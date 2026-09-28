@@ -18,45 +18,6 @@
 // 行表是 Hash Join v2 构建侧把构建行按固定内存布局编码后的容器；本测试覆盖：
 // 平台字长能否容纳指针、段（segment）行数/有效键/内存统计，以及多段合并后的全局行定位。
 
-/*
-// 这段逻辑验证 row table 底层布局假设：Go 堆对象地址稳定性、固定字段偏移、uint32 bit mask 和 uintptr 容量。
-
-#![allow(dead_code, non_snake_case, non_camel_case_types, non_upper_case_globals, unused_variables)]
-
-// TestHeapObjectCanMove 对应 Go 测试：确认当前 Go runtime 下堆对象不会移动。
-// row table 会把 unsafe.Pointer 编码进 uintptr，这个断言是后续指针恢复安全性的前置假设。
-#[test]
-pub fn TestHeapObjectCanMove() {
-    require::Equal(false, heapObjectsCanMove());
-}
-
-// TestFixedOffsetInRowLayout 对应 Go 测试：校验 next pointer 和 element size 在 row layout 中的固定宽度。
-#[test]
-pub fn TestFixedOffsetInRowLayout() {
-    require::Equal(8, sizeOfNextPtr);
-    require::Equal(4, sizeOfElementSize);
-}
-
-// TestBitMaskInUint32 对应 Go 测试：逐位写入 byte slice，再用 atomic.LoadUint32 读取验证 bitMaskInUint32。
-#[test]
-pub fn TestBitMaskInUint32() {
-    let mut testData = vec![0_u8; 4];
-    for i in 0..32 {
-        testData[i / 8] = 1 << (7 - i % 8);
-        // 原 Go 通过 unsafe.Pointer 把首地址转成 *uint32；只保留原子读取的测试形状。
-        let testUint32 = atomic::LoadUint32(unsafe_cast_to_uint32_ptr(&testData[0]));
-        let reference = testUint32 & bitMaskInUint32[i];
-        require::Equal(true, reference != 0);
-        testData[i / 8] = 0;
-    }
-}
-
-// TestUintptrCanHoldPointer 对应 Go 测试：确认 uintptr 足以保存 unsafe.Pointer 的位宽。
-#[test]
-pub fn TestUintptrCanHoldPointer() {
-    require::Equal(true, sizeOfUintptr >= sizeOfUnsafePointer);
-}
-*/
 
 use crate::join_row_table::{RowTable, RowTableSegment, SIZE_OF_ELEMENT_SIZE, SIZE_OF_NEXT_PTR};
 use crate::join_table_meta::EncodedRow;
