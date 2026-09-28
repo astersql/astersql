@@ -1,0 +1,22 @@
+[package]
+name = "astersql-cmd-benchdb"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "cmd/benchdb"
+legacy-tasks = []
+kind = "binary"
+lane = 0
+
+[[bin]]
+name = "astersql-cmd-benchdb"
+path = "bin_main.rs"
+
+# arm64 darwin: no kv/domain/kvproto/grpcio.
+# Prefer no heavy TiDB crates; local stubs cover SQL session, store, logging, flags.
+[dependencies]

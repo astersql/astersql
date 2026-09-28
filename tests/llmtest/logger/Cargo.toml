@@ -1,0 +1,18 @@
+[package]
+name = "astersql-tests-llmtest-logger"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "tests/llmtest/logger"
+legacy-tasks = []
+kind = "library"
+lane = 0
+
+# arm64 darwin: no kv/domain/kvproto/grpcio.
+# zap boundary is a local stub (see stubs.rs).
+[dependencies]

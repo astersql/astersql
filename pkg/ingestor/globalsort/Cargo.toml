@@ -1,0 +1,40 @@
+[package]
+name = "astersql-ingestor-globalsort"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/ingestor/globalsort"
+legacy-tasks = ["task-958", "task-959", "task-962", "task-966", "task-967"]
+
+[target.'cfg(windows)'.dependencies]
+"astersql-dxf-framework-taskexecutor-execute" = { package = "astersql-dxf-framework-taskexecutor-execute", path = "../../dxf/framework/taskexecutor/execute" }
+"astersql-dxf-operator" = { package = "astersql-dxf-operator", path = "../../dxf/operator" }
+"astersql-ingestor-engineapi" = { package = "astersql-ingestor-engineapi", path = "../engineapi" }
+"astersql-ingestor-simplesst" = { package = "astersql-ingestor-simplesst", path = "../simplesst" }
+"astersql-kv" = { package = "astersql-kv", path = "../../kv" }
+"astersql-lightning-common" = { package = "astersql-lightning-common", path = "../../lightning/common" }
+"astersql-lightning-log" = { package = "astersql-lightning-log", path = "../../lightning/log" }
+"astersql-lightning-membuf" = { package = "astersql-lightning-membuf", path = "../../lightning/membuf" }
+"astersql-lightning-metric" = { package = "astersql-lightning-metric", path = "../../lightning/metric" }
+"astersql-metrics" = { package = "astersql-metrics", path = "../../metrics" }
+"astersql-objstore" = { package = "astersql-objstore", path = "../../objstore" }
+"astersql-objstore-objectio" = { package = "astersql-objstore-objectio", path = "../../objstore/objectio" }
+"astersql-objstore-storeapi" = { package = "astersql-objstore-storeapi", path = "../../objstore/storeapi" }
+"astersql-resourcemanager-pool-workerpool" = { package = "astersql-resourcemanager-pool-workerpool", path = "../../resourcemanager/pool/workerpool" }
+"astersql-resourcemanager-util" = { package = "astersql-resourcemanager-util", path = "../../resourcemanager/util" }
+"astersql-util" = { package = "astersql-util", path = "../../util" }
+"astersql-util-intest" = { package = "astersql-util-intest", path = "../../util/intest" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../util/logutil" }
+"astersql-util-mathutil" = { package = "astersql-util-mathutil", path = "../../util/mathutil" }
+"astersql-util-size" = { package = "astersql-util-size", path = "../../util/size" }
+
+[target.'cfg(windows)'.dev-dependencies]
+"astersql-ingestor-testutils" = { package = "astersql-ingestor-testutils", path = "../testutils" }
+"astersql-lightning-backend-kv" = { package = "astersql-lightning-backend-kv", path = "../../lightning/backend/kv" }
+"astersql-lightning-config" = { package = "astersql-lightning-config", path = "../../lightning/config" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../testkit/testfailpoint" }

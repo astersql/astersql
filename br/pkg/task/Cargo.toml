@@ -1,0 +1,29 @@
+[package]
+name = "astersql-br-pkg-task"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "br/pkg/task"
+legacy-tasks = []
+kind = "library"
+lane = 1
+
+# arm64 darwin: no kv/domain/kvproto/grpcio. Local traits/stubs + slim BR crates only.
+[dependencies]
+astersql-br-pkg-gc = { path = "../gc" }
+astersql-br-pkg-aws = { package = "astersql-br-pkg-aws", path = "../aws" }
+astersql-br-pkg-common = { package = "astersql-br-pkg-common", path = "../common" }
+astersql-br-pkg-stream = { package = "astersql-br-pkg-stream", path = "../stream" }
+astersql-br-pkg-utils-consts = { package = "astersql-br-pkg-utils-consts", path = "../utils/consts" }
+hex = "0.4"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+url = "2"
+uuid = { version = "1", features = ["v4"] }

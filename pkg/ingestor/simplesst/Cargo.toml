@@ -1,0 +1,36 @@
+[package]
+name = "astersql-ingestor-simplesst"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/ingestor/simplesst"
+legacy-tasks = ["task-940", "task-941", "task-945", "task-947", "task-948"]
+
+[target.'cfg(windows)'.dependencies]
+"astersql-ingestor-engineapi" = { package = "astersql-ingestor-engineapi", path = "../engineapi" }
+"astersql-kv" = { package = "astersql-kv", path = "../../kv" }
+"astersql-lightning-backend-encode" = { package = "astersql-lightning-backend-encode", path = "../../lightning/backend/encode" }
+"astersql-lightning-backend-kv" = { package = "astersql-lightning-backend-kv", path = "../../lightning/backend/kv" }
+"astersql-lightning-common" = { package = "astersql-lightning-common", path = "../../lightning/common" }
+"astersql-lightning-log" = { package = "astersql-lightning-log", path = "../../lightning/log" }
+"astersql-lightning-membuf" = { package = "astersql-lightning-membuf", path = "../../lightning/membuf" }
+"astersql-metrics" = { package = "astersql-metrics", path = "../../metrics" }
+"astersql-objstore" = { package = "astersql-objstore", path = "../../objstore" }
+"astersql-objstore-objectio" = { package = "astersql-objstore-objectio", path = "../../objstore/objectio" }
+"astersql-objstore-storeapi" = { package = "astersql-objstore-storeapi", path = "../../objstore/storeapi" }
+"astersql-util" = { package = "astersql-util", path = "../../util" }
+"astersql-util-hack" = { package = "astersql-util-hack", path = "../../util/hack" }
+"astersql-util-intest" = { package = "astersql-util-intest", path = "../../util/intest" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../util/logutil" }
+"astersql-util-size" = { package = "astersql-util-size", path = "../../util/size" }
+
+[target.'cfg(windows)'.dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../config" }
+"astersql-ingestor-testutils" = { package = "astersql-ingestor-testutils", path = "../testutils" }
+"astersql-objstore-s3like" = { package = "astersql-objstore-s3like", path = "../../objstore/s3like" }
+"astersql-objstore-s3store" = { package = "astersql-objstore-s3store", path = "../../objstore/s3store" }

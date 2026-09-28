@@ -1,0 +1,13 @@
+[package]
+name = "astersql-resourcegroup"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/resourcegroup"
+legacy-tasks = ["task-36", "task-507"]

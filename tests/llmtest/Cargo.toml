@@ -1,0 +1,23 @@
+[package]
+name = "astersql-tests-llmtest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "tests/llmtest"
+legacy-tasks = []
+kind = "binary"
+lane = 2
+
+[[bin]]
+name = "astersql-tests-llmtest"
+path = "main.rs"
+
+[dependencies]
+"astersql-tests-llmtest-generator" = { package = "astersql-tests-llmtest-generator", path = "generator" }
+"astersql-tests-llmtest-logger" = { package = "astersql-tests-llmtest-logger", path = "logger" }
+"astersql-tests-llmtest-testcase" = { package = "astersql-tests-llmtest-testcase", path = "testcase" }

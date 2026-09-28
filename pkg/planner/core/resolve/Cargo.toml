@@ -1,0 +1,16 @@
+[package]
+name = "astersql-planner-core-resolve"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+parser-ast = { package = "astersql-parser-ast", path = "../../../parser/ast" }
+meta-model = { package = "astersql-meta-model", path = "../../../meta/model" }
+
+[package.metadata.porting]
+go-package = "pkg/planner/core/resolve"
+legacy-tasks = ["task-432"]

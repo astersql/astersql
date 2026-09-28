@@ -1,0 +1,21 @@
+[package]
+name = "astersql-util-generatedexpr"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+parser-dependency = { package = "astersql-parser", path = "../../parser" }
+model-dependency = { package = "astersql-meta-model", path = "../../meta/model" }
+parserutil-dependency = { package = "astersql-util-parser", path = "../parser" }
+
+[dev-dependencies]
+testsetup = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }
+
+[package.metadata.porting]
+go-package = "pkg/util/generatedexpr"
+legacy-tasks = ["task-533"]

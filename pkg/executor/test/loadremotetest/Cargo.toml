@@ -1,0 +1,18 @@
+[package]
+name = "astersql-executor-test-loadremotetest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/executor/test/loadremotetest"
+legacy-tasks = ["task-1347"]
+
+[dev-dependencies]
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
+"astersql-lightning-mydump" = { package = "astersql-lightning-mydump", path = "../../../lightning/mydump" }
+"astersql-parser-terror" = { package = "astersql-parser-terror", path = "../../../parser/terror" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }

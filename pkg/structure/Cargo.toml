@@ -1,0 +1,17 @@
+[package]
+name = "astersql-structure"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+codec-dependency = { package = "astersql-util-codec", path = "../util/codec" }
+dbterror-dependency = { package = "astersql-util-dbterror", path = "../util/dbterror" }
+kv-crate = { package = "astersql-kv", path = "../kv" }
+
+[package.metadata.porting]
+go-package = "pkg/structure"
+legacy-tasks = ["task-469"]

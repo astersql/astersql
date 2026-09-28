@@ -1,0 +1,19 @@
+[package]
+name = "astersql-testkit-external"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/testkit/external"
+legacy-tasks = ["task-1522"]
+
+[dependencies]
+"astersql-domain" = { package = "astersql-domain", path = "../../domain" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../parser/ast" }
+"astersql-table" = { package = "astersql-table", path = "../../table" }
+"astersql-table-tables" = { package = "astersql-table-tables", path = "../../table/tables" }
+"astersql-testkit" = { package = "astersql-testkit", path = ".." }

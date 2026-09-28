@@ -1,0 +1,35 @@
+[package]
+name = "astersql-dxf-framework-integrationtests"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/dxf/framework/integrationtests"
+legacy-tasks = ["task-1559", "task-1560"]
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../config" }
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../config/kerneltype" }
+"astersql-ddl" = { package = "astersql-ddl", path = "../../../ddl" }
+"astersql-domain" = { package = "astersql-domain", path = "../../../domain" }
+"astersql-dxf-framework-handle" = { package = "astersql-dxf-framework-handle", path = "../handle" }
+"astersql-dxf-framework-mock-execute" = { package = "astersql-dxf-framework-mock-execute", path = "../mock/execute" }
+"astersql-dxf-framework-proto" = { package = "astersql-dxf-framework-proto", path = "../proto" }
+"astersql-dxf-framework-scheduler" = { package = "astersql-dxf-framework-scheduler", path = "../scheduler" }
+"astersql-dxf-framework-scheduler-mock" = { package = "astersql-dxf-framework-scheduler-mock", path = "../scheduler/mock" }
+"astersql-dxf-framework-storage" = { package = "astersql-dxf-framework-storage", path = "../storage" }
+"astersql-dxf-framework-taskexecutor" = { package = "astersql-dxf-framework-taskexecutor", path = "../taskexecutor" }
+"astersql-dxf-framework-taskexecutor-execute" = { package = "astersql-dxf-framework-taskexecutor-execute", path = "../taskexecutor/execute" }
+"astersql-dxf-framework-testutil" = { package = "astersql-dxf-framework-testutil", path = "../testutil" }
+"astersql-session" = { package = "astersql-session", path = "../../../session" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../../sessionctx" }
+"astersql-store-driver" = { package = "astersql-store-driver", path = "../../../store/driver" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../testkit/testfailpoint" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }
+"astersql-util" = { package = "astersql-util", path = "../../../util" }
+"astersql-util-sqlexec" = { package = "astersql-util-sqlexec", path = "../../../util/sqlexec" }

@@ -1,0 +1,30 @@
+[package]
+name = "astersql-parser-auth"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+astersql-errors = { path = "../../errors" }
+astersql-parser-format = { path = "../format" }
+astersql-parser-mysql = { path = "../mysql" }
+astersql-parser-terror = { path = "../terror" }
+backtrace = "0.3"
+hex = "0.4"
+log = "0.4"
+rand = "0.8"
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+sha1 = "0.10"
+sha2 = "0.10"
+unicode-general-category = "1"
+
+[dev-dependencies]
+hex-literal = "0.4"
+
+[package.metadata.porting]
+go-package = "pkg/parser/auth"
+legacy-tasks = ["task-235", "task-264", "task-302"]

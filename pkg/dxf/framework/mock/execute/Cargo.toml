@@ -1,0 +1,19 @@
+[package]
+name = "astersql-dxf-framework-mock-execute"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+anyhow = "1"
+execute = { package = "astersql-dxf-framework-taskexecutor-execute", path = "../../taskexecutor/execute" }
+metering = { package = "astersql-dxf-framework-metering", path = "../../metering" }
+mockall = "0.15.0"
+proto = { package = "astersql-dxf-framework-proto", path = "../../proto" }
+
+[package.metadata.porting]
+go-package = "pkg/dxf/framework/mock/execute"
+legacy-tasks = ["task-589"]

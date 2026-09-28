@@ -1,0 +1,24 @@
+[package]
+name = "astersql-executor-internal-applycache"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+kvcache-dependency = { package = "astersql-util-kvcache", path = "../../../util/kvcache" }
+parking_lot = "0.12"
+tidb-chunk = { package = "astersql-util-chunk", path = "../../../util/chunk" }
+tidb-memory = { package = "astersql-util-memory", path = "../../../util/memory" }
+
+[dev-dependencies]
+fail = { version = "0.5.1", features = ["failpoints"] }
+testsetup = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }
+tidb_autoid = { package = "astersql-meta-autoid", path = "../../../meta/autoid" }
+tidb_config = { package = "astersql-config", path = "../../../config" }
+
+[package.metadata.porting]
+go-package = "pkg/executor/internal/applycache"
+legacy-tasks = ["task-628"]

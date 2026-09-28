@@ -1,0 +1,22 @@
+[package]
+name = "astersql-expression-generator"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+gtmpl = "0.7.1"
+tree-sitter = "0.25"
+tree-sitter-go = "0.25"
+
+[dev-dependencies]
+tempfile = "3"
+
+[workspace]
+
+[package.metadata.porting]
+go-package = "pkg/expression/generator"
+legacy-tasks = ["task-188", "task-189", "task-195"]

@@ -1,0 +1,26 @@
+[package]
+name = "astersql-ddl-copr"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/ddl/copr"
+legacy-tasks = ["task-875", "task-889"]
+
+[target.'cfg(any())'.dependencies]
+"astersql-expression" = { package = "astersql-expression", path = "../../expression" }
+"astersql-expression-exprctx" = { package = "astersql-expression-exprctx", path = "../../expression/exprctx" }
+"astersql-infoschema" = { package = "astersql-infoschema", path = "../../infoschema" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../meta/model" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../parser/ast" }
+"astersql-table-tables" = { package = "astersql-table-tables", path = "../../table/tables" }
+"astersql-types" = { package = "astersql-types", path = "../../types" }
+
+[target.'cfg(any())'.dev-dependencies]
+"astersql-expression-exprstatic" = { package = "astersql-expression-exprstatic", path = "../../expression/exprstatic" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+"astersql-util-mock" = { package = "astersql-util-mock", path = "../../util/mock" }

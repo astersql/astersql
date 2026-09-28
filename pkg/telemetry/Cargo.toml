@@ -1,0 +1,35 @@
+[package]
+name = "astersql-telemetry"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/telemetry"
+legacy-tasks = ["task-879", "task-1496"]
+
+[target.'cfg(any())'.dependencies]
+"astersql-config" = { package = "astersql-config", path = "../config" }
+"astersql-infoschema" = { package = "astersql-infoschema", path = "../infoschema" }
+"astersql-kv" = { package = "astersql-kv", path = "../kv" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../meta/model" }
+"astersql-metrics" = { package = "astersql-metrics", path = "../metrics" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../parser/ast" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../sessionctx" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../sessionctx/vardef" }
+"astersql-sessionctx-variable" = { package = "astersql-sessionctx-variable", path = "../sessionctx/variable" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../util/logutil" }
+"astersql-util-memory" = { package = "astersql-util-memory", path = "../util/memory" }
+"astersql-util-sqlexec" = { package = "astersql-util-sqlexec", path = "../util/sqlexec" }
+
+[target.'cfg(any())'.dev-dependencies]
+"astersql-autoid_service" = { package = "astersql-autoid_service", path = "../autoid_service" }
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../config/kerneltype" }
+"astersql-domain" = { package = "astersql-domain", path = "../domain" }
+"astersql-store-mockstore" = { package = "astersql-store-mockstore", path = "../store/mockstore" }
+"astersql-store-mockstore-unistore" = { package = "astersql-store-mockstore-unistore", path = "../store/mockstore/unistore" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../testkit" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../testkit/testsetup" }

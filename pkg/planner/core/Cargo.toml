@@ -1,0 +1,62 @@
+[package]
+name = "astersql-planner-core"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+sha2 = "0.10"
+aggregation-dependency = { package = "astersql-expression-aggregation", path = "../../expression/aggregation" }
+asyncload-dependency = { package = "astersql-statistics-asyncload", path = "../../statistics/asyncload" }
+base-dependency = { package = "astersql-planner-core-base", path = "base" }
+cardinality-dependency = { package = "astersql-planner-cardinality", path = "../cardinality" }
+chunk-dependency = { package = "astersql-util-chunk", path = "../../util/chunk" }
+coreusage-dependency = { package = "astersql-planner-util-coreusage", path = "../util/coreusage" }
+costusage-dependency = { package = "astersql-planner-util-costusage", path = "../util/costusage" }
+expression-dependency = { package = "astersql-expression", path = "../../expression" }
+expression-expropt-dependency = { package = "astersql-expression-expropt", path = "../../expression/expropt" }
+hint-dependency = { package = "astersql-util-hint", path = "../../util/hint" }
+infoschema-dependency = { package = "astersql-infoschema", path = "../../infoschema" }
+kv-dependency = { package = "astersql-kv", path = "../../kv" }
+logicalop-dependency = { package = "astersql-planner-core-operator-logicalop", path = "operator/logicalop" }
+memory-dependency = { package = "astersql-util-memory", path = "../../util/memory" }
+model-dependency = { package = "astersql-meta-model", path = "../../meta/model" }
+parser-ast-dependency = { package = "astersql-parser-ast", path = "../../parser/ast" }
+physicalop-dependency = { package = "astersql-planner-core-operator-physicalop", path = "operator/physicalop" }
+planner-util-dependency = { package = "astersql-planner-util", path = "../util" }
+plannererrors-dependency = { package = "astersql-util-dbterror-plannererrors", path = "../../util/dbterror/plannererrors" }
+property-dependency = { package = "astersql-planner-property", path = "../property" }
+resolve-dependency = { package = "astersql-planner-core-resolve", path = "resolve" }
+rule-dependency = { package = "astersql-planner-core-rule", path = "rule" }
+rule-util-dependency = { package = "astersql-planner-core-rule-util", path = "rule/util" }
+sem-dependency = { package = "astersql-util-sem-compat", path = "../../util/sem/compat" }
+stmtctx-dependency = { package = "astersql-sessionctx-stmtctx", path = "../../sessionctx/stmtctx" }
+statistics-dependency = { package = "astersql-statistics", path = "../../statistics" }
+stringutil-dependency = { package = "astersql-util-stringutil", path = "../../util/stringutil" }
+table-dependency = { package = "astersql-table", path = "../../table" }
+tipb = { git = "https://github.com/pingcap/tipb.git", rev = "07f0ea6b6bffa9d8ac100d81ee51dbbfe4dda3bf", default-features = false, features = ["protobuf-codec"] }
+types-dependency = { package = "astersql-types", path = "../../types" }
+vardef-dependency = { package = "astersql-sessionctx-vardef", path = "../../sessionctx/vardef" }
+variable-dependency = { package = "astersql-sessionctx-variable", path = "../../sessionctx/variable" }
+
+[dev-dependencies]
+codec-dependency = { package = "astersql-util-codec", path = "../../util/codec" }
+exprstatic-dependency = { package = "astersql-expression-exprstatic", path = "../../expression/exprstatic" }
+parser-dependency = { package = "astersql-parser", path = "../../parser" }
+util-dependency = { package = "astersql-util", path = "../../util" }
+
+[package.metadata.porting]
+go-package = "pkg/planner/core"
+legacy-tasks = [
+    "task-1158", "task-1159", "task-1160", "task-1161", "task-1162", "task-1163",
+    "task-1164", "task-1165", "task-1166", "task-1167", "task-1168", "task-1169",
+    "task-1170", "task-1171", "task-1172", "task-1173", "task-1174", "task-1175",
+    "task-1176", "task-1177", "task-1178", "task-1179", "task-1181", "task-1605",
+    "task-1606", "task-1607", "task-1608", "task-1609", "task-1610", "task-1611",
+    "task-1612", "task-1613", "task-1614",
+]

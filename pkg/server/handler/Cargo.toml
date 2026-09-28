@@ -1,0 +1,32 @@
+[package]
+name = "astersql-server-handler"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/server/handler"
+legacy-tasks = ["task-1271", "task-1276"]
+
+[dependencies]
+"astersql-domain-infosync" = { package = "astersql-domain-infosync", path = "../../domain/infosync" }
+"astersql-domain-serverinfo" = { package = "astersql-domain-serverinfo", path = "../../domain/serverinfo" }
+"astersql-infoschema" = { package = "astersql-infoschema", path = "../../infoschema" }
+"astersql-kv" = { package = "astersql-kv", path = "../../kv" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../meta/model" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../parser/ast" }
+"astersql-parser-terror" = { package = "astersql-parser-terror", path = "../../parser/terror" }
+"astersql-session" = { package = "astersql-session", path = "../../session" }
+"astersql-sessionctx-stmtctx" = { package = "astersql-sessionctx-stmtctx", path = "../../sessionctx/stmtctx" }
+"astersql-store-driver-error" = { package = "astersql-store-driver-error", path = "../../store/driver/error" }
+"astersql-store-helper" = { package = "astersql-store-helper", path = "../../store/helper" }
+"astersql-table" = { package = "astersql-table", path = "../../table" }
+"astersql-table-tables" = { package = "astersql-table-tables", path = "../../table/tables" }
+"astersql-tablecodec" = { package = "astersql-tablecodec", path = "../../tablecodec" }
+"astersql-types" = { package = "astersql-types", path = "../../types" }
+"astersql-util-codec" = { package = "astersql-util-codec", path = "../../util/codec" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../util/logutil" }

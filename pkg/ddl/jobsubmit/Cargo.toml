@@ -1,0 +1,42 @@
+[package]
+name = "astersql-ddl-jobsubmit"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/ddl/jobsubmit"
+legacy-tasks = ["task-919", "task-1300"]
+
+[dependencies]
+astersql-meta-model = { path = "../../meta/model" }
+serde_json = "1"
+
+[target.'cfg(any())'.dependencies]
+"astersql-ddl-bdr" = { package = "astersql-ddl-bdr", path = "../bdr" }
+"astersql-ddl-logutil" = { package = "astersql-ddl-logutil", path = "../logutil" }
+"astersql-ddl-serverstate" = { package = "astersql-ddl-serverstate", path = "../serverstate" }
+"astersql-ddl-session" = { package = "astersql-ddl-session", path = "../session" }
+"astersql-ddl-systable" = { package = "astersql-ddl-systable", path = "../systable" }
+"astersql-ddl-util" = { package = "astersql-ddl-util", path = "../util" }
+"astersql-infoschema" = { package = "astersql-infoschema", path = "../../infoschema" }
+"astersql-kv" = { package = "astersql-kv", path = "../../kv" }
+"astersql-meta" = { package = "astersql-meta", path = "../../meta" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../meta/model" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../parser/ast" }
+"astersql-parser-terror" = { package = "astersql-parser-terror", path = "../../parser/terror" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../sessionctx" }
+"astersql-util-dbterror" = { package = "astersql-util-dbterror", path = "../../util/dbterror" }
+"astersql-util-filter" = { package = "astersql-util-filter", path = "../../util/filter" }
+"astersql-util-intest" = { package = "astersql-util-intest", path = "../../util/intest" }
+"astersql-util-tracing" = { package = "astersql-util-tracing", path = "../../util/tracing" }
+
+[target.'cfg(any())'.dev-dependencies]
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+"astersql-store-mockstore" = { package = "astersql-store-mockstore", path = "../../store/mockstore" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../testkit" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../testkit/testfailpoint" }
+"astersql-util-mock" = { package = "astersql-util-mock", path = "../../util/mock" }

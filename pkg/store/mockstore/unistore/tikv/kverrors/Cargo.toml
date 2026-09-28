@@ -1,0 +1,19 @@
+[package]
+name = "astersql-store-mockstore-unistore-tikv-kverrors"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+grpcio = { version = "=0.13.0", default-features = false, features = ["protobuf-codec"] }
+hex = "0.4"
+kvproto = { git = "https://github.com/pingcap/kvproto.git", rev = "a15c348f8713", default-features = false, features = ["protobuf-codec"] }
+protobuf = "=2.8.0"
+astersql-store-mockstore-unistore-tikv-mvcc = { path = "../mvcc" }
+
+[package.metadata.porting]
+go-package = "pkg/store/mockstore/unistore/tikv/kverrors"
+legacy-tasks = ["task-468"]

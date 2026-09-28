@@ -1,0 +1,28 @@
+[package]
+name = "astersql-br-pkg-stream"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "br/pkg/stream"
+legacy-tasks = []
+kind = "library"
+lane = 2
+
+[dependencies]
+astersql-br-pkg-encryption = { package = "astersql-br-pkg-encryption", path = "../encryption" }
+astersql-br-pkg-stream-backupmetas = { package = "astersql-br-pkg-stream-backupmetas", path = "backupmetas" }
+astersql-br-pkg-streamhelper = { package = "astersql-br-pkg-streamhelper", path = "../streamhelper" }
+astersql-br-pkg-utils-consts = { package = "astersql-br-pkg-utils-consts", path = "../utils/consts" }
+astersql-br-pkg-utils-iter = { package = "astersql-br-pkg-utils-iter", path = "../utils/iter" }
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+base64 = "0.22"
+hex = "0.4"
+zstd = "0.13"

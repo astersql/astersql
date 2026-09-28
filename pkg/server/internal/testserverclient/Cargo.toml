@@ -1,0 +1,28 @@
+[package]
+name = "astersql-server-internal-testserverclient"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/server/internal/testserverclient"
+legacy-tasks = ["task-1523", "task-1525"]
+
+[dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../config" }
+"astersql-errno" = { package = "astersql-errno", path = "../../../errno" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../../meta/model" }
+"astersql-metrics" = { package = "astersql-metrics", path = "../../../metrics" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../../parser/mysql" }
+"astersql-server" = { package = "astersql-server", path = "../.." }
+"astersql-sessionctx-sessionstates" = { package = "astersql-sessionctx-sessionstates", path = "../../../sessionctx/sessionstates" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-testkit-testenv" = { package = "astersql-testkit-testenv", path = "../../../testkit/testenv" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../testkit/testfailpoint" }
+"astersql-util" = { package = "astersql-util", path = "../../../util" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../../util/logutil" }
+"astersql-util-versioninfo" = { package = "astersql-util-versioninfo", path = "../../../util/versioninfo" }

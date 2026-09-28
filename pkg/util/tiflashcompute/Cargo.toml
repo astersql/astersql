@@ -1,0 +1,22 @@
+[package]
+name = "astersql-util-tiflashcompute"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+config = { package = "astersql-config", path = "../../config" }
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+ureq = "2"
+url = "2"
+vardef = { package = "astersql-sessionctx-vardef", path = "../../sessionctx/vardef" }
+
+[package.metadata.porting]
+go-package = "pkg/util/tiflashcompute"
+legacy-tasks = ["task-372"]

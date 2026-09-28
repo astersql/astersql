@@ -1,0 +1,20 @@
+[package]
+name = "astersql-domain-sqlsvrapi"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+kv-dependency = { package = "astersql-kv", path = "../../kv" }
+model-dependency = { package = "astersql-meta-model", path = "../../meta/model" }
+owner-dependency = { package = "astersql-owner", path = "../../owner" }
+util-dependency = { package = "astersql-util", path = "../../util" }
+tokio-util = "0.7"
+
+[package.metadata.porting]
+go-package = "pkg/domain/sqlsvrapi"
+legacy-tasks = ["task-557", "task-579"]

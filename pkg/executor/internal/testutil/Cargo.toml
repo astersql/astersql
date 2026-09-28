@@ -1,0 +1,30 @@
+[package]
+name = "astersql-executor-internal-testutil"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/executor/internal/testutil"
+legacy-tasks = ["task-1084"]
+
+[dependencies]
+"astersql-executor-internal-exec" = { package = "astersql-executor-internal-exec", path = "../exec" }
+
+[target.'cfg(windows)'.dependencies]
+"astersql-expression" = { package = "astersql-expression", path = "../../../expression" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../parser/ast" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../../parser/mysql" }
+"astersql-planner-core-base" = { package = "astersql-planner-core-base", path = "../../../planner/core/base" }
+"astersql-planner-core-operator-logicalop" = { package = "astersql-planner-core-operator-logicalop", path = "../../../planner/core/operator/logicalop" }
+"astersql-planner-property" = { package = "astersql-planner-property", path = "../../../planner/property" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../../sessionctx" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../../sessionctx/vardef" }
+"astersql-types" = { package = "astersql-types", path = "../../../types" }
+"astersql-util-chunk" = { package = "astersql-util-chunk", path = "../../../util/chunk" }
+"astersql-util-memory" = { package = "astersql-util-memory", path = "../../../util/memory" }
+"astersql-util-serialization" = { package = "astersql-util-serialization", path = "../../../util/serialization" }
+"astersql-util-stringutil" = { package = "astersql-util-stringutil", path = "../../../util/stringutil" }

@@ -1,0 +1,19 @@
+[package]
+name = "astersql-planner-core-rule-util"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+base = { package = "astersql-planner-core-base", path = "../../base" }
+expression = { package = "astersql-expression", path = "../../../../expression" }
+intset = { package = "astersql-util-intset", path = "../../../../util/intset" }
+model = { package = "astersql-meta-model", path = "../../../../meta/model" }
+mysql = { package = "astersql-parser-mysql", path = "../../../../parser/mysql" }
+
+[package.metadata.porting]
+go-package = "pkg/planner/core/rule/util"

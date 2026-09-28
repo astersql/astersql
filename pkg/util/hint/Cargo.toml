@@ -1,0 +1,20 @@
+[package]
+name = "astersql-util-hint"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+dbterror = { package = "astersql-util-dbterror", path = "../dbterror" }
+errno = { package = "astersql-errno", path = "../../errno" }
+meta-model = { package = "astersql-meta-model-group1", path = "../../meta/model/internal/group1" }
+parser = { package = "astersql-parser", path = "../../parser" }
+plannererrors = { package = "astersql-util-dbterror-plannererrors", path = "../dbterror/plannererrors" }
+types = { package = "astersql-types", path = "../../types" }
+
+[package.metadata.porting]
+go-package = "pkg/util/hint"
+legacy-tasks = ["task-448"]

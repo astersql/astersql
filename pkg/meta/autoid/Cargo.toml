@@ -1,0 +1,18 @@
+[package]
+name = "astersql-meta-autoid"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+thiserror = "2"
+
+[dev-dependencies]
+astersql-testkit-testsetup = { path = "../../testkit/testsetup" }
+
+[package.metadata.porting]
+go-package = "pkg/meta/autoid"
+legacy-tasks = ["task-580", "task-589"]

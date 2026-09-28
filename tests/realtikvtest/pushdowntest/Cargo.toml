@@ -1,0 +1,32 @@
+[package]
+name = "astersql-tests-realtikvtest-pushdowntest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "tests/realtikvtest/pushdowntest"
+legacy-tasks = []
+kind = "test-only"
+lane = 1
+
+[[test]]
+name = "expr_test"
+path = "expr_test.rs"
+
+[[test]]
+name = "index_lookup_pushdown_test"
+path = "index_lookup_pushdown_test.rs"
+
+[[test]]
+name = "main_test"
+path = "main_test.rs"
+
+[dev-dependencies]
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../pkg/testkit" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../../pkg/util/logutil" }
+"astersql-tests-realtikvtest" = { package = "astersql-tests-realtikvtest", path = ".." }

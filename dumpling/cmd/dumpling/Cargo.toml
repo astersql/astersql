@@ -1,0 +1,25 @@
+[package]
+name = "astersql-dumpling-cmd-dumpling"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "dumpling/cmd/dumpling"
+legacy-tasks = []
+kind = "binary"
+lane = 0
+
+[[bin]]
+name = "astersql-dumpling-cmd-dumpling"
+path = "bin_main.rs"
+
+# arm64 darwin: no kv/domain/kvproto/grpcio.
+# Prefer slim dumpling-cli/export only; local stubs cover pflag/prometheus collectors.
+[dependencies]
+"astersql-dumpling-cli" = { package = "astersql-dumpling-cli", path = "../../cli" }
+"astersql-dumpling-export" = { package = "astersql-dumpling-export", path = "../../export" }
+"astersql-dumpling-log" = { package = "astersql-dumpling-log", path = "../../log" }

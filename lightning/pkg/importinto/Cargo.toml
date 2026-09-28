@@ -1,0 +1,23 @@
+[package]
+name = "astersql-lightning-pkg-importinto"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "lightning/pkg/importinto"
+legacy-tasks = []
+kind = "library"
+lane = 1
+
+# arm64 darwin: no kv/domain/kvproto/grpcio.
+# Prefer already-ported precheck; local stubs cover importsdk/SQL/objstore/config/common/log.
+[dependencies]
+"astersql-lightning-pkg-precheck" = { package = "astersql-lightning-pkg-precheck", path = "../precheck" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+uuid = { version = "1", features = ["v4"] }

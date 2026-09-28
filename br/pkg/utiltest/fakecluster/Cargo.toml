@@ -1,0 +1,22 @@
+[package]
+name = "astersql-br-pkg-utiltest-fakecluster"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "br/pkg/utiltest/fakecluster"
+legacy-tasks = []
+kind = "library"
+lane = 2
+
+# arm64 darwin: no kv/domain/kvproto/grpcio. Local stubs for proto/oracle/codec;
+# only slim already-ported BR crates (streamhelper + spans).
+[dependencies]
+astersql-br-pkg-streamhelper = { package = "astersql-br-pkg-streamhelper", path = "../../streamhelper" }
+astersql-br-pkg-streamhelper-spans = { package = "astersql-br-pkg-streamhelper-spans", path = "../../streamhelper/spans" }
+rand = "0.8"
+tracing = "0.1"

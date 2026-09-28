@@ -1,0 +1,35 @@
+[package]
+name = "astersql-statistics-handle-usage"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/statistics/handle/usage"
+legacy-tasks = ["task-954", "task-1489"]
+
+[target.'cfg(any())'.dependencies]
+"astersql-infoschema" = { package = "astersql-infoschema", path = "../../../infoschema" }
+"astersql-meta-metadef" = { package = "astersql-meta-metadef", path = "../../../meta/metadef" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../../meta/model" }
+"astersql-metrics" = { package = "astersql-metrics", path = "../../../metrics" }
+"astersql-session-syssession" = { package = "astersql-session-syssession", path = "../../../session/syssession" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../../sessionctx" }
+"astersql-sessionctx-variable" = { package = "astersql-sessionctx-variable", path = "../../../sessionctx/variable" }
+"astersql-statistics-handle-logutil" = { package = "astersql-statistics-handle-logutil", path = "../logutil" }
+"astersql-statistics-handle-storage" = { package = "astersql-statistics-handle-storage", path = "../storage" }
+"astersql-statistics-handle-types" = { package = "astersql-statistics-handle-types", path = "../types" }
+"astersql-statistics-handle-usage-indexusage" = { package = "astersql-statistics-handle-usage-indexusage", path = "indexusage" }
+"astersql-statistics-handle-usage-predicatecolumn" = { package = "astersql-statistics-handle-usage-predicatecolumn", path = "predicatecolumn" }
+"astersql-statistics-handle-util" = { package = "astersql-statistics-handle-util", path = "../util" }
+"astersql-types" = { package = "astersql-types", path = "../../../types" }
+"astersql-util" = { package = "astersql-util", path = "../../../util" }
+"astersql-util-intest" = { package = "astersql-util-intest", path = "../../../util/intest" }
+"astersql-util-sqlescape" = { package = "astersql-util-sqlescape", path = "../../../util/sqlescape" }
+
+[target.'cfg(any())'.dev-dependencies]
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../parser/ast" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }

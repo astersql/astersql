@@ -1,0 +1,52 @@
+[package]
+name = "astersql-ttl-ttlworker"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/ttl/ttlworker"
+legacy-tasks = ["task-985", "task-986", "task-987", "task-988", "task-990", "task-1503", "task-1504", "task-1505"]
+
+[target.'cfg(windows)'.dependencies]
+"astersql-infoschema" = { package = "astersql-infoschema", path = "../../infoschema" }
+"astersql-infoschema-context" = { package = "astersql-infoschema-context", path = "../../infoschema/context" }
+"astersql-kv" = { package = "astersql-kv", path = "../../kv" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../meta/model" }
+"astersql-metrics" = { package = "astersql-metrics", path = "../../metrics" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../parser/ast" }
+"astersql-parser-terror" = { package = "astersql-parser-terror", path = "../../parser/terror" }
+"astersql-session-syssession" = { package = "astersql-session-syssession", path = "../../session/syssession" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../sessionctx" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../sessionctx/vardef" }
+"astersql-statistics-handle" = { package = "astersql-statistics-handle", path = "../../statistics/handle" }
+"astersql-store-driver-error" = { package = "astersql-store-driver-error", path = "../../store/driver/error" }
+"astersql-timer-api" = { package = "astersql-timer-api", path = "../../timer/api" }
+"astersql-timer-runtime" = { package = "astersql-timer-runtime", path = "../../timer/runtime" }
+"astersql-timer-tablestore" = { package = "astersql-timer-tablestore", path = "../../timer/tablestore" }
+"astersql-ttl-cache" = { package = "astersql-ttl-cache", path = "../cache" }
+"astersql-ttl-client" = { package = "astersql-ttl-client", path = "../client" }
+"astersql-ttl-metrics" = { package = "astersql-ttl-metrics", path = "../metrics" }
+"astersql-ttl-session" = { package = "astersql-ttl-session", path = "../session" }
+"astersql-ttl-sqlbuilder" = { package = "astersql-ttl-sqlbuilder", path = "../sqlbuilder" }
+"astersql-types" = { package = "astersql-types", path = "../../types" }
+"astersql-util" = { package = "astersql-util", path = "../../util" }
+"astersql-util-chunk" = { package = "astersql-util-chunk", path = "../../util/chunk" }
+"astersql-util-intest" = { package = "astersql-util-intest", path = "../../util/intest" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../util/logutil" }
+"astersql-util-timeutil" = { package = "astersql-util-timeutil", path = "../../util/timeutil" }
+
+[target.'cfg(windows)'.dev-dependencies]
+"astersql-domain" = { package = "astersql-domain", path = "../../domain" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+"astersql-sessionctx-variable" = { package = "astersql-sessionctx-variable", path = "../../sessionctx/variable" }
+"astersql-statistics" = { package = "astersql-statistics", path = "../../statistics" }
+"astersql-store-mockstore" = { package = "astersql-store-mockstore", path = "../../store/mockstore" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../testkit" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../testkit/testfailpoint" }
+"astersql-testkit-testflag" = { package = "astersql-testkit-testflag", path = "../../testkit/testflag" }
+"astersql-util-skip" = { package = "astersql-util-skip", path = "../../util/skip" }
+"astersql-util-sqlexec" = { package = "astersql-util-sqlexec", path = "../../util/sqlexec" }

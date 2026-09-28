@@ -1,0 +1,323 @@
+// Copyright 2026 AsterSQL.
+// Copyright 2024 PingCAP, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// 物理计划扁平化（flat plan）与 EXPLAIN 行式输出。
+//
+// 将树形物理执行计划展开为深度优先的线性算子列表，记录父子下标、
+// Join 的 Build/Probe 标签、CTE 的 Seed/Recursive 分区以及缩进层级，
+// 供 `EXPLAIN` 以树状文本展示，并支持 analyze / verbose 附加列。
+
+use crate::{PlanKind, PlanNode, StoreType};
+use std::fmt;
+
+/// 扁平化后的算子序列（深度优先序）。
+pub type FlatPlanTree = Vec<FlatOperator>;
+
+/// 扁平化物理计划：主树、CTE、标量子查询及展示相关标志。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FlatPhysicalPlan {
+    /// 主查询对应的扁平算子树。
+    pub Main: FlatPlanTree,
+    /// CTE（公用表表达式）相关的扁平算子树。
+    pub CTE: FlatPlanTree,
+    /// 标量子查询相关的扁平算子树。
+    pub ScalarSubQ: FlatPlanTree,
+    /// 是否处于 Execute 上下文（影响展示语义）。
+    pub InExecute: bool,
+    /// 是否尝试快速计划路径。
+    pub TryFastPlan: bool,
+    /// Join 展开时是否优先遍历 Build 侧。
+    pub BuildSideFirst: bool,
+}
+
+impl FlatPhysicalPlan {
+    /// 取出 SELECT 侧计划：DML（Update/Delete/Insert）时跳过根算子，返回子树与偏移。
+    pub fn GetSelectPlan(&self) -> (&[FlatOperator], usize) {
+        if self.Main.is_empty() {
+            return (&[], 0);
+        }
+        let mut has_dml = false;
+        for (index, operator) in self.Main.iter().enumerate() {
+            if matches!(
+                operator.Origin.kind,
+                PlanKind::Update | PlanKind::Delete | PlanKind::Insert
+            ) {
+                has_dml = true;
+                continue;
+            }
+            if has_dml {
+                let end = self.Main[index..]
+                    .iter()
+                    .position(|operator| {
+                        matches!(
+                            operator.Origin.kind,
+                            PlanKind::FKCheck | PlanKind::FKCascade
+                        )
+                    })
+                    .map_or(self.Main.len(), |suffix| index + suffix);
+                return (&self.Main[index..end], index);
+            }
+            return (&self.Main[index..], index);
+        }
+        (&[], 0)
+    }
+}
+
+/// 扁平算子上的角色标签：Join 的 Build/Probe，或 CTE 的种子/递归部分。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OperatorLabel {
+    #[default]
+    Empty,
+    /// Hash/Index Join 的构建侧（通常较小的内表侧）。
+    BuildSide,
+    /// Join 的探测侧（外表侧）。
+    ProbeSide,
+    /// CTE 的种子（非递归）部分。
+    SeedPart,
+    /// CTE 的递归部分。
+    RecursivePart,
+}
+
+impl fmt::Display for OperatorLabel {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Empty => "",
+            Self::BuildSide => "(Build)",
+            Self::ProbeSide => "(Probe)",
+            Self::SeedPart => "(Seed Part)",
+            Self::RecursivePart => "(Recursive Part)",
+        })
+    }
+}
+
+/// 扁平化后的单个算子：保留原始 PlanNode，并附加树形展示所需元数据。
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlatOperator {
+    /// 原始物理计划节点。
+    pub Origin: PlanNode,
+    /// 子算子在扁平数组中的下标列表。
+    pub ChildrenIdx: Vec<usize>,
+    /// HashJoin 在 BuildSideFirst 时是否需交换驱动侧展示顺序。
+    pub NeedReverseDriverSide: bool,
+    /// Build/Probe/CTE 等角色标签。
+    pub Label: OperatorLabel,
+    /// 是否为当前子树的根。
+    pub IsRoot: bool,
+    /// 存储引擎类型（Root / TiKV / TiFlash 等）。
+    pub StoreType: StoreType,
+    /// 树深度，用于 EXPLAIN 缩进。
+    pub Level: usize,
+    /// 是否为同层最后一个孩子（决定 └─ / ├─）。
+    pub IsLastChild: bool,
+}
+
+impl FlatOperator {
+    /// 生成 EXPLAIN 中的算子 ID，形如 `TableScan_1`。
+    pub fn ExplainID(&self) -> String {
+        format!("{}_{}", self.Origin.kind.name(), self.Origin.id)
+    }
+}
+
+/// 递归扁平化时向下传递的上下文：层级、标签与兄弟位置。
+#[derive(Clone, Debug)]
+struct OperatorContext {
+    level: usize,
+    label: OperatorLabel,
+    is_root: bool,
+    is_last_child: bool,
+}
+
+/// 将物理计划树扁平化为 `FlatPhysicalPlan`；`plan` 为 `None` 时返回 `None`。
+pub fn FlattenPhysicalPlan(
+    plan: Option<&PlanNode>,
+    build_side_first: bool,
+) -> Option<FlatPhysicalPlan> {
+    let root = plan?;
+    let mut flat = FlatPhysicalPlan {
+        BuildSideFirst: build_side_first,
+        ..Default::default()
+    };
+    let context = OperatorContext {
+        level: 0,
+        label: OperatorLabel::Empty,
+        is_root: true,
+        is_last_child: true,
+    };
+    flatten_recursively(root, &context, &mut flat.Main, build_side_first);
+    Some(flat)
+}
+
+/// 按算子类型为各子节点分配 Build/Probe 或 Seed/Recursive 标签。
+fn child_labels(plan: &PlanNode) -> Vec<OperatorLabel> {
+    let mut labels = vec![OperatorLabel::Empty; plan.children.len()];
+    match &plan.kind {
+        PlanKind::HashJoin { inner_child, .. } => {
+            if labels.len() == 2 {
+                labels[*inner_child] = OperatorLabel::BuildSide;
+                labels[1 - *inner_child] = OperatorLabel::ProbeSide;
+            }
+        }
+        PlanKind::MergeJoin {
+            join_type: crate::JoinType::RightOuterJoin,
+            ..
+        } => {
+            if labels.len() == 2 {
+                labels[0] = OperatorLabel::BuildSide;
+                labels[1] = OperatorLabel::ProbeSide;
+            }
+        }
+        PlanKind::MergeJoin { .. }
+        | PlanKind::IndexJoin { .. }
+        | PlanKind::IndexMergeJoin { .. }
+        | PlanKind::IndexHashJoin { .. }
+        | PlanKind::Apply => {
+            // 这些 Join 约定：左为 Probe、右为 Build。
+            if labels.len() == 2 {
+                labels[0] = OperatorLabel::ProbeSide;
+                labels[1] = OperatorLabel::BuildSide;
+            }
+        }
+        PlanKind::CTE { .. } if labels.len() >= 2 => {
+            labels[0] = OperatorLabel::SeedPart;
+            labels[1] = OperatorLabel::RecursivePart;
+        }
+        _ => {}
+    }
+    labels
+}
+
+/// 深度优先写入扁平数组，返回当前算子在数组中的下标。
+fn flatten_recursively(
+    plan: &PlanNode,
+    context: &OperatorContext,
+    target: &mut FlatPlanTree,
+    build_side_first: bool,
+) -> usize {
+    let index = target.len();
+    target.push(FlatOperator {
+        Origin: plan.clone(),
+        ChildrenIdx: Vec::new(),
+        NeedReverseDriverSide: false,
+        Label: context.label,
+        IsRoot: context.is_root,
+        StoreType: plan.store_type,
+        Level: context.level,
+        IsLastChild: context.is_last_child,
+    });
+
+    let labels = child_labels(plan);
+    target[index].NeedReverseDriverSide = !build_side_first
+        && labels.len() == 2
+        && labels[0] == OperatorLabel::ProbeSide
+        && labels[1] == OperatorLabel::BuildSide;
+    let mut order: Vec<usize> = (0..plan.children.len()).collect();
+    // BuildSideFirst：先展开 Build 侧，使 EXPLAIN 与执行驱动顺序一致。
+    if build_side_first {
+        order.sort_by_key(|child| labels[*child] != OperatorLabel::BuildSide);
+    }
+    for (position, child_index) in order.iter().enumerate() {
+        let child_context = OperatorContext {
+            level: context.level + 1,
+            label: labels[*child_index],
+            is_root: if matches!(
+                plan.kind,
+                PlanKind::TableReader
+                    | PlanKind::IndexReader
+                    | PlanKind::IndexLookUpReader
+                    | PlanKind::IndexMergeReader { .. }
+            ) {
+                false
+            } else {
+                context.is_root
+            },
+            is_last_child: position + 1 == order.len(),
+        };
+        let flat_child = flatten_recursively(
+            &plan.children[*child_index],
+            &child_context,
+            target,
+            build_side_first,
+        );
+        target[index].ChildrenIdx.push(flat_child);
+    }
+    index
+}
+
+/// 将扁平计划格式化为 EXPLAIN 的行列表；`analyze`/`verbose` 追加运行时与代价列。
+pub fn ExplainFlatPlanInRowFormat(
+    flat: &FlatPhysicalPlan,
+    format: &str,
+    analyze: bool,
+) -> Vec<Vec<String>> {
+    flat.Main
+        .iter()
+        .map(|operator| {
+            // 按层级拼树状前缀：非末子用 ├─，末子用 └─。
+            let prefix = if operator.Level == 0 {
+                String::new()
+            } else {
+                format!(
+                    "{}{}",
+                    "  ".repeat(operator.Level.saturating_sub(1)),
+                    if operator.IsLastChild {
+                        "└─"
+                    } else {
+                        "├─"
+                    }
+                )
+            };
+            let label = operator.Label.to_string();
+            let id = format!("{prefix}{}{label}", operator.ExplainID());
+            let mut row = vec![
+                id,
+                format!("{:.2}", operator.Origin.estimated_rows),
+                format!("{:?}", operator.StoreType).to_lowercase(),
+                operator.Origin.access_object.clone(),
+                operator.Origin.operator_info.clone(),
+            ];
+            if analyze {
+                // EXPLAIN ANALYZE：插入实际行数，并追加执行信息与内存/磁盘。
+                row.insert(
+                    2,
+                    operator
+                        .Origin
+                        .actual_rows
+                        .map_or_else(|| "N/A".to_owned(), |rows| rows.to_string()),
+                );
+                row.push(operator.Origin.execution_info.clone());
+                row.push(format_bytes(operator.Origin.memory_bytes));
+                row.push(format_bytes(operator.Origin.disk_bytes));
+            }
+            if format.eq_ignore_ascii_case("verbose") {
+                // verbose：插入估计代价与代价公式。
+                row.insert(2, format!("{:.2}", operator.Origin.estimated_cost));
+                row.insert(3, operator.Origin.cost_formula.clone());
+            }
+            row
+        })
+        .collect()
+}
+
+/// 将字节数格式化为可读字符串；负数表示不可用（N/A）。
+fn format_bytes(bytes: i64) -> String {
+    if bytes < 0 {
+        return "N/A".to_owned();
+    }
+    if bytes < 1024 {
+        format!("{bytes} Bytes")
+    } else {
+        format!("{:.2} KB", bytes as f64 / 1024.0)
+    }
+}

@@ -1,0 +1,23 @@
+[package]
+name = "astersql-util-traceevent-test"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/util/traceevent/test"
+legacy-tasks = ["task-1513"]
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../config" }
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../config/kerneltype" }
+"astersql-keyspace" = { package = "astersql-keyspace", path = "../../../keyspace" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
+"astersql-session" = { package = "astersql-session", path = "../../../session" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../logutil" }
+"astersql-util-traceevent" = { package = "astersql-util-traceevent", path = ".." }
+"astersql-util-tracing" = { package = "astersql-util-tracing", path = "../../tracing" }

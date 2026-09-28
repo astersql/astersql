@@ -1,0 +1,20 @@
+[package]
+name = "astersql-store-mockstore-mockstorage"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/store/mockstore/mockstorage"
+legacy-tasks = ["task-819"]
+
+[dependencies]
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
+
+[target.'cfg(any())'.dependencies]
+"astersql-store-copr" = { package = "astersql-store-copr", path = "../../copr" }
+"astersql-store-driver-txn" = { package = "astersql-store-driver-txn", path = "../../driver/txn" }
+"astersql-store-helper" = { package = "astersql-store-helper", path = "../../helper" }

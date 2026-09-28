@@ -1,0 +1,34 @@
+[package]
+name = "astersql-executor-internal-calibrateresource"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/executor/internal/calibrateresource"
+legacy-tasks = ["task-1063", "task-1318"]
+
+[target.'cfg(windows)'.dependencies]
+"astersql-domain" = { package = "astersql-domain", path = "../../../domain" }
+"astersql-executor-internal-exec" = { package = "astersql-executor-internal-exec", path = "../exec" }
+"astersql-infoschema" = { package = "astersql-infoschema", path = "../../../infoschema" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../parser/ast" }
+"astersql-parser-duration" = { package = "astersql-parser-duration", path = "../../../parser/duration" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../../sessionctx" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../../sessionctx/vardef" }
+"astersql-sessiontxn-staleread" = { package = "astersql-sessiontxn-staleread", path = "../../../sessiontxn/staleread" }
+"astersql-util" = { package = "astersql-util", path = "../../../util" }
+"astersql-util-chunk" = { package = "astersql-util-chunk", path = "../../../util/chunk" }
+"astersql-util-sqlexec" = { package = "astersql-util-sqlexec", path = "../../../util/sqlexec" }
+
+[target.'cfg(windows)'.dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../config" }
+"astersql-meta-autoid" = { package = "astersql-meta-autoid", path = "../../../meta/autoid" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../../parser/mysql" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }
+"astersql-types" = { package = "astersql-types", path = "../../../types" }

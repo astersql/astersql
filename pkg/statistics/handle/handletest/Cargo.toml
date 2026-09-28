@@ -1,0 +1,33 @@
+[package]
+name = "astersql-statistics-handle-handletest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/statistics/handle/handletest"
+legacy-tasks = ["task-1630"]
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../config" }
+"astersql-domain" = { package = "astersql-domain", path = "../../../domain" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../../meta/model" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../parser/ast" }
+"astersql-planner-cardinality" = { package = "astersql-planner-cardinality", path = "../../../planner/cardinality" }
+"astersql-sessionctx-variable" = { package = "astersql-sessionctx-variable", path = "../../../sessionctx/variable" }
+"astersql-statistics" = { package = "astersql-statistics", path = "../.." }
+"astersql-statistics-asyncload" = { package = "astersql-statistics-asyncload", path = "../../asyncload" }
+"astersql-statistics-handle" = { package = "astersql-statistics-handle", path = ".." }
+"astersql-statistics-handle-ddl-testutil" = { package = "astersql-statistics-handle-ddl-testutil", path = "../ddl/testutil" }
+"astersql-statistics-handle-util" = { package = "astersql-statistics-handle-util", path = "../util" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-testkit-analyzehelper" = { package = "astersql-testkit-analyzehelper", path = "../../../testkit/analyzehelper" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../testkit/testfailpoint" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }
+"astersql-types" = { package = "astersql-types", path = "../../../types" }
+"astersql-util-collate" = { package = "astersql-util-collate", path = "../../../util/collate" }
+"astersql-util-mock" = { package = "astersql-util-mock", path = "../../../util/mock" }
+"astersql-util-ranger" = { package = "astersql-util-ranger", path = "../../../util/ranger" }

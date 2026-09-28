@@ -1,0 +1,41 @@
+[package]
+name = "astersql-executor-aggfuncs"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/executor/aggfuncs"
+legacy-tasks = ["task-788", "task-789", "task-790", "task-791", "task-792", "task-793", "task-806", "task-1314", "task-1315", "task-1316", "task-1317"]
+
+[dependencies]
+"astersql-expression" = { package = "astersql-expression", path = "../../expression" }
+"astersql-expression-aggregation" = { package = "astersql-expression-aggregation", path = "../../expression/aggregation", optional = true }
+"astersql-expression-exprctx" = { package = "astersql-expression-exprctx", path = "../../expression/exprctx" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../parser/ast", optional = true }
+"astersql-parser-charset" = { package = "astersql-parser-charset", path = "../../parser/charset", optional = true }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../parser/mysql", optional = true }
+"astersql-planner-util" = { package = "astersql-planner-util", path = "../../planner/util", optional = true }
+"astersql-types" = { package = "astersql-types", path = "../../types" }
+"astersql-util-chunk" = { package = "astersql-util-chunk", path = "../../util/chunk", optional = true }
+"astersql-util-codec" = { package = "astersql-util-codec", path = "../../util/codec", optional = true }
+"astersql-util-collate" = { package = "astersql-util-collate", path = "../../util/collate", optional = true }
+"astersql-util-dbterror-plannererrors" = { package = "astersql-util-dbterror-plannererrors", path = "../../util/dbterror/plannererrors", optional = true }
+"astersql-util-hack" = { package = "astersql-util-hack", path = "../../util/hack" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../util/logutil", optional = true }
+"astersql-util-selection" = { package = "astersql-util-selection", path = "../../util/selection", optional = true }
+"astersql-util-serialization" = { package = "astersql-util-serialization", path = "../../util/serialization" }
+"astersql-util-set" = { package = "astersql-util-set", path = "../../util/set", optional = true }
+"astersql-util-stringutil" = { package = "astersql-util-stringutil", path = "../../util/stringutil", optional = true }
+
+[dev-dependencies]
+"astersql-executor-internal-util" = { package = "astersql-executor-internal-util", path = "../internal/util" }
+"astersql-kv" = { package = "astersql-kv", path = "../../kv" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../sessionctx" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../sessionctx/vardef" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../testkit" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }
+"astersql-util-mock" = { package = "astersql-util-mock", path = "../../util/mock" }

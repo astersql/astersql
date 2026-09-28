@@ -1,0 +1,21 @@
+[package]
+name = "astersql-br-pkg-restore"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "br/pkg/restore"
+legacy-tasks = []
+kind = "library"
+lane = 2
+
+# arm64 darwin: no kv/domain/kvproto/grpcio. Local traits/stubs + slim rewrite helpers.
+[dependencies]
+astersql-br-pkg-restore-utils = { package = "astersql-br-pkg-restore-utils", path = "utils" }
+astersql-br-pkg-utils-iter = { package = "astersql-br-pkg-utils-iter", path = "../utils/iter" }
+base64 = "0.22"
+sha2 = "0.10"

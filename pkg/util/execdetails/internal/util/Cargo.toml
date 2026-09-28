@@ -1,0 +1,11 @@
+[package]
+name = "astersql-util-execdetails-util"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+tdigest = "1.0.0"

@@ -1,0 +1,22 @@
+[package]
+name = "astersql-store-helper"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+anyhow = "1"
+hex = "0.4"
+metadef = { package = "astersql-meta-metadef", path = "../../meta/metadef" }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tablecodec = { package = "astersql-tablecodec", path = "../../tablecodec" }
+
+[package.metadata.porting]
+go-package = "pkg/store/helper"
+legacy-tasks = ["task-542"]

@@ -1,0 +1,24 @@
+[package]
+name = "astersql-util-printer"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+rustc_version_runtime = "0.3"
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+
+[dev-dependencies]
+serial_test = "3"
+testsetup = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }
+tracing-test = { version = "0.2", features = ["no-env-filter"] }
+
+[package.metadata.porting]
+go-package = "pkg/util/printer"
+legacy-tasks = ["task-297", "task-311", "task-324"]

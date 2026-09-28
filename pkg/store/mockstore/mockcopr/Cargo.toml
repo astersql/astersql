@@ -1,0 +1,40 @@
+[package]
+name = "astersql-store-mockstore-mockcopr"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/store/mockstore/mockcopr"
+legacy-tasks = ["task-800", "task-801", "task-809", "task-1493"]
+
+[dependencies]
+"astersql-expression" = { package = "astersql-expression", path = "../../../expression", optional = true }
+"astersql-expression-aggregation" = { package = "astersql-expression-aggregation", path = "../../../expression/aggregation", optional = true }
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv", optional = true }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../../meta/model", optional = true }
+"astersql-parser-charset" = { package = "astersql-parser-charset", path = "../../../parser/charset", optional = true }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../../parser/mysql", optional = true }
+"astersql-parser-terror" = { package = "astersql-parser-terror", path = "../../../parser/terror", optional = true }
+"astersql-planner-core-resolve" = { package = "astersql-planner-core-resolve", path = "../../../planner/core/resolve", optional = true }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../../sessionctx", optional = true }
+"astersql-sessionctx-stmtctx" = { package = "astersql-sessionctx-stmtctx", path = "../../../sessionctx/stmtctx", optional = true }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../../sessionctx/vardef", optional = true }
+"astersql-statistics" = { package = "astersql-statistics", path = "../../../statistics", optional = true }
+"astersql-tablecodec" = { package = "astersql-tablecodec", path = "../../../tablecodec", optional = true }
+"astersql-types" = { package = "astersql-types", path = "../../../types", optional = true }
+"astersql-util-chunk" = { package = "astersql-util-chunk", path = "../../../util/chunk", optional = true }
+"astersql-util-codec" = { package = "astersql-util-codec", path = "../../../util/codec", optional = true }
+"astersql-util-collate" = { package = "astersql-util-collate", path = "../../../util/collate", optional = true }
+"astersql-util-context" = { package = "astersql-util-context", path = "../../../util/context", optional = true }
+"astersql-util-mock" = { package = "astersql-util-mock", path = "../../../util/mock", optional = true }
+"astersql-util-rowcodec" = { package = "astersql-util-rowcodec", path = "../../../util/rowcodec", optional = true }
+"astersql-util-timeutil" = { package = "astersql-util-timeutil", path = "../../../util/timeutil", optional = true }
+
+[dev-dependencies]
+"astersql-store-mockstore-unistore-tikv" = { package = "astersql-store-mockstore-unistore-tikv", path = "../unistore/tikv" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }
+fail = { version = "0.5.1", features = ["failpoints"] }

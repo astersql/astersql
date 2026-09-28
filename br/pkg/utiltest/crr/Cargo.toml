@@ -1,0 +1,26 @@
+[package]
+name = "astersql-br-pkg-utiltest-crr"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "br/pkg/utiltest/crr"
+legacy-tasks = []
+kind = "library"
+lane = 2
+
+# arm64 darwin: no kv/domain/kvproto/grpcio/objstore. Local stubs for storage;
+# only slim already-ported BR crates.
+[dependencies]
+astersql-br-pkg-stream = { package = "astersql-br-pkg-stream", path = "../../stream" }
+astersql-br-pkg-stream-backupmetas = { package = "astersql-br-pkg-stream-backupmetas", path = "../../stream/backupmetas" }
+astersql-br-pkg-streamhelper = { package = "astersql-br-pkg-streamhelper", path = "../../streamhelper" }
+astersql-br-pkg-streamhelper-config = { package = "astersql-br-pkg-streamhelper-config", path = "../../streamhelper/config" }
+astersql-br-pkg-utiltest-fakecluster = { package = "astersql-br-pkg-utiltest-fakecluster", path = "../fakecluster" }
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

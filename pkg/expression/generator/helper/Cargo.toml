@@ -1,0 +1,14 @@
+[package]
+name = "astersql-expression-generator-helper"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "lib.rs"
+
+[workspace]
+
+[package.metadata.porting]
+go-package = "pkg/expression/generator/helper"
+legacy-tasks = ["task-12"]

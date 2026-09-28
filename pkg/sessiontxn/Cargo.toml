@@ -1,0 +1,37 @@
+[package]
+name = "astersql-sessiontxn"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/sessiontxn"
+legacy-tasks = ["task-883", "task-887", "task-1472", "task-1473"]
+
+[dependencies]
+"astersql-infoschema" = { package = "astersql-infoschema", path = "../infoschema" }
+"astersql-kv" = { package = "astersql-kv", path = "../kv" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../parser/ast" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../sessionctx" }
+"astersql-util-stringutil" = { package = "astersql-util-stringutil", path = "../util/stringutil" }
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../config" }
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../config/kerneltype" }
+"astersql-domain" = { package = "astersql-domain", path = "../domain" }
+"astersql-errno" = { package = "astersql-errno", path = "../errno" }
+"astersql-expression" = { package = "astersql-expression", path = "../expression" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../meta/model" }
+"astersql-planner-core" = { package = "astersql-planner-core", path = "../planner/core" }
+"astersql-sessiontxn-internal" = { package = "astersql-sessiontxn-internal", path = "internal" }
+"astersql-sessiontxn-isolation" = { package = "astersql-sessiontxn-isolation", path = "isolation" }
+"astersql-sessiontxn-staleread" = { package = "astersql-sessiontxn-staleread", path = "staleread" }
+"astersql-table-temptable" = { package = "astersql-table-temptable", path = "../table/temptable" }
+"astersql-tablecodec" = { package = "astersql-tablecodec", path = "../tablecodec" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../testkit" }
+"astersql-testkit-testfork" = { package = "astersql-testkit-testfork", path = "../testkit/testfork" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../testkit/testsetup" }
+"astersql-util-intest" = { package = "astersql-util-intest", path = "../util/intest" }

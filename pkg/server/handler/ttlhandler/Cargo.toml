@@ -1,0 +1,19 @@
+[package]
+name = "astersql-server-handler-ttlhandler"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/server/handler/ttlhandler"
+legacy-tasks = ["task-1282"]
+
+[dependencies]
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
+"astersql-server-handler" = { package = "astersql-server-handler", path = ".." }
+"astersql-session" = { package = "astersql-session", path = "../../../session" }
+"astersql-ttl-client" = { package = "astersql-ttl-client", path = "../../../ttl/client" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../../util/logutil" }

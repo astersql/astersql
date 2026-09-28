@@ -1,0 +1,17 @@
+[package]
+name = "astersql-executor-join-test-indexjoin"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/executor/join/test/indexjoin"
+legacy-tasks = ["task-1321"]
+
+[dev-dependencies]
+"astersql-executor-join" = { package = "astersql-executor-join", path = "../../" }
+"astersql-session" = { package = "astersql-session", path = "../../../../session" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../../testkit" }

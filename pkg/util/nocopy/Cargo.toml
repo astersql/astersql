@@ -1,0 +1,15 @@
+[package]
+name = "astersql-util-nocopy"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dev-dependencies]
+static_assertions = "1"
+
+[package.metadata.porting]
+go-package = "pkg/util/nocopy"
+legacy-tasks = ["task-83"]

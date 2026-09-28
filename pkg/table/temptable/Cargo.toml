@@ -1,0 +1,36 @@
+[package]
+name = "astersql-table-temptable"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/table/temptable"
+legacy-tasks = ["task-878", "task-890"]
+
+[dependencies]
+
+[target.'cfg(any())'.dependencies]
+"astersql-infoschema" = { package = "astersql-infoschema", path = "../../infoschema" }
+"astersql-kv" = { package = "astersql-kv", path = "../../kv" }
+"astersql-meta" = { package = "astersql-meta", path = "../../meta" }
+"astersql-meta-autoid" = { package = "astersql-meta-autoid", path = "../../meta/autoid" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../meta/model" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../parser/ast" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../sessionctx" }
+"astersql-sessionctx-variable" = { package = "astersql-sessionctx-variable", path = "../../sessionctx/variable" }
+"astersql-store-driver-txn" = { package = "astersql-store-driver-txn", path = "../../store/driver/txn" }
+"astersql-table" = { package = "astersql-table", path = ".." }
+"astersql-table-tables" = { package = "astersql-table-tables", path = "../tables" }
+"astersql-tablecodec" = { package = "astersql-tablecodec", path = "../../tablecodec" }
+
+[target.'cfg(any())'.dev-dependencies]
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+"astersql-store-mockstore" = { package = "astersql-store-mockstore", path = "../../store/mockstore" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }
+"astersql-types" = { package = "astersql-types", path = "../../types" }
+"astersql-util-codec" = { package = "astersql-util-codec", path = "../../util/codec" }
+"astersql-util-mock" = { package = "astersql-util-mock", path = "../../util/mock" }

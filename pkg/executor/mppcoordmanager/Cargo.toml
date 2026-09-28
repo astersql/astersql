@@ -1,0 +1,18 @@
+[package]
+name = "astersql-executor-mppcoordmanager"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/executor/mppcoordmanager"
+legacy-tasks = ["task-818", "task-832"]
+
+[dependencies]
+"astersql-executor-metrics" = { package = "astersql-executor-metrics", path = "../metrics", optional = true }
+"astersql-kv" = { package = "astersql-kv", path = "../../kv", optional = true }
+"astersql-store-copr" = { package = "astersql-store-copr", path = "../../store/copr" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../util/logutil", optional = true }

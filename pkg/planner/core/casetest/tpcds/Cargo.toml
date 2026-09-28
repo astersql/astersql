@@ -1,0 +1,21 @@
+[package]
+name = "astersql-planner-core-casetest-tpcds"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/planner/core/casetest/tpcds"
+legacy-tasks = ["task-1427"]
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../../config" }
+"astersql-domain" = { package = "astersql-domain", path = "../../../../domain" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../../../meta/model" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../../testkit" }
+"astersql-testkit-testmain" = { package = "astersql-testkit-testmain", path = "../../../../testkit/testmain" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../../testkit/testsetup" }
+"astersql-util-benchdaily" = { package = "astersql-util-benchdaily", path = "../../../../util/benchdaily" }

@@ -1,0 +1,23 @@
+[package]
+name = "astersql-ingestor-ingestcli"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/ingestor/ingestcli"
+legacy-tasks = ["task-993", "task-994"]
+
+[dependencies]
+"astersql-ingestor-errdef" = { package = "astersql-ingestor-errdef", path = "../errdef" }
+"astersql-ingestor-ingestmetric" = { package = "astersql-ingestor-ingestmetric", path = "../ingestmetric" }
+"astersql-util" = { package = "astersql-util", path = "../../util", optional = true }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../util/logutil", optional = true }
+"astersql-util-redact" = { package = "astersql-util-redact", path = "../../util/redact", optional = true }
+"astersql-lightning-common" = { package = "astersql-lightning-common", path = "../../lightning/common", optional = true }
+
+[dev-dependencies]
+prometheus = "0.14"

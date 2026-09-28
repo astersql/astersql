@@ -1,0 +1,25 @@
+[package]
+name = "astersql-executor-test-unstabletest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/executor/test/unstabletest"
+legacy-tasks = ["task-1360"]
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../config" }
+"astersql-meta-autoid" = { package = "astersql-meta-autoid", path = "../../../meta/autoid" }
+"astersql-session-sessmgr" = { package = "astersql-session-sessmgr", path = "../../../session/sessmgr" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-util" = { package = "astersql-util", path = "../../../util" }
+"astersql-util-dbterror-exeerrors" = { package = "astersql-util-dbterror-exeerrors", path = "../../../util/dbterror/exeerrors" }
+"astersql-util-intest" = { package = "astersql-util-intest", path = "../../../util/intest" }
+"astersql-util-memory" = { package = "astersql-util-memory", path = "../../../util/memory" }
+"astersql-util-servermemorylimit" = { package = "astersql-util-servermemorylimit", path = "../../../util/servermemorylimit" }
+"astersql-util-skip" = { package = "astersql-util-skip", path = "../../../util/skip" }
+rustls = "0.23"

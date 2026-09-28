@@ -1,0 +1,18 @@
+[package]
+name = "astersql-tests-globalkilltest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "tests/globalkilltest"
+legacy-tasks = []
+kind = "library"
+lane = 1
+
+# arm64 darwin: no kv/domain/kvproto/grpcio.
+# TiDB/PD/TiKV HTTP boundaries are local stubs (see stubs.rs).
+[dependencies]

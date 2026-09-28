@@ -1,0 +1,18 @@
+[package]
+name = "astersql-planner-cascades-base-cascadesctx"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+cascades-base = { package = "astersql-planner-cascades-base", path = ".." }
+memo = { package = "astersql-planner-cascades-memo", path = "../../memo" }
+
+[package.metadata.porting]
+go-package = "pkg/planner/cascades/base/cascadesctx"
+legacy-tasks = ["task-1142"]

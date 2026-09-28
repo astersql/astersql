@@ -1,0 +1,27 @@
+[package]
+name = "astersql-expression-exprstatic"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+chrono = "0.4"
+chrono-tz = "0.10"
+contextutil-crate = { package = "astersql-util-context", path = "../../util/context" }
+errctx-crate = { package = "astersql-errctx", path = "../../errctx" }
+exprctx-crate = { package = "astersql-expression-exprctx", path = "../exprctx" }
+expropt-crate = { package = "astersql-expression-expropt", path = "../expropt" }
+mathutil-crate = { package = "astersql-util-mathutil", path = "../../util/mathutil" }
+mysql-crate = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+charset-crate = { package = "astersql-parser-charset", path = "../../parser/charset" }
+types-crate = { package = "astersql-types", path = "../../types" }
+vardef-crate = { package = "astersql-sessionctx-vardef", path = "../../sessionctx/vardef" }
+variable-crate = { package = "astersql-sessionctx-variable", path = "../../sessionctx/variable" }
+
+[package.metadata.porting]
+go-package = "pkg/expression/exprstatic"
+legacy-tasks = ["task-620"]

@@ -1,0 +1,19 @@
+[package]
+name = "astersql-util-breakpoint"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+contextutil-crate = { package = "astersql-util-context", path = "../context" }
+fail = { version = "0.5", features = ["failpoints"] }
+stringutil-crate = { package = "astersql-util-stringutil", path = "../stringutil" }
+
+[package.metadata.porting]
+go-package = "pkg/util/breakpoint"
+legacy-tasks = ["task-634"]

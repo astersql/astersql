@@ -1,0 +1,17 @@
+[package]
+name = "astersql-sessiontxn-internal"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+log = "0.4"
+sessionctx-dependency = { package = "astersql-sessionctx", path = "../../sessionctx" }
+variable-dependency = { package = "astersql-sessionctx-variable", path = "../../sessionctx/variable" }
+
+[package.metadata.porting]
+go-package = "pkg/sessiontxn/internal"
+legacy-tasks = ["task-632"]

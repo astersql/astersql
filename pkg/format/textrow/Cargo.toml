@@ -1,0 +1,21 @@
+[package]
+name = "astersql-format-textrow"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+chrono-tz = "0.10"
+goish = "0.20.7"
+parser-charset = { package = "astersql-parser-charset", path = "../../parser/charset" }
+parser-mysql = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+logutil = { package = "astersql-util-logutil", path = "../../util/logutil" }
+types-integration = { package = "astersql-types-datum", path = "../../types/internal/datum" }
+chunk = { package = "astersql-util-chunk", path = "../../util/chunk" }
+
+[package.metadata.porting]
+go-package = "pkg/format/textrow"
+legacy-tasks = ["task-429"]

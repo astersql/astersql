@@ -1,0 +1,28 @@
+[package]
+name = "astersql-lightning-pkg-server"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "lightning/pkg/server"
+legacy-tasks = []
+kind = "library"
+lane = 2
+
+# arm64 darwin: no kv/domain/kvproto/grpcio.
+# Prefer already-ported checkpoints/progress/importer/importinto;
+# local stubs cover HTTP/TLS/PD/TiKV/objstore/metric/promutil boundaries.
+[dependencies]
+"astersql-lightning-pkg-checkpoints" = { package = "astersql-lightning-pkg-checkpoints", path = "../checkpoints" }
+"astersql-lightning-pkg-progress" = { package = "astersql-lightning-pkg-progress", path = "../progress" }
+"astersql-lightning-pkg-importer" = { package = "astersql-lightning-pkg-importer", path = "../importer" }
+"astersql-lightning-pkg-importinto" = { package = "astersql-lightning-pkg-importinto", path = "../importinto" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+flate2 = "1"
+uuid = { version = "1", features = ["v4"] }
+libc = "0.2"

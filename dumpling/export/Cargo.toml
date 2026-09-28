@@ -1,0 +1,23 @@
+[package]
+name = "astersql-dumpling-export"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "dumpling/export"
+legacy-tasks = []
+kind = "library"
+lane = 0
+
+# arm64 darwin: no kv/domain/kvproto/grpcio.
+# Prefer slim dumpling-log/cli/context only; local stubs cover SQL/MySQL/storage/HTTP/metrics.
+[dependencies]
+"astersql-dumpling-cli" = { package = "astersql-dumpling-cli", path = "../cli" }
+"astersql-dumpling-context" = { package = "astersql-dumpling-context", path = "../context" }
+"astersql-dumpling-log" = { package = "astersql-dumpling-log", path = "../log" }
+"astersql-dumpformat-parquetfile" = { package = "astersql-dumpformat-parquetfile", path = "../../pkg/dumpformat/parquetfile" }
+parquet = "59.1.0"

@@ -1,0 +1,20 @@
+[package]
+name = "astersql-infoschema-test-infoschemav2test"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/infoschema/test/infoschemav2test"
+legacy-tasks = ["task-1395"]
+
+[dev-dependencies]
+astersql-infoschema = { package = "astersql-infoschema", path = "../.." }
+
+[[test]]
+name = "v2_test"
+path = "v2_test.rs"

@@ -1,0 +1,19 @@
+[package]
+name = "astersql-statistics-handle-usage-predicatecolumn"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+chrono = "0.4"
+chrono-tz = "0.10"
+meta-model = { package = "astersql-meta-model", path = "../../../../meta/model" }
+stats-types = { package = "astersql-statistics-handle-types", path = "../../types" }
+
+[package.metadata.porting]
+go-package = "pkg/statistics/handle/usage/predicatecolumn"
+legacy-tasks = ["task-1047"]
+status = "candidate"

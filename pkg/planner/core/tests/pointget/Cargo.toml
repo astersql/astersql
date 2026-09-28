@@ -1,0 +1,23 @@
+[package]
+name = "astersql-planner-core-tests-pointget"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/planner/core/tests/pointget"
+legacy-tasks = ["task-1439"]
+
+[dev-dependencies]
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../../config/kerneltype" }
+"astersql-domain" = { package = "astersql-domain", path = "../../../../domain" }
+"astersql-parser" = { package = "astersql-parser", path = "../../../../parser" }
+"astersql-planner-core" = { package = "astersql-planner-core", path = "../.." }
+"astersql-planner-core-metrics" = { package = "astersql-planner-core-metrics", path = "../../metrics" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../../testkit" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../../testkit/testsetup" }
+"astersql-types" = { package = "astersql-types", path = "../../../../types" }
+"astersql-util-hint" = { package = "astersql-util-hint", path = "../../../../util/hint" }

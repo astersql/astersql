@@ -1,0 +1,18 @@
+[package]
+name = "astersql-executor-test-analyzetest-panictest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/executor/test/analyzetest/panictest"
+legacy-tasks = ["task-1331"]
+
+[dev-dependencies]
+astersql-config = { package = "astersql-config", path = "../../../../config" }
+astersql-testkit = { package = "astersql-testkit", path = "../../../../testkit" }
+astersql-testkit-testfailpoint = { package = "astersql-testkit-testfailpoint", path = "../../../../testkit/testfailpoint" }
+astersql-testkit-testsetup = { package = "astersql-testkit-testsetup", path = "../../../../testkit/testsetup" }

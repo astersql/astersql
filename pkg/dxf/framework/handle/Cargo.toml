@@ -1,0 +1,43 @@
+[package]
+name = "astersql-dxf-framework-handle"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/dxf/framework/handle"
+legacy-tasks = ["task-817", "task-1558"]
+
+[dependencies]
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../config/kerneltype", optional = true }
+"astersql-domain-infosync" = { package = "astersql-domain-infosync", path = "../../../domain/infosync", optional = true }
+"astersql-dxf-framework-metering" = { package = "astersql-dxf-framework-metering", path = "../metering", optional = true }
+"astersql-dxf-framework-proto" = { package = "astersql-dxf-framework-proto", path = "../proto" }
+"astersql-dxf-framework-schstatus" = { package = "astersql-dxf-framework-schstatus", path = "../schstatus" }
+"astersql-dxf-framework-storage" = { package = "astersql-dxf-framework-storage", path = "../storage" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv", optional = true }
+"astersql-lightning-log" = { package = "astersql-lightning-log", path = "../../../lightning/log", optional = true }
+"astersql-meta" = { package = "astersql-meta", path = "../../../meta", optional = true }
+"astersql-meta-tidbvar" = { package = "astersql-meta-tidbvar", path = "../../../meta/tidbvar", optional = true }
+"astersql-metrics" = { package = "astersql-metrics", path = "../../../metrics", optional = true }
+"astersql-objstore" = { package = "astersql-objstore", path = "../../../objstore", optional = true }
+"astersql-objstore-recording" = { package = "astersql-objstore-recording", path = "../../../objstore/recording", optional = true }
+"astersql-objstore-storeapi" = { package = "astersql-objstore-storeapi", path = "../../../objstore/storeapi", optional = true }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../../sessionctx", optional = true }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../../sessionctx/vardef", optional = true }
+"astersql-util-backoff" = { package = "astersql-util-backoff", path = "../../../util/backoff", optional = true }
+"astersql-util-disttask" = { package = "astersql-util-disttask", path = "../../../util/disttask", optional = true }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../../util/logutil", optional = true }
+"astersql-util-sem-compat" = { package = "astersql-util-sem-compat", path = "../../../util/sem/compat", optional = true }
+"astersql-util-sqlexec" = { package = "astersql-util-sqlexec", path = "../../../util/sqlexec", optional = true }
+
+[target.'cfg(any())'.dev-dependencies]
+"astersql-dxf-framework-testutil" = { package = "astersql-dxf-framework-testutil", path = "../testutil" }
+"astersql-store-mockstore" = { package = "astersql-store-mockstore", path = "../../../store/mockstore" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-testkit-testenv" = { package = "astersql-testkit-testenv", path = "../../../testkit/testenv" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../testkit/testfailpoint" }
+"astersql-util-sem" = { package = "astersql-util-sem", path = "../../../util/sem" }

@@ -1,0 +1,28 @@
+[package]
+name = "astersql-session-test-schematest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/session/test/schematest"
+legacy-tasks = ["task-1462"]
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../config" }
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../config/kerneltype" }
+"astersql-domain" = { package = "astersql-domain", path = "../../../domain" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../parser/ast" }
+"astersql-server" = { package = "astersql-server", path = "../../../server" }
+"astersql-session" = { package = "astersql-session", path = "../.." }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../../sessionctx/vardef" }
+"astersql-sessionctx-variable" = { package = "astersql-sessionctx-variable", path = "../../../sessionctx/variable" }
+"astersql-store-mockstore" = { package = "astersql-store-mockstore", path = "../../../store/mockstore" }
+"astersql-tablecodec" = { package = "astersql-tablecodec", path = "../../../tablecodec" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-testkit-testmain" = { package = "astersql-testkit-testmain", path = "../../../testkit/testmain" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }

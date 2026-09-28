@@ -1,0 +1,50 @@
+[package]
+name = "astersql-statistics-handle-storage"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/statistics/handle/storage"
+legacy-tasks = ["task-939", "task-1633"]
+
+[target.'cfg(any())'.dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../config" }
+"astersql-infoschema" = { package = "astersql-infoschema", path = "../../../infoschema" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../../meta/model" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../parser/ast" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../../parser/mysql" }
+"astersql-parser-terror" = { package = "astersql-parser-terror", path = "../../../parser/terror" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../../sessionctx" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../../sessionctx/vardef" }
+"astersql-sessionctx-variable" = { package = "astersql-sessionctx-variable", path = "../../../sessionctx/variable" }
+"astersql-statistics" = { package = "astersql-statistics", path = "../.." }
+"astersql-statistics-asyncload" = { package = "astersql-statistics-asyncload", path = "../../asyncload" }
+"astersql-statistics-handle-cache" = { package = "astersql-statistics-handle-cache", path = "../cache" }
+"astersql-statistics-handle-lockstats" = { package = "astersql-statistics-handle-lockstats", path = "../lockstats" }
+"astersql-statistics-handle-logutil" = { package = "astersql-statistics-handle-logutil", path = "../logutil" }
+"astersql-statistics-handle-metrics" = { package = "astersql-statistics-handle-metrics", path = "../metrics" }
+"astersql-statistics-handle-types" = { package = "astersql-statistics-handle-types", path = "../types" }
+"astersql-statistics-handle-usage-predicatecolumn" = { package = "astersql-statistics-handle-usage-predicatecolumn", path = "../usage/predicatecolumn" }
+"astersql-statistics-handle-util" = { package = "astersql-statistics-handle-util", path = "../util" }
+"astersql-statistics-util" = { package = "astersql-statistics-util", path = "../../util" }
+"astersql-table" = { package = "astersql-table", path = "../../../table" }
+"astersql-types" = { package = "astersql-types", path = "../../../types" }
+"astersql-util-chunk" = { package = "astersql-util-chunk", path = "../../../util/chunk" }
+"astersql-util-compress" = { package = "astersql-util-compress", path = "../../../util/compress" }
+"astersql-util-intest" = { package = "astersql-util-intest", path = "../../../util/intest" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../../util/logutil" }
+"astersql-util-memory" = { package = "astersql-util-memory", path = "../../../util/memory" }
+"astersql-util-sqlescape" = { package = "astersql-util-sqlescape", path = "../../../util/sqlescape" }
+"astersql-util-sqlexec" = { package = "astersql-util-sqlexec", path = "../../../util/sqlexec" }
+
+[target.'cfg(any())'.dev-dependencies]
+"astersql-domain" = { package = "astersql-domain", path = "../../../domain" }
+"astersql-statistics-handle-ddl-testutil" = { package = "astersql-statistics-handle-ddl-testutil", path = "../ddl/testutil" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-testkit-analyzehelper" = { package = "astersql-testkit-analyzehelper", path = "../../../testkit/analyzehelper" }
+"astersql-util" = { package = "astersql-util", path = "../../../util" }

@@ -1,0 +1,17 @@
+[package]
+name = "astersql-br-pkg-rtree"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "br/pkg/rtree"
+legacy-tasks = []
+kind = "library"
+lane = 2
+
+[dependencies]
+"astersql-br-pkg-logutil" = { package = "astersql-br-pkg-logutil", path = "../logutil" }

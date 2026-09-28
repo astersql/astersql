@@ -1,0 +1,16 @@
+[package]
+name = "astersql-util-israce"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[features]
+default = []
+race = []
+
+[package.metadata.porting]
+go-package = "pkg/util/israce"
+legacy-tasks = ["task-79"]

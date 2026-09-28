@@ -1,0 +1,22 @@
+[package]
+name = "astersql-util-importer"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/util/importer"
+legacy-tasks = ["task-895"]
+
+[dependencies]
+
+[target.'cfg(any())'.dependencies]
+"astersql-parser" = { package = "astersql-parser", path = "../../parser" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../parser/ast" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+"astersql-parser-types" = { package = "astersql-parser-types", path = "../../parser/types" }
+"astersql-types-parser_driver" = { package = "astersql-types-parser_driver", path = "../../types/parser_driver" }
+"astersql-util-dbutil" = { package = "astersql-util-dbutil", path = "../dbutil" }

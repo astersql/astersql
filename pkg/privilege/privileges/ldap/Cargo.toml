@@ -1,0 +1,23 @@
+[package]
+name = "astersql-privilege-privileges-ldap"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+anyhow = "1"
+ldap3 = { git = "https://github.com/astersql/ldap3", tag = "v0.12.3", default-features = false, features = ["sync", "tls-native"] }
+native-tls = "0.2"
+r2d2 = "0.8"
+
+[dev-dependencies]
+rcgen = { version = "0.13", default-features = false, features = ["aws_lc_rs", "pem"] }
+tempfile = "3"
+time = "0.3"
+
+[package.metadata.porting]
+go-package = "pkg/privilege/privileges/ldap"
+legacy-tasks = ["task-236", "task-302"]

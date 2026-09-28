@@ -1,0 +1,28 @@
+[package]
+name = "astersql-planner-cascades-rule-apply-decorrelateapply"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/planner/cascades/rule/apply/decorrelateapply"
+legacy-tasks = ["task-1147", "task-1157"]
+
+[dependencies]
+cascades-pattern = { package = "astersql-planner-cascades-pattern", path = "../../../pattern" }
+cascades-rule = { package = "astersql-planner-cascades-rule", path = "../.." }
+cascades-util = { package = "astersql-planner-cascades-util", path = "../../../util" }
+coreusage = { package = "astersql-planner-util-coreusage", path = "../../../../util/coreusage" }
+logicalop = { package = "astersql-planner-core-operator-logicalop", path = "../../../../core/operator/logicalop" }
+
+[target.'cfg(any())'.dev-dependencies]
+"astersql-expression" = { package = "astersql-expression", path = "../../../../../expression" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../../../parser/ast" }
+"astersql-planner-cascades" = { package = "astersql-planner-cascades", path = "../../.." }
+"astersql-planner-cascades-base" = { package = "astersql-planner-cascades-base", path = "../../../base" }
+"astersql-planner-cascades-memo" = { package = "astersql-planner-cascades-memo", path = "../../../memo" }
+"astersql-types" = { package = "astersql-types", path = "../../../../../types" }
+"astersql-util-mock" = { package = "astersql-util-mock", path = "../../../../../util/mock" }

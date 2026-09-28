@@ -1,0 +1,18 @@
+[package]
+name = "astersql-util-fastrand"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+fastrand = "2"
+
+[dev-dependencies]
+rand = "0.8"
+
+[package.metadata.porting]
+go-package = "pkg/util/fastrand"
+legacy-tasks = ["task-71", "task-141"]

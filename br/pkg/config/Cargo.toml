@@ -1,0 +1,21 @@
+[package]
+name = "astersql-br-pkg-config"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "br/pkg/config"
+legacy-tasks = []
+kind = "library"
+lane = 1
+
+[dependencies]
+"astersql-br-pkg-metautil" = { package = "astersql-br-pkg-metautil", path = "../metautil" }
+"astersql-objstore-storeapi" = { package = "astersql-objstore-storeapi", path = "../../../pkg/objstore/storeapi" }
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

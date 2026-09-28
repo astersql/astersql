@@ -1,0 +1,31 @@
+[package]
+name = "astersql-cmd-tidb-server"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "cmd/tidb-server"
+legacy-tasks = []
+kind = "binary"
+lane = 0
+
+[[bin]]
+name = "astersql-cmd-tidb-server"
+path = "bin_main.rs"
+
+# Local stubs continue to cover server/session/domain/config/signal/metrics.
+# The production TiKV storage path is linked to the canonical store registry.
+[dependencies]
+astersql-config = { path = "../../pkg/config" }
+astersql-domain = { path = "../../pkg/domain" }
+astersql-server = { path = "../../pkg/server" }
+astersql-session = { path = "../../pkg/session" }
+astersql-store = { path = "../../pkg/store" }
+astersql-store-driver = { path = "../../pkg/store/driver" }
+astersql-util-signal = { path = "../../pkg/util/signal" }
+
+[dev-dependencies]

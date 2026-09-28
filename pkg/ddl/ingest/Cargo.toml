@@ -1,0 +1,52 @@
+[package]
+name = "astersql-ddl-ingest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/ddl/ingest"
+legacy-tasks = ["task-1001", "task-1002", "task-1004", "task-1544"]
+
+[target.'cfg(windows)'.dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../config" }
+"astersql-ddl-logutil" = { package = "astersql-ddl-logutil", path = "../logutil" }
+"astersql-ddl-session" = { package = "astersql-ddl-session", path = "../session" }
+"astersql-ddl-util" = { package = "astersql-ddl-util", path = "../util" }
+"astersql-ingestor-ingestctrl" = { package = "astersql-ingestor-ingestctrl", path = "../../ingestor/ingestctrl" }
+"astersql-kv" = { package = "astersql-kv", path = "../../kv" }
+"astersql-lightning-backend" = { package = "astersql-lightning-backend", path = "../../lightning/backend" }
+"astersql-lightning-backend-encode" = { package = "astersql-lightning-backend-encode", path = "../../lightning/backend/encode" }
+"astersql-lightning-backend-kv" = { package = "astersql-lightning-backend-kv", path = "../../lightning/backend/kv" }
+"astersql-lightning-common" = { package = "astersql-lightning-common", path = "../../lightning/common" }
+"astersql-lightning-config" = { package = "astersql-lightning-config", path = "../../lightning/config" }
+"astersql-lightning-importdef" = { package = "astersql-lightning-importdef", path = "../../lightning/importdef" }
+"astersql-lightning-log" = { package = "astersql-lightning-log", path = "../../lightning/log" }
+"astersql-meta" = { package = "astersql-meta", path = "../../meta" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../meta/model" }
+"astersql-metrics" = { package = "astersql-metrics", path = "../../metrics" }
+"astersql-owner" = { package = "astersql-owner", path = "../../owner" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+"astersql-parser-terror" = { package = "astersql-parser-terror", path = "../../parser/terror" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../sessionctx" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../sessionctx/vardef" }
+"astersql-sessiontxn" = { package = "astersql-sessiontxn", path = "../../sessiontxn" }
+"astersql-table" = { package = "astersql-table", path = "../../table" }
+"astersql-util" = { package = "astersql-util", path = "../../util" }
+"astersql-util-dbterror" = { package = "astersql-util-dbterror", path = "../../util/dbterror" }
+"astersql-util-generic" = { package = "astersql-util-generic", path = "../../util/generic" }
+"astersql-util-intest" = { package = "astersql-util-intest", path = "../../util/intest" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../util/logutil" }
+"astersql-util-memory" = { package = "astersql-util-memory", path = "../../util/memory" }
+"astersql-util-size" = { package = "astersql-util-size", path = "../../util/size" }
+
+[target.'cfg(windows)'.dev-dependencies]
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../config/kerneltype" }
+"astersql-ddl-ingest-testutil" = { package = "astersql-ddl-ingest-testutil", path = "testutil" }
+"astersql-ddl-testutil" = { package = "astersql-ddl-testutil", path = "../testutil" }
+"astersql-errno" = { package = "astersql-errno", path = "../../errno" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../testkit" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../testkit/testfailpoint" }

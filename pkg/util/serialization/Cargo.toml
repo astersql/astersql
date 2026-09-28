@@ -1,0 +1,17 @@
+[package]
+name = "astersql-util-serialization"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+chunk-dependency = { package = "astersql-util-chunk", path = "../chunk" }
+types-dependency = { package = "astersql-types-datum", path = "../../types/internal/datum" }
+types-json-dependency = { package = "astersql-types-json-binary", path = "../../types/internal/json_binary" }
+
+[package.metadata.porting]
+go-package = "pkg/util/serialization"
+legacy-tasks = ["task-437"]

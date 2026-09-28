@@ -1,0 +1,25 @@
+[package]
+name = "astersql-session-test-temporarytabletest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/session/test/temporarytabletest"
+legacy-tasks = ["task-1463"]
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../config" }
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../config/kerneltype" }
+"astersql-domain" = { package = "astersql-domain", path = "../../../domain" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
+"astersql-parser" = { package = "astersql-parser", path = "../../../parser" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../parser/ast" }
+"astersql-parser-terror" = { package = "astersql-parser-terror", path = "../../../parser/terror" }
+"astersql-session" = { package = "astersql-session", path = "../.." }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-testkit-testmain" = { package = "astersql-testkit-testmain", path = "../../../testkit/testmain" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }

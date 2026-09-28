@@ -1,0 +1,15 @@
+[package]
+name = "astersql-types-metadata"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+parser-ast = { package = "astersql-parser-ast", path = "../../../parser/ast" }
+parser-collate = { package = "astersql-util-collate", path = "../../../util/collate" }
+parser-types = { package = "astersql-parser-types", path = "../../../parser/types" }
+tidb-dbterror = { package = "astersql-util-dbterror", path = "../../../util/dbterror" }
+tidb-size = { package = "astersql-util-size", path = "../../../util/size" }

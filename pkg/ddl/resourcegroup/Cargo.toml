@@ -1,0 +1,21 @@
+[package]
+name = "astersql-ddl-resourcegroup"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+protobuf = "=2.8.0"
+meta-model = { package = "astersql-meta-model", path = "../../meta/model" }
+thiserror = "2"
+
+[build-dependencies]
+protobuf-codegen-pure = "=2.8.0"
+
+[package.metadata.porting]
+go-package = "pkg/ddl/resourcegroup"
+legacy-tasks = ["task-428"]

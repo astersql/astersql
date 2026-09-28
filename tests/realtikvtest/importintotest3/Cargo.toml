@@ -1,0 +1,56 @@
+[package]
+name = "astersql-tests-realtikvtest-importintotest3"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "tests/realtikvtest/importintotest3"
+legacy-tasks = []
+kind = "test-only"
+lane = 0
+
+[[test]]
+name = "cleanup_on_error_test"
+path = "cleanup_on_error_test.rs"
+
+[[test]]
+name = "cross_ks_test"
+path = "cross_ks_test.rs"
+
+[[test]]
+name = "extra_param_test"
+path = "extra_param_test.rs"
+
+[[test]]
+name = "file_compression_test"
+path = "file_compression_test.rs"
+
+[[test]]
+name = "from_server_test"
+path = "from_server_test.rs"
+
+[[test]]
+name = "main_test"
+path = "main_test.rs"
+
+# Legacy suite helpers remain local. Compression parity links the canonical
+# SQL/Domain/TiKV runtime through its dev-dependencies below.
+[dependencies]
+"astersql-tests-realtikvtest" = { package = "astersql-tests-realtikvtest", path = ".." }
+
+flate2 = "1.1.9"
+zstd = "0.13.3"
+snap = "1.1.2"
+
+astersql-objstore-compressedio = { path = "../../../pkg/objstore/compressedio" }
+
+[dev-dependencies]
+astersql-session = { path = "../../../pkg/session" }
+astersql-domain = { path = "../../../pkg/domain" }
+astersql-store-driver = { path = "../../../pkg/store/driver" }
+astersql-lightning-mydump = { path = "../../../pkg/lightning/mydump" }

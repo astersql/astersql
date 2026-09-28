@@ -1,0 +1,25 @@
+[package]
+name = "astersql-util-topsql-collector"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+crossbeam-channel = "0.5"
+hex = "0.4"
+log = "0.4"
+pprof = { version = "0.15", features = ["prost-codec"] }
+cpuprofile = { package = "astersql-util-cpuprofile", path = "../../cpuprofile" }
+topsql_state = { package = "astersql-util-topsql-state", path = "../state" }
+
+[dev-dependencies]
+serial_test = "3"
+testsetup = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }
+
+[package.metadata.porting]
+go-package = "pkg/util/topsql/collector"
+legacy-tasks = ["task-579"]

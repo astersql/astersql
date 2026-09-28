@@ -1,0 +1,23 @@
+[package]
+name = "astersql-lightning-duplicate"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+goish = "0.20.7"
+codec-dependency = { package = "astersql-util-codec", path = "../../util/codec" }
+extsort-dependency = { package = "astersql-util-extsort", path = "../../util/extsort" }
+lightning-log-dependency = { package = "astersql-lightning-log", path = "../log" }
+tokio-util = "0.7"
+
+[dev-dependencies]
+rand = "0.9"
+tempfile = "3"
+
+[package.metadata.porting]
+go-package = "pkg/lightning/duplicate"
+legacy-tasks = ["task-455", "task-462"]

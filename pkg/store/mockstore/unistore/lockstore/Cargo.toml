@@ -1,0 +1,19 @@
+[package]
+name = "astersql-store-mockstore-unistore-lockstore"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+rand = "0.8"
+
+[dev-dependencies]
+tempfile = "3"
+testsetup = { package = "astersql-testkit-testsetup", path = "../../../../testkit/testsetup" }
+
+[package.metadata.porting]
+go-package = "pkg/store/mockstore/unistore/lockstore"
+legacy-tasks = ["task-47", "task-127"]

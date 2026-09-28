@@ -1,0 +1,12 @@
+[package]
+name = "astersql-testkit-testfork"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/testkit/testfork"
+legacy-tasks = ["task-53", "task-129"]

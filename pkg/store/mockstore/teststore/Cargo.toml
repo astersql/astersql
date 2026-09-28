@@ -1,0 +1,20 @@
+[package]
+name = "astersql-store-mockstore-teststore"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/store/mockstore/teststore"
+legacy-tasks = ["task-860"]
+
+[dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../config" }
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../config/kerneltype" }
+"astersql-dxf-framework-handle" = { package = "astersql-dxf-framework-handle", path = "../../../dxf/framework/handle" }
+"astersql-keyspace" = { package = "astersql-keyspace", path = "../../../keyspace" }
+"astersql-store" = { package = "astersql-store", path = "../.." }
+"astersql-store-mockstore" = { package = "astersql-store-mockstore", path = ".." }

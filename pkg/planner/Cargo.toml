@@ -1,0 +1,42 @@
+[package]
+name = "astersql-planner"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/planner"
+legacy-tasks = ["task-1186"]
+
+[dependencies]
+"astersql-expression" = { package = "astersql-expression", path = "../expression" }
+"astersql-bindinfo" = { package = "astersql-bindinfo", path = "../bindinfo" }
+"astersql-domain" = { package = "astersql-domain", path = "../domain" }
+"astersql-infoschema" = { package = "astersql-infoschema", path = "../infoschema" }
+"astersql-kv" = { package = "astersql-kv", path = "../kv" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../parser/ast" }
+"astersql-planner-core" = { package = "astersql-planner-core", path = "core" }
+"astersql-planner-core-base" = { package = "astersql-planner-core-base", path = "core/base" }
+"astersql-planner-core-operator-logicalop" = { package = "astersql-planner-core-operator-logicalop", path = "core/operator/logicalop" }
+"astersql-planner-core-resolve" = { package = "astersql-planner-core-resolve", path = "core/resolve" }
+"astersql-planner-core-rule" = { package = "astersql-planner-core-rule", path = "core/rule" }
+"astersql-planner-indexadvisor" = { package = "astersql-planner-indexadvisor", path = "indexadvisor" }
+"astersql-planner-planctx" = { package = "astersql-planner-planctx", path = "planctx" }
+"astersql-planner-property" = { package = "astersql-planner-property", path = "property" }
+"astersql-planner-util-costusage" = { package = "astersql-planner-util-costusage", path = "util/costusage" }
+"astersql-privilege" = { package = "astersql-privilege", path = "../privilege" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../sessionctx" }
+"astersql-sessionctx-stmtctx" = { package = "astersql-sessionctx-stmtctx", path = "../sessionctx/stmtctx" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../sessionctx/vardef" }
+"astersql-sessionctx-variable" = { package = "astersql-sessionctx-variable", path = "../sessionctx/variable" }
+"astersql-types" = { package = "astersql-types", path = "../types" }
+"astersql-util" = { package = "astersql-util", path = "../util" }
+"astersql-util-dbterror-plannererrors" = { package = "astersql-util-dbterror-plannererrors", path = "../util/dbterror/plannererrors" }
+"astersql-util-hint" = { package = "astersql-util-hint", path = "../util/hint" }
+"astersql-util-intest" = { package = "astersql-util-intest", path = "../util/intest" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../util/logutil" }
+"astersql-util-topsql" = { package = "astersql-util-topsql", path = "../util/topsql" }
+"astersql-util-tracing" = { package = "astersql-util-tracing", path = "../util/tracing" }

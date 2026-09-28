@@ -1,0 +1,34 @@
+[package]
+name = "astersql-util-sqlexec"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[features]
+default = ["formal-crate"]
+formal-crate = []
+
+[dependencies]
+parser-ast = { package = "astersql-parser-ast", path = "../../parser/ast" }
+parser-crate = { package = "astersql-parser", path = "../../parser" }
+parser-terror = { package = "astersql-parser-terror", path = "../../parser/terror" }
+logutil-crate = { package = "astersql-util-logutil", path = "../logutil" }
+resolve-crate = { package = "astersql-planner-core-resolve", path = "../../planner/core/resolve" }
+sysproctrack-crate = { package = "astersql-sessionctx-sysproctrack", path = "../../sessionctx/sysproctrack" }
+variable-crate = { package = "astersql-sessionctx-variable", path = "../../sessionctx/variable" }
+chunk-crate = { package = "astersql-util-chunk", path = "../chunk" }
+kv-crate = { package = "astersql-kv", path = "../../kv" }
+types-crate = { package = "astersql-types", path = "../../types" }
+tokio-util = { version = "0.7", features = ["rt"] }
+
+[dev-dependencies]
+astersql-testkit-testsetup = { path = "../../testkit/testsetup" }
+
+[package.metadata.porting]
+go-package = "pkg/util/sqlexec"
+legacy-tasks = ["task-611", "task-614"]

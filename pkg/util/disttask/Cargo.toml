@@ -1,0 +1,15 @@
+[package]
+name = "astersql-util-disttask"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+infosync = { package = "astersql-domain-infosync", path = "../../domain/infosync" }
+
+[package.metadata.porting]
+go-package = "pkg/util/disttask"
+legacy-tasks = ["task-787", "task-815"]

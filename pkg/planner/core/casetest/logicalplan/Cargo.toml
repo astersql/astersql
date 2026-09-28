@@ -1,0 +1,19 @@
+[package]
+name = "astersql-planner-core-casetest-logicalplan"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/planner/core/casetest/logicalplan"
+legacy-tasks = ["task-1413"]
+
+[dev-dependencies]
+"astersql-domain" = { package = "astersql-domain", path = "../../../../domain" }
+"astersql-parser" = { package = "astersql-parser", path = "../../../../parser" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../../testkit" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../../testkit/testsetup" }
+"astersql-types" = { package = "astersql-types", path = "../../../../types" }

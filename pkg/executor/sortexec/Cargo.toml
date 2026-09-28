@@ -1,0 +1,44 @@
+[package]
+name = "astersql-executor-sortexec"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/executor/sortexec"
+legacy-tasks = ["task-1127", "task-1128", "task-1129", "task-1133", "task-1323", "task-1324"]
+
+[target.'cfg(windows)'.dependencies]
+"astersql-executor-internal-exec" = { package = "astersql-executor-internal-exec", path = "../internal/exec" }
+"astersql-expression" = { package = "astersql-expression", path = "../../expression" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+"astersql-planner-core-operator-physicalop" = { package = "astersql-planner-core-operator-physicalop", path = "../../planner/core/operator/physicalop" }
+"astersql-planner-util" = { package = "astersql-planner-util", path = "../../planner/util" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../sessionctx/vardef" }
+"astersql-types" = { package = "astersql-types", path = "../../types" }
+"astersql-util" = { package = "astersql-util", path = "../../util" }
+"astersql-util-channel" = { package = "astersql-util-channel", path = "../../util/channel" }
+"astersql-util-chunk" = { package = "astersql-util-chunk", path = "../../util/chunk" }
+"astersql-util-codec" = { package = "astersql-util-codec", path = "../../util/codec" }
+"astersql-util-collate" = { package = "astersql-util-collate", path = "../../util/collate" }
+"astersql-util-dbterror-exeerrors" = { package = "astersql-util-dbterror-exeerrors", path = "../../util/dbterror/exeerrors" }
+"astersql-util-disk" = { package = "astersql-util-disk", path = "../../util/disk" }
+"astersql-util-hack" = { package = "astersql-util-hack", path = "../../util/hack" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../util/logutil" }
+"astersql-util-memory" = { package = "astersql-util-memory", path = "../../util/memory" }
+"astersql-util-ranger" = { package = "astersql-util-ranger", path = "../../util/ranger" }
+"astersql-util-sqlkiller" = { package = "astersql-util-sqlkiller", path = "../../util/sqlkiller" }
+
+[target.'cfg(windows)'.dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../config" }
+"astersql-executor-internal-testutil" = { package = "astersql-executor-internal-testutil", path = "../internal/testutil" }
+"astersql-executor-internal-util" = { package = "astersql-executor-internal-util", path = "../internal/util" }
+"astersql-expression-exprstatic" = { package = "astersql-expression-exprstatic", path = "../../expression/exprstatic" }
+"astersql-session-sessmgr" = { package = "astersql-session-sessmgr", path = "../../session/sessmgr" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../sessionctx" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../testkit" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../testkit/testfailpoint" }
+"astersql-util-mock" = { package = "astersql-util-mock", path = "../../util/mock" }

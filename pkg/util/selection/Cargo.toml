@@ -1,0 +1,15 @@
+[package]
+name = "astersql-util-selection"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+rand = "0.8"
+
+[package.metadata.porting]
+go-package = "pkg/util/selection"
+legacy-tasks = ["task-90", "task-155"]

@@ -1,0 +1,20 @@
+[package]
+name = "astersql-executor-test-memtest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/executor/test/memtest"
+legacy-tasks = ["task-1348"]
+
+[dev-dependencies]
+astersql-config = { package = "astersql-config", path = "../../../config" }
+astersql-meta-autoid = { package = "astersql-meta-autoid", path = "../../../meta/autoid" }
+astersql-testkit = { package = "astersql-testkit", path = "../../../testkit" }
+astersql-testkit-testsetup = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }
+astersql-util-memory = { package = "astersql-util-memory", path = "../../../util/memory" }
+tempfile = "3"

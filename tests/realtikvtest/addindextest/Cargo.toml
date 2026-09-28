@@ -1,0 +1,59 @@
+[package]
+name = "astersql-tests-realtikvtest-addindextest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+# All tests are registered in the six package harness targets below.
+test = false
+doctest = false
+
+[package.metadata.porting]
+go-package = "tests/realtikvtest/addindextest"
+legacy-tasks = []
+kind = "test-only"
+lane = 2
+
+[[test]]
+name = "add_index_test"
+path = "add_index_test.rs"
+harness = false
+
+[[test]]
+name = "concurrent_ddl_test"
+path = "concurrent_ddl_test.rs"
+harness = false
+
+[[test]]
+name = "failpoints_test"
+path = "failpoints_test.rs"
+harness = false
+
+[[test]]
+name = "main_test"
+path = "main_test.rs"
+harness = false
+
+[[test]]
+name = "multi_schema_change_test"
+path = "multi_schema_change_test.rs"
+harness = false
+
+[[test]]
+name = "pitr_test"
+path = "pitr_test.rs"
+harness = false
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../pkg/config" }
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../pkg/config/kerneltype" }
+"astersql-dxf-framework-testutil" = { package = "astersql-dxf-framework-testutil", path = "../../../pkg/dxf/framework/testutil" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../../pkg/meta/model" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../pkg/testkit" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../pkg/testkit/testfailpoint" }
+"astersql-tests-realtikvtest" = { package = "astersql-tests-realtikvtest", path = ".." }
+"astersql-tests-realtikvtest-testutils" = { package = "astersql-tests-realtikvtest-testutils", path = "../testutils" }
+libtest-mimic = "0.8.2"

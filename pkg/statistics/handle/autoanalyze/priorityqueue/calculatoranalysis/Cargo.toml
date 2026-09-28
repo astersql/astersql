@@ -1,0 +1,19 @@
+[package]
+name = "astersql-statistics-handle-autoanalyze-priorityqueue-calculatoranalysis"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/statistics/handle/autoanalyze/priorityqueue/calculatoranalysis"
+legacy-tasks = ["task-949"]
+
+[dev-dependencies]
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../../../../sessionctx" }
+"astersql-sessionctx-sysproctrack" = { package = "astersql-sessionctx-sysproctrack", path = "../../../../../sessionctx/sysproctrack" }
+"astersql-statistics-handle-autoanalyze-priorityqueue" = { package = "astersql-statistics-handle-autoanalyze-priorityqueue", path = ".." }
+"astersql-statistics-handle-types" = { package = "astersql-statistics-handle-types", path = "../../../types" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../../../testkit/testsetup" }

@@ -1,0 +1,19 @@
+[package]
+name = "astersql-dxf-framework-mock"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/dxf/framework/mock"
+legacy-tasks = ["task-842", "task-843", "task-847"]
+
+[dependencies]
+"astersql-dxf-framework-planner" = { package = "astersql-dxf-framework-planner", path = "../planner" }
+"astersql-dxf-framework-proto" = { package = "astersql-dxf-framework-proto", path = "../proto" }
+"astersql-dxf-framework-storage" = { package = "astersql-dxf-framework-storage", path = "../storage" }
+"astersql-dxf-framework-taskexecutor-execute" = { package = "astersql-dxf-framework-taskexecutor-execute", path = "../taskexecutor/execute" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../../sessionctx" }

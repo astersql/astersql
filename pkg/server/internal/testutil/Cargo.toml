@@ -1,0 +1,12 @@
+[package]
+name = "astersql-server-internal-testutil"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/server/internal/testutil"
+legacy-tasks = ["task-40"]

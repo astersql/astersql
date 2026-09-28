@@ -1,0 +1,25 @@
+[package]
+name = "astersql-server-tests-cursor"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/server/tests/cursor"
+legacy-tasks = ["task-1645"]
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../config" }
+"astersql-executor" = { package = "astersql-executor", path = "../../../executor" }
+"astersql-metrics" = { package = "astersql-metrics", path = "../../../metrics" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../../parser/mysql" }
+"astersql-server" = { package = "astersql-server", path = "../.." }
+"astersql-server-internal-util" = { package = "astersql-server-internal-util", path = "../../internal/util" }
+"astersql-server-tests-servertestkit" = { package = "astersql-server-tests-servertestkit", path = "../servertestkit" }
+"astersql-store-mockstore-unistore" = { package = "astersql-store-mockstore-unistore", path = "../../../store/mockstore/unistore" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }
+"astersql-util-topsql-state" = { package = "astersql-util-topsql-state", path = "../../../util/topsql/state" }

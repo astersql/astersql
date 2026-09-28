@@ -1,0 +1,30 @@
+[package]
+name = "astersql-statistics-handle-autoanalyze-exec"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/statistics/handle/autoanalyze/exec"
+legacy-tasks = ["task-929", "task-1479"]
+
+[dependencies]
+chrono = "0.4"
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../../../sessionctx/vardef" }
+"astersql-statistics" = { package = "astersql-statistics", path = "../../.." }
+"astersql-statistics-handle-logutil" = { package = "astersql-statistics-handle-logutil", path = "../../logutil" }
+"astersql-statistics-handle-util" = { package = "astersql-statistics-handle-util", path = "../../util" }
+"astersql-util-sqlescape" = { package = "astersql-util-sqlescape", path = "../../../../util/sqlescape" }
+"astersql-util-timeutil" = { package = "astersql-util-timeutil", path = "../../../../util/timeutil" }
+
+[dev-dependencies]
+"astersql-domain" = { package = "astersql-domain", path = "../../../../domain" }
+"astersql-session" = { package = "astersql-session", path = "../../../../session" }
+"astersql-statistics-handle" = { package = "astersql-statistics-handle", path = "../.." }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../../testkit" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../../testkit/testsetup" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../../../util/logutil" }
+"astersql-util-sqlkiller" = { package = "astersql-util-sqlkiller", path = "../../../../util/sqlkiller" }

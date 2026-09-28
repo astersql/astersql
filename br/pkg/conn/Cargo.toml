@@ -1,0 +1,25 @@
+[package]
+name = "astersql-br-pkg-conn"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "br/pkg/conn"
+legacy-tasks = []
+kind = "library"
+lane = 0
+
+# Slimmed for darwin arm64: no kv/domain/kvproto/grpcio.
+# Config JSON parsing is local; HTTP/PD boundaries use traits + std.
+[dependencies]
+"astersql-br-pkg-errors" = { package = "astersql-br-pkg-errors", path = "../errors" }
+"astersql-br-pkg-glue" = { package = "astersql-br-pkg-glue", path = "../glue" }
+"astersql-br-pkg-version" = { package = "astersql-br-pkg-version", path = "../version" }
+"astersql-errors" = { package = "astersql-errors", path = "../../../pkg/errors" }
+fail = { version = "0.5.1", features = ["failpoints"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

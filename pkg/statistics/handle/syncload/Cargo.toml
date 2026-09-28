@@ -1,0 +1,12 @@
+[package]
+name = "astersql-statistics-handle-syncload"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/statistics/handle/syncload"
+legacy-tasks = ["task-953", "task-1634"]

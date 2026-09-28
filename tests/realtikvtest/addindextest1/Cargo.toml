@@ -1,0 +1,51 @@
+[package]
+name = "astersql-tests-realtikvtest-addindextest1"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "tests/realtikvtest/addindextest1"
+legacy-tasks = []
+kind = "test-only"
+lane = 2
+
+[[test]]
+name = "cross_ks_test"
+path = "cross_ks_test.rs"
+
+[[test]]
+name = "disttask_test"
+path = "disttask_test.rs"
+
+[[test]]
+name = "main_test"
+path = "main_test.rs"
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../pkg/config" }
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../pkg/config/kerneltype" }
+"astersql-ddl" = { package = "astersql-ddl", path = "../../../pkg/ddl" }
+"astersql-ddl-ingest" = { package = "astersql-ddl-ingest", path = "../../../pkg/ddl/ingest" }
+"astersql-ddl-schemaver" = { package = "astersql-ddl-schemaver", path = "../../../pkg/ddl/schemaver" }
+"astersql-dxf-framework-handle" = { package = "astersql-dxf-framework-handle", path = "../../../pkg/dxf/framework/handle" }
+"astersql-dxf-framework-proto" = { package = "astersql-dxf-framework-proto", path = "../../../pkg/dxf/framework/proto" }
+"astersql-dxf-framework-storage" = { package = "astersql-dxf-framework-storage", path = "../../../pkg/dxf/framework/storage" }
+"astersql-dxf-framework-taskexecutor" = { package = "astersql-dxf-framework-taskexecutor", path = "../../../pkg/dxf/framework/taskexecutor" }
+"astersql-dxf-framework-testutil" = { package = "astersql-dxf-framework-testutil", path = "../../../pkg/dxf/framework/testutil" }
+"astersql-errno" = { package = "astersql-errno", path = "../../../pkg/errno" }
+"astersql-ingestor-ingestctrl" = { package = "astersql-ingestor-ingestctrl", path = "../../../pkg/ingestor/ingestctrl" }
+"astersql-keyspace" = { package = "astersql-keyspace", path = "../../../pkg/keyspace" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../pkg/kv" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../../pkg/meta/model" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../../pkg/sessionctx/vardef" }
+"astersql-store" = { package = "astersql-store", path = "../../../pkg/store" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../pkg/testkit" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../pkg/testkit/testfailpoint" }
+"astersql-util-collate" = { package = "astersql-util-collate", path = "../../../pkg/util/collate" }
+"astersql-util-dbterror" = { package = "astersql-util-dbterror", path = "../../../pkg/util/dbterror" }
+"astersql-tests-realtikvtest" = { package = "astersql-tests-realtikvtest", path = ".." }

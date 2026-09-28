@@ -1,0 +1,28 @@
+[package]
+name = "astersql-store-driver"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+astersql-testkit-testfailpoint = { path = "../../testkit/testfailpoint" }
+astersql-kv = { package = "astersql-kv", path = "../../kv" }
+astersql-store-copr = { package = "astersql-store-copr", path = "../copr" }
+astersql-store-driver-txn = { package = "astersql-store-driver-txn", path = "txn" }
+thiserror = "2"
+tikv-client = { version = "=0.4.2", git = "ssh://git@github.com/astersql/client-rust.git", tag = "v0.4.2-aster.1", default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+url = "2"
+tonic = { version = "0.12", features = ["tls"] }
+futures = "0.3"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+protobuf = "=2.8.0"
+tipb = { git = "https://github.com/pingcap/tipb.git", rev = "07f0ea6b6bffa9d8ac100d81ee51dbbfe4dda3bf", default-features = false, features = ["protobuf-codec"] }
+
+[package.metadata.porting]
+go-package = "pkg/store/driver"

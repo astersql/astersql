@@ -1,0 +1,29 @@
+[package]
+name = "astersql-session-test-meta"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/session/test/meta"
+legacy-tasks = ["task-1626"]
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../config" }
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../config/kerneltype" }
+"astersql-ddl" = { package = "astersql-ddl", path = "../../../ddl" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
+"astersql-meta" = { package = "astersql-meta", path = "../../../meta" }
+"astersql-meta-metadef" = { package = "astersql-meta-metadef", path = "../../../meta/metadef" }
+"astersql-metrics" = { package = "astersql-metrics", path = "../../../metrics" }
+"astersql-session" = { package = "astersql-session", path = "../.." }
+"astersql-store-mockstore" = { package = "astersql-store-mockstore", path = "../../../store/mockstore" }
+"astersql-tablecodec" = { package = "astersql-tablecodec", path = "../../../tablecodec" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-testkit-external" = { package = "astersql-testkit-external", path = "../../../testkit/external" }
+"astersql-testkit-testmain" = { package = "astersql-testkit-testmain", path = "../../../testkit/testmain" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }
+"astersql-types" = { package = "astersql-types", path = "../../../types" }

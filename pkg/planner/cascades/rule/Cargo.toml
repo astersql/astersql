@@ -1,0 +1,20 @@
+[package]
+name = "astersql-planner-cascades-rule"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+cascades-memo = { package = "astersql-planner-cascades-memo", path = "../memo" }
+cascades-pattern = { package = "astersql-planner-cascades-pattern", path = "../pattern" }
+cascades-util = { package = "astersql-planner-cascades-util", path = "../util" }
+logicalop = { package = "astersql-planner-core-operator-logicalop", path = "../../core/operator/logicalop" }
+
+[package.metadata.porting]
+go-package = "pkg/planner/cascades/rule"
+legacy-tasks = ["task-1144", "task-1146"]

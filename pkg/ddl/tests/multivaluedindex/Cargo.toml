@@ -1,0 +1,19 @@
+[package]
+name = "astersql-ddl-tests-multivaluedindex"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/ddl/tests/multivaluedindex"
+legacy-tasks = ["task-1308"]
+
+[dependencies]
+"astersql-ddl" = { package = "astersql-ddl", path = "../.." }
+"astersql-meta-metabuild" = { package = "astersql-meta-metabuild", path = "../../../meta/metabuild" }
+"astersql-parser" = { package = "astersql-parser", path = "../../../parser" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../parser/ast" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }

@@ -1,0 +1,15 @@
+[package]
+name = "astersql-parser-opcode"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+astersql-parser-format = { path = "../format" }
+
+[package.metadata.porting]
+go-package = "pkg/parser/opcode"
+legacy-tasks = ["task-379"]

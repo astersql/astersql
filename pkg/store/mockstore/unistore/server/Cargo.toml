@@ -1,0 +1,21 @@
+[package]
+name = "astersql-store-mockstore-unistore-server"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/store/mockstore/unistore/server"
+legacy-tasks = ["task-836"]
+
+[dependencies]
+"astersql-store-mockstore-unistore-config" = { package = "astersql-store-mockstore-unistore-config", path = "../config" }
+"astersql-store-mockstore-unistore-lockstore" = { package = "astersql-store-mockstore-unistore-lockstore", path = "../lockstore" }
+"astersql-store-mockstore-unistore-tikv" = { package = "astersql-store-mockstore-unistore-tikv", path = "../tikv" }
+
+[target.'cfg(any())'.dependencies]
+"astersql-store-mockstore-unistore-pd" = { package = "astersql-store-mockstore-unistore-pd", path = "../pd" }
+"astersql-store-mockstore-unistore-tikv-mvcc" = { package = "astersql-store-mockstore-unistore-tikv-mvcc", path = "../tikv/mvcc" }

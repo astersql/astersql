@@ -1,0 +1,23 @@
+[package]
+name = "astersql-resourcemanager"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+anyhow = "1"
+crossbeam-channel = "0.5"
+log = "0.4"
+threadpool = "1"
+tokio-util = "0.7"
+uuid = { version = "1", features = ["v4"] }
+cpu_dependency = { package = "astersql-util-cpu", path = "../util/cpu" }
+scheduler_dependency = { package = "astersql-resourcemanager-scheduler", path = "scheduler" }
+
+[package.metadata.porting]
+go-package = "pkg/resourcemanager"
+legacy-tasks = ["task-526", "task-566"]

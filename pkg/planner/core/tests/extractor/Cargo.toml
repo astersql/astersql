@@ -1,0 +1,18 @@
+[package]
+name = "astersql-planner-core-tests-extractor"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/planner/core/tests/extractor"
+legacy-tasks = ["task-1437"]
+
+[dev-dependencies]
+"astersql-infoschema" = { package = "astersql-infoschema", path = "../../../../infoschema" }
+"astersql-planner-core" = { package = "astersql-planner-core", path = "../.." }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../../testkit" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../../testkit/testsetup" }

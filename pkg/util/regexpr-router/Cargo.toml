@@ -1,0 +1,17 @@
+[package]
+name = "astersql-util-regexpr-router"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+filter = { package = "astersql-util-filter", path = "../filter" }
+regex = "1.11"
+router_crate = { package = "astersql-util-table-router", path = "../table-router" }
+
+[package.metadata.porting]
+go-package = "pkg/util/regexpr-router"
+legacy-tasks = ["task-413"]

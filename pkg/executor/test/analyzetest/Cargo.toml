@@ -1,0 +1,37 @@
+[package]
+name = "astersql-executor-test-analyzetest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/executor/test/analyzetest"
+legacy-tasks = ["task-1596", "task-1597", "task-1598"]
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../config" }
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../config/kerneltype" }
+"astersql-domain" = { package = "astersql-domain", path = "../../../domain" }
+"astersql-domain-infosync" = { package = "astersql-domain-infosync", path = "../../../domain/infosync" }
+"astersql-errno" = { package = "astersql-errno", path = "../../../errno" }
+"astersql-executor" = { package = "astersql-executor", path = "../.." }
+"astersql-infoschema" = { package = "astersql-infoschema", path = "../../../infoschema" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../parser/ast" }
+"astersql-parser-auth" = { package = "astersql-parser-auth", path = "../../../parser/auth" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../../parser/mysql" }
+"astersql-parser-terror" = { package = "astersql-parser-terror", path = "../../../parser/terror" }
+"astersql-session" = { package = "astersql-session", path = "../../../session" }
+"astersql-session-sessionapi" = { package = "astersql-session-sessionapi", path = "../../../session/sessionapi" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../../sessionctx" }
+"astersql-sessionctx-variable" = { package = "astersql-sessionctx-variable", path = "../../../sessionctx/variable" }
+"astersql-statistics" = { package = "astersql-statistics", path = "../../../statistics" }
+"astersql-statistics-handle-ddl-testutil" = { package = "astersql-statistics-handle-ddl-testutil", path = "../../../statistics/handle/ddl/testutil" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-testkit-analyzehelper" = { package = "astersql-testkit-analyzehelper", path = "../../../testkit/analyzehelper" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../testkit/testfailpoint" }
+"astersql-util-dbterror-exeerrors" = { package = "astersql-util-dbterror-exeerrors", path = "../../../util/dbterror/exeerrors" }
+"astersql-util-sqlkiller" = { package = "astersql-util-sqlkiller", path = "../../../util/sqlkiller" }

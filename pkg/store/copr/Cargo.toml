@@ -1,0 +1,52 @@
+[package]
+name = "astersql-store-copr"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/store/copr"
+legacy-tasks = ["task-795", "task-796", "task-797", "task-798", "task-799", "task-808", "task-811", "task-812", "task-813"]
+
+[dependencies]
+tikv-client = { version = "=0.4.2", git = "ssh://git@github.com/astersql/client-rust.git", tag = "v0.4.2-aster.1", default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+"astersql-config" = { package = "astersql-config", path = "../../config", optional = true }
+"astersql-ddl-placement" = { package = "astersql-ddl-placement", path = "../../ddl/placement", optional = true }
+"astersql-domain-infosync" = { package = "astersql-domain-infosync", path = "../../domain/infosync", optional = true }
+"astersql-errno" = { package = "astersql-errno", path = "../../errno", optional = true }
+"astersql-kv" = { package = "astersql-kv", path = "../../kv", optional = true }
+"astersql-metrics" = { package = "astersql-metrics", path = "../../metrics", optional = true }
+"astersql-parser-terror" = { package = "astersql-parser-terror", path = "../../parser/terror", optional = true }
+"astersql-resourcegroup" = { package = "astersql-resourcegroup", path = "../../resourcegroup", optional = true }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../sessionctx/vardef", optional = true }
+"astersql-store-copr-metrics" = { package = "astersql-store-copr-metrics", path = "metrics", optional = true }
+"astersql-store-driver-backoff" = { package = "astersql-store-driver-backoff", path = "../driver/backoff", optional = true }
+"astersql-store-driver-error" = { package = "astersql-store-driver-error", path = "../driver/error", optional = true }
+"astersql-store-driver-options" = { package = "astersql-store-driver-options", path = "../driver/options", optional = true }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup", optional = true }
+"astersql-util" = { package = "astersql-util", path = "../../util", optional = true }
+"astersql-util-dbterror-exeerrors" = { package = "astersql-util-dbterror-exeerrors", path = "../../util/dbterror/exeerrors", optional = true }
+"astersql-util-execdetails" = { package = "astersql-util-execdetails", path = "../../util/execdetails", optional = true }
+"astersql-util-hack" = { package = "astersql-util-hack", path = "../../util/hack", optional = true }
+"astersql-util-intest" = { package = "astersql-util-intest", path = "../../util/intest", optional = true }
+"astersql-util-kvcache" = { package = "astersql-util-kvcache", path = "../../util/kvcache", optional = true }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../util/logutil", optional = true }
+"astersql-util-memory" = { package = "astersql-util-memory", path = "../../util/memory", optional = true }
+"astersql-util-paging" = { package = "astersql-util-paging", path = "../../util/paging", optional = true }
+"astersql-util-redact" = { package = "astersql-util-redact", path = "../../util/redact", optional = true }
+"astersql-util-size" = { package = "astersql-util-size", path = "../../util/size", optional = true }
+"astersql-util-tiflash" = { package = "astersql-util-tiflash", path = "../../util/tiflash", optional = true }
+"astersql-util-tiflashcompute" = { package = "astersql-util-tiflashcompute", path = "../../util/tiflashcompute", optional = true }
+"astersql-util-traceevent" = { package = "astersql-util-traceevent", path = "../../util/traceevent", optional = true }
+"astersql-util-tracing" = { package = "astersql-util-tracing", path = "../../util/tracing", optional = true }
+"astersql-util-trxevents" = { package = "astersql-util-trxevents", path = "../../util/trxevents", optional = true }
+futures-executor = "0.3"
+futures-util = "0.3"
+grpcio = { version = "=0.13.0", default-features = false, features = ["openssl-vendored", "protobuf-codec"] }
+kvproto = { git = "https://github.com/pingcap/kvproto.git", rev = "a15c348f8713", default-features = false, features = ["protobuf-codec"] }
+protobuf = "=2.8.0"
+fail = { version = "0.5.1", features = ["failpoints"] }

@@ -1,0 +1,20 @@
+[package]
+name = "astersql-types-vector"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+goish = "0.20.7"
+serde_json = "1"
+tidb-errno = { package = "astersql-errno", path = "../../../errno" }
+tidb-parser-types = { package = "astersql-parser-types", path = "../../../parser/types" }
+tidb-util-context = { package = "astersql-util-context", path = "../../../util/context" }
+
+[[test]]
+name = "truncate_12_aster_unit_test"
+path = "../../truncate_12_aster_unit_test.rs"

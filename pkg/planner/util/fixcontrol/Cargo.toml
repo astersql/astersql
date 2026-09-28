@@ -1,0 +1,17 @@
+[package]
+name = "astersql-planner-util-fixcontrol"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+anyhow = "1"
+
+[package.metadata.porting]
+go-package = "pkg/planner/util/fixcontrol"
+

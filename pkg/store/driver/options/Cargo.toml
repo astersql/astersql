@@ -1,0 +1,12 @@
+[package]
+name = "astersql-store-driver-options"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/store/driver/options"
+legacy-tasks = ["task-467"]

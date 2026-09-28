@@ -1,0 +1,19 @@
+[package]
+name = "astersql-dxf-importinto-taskkey"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[features]
+default = []
+nextgen = ["kerneltype/nextgen"]
+
+[dependencies]
+kerneltype = { package = "astersql-config-kerneltype", path = "../../../config/kerneltype" }
+
+[package.metadata.porting]
+go-package = "pkg/dxf/importinto/taskkey"
+legacy-tasks = ["task-329", "task-362"]

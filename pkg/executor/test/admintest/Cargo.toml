@@ -1,0 +1,41 @@
+[package]
+name = "astersql-executor-test-admintest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/executor/test/admintest"
+legacy-tasks = ["task-1326", "task-1327"]
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../config" }
+"astersql-ddl" = { package = "astersql-ddl", path = "../../../ddl" }
+"astersql-domain" = { package = "astersql-domain", path = "../../../domain" }
+"astersql-errno" = { package = "astersql-errno", path = "../../../errno" }
+"astersql-executor" = { package = "astersql-executor", path = "../.." }
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
+"astersql-meta-autoid" = { package = "astersql-meta-autoid", path = "../../../meta/autoid" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../../meta/model" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../parser/ast" }
+"astersql-server" = { package = "astersql-server", path = "../../../server" }
+"astersql-session" = { package = "astersql-session", path = "../../../session" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../../sessionctx" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../../sessionctx/vardef" }
+"astersql-sessionctx-variable" = { package = "astersql-sessionctx-variable", path = "../../../sessionctx/variable" }
+"astersql-table" = { package = "astersql-table", path = "../../../table" }
+"astersql-table-tables" = { package = "astersql-table-tables", path = "../../../table/tables" }
+"astersql-tablecodec" = { package = "astersql-tablecodec", path = "../../../tablecodec" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../testkit/testfailpoint" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }
+"astersql-testkit-testutil" = { package = "astersql-testkit-testutil", path = "../../../testkit/testutil" }
+"astersql-types" = { package = "astersql-types", path = "../../../types" }
+"astersql-util-codec" = { package = "astersql-util-codec", path = "../../../util/codec" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../../util/logutil" }
+"astersql-util-logutil-consistency" = { package = "astersql-util-logutil-consistency", path = "../../../util/logutil/consistency" }
+"astersql-util-mock" = { package = "astersql-util-mock", path = "../../../util/mock" }
+"astersql-util-redact" = { package = "astersql-util-redact", path = "../../../util/redact" }

@@ -1,0 +1,91 @@
+[package]
+name = "astersql-expression"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+bigdecimal = "0.4"
+aes = "0.8"
+adler2 = "2"
+base64 = "0.22"
+cbc = "0.1"
+cfb-mode = "0.8"
+cipher = { version = "0.4", features = ["alloc", "block-padding"] }
+crc32fast = "1"
+des = "0.8"
+dbterror-dependency = { package = "astersql-util-dbterror", path = "../util/dbterror" }
+chrono = "0.4"
+chrono-tz = "0.10"
+chunk-dependency = { package = "astersql-util-chunk", path = "../util/chunk" }
+codec-dependency = { package = "astersql-util-codec", path = "../util/codec" }
+collate-dependency = { package = "astersql-util-collate", path = "../util/collate" }
+contextutil-dependency = { package = "astersql-util-context", path = "../util/context" }
+errctx-dependency = { package = "astersql-errctx", path = "../errctx" }
+extension-dependency = { package = "astersql-extension", path = "../extension" }
+encoding_rs = "0.8.35"
+errno-dependency = { package = "astersql-errno", path = "../errno" }
+encrypt = { package = "astersql-util-encrypt", path = "../util/encrypt" }
+exprctx-dependency = { package = "astersql-expression-exprctx", path = "exprctx" }
+expropt = { package = "astersql-expression-expropt", path = "expropt" }
+flate2 = "1"
+generatedexpr-dependency = { package = "astersql-util-generatedexpr", path = "../util/generatedexpr" }
+intest-dependency = { package = "astersql-util-intest", path = "../util/intest" }
+intset = { package = "astersql-util-intset", path = "../util/intset" }
+jsonschema = "0.48"
+hex = "0.4"
+logutil-dependency = { package = "astersql-util-logutil", path = "../util/logutil" }
+kv-dependency = { package = "astersql-kv", path = "../kv" }
+mathutil = { package = "astersql-util-mathutil", path = "../util/mathutil" }
+model-dependency = { package = "astersql-meta-model", path = "../meta/model" }
+md-5 = "0.10"
+num-traits = "0.2"
+parser-ast-dependency = { package = "astersql-parser-ast", path = "../parser/ast" }
+parser-charset-dependency = { package = "astersql-parser-charset", path = "../parser/charset" }
+parser-mysql-dependency = { package = "astersql-parser-mysql", path = "../parser/mysql" }
+parser-opcode-dependency = { package = "astersql-parser-opcode", path = "../parser/opcode" }
+parser-dependency = { package = "astersql-parser", path = "../parser" }
+parser-auth = { package = "astersql-parser-auth", path = "../parser/auth" }
+param = { package = "astersql-param", path = "../param" }
+planner-base-dependency = { package = "astersql-planner-cascades-base", path = "../planner/cascades/base" }
+plannererrors-dependency = { package = "astersql-util-dbterror-plannererrors", path = "../util/dbterror/plannererrors" }
+protobuf = "=2.8.0"
+printer-dependency = { package = "astersql-util-printer", path = "../util/printer" }
+ofb = "0.6"
+rand = "0.8"
+regex = "1"
+sha1 = "0.10"
+sha2 = "0.10"
+stringutil-dependency = { package = "astersql-util-stringutil", path = "../util/stringutil" }
+types-dependency = { package = "astersql-types", path = "../types" }
+types-decimal = { package = "astersql-types-decimal", path = "../types/internal/decimal" }
+types-json-functions = { package = "astersql-types-json-functions", path = "../types/internal/json_functions" }
+types-time = { package = "astersql-types-time", path = "../types/internal/time" }
+driver = { package = "astersql-types-parser_driver", path = "../types/parser_driver" }
+rust_decimal = "1.37"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sem-dependency = { package = "astersql-util-sem", path = "../util/sem" }
+session-variable-dependency = { package = "astersql-sessionctx-variable", path = "../sessionctx/variable" }
+thiserror = "2"
+tipb = { git = "https://github.com/pingcap/tipb.git", rev = "07f0ea6b6bffa9d8ac100d81ee51dbbfe4dda3bf", default-features = false, features = ["protobuf-codec"] }
+unicode-general-category = "1"
+uuid = { version = "1", features = ["v1", "v4", "v7"] }
+
+[package.metadata.porting]
+go-package = "pkg/expression"
+legacy-tasks = ["task-671", "task-672", "task-673", "task-674", "task-675", "task-676", "task-677", "task-678", "task-679", "task-680", "task-681", "task-682", "task-683", "task-684", "task-685", "task-686", "task-687", "task-688", "task-689", "task-690", "task-691", "task-692", "task-693", "task-694", "task-695", "task-696", "task-697", "task-698", "task-699", "task-700", "task-701", "task-702", "task-703", "task-704", "task-705", "task-706", "task-707", "task-709", "task-1363", "task-1364", "task-1365", "task-1366", "task-1367", "task-1368", "task-1369", "task-1370", "task-1371", "task-1372", "task-1373", "task-1374", "task-1375", "task-1376", "task-1377", "task-1378", "task-1379", "task-1380", "task-1381", "task-1382", "task-1383", "task-1384", "task-1385", "task-1386"]
+
+[dev-dependencies]
+anyhow = "1"
+exprstatic = { package = "astersql-expression-exprstatic", path = "exprstatic" }
+maplit = "1"
+
+[[test]]
+name = "pb_to_expr_runtime_test"
+path = "pb_to_expr_runtime_test.rs"

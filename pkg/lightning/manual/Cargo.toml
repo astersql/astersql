@@ -1,0 +1,16 @@
+[package]
+name = "astersql-lightning-manual"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[features]
+default = []
+cgo = []
+
+[package.metadata.porting]
+go-package = "pkg/lightning/manual"
+legacy-tasks = ["task-18"]

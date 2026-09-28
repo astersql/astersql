@@ -1,0 +1,16 @@
+[package]
+name = "astersql-statistics-handle-cache-internal-mapcache"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+cache-internal = { package = "astersql-statistics-handle-cache-internal", path = ".." }
+statistics = { package = "astersql-statistics", path = "../../../../" }
+
+[package.metadata.porting]
+go-package = "pkg/statistics/handle/cache/internal/mapcache"
+legacy-tasks = ["task-750"]

@@ -1,0 +1,21 @@
+[package]
+name = "astersql-table-tables"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[features]
+default = []
+expression-runtime = ["dep:expression"]
+
+[dependencies]
+crc32fast = "1"
+expression = { package = "astersql-expression", path = "../../expression", optional = true }
+
+[package.metadata.porting]
+go-package = "pkg/table/tables"

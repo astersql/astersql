@@ -1,0 +1,29 @@
+[package]
+name = "astersql-expression-integration_test"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/expression/integration_test"
+legacy-tasks = ["task-1387", "task-1388"]
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../config" }
+"astersql-config-deploymode" = { package = "astersql-config-deploymode", path = "../../config/deploymode" }
+"astersql-expression" = { package = "astersql-expression", path = ".." }
+"astersql-expression-exprstatic" = { package = "astersql-expression-exprstatic", path = "../exprstatic" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../sessionctx/vardef" }
+"astersql-sessionctx-variable" = { package = "astersql-sessionctx-variable", path = "../../sessionctx/variable" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../testkit" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../testkit/testfailpoint" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }
+"astersql-types" = { package = "astersql-types", path = "../../types" }
+"astersql-util-sem-compat" = { package = "astersql-util-sem-compat", path = "../../util/sem/compat" }
+"astersql-util-timeutil" = { package = "astersql-util-timeutil", path = "../../util/timeutil" }
+crc32fast = "1"
+chrono = "0.4"
+serde_json = "1"

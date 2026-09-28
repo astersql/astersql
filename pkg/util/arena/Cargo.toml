@@ -1,0 +1,15 @@
+[package]
+name = "astersql-util-arena"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/util/arena"
+legacy-tasks = ["task-57", "task-131"]
+
+[dev-dependencies]
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }

@@ -1,0 +1,19 @@
+[package]
+name = "astersql-objstore-s3like-mock"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+anyhow = "1"
+mockall = "0.13"
+objectio = { package = "astersql-objstore-objectio", path = "../../objectio" }
+s3like = { package = "astersql-objstore-s3like", path = ".." }
+storeapi = { package = "astersql-objstore-storeapi", path = "../../storeapi" }
+
+[package.metadata.porting]
+go-package = "pkg/objstore/s3like/mock"
+legacy-tasks = ["task-492"]

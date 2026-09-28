@@ -1,0 +1,18 @@
+[package]
+name = "astersql-planner-funcdep"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+astersql-util-intset = { path = "../../util/intset" }
+
+[dev-dependencies]
+testsetup = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }
+
+[package.metadata.porting]
+go-package = "pkg/planner/funcdep"
+legacy-tasks = ["task-259", "task-302"]

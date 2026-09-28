@@ -1,0 +1,21 @@
+[package]
+name = "astersql-store-pdtypes"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+anyhow = "1"
+astersql-config-configtypes = { path = "../../config/configtypes" }
+chrono = "0.4"
+kvproto = { git = "https://github.com/pingcap/kvproto.git", rev = "a15c348f8713", default-features = false, features = ["protobuf-codec"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tikv-client = { version = "=0.4.2", git = "ssh://git@github.com/astersql/client-rust.git", tag = "v0.4.2-aster.1", default-features = false }
+
+[package.metadata.porting]
+go-package = "pkg/store/pdtypes"
+legacy-tasks = ["task-177"]

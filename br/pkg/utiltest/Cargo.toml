@@ -1,0 +1,21 @@
+[package]
+name = "astersql-br-pkg-utiltest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "br/pkg/utiltest"
+legacy-tasks = []
+kind = "library"
+lane = 1
+
+# arm64 darwin: no kv/domain/kvproto/grpcio/objstore.
+# Prefer already-slimmed gluetidb-mock + mock; local stubs for storeapi/objstore.
+[dependencies]
+astersql-br-pkg-gluetidb-mock = { package = "astersql-br-pkg-gluetidb-mock", path = "../gluetidb/mock" }
+astersql-br-pkg-mock = { package = "astersql-br-pkg-mock", path = "../mock" }
+tempfile = "3"

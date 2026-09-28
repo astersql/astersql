@@ -1,0 +1,38 @@
+[package]
+name = "astersql-infoschema-perfschema"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/infoschema/perfschema"
+legacy-tasks = ["task-1037", "task-1394"]
+
+[target.'cfg(any())'.dependencies]
+"astersql-ddl" = { package = "astersql-ddl", path = "../../ddl" }
+"astersql-expression" = { package = "astersql-expression", path = "../../expression" }
+"astersql-infoschema" = { package = "astersql-infoschema", path = ".." }
+"astersql-kv" = { package = "astersql-kv", path = "../../kv" }
+"astersql-meta-autoid" = { package = "astersql-meta-autoid", path = "../../meta/autoid" }
+"astersql-meta-metabuild" = { package = "astersql-meta-metabuild", path = "../../meta/metabuild" }
+"astersql-meta-metadef" = { package = "astersql-meta-metadef", path = "../../meta/metadef" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../meta/model" }
+"astersql-parser" = { package = "astersql-parser", path = "../../parser" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../parser/ast" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+"astersql-parser-terror" = { package = "astersql-parser-terror", path = "../../parser/terror" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../sessionctx" }
+"astersql-table" = { package = "astersql-table", path = "../../table" }
+"astersql-table-tables" = { package = "astersql-table-tables", path = "../../table/tables" }
+"astersql-types" = { package = "astersql-types", path = "../../types" }
+"astersql-util" = { package = "astersql-util", path = "../../util" }
+"astersql-util-profile" = { package = "astersql-util-profile", path = "../../util/profile" }
+
+[target.'cfg(any())'.dev-dependencies]
+"astersql-session" = { package = "astersql-session", path = "../../session" }
+"astersql-store-mockstore" = { package = "astersql-store-mockstore", path = "../../store/mockstore" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../testkit" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }

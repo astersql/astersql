@@ -1,0 +1,18 @@
+[package]
+name = "astersql-planner-util-domainmisc"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/planner/util/domainmisc"
+legacy-tasks = ["task-1056"]
+
+[target.'cfg(windows)'.dependencies]
+"astersql-domain" = { package = "astersql-domain", path = "../../../domain" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../../meta/model" }
+"astersql-planner-core-base" = { package = "astersql-planner-core-base", path = "../../core/base" }
+"astersql-table-temptable" = { package = "astersql-table-temptable", path = "../../../table/temptable" }

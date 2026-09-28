@@ -1,0 +1,27 @@
+[package]
+name = "astersql-planner-core-casetest-flatplan"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/planner/core/casetest/flatplan"
+legacy-tasks = ["task-1407"]
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../../config" }
+"astersql-infoschema" = { package = "astersql-infoschema", path = "../../../../infoschema" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../../kv" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../../../meta/model" }
+"astersql-parser" = { package = "astersql-parser", path = "../../../../parser" }
+"astersql-planner" = { package = "astersql-planner", path = "../../.." }
+"astersql-planner-core" = { package = "astersql-planner-core", path = "../.." }
+"astersql-planner-core-operator-physicalop" = { package = "astersql-planner-core-operator-physicalop", path = "../../operator/physicalop" }
+"astersql-planner-core-resolve" = { package = "astersql-planner-core-resolve", path = "../../resolve" }
+"astersql-planner-util-coretestsdk" = { package = "astersql-planner-util-coretestsdk", path = "../../../util/coretestsdk" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../../testkit" }
+"astersql-testkit-testmain" = { package = "astersql-testkit-testmain", path = "../../../../testkit/testmain" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../../testkit/testsetup" }

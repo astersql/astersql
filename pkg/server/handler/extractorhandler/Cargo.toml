@@ -1,0 +1,35 @@
+[package]
+name = "astersql-server-handler-extractorhandler"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/server/handler/extractorhandler"
+legacy-tasks = ["task-1279", "task-1621"]
+
+[dependencies]
+"astersql-domain" = { package = "astersql-domain", path = "../../../domain" }
+"astersql-planner-extstore" = { package = "astersql-planner-extstore", path = "../../../planner/extstore" }
+"astersql-server-handler" = { package = "astersql-server-handler", path = ".." }
+"astersql-types" = { package = "astersql-types", path = "../../../types" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../../util/logutil" }
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../config" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
+"astersql-metrics" = { package = "astersql-metrics", path = "../../../metrics" }
+"astersql-server" = { package = "astersql-server", path = "../.." }
+"astersql-server-internal-testserverclient" = { package = "astersql-server-internal-testserverclient", path = "../../internal/testserverclient" }
+"astersql-server-internal-testutil" = { package = "astersql-server-internal-testutil", path = "../../internal/testutil" }
+"astersql-server-internal-util" = { package = "astersql-server-internal-util", path = "../../internal/util" }
+"astersql-session" = { package = "astersql-session", path = "../../../session" }
+"astersql-store-mockstore-unistore" = { package = "astersql-store-mockstore-unistore", path = "../../../store/mockstore/unistore" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../testkit/testfailpoint" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }
+"astersql-util-stmtsummary-v2" = { package = "astersql-util-stmtsummary-v2", path = "../../../util/stmtsummary/v2" }
+"astersql-util-topsql-state" = { package = "astersql-util-topsql-state", path = "../../../util/topsql/state" }

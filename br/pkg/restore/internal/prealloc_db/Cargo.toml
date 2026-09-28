@@ -1,0 +1,19 @@
+[package]
+name = "astersql-br-pkg-restore-internal-prealloc-db"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "br/pkg/restore/internal/prealloc_db"
+legacy-tasks = []
+kind = "library"
+lane = 2
+
+# arm64 darwin: no kv/domain/kvproto/grpcio. Local glue/session/model traits;
+# reuse already-ported prealloc-table-id for ID rewrite.
+[dependencies]
+astersql-br-pkg-restore-internal-prealloc-table-id = { path = "../prealloc_table_id" }

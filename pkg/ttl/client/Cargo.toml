@@ -1,0 +1,19 @@
+[package]
+name = "astersql-ttl-client"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/ttl/client"
+legacy-tasks = ["task-764", "task-774"]
+
+[dependencies]
+
+[target.'cfg(any())'.dependencies]
+"astersql-ddl-util" = { package = "astersql-ddl-util", path = "../../ddl/util" }
+"astersql-util-intest" = { package = "astersql-util-intest", path = "../../util/intest" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../util/logutil" }

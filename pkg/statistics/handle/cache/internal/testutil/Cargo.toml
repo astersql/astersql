@@ -1,0 +1,17 @@
+[package]
+name = "astersql-statistics-handle-cache-internal-testutil"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+mysql = { package = "astersql-parser-mysql", path = "../../../../../parser/mysql" }
+statistics = { package = "astersql-statistics", path = "../../../../" }
+types = { package = "astersql-types-datum", path = "../../../../../types/internal/datum" }
+
+[package.metadata.porting]
+go-package = "pkg/statistics/handle/cache/internal/testutil"
+legacy-tasks = ["task-736"]

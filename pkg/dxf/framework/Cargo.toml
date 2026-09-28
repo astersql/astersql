@@ -1,0 +1,12 @@
+[package]
+name = "astersql-dxf-framework"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/dxf/framework"
+legacy-tasks = ["task-8"]

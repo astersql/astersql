@@ -1,0 +1,28 @@
+[package]
+name = "astersql-util-logutil"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+harness = false
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[package.metadata.porting]
+go-package = "pkg/util/logutil"
+legacy-tasks = ["task-218", "task-230", "task-237", "task-528"]
+
+[build-dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"
+
+[dev-dependencies]
+libtest-mimic = "0.8.2"
+libc = "0.2"
+testsetup = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading"] }

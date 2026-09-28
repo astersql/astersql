@@ -1,0 +1,30 @@
+[package]
+name = "astersql-ttl-sqlbuilder"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/ttl/sqlbuilder"
+legacy-tasks = ["task-924", "task-1502"]
+
+[target.'cfg(windows)'.dependencies]
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../meta/model" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../parser/ast" }
+"astersql-parser-format" = { package = "astersql-parser-format", path = "../../parser/format" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+"astersql-ttl-cache" = { package = "astersql-ttl-cache", path = "../cache" }
+"astersql-types" = { package = "astersql-types", path = "../../types" }
+"astersql-util-sqlescape" = { package = "astersql-util-sqlescape", path = "../../util/sqlescape" }
+
+[target.'cfg(windows)'.dev-dependencies]
+"astersql-kv" = { package = "astersql-kv", path = "../../kv" }
+"astersql-parser" = { package = "astersql-parser", path = "../../parser" }
+"astersql-parser-terror" = { package = "astersql-parser-terror", path = "../../parser/terror" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../testkit" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }
+"astersql-util-dbterror" = { package = "astersql-util-dbterror", path = "../../util/dbterror" }
+"astersql-util-sqlexec" = { package = "astersql-util-sqlexec", path = "../../util/sqlexec" }

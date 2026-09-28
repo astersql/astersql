@@ -1,0 +1,27 @@
+[package]
+name = "astersql-dxf-framework-planner"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/dxf/framework/planner"
+legacy-tasks = ["task-835", "task-1312"]
+
+[features]
+default = []
+kv-runtime = ["dep:astersql-kv"]
+
+[dependencies]
+"astersql-dxf-framework-handle" = { package = "astersql-dxf-framework-handle", path = "../handle" }
+"astersql-dxf-framework-proto" = { package = "astersql-dxf-framework-proto", path = "../proto" }
+"astersql-dxf-framework-storage" = { package = "astersql-dxf-framework-storage", path = "../storage" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv", optional = true }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../../sessionctx", optional = true }
+
+[target.'cfg(any())'.dev-dependencies]
+"astersql-dxf-framework-mock" = { package = "astersql-dxf-framework-mock", path = "../mock" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }

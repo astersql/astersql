@@ -1,0 +1,12 @@
+[package]
+name = "astersql-util-mvmap"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/util/mvmap"
+legacy-tasks = ["task-81", "task-148"]

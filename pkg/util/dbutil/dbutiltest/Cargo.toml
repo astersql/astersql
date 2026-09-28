@@ -1,0 +1,21 @@
+[package]
+name = "astersql-util-dbutil-dbutiltest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/util/dbutil/dbutiltest"
+legacy-tasks = ["task-1189"]
+
+[dependencies]
+"astersql-ddl" = { package = "astersql-ddl", path = "../../../ddl" }
+"astersql-meta-metabuild" = { package = "astersql-meta-metabuild", path = "../../../meta/metabuild" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../../meta/model" }
+"astersql-parser" = { package = "astersql-parser", path = "../../../parser" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../parser/ast" }
+"astersql-planner-core" = { package = "astersql-planner-core", path = "../../../planner/core" }
+"astersql-types" = { package = "astersql-types", path = "../../../types" }

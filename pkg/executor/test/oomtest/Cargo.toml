@@ -1,0 +1,21 @@
+[package]
+name = "astersql-executor-test-oomtest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/executor/test/oomtest"
+legacy-tasks = ["task-1349"]
+
+[dev-dependencies]
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../testkit/testfailpoint" }
+astersql-testkit-testsetup = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../../util/logutil" }
+astersql-util-memory = { package = "astersql-util-memory", path = "../../../util/memory" }
+astersql-util-set = { package = "astersql-util-set", path = "../../../util/set" }
+astersql-util-syncutil = { package = "astersql-util-syncutil", path = "../../../util/syncutil" }

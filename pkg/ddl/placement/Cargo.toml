@@ -1,0 +1,24 @@
+[package]
+name = "astersql-ddl-placement"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+base64 = "0.22"
+hex = "0.4"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+sha2 = "0.10"
+pdtypes = { package = "astersql-store-pdtypes", path = "../../store/pdtypes" }
+meta-model = { package = "astersql-meta-model", path = "../../meta/model" }
+tablecodec-dependency = { package = "astersql-tablecodec", path = "../../tablecodec" }
+
+[package.metadata.porting]
+go-package = "pkg/ddl/placement"
+legacy-tasks = ["task-496"]

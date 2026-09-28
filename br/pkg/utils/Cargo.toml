@@ -1,0 +1,52 @@
+[package]
+name = "astersql-br-pkg-utils"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "br/pkg/utils"
+legacy-tasks = []
+kind = "library"
+lane = 2
+
+# Slimmed for darwin arm64: no kv/domain/kvproto/grpcio/tablecodec/sqlexec.
+# Proto/KV/SQL boundaries use local stubs; meta/parser/util peers stay.
+[dependencies]
+"astersql-br-pkg-errors" = { package = "astersql-br-pkg-errors", path = "../errors" }
+"astersql-br-pkg-logutil" = { package = "astersql-br-pkg-logutil", path = "../logutil" }
+"astersql-br-pkg-summary" = { package = "astersql-br-pkg-summary", path = "../summary" }
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../pkg/config/kerneltype" }
+"astersql-errno" = { package = "astersql-errno", path = "../../../pkg/errno" }
+"astersql-meta" = { package = "astersql-meta", path = "../../../pkg/meta" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../../pkg/meta/model" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../pkg/parser/ast" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../../pkg/parser/mysql" }
+"astersql-parser-terror" = { package = "astersql-parser-terror", path = "../../../pkg/parser/terror" }
+"astersql-parser-types" = { package = "astersql-parser-types", path = "../../../pkg/parser/types" }
+"astersql-util" = { package = "astersql-util", path = "../../../pkg/util" }
+"astersql-util-codec" = { package = "astersql-util-codec", path = "../../../pkg/util/codec" }
+"astersql-util-encrypt" = { package = "astersql-util-encrypt", path = "../../../pkg/util/encrypt" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../../pkg/util/logutil" }
+"astersql-util-memory" = { package = "astersql-util-memory", path = "../../../pkg/util/memory" }
+"astersql-util-memoryusagealarm" = { package = "astersql-util-memoryusagealarm", path = "../../../pkg/util/memoryusagealarm" }
+"astersql-util-table-filter" = { package = "astersql-util-table-filter", path = "../../../pkg/util/table-filter" }
+"astersql-errors" = { package = "astersql-errors", path = "../../../pkg/errors" }
+bytesize = "2"
+crossbeam-channel = "0.5"
+serde_json = "1"
+signal-hook = "0.3"
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+prometheus = "0.14"
+pprof = { version = "0.15", features = ["prost-codec"] }
+prost = "0.12"
+
+[dev-dependencies]
+"astersql-planner-core-resolve" = { package = "astersql-planner-core-resolve", path = "../../../pkg/planner/core/resolve" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../pkg/testkit/testsetup" }
+"astersql-types" = { package = "astersql-types", path = "../../../pkg/types" }
+"astersql-util-chunk" = { package = "astersql-util-chunk", path = "../../../pkg/util/chunk" }

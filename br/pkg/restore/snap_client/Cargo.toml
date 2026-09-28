@@ -1,0 +1,20 @@
+[package]
+name = "astersql-br-pkg-restore-snap-client"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "br/pkg/restore/snap_client"
+legacy-tasks = []
+kind = "library"
+lane = 1
+
+# arm64 darwin: no kv/domain/kvproto/grpcio. Local traits/stubs only.
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"

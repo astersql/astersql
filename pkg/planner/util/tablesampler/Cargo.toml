@@ -1,0 +1,18 @@
+[package]
+name = "astersql-planner-util-tablesampler"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+expression = { package = "astersql-expression", path = "../../../expression" }
+parser-ast = { package = "astersql-parser-ast", path = "../../../parser/ast" }
+table = { package = "astersql-table", path = "../../../table" }
+size = { package = "astersql-util-size", path = "../../../util/size" }
+
+[package.metadata.porting]
+go-package = "pkg/planner/util/tablesampler"
+legacy-tasks = ["task-726"]

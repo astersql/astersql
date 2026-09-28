@@ -1,0 +1,22 @@
+[package]
+name = "astersql-server-internal-resultset"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/server/internal/resultset"
+legacy-tasks = ["task-1188"]
+
+[dependencies]
+"astersql-parser-terror" = { package = "astersql-parser-terror", path = "../../../parser/terror" }
+"astersql-planner-core" = { package = "astersql-planner-core", path = "../../../planner/core" }
+"astersql-resourcegroup" = { package = "astersql-resourcegroup", path = "../../../resourcegroup" }
+"astersql-server-internal-column" = { package = "astersql-server-internal-column", path = "../column" }
+"astersql-types" = { package = "astersql-types", path = "../../../types" }
+"astersql-util-chunk" = { package = "astersql-util-chunk", path = "../../../util/chunk" }
+"astersql-util-execdetails" = { package = "astersql-util-execdetails", path = "../../../util/execdetails" }
+"astersql-util-sqlexec" = { package = "astersql-util-sqlexec", path = "../../../util/sqlexec" }

@@ -1,0 +1,20 @@
+[package]
+name = "astersql-sessionctx-variable-tests-slowlog"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/sessionctx/variable/tests/slowlog"
+legacy-tasks = ["task-1256"]
+
+[dev-dependencies]
+astersql-parser = { path = "../../../../parser" }
+astersql-planner-core = { path = "../../../../planner/core" }
+astersql-executor = { package = "astersql-executor", path = "../../../../executor" }
+astersql-sessionctx-variable = { package = "astersql-sessionctx-variable", path = "../.." }
+astersql-testkit-testsetup = { package = "astersql-testkit-testsetup", path = "../../../../testkit/testsetup" }
+astersql-util-execdetails = { package = "astersql-util-execdetails", path = "../../../../util/execdetails" }

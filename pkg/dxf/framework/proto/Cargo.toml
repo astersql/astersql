@@ -1,0 +1,18 @@
+[package]
+name = "astersql-dxf-framework-proto"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+bytesize = "2"
+chrono = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[package.metadata.porting]
+go-package = "pkg/dxf/framework/proto"
+legacy-tasks = ["task-9", "task-329"]

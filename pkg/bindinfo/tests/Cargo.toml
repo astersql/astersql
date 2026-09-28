@@ -1,0 +1,26 @@
+[package]
+name = "astersql-bindinfo-tests"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/bindinfo/tests"
+legacy-tasks = ["task-1299"]
+
+[dev-dependencies]
+"astersql-bindinfo" = { package = "astersql-bindinfo", path = ".." }
+"astersql-domain" = { package = "astersql-domain", path = "../../domain" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../meta/model" }
+"astersql-parser" = { package = "astersql-parser", path = "../../parser" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../parser/ast" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+"astersql-session-sessionapi" = { package = "astersql-session-sessionapi", path = "../../session/sessionapi" }
+"astersql-session-sessmgr" = { package = "astersql-session-sessmgr", path = "../../session/sessmgr" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../testkit" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }
+"astersql-types" = { package = "astersql-types", path = "../../types" }
+"astersql-util-stmtsummary" = { package = "astersql-util-stmtsummary", path = "../../util/stmtsummary" }

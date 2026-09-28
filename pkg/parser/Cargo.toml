@@ -1,0 +1,32 @@
+[package]
+name = "astersql-parser"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[[bin]]
+name = "parse-demo1"
+path = "parse-demo1.rs"
+
+[dependencies]
+parser-duration = { package = "astersql-parser-duration", path = "duration" }
+hex = "0.4"
+regex = "1"
+sha2 = "0.10"
+parser-ast = { package = "astersql-parser-ast", path = "ast" }
+parser-auth = { package = "astersql-parser-auth", path = "auth" }
+parser-charset = { package = "astersql-parser-charset", path = "charset" }
+parser-mysql = { package = "astersql-parser-mysql", path = "mysql" }
+parser-terror = { package = "astersql-parser-terror", path = "terror" }
+parser-test-driver = { package = "astersql-parser-test_driver", path = "test_driver" }
+parser-types = { package = "astersql-parser-types", path = "types" }
+
+[dev-dependencies]
+astersql-parsergen = { path = "parsergen" }
+
+[package.metadata.porting]
+go-package = "pkg/parser"
+legacy-tasks = ["task-333", "task-362"]

@@ -1,0 +1,17 @@
+[package]
+name = "astersql-br-pkg-checksum"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "br/pkg/checksum"
+legacy-tasks = []
+kind = "library"
+lane = 1
+
+# arm64: no kvproto/grpcio/domain/kv/distsql/metautil heavy deps. Local traits only.
+[dependencies]

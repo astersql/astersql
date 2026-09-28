@@ -1,0 +1,22 @@
+[package]
+name = "astersql-util-profile"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+cpuprofile = { package = "astersql-util-cpuprofile", path = "../cpuprofile" }
+flate2 = "1"
+pprof = { version = "0.15", features = ["prost-codec"] }
+prost = "0.12"
+texttree = { package = "astersql-util-texttree", path = "../texttree" }
+thiserror = "2"
+types = { package = "astersql-types", path = "../../types" }
+
+[package.metadata.porting]
+go-package = "pkg/util/profile"
+legacy-tasks = ["task-563", "task-579"]

@@ -1,0 +1,40 @@
+[package]
+name = "astersql-executor-internal-exec"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/executor/internal/exec"
+legacy-tasks = ["task-1052", "task-1319"]
+
+[target.'cfg(windows)'.dependencies]
+"astersql-domain" = { package = "astersql-domain", path = "../../../domain" }
+"astersql-expression" = { package = "astersql-expression", path = "../../../expression" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../../meta/model" }
+"astersql-parser" = { package = "astersql-parser", path = "../../../parser" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../../sessionctx" }
+"astersql-sessionctx-stmtctx" = { package = "astersql-sessionctx-stmtctx", path = "../../../sessionctx/stmtctx" }
+"astersql-sessionctx-variable" = { package = "astersql-sessionctx-variable", path = "../../../sessionctx/variable" }
+"astersql-statistics" = { package = "astersql-statistics", path = "../../../statistics" }
+"astersql-statistics-handle-usage-indexusage" = { package = "astersql-statistics-handle-usage-indexusage", path = "../../../statistics/handle/usage/indexusage" }
+"astersql-table" = { package = "astersql-table", path = "../../../table" }
+"astersql-types" = { package = "astersql-types", path = "../../../types" }
+"astersql-util" = { package = "astersql-util", path = "../../../util" }
+"astersql-util-chunk" = { package = "astersql-util-chunk", path = "../../../util/chunk" }
+"astersql-util-execdetails" = { package = "astersql-util-execdetails", path = "../../../util/execdetails" }
+"astersql-util-linter-constructor" = { package = "astersql-util-linter-constructor", path = "../../../util/linter/constructor" }
+"astersql-util-topsql" = { package = "astersql-util-topsql", path = "../../../util/topsql" }
+"astersql-util-topsql-state" = { package = "astersql-util-topsql-state", path = "../../../util/topsql/state" }
+"astersql-util-tracing" = { package = "astersql-util-tracing", path = "../../../util/tracing" }
+
+[target.'cfg(windows)'.dev-dependencies]
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../parser/ast" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-types-parser_driver" = { package = "astersql-types-parser_driver", path = "../../../types/parser_driver" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../../util/logutil" }
+"astersql-util-mock" = { package = "astersql-util-mock", path = "../../../util/mock" }

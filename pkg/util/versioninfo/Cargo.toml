@@ -1,0 +1,12 @@
+[package]
+name = "astersql-util-versioninfo"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/util/versioninfo"
+legacy-tasks = ["task-102"]

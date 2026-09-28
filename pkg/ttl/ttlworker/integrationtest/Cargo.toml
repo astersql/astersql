@@ -1,0 +1,26 @@
+[package]
+name = "astersql-ttl-ttlworker-integrationtest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/ttl/ttlworker/integrationtest"
+legacy-tasks = ["task-1506"]
+
+[dev-dependencies]
+"astersql-domain" = { package = "astersql-domain", path = "../../../domain" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
+"astersql-meta-metadef" = { package = "astersql-meta-metadef", path = "../../../meta/metadef" }
+"astersql-metrics" = { package = "astersql-metrics", path = "../../../metrics" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../parser/ast" }
+"astersql-session-syssession" = { package = "astersql-session-syssession", path = "../../../session/syssession" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-timer-api" = { package = "astersql-timer-api", path = "../../../timer/api" }
+"astersql-timer-tablestore" = { package = "astersql-timer-tablestore", path = "../../../timer/tablestore" }
+"astersql-ttl-cache" = { package = "astersql-ttl-cache", path = "../../cache" }
+"astersql-ttl-ttlworker" = { package = "astersql-ttl-ttlworker", path = ".." }
+"astersql-util-mock" = { package = "astersql-util-mock", path = "../../../util/mock" }

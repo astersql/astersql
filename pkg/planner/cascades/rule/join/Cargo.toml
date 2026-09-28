@@ -1,0 +1,23 @@
+[package]
+name = "astersql-planner-cascades-rule-join"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+cascades-pattern = { package = "astersql-planner-cascades-pattern", path = "../../pattern" }
+cascades-rule = { package = "astersql-planner-cascades-rule", path = ".." }
+cascades-util = { package = "astersql-planner-cascades-util", path = "../../util" }
+logicalop = { package = "astersql-planner-core-operator-logicalop", path = "../../../core/operator/logicalop" }
+
+[dev-dependencies]
+cascades-memo = { package = "astersql-planner-cascades-memo", path = "../../memo" }
+
+[package.metadata.porting]
+go-package = "pkg/planner/cascades/rule/join"
+legacy-tasks = ["task-1148"]

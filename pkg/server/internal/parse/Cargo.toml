@@ -1,0 +1,20 @@
+[package]
+name = "astersql-server-internal-parse"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+log = "0.4"
+astersql-parser-mysql = { path = "../../../parser/mysql" }
+astersql-server-internal-handshake = { path = "../handshake" }
+astersql-server-internal-util = { path = "../util" }
+astersql-sessionctx-vardef = { path = "../../../sessionctx/vardef" }
+astersql-util-logutil = { path = "../../../util/logutil" }
+
+[package.metadata.porting]
+go-package = "pkg/server/internal/parse"
+legacy-tasks = ["task-369", "task-388"]

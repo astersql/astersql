@@ -1,0 +1,35 @@
+[package]
+name = "astersql-types-datum"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+base64 = "0.22"
+contextutil = { package = "astersql-util-context", path = "../../../util/context" }
+goish = "0.20.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rust_decimal = "1.37"
+types-group-1 = { package = "astersql-types-scalar", path = "../scalar" }
+types-file-group = { package = "astersql-types-file-group", path = "../file_group" }
+types-time = { package = "astersql-types-time", path = "../time" }
+types-vector = { package = "astersql-types-vector", path = "../vector" }
+types-group-4 = { package = "astersql-types-metadata", path = "../metadata" }
+types-field-group = { package = "astersql-types-field", path = "../field" }
+types-json = { package = "astersql-types-json-binary", path = "../json_binary" }
+types-decimal = { package = "astersql-types-decimal", path = "../decimal" }
+parser-charset = { package = "astersql-parser-charset", path = "../../../parser/charset" }
+parser-mysql = { package = "astersql-parser-mysql", path = "../../../parser/mysql" }
+parser-types = { package = "astersql-parser-types", path = "../../../parser/types" }
+collate = { package = "astersql-util-collate", path = "../../../util/collate" }
+planner-base = { package = "astersql-planner-cascades-base", path = "../../../planner/cascades/base" }
+hack-util = { package = "astersql-util-hack", path = "../../../util/hack" }
+
+[[test]]
+name = "datum_3_aster_unit_test"
+path = "../../datum_3_aster_unit_test.rs"

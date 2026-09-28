@@ -1,0 +1,16 @@
+[package]
+name = "astersql-statistics-handle-logutil"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+astersql-util-logutil = { path = "../../../util/logutil" }
+chrono = "0.4"
+
+[package.metadata.porting]
+go-package = "pkg/statistics/handle/logutil"
+legacy-tasks = ["task-237", "task-302"]

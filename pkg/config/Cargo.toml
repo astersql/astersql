@@ -1,0 +1,29 @@
+[package]
+name = "astersql-config"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+astersql-config-kerneltype = { path = "kerneltype" }
+base64 = "0.22"
+once_cell = "1"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+"astersql-config-configtypes" = { package = "astersql-config-configtypes", path = "configtypes" }
+thiserror = "2"
+toml = "0.8"
+url = "2"
+users = "0.11"
+
+[dev-dependencies]
+tempfile = "3"
+testsetup = { package = "astersql-testkit-testsetup", path = "../testkit/testsetup" }
+
+[package.metadata.porting]
+go-package = "pkg/config"
+legacy-tasks = ["task-256", "task-261", "task-283", "task-295", "task-302", "task-312", "task-528"]

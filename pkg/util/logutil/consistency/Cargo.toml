@@ -1,0 +1,21 @@
+[package]
+name = "astersql-util-logutil-consistency"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+hex = "0.4"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+model = { package = "astersql-meta-model-group1", path = "../../../meta/model/internal/group1" }
+tablecodec = { package = "astersql-tablecodec", path = "../../../tablecodec" }
+
+[package.metadata.porting]
+go-package = "pkg/util/logutil/consistency"
+legacy-tasks = ["task-579"]

@@ -1,0 +1,19 @@
+[package]
+name = "astersql-tests-realtikvtest-startertest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "tests/realtikvtest/startertest"
+legacy-tasks = []
+kind = "test-only"
+lane = 1
+
+[[test]]
+name = "starter_external_test"
+path = "starter_external_test.rs"

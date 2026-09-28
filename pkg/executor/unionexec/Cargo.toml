@@ -1,0 +1,20 @@
+[package]
+name = "astersql-executor-unionexec"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/executor/unionexec"
+legacy-tasks = ["task-1067"]
+
+[target.'cfg(windows)'.dependencies]
+"astersql-executor-internal-exec" = { package = "astersql-executor-internal-exec", path = "../internal/exec" }
+"astersql-util" = { package = "astersql-util", path = "../../util" }
+"astersql-util-channel" = { package = "astersql-util-channel", path = "../../util/channel" }
+"astersql-util-chunk" = { package = "astersql-util-chunk", path = "../../util/chunk" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../util/logutil" }
+"astersql-util-syncutil" = { package = "astersql-util-syncutil", path = "../../util/syncutil" }

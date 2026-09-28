@@ -1,0 +1,21 @@
+[package]
+name = "astersql-session-txninfo"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+chrono = "0.4"
+chrono-tz = "0.10"
+metrics = { package = "astersql-metrics", path = "../../metrics" }
+parser-mysql = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+prometheus = "0.14"
+serde_json = "1"
+types = { package = "astersql-types", path = "../../types" }
+
+[package.metadata.porting]
+go-package = "pkg/session/txninfo"
+legacy-tasks = ["task-400", "task-445"]

@@ -1,0 +1,15 @@
+[package]
+name = "astersql-ddl-mock"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/ddl/mock"
+legacy-tasks = ["task-907"]
+
+[dependencies]
+ddl-systable = { package = "astersql-ddl-systable", path = "../systable" }

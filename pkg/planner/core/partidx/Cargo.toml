@@ -1,0 +1,20 @@
+[package]
+name = "astersql-planner-core-partidx"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/planner/core/partidx"
+legacy-tasks = ["task-725"]
+
+[dependencies]
+"astersql-expression" = { package = "astersql-expression", path = "../../../expression", optional = true }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../parser/ast", optional = true }
+"astersql-planner-planctx" = { package = "astersql-planner-planctx", path = "../../planctx", optional = true }
+"astersql-util-intest" = { package = "astersql-util-intest", path = "../../../util/intest", optional = true }
+"astersql-util-ranger" = { package = "astersql-util-ranger", path = "../../../util/ranger", optional = true }
+"astersql-util-ranger-context" = { package = "astersql-util-ranger-context", path = "../../../util/ranger/context", optional = true }

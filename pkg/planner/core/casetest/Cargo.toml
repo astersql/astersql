@@ -1,0 +1,36 @@
+[package]
+name = "astersql-planner-core-casetest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/planner/core/casetest"
+legacy-tasks = ["task-1400"]
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../config" }
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../config/kerneltype" }
+"astersql-domain" = { package = "astersql-domain", path = "../../../domain" }
+"astersql-domain-infosync" = { package = "astersql-domain-infosync", path = "../../../domain/infosync" }
+"astersql-errno" = { package = "astersql-errno", path = "../../../errno" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../../meta/model" }
+"astersql-parser" = { package = "astersql-parser", path = "../../../parser" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../parser/ast" }
+"astersql-planner-core" = { package = "astersql-planner-core", path = ".." }
+"astersql-planner-core-base" = { package = "astersql-planner-core-base", path = "../base" }
+"astersql-planner-core-operator-logicalop" = { package = "astersql-planner-core-operator-logicalop", path = "../operator/logicalop" }
+"astersql-planner-core-resolve" = { package = "astersql-planner-core-resolve", path = "../resolve" }
+"astersql-planner-core-rule" = { package = "astersql-planner-core-rule", path = "../rule" }
+"astersql-planner-property" = { package = "astersql-planner-property", path = "../../property" }
+"astersql-statistics-handle-ddl-testutil" = { package = "astersql-statistics-handle-ddl-testutil", path = "../../../statistics/handle/ddl/testutil" }
+"astersql-store-mockstore" = { package = "astersql-store-mockstore", path = "../../../store/mockstore" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../testkit/testfailpoint" }
+"astersql-testkit-testmain" = { package = "astersql-testkit-testmain", path = "../../../testkit/testmain" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }
+"astersql-util-hint" = { package = "astersql-util-hint", path = "../../../util/hint" }
+"astersql-util-plancodec" = { package = "astersql-util-plancodec", path = "../../../util/plancodec" }

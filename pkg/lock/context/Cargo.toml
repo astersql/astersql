@@ -1,0 +1,16 @@
+[package]
+name = "astersql-lock-context"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+meta-model = { package = "astersql-meta-model", path = "../../meta/model" }
+parser-ast = { package = "astersql-parser-ast", path = "../../parser/ast" }
+
+[package.metadata.porting]
+go-package = "pkg/lock/context"
+legacy-tasks = ["task-431"]

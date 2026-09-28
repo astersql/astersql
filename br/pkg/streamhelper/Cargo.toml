@@ -1,0 +1,22 @@
+[package]
+name = "astersql-br-pkg-streamhelper"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "br/pkg/streamhelper"
+legacy-tasks = []
+kind = "library"
+lane = 2
+
+[dependencies]
+astersql-br-pkg-streamhelper-config = { package = "astersql-br-pkg-streamhelper-config", path = "config" }
+astersql-br-pkg-streamhelper-spans = { package = "astersql-br-pkg-streamhelper-spans", path = "spans" }
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }

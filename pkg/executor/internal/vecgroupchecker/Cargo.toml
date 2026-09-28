@@ -1,0 +1,26 @@
+[package]
+name = "astersql-executor-internal-vecgroupchecker"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+chrono-tz = "0.10"
+chunk-crate = { package = "astersql-util-chunk", path = "../../../util/chunk" }
+codec-crate = { package = "astersql-util-codec", path = "../../../util/codec" }
+expression-crate = { package = "astersql-expression", path = "../../../expression" }
+mysql-crate = { package = "astersql-parser-mysql", path = "../../../parser/mysql" }
+types-crate = { package = "astersql-types-datum", path = "../../../types/internal/datum" }
+
+[dev-dependencies]
+config-crate = { package = "astersql-config", path = "../../../config" }
+exprstatic-crate = { package = "astersql-expression-exprstatic", path = "../../../expression/exprstatic" }
+meta-autoid-crate = { package = "astersql-meta-autoid", path = "../../../meta/autoid" }
+testsetup-crate = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }
+
+[package.metadata.porting]
+go-package = "pkg/executor/internal/vecgroupchecker"
+legacy-tasks = ["task-710", "task-723"]

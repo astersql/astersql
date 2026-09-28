@@ -1,0 +1,15 @@
+[package]
+name = "astersql-dumpformat-parsedef"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+types-crate = { package = "astersql-types", path = "../../types" }
+
+[package.metadata.porting]
+go-package = "pkg/dumpformat/parsedef"
+legacy-tasks = ["task-445"]

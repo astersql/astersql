@@ -1,0 +1,18 @@
+[package]
+name = "astersql-tests-llmtest-generator"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "tests/llmtest/generator"
+legacy-tasks = []
+kind = "library"
+lane = 2
+
+[dependencies]
+"astersql-tests-llmtest-logger" = { package = "astersql-tests-llmtest-logger", path = "../logger" }
+"astersql-tests-llmtest-testcase" = { package = "astersql-tests-llmtest-testcase", path = "../testcase" }

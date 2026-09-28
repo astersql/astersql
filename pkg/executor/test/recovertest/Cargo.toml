@@ -1,0 +1,32 @@
+[package]
+name = "astersql-executor-test-recovertest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/executor/test/recovertest"
+legacy-tasks = ["task-1353"]
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../config" }
+"astersql-ddl" = { package = "astersql-ddl", path = "../../../ddl" }
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../config/kerneltype" }
+"astersql-ddl-util" = { package = "astersql-ddl-util", path = "../../../ddl/util" }
+"astersql-errno" = { package = "astersql-errno", path = "../../../errno" }
+"astersql-infoschema" = { package = "astersql-infoschema", path = "../../../infoschema" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
+"astersql-meta-autoid" = { package = "astersql-meta-autoid", path = "../../../meta/autoid" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../../meta/model" }
+"astersql-parser-auth" = { package = "astersql-parser-auth", path = "../../../parser/auth" }
+"astersql-sessionctx-variable" = { package = "astersql-sessionctx-variable", path = "../../../sessionctx/variable" }
+"astersql-store-mockstore" = { package = "astersql-store-mockstore", path = "../../../store/mockstore" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../testkit/testfailpoint" }
+"astersql-types" = { package = "astersql-types", path = "../../../types" }
+"astersql-util" = { package = "astersql-util", path = "../../../util" }
+"astersql-util-dbterror" = { package = "astersql-util-dbterror", path = "../../../util/dbterror" }
+"astersql-util-gcutil" = { package = "astersql-util-gcutil", path = "../../../util/gcutil" }

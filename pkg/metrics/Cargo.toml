@@ -1,0 +1,29 @@
+[package]
+name = "astersql-metrics"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+astersql-dxf-framework-dxfmetric = { path = "../dxf/framework/dxfmetric" }
+astersql-ingestor-ingestmetric = { path = "../ingestor/ingestmetric" }
+astersql-infoschema-metrics = { path = "../infoschema/metrics" }
+astersql-lightning-metric = { path = "../lightning/metric" }
+astersql-metrics-common = { path = "common" }
+astersql-timer-metrics = { path = "../timer/metrics" }
+astersql-util-intest = { path = "../util/intest" }
+astersql-util-promutil = { path = "../util/promutil" }
+grpcio = { version = "0.13", default-features = false, features = ["prost-codec"] }
+prometheus = "0.14"
+serde_json = "1"
+
+[dev-dependencies]
+astersql-parser-terror = { path = "../parser/terror" }
+astersql-testkit-testsetup = { path = "../testkit/testsetup" }
+
+[package.metadata.porting]
+go-package = "pkg/metrics"
+legacy-tasks = ["task-257", "task-273", "task-276", "task-302"]

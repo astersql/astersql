@@ -1,0 +1,42 @@
+[package]
+name = "astersql-dxf-importinto-conflictedkv"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/dxf/importinto/conflictedkv"
+legacy-tasks = ["task-1203", "task-1206", "task-1313"]
+
+[dependencies]
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../config/kerneltype" }
+"astersql-dxf-framework-handle" = { package = "astersql-dxf-framework-handle", path = "../../framework/handle" }
+"astersql-dxf-framework-taskexecutor-execute" = { package = "astersql-dxf-framework-taskexecutor-execute", path = "../../framework/taskexecutor/execute" }
+"astersql-executor-importer" = { package = "astersql-executor-importer", path = "../../../executor/importer" }
+"astersql-ingestor-globalsort" = { package = "astersql-ingestor-globalsort", path = "../../../ingestor/globalsort" }
+"astersql-ingestor-simplesst" = { package = "astersql-ingestor-simplesst", path = "../../../ingestor/simplesst" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
+"astersql-lightning-backend-kv" = { package = "astersql-lightning-backend-kv", path = "../../../lightning/backend/kv" }
+"astersql-lightning-common" = { package = "astersql-lightning-common", path = "../../../lightning/common" }
+"astersql-lightning-verification" = { package = "astersql-lightning-verification", path = "../../../lightning/verification" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../../meta/model" }
+"astersql-objstore-objectio" = { package = "astersql-objstore-objectio", path = "../../../objstore/objectio" }
+"astersql-objstore-storeapi" = { package = "astersql-objstore-storeapi", path = "../../../objstore/storeapi" }
+"astersql-table" = { package = "astersql-table", path = "../../../table" }
+"astersql-table-tables" = { package = "astersql-table-tables", path = "../../../table/tables" }
+"astersql-tablecodec" = { package = "astersql-tablecodec", path = "../../../tablecodec" }
+"astersql-types" = { package = "astersql-types", path = "../../../types" }
+"astersql-util" = { package = "astersql-util", path = "../../../util" }
+"astersql-util-backoff" = { package = "astersql-util-backoff", path = "../../../util/backoff" }
+"astersql-util-redact" = { package = "astersql-util-redact", path = "../../../util/redact" }
+
+[dev-dependencies]
+anyhow = "1"
+"astersql-lightning-backend-encode" = { package = "astersql-lightning-backend-encode", path = "../../../lightning/backend/encode" }
+"astersql-objstore" = { package = "astersql-objstore", path = "../../../objstore" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../parser/ast" }
+"astersql-session" = { package = "astersql-session", path = "../../../session" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }

@@ -1,0 +1,12 @@
+[package]
+name = "astersql-util-rowDecoder"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/util/rowDecoder"
+legacy-tasks = ["task-752", "task-1184"]

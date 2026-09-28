@@ -1,0 +1,24 @@
+[package]
+name = "astersql-util-regionsplit"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/util/regionsplit"
+legacy-tasks = ["task-751"]
+
+[dependencies]
+"astersql-kv" = { package = "astersql-kv", path = "../../kv", optional = true }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../meta/model", optional = true }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../parser/mysql", optional = true }
+"astersql-parser-terror" = { package = "astersql-parser-terror", path = "../../parser/terror", optional = true }
+"astersql-sessionctx-stmtctx" = { package = "astersql-sessionctx-stmtctx", path = "../../sessionctx/stmtctx", optional = true }
+"astersql-table-tables" = { package = "astersql-table-tables", path = "../../table/tables", optional = true }
+"astersql-tablecodec" = { package = "astersql-tablecodec", path = "../../tablecodec", optional = true }
+"astersql-types" = { package = "astersql-types", path = "../../types", optional = true }
+"astersql-util" = { package = "astersql-util", path = "..", optional = true }
+"astersql-util-codec" = { package = "astersql-util-codec", path = "../codec", optional = true }

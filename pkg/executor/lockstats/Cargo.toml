@@ -1,0 +1,24 @@
+[package]
+name = "astersql-executor-lockstats"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/executor/lockstats"
+legacy-tasks = ["task-1065", "task-1076"]
+
+[target.'cfg(windows)'.dependencies]
+"astersql-domain" = { package = "astersql-domain", path = "../../domain" }
+"astersql-executor-internal-exec" = { package = "astersql-executor-internal-exec", path = "../internal/exec" }
+"astersql-infoschema" = { package = "astersql-infoschema", path = "../../infoschema" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../parser/ast" }
+"astersql-statistics-handle-types" = { package = "astersql-statistics-handle-types", path = "../../statistics/handle/types" }
+"astersql-table-tables" = { package = "astersql-table-tables", path = "../../table/tables" }
+"astersql-util-chunk" = { package = "astersql-util-chunk", path = "../../util/chunk" }
+
+[target.'cfg(windows)'.dev-dependencies]
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../meta/model" }

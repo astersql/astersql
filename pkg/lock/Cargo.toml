@@ -1,0 +1,22 @@
+[package]
+name = "astersql-lock"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/lock"
+legacy-tasks = ["task-876"]
+
+[dependencies]
+"astersql-infoschema" = { package = "astersql-infoschema", path = "../infoschema" }
+"astersql-infoschema-context" = { package = "astersql-infoschema-context", path = "../infoschema/context" }
+"astersql-lock-context" = { package = "astersql-lock-context", path = "context" }
+"astersql-meta-metadef" = { package = "astersql-meta-metadef", path = "../meta/metadef" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../parser/ast" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../parser/mysql" }
+"astersql-table" = { package = "astersql-table", path = "../table" }
+"astersql-util-dbterror" = { package = "astersql-util-dbterror", path = "../util/dbterror" }

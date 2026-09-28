@@ -1,0 +1,20 @@
+[package]
+name = "astersql-br-pkg-gc"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "br/pkg/gc"
+legacy-tasks = []
+kind = "library"
+lane = 2
+
+# Production lib stays free of kvproto/grpcio. Heavy unistore mockstore packages
+# were dropped from [dev-dependencies] so darwin arm64 production trees stay clean;
+# mock_test wiring is deferred to a grpc-healthy regression.
+[dependencies]
+"astersql-br-pkg-errors" = { package = "astersql-br-pkg-errors", path = "../errors" }

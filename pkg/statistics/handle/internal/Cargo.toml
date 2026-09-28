@@ -1,0 +1,18 @@
+[package]
+name = "astersql-statistics-handle-internal"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+statistics = { package = "astersql-statistics", path = "../../" }
+
+[dev-dependencies]
+cache-testutil = { package = "astersql-statistics-handle-cache-internal-testutil", path = "../cache/internal/testutil" }
+
+[package.metadata.porting]
+go-package = "pkg/statistics/handle/internal"
+legacy-tasks = ["task-737"]

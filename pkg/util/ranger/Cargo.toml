@@ -1,0 +1,35 @@
+[package]
+name = "astersql-util-ranger"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+bytes = "1"
+chrono = "0.4"
+chrono-tz = "0.10"
+regex = "1"
+expression = { package = "astersql-expression", path = "../../expression" }
+fixcontrol = { package = "astersql-planner-util-fixcontrol", path = "../../planner/util/fixcontrol" }
+hack = { package = "astersql-util-hack", path = "../hack" }
+intest = { package = "astersql-util-intest", path = "../intest" }
+kv = { package = "astersql-kv", path = "../../kv" }
+model = { package = "astersql-meta-model", path = "../../meta/model" }
+planctx = { package = "astersql-planner-planctx", path = "../../planner/planctx" }
+plannererrors = { package = "astersql-util-dbterror-plannererrors", path = "../dbterror/plannererrors" }
+parser-format = { package = "astersql-parser-format", path = "../../parser/format" }
+stmtctx = { package = "astersql-sessionctx-stmtctx", path = "../../sessionctx/stmtctx" }
+driver = { package = "astersql-types-parser_driver", path = "../../types/parser_driver" }
+rangerctx = { package = "astersql-util-ranger-context", path = "context" }
+types-dependency = { package = "astersql-types", path = "../../types" }
+
+[package.metadata.porting]
+go-package = "pkg/util/ranger"
+
+[dev-dependencies]
+exprstatic = { package = "astersql-expression-exprstatic", path = "../../expression/exprstatic" }

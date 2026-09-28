@@ -1,0 +1,34 @@
+[package]
+name = "astersql-expression-aggregation"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+chunk = { package = "astersql-util-chunk", path = "../../util/chunk" }
+codec = { package = "astersql-util-codec", path = "../../util/codec" }
+collate = { package = "astersql-util-collate", path = "../../util/collate" }
+errors = { package = "astersql-errors", path = "../../errors" }
+expression = { package = "astersql-expression", path = ".." }
+kv = { package = "astersql-kv", path = "../../kv" }
+mvmap = { package = "astersql-util-mvmap", path = "../../util/mvmap" }
+planner-util = { package = "astersql-planner-util", path = "../../planner/util" }
+parser-ast-dependency = { package = "astersql-parser-ast", path = "../../parser/ast" }
+parser-mysql-dependency = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+stmtctx = { package = "astersql-sessionctx-stmtctx", path = "../../sessionctx/stmtctx" }
+tipb = { git = "https://github.com/pingcap/tipb.git", rev = "07f0ea6b6bffa9d8ac100d81ee51dbbfe4dda3bf", default-features = false, features = ["protobuf-codec"] }
+datum-dependency = { package = "astersql-types-datum", path = "../../types/internal/datum" }
+decimal-dependency = { package = "astersql-types-decimal", path = "../../types/internal/decimal" }
+field-dependency = { package = "astersql-types-field", path = "../../types/internal/field" }
+file-dependency = { package = "astersql-types-file-group", path = "../../types/internal/file_group" }
+size = { package = "astersql-util-size", path = "../../util/size" }
+
+[package.metadata.porting]
+go-package = "pkg/expression/aggregation"
+
+[dev-dependencies]
+exprstatic = { package = "astersql-expression-exprstatic", path = "../exprstatic" }

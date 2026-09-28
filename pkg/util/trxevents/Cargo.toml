@@ -1,0 +1,15 @@
+[package]
+name = "astersql-util-trxevents"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+tikv-client-proto = { package = "kvproto", git = "https://github.com/pingcap/kvproto.git", rev = "a15c348f8713", default-features = false, features = ["protobuf-codec"] }
+
+[package.metadata.porting]
+go-package = "pkg/util/trxevents"
+legacy-tasks = ["task-101"]

@@ -1,0 +1,65 @@
+[package]
+name = "astersql-tests-realtikvtest-txntest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "tests/realtikvtest/txntest"
+legacy-tasks = []
+kind = "test-only"
+lane = 2
+
+[[test]]
+name = "isolation_test"
+path = "isolation_test.rs"
+
+[[test]]
+name = "main_test"
+path = "main_test.rs"
+
+[[test]]
+name = "replica_read_test"
+path = "replica_read_test.rs"
+
+[[test]]
+name = "shared_lock_test"
+path = "shared_lock_test.rs"
+
+[[test]]
+name = "stale_read_test"
+path = "stale_read_test.rs"
+
+[[test]]
+name = "txn_state_test"
+path = "txn_state_test.rs"
+
+[[test]]
+name = "txn_test"
+path = "txn_test.rs"
+
+[dev-dependencies]
+tikv-client = { version = "=0.4.2", git = "ssh://git@github.com/astersql/client-rust.git", tag = "v0.4.2-aster.1", default-features = false }
+tonic = "0.12"
+"astersql-config" = { package = "astersql-config", path = "../../../pkg/config" }
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../pkg/config/kerneltype" }
+"astersql-ddl-placement" = { package = "astersql-ddl-placement", path = "../../../pkg/ddl/placement" }
+"astersql-errno" = { package = "astersql-errno", path = "../../../pkg/errno" }
+"astersql-expression" = { package = "astersql-expression", path = "../../../pkg/expression" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../pkg/kv" }
+"astersql-parser" = { package = "astersql-parser", path = "../../../pkg/parser" }
+"astersql-session" = { package = "astersql-session", path = "../../../pkg/session" }
+"astersql-session-txninfo" = { package = "astersql-session-txninfo", path = "../../../pkg/session/txninfo" }
+"astersql-sessiontxn" = { package = "astersql-sessiontxn", path = "../../../pkg/sessiontxn" }
+"astersql-sessiontxn-staleread" = { package = "astersql-sessiontxn-staleread", path = "../../../pkg/sessiontxn/staleread" }
+"astersql-store-driver" = { package = "astersql-store-driver", path = "../../../pkg/store/driver" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../pkg/testkit" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../pkg/testkit/testfailpoint" }
+"astersql-types" = { package = "astersql-types", path = "../../../pkg/types" }
+"astersql-util" = { package = "astersql-util", path = "../../../pkg/util" }
+"astersql-util-sqlexec" = { package = "astersql-util-sqlexec", path = "../../../pkg/util/sqlexec" }
+"astersql-tests-realtikvtest" = { package = "astersql-tests-realtikvtest", path = ".." }

@@ -1,0 +1,17 @@
+[package]
+name = "astersql-util-injectfailpoint"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+backtrace = "0.3"
+fail = { version = "0.5.1", features = ["failpoints"] }
+rand = "0.8"
+
+[package.metadata.porting]
+go-package = "pkg/util/injectfailpoint"
+legacy-tasks = ["task-76"]

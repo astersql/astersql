@@ -1,0 +1,18 @@
+[package]
+name = "astersql-lightning-pkg-precheck"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "lightning/pkg/precheck"
+legacy-tasks = []
+kind = "library"
+lane = 1
+
+# arm64 darwin: no kv/domain/kvproto/grpcio.
+# Pure types/interface crate; local stubs cover context/errors only.
+[dependencies]

@@ -1,0 +1,28 @@
+[package]
+name = "astersql-ddl-label"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[features]
+# Match Go: Classic by default, NextGen only when explicitly selected.
+default = []
+nextgen = ["kerneltype-dependency/nextgen", "tablecodec-dependency/nextgen"]
+
+[dependencies]
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+thiserror = "2"
+kerneltype-dependency = { package = "astersql-config-kerneltype", path = "../../config/kerneltype" }
+parser-ast-dependency = { package = "astersql-parser-ast", path = "../../parser/ast" }
+codec-dependency = { package = "astersql-util-codec", path = "../../util/codec" }
+tablecodec-dependency = { package = "astersql-tablecodec", path = "../../tablecodec" }
+
+[package.metadata.porting]
+go-package = "pkg/ddl/label"
+legacy-tasks = ["task-490", "task-503"]

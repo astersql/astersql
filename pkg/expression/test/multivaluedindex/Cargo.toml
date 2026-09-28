@@ -1,0 +1,21 @@
+[package]
+name = "astersql-expression-test-multivaluedindex"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/expression/test/multivaluedindex"
+legacy-tasks = ["task-1390"]
+
+[dependencies]
+astersql-config = { package = "astersql-config", path = "../../../config" }
+astersql-errno = { package = "astersql-errno", path = "../../../errno" }
+astersql-tablecodec = { package = "astersql-tablecodec", path = "../../../tablecodec" }
+astersql-testkit = { package = "astersql-testkit", path = "../../../testkit" }
+astersql-testkit-testfailpoint = { package = "astersql-testkit-testfailpoint", path = "../../../testkit/testfailpoint" }
+astersql-testkit-testsetup = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }
+astersql-util-timeutil = { package = "astersql-util-timeutil", path = "../../../util/timeutil" }

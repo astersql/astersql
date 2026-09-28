@@ -1,0 +1,21 @@
+[package]
+name = "astersql-executor-test-indexmergereadtest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/executor/test/indexmergereadtest"
+legacy-tasks = ["task-1340"]
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../config" }
+"astersql-executor" = { package = "astersql-executor", path = "../.." }
+"astersql-meta-autoid" = { package = "astersql-meta-autoid", path = "../../../meta/autoid" }
+"astersql-session" = { package = "astersql-session", path = "../../../session" }
+"astersql-session-sessmgr" = { package = "astersql-session-sessmgr", path = "../../../session/sessmgr" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-util" = { package = "astersql-util", path = "../../../util" }

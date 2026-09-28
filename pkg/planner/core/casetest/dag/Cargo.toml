@@ -1,0 +1,24 @@
+[package]
+name = "astersql-planner-core-casetest-dag"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/planner/core/casetest/dag"
+legacy-tasks = ["task-1406"]
+
+[dev-dependencies]
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../../config/kerneltype" }
+"astersql-domain" = { package = "astersql-domain", path = "../../../../domain" }
+"astersql-infoschema" = { package = "astersql-infoschema", path = "../../../../infoschema" }
+"astersql-parser" = { package = "astersql-parser", path = "../../../../parser" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../../parser/ast" }
+"astersql-planner-util-coretestsdk" = { package = "astersql-planner-util-coretestsdk", path = "../../../util/coretestsdk" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../../../sessionctx/vardef" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../../testkit" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../../testkit/testsetup" }
+"astersql-util-hint" = { package = "astersql-util-hint", path = "../../../../util/hint" }

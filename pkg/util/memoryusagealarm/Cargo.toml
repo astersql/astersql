@@ -1,0 +1,26 @@
+[package]
+name = "astersql-util-memoryusagealarm"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+backtrace = "0.3"
+chrono = "0.4"
+crossbeam-channel = "0.5"
+memory-stats = "1"
+task-config = { package = "astersql-config", path = "../../config" }
+task-disk = { package = "astersql-util-disk", path = "../disk" }
+task-logutil = { package = "astersql-util-logutil", path = "../logutil" }
+task-memory = { package = "astersql-util-memory", path = "../memory" }
+task-vardef = { package = "astersql-sessionctx-vardef", path = "../../sessionctx/vardef" }
+
+[dev-dependencies]
+tempfile = "3"
+
+[package.metadata.porting]
+go-package = "pkg/util/memoryusagealarm"
+legacy-tasks = ["task-534"]

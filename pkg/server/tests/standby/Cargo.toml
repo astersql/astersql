@@ -1,0 +1,26 @@
+[package]
+name = "astersql-server-tests-standby"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/server/tests/standby"
+legacy-tasks = ["task-1625"]
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../config" }
+"astersql-metrics" = { package = "astersql-metrics", path = "../../../metrics" }
+"astersql-server" = { package = "astersql-server", path = "../.." }
+"astersql-server-internal-testserverclient" = { package = "astersql-server-internal-testserverclient", path = "../../internal/testserverclient" }
+"astersql-server-internal-testutil" = { package = "astersql-server-internal-testutil", path = "../../internal/testutil" }
+"astersql-server-internal-util" = { package = "astersql-server-internal-util", path = "../../internal/util" }
+"astersql-session" = { package = "astersql-session", path = "../../../session" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../../sessionctx/vardef" }
+"astersql-store-mockstore-unistore" = { package = "astersql-store-mockstore-unistore", path = "../../../store/mockstore/unistore" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }
+"astersql-util-topsql-state" = { package = "astersql-util-topsql-state", path = "../../../util/topsql/state" }

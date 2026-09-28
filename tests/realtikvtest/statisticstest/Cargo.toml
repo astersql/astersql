@@ -1,0 +1,32 @@
+[package]
+name = "astersql-tests-realtikvtest-statisticstest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "tests/realtikvtest/statisticstest"
+legacy-tasks = []
+kind = "test-only"
+lane = 0
+
+[[test]]
+name = "main_test"
+path = "main_test.rs"
+
+[[test]]
+name = "statistics_test"
+path = "statistics_test.rs"
+
+# arm64 darwin: no kv/domain/kvproto/grpcio.
+# RealTiKV / SQL / stats / async-load boundaries are local slim stubs in
+# `harness` (+ parent `astersql-tests-realtikvtest`). Do not pull heavy deps.
+[dependencies]
+"astersql-tests-realtikvtest" = { package = "astersql-tests-realtikvtest", path = ".." }
+flate2 = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

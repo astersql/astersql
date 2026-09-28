@@ -1,0 +1,21 @@
+[package]
+name = "astersql-resourcemanager-pool-spool"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+crossbeam-channel = "0.5"
+prometheus = "0.14"
+resourcemanager-dependency = { package = "astersql-resourcemanager", path = "../.." }
+
+[dev-dependencies]
+testsetup = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }
+
+[package.metadata.porting]
+go-package = "pkg/resourcemanager/pool/spool"
+legacy-tasks = ["task-561", "task-579"]

@@ -1,0 +1,55 @@
+[package]
+name = "astersql-dxf-framework-scheduler"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/dxf/framework/scheduler"
+legacy-tasks = ["task-838", "task-839", "task-841", "task-1561", "task-1562"]
+
+[dependencies]
+"astersql-dxf-framework-proto" = { package = "astersql-dxf-framework-proto", path = "../proto" }
+"astersql-dxf-framework-schstatus" = { package = "astersql-dxf-framework-schstatus", path = "../schstatus" }
+"astersql-dxf-framework-storage" = { package = "astersql-dxf-framework-storage", path = "../storage" }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../config/kerneltype" }
+"astersql-domain-infosync" = { package = "astersql-domain-infosync", path = "../../../domain/infosync" }
+"astersql-domain-serverinfo" = { package = "astersql-domain-serverinfo", path = "../../../domain/serverinfo" }
+"astersql-domain-sqlsvrapi" = { package = "astersql-domain-sqlsvrapi", path = "../../../domain/sqlsvrapi" }
+"astersql-dxf-framework-dxfmetric" = { package = "astersql-dxf-framework-dxfmetric", path = "../dxfmetric" }
+"astersql-dxf-framework-dxfutil" = { package = "astersql-dxf-framework-dxfutil", path = "../dxfutil" }
+"astersql-dxf-framework-handle" = { package = "astersql-dxf-framework-handle", path = "../handle" }
+"astersql-dxf-framework-taskexecutor-execute" = { package = "astersql-dxf-framework-taskexecutor-execute", path = "../taskexecutor/execute" }
+"astersql-ingestor-errdef" = { package = "astersql-ingestor-errdef", path = "../../../ingestor/errdef" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
+"astersql-lightning-log" = { package = "astersql-lightning-log", path = "../../../lightning/log" }
+"astersql-metrics" = { package = "astersql-metrics", path = "../../../metrics" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../../sessionctx" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../../sessionctx/vardef" }
+"astersql-util" = { package = "astersql-util", path = "../../../util" }
+"astersql-util-backoff" = { package = "astersql-util-backoff", path = "../../../util/backoff" }
+"astersql-util-cpu" = { package = "astersql-util-cpu", path = "../../../util/cpu" }
+"astersql-util-disttask" = { package = "astersql-util-disttask", path = "../../../util/disttask" }
+"astersql-util-intest" = { package = "astersql-util-intest", path = "../../../util/intest" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../../util/logutil" }
+"astersql-util-syncutil" = { package = "astersql-util-syncutil", path = "../../../util/syncutil" }
+"astersql-util-traceevent" = { package = "astersql-util-traceevent", path = "../../../util/traceevent" }
+"astersql-util-tracing" = { package = "astersql-util-tracing", path = "../../../util/tracing" }
+
+[target.'cfg(target_os = "windows")'.dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../config" }
+"astersql-domain-sqlsvrapi-mock" = { package = "astersql-domain-sqlsvrapi-mock", path = "../../../domain/sqlsvrapi/mock" }
+"astersql-dxf-framework-mock" = { package = "astersql-dxf-framework-mock", path = "../mock" }
+"astersql-dxf-framework-scheduler-mock" = { package = "astersql-dxf-framework-scheduler-mock", path = "mock" }
+"astersql-dxf-framework-testutil" = { package = "astersql-dxf-framework-testutil", path = "../testutil" }
+"astersql-keyspace" = { package = "astersql-keyspace", path = "../../../keyspace" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../testkit/testfailpoint" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }
+"astersql-util-mock" = { package = "astersql-util-mock", path = "../../../util/mock" }
+"astersql-util-sqlexec" = { package = "astersql-util-sqlexec", path = "../../../util/sqlexec" }

@@ -1,0 +1,30 @@
+[package]
+name = "astersql-extension"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+chunk_dependency = { package = "astersql-util-chunk", path = "../util/chunk" }
+etcd-client = "0.19"
+parser_ast = { package = "astersql-parser-ast", path = "../parser/ast" }
+parser_auth = { package = "astersql-parser-auth", path = "../parser/auth" }
+parser_mysql = { package = "astersql-parser-mysql", path = "../parser/mysql" }
+parser_root = { package = "astersql-parser", path = "../parser" }
+parser_types = { package = "astersql-parser-types", path = "../parser/types" }
+privilege_conn_dependency = { package = "astersql-privilege-conn", path = "../privilege/conn" }
+rustls = "0.23"
+stmtctx_dependency = { package = "astersql-sessionctx-stmtctx", path = "../sessionctx/stmtctx" }
+types_dependency = { package = "astersql-types", path = "../types" }
+variable_dependency = { package = "astersql-sessionctx-variable", path = "../sessionctx/variable" }
+
+[dev-dependencies]
+serial_test = "3"
+
+[package.metadata.porting]
+go-package = "pkg/extension"
+legacy-tasks = ["task-606"]

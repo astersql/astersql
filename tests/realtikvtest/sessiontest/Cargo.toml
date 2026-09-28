@@ -1,0 +1,60 @@
+[package]
+name = "astersql-tests-realtikvtest-sessiontest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "tests/realtikvtest/sessiontest"
+legacy-tasks = []
+kind = "test-only"
+lane = 2
+
+[[test]]
+name = "cross_ks_gc_test"
+path = "cross_ks_gc_test.rs"
+
+[[test]]
+name = "infoschema_test"
+path = "infoschema_test.rs"
+
+[[test]]
+name = "infoschema_v2_test"
+path = "infoschema_v2_test.rs"
+
+[[test]]
+name = "main_test"
+path = "main_test.rs"
+
+[[test]]
+name = "mysql_metadata_compat_test"
+path = "mysql_metadata_compat_test.rs"
+
+[[test]]
+name = "paging_test"
+path = "paging_test.rs"
+
+[[test]]
+name = "session_fail_test"
+path = "session_fail_test.rs"
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde_json = "1"
+"astersql-config" = { package = "astersql-config", path = "../../../pkg/config" }
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../pkg/config/kerneltype" }
+"astersql-infoschema" = { package = "astersql-infoschema", path = "../../../pkg/infoschema" }
+"astersql-keyspace" = { package = "astersql-keyspace", path = "../../../pkg/keyspace" }
+"astersql-meta" = { package = "astersql-meta", path = "../../../pkg/meta" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../pkg/parser/ast" }
+"astersql-session" = { package = "astersql-session", path = "../../../pkg/session" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../../pkg/sessionctx/vardef" }
+"astersql-store-helper" = { package = "astersql-store-helper", path = "../../../pkg/store/helper" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../pkg/testkit" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../pkg/testkit/testfailpoint" }
+"astersql-util-sqlkiller" = { package = "astersql-util-sqlkiller", path = "../../../pkg/util/sqlkiller" }
+"astersql-tests-realtikvtest" = { package = "astersql-tests-realtikvtest", path = ".." }

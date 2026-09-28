@@ -1,0 +1,28 @@
+[package]
+name = "astersql-planner-core-base"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+cascades-base = { package = "astersql-planner-cascades-base", path = "../../cascades/base" }
+costusage = { package = "astersql-planner-util-costusage", path = "../../util/costusage" }
+execdetails = { package = "astersql-util-execdetails", path = "../../../util/execdetails" }
+expression = { package = "astersql-expression", path = "../../../expression" }
+fd = { package = "astersql-planner-funcdep", path = "../../funcdep" }
+kv = { package = "astersql-kv", path = "../../../kv" }
+planctx = { package = "astersql-planner-planctx", path = "../../planctx" }
+property = { package = "astersql-planner-property", path = "../../property" }
+tables = { package = "astersql-table-tables", path = "../../../table/tables", features = ["expression-runtime"] }
+tipb = { git = "https://github.com/pingcap/tipb.git", rev = "07f0ea6b6bffa9d8ac100d81ee51dbbfe4dda3bf", default-features = false, features = ["protobuf-codec"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+types-dependency = { package = "astersql-types", path = "../../../types" }
+vardef = { package = "astersql-sessionctx-vardef", path = "../../../sessionctx/vardef" }
+
+[package.metadata.porting]
+go-package = "pkg/planner/core/base"
+legacy-tasks = ["task-1160"]

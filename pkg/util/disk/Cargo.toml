@@ -1,0 +1,22 @@
+[package]
+name = "astersql-util-disk"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+astersql-config = { path = "../../config" }
+fs2 = "0.4"
+tidb-memory = { package = "astersql-util-memory", path = "../memory" }
+
+[dev-dependencies]
+serial_test = "3"
+tempfile = "3"
+testsetup = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }
+
+[package.metadata.porting]
+go-package = "pkg/util/disk"
+legacy-tasks = ["task-356"]

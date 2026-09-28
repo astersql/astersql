@@ -1,0 +1,22 @@
+[package]
+name = "astersql-planner-core-casetest-enforcempp"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/planner/core/casetest/enforcempp"
+legacy-tasks = ["task-1615"]
+
+[dev-dependencies]
+"astersql-domain" = { package = "astersql-domain", path = "../../../../domain" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../../../meta/model" }
+"astersql-parser" = { package = "astersql-parser", path = "../../../../parser" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../../parser/ast" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../../../sessionctx/vardef" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../../testkit" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../../testkit/testsetup" }
+"astersql-util-collate" = { package = "astersql-util-collate", path = "../../../../util/collate" }

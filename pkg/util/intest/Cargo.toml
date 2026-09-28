@@ -1,0 +1,21 @@
+[package]
+name = "astersql-util-intest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[[test]]
+name = "not_in_unittest_test"
+path = "not_in_unittest_test.rs"
+
+[features]
+default = []
+intest = []
+enableassert = []
+
+[package.metadata.porting]
+go-package = "pkg/util/intest"
+legacy-tasks = ["task-77", "task-146"]

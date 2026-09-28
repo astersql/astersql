@@ -1,0 +1,12 @@
+[package]
+name = "astersql-util-size"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/util/size"
+legacy-tasks = ["task-91"]

@@ -1,0 +1,19 @@
+[package]
+name = "astersql-sessionctx-sysproctrack"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+anyhow = "1"
+sessmgr = { package = "astersql-session-sessmgr", path = "../../session/sessmgr" }
+variable = { package = "astersql-sessionctx-variable", path = "../variable" }
+
+[package.metadata.porting]
+go-package = "pkg/sessionctx/sysproctrack"
+legacy-tasks = ["task-601"]

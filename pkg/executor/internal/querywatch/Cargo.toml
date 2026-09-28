@@ -1,0 +1,17 @@
+[package]
+name = "astersql-executor-internal-querywatch"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/executor/internal/querywatch"
+legacy-tasks = ["task-1064", "task-1320"]
+
+[dev-dependencies]
+astersql-config = { package = "astersql-config", path = "../../../config" }
+astersql-meta-autoid = { package = "astersql-meta-autoid", path = "../../../meta/autoid" }
+astersql-testkit-testsetup = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }

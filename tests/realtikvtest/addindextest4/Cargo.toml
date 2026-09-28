@@ -1,0 +1,49 @@
+[package]
+name = "astersql-tests-realtikvtest-addindextest4"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "tests/realtikvtest/addindextest4"
+legacy-tasks = []
+kind = "test-only"
+lane = 2
+
+[[test]]
+name = "failure_test"
+path = "failure_test.rs"
+
+[[test]]
+name = "integration_test"
+path = "integration_test.rs"
+
+[[test]]
+name = "main_test"
+path = "main_test.rs"
+
+[[test]]
+name = "partial_index_test"
+path = "partial_index_test.rs"
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../pkg/config" }
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../pkg/config/kerneltype" }
+"astersql-ddl" = { package = "astersql-ddl", path = "../../../pkg/ddl" }
+"astersql-ddl-ingest" = { package = "astersql-ddl-ingest", path = "../../../pkg/ddl/ingest" }
+"astersql-domain" = { package = "astersql-domain", path = "../../../pkg/domain" }
+"astersql-dxf-framework-proto" = { package = "astersql-dxf-framework-proto", path = "../../../pkg/dxf/framework/proto" }
+"astersql-errno" = { package = "astersql-errno", path = "../../../pkg/errno" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../pkg/kv" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../../pkg/meta/model" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../pkg/parser/ast" }
+"astersql-table-tables-testutil" = { package = "astersql-table-tables-testutil", path = "../../../pkg/table/tables/testutil" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../pkg/testkit" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../pkg/testkit/testfailpoint" }
+"astersql-util" = { package = "astersql-util", path = "../../../pkg/util" }
+"astersql-util-dbterror" = { package = "astersql-util-dbterror", path = "../../../pkg/util/dbterror" }
+"astersql-tests-realtikvtest" = { package = "astersql-tests-realtikvtest", path = ".." }

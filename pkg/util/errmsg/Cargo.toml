@@ -1,0 +1,22 @@
+[package]
+name = "astersql-util-errmsg"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+astersql-config = { path = "../../config" }
+astersql-errors = { path = "../../errors" }
+astersql-parser-mysql = { path = "../../parser/mysql" }
+backtrace = "0.3"
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+unicode-general-category = "1"
+
+[package.metadata.porting]
+go-package = "pkg/util/errmsg"
+legacy-tasks = ["task-295", "task-324"]

@@ -1,0 +1,28 @@
+[package]
+name = "astersql-tests-readonlytest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "tests/readonlytest"
+legacy-tasks = []
+kind = "test-only"
+lane = 2
+
+[[test]]
+name = "main_test"
+path = "main_test.rs"
+
+[[test]]
+name = "readonly_test"
+path = "readonly_test.rs"
+
+[dev-dependencies]
+"astersql-kv" = { package = "astersql-kv", path = "../../pkg/kv" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../pkg/testkit" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../pkg/testkit/testsetup" }

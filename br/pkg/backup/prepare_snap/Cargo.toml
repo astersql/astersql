@@ -1,0 +1,17 @@
+[package]
+name = "astersql-br-pkg-backup-prepare-snap"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "br/pkg/backup/prepare_snap"
+legacy-tasks = []
+kind = "library"
+lane = 2
+
+# arm64: do not pull logutil/utils/engine/kvproto (native SSE). Local stubs only.
+[dependencies]

@@ -1,0 +1,50 @@
+[package]
+name = "astersql-sessiontxn-isolation"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/sessiontxn/isolation"
+legacy-tasks = ["task-1194", "task-1197", "task-1474", "task-1475"]
+
+[dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../config" }
+"astersql-domain" = { package = "astersql-domain", path = "../../domain" }
+"astersql-infoschema" = { package = "astersql-infoschema", path = "../../infoschema" }
+"astersql-kv" = { package = "astersql-kv", path = "../../kv" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../parser/ast" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+"astersql-parser-terror" = { package = "astersql-parser-terror", path = "../../parser/terror" }
+"astersql-planner-core" = { package = "astersql-planner-core", path = "../../planner/core" }
+"astersql-planner-core-base" = { package = "astersql-planner-core-base", path = "../../planner/core/base" }
+"astersql-planner-core-operator-physicalop" = { package = "astersql-planner-core-operator-physicalop", path = "../../planner/core/operator/physicalop" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../sessionctx" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../sessionctx/vardef" }
+"astersql-sessionctx-variable" = { package = "astersql-sessionctx-variable", path = "../../sessionctx/variable" }
+"astersql-sessiontxn" = { package = "astersql-sessiontxn", path = ".." }
+"astersql-sessiontxn-internal" = { package = "astersql-sessiontxn-internal", path = "../internal" }
+"astersql-sessiontxn-isolation-metrics" = { package = "astersql-sessiontxn-isolation-metrics", path = "metrics" }
+"astersql-sessiontxn-staleread" = { package = "astersql-sessiontxn-staleread", path = "../staleread" }
+"astersql-store-driver-txn" = { package = "astersql-store-driver-txn", path = "../../store/driver/txn" }
+"astersql-table-temptable" = { package = "astersql-table-temptable", path = "../../table/temptable" }
+"astersql-tablecodec" = { package = "astersql-tablecodec", path = "../../tablecodec" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../util/logutil" }
+"astersql-util-redact" = { package = "astersql-util-redact", path = "../../util/redact" }
+"astersql-util-tableutil" = { package = "astersql-util-tableutil", path = "../../util/tableutil" }
+"astersql-util-tracing" = { package = "astersql-util-tracing", path = "../../util/tracing" }
+
+[dev-dependencies]
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../config/kerneltype" }
+"astersql-executor" = { package = "astersql-executor", path = "../../executor" }
+"astersql-expression" = { package = "astersql-expression", path = "../../expression" }
+"astersql-parser" = { package = "astersql-parser", path = "../../parser" }
+"astersql-planner" = { package = "astersql-planner", path = "../../planner" }
+"astersql-planner-core-resolve" = { package = "astersql-planner-core-resolve", path = "../../planner/core/resolve" }
+"astersql-session" = { package = "astersql-session", path = "../../session" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../testkit" }
+"astersql-testkit-testfork" = { package = "astersql-testkit-testfork", path = "../../testkit/testfork" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }

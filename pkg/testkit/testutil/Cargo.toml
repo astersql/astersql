@@ -1,0 +1,21 @@
+[package]
+name = "astersql-testkit-testutil"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+chrono-tz = "0.10"
+codec-dependency = { package = "astersql-util-codec", path = "../../util/codec" }
+kv-dependency = { package = "astersql-kv", path = "../../kv" }
+mysql-dependency = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+rand = "0.9"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+[package.metadata.porting]
+go-package = "pkg/testkit/testutil"
+legacy-tasks = ["task-508"]

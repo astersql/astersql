@@ -1,0 +1,21 @@
+[package]
+name = "astersql-util-mathutil"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[features]
+default = ["formal-crate"]
+formal-crate = []
+intest = []
+enableassert = []
+
+[dev-dependencies]
+testsetup = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }
+
+[package.metadata.porting]
+go-package = "pkg/util/mathutil"
+legacy-tasks = ["task-181", "task-292"]

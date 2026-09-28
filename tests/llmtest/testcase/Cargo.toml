@@ -1,0 +1,19 @@
+[package]
+name = "astersql-tests-llmtest-testcase"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "tests/llmtest/testcase"
+legacy-tasks = []
+kind = "library"
+lane = 2
+
+# arm64 darwin: no kv/domain/kvproto/grpcio.
+# database/sql + encoding/json boundaries are local stubs (see stubs.rs).
+[dependencies]
+"astersql-tests-llmtest-logger" = { package = "astersql-tests-llmtest-logger", path = "../logger" }

@@ -1,0 +1,26 @@
+[package]
+name = "astersql-planner-core-casetest-cascades"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/planner/core/casetest/cascades"
+legacy-tasks = ["task-1402"]
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../../config" }
+"astersql-expression" = { package = "astersql-expression", path = "../../../../expression" }
+"astersql-parser" = { package = "astersql-parser", path = "../../../../parser" }
+"astersql-planner-cascades-memo" = { package = "astersql-planner-cascades-memo", path = "../../../cascades/memo" }
+"astersql-planner-cascades-util" = { package = "astersql-planner-cascades-util", path = "../../../cascades/util" }
+"astersql-planner-core-base" = { package = "astersql-planner-core-base", path = "../../base" }
+"astersql-planner-core-operator-logicalop" = { package = "astersql-planner-core-operator-logicalop", path = "../../operator/logicalop" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../../testkit" }
+"astersql-planner-funcdep" = { package = "astersql-planner-funcdep", path = "../../../funcdep" }
+"astersql-planner-planctx" = { package = "astersql-planner-planctx", path = "../../../planctx" }
+"astersql-planner-property" = { package = "astersql-planner-property", path = "../../../property" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../../testkit/testsetup" }

@@ -1,0 +1,39 @@
+[package]
+name = "astersql-util-codec"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+astersql-errors = { path = "../../errors" }
+mysql-crate = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+terror-crate = { package = "astersql-parser-terror", path = "../../parser/terror" }
+base-crate = { package = "astersql-planner-cascades-base", path = "../../planner/cascades/base" }
+chunk-crate = { package = "astersql-util-chunk", path = "../chunk" }
+collate-crate = { package = "astersql-util-collate", path = "../collate" }
+hack-crate = { package = "astersql-util-hack", path = "../hack" }
+intest-crate = { package = "astersql-util-intest", path = "../intest", default-features = false }
+logutil-crate = { package = "astersql-util-logutil", path = "../logutil" }
+size-crate = { package = "astersql-util-size", path = "../size" }
+types-crate = { package = "astersql-types-datum", path = "../../types/internal/datum" }
+types-decimal = { package = "astersql-types-decimal", path = "../../types/internal/decimal" }
+types-field = { package = "astersql-types-field", path = "../../types/internal/field" }
+types-json-functions = { package = "astersql-types-json-functions", path = "../../types/internal/json_functions" }
+types-scalar = { package = "astersql-types-scalar", path = "../../types/internal/scalar" }
+types-vector = { package = "astersql-types-vector", path = "../../types/internal/vector" }
+backtrace = "0.3"
+chrono-tz = "0.10"
+fail = { version = "0.5", features = ["failpoints"] }
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+benchdaily = { package = "astersql-util-benchdaily", path = "../benchdaily" }
+fnv = "1"
+testsetup = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }
+
+[package.metadata.porting]
+go-package = "pkg/util/codec"
+legacy-tasks = ["task-439", "task-440", "task-447", "task-453"]

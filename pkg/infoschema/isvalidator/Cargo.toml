@@ -1,0 +1,20 @@
+[package]
+name = "astersql-infoschema-isvalidator"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+logutil = { package = "astersql-util-logutil", path = "../../util/logutil" }
+validatorapi = { package = "astersql-infoschema-validatorapi", path = "../validatorapi" }
+vardef = { package = "astersql-sessionctx-vardef", path = "../../sessionctx/vardef" }
+
+[dev-dependencies]
+crossbeam-channel = "0.5"
+
+[package.metadata.porting]
+go-package = "pkg/infoschema/isvalidator"
+legacy-tasks = ["task-368"]

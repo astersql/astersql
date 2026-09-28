@@ -1,0 +1,32 @@
+[package]
+name = "astersql-timer-tablestore"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/timer/tablestore"
+legacy-tasks = ["task-826", "task-829", "task-834"]
+
+[dependencies]
+"astersql-kv" = { package = "astersql-kv", path = "../../kv", optional = true }
+"astersql-parser-terror" = { package = "astersql-parser-terror", path = "../../parser/terror", optional = true }
+"astersql-session-syssession" = { package = "astersql-session-syssession", path = "../../session/syssession" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../sessionctx", optional = true }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../sessionctx/vardef", optional = true }
+"astersql-timer-api" = { package = "astersql-timer-api", path = "../api" }
+"astersql-util-chunk" = { package = "astersql-util-chunk", path = "../../util/chunk", optional = true }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../util/logutil", optional = true }
+"astersql-util-sqlexec" = { package = "astersql-util-sqlexec", path = "../../util/sqlexec", optional = true }
+"astersql-util-timeutil" = { package = "astersql-util-timeutil", path = "../../util/timeutil", optional = true }
+
+[target.'cfg(any())'.dev-dependencies]
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../meta/model" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+"astersql-planner-core-resolve" = { package = "astersql-planner-core-resolve", path = "../../planner/core/resolve" }
+"astersql-session-sessmgr" = { package = "astersql-session-sessmgr", path = "../../session/sessmgr" }
+"astersql-sessionctx-variable" = { package = "astersql-sessionctx-variable", path = "../../sessionctx/variable" }
+"astersql-types" = { package = "astersql-types", path = "../../types" }

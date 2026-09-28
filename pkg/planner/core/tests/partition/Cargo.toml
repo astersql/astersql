@@ -1,0 +1,26 @@
+[package]
+name = "astersql-planner-core-tests-partition"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/planner/core/tests/partition"
+legacy-tasks = ["task-1266"]
+
+[dev-dependencies]
+"astersql-autoid_service" = { package = "astersql-autoid_service", path = "../../../../autoid_service" }
+"astersql-config" = { package = "astersql-config", path = "../../../../config" }
+"astersql-domain" = { package = "astersql-domain", path = "../../../../domain" }
+"astersql-expression" = { package = "astersql-expression", path = "../../../../expression" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../../kv" }
+"astersql-session" = { package = "astersql-session", path = "../../../../session" }
+"astersql-session-sessionapi" = { package = "astersql-session-sessionapi", path = "../../../../session/sessionapi" }
+"astersql-store-mockstore" = { package = "astersql-store-mockstore", path = "../../../../store/mockstore" }
+"astersql-util-benchdaily" = { package = "astersql-util-benchdaily", path = "../../../../util/benchdaily" }
+"astersql-util-chunk" = { package = "astersql-util-chunk", path = "../../../../util/chunk" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../../../util/logutil" }
+"astersql-util-sqlexec" = { package = "astersql-util-sqlexec", path = "../../../../util/sqlexec" }

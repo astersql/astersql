@@ -1,0 +1,24 @@
+[package]
+name = "astersql-ddl-serverstate"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/ddl/serverstate"
+legacy-tasks = ["task-760", "task-831"]
+
+[dependencies]
+
+[target.'cfg(any())'.dependencies]
+"astersql-ddl-logutil" = { package = "astersql-ddl-logutil", path = "../logutil" }
+"astersql-ddl-util" = { package = "astersql-ddl-util", path = "../util" }
+"astersql-metrics" = { package = "astersql-metrics", path = "../../metrics" }
+"astersql-util" = { package = "astersql-util", path = "../../util" }
+
+[target.'cfg(any())'.dev-dependencies]
+"astersql-ddl-schemaver" = { package = "astersql-ddl-schemaver", path = "../schemaver" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../sessionctx/vardef" }

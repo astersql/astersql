@@ -1,0 +1,17 @@
+[package]
+name = "astersql-dxf-framework-scheduler-mock"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+anyhow = "1"
+mockall = "0.13"
+astersql-dxf-framework-proto = { path = "../../proto" }
+
+[package.metadata.porting]
+go-package = "pkg/dxf/framework/scheduler/mock"
+legacy-tasks = ["task-643"]

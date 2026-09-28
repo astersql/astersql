@@ -1,0 +1,16 @@
+[package]
+name = "astersql-lightning-backend-kv"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+encode = { package = "astersql-lightning-backend-encode", path = "../encode" }
+tablecodec = { package = "astersql-tablecodec", path = "../../../tablecodec" }
+verification = { package = "astersql-lightning-verification", path = "../../verification" }
+
+[package.metadata.porting]
+go-package = "pkg/lightning/backend/kv"

@@ -1,0 +1,26 @@
+[package]
+name = "astersql-keyspace"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[features]
+# Match Go: Classic by default, NextGen only when explicitly selected.
+default = []
+nextgen = ["kerneltype/nextgen", "deploymode_dependency/nextgen"]
+
+[dependencies]
+config_crate = { package = "astersql-config", path = "../config" }
+deploymode_dependency = { package = "astersql-config-deploymode", path = "../config/deploymode" }
+exeerrors_dependency = { package = "astersql-util-dbterror-exeerrors", path = "../util/dbterror/exeerrors" }
+kerneltype = { package = "astersql-config-kerneltype", path = "../config/kerneltype" }
+
+[dev-dependencies]
+serial_test = "3"
+
+[package.metadata.porting]
+go-package = "pkg/keyspace"
+legacy-tasks = ["task-312", "task-329"]

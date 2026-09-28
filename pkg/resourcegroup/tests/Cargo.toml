@@ -1,0 +1,26 @@
+[package]
+name = "astersql-resourcegroup-tests"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/resourcegroup/tests"
+legacy-tasks = ["task-1451"]
+
+[dev-dependencies]
+"astersql-ddl-resourcegroup" = { package = "astersql-ddl-resourcegroup", path = "../../ddl/resourcegroup" }
+"astersql-domain" = { package = "astersql-domain", path = "../../domain" }
+"astersql-domain-infosync" = { package = "astersql-domain-infosync", path = "../../domain/infosync" }
+"astersql-errno" = { package = "astersql-errno", path = "../../errno" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../meta/model" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../parser/ast" }
+"astersql-parser-auth" = { package = "astersql-parser-auth", path = "../../parser/auth" }
+"astersql-resourcegroup-runaway" = { package = "astersql-resourcegroup-runaway", path = "../runaway" }
+"astersql-server" = { package = "astersql-server", path = "../../server" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../sessionctx" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../testkit" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../testkit/testfailpoint" }

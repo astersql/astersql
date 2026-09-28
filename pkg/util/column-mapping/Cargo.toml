@@ -1,0 +1,15 @@
+[package]
+name = "astersql-util-column-mapping"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+table_rule_selector = { package = "astersql-util-table-rule-selector", path = "../table-rule-selector" }
+
+[package.metadata.porting]
+go-package = "pkg/util/column-mapping"
+legacy-tasks = ["task-180", "task-205"]

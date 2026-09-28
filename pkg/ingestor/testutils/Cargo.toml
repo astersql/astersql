@@ -1,0 +1,19 @@
+[package]
+name = "astersql-ingestor-testutils"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+objectio = { package = "astersql-objstore-objectio", path = "../../objstore/objectio" }
+objstore = { package = "astersql-objstore", path = "../../objstore" }
+storeapi = { package = "astersql-objstore-storeapi", path = "../../objstore/storeapi" }
+
+[package.metadata.porting]
+go-package = "pkg/ingestor/testutils"
+legacy-tasks = ["task-656"]

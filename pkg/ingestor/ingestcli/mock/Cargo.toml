@@ -1,0 +1,15 @@
+[package]
+name = "astersql-ingestor-ingestcli-mock"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/ingestor/ingestcli/mock"
+legacy-tasks = ["task-995"]
+
+[dependencies]
+"astersql-ingestor-ingestcli" = { package = "astersql-ingestor-ingestcli", path = ".." }

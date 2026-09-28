@@ -1,0 +1,24 @@
+[package]
+name = "astersql-util-ddl-checker"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/util/ddl-checker"
+legacy-tasks = ["task-1272", "task-1508"]
+
+[dependencies]
+"astersql-parser" = { package = "astersql-parser", path = "../../parser" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../parser/ast" }
+"astersql-session" = { package = "astersql-session", path = "../../session" }
+"astersql-session-sessionapi" = { package = "astersql-session-sessionapi", path = "../../session/sessionapi" }
+"astersql-store-mockstore" = { package = "astersql-store-mockstore", path = "../../store/mockstore" }
+"astersql-util-dbutil" = { package = "astersql-util-dbutil", path = "../dbutil" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../logutil" }
+
+[dev-dependencies]
+"astersql-testkit" = { package = "astersql-testkit", path = "../../testkit" }

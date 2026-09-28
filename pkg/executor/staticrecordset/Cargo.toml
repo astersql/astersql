@@ -1,0 +1,29 @@
+[package]
+name = "astersql-executor-staticrecordset"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/executor/staticrecordset"
+legacy-tasks = ["task-1066", "task-1325"]
+
+[dependencies]
+"astersql-executor-internal-exec" = { package = "astersql-executor-internal-exec", path = "../internal/exec" }
+
+[target.'cfg(windows)'.dependencies]
+"astersql-planner-core-resolve" = { package = "astersql-planner-core-resolve", path = "../../planner/core/resolve" }
+"astersql-session-cursor" = { package = "astersql-session-cursor", path = "../../session/cursor" }
+"astersql-util" = { package = "astersql-util", path = "../../util" }
+"astersql-util-chunk" = { package = "astersql-util-chunk", path = "../../util/chunk" }
+"astersql-util-execdetails" = { package = "astersql-util-execdetails", path = "../../util/execdetails" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../util/logutil" }
+"astersql-util-sqlexec" = { package = "astersql-util-sqlexec", path = "../../util/sqlexec" }
+
+[target.'cfg(windows)'.dev-dependencies]
+"astersql-ddl" = { package = "astersql-ddl", path = "../../ddl" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../testkit" }

@@ -1,0 +1,44 @@
+[package]
+name = "astersql-planner-util"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+cascades-base = { package = "astersql-planner-cascades-base", path = "../cascades/base" }
+chunk = { package = "astersql-util-chunk", path = "../../util/chunk" }
+chrono = "0.4"
+codec = { package = "astersql-util-codec", path = "../../util/codec" }
+collate = { package = "astersql-util-collate", path = "../../util/collate" }
+errctx = { package = "astersql-errctx", path = "../../errctx" }
+expression = { package = "astersql-expression", path = "../../expression" }
+exprctx = { package = "astersql-expression-exprctx", path = "../../expression/exprctx" }
+funcdep = { package = "astersql-planner-funcdep", path = "../funcdep" }
+hint = { package = "astersql-util-hint", path = "../../util/hint" }
+intset = { package = "astersql-util-intset", path = "../../util/intset" }
+kv = { package = "astersql-kv", path = "../../kv" }
+metadef = { package = "astersql-meta-metadef", path = "../../meta/metadef" }
+model = { package = "astersql-meta-model", path = "../../meta/model" }
+mysql = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+parser-ast = { package = "astersql-parser-ast", path = "../../parser/ast" }
+plan-base = { package = "astersql-planner-core-base", path = "../core/base" }
+planctx = { package = "astersql-planner-planctx", path = "../planctx" }
+plannererrors = { package = "astersql-util-dbterror-plannererrors", path = "../../util/dbterror/plannererrors" }
+ranger = { package = "astersql-util-ranger", path = "../../util/ranger" }
+size = { package = "astersql-util-size", path = "../../util/size" }
+stmtctx = { package = "astersql-sessionctx-stmtctx", path = "../../sessionctx/stmtctx" }
+tablecodec = { package = "astersql-tablecodec", path = "../../tablecodec" }
+types = { package = "astersql-types", path = "../../types" }
+vardef = { package = "astersql-sessionctx-vardef", path = "../../sessionctx/vardef" }
+
+[dev-dependencies]
+exprstatic = { package = "astersql-expression-exprstatic", path = "../../expression/exprstatic" }
+testsetup = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }
+
+[package.metadata.porting]
+go-package = "pkg/planner/util"

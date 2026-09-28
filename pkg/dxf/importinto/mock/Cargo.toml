@@ -1,0 +1,17 @@
+[package]
+name = "astersql-dxf-importinto-mock"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/dxf/importinto/mock"
+legacy-tasks = ["task-982"]
+
+[dependencies]
+"astersql-dxf-framework-taskexecutor-execute" = { package = "astersql-dxf-framework-taskexecutor-execute", path = "../../framework/taskexecutor/execute" }
+"astersql-lightning-backend" = { package = "astersql-lightning-backend", path = "../../../lightning/backend" }
+"astersql-lightning-backend-encode" = { package = "astersql-lightning-backend-encode", path = "../../../lightning/backend/encode" }

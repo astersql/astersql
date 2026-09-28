@@ -1,0 +1,20 @@
+[package]
+name = "astersql-util-set"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+hack-crate = { package = "astersql-util-hack", path = "../hack" }
+memory-crate = { package = "astersql-util-memory", path = "../memory" }
+types-crate = { package = "astersql-types", path = "../../types" }
+
+[dev-dependencies]
+testsetup = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }
+
+[package.metadata.porting]
+go-package = "pkg/util/set"
+legacy-tasks = ["task-403"]

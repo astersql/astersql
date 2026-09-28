@@ -1,0 +1,17 @@
+[package]
+name = "astersql-param"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+astersql-errno = { path = "../errno" }
+astersql-parser-terror = { path = "../parser/terror" }
+dbterror_crate = { package = "astersql-util-dbterror", path = "../util/dbterror" }
+
+[package.metadata.porting]
+go-package = "pkg/param"
+legacy-tasks = ["task-279", "task-324"]

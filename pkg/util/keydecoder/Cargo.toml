@@ -1,0 +1,31 @@
+[package]
+name = "astersql-util-keydecoder"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/util/keydecoder"
+legacy-tasks = ["task-880", "task-1183"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+"astersql-infoschema" = { package = "astersql-infoschema", path = "../../infoschema" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../meta/model" }
+"astersql-tablecodec" = { package = "astersql-tablecodec", path = "../../tablecodec" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../logutil" }
+
+[dev-dependencies]
+serde_json = "1"
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../parser/ast" }
+"astersql-planner-core" = { package = "astersql-planner-core", path = "../../planner/core" }
+"astersql-sessionctx-stmtctx" = { package = "astersql-sessionctx-stmtctx", path = "../../sessionctx/stmtctx" }
+"astersql-table" = { package = "astersql-table", path = "../../table" }
+"astersql-table-tables" = { package = "astersql-table-tables", path = "../../table/tables" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }
+"astersql-testkit-testutil" = { package = "astersql-testkit-testutil", path = "../../testkit/testutil" }
+"astersql-types" = { package = "astersql-types", path = "../../types" }
+"astersql-util-codec" = { package = "astersql-util-codec", path = "../codec" }

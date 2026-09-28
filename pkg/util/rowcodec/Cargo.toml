@@ -1,0 +1,35 @@
+[package]
+name = "astersql-util-rowcodec"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[features]
+# Match Go: Classic by default, NextGen only when explicitly selected.
+default = []
+nextgen = ["kerneltype-dependency/nextgen", "kv-dependency/nextgen"]
+
+[dependencies]
+chrono-tz = "0.10"
+crc32fast = "1"
+chunk-dependency = { package = "astersql-util-chunk", path = "../chunk" }
+codec-dependency = { package = "astersql-util-codec", path = "../codec" }
+intest-dependency = { package = "astersql-util-intest", path = "../intest", default-features = false }
+kerneltype-dependency = { package = "astersql-config-kerneltype", path = "../../config/kerneltype" }
+kv-dependency = { package = "astersql-kv", path = "../../kv" }
+model-dependency = { package = "astersql-meta-model-group1", path = "../../meta/model/internal/group1" }
+types-dependency = { package = "astersql-types-datum", path = "../../types/internal/datum" }
+types-metadata-dependency = { package = "astersql-types-metadata", path = "../../types/internal/metadata" }
+types-scalar-dependency = { package = "astersql-types-scalar", path = "../../types/internal/scalar" }
+
+[dev-dependencies]
+collate-dependency = { package = "astersql-util-collate", path = "../collate" }
+hex = "0.4"
+tablecodec-dependency = { package = "astersql-tablecodec", path = "../../tablecodec" }
+
+[package.metadata.porting]
+go-package = "pkg/util/rowcodec"
+legacy-tasks = ["task-474", "task-477", "task-506"]

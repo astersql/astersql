@@ -1,0 +1,11 @@
+[package]
+name = "astersql-types-json-path"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+serde_json = "1"

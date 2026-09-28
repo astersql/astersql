@@ -1,0 +1,55 @@
+[package]
+name = "astersql-util"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[[test]]
+name = "security_2_aster_unit_test"
+path = "security_formal_aster_unit_test.rs"
+
+[dependencies]
+anyhow = "1"
+crossbeam-channel = "0.5"
+fail = { version = "0.5", features = ["failpoints"] }
+get_if_addrs = "0.5"
+hostname = "0.4"
+libc = "0.2"
+log = "0.4"
+openssl = "0.10"
+prost = "0.13"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+rustc_version_runtime = "0.3"
+rustls = "0.23"
+rustls-native-certs = "0.8"
+rustls-pemfile = "2"
+rustls-webpki = "0.103"
+thiserror = "2"
+threadpool = "1"
+tokio-util = "0.7"
+url = "2"
+x509-parser = "0.17"
+task_config = { package = "astersql-config", path = "../config" }
+task_mysql = { package = "astersql-parser-mysql", path = "../parser/mysql" }
+task-parser = { package = "astersql-parser", path = "../parser" }
+task-sessmgr = { package = "astersql-session-sessmgr", path = "../session/sessmgr" }
+task-traceevent = { package = "astersql-util-traceevent", path = "traceevent" }
+task_types_group = { package = "astersql-types-scalar", path = "../types/internal/scalar" }
+
+[dev-dependencies]
+astersql-util-fastrand = { path = "fastrand" }
+chrono-tz = "0.10"
+rcgen = "0.13"
+tempfile = "3"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
+[package.metadata.porting]
+go-package = "pkg/util"
+legacy-tasks = ["task-520", "task-526"]

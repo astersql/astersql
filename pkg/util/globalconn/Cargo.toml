@@ -1,0 +1,15 @@
+[package]
+name = "astersql-util-globalconn"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+log = "0.4"
+
+[package.metadata.porting]
+go-package = "pkg/util/globalconn"
+legacy-tasks = ["task-240", "task-269", "task-302"]

@@ -1,0 +1,20 @@
+[package]
+name = "astersql-util-ranger-context"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+contextutil-crate = { package = "astersql-util-context", path = "../../context" }
+errctx-crate = { package = "astersql-errctx", path = "../../../errctx" }
+exprctx-crate = { package = "astersql-expression-exprctx", path = "../../../expression/exprctx" }
+exprstatic-crate = { package = "astersql-expression-exprstatic", path = "../../../expression/exprstatic" }
+types-crate = { package = "astersql-types", path = "../../../types" }
+
+[package.metadata.porting]
+go-package = "pkg/util/ranger/context"
+legacy-tasks = ["task-610"]

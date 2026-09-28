@@ -1,0 +1,23 @@
+[package]
+name = "astersql-util-timeutil"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+chrono = "0.4.45"
+chrono-tz = "0.10"
+tokio = { version = "1.52.3", features = ["macros", "rt", "time"] }
+tokio-util = "0.7.18"
+
+[dev-dependencies]
+tempfile = "3"
+testsetup = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }
+tokio = { version = "1.52.3", features = ["macros", "rt", "rt-multi-thread", "time"] }
+
+[package.metadata.porting]
+go-package = "pkg/util/timeutil"
+legacy-tasks = ["task-404", "task-445"]

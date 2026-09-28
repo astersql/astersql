@@ -1,0 +1,25 @@
+[package]
+name = "astersql-expression-exprctx"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+chrono = "0.4"
+chrono-tz = "0.10"
+contextutil = { package = "astersql-util-context", path = "../../util/context" }
+errctx_crate = { package = "astersql-errctx", path = "../../errctx" }
+mathutil_crate = { package = "astersql-util-mathutil", path = "../../util/mathutil" }
+parser_mysql = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+parser_crate = { package = "astersql-parser", path = "../../parser" }
+parser_ast = { package = "astersql-parser-ast", path = "../../parser/ast" }
+session_variable = { package = "astersql-sessionctx-variable", path = "../../sessionctx/variable" }
+types_crate = { package = "astersql-types", path = "../../types" }
+
+[package.metadata.porting]
+go-package = "pkg/expression/exprctx"
+legacy-tasks = ["task-600"]

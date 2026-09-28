@@ -1,0 +1,24 @@
+[package]
+name = "astersql-util-sem"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+hostname = "0.4"
+intest = { package = "astersql-util-intest", path = "../intest", default-features = false }
+logutil = { package = "astersql-util-logutil", path = "../logutil" }
+metadef = { package = "astersql-meta-metadef", path = "../../meta/metadef" }
+parser_mysql = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+vardef = { package = "astersql-sessionctx-vardef", path = "../../sessionctx/vardef" }
+variable = { package = "astersql-sessionctx-variable", path = "../../sessionctx/variable" }
+
+[dev-dependencies]
+testsetup = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }
+
+[package.metadata.porting]
+go-package = "pkg/util/sem"
+legacy-tasks = ["task-603", "task-608"]

@@ -1,0 +1,19 @@
+[package]
+name = "astersql-lightning-pkg-importinto-mock"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "lightning/pkg/importinto/mock"
+legacy-tasks = []
+kind = "library"
+lane = 0
+
+# arm64 darwin: no kv/domain/kvproto/grpcio.
+# Prefer slim importinto; gomock Controller is local stubs.
+[dependencies]
+"astersql-lightning-pkg-importinto" = { package = "astersql-lightning-pkg-importinto", path = ".." }

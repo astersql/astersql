@@ -1,0 +1,12 @@
+[package]
+name = "astersql-types-file-group"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+collate = { package = "astersql-util-collate", path = "../../../util/collate" }
+astersql_errors = { package = "astersql-errors", path = "../../../errors" }

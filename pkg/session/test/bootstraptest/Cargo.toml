@@ -1,0 +1,39 @@
+[package]
+name = "astersql-session-test-bootstraptest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/session/test/bootstraptest"
+legacy-tasks = ["task-1455", "task-1456"]
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../config" }
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../config/kerneltype" }
+"astersql-ddl" = { package = "astersql-ddl", path = "../../../ddl" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
+"astersql-meta" = { package = "astersql-meta", path = "../../../meta" }
+"astersql-meta-metadef" = { package = "astersql-meta-metadef", path = "../../../meta/metadef" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../../meta/model" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../parser/ast" }
+"astersql-parser-terror" = { package = "astersql-parser-terror", path = "../../../parser/terror" }
+"astersql-planner-core" = { package = "astersql-planner-core", path = "../../../planner/core" }
+"astersql-server-handler" = { package = "astersql-server-handler", path = "../../../server/handler" }
+"astersql-session" = { package = "astersql-session", path = "../.." }
+"astersql-session-sessionapi" = { package = "astersql-session-sessionapi", path = "../../sessionapi" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../../sessionctx" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../../sessionctx/vardef" }
+"astersql-statistics" = { package = "astersql-statistics", path = "../../../statistics" }
+"astersql-store-mockstore" = { package = "astersql-store-mockstore", path = "../../../store/mockstore" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-testkit-testenv" = { package = "astersql-testkit-testenv", path = "../../../testkit/testenv" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../testkit/testfailpoint" }
+"astersql-testkit-testmain" = { package = "astersql-testkit-testmain", path = "../../../testkit/testmain" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }
+"astersql-types" = { package = "astersql-types", path = "../../../types" }
+"astersql-util-chunk" = { package = "astersql-util-chunk", path = "../../../util/chunk" }
+"astersql-util-sqlexec" = { package = "astersql-util-sqlexec", path = "../../../util/sqlexec" }

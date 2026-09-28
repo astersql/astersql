@@ -1,0 +1,29 @@
+[package]
+name = "astersql-executor-test-tiflashtest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/executor/test/tiflashtest"
+legacy-tasks = ["task-1601", "task-1602"]
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../config" }
+"astersql-domain" = { package = "astersql-domain", path = "../../../domain" }
+"astersql-executor-mppcoordmanager" = { package = "astersql-executor-mppcoordmanager", path = "../../mppcoordmanager" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
+"astersql-meta-autoid" = { package = "astersql-meta-autoid", path = "../../../meta/autoid" }
+"astersql-parser-terror" = { package = "astersql-parser-terror", path = "../../../parser/terror" }
+"astersql-planner-core-operator-physicalop" = { package = "astersql-planner-core-operator-physicalop", path = "../../../planner/core/operator/physicalop" }
+"astersql-store-mockstore" = { package = "astersql-store-mockstore", path = "../../../store/mockstore" }
+"astersql-store-mockstore-unistore" = { package = "astersql-store-mockstore-unistore", path = "../../../store/mockstore/unistore" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-testkit-external" = { package = "astersql-testkit-external", path = "../../../testkit/external" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../testkit/testfailpoint" }
+"astersql-util-dbterror-exeerrors" = { package = "astersql-util-dbterror-exeerrors", path = "../../../util/dbterror/exeerrors" }
+"astersql-util-sqlkiller" = { package = "astersql-util-sqlkiller", path = "../../../util/sqlkiller" }
+"astersql-util-tiflashcompute" = { package = "astersql-util-tiflashcompute", path = "../../../util/tiflashcompute" }

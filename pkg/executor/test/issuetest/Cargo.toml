@@ -1,0 +1,30 @@
+[package]
+name = "astersql-executor-test-issuetest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/executor/test/issuetest"
+legacy-tasks = ["task-1342"]
+
+[dev-dependencies]
+"astersql-autoid_service" = { package = "astersql-autoid_service", path = "../../../autoid_service" }
+"astersql-config" = { package = "astersql-config", path = "../../../config" }
+"astersql-executor" = { package = "astersql-executor", path = "../.." }
+"astersql-executor-join" = { package = "astersql-executor-join", path = "../../join" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
+"astersql-meta-autoid" = { package = "astersql-meta-autoid", path = "../../../meta/autoid" }
+"astersql-parser-auth" = { package = "astersql-parser-auth", path = "../../../parser/auth" }
+"astersql-parser-charset" = { package = "astersql-parser-charset", path = "../../../parser/charset" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../../parser/mysql" }
+"astersql-session-sessionapi" = { package = "astersql-session-sessionapi", path = "../../../session/sessionapi" }
+"astersql-session-sessmgr" = { package = "astersql-session-sessmgr", path = "../../../session/sessmgr" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../testkit/testfailpoint" }
+"astersql-util" = { package = "astersql-util", path = "../../../util" }
+"astersql-util-dbterror-exeerrors" = { package = "astersql-util-dbterror-exeerrors", path = "../../../util/dbterror/exeerrors" }
+"astersql-util-memory" = { package = "astersql-util-memory", path = "../../../util/memory" }

@@ -1,0 +1,26 @@
+[package]
+name = "astersql-tests-graceshutdown"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "tests/graceshutdown"
+legacy-tasks = []
+kind = "test-only"
+lane = 0
+
+[[test]]
+name = "graceshutdown_test"
+path = "graceshutdown_test.rs"
+
+[[test]]
+name = "main_test"
+path = "main_test.rs"
+
+[dev-dependencies]
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../pkg/testkit/testsetup" }

@@ -1,0 +1,17 @@
+[package]
+name = "astersql-br-pkg-restore-internal-import-client"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "br/pkg/restore/internal/import_client"
+legacy-tasks = []
+kind = "library"
+lane = 2
+
+# arm64 darwin: no kv/domain/kvproto/grpcio. Local gRPC/ImportSST traits only.
+[dependencies]

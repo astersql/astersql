@@ -1,0 +1,23 @@
+[package]
+name = "astersql-br-tests"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "br/tests"
+legacy-tasks = []
+kind = "binary"
+lane = 1
+
+[[bin]]
+name = "astersql-br-tests"
+path = "bin_main.rs"
+
+# arm64 darwin: no kv/domain/kvproto/grpcio.
+# Slim deps only; local cobra stub in stubs.rs.
+[dependencies]
+zstd = "0.13"

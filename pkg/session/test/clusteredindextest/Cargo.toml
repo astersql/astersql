@@ -1,0 +1,22 @@
+[package]
+name = "astersql-session-test-clusteredindextest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/session/test/clusteredindextest"
+legacy-tasks = ["task-1457"]
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../config" }
+"astersql-domain" = { package = "astersql-domain", path = "../../../domain" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
+"astersql-session" = { package = "astersql-session", path = "../.." }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../../sessionctx/vardef" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-testkit-testmain" = { package = "astersql-testkit-testmain", path = "../../../testkit/testmain" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }

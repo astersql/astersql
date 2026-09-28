@@ -1,0 +1,18 @@
+[package]
+name = "astersql-br-pkg-encryption"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "br/pkg/encryption"
+legacy-tasks = []
+kind = "library"
+lane = 0
+
+[dependencies]
+"astersql-br-pkg-encryption-master-key" = { package = "astersql-br-pkg-encryption-master-key", path = "master_key" }
+"astersql-util-encrypt" = { package = "astersql-util-encrypt", path = "../../../pkg/util/encrypt" }

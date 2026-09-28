@@ -1,0 +1,30 @@
+[package]
+name = "astersql-util-sem-v2"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+ast = { package = "astersql-parser-ast", path = "../../../parser/ast" }
+intest = { package = "astersql-util-intest", path = "../../intest" }
+logutil = { package = "astersql-util-logutil", path = "../../logutil" }
+mysql = { package = "astersql-parser-mysql", path = "../../../parser/mysql" }
+objstore = { package = "astersql-objstore", path = "../../../objstore" }
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+vardef = { package = "astersql-sessionctx-vardef", path = "../../../sessionctx/vardef" }
+variable = { package = "astersql-sessionctx-variable", path = "../../../sessionctx/variable" }
+
+[dev-dependencies]
+parser = { package = "astersql-parser", path = "../../../parser" }
+serial_test = "3"
+tempfile = "3"
+
+[package.metadata.porting]
+go-package = "pkg/util/sem/v2"
+legacy-tasks = ["task-659"]

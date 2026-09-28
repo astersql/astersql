@@ -1,0 +1,15 @@
+[package]
+name = "astersql-util-dbterror"
+version.workspace = true
+edition = "2024"
+publish = false
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+astersql-errno = { path = "../../errno" }
+astersql-parser-terror = { path = "../../parser/terror" }
+
+[dev-dependencies]
+astersql-testkit-testsetup = { path = "../../testkit/testsetup" }

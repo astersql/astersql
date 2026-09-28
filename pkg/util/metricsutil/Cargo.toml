@@ -1,0 +1,36 @@
+[package]
+name = "astersql-util-metricsutil"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/util/metricsutil"
+legacy-tasks = ["task-1116", "task-1141"]
+
+[dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../config" }
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../config/kerneltype" }
+"astersql-domain-metrics" = { package = "astersql-domain-metrics", path = "../../domain/metrics" }
+"astersql-executor-metrics" = { package = "astersql-executor-metrics", path = "../../executor/metrics" }
+"astersql-infoschema-metrics" = { package = "astersql-infoschema-metrics", path = "../../infoschema/metrics" }
+"astersql-keyspace" = { package = "astersql-keyspace", path = "../../keyspace" }
+"astersql-metrics" = { package = "astersql-metrics", path = "../../metrics", optional = true }
+"astersql-metrics-common" = { package = "astersql-metrics-common", path = "../../metrics/common" }
+"astersql-planner-core-metrics" = { package = "astersql-planner-core-metrics", path = "../../planner/core/metrics" }
+"astersql-server-metrics" = { package = "astersql-server-metrics", path = "../../server/metrics" }
+"astersql-session-metrics" = { package = "astersql-session-metrics", path = "../../session/metrics" }
+"astersql-session-txninfo" = { package = "astersql-session-txninfo", path = "../../session/txninfo" }
+"astersql-sessiontxn-isolation-metrics" = { package = "astersql-sessiontxn-isolation-metrics", path = "../../sessiontxn/isolation/metrics" }
+"astersql-statistics-handle-cache-metrics" = { package = "astersql-statistics-handle-cache-metrics", path = "../../statistics/handle/cache/metrics" }
+"astersql-statistics-handle-metrics" = { package = "astersql-statistics-handle-metrics", path = "../../statistics/handle/metrics" }
+"astersql-store" = { package = "astersql-store", path = "../../store" }
+"astersql-store-copr-metrics" = { package = "astersql-store-copr-metrics", path = "../../store/copr/metrics" }
+"astersql-store-mockstore-unistore-metrics" = { package = "astersql-store-mockstore-unistore-metrics", path = "../../store/mockstore/unistore/metrics" }
+"astersql-ttl-metrics" = { package = "astersql-ttl-metrics", path = "../../ttl/metrics" }
+"astersql-util" = { package = "astersql-util", path = ".." }
+"astersql-util-topsql-reporter-metrics" = { package = "astersql-util-topsql-reporter-metrics", path = "../topsql/reporter/metrics" }
+prometheus = "0.14"

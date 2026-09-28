@@ -1,0 +1,15 @@
+[package]
+name = "astersql-util-kvcache"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+tidb-memory = { package = "astersql-util-memory", path = "../memory" }
+
+[package.metadata.porting]
+go-package = "pkg/util/kvcache"
+legacy-tasks = ["task-367", "task-385", "task-628"]

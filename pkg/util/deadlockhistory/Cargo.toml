@@ -1,0 +1,26 @@
+[package]
+name = "astersql-util-deadlockhistory"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+chrono = "0.4"
+chrono-tz = "0.10"
+hex = "0.4"
+log = "0.4"
+protobuf = "=2.8.0"
+mysql = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+resourcegrouptag = { package = "astersql-util-resourcegrouptag", path = "../resourcegrouptag" }
+types = { package = "astersql-types-datum", path = "../../types/internal/datum" }
+
+[dev-dependencies]
+meta_model = { package = "astersql-meta-model", path = "../../meta/model" }
+parser = { package = "astersql-parser", path = "../../parser" }
+
+[package.metadata.porting]
+go-package = "pkg/util/deadlockhistory"
+legacy-tasks = ["task-402"]

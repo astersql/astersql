@@ -1,0 +1,81 @@
+// Copyright 2026 AsterSQL.
+// Copyright 2018 PingCAP, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Point Get 分区物理 ID 与分区名过滤的单元测试。
+//
+// 覆盖：无分区索引时回退到逻辑表 ID；有分区索引时取对应物理分区 ID；
+// `matchPartitionNames` 按 ASCII 大小写不敏感匹配分区名。
+
+use crate::point_get::{
+    GetPhysID, PartitionDefinition, PartitionInfo, TableInfo, matchPartitionNames,
+};
+
+/// 验证物理分区 ID 解析与分区名大小写不敏感过滤。
+#[test]
+fn point_get_resolves_physical_partition_and_case_insensitive_name_filter() {
+    // 构造含两个分区定义的 PartitionInfo（分区元数据）。
+    let partitions = PartitionInfo {
+        definitions: vec![
+            PartitionDefinition {
+                id: 11,
+                name: "pNorth".into(),
+            },
+            PartitionDefinition {
+                id: 12,
+                name: "pSouth".into(),
+            },
+        ],
+        ids_in_ddl_to_ignore: Vec::new(),
+    };
+    let table = TableInfo {
+        id: 7,
+        name: "orders".into(),
+        temporary: false,
+        cache_enabled: false,
+        pk_is_handle: true,
+        is_common_handle: false,
+        columns: Vec::new(),
+        primary_index: None,
+        partition: Some(partitions.clone()),
+        table_lock: None,
+    };
+    // 无分区索引 → 逻辑表 ID；索引 1 → 第二个分区物理 ID。
+    assert_eq!(GetPhysID(&table, None), 7);
+    assert_eq!(GetPhysID(&table, Some(1)), 12);
+    // 分区名比较忽略大小写；不匹配的分区应返回 false。
+    assert!(matchPartitionNames(11, &["PNORTH".into()], &partitions));
+    assert!(!matchPartitionNames(12, &["PNORTH".into()], &partitions));
+}
+
+/// Go `GetPhysID` falls back to the logical table ID when a stale plan still
+/// carries a partition index but the current table metadata is no longer
+/// partitioned.
+#[test]
+fn point_get_falls_back_when_partition_metadata_is_absent() {
+    let table = TableInfo {
+        id: 19,
+        name: "orders".into(),
+        temporary: false,
+        cache_enabled: false,
+        pk_is_handle: true,
+        is_common_handle: false,
+        columns: Vec::new(),
+        primary_index: None,
+        partition: None,
+        table_lock: None,
+    };
+
+    assert_eq!(GetPhysID(&table, Some(0)), 19);
+}

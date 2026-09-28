@@ -1,0 +1,23 @@
+[package]
+name = "astersql-dxf-importinto-jobhistory"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+bytesize = "2.4.2"
+injectfailpoint-crate = { package = "astersql-util-injectfailpoint", path = "../../../util/injectfailpoint" }
+proto-crate = { package = "astersql-dxf-framework-proto", path = "../../framework/proto" }
+serde = { version = "1", features = ["derive"] }
+storage-crate = { package = "astersql-dxf-framework-storage", path = "../../framework/storage" }
+taskkey-crate = { package = "astersql-dxf-importinto-taskkey", path = "../taskkey" }
+
+[dev-dependencies]
+serde_json = "1"
+
+[package.metadata.porting]
+go-package = "pkg/dxf/importinto/jobhistory"
+legacy-tasks = ["task-644"]

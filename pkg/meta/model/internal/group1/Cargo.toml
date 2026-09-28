@@ -1,0 +1,24 @@
+[package]
+name = "astersql-meta-model-group1"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+astersql-errors = { path = "../../../../errors" }
+chrono = { version = "0.4", features = ["serde"] }
+humantime = "2.2"
+kerneltype = { package = "astersql-config-kerneltype", path = "../../../../config/kerneltype" }
+parser = { package = "astersql-parser", path = "../../../../parser" }
+parser-ast = { package = "astersql-parser-ast", path = "../../../../parser/ast" }
+parser-auth = { package = "astersql-parser-auth", path = "../../../../parser/auth" }
+parser-charset = { package = "astersql-parser-charset", path = "../../../../parser/charset" }
+parser-mysql = { package = "astersql-parser-mysql", path = "../../../../parser/mysql" }
+parser-types = { package = "astersql-parser-types", path = "../../../../parser/types" }
+planner-base = { package = "astersql-planner-cascades-base", path = "../../../../planner/cascades/base" }
+serde = { version = "1", features = ["derive", "rc"] }
+serde_repr = "0.1"

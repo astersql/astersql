@@ -1,0 +1,20 @@
+[package]
+name = "astersql-util-cgroup"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+anyhow = "1"
+
+[dev-dependencies]
+libc = "0.2"
+regex = "1"
+tempfile = "3"
+
+[package.metadata.porting]
+go-package = "pkg/util/cgroup"
+legacy-tasks = ["task-110", "task-292"]

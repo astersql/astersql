@@ -1,0 +1,36 @@
+[package]
+name = "astersql-statistics-handle-cache"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/statistics/handle/cache"
+legacy-tasks = ["task-930", "task-937"]
+
+[dependencies]
+statistics = { package = "astersql-statistics", path = "../.." }
+cache-internal = { package = "astersql-statistics-handle-cache-internal", path = "internal" }
+cache-lfu = { package = "astersql-statistics-handle-cache-internal-lfu", path = "internal/lfu" }
+cache-map = { package = "astersql-statistics-handle-cache-internal-mapcache", path = "internal/mapcache" }
+cache-metrics = { package = "astersql-statistics-handle-cache-metrics", path = "metrics" }
+stats-types = { package = "astersql-statistics-handle-types", path = "../types" }
+stats-util = { package = "astersql-statistics-handle-util", path = "../util" }
+config = { package = "astersql-config", path = "../../../config" }
+vardef = { package = "astersql-sessionctx-vardef", path = "../../../sessionctx/vardef" }
+model = { package = "astersql-meta-model", path = "../../../meta/model" }
+metrics = { package = "astersql-metrics", path = "../../../metrics" }
+log = "0.4"
+fail = { version = "0.5.1", features = ["failpoints"] }
+
+"astersql-statistics-handle-metrics" = { package = "astersql-statistics-handle-metrics", path = "../metrics" }
+
+[dev-dependencies]
+testfailpoint = { package = "astersql-testkit-testfailpoint", path = "../../../testkit/testfailpoint" }
+infoschema = { package = "astersql-infoschema", path = "../../../infoschema" }
+cache-testutil = { package = "astersql-statistics-handle-cache-internal-testutil", path = "internal/testutil" }
+
+"astersql-util-benchdaily" = { package = "astersql-util-benchdaily", path = "../../../util/benchdaily" }

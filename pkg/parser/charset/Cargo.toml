@@ -1,0 +1,24 @@
+[package]
+name = "astersql-parser-charset"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+astersql-errors = { path = "../../errors" }
+astersql-parser-mysql = { path = "../mysql" }
+astersql-parser-terror = { path = "../terror" }
+backtrace = "0.3"
+encoding = "0.2.33"
+encoding_rs = "0.8.35"
+log = "0.4"
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+unicode-general-category = "1"
+
+[package.metadata.porting]
+go-package = "pkg/parser/charset"
+legacy-tasks = ["task-258", "task-302"]

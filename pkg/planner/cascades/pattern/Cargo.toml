@@ -1,0 +1,17 @@
+[package]
+name = "astersql-planner-cascades-pattern"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+logicalop = { package = "astersql-planner-core-operator-logicalop", path = "../../core/operator/logicalop" }
+
+[package.metadata.porting]
+go-package = "pkg/planner/cascades/pattern"
+legacy-tasks = ["task-1085", "task-1091"]

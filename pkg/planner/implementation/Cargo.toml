@@ -1,0 +1,32 @@
+[package]
+name = "astersql-planner-implementation"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/planner/implementation"
+legacy-tasks = ["task-1202", "task-1209"]
+
+[dependencies]
+"astersql-expression" = { package = "astersql-expression", path = "../../expression" }
+"astersql-kv" = { package = "astersql-kv", path = "../../kv" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../meta/model" }
+"astersql-planner-cardinality" = { package = "astersql-planner-cardinality", path = "../cardinality" }
+"astersql-planner-core" = { package = "astersql-planner-core", path = "../core" }
+"astersql-planner-core-base" = { package = "astersql-planner-core-base", path = "../core/base" }
+"astersql-planner-core-cost" = { package = "astersql-planner-core-cost", path = "../core/cost" }
+"astersql-planner-core-operator-logicalop" = { package = "astersql-planner-core-operator-logicalop", path = "../core/operator/logicalop" }
+"astersql-planner-core-operator-physicalop" = { package = "astersql-planner-core-operator-physicalop", path = "../core/operator/physicalop" }
+"astersql-planner-memo" = { package = "astersql-planner-memo", path = "../memo" }
+"astersql-planner-util-utilfuncp" = { package = "astersql-planner-util-utilfuncp", path = "../util/utilfuncp" }
+"astersql-statistics" = { package = "astersql-statistics", path = "../../statistics" }
+
+[dev-dependencies]
+"astersql-domain" = { package = "astersql-domain", path = "../../domain" }
+"astersql-planner-util-coretestsdk" = { package = "astersql-planner-util-coretestsdk", path = "../util/coretestsdk" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }
+planctx = { package = "astersql-planner-planctx", path = "../planctx" }

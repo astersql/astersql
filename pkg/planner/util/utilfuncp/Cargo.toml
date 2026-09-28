@@ -1,0 +1,25 @@
+[package]
+name = "astersql-planner-util-utilfuncp"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/planner/util/utilfuncp"
+legacy-tasks = ["task-775", "task-785"]
+
+[dependencies]
+astersql-expression = { package = "astersql-expression", path = "../../../expression" }
+
+[target.'cfg(any())'.dependencies]
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../parser/ast" }
+"astersql-planner-core-base" = { package = "astersql-planner-core-base", path = "../../core/base" }
+"astersql-planner-property" = { package = "astersql-planner-property", path = "../../property" }
+"astersql-planner-util" = { package = "astersql-planner-util", path = ".." }
+"astersql-planner-util-costusage" = { package = "astersql-planner-util-costusage", path = "../costusage" }
+"astersql-table" = { package = "astersql-table", path = "../../../table" }
+"astersql-util-execdetails" = { package = "astersql-util-execdetails", path = "../../../util/execdetails" }
+"astersql-util-hint" = { package = "astersql-util-hint", path = "../../../util/hint" }

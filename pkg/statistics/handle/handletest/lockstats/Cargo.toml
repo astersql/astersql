@@ -1,0 +1,23 @@
+[package]
+name = "astersql-statistics-handle-handletest-lockstats"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/statistics/handle/handletest/lockstats"
+legacy-tasks = ["task-1488"]
+
+[dev-dependencies]
+"astersql-statistics-handle-lockstats" = { package = "astersql-statistics-handle-lockstats", path = "../../lockstats" }
+"astersql-config" = { package = "astersql-config", path = "../../../../config" }
+"astersql-domain" = { package = "astersql-domain", path = "../../../../domain" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../../kv" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../../../meta/model" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../../parser/ast" }
+"astersql-statistics" = { package = "astersql-statistics", path = "../../.." }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../../testkit" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../../testkit/testsetup" }

@@ -1,0 +1,20 @@
+[package]
+name = "astersql-statistics-handle-usage-indexusage"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+crossbeam-channel = "0.5"
+meta-model = { package = "astersql-meta-model", path = "../../../../meta/model" }
+usage-collector = { package = "astersql-statistics-handle-usage-collector", path = "../collector" }
+
+[dev-dependencies]
+rand = "0.8"
+
+[package.metadata.porting]
+go-package = "pkg/statistics/handle/usage/indexusage"
+legacy-tasks = ["task-434"]

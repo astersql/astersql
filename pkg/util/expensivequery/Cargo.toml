@@ -1,0 +1,25 @@
+[package]
+name = "astersql-util-expensivequery"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/util/expensivequery"
+legacy-tasks = ["task-894", "task-906"]
+
+[dependencies]
+"astersql-statistics-handle-util" = { package = "astersql-statistics-handle-util", path = "../../statistics/handle/util" }
+
+[target.'cfg(any())'.dependencies]
+"astersql-metrics" = { package = "astersql-metrics", path = "../../metrics" }
+"astersql-session-sessmgr" = { package = "astersql-session-sessmgr", path = "../../session/sessmgr" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../sessionctx/vardef" }
+"astersql-util" = { package = "astersql-util", path = ".." }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../logutil" }
+
+[dev-dependencies]
+testsetup = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }

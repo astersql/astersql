@@ -1,0 +1,25 @@
+[package]
+name = "astersql-cmd-pluginpkg"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "cmd/pluginpkg"
+legacy-tasks = []
+kind = "binary"
+lane = 2
+
+[[bin]]
+name = "astersql-cmd-pluginpkg"
+path = "bin_main.rs"
+
+# arm64 darwin: no kv/domain/kvproto/grpcio.
+# Prefer no heavy TiDB crates; local stubs cover go toolchain / file boundaries.
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"

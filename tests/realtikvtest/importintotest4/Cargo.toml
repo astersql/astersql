@@ -1,0 +1,73 @@
+[package]
+name = "astersql-tests-realtikvtest-importintotest4"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "tests/realtikvtest/importintotest4"
+legacy-tasks = []
+kind = "test-only"
+lane = 1
+
+[[test]]
+name = "cloud_sdk_test"
+path = "cloud_sdk_test.rs"
+
+[[test]]
+name = "conflict_resolution_test"
+path = "conflict_resolution_test.rs"
+
+[[test]]
+name = "global_sort_test"
+path = "global_sort_test.rs"
+
+[[test]]
+name = "import_summary_test"
+path = "import_summary_test.rs"
+
+[[test]]
+name = "main_test"
+path = "main_test.rs"
+
+[[test]]
+name = "manual_recovery_test"
+path = "manual_recovery_test.rs"
+
+[[test]]
+name = "split_file_test"
+path = "split_file_test.rs"
+
+[dev-dependencies]
+serde_json = "1"
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../pkg/config/kerneltype" }
+"astersql-dumpformat-testutils" = { package = "astersql-dumpformat-testutils", path = "../../../pkg/dumpformat/testutils" }
+"astersql-dxf-framework-handle" = { package = "astersql-dxf-framework-handle", path = "../../../pkg/dxf/framework/handle" }
+"astersql-dxf-framework-metering" = { package = "astersql-dxf-framework-metering", path = "../../../pkg/dxf/framework/metering" }
+"astersql-dxf-framework-proto" = { package = "astersql-dxf-framework-proto", path = "../../../pkg/dxf/framework/proto" }
+"astersql-dxf-framework-scheduler" = { package = "astersql-dxf-framework-scheduler", path = "../../../pkg/dxf/framework/scheduler" }
+"astersql-dxf-framework-storage" = { package = "astersql-dxf-framework-storage", path = "../../../pkg/dxf/framework/storage" }
+"astersql-dxf-framework-taskexecutor-execute" = { package = "astersql-dxf-framework-taskexecutor-execute", path = "../../../pkg/dxf/framework/taskexecutor/execute" }
+"astersql-dxf-framework-testutil" = { package = "astersql-dxf-framework-testutil", path = "../../../pkg/dxf/framework/testutil" }
+"astersql-dxf-importinto" = { package = "astersql-dxf-importinto", path = "../../../pkg/dxf/importinto" }
+"astersql-dxf-importinto-conflictedkv" = { package = "astersql-dxf-importinto-conflictedkv", path = "../../../pkg/dxf/importinto/conflictedkv" }
+"astersql-executor-importer" = { package = "astersql-executor-importer", path = "../../../pkg/executor/importer" }
+"astersql-importsdk" = { package = "astersql-importsdk", path = "../../../pkg/importsdk" }
+"astersql-ingestor-globalsort" = { package = "astersql-ingestor-globalsort", path = "../../../pkg/ingestor/globalsort" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../pkg/kv" }
+"astersql-lightning-config" = { package = "astersql-lightning-config", path = "../../../pkg/lightning/config" }
+"astersql-lightning-mydump" = { package = "astersql-lightning-mydump", path = "../../../pkg/lightning/mydump" }
+"astersql-planner-core" = { package = "astersql-planner-core", path = "../../../pkg/planner/core" }
+"astersql-session" = { package = "astersql-session", path = "../../../pkg/session" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../pkg/testkit" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../pkg/testkit/testfailpoint" }
+"astersql-util-engine" = { package = "astersql-util-engine", path = "../../../pkg/util/engine" }
+"astersql-tests-realtikvtest" = { package = "astersql-tests-realtikvtest", path = ".." }
+"astersql-tests-realtikvtest-testutils" = { package = "astersql-tests-realtikvtest-testutils", path = "../testutils" }
+
+"astersql-domain" = { path = "../../../pkg/domain" }
+"astersql-store-driver" = { path = "../../../pkg/store/driver" }

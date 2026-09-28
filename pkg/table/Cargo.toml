@@ -1,0 +1,36 @@
+[package]
+name = "astersql-table"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+autoid-dependency = { package = "astersql-meta-autoid", path = "../meta/autoid" }
+chrono-tz = "0.10"
+chunk-dependency = { package = "astersql-util-chunk", path = "../util/chunk" }
+dbterror-dependency = { package = "astersql-util-dbterror", path = "../util/dbterror" }
+errctx-dependency = { package = "astersql-errctx", path = "../errctx" }
+errors-dependency = { package = "astersql-errors", path = "../errors" }
+expression-dependency = { package = "astersql-expression", path = "../expression" }
+model-dependency = { package = "astersql-meta-model", path = "../meta/model" }
+kv-dependency = { package = "astersql-kv", path = "../kv" }
+parser-ast-dependency = { package = "astersql-parser-ast", path = "../parser/ast" }
+parser-dependency = { package = "astersql-parser", path = "../parser" }
+parser-mysql-dependency = { package = "astersql-parser-mysql", path = "../parser/mysql" }
+sqlexec-dependency = { package = "astersql-util-sqlexec", path = "../util/sqlexec" }
+types-dependency = { package = "astersql-types", path = "../types" }
+tblctx-dependency = { package = "astersql-table-tblctx", path = "tblctx" }
+
+[package.metadata.porting]
+go-package = "pkg/table"
+legacy-tasks = ["task-713", "task-714", "task-721", "task-724"]
+
+[dev-dependencies]
+chrono = "0.4"
+collate-test = { package = "astersql-util-collate", path = "../util/collate" }
+contextutil-test = { package = "astersql-util-context", path = "../util/context" }
+exprctx-test = { package = "astersql-expression-exprctx", path = "../expression/exprctx" }
+mathutil-test = { package = "astersql-util-mathutil", path = "../util/mathutil" }

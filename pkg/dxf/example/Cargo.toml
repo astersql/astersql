@@ -1,0 +1,26 @@
+[package]
+name = "astersql-dxf-example"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/dxf/example"
+legacy-tasks = ["task-851", "task-1311"]
+
+[dependencies]
+"astersql-dxf-framework-taskexecutor" = { package = "astersql-dxf-framework-taskexecutor", path = "../framework/taskexecutor" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../util/logutil" }
+
+[target.'cfg(any())'.dependencies]
+"astersql-dxf-framework-proto" = { package = "astersql-dxf-framework-proto", path = "../framework/proto" }
+"astersql-dxf-framework-scheduler" = { package = "astersql-dxf-framework-scheduler", path = "../framework/scheduler" }
+"astersql-dxf-framework-storage" = { package = "astersql-dxf-framework-storage", path = "../framework/storage" }
+"astersql-dxf-framework-taskexecutor-execute" = { package = "astersql-dxf-framework-taskexecutor-execute", path = "../framework/taskexecutor/execute" }
+
+[target.'cfg(any())'.dev-dependencies]
+"astersql-dxf-framework-handle" = { package = "astersql-dxf-framework-handle", path = "../framework/handle" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../testkit" }

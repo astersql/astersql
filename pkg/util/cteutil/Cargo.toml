@@ -1,0 +1,21 @@
+[package]
+name = "astersql-util-cteutil"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+parking_lot = "0.12"
+thiserror = "2"
+chunk-crate = { package = "astersql-util-chunk", path = "../chunk" }
+disk-crate = { package = "astersql-util-disk", path = "../disk" }
+memory-crate = { package = "astersql-util-memory", path = "../memory" }
+syncutil-crate = { package = "astersql-util-syncutil", path = "../syncutil" }
+types-crate = { package = "astersql-types", path = "../../types" }
+
+[package.metadata.porting]
+go-package = "pkg/util/cteutil"
+legacy-tasks = ["task-435"]

@@ -1,0 +1,56 @@
+[package]
+name = "astersql-tests-realtikvtest-pessimistictest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "tests/realtikvtest/pessimistictest"
+legacy-tasks = []
+kind = "test-only"
+lane = 2
+
+[[test]]
+name = "main_test"
+path = "main_test.rs"
+
+[[test]]
+name = "pessimistic_test"
+path = "pessimistic_test.rs"
+
+[[test]]
+name = "pessimistic_parity_test"
+path = "pessimistic_parity_test.rs"
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../pkg/config" }
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../pkg/config/kerneltype" }
+"astersql-domain" = { package = "astersql-domain", path = "../../../pkg/domain" }
+"astersql-errno" = { package = "astersql-errno", path = "../../../pkg/errno" }
+"astersql-expression" = { package = "astersql-expression", path = "../../../pkg/expression" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../pkg/kv" }
+"astersql-parser" = { package = "astersql-parser", path = "../../../pkg/parser" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../pkg/parser/ast" }
+"astersql-parser-auth" = { package = "astersql-parser-auth", path = "../../../pkg/parser/auth" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../../pkg/parser/mysql" }
+"astersql-parser-terror" = { package = "astersql-parser-terror", path = "../../../pkg/parser/terror" }
+"astersql-session" = { package = "astersql-session", path = "../../../pkg/session" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../../pkg/sessionctx/vardef" }
+"astersql-sessiontxn" = { package = "astersql-sessiontxn", path = "../../../pkg/sessiontxn" }
+"astersql-store-driver-error" = { package = "astersql-store-driver-error", path = "../../../pkg/store/driver/error" }
+"astersql-store-gcworker" = { package = "astersql-store-gcworker", path = "../../../pkg/store/gcworker" }
+"astersql-store-mockstore" = { package = "astersql-store-mockstore", path = "../../../pkg/store/mockstore" }
+"astersql-tablecodec" = { package = "astersql-tablecodec", path = "../../../pkg/tablecodec" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../pkg/testkit" }
+"astersql-testkit-external" = { package = "astersql-testkit-external", path = "../../../pkg/testkit/external" }
+"astersql-types" = { package = "astersql-types", path = "../../../pkg/types" }
+"astersql-util-codec" = { package = "astersql-util-codec", path = "../../../pkg/util/codec" }
+"astersql-util-dbterror-exeerrors" = { package = "astersql-util-dbterror-exeerrors", path = "../../../pkg/util/dbterror/exeerrors" }
+"astersql-util-dbterror-plannererrors" = { package = "astersql-util-dbterror-plannererrors", path = "../../../pkg/util/dbterror/plannererrors" }
+"astersql-util-deadlockhistory" = { package = "astersql-util-deadlockhistory", path = "../../../pkg/util/deadlockhistory" }
+"astersql-util-sqlkiller" = { package = "astersql-util-sqlkiller", path = "../../../pkg/util/sqlkiller" }
+"astersql-tests-realtikvtest" = { package = "astersql-tests-realtikvtest", path = ".." }

@@ -1,0 +1,16 @@
+[package]
+name = "astersql-domain-sqlsvrapi-mock"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+mockall = "0.13"
+sqlsvrapi-dependency = { package = "astersql-domain-sqlsvrapi", path = ".." }
+
+[package.metadata.porting]
+go-package = "pkg/domain/sqlsvrapi/mock"
+legacy-tasks = ["task-572", "task-589"]

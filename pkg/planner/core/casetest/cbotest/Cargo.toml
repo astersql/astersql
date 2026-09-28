@@ -1,0 +1,34 @@
+[package]
+name = "astersql-planner-core-casetest-cbotest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/planner/core/casetest/cbotest"
+legacy-tasks = ["task-1403"]
+
+[dev-dependencies]
+"astersql-domain" = { package = "astersql-domain", path = "../../../../domain" }
+"astersql-executor" = { package = "astersql-executor", path = "../../../../executor" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../../../meta/model" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../../parser/ast" }
+"astersql-planner" = { package = "astersql-planner", path = "../../.." }
+"astersql-planner-core" = { package = "astersql-planner-core", path = "../.." }
+"astersql-planner-core-resolve" = { package = "astersql-planner-core-resolve", path = "../../resolve" }
+"astersql-session" = { package = "astersql-session", path = "../../../../session" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../../../sessionctx/vardef" }
+"astersql-statistics" = { package = "astersql-statistics", path = "../../../../statistics" }
+"astersql-statistics-handle" = { package = "astersql-statistics-handle", path = "../../../../statistics/handle" }
+"astersql-statistics-util" = { package = "astersql-statistics-util", path = "../../../../statistics/util" }
+"astersql-statistics-handle-ddl-testutil" = { package = "astersql-statistics-handle-ddl-testutil", path = "../../../../statistics/handle/ddl/testutil" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../../testkit" }
+"astersql-testkit-testmain" = { package = "astersql-testkit-testmain", path = "../../../../testkit/testmain" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../../testkit/testsetup" }
+base64 = "0.22"
+protobuf = "=2.8.0"
+serde_json = "1"
+tipb = { git = "https://github.com/pingcap/tipb.git", rev = "07f0ea6b6bffa9d8ac100d81ee51dbbfe4dda3bf", default-features = false, features = ["protobuf-codec"] }

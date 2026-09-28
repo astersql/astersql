@@ -1,0 +1,19 @@
+[package]
+name = "astersql-config-configtypes"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+anyhow = "1"
+bytesize = "2.4"
+humantime = "2"
+serde_json = "1"
+toml = "0.8"
+
+[package.metadata.porting]
+go-package = "pkg/config/configtypes"
+legacy-tasks = ["task-5"]

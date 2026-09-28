@@ -1,0 +1,62 @@
+[package]
+name = "astersql-tests-realtikvtest-addindextest3"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "tests/realtikvtest/addindextest3"
+legacy-tasks = []
+kind = "test-only"
+lane = 2
+
+[[test]]
+name = "functional_test"
+path = "functional_test.rs"
+
+[[test]]
+name = "ingest_test"
+path = "ingest_test.rs"
+
+[[test]]
+name = "main_test"
+path = "main_test.rs"
+
+[[test]]
+name = "operator_test"
+path = "operator_test.rs"
+
+[[test]]
+name = "temp_index_test"
+path = "temp_index_test.rs"
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../pkg/config" }
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../pkg/config/kerneltype" }
+"astersql-ddl" = { package = "astersql-ddl", path = "../../../pkg/ddl" }
+"astersql-ddl-copr" = { package = "astersql-ddl-copr", path = "../../../pkg/ddl/copr" }
+"astersql-ddl-ingest" = { package = "astersql-ddl-ingest", path = "../../../pkg/ddl/ingest" }
+"astersql-ddl-testutil" = { package = "astersql-ddl-testutil", path = "../../../pkg/ddl/testutil" }
+"astersql-domain" = { package = "astersql-domain", path = "../../../pkg/domain" }
+"astersql-dxf-framework-taskexecutor-execute" = { package = "astersql-dxf-framework-taskexecutor-execute", path = "../../../pkg/dxf/framework/taskexecutor/execute" }
+"astersql-dxf-framework-testutil" = { package = "astersql-dxf-framework-testutil", path = "../../../pkg/dxf/framework/testutil" }
+"astersql-dxf-operator" = { package = "astersql-dxf-operator", path = "../../../pkg/dxf/operator" }
+"astersql-errno" = { package = "astersql-errno", path = "../../../pkg/errno" }
+"astersql-ingestor-ingestctrl" = { package = "astersql-ingestor-ingestctrl", path = "../../../pkg/ingestor/ingestctrl" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../pkg/kv" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../../pkg/meta/model" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../pkg/parser/ast" }
+"astersql-resourcemanager-pool-workerpool" = { package = "astersql-resourcemanager-pool-workerpool", path = "../../../pkg/resourcemanager/pool/workerpool" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../../pkg/sessionctx" }
+"astersql-table" = { package = "astersql-table", path = "../../../pkg/table" }
+"astersql-table-tables" = { package = "astersql-table-tables", path = "../../../pkg/table/tables" }
+"astersql-tablecodec" = { package = "astersql-tablecodec", path = "../../../pkg/tablecodec" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../pkg/testkit" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../pkg/testkit/testfailpoint" }
+"astersql-util" = { package = "astersql-util", path = "../../../pkg/util" }
+"astersql-util-chunk" = { package = "astersql-util-chunk", path = "../../../pkg/util/chunk" }
+"astersql-tests-realtikvtest" = { package = "astersql-tests-realtikvtest", path = ".." }

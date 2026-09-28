@@ -1,0 +1,24 @@
+[package]
+name = "astersql-lightning-cmd-tidb-lightning"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "lightning/cmd/tidb-lightning"
+legacy-tasks = []
+kind = "binary"
+lane = 0
+
+[[bin]]
+name = "astersql-lightning-cmd-tidb-lightning"
+path = "bin_main.rs"
+
+# arm64 darwin: no kv/domain/kvproto/grpcio.
+# Prefer slim server/progress; local stubs cover config CLI, memory, GC, signals.
+[dependencies]
+"astersql-lightning-pkg-progress" = { package = "astersql-lightning-pkg-progress", path = "../../pkg/progress" }
+"astersql-lightning-pkg-server" = { package = "astersql-lightning-pkg-server", path = "../../pkg/server" }

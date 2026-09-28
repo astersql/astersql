@@ -1,0 +1,17 @@
+[package]
+name = "astersql-server-internal-util"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+config_crate = { package = "astersql-config", path = "../../../config" }
+encoding_rs = "0.8"
+http = "1"
+
+[package.metadata.porting]
+go-package = "pkg/server/internal/util"
+legacy-tasks = ["task-283", "task-324"]

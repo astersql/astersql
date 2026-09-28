@@ -1,0 +1,47 @@
+[package]
+name = "astersql-planner-core-operator-physicalop"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+base = { package = "astersql-planner-core-base", path = "../../base" }
+baseimpl = { package = "astersql-planner-core-operator-baseimpl", path = "../baseimpl" }
+costusage = { package = "astersql-planner-util-costusage", path = "../../../util/costusage" }
+cardinality = { package = "astersql-planner-cardinality", path = "../../../cardinality" }
+chunk = { package = "astersql-util-chunk", path = "../../../../util/chunk" }
+execdetails = { package = "astersql-util-execdetails", path = "../../../../util/execdetails" }
+expression = { package = "astersql-expression", path = "../../../../expression" }
+aggregation = { package = "astersql-expression-aggregation", path = "../../../../expression/aggregation" }
+kv = { package = "astersql-kv", path = "../../../../kv" }
+logicalop = { package = "astersql-planner-core-operator-logicalop", path = "../logicalop" }
+model = { package = "astersql-meta-model", path = "../../../../meta/model" }
+mysql = { package = "astersql-parser-mysql", path = "../../../../parser/mysql" }
+parser_ast = { package = "astersql-parser-ast", path = "../../../../parser/ast" }
+planctx = { package = "astersql-planner-planctx", path = "../../../planctx" }
+property = { package = "astersql-planner-property", path = "../../../property" }
+planner_util = { package = "astersql-planner-util", path = "../../../util" }
+ranger = { package = "astersql-util-ranger", path = "../../../../util/ranger" }
+rangerctx = { package = "astersql-util-ranger-context", path = "../../../../util/ranger/context" }
+statistics = { package = "astersql-statistics", path = "../../../../statistics" }
+plancodec = { package = "astersql-util-plancodec", path = "../../../../util/plancodec" }
+protobuf = "=2.8.0"
+vardef = { package = "astersql-sessionctx-vardef", path = "../../../../sessionctx/vardef" }
+stmtctx = { package = "astersql-sessionctx-stmtctx", path = "../../../../sessionctx/stmtctx" }
+table = { package = "astersql-table", path = "../../../../table" }
+tablesampler = { package = "astersql-planner-util-tablesampler", path = "../../../util/tablesampler" }
+tipb = { git = "https://github.com/pingcap/tipb.git", rev = "07f0ea6b6bffa9d8ac100d81ee51dbbfe4dda3bf", default-features = false, features = ["protobuf-codec"] }
+types = { package = "astersql-types", path = "../../../../types" }
+
+[dev-dependencies]
+exprstatic = { package = "astersql-expression-exprstatic", path = "../../../../expression/exprstatic" }
+memo = { package = "astersql-planner-cascades-memo", path = "../../../cascades/memo" }
+planctx = { package = "astersql-planner-planctx", path = "../../../planctx" }
+
+[package.metadata.porting]
+go-package = "pkg/planner/core/operator/physicalop"

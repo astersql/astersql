@@ -1,0 +1,18 @@
+[package]
+name = "astersql-store-driver-backoff"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+driver-error-dependency = { package = "astersql-store-driver-error", path = "../error" }
+kv-dependency = { package = "astersql-kv", path = "../../../kv" }
+tikv-client = { version = "=0.4.2", git = "ssh://git@github.com/astersql/client-rust.git", tag = "v0.4.2-aster.1", default-features = false }
+tokio-util = "0.7"
+
+[package.metadata.porting]
+go-package = "pkg/store/driver/backoff"
+legacy-tasks = ["task-482", "task-495"]

@@ -1,0 +1,23 @@
+[package]
+name = "astersql-distsql-context"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+chrono-tz = "0.10"
+errctx-dependency = { package = "astersql-errctx", path = "../../errctx" }
+execdetails-dependency = { package = "astersql-util-execdetails", path = "../../util/execdetails" }
+kv-dependency = { package = "astersql-kv", path = "../../kv" }
+memory-dependency = { package = "astersql-util-memory", path = "../../util/memory" }
+mysql-dependency = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+ppcpuusage-dependency = { package = "astersql-util-ppcpuusage", path = "../../util/ppcpuusage" }
+sqlkiller-dependency = { package = "astersql-util-sqlkiller", path = "../../util/sqlkiller" }
+tiflash-dependency = { package = "astersql-util-tiflash", path = "../../util/tiflash" }
+
+[package.metadata.porting]
+go-package = "pkg/distsql/context"
+legacy-tasks = ["task-491", "task-503"]

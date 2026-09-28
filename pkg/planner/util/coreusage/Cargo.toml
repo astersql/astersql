@@ -1,0 +1,24 @@
+[package]
+name = "astersql-planner-util-coreusage"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+aggregation = { package = "astersql-expression-aggregation", path = "../../../expression/aggregation" }
+base = { package = "astersql-planner-core-base", path = "../../core/base" }
+expression = { package = "astersql-expression", path = "../../../expression" }
+logicalop = { package = "astersql-planner-core-operator-logicalop", path = "../../core/operator/logicalop" }
+types = { package = "astersql-types", path = "../../../types" }
+
+[package.metadata.porting]
+go-package = "pkg/planner/util/coreusage"
+legacy-tasks = ["task-786"]
+
+[dev-dependencies]
+exprstatic = { package = "astersql-expression-exprstatic", path = "../../../expression/exprstatic" }

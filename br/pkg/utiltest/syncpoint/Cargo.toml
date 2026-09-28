@@ -1,0 +1,20 @@
+[package]
+name = "astersql-br-pkg-utiltest-syncpoint"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "br/pkg/utiltest/syncpoint"
+legacy-tasks = []
+kind = "library"
+lane = 2
+
+# arm64 darwin: no kv/domain/kvproto/grpcio. Local Context stubs;
+# only slim already-ported testfailpoint (fail crate).
+[dependencies]
+astersql-testkit-testfailpoint = { package = "astersql-testkit-testfailpoint", path = "../../../../pkg/testkit/testfailpoint" }
+fail = { version = "0.5.1", features = ["failpoints"] }

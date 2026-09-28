@@ -1,0 +1,22 @@
+[package]
+name = "astersql-statistics-handle-cache-internal-lfu"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+cache-internal = { package = "astersql-statistics-handle-cache-internal", path = ".." }
+cache-metrics = { package = "astersql-statistics-handle-cache-metrics", path = "../../metrics" }
+moka = { version = "0.12", features = ["sync"] }
+statistics = { package = "astersql-statistics", path = "../../../../" }
+sysinfo = "0.33"
+
+[dev-dependencies]
+testutil = { package = "astersql-statistics-handle-cache-internal-testutil", path = "../testutil" }
+
+[package.metadata.porting]
+go-package = "pkg/statistics/handle/cache/internal/lfu"
+legacy-tasks = ["task-749", "task-758"]

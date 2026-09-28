@@ -1,0 +1,18 @@
+[package]
+name = "astersql-tools-fake-oauth"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "tools/fake-oauth"
+legacy-tasks = []
+kind = "binary"
+lane = 0
+
+[[bin]]
+name = "astersql-tools-fake-oauth"
+path = "main.rs"

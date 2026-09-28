@@ -1,0 +1,29 @@
+[package]
+name = "astersql-tests-realtikvtest-flashbacktest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "tests/realtikvtest/flashbacktest"
+legacy-tasks = []
+kind = "test-only"
+lane = 1
+
+[[test]]
+name = "flashback_test"
+path = "flashback_test.rs"
+
+[[test]]
+name = "main_test"
+path = "main_test.rs"
+
+# arm64 darwin: no kv/domain/kvproto/grpcio.
+# RealTiKV / SQL / flashback / failpoint / GC boundaries are local slim stubs in
+# `harness` (+ parent `astersql-tests-realtikvtest`). Do not pull heavy deps.
+[dependencies]
+"astersql-tests-realtikvtest" = { package = "astersql-tests-realtikvtest", path = ".." }

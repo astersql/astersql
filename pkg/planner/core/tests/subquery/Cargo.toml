@@ -1,0 +1,17 @@
+[package]
+name = "astersql-planner-core-tests-subquery"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/planner/core/tests/subquery"
+legacy-tasks = ["task-1443"]
+
+[dev-dependencies]
+"astersql-parser" = { package = "astersql-parser", path = "../../../../parser" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../../testkit" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../../testkit/testsetup" }

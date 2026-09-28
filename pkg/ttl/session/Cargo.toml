@@ -1,0 +1,37 @@
+[package]
+name = "astersql-ttl-session"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/ttl/session"
+legacy-tasks = ["task-893", "task-1501"]
+
+[dependencies]
+
+[dev-dependencies]
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../sessionctx/vardef" }
+
+[target.'cfg(any())'.dependencies]
+"astersql-infoschema-context" = { package = "astersql-infoschema-context", path = "../../infoschema/context" }
+"astersql-kv" = { package = "astersql-kv", path = "../../kv" }
+"astersql-parser-terror" = { package = "astersql-parser-terror", path = "../../parser/terror" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../sessionctx" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../sessionctx/vardef" }
+"astersql-sessionctx-variable" = { package = "astersql-sessionctx-variable", path = "../../sessionctx/variable" }
+"astersql-sessiontxn" = { package = "astersql-sessiontxn", path = "../../sessiontxn" }
+"astersql-ttl-metrics" = { package = "astersql-ttl-metrics", path = "../metrics" }
+"astersql-util-chunk" = { package = "astersql-util-chunk", path = "../../util/chunk" }
+"astersql-util-intest" = { package = "astersql-util-intest", path = "../../util/intest" }
+"astersql-util-sqlexec" = { package = "astersql-util-sqlexec", path = "../../util/sqlexec" }
+"astersql-util-sqlkiller" = { package = "astersql-util-sqlkiller", path = "../../util/sqlkiller" }
+"astersql-util-timeutil" = { package = "astersql-util-timeutil", path = "../../util/timeutil" }
+
+[target.'cfg(any())'.dev-dependencies]
+"astersql-testkit" = { package = "astersql-testkit", path = "../../testkit" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }
+"astersql-util" = { package = "astersql-util", path = "../../util" }

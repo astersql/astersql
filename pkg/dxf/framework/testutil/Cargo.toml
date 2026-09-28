@@ -1,0 +1,33 @@
+[package]
+name = "astersql-dxf-framework-testutil"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/dxf/framework/testutil"
+legacy-tasks = ["task-1518"]
+
+[dependencies]
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../config/kerneltype" }
+"astersql-dxf-framework-handle" = { package = "astersql-dxf-framework-handle", path = "../handle" }
+"astersql-dxf-framework-mock" = { package = "astersql-dxf-framework-mock", path = "../mock" }
+"astersql-dxf-framework-mock-execute" = { package = "astersql-dxf-framework-mock-execute", path = "../mock/execute" }
+"astersql-dxf-framework-proto" = { package = "astersql-dxf-framework-proto", path = "../proto" }
+"astersql-dxf-framework-scheduler" = { package = "astersql-dxf-framework-scheduler", path = "../scheduler" }
+"astersql-dxf-framework-scheduler-mock" = { package = "astersql-dxf-framework-scheduler-mock", path = "../scheduler/mock" }
+"astersql-dxf-framework-storage" = { package = "astersql-dxf-framework-storage", path = "../storage" }
+"astersql-dxf-framework-taskexecutor" = { package = "astersql-dxf-framework-taskexecutor", path = "../taskexecutor" }
+"astersql-dxf-framework-taskexecutor-execute" = { package = "astersql-dxf-framework-taskexecutor-execute", path = "../taskexecutor/execute" }
+"astersql-keyspace" = { package = "astersql-keyspace", path = "../../../keyspace" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../../sessionctx" }
+"astersql-store-mockstore" = { package = "astersql-store-mockstore", path = "../../../store/mockstore" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../testkit/testfailpoint" }
+"astersql-util" = { package = "astersql-util", path = "../../../util" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../../util/logutil" }
+"astersql-util-sqlexec" = { package = "astersql-util-sqlexec", path = "../../../util/sqlexec" }

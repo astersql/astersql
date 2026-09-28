@@ -1,0 +1,27 @@
+[package]
+name = "astersql-statistics-asyncload"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+# `AsyncLoadHistogramNeededItems` is a process-global. Driving it through the
+# domain requires linking the same rlib the domain links, so this port has to
+# be an integration test rather than a `#[cfg(test)]` module.
+[[test]]
+name = "async_load_test"
+path = "async_load_test.rs"
+
+[package.metadata.porting]
+go-package = "pkg/statistics/asyncload"
+legacy-tasks = ["task-433", "task-1477"]
+
+[dependencies]
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../meta/model" }
+
+[dev-dependencies]
+"astersql-domain" = { package = "astersql-domain", path = "../../domain" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../parser/ast" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../testkit" }

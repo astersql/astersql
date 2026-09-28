@@ -1,0 +1,44 @@
+[package]
+name = "astersql-store-gcworker"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/store/gcworker"
+legacy-tasks = ["task-1273", "task-1275", "task-1277", "task-1278"]
+
+[dependencies]
+"astersql-config-deploymode" = { package = "astersql-config-deploymode", path = "../../config/deploymode" }
+"astersql-ddl" = { package = "astersql-ddl", path = "../../ddl" }
+"astersql-ddl-label" = { package = "astersql-ddl-label", path = "../../ddl/label" }
+"astersql-ddl-placement" = { package = "astersql-ddl-placement", path = "../../ddl/placement" }
+"astersql-ddl-util" = { package = "astersql-ddl-util", path = "../../ddl/util" }
+"astersql-domain-infosync" = { package = "astersql-domain-infosync", path = "../../domain/infosync" }
+"astersql-kv" = { package = "astersql-kv", path = "../../kv" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../meta/model" }
+"astersql-metrics" = { package = "astersql-metrics", path = "../../metrics" }
+"astersql-parser-terror" = { package = "astersql-parser-terror", path = "../../parser/terror" }
+"astersql-privilege" = { package = "astersql-privilege", path = "../../privilege" }
+"astersql-session" = { package = "astersql-session", path = "../../session" }
+"astersql-session-sessionapi" = { package = "astersql-session-sessionapi", path = "../../session/sessionapi" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../sessionctx/vardef" }
+"astersql-sessionctx-variable" = { package = "astersql-sessionctx-variable", path = "../../sessionctx/variable" }
+"astersql-tablecodec" = { package = "astersql-tablecodec", path = "../../tablecodec" }
+"astersql-util" = { package = "astersql-util", path = "../../util" }
+"astersql-util-codec" = { package = "astersql-util-codec", path = "../../util/codec" }
+"astersql-util-dbterror" = { package = "astersql-util-dbterror", path = "../../util/dbterror" }
+"astersql-util-intest" = { package = "astersql-util-intest", path = "../../util/intest" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../util/logutil" }
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../config" }
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../config/kerneltype" }
+"astersql-domain" = { package = "astersql-domain", path = "../../domain" }
+"astersql-store-mockstore" = { package = "astersql-store-mockstore", path = "../mockstore" }
+"astersql-store-mockstore-unistore" = { package = "astersql-store-mockstore-unistore", path = "../mockstore/unistore" }
+"astersql-testkit-testmain" = { package = "astersql-testkit-testmain", path = "../../testkit/testmain" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }

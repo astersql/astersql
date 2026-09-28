@@ -1,0 +1,31 @@
+[package]
+name = "astersql-util-chunk"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+anyhow = "1"
+crossbeam-channel = "0.5"
+fail = { version = "0.5", features = ["failpoints"] }
+rand-crate = { package = "rand", version = "0.9" }
+tempfile = "3"
+thiserror = "2"
+checksum-crate = { package = "astersql-util-checksum", path = "../checksum" }
+config-crate = { package = "astersql-config", path = "../../config" }
+disjointset-crate = { package = "astersql-util-disjointset", path = "../disjointset" }
+disk-crate = { package = "astersql-util-disk", path = "../disk" }
+encrypt-crate = { package = "astersql-util-encrypt", path = "../encrypt" }
+intest-crate = { package = "astersql-util-intest", path = "../intest", default-features = false }
+memory-crate = { package = "astersql-util-memory", path = "../memory" }
+parser-mysql = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+types = { package = "astersql-types-datum", path = "../../types/internal/datum" }
+types-field = { package = "astersql-types-field", path = "../../types/internal/field" }
+types-scalar = { package = "astersql-types-scalar", path = "../../types/internal/scalar" }
+
+[package.metadata.porting]
+go-package = "pkg/util/chunk"
+legacy-tasks = ["task-409", "task-415"]

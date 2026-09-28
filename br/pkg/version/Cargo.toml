@@ -1,0 +1,21 @@
+[package]
+name = "astersql-br-pkg-version"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "br/pkg/version"
+legacy-tasks = []
+kind = "library"
+lane = 2
+
+[dependencies]
+"astersql-br-pkg-errors" = { package = "astersql-br-pkg-errors", path = "../errors" }
+"astersql-br-pkg-version-build" = { package = "astersql-br-pkg-version-build", path = "build" }
+"astersql-errors" = { package = "astersql-errors", path = "../../../pkg/errors" }
+regex = "1"
+semver = "1"

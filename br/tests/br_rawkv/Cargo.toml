@@ -1,0 +1,22 @@
+[package]
+name = "astersql-br-tests-br-rawkv"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "br/tests/br_rawkv"
+legacy-tasks = []
+kind = "binary"
+lane = 2
+
+[[bin]]
+name = "astersql-br-tests-br-rawkv"
+path = "bin_main.rs"
+
+# Slimmed for darwin arm64: no kv/domain/kvproto/grpcio.
+# PD/TiKV/rawkv boundaries are local stubs in stubs.rs.
+[dependencies]

@@ -1,0 +1,38 @@
+[package]
+name = "astersql-objstore-s3store"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+anyhow = "1"
+aws-config = "1"
+aws-credential-types = "1"
+aws-sdk-s3 = "1"
+aws-types = "1"
+base64 = "0.22"
+http = "1"
+md-5 = "0.10"
+mockall = "0.13"
+objectio = { package = "astersql-objstore-objectio", path = "../objectio" }
+prefetch = { package = "astersql-util-prefetch", path = "../../util/prefetch" }
+reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"], default-features = false }
+s3like = { package = "astersql-objstore-s3like", path = "../s3like" }
+serde = { version = "1", features = ["derive"] }
+storeapi = { package = "astersql-objstore-storeapi", path = "../storeapi" }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "macros"] }
+tracing = "0.1"
+
+[dev-dependencies]
+objstore = { package = "astersql-objstore", path = ".." }
+
+[[test]]
+name = "s3_test"
+path = "s3_test.rs"
+
+[package.metadata.porting]
+go-package = "pkg/objstore/s3store"
+legacy-tasks = ["task-497"]

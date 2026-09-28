@@ -1,0 +1,15 @@
+[package]
+name = "astersql-tablecodec-rowindexcodec"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/tablecodec/rowindexcodec"
+legacy-tasks = ["task-183"]
+
+[dev-dependencies]
+testsetup = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }

@@ -1,0 +1,20 @@
+[package]
+name = "astersql-store-driver-error"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+thiserror = "2"
+tikv-client = { version = "=0.4.2", git = "ssh://git@github.com/astersql/client-rust.git", tag = "v0.4.2-aster.1", default-features = false }
+tidb-dbterror = { package = "astersql-util-dbterror", path = "../../../util/dbterror" }
+tidb-sqlkiller = { package = "astersql-util-sqlkiller", path = "../../../util/sqlkiller" }
+exeerrors-crate = { package = "astersql-util-dbterror-exeerrors", path = "../../../util/dbterror/exeerrors" }
+parser-mysql-crate = { package = "astersql-parser-mysql", path = "../../../parser/mysql" }
+
+[package.metadata.porting]
+go-package = "pkg/store/driver/error"
+legacy-tasks = ["task-466", "task-486"]

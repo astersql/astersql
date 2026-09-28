@@ -1,0 +1,28 @@
+[package]
+name = "astersql-br-pkg-kms"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+aws-config = "1"
+aws-credential-types = "1"
+aws-sdk-kms = "1"
+aws-smithy-http-client = { version = "1", features = ["legacy-rustls-ring"] }
+aws-types = "1"
+bytes = "1"
+google-cloud-auth = "1.15"
+google-cloud-kms-v1 = "1.13"
+hyper-rustls = { version = "0.24", default-features = false, features = ["http1", "http2", "tls12", "webpki-tokio"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio-util = "0.7"
+
+[package.metadata.porting]
+go-package = "br/pkg/kms"
+legacy-tasks = []
+kind = "library"
+lane = 0

@@ -1,0 +1,21 @@
+[package]
+name = "astersql-br-pkg-version-build"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "br/pkg/version/build"
+legacy-tasks = []
+kind = "library"
+lane = 2
+
+[dependencies]
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../../pkg/config/kerneltype" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../../../pkg/parser/mysql" }
+"astersql-util-israce" = { package = "astersql-util-israce", path = "../../../../pkg/util/israce" }
+"astersql-util-versioninfo" = { package = "astersql-util-versioninfo", path = "../../../../pkg/util/versioninfo" }
+rustc_version_runtime = "0.3"

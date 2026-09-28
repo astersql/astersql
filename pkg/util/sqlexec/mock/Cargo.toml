@@ -1,0 +1,17 @@
+[package]
+name = "astersql-util-sqlexec-mock"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+sqlexec-crate = { package = "astersql-util-sqlexec", path = ".." }
+
+[package.metadata.porting]
+go-package = "pkg/util/sqlexec/mock"
+legacy-tasks = ["task-617"]

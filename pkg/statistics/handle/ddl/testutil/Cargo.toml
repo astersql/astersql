@@ -1,0 +1,18 @@
+[package]
+name = "astersql-statistics-handle-ddl-testutil"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+aster_sql_ddl_notifier = { package = "astersql-ddl-notifier", path = "../../../../ddl/notifier" }
+aster_sql_kv = { package = "astersql-kv", path = "../../../../kv" }
+aster_sql_meta_model = { package = "astersql-meta-model", path = "../../../../meta/model" }
+aster_sql_statistics_handle_util = { package = "astersql-statistics-handle-util", path = "../../util" }
+
+[package.metadata.porting]
+go-package = "pkg/statistics/handle/ddl/testutil"
+legacy-tasks = ["task-984"]

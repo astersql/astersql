@@ -1,0 +1,60 @@
+[package]
+name = "astersql-tests-realtikvtest-importintotest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "tests/realtikvtest/importintotest"
+legacy-tasks = []
+kind = "test-only"
+lane = 1
+
+[[test]]
+name = "detach_test"
+path = "detach_test.rs"
+
+[[test]]
+name = "import_into_test"
+path = "import_into_test.rs"
+
+[[test]]
+name = "job_test"
+path = "job_test.rs"
+
+[[test]]
+name = "main_test"
+path = "main_test.rs"
+
+[[test]]
+name = "one_parquet_test"
+path = "one_parquet_test.rs"
+
+[[test]]
+name = "parquet_test"
+path = "parquet_test.rs"
+
+[[test]]
+name = "precheck_test"
+path = "precheck_test.rs"
+
+[[test]]
+name = "sdk_test"
+path = "sdk_test.rs"
+
+[[test]]
+name = "util_test"
+path = "util_test.rs"
+
+# arm64 darwin: no kv/domain/kvproto/grpcio.
+# RealTiKV / SQL / IMPORT INTO / failpoint / fake-GCS / ImportSDK boundaries are
+# local slim stubs in this crate (+ parent realtikvtest). Do not pull heavy deps.
+[dependencies]
+"astersql-tests-realtikvtest" = { package = "astersql-tests-realtikvtest", path = ".." }
+
+regex = "1"
+url = "2"

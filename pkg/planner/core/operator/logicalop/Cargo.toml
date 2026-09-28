@@ -1,0 +1,37 @@
+[package]
+name = "astersql-planner-core-operator-logicalop"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+aggregation = { package = "astersql-expression-aggregation", path = "../../../../expression/aggregation" }
+base = { package = "astersql-planner-core-base", path = "../../base" }
+cardinality = { package = "astersql-planner-cardinality", path = "../../../cardinality" }
+cost = { package = "astersql-planner-core-cost", path = "../../cost" }
+expression = { package = "astersql-expression", path = "../../../../expression" }
+exprstatic = { package = "astersql-expression-exprstatic", path = "../../../../expression/exprstatic" }
+fd = { package = "astersql-planner-funcdep", path = "../../../funcdep" }
+hint = { package = "astersql-util-hint", path = "../../../../util/hint" }
+kv = { package = "astersql-kv", path = "../../../../kv" }
+intset = { package = "astersql-util-intset", path = "../../../../util/intset" }
+model = { package = "astersql-meta-model", path = "../../../../meta/model" }
+mysql = { package = "astersql-parser-mysql", path = "../../../../parser/mysql" }
+property = { package = "astersql-planner-property", path = "../../../property" }
+planner_util = { package = "astersql-planner-util", path = "../../../util" }
+parser_ast = { package = "astersql-parser-ast", path = "../../../../parser/ast" }
+planctx = { package = "astersql-planner-planctx", path = "../../../planctx" }
+plancodec = { package = "astersql-util-plancodec", path = "../../../../util/plancodec" }
+ranger = { package = "astersql-util-ranger", path = "../../../../util/ranger" }
+statistics = { package = "astersql-statistics", path = "../../../../statistics" }
+rule_util = { package = "astersql-planner-core-rule-util", path = "../../rule/util" }
+types = { package = "astersql-types", path = "../../../../types" }
+vardef = { package = "astersql-sessionctx-vardef", path = "../../../../sessionctx/vardef" }
+
+[package.metadata.porting]
+go-package = "pkg/planner/core/operator/logicalop"

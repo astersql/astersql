@@ -1,0 +1,14 @@
+[package]
+name = "astersql-errno"
+version.workspace = true
+edition = "2024"
+publish = false
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+astersql-parser-mysql = { path = "../parser/mysql" }
+
+[dev-dependencies]
+astersql-testkit-testsetup = { path = "../testkit/testsetup" }

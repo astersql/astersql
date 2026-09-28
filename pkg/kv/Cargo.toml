@@ -1,0 +1,41 @@
+[package]
+name = "astersql-kv"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[features]
+# Match Go: Classic by default, NextGen only when explicitly selected.
+default = []
+nextgen = ["kerneltype/nextgen", "keyspace/nextgen"]
+
+[dependencies]
+codec-dependency = { package = "astersql-util-codec", path = "../util/codec" }
+config-dependency = { package = "astersql-config", path = "../config" }
+dbterror-dependency = { package = "astersql-util-dbterror", path = "../util/dbterror" }
+hack-dependency = { package = "astersql-util-hack", path = "../util/hack" }
+kerneltype = { package = "astersql-config-kerneltype", path = "../config/kerneltype" }
+keyspace = { package = "astersql-keyspace", path = "../keyspace" }
+parser-mysql = { package = "astersql-parser-mysql", path = "../parser/mysql" }
+resourcegrouptag-dependency = { package = "astersql-util-resourcegrouptag", path = "../util/resourcegrouptag" }
+size-dependency = { package = "astersql-util-size", path = "../util/size" }
+fail = { version = "0.5", features = ["failpoints"] }
+kvproto = { git = "https://github.com/pingcap/kvproto.git", rev = "a15c348f8713", default-features = false, features = ["protobuf-codec"] }
+log = "0.4"
+xxhash-rust = { version = "0.8", features = ["xxh64"] }
+protobuf = "=2.8.0"
+rand = "0.9"
+thiserror = "2"
+tokio-util = { version = "0.7", features = ["rt"] }
+
+[dev-dependencies]
+chrono-tz = "0.10"
+testsetup = { package = "astersql-testkit-testsetup", path = "../testkit/testsetup" }
+vardef-dependency = { package = "astersql-sessionctx-vardef", path = "../sessionctx/vardef" }
+
+[package.metadata.porting]
+go-package = "pkg/kv"
+legacy-tasks = ["task-461", "task-465", "task-475"]

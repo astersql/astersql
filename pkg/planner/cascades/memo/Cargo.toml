@@ -1,0 +1,21 @@
+[package]
+name = "astersql-planner-cascades-memo"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+cascades-base = { package = "astersql-planner-cascades-base", path = "../base" }
+core-base = { package = "astersql-planner-core-base", path = "../../core/base" }
+logicalop = { package = "astersql-planner-core-operator-logicalop", path = "../../core/operator/logicalop" }
+property = { package = "astersql-planner-property", path = "../../property" }
+planctx = { package = "astersql-planner-planctx", path = "../../planctx" }
+
+[package.metadata.porting]
+go-package = "pkg/planner/cascades/memo"
+legacy-tasks = ["task-1114", "task-1139"]

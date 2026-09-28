@@ -1,0 +1,18 @@
+[package]
+name = "astersql-util-filter"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+metadef = { package = "astersql-meta-metadef", path = "../../meta/metadef" }
+regex = "1.11"
+selector = { package = "astersql-util-table-rule-selector", path = "../table-rule-selector" }
+tfilter = { package = "astersql-util-table-filter", path = "../table-filter" }
+
+[package.metadata.porting]
+go-package = "pkg/util/filter"
+legacy-tasks = ["task-357", "task-385"]

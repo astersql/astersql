@@ -1,0 +1,25 @@
+[package]
+name = "astersql-session-sessionapi"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+ast-crate = { package = "astersql-parser-ast", path = "../../parser/ast" }
+auth-crate = { package = "astersql-parser-auth", path = "../../parser/auth" }
+conn-crate = { package = "astersql-privilege-conn", path = "../../privilege/conn" }
+extension-crate = { package = "astersql-extension", path = "../../extension" }
+resolve-crate = { package = "astersql-planner-core-resolve", path = "../../planner/core/resolve" }
+rustls = "0.23"
+sessmgr-crate = { package = "astersql-session-sessmgr", path = "../sessmgr" }
+sessionctx-crate = { package = "astersql-sessionctx", path = "../../sessionctx" }
+sessionstates-crate = { package = "astersql-sessionctx-sessionstates", path = "../../sessionctx/sessionstates" }
+sqlexec-crate = { package = "astersql-util-sqlexec", path = "../../util/sqlexec", features = ["formal-crate"] }
+txninfo-crate = { package = "astersql-session-txninfo", path = "../txninfo" }
+
+[package.metadata.porting]
+go-package = "pkg/session/sessionapi"
+legacy-tasks = ["task-712"]

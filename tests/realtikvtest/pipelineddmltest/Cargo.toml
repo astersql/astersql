@@ -1,0 +1,30 @@
+[package]
+name = "astersql-tests-realtikvtest-pipelineddmltest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "tests/realtikvtest/pipelineddmltest"
+legacy-tasks = []
+kind = "test-only"
+lane = 1
+
+[[test]]
+name = "main_test"
+path = "main_test.rs"
+
+[[test]]
+name = "pipelineddml_test"
+path = "pipelineddml_test.rs"
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../pkg/config" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../pkg/kv" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../../pkg/sessionctx/vardef" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../pkg/testkit" }
+"astersql-tests-realtikvtest" = { package = "astersql-tests-realtikvtest", path = ".." }

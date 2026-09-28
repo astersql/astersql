@@ -1,0 +1,27 @@
+[package]
+name = "astersql-session-test-txn"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/session/test/txn"
+legacy-tasks = ["task-1464"]
+
+[dev-dependencies]
+"astersql-domain" = { package = "astersql-domain", path = "../../../domain" }
+"astersql-config" = { package = "astersql-config", path = "../../../config" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
+"astersql-parser-auth" = { package = "astersql-parser-auth", path = "../../../parser/auth" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../../parser/mysql" }
+"astersql-parser-terror" = { package = "astersql-parser-terror", path = "../../../parser/terror" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-testkit-testmain" = { package = "astersql-testkit-testmain", path = "../../../testkit/testmain" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../testkit/testfailpoint" }
+"astersql-util-dbterror-plannererrors" = { package = "astersql-util-dbterror-plannererrors", path = "../../../util/dbterror/plannererrors" }
+"astersql-util-memory" = { package = "astersql-util-memory", path = "../../../util/memory" }
+"astersql-util-sqlkiller" = { package = "astersql-util-sqlkiller", path = "../../../util/sqlkiller" }

@@ -1,0 +1,24 @@
+[package]
+name = "astersql-util-topsql-reporter-mock"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+prost = "0.13"
+log = "0.4"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+tonic = { version = "0.12", features = ["transport"] }
+
+[build-dependencies]
+protoc-bin-vendored = "3"
+tonic-build = "0.12"
+
+[package.metadata.porting]
+go-package = "pkg/util/topsql/reporter/mock"
+legacy-tasks = ["task-244", "task-302"]

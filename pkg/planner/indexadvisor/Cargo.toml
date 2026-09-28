@@ -1,0 +1,36 @@
+[package]
+name = "astersql-planner-indexadvisor"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/planner/indexadvisor"
+legacy-tasks = ["task-1059", "task-1061", "task-1445"]
+
+[target.'cfg(windows)'.dependencies]
+"astersql-domain" = { package = "astersql-domain", path = "../../domain" }
+"astersql-infoschema" = { package = "astersql-infoschema", path = "../../infoschema" }
+"astersql-kv" = { package = "astersql-kv", path = "../../kv" }
+"astersql-meta-metadef" = { package = "astersql-meta-metadef", path = "../../meta/metadef" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../meta/model" }
+"astersql-parser" = { package = "astersql-parser", path = "../../parser" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../parser/ast" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+"astersql-parser-opcode" = { package = "astersql-parser-opcode", path = "../../parser/opcode" }
+"astersql-planner-util-fixcontrol" = { package = "astersql-planner-util-fixcontrol", path = "../util/fixcontrol" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../sessionctx" }
+"astersql-types" = { package = "astersql-types", path = "../../types" }
+"astersql-types-parser_driver" = { package = "astersql-types-parser_driver", path = "../../types/parser_driver" }
+"astersql-util-chunk" = { package = "astersql-util-chunk", path = "../../util/chunk" }
+"astersql-util-intest" = { package = "astersql-util-intest", path = "../../util/intest" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../util/logutil" }
+"astersql-util-parser" = { package = "astersql-util-parser", path = "../../util/parser" }
+"astersql-util-set" = { package = "astersql-util-set", path = "../../util/set" }
+"astersql-util-sqlexec" = { package = "astersql-util-sqlexec", path = "../../util/sqlexec" }
+
+[target.'cfg(windows)'.dev-dependencies]
+"astersql-testkit" = { package = "astersql-testkit", path = "../../testkit" }

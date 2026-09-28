@@ -1,0 +1,35 @@
+[package]
+name = "astersql-store"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[features]
+# Match Go: Classic by default, NextGen only when explicitly selected.
+default = []
+nextgen = ["kerneltype/nextgen", "keyspace-dependency/nextgen"]
+
+[dependencies]
+astersql-store-driver = { path = "driver" }
+config-dependency = { package = "astersql-config", path = "../config" }
+etcd-client = { version = "0.19", features = ["tls"] }
+etcd-dependency = { package = "astersql-util-etcd", path = "../util/etcd" }
+kerneltype = { package = "astersql-config-kerneltype", path = "../config/kerneltype" }
+keyspace-dependency = { package = "astersql-keyspace", path = "../keyspace" }
+thiserror = "2"
+url = "2"
+
+[dev-dependencies]
+astersql-kv = { path = "../kv" }
+astersql-store-mockstore-mockstorage = { path = "mockstore/mockstorage" }
+astersql-testkit-testsetup = { path = "../testkit/testsetup" }
+serial_test = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[package.metadata.porting]
+go-package = "pkg/store"
+legacy-tasks = ["task-529"]

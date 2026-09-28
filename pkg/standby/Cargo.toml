@@ -1,0 +1,27 @@
+[package]
+name = "astersql-standby"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/standby"
+legacy-tasks = ["task-1519", "task-1627"]
+
+[dependencies]
+"astersql-config" = { package = "astersql-config", path = "../config" }
+"astersql-config-deploymode" = { package = "astersql-config-deploymode", path = "../config/deploymode" }
+"astersql-keyspace" = { package = "astersql-keyspace", path = "../keyspace" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../parser/mysql" }
+"astersql-server" = { package = "astersql-server", path = "../server" }
+"astersql-tidbmanager" = { package = "astersql-tidbmanager", path = "../tidbmanager" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../util/logutil" }
+"astersql-util-signal" = { package = "astersql-util-signal", path = "../util/signal" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../config/kerneltype" }

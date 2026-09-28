@@ -1,0 +1,17 @@
+[package]
+name = "astersql-br-pkg-task-show"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "br/pkg/task/show"
+legacy-tasks = []
+kind = "library"
+lane = 2
+
+# arm64 darwin: no kv/domain/kvproto/grpcio. Local traits/stubs only.
+[dependencies]

@@ -1,0 +1,12 @@
+[package]
+name = "astersql-util-backoff"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/util/backoff"
+legacy-tasks = ["task-58", "task-132"]

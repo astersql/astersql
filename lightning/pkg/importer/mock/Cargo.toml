@@ -1,0 +1,19 @@
+[package]
+name = "astersql-lightning-pkg-importer-mock"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "lightning/pkg/importer/mock"
+legacy-tasks = []
+kind = "library"
+lane = 1
+
+# arm64 darwin: no kv/domain/kvproto/grpcio.
+# opts is slim/arm64-safe; mydump/objstore/meta-model/pd/errno use local stubs.
+[dependencies]
+"astersql-lightning-pkg-importer-opts" = { package = "astersql-lightning-pkg-importer-opts", path = "../opts" }

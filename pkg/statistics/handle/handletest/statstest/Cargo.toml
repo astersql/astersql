@@ -1,0 +1,24 @@
+[package]
+name = "astersql-statistics-handle-handletest-statstest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/statistics/handle/handletest/statstest"
+legacy-tasks = ["task-1632"]
+
+[target.'cfg(any())'.dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../../config" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../../../meta/model" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../../parser/ast" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../../../parser/mysql" }
+"astersql-statistics" = { package = "astersql-statistics", path = "../../.." }
+"astersql-statistics-handle-ddl-testutil" = { package = "astersql-statistics-handle-ddl-testutil", path = "../../ddl/testutil" }
+"astersql-statistics-handle-internal" = { package = "astersql-statistics-handle-internal", path = "../../internal" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../../testkit" }
+"astersql-testkit-analyzehelper" = { package = "astersql-testkit-analyzehelper", path = "../../../../testkit/analyzehelper" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../../testkit/testsetup" }

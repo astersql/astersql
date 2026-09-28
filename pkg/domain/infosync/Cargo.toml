@@ -1,0 +1,21 @@
+[package]
+name = "astersql-domain-infosync"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+astersql-config = { path = "../../config" }
+ddl-label = { package = "astersql-ddl-label", path = "../../ddl/label" }
+ddl-placement = { package = "astersql-ddl-placement", path = "../../ddl/placement" }
+meta-model = { package = "astersql-meta-model", path = "../../meta/model" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[package.metadata.porting]
+go-package = "pkg/domain/infosync"
+

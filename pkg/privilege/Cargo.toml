@@ -1,0 +1,21 @@
+[package]
+name = "astersql-privilege"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+auth-crate = { package = "astersql-parser-auth", path = "../parser/auth" }
+conn-crate = { package = "astersql-privilege-conn", path = "conn" }
+mysql-crate = { package = "astersql-parser-mysql", path = "../parser/mysql" }
+sessionctx-crate = { package = "astersql-sessionctx", path = "../sessionctx" }
+sqlexec-crate = { package = "astersql-util-sqlexec", path = "../util/sqlexec" }
+types-crate = { package = "astersql-types", path = "../types" }
+variable-crate = { package = "astersql-sessionctx-variable", path = "../sessionctx/variable" }
+
+[package.metadata.porting]
+go-package = "pkg/privilege"
+legacy-tasks = ["task-631"]

@@ -1,0 +1,24 @@
+[package]
+name = "astersql-statistics"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+astersql-errors = { path = "../errors" }
+chrono-tz = "0.10"
+chunk = { package = "astersql-util-chunk", path = "../util/chunk" }
+codec = { package = "astersql-util-codec", path = "../util/codec" }
+collate = { package = "astersql-util-collate", path = "../util/collate" }
+protobuf = "=2.8.0"
+stmtctx = { package = "astersql-sessionctx-stmtctx", path = "../sessionctx/stmtctx" }
+tipb = { git = "https://github.com/pingcap/tipb.git", rev = "07f0ea6b6bffa9d8ac100d81ee51dbbfe4dda3bf", default-features = false, features = ["protobuf-codec"] }
+types = { package = "astersql-types-datum", path = "../types/internal/datum" }
+types-field = { package = "astersql-types-field", path = "../types/internal/field" }
+
+[package.metadata.porting]
+go-package = "pkg/statistics"

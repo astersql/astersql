@@ -1,0 +1,57 @@
+[package]
+name = "astersql-statistics-handle-autoanalyze"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/statistics/handle/autoanalyze"
+legacy-tasks = ["task-968", "task-1478"]
+
+[target.'cfg(any())'.dependencies]
+"astersql-ddl-notifier" = { package = "astersql-ddl-notifier", path = "../../../ddl/notifier" }
+"astersql-domain-infosync" = { package = "astersql-domain-infosync", path = "../../../domain/infosync" }
+"astersql-infoschema" = { package = "astersql-infoschema", path = "../../../infoschema" }
+"astersql-meta-metadef" = { package = "astersql-meta-metadef", path = "../../../meta/metadef" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../../meta/model" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../parser/ast" }
+"astersql-parser-terror" = { package = "astersql-parser-terror", path = "../../../parser/terror" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../../sessionctx" }
+"astersql-sessionctx-sysproctrack" = { package = "astersql-sessionctx-sysproctrack", path = "../../../sessionctx/sysproctrack" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../../sessionctx/vardef" }
+"astersql-sessionctx-variable" = { package = "astersql-sessionctx-variable", path = "../../../sessionctx/variable" }
+"astersql-statistics" = { package = "astersql-statistics", path = "../.." }
+"astersql-statistics-handle-autoanalyze-exec" = { package = "astersql-statistics-handle-autoanalyze-exec", path = "exec" }
+"astersql-statistics-handle-autoanalyze-refresher" = { package = "astersql-statistics-handle-autoanalyze-refresher", path = "refresher" }
+"astersql-statistics-handle-lockstats" = { package = "astersql-statistics-handle-lockstats", path = "../lockstats" }
+"astersql-statistics-handle-logutil" = { package = "astersql-statistics-handle-logutil", path = "../logutil" }
+"astersql-statistics-handle-types" = { package = "astersql-statistics-handle-types", path = "../types" }
+"astersql-statistics-handle-util" = { package = "astersql-statistics-handle-util", path = "../util" }
+"astersql-types" = { package = "astersql-types", path = "../../../types" }
+"astersql-util-intest" = { package = "astersql-util-intest", path = "../../../util/intest" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../../util/logutil" }
+"astersql-util-sqlescape" = { package = "astersql-util-sqlescape", path = "../../../util/sqlescape" }
+"astersql-util-timeutil" = { package = "astersql-util-timeutil", path = "../../../util/timeutil" }
+
+[dev-dependencies]
+"astersql-domain" = { package = "astersql-domain", path = "../../../domain" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../../sessionctx/vardef" }
+"astersql-statistics" = { package = "astersql-statistics", path = "../.." }
+"astersql-statistics-handle" = { package = "astersql-statistics-handle", path = ".." }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }
+
+[target.'cfg(any())'.dev-dependencies]
+"astersql-domain-serverinfo" = { package = "astersql-domain-serverinfo", path = "../../../domain/serverinfo" }
+"astersql-keyspace" = { package = "astersql-keyspace", path = "../../../keyspace" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../../parser/mysql" }
+"astersql-statistics-handle-ddl-testutil" = { package = "astersql-statistics-handle-ddl-testutil", path = "../ddl/testutil" }
+"astersql-statistics-handle-util-test" = { package = "astersql-statistics-handle-util-test", path = "../util/test" }
+"astersql-store-mockstore" = { package = "astersql-store-mockstore", path = "../../../store/mockstore" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../testkit/testfailpoint" }
+"astersql-util-chunk" = { package = "astersql-util-chunk", path = "../../../util/chunk" }
+"astersql-util-mock" = { package = "astersql-util-mock", path = "../../../util/mock" }
+"astersql-util-sqlexec-mock" = { package = "astersql-util-sqlexec-mock", path = "../../../util/sqlexec/mock" }

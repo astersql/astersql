@@ -1,0 +1,19 @@
+[package]
+name = "astersql-server-internal-dump"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+time = "0.3.44"
+types = { package = "astersql-types-time", path = "../../../types/internal/time" }
+
+[dev-dependencies]
+chrono-tz = "0.10"
+
+[package.metadata.porting]
+go-package = "pkg/server/internal/dump"
+legacy-tasks = ["task-399", "task-418"]

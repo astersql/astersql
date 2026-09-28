@@ -1,0 +1,19 @@
+[package]
+name = "astersql-util-stmtsummary-v2-tests"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/util/stmtsummary/v2/tests"
+legacy-tasks = ["task-1512"]
+
+[dependencies]
+astersql-parser = { package = "astersql-parser", path = "../../../../parser" }
+astersql-util-stmtsummary-v2 = { package = "astersql-util-stmtsummary-v2", path = ".." }
+
+[dev-dependencies]
+astersql-testkit-testsetup = { package = "astersql-testkit-testsetup", path = "../../../../testkit/testsetup" }

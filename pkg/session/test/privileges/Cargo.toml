@@ -1,0 +1,22 @@
+[package]
+name = "astersql-session-test-privileges"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/session/test/privileges"
+legacy-tasks = ["task-1460"]
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../config" }
+"astersql-parser-auth" = { package = "astersql-parser-auth", path = "../../../parser/auth" }
+"astersql-privilege-privileges" = { package = "astersql-privilege-privileges", path = "../../../privilege/privileges" }
+"astersql-session" = { package = "astersql-session", path = "../.." }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-testkit-testmain" = { package = "astersql-testkit-testmain", path = "../../../testkit/testmain" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }
+serial_test = "3"

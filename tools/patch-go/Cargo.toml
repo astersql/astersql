@@ -1,0 +1,22 @@
+[package]
+name = "astersql-tools-patch-go"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "tools/patch-go"
+legacy-tasks = []
+kind = "binary"
+lane = 0
+
+[[bin]]
+name = "astersql-tools-patch-go"
+path = "main.rs"
+
+# arm64 darwin: no kv/domain/kvproto/grpcio.
+# runtime.grunningnanos is provided by local stubs.rs (Go //go:linkname).
+[dependencies]

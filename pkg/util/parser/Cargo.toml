@@ -1,0 +1,15 @@
+[package]
+name = "astersql-util-parser"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+astersql-parser = { path = "../../parser" }
+
+[package.metadata.porting]
+go-package = "pkg/util/parser"
+legacy-tasks = ["task-385", "task-445", "task-533"]

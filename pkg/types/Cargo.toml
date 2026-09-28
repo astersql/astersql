@@ -1,0 +1,39 @@
+[package]
+name = "astersql-types"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+base64 = "0.22"
+chrono-tz = "0.10"
+serde_json = { version = "1", features = ["arbitrary_precision", "preserve_order"] }
+thiserror = "2"
+collate = { package = "astersql-util-collate", path = "../util/collate" }
+dbterror = { package = "astersql-util-dbterror", path = "../util/dbterror" }
+mathutil = { package = "astersql-util-mathutil", path = "../util/mathutil" }
+parser-types = { package = "astersql-parser-types", path = "../parser/types" }
+types-group-1 = { package = "astersql-types-scalar", path = "internal/scalar" }
+types-file-group = { package = "astersql-types-file-group", path = "internal/file_group" }
+types-time = { package = "astersql-types-time", path = "internal/time" }
+types-vector = { package = "astersql-types-vector", path = "internal/vector" }
+types-core-time = { package = "astersql-types-core-time", path = "internal/core_time" }
+astersql_types_datum = { package = "astersql-types-datum", path = "internal/datum" }
+types-group-4 = { package = "astersql-types-metadata", path = "internal/metadata" }
+types-field-group = { package = "astersql-types-field", path = "internal/field" }
+types-json-functions = { package = "astersql-types-json-functions", path = "internal/json_functions" }
+types-json-binary = { package = "astersql-types-json-binary", path = "internal/json_binary" }
+types-json-path = { package = "astersql-types-json-path", path = "internal/json_path" }
+types-decimal = { package = "astersql-types-decimal", path = "internal/decimal" }
+
+[dev-dependencies]
+chrono = "0.4"
+rand = "0.8"
+rust_decimal = "1.37"
+
+[package.metadata.porting]
+go-package = "pkg/types"
+legacy-tasks = ["task-373", "task-374", "task-375", "task-376", "task-377", "task-379", "task-384", "task-386", "task-390", "task-393", "task-413", "task-470", "task-486"]

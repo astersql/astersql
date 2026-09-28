@@ -1,0 +1,37 @@
+[package]
+name = "astersql-dumpformat-parquetfile"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+bytes = "1"
+parquet = "59.1.0"
+
+[package.metadata.porting]
+go-package = "pkg/dumpformat/parquetfile"
+legacy-tasks = ["task-955", "task-956", "task-957", "task-961", "task-963", "task-964", "task-965"]
+
+[target.'cfg(windows)'.dependencies]
+"astersql-dumpformat-parsedef" = { package = "astersql-dumpformat-parsedef", path = "../parsedef" }
+"astersql-ingestor-simplesst" = { package = "astersql-ingestor-simplesst", path = "../../ingestor/simplesst" }
+"astersql-lightning-common" = { package = "astersql-lightning-common", path = "../../lightning/common" }
+"astersql-lightning-log" = { package = "astersql-lightning-log", path = "../../lightning/log" }
+"astersql-objstore" = { package = "astersql-objstore", path = "../../objstore" }
+"astersql-objstore-compressedio" = { package = "astersql-objstore-compressedio", path = "../../objstore/compressedio" }
+"astersql-objstore-storeapi" = { package = "astersql-objstore-storeapi", path = "../../objstore/storeapi" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+"astersql-types" = { package = "astersql-types", path = "../../types" }
+"astersql-util" = { package = "astersql-util", path = "../../util" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../util/logutil" }
+"astersql-util-timeutil" = { package = "astersql-util-timeutil", path = "../../util/timeutil" }
+"astersql-util-zeropool" = { package = "astersql-util-zeropool", path = "../../util/zeropool" }
+
+[target.'cfg(windows)'.dev-dependencies]
+"astersql-dumpformat-testutils" = { package = "astersql-dumpformat-testutils", path = "../testutils" }
+"astersql-objstore-objectio" = { package = "astersql-objstore-objectio", path = "../../objstore/objectio" }
+"astersql-table" = { package = "astersql-table", path = "../../table" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../testkit/testfailpoint" }

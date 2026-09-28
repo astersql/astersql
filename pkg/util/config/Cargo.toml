@@ -1,0 +1,20 @@
+[package]
+name = "astersql-util-config"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+logutil = { package = "astersql-util-logutil", path = "../logutil" }
+toml = "0.8"
+variable = { package = "astersql-sessionctx-variable", path = "../../sessionctx/variable" }
+
+[dev-dependencies]
+serial_test = "3"
+
+[package.metadata.porting]
+go-package = "pkg/util/config"
+legacy-tasks = ["task-635"]

@@ -1,0 +1,40 @@
+[package]
+name = "astersql-tablecodec"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[features]
+# Match Go: Classic by default, NextGen only when explicitly selected.
+default = []
+nextgen = ["kerneltype-dependency/nextgen"]
+
+[dependencies]
+chrono-tz = "0.10"
+crc32fast = "1"
+charset-dependency = { package = "astersql-parser-charset", path = "../parser/charset" }
+chunk-dependency = { package = "astersql-util-chunk", path = "../util/chunk" }
+codec-dependency = { package = "astersql-util-codec", path = "../util/codec" }
+collate-dependency = { package = "astersql-util-collate", path = "../util/collate" }
+datum-dependency = { package = "astersql-types-datum", path = "../types/internal/datum" }
+dbterror-dependency = { package = "astersql-util-dbterror", path = "../util/dbterror" }
+hack-dependency = { package = "astersql-util-hack", path = "../util/hack" }
+intest-dependency = { package = "astersql-util-intest", path = "../util/intest", default-features = false }
+kerneltype-dependency = { package = "astersql-config-kerneltype", path = "../config/kerneltype" }
+model-group-1 = { package = "astersql-meta-model-group1", path = "../meta/model/internal/group1" }
+size-dependency = { package = "astersql-util-size", path = "../util/size" }
+stringutil-dependency = { package = "astersql-util-stringutil", path = "../util/stringutil" }
+structure-dependency = { package = "astersql-structure", path = "../structure" }
+types-etc-dependency = { package = "astersql-types-metadata", path = "../types/internal/metadata" }
+types-scalar = { package = "astersql-types-scalar", path = "../types/internal/scalar" }
+
+[dev-dependencies]
+fail = { version = "0.5", features = ["failpoints"] }
+testsetup = { package = "astersql-testkit-testsetup", path = "../testkit/testsetup" }
+
+[package.metadata.porting]
+go-package = "pkg/tablecodec"
+legacy-tasks = ["task-484", "task-495"]

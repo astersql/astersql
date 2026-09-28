@@ -1,0 +1,31 @@
+[package]
+name = "astersql-objstore-ossstore"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+ali-oss-rs = { version = "0.2.5", default-features = false, features = ["blocking", "rust-tls"] }
+anyhow = "1"
+arc-swap = "1"
+http = "1"
+log = "0.4"
+reqsign-aliyun-oss = "3.1"
+reqsign-core = "3.1"
+reqsign-file-read-tokio = "3.0.2"
+reqsign-http-send-reqwest = "4.0.2"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+objectio = { package = "astersql-objstore-objectio", path = "../objectio" }
+prefetch = { package = "astersql-util-prefetch", path = "../../util/prefetch" }
+s3like = { package = "astersql-objstore-s3like", path = "../s3like" }
+storeapi = { package = "astersql-objstore-storeapi", path = "../storeapi" }
+
+[package.metadata.porting]
+go-package = "pkg/objstore/ossstore"
+legacy-tasks = ["task-525"]

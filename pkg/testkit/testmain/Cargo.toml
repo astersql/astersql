@@ -1,0 +1,12 @@
+[package]
+name = "astersql-testkit-testmain"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/testkit/testmain"
+legacy-tasks = ["task-54"]

@@ -1,0 +1,30 @@
+[package]
+name = "astersql-tests-realtikvtest-ddltest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "tests/realtikvtest/ddltest"
+legacy-tasks = []
+kind = "test-only"
+lane = 2
+
+[[test]]
+name = "ddl_test"
+path = "ddl_test.rs"
+
+[[test]]
+name = "main_test"
+path = "main_test.rs"
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../pkg/config" }
+"astersql-ddl" = { package = "astersql-ddl", path = "../../../pkg/ddl" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../pkg/testkit" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../pkg/testkit/testfailpoint" }
+"astersql-tests-realtikvtest" = { package = "astersql-tests-realtikvtest", path = ".." }

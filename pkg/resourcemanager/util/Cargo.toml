@@ -1,0 +1,13 @@
+[package]
+name = "astersql-resourcemanager-util"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[package.metadata.porting]
+go-package = "pkg/resourcemanager/util"
+legacy-tasks = ["task-313", "task-526", "task-548"]

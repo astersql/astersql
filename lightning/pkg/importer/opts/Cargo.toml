@@ -1,0 +1,18 @@
+[package]
+name = "astersql-lightning-pkg-importer-opts"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "lightning/pkg/importer/opts"
+legacy-tasks = []
+kind = "library"
+lane = 2
+
+# arm64 darwin: no kv/domain/kvproto/grpcio.
+# mydump MDLoaderSetupOption is FnOnce (not Clone); local stubs cover slices.Clone.
+[dependencies]

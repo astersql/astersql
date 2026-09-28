@@ -1,0 +1,19 @@
+[package]
+name = "astersql-util-gcutil"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+chrono = "0.4"
+sessionctx = { package = "astersql-sessionctx", path = "../../sessionctx" }
+thiserror = "2"
+vardef = { package = "astersql-sessionctx-vardef", path = "../../sessionctx/vardef" }
+variable = { package = "astersql-sessionctx-variable", path = "../../sessionctx/variable" }
+
+[package.metadata.porting]
+go-package = "pkg/util/gcutil"
+legacy-tasks = ["task-636"]

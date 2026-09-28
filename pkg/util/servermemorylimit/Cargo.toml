@@ -1,0 +1,25 @@
+[package]
+name = "astersql-util-servermemorylimit"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+chrono = "0.4"
+chrono-tz = "0.10"
+fail = { version = "0.5", features = ["failpoints"] }
+logutil-dependency = { package = "astersql-util-logutil", path = "../logutil" }
+memory-dependency = { package = "astersql-util-memory", path = "../memory" }
+mysql-dependency = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+sessmgr-dependency = { package = "astersql-session-sessmgr", path = "../../session/sessmgr" }
+sqlkiller-dependency = { package = "astersql-util-sqlkiller", path = "../sqlkiller" }
+types-datum = { package = "astersql-types-datum", path = "../../types/internal/datum" }
+types-time = { package = "astersql-types-time", path = "../../types/internal/time" }
+
+[package.metadata.porting]
+go-package = "pkg/util/servermemorylimit"
+legacy-tasks = ["task-516"]

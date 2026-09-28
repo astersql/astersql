@@ -1,0 +1,15 @@
+[package]
+name = "astersql-util-hack"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dev-dependencies]
+testsetup = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }
+
+[package.metadata.porting]
+go-package = "pkg/util/hack"
+legacy-tasks = ["task-74"]

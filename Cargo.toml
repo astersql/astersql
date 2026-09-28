@@ -1,0 +1,1501 @@
+# Go 到 Rust 机械迁移的临时基线；当前不声明迁移草稿可构建。
+
+[workspace]
+resolver = "3"
+members = [
+    "br/cmd/br",
+    "br/pkg/aws",
+    "br/pkg/backup",
+    "br/pkg/backup/prepare_snap",
+    "br/pkg/checkpoint",
+    "br/pkg/checksum",
+    "br/pkg/common",
+    "br/pkg/config",
+    "br/pkg/conn",
+    "br/pkg/conn/util",
+    "br/pkg/encryption",
+    "br/pkg/encryption/master_key",
+    "br/pkg/errors",
+    "br/pkg/gc",
+    "br/pkg/glue",
+    "br/pkg/gluetidb",
+    "br/pkg/gluetidb/mock",
+    "br/pkg/gluetikv",
+    "br/pkg/kms",
+    "br/pkg/logutil",
+    "br/pkg/metautil",
+    "br/pkg/mock",
+    "br/pkg/mock/mockid",
+    "br/pkg/mock/mocklocal",
+    "br/pkg/operation",
+    "br/pkg/pdutil",
+    "br/pkg/registry",
+    "br/pkg/restore",
+    "br/pkg/restore/data",
+    "br/pkg/restore/ingestrec",
+    "br/pkg/restore/internal/import_client",
+    "br/pkg/restore/internal/prealloc_db",
+    "br/pkg/restore/internal/prealloc_table_id",
+    "br/pkg/restore/internal/rawkv",
+    "br/pkg/restore/log_client",
+    "br/pkg/restore/snap_client",
+    "br/pkg/restore/split",
+    "br/pkg/restore/tiflashrec",
+    "br/pkg/restore/utils",
+    "br/pkg/rtree",
+    "br/pkg/stream",
+    "br/pkg/stream/backupmetas",
+    "br/pkg/stream/crr/config",
+    "br/pkg/stream/crr/internal/checkpoint",
+    "br/pkg/stream/crr/service",
+    "br/pkg/streamhelper",
+    "br/pkg/streamhelper/config",
+    "br/pkg/streamhelper/daemon",
+    "br/pkg/streamhelper/spans",
+    "br/pkg/summary",
+    "br/pkg/task",
+    "br/pkg/task/operator",
+    "br/pkg/task/show",
+    "br/pkg/trace",
+    "br/pkg/utils",
+    "br/pkg/utils/consts",
+    "br/pkg/utils/iter",
+    "br/pkg/utils/storewatch",
+    "br/pkg/utiltest",
+    "br/pkg/utiltest/crr",
+    "br/pkg/utiltest/fakecluster",
+    "br/pkg/utiltest/syncpoint",
+    "br/pkg/version",
+    "br/pkg/version/build",
+    "br/tests",
+    "br/tests/br_key_locked",
+    "br/tests/br_rawkv",
+    "br/tests/br_txn",
+    "br/tests/br_z_gc_safepoint",
+    "cmd/benchdb",
+    "cmd/benchkv",
+    "cmd/benchraw",
+    "cmd/ddltest",
+    "cmd/importer",
+    "cmd/mirror",
+    "cmd/pluginpkg",
+    "cmd/tidb-server",
+    "dumpling/cli",
+    "dumpling/cmd/dumpling",
+    "dumpling/context",
+    "dumpling/export",
+    "dumpling/log",
+    "dumpling/tests/s3",
+    "lightning/cmd/tidb-lightning",
+    "lightning/cmd/tidb-lightning-ctl",
+    "lightning/pkg/checkpoints",
+    "lightning/pkg/checkpoints/checkpointspb",
+    "lightning/pkg/errormanager",
+    "lightning/pkg/importer",
+    "lightning/pkg/importer/mock",
+    "lightning/pkg/importer/opts",
+    "lightning/pkg/importinto",
+    "lightning/pkg/importinto/mock",
+    "lightning/pkg/precheck",
+    "lightning/pkg/progress",
+    "lightning/pkg/server",
+    "pkg/autoid_service",
+    "pkg/bindinfo",
+    "pkg/bindinfo/tests",
+    "pkg/config",
+    "pkg/config/configtypes",
+    "pkg/config/deploymode",
+    "pkg/config/kerneltype",
+    "pkg/ddl",
+    "pkg/ddl/bdr",
+    "pkg/ddl/copr",
+    "pkg/ddl/ingest",
+    "pkg/ddl/ingest/testutil",
+    "pkg/ddl/jobsubmit",
+    "pkg/ddl/label",
+    "pkg/ddl/logutil",
+    "pkg/ddl/mock",
+    "pkg/ddl/notifier",
+    "pkg/ddl/placement",
+    "pkg/ddl/resourcegroup",
+    "pkg/ddl/schematracker",
+    "pkg/ddl/schemaver",
+    "pkg/ddl/serverstate",
+    "pkg/ddl/session",
+    "pkg/ddl/systable",
+    "pkg/ddl/testargsv1",
+    "pkg/ddl/tests/adminpause",
+    "pkg/ddl/tests/fail",
+    "pkg/ddl/tests/fastcreatetable",
+    "pkg/ddl/tests/fk",
+    "pkg/ddl/tests/indexmerge",
+    "pkg/ddl/tests/metadatalock",
+    "pkg/ddl/tests/multivaluedindex",
+    "pkg/ddl/tests/partition",
+    "pkg/ddl/tests/serial",
+    "pkg/ddl/tests/tiflash",
+    "pkg/ddl/testutil",
+    "pkg/ddl/util",
+    "pkg/distsql",
+    "pkg/distsql/context",
+    "pkg/domain",
+    "pkg/domain/affinity",
+    "pkg/domain/crossks",
+    "pkg/domain/globalconfigsync",
+    "pkg/domain/infosync",
+    "pkg/domain/metrics",
+    "pkg/domain/serverinfo",
+    "pkg/domain/sqlsvrapi",
+    "pkg/domain/sqlsvrapi/mock",
+    "pkg/dumpformat/parquetfile",
+    "pkg/dumpformat/parsedef",
+    "pkg/dumpformat/testutils",
+    "pkg/dxf/example",
+    "pkg/dxf/framework",
+    "pkg/dxf/framework/dxfmetric",
+    "pkg/dxf/framework/dxfutil",
+    "pkg/dxf/framework/handle",
+    "pkg/dxf/framework/integrationtests",
+    "pkg/dxf/framework/metering",
+    "pkg/dxf/framework/mock",
+    "pkg/dxf/framework/mock/execute",
+    "pkg/dxf/framework/planner",
+    "pkg/dxf/framework/proto",
+    "pkg/dxf/framework/scheduler",
+    "pkg/dxf/framework/scheduler/mock",
+    "pkg/dxf/framework/schstatus",
+    "pkg/dxf/framework/storage",
+    "pkg/dxf/framework/taskexecutor",
+    "pkg/dxf/framework/taskexecutor/execute",
+    "pkg/dxf/framework/testutil",
+    "pkg/dxf/importinto",
+    "pkg/dxf/importinto/conflictedkv",
+    "pkg/dxf/importinto/jobhistory",
+    "pkg/dxf/importinto/mock",
+    "pkg/dxf/importinto/taskkey",
+    "pkg/dxf/operator",
+    "pkg/errctx",
+    "pkg/errno",
+    "pkg/errors",
+    "pkg/executor",
+    "pkg/executor/aggfuncs",
+    "pkg/executor/aggregate",
+    "pkg/executor/importer",
+    "pkg/executor/internal/applycache",
+    "pkg/executor/internal/builder",
+    "pkg/executor/internal/calibrateresource",
+    "pkg/executor/internal/exec",
+    "pkg/executor/internal/mpp",
+    "pkg/executor/internal/pdhelper",
+    "pkg/executor/internal/querywatch",
+    "pkg/executor/internal/testutil",
+    "pkg/executor/internal/util",
+    "pkg/executor/internal/vecgroupchecker",
+    "pkg/executor/join",
+    "pkg/executor/join/joinversion",
+    "pkg/executor/join/test/indexjoin",
+    "pkg/executor/join/test/mergejoin",
+    "pkg/executor/lockstats",
+    "pkg/executor/metrics",
+    "pkg/executor/mppcoordmanager",
+    "pkg/executor/sortexec",
+    "pkg/executor/staticrecordset",
+    "pkg/executor/test/admintest",
+    "pkg/executor/test/aggregate",
+    "pkg/executor/test/analyzetest",
+    "pkg/executor/test/analyzetest/columns",
+    "pkg/executor/test/analyzetest/memorycontrol",
+    "pkg/executor/test/analyzetest/options",
+    "pkg/executor/test/analyzetest/panictest",
+    "pkg/executor/test/autoidtest",
+    "pkg/executor/test/cte",
+    "pkg/executor/test/ddl",
+    "pkg/executor/test/distsqltest",
+    "pkg/executor/test/executor",
+    "pkg/executor/test/fktest",
+    "pkg/executor/test/indexmergereadtest",
+    "pkg/executor/test/infoschema",
+    "pkg/executor/test/issuetest",
+    "pkg/executor/test/jointest",
+    "pkg/executor/test/jointest/hashjoin",
+    "pkg/executor/test/loaddatatest",
+    "pkg/executor/test/loadremotetest",
+    "pkg/executor/test/memtest",
+    "pkg/executor/test/oomtest",
+    "pkg/executor/test/passwordtest",
+    "pkg/executor/test/plancache",
+    "pkg/executor/test/planreplayer",
+    "pkg/executor/test/recovertest",
+    "pkg/executor/test/seqtest",
+    "pkg/executor/test/showtest",
+    "pkg/executor/test/simpletest",
+    "pkg/executor/test/splittest",
+    "pkg/executor/test/tiflashtest",
+    "pkg/executor/test/txn",
+    "pkg/executor/test/unstabletest",
+    "pkg/executor/test/writetest",
+    "pkg/executor/unionexec",
+    "pkg/executor/windows",
+    "pkg/expression",
+    "pkg/expression/aggregation",
+    "pkg/expression/exprctx",
+    "pkg/expression/expropt",
+    "pkg/expression/exprstatic",
+    "pkg/expression/integration_test",
+    "pkg/expression/sessionexpr",
+    "pkg/expression/test/constantpropagation",
+    "pkg/expression/test/multivaluedindex",
+    "pkg/extension",
+    "pkg/extension/extensionimpl",
+    "pkg/extworkload",
+    "pkg/extworkload/client",
+    "pkg/format/textrow",
+    "pkg/importsdk",
+    "pkg/importsdk/mock",
+    "pkg/infoschema",
+    "pkg/infoschema/context",
+    "pkg/infoschema/internal",
+    "pkg/infoschema/issyncer",
+    "pkg/infoschema/issyncer/mdldef",
+    "pkg/infoschema/isvalidator",
+    "pkg/infoschema/metrics",
+    "pkg/infoschema/perfschema",
+    "pkg/infoschema/test/cachetest",
+    "pkg/infoschema/test/clustertablestest",
+    "pkg/infoschema/test/infoschemav2test",
+    "pkg/infoschema/validatorapi",
+    "pkg/ingestor",
+    "pkg/ingestor/engineapi",
+    "pkg/ingestor/errdef",
+    "pkg/ingestor/globalsort",
+    "pkg/ingestor/ingestcli",
+    "pkg/ingestor/ingestcli/mock",
+    "pkg/ingestor/ingestctrl",
+    "pkg/ingestor/ingestmetric",
+    "pkg/ingestor/simplesst",
+    "pkg/ingestor/testutils",
+    "pkg/keyspace",
+    "pkg/kv",
+    "pkg/lightning/backend",
+    "pkg/lightning/backend/encode",
+    "pkg/lightning/backend/kv",
+    "pkg/lightning/backend/tidb",
+    "pkg/lightning/common",
+    "pkg/lightning/config",
+    "pkg/lightning/duplicate",
+    "pkg/lightning/importdef",
+    "pkg/lightning/log",
+    "pkg/lightning/manual",
+    "pkg/lightning/membuf",
+    "pkg/lightning/metric",
+    "pkg/lightning/mydump",
+    "pkg/lightning/tikv",
+    "pkg/lightning/verification",
+    "pkg/lightning/worker",
+    "pkg/lock",
+    "pkg/lock/context",
+    "pkg/meta",
+    "pkg/meta/autoid",
+    "pkg/meta/metabuild",
+    "pkg/meta/metadef",
+    "pkg/meta/model",
+    "pkg/meta/tidbvar",
+    "pkg/metaservice",
+    "pkg/metrics",
+    "pkg/metrics/common",
+    "pkg/objstore",
+    "pkg/objstore/compressedio",
+    "pkg/objstore/mockobjstore",
+    "pkg/objstore/objectio",
+    "pkg/objstore/ossstore",
+    "pkg/objstore/ossstore/mock",
+    "pkg/objstore/recording",
+    "pkg/objstore/s3like",
+    "pkg/objstore/s3like/mock",
+    "pkg/objstore/s3store",
+    "pkg/objstore/s3store/mock",
+    "pkg/objstore/storeapi",
+    "pkg/owner",
+    "pkg/param",
+    "pkg/parser",
+    "pkg/parser/ast",
+    "pkg/parser/auth",
+    "pkg/parser/charset",
+    "pkg/parser/duration",
+    "pkg/parser/format",
+    "pkg/parser/mysql",
+    "pkg/parser/opcode",
+    "pkg/parser/parsergen",
+    "pkg/parser/terror",
+    "pkg/parser/test_driver",
+    "pkg/parser/tidb",
+    "pkg/parser/types",
+    "pkg/parser/util",
+    "pkg/planner",
+    "pkg/planner/cardinality",
+    "pkg/planner/cascades",
+    "pkg/planner/cascades/base",
+    "pkg/planner/cascades/base/cascadesctx",
+    "pkg/planner/cascades/impl",
+    "pkg/planner/cascades/memo",
+    "pkg/planner/cascades/old",
+    "pkg/planner/cascades/pattern",
+    "pkg/planner/cascades/rule",
+    "pkg/planner/cascades/rule/apply/decorrelateapply",
+    "pkg/planner/cascades/rule/join",
+    "pkg/planner/cascades/rule/ruleset",
+    "pkg/planner/cascades/task",
+    "pkg/planner/cascades/util",
+    "pkg/planner/core",
+    "pkg/planner/core/access",
+    "pkg/planner/core/base",
+    "pkg/planner/core/casetest",
+    "pkg/planner/core/casetest/binaryplan",
+    "pkg/planner/core/casetest/cascades",
+    "pkg/planner/core/casetest/cbotest",
+    "pkg/planner/core/casetest/ch",
+    "pkg/planner/core/casetest/correlated",
+    "pkg/planner/core/casetest/dag",
+    "pkg/planner/core/casetest/enforcempp",
+    "pkg/planner/core/casetest/flatplan",
+    "pkg/planner/core/casetest/hint",
+    "pkg/planner/core/casetest/index",
+    "pkg/planner/core/casetest/indexmerge",
+    "pkg/planner/core/casetest/instanceplancache",
+    "pkg/planner/core/casetest/join",
+    "pkg/planner/core/casetest/logicalplan",
+    "pkg/planner/core/casetest/mpp",
+    "pkg/planner/core/casetest/parallelapply",
+    "pkg/planner/core/casetest/partition",
+    "pkg/planner/core/casetest/physicalplantest",
+    "pkg/planner/core/casetest/plancache",
+    "pkg/planner/core/casetest/planstats",
+    "pkg/planner/core/casetest/pushdown",
+    "pkg/planner/core/casetest/rule",
+    "pkg/planner/core/casetest/scalarsubquery",
+    "pkg/planner/core/casetest/schema",
+    "pkg/planner/core/casetest/tpcds",
+    "pkg/planner/core/casetest/tpch",
+    "pkg/planner/core/casetest/vectorsearch",
+    "pkg/planner/core/casetest/windows",
+    "pkg/planner/core/constraint",
+    "pkg/planner/core/cost",
+    "pkg/planner/core/generator/hash64_equals",
+    "pkg/planner/core/generator/plan_cache",
+    "pkg/planner/core/generator/shallow_ref",
+    "pkg/planner/core/issuetest",
+    "pkg/planner/core/joinorder",
+    "pkg/planner/core/metrics",
+    "pkg/planner/core/operator/baseimpl",
+    "pkg/planner/core/operator/logicalop",
+    "pkg/planner/core/operator/logicalop/logicalop_test",
+    "pkg/planner/core/operator/physicalop",
+    "pkg/planner/core/partidx",
+    "pkg/planner/core/resolve",
+    "pkg/planner/core/rule",
+    "pkg/planner/core/rule/util",
+    "pkg/planner/core/stats",
+    "pkg/planner/core/tests/analyze",
+    "pkg/planner/core/tests/cte",
+    "pkg/planner/core/tests/extractor",
+    "pkg/planner/core/tests/null",
+    "pkg/planner/core/tests/partition",
+    "pkg/planner/core/tests/pointget",
+    "pkg/planner/core/tests/prepare",
+    "pkg/planner/core/tests/redact",
+    "pkg/planner/core/tests/rewriter",
+    "pkg/planner/core/tests/subquery",
+    "pkg/planner/extstore",
+    "pkg/planner/funcdep",
+    "pkg/planner/implementation",
+    "pkg/planner/indexadvisor",
+    "pkg/planner/memo",
+    "pkg/planner/planctx",
+    "pkg/planner/plannersession",
+    "pkg/planner/property",
+    "pkg/planner/util",
+    "pkg/planner/util/coretestsdk",
+    "pkg/planner/util/coreusage",
+    "pkg/planner/util/costusage",
+    "pkg/planner/util/domainmisc",
+    "pkg/planner/util/fixcontrol",
+    "pkg/planner/util/partitionpruning",
+    "pkg/planner/util/tablesampler",
+    "pkg/planner/util/utilfuncp",
+    "pkg/plugin",
+    "pkg/plugin/conn_ip_example",
+    "pkg/privilege",
+    "pkg/privilege/conn",
+    "pkg/privilege/privileges",
+    "pkg/privilege/privileges/ldap",
+    "pkg/resourcegroup",
+    "pkg/resourcegroup/runaway",
+    "pkg/resourcegroup/tests",
+    "pkg/resourcemanager",
+    "pkg/resourcemanager/pool",
+    "pkg/resourcemanager/pool/spool",
+    "pkg/resourcemanager/pool/workerpool",
+    "pkg/resourcemanager/poolmanager",
+    "pkg/resourcemanager/scheduler",
+    "pkg/resourcemanager/util",
+    "pkg/server",
+    "pkg/server/err",
+    "pkg/server/handler",
+    "pkg/server/handler/extractorhandler",
+    "pkg/server/handler/optimizor",
+    "pkg/server/handler/tests",
+    "pkg/server/handler/tikvhandler",
+    "pkg/server/handler/ttlhandler",
+    "pkg/server/internal",
+    "pkg/server/internal/column",
+    "pkg/server/internal/dump",
+    "pkg/server/internal/handshake",
+    "pkg/server/internal/parse",
+    "pkg/server/internal/resultset",
+    "pkg/server/internal/testserverclient",
+    "pkg/server/internal/testutil",
+    "pkg/server/internal/util",
+    "pkg/server/metrics",
+    "pkg/server/tests",
+    "pkg/server/tests/commontest",
+    "pkg/server/tests/cursor",
+    "pkg/server/tests/servertestkit",
+    "pkg/server/tests/standby",
+    "pkg/server/tests/tls",
+    "pkg/session",
+    "pkg/session/cursor",
+    "pkg/session/metrics",
+    "pkg/session/sessionapi",
+    "pkg/session/sessmgr",
+    "pkg/session/syssession",
+    "pkg/session/test",
+    "pkg/session/test/bootstraptest",
+    "pkg/session/test/bootstraptest2",
+    "pkg/session/test/clusteredindextest",
+    "pkg/session/test/common",
+    "pkg/session/test/meta",
+    "pkg/session/test/nontransactionaltest",
+    "pkg/session/test/privileges",
+    "pkg/session/test/resourcegrouptest",
+    "pkg/session/test/schematest",
+    "pkg/session/test/temporarytabletest",
+    "pkg/session/test/txn",
+    "pkg/session/test/variable",
+    "pkg/session/test/vars",
+    "pkg/session/txninfo",
+    "pkg/sessionctx",
+    "pkg/sessionctx/sessionstates",
+    "pkg/sessionctx/slowlogrule",
+    "pkg/sessionctx/stmtctx",
+    "pkg/sessionctx/sysproctrack",
+    "pkg/sessionctx/vardef",
+    "pkg/sessionctx/variable",
+    "pkg/sessionctx/variable/tests",
+    "pkg/sessionctx/variable/tests/slowlog",
+    "pkg/sessiontxn",
+    "pkg/sessiontxn/internal",
+    "pkg/sessiontxn/isolation",
+    "pkg/sessiontxn/isolation/metrics",
+    "pkg/sessiontxn/staleread",
+    "pkg/standby",
+    "pkg/statistics",
+    "pkg/statistics/asyncload",
+    "pkg/statistics/handle",
+    "pkg/statistics/handle/autoanalyze",
+    "pkg/statistics/handle/autoanalyze/exec",
+    "pkg/statistics/handle/autoanalyze/priorityqueue",
+    "pkg/statistics/handle/autoanalyze/priorityqueue/calculatoranalysis",
+    "pkg/statistics/handle/autoanalyze/priorityqueue/intervaltimezone",
+    "pkg/statistics/handle/autoanalyze/refresher",
+    "pkg/statistics/handle/cache",
+    "pkg/statistics/handle/cache/internal",
+    "pkg/statistics/handle/cache/internal/lfu",
+    "pkg/statistics/handle/cache/internal/mapcache",
+    "pkg/statistics/handle/cache/internal/testutil",
+    "pkg/statistics/handle/cache/metrics",
+    "pkg/statistics/handle/ddl",
+    "pkg/statistics/handle/ddl/testutil",
+    "pkg/statistics/handle/globalstats",
+    "pkg/statistics/handle/handletest",
+    "pkg/statistics/handle/handletest/analyze",
+    "pkg/statistics/handle/handletest/initstats",
+    "pkg/statistics/handle/handletest/lockstats",
+    "pkg/statistics/handle/handletest/statstest",
+    "pkg/statistics/handle/history",
+    "pkg/statistics/handle/initstats",
+    "pkg/statistics/handle/internal",
+    "pkg/statistics/handle/lockstats",
+    "pkg/statistics/handle/logutil",
+    "pkg/statistics/handle/metrics",
+    "pkg/statistics/handle/storage",
+    "pkg/statistics/handle/syncload",
+    "pkg/statistics/handle/types",
+    "pkg/statistics/handle/updatetest",
+    "pkg/statistics/handle/usage",
+    "pkg/statistics/handle/usage/collector",
+    "pkg/statistics/handle/usage/indexusage",
+    "pkg/statistics/handle/usage/predicatecolumn",
+    "pkg/statistics/handle/util",
+    "pkg/statistics/handle/util/test",
+    "pkg/statistics/util",
+    "pkg/store",
+    "pkg/store/copr",
+    "pkg/store/copr/copr_test",
+    "pkg/store/copr/metrics",
+    "pkg/store/driver",
+    "pkg/store/driver/backoff",
+    "pkg/store/driver/error",
+    "pkg/store/driver/options",
+    "pkg/store/driver/txn",
+    "pkg/store/gcworker",
+    "pkg/store/helper",
+    "pkg/store/mockstore",
+    "pkg/store/mockstore/mockcopr",
+    "pkg/store/mockstore/mockstorage",
+    "pkg/store/mockstore/teststore",
+    "pkg/store/mockstore/unistore",
+    "pkg/store/mockstore/unistore/client",
+    "pkg/store/mockstore/unistore/config",
+    "pkg/store/mockstore/unistore/cophandler",
+    "pkg/store/mockstore/unistore/lockstore",
+    "pkg/store/mockstore/unistore/metrics",
+    "pkg/store/mockstore/unistore/pd",
+    "pkg/store/mockstore/unistore/server",
+    "pkg/store/mockstore/unistore/tikv",
+    "pkg/store/mockstore/unistore/tikv/dbreader",
+    "pkg/store/mockstore/unistore/tikv/kverrors",
+    "pkg/store/mockstore/unistore/tikv/mvcc",
+    "pkg/store/mockstore/unistore/tikv/pberror",
+    "pkg/store/mockstore/unistore/util/lockwaiter",
+    "pkg/store/pdtypes",
+    "pkg/structure",
+    "pkg/table",
+    "pkg/table/tables",
+    "pkg/table/tables/test/partition",
+    "pkg/table/tables/testutil",
+    "pkg/table/tblctx",
+    "pkg/table/tblsession",
+    "pkg/table/temptable",
+    "pkg/tablecodec",
+    "pkg/tablecodec/rowindexcodec",
+    "pkg/telemetry",
+    "pkg/testkit",
+    "pkg/testkit/analyzehelper",
+    "pkg/testkit/ddlhelper",
+    "pkg/testkit/external",
+    "pkg/testkit/testenv",
+    "pkg/testkit/testfailpoint",
+    "pkg/testkit/testflag",
+    "pkg/testkit/testfork",
+    "pkg/testkit/testmain",
+    "pkg/testkit/testsetup",
+    "pkg/testkit/testutil",
+    "pkg/tidbmanager",
+    "pkg/timer",
+    "pkg/timer/api",
+    "pkg/timer/metrics",
+    "pkg/timer/runtime",
+    "pkg/timer/tablestore",
+    "pkg/ttl/cache",
+    "pkg/ttl/client",
+    "pkg/ttl/metrics",
+    "pkg/ttl/session",
+    "pkg/ttl/sqlbuilder",
+    "pkg/ttl/ttlworker",
+    "pkg/ttl/ttlworker/integrationtest",
+    "pkg/types",
+    "pkg/types/parser_driver",
+    "pkg/util",
+    "pkg/util/admin",
+    "pkg/util/arena",
+    "pkg/util/backoff",
+    "pkg/util/benchdaily",
+    "pkg/util/bitmap",
+    "pkg/util/breakpoint",
+    "pkg/util/cdcutil",
+    "pkg/util/cgmon",
+    "pkg/util/cgroup",
+    "pkg/util/channel",
+    "pkg/util/checksum",
+    "pkg/util/chunk",
+    "pkg/util/codec",
+    "pkg/util/collate",
+    "pkg/util/collate/ucadata",
+    "pkg/util/collate/ucadata/generator",
+    "pkg/util/collate/ucaimpl",
+    "pkg/util/column-mapping",
+    "pkg/util/compress",
+    "pkg/util/config",
+    "pkg/util/context",
+    "pkg/util/cpu",
+    "pkg/util/cpuprofile",
+    "pkg/util/cpuprofile/testutil",
+    "pkg/util/cteutil",
+    "pkg/util/dbterror",
+    "pkg/util/dbterror/exeerrors",
+    "pkg/util/dbterror/plannererrors",
+    "pkg/util/dbutil",
+    "pkg/util/dbutil/dbutiltest",
+    "pkg/util/ddl-checker",
+    "pkg/util/deadlockhistory",
+    "pkg/util/deeptest",
+    "pkg/util/disjointset",
+    "pkg/util/disk",
+    "pkg/util/disttask",
+    "pkg/util/domainutil",
+    "pkg/util/encrypt",
+    "pkg/util/engine",
+    "pkg/util/errmsg",
+    "pkg/util/etcd",
+    "pkg/util/execdetails",
+    "pkg/util/expensivequery",
+    "pkg/util/extsort",
+    "pkg/util/fastrand",
+    "pkg/util/filter",
+    "pkg/util/format",
+    "pkg/util/gctuner",
+    "pkg/util/gcutil",
+    "pkg/util/generatedexpr",
+    "pkg/util/generic",
+    "pkg/util/globalconn",
+    "pkg/util/hack",
+    "pkg/util/hint",
+    "pkg/util/httputil",
+    "pkg/util/importer",
+    "pkg/util/injectfailpoint",
+    "pkg/util/intest",
+    "pkg/util/intset",
+    "pkg/util/israce",
+    "pkg/util/keydecoder",
+    "pkg/util/kvcache",
+    "pkg/util/linter/constructor",
+    "pkg/util/logutil",
+    "pkg/util/logutil/consistency",
+    "pkg/util/mathutil",
+    "pkg/util/memory",
+    "pkg/util/memoryusagealarm",
+    "pkg/util/metricsutil",
+    "pkg/util/mock",
+    "pkg/util/mvmap",
+    "pkg/util/naming",
+    "pkg/util/nocopy",
+    "pkg/util/paging",
+    "pkg/util/parser",
+    "pkg/util/partialjson",
+    "pkg/util/password-validation",
+    "pkg/util/plancodec",
+    "pkg/util/ppcpuusage",
+    "pkg/util/prefetch",
+    "pkg/util/printer",
+    "pkg/util/profile",
+    "pkg/util/promutil",
+    "pkg/util/queue",
+    "pkg/util/ranger",
+    "pkg/util/ranger/context",
+    "pkg/util/redact",
+    "pkg/util/regexpr-router",
+    "pkg/util/regionsplit",
+    "pkg/util/replayer",
+    "pkg/util/resourcegrouptag",
+    "pkg/util/rowDecoder",
+    "pkg/util/rowcodec",
+    "pkg/util/schemacmp",
+    "pkg/util/selection",
+    "pkg/util/sem",
+    "pkg/util/sem/compat",
+    "pkg/util/sem/v2",
+    "pkg/util/serialization",
+    "pkg/util/servermemorylimit",
+    "pkg/util/set",
+    "pkg/util/signal",
+    "pkg/util/size",
+    "pkg/util/skip",
+    "pkg/util/sli",
+    "pkg/util/slice",
+    "pkg/util/sqlescape",
+    "pkg/util/sqlexec",
+    "pkg/util/sqlexec/mock",
+    "pkg/util/sqlkiller",
+    "pkg/util/stmtsummary",
+    "pkg/util/stmtsummary/v2",
+    "pkg/util/stmtsummary/v2/tests",
+    "pkg/util/stringutil",
+    "pkg/util/syncutil",
+    "pkg/util/sys/linux",
+    "pkg/util/sys/storage",
+    "pkg/util/systimemon",
+    "pkg/util/table-filter",
+    "pkg/util/table-router",
+    "pkg/util/table-rule-selector",
+    "pkg/util/tableutil",
+    "pkg/util/texttree",
+    "pkg/util/tiflash",
+    "pkg/util/tiflashcompute",
+    "pkg/util/tikvutil",
+    "pkg/util/timeutil",
+    "pkg/util/tls",
+    "pkg/util/topsql",
+    "pkg/util/topsql/collector",
+    "pkg/util/topsql/collector/mock",
+    "pkg/util/topsql/reporter",
+    "pkg/util/topsql/reporter/metrics",
+    "pkg/util/topsql/reporter/mock",
+    "pkg/util/topsql/state",
+    "pkg/util/topsql/stmtstats",
+    "pkg/util/traceevent",
+    "pkg/util/traceevent/test",
+    "pkg/util/tracing",
+    "pkg/util/trxevents",
+    "pkg/util/versioninfo",
+    "pkg/util/vitess",
+    "pkg/util/watcher",
+    "pkg/util/workloadrepo",
+    "pkg/util/zeropool",
+    "pkg/workloadlearning",
+    "tests/globalkilltest",
+    "tests/graceshutdown",
+    "tests/llmtest",
+    "tests/llmtest/generator",
+    "tests/llmtest/logger",
+    "tests/llmtest/testcase",
+    "tests/readonlytest",
+    "tests/realtikvtest",
+    "tests/realtikvtest/addindextest",
+    "tests/realtikvtest/addindextest1",
+    "tests/realtikvtest/addindextest2",
+    "tests/realtikvtest/addindextest3",
+    "tests/realtikvtest/addindextest4",
+    "tests/realtikvtest/brietest",
+    "tests/realtikvtest/ddltest",
+    "tests/realtikvtest/flashbacktest",
+    "tests/realtikvtest/importintotest",
+    "tests/realtikvtest/importintotest2",
+    "tests/realtikvtest/importintotest3",
+    "tests/realtikvtest/importintotest4",
+    "tests/realtikvtest/pessimistictest",
+    "tests/realtikvtest/pipelineddmltest",
+    "tests/realtikvtest/pushdowntest",
+    "tests/realtikvtest/sessiontest",
+    "tests/realtikvtest/startertest",
+    "tests/realtikvtest/statisticstest",
+    "tests/realtikvtest/testutils",
+    "tests/realtikvtest/txntest",
+    "tools/check",
+    "tools/check/xprog",
+    "tools/dashboard-linter",
+    "tools/fake-oauth",
+    "tools/gen-parquet",
+    "tools/patch-go",
+    "tools/tazel",
+]
+exclude = [
+    "crates/porting",
+    "pkg/expression/generator",
+    "pkg/expression/generator/helper",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[package]
+name = "astersql"
+version = "0.1.0"
+edition = "2024"
+publish = false
+autotests = false
+autobenches = false
+build = "build.rs"
+
+[features]
+default = []
+intest = []
+enableassert = []
+nextgen = ["facade_dxf_importinto_taskkey/nextgen", "facade_sessionctx_vardef/nextgen"]
+ddlargsv1 = ["facade_ddl_testargsv1/ddlargsv1"]
+cgo = ["facade_lightning_manual/cgo"]
+race = []
+mem-arbitrator = ["facade_util_memory/mem-arbitrator"]
+
+[dependencies]
+regex = "1"
+facade_config = { package = "astersql-config", path = "pkg/config" }
+facade_config_configtypes = { package = "astersql-config-configtypes", path = "pkg/config/configtypes" }
+facade_config_deploymode = { package = "astersql-config-deploymode", path = "pkg/config/deploymode" }
+facade_config_kerneltype = { package = "astersql-config-kerneltype", path = "pkg/config/kerneltype" }
+facade_ddl_bdr = { package = "astersql-ddl-bdr", path = "pkg/ddl/bdr" }
+facade_ddl_label = { package = "astersql-ddl-label", path = "pkg/ddl/label" }
+facade_ddl_logutil = { package = "astersql-ddl-logutil", path = "pkg/ddl/logutil" }
+facade_ddl_placement = { package = "astersql-ddl-placement", path = "pkg/ddl/placement" }
+facade_ddl_resourcegroup = { package = "astersql-ddl-resourcegroup", path = "pkg/ddl/resourcegroup" }
+facade_ddl_testargsv1 = { package = "astersql-ddl-testargsv1", path = "pkg/ddl/testargsv1" }
+facade_distsql_context = { package = "astersql-distsql-context", path = "pkg/distsql/context" }
+facade_domain_affinity = { package = "astersql-domain-affinity", path = "pkg/domain/affinity" }
+facade_domain_globalconfigsync = { package = "astersql-domain-globalconfigsync", path = "pkg/domain/globalconfigsync" }
+facade_domain_infosync = { package = "astersql-domain-infosync", path = "pkg/domain/infosync" }
+facade_domain_metrics = { package = "astersql-domain-metrics", path = "pkg/domain/metrics" }
+facade_domain_sqlsvrapi = { package = "astersql-domain-sqlsvrapi", path = "pkg/domain/sqlsvrapi" }
+facade_domain_sqlsvrapi_mock = { package = "astersql-domain-sqlsvrapi-mock", path = "pkg/domain/sqlsvrapi/mock" }
+facade_dumpformat_parsedef = { package = "astersql-dumpformat-parsedef", path = "pkg/dumpformat/parsedef" }
+facade_dumpformat_testutils = { package = "astersql-dumpformat-testutils", path = "pkg/dumpformat/testutils" }
+facade_dxf_framework = { package = "astersql-dxf-framework", path = "pkg/dxf/framework" }
+facade_dxf_framework_dxfmetric = { package = "astersql-dxf-framework-dxfmetric", path = "pkg/dxf/framework/dxfmetric" }
+facade_dxf_framework_dxfutil = { package = "astersql-dxf-framework-dxfutil", path = "pkg/dxf/framework/dxfutil" }
+facade_dxf_framework_metering = { package = "astersql-dxf-framework-metering", path = "pkg/dxf/framework/metering" }
+facade_dxf_framework_mock_execute = { package = "astersql-dxf-framework-mock-execute", path = "pkg/dxf/framework/mock/execute" }
+facade_dxf_framework_proto = { package = "astersql-dxf-framework-proto", path = "pkg/dxf/framework/proto" }
+facade_dxf_framework_scheduler_mock = { package = "astersql-dxf-framework-scheduler-mock", path = "pkg/dxf/framework/scheduler/mock" }
+facade_dxf_framework_schstatus = { package = "astersql-dxf-framework-schstatus", path = "pkg/dxf/framework/schstatus" }
+facade_dxf_framework_storage = { package = "astersql-dxf-framework-storage", path = "pkg/dxf/framework/storage" }
+facade_dxf_framework_taskexecutor_execute = { package = "astersql-dxf-framework-taskexecutor-execute", path = "pkg/dxf/framework/taskexecutor/execute" }
+facade_dxf_importinto_jobhistory = { package = "astersql-dxf-importinto-jobhistory", path = "pkg/dxf/importinto/jobhistory" }
+facade_dxf_importinto_taskkey = { package = "astersql-dxf-importinto-taskkey", path = "pkg/dxf/importinto/taskkey" }
+facade_dxf_operator = { package = "astersql-dxf-operator", path = "pkg/dxf/operator" }
+facade_errctx = { package = "astersql-errctx", path = "pkg/errctx" }
+facade_errno = { package = "astersql-errno", path = "pkg/errno" }
+facade_errors = { package = "astersql-errors", path = "pkg/errors" }
+facade_executor_internal_applycache = { package = "astersql-executor-internal-applycache", path = "pkg/executor/internal/applycache" }
+facade_executor_internal_pdhelper = { package = "astersql-executor-internal-pdhelper", path = "pkg/executor/internal/pdhelper" }
+facade_executor_internal_util = { package = "astersql-executor-internal-util", path = "pkg/executor/internal/util" }
+facade_executor_internal_vecgroupchecker = { package = "astersql-executor-internal-vecgroupchecker", path = "pkg/executor/internal/vecgroupchecker" }
+facade_executor_join_joinversion = { package = "astersql-executor-join-joinversion", path = "pkg/executor/join/joinversion" }
+facade_executor_metrics = { package = "astersql-executor-metrics", path = "pkg/executor/metrics" }
+facade_expression = { package = "astersql-expression", path = "pkg/expression" }
+facade_expression_aggregation = { package = "astersql-expression-aggregation", path = "pkg/expression/aggregation" }
+facade_expression_exprctx = { package = "astersql-expression-exprctx", path = "pkg/expression/exprctx" }
+facade_expression_expropt = { package = "astersql-expression-expropt", path = "pkg/expression/expropt" }
+facade_expression_exprstatic = { package = "astersql-expression-exprstatic", path = "pkg/expression/exprstatic" }
+facade_expression_sessionexpr = { package = "astersql-expression-sessionexpr", path = "pkg/expression/sessionexpr" }
+facade_extension = { package = "astersql-extension", path = "pkg/extension" }
+facade_extworkload = { package = "astersql-extworkload", path = "pkg/extworkload" }
+facade_extworkload_client = { package = "astersql-extworkload-client", path = "pkg/extworkload/client" }
+facade_format_textrow = { package = "astersql-format-textrow", path = "pkg/format/textrow" }
+facade_infoschema_context = { package = "astersql-infoschema-context", path = "pkg/infoschema/context" }
+facade_infoschema_issyncer_mdldef = { package = "astersql-infoschema-issyncer-mdldef", path = "pkg/infoschema/issyncer/mdldef" }
+facade_infoschema_isvalidator = { package = "astersql-infoschema-isvalidator", path = "pkg/infoschema/isvalidator" }
+facade_infoschema_metrics = { package = "astersql-infoschema-metrics", path = "pkg/infoschema/metrics" }
+facade_infoschema_validatorapi = { package = "astersql-infoschema-validatorapi", path = "pkg/infoschema/validatorapi" }
+facade_ingestor = { package = "astersql-ingestor", path = "pkg/ingestor" }
+facade_ingestor_engineapi = { package = "astersql-ingestor-engineapi", path = "pkg/ingestor/engineapi" }
+facade_ingestor_errdef = { package = "astersql-ingestor-errdef", path = "pkg/ingestor/errdef" }
+facade_ingestor_ingestmetric = { package = "astersql-ingestor-ingestmetric", path = "pkg/ingestor/ingestmetric" }
+facade_ingestor_testutils = { package = "astersql-ingestor-testutils", path = "pkg/ingestor/testutils" }
+facade_keyspace = { package = "astersql-keyspace", path = "pkg/keyspace" }
+facade_kv = { package = "astersql-kv", path = "pkg/kv" }
+facade_lightning_duplicate = { package = "astersql-lightning-duplicate", path = "pkg/lightning/duplicate" }
+facade_lightning_importdef = { package = "astersql-lightning-importdef", path = "pkg/lightning/importdef" }
+facade_lightning_log = { package = "astersql-lightning-log", path = "pkg/lightning/log" }
+facade_lightning_manual = { package = "astersql-lightning-manual", path = "pkg/lightning/manual" }
+facade_lightning_membuf = { package = "astersql-lightning-membuf", path = "pkg/lightning/membuf" }
+facade_lightning_metric = { package = "astersql-lightning-metric", path = "pkg/lightning/metric" }
+facade_lightning_mydump = { package = "astersql-lightning-mydump", path = "pkg/lightning/mydump" }
+facade_lightning_tikv = { package = "astersql-lightning-tikv", path = "pkg/lightning/tikv" }
+facade_lightning_verification = { package = "astersql-lightning-verification", path = "pkg/lightning/verification" }
+facade_lightning_backend_encode = { package = "astersql-lightning-backend-encode", path = "pkg/lightning/backend/encode" }
+facade_lightning_backend = { package = "astersql-lightning-backend", path = "pkg/lightning/backend" }
+facade_lightning_backend_kv = { package = "astersql-lightning-backend-kv", path = "pkg/lightning/backend/kv" }
+facade_lightning_backend_tidb = { package = "astersql-lightning-backend-tidb", path = "pkg/lightning/backend/tidb" }
+facade_lightning_worker = { package = "astersql-lightning-worker", path = "pkg/lightning/worker" }
+facade_workloadlearning = { package = "astersql-workloadlearning", path = "pkg/workloadlearning" }
+facade_lock_context = { package = "astersql-lock-context", path = "pkg/lock/context" }
+facade_meta = { package = "astersql-meta", path = "pkg/meta" }
+facade_meta_autoid = { package = "astersql-meta-autoid", path = "pkg/meta/autoid" }
+facade_meta_metabuild = { package = "astersql-meta-metabuild", path = "pkg/meta/metabuild" }
+facade_meta_metadef = { package = "astersql-meta-metadef", path = "pkg/meta/metadef" }
+facade_meta_model = { package = "astersql-meta-model", path = "pkg/meta/model" }
+facade_meta_tidbvar = { package = "astersql-meta-tidbvar", path = "pkg/meta/tidbvar" }
+facade_metaservice = { package = "astersql-metaservice", path = "pkg/metaservice" }
+facade_metrics = { package = "astersql-metrics", path = "pkg/metrics" }
+facade_metrics_common = { package = "astersql-metrics-common", path = "pkg/metrics/common" }
+facade_objstore = { package = "astersql-objstore", path = "pkg/objstore" }
+facade_objstore_compressedio = { package = "astersql-objstore-compressedio", path = "pkg/objstore/compressedio" }
+facade_objstore_mockobjstore = { package = "astersql-objstore-mockobjstore", path = "pkg/objstore/mockobjstore" }
+facade_objstore_objectio = { package = "astersql-objstore-objectio", path = "pkg/objstore/objectio" }
+facade_objstore_ossstore = { package = "astersql-objstore-ossstore", path = "pkg/objstore/ossstore" }
+facade_objstore_ossstore_mock = { package = "astersql-objstore-ossstore-mock", path = "pkg/objstore/ossstore/mock" }
+facade_objstore_recording = { package = "astersql-objstore-recording", path = "pkg/objstore/recording" }
+facade_objstore_s3like = { package = "astersql-objstore-s3like", path = "pkg/objstore/s3like" }
+facade_objstore_s3like_mock = { package = "astersql-objstore-s3like-mock", path = "pkg/objstore/s3like/mock" }
+facade_objstore_s3store = { package = "astersql-objstore-s3store", path = "pkg/objstore/s3store" }
+facade_objstore_s3store_mock = { package = "astersql-objstore-s3store-mock", path = "pkg/objstore/s3store/mock" }
+facade_objstore_storeapi = { package = "astersql-objstore-storeapi", path = "pkg/objstore/storeapi" }
+facade_owner = { package = "astersql-owner", path = "pkg/owner" }
+facade_param = { package = "astersql-param", path = "pkg/param" }
+facade_parser = { package = "astersql-parser", path = "pkg/parser" }
+facade_parser_ast = { package = "astersql-parser-ast", path = "pkg/parser/ast" }
+facade_parser_auth = { package = "astersql-parser-auth", path = "pkg/parser/auth" }
+facade_parser_charset = { package = "astersql-parser-charset", path = "pkg/parser/charset" }
+facade_parser_duration = { package = "astersql-parser-duration", path = "pkg/parser/duration" }
+facade_parser_format = { package = "astersql-parser-format", path = "pkg/parser/format" }
+facade_parser_mysql = { package = "astersql-parser-mysql", path = "pkg/parser/mysql" }
+facade_parser_opcode = { package = "astersql-parser-opcode", path = "pkg/parser/opcode" }
+facade_parser_terror = { package = "astersql-parser-terror", path = "pkg/parser/terror" }
+facade_parser_test_driver = { package = "astersql-parser-test_driver", path = "pkg/parser/test_driver" }
+facade_parser_tidb = { package = "astersql-parser-tidb", path = "pkg/parser/tidb" }
+facade_parser_types = { package = "astersql-parser-types", path = "pkg/parser/types" }
+facade_parser_util = { package = "astersql-parser-util", path = "pkg/parser/util" }
+facade_planner_cascades_base = { package = "astersql-planner-cascades-base", path = "pkg/planner/cascades/base" }
+facade_planner_core = { package = "astersql-planner-core", path = "pkg/planner/core" }
+facade_planner_core_base = { package = "astersql-planner-core-base", path = "pkg/planner/core/base" }
+facade_planner_core_operator_baseimpl = { package = "astersql-planner-core-operator-baseimpl", path = "pkg/planner/core/operator/baseimpl" }
+facade_planner_core_rule_util = { package = "astersql-planner-core-rule-util", path = "pkg/planner/core/rule/util" }
+facade_planner_core_constraint = { package = "astersql-planner-core-constraint", path = "pkg/planner/core/constraint" }
+facade_planner_cascades_util = { package = "astersql-planner-cascades-util", path = "pkg/planner/cascades/util" }
+facade_planner_core_access = { package = "astersql-planner-core-access", path = "pkg/planner/core/access" }
+facade_planner_core_cost = { package = "astersql-planner-core-cost", path = "pkg/planner/core/cost" }
+facade_planner_core_metrics = { package = "astersql-planner-core-metrics", path = "pkg/planner/core/metrics" }
+facade_planner_core_resolve = { package = "astersql-planner-core-resolve", path = "pkg/planner/core/resolve" }
+facade_planner_extstore = { package = "astersql-planner-extstore", path = "pkg/planner/extstore" }
+facade_planner_funcdep = { package = "astersql-planner-funcdep", path = "pkg/planner/funcdep" }
+facade_planner_planctx = { package = "astersql-planner-planctx", path = "pkg/planner/planctx" }
+facade_planner_property = { package = "astersql-planner-property", path = "pkg/planner/property" }
+facade_planner_util = { package = "astersql-planner-util", path = "pkg/planner/util" }
+facade_planner_util_fixcontrol = { package = "astersql-planner-util-fixcontrol", path = "pkg/planner/util/fixcontrol" }
+facade_planner_util_costusage = { package = "astersql-planner-util-costusage", path = "pkg/planner/util/costusage" }
+facade_planner_util_coreusage = { package = "astersql-planner-util-coreusage", path = "pkg/planner/util/coreusage" }
+facade_privilege = { package = "astersql-privilege", path = "pkg/privilege" }
+facade_privilege_conn = { package = "astersql-privilege-conn", path = "pkg/privilege/conn" }
+facade_privilege_privileges = { package = "astersql-privilege-privileges", path = "pkg/privilege/privileges" }
+facade_privilege_privileges_ldap = { package = "astersql-privilege-privileges-ldap", path = "pkg/privilege/privileges/ldap" }
+facade_resourcegroup = { package = "astersql-resourcegroup", path = "pkg/resourcegroup" }
+facade_resourcemanager = { package = "astersql-resourcemanager", path = "pkg/resourcemanager" }
+facade_resourcemanager_pool = { package = "astersql-resourcemanager-pool", path = "pkg/resourcemanager/pool" }
+facade_resourcemanager_pool_spool = { package = "astersql-resourcemanager-pool-spool", path = "pkg/resourcemanager/pool/spool" }
+facade_resourcemanager_pool_workerpool = { package = "astersql-resourcemanager-pool-workerpool", path = "pkg/resourcemanager/pool/workerpool" }
+facade_resourcemanager_poolmanager = { package = "astersql-resourcemanager-poolmanager", path = "pkg/resourcemanager/poolmanager" }
+facade_resourcemanager_scheduler = { package = "astersql-resourcemanager-scheduler", path = "pkg/resourcemanager/scheduler" }
+facade_resourcemanager_util = { package = "astersql-resourcemanager-util", path = "pkg/resourcemanager/util" }
+facade_server_err = { package = "astersql-server-err", path = "pkg/server/err" }
+facade_server_internal = { package = "astersql-server-internal", path = "pkg/server/internal" }
+facade_server_internal_column = { package = "astersql-server-internal-column", path = "pkg/server/internal/column" }
+facade_server_internal_dump = { package = "astersql-server-internal-dump", path = "pkg/server/internal/dump" }
+facade_server_internal_handshake = { package = "astersql-server-internal-handshake", path = "pkg/server/internal/handshake" }
+facade_server_internal_parse = { package = "astersql-server-internal-parse", path = "pkg/server/internal/parse" }
+facade_server_internal_testutil = { package = "astersql-server-internal-testutil", path = "pkg/server/internal/testutil" }
+facade_server_internal_util = { package = "astersql-server-internal-util", path = "pkg/server/internal/util" }
+facade_server_metrics = { package = "astersql-server-metrics", path = "pkg/server/metrics" }
+facade_session_cursor = { package = "astersql-session-cursor", path = "pkg/session/cursor" }
+facade_session_metrics = { package = "astersql-session-metrics", path = "pkg/session/metrics" }
+facade_session_sessmgr = { package = "astersql-session-sessmgr", path = "pkg/session/sessmgr" }
+facade_session_sessionapi = { package = "astersql-session-sessionapi", path = "pkg/session/sessionapi" }
+facade_session_txninfo = { package = "astersql-session-txninfo", path = "pkg/session/txninfo" }
+facade_sessionctx = { package = "astersql-sessionctx", path = "pkg/sessionctx" }
+facade_sessionctx_sessionstates = { package = "astersql-sessionctx-sessionstates", path = "pkg/sessionctx/sessionstates" }
+facade_sessionctx_slowlogrule = { package = "astersql-sessionctx-slowlogrule", path = "pkg/sessionctx/slowlogrule" }
+facade_sessionctx_stmtctx = { package = "astersql-sessionctx-stmtctx", path = "pkg/sessionctx/stmtctx" }
+facade_sessionctx_sysproctrack = { package = "astersql-sessionctx-sysproctrack", path = "pkg/sessionctx/sysproctrack" }
+facade_sessionctx_vardef = { package = "astersql-sessionctx-vardef", path = "pkg/sessionctx/vardef" }
+facade_sessionctx_variable = { package = "astersql-sessionctx-variable", path = "pkg/sessionctx/variable" }
+facade_sessiontxn_internal = { package = "astersql-sessiontxn-internal", path = "pkg/sessiontxn/internal" }
+facade_sessiontxn_isolation_metrics = { package = "astersql-sessiontxn-isolation-metrics", path = "pkg/sessiontxn/isolation/metrics" }
+facade_statistics_handle_cache_metrics = { package = "astersql-statistics-handle-cache-metrics", path = "pkg/statistics/handle/cache/metrics" }
+facade_statistics_handle_cache_internal = { package = "astersql-statistics-handle-cache-internal", path = "pkg/statistics/handle/cache/internal" }
+facade_statistics_handle_cache_internal_lfu = { package = "astersql-statistics-handle-cache-internal-lfu", path = "pkg/statistics/handle/cache/internal/lfu" }
+facade_statistics_handle_cache_internal_mapcache = { package = "astersql-statistics-handle-cache-internal-mapcache", path = "pkg/statistics/handle/cache/internal/mapcache" }
+facade_statistics_handle_cache_internal_testutil = { package = "astersql-statistics-handle-cache-internal-testutil", path = "pkg/statistics/handle/cache/internal/testutil" }
+facade_statistics_handle_initstats = { package = "astersql-statistics-handle-initstats", path = "pkg/statistics/handle/initstats" }
+facade_statistics_handle_internal = { package = "astersql-statistics-handle-internal", path = "pkg/statistics/handle/internal" }
+facade_statistics_handle_logutil = { package = "astersql-statistics-handle-logutil", path = "pkg/statistics/handle/logutil" }
+facade_statistics_handle_metrics = { package = "astersql-statistics-handle-metrics", path = "pkg/statistics/handle/metrics" }
+facade_statistics_handle_autoanalyze_priorityqueue = { package = "astersql-statistics-handle-autoanalyze-priorityqueue", path = "pkg/statistics/handle/autoanalyze/priorityqueue" }
+facade_statistics_handle_usage_collector = { package = "astersql-statistics-handle-usage-collector", path = "pkg/statistics/handle/usage/collector" }
+facade_statistics_handle_usage_indexusage = { package = "astersql-statistics-handle-usage-indexusage", path = "pkg/statistics/handle/usage/indexusage" }
+facade_statistics_handle_usage_predicatecolumn = { package = "astersql-statistics-handle-usage-predicatecolumn", path = "pkg/statistics/handle/usage/predicatecolumn" }
+facade_statistics_handle_util_test = { package = "astersql-statistics-handle-util-test", path = "pkg/statistics/handle/util/test" }
+facade_statistics_util = { package = "astersql-statistics-util", path = "pkg/statistics/util" }
+facade_store = { package = "astersql-store", path = "pkg/store" }
+facade_store_copr_metrics = { package = "astersql-store-copr-metrics", path = "pkg/store/copr/metrics" }
+facade_store_driver = { package = "astersql-store-driver", path = "pkg/store/driver" }
+facade_store_driver_backoff = { package = "astersql-store-driver-backoff", path = "pkg/store/driver/backoff" }
+facade_store_driver_error = { package = "astersql-store-driver-error", path = "pkg/store/driver/error" }
+facade_store_driver_options = { package = "astersql-store-driver-options", path = "pkg/store/driver/options" }
+facade_store_helper = { package = "astersql-store-helper", path = "pkg/store/helper" }
+facade_store_mockstore_unistore_client = { package = "astersql-store-mockstore-unistore-client", path = "pkg/store/mockstore/unistore/client" }
+facade_store_mockstore_unistore_config = { package = "astersql-store-mockstore-unistore-config", path = "pkg/store/mockstore/unistore/config" }
+facade_store_mockstore_unistore_lockstore = { package = "astersql-store-mockstore-unistore-lockstore", path = "pkg/store/mockstore/unistore/lockstore" }
+facade_store_mockstore_unistore_metrics = { package = "astersql-store-mockstore-unistore-metrics", path = "pkg/store/mockstore/unistore/metrics" }
+facade_store_mockstore_unistore_pd = { package = "astersql-store-mockstore-unistore-pd", path = "pkg/store/mockstore/unistore/pd" }
+facade_store_mockstore_unistore_tikv_dbreader = { package = "astersql-store-mockstore-unistore-tikv-dbreader", path = "pkg/store/mockstore/unistore/tikv/dbreader" }
+facade_store_mockstore_unistore_tikv_kverrors = { package = "astersql-store-mockstore-unistore-tikv-kverrors", path = "pkg/store/mockstore/unistore/tikv/kverrors" }
+facade_store_mockstore_unistore_tikv_mvcc = { package = "astersql-store-mockstore-unistore-tikv-mvcc", path = "pkg/store/mockstore/unistore/tikv/mvcc" }
+facade_store_mockstore_unistore_tikv_pberror = { package = "astersql-store-mockstore-unistore-tikv-pberror", path = "pkg/store/mockstore/unistore/tikv/pberror" }
+facade_store_mockstore_unistore_util_lockwaiter = { package = "astersql-store-mockstore-unistore-util-lockwaiter", path = "pkg/store/mockstore/unistore/util/lockwaiter" }
+facade_store_pdtypes = { package = "astersql-store-pdtypes", path = "pkg/store/pdtypes" }
+facade_structure = { package = "astersql-structure", path = "pkg/structure" }
+facade_table_tblctx = { package = "astersql-table-tblctx", path = "pkg/table/tblctx" }
+facade_table = { package = "astersql-table", path = "pkg/table" }
+facade_table_tables = { package = "astersql-table-tables", path = "pkg/table/tables" }
+facade_table_tblsession = { package = "astersql-table-tblsession", path = "pkg/table/tblsession" }
+facade_tablecodec = { package = "astersql-tablecodec", path = "pkg/tablecodec" }
+facade_tablecodec_rowindexcodec = { package = "astersql-tablecodec-rowindexcodec", path = "pkg/tablecodec/rowindexcodec" }
+facade_testkit_testfailpoint = { package = "astersql-testkit-testfailpoint", path = "pkg/testkit/testfailpoint" }
+facade_testkit_testflag = { package = "astersql-testkit-testflag", path = "pkg/testkit/testflag" }
+facade_testkit_testfork = { package = "astersql-testkit-testfork", path = "pkg/testkit/testfork" }
+facade_testkit_testmain = { package = "astersql-testkit-testmain", path = "pkg/testkit/testmain" }
+facade_testkit_testsetup = { package = "astersql-testkit-testsetup", path = "pkg/testkit/testsetup" }
+facade_testkit_testutil = { package = "astersql-testkit-testutil", path = "pkg/testkit/testutil" }
+facade_tidbmanager = { package = "astersql-tidbmanager", path = "pkg/tidbmanager" }
+facade_timer_api = { package = "astersql-timer-api", path = "pkg/timer/api" }
+facade_timer_metrics = { package = "astersql-timer-metrics", path = "pkg/timer/metrics" }
+facade_timer_runtime = { package = "astersql-timer-runtime", path = "pkg/timer/runtime" }
+facade_ttl_metrics = { package = "astersql-ttl-metrics", path = "pkg/ttl/metrics" }
+facade_types = { package = "astersql-types", path = "pkg/types" }
+facade_types_parser_driver = { package = "astersql-types-parser_driver", path = "pkg/types/parser_driver" }
+facade_util = { package = "astersql-util", path = "pkg/util" }
+facade_util_admin = { package = "astersql-util-admin", path = "pkg/util/admin" }
+facade_util_arena = { package = "astersql-util-arena", path = "pkg/util/arena" }
+facade_util_backoff = { package = "astersql-util-backoff", path = "pkg/util/backoff" }
+facade_util_benchdaily = { package = "astersql-util-benchdaily", path = "pkg/util/benchdaily" }
+facade_util_bitmap = { package = "astersql-util-bitmap", path = "pkg/util/bitmap" }
+facade_util_breakpoint = { package = "astersql-util-breakpoint", path = "pkg/util/breakpoint" }
+facade_util_cdcutil = { package = "astersql-util-cdcutil", path = "pkg/util/cdcutil" }
+facade_util_cgmon = { package = "astersql-util-cgmon", path = "pkg/util/cgmon" }
+facade_util_cgroup = { package = "astersql-util-cgroup", path = "pkg/util/cgroup" }
+facade_util_channel = { package = "astersql-util-channel", path = "pkg/util/channel" }
+facade_util_checksum = { package = "astersql-util-checksum", path = "pkg/util/checksum" }
+facade_util_chunk = { package = "astersql-util-chunk", path = "pkg/util/chunk" }
+facade_util_codec = { package = "astersql-util-codec", path = "pkg/util/codec" }
+facade_util_collate = { package = "astersql-util-collate", path = "pkg/util/collate" }
+facade_util_collate_ucadata = { package = "astersql-util-collate-ucadata", path = "pkg/util/collate/ucadata" }
+facade_util_collate_ucadata_generator = { package = "astersql-util-collate-ucadata-generator", path = "pkg/util/collate/ucadata/generator" }
+facade_util_collate_ucaimpl = { package = "astersql-util-collate-ucaimpl", path = "pkg/util/collate/ucaimpl" }
+facade_util_column_mapping = { package = "astersql-util-column-mapping", path = "pkg/util/column-mapping" }
+facade_util_compress = { package = "astersql-util-compress", path = "pkg/util/compress" }
+facade_util_config = { package = "astersql-util-config", path = "pkg/util/config" }
+facade_util_context = { package = "astersql-util-context", path = "pkg/util/context" }
+facade_util_cpu = { package = "astersql-util-cpu", path = "pkg/util/cpu" }
+facade_util_cpuprofile = { package = "astersql-util-cpuprofile", path = "pkg/util/cpuprofile" }
+facade_util_cpuprofile_testutil = { package = "astersql-util-cpuprofile-testutil", path = "pkg/util/cpuprofile/testutil" }
+facade_util_cteutil = { package = "astersql-util-cteutil", path = "pkg/util/cteutil" }
+facade_util_dbterror = { package = "astersql-util-dbterror", path = "pkg/util/dbterror" }
+facade_util_dbterror_exeerrors = { package = "astersql-util-dbterror-exeerrors", path = "pkg/util/dbterror/exeerrors" }
+facade_util_dbterror_plannererrors = { package = "astersql-util-dbterror-plannererrors", path = "pkg/util/dbterror/plannererrors" }
+facade_util_deadlockhistory = { package = "astersql-util-deadlockhistory", path = "pkg/util/deadlockhistory" }
+facade_util_deeptest = { package = "astersql-util-deeptest", path = "pkg/util/deeptest" }
+facade_util_disjointset = { package = "astersql-util-disjointset", path = "pkg/util/disjointset" }
+facade_util_disk = { package = "astersql-util-disk", path = "pkg/util/disk" }
+facade_util_disttask = { package = "astersql-util-disttask", path = "pkg/util/disttask" }
+facade_util_domainutil = { package = "astersql-util-domainutil", path = "pkg/util/domainutil" }
+facade_util_engine = { package = "astersql-util-engine", path = "pkg/util/engine" }
+facade_util_encrypt = { package = "astersql-util-encrypt", path = "pkg/util/encrypt" }
+facade_util_errmsg = { package = "astersql-util-errmsg", path = "pkg/util/errmsg" }
+facade_util_etcd = { package = "astersql-util-etcd", path = "pkg/util/etcd" }
+facade_util_execdetails = { package = "astersql-util-execdetails", path = "pkg/util/execdetails" }
+facade_util_execdetails_group1 = { package = "astersql-util-execdetails-group1", path = "pkg/util/execdetails/internal/group1" }
+facade_util_execdetails_ruv2 = { package = "astersql-util-execdetails-ruv2", path = "pkg/util/execdetails/internal/ruv2" }
+facade_util_execdetails_util = { package = "astersql-util-execdetails-util", path = "pkg/util/execdetails/internal/util" }
+facade_util_extsort = { package = "astersql-util-extsort", path = "pkg/util/extsort" }
+facade_util_fastrand = { package = "astersql-util-fastrand", path = "pkg/util/fastrand" }
+facade_util_filter = { package = "astersql-util-filter", path = "pkg/util/filter" }
+facade_util_format = { package = "astersql-util-format", path = "pkg/util/format" }
+facade_util_gctuner = { package = "astersql-util-gctuner", path = "pkg/util/gctuner" }
+facade_util_gcutil = { package = "astersql-util-gcutil", path = "pkg/util/gcutil" }
+facade_util_generatedexpr = { package = "astersql-util-generatedexpr", path = "pkg/util/generatedexpr" }
+facade_util_generic = { package = "astersql-util-generic", path = "pkg/util/generic" }
+facade_util_globalconn = { package = "astersql-util-globalconn", path = "pkg/util/globalconn" }
+facade_util_hack = { package = "astersql-util-hack", path = "pkg/util/hack" }
+facade_util_hint = { package = "astersql-util-hint", path = "pkg/util/hint" }
+facade_util_httputil = { package = "astersql-util-httputil", path = "pkg/util/httputil" }
+facade_util_injectfailpoint = { package = "astersql-util-injectfailpoint", path = "pkg/util/injectfailpoint" }
+facade_util_intest = { package = "astersql-util-intest", path = "pkg/util/intest" }
+facade_util_intset = { package = "astersql-util-intset", path = "pkg/util/intset" }
+facade_util_israce = { package = "astersql-util-israce", path = "pkg/util/israce" }
+facade_util_kvcache = { package = "astersql-util-kvcache", path = "pkg/util/kvcache" }
+facade_util_linter_constructor = { package = "astersql-util-linter-constructor", path = "pkg/util/linter/constructor" }
+facade_util_logutil = { package = "astersql-util-logutil", path = "pkg/util/logutil" }
+facade_util_logutil_consistency = { package = "astersql-util-logutil-consistency", path = "pkg/util/logutil/consistency" }
+facade_util_mathutil = { package = "astersql-util-mathutil", path = "pkg/util/mathutil" }
+facade_util_memory = { package = "astersql-util-memory", path = "pkg/util/memory" }
+facade_util_memoryusagealarm = { package = "astersql-util-memoryusagealarm", path = "pkg/util/memoryusagealarm" }
+facade_util_mock = { package = "astersql-util-mock", path = "pkg/util/mock" }
+facade_util_mvmap = { package = "astersql-util-mvmap", path = "pkg/util/mvmap" }
+facade_util_naming = { package = "astersql-util-naming", path = "pkg/util/naming" }
+facade_util_nocopy = { package = "astersql-util-nocopy", path = "pkg/util/nocopy" }
+facade_util_paging = { package = "astersql-util-paging", path = "pkg/util/paging" }
+facade_util_parser = { package = "astersql-util-parser", path = "pkg/util/parser" }
+facade_util_partialjson = { package = "astersql-util-partialjson", path = "pkg/util/partialjson" }
+facade_util_password_validation = { package = "astersql-util-password-validation", path = "pkg/util/password-validation" }
+facade_util_plancodec = { package = "astersql-util-plancodec", path = "pkg/util/plancodec" }
+facade_util_ppcpuusage = { package = "astersql-util-ppcpuusage", path = "pkg/util/ppcpuusage" }
+facade_util_prefetch = { package = "astersql-util-prefetch", path = "pkg/util/prefetch" }
+facade_util_printer = { package = "astersql-util-printer", path = "pkg/util/printer" }
+facade_util_profile = { package = "astersql-util-profile", path = "pkg/util/profile" }
+facade_util_promutil = { package = "astersql-util-promutil", path = "pkg/util/promutil" }
+facade_util_queue = { package = "astersql-util-queue", path = "pkg/util/queue" }
+facade_util_ranger_context = { package = "astersql-util-ranger-context", path = "pkg/util/ranger/context" }
+facade_util_ranger = { package = "astersql-util-ranger", path = "pkg/util/ranger" }
+facade_util_redact = { package = "astersql-util-redact", path = "pkg/util/redact" }
+facade_util_regexpr_router = { package = "astersql-util-regexpr-router", path = "pkg/util/regexpr-router" }
+facade_util_replayer = { package = "astersql-util-replayer", path = "pkg/util/replayer" }
+facade_util_resourcegrouptag = { package = "astersql-util-resourcegrouptag", path = "pkg/util/resourcegrouptag" }
+facade_util_rowcodec = { package = "astersql-util-rowcodec", path = "pkg/util/rowcodec" }
+facade_util_schemacmp = { package = "astersql-util-schemacmp", path = "pkg/util/schemacmp" }
+facade_util_selection = { package = "astersql-util-selection", path = "pkg/util/selection" }
+facade_util_sem = { package = "astersql-util-sem", path = "pkg/util/sem" }
+facade_util_sem_v2 = { package = "astersql-util-sem-v2", path = "pkg/util/sem/v2" }
+facade_util_serialization = { package = "astersql-util-serialization", path = "pkg/util/serialization" }
+facade_util_servermemorylimit = { package = "astersql-util-servermemorylimit", path = "pkg/util/servermemorylimit" }
+facade_util_set = { package = "astersql-util-set", path = "pkg/util/set" }
+facade_util_signal = { package = "astersql-util-signal", path = "pkg/util/signal" }
+facade_util_size = { package = "astersql-util-size", path = "pkg/util/size" }
+facade_util_skip = { package = "astersql-util-skip", path = "pkg/util/skip" }
+facade_util_sli = { package = "astersql-util-sli", path = "pkg/util/sli" }
+facade_util_slice = { package = "astersql-util-slice", path = "pkg/util/slice" }
+facade_util_sqlescape = { package = "astersql-util-sqlescape", path = "pkg/util/sqlescape" }
+facade_util_sqlexec = { package = "astersql-util-sqlexec", path = "pkg/util/sqlexec" }
+facade_util_sqlexec_mock = { package = "astersql-util-sqlexec-mock", path = "pkg/util/sqlexec/mock" }
+facade_util_sqlkiller = { package = "astersql-util-sqlkiller", path = "pkg/util/sqlkiller" }
+facade_util_stmtsummary = { package = "astersql-util-stmtsummary", path = "pkg/util/stmtsummary" }
+facade_util_stmtsummary_v2 = { package = "astersql-util-stmtsummary-v2", path = "pkg/util/stmtsummary/v2" }
+facade_util_stringutil = { package = "astersql-util-stringutil", path = "pkg/util/stringutil" }
+facade_util_syncutil = { package = "astersql-util-syncutil", path = "pkg/util/syncutil" }
+facade_util_sys_linux = { package = "astersql-util-sys-linux", path = "pkg/util/sys/linux" }
+facade_util_sys_storage = { package = "astersql-util-sys-storage", path = "pkg/util/sys/storage" }
+facade_util_systimemon = { package = "astersql-util-systimemon", path = "pkg/util/systimemon" }
+facade_util_table_filter = { package = "astersql-util-table-filter", path = "pkg/util/table-filter" }
+facade_util_table_router = { package = "astersql-util-table-router", path = "pkg/util/table-router" }
+facade_util_table_rule_selector = { package = "astersql-util-table-rule-selector", path = "pkg/util/table-rule-selector" }
+facade_util_tableutil = { package = "astersql-util-tableutil", path = "pkg/util/tableutil" }
+facade_util_texttree = { package = "astersql-util-texttree", path = "pkg/util/texttree" }
+facade_util_tiflash = { package = "astersql-util-tiflash", path = "pkg/util/tiflash" }
+facade_util_tiflashcompute = { package = "astersql-util-tiflashcompute", path = "pkg/util/tiflashcompute" }
+facade_util_tikvutil = { package = "astersql-util-tikvutil", path = "pkg/util/tikvutil" }
+facade_util_timeutil = { package = "astersql-util-timeutil", path = "pkg/util/timeutil" }
+facade_util_tls = { package = "astersql-util-tls", path = "pkg/util/tls" }
+facade_util_topsql = { package = "astersql-util-topsql", path = "pkg/util/topsql" }
+facade_util_topsql_collector = { package = "astersql-util-topsql-collector", path = "pkg/util/topsql/collector" }
+facade_util_topsql_collector_mock = { package = "astersql-util-topsql-collector-mock", path = "pkg/util/topsql/collector/mock" }
+facade_util_topsql_reporter = { package = "astersql-util-topsql-reporter", path = "pkg/util/topsql/reporter" }
+facade_util_topsql_reporter_metrics = { package = "astersql-util-topsql-reporter-metrics", path = "pkg/util/topsql/reporter/metrics" }
+facade_util_topsql_reporter_mock = { package = "astersql-util-topsql-reporter-mock", path = "pkg/util/topsql/reporter/mock" }
+facade_util_topsql_state = { package = "astersql-util-topsql-state", path = "pkg/util/topsql/state" }
+facade_util_topsql_stmtstats = { package = "astersql-util-topsql-stmtstats", path = "pkg/util/topsql/stmtstats" }
+facade_util_traceevent = { package = "astersql-util-traceevent", path = "pkg/util/traceevent" }
+facade_util_tracing = { package = "astersql-util-tracing", path = "pkg/util/tracing" }
+facade_util_trxevents = { package = "astersql-util-trxevents", path = "pkg/util/trxevents" }
+facade_util_versioninfo = { package = "astersql-util-versioninfo", path = "pkg/util/versioninfo" }
+facade_util_vitess = { package = "astersql-util-vitess", path = "pkg/util/vitess" }
+facade_util_watcher = { package = "astersql-util-watcher", path = "pkg/util/watcher" }
+facade_util_workloadrepo = { package = "astersql-util-workloadrepo", path = "pkg/util/workloadrepo" }
+facade_util_zeropool = { package = "astersql-util-zeropool", path = "pkg/util/zeropool" }
+
+facade_autoid_service = { package = "astersql-autoid_service", path = "pkg/autoid_service" }
+facade_bindinfo = { package = "astersql-bindinfo", path = "pkg/bindinfo" }
+facade_bindinfo_tests = { package = "astersql-bindinfo-tests", path = "pkg/bindinfo/tests" }
+facade_ddl = { package = "astersql-ddl", path = "pkg/ddl" }
+facade_ddl_copr = { package = "astersql-ddl-copr", path = "pkg/ddl/copr" }
+facade_ddl_ingest = { package = "astersql-ddl-ingest", path = "pkg/ddl/ingest" }
+facade_ddl_ingest_testutil = { package = "astersql-ddl-ingest-testutil", path = "pkg/ddl/ingest/testutil" }
+facade_ddl_jobsubmit = { package = "astersql-ddl-jobsubmit", path = "pkg/ddl/jobsubmit" }
+facade_ddl_mock = { package = "astersql-ddl-mock", path = "pkg/ddl/mock" }
+facade_ddl_notifier = { package = "astersql-ddl-notifier", path = "pkg/ddl/notifier" }
+facade_ddl_schematracker = { package = "astersql-ddl-schematracker", path = "pkg/ddl/schematracker" }
+facade_ddl_schemaver = { package = "astersql-ddl-schemaver", path = "pkg/ddl/schemaver" }
+facade_ddl_serverstate = { package = "astersql-ddl-serverstate", path = "pkg/ddl/serverstate" }
+facade_ddl_session = { package = "astersql-ddl-session", path = "pkg/ddl/session" }
+facade_ddl_systable = { package = "astersql-ddl-systable", path = "pkg/ddl/systable" }
+facade_ddl_tests_adminpause = { package = "astersql-ddl-tests-adminpause", path = "pkg/ddl/tests/adminpause" }
+facade_ddl_tests_fail = { package = "astersql-ddl-tests-fail", path = "pkg/ddl/tests/fail" }
+facade_ddl_tests_fastcreatetable = { package = "astersql-ddl-tests-fastcreatetable", path = "pkg/ddl/tests/fastcreatetable" }
+facade_ddl_tests_fk = { package = "astersql-ddl-tests-fk", path = "pkg/ddl/tests/fk" }
+facade_ddl_tests_indexmerge = { package = "astersql-ddl-tests-indexmerge", path = "pkg/ddl/tests/indexmerge" }
+facade_ddl_tests_metadatalock = { package = "astersql-ddl-tests-metadatalock", path = "pkg/ddl/tests/metadatalock" }
+facade_ddl_tests_multivaluedindex = { package = "astersql-ddl-tests-multivaluedindex", path = "pkg/ddl/tests/multivaluedindex" }
+facade_ddl_tests_partition = { package = "astersql-ddl-tests-partition", path = "pkg/ddl/tests/partition" }
+facade_ddl_tests_serial = { package = "astersql-ddl-tests-serial", path = "pkg/ddl/tests/serial" }
+facade_ddl_tests_tiflash = { package = "astersql-ddl-tests-tiflash", path = "pkg/ddl/tests/tiflash" }
+facade_ddl_testutil = { package = "astersql-ddl-testutil", path = "pkg/ddl/testutil" }
+facade_ddl_util = { package = "astersql-ddl-util", path = "pkg/ddl/util" }
+facade_distsql = { package = "astersql-distsql", path = "pkg/distsql" }
+facade_domain = { package = "astersql-domain", path = "pkg/domain" }
+facade_domain_crossks = { package = "astersql-domain-crossks", path = "pkg/domain/crossks" }
+facade_domain_serverinfo = { package = "astersql-domain-serverinfo", path = "pkg/domain/serverinfo" }
+facade_dumpformat_parquetfile = { package = "astersql-dumpformat-parquetfile", path = "pkg/dumpformat/parquetfile" }
+facade_dxf_example = { package = "astersql-dxf-example", path = "pkg/dxf/example" }
+facade_dxf_framework_handle = { package = "astersql-dxf-framework-handle", path = "pkg/dxf/framework/handle" }
+facade_dxf_framework_integrationtests = { package = "astersql-dxf-framework-integrationtests", path = "pkg/dxf/framework/integrationtests" }
+facade_dxf_framework_mock = { package = "astersql-dxf-framework-mock", path = "pkg/dxf/framework/mock" }
+facade_dxf_framework_planner = { package = "astersql-dxf-framework-planner", path = "pkg/dxf/framework/planner" }
+facade_dxf_framework_scheduler = { package = "astersql-dxf-framework-scheduler", path = "pkg/dxf/framework/scheduler" }
+facade_dxf_framework_taskexecutor = { package = "astersql-dxf-framework-taskexecutor", path = "pkg/dxf/framework/taskexecutor" }
+facade_dxf_framework_testutil = { package = "astersql-dxf-framework-testutil", path = "pkg/dxf/framework/testutil" }
+facade_dxf_importinto = { package = "astersql-dxf-importinto", path = "pkg/dxf/importinto" }
+facade_dxf_importinto_conflictedkv = { package = "astersql-dxf-importinto-conflictedkv", path = "pkg/dxf/importinto/conflictedkv" }
+facade_dxf_importinto_mock = { package = "astersql-dxf-importinto-mock", path = "pkg/dxf/importinto/mock" }
+facade_executor = { package = "astersql-executor", path = "pkg/executor" }
+facade_executor_aggfuncs = { package = "astersql-executor-aggfuncs", path = "pkg/executor/aggfuncs" }
+facade_executor_aggregate = { package = "astersql-executor-aggregate", path = "pkg/executor/aggregate" }
+facade_executor_importer = { package = "astersql-executor-importer", path = "pkg/executor/importer" }
+facade_executor_internal_builder = { package = "astersql-executor-internal-builder", path = "pkg/executor/internal/builder" }
+facade_executor_internal_calibrateresource = { package = "astersql-executor-internal-calibrateresource", path = "pkg/executor/internal/calibrateresource" }
+facade_executor_internal_exec = { package = "astersql-executor-internal-exec", path = "pkg/executor/internal/exec" }
+facade_executor_internal_mpp = { package = "astersql-executor-internal-mpp", path = "pkg/executor/internal/mpp" }
+facade_executor_internal_querywatch = { package = "astersql-executor-internal-querywatch", path = "pkg/executor/internal/querywatch" }
+facade_executor_internal_testutil = { package = "astersql-executor-internal-testutil", path = "pkg/executor/internal/testutil" }
+facade_executor_join = { package = "astersql-executor-join", path = "pkg/executor/join" }
+facade_executor_join_test_indexjoin = { package = "astersql-executor-join-test-indexjoin", path = "pkg/executor/join/test/indexjoin" }
+facade_executor_join_test_mergejoin = { package = "astersql-executor-join-test-mergejoin", path = "pkg/executor/join/test/mergejoin" }
+facade_executor_lockstats = { package = "astersql-executor-lockstats", path = "pkg/executor/lockstats" }
+facade_executor_mppcoordmanager = { package = "astersql-executor-mppcoordmanager", path = "pkg/executor/mppcoordmanager" }
+facade_executor_sortexec = { package = "astersql-executor-sortexec", path = "pkg/executor/sortexec" }
+facade_executor_staticrecordset = { package = "astersql-executor-staticrecordset", path = "pkg/executor/staticrecordset" }
+facade_executor_test_admintest = { package = "astersql-executor-test-admintest", path = "pkg/executor/test/admintest" }
+facade_executor_test_aggregate = { package = "astersql-executor-test-aggregate", path = "pkg/executor/test/aggregate" }
+facade_executor_test_analyzetest = { package = "astersql-executor-test-analyzetest", path = "pkg/executor/test/analyzetest" }
+facade_executor_test_analyzetest_columns = { package = "astersql-executor-test-analyzetest-columns", path = "pkg/executor/test/analyzetest/columns" }
+facade_executor_test_analyzetest_memorycontrol = { package = "astersql-executor-test-analyzetest-memorycontrol", path = "pkg/executor/test/analyzetest/memorycontrol" }
+facade_executor_test_analyzetest_options = { package = "astersql-executor-test-analyzetest-options", path = "pkg/executor/test/analyzetest/options" }
+facade_executor_test_analyzetest_panictest = { package = "astersql-executor-test-analyzetest-panictest", path = "pkg/executor/test/analyzetest/panictest" }
+facade_executor_test_autoidtest = { package = "astersql-executor-test-autoidtest", path = "pkg/executor/test/autoidtest" }
+facade_executor_test_cte = { package = "astersql-executor-test-cte", path = "pkg/executor/test/cte" }
+facade_executor_test_ddl = { package = "astersql-executor-test-ddl", path = "pkg/executor/test/ddl" }
+facade_executor_test_distsqltest = { package = "astersql-executor-test-distsqltest", path = "pkg/executor/test/distsqltest" }
+facade_executor_test_executor = { package = "astersql-executor-test-executor", path = "pkg/executor/test/executor" }
+facade_executor_test_fktest = { package = "astersql-executor-test-fktest", path = "pkg/executor/test/fktest" }
+facade_executor_test_indexmergereadtest = { package = "astersql-executor-test-indexmergereadtest", path = "pkg/executor/test/indexmergereadtest" }
+facade_executor_test_infoschema = { package = "astersql-executor-test-infoschema", path = "pkg/executor/test/infoschema" }
+facade_executor_test_issuetest = { package = "astersql-executor-test-issuetest", path = "pkg/executor/test/issuetest" }
+facade_executor_test_jointest = { package = "astersql-executor-test-jointest", path = "pkg/executor/test/jointest" }
+facade_executor_test_jointest_hashjoin = { package = "astersql-executor-test-jointest-hashjoin", path = "pkg/executor/test/jointest/hashjoin" }
+facade_executor_test_loaddatatest = { package = "astersql-executor-test-loaddatatest", path = "pkg/executor/test/loaddatatest" }
+facade_executor_test_loadremotetest = { package = "astersql-executor-test-loadremotetest", path = "pkg/executor/test/loadremotetest" }
+facade_executor_test_memtest = { package = "astersql-executor-test-memtest", path = "pkg/executor/test/memtest" }
+facade_executor_test_oomtest = { package = "astersql-executor-test-oomtest", path = "pkg/executor/test/oomtest" }
+facade_executor_test_passwordtest = { package = "astersql-executor-test-passwordtest", path = "pkg/executor/test/passwordtest" }
+facade_executor_test_plancache = { package = "astersql-executor-test-plancache", path = "pkg/executor/test/plancache" }
+facade_executor_test_planreplayer = { package = "astersql-executor-test-planreplayer", path = "pkg/executor/test/planreplayer" }
+facade_executor_test_recovertest = { package = "astersql-executor-test-recovertest", path = "pkg/executor/test/recovertest" }
+facade_executor_test_seqtest = { package = "astersql-executor-test-seqtest", path = "pkg/executor/test/seqtest" }
+facade_executor_test_showtest = { package = "astersql-executor-test-showtest", path = "pkg/executor/test/showtest" }
+facade_executor_test_simpletest = { package = "astersql-executor-test-simpletest", path = "pkg/executor/test/simpletest" }
+facade_executor_test_splittest = { package = "astersql-executor-test-splittest", path = "pkg/executor/test/splittest" }
+facade_executor_test_tiflashtest = { package = "astersql-executor-test-tiflashtest", path = "pkg/executor/test/tiflashtest" }
+facade_executor_test_txn = { package = "astersql-executor-test-txn", path = "pkg/executor/test/txn" }
+facade_executor_test_unstabletest = { package = "astersql-executor-test-unstabletest", path = "pkg/executor/test/unstabletest" }
+facade_executor_test_writetest = { package = "astersql-executor-test-writetest", path = "pkg/executor/test/writetest" }
+facade_executor_unionexec = { package = "astersql-executor-unionexec", path = "pkg/executor/unionexec" }
+facade_executor_windows = { package = "astersql-executor-windows", path = "pkg/executor/windows" }
+facade_expression_integration_test = { package = "astersql-expression-integration_test", path = "pkg/expression/integration_test" }
+facade_expression_test_constantpropagation = { package = "astersql-expression-test-constantpropagation", path = "pkg/expression/test/constantpropagation" }
+facade_expression_test_multivaluedindex = { package = "astersql-expression-test-multivaluedindex", path = "pkg/expression/test/multivaluedindex" }
+facade_extension_extensionimpl = { package = "astersql-extension-extensionimpl", path = "pkg/extension/extensionimpl" }
+facade_importsdk = { package = "astersql-importsdk", path = "pkg/importsdk" }
+facade_importsdk_mock = { package = "astersql-importsdk-mock", path = "pkg/importsdk/mock" }
+facade_infoschema = { package = "astersql-infoschema", path = "pkg/infoschema" }
+facade_infoschema_internal = { package = "astersql-infoschema-internal", path = "pkg/infoschema/internal" }
+facade_infoschema_issyncer = { package = "astersql-infoschema-issyncer", path = "pkg/infoschema/issyncer" }
+facade_infoschema_perfschema = { package = "astersql-infoschema-perfschema", path = "pkg/infoschema/perfschema" }
+facade_infoschema_test_cachetest = { package = "astersql-infoschema-test-cachetest", path = "pkg/infoschema/test/cachetest" }
+facade_infoschema_test_clustertablestest = { package = "astersql-infoschema-test-clustertablestest", path = "pkg/infoschema/test/clustertablestest" }
+facade_infoschema_test_infoschemav2test = { package = "astersql-infoschema-test-infoschemav2test", path = "pkg/infoschema/test/infoschemav2test" }
+facade_ingestor_globalsort = { package = "astersql-ingestor-globalsort", path = "pkg/ingestor/globalsort" }
+facade_ingestor_ingestcli = { package = "astersql-ingestor-ingestcli", path = "pkg/ingestor/ingestcli" }
+facade_ingestor_ingestcli_mock = { package = "astersql-ingestor-ingestcli-mock", path = "pkg/ingestor/ingestcli/mock" }
+facade_ingestor_ingestctrl = { package = "astersql-ingestor-ingestctrl", path = "pkg/ingestor/ingestctrl" }
+facade_ingestor_simplesst = { package = "astersql-ingestor-simplesst", path = "pkg/ingestor/simplesst" }
+facade_lightning_common = { package = "astersql-lightning-common", path = "pkg/lightning/common" }
+facade_lightning_config = { package = "astersql-lightning-config", path = "pkg/lightning/config" }
+facade_lock = { package = "astersql-lock", path = "pkg/lock" }
+facade_planner = { package = "astersql-planner", path = "pkg/planner" }
+facade_planner_cardinality = { package = "astersql-planner-cardinality", path = "pkg/planner/cardinality" }
+facade_planner_cascades = { package = "astersql-planner-cascades", path = "pkg/planner/cascades" }
+facade_planner_cascades_base_cascadesctx = { package = "astersql-planner-cascades-base-cascadesctx", path = "pkg/planner/cascades/base/cascadesctx" }
+facade_planner_cascades_impl = { package = "astersql-planner-cascades-impl", path = "pkg/planner/cascades/impl" }
+facade_planner_cascades_memo = { package = "astersql-planner-cascades-memo", path = "pkg/planner/cascades/memo" }
+facade_planner_cascades_old = { package = "astersql-planner-cascades-old", path = "pkg/planner/cascades/old" }
+facade_planner_cascades_pattern = { package = "astersql-planner-cascades-pattern", path = "pkg/planner/cascades/pattern" }
+facade_planner_cascades_rule = { package = "astersql-planner-cascades-rule", path = "pkg/planner/cascades/rule" }
+facade_planner_cascades_rule_apply_decorrelateapply = { package = "astersql-planner-cascades-rule-apply-decorrelateapply", path = "pkg/planner/cascades/rule/apply/decorrelateapply" }
+facade_planner_cascades_rule_join = { package = "astersql-planner-cascades-rule-join", path = "pkg/planner/cascades/rule/join" }
+facade_planner_cascades_rule_ruleset = { package = "astersql-planner-cascades-rule-ruleset", path = "pkg/planner/cascades/rule/ruleset" }
+facade_planner_cascades_task = { package = "astersql-planner-cascades-task", path = "pkg/planner/cascades/task" }
+facade_planner_core_casetest = { package = "astersql-planner-core-casetest", path = "pkg/planner/core/casetest" }
+facade_planner_core_casetest_binaryplan = { package = "astersql-planner-core-casetest-binaryplan", path = "pkg/planner/core/casetest/binaryplan" }
+facade_planner_core_casetest_cascades = { package = "astersql-planner-core-casetest-cascades", path = "pkg/planner/core/casetest/cascades" }
+facade_planner_core_casetest_cbotest = { package = "astersql-planner-core-casetest-cbotest", path = "pkg/planner/core/casetest/cbotest" }
+facade_planner_core_casetest_ch = { package = "astersql-planner-core-casetest-ch", path = "pkg/planner/core/casetest/ch" }
+facade_planner_core_casetest_correlated = { package = "astersql-planner-core-casetest-correlated", path = "pkg/planner/core/casetest/correlated" }
+facade_planner_core_casetest_dag = { package = "astersql-planner-core-casetest-dag", path = "pkg/planner/core/casetest/dag" }
+facade_planner_core_casetest_enforcempp = { package = "astersql-planner-core-casetest-enforcempp", path = "pkg/planner/core/casetest/enforcempp" }
+facade_planner_core_casetest_flatplan = { package = "astersql-planner-core-casetest-flatplan", path = "pkg/planner/core/casetest/flatplan" }
+facade_planner_core_casetest_hint = { package = "astersql-planner-core-casetest-hint", path = "pkg/planner/core/casetest/hint" }
+facade_planner_core_casetest_index = { package = "astersql-planner-core-casetest-index", path = "pkg/planner/core/casetest/index" }
+facade_planner_core_casetest_indexmerge = { package = "astersql-planner-core-casetest-indexmerge", path = "pkg/planner/core/casetest/indexmerge" }
+facade_planner_core_casetest_instanceplancache = { package = "astersql-planner-core-casetest-instanceplancache", path = "pkg/planner/core/casetest/instanceplancache" }
+facade_planner_core_casetest_join = { package = "astersql-planner-core-casetest-join", path = "pkg/planner/core/casetest/join" }
+facade_planner_core_casetest_logicalplan = { package = "astersql-planner-core-casetest-logicalplan", path = "pkg/planner/core/casetest/logicalplan" }
+facade_planner_core_casetest_mpp = { package = "astersql-planner-core-casetest-mpp", path = "pkg/planner/core/casetest/mpp" }
+facade_planner_core_casetest_parallelapply = { package = "astersql-planner-core-casetest-parallelapply", path = "pkg/planner/core/casetest/parallelapply" }
+facade_planner_core_casetest_partition = { package = "astersql-planner-core-casetest-partition", path = "pkg/planner/core/casetest/partition" }
+facade_planner_core_casetest_physicalplantest = { package = "astersql-planner-core-casetest-physicalplantest", path = "pkg/planner/core/casetest/physicalplantest" }
+facade_planner_core_casetest_plancache = { package = "astersql-planner-core-casetest-plancache", path = "pkg/planner/core/casetest/plancache" }
+facade_planner_core_casetest_planstats = { package = "astersql-planner-core-casetest-planstats", path = "pkg/planner/core/casetest/planstats" }
+facade_planner_core_casetest_pushdown = { package = "astersql-planner-core-casetest-pushdown", path = "pkg/planner/core/casetest/pushdown" }
+facade_planner_core_casetest_rule = { package = "astersql-planner-core-casetest-rule", path = "pkg/planner/core/casetest/rule" }
+facade_planner_core_casetest_scalarsubquery = { package = "astersql-planner-core-casetest-scalarsubquery", path = "pkg/planner/core/casetest/scalarsubquery" }
+facade_planner_core_casetest_schema = { package = "astersql-planner-core-casetest-schema", path = "pkg/planner/core/casetest/schema" }
+facade_planner_core_casetest_tpcds = { package = "astersql-planner-core-casetest-tpcds", path = "pkg/planner/core/casetest/tpcds" }
+facade_planner_core_casetest_tpch = { package = "astersql-planner-core-casetest-tpch", path = "pkg/planner/core/casetest/tpch" }
+facade_planner_core_casetest_vectorsearch = { package = "astersql-planner-core-casetest-vectorsearch", path = "pkg/planner/core/casetest/vectorsearch" }
+facade_planner_core_casetest_windows = { package = "astersql-planner-core-casetest-windows", path = "pkg/planner/core/casetest/windows" }
+facade_planner_core_generator_hash64_equals = { package = "astersql-planner-core-generator-hash64_equals", path = "pkg/planner/core/generator/hash64_equals" }
+facade_planner_core_generator_plan_cache = { package = "astersql-planner-core-generator-plan_cache", path = "pkg/planner/core/generator/plan_cache" }
+facade_planner_core_generator_shallow_ref = { package = "astersql-planner-core-generator-shallow_ref", path = "pkg/planner/core/generator/shallow_ref" }
+facade_planner_core_issuetest = { package = "astersql-planner-core-issuetest", path = "pkg/planner/core/issuetest" }
+facade_planner_core_joinorder = { package = "astersql-planner-core-joinorder", path = "pkg/planner/core/joinorder" }
+facade_planner_core_operator_logicalop = { package = "astersql-planner-core-operator-logicalop", path = "pkg/planner/core/operator/logicalop" }
+facade_planner_core_operator_logicalop_logicalop_test = { package = "astersql-planner-core-operator-logicalop-logicalop_test", path = "pkg/planner/core/operator/logicalop/logicalop_test" }
+facade_planner_core_operator_physicalop = { package = "astersql-planner-core-operator-physicalop", path = "pkg/planner/core/operator/physicalop" }
+facade_planner_core_partidx = { package = "astersql-planner-core-partidx", path = "pkg/planner/core/partidx" }
+facade_planner_core_rule = { package = "astersql-planner-core-rule", path = "pkg/planner/core/rule" }
+facade_planner_core_stats = { package = "astersql-planner-core-stats", path = "pkg/planner/core/stats" }
+facade_planner_core_tests_analyze = { package = "astersql-planner-core-tests-analyze", path = "pkg/planner/core/tests/analyze" }
+facade_planner_core_tests_cte = { package = "astersql-planner-core-tests-cte", path = "pkg/planner/core/tests/cte" }
+facade_planner_core_tests_extractor = { package = "astersql-planner-core-tests-extractor", path = "pkg/planner/core/tests/extractor" }
+facade_planner_core_tests_null = { package = "astersql-planner-core-tests-null", path = "pkg/planner/core/tests/null" }
+facade_planner_core_tests_partition = { package = "astersql-planner-core-tests-partition", path = "pkg/planner/core/tests/partition" }
+facade_planner_core_tests_pointget = { package = "astersql-planner-core-tests-pointget", path = "pkg/planner/core/tests/pointget" }
+facade_planner_core_tests_prepare = { package = "astersql-planner-core-tests-prepare", path = "pkg/planner/core/tests/prepare" }
+facade_planner_core_tests_redact = { package = "astersql-planner-core-tests-redact", path = "pkg/planner/core/tests/redact" }
+facade_planner_core_tests_rewriter = { package = "astersql-planner-core-tests-rewriter", path = "pkg/planner/core/tests/rewriter" }
+facade_planner_core_tests_subquery = { package = "astersql-planner-core-tests-subquery", path = "pkg/planner/core/tests/subquery" }
+facade_planner_implementation = { package = "astersql-planner-implementation", path = "pkg/planner/implementation" }
+facade_planner_indexadvisor = { package = "astersql-planner-indexadvisor", path = "pkg/planner/indexadvisor" }
+facade_planner_memo = { package = "astersql-planner-memo", path = "pkg/planner/memo" }
+facade_planner_plannersession = { package = "astersql-planner-plannersession", path = "pkg/planner/plannersession" }
+facade_planner_util_coretestsdk = { package = "astersql-planner-util-coretestsdk", path = "pkg/planner/util/coretestsdk" }
+facade_planner_util_domainmisc = { package = "astersql-planner-util-domainmisc", path = "pkg/planner/util/domainmisc" }
+facade_planner_util_partitionpruning = { package = "astersql-planner-util-partitionpruning", path = "pkg/planner/util/partitionpruning" }
+facade_planner_util_tablesampler = { package = "astersql-planner-util-tablesampler", path = "pkg/planner/util/tablesampler" }
+facade_planner_util_utilfuncp = { package = "astersql-planner-util-utilfuncp", path = "pkg/planner/util/utilfuncp" }
+facade_plugin = { package = "astersql-plugin", path = "pkg/plugin" }
+facade_plugin_conn_ip_example = { package = "astersql-plugin-conn_ip_example", path = "pkg/plugin/conn_ip_example" }
+facade_resourcegroup_runaway = { package = "astersql-resourcegroup-runaway", path = "pkg/resourcegroup/runaway" }
+facade_resourcegroup_tests = { package = "astersql-resourcegroup-tests", path = "pkg/resourcegroup/tests" }
+facade_server = { package = "astersql-server", path = "pkg/server" }
+facade_server_handler = { package = "astersql-server-handler", path = "pkg/server/handler" }
+facade_server_handler_extractorhandler = { package = "astersql-server-handler-extractorhandler", path = "pkg/server/handler/extractorhandler" }
+facade_server_handler_optimizor = { package = "astersql-server-handler-optimizor", path = "pkg/server/handler/optimizor" }
+facade_server_handler_tests = { package = "astersql-server-handler-tests", path = "pkg/server/handler/tests" }
+facade_server_handler_tikvhandler = { package = "astersql-server-handler-tikvhandler", path = "pkg/server/handler/tikvhandler" }
+facade_server_handler_ttlhandler = { package = "astersql-server-handler-ttlhandler", path = "pkg/server/handler/ttlhandler" }
+facade_server_internal_resultset = { package = "astersql-server-internal-resultset", path = "pkg/server/internal/resultset" }
+facade_server_internal_testserverclient = { package = "astersql-server-internal-testserverclient", path = "pkg/server/internal/testserverclient" }
+facade_server_tests = { package = "astersql-server-tests", path = "pkg/server/tests" }
+facade_server_tests_commontest = { package = "astersql-server-tests-commontest", path = "pkg/server/tests/commontest" }
+facade_server_tests_cursor = { package = "astersql-server-tests-cursor", path = "pkg/server/tests/cursor" }
+facade_server_tests_servertestkit = { package = "astersql-server-tests-servertestkit", path = "pkg/server/tests/servertestkit" }
+facade_server_tests_standby = { package = "astersql-server-tests-standby", path = "pkg/server/tests/standby" }
+facade_server_tests_tls = { package = "astersql-server-tests-tls", path = "pkg/server/tests/tls" }
+facade_session = { package = "astersql-session", path = "pkg/session" }
+facade_session_syssession = { package = "astersql-session-syssession", path = "pkg/session/syssession" }
+facade_session_test = { package = "astersql-session-test", path = "pkg/session/test" }
+facade_session_test_bootstraptest = { package = "astersql-session-test-bootstraptest", path = "pkg/session/test/bootstraptest" }
+facade_session_test_bootstraptest2 = { package = "astersql-session-test-bootstraptest2", path = "pkg/session/test/bootstraptest2" }
+facade_session_test_clusteredindextest = { package = "astersql-session-test-clusteredindextest", path = "pkg/session/test/clusteredindextest" }
+facade_session_test_common = { package = "astersql-session-test-common", path = "pkg/session/test/common" }
+facade_session_test_meta = { package = "astersql-session-test-meta", path = "pkg/session/test/meta" }
+facade_session_test_nontransactionaltest = { package = "astersql-session-test-nontransactionaltest", path = "pkg/session/test/nontransactionaltest" }
+facade_session_test_privileges = { package = "astersql-session-test-privileges", path = "pkg/session/test/privileges" }
+facade_session_test_resourcegrouptest = { package = "astersql-session-test-resourcegrouptest", path = "pkg/session/test/resourcegrouptest" }
+facade_session_test_schematest = { package = "astersql-session-test-schematest", path = "pkg/session/test/schematest" }
+facade_session_test_temporarytabletest = { package = "astersql-session-test-temporarytabletest", path = "pkg/session/test/temporarytabletest" }
+facade_session_test_txn = { package = "astersql-session-test-txn", path = "pkg/session/test/txn" }
+facade_session_test_variable = { package = "astersql-session-test-variable", path = "pkg/session/test/variable" }
+facade_session_test_vars = { package = "astersql-session-test-vars", path = "pkg/session/test/vars" }
+facade_sessionctx_variable_tests = { package = "astersql-sessionctx-variable-tests", path = "pkg/sessionctx/variable/tests" }
+facade_sessionctx_variable_tests_slowlog = { package = "astersql-sessionctx-variable-tests-slowlog", path = "pkg/sessionctx/variable/tests/slowlog" }
+facade_sessiontxn = { package = "astersql-sessiontxn", path = "pkg/sessiontxn" }
+facade_sessiontxn_isolation = { package = "astersql-sessiontxn-isolation", path = "pkg/sessiontxn/isolation" }
+facade_sessiontxn_staleread = { package = "astersql-sessiontxn-staleread", path = "pkg/sessiontxn/staleread" }
+facade_standby = { package = "astersql-standby", path = "pkg/standby" }
+facade_statistics = { package = "astersql-statistics", path = "pkg/statistics" }
+facade_statistics_asyncload = { package = "astersql-statistics-asyncload", path = "pkg/statistics/asyncload" }
+facade_statistics_handle = { package = "astersql-statistics-handle", path = "pkg/statistics/handle" }
+facade_statistics_handle_autoanalyze = { package = "astersql-statistics-handle-autoanalyze", path = "pkg/statistics/handle/autoanalyze" }
+facade_statistics_handle_autoanalyze_exec = { package = "astersql-statistics-handle-autoanalyze-exec", path = "pkg/statistics/handle/autoanalyze/exec" }
+facade_statistics_handle_autoanalyze_priorityqueue_calculatoranalysis = { package = "astersql-statistics-handle-autoanalyze-priorityqueue-calculatoranalysis", path = "pkg/statistics/handle/autoanalyze/priorityqueue/calculatoranalysis" }
+facade_statistics_handle_autoanalyze_priorityqueue_intervaltimezone = { package = "astersql-statistics-handle-autoanalyze-priorityqueue-intervaltimezone", path = "pkg/statistics/handle/autoanalyze/priorityqueue/intervaltimezone" }
+facade_statistics_handle_autoanalyze_refresher = { package = "astersql-statistics-handle-autoanalyze-refresher", path = "pkg/statistics/handle/autoanalyze/refresher" }
+facade_statistics_handle_cache = { package = "astersql-statistics-handle-cache", path = "pkg/statistics/handle/cache" }
+facade_statistics_handle_ddl = { package = "astersql-statistics-handle-ddl", path = "pkg/statistics/handle/ddl" }
+facade_statistics_handle_ddl_testutil = { package = "astersql-statistics-handle-ddl-testutil", path = "pkg/statistics/handle/ddl/testutil" }
+facade_statistics_handle_globalstats = { package = "astersql-statistics-handle-globalstats", path = "pkg/statistics/handle/globalstats" }
+facade_statistics_handle_handletest = { package = "astersql-statistics-handle-handletest", path = "pkg/statistics/handle/handletest" }
+facade_statistics_handle_handletest_analyze = { package = "astersql-statistics-handle-handletest-analyze", path = "pkg/statistics/handle/handletest/analyze" }
+facade_statistics_handle_handletest_initstats = { package = "astersql-statistics-handle-handletest-initstats", path = "pkg/statistics/handle/handletest/initstats" }
+facade_statistics_handle_handletest_lockstats = { package = "astersql-statistics-handle-handletest-lockstats", path = "pkg/statistics/handle/handletest/lockstats" }
+facade_statistics_handle_handletest_statstest = { package = "astersql-statistics-handle-handletest-statstest", path = "pkg/statistics/handle/handletest/statstest" }
+facade_statistics_handle_history = { package = "astersql-statistics-handle-history", path = "pkg/statistics/handle/history" }
+facade_statistics_handle_lockstats = { package = "astersql-statistics-handle-lockstats", path = "pkg/statistics/handle/lockstats" }
+facade_statistics_handle_storage = { package = "astersql-statistics-handle-storage", path = "pkg/statistics/handle/storage" }
+facade_statistics_handle_syncload = { package = "astersql-statistics-handle-syncload", path = "pkg/statistics/handle/syncload" }
+facade_statistics_handle_types = { package = "astersql-statistics-handle-types", path = "pkg/statistics/handle/types" }
+facade_statistics_handle_updatetest = { package = "astersql-statistics-handle-updatetest", path = "pkg/statistics/handle/updatetest" }
+facade_statistics_handle_usage = { package = "astersql-statistics-handle-usage", path = "pkg/statistics/handle/usage" }
+facade_statistics_handle_util = { package = "astersql-statistics-handle-util", path = "pkg/statistics/handle/util" }
+facade_store_copr = { package = "astersql-store-copr", path = "pkg/store/copr" }
+facade_store_copr_copr_test = { package = "astersql-store-copr-copr_test", path = "pkg/store/copr/copr_test" }
+facade_store_driver_txn = { package = "astersql-store-driver-txn", path = "pkg/store/driver/txn" }
+facade_store_gcworker = { package = "astersql-store-gcworker", path = "pkg/store/gcworker" }
+facade_store_mockstore = { package = "astersql-store-mockstore", path = "pkg/store/mockstore" }
+facade_store_mockstore_mockcopr = { package = "astersql-store-mockstore-mockcopr", path = "pkg/store/mockstore/mockcopr" }
+facade_store_mockstore_mockstorage = { package = "astersql-store-mockstore-mockstorage", path = "pkg/store/mockstore/mockstorage" }
+facade_store_mockstore_teststore = { package = "astersql-store-mockstore-teststore", path = "pkg/store/mockstore/teststore" }
+facade_store_mockstore_unistore = { package = "astersql-store-mockstore-unistore", path = "pkg/store/mockstore/unistore" }
+facade_store_mockstore_unistore_cophandler = { package = "astersql-store-mockstore-unistore-cophandler", path = "pkg/store/mockstore/unistore/cophandler" }
+facade_store_mockstore_unistore_server = { package = "astersql-store-mockstore-unistore-server", path = "pkg/store/mockstore/unistore/server" }
+facade_store_mockstore_unistore_tikv = { package = "astersql-store-mockstore-unistore-tikv", path = "pkg/store/mockstore/unistore/tikv" }
+facade_table_tables_test_partition = { package = "astersql-table-tables-test-partition", path = "pkg/table/tables/test/partition" }
+facade_table_tables_testutil = { package = "astersql-table-tables-testutil", path = "pkg/table/tables/testutil" }
+facade_table_temptable = { package = "astersql-table-temptable", path = "pkg/table/temptable" }
+facade_telemetry = { package = "astersql-telemetry", path = "pkg/telemetry" }
+facade_testkit = { package = "astersql-testkit", path = "pkg/testkit" }
+facade_testkit_analyzehelper = { package = "astersql-testkit-analyzehelper", path = "pkg/testkit/analyzehelper" }
+facade_testkit_ddlhelper = { package = "astersql-testkit-ddlhelper", path = "pkg/testkit/ddlhelper" }
+facade_testkit_external = { package = "astersql-testkit-external", path = "pkg/testkit/external" }
+facade_testkit_testenv = { package = "astersql-testkit-testenv", path = "pkg/testkit/testenv" }
+facade_timer = { package = "astersql-timer", path = "pkg/timer" }
+facade_timer_tablestore = { package = "astersql-timer-tablestore", path = "pkg/timer/tablestore" }
+facade_ttl_cache = { package = "astersql-ttl-cache", path = "pkg/ttl/cache" }
+facade_ttl_client = { package = "astersql-ttl-client", path = "pkg/ttl/client" }
+facade_ttl_session = { package = "astersql-ttl-session", path = "pkg/ttl/session" }
+facade_ttl_sqlbuilder = { package = "astersql-ttl-sqlbuilder", path = "pkg/ttl/sqlbuilder" }
+facade_ttl_ttlworker = { package = "astersql-ttl-ttlworker", path = "pkg/ttl/ttlworker" }
+facade_ttl_ttlworker_integrationtest = { package = "astersql-ttl-ttlworker-integrationtest", path = "pkg/ttl/ttlworker/integrationtest" }
+facade_util_dbutil = { package = "astersql-util-dbutil", path = "pkg/util/dbutil" }
+facade_util_dbutil_dbutiltest = { package = "astersql-util-dbutil-dbutiltest", path = "pkg/util/dbutil/dbutiltest" }
+facade_util_ddl_checker = { package = "astersql-util-ddl-checker", path = "pkg/util/ddl-checker" }
+facade_util_expensivequery = { package = "astersql-util-expensivequery", path = "pkg/util/expensivequery" }
+facade_util_importer = { package = "astersql-util-importer", path = "pkg/util/importer" }
+facade_util_keydecoder = { package = "astersql-util-keydecoder", path = "pkg/util/keydecoder" }
+facade_util_metricsutil = { package = "astersql-util-metricsutil", path = "pkg/util/metricsutil" }
+facade_util_regionsplit = { package = "astersql-util-regionsplit", path = "pkg/util/regionsplit" }
+facade_util_rowDecoder = { package = "astersql-util-rowDecoder", path = "pkg/util/rowDecoder" }
+facade_util_sem_compat = { package = "astersql-util-sem-compat", path = "pkg/util/sem/compat" }
+facade_util_stmtsummary_v2_tests = { package = "astersql-util-stmtsummary-v2-tests", path = "pkg/util/stmtsummary/v2/tests" }
+facade_util_traceevent_test = { package = "astersql-util-traceevent-test", path = "pkg/util/traceevent/test" }
+[build-dependencies]
+protobuf-codegen-pure = "=2.8.0"
+protoc-bin-vendored = "3"
+tonic-build = "0.12"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[patch.crates-io]
+raft-proto = { git = "https://github.com/tikv/raft-rs.git", rev = "9d360a3b0cdb691da8e500a4f73c457b605a1d73" }
+protobuf = { git = "https://github.com/pingcap/rust-protobuf", rev = "de31a47f395c2f46dbfea2545517ea1b27ad0096" }
+protobuf-codegen = { git = "https://github.com/pingcap/rust-protobuf", rev = "de31a47f395c2f46dbfea2545517ea1b27ad0096" }
+
+[lib]
+path = "pkg/lib.rs"
+
+[[test]]
+name = "zeropool_root_facade"
+path = "benches/zeropool_standalone.rs"
+
+[[bench]]
+name = "errors"
+harness = false

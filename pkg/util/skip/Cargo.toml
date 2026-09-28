@@ -1,0 +1,15 @@
+[package]
+name = "astersql-util-skip"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+testflag = { package = "astersql-testkit-testflag", path = "../../testkit/testflag" }
+
+[package.metadata.porting]
+go-package = "pkg/util/skip"
+legacy-tasks = ["task-184"]

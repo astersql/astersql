@@ -1,0 +1,19 @@
+[package]
+name = "astersql-util-vitess"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+des = "0.8"
+
+[dev-dependencies]
+hex = "0.4"
+testsetup = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }
+
+[package.metadata.porting]
+go-package = "pkg/util/vitess"
+legacy-tasks = ["task-103", "task-163"]

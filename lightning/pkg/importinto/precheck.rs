@@ -1,0 +1,205 @@
+// Copyright 2026 AsterSQL.
+// Copyright 2026 PingCAP, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//! Precheck runner for import-into backend.
+//! 中文注释索引开始
+//! 本文件负责`lightning/pkg/importinto/precheck.rs`对应的导入前校验，本次仅补充注释，不改变执行语义。
+//! 阅读时应把它视为 Go 同名实现的语义镜像，重点核对职责边界而不是表面写法。
+//! 注释优先解释状态推进、错误传播、资源释放、默认值来源以及与相邻 Go 文件的对齐点。
+//! 若这里使用内存 DB、临时目录、本地 HTTP 桩或脚本化 mock，被保护的仍是可观察行为而非环境搭建本身。
+//! 对于测试文件，模块概览还会列出长测试内部的子场景，便于维护者快速定位断言目的。
+//! 对于入口与 lib 文件，注释会重点说明哪些模块只是重导出，哪些模块才承载真实逻辑。
+//! 对于 mock 与 stubs 文件，注释强调它们服务于验证，不代表生产路径真的依赖这些简化实现。
+//! 本任务要求至少25行中文注释，因此下方会显式列出关键符号与高价值场景索引。
+//! - `struct`承载\"struct\"相关状态，是理解数据流的入口之一。
+//! 关注点不只是字段名，还包括谁负责填充、谁负责消费、何时被复制以及何时需要回写。
+//! 当 Rust 端使用 Arc、Mutex、RwLock 或其他包装来表达 Go 约束时，对外契约仍以可观察行为为准。
+//! 所以注释重点会落在生命周期、并发保护和默认值，而不是逐字段翻译。
+//! - `fn`是当前文件的重要函数，承担\"fn\"对应的局部职责。
+//! 这里真正需要解释的是输入输出、失败语义和调用顺序，而不是重复 Rust 语法本身。
+//! 若函数服务于测试，它固定的是行为契约；若服务于实现，它固定的是边界与副作用。
+//! 因此阅读该函数时要特别留意默认值、空集合、未知状态和错误包装是否继续与 Go 对齐。
+//! - `impl PrecheckRunner`把\"PrecheckRunner\"的方法聚合在一起，体现类型的生命周期与行为边界。
+//! 注意这里真正需要关注的是状态如何推进、何时落盘或回写，以及错误是记录后继续还是立即返回。
+//! 与 Go 相比， Rust 常用所有权与锁表达相同约束，因此注释会补足这层映射关系。
+//! 这有助于减少局部重构时破坏跨方法隐含约束的风险。
+//! - `impl precheck`把\"precheck\"的方法聚合在一起，体现类型的生命周期与行为边界。
+//! 注意这里真正需要关注的是状态如何推进、何时落盘或回写，以及错误是记录后继续还是立即返回。
+//! 与 Go 相比， Rust 常用所有权与锁表达相同约束，因此注释会补足这层映射关系。
+//! 这有助于减少局部重构时破坏跨方法隐含约束的风险。
+//! - `GetCheckItemID`是当前文件的重要函数，承担\"GetCheckItemID\"对应的局部职责。
+//! 这里真正需要解释的是输入输出、失败语义和调用顺序，而不是重复 Rust 语法本身。
+//! 若函数服务于测试，它固定的是行为契约；若服务于实现，它固定的是边界与副作用。
+//! 因此阅读该函数时要特别留意默认值、空集合、未知状态和错误包装是否继续与 Go 对齐。
+//! - `Check`是当前文件的重要函数，承担\"Check\"对应的局部职责。
+//! 这里真正需要解释的是输入输出、失败语义和调用顺序，而不是重复 Rust 语法本身。
+//! 若函数服务于测试，它固定的是行为契约；若服务于实现，它固定的是边界与副作用。
+//! 因此阅读该函数时要特别留意默认值、空集合、未知状态和错误包装是否继续与 Go 对齐。
+//! - 场景\"Bridge to precheck crate's empty Context type.\"说明当前文件不只覆盖主流程，也显式保护这个子分支的语义。
+//! 这类场景常常会同时验证状态字段、返回值、错误类别、日志内容或清理动作是否完整发生。
+//! 把场景名写进模块说明后，维护者无需先读完整个长函数，就能知道这段逻辑存在的原因。
+//! 如果未来有人删除或合并分支，这些场景索引也会提醒哪些承诺不能被无声丢弃。
+//! 中文注释索引结束
+
+use crate::checkpoint::{CheckpointManager, CheckpointStatus};
+use crate::stubs::*;
+use astersql_lightning_pkg_precheck as precheck;
+use std::sync::Arc;
+
+/// PrecheckRunner runs prechecks.
+pub struct PrecheckRunner {
+    checkers: Vec<Box<dyn precheck::Checker>>,
+}
+
+/// NewPrecheckRunner creates a new PrecheckRunner.
+pub fn NewPrecheckRunner() -> PrecheckRunner {
+    PrecheckRunner {
+        checkers: Vec::new(),
+    }
+}
+
+impl PrecheckRunner {
+    /// Register registers a checker.
+    pub fn Register(&mut self, checker: Box<dyn precheck::Checker>) {
+        self.checkers.push(checker);
+    }
+
+    /// Run runs all registered checkers.
+    pub fn Run(&mut self, ctx: context::Context) -> Result<()> {
+        // The Rust crates use distinct context stand-ins. Preserve the observable
+        // cancellation state while bridging them, as Go forwards the same context.
+        let mut pctx = precheck::context::Background();
+        pctx.cancelled = ctx.is_cancelled();
+        for checker in &mut self.checkers {
+            let itemID = checker.GetCheckItemID();
+            log::L().Debug("running precheck", &[zap::String("item", itemID)]);
+
+            let res = match checker.Check(pctx.clone()) {
+                Ok(res) => res,
+                Err(err) => {
+                    let mapped = Error::new(err.Error().to_string());
+                    log::L().Error(
+                        "precheck error",
+                        &[zap::String("item", itemID), zap::Error(&mapped)],
+                    );
+                    return Err(errors::Annotatef(
+                        mapped,
+                        format!("precheck {itemID} failed"),
+                    ));
+                }
+            };
+
+            let Some(res) = res else {
+                continue;
+            };
+
+            if !res.Passed {
+                log::L().Error(
+                    "precheck failed",
+                    &[
+                        zap::String("item", itemID),
+                        zap::String("message", &res.Message),
+                    ],
+                );
+                return Err(errors::Errorf(format!(
+                    "precheck {itemID} failed: {}",
+                    res.Message
+                )));
+            }
+
+            if !res.Message.is_empty() {
+                log::L().Info(
+                    "precheck passed",
+                    &[
+                        zap::String("item", itemID),
+                        zap::String("message", &res.Message),
+                    ],
+                );
+            } else {
+                log::L().Info("precheck passed", &[zap::String("item", itemID)]);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// CheckpointCheckItem validates the existing checkpoint state before import starts.
+pub struct CheckpointCheckItem {
+    cfg: Arc<config::Config>,
+    cpMgr: Arc<dyn CheckpointManager>,
+}
+
+/// NewCheckpointCheckItem returns a checkpoint precheck implementation.
+pub fn NewCheckpointCheckItem(
+    cfg: Arc<config::Config>,
+    cpMgr: Arc<dyn CheckpointManager>,
+) -> Box<dyn precheck::Checker> {
+    Box::new(CheckpointCheckItem { cfg, cpMgr })
+}
+
+impl precheck::Checker for CheckpointCheckItem {
+    fn GetCheckItemID(&self) -> precheck::CheckItemID {
+        precheck::CheckCheckpoints
+    }
+
+    fn Check(
+        &mut self,
+        pctx: precheck::context::Context,
+    ) -> std::result::Result<Option<precheck::CheckResult>, precheck::errors::Error> {
+        if !self.cfg.Checkpoint.Enable {
+            return Ok(Some(precheck::CheckResult {
+                Passed: true,
+                ..Default::default()
+            }));
+        }
+
+        let ctx = context::Background();
+        if pctx.cancelled {
+            ctx.cancel_with(Error::new("context canceled"));
+        }
+
+        let cps = self
+            .cpMgr
+            .GetCheckpoints(&ctx)
+            .map_err(|e| precheck::errors::New(e.Error()))?;
+
+        if cps.is_empty() {
+            return Ok(Some(precheck::CheckResult {
+                Passed: true,
+                ..Default::default()
+            }));
+        }
+
+        for cp in &cps {
+            if cp.Status == CheckpointStatus::Failed {
+                return Ok(Some(precheck::CheckResult {
+                    Passed: false,
+                    Message: format!(
+                        "The checkpoint table contains failed tasks (e.g. table {}). Please use `tidb-lightning-ctl --checkpoint-error-destroy=all` to clean up the failed checkpoints, or `tidb-lightning-ctl --checkpoint-remove=all` to remove all checkpoints.",
+                        cp.TableName
+                    ),
+                    ..Default::default()
+                }));
+            }
+        }
+
+        Ok(Some(precheck::CheckResult {
+            Passed: true,
+            Severity: precheck::Warn,
+            Message: "The checkpoint table is not empty. If you want to resume the import, please use the same configuration. If you want to start a new import, please use `tidb-lightning-ctl --checkpoint-remove=all` to remove the checkpoints.".to_string(),
+            ..Default::default()
+        }))
+    }
+}

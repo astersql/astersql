@@ -1,0 +1,19 @@
+[package]
+name = "astersql-planner-core-casetest-instanceplancache"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/planner/core/casetest/instanceplancache"
+legacy-tasks = ["task-1411"]
+
+[dev-dependencies]
+"astersql-domain" = { package = "astersql-domain", path = "../../../../domain" }
+"astersql-parser-auth" = { package = "astersql-parser-auth", path = "../../../../parser/auth" }
+"astersql-planner-core" = { package = "astersql-planner-core", path = "../.." }
+"astersql-session-sessmgr" = { package = "astersql-session-sessmgr", path = "../../../../session/sessmgr" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../../testkit" }

@@ -1,0 +1,24 @@
+[package]
+name = "astersql-timer-api"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+chrono = "0.4"
+chrono-tz = "0.10"
+cron = "0.16"
+crossbeam-channel = "0.5"
+fail = { version = "0.5.1", features = ["failpoints"] }
+humantime = "2"
+parking_lot = "0.12"
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+parser_duration = { package = "astersql-parser-duration", path = "../../parser/duration" }
+
+[package.metadata.porting]
+go-package = "pkg/timer/api"
+legacy-tasks = ["task-543", "task-567"]

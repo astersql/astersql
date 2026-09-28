@@ -1,0 +1,18 @@
+[package]
+name = "astersql-br-pkg-mock"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "br/pkg/mock"
+legacy-tasks = []
+kind = "library"
+lane = 0
+
+# Slimmed for darwin arm64: no kv/domain/kvproto/grpcio/lightning/server.
+# Local stubs cover PD/TiKV/cluster/importer/lightning boundaries used by this package.
+[dependencies]

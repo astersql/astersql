@@ -1,0 +1,23 @@
+[package]
+name = "astersql-planner-util-partitionpruning"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/planner/util/partitionpruning"
+legacy-tasks = ["task-1100"]
+
+[dependencies]
+"astersql-planner-core-rule" = { package = "astersql-planner-core-rule", path = "../../core/rule" }
+
+[target.'cfg(windows)'.dependencies]
+"astersql-expression" = { package = "astersql-expression", path = "../../../expression" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../../meta/model" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../parser/ast" }
+"astersql-planner-core-base" = { package = "astersql-planner-core-base", path = "../../core/base" }
+"astersql-table" = { package = "astersql-table", path = "../../../table" }
+"astersql-types" = { package = "astersql-types", path = "../../../types" }

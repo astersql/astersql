@@ -1,0 +1,37 @@
+[package]
+name = "astersql-importsdk"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/importsdk"
+legacy-tasks = ["task-1204", "task-1207", "task-1208"]
+
+[dependencies]
+"astersql-ddl" = { package = "astersql-ddl", path = "../ddl" }
+"astersql-errors" = { package = "astersql-errors", path = "../errors" }
+"astersql-executor-importer" = { package = "astersql-executor-importer", path = "../executor/importer" }
+"astersql-lightning-common" = { package = "astersql-lightning-common", path = "../lightning/common" }
+"astersql-lightning-config" = { package = "astersql-lightning-config", path = "../lightning/config" }
+"astersql-lightning-log" = { package = "astersql-lightning-log", path = "../lightning/log" }
+"astersql-lightning-mydump" = { package = "astersql-lightning-mydump", path = "../lightning/mydump" }
+"astersql-meta-metabuild" = { package = "astersql-meta-metabuild", path = "../meta/metabuild" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../meta/model" }
+"astersql-objstore" = { package = "astersql-objstore", path = "../objstore" }
+"astersql-objstore-storeapi" = { package = "astersql-objstore-storeapi", path = "../objstore/storeapi" }
+"astersql-parser" = { package = "astersql-parser", path = "../parser" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../parser/ast" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../parser/mysql" }
+"astersql-planner-core" = { package = "astersql-planner-core", path = "../planner/core" }
+"astersql-table-tables" = { package = "astersql-table-tables", path = "../table/tables" }
+chrono = "0.4"
+url = "2"
+
+[dev-dependencies]
+"astersql-util-table-filter" = { package = "astersql-util-table-filter", path = "../util/table-filter" }
+flate2 = "1"
+tempfile = "3"

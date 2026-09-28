@@ -1,0 +1,37 @@
+[package]
+name = "astersql-util-stmtsummary-v2"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[[test]]
+name = "column_1_aster_unit_test"
+path = "column_formal_aster_unit_test.rs"
+
+[dependencies]
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+crossbeam-channel = "0.5"
+lru = "0.12"
+parking_lot = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+snap = "1"
+task-execdetails = { package = "astersql-util-execdetails", path = "../../execdetails" }
+task-stmtctx = { package = "astersql-sessionctx-stmtctx", path = "../../../sessionctx/stmtctx" }
+task-stmtsummary = { package = "astersql-util-stmtsummary", path = ".." }
+plancodec-dependency = { package = "astersql-util-plancodec", path = "../../plancodec" }
+
+[dev-dependencies]
+tempfile = "3"
+testsetup-dependency = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }
+
+[package.metadata.porting]
+go-package = "pkg/util/stmtsummary/v2"
+legacy-tasks = ["task-544"]

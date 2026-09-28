@@ -1,0 +1,17 @@
+[package]
+name = "astersql-dumpling-context"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "dumpling/context"
+legacy-tasks = []
+kind = "library"
+lane = 0
+
+[dependencies]
+"astersql-dumpling-log" = { package = "astersql-dumpling-log", path = "../log" }

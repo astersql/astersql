@@ -1,0 +1,24 @@
+[package]
+name = "astersql-dxf-framework-dxfutil"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+kv-dependency = { package = "astersql-kv", path = "../../../kv" }
+model-dependency = { package = "astersql-meta-model", path = "../../../meta/model" }
+owner-dependency = { package = "astersql-owner", path = "../../../owner" }
+sqlsvrapi-dependency = { package = "astersql-domain-sqlsvrapi", path = "../../../domain/sqlsvrapi" }
+util-dependency = { package = "astersql-util", path = "../../../util" }
+
+[dev-dependencies]
+sqlsvrapimock_dependency = { package = "astersql-domain-sqlsvrapi-mock", path = "../../../domain/sqlsvrapi/mock" }
+
+[package.metadata.porting]
+go-package = "pkg/dxf/framework/dxfutil"
+legacy-tasks = ["task-642", "task-661"]

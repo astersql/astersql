@@ -1,0 +1,16 @@
+[package]
+name = "astersql-config-kerneltype"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[features]
+default = []
+nextgen = []
+
+[package.metadata.porting]
+go-package = "pkg/config/kerneltype"
+legacy-tasks = ["task-166", "task-329"]

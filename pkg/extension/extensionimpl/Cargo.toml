@@ -1,0 +1,20 @@
+[package]
+name = "astersql-extension-extensionimpl"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/extension/extensionimpl"
+legacy-tasks = ["task-1053"]
+
+[dependencies]
+"astersql-domain" = { package = "astersql-domain", path = "../../domain" }
+"astersql-extension" = { package = "astersql-extension", path = ".." }
+"astersql-kv" = { package = "astersql-kv", path = "../../kv" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../sessionctx" }
+"astersql-util-chunk" = { package = "astersql-util-chunk", path = "../../util/chunk" }
+"astersql-util-sqlexec" = { package = "astersql-util-sqlexec", path = "../../util/sqlexec" }

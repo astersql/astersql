@@ -1,0 +1,19 @@
+[package]
+name = "astersql-lightning-common"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/lightning/common"
+legacy-tasks = ["task-899", "task-900", "task-903", "task-1396"]
+
+[dependencies]
+"astersql-lightning-log" = { package = "astersql-lightning-log", path = "../log" }
+libc = "0.2"
+
+[dev-dependencies]
+serial_test = "3"

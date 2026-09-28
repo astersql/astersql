@@ -1,0 +1,22 @@
+[package]
+name = "astersql-util-execdetails"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+execdetails-group-1 = { package = "astersql-util-execdetails-group1", path = "internal/group1" }
+execdetails-ruv2 = { package = "astersql-util-execdetails-ruv2", path = "internal/ruv2" }
+execdetails-util = { package = "astersql-util-execdetails-util", path = "internal/util" }
+protobuf = "=2.8.0"
+tdigest = "1.0.0"
+
+[dev-dependencies]
+astersql-testkit-testsetup = { path = "../../testkit/testsetup" }
+
+[package.metadata.porting]
+go-package = "pkg/util/execdetails"
+legacy-tasks = ["task-486"]

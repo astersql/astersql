@@ -1,0 +1,34 @@
+[package]
+name = "astersql-store-mockstore-unistore-tikv"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/store/mockstore/unistore/tikv"
+legacy-tasks = ["task-820", "task-821", "task-822", "task-823", "task-824", "task-825", "task-828", "task-833"]
+
+[target.'cfg(target_os = "windows")'.dependencies]
+"astersql-kv" = { package = "astersql-kv", path = "../../../../kv" }
+"astersql-store-mockstore-unistore-client" = { package = "astersql-store-mockstore-unistore-client", path = "../client" }
+"astersql-store-mockstore-unistore-config" = { package = "astersql-store-mockstore-unistore-config", path = "../config" }
+"astersql-store-mockstore-unistore-cophandler" = { package = "astersql-store-mockstore-unistore-cophandler", path = "../cophandler" }
+"astersql-store-mockstore-unistore-lockstore" = { package = "astersql-store-mockstore-unistore-lockstore", path = "../lockstore" }
+"astersql-store-mockstore-unistore-metrics" = { package = "astersql-store-mockstore-unistore-metrics", path = "../metrics" }
+"astersql-store-mockstore-unistore-pd" = { package = "astersql-store-mockstore-unistore-pd", path = "../pd" }
+"astersql-store-mockstore-unistore-tikv-dbreader" = { package = "astersql-store-mockstore-unistore-tikv-dbreader", path = "dbreader" }
+"astersql-store-mockstore-unistore-tikv-kverrors" = { package = "astersql-store-mockstore-unistore-tikv-kverrors", path = "kverrors" }
+"astersql-store-mockstore-unistore-tikv-mvcc" = { package = "astersql-store-mockstore-unistore-tikv-mvcc", path = "mvcc" }
+"astersql-store-mockstore-unistore-tikv-pberror" = { package = "astersql-store-mockstore-unistore-tikv-pberror", path = "pberror" }
+"astersql-store-mockstore-unistore-util-lockwaiter" = { package = "astersql-store-mockstore-unistore-util-lockwaiter", path = "../util/lockwaiter" }
+"astersql-tablecodec" = { package = "astersql-tablecodec", path = "../../../../tablecodec" }
+"astersql-types" = { package = "astersql-types", path = "../../../../types" }
+"astersql-util-codec" = { package = "astersql-util-codec", path = "../../../../util/codec" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../../../util/logutil" }
+"astersql-util-rowcodec" = { package = "astersql-util-rowcodec", path = "../../../../util/rowcodec" }
+
+[target.'cfg(target_os = "windows")'.dev-dependencies]
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../../testkit/testsetup" }

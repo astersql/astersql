@@ -1,0 +1,31 @@
+[package]
+name = "astersql-util-dbutil"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/util/dbutil"
+legacy-tasks = ["task-884", "task-888", "task-1200"]
+
+[dependencies]
+"astersql-infoschema" = { package = "astersql-infoschema", path = "../../infoschema" }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+"astersql-errno" = { package = "astersql-errno", path = "../../errno" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../meta/model" }
+"astersql-parser" = { package = "astersql-parser", path = "../../parser" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../parser/ast" }
+"astersql-parser-auth" = { package = "astersql-parser-auth", path = "../../parser/auth" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+"astersql-types" = { package = "astersql-types", path = "../../types" }
+"astersql-types-parser_driver" = { package = "astersql-types-parser_driver", path = "../../types/parser_driver" }
+"astersql-util" = { package = "astersql-util", path = ".." }
+"astersql-util-dbterror" = { package = "astersql-util-dbterror", path = "../dbterror" }
+
+[target.'cfg(target_os = "windows")'.dev-dependencies]
+"astersql-util-dbutil-dbutiltest" = { package = "astersql-util-dbutil-dbutiltest", path = "dbutiltest" }
+"astersql-util-schemacmp" = { package = "astersql-util-schemacmp", path = "../schemacmp" }

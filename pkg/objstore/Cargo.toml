@@ -1,0 +1,44 @@
+[package]
+name = "astersql-objstore"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+bytes = "1"
+chrono = { version = "0.4", features = ["serde"] }
+crossbeam-channel = "0.5"
+flate2 = "1"
+futures = "0.3"
+hostname = "0.4"
+http = "1"
+libc = "0.2"
+object_store = { version = "0.14", features = ["azure", "gcp"] }
+objectio = { package = "astersql-objstore-objectio", path = "objectio" }
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+snap = "1"
+storeapi = { package = "astersql-objstore-storeapi", path = "storeapi" }
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+walkdir = "2"
+zstd = "0.13"
+
+[dev-dependencies]
+serial_test = "3"
+
+[package.metadata.porting]
+go-package = "pkg/objstore"
+legacy-tasks = ["task-649", "task-651"]

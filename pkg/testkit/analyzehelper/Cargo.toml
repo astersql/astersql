@@ -1,0 +1,17 @@
+[package]
+name = "astersql-testkit-analyzehelper"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/testkit/analyzehelper"
+legacy-tasks = ["task-1521"]
+
+[dependencies]
+"astersql-kv" = { package = "astersql-kv", path = "../../kv" }
+"astersql-session" = { package = "astersql-session", path = "../../session" }
+"astersql-testkit" = { package = "astersql-testkit", path = ".." }

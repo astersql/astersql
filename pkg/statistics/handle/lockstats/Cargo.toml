@@ -1,0 +1,28 @@
+[package]
+name = "astersql-statistics-handle-lockstats"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/statistics/handle/lockstats"
+legacy-tasks = ["task-931", "task-938"]
+
+[target.'cfg(any())'.dependencies]
+"astersql-session-syssession" = { package = "astersql-session-syssession", path = "../../../session/syssession" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../../sessionctx" }
+"astersql-statistics-handle-logutil" = { package = "astersql-statistics-handle-logutil", path = "../logutil" }
+"astersql-statistics-handle-types" = { package = "astersql-statistics-handle-types", path = "../types" }
+"astersql-statistics-handle-util" = { package = "astersql-statistics-handle-util", path = "../util" }
+
+[target.'cfg(any())'.dev-dependencies]
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../../parser/mysql" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }
+"astersql-types" = { package = "astersql-types", path = "../../../types" }
+"astersql-util-chunk" = { package = "astersql-util-chunk", path = "../../../util/chunk" }
+"astersql-util-mock" = { package = "astersql-util-mock", path = "../../../util/mock" }
+"astersql-util-sqlexec-mock" = { package = "astersql-util-sqlexec-mock", path = "../../../util/sqlexec/mock" }

@@ -1,0 +1,36 @@
+[package]
+name = "astersql-br-pkg-metautil"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "br/pkg/metautil"
+legacy-tasks = []
+kind = "library"
+lane = 0
+
+# Slimmed for darwin arm64: no kvproto/grpcio/statistics-handle/tablecodec.
+# brpb/JSONTable/DecodeTableID use local stubs; utils/logutil peers stay slim.
+[dependencies]
+"astersql-br-pkg-errors" = { package = "astersql-br-pkg-errors", path = "../errors" }
+"astersql-br-pkg-logutil" = { package = "astersql-br-pkg-logutil", path = "../logutil" }
+"astersql-br-pkg-summary" = { package = "astersql-br-pkg-summary", path = "../summary" }
+"astersql-br-pkg-utils" = { package = "astersql-br-pkg-utils", path = "../utils" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../../pkg/meta/model" }
+"astersql-objstore-storeapi" = { package = "astersql-objstore-storeapi", path = "../../../pkg/objstore/storeapi" }
+"astersql-util" = { package = "astersql-util", path = "../../../pkg/util" }
+"astersql-util-encrypt" = { package = "astersql-util-encrypt", path = "../../../pkg/util/encrypt" }
+"astersql-errors" = { package = "astersql-errors", path = "../../../pkg/errors" }
+bytesize = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+
+[dev-dependencies]
+"astersql-objstore" = { package = "astersql-objstore", path = "../../../pkg/objstore" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../pkg/parser/ast" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../pkg/testkit/testsetup" }

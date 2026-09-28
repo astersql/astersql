@@ -1,0 +1,26 @@
+[package]
+name = "astersql-infoschema-internal"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/infoschema/internal"
+legacy-tasks = ["task-859", "task-862"]
+
+[dependencies]
+"astersql-store-mockstore" = { package = "astersql-store-mockstore", path = "../../store/mockstore" }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+"astersql-kv" = { package = "astersql-kv", path = "../../kv" }
+"astersql-meta" = { package = "astersql-meta", path = "../../meta" }
+"astersql-meta-autoid" = { package = "astersql-meta-autoid", path = "../../meta/autoid" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../meta/model" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../parser/ast" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+"astersql-table" = { package = "astersql-table", path = "../../table" }
+"astersql-table-tables" = { package = "astersql-table-tables", path = "../../table/tables" }
+"astersql-types" = { package = "astersql-types", path = "../../types" }

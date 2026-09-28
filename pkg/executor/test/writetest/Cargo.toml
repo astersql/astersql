@@ -1,0 +1,30 @@
+[package]
+name = "astersql-executor-test-writetest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/executor/test/writetest"
+legacy-tasks = ["task-1361"]
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../config" }
+"astersql-errctx" = { package = "astersql-errctx", path = "../../../errctx" }
+"astersql-executor" = { package = "astersql-executor", path = "../.." }
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
+"astersql-lightning-mydump" = { package = "astersql-lightning-mydump", path = "../../../lightning/mydump" }
+"astersql-meta-autoid" = { package = "astersql-meta-autoid", path = "../../../meta/autoid" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../parser/ast" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../../parser/mysql" }
+"astersql-session" = { package = "astersql-session", path = "../../../session" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../../sessionctx" }
+"astersql-sessiontxn" = { package = "astersql-sessiontxn", path = "../../../sessiontxn" }
+"astersql-store-mockstore" = { package = "astersql-store-mockstore", path = "../../../store/mockstore" }
+"astersql-table-tables" = { package = "astersql-table-tables", path = "../../../table/tables" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-types" = { package = "astersql-types", path = "../../../types" }
+"astersql-util" = { package = "astersql-util", path = "../../../util" }

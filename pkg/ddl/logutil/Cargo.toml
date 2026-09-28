@@ -1,0 +1,16 @@
+[package]
+name = "astersql-ddl-logutil"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+astersql-util-logutil = { path = "../../util/logutil" }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[package.metadata.porting]
+go-package = "pkg/ddl/logutil"
+legacy-tasks = ["task-230", "task-302"]

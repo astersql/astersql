@@ -1,0 +1,19 @@
+[package]
+name = "astersql-executor-test-analyzetest-options"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/executor/test/analyzetest/options"
+legacy-tasks = ["task-1599"]
+
+[target.'cfg(any())'.dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../../config" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../../parser/ast" }
+"astersql-statistics" = { package = "astersql-statistics", path = "../../../../statistics" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../../testkit" }
+"astersql-testkit-analyzehelper" = { package = "astersql-testkit-analyzehelper", path = "../../../../testkit/analyzehelper" }

@@ -1,0 +1,28 @@
+[package]
+name = "astersql-session-sessmgr"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+chrono = "0.4"
+chrono-tz = "0.10"
+rustls = "0.23"
+auth-dependency = { package = "astersql-parser-auth", path = "../../parser/auth" }
+cursor-dependency = { package = "astersql-session-cursor", path = "../cursor" }
+disk-dependency = { package = "astersql-util-disk", path = "../../util/disk" }
+execdetails-dependency = { package = "astersql-util-execdetails", path = "../../util/execdetails" }
+mdldef-dependency = { package = "astersql-infoschema-issyncer-mdldef", path = "../../infoschema/issyncer/mdldef" }
+memory-dependency = { package = "astersql-util-memory", path = "../../util/memory" }
+mysql-dependency = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+ppcpuusage-dependency = { package = "astersql-util-ppcpuusage", path = "../../util/ppcpuusage" }
+resourcegroup-dependency = { package = "astersql-resourcegroup", path = "../../resourcegroup" }
+stmtctx-dependency = { package = "astersql-sessionctx-stmtctx", path = "../../sessionctx/stmtctx" }
+txninfo-dependency = { package = "astersql-session-txninfo", path = "../txninfo" }
+
+[package.metadata.porting]
+go-package = "pkg/session/sessmgr"
+legacy-tasks = ["task-507"]

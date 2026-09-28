@@ -1,0 +1,30 @@
+[package]
+name = "astersql-types-scalar"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[features]
+default = []
+types-integration = [
+    "dep:types-decimal",
+    "dep:types-file-group",
+    "dep:types-json-binary",
+    "dep:types-metadata",
+]
+
+[dependencies]
+chrono-tz = "0.10"
+hex = "0.4"
+ryu = "1"
+contextutil = { package = "astersql-util-context", path = "../../../util/context" }
+collate = { package = "astersql-util-collate", path = "../../../util/collate" }
+parser-mysql = { package = "astersql-parser-mysql", path = "../../../parser/mysql" }
+types-time = { package = "astersql-types-time", path = "../time" }
+types-decimal = { package = "astersql-types-decimal", path = "../decimal", optional = true }
+types-file-group = { package = "astersql-types-file-group", path = "../file_group", optional = true }
+types-json-binary = { package = "astersql-types-json-binary", path = "../json_binary", optional = true }
+types-metadata = { package = "astersql-types-metadata", path = "../metadata", optional = true }

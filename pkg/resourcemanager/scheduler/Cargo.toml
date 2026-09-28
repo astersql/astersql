@@ -1,0 +1,18 @@
+[package]
+name = "astersql-resourcemanager-scheduler"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+cpu_crate = { package = "astersql-util-cpu", path = "../../util/cpu" }
+
+[dev-dependencies]
+cpu_crate = { package = "astersql-util-cpu", path = "../../util/cpu", features = ["test-support"] }
+
+[package.metadata.porting]
+go-package = "pkg/resourcemanager/scheduler"
+legacy-tasks = ["task-313"]

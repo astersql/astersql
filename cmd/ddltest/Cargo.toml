@@ -1,0 +1,45 @@
+[package]
+name = "astersql-cmd-ddltest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "cmd/ddltest"
+legacy-tasks = []
+kind = "test-only"
+lane = 0
+
+[[test]]
+name = "column_test"
+path = "column_test.rs"
+
+[[test]]
+name = "ddl_test"
+path = "ddl_test.rs"
+
+[[test]]
+name = "index_test"
+path = "index_test.rs"
+
+[[test]]
+name = "main_test"
+path = "main_test.rs"
+
+[[test]]
+name = "random_test"
+path = "random_test.rs"
+
+[[test]]
+name = "parity_test"
+path = "parity_test.rs"
+
+# arm64 darwin: no kv/domain/kvproto/grpcio.
+# Local in-lib stubs cover TiKV/session/domain/MySQL/process boundaries.
+[dependencies]
+
+[dev-dependencies]

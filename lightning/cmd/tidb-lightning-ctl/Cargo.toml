@@ -1,0 +1,24 @@
+[package]
+name = "astersql-lightning-cmd-tidb-lightning-ctl"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "lightning/cmd/tidb-lightning-ctl"
+legacy-tasks = []
+kind = "binary"
+lane = 2
+
+[[bin]]
+name = "astersql-lightning-cmd-tidb-lightning-ctl"
+path = "bin_main.rs"
+
+# arm64 darwin: no kv/domain/kvproto/grpcio.
+# Prefer slim importer/server; local stubs cover flag/PD/TiKV/config glue.
+[dependencies]
+"astersql-lightning-pkg-importer" = { package = "astersql-lightning-pkg-importer", path = "../../pkg/importer" }
+"astersql-lightning-pkg-server" = { package = "astersql-lightning-pkg-server", path = "../../pkg/server" }

@@ -1,0 +1,41 @@
+[package]
+name = "astersql-sessiontxn-staleread"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/sessiontxn/staleread"
+legacy-tasks = ["task-1058", "task-1476"]
+
+[target.'cfg(any())'.dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../config" }
+"astersql-domain" = { package = "astersql-domain", path = "../../domain" }
+"astersql-expression" = { package = "astersql-expression", path = "../../expression" }
+"astersql-infoschema" = { package = "astersql-infoschema", path = "../../infoschema" }
+"astersql-kv" = { package = "astersql-kv", path = "../../kv" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../parser/ast" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+"astersql-planner-planctx" = { package = "astersql-planner-planctx", path = "../../planner/planctx" }
+"astersql-planner-util" = { package = "astersql-planner-util", path = "../../planner/util" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../sessionctx" }
+"astersql-sessionctx-stmtctx" = { package = "astersql-sessionctx-stmtctx", path = "../../sessionctx/stmtctx" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../sessionctx/vardef" }
+"astersql-sessionctx-variable" = { package = "astersql-sessionctx-variable", path = "../../sessionctx/variable" }
+"astersql-sessiontxn" = { package = "astersql-sessiontxn", path = ".." }
+"astersql-sessiontxn-internal" = { package = "astersql-sessiontxn-internal", path = "../internal" }
+"astersql-table-temptable" = { package = "astersql-table-temptable", path = "../../table/temptable" }
+"astersql-types" = { package = "astersql-types", path = "../../types" }
+"astersql-util-dbterror-plannererrors" = { package = "astersql-util-dbterror-plannererrors", path = "../../util/dbterror/plannererrors" }
+
+[target.'cfg(any())'.dev-dependencies]
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../config/kerneltype" }
+"astersql-parser" = { package = "astersql-parser", path = "../../parser" }
+"astersql-parser-auth" = { package = "astersql-parser-auth", path = "../../parser/auth" }
+"astersql-store-mockstore" = { package = "astersql-store-mockstore", path = "../../store/mockstore" }
+"astersql-tablecodec" = { package = "astersql-tablecodec", path = "../../tablecodec" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../testkit" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }

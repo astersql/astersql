@@ -1,0 +1,32 @@
+[package]
+name = "astersql-lightning-pkg-importer"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "lightning/pkg/importer"
+legacy-tasks = []
+kind = "library"
+lane = 1
+
+# arm64 darwin: no kv/domain/kvproto/grpcio.
+# Prefer already-ported checkpoints/precheck/progress/errormanager/importer-opts;
+# local stubs cover backend/PD/TiKV/SQL/encode/mydump/IO boundaries.
+[dependencies]
+"astersql-lightning-pkg-checkpoints" = { package = "astersql-lightning-pkg-checkpoints", path = "../checkpoints" }
+"astersql-lightning-pkg-errormanager" = { package = "astersql-lightning-pkg-errormanager", path = "../errormanager" }
+"astersql-lightning-pkg-importer-opts" = { package = "astersql-lightning-pkg-importer-opts", path = "opts" }
+"astersql-lightning-pkg-precheck" = { package = "astersql-lightning-pkg-precheck", path = "../precheck" }
+"astersql-lightning-pkg-progress" = { package = "astersql-lightning-pkg-progress", path = "../progress" }
+"astersql-lightning-mydump" = { path = "../../../pkg/lightning/mydump" }
+regexpr-router = { package = "astersql-util-regexpr-router", path = "../../../pkg/util/regexpr-router" }
+table-router = { package = "astersql-util-table-router", path = "../../../pkg/util/table-router" }
+bytes = "1"
+flate2 = "1"
+parquet = "59.1.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

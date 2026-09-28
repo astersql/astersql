@@ -1,0 +1,17 @@
+[package]
+name = "astersql-br-pkg-errors"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "br/pkg/errors"
+legacy-tasks = []
+kind = "library"
+lane = 1
+
+[dependencies]
+"astersql-errors" = { package = "astersql-errors", path = "../../../pkg/errors" }

@@ -1,0 +1,23 @@
+[package]
+name = "astersql-planner-cascades"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/planner/cascades"
+legacy-tasks = ["task-1155", "task-1399"]
+
+[dependencies]
+base = { package = "astersql-planner-cascades-base", path = "base" }
+task = { package = "astersql-planner-cascades-task", path = "task" }
+cascades-memo = { package = "astersql-planner-cascades-memo", path = "memo" }
+cascades-pattern = { package = "astersql-planner-cascades-pattern", path = "pattern" }
+cascades-rule = { package = "astersql-planner-cascades-rule", path = "rule" }
+logicalop = { package = "astersql-planner-core-operator-logicalop", path = "../core/operator/logicalop" }
+
+[target.'cfg(any())'.dev-dependencies]
+"astersql-testkit" = { package = "astersql-testkit", path = "../../testkit" }

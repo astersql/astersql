@@ -1,0 +1,18 @@
+[package]
+name = "astersql-executor-test-analyzetest-columns"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/executor/test/analyzetest/columns"
+legacy-tasks = ["task-1329"]
+
+[dev-dependencies]
+astersql-config = { package = "astersql-config", path = "../../../../config" }
+astersql-parser-ast = { package = "astersql-parser-ast", path = "../../../../parser/ast" }
+astersql-testkit = { package = "astersql-testkit", path = "../../../../testkit" }
+astersql-testkit-testsetup = { package = "astersql-testkit-testsetup", path = "../../../../testkit/testsetup" }

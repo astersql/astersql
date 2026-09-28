@@ -1,0 +1,19 @@
+[package]
+name = "astersql-br-pkg-encryption-master-key"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "br/pkg/encryption/master_key"
+legacy-tasks = []
+kind = "library"
+lane = 2
+
+[dependencies]
+"astersql-br-pkg-kms" = { package = "astersql-br-pkg-kms", path = "../../kms" }
+aes-gcm = "0.10"
+rand = "0.8"

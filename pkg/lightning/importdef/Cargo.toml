@@ -1,0 +1,15 @@
+[package]
+name = "astersql-lightning-importdef"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+model-dependency = { package = "astersql-meta-model", path = "../../meta/model" }
+
+[package.metadata.porting]
+go-package = "pkg/lightning/importdef"
+legacy-tasks = ["task-430"]

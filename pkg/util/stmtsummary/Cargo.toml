@@ -1,0 +1,33 @@
+[package]
+name = "astersql-util-stmtsummary"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+base64 = "0.22"
+chrono = "0.4"
+chrono-tz = "0.10"
+log = "0.4"
+lru = "0.12"
+prometheus = "0.14"
+snap = "1"
+ppcpuusage = { package = "astersql-util-ppcpuusage", path = "../ppcpuusage" }
+auth-dependency = { package = "astersql-parser-auth", path = "../../parser/auth" }
+model-dependency = { package = "astersql-meta-model", path = "../../meta/model" }
+mysql-dependency = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+plancodec-dependency = { package = "astersql-util-plancodec", path = "../plancodec" }
+set-dependency = { package = "astersql-util-set", path = "../set" }
+task-execdetails = { package = "astersql-util-execdetails", path = "../execdetails" }
+task-stmtctx = { package = "astersql-sessionctx-stmtctx", path = "../../sessionctx/stmtctx" }
+types-dependency = { package = "astersql-types", path = "../../types" }
+
+[dev-dependencies]
+astersql-testkit-testsetup = { path = "../../testkit/testsetup" }
+
+[package.metadata.porting]
+go-package = "pkg/util/stmtsummary"
+legacy-tasks = ["task-512"]

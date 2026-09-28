@@ -1,0 +1,22 @@
+[package]
+name = "astersql-statistics-handle-history"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/statistics/handle/history"
+legacy-tasks = ["task-952"]
+
+[target.'cfg(any())'.dependencies]
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../../meta/model" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../../sessionctx" }
+"astersql-statistics-handle-logutil" = { package = "astersql-statistics-handle-logutil", path = "../logutil" }
+"astersql-statistics-handle-storage" = { package = "astersql-statistics-handle-storage", path = "../storage" }
+"astersql-statistics-handle-types" = { package = "astersql-statistics-handle-types", path = "../types" }
+"astersql-statistics-handle-util" = { package = "astersql-statistics-handle-util", path = "../util" }
+"astersql-statistics-util" = { package = "astersql-statistics-util", path = "../../util" }
+"astersql-util-intest" = { package = "astersql-util-intest", path = "../../../util/intest" }

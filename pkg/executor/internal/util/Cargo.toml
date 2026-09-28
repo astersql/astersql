@@ -1,0 +1,21 @@
+[package]
+name = "astersql-executor-internal-util"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+backtrace = "0.3"
+rand = "0.8"
+thiserror = "2"
+walkdir = "2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[package.metadata.porting]
+go-package = "pkg/executor/internal/util"
+legacy-tasks = ["task-275", "task-324"]

@@ -1,0 +1,22 @@
+[package]
+name = "astersql-server-tests-tls"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/server/tests/tls"
+legacy-tasks = ["task-1646"]
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../config" }
+"astersql-metrics" = { package = "astersql-metrics", path = "../../../metrics" }
+"astersql-server" = { package = "astersql-server", path = "../.." }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }
+"astersql-util" = { package = "astersql-util", path = "../../../util" }
+"astersql-util-topsql-state" = { package = "astersql-util-topsql-state", path = "../../../util/topsql/state" }
+openssl = "0.10"
+rustls = "0.23"

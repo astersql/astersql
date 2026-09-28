@@ -1,0 +1,17 @@
+[package]
+name = "astersql-util-topsql-stmtstats"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+execdetails-dependency = { package = "astersql-util-execdetails", path = "../../execdetails" }
+reporter-metrics-dependency = { package = "astersql-util-topsql-reporter-metrics", path = "../reporter/metrics" }
+topsql-state-dependency = { package = "astersql-util-topsql-state", path = "../state" }
+
+[package.metadata.porting]
+go-package = "pkg/util/topsql/stmtstats"
+legacy-tasks = ["task-488", "task-495"]

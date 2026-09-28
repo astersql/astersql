@@ -1,0 +1,27 @@
+[package]
+name = "astersql-util-mock"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+chrono = "0.4"
+kv-crate = { package = "astersql-kv", path = "../../kv" }
+prometheus = "0.14"
+sessionctx-crate = { package = "astersql-sessionctx", path = "../../sessionctx" }
+sli-crate = { package = "astersql-util-sli", path = "../sli" }
+thiserror = "2"
+tokio-util = "0.7"
+vardef-crate = { package = "astersql-sessionctx-vardef", path = "../../sessionctx/vardef" }
+variable-crate = { package = "astersql-sessionctx-variable", path = "../../sessionctx/variable" }
+
+[dev-dependencies]
+mockstorage_crate = { package = "astersql-store-mockstore-mockstorage", path = "../../store/mockstore/mockstorage" }
+testsetup_crate = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }
+
+[package.metadata.porting]
+go-package = "pkg/util/mock"
+legacy-tasks = ["task-658"]

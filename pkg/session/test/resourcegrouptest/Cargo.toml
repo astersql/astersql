@@ -1,0 +1,22 @@
+[package]
+name = "astersql-session-test-resourcegrouptest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/session/test/resourcegrouptest"
+legacy-tasks = ["task-1461"]
+
+[dev-dependencies]
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
+"astersql-parser" = { package = "astersql-parser", path = "../../../parser" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../parser/ast" }
+"astersql-session" = { package = "astersql-session", path = "../.." }
+"astersql-sessionctx-variable" = { package = "astersql-sessionctx-variable", path = "../../../sessionctx/variable" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../testkit/testfailpoint" }
+fail = { version = "0.5", features = ["failpoints"] }

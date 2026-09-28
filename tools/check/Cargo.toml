@@ -1,0 +1,23 @@
+[package]
+name = "astersql-tools-check"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "tools/check"
+legacy-tasks = []
+kind = "binary"
+lane = 1
+
+[[bin]]
+name = "astersql-tools-check"
+path = "bin_main.rs"
+
+# arm64 darwin: no kv/domain/kvproto/grpcio.
+# Subprocess / cover-profile / regex boundaries use local stubs (see stubs.rs).
+[dependencies]
+regex = "1"

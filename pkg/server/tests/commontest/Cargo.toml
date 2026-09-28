@@ -1,0 +1,48 @@
+[package]
+name = "astersql-server-tests-commontest"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/server/tests/commontest"
+legacy-tasks = ["task-1643", "task-1644"]
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../config" }
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../config/kerneltype" }
+"astersql-ddl-util" = { package = "astersql-ddl-util", path = "../../../ddl/util" }
+"astersql-extension" = { package = "astersql-extension", path = "../../../extension" }
+"astersql-metrics" = { package = "astersql-metrics", path = "../../../metrics" }
+"astersql-parser" = { package = "astersql-parser", path = "../../../parser" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../parser/ast" }
+"astersql-parser-auth" = { package = "astersql-parser-auth", path = "../../../parser/auth" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../../parser/mysql" }
+"astersql-parser-terror" = { package = "astersql-parser-terror", path = "../../../parser/terror" }
+"astersql-plugin" = { package = "astersql-plugin", path = "../../../plugin" }
+"astersql-server" = { package = "astersql-server", path = "../.." }
+"astersql-server-internal-column" = { package = "astersql-server-internal-column", path = "../../internal/column" }
+"astersql-server-internal-resultset" = { package = "astersql-server-internal-resultset", path = "../../internal/resultset" }
+"astersql-server-internal-testserverclient" = { package = "astersql-server-internal-testserverclient", path = "../../internal/testserverclient" }
+"astersql-server-internal-testutil" = { package = "astersql-server-internal-testutil", path = "../../internal/testutil" }
+"astersql-server-internal-util" = { package = "astersql-server-internal-util", path = "../../internal/util" }
+"astersql-server-tests-servertestkit" = { package = "astersql-server-tests-servertestkit", path = "../servertestkit" }
+"astersql-session" = { package = "astersql-session", path = "../../../session" }
+"astersql-sessionctx-variable" = { package = "astersql-sessionctx-variable", path = "../../../sessionctx/variable" }
+"astersql-store-mockstore-unistore" = { package = "astersql-store-mockstore-unistore", path = "../../../store/mockstore/unistore" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../testkit/testfailpoint" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }
+"astersql-util" = { package = "astersql-util", path = "../../../util" }
+"astersql-util-plancodec" = { package = "astersql-util-plancodec", path = "../../../util/plancodec" }
+"astersql-util-resourcegrouptag" = { package = "astersql-util-resourcegrouptag", path = "../../../util/resourcegrouptag" }
+"astersql-util-topsql" = { package = "astersql-util-topsql", path = "../../../util/topsql" }
+"astersql-util-topsql-collector" = { package = "astersql-util-topsql-collector", path = "../../../util/topsql/collector" }
+"astersql-util-topsql-collector-mock" = { package = "astersql-util-topsql-collector-mock", path = "../../../util/topsql/collector/mock" }
+"astersql-util-topsql-state" = { package = "astersql-util-topsql-state", path = "../../../util/topsql/state" }
+"astersql-util-topsql-stmtstats" = { package = "astersql-util-topsql-stmtstats", path = "../../../util/topsql/stmtstats" }
+"astersql-util-chunk" = { package = "astersql-util-chunk", path = "../../../util/chunk" }
+"astersql-util-sqlexec" = { package = "astersql-util-sqlexec", path = "../../../util/sqlexec" }

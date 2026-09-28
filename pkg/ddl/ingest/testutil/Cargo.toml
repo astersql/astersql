@@ -1,0 +1,20 @@
+[package]
+name = "astersql-ddl-ingest-testutil"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/ddl/ingest/testutil"
+legacy-tasks = ["task-1516"]
+
+[dependencies]
+"astersql-ddl-ingest" = { package = "astersql-ddl-ingest", path = ".." }
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../../meta/model" }
+"astersql-metrics" = { package = "astersql-metrics", path = "../../../metrics" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../testkit/testfailpoint" }

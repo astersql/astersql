@@ -1,0 +1,23 @@
+[package]
+name = "astersql-br-pkg-pdutil"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "br/pkg/pdutil"
+legacy-tasks = []
+kind = "library"
+lane = 2
+
+[dependencies]
+"astersql-br-pkg-errors" = { package = "astersql-br-pkg-errors", path = "../errors" }
+"astersql-errors" = { package = "astersql-errors", path = "../../../pkg/errors" }
+hex = "0.4"
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }

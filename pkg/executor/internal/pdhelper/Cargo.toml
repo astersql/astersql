@@ -1,0 +1,23 @@
+[package]
+name = "astersql-executor-internal-pdhelper"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+fail = { version = "0.5", features = ["failpoints"] }
+lru = "0.12"
+
+[dev-dependencies]
+astersql-config = { package = "astersql-config", path = "../../../config" }
+astersql-meta-autoid = { package = "astersql-meta-autoid", path = "../../../meta/autoid" }
+testsetup = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }
+
+[package.metadata.porting]
+go-package = "pkg/executor/internal/pdhelper"
+legacy-tasks = ["task-629", "task-641"]

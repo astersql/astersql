@@ -1,0 +1,23 @@
+[package]
+name = "astersql-sessionctx-stmtctx"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+chrono-tz = "0.10"
+task-context = { package = "astersql-util-context", path = "../../util/context" }
+task-errctx = { package = "astersql-errctx", path = "../../errctx" }
+task-execdetails = { package = "astersql-util-execdetails", path = "../../util/execdetails" }
+task-intset = { package = "astersql-util-intset", path = "../../util/intset" }
+task-memory = { package = "astersql-util-memory", path = "../../util/memory" }
+task-model = { package = "astersql-meta-model", path = "../../meta/model" }
+task-parser = { package = "astersql-parser", path = "../../parser" }
+task-types = { package = "astersql-types", path = "../../types" }
+
+[package.metadata.porting]
+go-package = "pkg/sessionctx/stmtctx"
+legacy-tasks = ["task-504"]

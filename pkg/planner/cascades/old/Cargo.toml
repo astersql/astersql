@@ -1,0 +1,50 @@
+[package]
+name = "astersql-planner-cascades-old"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/planner/cascades/old"
+legacy-tasks = ["task-1214", "task-1217", "task-1218"]
+
+[dependencies]
+"astersql-expression" = { package = "astersql-expression", path = "../../../expression" }
+"astersql-expression-aggregation" = { package = "astersql-expression-aggregation", path = "../../../expression/aggregation" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../../meta/model" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../parser/ast" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../../parser/mysql" }
+"astersql-planner-cascades-pattern" = { package = "astersql-planner-cascades-pattern", path = "../pattern" }
+"astersql-planner-cardinality" = { package = "astersql-planner-cardinality", path = "../../cardinality" }
+"astersql-planner-core" = { package = "astersql-planner-core", path = "../../core" }
+"astersql-planner-core-base" = { package = "astersql-planner-core-base", path = "../../core/base" }
+"astersql-planner-core-operator-logicalop" = { package = "astersql-planner-core-operator-logicalop", path = "../../core/operator/logicalop" }
+"astersql-planner-core-operator-physicalop" = { package = "astersql-planner-core-operator-physicalop", path = "../../core/operator/physicalop" }
+"astersql-planner-core-rule-util" = { package = "astersql-planner-core-rule-util", path = "../../core/rule/util" }
+"astersql-planner-implementation" = { package = "astersql-planner-implementation", path = "../../implementation" }
+"astersql-planner-memo" = { package = "astersql-planner-memo", path = "../../memo" }
+"astersql-planner-planctx" = { package = "astersql-planner-planctx", path = "../../planctx" }
+"astersql-planner-property" = { package = "astersql-planner-property", path = "../../property" }
+"astersql-planner-util" = { package = "astersql-planner-util", path = "../../util" }
+"astersql-planner-util-coreusage" = { package = "astersql-planner-util-coreusage", path = "../../util/coreusage" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../../sessionctx/vardef" }
+"astersql-statistics" = { package = "astersql-statistics", path = "../../../statistics" }
+"astersql-types" = { package = "astersql-types", path = "../../../types" }
+"astersql-util-dbterror-plannererrors" = { package = "astersql-util-dbterror-plannererrors", path = "../../../util/dbterror/plannererrors" }
+"astersql-util-intset" = { package = "astersql-util-intset", path = "../../../util/intset" }
+"astersql-util-ranger" = { package = "astersql-util-ranger", path = "../../../util/ranger" }
+
+[dev-dependencies]
+"astersql-domain" = { package = "astersql-domain", path = "../../../domain" }
+"astersql-expression-exprstatic" = { package = "astersql-expression-exprstatic", path = "../../../expression/exprstatic" }
+"astersql-infoschema" = { package = "astersql-infoschema", path = "../../../infoschema" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../../meta/model" }
+"astersql-parser" = { package = "astersql-parser", path = "../../../parser" }
+"astersql-planner-core-resolve" = { package = "astersql-planner-core-resolve", path = "../../core/resolve" }
+"astersql-planner-util-coretestsdk" = { package = "astersql-planner-util-coretestsdk", path = "../../util/coretestsdk" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../testkit" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }

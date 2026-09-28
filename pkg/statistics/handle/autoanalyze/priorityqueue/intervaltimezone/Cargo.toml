@@ -1,0 +1,18 @@
+[package]
+name = "astersql-statistics-handle-autoanalyze-priorityqueue-intervaltimezone"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/statistics/handle/autoanalyze/priorityqueue/intervaltimezone"
+legacy-tasks = ["task-1483"]
+
+[dev-dependencies]
+"astersql-statistics-handle-autoanalyze" = { package = "astersql-statistics-handle-autoanalyze", path = "../.." }
+"astersql-statistics-handle-autoanalyze-priorityqueue" = { package = "astersql-statistics-handle-autoanalyze-priorityqueue", path = ".." }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../../../testkit/testsetup" }
+"astersql-util-timeutil" = { package = "astersql-util-timeutil", path = "../../../../../util/timeutil" }

@@ -1,0 +1,19 @@
+[package]
+name = "astersql-testkit-ddlhelper"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/testkit/ddlhelper"
+legacy-tasks = ["task-1038"]
+
+[dependencies]
+"astersql-ddl" = { package = "astersql-ddl", path = "../../ddl" }
+"astersql-meta-metabuild" = { package = "astersql-meta-metabuild", path = "../../meta/metabuild" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../meta/model" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../parser/ast" }
+"astersql-parser" = { package = "astersql-parser", path = "../../parser" }

@@ -1,0 +1,26 @@
+[package]
+name = "astersql-planner-property"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+autotests = false
+
+[lib]
+path = "lib.rs"
+doctest = false
+
+[dependencies]
+base-dependency = { package = "astersql-planner-cascades-base", path = "../cascades/base" }
+codec-dependency = { package = "astersql-util-codec", path = "../../util/codec" }
+collate-dependency = { package = "astersql-util-collate", path = "../../util/collate" }
+expression-dependency = { package = "astersql-expression", path = "../../expression" }
+funcdep-dependency = { package = "astersql-planner-funcdep", path = "../funcdep" }
+intset-dependency = { package = "astersql-util-intset", path = "../../util/intset" }
+log = "0.4"
+session-variable-dependency = { package = "astersql-sessionctx-variable", path = "../../sessionctx/variable" }
+size-dependency = { package = "astersql-util-size", path = "../../util/size" }
+tipb = { git = "https://github.com/pingcap/tipb.git", rev = "07f0ea6b6bffa9d8ac100d81ee51dbbfe4dda3bf", default-features = false, features = ["protobuf-codec"] }
+
+[package.metadata.porting]
+go-package = "pkg/planner/property"
+

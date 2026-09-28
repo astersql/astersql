@@ -1,0 +1,36 @@
+[package]
+name = "astersql-resourcegroup-runaway"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/resourcegroup/runaway"
+legacy-tasks = ["task-1041", "task-1044", "task-1045"]
+
+[target.'cfg(windows)'.dependencies]
+"astersql-ddl" = { package = "astersql-ddl", path = "../../ddl" }
+"astersql-infoschema" = { package = "astersql-infoschema", path = "../../infoschema" }
+"astersql-kv" = { package = "astersql-kv", path = "../../kv" }
+"astersql-metrics" = { package = "astersql-metrics", path = "../../metrics" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../parser/ast" }
+"astersql-parser-terror" = { package = "astersql-parser-terror", path = "../../parser/terror" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../sessionctx" }
+"astersql-ttl-cache" = { package = "astersql-ttl-cache", path = "../../ttl/cache" }
+"astersql-ttl-sqlbuilder" = { package = "astersql-ttl-sqlbuilder", path = "../../ttl/sqlbuilder" }
+"astersql-types" = { package = "astersql-types", path = "../../types" }
+"astersql-util" = { package = "astersql-util", path = "../../util" }
+"astersql-util-chunk" = { package = "astersql-util-chunk", path = "../../util/chunk" }
+"astersql-util-dbterror-exeerrors" = { package = "astersql-util-dbterror-exeerrors", path = "../../util/dbterror/exeerrors" }
+"astersql-util-generic" = { package = "astersql-util-generic", path = "../../util/generic" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../util/logutil" }
+"astersql-util-sqlexec" = { package = "astersql-util-sqlexec", path = "../../util/sqlexec" }
+
+[target.'cfg(windows)'.dev-dependencies]
+"astersql-owner" = { package = "astersql-owner", path = "../../owner" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+"astersql-planner-core-resolve" = { package = "astersql-planner-core-resolve", path = "../../planner/core/resolve" }
+"astersql-util-mock" = { package = "astersql-util-mock", path = "../../util/mock" }

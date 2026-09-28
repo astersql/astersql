@@ -1,0 +1,27 @@
+[package]
+name = "astersql-table-tblsession"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[features]
+default = []
+intest = []
+
+[dependencies]
+tblctx-dependency = { package = "astersql-table-tblctx", path = "../tblctx" }
+
+[dev-dependencies]
+chrono = "0.4"
+chrono-tz = "0.10"
+contextutil = { package = "astersql-util-context", path = "../../util/context" }
+errctx-crate = { package = "astersql-errctx", path = "../../errctx" }
+mathutil-crate = { package = "astersql-util-mathutil", path = "../../util/mathutil" }
+types-crate = { package = "astersql-types", path = "../../types" }
+
+[package.metadata.porting]
+go-package = "pkg/table/tblsession"
+legacy-tasks = ["task-633"]

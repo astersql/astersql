@@ -1,0 +1,23 @@
+[package]
+name = "astersql-util-schemacmp"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+meta-model = { package = "astersql-meta-model-group1", path = "../../meta/model/internal/group1" }
+parser-types = { package = "astersql-parser-types", path = "../../parser/types" }
+tidb-types = { package = "astersql-types-metadata", path = "../../types/internal/metadata" }
+
+[dev-dependencies]
+astersql-ddl = { package = "astersql-ddl", path = "../../ddl" }
+astersql-meta-metabuild = { package = "astersql-meta-metabuild", path = "../../meta/metabuild" }
+astersql-parser = { package = "astersql-parser", path = "../../parser" }
+astersql-parser-ast = { package = "astersql-parser-ast", path = "../../parser/ast" }
+
+[package.metadata.porting]
+go-package = "pkg/util/schemacmp"
+legacy-tasks = ["task-449"]

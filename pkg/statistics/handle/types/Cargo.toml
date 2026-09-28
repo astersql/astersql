@@ -1,0 +1,31 @@
+[package]
+name = "astersql-statistics-handle-types"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+aster_sql_ddl_notifier = { package = "astersql-ddl-notifier", path = "../../../ddl/notifier" }
+aster_sql_infoschema = { package = "astersql-infoschema", path = "../../../infoschema" }
+aster_sql_meta_model = { package = "astersql-meta-model", path = "../../../meta/model" }
+aster_sql_parser_ast = { package = "astersql-parser-ast", path = "../../../parser/ast" }
+aster_sql_sessionctx_stmtctx = { package = "astersql-sessionctx-stmtctx", path = "../../../sessionctx/stmtctx" }
+aster_sql_statistics = { package = "astersql-statistics", path = "../.." }
+aster_sql_statistics_handle_usage_indexusage = { package = "astersql-statistics-handle-usage-indexusage", path = "../usage/indexusage" }
+aster_sql_statistics_handle_util = { package = "astersql-statistics-handle-util", path = "../util" }
+aster_sql_statistics_util = { package = "astersql-statistics-util", path = "../../util" }
+aster_sql_types = { package = "astersql-types", path = "../../../types" }
+aster_sql_util = { package = "astersql-util", path = "../../../util" }
+aster_sql_util_sqlexec = { package = "astersql-util-sqlexec", path = "../../../util/sqlexec" }
+chrono-tz = "0.10"
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
+
+[package.metadata.porting]
+go-package = "pkg/statistics/handle/types"
+legacy-tasks = ["task-923"]

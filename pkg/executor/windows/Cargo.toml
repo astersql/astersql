@@ -1,0 +1,32 @@
+[package]
+name = "astersql-executor-windows"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/executor/windows"
+legacy-tasks = ["task-1130", "task-1134", "task-1362"]
+
+[target.'cfg(any())'.dependencies]
+"astersql-executor-aggfuncs" = { package = "astersql-executor-aggfuncs", path = "../aggfuncs" }
+"astersql-executor-internal-exec" = { package = "astersql-executor-internal-exec", path = "../internal/exec" }
+"astersql-executor-internal-vecgroupchecker" = { package = "astersql-executor-internal-vecgroupchecker", path = "../internal/vecgroupchecker" }
+"astersql-expression" = { package = "astersql-expression", path = "../../expression" }
+"astersql-expression-aggregation" = { package = "astersql-expression-aggregation", path = "../../expression/aggregation" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../parser/ast" }
+"astersql-planner-core-operator-logicalop" = { package = "astersql-planner-core-operator-logicalop", path = "../../planner/core/operator/logicalop" }
+"astersql-planner-core-operator-physicalop" = { package = "astersql-planner-core-operator-physicalop", path = "../../planner/core/operator/physicalop" }
+"astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../sessionctx" }
+"astersql-util-chunk" = { package = "astersql-util-chunk", path = "../../util/chunk" }
+
+[target.'cfg(any())'.dev-dependencies]
+"astersql-executor-internal-testutil" = { package = "astersql-executor-internal-testutil", path = "../internal/testutil" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+"astersql-planner-core-base" = { package = "astersql-planner-core-base", path = "../../planner/core/base" }
+"astersql-planner-property" = { package = "astersql-planner-property", path = "../../planner/property" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../testkit" }
+"astersql-types" = { package = "astersql-types", path = "../../types" }

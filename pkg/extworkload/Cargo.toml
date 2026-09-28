@@ -1,0 +1,12 @@
+[package]
+name = "astersql-extworkload"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/extworkload"
+legacy-tasks = ["task-277", "task-304", "task-324"]

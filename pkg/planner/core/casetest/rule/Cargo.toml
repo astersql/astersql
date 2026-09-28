@@ -1,0 +1,29 @@
+[package]
+name = "astersql-planner-core-casetest-rule"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/planner/core/casetest/rule"
+legacy-tasks = ["task-1423", "task-1424"]
+
+[dev-dependencies]
+"astersql-planner-core" = { package = "astersql-planner-core", path = "../.." }
+"astersql-config" = { package = "astersql-config", path = "../../../../config" }
+"astersql-domain" = { package = "astersql-domain", path = "../../../../domain" }
+"astersql-expression" = { package = "astersql-expression", path = "../../../../expression" }
+"astersql-expression-aggregation" = { package = "astersql-expression-aggregation", path = "../../../../expression/aggregation" }
+"astersql-expression-exprstatic" = { package = "astersql-expression-exprstatic", path = "../../../../expression/exprstatic" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../../parser/ast" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../../../parser/mysql" }
+"astersql-planner-util-coreusage" = { package = "astersql-planner-util-coreusage", path = "../../../util/coreusage" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../../testkit" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../../testkit/testfailpoint" }
+"astersql-testkit-testmain" = { package = "astersql-testkit-testmain", path = "../../../../testkit/testmain" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../../testkit/testsetup" }
+"astersql-types" = { package = "astersql-types", path = "../../../../types" }
+"astersql-util-mock" = { package = "astersql-util-mock", path = "../../../../util/mock" }

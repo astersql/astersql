@@ -1,0 +1,16 @@
+[package]
+name = "astersql-store-mockstore-unistore-util-lockwaiter"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+crossbeam-channel = "0.5"
+unistore_config = { package = "astersql-store-mockstore-unistore-config", path = "../../config" }
+
+[package.metadata.porting]
+go-package = "pkg/store/mockstore/unistore/util/lockwaiter"
+legacy-tasks = ["task-176", "task-203"]

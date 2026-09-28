@@ -1,0 +1,20 @@
+[package]
+name = "astersql-executor-test-jointest-hashjoin"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/executor/test/jointest/hashjoin"
+legacy-tasks = ["task-1345"]
+
+[dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../../config" }
+"astersql-executor-join" = { package = "astersql-executor-join", path = "../../../join" }
+"astersql-meta-autoid" = { package = "astersql-meta-autoid", path = "../../../../meta/autoid" }
+"astersql-session" = { package = "astersql-session", path = "../../../../session" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../../testkit" }
+"astersql-util-dbterror-exeerrors" = { package = "astersql-util-dbterror-exeerrors", path = "../../../../util/dbterror/exeerrors" }

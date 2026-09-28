@@ -1,0 +1,75 @@
+[package]
+name = "astersql-ingestor-ingestctrl"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/ingestor/ingestctrl"
+legacy-tasks = ["task-996", "task-997", "task-998", "task-1000", "task-1033", "task-1034", "task-1035", "task-1036"]
+
+[dependencies]
+"astersql-util-compress" = { package = "astersql-util-compress", path = "../../util/compress" }
+
+[target.'cfg(windows)'.dependencies]
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../config/kerneltype" }
+"astersql-distsql" = { package = "astersql-distsql", path = "../../distsql" }
+"astersql-dxf-framework-taskexecutor-execute" = { package = "astersql-dxf-framework-taskexecutor-execute", path = "../../dxf/framework/taskexecutor/execute" }
+"astersql-infoschema" = { package = "astersql-infoschema", path = "../../infoschema" }
+"astersql-ingestor-engineapi" = { package = "astersql-ingestor-engineapi", path = "../engineapi" }
+"astersql-ingestor-errdef" = { package = "astersql-ingestor-errdef", path = "../errdef" }
+"astersql-ingestor-globalsort" = { package = "astersql-ingestor-globalsort", path = "../globalsort" }
+"astersql-ingestor-ingestcli" = { package = "astersql-ingestor-ingestcli", path = "../ingestcli" }
+"astersql-keyspace" = { package = "astersql-keyspace", path = "../../keyspace" }
+"astersql-kv" = { package = "astersql-kv", path = "../../kv" }
+"astersql-lightning-backend" = { package = "astersql-lightning-backend", path = "../../lightning/backend" }
+"astersql-lightning-backend-encode" = { package = "astersql-lightning-backend-encode", path = "../../lightning/backend/encode" }
+"astersql-lightning-backend-kv" = { package = "astersql-lightning-backend-kv", path = "../../lightning/backend/kv" }
+"astersql-lightning-common" = { package = "astersql-lightning-common", path = "../../lightning/common" }
+"astersql-lightning-config" = { package = "astersql-lightning-config", path = "../../lightning/config" }
+"astersql-lightning-importdef" = { package = "astersql-lightning-importdef", path = "../../lightning/importdef" }
+"astersql-lightning-log" = { package = "astersql-lightning-log", path = "../../lightning/log" }
+"astersql-lightning-manual" = { package = "astersql-lightning-manual", path = "../../lightning/manual" }
+"astersql-lightning-membuf" = { package = "astersql-lightning-membuf", path = "../../lightning/membuf" }
+"astersql-lightning-metric" = { package = "astersql-lightning-metric", path = "../../lightning/metric" }
+"astersql-lightning-tikv" = { package = "astersql-lightning-tikv", path = "../../lightning/tikv" }
+"astersql-lightning-verification" = { package = "astersql-lightning-verification", path = "../../lightning/verification" }
+"astersql-meta" = { package = "astersql-meta", path = "../../meta" }
+"astersql-meta-model" = { package = "astersql-meta-model", path = "../../meta/model" }
+"astersql-metrics" = { package = "astersql-metrics", path = "../../metrics" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
+"astersql-parser-terror" = { package = "astersql-parser-terror", path = "../../parser/terror" }
+"astersql-resourcemanager-pool-workerpool" = { package = "astersql-resourcemanager-pool-workerpool", path = "../../resourcemanager/pool/workerpool" }
+"astersql-resourcemanager-util" = { package = "astersql-resourcemanager-util", path = "../../resourcemanager/util" }
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../sessionctx/vardef" }
+"astersql-table" = { package = "astersql-table", path = "../../table" }
+"astersql-table-tables" = { package = "astersql-table-tables", path = "../../table/tables" }
+"astersql-tablecodec" = { package = "astersql-tablecodec", path = "../../tablecodec" }
+"astersql-util" = { package = "astersql-util", path = "../../util" }
+"astersql-util-codec" = { package = "astersql-util-codec", path = "../../util/codec" }
+"astersql-util-engine" = { package = "astersql-util-engine", path = "../../util/engine" }
+"astersql-util-hack" = { package = "astersql-util-hack", path = "../../util/hack" }
+"astersql-util-injectfailpoint" = { package = "astersql-util-injectfailpoint", path = "../../util/injectfailpoint" }
+"astersql-util-intest" = { package = "astersql-util-intest", path = "../../util/intest" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../util/logutil" }
+"astersql-util-mathutil" = { package = "astersql-util-mathutil", path = "../../util/mathutil" }
+"astersql-util-ranger" = { package = "astersql-util-ranger", path = "../../util/ranger" }
+"astersql-util-redact" = { package = "astersql-util-redact", path = "../../util/redact" }
+
+[target.'cfg(windows)'.dev-dependencies]
+"astersql-ddl" = { package = "astersql-ddl", path = "../../ddl" }
+"astersql-errno" = { package = "astersql-errno", path = "../../errno" }
+"astersql-ingestor-ingestcli-mock" = { package = "astersql-ingestor-ingestcli-mock", path = "../ingestcli/mock" }
+"astersql-lightning-mydump" = { package = "astersql-lightning-mydump", path = "../../lightning/mydump" }
+"astersql-objstore" = { package = "astersql-objstore", path = "../../objstore" }
+"astersql-parser" = { package = "astersql-parser", path = "../../parser" }
+"astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../parser/ast" }
+"astersql-sessionctx-stmtctx" = { package = "astersql-sessionctx-stmtctx", path = "../../sessionctx/stmtctx" }
+"astersql-store-pdtypes" = { package = "astersql-store-pdtypes", path = "../../store/pdtypes" }
+"astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../testkit/testfailpoint" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }
+"astersql-types" = { package = "astersql-types", path = "../../types" }
+"astersql-util-mock" = { package = "astersql-util-mock", path = "../../util/mock" }

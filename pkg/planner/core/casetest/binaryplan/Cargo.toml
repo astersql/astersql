@@ -1,0 +1,22 @@
+[package]
+name = "astersql-planner-core-casetest-binaryplan"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[package.metadata.porting]
+go-package = "pkg/planner/core/casetest/binaryplan"
+legacy-tasks = ["task-1401"]
+
+[target.'cfg(any())'.dev-dependencies]
+"astersql-config" = { package = "astersql-config", path = "../../../../config" }
+"astersql-parser-auth" = { package = "astersql-parser-auth", path = "../../../../parser/auth" }
+"astersql-sessionctx-variable" = { package = "astersql-sessionctx-variable", path = "../../../../sessionctx/variable" }
+"astersql-testkit" = { package = "astersql-testkit", path = "../../../../testkit" }
+"astersql-testkit-testmain" = { package = "astersql-testkit-testmain", path = "../../../../testkit/testmain" }
+"astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../../testkit/testsetup" }
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../../../util/logutil" }
+"astersql-util-stmtsummary" = { package = "astersql-util-stmtsummary", path = "../../../../util/stmtsummary" }
