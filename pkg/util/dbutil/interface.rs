@@ -15,7 +15,7 @@
 
 // 数据库执行器抽象：查询、写语句与事务接口，以及通用结果/错误类型。
 //
-// 对应 Go `pkg/util/dbutil` 中 `QueryExecutor`/`DBExecutor`。迁移稿保留在块注释中；
+// 对应 Go `pkg/util/dbutil` 中 `QueryExecutor`/`DBExecutor`。
 // 当前可编译部分用 `Value`/`DbError`/`QueryResult` 表达驱动无关的 SQL 交互形状。
 
 // check compatibility
@@ -25,49 +25,6 @@
 //     _ DBExecutor = &sql.DB{}
 //     _ DBExecutor = &sql.Conn{}
 // )
-
-/* Mechanical draft retained for migration history.
-// QueryExecutor is a interface for execute Query from a database.
-// in generate the implement should be *sql.DB or *sql.Conn
-// QueryExecutor 对应 Go 的查询接口，保留带 context、SQL 字符串和可变参数的调用形状。
-pub trait QueryExecutor {
-    // Go 的 `args ...any` 是可变参数；用 Any 切片表达“按顺序传给数据库驱动”的含义。
-    fn QueryContext(
-        &self,
-        ctx: context::Context,
-        query: String,
-        args: &[Box<dyn std::any::Any>],
-    ) -> Result<sql::Rows, errors::Error>;
-
-    // QueryRowContext 在 Go 中返回 *sql.Row 且错误延迟到 Scan 暴露；这里保持相同返回形状。
-    fn QueryRowContext(
-        &self,
-        ctx: context::Context,
-        query: String,
-        args: &[Box<dyn std::any::Any>],
-    ) -> sql::Row;
-}
-
-// DBExecutor is a interface for execute read and write statements from a database.
-// in generate the implement should be *sql.DB or *sql.Conn
-// DBExecutor 嵌入 QueryExecutor，并补充事务开启和写语句执行能力。
-pub trait DBExecutor: QueryExecutor {
-    // BeginTx 对应 Go 的 BeginTx(ctx, opts)，opts 为 nil/指针语义，暂用 Option 表达。
-    fn BeginTx(
-        &self,
-        ctx: context::Context,
-        opts: Option<sql::TxOptions>,
-    ) -> Result<sql::Tx, errors::Error>;
-
-    // ExecContext 保留 Go 的写语句执行接口，返回 sql.Result 占位以表示受影响行等驱动结果。
-    fn ExecContext(
-        &self,
-        ctx: context::Context,
-        query: String,
-        args: &[Box<dyn std::any::Any>],
-    ) -> Result<sql::Result, errors::Error>;
-}
-*/
 
 use std::fmt;
 
