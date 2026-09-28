@@ -18,60 +18,6 @@
 // 覆盖前导零推算 tag 位数、高位掩码初始化，以及真实堆分配地址的 round-trip
 //（嵌入 tag 后再剥离，指针与指向内容保持不变）。不验证生产侧哈希表探测逻辑。
 
-/*
-// tagged pointer helper 的位运算测试，不会解引用真实地址，也不会改变生产侧指针封装行为。
-
-#[test]
-pub fn test_tagged_bits() {
-    let mut p: usize = 0;
-    for i in 0..=64 {
-        let tagged_bits = get_tagged_bits_from_uintptr(p);
-        // Go 使用 min(int8(64-i), maxTaggedBits)；这里保留从全 0 到全 1 逐步减少 leading zeros 的检查。
-        require::Equal(&mut testing::T::new(), (64_i8 - i as i8).min(MAX_TAGGED_BITS), tagged_bits as i8);
-        p = (p << 1) + 1;
-    }
-}
-
-#[test]
-pub fn test_tag_helper_init() {
-    let mut mask = !MAX_TAGGED_MASK;
-    for tagged_bits in (0..=MAX_TAGGED_BITS).rev() {
-        let mut tag_helper = TagPtrHelper { tagged_mask: 0 };
-        tag_helper.init(tagged_bits as u8);
-        require::Equal(&mut testing::T::new(), mask, tag_helper.tagged_mask);
-        // Go 每轮左移一次，验证可用 tag 位减少时高位掩码同步收缩。
-        mask <<= 1;
-    }
-}
-
-#[test]
-pub fn test_tag_helper() {
-    let mut raw_data = vec![0_u8; 10 * 1024 * 1024];
-    let start_ptr = raw_data.as_mut_ptr() as *mut std::ffi::c_void;
-    let end_ptr = unsafe { raw_data.as_mut_ptr().add(raw_data.len() - 1) } as *mut std::ffi::c_void;
-    let start_uintptr = start_ptr as usize;
-    let end_uintptr = end_ptr as usize;
-    let tagged_bits = get_tagged_bits_from_uintptr(start_uintptr | end_uintptr);
-    let mut tag_helper = TagPtrHelper { tagged_mask: 0 };
-    tag_helper.init(tagged_bits);
-
-    let mut tagged_value = 0x1234_u64 << (64 - MAX_TAGGED_BITS);
-    loop {
-        if tagged_value & tag_helper.tagged_mask == tagged_value {
-            break;
-        }
-        tagged_value <<= 1;
-    }
-    require::True(&mut testing::T::new(), tagged_value != 0, "tagged value should not be zero");
-
-    // Go 对起止两个真实 unsafe.Pointer 做 round trip；保留裸指针整数化与清 tag 的检查形状。
-    for test_ptr in [start_ptr, end_ptr] {
-        let tagged_ptr = tag_helper.to_tagged_ptr(tagged_value, test_ptr);
-        require::Equal(&mut testing::T::new(), tagged_value, tag_helper.get_tagged_value(tagged_ptr as u64));
-        require::Equal(&mut testing::T::new(), test_ptr, tag_helper.to_unsafe_pointer(tagged_ptr));
-    }
-}
-*/
 
 use crate::tagged_ptr::{
     MAX_TAGGED_BITS, MAX_TAGGED_MASK, TAGGED_POINTER_LEN, TagPtrHelper,
