@@ -1,6 +1,6 @@
 <div align="center">
 <a href='https://www.pingcap.com/?utm_source=github&utm_medium=tidb'>
-<img src="docs/tidb-logo.png" alt="TiDB, a distributed SQL database" height=100></img>
+<img src="docs/aster-logo.png" alt="AsterSQL, a distributed SQL database" height=100></img>
 </a>
 
 ---
@@ -13,9 +13,9 @@
 [![GitHub release](https://img.shields.io/github/tag/pingcap/tidb.svg?label=release)](https://github.com/pingcap/tidb/releases)
 </div>
 
-# TiDB
+# AsterSQL
 
-TiDB (/’taɪdiːbi:/, "Ti" stands for Titanium) is an open-source, cloud-native, distributed SQL database designed for high availability, horizontal and vertical scalability, strong consistency, and high performance.
+AsterSQL (/ˈæstərˌsiːkwəl/) is an open-source, cloud-native, distributed SQL database designed for high availability, horizontal and vertical scalability, strong consistency, and high performance.
 
 - [Key Features](#key-features)
 - [Quick Start](#quick-start)
