@@ -1,0 +1,29 @@
+syntax = "proto3";
+package tipb;
+
+message EmptyResponse {}
+message TopSQLRecord { bytes sql_digest = 1; bytes plan_digest = 2; }
+message TopRURecord { bytes sql_digest = 1; double ru = 2; }
+message SQLMeta { bytes sql_digest = 1; string normalized_sql = 2; }
+message PlanMeta { bytes plan_digest = 1; string normalized_plan = 2; }
+
+message TopSQLSubRequest {}
+message TopSQLSubResponse {
+  oneof resp_oneof {
+    TopSQLRecord record = 1;
+    SQLMeta sql_meta = 2;
+    PlanMeta plan_meta = 3;
+    TopRURecord ru_record = 4;
+  }
+}
+
+service TopSQLAgent {
+  rpc ReportTopSQLRecords(stream TopSQLRecord) returns (EmptyResponse);
+  rpc ReportTopRURecords(stream TopRURecord) returns (EmptyResponse);
+  rpc ReportSQLMeta(stream SQLMeta) returns (EmptyResponse);
+  rpc ReportPlanMeta(stream PlanMeta) returns (EmptyResponse);
+}
+
+service TopSQLPubSub {
+  rpc Subscribe(TopSQLSubRequest) returns (stream TopSQLSubResponse);
+}

@@ -1,0 +1,30 @@
+syntax = "proto3";
+package externalworkload;
+
+enum ErrorType { OK = 0; PAUSED = 1; UNKNOWN = 2; }
+message Error { ErrorType type = 1; string message = 2; }
+message Response { Error error = 1; }
+message RequestHeader { uint32 keyspace_id = 1; string keyspace_name = 2; string tidb_pool = 3; }
+message PingRequest {}
+message RegisterGCV2Request { RequestHeader header = 1; uint64 safe_point = 2; int64 gc_life_time = 3; }
+message RecycleGCV2Request { RequestHeader header = 1; uint64 safe_point = 2; }
+message UpdateGCLifeTimeRequest { RequestHeader header = 1; int64 gc_life_time = 2; }
+message RegisterTTLTaskRequest { RequestHeader header = 1; int64 table_id = 2; bool ttl_job_enable = 3; }
+message DeleteTTLTableInfoRequest { RequestHeader header = 1; int64 table_id = 2; }
+message RecycleTTLTaskRequest { RequestHeader header = 1; uint64 completed_job_create_time = 2; }
+message UpdateTTLJobEnableRequest { RequestHeader header = 1; bool ttl_job_enable = 2; }
+message RegisterAutoAnalyzeRequest { RequestHeader header = 1; uint64 task_id = 2; }
+message RecycleAutoAnalyzeRequest { RequestHeader header = 1; uint64 task_id = 2; }
+
+service ExternalWorkloadController {
+  rpc Ping(PingRequest) returns (Response);
+  rpc RegisterGCV2(RegisterGCV2Request) returns (Response);
+  rpc RecycleGCV2(RecycleGCV2Request) returns (Response);
+  rpc UpdateGCLifeTime(UpdateGCLifeTimeRequest) returns (Response);
+  rpc RegisterTTLTask(RegisterTTLTaskRequest) returns (Response);
+  rpc DeleteTTLTableInfo(DeleteTTLTableInfoRequest) returns (Response);
+  rpc RecycleTTLTask(RecycleTTLTaskRequest) returns (Response);
+  rpc UpdateTTLJobEnable(UpdateTTLJobEnableRequest) returns (Response);
+  rpc RegisterAutoAnalyze(RegisterAutoAnalyzeRequest) returns (Response);
+  rpc RecycleAutoAnalyze(RecycleAutoAnalyzeRequest) returns (Response);
+}
