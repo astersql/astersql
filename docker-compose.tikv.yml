@@ -15,7 +15,7 @@ services:
       - --data-dir=/data
       - --client-urls=http://0.0.0.0:2379
       - --peer-urls=http://0.0.0.0:2380
-      - --advertise-client-urls=http://127.0.0.1:2379,http://host.docker.internal:2379
+      - --advertise-client-urls=http://${ASTERSQL_ADVERTISE_HOST:-127.0.0.1}:2379
       - --advertise-peer-urls=http://astersql-task4-pd:2380
       - --initial-cluster=astersql-task4-pd=http://astersql-task4-pd:2380
       - --log-file=
@@ -33,7 +33,7 @@ services:
       - ${ASTERSQL_DOCKER_DATA_DIR:-./.local/tikv-docker}/tikv:/data
     command:
       - --addr=0.0.0.0:20160
-      - --advertise-addr=127.0.0.1:20160
+      - --advertise-addr=${ASTERSQL_ADVERTISE_HOST:-127.0.0.1}:20160
       - --status-addr=0.0.0.0:20180
       - --advertise-status-addr=host.docker.internal:20180
       - --pd=pd:2379
@@ -43,6 +43,21 @@ services:
       # less than this explicit logical capacity.
       - --capacity=20GB
       - --log-file=
+
+  tiflash:
+    image: pingcap/tiflash:v8.5.1
+    container_name: astersql-task4-tiflash
+    restart: unless-stopped
+    depends_on:
+      - pd
+      - tikv
+    volumes:
+      - ./docker/tiflash/tiflash.toml:/tiflash.toml:ro
+      - ./docker/tiflash/tiflash-learner.toml:/tiflash-learner.toml:ro
+      - ${ASTERSQL_DOCKER_DATA_DIR:-./.local/tikv-docker}/tiflash/data:/data
+      - ${ASTERSQL_DOCKER_DATA_DIR:-./.local/tikv-docker}/tiflash/logs:/logs
+    command:
+      - --config=/tiflash.toml
 
 networks:
   default:

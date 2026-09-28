@@ -97,15 +97,21 @@ cargo test \
 未运行时执行 `docker start`，不会执行 `docker rm`、`docker compose
 down`、`--rm`，也不会停止或重建容器。
 
-### Docker 持久化 PD/TiKV
+### Docker 持久化 PD/TiKV/TiFlash
 
-仓库根目录的 `docker-compose.tikv.yml` 启动 PD 和 TiKV。bind mount
-默认把 PD 和 TiKV 数据分别保存在仓库的
-`.local/tikv-docker/pd` 和 `.local/tikv-docker/tikv`；可用
+仓库根目录的 `docker-compose.tikv.yml` 启动 PD、TiKV 和 TiFlash。bind mount
+默认把数据分别保存在仓库的 `.local/tikv-docker/pd`、
+`.local/tikv-docker/tikv` 和 `.local/tikv-docker/tiflash/data`；可用
 `ASTERSQL_DOCKER_DATA_DIR` 覆盖根目录。容器使用 `restart: unless-stopped`，
-Docker Desktop 或机器重启后会自动启动；删除并重建容器时，只要不删除这两个
+Docker Desktop 或机器重启后会自动启动；删除并重建容器时，只要不删除这些
 宿主机目录，数据也不会丢失。Rust AsterSQL 按下文的 `cargo run`
 命令在宿主机启动。
+
+TiFlash 和宿主机 Rust server 都需要访问 PD/TiKV 的通告地址。启动前将
+`ASTERSQL_ADVERTISE_HOST` 设为两者都能访问的宿主机 IP，例如本机当前的
+`192.168.10.226`。网络地址变化后，更新此值并重建 PD/TiKV 容器。
+仅启动容器并不代表 Rust server 已能使用 TiFlash 向量索引；还需验证
+`/schema` 元数据接口、TiFlash 副本状态和向量查询执行计划。
 
 仅首次明确需要丢弃全部历史数据时执行：
 
@@ -117,17 +123,17 @@ docker volume rm astersql-task4-pd-data astersql-task4-tikv-data 2>/dev/null || 
 rm -rf .local/tikv-docker/pd .local/tikv-docker/tikv
 mkdir -p .local/tikv-docker/pd .local/tikv-docker/tikv
 
-docker compose -f docker-compose.tikv.yml up -d
+ASTERSQL_ADVERTISE_HOST=192.168.10.226 docker compose -f docker-compose.tikv.yml up -d
 ```
 
 `rm -rf` 会不可恢复地删除现有集群数据，日常重启或重建不得执行。日常启动、
 停止和重建容器使用：
 
 ```bash
-docker compose -f docker-compose.tikv.yml up -d
+ASTERSQL_ADVERTISE_HOST=192.168.10.226 docker compose -f docker-compose.tikv.yml up -d
 docker compose -f docker-compose.tikv.yml stop
 docker compose -f docker-compose.tikv.yml down
-docker compose -f docker-compose.tikv.yml up -d
+ASTERSQL_ADVERTISE_HOST=192.168.10.226 docker compose -f docker-compose.tikv.yml up -d
 ```
 
 `docker compose down` 只删除容器和网络，不删除 bind mount 中的数据。确认

@@ -1,0 +1,24 @@
+default_profile = "default"
+display_name = "TiFlash"
+listen_host = "0.0.0.0"
+path = "/data"
+tmp_path = "/data/tmp"
+
+[flash]
+tidb_status_addr = "host.docker.internal:10080"
+service_addr = "astersql-task4-tiflash:3930"
+
+[flash.proxy]
+config = "/tiflash-learner.toml"
+
+[raft]
+pd_addr = "pd:2379"
+storage_engine = "dt"
+
+[logger]
+log = "/logs/tiflash.log"
+errorlog = "/logs/tiflash_error.log"
+level = "info"
+
+[profiles.default]
+max_memory_usage = 2000000000

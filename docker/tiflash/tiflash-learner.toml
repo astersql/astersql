@@ -1,0 +1,14 @@
+log-file = "/logs/tiflash_learner.log"
+
+[server]
+engine-addr = "astersql-task4-tiflash:3930"
+addr = "0.0.0.0:20170"
+advertise-addr = "astersql-task4-tiflash:20170"
+status-addr = "0.0.0.0:20292"
+advertise-status-addr = "astersql-task4-tiflash:20292"
+
+[storage]
+data-dir = "/data/flash"
+
+[raftstore]
+capacity = "10GB"
