@@ -15,56 +15,8 @@
 
 // TRACE 执行器单元测试：树形前缀布局与 log 事件过滤。
 //
-// 块注释内保留自 Go 的集成测试草稿；下方可运行用例校验 `dfsTree` 与 `generateLogResult`。
+// 可运行用例校验 `dfsTree` 与 `generateLogResult`。
 
-/*
-// TRACE 语句在不同 format 下返回行数以及 row 格式 snapshotTS 有序性的检查。
-
-// test_trace_exec 对应 Go 的 TestTraceExec：创建 trace 表后覆盖 insert/select/delete/analyze 的 trace 输出。
-#[test]
-fn test_trace_exec() {
-    let store = testkit::CreateMockStore();
-    let mut tk = testkit::NewTestKit(store);
-    tk.MustExec("use test");
-    tk.MustExec("create table trace (id int PRIMARY KEY AUTO_INCREMENT, c1 int, c2 int, c3 int default 1);");
-    tk.MustExec("trace insert into trace (c1, c2, c3) values (1, 2, 3)");
-    let mut rows = tk.MustQuery("trace select * from trace where id = 0;").Rows();
-    require::GreaterOrEqual(rows.len(), 1);
-
-    // Go 注释里给出了 TRACE row 格式示例，核心检查是 operation/snapshotTS/duration 多行返回且 snapshotTS 有序。
-    rows = tk.MustQuery("trace format='row' select * from trace where id = 0;").Rows();
-    require::Greater(rows.len(), 1);
-    require::True(rows_ordered(&rows));
-
-    rows = tk.MustQuery("trace format='row' delete from trace where id = 0").Rows();
-    require::Greater(rows.len(), 1);
-    require::True(rows_ordered(&rows));
-
-    rows = tk.MustQuery("trace format='row' analyze table trace").Rows();
-    require::Greater(rows.len(), 1);
-    require::True(rows_ordered(&rows));
-
-    tk.MustExec("trace format='log' insert into trace (c1, c2, c3) values (1, 2, 3)");
-    rows = tk.MustQuery("trace format='log' select * from trace where id = 0;").Rows();
-    require::GreaterOrEqual(rows.len(), 1);
-}
-
-// rows_ordered 对应 Go 的 rowsOrdered：要求每行第二列为 string，并按字符串顺序非递减。
-fn rows_ordered(rows: &[Vec<any::Any>]) -> bool {
-    for idx in 0..rows.len() {
-        if !rows[idx][1].is::<String>() {
-            return false;
-        }
-        if idx == 0 {
-            continue;
-        }
-        if rows[idx - 1][1].as_string() > rows[idx][1].as_string() {
-            return false;
-        }
-    }
-    true
-}
-*/
 
 use crate::trace::{
     RawSpan, TraceChunk, TraceLog, TraceLogField, TraceNode, TraceTimespan, dfsTree,
