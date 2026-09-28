@@ -1,6 +1,6 @@
 <div align="center">
 <a href='https://www.pingcap.com/?utm_source=github&utm_medium=tidb'>
-<img src="docs/aster-logo.png" alt="AsterSQL, a distributed SQL database" height=100></img>
+<img src="docs/aster-logo.png" alt="AsterSQL, a distributed SQL database" height=300></img>
 </a>
 
 ---
