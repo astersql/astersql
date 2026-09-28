@@ -12,63 +12,10 @@
 
 // RANK / DENSE_RANK 窗口函数测试。
 //
-// 块注释内保留 Go `TestMemRank` 的内存用例轮廓；可执行部分对比
-// `Rank`（标准排名）与 `DenseRank`（稠密排名）在 peer 并列后的序号差异。
+// 测试对比 `Rank`（标准排名）与 `DenseRank`（稠密排名）在 peer 并列后的序号差异。
 // 窗口函数（window function）按分区内排序结果编号，不改变结果集行数；
 // peer 指排序键相同的并列行。
 
-/*
-// RANK 窗口函数部分结果的内存测试。
-// RankWindowMemCaseDraft 对应 Go windowMemTest 的 RANK 用例轮廓。
-pub struct RankWindowMemCaseDraft {
-    pub funcName: &'static str,
-    pub fieldType: &'static str,
-    pub begin: i64,
-    pub end: i64,
-    pub step: i64,
-    pub partialResultSize: &'static str,
-    pub updateMemDelta: &'static str,
-}
-
-// test_mem_rank 对应 Go TestMemRank，保留 RANK 对 rowMemDeltaGens 的依赖。
-#[test]
-pub fn test_mem_rank() {
-    let tests = vec![
-        RankWindowMemCaseDraft {
-            funcName: "ast.WindowFuncRank",
-            fieldType: "mysql.TypeLonglong",
-            begin: 0,
-            end: 1,
-            step: 1,
-            partialResultSize: "aggfuncs.DefPartialResult4RankSize",
-            updateMemDelta: "rowMemDeltaGens",
-        },
-        RankWindowMemCaseDraft {
-            funcName: "ast.WindowFuncRank",
-            fieldType: "mysql.TypeLonglong",
-            begin: 0,
-            end: 3,
-            step: 0,
-            partialResultSize: "aggfuncs.DefPartialResult4RankSize",
-            updateMemDelta: "rowMemDeltaGens",
-        },
-        RankWindowMemCaseDraft {
-            funcName: "ast.WindowFuncRank",
-            fieldType: "mysql.TypeLonglong",
-            begin: 0,
-            end: 4,
-            step: 1,
-            partialResultSize: "aggfuncs.DefPartialResult4RankSize",
-            updateMemDelta: "rowMemDeltaGens",
-        },
-    ];
-
-    for test in tests {
-        // Go 这里调用 testWindowAggMemFunc；真实分区行构造和内存断言留在原 Go harness 语义中。
-        testWindowAggMemFunc(test);
-    }
-}
-*/
 
 /// 验证 RANK 与 DENSE_RANK 仅在 peer 出现 gap 后才分叉。
 ///
