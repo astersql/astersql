@@ -1140,7 +1140,8 @@ pub fn EvalExprWithBitColumns(
             }
         }
         ast::ExprKind::Function { FnName, Args, .. }
-            if FnName.L == "vec_cosine_distance" && Args.len() == 1 =>
+            if matches!(FnName.L.as_str(), "vec_cosine_distance" | "vec_l2_distance")
+                && Args.len() == 1 =>
         {
             // VECTOR INDEX stores a hidden generated column whose expression
             // is the one-argument distance marker. Go preserves the vector

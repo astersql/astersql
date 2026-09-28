@@ -288,21 +288,7 @@ impl ConcreteSession {
     pub(super) fn explain_plan_tree_rows(lines: Vec<String>) -> ConcreteRecordSet {
         ConcreteRecordSet::new(
             vec!["plan".to_owned()],
-            lines
-                .into_iter()
-                .map(|line| {
-                    // Like Go's PrettyIdentifier, keep the tree prefix in the
-                    // operator ID instead of treating its spaces as columns.
-                    let operator = line.trim_start_matches([' ', '│', '├', '└', '─']);
-                    let prefix_len = line.len() - operator.len();
-                    let mut columns = operator
-                        .splitn(4, ' ')
-                        .map(str::to_owned)
-                        .collect::<Vec<_>>();
-                    columns[0].insert_str(0, &line[..prefix_len]);
-                    columns
-                })
-                .collect(),
+            lines.into_iter().map(|line| vec![line]).collect(),
         )
     }
 

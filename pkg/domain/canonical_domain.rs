@@ -65,6 +65,37 @@ pub struct DdlMetadataService {
 }
 
 impl DdlMetadataService {
+    /// Enumerate configured replicas from committed metadata for the physical
+    /// status poller. The table ID is rechecked inside each update transaction.
+    pub fn replica_tables(
+        &self,
+        store: &dyn kv::Storage,
+    ) -> Result<Vec<(String, String, i64, u64, bool, Vec<i64>)>, kv::errors::SharedError> {
+        let version = store.CurrentVersion("global")?;
+        let catalog = read_catalog(store.GetSnapshot(version).as_ref())?;
+        Ok(catalog
+            .tables
+            .into_iter()
+            .filter_map(|((database, table), info)| {
+                info.TiFlashReplica.and_then(|replica| {
+                    (replica.Count > 0).then_some((
+                        database,
+                        table,
+                        info.ID,
+                        replica.Count,
+                        replica.Available,
+                        info.Partition
+                            .as_ref()
+                            .filter(|partition| !partition.Definitions.is_empty())
+                            .map(|partition| {
+                                partition.Definitions.iter().map(|part| part.ID).collect()
+                            })
+                            .unwrap_or_else(|| vec![info.ID]),
+                    ))
+                })
+            })
+            .collect())
+    }
     /// Return every database persisted in the canonical KV catalog, including
     /// schemas that do not own tables yet.
     pub fn database_names(
@@ -99,6 +130,7 @@ impl DdlMetadataService {
         // AllowedOnAlmostFull so bootstrap/DDL can repair a nearly-full store.
         transaction.SetDiskFullOpt(kv::kvrpcpb::DiskFullOpt::AllowedOnAlmostFull);
         let mut catalog = read_catalog(transaction.as_ref())?;
+        let previous = catalog.clone();
         let mut change = operation(&mut catalog)?;
         // 无实际变更：回滚事务，仍返回当前 schema_version。
         if !change.changed {
@@ -120,8 +152,37 @@ impl DdlMetadataService {
             }
         }
         // 有变更：递增 schema 版本、写回 catalog 并提交事务。
-        catalog.version = catalog.version.saturating_add(1);
+        let schema_version_key = tidb_string_key(b"SchemaVersionKey");
+        let existing_schema_version = match kv::GetValue(
+            &kv::Context::default(),
+            transaction.as_ref(),
+            schema_version_key.clone(),
+        ) {
+            Ok(value) => std::str::from_utf8(&value)
+                .map_err(|error| kv::errors::New(error.to_string()))?
+                .parse::<i64>()
+                .map_err(|error| kv::errors::New(error.to_string()))?,
+            Err(error) if kv::IsErrNotFound(&error) => 0,
+            Err(error) => return Err(error),
+        };
+        catalog.version = catalog
+            .version
+            .max(existing_schema_version)
+            .saturating_add(1);
         change.schema_version = catalog.version;
+        publish_tidb_schema_metadata(transaction.as_mut(), &previous, &catalog)?;
+        // TiFlash reloads the complete schema when this flag is set. This is
+        // required while the canonical DDL path does not emit action-specific
+        // TiDB schema diffs, and keeps table ID mappings in sync after DDL.
+        let diff = format!(
+            "{{\"version\":{},\"type\":0,\"schema_id\":0,\"table_id\":0,\"old_table_id\":0,\"old_schema_id\":0,\"regenerate_schema_map\":true,\"affected_options\":null}}",
+            catalog.version
+        );
+        transaction.Set(
+            tidb_string_key(format!("Diff:{}", catalog.version).as_bytes()),
+            diff.into_bytes(),
+        )?;
+        transaction.Set(schema_version_key, catalog.version.to_string().into_bytes())?;
         transaction.Set(kv::Key(DDL_CATALOG_KEY.to_vec()), encode_catalog(&catalog)?)?;
         transaction.Commit(&kv::Context::default())?;
         Ok(change)
@@ -291,6 +352,49 @@ impl DdlMetadataService {
                 LocationLabels: location_labels.clone(),
                 ..Default::default()
             });
+            catalog.tables.insert(key, updated.clone());
+            Ok(DdlMetadataChange {
+                old_tables: vec![(database.clone(), existing)],
+                new_tables: vec![(database, updated)],
+                changed: true,
+                ..DdlMetadataChange::default()
+            })
+        })
+    }
+
+    /// Persist an observed replica availability change without replacing its
+    /// configured count or location labels.
+    pub fn update_tiflash_replica_availability(
+        &self,
+        store: &dyn kv::Storage,
+        database: &str,
+        table: &str,
+        expected_table_id: i64,
+        available: bool,
+    ) -> Result<DdlMetadataChange, kv::errors::SharedError> {
+        let database = database.to_ascii_lowercase();
+        let table_name = table.to_ascii_lowercase();
+        self.mutate(store, move |catalog| {
+            let key = (database.clone(), table_name.clone());
+            let existing = catalog
+                .tables
+                .get(&key)
+                .cloned()
+                .ok_or_else(|| kv::errors::New(format!("unknown table {}.{}", key.0, key.1)))?;
+            if existing.ID != expected_table_id {
+                return Err(kv::errors::New("TiFlash report table ID mismatch"));
+            }
+            let mut updated = existing.clone();
+            let replica = updated.TiFlashReplica.as_mut().ok_or_else(|| {
+                kv::errors::New(format!("table {}.{} has no TiFlash replica", key.0, key.1))
+            })?;
+            if replica.Count == 0 && available {
+                return Err(kv::errors::New("TiFlash replica count is zero"));
+            }
+            if replica.Available == available {
+                return Ok(DdlMetadataChange::default());
+            }
+            replica.Available = available;
             catalog.tables.insert(key, updated.clone());
             Ok(DdlMetadataChange {
                 old_tables: vec![(database.clone(), existing)],
@@ -1191,6 +1295,86 @@ impl DdlMetadataService {
     }
 }
 
+fn tidb_string_key(key: &[u8]) -> kv::Key {
+    let encoded = astersql_util_codec::EncodeBytes(b"m".to_vec(), key);
+    kv::Key(astersql_util_codec::EncodeUint(encoded, b's' as u64))
+}
+
+fn tidb_hash_key(key: &[u8], field: &[u8]) -> kv::Key {
+    let encoded = astersql_util_codec::EncodeBytes(b"m".to_vec(), key);
+    let encoded = astersql_util_codec::EncodeUint(encoded, b'h' as u64);
+    kv::Key(astersql_util_codec::EncodeBytes(encoded, field))
+}
+
+fn publish_tidb_schema_metadata(
+    transaction: &mut dyn kv::Transaction,
+    previous: &MetadataCatalog,
+    catalog: &MetadataCatalog,
+) -> Result<(), kv::errors::SharedError> {
+    for (name, database) in &previous.databases {
+        if !catalog.databases.contains_key(name) {
+            transaction.Delete(tidb_hash_key(
+                b"DBs",
+                format!("DB:{}", database.ID).as_bytes(),
+            ))?;
+        }
+    }
+    for (name, database) in &catalog.databases {
+        let encoded = EncodeDBInfo(database).map_err(kv::errors::New)?;
+        let changed = previous
+            .databases
+            .get(name)
+            .map(|old| EncodeDBInfo(old).map(|old| old != encoded))
+            .transpose()
+            .map_err(kv::errors::New)?
+            .unwrap_or(true);
+        if changed {
+            transaction.Set(
+                tidb_hash_key(b"DBs", format!("DB:{}", database.ID).as_bytes()),
+                encoded,
+            )?;
+        }
+    }
+    for (key, table) in &previous.tables {
+        if !catalog.tables.contains_key(key) {
+            let db_id = previous
+                .databases
+                .get(&key.0)
+                .map(|db| db.ID)
+                .unwrap_or(table.DBID);
+            transaction.Delete(tidb_hash_key(
+                format!("DB:{db_id}").as_bytes(),
+                format!("Table:{}", table.ID).as_bytes(),
+            ))?;
+        }
+    }
+    for (key, table) in &catalog.tables {
+        let db_id = catalog
+            .databases
+            .get(&key.0)
+            .map(|db| db.ID)
+            .unwrap_or(table.DBID);
+        let encoded = EncodeTableInfo(table).map_err(kv::errors::New)?;
+        let changed = previous
+            .tables
+            .get(key)
+            .map(|old| EncodeTableInfo(old).map(|old| old != encoded))
+            .transpose()
+            .map_err(kv::errors::New)?
+            .unwrap_or(true);
+        if changed {
+            transaction.Set(
+                tidb_hash_key(
+                    format!("DB:{db_id}").as_bytes(),
+                    format!("Table:{}", table.ID).as_bytes(),
+                ),
+                encoded,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// 从目录分配下一个全局物理 ID。
 fn allocate_id(catalog: &mut MetadataCatalog) -> i64 {
     catalog.next_id = catalog.next_id.saturating_add(1).max(1);
@@ -1469,7 +1653,11 @@ fn decode_catalog(bytes: &[u8]) -> Result<MetadataCatalog, kv::errors::SharedErr
     let mut tables = BTreeMap::new();
     for _ in 0..count {
         let database = decoder.string()?.to_ascii_lowercase();
-        let table = DecodeTableInfo(decoder.bytes()?).map_err(kv::errors::New)?;
+        let mut table = DecodeTableInfo(decoder.bytes()?).map_err(kv::errors::New)?;
+        table.DBID = databases
+            .get(&database)
+            .map(|info: &DBInfo| info.ID)
+            .ok_or_else(|| kv::errors::New(format!("table has unknown database {database}")))?;
         tables.insert((database, table.Name.L.clone()), table);
     }
     if !decoder.is_exhausted() {

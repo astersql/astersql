@@ -27,6 +27,7 @@ legacy-tasks = ["task-1046", "task-1047", "task-1048", "task-1049", "task-1051",
 "astersql-statistics-handle-util" = { package = "astersql-statistics-handle-util", path = "../statistics/handle/util" }
 "astersql-util-tiflashcompute" = { package = "astersql-util-tiflashcompute", path = "../util/tiflashcompute" }
 "astersql-util-dbterror" = { package = "astersql-util-dbterror", path = "../util/dbterror" }
+"astersql-util-codec" = { package = "astersql-util-codec", path = "../util/codec" }
 "astersql-util-sqlkiller" = { package = "astersql-util-sqlkiller", path = "../util/sqlkiller" }
 "astersql-resourcegroup" = { package = "astersql-resourcegroup", path = "../resourcegroup" }
 "astersql-resourcegroup-runaway" = { package = "astersql-resourcegroup-runaway", path = "../resourcegroup/runaway" }

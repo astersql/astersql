@@ -1554,6 +1554,68 @@ impl ConcreteSession {
             .into_iter()
             .filter(|((database, table), _)| self.information_schema_table_visible(database, table))
             .collect::<SessionMetadataCatalog>();
+        if table_name.eq_ignore_ascii_case("tiflash_replica") {
+            let rows = metadata_catalog
+                .into_iter()
+                .filter_map(|((database, _), table)| {
+                    let replica = table.TiFlashReplica.as_ref()?;
+                    let physical_ids = table
+                        .Partition
+                        .as_ref()
+                        .filter(|partition| !partition.Definitions.is_empty())
+                        .map(|partition| {
+                            partition
+                                .Definitions
+                                .iter()
+                                .map(|part| part.ID)
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_else(|| vec![table.ID]);
+                    let progress = physical_ids
+                        .iter()
+                        .map(|physical_id| {
+                            self.domain
+                                .storage_handle()
+                                .with_storage(|store| {
+                                    store.ObserveTiFlashReplicaProgress(*physical_id, replica.Count)
+                                })
+                                .ok()
+                                .flatten()
+                                .unwrap_or(if replica.Available { 1.0 } else { 0.0 })
+                        })
+                        .sum::<f64>()
+                        / physical_ids.len() as f64;
+                    Some(HashMap::from([
+                        ("table_schema".to_owned(), Some(database)),
+                        ("table_name".to_owned(), Some(table.Name.O.clone())),
+                        ("table_id".to_owned(), Some(table.ID.to_string())),
+                        ("replica_count".to_owned(), Some(replica.Count.to_string())),
+                        (
+                            "location_labels".to_owned(),
+                            Some(replica.LocationLabels.join(",")),
+                        ),
+                        (
+                            "available".to_owned(),
+                            Some(if replica.Available { "1" } else { "0" }.to_owned()),
+                        ),
+                        ("progress".to_owned(), Some(format!("{progress:.2}"))),
+                    ]))
+                })
+                .collect();
+            return Ok(Some(project_virtual_rows(
+                statement,
+                &[
+                    "TABLE_SCHEMA",
+                    "TABLE_NAME",
+                    "TABLE_ID",
+                    "REPLICA_COUNT",
+                    "LOCATION_LABELS",
+                    "AVAILABLE",
+                    "PROGRESS",
+                ],
+                rows,
+            )?));
+        }
         if table_name.eq_ignore_ascii_case("analyze_status") {
             let rows = self
                 .domain

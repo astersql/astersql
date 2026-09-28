@@ -640,6 +640,25 @@ pub struct SSTImportStats {
 }
 
 pub trait Storage {
+    /// Publish a TiFlash learner placement rule for a physical table. Stores
+    /// without PD (for example the in-memory test store) have no rule target.
+    fn PublishTiFlashPlacementRule(
+        &self,
+        _table_id: i64,
+        _count: u64,
+        _location_labels: &[String],
+    ) -> Result<(), errors::SharedError> {
+        Ok(())
+    }
+    /// Return observed physical replica progress, or None when this storage
+    /// has no PD/TiFlash status source.
+    fn ObserveTiFlashReplicaProgress(
+        &self,
+        _table_id: i64,
+        _replica_count: u64,
+    ) -> Result<Option<f64>, errors::SharedError> {
+        Ok(None)
+    }
     /// Physically ingest sorted unique logical KV pairs at a PD commit TSO.
     /// Unsupported stores must report an error, never silently use SQL writes.
     fn ImportSST(

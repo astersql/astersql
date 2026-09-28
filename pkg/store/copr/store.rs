@@ -19,6 +19,7 @@
 // 提供 TikvClient、CopClient、MppClient，并管理 coprocessor 缓存与事件监听。
 // EndpointType 描述 TiKV / TiFlash / TiFlash Compute / TiDB 等端点角色。
 
+use protobuf::Message;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -211,6 +212,85 @@ struct StoreCopBackend {
 }
 
 impl CopBackend for StoreCopBackend {
+    fn send_tiflash_batch(
+        &self,
+        request: &CopRequest,
+    ) -> BatchResult<Vec<crate::batch_request_sender::BatchResponse>> {
+        let mut responses = Vec::new();
+        for partition in &request.key_ranges {
+            let ranges = crate::batch_request_sender::KeyRanges::new(partition.ranges.clone());
+            let locations = self.region_cache.split_key_ranges_by_locations(
+                ranges,
+                crate::region_cache::UNSPECIFIED_LIMIT,
+                false,
+                false,
+            )?;
+            for location in locations {
+                let region = location.location.region;
+                let context = crate::batch_coprocessor::BatchTaskSource::rpc_context(
+                    self.region_cache.as_ref(),
+                    region,
+                    false,
+                )?
+                .ok_or(crate::batch_request_sender::BatchError::MissingRegion(
+                    region,
+                ))?;
+                let mut pb_region = kvproto::coprocessor::RegionInfo::new();
+                pb_region.set_region_id(region.id);
+                let mut epoch = kvproto::metapb::RegionEpoch::new();
+                epoch.set_conf_ver(region.conf_ver);
+                epoch.set_version(region.version);
+                pb_region.set_region_epoch(epoch);
+                pb_region.set_ranges(
+                    location
+                        .ranges
+                        .iter()
+                        .map(|range| {
+                            let mut pb_range = kvproto::coprocessor::KeyRange::new();
+                            pb_range.set_start(range.start.clone());
+                            pb_range.set_end(range.end.clone());
+                            pb_range
+                        })
+                        .collect::<Vec<_>>()
+                        .into(),
+                );
+                let mut pb_request = kvproto::coprocessor::BatchRequest::new();
+                pb_request.set_tp(103);
+                pb_request.set_data(request.data.clone());
+                pb_request.set_start_ts(request.start_ts);
+                pb_request.set_schema_ver(request.schema_version);
+                pb_request.set_connection_id(request.connection_id);
+                pb_request.set_connection_alias(request.connection_alias.clone());
+                pb_request.set_regions(vec![pb_region].into());
+                let payload = pb_request.write_to_bytes().map_err(|error| {
+                    crate::batch_request_sender::BatchError::Transport(error.to_string())
+                })?;
+                let rpc = self.backend.send_request(
+                    &context.address,
+                    &BatchRequest {
+                        payload,
+                        ..BatchRequest::default()
+                    },
+                    if request.tikv_client_read_timeout.is_zero() {
+                        Duration::from_secs(60)
+                    } else {
+                        request.tikv_client_read_timeout
+                    },
+                    &CancellationToken::default(),
+                )?;
+                for response in rpc.responses {
+                    let response = response?;
+                    if !response.retry_regions.is_empty() {
+                        return Err(crate::batch_request_sender::BatchError::Transport(
+                            "TiFlash requested Region retry during ANN scan".to_owned(),
+                        ));
+                    }
+                    responses.push(response);
+                }
+            }
+        }
+        Ok(responses)
+    }
     /// 按 Region 切分 Cop 任务 ranges。
     fn split_key_ranges(
         &self,

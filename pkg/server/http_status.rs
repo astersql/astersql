@@ -1141,7 +1141,13 @@ fn schema_response(server: &Server, request: &Request) -> Response {
     use astersql_server_handler_tikvhandler::tikv_handler::ResponseWriter;
 
     let Some(tool) = tikv_tool(server) else {
-        return unavailable(HandlerKind::Schema)(request);
+        return server
+            .domain()
+            .and_then(|domain| domain.schema_snapshot())
+            .map_or_else(
+                || unavailable(HandlerKind::Schema)(request),
+                |schema| canonical_schema_response(schema.as_ref(), request),
+            );
     };
     let mut path = HashMap::new();
     match request
@@ -1167,6 +1173,74 @@ fn schema_response(server: &Server, request: &Request) -> Response {
     let mut writer = ResponseWriter::default();
     handler.ServeHTTP(&mut writer, &tikv_request(request, path));
     tikv_response(writer)
+}
+
+fn canonical_schema_response(
+    schema: &dyn astersql_infoschema::InfoSchema,
+    request: &Request,
+) -> Response {
+    use astersql_infoschema::CiString;
+
+    let parts: Vec<_> = request.path.trim_matches('/').split('/').collect();
+    let table_json = |table: &astersql_infoschema::Table| {
+        table
+            .ModelMeta()
+            .ok()
+            .and_then(|meta| serde_json::to_value(meta.as_ref()).ok())
+            .unwrap_or_else(|| serde_json::json!({"id": table.0.id, "name": table.0.name.original}))
+    };
+    let result = if let Some(table_id) = request.query.get("table_id") {
+        match table_id
+            .parse::<i64>()
+            .ok()
+            .and_then(|id| schema.TableByID(id))
+        {
+            Some(table) => table_json(&table),
+            None => return serve_error(400, "table id not exists"),
+        }
+    } else {
+        match parts.as_slice() {
+            ["schema"] => {
+                let mut databases = Vec::new();
+                for db in schema.AllSchemas() {
+                    let tables = match schema.SchemaTableInfos(&db.name) {
+                        Ok(tables) => tables,
+                        Err(error) => return serve_error(500, &error.to_string()),
+                    };
+                    let tables = tables
+                        .into_iter()
+                        .map(|table| table_json(&astersql_infoschema::Table(table)))
+                        .collect::<Vec<_>>();
+                    databases.push(serde_json::json!({"id": db.id, "db_name": db.name.original, "tables": tables}));
+                }
+                serde_json::Value::Array(databases)
+            }
+            ["schema", database] => {
+                let db_name = CiString::new(*database);
+                if schema.SchemaByName(&db_name).is_none() {
+                    return serve_error(400, "database not exists");
+                }
+                let tables = match schema.SchemaTableInfos(&db_name) {
+                    Ok(tables) => tables,
+                    Err(error) => return serve_error(400, &error.to_string()),
+                };
+                serde_json::Value::Array(
+                    tables
+                        .into_iter()
+                        .map(|table| table_json(&astersql_infoschema::Table(table)))
+                        .collect(),
+                )
+            }
+            ["schema", database, table] => {
+                match schema.TableByName(&CiString::new(*database), &CiString::new(*table)) {
+                    Ok(table) => table_json(&table),
+                    Err(_) => return serve_error(400, "table not exists"),
+                }
+            }
+            _ => return serve_error(404, "schema route not found"),
+        }
+    };
+    Response::json(200, result.to_string())
 }
 
 fn mvcc_hex_response(server: &Server, request: &Request) -> Response {
@@ -1445,7 +1519,41 @@ fn tiflash_replica_response(server: &Server, request: &Request) -> Response {
     use astersql_server_handler_tikvhandler::tikv_handler::ResponseWriter;
 
     let Some(tool) = tikv_tool(server) else {
-        return unavailable(HandlerKind::Status)(request);
+        if request.method != Method::Post {
+            return unavailable(HandlerKind::Status)(request);
+        }
+        let report: serde_json::Value = match serde_json::from_slice(&request.body) {
+            Ok(report) => report,
+            Err(error) => return serve_error(400, &error.to_string()),
+        };
+        let Some((id, region_count, flash_region_count)) = report
+            .get("id")
+            .and_then(serde_json::Value::as_i64)
+            .zip(
+                report
+                    .get("region_count")
+                    .and_then(serde_json::Value::as_u64),
+            )
+            .zip(
+                report
+                    .get("flash_region_count")
+                    .and_then(serde_json::Value::as_u64),
+            )
+            .map(|((id, regions), flash_regions)| (id, regions, flash_regions))
+        else {
+            return serve_error(400, "invalid TiFlash replica report");
+        };
+        return server.domain().map_or_else(
+            || unavailable(HandlerKind::Status)(request),
+            |domain| match domain.publish_tiflash_replica_report(
+                id,
+                region_count,
+                flash_region_count,
+            ) {
+                Ok(()) => Response::json(200, "null"),
+                Err(error) => serve_error(400, &error),
+            },
+        );
     };
     let handler = NewFlashReplicaHandler(tool);
     let mut writer = ResponseWriter::default();

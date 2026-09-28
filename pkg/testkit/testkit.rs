@@ -488,7 +488,7 @@ impl TestKit {
         assert!(
             plan.Rows()
                 .iter()
-                .any(|row| row.get(3).is_some_and(|value| value.contains(&marker))),
+                .any(|row| row.iter().any(|value| value.contains(&marker))),
             "index not used: sql={sql:?}, index={index:?}, plan={:?}",
             plan.Rows()
         );

@@ -39,6 +39,159 @@ fn new_testkit() -> (Arc<astersql_domain::Domain>, TestKit) {
     (domain, TestKit::new(store))
 }
 
+#[test]
+fn tiflash_schema_metadata_is_visible_in_tidb_kv_layout() {
+    let (domain, mut tk) = new_testkit();
+    tk.MustExec("create database tiflash_schema_meta", Vec::new());
+    tk.MustExec("use tiflash_schema_meta", Vec::new());
+    tk.MustExec("create table t (v vector(3))", Vec::new());
+    tk.MustExec(
+        "alter table t add vector index v_idx ((vec_l2_distance(v))) using hnsw",
+        Vec::new(),
+    );
+    tk.MustExec("alter table t set tiflash replica 1", Vec::new());
+
+    let table = domain.table_by_name("tiflash_schema_meta", "t").unwrap();
+    assert_eq!(
+        table.Indices[0].Tp,
+        astersql_parser_ast::model::IndexTypeVector
+    );
+    let replica_rows = ConvertRowsToStrings(&tk.MustQuery(
+        "select table_id, replica_count, available from information_schema.tiflash_replica where table_schema = 'tiflash_schema_meta' and table_name = 't'",
+        Vec::new(),
+    ).Rows());
+    assert_eq!(replica_rows, vec![format!("{} 1 0", table.ID)]);
+    let db_id = table.DBID;
+    let table_id = table.ID;
+    let mut db_key = b"m".to_vec();
+    db_key = astersql_util_codec::EncodeBytes(db_key, b"DBs");
+    db_key = astersql_util_codec::EncodeUint(db_key, b'h' as u64);
+    db_key = astersql_util_codec::EncodeBytes(db_key, format!("DB:{db_id}").as_bytes());
+    let mut table_key = b"m".to_vec();
+    table_key = astersql_util_codec::EncodeBytes(table_key, format!("DB:{db_id}").as_bytes());
+    table_key = astersql_util_codec::EncodeUint(table_key, b'h' as u64);
+    table_key = astersql_util_codec::EncodeBytes(table_key, format!("Table:{table_id}").as_bytes());
+    let mut version_key = b"m".to_vec();
+    version_key = astersql_util_codec::EncodeBytes(version_key, b"SchemaVersionKey");
+    version_key = astersql_util_codec::EncodeUint(version_key, b's' as u64);
+
+    domain.storage_handle().with_storage(|store| {
+        let version = store.CurrentVersion("global").unwrap();
+        let snapshot = store.GetSnapshot(version);
+        let db = astersql_kv::GetValue(
+            &astersql_kv::Context::default(),
+            snapshot.as_ref(),
+            astersql_kv::Key(db_key),
+        )
+        .unwrap();
+        let table = astersql_kv::GetValue(
+            &astersql_kv::Context::default(),
+            snapshot.as_ref(),
+            astersql_kv::Key(table_key.clone()),
+        )
+        .unwrap();
+        let schema_version = astersql_kv::GetValue(
+            &astersql_kv::Context::default(),
+            snapshot.as_ref(),
+            astersql_kv::Key(version_key),
+        )
+        .unwrap();
+        assert!(String::from_utf8_lossy(&db).contains("tiflash_schema_meta"));
+        assert!(String::from_utf8_lossy(&table).contains("tiflash"));
+        let schema_version = String::from_utf8_lossy(&schema_version)
+            .parse::<i64>()
+            .unwrap();
+        assert!(schema_version > 0);
+        let mut diff_key = astersql_util_codec::EncodeBytes(
+            b"m".to_vec(),
+            format!("Diff:{schema_version}").as_bytes(),
+        );
+        diff_key = astersql_util_codec::EncodeUint(diff_key, b's' as u64);
+        let diff = astersql_kv::GetValue(
+            &astersql_kv::Context::default(),
+            snapshot.as_ref(),
+            astersql_kv::Key(diff_key),
+        )
+        .unwrap();
+        assert!(String::from_utf8_lossy(&diff).contains("\"regenerate_schema_map\":true"));
+    });
+    tk.MustExec("drop table t", Vec::new());
+    domain.storage_handle().with_storage(|store| {
+        let version = store.CurrentVersion("global").unwrap();
+        let snapshot = store.GetSnapshot(version);
+        let error = astersql_kv::GetValue(
+            &astersql_kv::Context::default(),
+            snapshot.as_ref(),
+            astersql_kv::Key(table_key),
+        )
+        .unwrap_err();
+        assert!(astersql_kv::IsErrNotFound(&error));
+    });
+}
+
+#[test]
+fn tiflash_replica_state_reaches_vector_planner() {
+    let (domain, mut tk) = new_testkit();
+    tk.MustExec("use test", Vec::new());
+    tk.MustExec("create table replica_state_t (vec vector(3))", Vec::new());
+    tk.MustExec(
+        "alter table replica_state_t add vector index ((vec_cosine_distance(vec))) using hnsw",
+        Vec::new(),
+    );
+    tk.MustExec(
+        "alter table replica_state_t set tiflash replica 1",
+        Vec::new(),
+    );
+
+    let table = domain
+        .table_by_name("test", "replica_state_t")
+        .expect("lookup replica_state_t");
+    let replica = table.TiFlashReplica.as_ref().expect("replica metadata");
+    assert_eq!(replica.Count, 1);
+    assert!(!replica.Available, "DDL must wait for replica progress");
+
+    let plan = explain_plan_tree(
+        &tk,
+        "select * from replica_state_t order by vec_cosine_distance(vec, '[1,1,1]') limit 1",
+    );
+    assert!(
+        !plan.iter().any(|row| row.contains("annIndex:")),
+        "{plan:?}"
+    );
+    assert!(
+        domain
+            .publish_tiflash_replica_progress("test", "replica_state_t", table.ID + 1, 1.0)
+            .is_err(),
+        "stale table IDs must not publish replica readiness"
+    );
+
+    for (progress, available) in [(0.5, false), (1.0, true), (0.2, false)] {
+        domain
+            .publish_tiflash_replica_progress("test", "replica_state_t", table.ID, progress)
+            .expect("publish observed replica progress");
+        let table = domain
+            .table_by_name("test", "replica_state_t")
+            .expect("lookup updated table");
+        assert_eq!(
+            table
+                .TiFlashReplica
+                .as_ref()
+                .expect("replica metadata")
+                .Available,
+            available
+        );
+        let plan = explain_plan_tree(
+            &tk,
+            "select * from replica_state_t order by vec_cosine_distance(vec, '[1,1,1]') limit 1",
+        );
+        assert_eq!(
+            plan.iter().any(|row| row.contains("annIndex:")),
+            available,
+            "progress={progress}, plan={plan:?}"
+        );
+    }
+}
+
 /// 解析单条 SQL 为 AST 节点；失败则 panic 并带上原 SQL。
 fn parse_stmt(sql: &str) -> Box<dyn ast::Node> {
     Parser::default()
@@ -580,6 +733,53 @@ fn test_ann_index_with_non_int_clustered_pk_uses_full_vector_range() {
         .expect("vector_index vector metadata");
     assert_eq!(vector.Dimension, 3);
     assert_eq!(vector.DistanceMetric, DistanceMetricCosine);
+}
+
+#[test]
+fn hnsw_query_plan_matches_execution() {
+    let (domain, mut tk) = new_testkit();
+    tk.MustExec("use test", Vec::new());
+    tk.MustExec(
+        "create table hnsw_execution_t (id int primary key, vec vector(3))",
+        Vec::new(),
+    );
+    tk.MustExec(
+        "alter table hnsw_execution_t set tiflash replica 1",
+        Vec::new(),
+    );
+    tk.MustExec(
+        "alter table hnsw_execution_t add vector index vector_index ((vec_l2_distance(vec))) using hnsw",
+        Vec::new(),
+    );
+    tk.MustExec(
+        "insert into hnsw_execution_t values (1, '[1,2,3]'), (2, '[1,2,4]'), (3, '[9,9,9]')",
+        Vec::new(),
+    );
+    let query = "select id from hnsw_execution_t order by vec_l2_distance(vec, '[1,2,3]') limit 2";
+    tk.MustQuery(query, Vec::new())
+        .Check(vec![vec!["1"], vec!["2"]]);
+    domain
+        .set_tiflash_replica_for_test("test", "hnsw_execution_t", 1, true)
+        .expect("set TiFlash replica available");
+
+    let plan = explain_plan_tree(&tk, query);
+    assert!(
+        tk.MustQuery(&format!("explain format = 'plan_tree' {query}"), Vec::new())
+            .Rows()
+            .iter()
+            .all(|row| row.len() == 1 && row[0].contains(' ')),
+        "plan_tree must expose complete plan lines in its single column"
+    );
+    assert!(
+        plan.iter().any(|row| row.contains("annIndex:L2")),
+        "plan={plan:?}"
+    );
+    assert!(
+        plan.iter().any(|row| row.contains("index:vector_index")),
+        "plan={plan:?}"
+    );
+    tk.MustQuery(query, Vec::new())
+        .Check(vec![vec!["1"], vec!["2"]]);
 }
 
 /// 建立 Go PK/HeavyFunction 三个用例共用的 6000 行非分区 fixture。

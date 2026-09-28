@@ -603,6 +603,21 @@ pub trait Domain: Send + Sync {
         None
     }
 
+    /// Current SQL schema for the status metadata routes.
+    fn schema_snapshot(&self) -> Option<astersql_infoschema::SchemaRef> {
+        None
+    }
+
+    /// Publish a TiFlash status report for a physical table ID.
+    fn publish_tiflash_replica_report(
+        &self,
+        _table_id: i64,
+        _region_count: u64,
+        _flash_region_count: u64,
+    ) -> Result<(), String> {
+        Err("TiFlash replica reports are not configured".into())
+    }
+
     /// DXF status HTTP handler 所需的运行时。
     fn dxf_runtime(&self) -> Option<Arc<dyn DxfRuntime>> {
         None

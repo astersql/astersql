@@ -150,6 +150,146 @@ fn status_listener_reports_health_and_exits_during_shutdown() {
 }
 
 #[test]
+fn schema_route_uses_tikv_domain_runtime() {
+    let (domain, _) =
+        astersql_session::runtime::CreateAnalyzeSession().expect("initialize canonical domain");
+    domain
+        .ddl_create_database("schema_route_test", false)
+        .expect("create schema");
+    domain
+        .ddl_create_table(
+            "schema_route_test",
+            astersql_meta_model::TableInfo {
+                Name: astersql_parser_ast::NewCIStr("schema_route_table"),
+                ..Default::default()
+            },
+            false,
+        )
+        .expect("create table");
+    let server = Server::new_test(
+        ServerConfig {
+            host: "127.0.0.1".into(),
+            port: 0,
+            status: StatusConfig {
+                report_status: true,
+                host: "127.0.0.1".into(),
+                port: 0,
+                ..StatusConfig::default()
+            },
+            ..ServerConfig::default()
+        },
+        Arc::new(Driver),
+    );
+    server
+        .run(Arc::new(crate::runtime::CanonicalServerDomain::new(domain)))
+        .expect("start canonical status listener");
+    let address = server.status_listener_addr().expect("status address");
+    let mut stream = TcpStream::connect(address).expect("connect status listener");
+    stream
+        .write_all(b"GET /schema HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .expect("write schema request");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("read schema response");
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+    assert!(response.contains("schema_route_test"), "{response}");
+    assert!(response.contains("schema_route_table"), "{response}");
+
+    let mut stream = TcpStream::connect(address).expect("connect status listener");
+    stream
+        .write_all(b"GET /schema/schema_route_test HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .expect("write database schema request");
+    let mut database_response = String::new();
+    stream
+        .read_to_string(&mut database_response)
+        .expect("read database schema response");
+    assert!(
+        database_response.starts_with("HTTP/1.1 200 OK"),
+        "{database_response}"
+    );
+    assert!(
+        database_response.contains("schema_route_table"),
+        "{database_response}"
+    );
+    server.close();
+}
+
+#[test]
+fn tiflash_report_updates_canonical_domain_replica() {
+    let (domain, _) =
+        astersql_session::runtime::CreateAnalyzeSession().expect("initialize canonical domain");
+    domain
+        .ddl_create_database("replica_report_test", false)
+        .expect("create schema");
+    let table = domain
+        .ddl_create_table(
+            "replica_report_test",
+            astersql_meta_model::TableInfo {
+                Name: astersql_parser_ast::NewCIStr("t"),
+                ..Default::default()
+            },
+            false,
+        )
+        .expect("create table");
+    domain
+        .ddl_set_tiflash_replica("replica_report_test", "t", 1, Vec::new())
+        .expect("configure replica");
+    let server = Server::new_test(
+        ServerConfig {
+            host: "127.0.0.1".into(),
+            port: 0,
+            status: StatusConfig {
+                report_status: true,
+                host: "127.0.0.1".into(),
+                port: 0,
+                ..StatusConfig::default()
+            },
+            ..ServerConfig::default()
+        },
+        Arc::new(Driver),
+    );
+    server
+        .run(Arc::new(crate::runtime::CanonicalServerDomain::new(
+            Arc::clone(&domain),
+        )))
+        .expect("start canonical status listener");
+    let address = server.status_listener_addr().expect("status address");
+    for (flash_regions, available) in [(1, false), (2, true), (1, false)] {
+        let body = format!(
+            "{{\"id\":{},\"region_count\":2,\"flash_region_count\":{flash_regions}}}",
+            table.ID
+        );
+        let mut stream = TcpStream::connect(address).expect("connect status listener");
+        stream
+            .write_all(
+                format!(
+                    "POST /tiflash/replica-deprecated HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .expect("write TiFlash report");
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .expect("read TiFlash response");
+        assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+        assert_eq!(
+            domain
+                .table_by_name("replica_report_test", "t")
+                .expect("table")
+                .TiFlashReplica
+                .as_ref()
+                .expect("replica")
+                .Available,
+            available
+        );
+    }
+    server.close();
+}
+
+#[test]
 /// 验证 `/metrics` 返回 Prometheus 文本格式的成功响应。
 fn status_listener_exposes_prometheus_metrics() {
     let server = Server::new_test(

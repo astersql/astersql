@@ -390,6 +390,16 @@ fn dag_request() -> kv::Request {
     }
 }
 
+#[test]
+fn tiflash_batch_dag_request_preserves_store_type() {
+    let mut request = dag_request();
+    request.StoreType = kv::StoreType::TiFlash;
+    request.BatchCop = true;
+    let adapted = super::kv_adapter::cop_request(&request).expect("TiFlash batch DAG request");
+    assert_eq!(adapted.store_type, copr::StoreType::TiFlash);
+    assert!(adapted.batch_cop);
+}
+
 fn send_option() -> kv::ClientSendOption {
     kv::ClientSendOption {
         SessionMemTracker: None,

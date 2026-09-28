@@ -764,7 +764,7 @@ pub struct Domain {
     config: DomainConfig,
     store: Arc<StorageHandle>,
     schema_loader: Arc<dyn InfoSchemaLoader>,
-    ddl_metadata: DdlMetadataService,
+    ddl_metadata: Arc<DdlMetadataService>,
     ddl: RwLock<Option<Arc<dyn DdlService>>>,
     info_cache: Arc<InfoCache>,
     keyspace_runtimes: Mutex<BTreeMap<String, KeyspaceRuntime>>,
@@ -1402,7 +1402,7 @@ impl Domain {
             config,
             store: storage,
             schema_loader,
-            ddl_metadata: DdlMetadataService::new(),
+            ddl_metadata: Arc::new(DdlMetadataService::new()),
             ddl: RwLock::new(None),
             info_cache: cache,
             keyspace_runtimes: Mutex::new(BTreeMap::new()),
@@ -3352,7 +3352,8 @@ impl Domain {
             .store
             .with_storage(|store| self.ddl_metadata.drop_database(store, database, if_exists))
             .map_err(|error| DomainError::Ddl(error.to_string()))?;
-        self.publish_ddl_metadata_change(change).map(|_| ())
+        let change = self.publish_ddl_metadata_change(change)?;
+        self.remove_tiflash_rules_for_dropped_tables(&change.old_tables)
     }
 
     /// Read canonical database names directly from KV so empty schemas remain
@@ -3427,8 +3428,57 @@ impl Domain {
                     database,
                     table,
                     count,
-                    count > 0,
-                    location_labels,
+                    false,
+                    location_labels.clone(),
+                )
+            })
+            .map_err(|error| DomainError::Ddl(error.to_string()))?;
+        let change = self.publish_ddl_metadata_change(change)?;
+        if let Some((_, table)) = change.new_tables.first() {
+            self.store
+                .with_storage(|store| {
+                    if let Some(partition) = &table.Partition {
+                        for definition in &partition.Definitions {
+                            store.PublishTiFlashPlacementRule(
+                                definition.ID,
+                                count,
+                                &location_labels,
+                            )?;
+                        }
+                        store.PublishTiFlashPlacementRule(table.ID, 0, &[])?;
+                    } else {
+                        store.PublishTiFlashPlacementRule(table.ID, count, &location_labels)?;
+                    }
+                    Ok::<_, astersql_kv::errors::SharedError>(())
+                })
+                .map_err(|error| DomainError::Ddl(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// Publish replica progress observed by a TiFlash status collector.
+    /// Only full progress can make the replica available to the planner.
+    pub fn publish_tiflash_replica_progress(
+        &self,
+        database: &str,
+        table: &str,
+        table_id: i64,
+        progress: f64,
+    ) -> Result<(), DomainError> {
+        if !progress.is_finite() || !(0.0..=1.0).contains(&progress) {
+            return Err(DomainError::Ddl(
+                "invalid TiFlash replica progress".to_owned(),
+            ));
+        }
+        let change = self
+            .store
+            .with_storage(|store| {
+                self.ddl_metadata.update_tiflash_replica_availability(
+                    store,
+                    database,
+                    table,
+                    table_id,
+                    progress == 1.0,
                 )
             })
             .map_err(|error| DomainError::Ddl(error.to_string()))?;
@@ -3445,7 +3495,30 @@ impl Domain {
             .store
             .with_storage(|store| self.ddl_metadata.drop_tables(store, tables, if_exists))
             .map_err(|error| DomainError::Ddl(error.to_string()))?;
-        self.publish_ddl_metadata_change(change).map(|_| ())
+        let change = self.publish_ddl_metadata_change(change)?;
+        self.remove_tiflash_rules_for_dropped_tables(&change.old_tables)
+    }
+
+    fn remove_tiflash_rules_for_dropped_tables(
+        &self,
+        tables: &[(String, astersql_meta_model::TableInfo)],
+    ) -> Result<(), DomainError> {
+        self.store
+            .with_storage(|store| {
+                for (_, table) in tables {
+                    if table.TiFlashReplica.is_none() {
+                        continue;
+                    }
+                    if let Some(partition) = &table.Partition {
+                        for definition in &partition.Definitions {
+                            store.PublishTiFlashPlacementRule(definition.ID, 0, &[])?;
+                        }
+                    }
+                    store.PublishTiFlashPlacementRule(table.ID, 0, &[])?;
+                }
+                Ok::<_, astersql_kv::errors::SharedError>(())
+            })
+            .map_err(|error| DomainError::Ddl(error.to_string()))
     }
 
     /// Persist ALTER TABLE SHARD_ROW_ID_BITS through canonical metadata.
@@ -5004,6 +5077,58 @@ impl Domain {
                 }
             },
         );
+        self.start_periodic_worker("tiflash-replica-progress", Duration::from_secs(2), {
+            let store = self.store.clone();
+            let metadata = self.ddl_metadata.clone();
+            let loader = self.schema_loader.clone();
+            let cache = self.info_cache.clone();
+            let keyspace = self.config.keyspace.clone();
+            move || {
+                let Ok(tables) = store.with_storage(|storage| metadata.replica_tables(storage))
+                else {
+                    return;
+                };
+                let mut changed = false;
+                for (database, table, id, count, available, physical_ids) in tables {
+                    let mut ready = true;
+                    let mut supported = true;
+                    for physical_id in physical_ids {
+                        match store.with_storage(|storage| {
+                            storage.ObserveTiFlashReplicaProgress(physical_id, count)
+                        }) {
+                            Ok(Some(progress)) => ready &= progress == 1.0,
+                            Ok(None) => {
+                                supported = false;
+                                break;
+                            }
+                            Err(_) => ready = false,
+                        }
+                    }
+                    if !supported {
+                        continue;
+                    }
+                    if ready != available {
+                        if store
+                            .with_storage(|storage| {
+                                metadata.update_tiflash_replica_availability(
+                                    storage, &database, &table, id, ready,
+                                )
+                            })
+                            .is_ok()
+                        {
+                            changed = true;
+                        }
+                    }
+                }
+                if changed {
+                    if let Ok(loaded) =
+                        store.with_storage(|storage| loader.load_info_schema(storage, &keyspace))
+                    {
+                        cache.Insert(loaded.schema, loaded.timestamp);
+                    }
+                }
+            }
+        });
         Ok(())
     }
 

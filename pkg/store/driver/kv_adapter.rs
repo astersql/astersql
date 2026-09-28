@@ -100,6 +100,26 @@ fn adapter_error(error: impl ToString) -> kv::errors::SharedError {
     kv::errors::New(error.to_string())
 }
 
+fn tiflash_http_client(
+    store: &TikvStore,
+) -> Result<(reqwest::blocking::Client, &'static str), kv::errors::SharedError> {
+    let mut builder = reqwest::blocking::Client::builder().timeout(Duration::from_secs(10));
+    let scheme = if let Some(tls) = store.TLSConfig() {
+        let ca = std::fs::read(&tls.ca_path).map_err(adapter_error)?;
+        let cert = std::fs::read(&tls.cert_path).map_err(adapter_error)?;
+        let key = std::fs::read(&tls.key_path).map_err(adapter_error)?;
+        let mut identity = cert;
+        identity.extend_from_slice(&key);
+        builder = builder
+            .add_root_certificate(reqwest::Certificate::from_pem(&ca).map_err(adapter_error)?)
+            .identity(reqwest::Identity::from_pem(&identity).map_err(adapter_error)?);
+        "https"
+    } else {
+        "http"
+    };
+    Ok((builder.build().map_err(adapter_error)?, scheme))
+}
+
 fn runtime_error() -> kv::errors::SharedError {
     adapter_error("TiKV store was opened without the client-rust runtime")
 }
@@ -1527,6 +1547,18 @@ impl From<copr::CopResponse> for CopResultSubset {
     }
 }
 
+impl From<copr::batch_request_sender::BatchResponse> for CopResultSubset {
+    fn from(response: copr::batch_request_sender::BatchResponse) -> Self {
+        let memory_size = response.data.len() as i64;
+        Self {
+            data: response.data,
+            start_key: kv::Key(Vec::new()),
+            memory_size,
+            response_time: Duration::ZERO,
+        }
+    }
+}
+
 impl kv::ResultSubset for CopResultSubset {
     fn GetData(&self) -> &[u8] {
         &self.data
@@ -1587,6 +1619,13 @@ impl kv::Response for CopResponse {
             copr::CopResponseStream::Batch(_) => Err(adapter_error(
                 "batch coprocessor response reached the standard TiKV DAG adapter",
             )),
+            copr::CopResponseStream::BatchDirect(responses) => match responses.pop_front() {
+                Some(response) if !response.other_error.is_empty() => {
+                    Err(adapter_error(response.other_error))
+                }
+                Some(response) => Ok(Some(Box::new(CopResultSubset::from(response)))),
+                None => Ok(None),
+            },
         }
     }
 
@@ -1599,6 +1638,7 @@ impl kv::Response for CopResponse {
             match stream {
                 copr::CopResponseStream::Standard(iterator) => iterator.close(),
                 copr::CopResponseStream::Batch(iterator) => iterator.close(),
+                copr::CopResponseStream::BatchDirect(_) => {}
             }
         }
         self.stream = None;
@@ -1617,16 +1657,14 @@ pub(crate) fn cop_request(req: &kv::Request) -> Result<copr::CopRequest, kv::err
             )));
         }
     };
-    if req.StoreType != kv::StoreType::TiKV {
+    if !matches!(
+        (req.StoreType, req.BatchCop),
+        (kv::StoreType::TiKV, false) | (kv::StoreType::TiFlash, true)
+    ) {
         return Err(adapter_error(format!(
-            "standard DAG transport only supports TiKV, got {}",
+            "unsupported coprocessor transport for {}",
             req.StoreType.Name()
         )));
-    }
-    if req.BatchCop {
-        return Err(adapter_error(
-            "standard TiKV DAG transport does not accept BatchCop",
-        ));
     }
 
     let mut key_ranges = Vec::new();
@@ -1674,8 +1712,12 @@ pub(crate) fn cop_request(req: &kv::Request) -> Result<copr::CopRequest, kv::err
     Ok(copr::CopRequest {
         read_stats: None,
         request_type,
-        store_type: copr::StoreType::TiKv,
-        batch_cop: false,
+        store_type: if req.StoreType == kv::StoreType::TiFlash {
+            copr::StoreType::TiFlash
+        } else {
+            copr::StoreType::TiKv
+        },
+        batch_cop: req.BatchCop,
         start_ts: req.StartTs,
         data: req.Data.clone(),
         schema_version: req.SchemaVar,
@@ -1857,6 +1899,197 @@ fn mem_manager() -> &'static AdapterMemManager {
 }
 
 impl kv::Storage for TikvStore {
+    fn ObserveTiFlashReplicaProgress(
+        &self,
+        table_id: i64,
+        replica_count: u64,
+    ) -> Result<Option<f64>, kv::errors::SharedError> {
+        if replica_count == 0 {
+            return Ok(Some(0.0));
+        }
+        if !self.GetKeyspace().is_empty() {
+            return Err(adapter_error(
+                "TiFlash progress for named keyspaces is not configured",
+            ));
+        }
+        let (client, scheme) = tiflash_http_client(self)?;
+        let addresses = self.GetPDAddrs().map_err(adapter_error)?;
+        let mut pd = None;
+        for address in addresses {
+            let base = if address.contains("://") {
+                address.trim_end_matches('/').to_owned()
+            } else {
+                format!("{scheme}://{address}")
+            };
+            if client
+                .get(format!("{base}/pd/api/v1/stores"))
+                .send()
+                .is_ok_and(|r| r.status().is_success())
+            {
+                pd = Some(base);
+                break;
+            }
+        }
+        let pd = pd.ok_or_else(|| adapter_error("PD stores API is unavailable"))?;
+        let stores: serde_json::Value = client
+            .get(format!("{pd}/pd/api/v1/stores"))
+            .send()
+            .map_err(adapter_error)?
+            .error_for_status()
+            .map_err(adapter_error)?
+            .json()
+            .map_err(adapter_error)?;
+        let stores = stores["stores"]
+            .as_array()
+            .ok_or_else(|| adapter_error("invalid PD stores response"))?;
+        let mut start = b"t".to_vec();
+        start.extend_from_slice(&((table_id as u64) ^ (1_u64 << 63)).to_be_bytes());
+        start.extend_from_slice(b"_r");
+        let mut end = b"t".to_vec();
+        let next_id = table_id
+            .checked_add(1)
+            .ok_or_else(|| adapter_error("invalid table ID"))?;
+        end.extend_from_slice(&(next_id as u64 ^ (1_u64 << 63)).to_be_bytes());
+        let hex = |bytes: &[u8]| -> String {
+            astersql_util_codec::EncodeBytes(Vec::new(), bytes)
+                .iter()
+                .map(|byte| format!("{byte:02X}"))
+                .collect()
+        };
+        let stats: serde_json::Value = client
+            .get(format!("{pd}/pd/api/v1/stats/region"))
+            .query(&[("start_key", hex(&start)), ("end_key", hex(&end))])
+            .send()
+            .map_err(adapter_error)?
+            .error_for_status()
+            .map_err(adapter_error)?
+            .json()
+            .map_err(adapter_error)?;
+        let region_count = stats["count"]
+            .as_u64()
+            .ok_or_else(|| adapter_error("invalid PD region count"))?;
+        if region_count == 0 {
+            return Ok(Some(0.0));
+        }
+        let mut peers = 0_u64;
+        let mut covered = std::collections::HashSet::new();
+        for entry in stores {
+            let store = &entry["store"];
+            let is_tiflash = store["labels"].as_array().is_some_and(|labels| {
+                labels
+                    .iter()
+                    .any(|label| label["key"] == "engine" && label["value"] == "tiflash")
+            });
+            if !is_tiflash {
+                continue;
+            }
+            let state = store["state_name"].as_str().unwrap_or_default();
+            if state != "Up" && state != "Disconnected" {
+                continue;
+            }
+            let address = store["status_address"]
+                .as_str()
+                .ok_or_else(|| adapter_error("TiFlash store has no status address"))?;
+            let status = client
+                .get(format!(
+                    "{scheme}://{address}/tiflash/sync-status/keyspace/4294967295/table/{table_id}"
+                ))
+                .send()
+                .map_err(adapter_error)?
+                .error_for_status()
+                .map_err(adapter_error)?
+                .text()
+                .map_err(adapter_error)?;
+            let mut lines = status.lines();
+            let claimed = lines
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .parse::<usize>()
+                .map_err(adapter_error)?;
+            let ids = lines
+                .next()
+                .unwrap_or_default()
+                .split_whitespace()
+                .map(str::parse::<u64>)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(adapter_error)?;
+            if ids.len() != claimed {
+                return Err(adapter_error("TiFlash sync status region count mismatch"));
+            }
+            peers += ids.len() as u64;
+            covered.extend(ids);
+        }
+        let denominator = region_count.saturating_mul(replica_count);
+        let fraction = (peers as f64 / denominator as f64).min(1.0);
+        Ok(Some(if covered.len() as u64 == region_count {
+            fraction
+        } else {
+            fraction.min(0.999_999)
+        }))
+    }
+    fn PublishTiFlashPlacementRule(
+        &self,
+        table_id: i64,
+        count: u64,
+        location_labels: &[String],
+    ) -> Result<(), kv::errors::SharedError> {
+        if !self.GetKeyspace().is_empty() {
+            return Err(adapter_error(
+                "TiFlash placement for named keyspaces is not configured",
+            ));
+        }
+        let count = i32::try_from(count)
+            .map_err(|_| adapter_error("TiFlash replica count exceeds PD limit"))?;
+        let (client, scheme) = tiflash_http_client(self)?;
+        let rule_id = format!("table-{table_id}-r");
+        let mut last_error = String::new();
+        for address in self.GetPDAddrs().map_err(adapter_error)? {
+            let base = if address.contains("://") {
+                address.trim_end_matches('/').to_owned()
+            } else {
+                format!("{scheme}://{address}")
+            };
+            let response = if count == 0 {
+                client
+                    .delete(format!("{base}/pd/api/v1/config/rule/tiflash/{rule_id}"))
+                    .send()
+            } else {
+                let mut start = b"t".to_vec();
+                start.extend_from_slice(&((table_id as u64) ^ (1_u64 << 63)).to_be_bytes());
+                start.extend_from_slice(b"_r");
+                let mut end = b"t".to_vec();
+                let next_id = table_id
+                    .checked_add(1)
+                    .ok_or_else(|| adapter_error("invalid table ID"))?;
+                end.extend_from_slice(&(next_id as u64 ^ (1_u64 << 63)).to_be_bytes());
+                let start = astersql_util_codec::EncodeBytes(Vec::new(), &start);
+                let end = astersql_util_codec::EncodeBytes(Vec::new(), &end);
+                let hex = |bytes: &[u8]| -> String {
+                    bytes.iter().map(|byte| format!("{byte:02X}")).collect()
+                };
+                let rule = serde_json::json!({
+                    "group_id": "tiflash", "id": rule_id, "index": 120,
+                    "start_key": hex(&start), "end_key": hex(&end),
+                    "role": "learner", "count": count,
+                    "label_constraints": [{"key": "engine", "op": "in", "values": ["tiflash"]}],
+                    "location_labels": location_labels,
+                });
+                client
+                    .post(format!("{base}/pd/api/v1/config/rule"))
+                    .json(&rule)
+                    .send()
+            };
+            match response {
+                Ok(response) if response.status().is_success() => return Ok(()),
+                Ok(response) => last_error = format!("PD returned {}", response.status()),
+                Err(error) => last_error = error.to_string(),
+            }
+        }
+        Err(adapter_error(format!(
+            "publish TiFlash placement rule {rule_id}: {last_error}"
+        )))
+    }
     fn ImportSST(
         &self,
         commit_ts: u64,

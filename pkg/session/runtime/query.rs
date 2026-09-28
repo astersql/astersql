@@ -2741,7 +2741,58 @@ impl ConcreteSession {
                 )));
             }
         }
-        let mut rows = if read_committed {
+        let ann_rows = if self.state.borrow().transaction.is_none()
+            && statement_read_ts.is_none()
+            && right_table.is_none()
+            && statement.Where.is_none()
+            && statement.GroupBy.is_empty()
+            && statement.Having.is_none()
+            && !statement.Distinct
+            && !has_lock
+            && table.GetPartitionInfo().is_none()
+            && table
+                .TiFlashReplica
+                .as_ref()
+                .is_some_and(|replica| replica.Available && replica.Count > 0)
+            && self
+                .state
+                .borrow()
+                .isolation_read_engines
+                .split(',')
+                .any(|engine| engine.trim() == "tiflash")
+            && statement.OrderBy.len() == 1
+            && !statement.OrderBy[0].Desc
+        {
+            if let (Some(window), ast::ExprKind::Function { FnName, Args, .. }) =
+                (limit_window, &statement.OrderBy[0].Expr.Kind)
+                && FnName.L == "vec_l2_distance"
+                && Args.len() == 2
+                && let ast::ExprKind::Column(column) = &Args[0].Kind
+                && let Some(index) = table.Indices.iter().find(|index| {
+                    index
+                        .VectorInfo
+                        .as_ref()
+                        .is_some_and(|info| info.DistanceMetric.0.as_ref() == "L2")
+                        && index
+                            .Columns
+                            .first()
+                            .is_some_and(|indexed| indexed.Name.L == column.Name.L)
+                        && !index.Invisible
+                })
+                && let Some(reference) = relational_expression_value(&Args[1], &HashMap::new())?
+            {
+                let top_k = u32::try_from(window.offset.saturating_add(window.count))
+                    .map_err(|_| SessionError::new("ANN LIMIT exceeds TiFlash TopK range"))?;
+                self.scan_relational_ann_rows(&table, index, &reference, top_k)?
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let mut rows = if let Some(rows) = ann_rows {
+            rows
+        } else if read_committed {
             self.scan_latest_with_transaction_overlay(&table)?
         } else if let Some(window) = scan_window {
             if let Some(access) = secondary_index_access.as_ref() {

@@ -14,11 +14,13 @@ legacy-tasks = ["task-1429"]
 [dev-dependencies]
 "astersql-config" = { package = "astersql-config", path = "../../../../config" }
 "astersql-domain" = { package = "astersql-domain", path = "../../../../domain" }
+"astersql-kv" = { package = "astersql-kv", path = "../../../../kv" }
 "astersql-meta-model" = { package = "astersql-meta-model", path = "../../../../meta/model" }
 "astersql-parser" = { package = "astersql-parser", path = "../../../../parser" }
 "astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../../../parser/ast" }
 "astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../../../sessionctx/vardef" }
 "astersql-testkit" = { package = "astersql-testkit", path = "../../../../testkit" }
 "astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../../testkit/testsetup" }
+"astersql-util-codec" = { package = "astersql-util-codec", path = "../../../../util/codec" }
 protobuf = "=2.8.0"
 tipb = { git = "https://github.com/pingcap/tipb.git", rev = "07f0ea6b6bffa9d8ac100d81ee51dbbfe4dda3bf", default-features = false, features = ["protobuf-codec"] }

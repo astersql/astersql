@@ -3139,6 +3139,13 @@ impl ConcreteSession {
                                     ast::ConstraintType::Unique | ast::ConstraintType::PrimaryKey
                                 ),
                                 Primary: constraint.Tp == ast::ConstraintType::PrimaryKey,
+                                Tp: if vector_info.is_some() {
+                                    astersql_parser_ast::model::IndexTypeVector
+                                } else if inverted_info.is_some() {
+                                    astersql_parser_ast::model::IndexTypeInverted
+                                } else {
+                                    astersql_parser_ast::model::IndexTypeBtree
+                                },
                                 ConditionExprString: condition,
                                 VectorInfo: vector_info,
                                 InvertedInfo: inverted_info,

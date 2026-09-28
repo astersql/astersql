@@ -597,6 +597,14 @@ pub trait CopBackend: Send + Sync + 'static {
             "batch iterator is not configured".to_owned(),
         ))
     }
+    fn send_tiflash_batch(
+        &self,
+        _request: &CopRequest,
+    ) -> BatchResult<Vec<crate::batch_request_sender::BatchResponse>> {
+        Err(BatchError::OtherResponse(
+            "TiFlash batch transport is unavailable".to_owned(),
+        ))
+    }
 }
 
 /// 确保 key ranges 单调有序；若需修正则原地排序并返回是否改动。
@@ -1683,6 +1691,7 @@ impl Drop for CopIterator {
 pub enum CopResponseStream {
     Standard(CopIterator),
     Batch(BatchCopIterator),
+    BatchDirect(VecDeque<crate::batch_request_sender::BatchResponse>),
 }
 
 /// 协处理器客户端：构建迭代器或直接发送请求。
@@ -1712,8 +1721,8 @@ impl CopClient {
         if request.store_type == StoreType::TiFlash && request.batch_cop {
             return self
                 .backend
-                .build_batch_iterator(&request)
-                .map(CopResponseStream::Batch);
+                .send_tiflash_batch(&request)
+                .map(|responses| CopResponseStream::BatchDirect(responses.into()));
         }
         let mut iterator = self.build_cop_iterator(&mut request)?;
         iterator.open();

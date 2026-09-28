@@ -262,6 +262,16 @@ pub trait CoprocessorResponseStream: Send {
 
 /// TiKV 标准 Coprocessor unary/stream RPC 边界。
 pub trait StandardCoprocessorTransport: Send + Sync + 'static {
+    fn send_batch(
+        &self,
+        _address: &str,
+        _request: &coprocessorpb::BatchRequest,
+        _timeout: Duration,
+    ) -> BatchResult<Vec<coprocessorpb::BatchResponse>> {
+        Err(BatchError::OtherResponse(
+            "batch coprocessor transport is unavailable".to_owned(),
+        ))
+    }
     fn send_unary(
         &self,
         request: &StandardCoprocessorRequest,
@@ -524,14 +534,41 @@ impl StoreBackend for NetworkBackend {
 
     fn send_request(
         &self,
-        _address: &str,
-        _request: &BatchRequest,
-        _timeout: Duration,
-        _cancellation: &CancellationToken,
+        address: &str,
+        request: &BatchRequest,
+        timeout: Duration,
+        cancellation: &CancellationToken,
     ) -> BatchResult<RpcResponse> {
-        Err(BatchError::OtherResponse(
-            "standard DAG backend does not provide batch-coprocessor transport".to_owned(),
-        ))
+        if cancellation.is_cancelled() {
+            return Err(BatchError::Cancelled);
+        }
+        let protobuf_request: coprocessorpb::BatchRequest =
+            protobuf::parse_from_bytes(&request.payload).map_err(transport_error)?;
+        let mut responses = std::collections::VecDeque::new();
+        for response in self
+            .coprocessor
+            .send_batch(address, &protobuf_request, timeout)?
+        {
+            if cancellation.is_cancelled() {
+                return Err(BatchError::Cancelled);
+            }
+            responses.push_back(Ok(crate::batch_request_sender::BatchResponse {
+                data: response.get_data().to_vec(),
+                other_error: response.get_other_error().to_owned(),
+                retry_regions: response
+                    .get_retry_regions()
+                    .iter()
+                    .map(|region| {
+                        RegionVerId::new(
+                            region.get_id(),
+                            region.get_region_epoch().get_conf_ver(),
+                            region.get_region_epoch().get_version(),
+                        )
+                    })
+                    .collect(),
+            }));
+        }
+        Ok(RpcResponse { responses })
     }
 
     fn set_event_listener(&self, listener: Option<Arc<dyn ClientEventListener>>) {
@@ -719,10 +756,22 @@ impl RegionCacheBackend for NetworkRegionBackend {
 
     fn tiflash_rpc_context(
         &self,
-        _region: RegionVerId,
+        region: RegionVerId,
         _is_mpp: bool,
     ) -> BatchResult<Option<RpcContext>> {
-        Ok(None)
+        Ok(self
+            .metadata
+            .read_replicas(region.id)?
+            .into_iter()
+            .find(|location| {
+                location.store.as_ref().is_some_and(|store| {
+                    store
+                        .labels
+                        .get("engine")
+                        .is_some_and(|engine| engine == "tiflash")
+                })
+            })
+            .map(location_to_rpc_context))
     }
 
     fn all_valid_tiflash_store_ids(
@@ -1570,6 +1619,33 @@ impl GrpcStandardCoprocessorTransport {
 }
 
 impl StandardCoprocessorTransport for GrpcStandardCoprocessorTransport {
+    fn send_batch(
+        &self,
+        address: &str,
+        request: &coprocessorpb::BatchRequest,
+        timeout: Duration,
+    ) -> BatchResult<Vec<coprocessorpb::BatchResponse>> {
+        let mut request = request.clone();
+        for region in request.mut_regions().iter_mut() {
+            for range in region.mut_ranges().iter_mut() {
+                let (start, end) = self.codec.encode_range(range.get_start(), range.get_end());
+                range.set_start(start);
+                range.set_end(end);
+            }
+        }
+        let mut receiver = self
+            .client(address)?
+            .batch_coprocessor_opt(&request, CallOption::default().timeout(timeout))
+            .map_err(transport_error)?;
+        let mut responses = Vec::new();
+        while let Some(response) = block_on(receiver.next())
+            .transpose()
+            .map_err(transport_error)?
+        {
+            responses.push(response);
+        }
+        Ok(responses)
+    }
     fn send_unary(
         &self,
         request: &StandardCoprocessorRequest,

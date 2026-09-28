@@ -430,6 +430,42 @@ impl CanonicalServerDomain {
 }
 
 impl ServerDomain for CanonicalServerDomain {
+    fn schema_snapshot(&self) -> Option<astersql_infoschema::SchemaRef> {
+        Some(self.domain.info_schema())
+    }
+
+    fn publish_tiflash_replica_report(
+        &self,
+        table_id: i64,
+        region_count: u64,
+        flash_region_count: u64,
+    ) -> Result<(), String> {
+        if region_count == 0 || flash_region_count > region_count {
+            return Err("invalid TiFlash region counts".into());
+        }
+        let schema = self.domain.info_schema();
+        let table = schema
+            .TableByID(table_id)
+            .ok_or_else(|| format!("table {table_id} not found"))?;
+        let database = schema
+            .AllSchemas()
+            .into_iter()
+            .find(|database| {
+                schema
+                    .SchemaTableInfos(&database.name)
+                    .is_ok_and(|tables| tables.iter().any(|candidate| candidate.id == table_id))
+            })
+            .ok_or_else(|| format!("schema for table {table_id} not found"))?;
+        self.domain
+            .publish_tiflash_replica_progress(
+                &database.name.lower,
+                &table.Meta().name.lower,
+                table_id,
+                flash_region_count as f64 / region_count as f64,
+            )
+            .map_err(|error| error.to_string())
+    }
+
     fn server_id(&self) -> u64 {
         self.domain.server_id()
     }

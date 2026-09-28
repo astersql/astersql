@@ -17,6 +17,126 @@
 
 use super::*;
 
+impl ConcreteSession {
+    pub(super) fn scan_relational_ann_rows(
+        &self,
+        table: &astersql_meta_model::TableInfo,
+        index: &astersql_meta_model::IndexInfo,
+        reference: &str,
+        top_k: u32,
+    ) -> SessionResult<Option<Vec<RelationalRow>>> {
+        self.domain.storage().with_storage(|store| {
+            if store.Name() != "TiKV" {
+                return Ok(None);
+            }
+            let version = store
+                .CurrentVersion(kv::GlobalTxnScope)
+                .map_err(|error| session_error("ANN read TSO", error))?;
+            let vector_column = table
+                .Columns
+                .iter()
+                .find(|column| {
+                    index
+                        .Columns
+                        .first()
+                        .is_some_and(|indexed| indexed.Name.L == column.Name.L)
+                })
+                .ok_or_else(|| SessionError::new("ANN index vector column is missing"))?;
+            let vector = astersql_types::vector::ParseVectorFloat32(reference)
+                .map_err(|error| session_error("parse ANN reference vector", error))?;
+            let mut ann = tipb::AnnQueryInfo::new();
+            ann.set_query_type(tipb::AnnQueryType::OrderBy);
+            ann.set_distance_metric(tipb::VectorDistanceMetric::L2);
+            ann.set_top_k(top_k);
+            ann.set_column_name(vector_column.Name.L.clone());
+            ann.set_index_id(index.ID);
+            ann.set_ref_vec_f32(vector.SerializeTo(Vec::new()));
+            ann.set_column(relational_scan_column(table, vector_column));
+            let mut index_info = tipb::ColumnarIndexInfo::new();
+            index_info.set_index_type(tipb::ColumnarIndexType::TypeVector);
+            index_info.set_ann_query_info(ann);
+            let mut scan = tipb::TableScan::new();
+            scan.set_table_id(table.ID);
+            scan.set_columns(
+                table
+                    .Columns
+                    .iter()
+                    .map(|column| relational_scan_column(table, column))
+                    .collect::<Vec<_>>()
+                    .into(),
+            );
+            scan.set_used_columnar_indexes(vec![index_info].into());
+            let mut executor = tipb::Executor::new();
+            executor.set_tp(tipb::ExecType::TypeTableScan);
+            executor.set_tbl_scan(scan);
+            let mut dag = tipb::DagRequest::new();
+            dag.set_executors(vec![executor].into());
+            dag.set_output_offsets((0..table.Columns.len() as u32).collect());
+            let mut request = relational_coprocessor_request(table, version.Ver)?;
+            request.Data = protobuf::Message::write_to_bytes(&dag)
+                .map_err(|error| session_error("encode ANN DAG", error))?;
+            request.StoreType = kv::StoreType::TiFlash;
+            request.BatchCop = true;
+            let context = kv::Context::todo();
+            let option = kv::ClientSendOption {
+                SessionMemTracker: None,
+                EnabledRateLimitAction: false,
+                EventCb: None,
+                EnableCollectExecutionInfo: false,
+                TiFlashReplicaRead: kv::tiflash::ReplicaRead::default(),
+                AppendWarning: None,
+                TryCopLiteWorker: None,
+            };
+            let mut response = store
+                .GetClient()
+                .Send(&context, &request, &(), &option)
+                .ok_or_else(|| SessionError::new("TiFlash returned no ANN response"))?;
+            let result = (|| {
+                let mut rows = Vec::new();
+                while let Some(subset) = response
+                    .Next(&context)
+                    .map_err(|error| session_error("execute TiFlash ANN scan", error))?
+                {
+                    let result: tipb::SelectResponse = protobuf::parse_from_bytes(subset.GetData())
+                        .map_err(|error| session_error("decode TiFlash ANN response", error))?;
+                    if result.has_error() {
+                        return Err(SessionError::new(format!(
+                            "TiFlash ANN scan failed: {}",
+                            result.get_error().get_msg()
+                        )));
+                    }
+                    for chunk in result.get_chunks() {
+                        let mut encoded = chunk.get_rows_data();
+                        while !encoded.is_empty() {
+                            let mut row = HashMap::new();
+                            for column in &table.Columns {
+                                let (remaining, datum) =
+                                    astersql_tablecodec::codec::DecodeOne(encoded).map_err(
+                                        |error| session_error("decode TiFlash ANN datum", error),
+                                    )?;
+                                row.insert(
+                                    column.Name.L.clone(),
+                                    datum_to_runtime_value(&datum, Some(column))?,
+                                );
+                                encoded = remaining;
+                            }
+                            rows.push((0, row));
+                        }
+                    }
+                }
+                Ok(rows)
+            })();
+            let close = response
+                .Close()
+                .map_err(|error| session_error("close TiFlash ANN response", error));
+            match (result, close) {
+                (Err(error), _) | (_, Err(error)) => Err(error),
+                (Ok(rows), Ok(())) => Ok(Some(rows)),
+            }
+        })
+    }
+}
+
 /// 扫描表前缀得到关系行列表。
 pub(super) fn scan_relational_rows(
     retriever: &dyn kv::Retriever,
