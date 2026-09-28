@@ -12,7 +12,7 @@
 [![GitHub release](https://img.shields.io/github/tag/astersql/astersql.svg?label=release)](https://github.com/astersql/astersql/releases)
 </div>
 
-# AsterSQL 傲世是据库
+# AsterSQL 傲世数据库
 
 AsterSQL (/ˈæstərˌsiːkwəl/) is an open-source, cloud-native, distributed SQL database designed for high availability, horizontal and vertical scalability, strong consistency, and high performance.
 
