@@ -576,8 +576,7 @@ fn main() {
     )
     .expect("write nested kvproto module list");
 
-    // `tipb` 与 `kvproto` 处理方式基本一致，但额外带上仓库内的 `proto/explain.proto`。
-    // 这样 Rust 侧分析和 explain 相关代码能共享同一套生成结果。
+    // `tipb` 与 `kvproto` 处理方式基本一致。
     let tipb_proto = tipb.join("proto");
     let tipb_harness = out_dir.join("tipb");
     std::fs::create_dir_all(&tipb_harness).expect("create tipb directory");
@@ -585,12 +584,10 @@ fn main() {
     for name in tipb_names {
         normalized_proto(&tipb_proto.join(name), &tipb_harness.join(name));
     }
-    let explain = PathBuf::from("proto/explain.proto");
-    let mut tipb_inputs = tipb_names
+    let tipb_inputs = tipb_names
         .iter()
         .map(|name| tipb_harness.join(name))
         .collect::<Vec<_>>();
-    tipb_inputs.push(explain.clone());
     let tipb_input_strings = tipb_inputs
         .iter()
         .map(|p| p.to_str().unwrap())
@@ -605,7 +602,7 @@ fn main() {
         customize: Default::default(),
     })
     .expect("generate tipb bindings");
-    for name in ["explain.rs", "schema.rs", "analyze.rs", "resourcetag.rs"] {
+    for name in ["schema.rs", "analyze.rs", "resourcetag.rs"] {
         let path = out_dir.join(name);
         let generated = std::fs::read_to_string(&path).expect("read tipb binding");
         let generated = generated
@@ -627,8 +624,6 @@ fn main() {
     )
     .expect("write nested tipb module list");
 
-    // 把仓库内直接读取的 proto 文件挂到 Cargo 依赖追踪里，
-    // 确保修改 schema 后会自动重跑整个构建脚本。
+    // 把仓库内直接读取的 proto 文件挂到 Cargo 依赖追踪里。
     println!("cargo:rerun-if-changed={external_workload}");
-    println!("cargo:rerun-if-changed={}", explain.display());
 }
