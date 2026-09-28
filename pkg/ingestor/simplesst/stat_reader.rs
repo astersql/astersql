@@ -1,25 +1,4 @@
 // Copyright 2026 AsterSQL.
-/*
-// Copyright 2023 PingCAP, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
-
-/// StatsReader 对应 Go 同名结构，复用 ByteReader 顺序读取长度前缀的 RangeProperty。
-pub struct StatsReader {
-    byteReader: ByteReader,
-}
-*/
 
 // 统计文件（stats）顺序读取器。
 //
@@ -82,36 +61,3 @@ pub fn NewStatsReader(
 ) -> Result<StatsReader> {
     StatsReader::from_storage(store, name, buffer_size)
 }
-/*
-
-impl StatsReader {
-    /// NewStatsReader 对应 Go 构造函数，从文件头打开 reader，并使用固定 250 KiB 存储预取窗口。
-    pub fn NewStatsReader(
-        ctx: &Context,
-        store: &Storage,
-        name: &str,
-        bufSize: usize,
-    ) -> Result<Self, Error> {
-        // offset 固定为 0；250 KiB 只用于底层对象读取，调用方的 bufSize 用于 ByteReader。
-        let sr = openStoreReaderAndSeek(ctx, store, name, 0, 250 * 1024)?;
-        let br = newByteReader(ctx, sr, bufSize)?;
-        Ok(Self { byteReader: br })
-    }
-
-    /// NextProp 对应 Go 的 NextProp：先读 4 字节大端长度，再解码一条范围属性。
-    pub fn NextProp(&mut self) -> Result<RangeProperty, Error> {
-        // 长度头处 EOF 表示属性迭代结束，沿用底层原始错误。
-        let lenBytes = self.byteReader.readNBytes(4)?;
-        let propLen = u32::from_be_bytes(lenBytes.try_into().map_err(Error::from)?) as usize;
-
-        // 长度头已经存在却读不到完整正文属于文件截断，noEOF 会转成 UnexpectedEOF。
-        let propBytes = self.byteReader.readNBytes(propLen).map_err(noEOF)?;
-        Ok(decodeProp(propBytes))
-    }
-
-    /// Close 对应 Go 的资源收尾，直接转交 ByteReader 关闭底层存储 reader。
-    pub fn Close(&mut self) -> Result<(), Error> {
-        self.byteReader.Close()
-    }
-}
-*/
