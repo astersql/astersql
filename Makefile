@@ -75,6 +75,15 @@ check-file-perm:
 	@echo "check file permission"
 	./tools/check/check-file-perm.sh
 
+.PHONY: cloc
+cloc: ## Count source code lines, excluding Rust target build directories
+	@command -v cloc >/dev/null 2>&1 || { echo "cloc is required; install it first."; exit 1; }
+	@if cloc --help 2>&1 | grep -q -- '--exclude-dir'; then \
+		cloc . --exclude-dir=target; \
+	else \
+		cloc --ignore-file .gitignore .; \
+	fi
+
 .PHONY: gogenerate
 gogenerate:
 	@echo "go generate ./..."
@@ -146,6 +155,26 @@ clean: failpoint-disable ## Clean build artifacts and test binaries
 test: ## Run all tests (split into parts for parallel execution)
 test: test_part_1 test_part_2
 	@>&2 echo "Great, all tests passed."
+
+.PHONY: rust-test
+rust-test: ## Run Rust targets except doctests; use PACKAGE, RUST_TEST_TARGETS, and RUST_TEST_ARGS to narrow
+	@mkdir -p ./target; \
+	log_file="$$(mktemp "./target/rust-test.XXXXXX")"; \
+	status_file="$$log_file.status"; \
+	echo "Rust test log: $$log_file"; \
+	( env -u LDFLAGS cargo test --locked --no-fail-fast $(if $(PACKAGE),--package $(PACKAGE),--workspace) $(if $(RUST_TEST_TARGETS),$(RUST_TEST_TARGETS),--all-targets) $(RUST_TEST_ARGS); echo $$? > "$$status_file" ) 2>&1 | tee "$$log_file"; \
+	status="$$(cat "$$status_file" 2>/dev/null || echo 1)"; \
+	rm -f "$$status_file"; \
+	echo "Rust test log saved to: $$log_file"; \
+	exit "$$status"
+
+.PHONY: rust-doc-test
+rust-doc-test: ## Run Rust doctests separately; use PACKAGE=<crate> to narrow
+	env -u LDFLAGS cargo test --locked --no-fail-fast $(if $(PACKAGE),--package $(PACKAGE),--workspace) --doc $(RUST_TEST_ARGS)
+
+.PHONY: rust-unit-test
+rust-unit-test: ## Run Rust library unit tests across the Cargo workspace
+	env -u LDFLAGS cargo test --workspace --lib --locked --no-fail-fast
 
 .PHONY: test_part_1
 test_part_1: checklist integrationtest ## Run test part 1: checklist and integration tests

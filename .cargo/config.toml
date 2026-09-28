@@ -1,0 +1,30 @@
+# Copyright 2026 AsterSQL.
+
+[env]
+# grpcio 0.10 embeds CMake projects whose historical minimum declarations need
+# this compatibility floor when configured by CMake 4.x.
+CMAKE_POLICY_VERSION_MINIMUM = "3.5"
+
+[net]
+git-fetch-with-cli = true
+
+[build]
+# Keep Go-compatible translated names and helper surfaces warning-clean while the
+# Rust port is still being completed. This intentionally avoids `-A warnings` so
+# new warning classes still surface.
+rustflags = [
+    "-Aambiguous_glob_reexports",
+    "-Adead_code",
+    "-Adeprecated",
+    "-Ahidden_glob_reexports",
+    "-Anon_camel_case_types",
+    "-Anon_snake_case",
+    "-Anon_upper_case_globals",
+    "-Aprivate_interfaces",
+    "-Arenamed_and_removed_lints",
+    "-Aunsafe_op_in_unsafe_fn",
+    "-Aunused_assignments",
+    "-Aunused_imports",
+    "-Aunused_mut",
+    "-Aunused_variables",
+]

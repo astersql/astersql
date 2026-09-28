@@ -1,0 +1,49 @@
+name: astersql-task4
+
+services:
+  pd:
+    image: pingcap/pd:v8.5.1
+    container_name: astersql-task4-pd
+    restart: unless-stopped
+    ports:
+      - "2379:2379"
+      - "2380:2380"
+    volumes:
+      - ${ASTERSQL_DOCKER_DATA_DIR:-./.local/tikv-docker}/pd:/data
+    command:
+      - --name=astersql-task4-pd
+      - --data-dir=/data
+      - --client-urls=http://0.0.0.0:2379
+      - --peer-urls=http://0.0.0.0:2380
+      - --advertise-client-urls=http://127.0.0.1:2379,http://host.docker.internal:2379
+      - --advertise-peer-urls=http://astersql-task4-pd:2380
+      - --initial-cluster=astersql-task4-pd=http://astersql-task4-pd:2380
+      - --log-file=
+
+  tikv:
+    image: pingcap/tikv:v8.5.1
+    container_name: astersql-task4-tikv
+    restart: unless-stopped
+    depends_on:
+      - pd
+    ports:
+      - "20160:20160"
+      - "20180:20180"
+    volumes:
+      - ${ASTERSQL_DOCKER_DATA_DIR:-./.local/tikv-docker}/tikv:/data
+    command:
+      - --addr=0.0.0.0:20160
+      - --advertise-addr=127.0.0.1:20160
+      - --status-addr=0.0.0.0:20180
+      - --advertise-status-addr=host.docker.internal:20180
+      - --pd=pd:2379
+      - --data-dir=/data
+      # Keep local development usable when the host volume is above TiKV's
+      # default AlmostFull threshold. Persistent TiKV data currently uses
+      # less than this explicit logical capacity.
+      - --capacity=20GB
+      - --log-file=
+
+networks:
+  default:
+    name: astersql-task4-net

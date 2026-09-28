@@ -1,0 +1,2 @@
+# Run rustfmt with this config (it should be picked up automatically).
+style_edition = "2024"
