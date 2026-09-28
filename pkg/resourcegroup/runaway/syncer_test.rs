@@ -170,26 +170,6 @@ type scanTestCase struct {
 
 // scanCases 把 watch 与 watch_done 两条扫描路径参数化，后续测试复用同一批 checkpoint 断言。
 // Go 声明: var scanCases = []scanTestCase{
-/*
-var scanCases = []scanTestCase{
-	{
-		name:        "watch",
-		makeReader:  newTestWatchReader,
-		makeRows:    makeWatchRows,
-		makeInvalid: func(id int64) chunk.Row { return newInvalidWatchRow(id, "rg") },
-		setup:       func(s *syncer, r *systemTableReader) { s.newWatchReader = r },
-		scan:        func(s *syncer) ([]*QuarantineRecord, error) { return s.getNewWatchRecords() },
-	},
-	{
-		name:        "watch_done",
-		makeReader:  newTestWatchDoneReader,
-		makeRows:    makeWatchDoneRows,
-		makeInvalid: newInvalidWatchDoneRow,
-		setup:       func(s *syncer, r *systemTableReader) { s.deletionWatchReader = r },
-		scan:        func(s *syncer) ([]*QuarantineRecord, error) { return s.getNewWatchDoneRecords() },
-	},
-}
-*/
 
 // newTestWatchReader 对应 Go 的同名测试/辅助函数。保留 Go 辅助函数/方法的调用形状。
 // Go 签名: func newTestWatchReader(checkpoint time.Time) *systemTableReader {
