@@ -68,6 +68,8 @@ pub static mut AffectedRowsCounterNTDMLDelete: Option<prometheus::Counter> = Non
 pub static mut AffectedRowsCounterNTDMLInsert: Option<prometheus::Counter> = None;
 /// 非事务 DML Replace 影响行数。
 pub static mut AffectedRowsCounterNTDMLReplace: Option<prometheus::Counter> = None;
+/// Purged materialized log rows.
+pub static mut AffectedRowsCounterPurgeMLog: Option<prometheus::Counter> = None;
 
 /// 查询网络传输字节数。
 // NetworkTransmissionStats records the network transmission for queries.
@@ -263,6 +265,7 @@ pub fn InitExecutorMetrics() {
         OngoingTxnDurationHistogram = Some(ongoing_txn_duration);
         MppCoordinatorStats = Some(mpp_coordinator_stats);
         MppCoordinatorLatency = Some(mpp_coordinator_latency);
+        AffectedRowsCounterPurgeMLog = Some(affected_rows_counter.WithLabelValues(&["PurgeMLog"]));
         AffectedRowsCounter = Some(affected_rows_counter);
         AffectedRowsCounterInsert = Some(affected_insert);
         AffectedRowsCounterUpdate = Some(affected_update);

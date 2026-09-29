@@ -807,10 +807,10 @@ impl Default for SessionVars {
     }
 }
 impl SessionVars {
-    /// Go SessionVars.RUV2Weights reads the active global RUv2 configuration.
+    /// Reads legacy RU weights from the TiKV client configuration.
     pub fn RUV2Weights(&self) -> execdetails::ruv2_metrics::RUV2Weights {
         let cfg = config::get_global_config();
-        let weights = &cfg.ruv2;
+        let weights = &cfg.tikv_client.ruv2;
         execdetails::ruv2_metrics::RUV2Weights {
             RUScale: weights.ru_scale,
             ResultChunkCells: weights.result_chunk_cells,

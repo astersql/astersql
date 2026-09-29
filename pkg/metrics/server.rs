@@ -35,10 +35,15 @@ pub static mut ResettablePlanCacheCounterFortTest: bool = false;
 pub static mut PacketIOCounter: Option<prometheus::CounterVec> = None;
 /// 查询处理耗时直方图（秒）。
 pub static mut QueryDurationHistogram: Option<prometheus::HistogramVec> = None;
+pub static mut CommandDurationHistogram: Option<prometheus::HistogramVec> = None;
 /// 单条语句触发的 RPC 次数分布。
 pub static mut QueryRPCHistogram: Option<prometheus::HistogramVec> = None;
 /// 扫描过程中处理的键数分布。
 pub static mut QueryProcessedKeyHistogram: Option<prometheus::HistogramVec> = None;
+pub static mut IACacheHitCount: Option<prometheus::CounterVec> = None;
+pub static mut IARemoteReadSegmentCount: Option<prometheus::CounterVec> = None;
+pub static mut IARemoteReadSegmentSize: Option<prometheus::CounterVec> = None;
+pub static mut IARemoteReadSegmentWaitDuration: Option<prometheus::HistogramVec> = None;
 /// 查询总次数。
 pub static mut QueryTotalCounter: Option<prometheus::CounterVec> = None;
 /// 当前连接数（可按资源组划分）。
@@ -238,7 +243,14 @@ pub fn InitServerMetrics() {
         QueryDurationHistogram = Some(histogram_vec(
             "server",
             "handle_query_duration_seconds",
-            "Bucketed histogram of processing time (s) of handled queries.",
+            "Bucketed histogram of processing time (s) of individual SQL statements.",
+            prometheus::ExponentialBuckets(0.0005, 2.0, 29),
+            &[LblSQLType, LblDb, LblResourceGroup],
+        ));
+        CommandDurationHistogram = Some(histogram_vec(
+            "server",
+            "handle_command_duration_seconds",
+            "Bucketed histogram of processing time (s) of handled commands and restricted SQL operations.",
             prometheus::ExponentialBuckets(0.0005, 2.0, 29),
             &[LblSQLType, LblDb, LblResourceGroup],
         ));
@@ -254,6 +266,31 @@ pub fn InitServerMetrics() {
             "query_statement_processed_keys",
             "Bucketed histogram of processed key count during the scan of handled query statements.",
             prometheus::ExponentialBuckets(1.0, 2.0, 32),
+            &[LblSQLType, LblDb],
+        ));
+        IACacheHitCount = Some(counter_vec(
+            "server",
+            "ia_cache_hit_count",
+            "Counter of IA segment cache hits observed by TiDB.",
+            &[LblSQLType, LblDb],
+        ));
+        IARemoteReadSegmentCount = Some(counter_vec(
+            "server",
+            "ia_remote_read_segment_count",
+            "Counter of IA remote read segments observed by TiDB.",
+            &[LblSQLType, LblDb],
+        ));
+        IARemoteReadSegmentSize = Some(counter_vec(
+            "server",
+            "ia_remote_read_segment_size_bytes",
+            "Counter of IA remote read segment bytes observed by TiDB.",
+            &[LblSQLType, LblDb],
+        ));
+        IARemoteReadSegmentWaitDuration = Some(histogram_vec(
+            "server",
+            "ia_remote_read_segment_wait_duration_seconds",
+            "Bucketed histogram of IA remote read segment wait time observed by TiDB.",
+            prometheus::ExponentialBuckets(0.00005, 2.0, 20),
             &[LblSQLType, LblDb],
         ));
         QueryTotalCounter = Some(counter_vec(

@@ -74,10 +74,6 @@ pub static mut GlobalMemArbitratorSubEvents: GlobalMemArbitratorSubEventsMetrics
 /// 解析 / 计划路径上取消、强制终止与无限制模式的预绑定 Counter 集合。
 #[derive(Default)]
 pub struct GlobalMemArbitratorSubTasksMetrics {
-    pub CancelWaitAverseParse: Option<prometheus::Counter>,
-    pub CancelWaitAversePlan: Option<prometheus::Counter>,
-    pub CancelStandardModeParse: Option<prometheus::Counter>,
-    pub CancelStandardModePlan: Option<prometheus::Counter>,
     pub ForceKillParse: Option<prometheus::Counter>,
     pub ForceKillPlan: Option<prometheus::Counter>,
     pub NoLimit: Option<prometheus::Counter>,
@@ -86,10 +82,6 @@ pub struct GlobalMemArbitratorSubTasksMetrics {
 /// 全局内存仲裁器常用任务子指标的包级实例。
 pub static mut GlobalMemArbitratorSubTasks: GlobalMemArbitratorSubTasksMetrics =
     GlobalMemArbitratorSubTasksMetrics {
-        CancelWaitAverseParse: None,
-        CancelWaitAversePlan: None,
-        CancelStandardModeParse: None,
-        CancelStandardModePlan: None,
         ForceKillParse: None,
         ForceKillPlan: None,
         NoLimit: None,
@@ -211,14 +203,6 @@ pub unsafe fn InitMemoryMetrics() {
     let task_counter = GlobalMemArbitratorTaskExecCounter
         .as_ref()
         .expect("GlobalMemArbitratorTaskExecCounter must be initialized first");
-    GlobalMemArbitratorSubTasks.CancelWaitAverseParse =
-        Some(task_counter.WithLabelValues(vec!["cancel-wait-averse-parse"]));
-    GlobalMemArbitratorSubTasks.CancelWaitAversePlan =
-        Some(task_counter.WithLabelValues(vec!["cancel-wait-averse-plan"]));
-    GlobalMemArbitratorSubTasks.CancelStandardModeParse =
-        Some(task_counter.WithLabelValues(vec!["cancel-standard-mode-parse"]));
-    GlobalMemArbitratorSubTasks.CancelStandardModePlan =
-        Some(task_counter.WithLabelValues(vec!["cancel-standard-mode-plan"]));
     GlobalMemArbitratorSubTasks.ForceKillParse =
         Some(task_counter.WithLabelValues(vec!["force-kill-parse"]));
     GlobalMemArbitratorSubTasks.ForceKillPlan =

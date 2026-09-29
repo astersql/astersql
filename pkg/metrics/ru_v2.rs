@@ -27,6 +27,38 @@ use crate::*;
 
 // 仅构造 Prometheus 指标描述与句柄，不会注册采集器、连接数据库、访问 TiKV 或执行请求计费。
 
+pub const LblRUV2Unit: &str = "unit";
+pub const LblRUV2UnitCPUWork: &str = "cpu_work";
+pub const LblRUV2UnitScanBytes: &str = "scan_bytes";
+pub const LblRUV2UnitNetBytes: &str = "net_bytes";
+pub const LblRUV2UnitCrossAZNetBytes: &str = "cross_az_net_bytes";
+pub const LblRUV2UnitFrontendCompileBytes: &str = "frontend_compile_bytes";
+pub const LblRUV2UnitHashStateRows: &str = "hash_state_rows";
+pub const LblRUV2UnitJoinOutputRows: &str = "join_output_rows";
+pub const LblRUV2UnitWriteStatement: &str = "write_statement";
+pub const LblRUV2UnitOperatorNum: &str = "operator_num";
+pub const LblRUV2UnitWriteKeys: &str = "write_keys";
+pub const LblRUV2UnitWriteBytes: &str = "write_bytes";
+
+pub static mut RUV2Total: Option<prometheus::Counter> = None;
+pub static mut RUV2TTLTotal: Option<prometheus::Counter> = None;
+pub static mut RUV2BySQLType: Option<prometheus::CounterVec> = None;
+pub static mut RUV2BySQLTypeDDL: Option<prometheus::Counter> = None;
+pub static mut RUV2ByEngine: Option<prometheus::CounterVec> = None;
+pub static mut RUV2ByEngineTiKV: Option<prometheus::Counter> = None;
+pub static mut RUV2Unit: Option<prometheus::CounterVec> = None;
+pub static mut RUV2Statements: Option<prometheus::CounterVec> = None;
+static mut ruv2TiDB: Option<prometheus::Counter> = None;
+static mut ruv2TiFlash: Option<prometheus::Counter> = None;
+static mut ruv2Select: Option<prometheus::Counter> = None;
+static mut ruv2Insert: Option<prometheus::Counter> = None;
+static mut ruv2Replace: Option<prometheus::Counter> = None;
+static mut ruv2Update: Option<prometheus::Counter> = None;
+static mut ruv2Delete: Option<prometheus::Counter> = None;
+static mut ruv2Commit: Option<prometheus::Counter> = None;
+static mut ruv2Analyze: Option<prometheus::Counter> = None;
+static mut ruv2Other: Option<prometheus::Counter> = None;
+
 // RU v2 对外指标。Option 对应 Go 包变量在 InitRUV2Metrics 调用前的 nil/零值阶段。
 /// 结果 Chunk 单元格累计数（Chunk 是列式批处理的基本数据块）。
 pub static mut RUV2ResultChunkCells: Option<prometheus::Counter> = None;
@@ -135,6 +167,68 @@ fn counter_vec(name: &'static str, help: &'static str) -> prometheus::CounterVec
 /// 初始化全部 RU v2 指标并预热热点 executor/coprocessor 标签缓存。
 pub fn InitRUV2Metrics() {
     unsafe {
+        RUV2TTLTotal = Some(counter(
+            "ttl_ru_total",
+            "Counter of RU v2 consumption from TTL user-table scans and deletes, including their commits; included in ru_total.",
+        ));
+        RUV2Total = Some(counter(
+            "ru_total",
+            "Counter of resource unit consumption for RU v2.",
+        ));
+        let sql = metricscommon::NewCounterVec(
+            prometheus::CounterOpts {
+                Namespace: "tidb",
+                Subsystem: "ruv2",
+                Name: "ru_by_sql_type_total",
+                Help: "Counter of resource unit consumption by SQL type for RU v2.",
+                ..Default::default()
+            },
+            &[LblSQLType],
+        );
+        RUV2BySQLTypeDDL = Some(sql.WithLabelValues(&[LblSQLTypeDDL]));
+        ruv2Select = Some(sql.WithLabelValues(&["select"]));
+        ruv2Insert = Some(sql.WithLabelValues(&["insert"]));
+        ruv2Replace = Some(sql.WithLabelValues(&["replace"]));
+        ruv2Update = Some(sql.WithLabelValues(&["update"]));
+        ruv2Delete = Some(sql.WithLabelValues(&["delete"]));
+        ruv2Commit = Some(sql.WithLabelValues(&["commit"]));
+        ruv2Analyze = Some(sql.WithLabelValues(&["analyze"]));
+        ruv2Other = Some(sql.WithLabelValues(&["other"]));
+        RUV2BySQLType = Some(sql);
+        let engine = metricscommon::NewCounterVec(
+            prometheus::CounterOpts {
+                Namespace: "tidb",
+                Subsystem: "ruv2",
+                Name: "ru_by_engine_total",
+                Help: "Counter of resource unit consumption by engine for RU v2.",
+                ..Default::default()
+            },
+            &[LblEngine],
+        );
+        ruv2TiDB = Some(engine.WithLabelValues(&["tidb"]));
+        ruv2TiFlash = Some(engine.WithLabelValues(&[LblEngineTiFlash]));
+        RUV2ByEngineTiKV = Some(engine.WithLabelValues(&[LblEngineTiKV]));
+        RUV2ByEngine = Some(engine);
+        RUV2Unit = Some(metricscommon::NewCounterVec(
+            prometheus::CounterOpts {
+                Namespace: "tidb",
+                Subsystem: "ruv2",
+                Name: "unit_total",
+                Help: "Counter of raw statement units for RU v2.",
+                ..Default::default()
+            },
+            &[LblEngine, "opclass", LblRUV2Unit],
+        ));
+        RUV2Statements = Some(metricscommon::NewCounterVec(
+            prometheus::CounterOpts {
+                Namespace: "tidb",
+                Subsystem: "ruv2",
+                Name: "statements_total",
+                Help: "Counter of RU v2 calculation outcomes in full report mode; success with incomplete evidence remains best effort.",
+                ..Default::default()
+            },
+            &["status", "reason"],
+        ));
         RUV2ResultChunkCells = Some(counter(
             "result_chunk_cells",
             "Counter of result chunk cells for RU v2.",
@@ -213,6 +307,42 @@ pub fn InitRUV2Metrics() {
             "Counter of TiKV coprocessor executor work for RU v2.",
         ));
         initRUV2CachedLabelCounters();
+    }
+}
+
+/// Record RU totals by SQL type and execution engine using prebound counters.
+pub fn AddRUV2Results(tikv_ru: f64, tidb_ru: f64, tiflash_ru: f64, total_ru: f64, sql_type: &str) {
+    unsafe {
+        let sql_counter = match sql_type {
+            "select" => &ruv2Select,
+            "insert" => &ruv2Insert,
+            "replace" => &ruv2Replace,
+            "update" => &ruv2Update,
+            "delete" => &ruv2Delete,
+            "commit" => &ruv2Commit,
+            "analyze" => &ruv2Analyze,
+            _ => &ruv2Other,
+        };
+        RUV2Total
+            .as_ref()
+            .expect("RU v2 metrics initialized")
+            .Add(total_ru);
+        sql_counter
+            .as_ref()
+            .expect("RU v2 metrics initialized")
+            .Add(total_ru);
+        RUV2ByEngineTiKV
+            .as_ref()
+            .expect("RU v2 metrics initialized")
+            .Add(tikv_ru);
+        ruv2TiDB
+            .as_ref()
+            .expect("RU v2 metrics initialized")
+            .Add(tidb_ru);
+        ruv2TiFlash
+            .as_ref()
+            .expect("RU v2 metrics initialized")
+            .Add(tiflash_ru);
     }
 }
 

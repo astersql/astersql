@@ -30,16 +30,7 @@ use crate::metrics::{
     register_external_metrics, setup_channelz_collector, with_grpc_channelz_collector_locked,
 };
 use crate::ru_v2::{
-    InitRUV2Metrics, RUV2ExecutorCounter, ruv2ExecutorL1BatchPointGetExec, ruv2ExecutorL1LimitExec,
-    ruv2ExecutorL1PointGetExecutor, ruv2ExecutorL2ExpandExec, ruv2ExecutorL2HashAggExec,
-    ruv2ExecutorL2HashJoinExec, ruv2ExecutorL2HashJoinV1Exec, ruv2ExecutorL2HashJoinV2Exec,
-    ruv2ExecutorL2IndexLookUpExec, ruv2ExecutorL2IndexLookUpJoin,
-    ruv2ExecutorL2IndexLookUpMergeJoin, ruv2ExecutorL2IndexNestedLoopHashJoin,
-    ruv2ExecutorL2IndexReaderExec, ruv2ExecutorL2MemTableReaderExec, ruv2ExecutorL2MergeJoinExec,
-    ruv2ExecutorL2ProjectionExec, ruv2ExecutorL2SelectLockExec, ruv2ExecutorL2SelectionExec,
-    ruv2ExecutorL2TableDualExec, ruv2ExecutorL2TableReaderExec, ruv2ExecutorL2TopNExec,
-    ruv2ExecutorL2UnionScanExec, ruv2ExecutorL2WindowExec, ruv2ExecutorL3SortExec,
-    ruv2ExecutorL3StreamAggExec,
+    InitRUV2Metrics, RUV2ByEngine, RUV2BySQLType, RUV2Statements, RUV2TTLTotal, RUV2Total, RUV2Unit,
 };
 use crate::stmtsummary::{
     InitStmtSummaryMetrics, SetStmtSummaryWindowMetrics, StmtSummaryEvictedLogCounter,
@@ -55,6 +46,63 @@ fn read_gauge_value(gauge: &Gauge) -> f64 {
 /// 读取 Counter 当前值。
 fn read_counter_value(counter: &Counter) -> f64 {
     counter.get()
+}
+
+#[test]
+fn go_merge_6_ru_results_use_go_label_and_engine_contract() {
+    if crate::main_test::run_in_isolated_process(
+        "metrics_internal_test::go_merge_6_ru_results_use_go_label_and_engine_contract",
+    ) {
+        return;
+    }
+    ensure_test_env();
+    use crate::ru_v2::{AddRUV2Results, RUV2ByEngine, RUV2BySQLType, RUV2Total};
+    InitRUV2Metrics();
+    AddRUV2Results(3.0, 4.0, 5.0, 12.0, "select");
+    AddRUV2Results(1.0, 2.0, 3.0, 6.0, "unexpected");
+    unsafe {
+        assert_eq!(RUV2Total.as_ref().unwrap().get(), 18.0);
+        assert_eq!(
+            RUV2BySQLType
+                .as_ref()
+                .unwrap()
+                .with_label_values(&["select"])
+                .get(),
+            12.0
+        );
+        assert_eq!(
+            RUV2BySQLType
+                .as_ref()
+                .unwrap()
+                .with_label_values(&["other"])
+                .get(),
+            6.0
+        );
+        assert_eq!(
+            RUV2ByEngine
+                .as_ref()
+                .unwrap()
+                .with_label_values(&["tikv"])
+                .get(),
+            4.0
+        );
+        assert_eq!(
+            RUV2ByEngine
+                .as_ref()
+                .unwrap()
+                .with_label_values(&["tidb"])
+                .get(),
+            6.0
+        );
+        assert_eq!(
+            RUV2ByEngine
+                .as_ref()
+                .unwrap()
+                .with_label_values(&["tiflash"])
+                .get(),
+            8.0
+        );
+    }
 }
 
 /// 统计 Collector 产出的全部 metric 序列条数。
@@ -90,168 +138,92 @@ fn test_ret_label() {
     assert_eq!(OP_FAILED, RetLabel(Some(&String::from("test error"))));
 }
 
-/// 验证已知 level+label 返回与预缓存 Counter 同一句柄。
+/// Go RU v2 collector names and label dimensions are part of the monitoring contract.
 #[test]
-fn test_ruv2_executor_counter_returns_cached_known_labels() {
+fn go_merge_6_ru_metric_definitions() {
     if crate::main_test::run_in_isolated_process(
-        "metrics_internal_test::test_ruv2_executor_counter_returns_cached_known_labels",
+        "metrics_internal_test::go_merge_6_ru_metric_definitions",
     ) {
         return;
     }
     ensure_test_env();
     InitRUV2Metrics();
-
-    struct Case {
-        level: i32,
-        label: &'static str,
-        expected: Counter,
+    let registry = Registry::new();
+    unsafe {
+        registry
+            .register(Box::new(RUV2Total.as_ref().unwrap().clone()))
+            .unwrap();
+        registry
+            .register(Box::new(RUV2TTLTotal.as_ref().unwrap().clone()))
+            .unwrap();
+        registry
+            .register(Box::new(RUV2BySQLType.as_ref().unwrap().clone()))
+            .unwrap();
+        registry
+            .register(Box::new(RUV2ByEngine.as_ref().unwrap().clone()))
+            .unwrap();
+        registry
+            .register(Box::new(RUV2Unit.as_ref().unwrap().clone()))
+            .unwrap();
+        registry
+            .register(Box::new(RUV2Statements.as_ref().unwrap().clone()))
+            .unwrap();
+        RUV2Total.as_ref().unwrap().inc();
+        RUV2TTLTotal.as_ref().unwrap().inc();
+        RUV2BySQLType
+            .as_ref()
+            .unwrap()
+            .with_label_values(&["select"])
+            .inc();
+        RUV2ByEngine
+            .as_ref()
+            .unwrap()
+            .with_label_values(&["tikv"])
+            .inc();
+        RUV2Unit
+            .as_ref()
+            .unwrap()
+            .with_label_values(&["tikv", "hash_agg", "cpu_work"])
+            .inc();
+        RUV2Statements
+            .as_ref()
+            .unwrap()
+            .with_label_values(&["success", "incomplete"])
+            .inc();
     }
-
-    // 覆盖 L1/L2/L3 常见执行器标签，与 Go 用例表对齐。
-    let cases = unsafe {
-        vec![
-            Case {
-                level: 1,
-                label: "BatchPointGetExec",
-                expected: ruv2ExecutorL1BatchPointGetExec.clone().unwrap(),
-            },
-            Case {
-                level: 1,
-                label: "PointGetExecutor",
-                expected: ruv2ExecutorL1PointGetExecutor.clone().unwrap(),
-            },
-            Case {
-                level: 1,
-                label: "LimitExec",
-                expected: ruv2ExecutorL1LimitExec.clone().unwrap(),
-            },
-            Case {
-                level: 2,
-                label: "ExpandExec",
-                expected: ruv2ExecutorL2ExpandExec.clone().unwrap(),
-            },
-            Case {
-                level: 2,
-                label: "HashAggExec",
-                expected: ruv2ExecutorL2HashAggExec.clone().unwrap(),
-            },
-            Case {
-                level: 2,
-                label: "HashJoinExec",
-                expected: ruv2ExecutorL2HashJoinExec.clone().unwrap(),
-            },
-            Case {
-                level: 2,
-                label: "HashJoinV1Exec",
-                expected: ruv2ExecutorL2HashJoinV1Exec.clone().unwrap(),
-            },
-            Case {
-                level: 2,
-                label: "HashJoinV2Exec",
-                expected: ruv2ExecutorL2HashJoinV2Exec.clone().unwrap(),
-            },
-            Case {
-                level: 2,
-                label: "IndexLookUpJoin",
-                expected: ruv2ExecutorL2IndexLookUpJoin.clone().unwrap(),
-            },
-            Case {
-                level: 2,
-                label: "IndexLookUpMergeJoin",
-                expected: ruv2ExecutorL2IndexLookUpMergeJoin.clone().unwrap(),
-            },
-            Case {
-                level: 2,
-                label: "IndexNestedLoopHashJoin",
-                expected: ruv2ExecutorL2IndexNestedLoopHashJoin.clone().unwrap(),
-            },
-            Case {
-                level: 2,
-                label: "IndexLookUpExecutor",
-                expected: ruv2ExecutorL2IndexLookUpExec.clone().unwrap(),
-            },
-            Case {
-                level: 2,
-                label: "IndexReaderExecutor",
-                expected: ruv2ExecutorL2IndexReaderExec.clone().unwrap(),
-            },
-            Case {
-                level: 2,
-                label: "MemTableReaderExec",
-                expected: ruv2ExecutorL2MemTableReaderExec.clone().unwrap(),
-            },
-            Case {
-                level: 2,
-                label: "MergeJoinExec",
-                expected: ruv2ExecutorL2MergeJoinExec.clone().unwrap(),
-            },
-            Case {
-                level: 2,
-                label: "ProjectionExec",
-                expected: ruv2ExecutorL2ProjectionExec.clone().unwrap(),
-            },
-            Case {
-                level: 2,
-                label: "SelectionExec",
-                expected: ruv2ExecutorL2SelectionExec.clone().unwrap(),
-            },
-            Case {
-                level: 2,
-                label: "TableDualExec",
-                expected: ruv2ExecutorL2TableDualExec.clone().unwrap(),
-            },
-            Case {
-                level: 2,
-                label: "TableReaderExecutor",
-                expected: ruv2ExecutorL2TableReaderExec.clone().unwrap(),
-            },
-            Case {
-                level: 2,
-                label: "TopNExec",
-                expected: ruv2ExecutorL2TopNExec.clone().unwrap(),
-            },
-            Case {
-                level: 2,
-                label: "UnionScanExec",
-                expected: ruv2ExecutorL2UnionScanExec.clone().unwrap(),
-            },
-            Case {
-                level: 2,
-                label: "SelectLockExec",
-                expected: ruv2ExecutorL2SelectLockExec.clone().unwrap(),
-            },
-            Case {
-                level: 2,
-                label: "WindowExec",
-                expected: ruv2ExecutorL2WindowExec.clone().unwrap(),
-            },
-            Case {
-                level: 3,
-                label: "SortExec",
-                expected: ruv2ExecutorL3SortExec.clone().unwrap(),
-            },
-            Case {
-                level: 3,
-                label: "StreamAggExec",
-                expected: ruv2ExecutorL3StreamAggExec.clone().unwrap(),
-            },
-        ]
+    let families = registry.gather();
+    for name in [
+        "tidb_ruv2_ru_total",
+        "tidb_ruv2_ttl_ru_total",
+        "tidb_ruv2_ru_by_sql_type_total",
+        "tidb_ruv2_ru_by_engine_total",
+        "tidb_ruv2_unit_total",
+        "tidb_ruv2_statements_total",
+    ] {
+        assert!(find_metric_family(&families, name).is_some(), "{name}");
+    }
+    let has_label = |family: &str, name: &str, value: &str| {
+        find_metric_family(&families, family)
+            .unwrap()
+            .get_metric()
+            .iter()
+            .any(|metric| metric_has_label_value(metric, name, value))
     };
-
-    for tc in cases {
-        let got = RUV2ExecutorCounter(tc.level, tc.label).expect(tc.label);
-        let before = tc.expected.get();
-        got.inc();
-        assert_eq!(
-            before + 1.0,
-            tc.expected.get(),
-            "cached counter storage mismatch for {}",
-            tc.label
-        );
-    }
+    assert!(has_label(
+        "tidb_ruv2_ru_by_sql_type_total",
+        "sql_type",
+        "select"
+    ));
+    assert!(has_label("tidb_ruv2_ru_by_engine_total", "engine", "tikv"));
+    assert!(has_label("tidb_ruv2_unit_total", "opclass", "hash_agg"));
+    assert!(has_label("tidb_ruv2_unit_total", "unit", "cpu_work"));
+    assert!(has_label(
+        "tidb_ruv2_statements_total",
+        "reason",
+        "incomplete"
+    ));
 }
 
-/// 验证语句摘要窗口与淘汰日志指标的标签写入与采集条数。
 #[test]
 fn test_stmt_summary_metric_labels() {
     if crate::main_test::run_in_isolated_process(

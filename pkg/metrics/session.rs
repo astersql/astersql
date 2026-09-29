@@ -349,6 +349,14 @@ pub const LblDb: &str = "db";
 pub const LblResult: &str = "result";
 /// SQL 类型标签名。
 pub const LblSQLType: &str = "sql_type";
+pub const LblSQLTypeDDL: &str = "ddl";
+pub const LblSQLTypeRead: &str = "read";
+pub const LblSQLTypeWrite: &str = "write";
+pub const LblSQLTypeAnalyze: &str = "analyze";
+pub const LblSQLTypeOther: &str = "other";
+pub const LblEngine: &str = "engine";
+pub const LblEngineTiKV: &str = "tikv";
+pub const LblEngineTiFlash: &str = "tiflash";
 /// Coprocessor 类型标签名。
 pub const LblCoprType: &str = "copr_type";
 /// 一般（用户）SQL 标签值。
