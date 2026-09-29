@@ -27,5 +27,6 @@ astersql-session = { path = "../../pkg/session" }
 astersql-store = { path = "../../pkg/store" }
 astersql-store-driver = { path = "../../pkg/store/driver" }
 astersql-util-signal = { path = "../../pkg/util/signal" }
+rpprof = { git = "https://github.com/mingley/pprof-rs", tag = "v0.18.1" }
 
 [dev-dependencies]
