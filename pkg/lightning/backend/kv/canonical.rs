@@ -244,7 +244,6 @@ pub(crate) fn encodeCanonicalRow(
         .collect::<Result<Vec<_>, _>>()?;
     let column_ids = (1..=datums.len()).map(|id| id as i64).collect();
     tablecodec::EncodeRow(
-        codec::NewEncoder(false),
         Some(tablecodec::time::UTC),
         values,
         column_ids,

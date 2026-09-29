@@ -389,7 +389,6 @@ pub(crate) fn encode_row(
         Box::new(astersql_tablecodec::kv::IntHandle(handle)),
     );
     let value = astersql_tablecodec::EncodeRow(
-        astersql_util_codec::NewEncoder(astersql_util_collate::NewCollationEnabled()),
         Some(astersql_tablecodec::time::UTC),
         vec![
             astersql_types::datum::NewIntDatum(a),

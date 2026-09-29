@@ -92,15 +92,8 @@ pub fn BenchmarkEncodeFromOldRow(iterations: usize) {
         types::NewStringDatum("abc".to_owned()),
         types::NewFloat64Datum(1.1),
     ];
-    let old_row = tablecodec::EncodeOldRow(
-        codec::NewEncoder(collate::NewCollationEnabled()),
-        None,
-        datums,
-        vec![1, 2, 3],
-        Vec::new(),
-        None,
-    )
-    .expect("old row encoding should succeed");
+    let old_row = tablecodec::EncodeOldRow(None, datums, vec![1, 2, 3], Vec::new(), None)
+        .expect("old row encoding should succeed");
     // Go uses Encoder's zero value in this benchmark (`Enable == false`).
     let mut encoder = rowcodec::Encoder::new(false);
     let mut buf = Vec::new();

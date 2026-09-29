@@ -63,7 +63,6 @@ fn encode_buffer_matches_go_old_new_checksum_and_flag_paths() {
             }) as Box<dyn rowcodec::Checksum>
         });
         let expected = tablecodec::EncodeRow(
-            codec::NewEncoder(false),
             Some(time::UTC),
             buffer.row.clone(),
             buffer.colIDs.clone(),
@@ -102,7 +101,6 @@ fn encode_buffer_matches_go_old_new_checksum_and_flag_paths() {
             .EncodeBinlogRowData(Some(time::UTC), (*errctx::StrictNoWarningContext).clone())
             .unwrap();
         let expected_binlog = tablecodec::EncodeOldRow(
-            codec::NewEncoder(false),
             Some(time::UTC),
             buffer.row.clone(),
             buffer.colIDs.clone(),

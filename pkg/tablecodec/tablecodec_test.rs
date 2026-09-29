@@ -64,18 +64,35 @@ fn assert_datum_equal(actual: &types::Datum, expected: &types::Datum) {
 
 /// 使用旧版行编码路径编码单个 Datum。
 fn encode_old_value(value: types::Datum) -> Vec<u8> {
-    let encoded = EncodeOldRow(
-        defaultCodecEncoder(),
-        Some(time::UTC),
-        vec![value],
-        vec![1],
-        Vec::new(),
-        None,
-    )
-    .unwrap();
+    let encoded = EncodeOldRow(Some(time::UTC), vec![value], vec![1], Vec::new(), None).unwrap();
     let (_, remain) = codec::CutOne(encoded).unwrap();
     let (value, _) = codec::CutOne(remain).unwrap();
     value
+}
+
+#[test]
+fn go_merge_9_row_encoding_uses_package_codec() {
+    let row = vec![types::NewStringDatum("row".to_owned())];
+    let old = EncodeOldRow(Some(time::UTC), row.clone(), vec![7], Vec::new(), None).unwrap();
+    let expected = codec::EncodeValue(
+        time::UTC,
+        Vec::new(),
+        vec![types::NewIntDatum(7), row[0].clone()],
+    )
+    .unwrap();
+    assert_eq!(old, expected);
+
+    let fallback = EncodeRow(
+        Some(time::UTC),
+        row,
+        vec![7],
+        Vec::new(),
+        None,
+        None,
+        rowcodec::Encoder::new(false),
+    )
+    .unwrap();
+    assert_eq!(fallback, old);
 }
 
 /// 构造临时索引 value 元素测试夹具。
@@ -161,7 +178,6 @@ fn TestRowCodec() {
     ];
     let ids = vec![1, 2, 3, 4, 5, 6];
     let encoded = EncodeRow(
-        defaultCodecEncoder(),
         Some(time::UTC),
         row.clone(),
         ids.clone(),
@@ -192,15 +208,7 @@ fn TestRowCodec() {
     assert_datum_equal(decoded.get(&1).unwrap(), &row[0]);
     assert_datum_equal(decoded.get(&2).unwrap(), &row[1]);
 
-    let empty = EncodeOldRow(
-        defaultCodecEncoder(),
-        Some(time::UTC),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        None,
-    )
-    .unwrap();
+    let empty = EncodeOldRow(Some(time::UTC), Vec::new(), Vec::new(), Vec::new(), None).unwrap();
     assert_eq!(empty, vec![codec::NilFlag]);
     assert!(
         DecodeRowToDatumMap(Some(empty), HashMap::new(), Some(time::UTC))
@@ -310,7 +318,6 @@ fn TestTimeCodec() {
     ];
     let ids = vec![1, 2, 3, 4];
     let encoded = EncodeRow(
-        defaultCodecEncoder(),
         Some(time::UTC),
         row.clone(),
         ids.clone(),
@@ -340,15 +347,7 @@ fn TestCutRow() {
         .cloned()
         .map(|value| EncodeValue(Some(time::UTC), Vec::new(), value).unwrap())
         .collect();
-    let encoded = EncodeOldRow(
-        defaultCodecEncoder(),
-        Some(time::UTC),
-        row,
-        vec![1, 2, 3],
-        Vec::new(),
-        None,
-    )
-    .unwrap();
+    let encoded = EncodeOldRow(Some(time::UTC), row, vec![1, 2, 3], Vec::new(), None).unwrap();
     let columns = HashMap::from([(1, 0), (2, 1), (3, 2)]);
     assert_eq!(CutRowNew(Some(encoded), columns.clone()).unwrap(), expected);
     assert!(

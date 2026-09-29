@@ -42,7 +42,6 @@ fn test_cluster_split() {
             tablecodec::EncodeRowKeyWithHandle(tbl_id, Box::new(tablecodec::kv::IntHandle(handle)));
         let col_value = tablecodec::types::NewStringDatum(handle.to_string());
         let row_value = tablecodec::EncodeRow(
-            tablecodec::codec::NewEncoder(tablecodec::collate::NewCollationEnabled()),
             Some(tablecodec::time::UTC),
             vec![col_value.clone()],
             vec![col_id],

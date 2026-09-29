@@ -562,7 +562,6 @@ pub(super) fn encode_relational_row_with_format(
         ids.push(column.ID);
     }
     let value = astersql_tablecodec::EncodeRow(
-        astersql_tablecodec::codec::NewEncoder(astersql_tablecodec::collate::NewCollationEnabled()),
         Some(astersql_tablecodec::time::UTC),
         values,
         ids,

@@ -200,7 +200,6 @@ fn mvcc_json_matches_go_protobuf_tags_and_byte_encoding() {
 fn row_and_index_mvcc_decoders_match_go_write_value_and_error_behavior() {
     let (table, mut index) = table_and_index();
     let encoded_row = tablecodec::EncodeRow(
-        tablecodec::codec::NewEncoder(false),
         Some(tablecodec::time::UTC),
         vec![NewIntDatum(42)],
         vec![1],

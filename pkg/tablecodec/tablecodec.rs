@@ -399,7 +399,6 @@ pub fn EncodeValue(
 // expects to handle these errors according to `SQL_MODE` or other configuration, please refer to `pkg/errctx`.
 /// 编码整行：优先新行编码，失败或配置时回退旧编码。
 pub fn EncodeRow(
-    enc: codec::Encoder,
     loc: Option<time::Location>,
     row: Vec<types::Datum>,
     colIDs: Vec<i64>,
@@ -421,7 +420,7 @@ pub fn EncodeRow(
             .Encode(loc.as_ref(), colIDs, row, checksum, valBuf)
             .map_err(trace_error);
     }
-    EncodeOldRow(enc, loc, row, colIDs, valBuf, values)
+    EncodeOldRow(loc, row, colIDs, valBuf, values)
 }
 
 // EncodeOldRow encode row data and column ids into a slice of byte.
@@ -430,7 +429,6 @@ pub fn EncodeRow(
 // EncodeOldRow will allocate it.
 /// 使用旧版行格式编码列值。
 pub fn EncodeOldRow(
-    enc: codec::Encoder,
     loc: Option<time::Location>,
     row: Vec<types::Datum>,
     colIDs: Vec<i64>,
@@ -458,7 +456,7 @@ pub fn EncodeOldRow(
         valBuf.push(codec::NilFlag);
         return Ok(valBuf);
     }
-    enc.EncodeValue(loc.unwrap_or(time::UTC), valBuf, values)
+    codec::EncodeValue(loc.unwrap_or(time::UTC), valBuf, values)
         .map_err(trace_error)
 }
 

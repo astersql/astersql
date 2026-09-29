@@ -168,9 +168,6 @@ fn prepared_uncovered_index_select_uses_a_double_read_physical_plan() {
         let record_key =
             astersql_tablecodec::EncodeRowKeyWithHandle(101, Box::new(kv::IntHandle(handle)));
         let record_value = astersql_tablecodec::EncodeRow(
-            astersql_tablecodec::codec::NewEncoder(
-                astersql_tablecodec::collate::NewCollationEnabled(),
-            ),
             Some(astersql_tablecodec::time::UTC),
             vec![
                 astersql_tablecodec::types::NewStringDatum(a.into()),
@@ -277,7 +274,6 @@ fn prepared_uncovered_index_select_uses_a_double_read_physical_plan() {
         .with_storage(|storage| storage.Begin(&[]))
         .expect("begin concurrent canonical KV writer");
     let updated = astersql_tablecodec::EncodeRow(
-        astersql_tablecodec::codec::NewEncoder(astersql_tablecodec::collate::NewCollationEnabled()),
         Some(astersql_tablecodec::time::UTC),
         vec![
             astersql_tablecodec::types::NewStringDatum("aa".into()),
@@ -540,7 +536,6 @@ fn canonical_point_get_plan_opens_an_owned_lazy_record_getter() {
     domain.init().unwrap();
     let key = astersql_tablecodec::EncodeRowKeyWithHandle(101, Box::new(kv::IntHandle(4)));
     let value = astersql_tablecodec::EncodeRow(
-        astersql_tablecodec::codec::NewEncoder(astersql_tablecodec::collate::NewCollationEnabled()),
         Some(astersql_tablecodec::time::UTC),
         vec![
             astersql_tablecodec::types::NewStringDatum("aa".into()),
@@ -561,7 +556,6 @@ fn canonical_point_get_plan_opens_an_owned_lazy_record_getter() {
     seed.Set(kv::Key(key.0), value).unwrap();
     let second_key = astersql_tablecodec::EncodeRowKeyWithHandle(101, Box::new(kv::IntHandle(5)));
     let second_value = astersql_tablecodec::EncodeRow(
-        astersql_tablecodec::codec::NewEncoder(astersql_tablecodec::collate::NewCollationEnabled()),
         Some(astersql_tablecodec::time::UTC),
         vec![
             astersql_tablecodec::types::NewStringDatum("bb".into()),

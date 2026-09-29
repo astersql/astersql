@@ -82,7 +82,6 @@ impl EncodeRowBuffer {
         // 取出并复用会话级 RowValBuf，编码完成后写回。
         let rowValBuf = std::mem::take(&mut stmtBufs.RowValBuf);
         let encoded = tablecodec::EncodeRow(
-            enc,
             loc,
             self.row.clone(),
             self.colIDs.clone(),
@@ -109,15 +108,8 @@ impl EncodeRowBuffer {
         loc: Option<time::Location>,
         ec: errctx::Context,
     ) -> Result<Vec<u8>, errors::SharedError> {
-        tablecodec::EncodeOldRow(
-            codec::NewEncoder(collate::NewCollationEnabled()),
-            loc,
-            self.row.clone(),
-            self.colIDs.clone(),
-            Vec::new(),
-            None,
-        )
-        .map_err(|error| handleEncodingError(&ec, error.to_string()))
+        tablecodec::EncodeOldRow(loc, self.row.clone(), self.colIDs.clone(), Vec::new(), None)
+            .map_err(|error| handleEncodingError(&ec, error.to_string()))
     }
 }
 

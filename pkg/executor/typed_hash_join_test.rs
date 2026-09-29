@@ -68,7 +68,6 @@ fn encode_null_row(table_id: i64, handle: i64) -> (astersql_kv::Key, Vec<u8>) {
         Box::new(astersql_tablecodec::kv::IntHandle(handle)),
     );
     let value = astersql_tablecodec::EncodeRow(
-        astersql_util_codec::NewEncoder(astersql_util_collate::NewCollationEnabled()),
         Some(astersql_tablecodec::time::UTC),
         vec![astersql_types::datum::Datum::default()],
         vec![1],

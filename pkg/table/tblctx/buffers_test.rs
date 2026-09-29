@@ -126,7 +126,6 @@ fn TestEncodeRow() {
             }) as Box<dyn rowcodec::Checksum>
         });
         let expected_val = tablecodec::EncodeRow(
-            codec::NewEncoder(collate::NewCollationEnabled()),
             Some(case.loc),
             vec![d1.clone(), d2.clone(), d3.clone()],
             vec![1, 2, 3],
@@ -162,7 +161,6 @@ fn TestEncodeRow() {
 
         // binlog 使用旧行格式，且不得与 RowValBuf/IndexKeyBuf 共享底层缓冲。
         let expected_binlog = tablecodec::EncodeOldRow(
-            codec::NewEncoder(collate::NewCollationEnabled()),
             Some(case.loc),
             vec![d1.clone(), d2.clone(), d3.clone()],
             vec![1, 2, 3],

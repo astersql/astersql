@@ -153,7 +153,6 @@ pub(crate) fn strict_t_multi_row(handle: i64, a: i64, b: &str, c: &str) -> (kv::
         Box::new(astersql_tablecodec::kv::IntHandle(handle)),
     );
     let value = astersql_tablecodec::EncodeRow(
-        astersql_tablecodec::codec::NewEncoder(astersql_tablecodec::collate::NewCollationEnabled()),
         Some(astersql_tablecodec::time::UTC),
         vec![
             astersql_tablecodec::types::NewIntDatum(a),

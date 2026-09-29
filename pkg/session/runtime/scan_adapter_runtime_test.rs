@@ -299,7 +299,6 @@ fn canonical_locked_point_get_locks_existing_and_rr_missing_keys_but_rc_only_exi
     let session = canonical_dml_session();
     let row_key = astersql_tablecodec::EncodeRowKeyWithHandle(123, Box::new(kv::IntHandle(1)));
     let row_value = astersql_tablecodec::EncodeRow(
-        astersql_tablecodec::codec::NewEncoder(astersql_tablecodec::collate::NewCollationEnabled()),
         Some(astersql_tablecodec::time::UTC),
         vec![
             astersql_types::datum::NewIntDatum(1),

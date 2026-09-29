@@ -150,7 +150,6 @@ fn cached_table_row(handle: i64, value: i64) -> (kv::Key, Vec<u8>) {
         Box::new(astersql_tablecodec::kv::IntHandle(handle)),
     );
     let value = astersql_tablecodec::EncodeRow(
-        astersql_tablecodec::codec::NewEncoder(astersql_tablecodec::collate::NewCollationEnabled()),
         Some(astersql_tablecodec::time::UTC),
         vec![astersql_tablecodec::types::NewIntDatum(value)],
         vec![1],

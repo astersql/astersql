@@ -777,15 +777,8 @@ fn old_row_fixture() -> (Vec<i64>, Vec<types::FieldType>, Vec<u8>) {
         types::NewIntDatum(3),
         types::Datum::default(),
     ];
-    let encoded = tablecodec::EncodeOldRow(
-        codec::NewEncoder(collate::NewCollationEnabled()),
-        Some(time::UTC),
-        row,
-        ids.clone(),
-        Vec::new(),
-        None,
-    )
-    .expect("old row encode");
+    let encoded = tablecodec::EncodeOldRow(Some(time::UTC), row, ids.clone(), Vec::new(), None)
+        .expect("old row encode");
     (ids, fields, encoded)
 }
 
