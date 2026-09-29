@@ -83,6 +83,8 @@ func genStorageURI(t *testing.T) (host string, port uint16, uri string) {
 func genServerWithStorage(t *testing.T) (*fakestorage.Server, string) {
 	t.Helper()
 	gcsHost, gcsPort, cloudStorageURI := genStorageURI(t)
+	// Use the existing test-only unauthenticated path without probing GCE metadata.
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", t.TempDir()+"/missing-gcs-credentials.json")
 	opt := fakestorage.Options{
 		Scheme:     "http",
 		Host:       gcsHost,
@@ -166,7 +168,7 @@ func TestGlobalSortBasic(t *testing.T) {
 	store := realtikvtest.CreateMockStoreAndSetup(t)
 	tk := testkit.NewTestKit(t, store)
 	ch := make(chan struct{})
-	testfailpoint.EnableCall(t, "github.com/pingcap/tidb/pkg/dxf/framework/scheduler/doCleanupTask", func() {
+	testfailpoint.EnableCall(t, "github.com/pingcap/tidb/pkg/dxf/framework/scheduler/processCleanupTaskBatch", func() {
 		ch <- struct{}{}
 	})
 	testfailpoint.EnableCall(t, "github.com/pingcap/tidb/pkg/dxf/framework/scheduler/WaitCleanUpFinished", func() {
