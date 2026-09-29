@@ -2063,7 +2063,7 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
         }
         QueryRule::FieldAlt04 => {
             out.item = Some(Box::new(parser_ast::SelectField {
-                Expr: rhs[rhs_len - (1)].expr.clone(),
+                Expr: rhs[rhs_len - (1)].expr.take(),
                 AsName: parser_ast::NewCIStr(&rhs[rhs_len - (0)].ident),
                 ..Default::default()
             }));

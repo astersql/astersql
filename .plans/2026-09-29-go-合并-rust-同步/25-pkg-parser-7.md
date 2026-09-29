@@ -1,43 +1,36 @@
-# 任务 35: pkg/parser 第 12 组 Go 差异移植
+# 任务 25: pkg/parser 第 7 组 Go 差异移植
 
-批次：【批次 12】依赖：批次 11
+批次：【批次 7】依赖：批次 6
 
 状态：未开始
 
 目的：逐项同步本组 Go 文件在合并中引入的行为与测试意图，保持 Rust 实现和 Go 最新逻辑等价。
 
-来源任务：`ad193e964b` 第一父差异；覆盖清单中的任务 35。
+来源任务：`ad193e964b` 第一父差异；覆盖清单中的任务 25。
 
-预计会话范围：5 个 Go 文件，合计 570 行差异。只处理本组函数及相邻 Rust 测试；若单文件内容较大，按函数/行为分段验证，并记录每段证据。
+预计会话范围：1 个 Go 文件，合计 2950 行差异。只处理本组函数及相邻 Rust 测试；若单文件内容较大，按函数/行为分段验证，并记录每段证据。
 
 ## 文件
 
-- Go 来源：`pkg/parser/parser_test.go`（+329/-39）
-- Go 来源：`pkg/parser/test_driver/accept_in_place_test.go`（+122/-0）
-- Go 来源：`pkg/parser/test_driver/test_driver.go`（+16/-0）
-- Go 来源：`pkg/parser/tidb/features.go`（+10/-3）
-- Go 来源：`pkg/parser/yy_parser.go`（+48/-3）
-- Rust 候选：`pkg/parser/parser_test.rs`
-- Rust 候选：`pkg/parser/test_driver/accept_in_place_test.rs（候选测试文件，先查现有测试模块）`
-- Rust 候选：`pkg/parser/test_driver/test_driver.rs`
-- Rust 候选：`pkg/parser/tidb/features.rs`
-- Rust 候选：`pkg/parser/yy_parser.rs`
-- Cargo 包线索：`pkg/parser/Cargo.toml`、`pkg/parser/test_driver/Cargo.toml`、`pkg/parser/tidb/Cargo.toml`
+- Go 来源：`pkg/parser/ast/visitor_inplace_generated.go`（+2950/-0）
+- Rust 候选：`pkg/parser/ast/visitor_inplace_generated.rs（候选，先用索引确认）`
+- Cargo 包线索：`pkg/parser/ast/Cargo.toml`
 
 ## 上下文
 
 - 先运行 `~/.rustcodegraph/bin/rustcodegraph status`，若索引新鲜，再按本组 Go 符号用 `explore` / `node` 查 Rust 调用链；索引不覆盖时用 `rg` 和原始文件。目标包有 `doc.go` 时先读。
-- 用 `git diff ad193e964b^1 ad193e964b -- pkg/parser/parser_test.go pkg/parser/test_driver/accept_in_place_test.go pkg/parser/test_driver/test_driver.go pkg/parser/tidb/features.go pkg/parser/yy_parser.go` 阅读完整来源差异，连同 Go 测试、调用方和 Rust 独有适配层核对。上列 Rust 路径仅为文件名候选，不能据此省略真实调用链。
+- 用 `git diff ad193e964b^1 ad193e964b -- pkg/parser/ast/visitor_inplace_generated.go` 阅读完整来源差异，连同 Go 测试、调用方和 Rust 独有适配层核对。上列 Rust 路径仅为文件名候选，不能据此省略真实调用链。
 - Rust 单元测试与源文件分离；不删 PingCAP 注释；修复真正可用后在 Rust 源文件顶部增加 `// Copyright 2026 AsterSQL.`。
 
+- 此组含超大单文件差异。先按 Go 函数和行为列出小段及其 Rust 对应测试，逐段完成；生成文件应追溯生成器与输入。不得只实现其中一段就删除任务文件。
 
 ## 测试计划
 
 - 行为：本组 Go 改动中的每个可观察函数分支、错误与边界，在 Rust 对应调用路径中产生相同结果。先列 Go→Rust 符号/测试对照；测试专用或生成文件也要追溯意图并记录判定。
-- 失败验证测试：在对应 Rust 独立测试文件中新增或扩展 `go_merge_35` 前缀的聚焦回归测试；若本组只有生成物或测试设施变更，先记录为何无法构造先失败的行为测试并采用生成/编译或测试意图检查。
-- 失败验证命令：`cargo test --manifest-path pkg/parser/Cargo.toml --lib go_merge_35`
+- 失败验证测试：在对应 Rust 独立测试文件中新增或扩展 `go_merge_25` 前缀的聚焦回归测试；若本组只有生成物或测试设施变更，先记录为何无法构造先失败的行为测试并采用生成/编译或测试意图检查。
+- 失败验证命令：`cargo test --manifest-path pkg/parser/ast/Cargo.toml --lib go_merge_25`
 - 预期失败原因：未移植的 Go 语义在 Rust 真实路径上产生不同结果；如果基线先因无关编译错误失败，记录准确错误并修复本任务涉及的依赖或标记待回归。
-- 通过验证命令：`cargo test --manifest-path pkg/parser/Cargo.toml --lib go_merge_35`
+- 通过验证命令：`cargo test --manifest-path pkg/parser/ast/Cargo.toml --lib go_merge_25`
 - 模拟策略：优先使用现有真实 Rust 依赖与测试设施；仅对网络、外部服务或时间等明确边界使用现有 mock，核对输入与副作用。
 
 ## 步骤
@@ -51,7 +44,7 @@
 ## 验证
 
 - 格式：Rust 代码修改完成后，先运行 `cargo fmt --all` 自动格式化，再运行 `cargo fmt --all -- --check` 校验；自审格式化产生的差异。
-- 运行：`cargo test --manifest-path pkg/parser/Cargo.toml --lib go_merge_35`
+- 运行：`cargo test --manifest-path pkg/parser/ast/Cargo.toml --lib go_merge_25`
 - 运行：`cargo fmt --all -- --check`
 - 运行：`make lint`（代码交付的 Ready 门槛；若环境/基线阻塞，记录具体错误）
 - 预期：本组回归测试经历预期失败后通过；每个 Go 文件均有 Rust 对应行为、测试意图或有源码证据的无可移植项说明。

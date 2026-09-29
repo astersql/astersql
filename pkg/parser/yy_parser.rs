@@ -112,6 +112,148 @@ pub struct ParserConfig {
     pub SkipPositionRecording: bool,
 }
 
+// Allow the statement wrappers surrounding a 10,000-level expression.
+const MAX_AST_DEPTH_STMT_OVERHEAD: usize = 64;
+const MAX_AST_DEPTH: usize = 10_000 + MAX_AST_DEPTH_STMT_OVERHEAD;
+
+// The generated reducer can recursively clone a growing expression before an
+// AST exists. Reject the token patterns that make such a chain before parsing.
+// The AST visitor below remains the authoritative check for all other shapes.
+fn check_expression_depth_before_parse(scanner: &Scanner, sql: &str) -> Result<(), errors::Error> {
+    if sql.len() <= MAX_AST_DEPTH {
+        return Ok(());
+    }
+    let mut probe = scanner.InheritScanner(sql.to_owned());
+    let mut case_depth = 0usize;
+    let mut unary_depth = 0usize;
+    let mut binary_depth = 0usize;
+    let mut chain_operator = 0;
+    let mut previous_operand = false;
+    let mut pending_binary = false;
+    loop {
+        let token = probe.Lex(&mut yySymType::default()) as isize;
+        if token == 0 || token == token::invalid {
+            break;
+        }
+        if token == token::caseKwd {
+            case_depth += 1;
+            if case_depth > MAX_AST_DEPTH {
+                return ast_depth_error(MAX_AST_DEPTH);
+            }
+        } else if token == token::end {
+            case_depth = case_depth.saturating_sub(1);
+        }
+
+        if token == '!' as isize && !previous_operand {
+            unary_depth += 1;
+            if unary_depth > MAX_AST_DEPTH {
+                return ast_depth_error(MAX_AST_DEPTH);
+            }
+            continue;
+        }
+        unary_depth = 0;
+
+        let operand = matches!(token, token::intLit | token::floatLit | token::identifier);
+        if operand {
+            if pending_binary {
+                binary_depth += 1;
+                if binary_depth > MAX_AST_DEPTH {
+                    return ast_depth_error(MAX_AST_DEPTH);
+                }
+            } else {
+                binary_depth = 0;
+            }
+            previous_operand = true;
+            pending_binary = false;
+        } else if token == '+' as isize && previous_operand {
+            if chain_operator != token {
+                binary_depth = 0;
+                chain_operator = token;
+            }
+            previous_operand = false;
+            pending_binary = true;
+        } else {
+            previous_operand = false;
+            pending_binary = false;
+            binary_depth = 0;
+            chain_operator = 0;
+        }
+    }
+    Ok(())
+}
+
+fn ast_depth_error(limit: usize) -> Result<(), errors::Error> {
+    Err(ErrParse.GenWithStackByArgs(&[
+        "AST nesting depth exceeds maximum".into(),
+        limit.to_string().into(),
+    ]))
+}
+
+struct AstDepthChecker {
+    depth: usize,
+    limit: usize,
+    exceeded: bool,
+}
+
+impl parser_ast::InPlaceVisitor for AstDepthChecker {
+    fn enter(&mut self, node: &mut dyn parser_ast::Node) -> bool {
+        self.depth += 1;
+        if self.depth > self.limit {
+            self.exceeded = true;
+            return true;
+        }
+        // A chain of parenthesized expressions has one node per pair of
+        // parentheses. Walk that spine iteratively to avoid consuming the
+        // Rust call stack before reaching the Go depth limit.
+        if let Some(expr) = node.as_any_mut().downcast_mut::<parser_ast::ExprNode>() {
+            if let parser_ast::ExprKind::Parentheses(inner) = &mut expr.Kind {
+                let mut inner = inner.as_mut();
+                let mut skipped = 0;
+                while matches!(inner.Kind, parser_ast::ExprKind::Parentheses(_)) {
+                    self.depth += 1;
+                    skipped += 1;
+                    if self.depth > self.limit {
+                        self.exceeded = true;
+                        break;
+                    }
+                    let parser_ast::ExprKind::Parentheses(next) = &mut inner.Kind else {
+                        unreachable!()
+                    };
+                    inner = next.as_mut();
+                }
+                if !self.exceeded {
+                    parser_ast::Node::accept_in_place(inner, self);
+                }
+                self.depth -= skipped;
+                return true;
+            }
+        }
+        false
+    }
+
+    fn leave(&mut self, _node: &mut dyn parser_ast::Node) -> bool {
+        self.depth -= 1;
+        !self.exceeded
+    }
+}
+
+pub(crate) fn check_ast_depth_limit(
+    statement: &mut dyn parser_ast::Node,
+    limit: usize,
+) -> Result<(), errors::Error> {
+    let mut checker = AstDepthChecker {
+        depth: 0,
+        limit,
+        exceeded: false,
+    };
+    parser_ast::Walk(statement, &mut checker);
+    if checker.exceeded {
+        return ast_depth_error(limit);
+    }
+    Ok(())
+}
+
+
 /// 一次 SQL 解析会话的状态：字符集、词法器、AST 结果与 yacc 符号缓存。
 // Parser 保存一次解析所需的连接字符集、词法器、结果以及 yacc 临时值。
 // Go 的切片复用和指针字段在这里保留为 Vec/Option 形状，以表达生命周期和可空语义。
@@ -253,6 +395,8 @@ impl Parser {
         self.reducedStatementCount = 0;
         self.allStatementsSemanticallyComplete = true;
 
+        check_expression_depth_before_parse(&self.lexer, sql)?;
+
         // Go always lets the package Scanner and generated goyacc machine own
         // syntax acceptance and diagnostics. Keep the temporary AST conversion
         // below, but never let the third-party converter broaden TiDB grammar.
@@ -271,7 +415,8 @@ impl Parser {
         }
         if self.allStatementsSemanticallyComplete && self.result.len() == self.reducedStatementCount
         {
-            for statement in &self.result {
+            for statement in &mut self.result {
+                check_ast_depth_limit(statement.as_mut(), MAX_AST_DEPTH)?;
                 parser_ast::SetFlag(statement.as_ref());
             }
             return Ok((std::mem::take(&mut self.result), warnings));

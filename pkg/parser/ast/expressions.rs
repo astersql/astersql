@@ -858,14 +858,6 @@ impl Expr {
     }
 
     pub fn accept<V: Visitor>(&mut self, visitor: &mut V) -> bool {
-        fn visit_column<V: Visitor>(column: &mut ColumnName, visitor: &mut V) -> bool {
-            let _skip = visitor.enter_column_name(column);
-            visitor.leave_column_name(column)
-        }
-        fn visit_table<V: Visitor>(table: &mut TableName, visitor: &mut V) -> bool {
-            let _skip = visitor.enter_table_name(table);
-            visitor.leave_table_name(table)
-        }
         // enter 返回 true：跳过子节点，直接 leave
         if visitor.enter(self) {
             return visitor.leave(self);
@@ -913,16 +905,8 @@ impl Expr {
                 .value
                 .as_mut()
                 .is_none_or(|value| value.accept(visitor)),
-            Self::MatchAgainst(node) => {
-                node.column_names
-                    .iter_mut()
-                    .all(|column| visit_column(column, visitor))
-                    && node.against.accept(visitor)
-            }
+            Self::MatchAgainst(node) => node.against.accept(visitor),
             Self::SetCollation(node) => node.expr.accept(visitor),
-            Self::TableName(node) => visit_table(&mut node.name, visitor),
-            Self::ColumnName(node) => visit_column(&mut node.name, visitor),
-            Self::Values(node) => visit_column(&mut node.column.name, visitor),
             _ => true,
         };
         children_ok && visitor.leave(self)
@@ -1212,19 +1196,6 @@ pub trait Visitor {
     /// Return true to skip children, matching Go's Visitor.Enter contract.
     fn enter(&mut self, node: &mut Expr) -> bool;
     fn leave(&mut self, node: &mut Expr) -> bool;
-
-    fn enter_column_name(&mut self, _node: &mut ColumnName) -> bool {
-        false
-    }
-    fn leave_column_name(&mut self, _node: &mut ColumnName) -> bool {
-        true
-    }
-    fn enter_table_name(&mut self, _node: &mut TableName) -> bool {
-        false
-    }
-    fn leave_table_name(&mut self, _node: &mut TableName) -> bool {
-        true
-    }
 
     fn enter_param_marker(&mut self, _node: &mut dyn ParamMarkerExpr) -> bool {
         false

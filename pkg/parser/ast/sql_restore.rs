@@ -509,7 +509,131 @@ fn restore_table_name(table: &parser_ast::TableName) -> String {
     )
 }
 
+fn restore_grant_level(level: &parser_ast::GrantLevel) -> String {
+    match level.Level {
+        parser_ast::GrantLevelType::Global => "*.*".to_owned(),
+        parser_ast::GrantLevelType::DB => format!("{}.*", quote(&level.DBName)),
+        parser_ast::GrantLevelType::Table => format!(
+            "{}.{}",
+            if level.DBName.is_empty() {
+                "*".to_owned()
+            } else {
+                quote(&level.DBName)
+            },
+            quote(&level.TableName)
+        ),
+    }
+}
+
+fn restore_grant_users(users: &[parser_ast::UserSpec]) -> String {
+    users
+        .iter()
+        .map(|user| {
+            format!(
+                "{}@{}",
+                quote(&user.User.username),
+                quote(&user.User.hostname)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 pub fn restore_node(node: &dyn parser_ast::Node) -> Result<String, String> {
+    if let Some(stmt) = node.as_any().downcast_ref::<parser_ast::SetRoleStmt>() {
+        let mut sql = "SET ROLE".to_owned();
+        sql.push_str(match stmt.SetRoleOpt {
+            parser_ast::SetRoleOpt::None => " NONE",
+            parser_ast::SetRoleOpt::All => " ALL",
+            parser_ast::SetRoleOpt::Default => " DEFAULT",
+            parser_ast::SetRoleOpt::AllExcept => " ALL EXCEPT",
+            parser_ast::SetRoleOpt::Regular => "",
+        });
+        if !stmt.RoleList.is_empty() {
+            sql.push(' ');
+            sql.push_str(
+                &stmt
+                    .RoleList
+                    .iter()
+                    .map(|role| format!("{}@{}", quote(&role.username), quote(&role.hostname)))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+        }
+        return Ok(sql);
+    }
+    if let Some(stmt) = node.as_any().downcast_ref::<parser_ast::GrantStmt>() {
+        if stmt.Privs.len() == 1
+            && stmt.Privs[0].Priv == parser_mysql::privs::OperateViewPriv
+            && stmt.Privs[0].Cols.is_empty()
+            && stmt.AuthTokenOrTLSOptions.is_empty()
+            && !stmt.WithGrant
+        {
+            return Ok(format!(
+                "GRANT OPERATE VIEW ON {}{} TO {}",
+                if stmt.ObjectType == parser_ast::ObjectTypeType::Table {
+                    "TABLE "
+                } else {
+                    ""
+                },
+                restore_grant_level(&stmt.Level),
+                restore_grant_users(&stmt.Users)
+            ));
+        }
+    }
+    if let Some(stmt) = node.as_any().downcast_ref::<parser_ast::RevokeStmt>() {
+        if stmt.Privs.len() == 1
+            && stmt.Privs[0].Priv == parser_mysql::privs::OperateViewPriv
+            && stmt.Privs[0].Cols.is_empty()
+        {
+            return Ok(format!(
+                "REVOKE OPERATE VIEW ON {}{} FROM {}",
+                if stmt.ObjectType == parser_ast::ObjectTypeType::Table {
+                    "TABLE "
+                } else {
+                    ""
+                },
+                restore_grant_level(&stmt.Level),
+                restore_grant_users(&stmt.Users)
+            ));
+        }
+    }
+    if let Some(stmt) = node
+        .as_any()
+        .downcast_ref::<parser_ast::CreateMaterializedViewStmt>()
+    {
+        return stmt.restore();
+    }
+    if let Some(stmt) = node
+        .as_any()
+        .downcast_ref::<parser_ast::CreateMaterializedViewLogStmt>()
+    {
+        return stmt.restore();
+    }
+    if let Some(stmt) = node
+        .as_any()
+        .downcast_ref::<parser_ast::AlterMaterializedViewStmt>()
+    {
+        return stmt.restore();
+    }
+    if let Some(stmt) = node
+        .as_any()
+        .downcast_ref::<parser_ast::AlterMaterializedViewLogStmt>()
+    {
+        return stmt.restore();
+    }
+    if let Some(stmt) = node
+        .as_any()
+        .downcast_ref::<parser_ast::DropMaterializedViewStmt>()
+    {
+        return stmt.restore();
+    }
+    if let Some(stmt) = node
+        .as_any()
+        .downcast_ref::<parser_ast::DropMaterializedViewLogStmt>()
+    {
+        return stmt.restore();
+    }
     if let Some(stmt) = node
         .as_any()
         .downcast_ref::<parser_ast::PurgeMaterializedViewLogStmt>()
@@ -539,7 +663,16 @@ pub fn restore_node(node: &dyn parser_ast::Node) -> Result<String, String> {
     }
     if let Some(show) = node.as_any().downcast_ref::<parser_ast::ShowStmt>() {
         if show.Tp == parser_ast::ShowStmtType::StorageClassTransitions {
-            return Ok("SHOW STORAGE_CLASS TRANSITIONS".into());
+            let mut sql = "SHOW STORAGE_CLASS TRANSITIONS".to_owned();
+            if let Some(pattern) = &show.Pattern {
+                sql.push_str(" LIKE ");
+                sql.push_str(&restore_expr(pattern)?);
+            }
+            if let Some(where_clause) = &show.Where {
+                sql.push_str(" WHERE ");
+                sql.push_str(&restore_expr(where_clause)?);
+            }
+            return Ok(sql);
         }
     }
     if let Some(select) = node.as_any().downcast_ref::<parser_ast::SelectStmt>() {
@@ -732,7 +865,7 @@ fn restore_limit(limit: &parser_ast::Limit) -> Result<String, String> {
 pub fn restore_select_stmt(stmt: &parser_ast::SelectStmt) -> Result<String, String> {
     let opts = &stmt.SelectStmtOpts;
     let unsupported_options = opts.ExplicitAll
-        || opts.SQLCache
+        || !opts.SQLCache
         || !opts.TableHints.is_empty()
         || opts.Priority != 0
         || opts.SQLSmallResult

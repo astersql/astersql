@@ -86,3 +86,12 @@ fn feature_validation_preserves_go_variadic_semantics() {
     assert!(CanParseFeature(&[FeatureIDAutoRandom]));
     assert!(!CanParseFeature(&[FeatureIDResourceGroup]));
 }
+
+#[test]
+fn go_merge_35_auto_presplit_and_compatibility() {
+    use super::{FeatureIDAutoPreSplit, FeatureIDPreSplit, FeatureIDPresplit};
+    assert_eq!(FeatureIDPreSplit, "pre_split");
+    assert_eq!(FeatureIDPresplit, FeatureIDPreSplit);
+    assert_eq!(FeatureIDAutoPreSplit, "auto_presplit");
+    assert!(CanParseFeature(&[FeatureIDPreSplit, FeatureIDAutoPreSplit]));
+}

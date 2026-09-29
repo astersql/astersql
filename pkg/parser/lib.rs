@@ -211,6 +211,10 @@ pub mod generate {
 pub use parser_impl::*;
 
 #[cfg(test)]
+#[path = "go_merge_35_test.rs"]
+mod go_merge_35_test;
+
+#[cfg(test)]
 #[path = "digester_1_aster_unit_test.rs"]
 mod digester_aster_unit_test;
 

@@ -26,7 +26,23 @@ pub fn HasWindowFlag(expr: &ExprNode) -> bool {
 pub fn SetFlag(node: &dyn Node) {
     struct Setter;
     impl Visitor for Setter {
-        fn enter(&mut self, _: &dyn Node) -> bool {
+        fn enter(&mut self, node: &dyn Node) -> bool {
+            if let Some(expr) = node.as_any().downcast_ref::<ExprNode>() {
+                if let ExprKind::Parentheses(first) = &expr.Kind {
+                    let mut inner = first.as_ref();
+                    while let ExprKind::Parentheses(next) = &inner.Kind {
+                        inner = next.as_ref();
+                    }
+                    inner.accept(self);
+                    let flag = inner.GetFlag();
+                    let mut current = first.as_ref();
+                    while let ExprKind::Parentheses(next) = &current.Kind {
+                        current.SetFlag(flag);
+                        current = next.as_ref();
+                    }
+                    return true;
+                }
+            }
             false
         }
         fn leave(&mut self, node: &dyn Node) -> bool {

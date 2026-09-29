@@ -2465,7 +2465,7 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             ));
         }
         ExpressionRule::SimpleExprAlt18 => {
-            let Some(value) = rhs[rhs_len - (1)].expr.clone() else {
+            let Some(value) = rhs[rhs_len - (1)].expr.take() else {
                 return Ok(false);
             };
             out.expr = Some(parser_ast::ExprNode::Parentheses(Box::new(value)));
@@ -2642,7 +2642,7 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
             out.item = Some(Box::new(
                 rhs[rhs_len - (0)]
                     .expr
-                    .clone()
+                    .take()
                     .into_iter()
                     .collect::<Vec<_>>(),
             ));

@@ -41,7 +41,11 @@ pub const FEATURE_ID_RESOURCE_GROUP: &str = "resource_group";
 /// 全局索引：分区表上跨分区的唯一/二级索引。
 pub const FEATURE_ID_GLOBAL_INDEX: &str = "global_index";
 /// 预分裂（pre-split）：建表时预先切分 Region，减轻热点。
-pub const FEATURE_ID_PRESPLIT: &str = "pre_split";
+pub const FEATURE_ID_PRE_SPLIT: &str = "pre_split";
+/// 兼容旧拼写。
+pub const FEATURE_ID_PRESPLIT: &str = FEATURE_ID_PRE_SPLIT;
+/// 自动索引预分裂。
+pub const FEATURE_ID_AUTO_PRE_SPLIT: &str = "auto_presplit";
 /// 亲和性（affinity）相关表属性。
 pub const FEATURE_ID_AFFINITY: &str = "affinity";
 /// Region 分裂相关语法；Region 是 TiKV 的数据分片与调度单位。
@@ -57,7 +61,8 @@ const FEATURE_IDS: &[&str] = &[
     FEATURE_ID_PLACEMENT,
     FEATURE_ID_TTL,
     FEATURE_ID_GLOBAL_INDEX,
-    FEATURE_ID_PRESPLIT,
+    FEATURE_ID_PRE_SPLIT,
+    FEATURE_ID_AUTO_PRE_SPLIT,
     FEATURE_ID_AFFINITY,
     FEATURE_ID_SPLIT_REGION,
 ];
@@ -89,6 +94,10 @@ pub const FeatureIDResourceGroup: &str = FEATURE_ID_RESOURCE_GROUP;
 pub const FeatureIDGlobalIndex: &str = FEATURE_ID_GLOBAL_INDEX;
 /// Go 风格导出名：与 FEATURE_ID_PRESPLIT 相同。
 pub const FeatureIDPresplit: &str = FEATURE_ID_PRESPLIT;
+/// Go 风格导出名：规范的预分裂 ID。
+pub const FeatureIDPreSplit: &str = FEATURE_ID_PRE_SPLIT;
+/// Go 风格导出名：自动索引预分裂 ID。
+pub const FeatureIDAutoPreSplit: &str = FEATURE_ID_AUTO_PRE_SPLIT;
 /// Go 风格导出名：与 FEATURE_ID_AFFINITY 相同。
 pub const FeatureIDAffinity: &str = FEATURE_ID_AFFINITY;
 /// Go 风格导出名：与 FEATURE_ID_SPLIT_REGION 相同。

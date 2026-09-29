@@ -560,6 +560,13 @@ impl Scanner {
     // 把最后一个编码 error 降级为 warning，保持两组诊断的相对顺序。
     /// 将最近一次 error 降级为 warning。
     pub(super) fn lastErrorAsWarn(&mut self) {
+        if self.errs.last().is_some_and(|error| {
+            let message = error.to_string();
+            message.contains("parentheses nesting depth exceeds maximum")
+                || message.contains("AST nesting depth exceeds maximum")
+        }) {
+            return;
+        }
         if let Some(err) = self.errs.pop() {
             self.warns.push(err);
         }

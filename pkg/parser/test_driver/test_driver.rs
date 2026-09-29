@@ -40,6 +40,14 @@ pub trait Visitor {
     fn Leave(&mut self, node: Box<dyn Any>) -> (Box<dyn Any>, bool);
 }
 
+/// Direct traversal of the test driver's leaf expression nodes.
+pub trait InPlaceVisitor {
+    /// Return true to skip children; leaf nodes have no children.
+    fn Enter(&mut self, node: &mut dyn Any) -> bool;
+    /// Return false to stop traversal.
+    fn Leave(&mut self, node: &mut dyn Any) -> bool;
+}
+
 /// 字面值表达式节点：内嵌 Datum、字段类型与投影偏移。
 #[derive(Default)]
 pub struct ValueExpr {
@@ -184,6 +192,14 @@ impl ValueExpr {
             .unwrap_or_else(|_| panic!("visitor Enter returned a non-ValueExpr node"));
         visitor.Leave(node)
     }
+
+    /// Visit this leaf expression without replacing or moving it.
+    pub fn AcceptInPlace(&mut self, visitor: &mut dyn InPlaceVisitor) -> bool {
+        if visitor.Enter(self) {
+            return visitor.Leave(self);
+        }
+        visitor.Leave(self)
+    }
 }
 
 /// Go 风格构造函数别名，委托给 `ValueExpr::new`。
@@ -238,6 +254,13 @@ impl ParamMarkerExpr {
             .downcast::<ParamMarkerExpr>()
             .unwrap_or_else(|_| panic!("visitor Enter returned a non-ParamMarkerExpr node"));
         visitor.Leave(node)
+    }
+    /// Visit this leaf expression without replacing or moving it.
+    pub fn AcceptInPlace(&mut self, visitor: &mut dyn InPlaceVisitor) -> bool {
+        if visitor.Enter(self) {
+            return visitor.Leave(self);
+        }
+        visitor.Leave(self)
     }
     /// 设置参数在预处理语句中的顺序号。
     pub fn SetOrder(&mut self, order: i32) {

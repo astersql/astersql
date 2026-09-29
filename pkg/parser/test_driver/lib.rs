@@ -51,3 +51,7 @@ mod migration_aster_unit_test;
 #[cfg(test)]
 #[path = "test_driver_test.rs"]
 mod test_driver_test;
+
+#[cfg(test)]
+#[path = "go_merge_35_test.rs"]
+mod go_merge_35_test;
