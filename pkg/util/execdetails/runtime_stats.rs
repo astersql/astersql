@@ -1433,57 +1433,26 @@ impl RuntimeStatsWithCommit {
     }
 }
 
-// RURuntimeStats wraps RU details and statement-level RU v2 metrics for EXPLAIN output.
-// RUVersion controls which RU accounting version produces output:
-//   - 1 (v1): shows RRU + WRU
-//   - 2 (v2): shows total RU from v2 metrics
-//   - 0 / unknown: defaults to v1
+// RURuntimeStats wraps RU v1 details for EXPLAIN output.
 #[derive(Default)]
 /// 资源单位（RU）相关运行时统计。
 pub struct RURuntimeStats {
     pub RUDetails: Option<util::RUDetails>,
-    pub Metrics: Option<RUV2Metrics>,
-    pub Weights: RUV2Weights,
-    pub RUVersion: rmclient::RUVersion,
 }
 
 impl RURuntimeStats {
     // String implements the RuntimeStats interface.
     pub fn String(&self) -> String {
-        match self.RUVersion {
-            rmclient::RUVersionV2 => {
-                let mut tiKVRU = 0.0;
-                let mut tiFlashRU = 0.0;
-                if let Some(ruDetails) = self.RUDetails.as_ref() {
-                    tiKVRU = ruDetails.TiKVRUV2();
-                    tiFlashRU = ruDetails.TiflashRU();
-                }
-                let totalRU = self
-                    .Metrics
-                    .as_ref()
-                    .map(|metrics| metrics.TotalRU(self.Weights, tiKVRU, tiFlashRU))
-                    .unwrap_or(tiKVRU + tiFlashRU);
-                if totalRU == 0.0 {
-                    return String::new();
-                }
-                format!("RU:{:.2}", totalRU)
-            }
-            _ => {
-                if let Some(ruDetails) = self.RUDetails.as_ref() {
-                    return format!("RU:{:.2}", ruDetails.RRU() + ruDetails.WRU());
-                }
-                String::new()
-            }
-        }
+        self.RUDetails
+            .as_ref()
+            .map(|details| format!("RU:{:.2}", details.RRU() + details.WRU()))
+            .unwrap_or_default()
     }
 
     // Clone implements the RuntimeStats interface.
     pub fn Clone(&self) -> RURuntimeStats {
         RURuntimeStats {
             RUDetails: self.RUDetails.as_ref().map(|ruDetails| ruDetails.Clone()),
-            Metrics: self.Metrics.as_ref().map(|metrics| metrics.Clone()),
-            Weights: self.Weights,
-            RUVersion: self.RUVersion,
         }
     }
 
@@ -1494,22 +1463,61 @@ impl RURuntimeStats {
         } else if self.RUDetails.is_none() {
             self.RUDetails = tmp.RUDetails.as_ref().map(|details| details.Clone());
         }
-        if let Some(metrics) = self.Metrics.as_ref() {
-            metrics.Merge(tmp.Metrics.as_ref());
-        } else {
-            self.Metrics = tmp.Metrics.as_ref().map(|metrics| metrics.Clone());
-        }
-        if self.Weights == RUV2Weights::default() {
-            self.Weights = tmp.Weights;
-        }
-        if self.RUVersion == 0 {
-            self.RUVersion = tmp.RUVersion;
-        }
     }
 
     // Tp implements the RuntimeStats interface.
     pub fn Tp(&self) -> i32 {
         TpRURuntimeStats
+    }
+}
+
+/// Per-operator resource units for EXPLAIN ANALYZE FORMAT='ru'.
+#[derive(Clone, Default)]
+pub struct ExplainRURuntimeStats {
+    pub SelfRU: f64,
+    pub CumRU: f64,
+}
+
+impl ExplainRURuntimeStats {
+    pub fn String(&self) -> String {
+        if self.SelfRU == 0.0 && self.CumRU == 0.0 {
+            String::new()
+        } else {
+            format!("selfRU:{:.2}, cumRU:{:.2}", self.SelfRU, self.CumRU)
+        }
+    }
+
+    pub fn Clone(&self) -> Self {
+        Clone::clone(self)
+    }
+
+    pub fn Merge(&mut self, other: &Self) {
+        self.SelfRU += other.SelfRU;
+        self.CumRU += other.CumRU;
+    }
+
+    pub fn Tp(&self) -> i32 {
+        TpExplainRURuntimeStats
+    }
+}
+
+impl RuntimeStats for ExplainRURuntimeStats {
+    fn String(&self) -> String {
+        Self::String(self)
+    }
+    fn Merge(&mut self, other: &dyn RuntimeStats) {
+        if let Some(other) = other.as_any().downcast_ref::<Self>() {
+            Self::Merge(self, other);
+        }
+    }
+    fn CloneBox(&self) -> Box<dyn RuntimeStats> {
+        Box::new(self.Clone())
+    }
+    fn Tp(&self) -> i32 {
+        Self::Tp(self)
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 

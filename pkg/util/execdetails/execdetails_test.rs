@@ -23,6 +23,38 @@ use std::sync::atomic::{AtomicI32, AtomicI64};
 use std::time::Duration;
 
 #[test]
+fn go_merge_17_explain_ru_stats() {
+    let mut stats = exec::ExplainRURuntimeStats {
+        SelfRU: 1.234,
+        CumRU: 5.0,
+    };
+    assert_eq!(stats.String(), "selfRU:1.23, cumRU:5.00");
+    let copy = stats.Clone();
+    stats.Merge(&exec::ExplainRURuntimeStats {
+        SelfRU: 0.5,
+        CumRU: 1.0,
+    });
+    assert_eq!(stats.String(), "selfRU:1.73, cumRU:6.00");
+    assert_eq!(copy.String(), "selfRU:1.23, cumRU:5.00");
+    assert_eq!(stats.Tp(), exec::TpExplainRURuntimeStats);
+    assert_eq!(exec::ExplainRURuntimeStats::default().String(), "");
+    let mut coll = exec::NewRuntimeStatsColl(None);
+    coll.RegisterStats(7, Box::new(copy));
+    coll.RegisterStats(
+        7,
+        Box::new(exec::ExplainRURuntimeStats {
+            SelfRU: 0.5,
+            CumRU: 1.0,
+        }),
+    );
+    assert!(
+        coll.GetRootStats(7)
+            .String()
+            .contains("selfRU:1.73, cumRU:6.00")
+    );
+}
+
+#[test]
 fn go_merge_14_scan_and_cop_summary_snapshots() {
     let mut coll = exec::NewRuntimeStatsColl(None);
     let scan = exec::util::ScanDetail {
@@ -757,26 +789,6 @@ fn test_format_ruv2_metrics_includes_ru_values_first() {
     );
 }
 
-/// 构造 RUVersionV2 的 RURuntimeStats 测试夹具。
-fn v2_runtime_stats(tikv_ru: f64, tiflash_ru: f64) -> exec::RURuntimeStats {
-    exec::RURuntimeStats {
-        RUDetails: Some(exec::util::RUDetails {
-            tikv_ru_v2: tikv_ru,
-            tiflash_ru,
-            ..Default::default()
-        }),
-        Metrics: Some(exec::RUV2Metrics::default()),
-        Weights: exec::RUV2Weights { RUScale: 1.0 },
-        RUVersion: exec::rmclient::RUVersionV2,
-    }
-}
-
-#[test]
-/// v2 String 应包含 TiFlash RU。
-fn test_ru_runtime_stats_string_includes_ti_flash_ru() {
-    assert_eq!(v2_runtime_stats(200.0, 300.0).String(), "RU:500.00");
-}
-
 #[test]
 /// TiFlash cop 运行时统计路径。
 fn test_cop_runtime_stats_for_ti_flash() {
@@ -1101,103 +1113,19 @@ fn test_cop_runtime_stats2() {
 }
 
 #[test]
-/// RU v1 String 展示。
-fn test_ru_runtime_stats_string_v1() {
-    let stats = exec::RURuntimeStats {
+fn go_merge_17_ru_v1_only() {
+    let mut stats = exec::RURuntimeStats {
         RUDetails: Some(exec::util::RUDetails {
             read_ru: 10.5,
             write_ru: 20.3,
+            tikv_ru_v2: 200.0,
+            tiflash_ru: 300.0,
             ..Default::default()
         }),
-        RUVersion: 1,
-        ..Default::default()
     };
     assert_eq!(stats.String(), "RU:30.80");
-}
-
-#[test]
-/// v1 且 details 为空时的 String。
-fn test_ru_runtime_stats_string_v1_nil_details() {
-    assert_eq!(
-        exec::RURuntimeStats {
-            RUVersion: 1,
-            ..Default::default()
-        }
-        .String(),
-        ""
-    );
-}
-
-#[test]
-/// RU v2 String 展示。
-fn test_ru_runtime_stats_string_v2() {
-    assert_eq!(v2_runtime_stats(200.0, 300.0).String(), "RU:500.00");
-}
-
-#[test]
-/// v2 且 RU 为 0 时的 String。
-fn test_ru_runtime_stats_string_v2_zero_ru() {
-    assert_eq!(v2_runtime_stats(0.0, 0.0).String(), "");
-}
-
-#[test]
-/// 默认 RU 版本下的 String。
-fn test_ru_runtime_stats_string_default_version() {
-    let stats = exec::RURuntimeStats {
-        RUDetails: Some(exec::util::RUDetails {
-            read_ru: 10.5,
-            write_ru: 20.3,
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-    assert_eq!(stats.String(), "RU:30.80");
-}
-
-#[test]
-/// Clone 应保留 RUVersion。
-fn test_ru_runtime_stats_clone_preserves_ru_version() {
-    let stats = exec::RURuntimeStats {
-        RUDetails: Some(exec::util::RUDetails {
-            read_ru: 10.0,
-            write_ru: 20.0,
-            ..Default::default()
-        }),
-        RUVersion: 1,
-        ..Default::default()
-    };
-    let cloned = stats.Clone();
-    assert_eq!(cloned.RUVersion, 1);
-    assert_eq!(cloned.String(), stats.String());
-}
-
-#[test]
-/// nil/空 Clone 应保留零版本。
-fn test_ru_runtime_stats_clone_nil_preserves_zero_version() {
-    let stats: Option<exec::RURuntimeStats> = None;
-    let cloned = stats
-        .as_ref()
-        .map(exec::RURuntimeStats::Clone)
-        .unwrap_or_default();
-    assert_eq!(cloned.RUVersion, 0);
-}
-
-#[test]
-/// Merge 时应传播 RUVersion。
-fn test_ru_runtime_stats_merge_ru_version() {
-    let mut dst = exec::RURuntimeStats::default();
-    let src = v2_runtime_stats(0.0, 0.0);
-    dst.MergeRURuntimeStats(&src);
-    assert_eq!(dst.RUVersion, exec::rmclient::RUVersionV2);
-}
-
-#[test]
-/// Merge 时保留已有 RUVersion，不被对方覆盖。
-fn test_ru_runtime_stats_merge_keeps_existing_ru_version() {
-    let mut dst = exec::RURuntimeStats {
-        RUVersion: 1,
-        ..Default::default()
-    };
-    dst.MergeRURuntimeStats(&v2_runtime_stats(0.0, 0.0));
-    assert_eq!(dst.RUVersion, 1);
+    let copy = stats.Clone();
+    stats.MergeRURuntimeStats(&exec::RURuntimeStats::default());
+    assert_eq!(stats.String(), copy.String());
+    assert_eq!(exec::RURuntimeStats::default().String(), "");
 }

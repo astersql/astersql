@@ -312,10 +312,7 @@ fn fair_locking_details_clone_and_merge_preserve_all_go_counters() {
 }
 
 #[test]
-/// RU 运行时统计的 Clone/Merge 与 v2 展示应与 Go 行为一致。
-fn ru_runtime_stats_v1_v2_clone_and_merge_follow_go_behavior() {
-    let metrics = RUV2Metrics::default();
-    metrics.Add(2.0);
+fn ru_runtime_stats_v1_clone_and_merge_follow_go_behavior() {
     let mut stats = RURuntimeStats {
         RUDetails: Some(util::RUDetails {
             read_ru: 1.5,
@@ -324,20 +321,15 @@ fn ru_runtime_stats_v1_v2_clone_and_merge_follow_go_behavior() {
             tiflash_ru: 1.0,
             ..Default::default()
         }),
-        Metrics: Some(metrics),
-        Weights: RUV2Weights { RUScale: 2.0 },
-        RUVersion: rmclient::RUVersionV2,
     };
-    assert_eq!(stats.String(), "RU:12.00");
+    assert_eq!(stats.String(), "RU:4.00");
     let cloned = stats.Clone();
-    assert_eq!(cloned.String(), "RU:12.00");
-
+    assert_eq!(cloned.String(), "RU:4.00");
     stats.MergeRURuntimeStats(&RURuntimeStats {
         RUDetails: Some(util::RUDetails {
-            tikv_ru_v2: 1.0,
+            read_ru: 1.0,
             ..Default::default()
         }),
-        ..Default::default()
     });
-    assert_eq!(stats.String(), "RU:14.00");
+    assert_eq!(stats.String(), "RU:5.00");
 }
