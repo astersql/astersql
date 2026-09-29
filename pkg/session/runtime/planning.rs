@@ -2069,6 +2069,78 @@ impl ConcreteSession {
     }
 
     /// 执行已预编译的计划型 SELECT。
+    pub fn ExecutePreparedPlannedKVSelectThroughAdapter(
+        &self,
+        statement_id: u64,
+        parameters: &[astersql_types::datum::Datum],
+    ) -> SessionResult<PreparedPlannedKVResult> {
+        let owner = Arc::new(super::SessionBoundAdapterOwner::new(self.clone()));
+        owner
+            .BindPreparedPlannedKVSelect(statement_id, parameters, 32, 1024)
+            .map_err(|error| session_error("bind prepared physical SELECT", error))?;
+        let (from_plan_cache, warnings, plan) = owner
+            .PreparedResultMetadata()
+            .ok_or_else(|| SessionError::new("prepared physical result metadata is missing"))?;
+        let mut statement = owner
+            .BuildPreparedExecStmt()
+            .map_err(|error| session_error("build prepared ExecStmt", error))?;
+        let field_types = statement
+            .Plan
+            .schema
+            .iter()
+            .map(|column| column.field_type.clone())
+            .collect::<Vec<_>>();
+        let columns = statement
+            .OutputNames
+            .iter()
+            .map(|name| name.column_name.clone())
+            .collect();
+        let mut record_set = statement
+            .Exec()
+            .map_err(|error| session_error("execute prepared ExecStmt", error))?
+            .ok_or_else(|| SessionError::new("prepared SELECT returned no result set"))?;
+        let mut rows = Vec::new();
+        let mut chunk = record_set.NewChunk();
+        let read = (|| -> SessionResult<()> {
+            loop {
+                record_set
+                    .Next(&mut chunk)
+                    .map_err(|error| session_error("read prepared result", error))?;
+                if chunk.NumRows() == 0 {
+                    break;
+                }
+                for index in 0..chunk.NumRows() {
+                    let row = chunk.GetRow(index);
+                    let values = field_types
+                        .iter()
+                        .enumerate()
+                        .map(|(column, field_type)| {
+                            astersql_executor::physical_plan_runtime::datum_to_sort_value(
+                                row.GetDatum(column, field_type),
+                            )
+                            .map_err(|error| session_error("convert prepared result", error))
+                        })
+                        .collect::<SessionResult<Vec<_>>>()?;
+                    rows.push(astersql_executor_sortexec::Row(values));
+                }
+            }
+            Ok(())
+        })();
+        let close = record_set
+            .Close()
+            .map_err(|error| session_error("close prepared result", error));
+        read?;
+        close?;
+        Ok(PreparedPlannedKVResult {
+            Rows: rows,
+            Columns: columns,
+            FromPlanCache: from_plan_cache,
+            Warnings: warnings,
+            Plan: plan,
+        })
+    }
+
+    /// 执行已预编译的计划型 SELECT。
     pub fn ExecutePreparedPlannedKVSelect(
         &self,
         statement_id: u64,
@@ -2076,6 +2148,13 @@ impl ConcreteSession {
         retriever: &dyn kv::Retriever,
     ) -> SessionResult<PreparedPlannedKVResult> {
         let mut planned = self.PlanPreparedPlannedKVSelect(statement_id, parameters)?;
+        let columns = planned
+            .Plan
+            .schema()
+            .Columns
+            .iter()
+            .map(|column| column.OrigName.clone())
+            .collect();
         let source =
             astersql_executor::physical_plan_runtime::KVRetrieverTableSource::New(retriever);
         let mut rows = astersql_executor::physical_plan_runtime::ExecutePhysicalPlan(
@@ -2087,6 +2166,7 @@ impl ConcreteSession {
         self.FinishPreparedKVPhysicalPlan(&mut planned, source.ScannedRows());
         Ok(PreparedPlannedKVResult {
             Rows: rows,
+            Columns: columns,
             FromPlanCache: planned.FromPlanCache,
             Warnings: planned.Warnings,
             Plan: planned.Snapshot,

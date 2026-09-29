@@ -130,7 +130,7 @@ pub struct CompilerMetricMode {
 pub struct ExecStmtBuildInput {
     pub context: CompilerContext,
     pub infoSchema: Box<dyn CompilerInfoSchema>,
-    pub plan: Box<dyn base::Plan>,
+    pub plan: Arc<dyn base::Plan>,
     pub lowerPriority: bool,
     pub statement: ast::NodeRef,
     pub session: CompilerSession,
@@ -418,16 +418,19 @@ impl Compiler {
         self.dependencies
             .WarmUpTransaction(&self.Ctx, optimized.plan.as_ref())?;
 
-        Ok(self.dependencies.BuildExecStmt(ExecStmtBuildInput {
+        let typed_plan: Arc<dyn base::Plan> = Arc::from(optimized.plan);
+        let mut exec_stmt = self.dependencies.BuildExecStmt(ExecStmtBuildInput {
             context: ctx,
             infoSchema: info_schema,
-            plan: optimized.plan,
+            plan: typed_plan.clone(),
             lowerPriority: lower_priority,
             statement,
             session: self.Ctx.clone(),
             outputNames: optimized.outputNames,
             prepared: preparedCacheForExec(prepared, reused_prepared),
-        }))
+        });
+        exec_stmt.TypedPlan = Some(typed_plan);
+        Ok(exec_stmt)
     }
 }
 

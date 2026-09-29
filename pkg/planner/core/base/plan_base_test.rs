@@ -15,7 +15,14 @@
 
 use cascades_base::NewHashEqualer;
 
-use crate::PossiblePropertiesInfo;
+use crate::{JoinType, PossiblePropertiesInfo};
+
+#[test]
+fn full_outer_join_keeps_go_discriminant_and_outer_semantics() {
+    assert_eq!(JoinType::FullOuterJoin as i32, 7);
+    assert!(JoinType::FullOuterJoin.is_outer_join());
+    assert_eq!(JoinType::FullOuterJoin.to_string(), "full outer join");
+}
 
 #[test]
 fn possible_properties_hash_starts_with_non_nil_object_marker() {

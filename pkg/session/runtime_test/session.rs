@@ -17,6 +17,23 @@
 use super::*;
 
 #[test]
+fn cloned_concrete_session_retains_shared_state_until_last_owner_drops() {
+    let (_domain, session) = crate::runtime::CreateAnalyzeSession().expect("canonical session");
+    session
+        .execute("set @shared_plan_bridge = 7")
+        .expect("set variable");
+    let retained = session.clone();
+    drop(session);
+    let mut result = retained
+        .execute("select @shared_plan_bridge")
+        .expect("execute on retained session");
+    assert_eq!(
+        result[0].next_row().expect("read variable"),
+        Some(vec!["7".to_owned()])
+    );
+}
+
+#[test]
 fn setting_tiflash_cop_updates_planner_session_vars() {
     let (_domain, session) = crate::runtime::CreateAnalyzeSession().expect("canonical session");
     session.WithSessionVars(|variables| assert!(variables.IsTiFlashCopBanned()));

@@ -178,7 +178,9 @@ impl<'a> KVRetrieverTableSource<'a> {
 }
 
 /// 将 types::Datum 转为排序/执行器用的 SortValue。
-fn datum_to_sort_value(datum: astersql_types::datum::Datum) -> PhysicalRuntimeResult<SortValue> {
+pub fn datum_to_sort_value(
+    datum: astersql_types::datum::Datum,
+) -> PhysicalRuntimeResult<SortValue> {
     Ok(match datum.Kind() {
         astersql_types::datum::KindNull => SortValue::Null,
         astersql_types::datum::KindInt64 => SortValue::Int(datum.GetInt64()),

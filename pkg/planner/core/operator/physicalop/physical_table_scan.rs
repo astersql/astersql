@@ -81,6 +81,33 @@ pub struct PhysicalTableScan {
 }
 
 impl PhysicalTableScan {
+    /// Re-evaluate handle ranges against the current prepared parameter list.
+    /// A cached physical plan's serialized Ranges reflect its first execution.
+    pub fn RebuildRangesForPlanCache(&self) -> Result<ranger::Ranges, expression::Error> {
+        let primary = self
+            .Table
+            .as_ref()
+            .and_then(TableInfo::GetPkColInfo)
+            .ok_or_else(|| expression::errors::New("table scan has no primary handle"))?;
+        let mut context = self.s_ctx().GetRangerCtx().clone();
+        let (ranges, _, remaining) = ranger::BuildTableRange(
+            self.AccessCondition
+                .iter()
+                .map(|condition| condition.CloneExpr())
+                .collect(),
+            &mut context,
+            &primary.FieldType,
+            0,
+        )
+        .map_err(|error| expression::errors::New(error.to_string()))?;
+        if !remaining.is_empty() {
+            return Err(expression::errors::New(
+                "prepared table scan access conditions did not rebuild completely",
+            ));
+        }
+        Ok(ranges)
+    }
+
     /// 构造默认表扫描节点（类型码 TableScan，Ranges 为空）。
     pub fn New(ctx: ContextRef) -> Self {
         Self {

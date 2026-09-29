@@ -366,6 +366,9 @@ pub(super) struct NamedPreparedStatement {
     pub(super) last_parameter_shape: Option<bool>,
     /// Cached transaction contexts: `(in_transaction, has_dirty_tables)`.
     pub(super) cached_transaction_contexts: HashSet<(bool, bool)>,
+    /// Canonical physical plan cache entry for a SELECT executed through ExecStmt.
+    pub(super) typed_plan_id: Option<u64>,
+    pub(super) typed_plan_catalog_version: Option<u64>,
 }
 
 impl Default for SessionState {
@@ -559,6 +562,10 @@ impl Default for SessionState {
 
 /// 可执行的具体会话：Domain、会话变量、binding、内存跟踪与 SQLKiller。
 pub struct ConcreteSession {
+    pub(super) inner: Rc<ConcreteSessionInner>,
+}
+
+pub struct ConcreteSessionInner {
     pub(super) import_files: RefCell<super::import_file::ImportFiles>,
     pub(super) domain: Arc<Domain>,
     /// 同一 Domain 内所有会话共享的线程安全实例计划缓存。
@@ -589,6 +596,28 @@ pub struct ConcreteSession {
     pub(super) last_statement_disk_max: std::cell::Cell<i64>,
     pub(super) row_lock_owner: u64,
     pub(super) trace_statement_count: AtomicU64,
+}
+
+impl Clone for ConcreteSession {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Rc::clone(&self.inner),
+        }
+    }
+}
+
+impl std::ops::Deref for ConcreteSession {
+    type Target = ConcreteSessionInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl std::ops::DerefMut for ConcreteSession {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Rc::get_mut(&mut self.inner).expect("cannot mutate a shared session")
+    }
 }
 
 /// Send-safe result-column metadata consumed by the production protocol worker.
@@ -871,27 +900,29 @@ impl ConcreteSession {
         mem_tracker.IsRootTrackerOfSess = true;
         let instance_plan_cache = runtime_instance_plan_cache(&domain);
         let session = Self {
-            domain,
-            instance_plan_cache,
-            state: RefCell::new(state),
-            cte_scopes: RefCell::new(Vec::new()),
-            import_files: RefCell::new(Default::default()),
-            session_vars: Arc::new(session_vars),
-            time_zone: RefCell::new(RuntimeTimeZone::Named(chrono_tz::UTC)),
-            bindings: RefCell::new(crate::hint_runtime::SessionBindingCatalog::New("test")),
-            session_manager: None,
-            login_user: None,
-            login_host: None,
-            authenticated_host: None,
-            active_roles: RefCell::new(Vec::new()),
-            has_process_privilege: false,
-            connection_id: AtomicU64::new(0),
-            sql_killer: Arc::new(SQLKiller::default()),
-            mem_tracker: RefCell::new(mem_tracker),
-            last_statement_tracker: RefCell::new(None),
-            last_statement_disk_max: std::cell::Cell::new(0),
-            row_lock_owner: NEXT_ROW_LOCK_OWNER.fetch_add(1, Ordering::Relaxed),
-            trace_statement_count: AtomicU64::new(0),
+            inner: Rc::new(ConcreteSessionInner {
+                domain,
+                instance_plan_cache,
+                state: RefCell::new(state),
+                cte_scopes: RefCell::new(Vec::new()),
+                import_files: RefCell::new(Default::default()),
+                session_vars: Arc::new(session_vars),
+                time_zone: RefCell::new(RuntimeTimeZone::Named(chrono_tz::UTC)),
+                bindings: RefCell::new(crate::hint_runtime::SessionBindingCatalog::New("test")),
+                session_manager: None,
+                login_user: None,
+                login_host: None,
+                authenticated_host: None,
+                active_roles: RefCell::new(Vec::new()),
+                has_process_privilege: false,
+                connection_id: AtomicU64::new(0),
+                sql_killer: Arc::new(SQLKiller::default()),
+                mem_tracker: RefCell::new(mem_tracker),
+                last_statement_tracker: RefCell::new(None),
+                last_statement_disk_max: std::cell::Cell::new(0),
+                row_lock_owner: NEXT_ROW_LOCK_OWNER.fetch_add(1, Ordering::Relaxed),
+                trace_statement_count: AtomicU64::new(0),
+            }),
         };
         session.load_persisted_global_variables();
         session

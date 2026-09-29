@@ -7,6 +7,62 @@ use std::time::Duration;
 
 struct PreparedBridgeSchemaLoader(astersql_infoschema::SchemaRef);
 
+#[test]
+fn sql_prepared_primary_key_select_uses_typed_ranges_for_execute_and_explain() {
+    let (_domain, session) = crate::runtime::CreateAnalyzeSession().expect("canonical session");
+    session
+        .execute("create table typed_point_bridge (id int primary key, a int)")
+        .expect("create point table");
+    session
+        .execute("insert into typed_point_bridge values (1, 10), (2, 20)")
+        .expect("seed point table");
+    session
+        .execute("set @point_id = 2")
+        .expect("bind point parameter");
+    session
+        .execute("prepare typed_point_stmt from 'select a from typed_point_bridge where id = ?'")
+        .expect("prepare point SELECT");
+    let mut executed = session
+        .execute("execute typed_point_stmt using @point_id")
+        .expect("execute typed point SELECT");
+    assert!(session.PreparedNameHasTypedPlanForTest("typed_point_stmt"));
+    assert_eq!(
+        executed[0].next_row().expect("read point row"),
+        Some(vec!["20".to_owned()])
+    );
+    session
+        .execute("set @point_id = 1")
+        .expect("rebind point parameter");
+    let mut rebound = session
+        .execute("execute typed_point_stmt using @point_id")
+        .expect("execute rebound typed range");
+    assert!(session.PreparedNameHasTypedPlanForTest("typed_point_stmt"));
+    assert_eq!(
+        rebound[0].next_row().expect("read rebound point row"),
+        Some(vec!["10".to_owned()])
+    );
+    session
+        .execute("prepare typed_multi_stmt from 'select id, a as value from typed_point_bridge where id = ?'")
+        .expect("prepare multiple columns");
+    let mut multiple = session
+        .execute("execute typed_multi_stmt using @point_id")
+        .expect("execute typed multiple columns");
+    assert!(session.PreparedNameHasTypedPlanForTest("typed_multi_stmt"));
+    assert_eq!(
+        multiple[0].next_row().expect("read multiple columns"),
+        Some(vec!["1".to_owned(), "10".to_owned()])
+    );
+    assert_eq!(multiple[0].columns(), &["id", "value"]);
+    let mut analyzed = session
+        .execute("explain analyze select a from typed_point_bridge where id = 1")
+        .expect("analyze real point plan");
+    let first = analyzed[0]
+        .next_row()
+        .expect("read point plan")
+        .expect("point plan row");
+    assert!(first[1].contains('.'), "real optimizer estimate: {first:?}");
+}
+
 impl astersql_domain::InfoSchemaLoader for PreparedBridgeSchemaLoader {
     fn load_info_schema(
         &self,
@@ -411,59 +467,41 @@ fn session_bound_adapter_accepts_a_canonical_physical_limit_root() {
 #[test]
 fn canonical_prepared_exec_stmt_binds_limit_and_streams_rows_then_restores_plan_cache() {
     use astersql_executor::adapter::{
-        ExecStmt, FieldName, PlanInfo, PlanKind, Priority, SchemaColumn, StatementContext,
-        StatementKind, StatementNode,
+        ExecStmt, FieldName, PlanInfo, PlanKind, SchemaColumn, StatementKind, StatementNode,
     };
 
     fn prepared_stmt(owner: Arc<crate::runtime::SessionBoundAdapterOwner>) -> ExecStmt {
         let execute = "execute prepared_limit";
-        ExecStmt {
-            GoCtx: None,
-            InfoSchema: 0,
-            Plan: PlanInfo {
-                id: 42,
-                kind: PlanKind::Query,
-                schema: vec![SchemaColumn {
-                    field_type: astersql_parser_types::NewFieldType(
-                        astersql_parser_mysql::r#type::TypeLonglong,
-                    ),
+        owner
+            .BuildExecStmt(
+                PlanInfo {
+                    id: 42,
+                    kind: PlanKind::Query,
+                    schema: vec![SchemaColumn {
+                        field_type: astersql_parser_types::NewFieldType(
+                            astersql_parser_mysql::r#type::TypeLonglong,
+                        ),
+                    }],
+                    calculate_no_delay: false,
+                    projection_child: None,
+                    encoded: "prepared physical SELECT".into(),
+                    binary: String::new(),
+                    hints: String::new(),
+                },
+                StatementNode {
+                    kind: StatementKind::Execute,
+                    original_text: execute.into(),
+                    text: execute.into(),
+                    secure_text: execute.into(),
+                    prepared_text: None,
+                },
+                vec![FieldName {
+                    column_name: "a".into(),
+                    ..Default::default()
                 }],
-                calculate_no_delay: false,
-                projection_child: None,
-                encoded: "prepared physical SELECT".into(),
-                binary: String::new(),
-                hints: String::new(),
-            },
-            StmtNode: StatementNode {
-                kind: StatementKind::Execute,
-                original_text: execute.into(),
-                text: execute.into(),
-                secure_text: execute.into(),
-                prepared_text: None,
-            },
-            Ctx: owner,
-            LowerPriority: false,
-            isPreparedStmt: true,
-            isSelectForUpdate: false,
-            retryCount: 0,
-            retryStartTime: None,
-            phaseBuildDurations: [Duration::ZERO; 2],
-            phaseOpenDurations: [Duration::ZERO; 2],
-            phaseNextDurations: [Duration::ZERO; 2],
-            phaseLockDurations: [Duration::ZERO; 2],
-            OutputNames: vec![FieldName {
-                column_name: "a".into(),
-                ..Default::default()
-            }],
-            PsStmt: None,
-            Ti: None,
-            StatementCtx: StatementContext {
-                priority: Priority::Unspecified,
-                statement_type: "Execute".into(),
-                sql_normalized: execute.into(),
-                ..Default::default()
-            },
-        }
+                true,
+            )
+            .expect("build prepared ExecStmt from bound physical plan")
     }
 
     fn physical_limits(plan: &dyn astersql_planner_core_base::PhysicalPlan) -> Vec<(u64, u64)> {
@@ -539,6 +577,7 @@ fn canonical_prepared_exec_stmt_binds_limit_and_streams_rows_then_restores_plan_
             session.domain().info_schema(),
         )
         .expect("prepare canonical OFFSET/COUNT SELECT");
+    let production_session = session.clone();
     let owner = Arc::new(crate::runtime::SessionBoundAdapterOwner::new(session));
     for invalid in [
         astersql_types::datum::NewIntDatum(-1),
@@ -554,6 +593,27 @@ fn canonical_prepared_exec_stmt_binds_limit_and_streams_rows_then_restores_plan_
         .expect("bind first parameterized physical plan");
     assert!(!owner.LastPlanFromCache());
     let mut first = prepared_stmt(owner.clone());
+    let typed = first
+        .TypedFlatPlan()
+        .expect("EXECUTE retains the physical tree");
+    assert!(typed.iter().any(|operator| {
+        operator
+            .Origin
+            .as_any()
+            .is::<astersql_planner_core_operator_physicalop::PhysicalTableScan>()
+    }));
+    assert!(typed.iter().any(|operator| !operator.IsRoot));
+    first.RebuildPlan().expect("rebuild prepared physical plan");
+    let rebuilt = first
+        .TypedFlatPlan()
+        .expect("rebuilt EXECUTE retains the physical tree");
+    assert!(rebuilt.iter().any(|operator| {
+        operator
+            .Origin
+            .as_any()
+            .is::<astersql_planner_core_operator_physicalop::PhysicalTableScan>()
+    }));
+    assert!(rebuilt.iter().any(|operator| !operator.IsRoot));
     let mut result = first
         .Exec()
         .expect("execute canonical prepared physical plan")
@@ -597,6 +657,13 @@ fn canonical_prepared_exec_stmt_binds_limit_and_streams_rows_then_restores_plan_
         .expect("restore cached plan with changed LIMIT parameter");
     assert!(owner.LastPlanFromCache());
     let mut second = prepared_stmt(owner.clone());
+    second.RebuildPlan().expect("rebuild cached prepared plan");
+    let rebuilt_plan = second
+        .TypedPlan
+        .as_deref()
+        .and_then(|plan| plan.as_physical_plan())
+        .expect("cached rebuild retains physical root");
+    assert!(physical_limits(rebuilt_plan).contains(&(0, 1)));
     let mut cached = second
         .Exec()
         .expect("execute restored canonical plan")
@@ -641,6 +708,63 @@ fn canonical_prepared_exec_stmt_binds_limit_and_streams_rows_then_restores_plan_
             .Close()
             .expect("admit or finish cached OFFSET plan");
     }
+    let production = production_session
+        .ExecutePreparedPlannedKVSelectThroughAdapter(
+            statement_id,
+            &[astersql_types::datum::NewIntDatum(1)],
+        )
+        .expect("canonical session executes prepared plan through ExecStmt");
+    assert_eq!(production.Rows.len(), 1);
+    assert_eq!(
+        production.Rows[0].0,
+        vec![astersql_executor_sortexec::SortValue::Int(10)]
+    );
+    production_session
+        .execute("set @prepared_limit = 1")
+        .expect("bind SQL parameter");
+    production_session
+        .execute("prepare bridge_sql from 'select a from t_prepared_limit limit ?'")
+        .expect("prepare SQL dispatch");
+    let mut sql_result = production_session
+        .execute("execute bridge_sql using @prepared_limit")
+        .expect("execute SQL dispatch");
+    assert!(production_session.PreparedNameHasTypedPlanForTest("bridge_sql"));
+    assert_eq!(
+        sql_result[0].next_row().expect("read SQL result"),
+        Some(vec!["10".to_owned()])
+    );
+    production_session
+        .execute("set @prepared_limit = 2")
+        .expect("rebind SQL parameter");
+    let mut rebound = production_session
+        .execute("execute bridge_sql using @prepared_limit")
+        .expect("reexecute SQL through cached physical plan");
+    assert_eq!(
+        rebound[0].next_row().expect("read rebound row"),
+        Some(vec!["10".to_owned()])
+    );
+    assert_eq!(
+        rebound[0].next_row().expect("read second rebound row"),
+        Some(vec!["20".to_owned()])
+    );
+    let mut analyzed = production_session
+        .execute("explain analyze select a from t_prepared_limit limit 1")
+        .expect("EXPLAIN ANALYZE uses the typed physical plan");
+    let mut analyzed_rows = Vec::new();
+    while let Some(row) = analyzed[0].next_row().expect("read analyzed plan") {
+        analyzed_rows.push(row);
+    }
+    assert!(analyzed_rows.iter().any(|row| row[0].contains("Limit")));
+    let scan = analyzed_rows
+        .iter()
+        .find(|row| row[0].contains("Scan"))
+        .expect("typed EXPLAIN keeps the scan operator");
+    assert_eq!(scan[2], "3");
+    assert!(scan[5].contains("total_process_keys: 3"));
+    assert!(
+        analyzed_rows[0][1].contains('.'),
+        "real optimizer estimate: {analyzed_rows:?}"
+    );
     drop(cached);
     drop(second);
     drop(result);
@@ -725,6 +849,7 @@ fn canonical_pessimistic_select_for_update_locks_scanned_record_before_returning
             binary: String::new(),
             hints: String::new(),
         },
+        TypedPlan: None,
         StmtNode: StatementNode {
             kind: StatementKind::Select,
             original_text: sql.into(),
@@ -862,6 +987,7 @@ fn canonical_session_exec_stmt_streams_typed_rows_and_finishes_statement() {
         GoCtx: None,
         InfoSchema: 0,
         Plan: plan,
+        TypedPlan: None,
         StmtNode: StatementNode {
             kind: StatementKind::Select,
             original_text: sql.into(),

@@ -39,6 +39,8 @@ pub struct ProcessPlanSnapshot {
 pub struct PreparedPlannedKVResult {
     /// 查询返回的行。
     pub Rows: Vec<astersql_executor_sortexec::Row>,
+    /// Physical output names in projection order.
+    pub Columns: Vec<String>,
     /// 本次是否从计划缓存取出计划（`true` 表示命中缓存）。
     pub FromPlanCache: bool,
     /// 执行过程产生的告警（如 range 过大跳过缓存）。

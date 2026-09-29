@@ -203,6 +203,7 @@ fn dml_stmt(
             binary: String::new(),
             hints: String::new(),
         },
+        TypedPlan: None,
         StmtNode: StatementNode {
             kind: statement_kind,
             original_text: sql.into(),
@@ -258,6 +259,7 @@ fn point_lock_stmt(
             binary: String::new(),
             hints: String::new(),
         },
+        TypedPlan: None,
         StmtNode: StatementNode {
             kind: StatementKind::Select,
             original_text: sql.into(),
@@ -1153,7 +1155,7 @@ fn canonical_adapter_top_sql_begin_finish_updates_formal_statement_stats() {
     context.network_sent_bytes = 17;
     owner.SetStatementContext(&context);
     owner.TopSQLStart(b"sql-4104", b"plan-4104");
-    owner.TopSQLFinish();
+    owner.TopSQLFinish(0.0);
     let stats = owner.top_sql_stats.borrow().as_ref().cloned().unwrap();
     let item = stats.GetOrCreateStatementStatsItem(b"sql-4104", b"plan-4104");
     assert_eq!(item.ExecCount, 1);

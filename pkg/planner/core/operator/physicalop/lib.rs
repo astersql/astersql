@@ -576,6 +576,9 @@ macro_rules! impl_concrete_physical_plan {
             fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
                 self
             }
+            fn as_physical_plan(&self) -> Option<&dyn base::PhysicalPlan> {
+                Some(self)
+            }
             fn schema(&self) -> &Schema {
                 self.schema_operator()
             }

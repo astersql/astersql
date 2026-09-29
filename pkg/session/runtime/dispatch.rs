@@ -371,6 +371,70 @@ fn binding_sql_parts(sql: &str) -> Option<(String, String)> {
 }
 
 impl ConcreteSession {
+    pub(super) fn simple_typed_primary_key_predicate(
+        &self,
+        database: &str,
+        table_name: &str,
+        predicate: &ast::ExprNode,
+    ) -> bool {
+        let ast::ExprKind::Binary { Op, L, R } = &predicate.Kind else {
+            return false;
+        };
+        if !matches!(Op.as_str(), "=" | "==") {
+            return false;
+        }
+        let column_name = match (&L.Kind, &R.Kind) {
+            (ast::ExprKind::Column(column), ast::ExprKind::ParamMarker { .. })
+            | (ast::ExprKind::Column(column), ast::ExprKind::Value(_)) => &column.Name.L,
+            (ast::ExprKind::ParamMarker { .. }, ast::ExprKind::Column(column))
+            | (ast::ExprKind::Value(_), ast::ExprKind::Column(column)) => &column.Name.L,
+            _ => return false,
+        };
+        self.domain
+            .stats_table(database, table_name)
+            .and_then(|(_, table)| table.GetPkColInfo().map(|column| column.Name.L.clone()))
+            .is_some_and(|primary| primary == *column_name)
+    }
+
+    pub(super) fn simple_typed_select_shape(select: &ast::SelectStmt) -> bool {
+        let Some(from) = select.From.as_ref() else {
+            return false;
+        };
+        matches!(from.TableRefs.Left.as_deref(), Some(ast::ResultSetNode::TableSource(source)) if source.QuerySource.is_none())
+            && from.TableRefs.Right.is_none()
+            && select.With.is_none()
+            && select.lock_info.is_none()
+            && select.SelectIntoOpt.is_none()
+            && !select.Distinct
+            && select.SelectStmtOpts.SQLCache
+            && !select.SelectStmtOpts.CalcFoundRows
+            && !select.SelectStmtOpts.SQLBufferResult
+            && select.TableHints.is_empty()
+            && select.WindowSpecs.is_empty()
+            && select.GroupBy.is_empty()
+            && select.Having.is_none()
+            && select.Where.as_ref().is_none_or(|predicate| {
+                matches!(&predicate.Kind, ast::ExprKind::Binary { Op, .. } if matches!(Op.as_str(), "=" | "=="))
+            })
+            && select.OrderBy.is_empty()
+            && (select.Limit.is_some() || select.Where.is_some())
+            && !select.Fields.Fields.is_empty()
+            && select.Fields.Fields.iter().all(|field| {
+                matches!(
+                    field.Expr.as_ref().map(|expr| &expr.Kind),
+                    Some(ast::ExprKind::Column(_))
+                )
+            })
+    }
+
+    #[cfg(test)]
+    pub fn PreparedNameHasTypedPlanForTest(&self, name: &str) -> bool {
+        self.state
+            .borrow()
+            .prepared_by_name
+            .get(&name.to_lowercase())
+            .is_some_and(|prepared| prepared.typed_plan_id.is_some())
+    }
     fn execute_plan_replayer_load(
         &self,
         statement: &ast::PlanReplayerStmt,
@@ -850,11 +914,13 @@ impl ConcreteSession {
         self.sql_killer
             .ConnID
             .store(connection_id, Ordering::Release);
-        let variables = Arc::get_mut(&mut self.session_vars)
+        let inner = Rc::get_mut(&mut self.inner)
+            .ok_or_else(|| SessionError::new("session is already shared"))?;
+        let variables = Arc::get_mut(&mut inner.session_vars)
             .ok_or_else(|| SessionError::new("session variables are already shared"))?;
         variables.ConnectionID = connection_id;
         variables.ClientCapability = capability;
-        self.state.borrow_mut().client_capability = capability;
+        inner.state.borrow_mut().client_capability = capability;
         let collation_name =
             astersql_parser_mysql::charset::GetCollationNameByID(u16::from(collation))
                 .ok_or_else(|| SessionError::new(format!("unknown collation id {collation}")))?;
@@ -2945,16 +3011,14 @@ impl ConcreteSession {
         }
         if let Some(deallocate) = statement.as_any().downcast_ref::<ast::DeallocateStmt>() {
             let name = deallocate.Name.to_lowercase();
-            if self
-                .state
-                .borrow_mut()
-                .prepared_by_name
-                .remove(&name)
-                .is_none()
-            {
+            let removed = self.state.borrow_mut().prepared_by_name.remove(&name);
+            let Some(removed) = removed else {
                 return Err(SessionError::new(format!(
                     "Unknown prepared statement handler ({name}) given to DEALLOCATE PREPARE"
                 )));
+            };
+            if let Some(id) = removed.typed_plan_id {
+                self.state.borrow_mut().prepared_planned.remove(&id);
             }
             runtime_prepared_stmt_release(&self.domain, 1);
             return Ok(None);
@@ -2997,7 +3061,7 @@ impl ConcreteSession {
             }
         }
         let database = self.current_database();
-        self.state.borrow_mut().prepared_by_name.insert(
+        let replaced = self.state.borrow_mut().prepared_by_name.insert(
             name,
             NamedPreparedStatement {
                 sql,
@@ -3006,9 +3070,170 @@ impl ConcreteSession {
                 planned_catalog_version: None,
                 last_parameter_shape: None,
                 cached_transaction_contexts: HashSet::new(),
+                typed_plan_id: None,
+                typed_plan_catalog_version: None,
             },
         );
+        if let Some(id) = replaced.and_then(|prepared| prepared.typed_plan_id) {
+            self.state.borrow_mut().prepared_planned.remove(&id);
+        }
         Ok(())
+    }
+
+    fn execute_simple_prepared_select_through_adapter(
+        &self,
+        name: &str,
+        template: &str,
+        arguments: &[String],
+        catalog_version: u64,
+    ) -> SessionResult<Option<ConcreteRecordSet>> {
+        let state = self.state.borrow();
+        if state.transaction.is_some()
+            || state.transaction_stale_read_ts.is_some()
+            || state.current_statement_is_stale
+            || state.pending_stale_read_ts.is_some()
+        {
+            return Ok(None);
+        }
+        drop(state);
+        let statements = parse(template)?;
+        let Some(select) = statements
+            .first()
+            .and_then(|statement| statement.as_any().downcast_ref::<ast::SelectStmt>())
+        else {
+            return Ok(None);
+        };
+        let Some(from) = select.From.as_ref() else {
+            return Ok(None);
+        };
+        let Some(ast::ResultSetNode::TableSource(source)) = from.TableRefs.Left.as_deref() else {
+            return Ok(None);
+        };
+        let database = if source.Source.Schema.L.is_empty() {
+            self.current_database()
+        } else {
+            source.Source.Schema.L.clone()
+        };
+        if ["information_schema", "performance_schema", "mysql", "sys"]
+            .iter()
+            .any(|system| database.eq_ignore_ascii_case(system))
+            || self
+                .state
+                .borrow()
+                .local_temporary_tables
+                .contains_key(&(database.to_lowercase(), source.Source.Name.L.to_lowercase()))
+        {
+            return Ok(None);
+        }
+        if statements.len() != 1 || !Self::simple_typed_select_shape(select) {
+            return Ok(None);
+        }
+        if select.Where.as_ref().is_some_and(|predicate| {
+            !self.simple_typed_primary_key_predicate(&database, &source.Source.Name.L, predicate)
+        }) {
+            return Ok(None);
+        }
+        let Some(parameters) = arguments
+            .iter()
+            .map(|argument| {
+                argument
+                    .parse::<i64>()
+                    .ok()
+                    .map(astersql_types::datum::NewIntDatum)
+            })
+            .collect::<Option<Vec<_>>>()
+        else {
+            return Ok(None);
+        };
+        self.ensure_implicit_transaction()?;
+        self.validate_table_read_ts_after_last_commit()?;
+        self.validate_grouping_function_arguments(select)?;
+        self.validate_only_full_group_by(select)?;
+        self.observe_alternative_logical_plan(select, template)?;
+        self.record_replica_read_request(select, template);
+        let existing = self
+            .state
+            .borrow()
+            .prepared_by_name
+            .get(name)
+            .and_then(|prepared| {
+                (prepared.typed_plan_catalog_version == Some(catalog_version))
+                    .then_some(prepared.typed_plan_id)
+                    .flatten()
+            });
+        let statement_id = if let Some(id) = existing {
+            id
+        } else {
+            let id = self.PreparePlannedKVSelect(template, self.domain.info_schema())?;
+            let mut state = self.state.borrow_mut();
+            let previous = if let Some(prepared) = state.prepared_by_name.get_mut(name) {
+                prepared.typed_plan_catalog_version = Some(catalog_version);
+                prepared.typed_plan_id.replace(id)
+            } else {
+                None
+            };
+            if let Some(previous) = previous {
+                state.prepared_planned.remove(&previous);
+            }
+            id
+        };
+        let executed =
+            match self.ExecutePreparedPlannedKVSelectThroughAdapter(statement_id, &parameters) {
+                Ok(executed) => executed,
+                Err(error)
+                    if error
+                        .to_string()
+                        .contains("prepared typed KV range encoder") =>
+                {
+                    let mut state = self.state.borrow_mut();
+                    if let Some(prepared) = state.prepared_by_name.get_mut(name) {
+                        prepared.typed_plan_id = None;
+                        prepared.typed_plan_catalog_version = None;
+                    }
+                    state.prepared_planned.remove(&statement_id);
+                    return Ok(None);
+                }
+                Err(error) => return Err(error),
+            };
+        let columns = executed
+            .Columns
+            .into_iter()
+            .enumerate()
+            .map(|(index, name)| {
+                let field = &select.Fields.Fields[index];
+                if !field.AsName.L.is_empty() {
+                    field.AsName.L.clone()
+                } else {
+                    field
+                        .Expr
+                        .as_ref()
+                        .and_then(|expression| match &expression.Kind {
+                            ast::ExprKind::Column(column) => Some(column.Name.L.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or(name)
+                }
+            })
+            .collect();
+        let rows = executed
+            .Rows
+            .into_iter()
+            .map(|row| {
+                row.0
+                    .into_iter()
+                    .map(|value| match value {
+                        astersql_executor_sortexec::SortValue::Null => "NULL".to_owned(),
+                        astersql_executor_sortexec::SortValue::Int(value) => value.to_string(),
+                        astersql_executor_sortexec::SortValue::UInt(value) => value.to_string(),
+                        astersql_executor_sortexec::SortValue::Float(value) => value.to_string(),
+                        astersql_executor_sortexec::SortValue::Bytes(value) => {
+                            String::from_utf8_lossy(&value).into_owned()
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        Ok(Some(ConcreteRecordSet::new(columns, rows)))
     }
 
     /// Go `EXECUTE stmt USING @v`: binds the user variables into the parameter
@@ -3024,9 +3249,18 @@ impl ConcreteSession {
         {
             let mut state = self.state.borrow_mut();
             if state.plan_cache_generation != generation {
+                let stale_typed = state
+                    .prepared_by_name
+                    .values_mut()
+                    .filter_map(|prepared| prepared.typed_plan_id.take())
+                    .collect::<Vec<_>>();
+                for id in stale_typed {
+                    state.prepared_planned.remove(&id);
+                }
                 for prepared in state.prepared_by_name.values_mut() {
                     prepared.planned = false;
                     prepared.cached_transaction_contexts.clear();
+                    prepared.typed_plan_catalog_version = None;
                 }
                 state.last_plan_from_cache = false;
                 state.plan_cache_generation = generation;
@@ -3229,17 +3463,32 @@ impl ConcreteSession {
             state.skip_predicate_collection = from_plan_cache;
             state.prepared_database_override = Some(database);
         }
+        let typed_execution = self.execute_simple_prepared_select_through_adapter(
+            &name,
+            &parameter_template,
+            &arguments,
+            current_catalog_version,
+        );
         let mut record_set = None;
         let mut execution = Ok(());
-        for prepared_statement in &statements {
-            match self.execute_statement(prepared_statement.as_ref(), Some(&sql)) {
-                Ok(result) => {
-                    self.record_statement_metric(prepared_statement.as_ref());
-                    record_set = result.or(record_set);
-                }
-                Err(error) => {
-                    execution = Err(error);
-                    break;
+        match typed_execution {
+            Ok(result) => record_set = result,
+            Err(error) => execution = Err(error),
+        }
+        if record_set.is_some() {
+            self.record_statement_metric(statements[0].as_ref());
+        }
+        if execution.is_ok() && record_set.is_none() {
+            for prepared_statement in &statements {
+                match self.execute_statement(prepared_statement.as_ref(), Some(&sql)) {
+                    Ok(result) => {
+                        self.record_statement_metric(prepared_statement.as_ref());
+                        record_set = result.or(record_set);
+                    }
+                    Err(error) => {
+                        execution = Err(error);
+                        break;
+                    }
                 }
             }
         }
@@ -3874,7 +4123,7 @@ pub(crate) fn split_statement_sql(sql: &str) -> Vec<String> {
     statements
 }
 
-impl Drop for ConcreteSession {
+impl Drop for super::session::ConcreteSessionInner {
     fn drop(&mut self) {
         let state = self.state.get_mut();
         let prepared_count = state

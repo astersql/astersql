@@ -1541,7 +1541,8 @@ impl ConcreteSession {
             .AnalyzeOpts
             .iter()
             .find(|option| option.Type == ast::AnalyzeOptionType::NumTopN)
-            .map(|option| literal(&option.Value))
+            .and_then(|option| option.Value.as_ref())
+            .map(literal)
             .transpose()?
             .map(|value| {
                 value
@@ -1554,7 +1555,8 @@ impl ConcreteSession {
             .AnalyzeOpts
             .iter()
             .find(|option| option.Type == ast::AnalyzeOptionType::NumBuckets)
-            .map(|option| literal(&option.Value))
+            .and_then(|option| option.Value.as_ref())
+            .map(literal)
             .transpose()?
             .map(|value| {
                 value

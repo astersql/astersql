@@ -29,6 +29,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 use astersql_errors as errors;
+use astersql_planner_core_base as base;
 use astersql_sessionctx_vardef::QueryLogMaxLen;
 use astersql_util_chunk as chunk;
 pub use astersql_util_execdetails::ruv2_metrics::{RUV2Metrics, RUV2Weights};
@@ -139,6 +140,15 @@ impl PlanInfo {
             PlanKind::Insert | PlanKind::Update | PlanKind::Delete
         )
     }
+}
+
+/// Optimizer result used when a statement is rebuilt after preparation or retry.
+/// Keep the physical tree alongside the compatibility summary for RU traversal.
+pub struct RebuiltPlan {
+    pub summary: PlanInfo,
+    pub typed: Arc<dyn base::Plan>,
+    pub output_names: Vec<FieldName>,
+    pub schema_version: i64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -396,7 +406,9 @@ pub trait AdapterRuntime {
     fn RebuildPlan(
         &self,
         statement: &StatementNode,
-    ) -> AdapterResult<(PlanInfo, Vec<FieldName>, i64)>;
+        previous_summary: &PlanInfo,
+        previous_names: &[FieldName],
+    ) -> AdapterResult<RebuiltPlan>;
     fn NewChunk(&self, config: &ChunkConfig) -> chunk::Chunk;
     fn StatementReadTS(&self) -> AdapterResult<u64>;
     fn TransactionStartTS(&self) -> u64;
@@ -480,7 +492,7 @@ pub trait AdapterRuntime {
     fn RecordNetworkTraffic(&self, sent: u64, received: u64, mpp: u64);
     fn RecordPlanCache(&self, hit: bool, reason: Option<&str>);
     fn TopSQLStart(&self, sql_digest: &[u8], plan_digest: &[u8]);
-    fn TopSQLFinish(&self);
+    fn TopSQLFinish(&self, total_ru_v2: f64);
     fn OnExecComplete(&self, _success: bool) {}
     fn ExecLockMetrics(&self) -> ExecLockMetrics {
         ExecLockMetrics::default()
@@ -797,6 +809,8 @@ pub struct ExecStmt {
     pub GoCtx: Option<ExecutionContext>,
     pub InfoSchema: i64,
     pub Plan: PlanInfo,
+    /// Original typed planner tree retained for operator-level RU traversal.
+    pub TypedPlan: Option<Arc<dyn base::Plan>>,
     pub StmtNode: StatementNode,
     pub Ctx: Arc<dyn AdapterRuntime>,
     pub LowerPriority: bool,
@@ -815,6 +829,12 @@ pub struct ExecStmt {
 }
 
 impl ExecStmt {
+    /// Traverse the original physical operators, if the statement has a typed plan.
+    /// A missing or nonphysical plan is never replaced with `PlanInfo` estimates.
+    pub fn TypedFlatPlan(&self) -> Option<Vec<astersql_planner_core::TypedFlatOperator<'_>>> {
+        astersql_planner_core::FlattenTypedPhysicalPlan(self.TypedPlan.as_deref()?)
+    }
+
     /// 返回语句节点。
     pub fn GetStmtNode(&self) -> &StatementNode {
         &self.StmtNode
@@ -867,12 +887,15 @@ impl ExecStmt {
 
     /// 重建执行计划并更新 InfoSchema 版本。
     pub fn RebuildPlan(&mut self) -> AdapterResult<i64> {
-        let (plan, names, schema_version) = self.Ctx.RebuildPlan(&self.StmtNode)?;
-        self.Plan = plan;
-        self.OutputNames = names;
-        self.InfoSchema = schema_version;
+        let rebuilt = self
+            .Ctx
+            .RebuildPlan(&self.StmtNode, &self.Plan, &self.OutputNames)?;
+        self.Plan = rebuilt.summary;
+        self.TypedPlan = Some(rebuilt.typed);
+        self.OutputNames = rebuilt.output_names;
+        self.InfoSchema = rebuilt.schema_version;
         self.StatementCtx.plan = Some(self.Plan.clone());
-        Ok(schema_version)
+        Ok(rebuilt.schema_version)
     }
 
     /// 执行语句入口（捕获 panic）。
@@ -1846,7 +1869,7 @@ impl ExecStmt {
 
     /// TopSQL 语句结束钩子。
     pub fn observeStmtFinishedForTopProfiling(&self) {
-        self.Ctx.TopSQLFinish();
+        self.Ctx.TopSQLFinish(self.StatementCtx.total_ru);
     }
 
     pub fn getSQLPlanDigest(&mut self) -> (Vec<u8>, Vec<u8>) {

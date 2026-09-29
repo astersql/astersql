@@ -534,6 +534,9 @@ impl Plan for BasePhysicalPlan {
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
+    fn as_physical_plan(&self) -> Option<&dyn PhysicalPlan> {
+        Some(self)
+    }
     fn schema(&self) -> &Schema {
         self.children
             .first()

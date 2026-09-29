@@ -138,6 +138,10 @@ pub trait Plan: Any {
     /// Mutable runtime type boundary for in-place physical-plan rewrites.
     /// 可变运行时类型边界，供物理计划路由原地替换具体算子。
     fn as_any_mut(&mut self) -> &mut dyn Any;
+    /// Expose the physical tree without erasing concrete operator types.
+    fn as_physical_plan(&self) -> Option<&dyn PhysicalPlan> {
+        None
+    }
     /// 返回计划输出 schema；Go 指针语义机械映射为共享借用。
     fn schema(&self) -> &expression::Schema;
     /// 返回计划节点 ID。
@@ -398,6 +402,8 @@ pub enum JoinType {
     LeftOuterSemiJoin = 5,
     /// 输出左表行并附加是否未匹配的布尔值。
     AntiLeftOuterSemiJoin = 6,
+    /// 保留左右两侧未匹配行。
+    FullOuterJoin = 7,
 }
 
 impl JoinType {
@@ -407,6 +413,7 @@ impl JoinType {
             self,
             Self::LeftOuterJoin
                 | Self::RightOuterJoin
+                | Self::FullOuterJoin
                 | Self::LeftOuterSemiJoin
                 | Self::AntiLeftOuterSemiJoin
         )
@@ -436,6 +443,7 @@ impl std::fmt::Display for JoinType {
             Self::InnerJoin => "inner join",
             Self::LeftOuterJoin => "left outer join",
             Self::RightOuterJoin => "right outer join",
+            Self::FullOuterJoin => "full outer join",
             Self::SemiJoin => "semi join",
             Self::AntiSemiJoin => "anti semi join",
             Self::LeftOuterSemiJoin => "left outer semi join",

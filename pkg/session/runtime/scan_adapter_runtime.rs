@@ -481,9 +481,43 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
     }
     fn RebuildPlan(
         &self,
-        statement: &StatementNode,
-    ) -> AdapterResult<(PlanInfo, Vec<FieldName>, i64)> {
-        Err(errors::New("plan rebuild requires the canonical optimizer"))
+        _statement: &StatementNode,
+        previous_summary: &PlanInfo,
+        previous_names: &[FieldName],
+    ) -> AdapterResult<astersql_executor::adapter::RebuiltPlan> {
+        let prepared = self
+            .prepared_binding
+            .borrow()
+            .clone()
+            .ok_or_else(|| errors::New("plan rebuild requires a prepared physical binding"))?;
+        self.BindPreparedPlannedKVSelect(
+            prepared.statement_id,
+            &prepared.parameters,
+            prepared.initial_capacity,
+            prepared.maximum_chunk_size,
+        )
+        .map_err(|error| errors::New(error.to_string()))?;
+        let binding = self.physical_scan.borrow();
+        let physical = binding
+            .as_ref()
+            .ok_or_else(|| errors::New("rebuilt physical plan was not bound"))?;
+        let plan = physical.plan.as_plan();
+        let cloned = plan
+            .clone_physical(plan.s_ctx().clone())
+            .map_err(|error| errors::New(error.to_string()))?;
+        let typed: Arc<dyn astersql_planner_core_base::Plan> =
+            Arc::from(cloned as Box<dyn astersql_planner_core_base::Plan>);
+        let mut summary = previous_summary.clone();
+        summary.id = plan.id();
+        if let super::typed_adapter_bridge::BoundPhysicalPlan::Prepared(prepared) = &physical.plan {
+            summary.encoded = prepared.Snapshot.Operators.join(" -> ");
+        }
+        Ok(RebuiltPlan {
+            summary,
+            typed,
+            output_names: previous_names.to_vec(),
+            schema_version: self.session.domain.info_schema().SchemaMetaVersion(),
+        })
     }
     fn NewChunk(&self, config: &ChunkConfig) -> chunk::Chunk {
         *chunk::New(
@@ -736,6 +770,7 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
         self.deadline.borrow_mut().take();
     }
     fn FinalizePreparedExecution(&self, scanned_rows: usize, success: bool) {
+        self.effects.borrow_mut().last_scanned_rows = scanned_rows;
         if let Some(binding) = self.physical_scan.borrow_mut().as_mut() {
             if let super::typed_adapter_bridge::BoundPhysicalPlan::Prepared(planned) =
                 &mut binding.plan
@@ -1389,7 +1424,7 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
             }
         }
     }
-    fn TopSQLFinish(&self) {
+    fn TopSQLFinish(&self, total_ru_v2: f64) {
         self.deadline.borrow_mut().take();
         self.effects.borrow_mut().top_sql_finished += 1;
         let Some((sql_digest, plan_digest, started)) = self.top_sql_current.borrow_mut().take()
@@ -1405,6 +1440,7 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
             .as_nanos()
             .min(i64::MAX as u128) as i64;
         let finish = astersql_util_topsql_stmtstats::ExecFinishInfo {
+            TotalRUV2: total_ru_v2,
             OutNetworkBytes: self.statement_context.borrow().network_sent_bytes,
             ExecDuration: astersql_util_topsql_stmtstats::SignedDuration::from_nanos(duration_ns),
             TopRUEnabled: astersql_util_topsql_state::TopRUEnabled(),

@@ -4096,6 +4096,12 @@ fn build_join_runtime(
             reset_not_null(&mut full_schema, 0);
             base::JoinType::RightOuterJoin
         }
+        crate::ast::JoinType::FullJoin => {
+            builder.optFlag |= rule::FLAG_ELIMINATE_OUTER_JOIN;
+            reset_not_null(&mut schema, 0);
+            reset_not_null(&mut full_schema, 0);
+            base::JoinType::FullOuterJoin
+        }
     };
     let mut names = left.OutputNames().Shallow();
     names.0.extend(right.OutputNames().0.iter().cloned());
@@ -4248,6 +4254,11 @@ fn build_lateral_join_runtime(
         crate::ast::JoinType::RightJoin => {
             return Err(expression::errors::New(
                 "RIGHT JOIN is not supported with LATERAL",
+            ));
+        }
+        crate::ast::JoinType::FullJoin => {
+            return Err(expression::errors::New(
+                "FULL JOIN is not supported with LATERAL",
             ));
         }
         crate::ast::JoinType::CrossJoin => {}

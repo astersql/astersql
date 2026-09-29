@@ -35,6 +35,7 @@ pub struct SessionBoundAdapterOwner {
     pub(super) session: Rc<ConcreteSession>,
     pub(super) scan: RefCell<Option<TypedScanSpec>>,
     pub(super) physical_scan: RefCell<Option<PhysicalScanBinding>>,
+    pub(super) prepared_binding: RefCell<Option<PreparedBinding>>,
     pub(super) dml_sql: RefCell<Option<String>>,
     pub(super) analyze_sql: RefCell<Option<String>>,
     pub(super) fk_savepoint: RefCell<Option<String>>,
@@ -129,6 +130,7 @@ pub struct ScanAdapterEffects {
     pub process_sql: String,
     pub process_started: Option<std::time::SystemTime>,
     pub last_found_rows: u64,
+    pub last_scanned_rows: usize,
     pub audited_sql: Vec<String>,
     pub slow_queries: Vec<(String, bool)>,
     pub summaries: Vec<String>,
@@ -155,6 +157,14 @@ pub(super) struct PhysicalScanBinding {
     pub ranges: Vec<KeyRange>,
     pub leaf_ranges: Vec<(i64, Vec<KeyRange>)>,
     pub version: kv::Version,
+    pub initial_capacity: usize,
+    pub maximum_chunk_size: usize,
+}
+
+#[derive(Clone)]
+pub(super) struct PreparedBinding {
+    pub statement_id: u64,
+    pub parameters: Vec<astersql_types::datum::Datum>,
     pub initial_capacity: usize,
     pub maximum_chunk_size: usize,
 }
@@ -275,12 +285,193 @@ fn encode_index_ranges(
         .collect()
 }
 
+fn encode_table_record_ranges(
+    scan: &PhysicalTableScan,
+    table_id: i64,
+) -> Result<Vec<KeyRange>, BuildError> {
+    let table = scan
+        .Table
+        .as_ref()
+        .ok_or_else(|| BuildError::new("prepared PhysicalTableScan has no TableInfo"))?;
+    if !table.PKIsHandle || scan.IsCommonHandle {
+        return Err(BuildError::new(
+            "prepared typed KV range encoder requires an integer handle range",
+        ));
+    }
+    let ranges = scan
+        .RebuildRangesForPlanCache()
+        .map_err(|error| BuildError::new(error.to_string()))?;
+    ranges
+        .iter()
+        .map(|range| {
+            let [low] = range.LowVal.as_slice() else {
+                return Err(BuildError::new(
+                    "prepared typed KV range encoder requires one lower handle",
+                ));
+            };
+            let [high] = range.HighVal.as_slice() else {
+                return Err(BuildError::new(
+                    "prepared typed KV range encoder requires one upper handle",
+                ));
+            };
+            if low.Kind() != astersql_types::datum::KindInt64
+                || high.Kind() != astersql_types::datum::KindInt64
+            {
+                return Err(BuildError::new(
+                    "prepared typed KV range encoder requires signed integer handles",
+                ));
+            }
+            let mut start = astersql_tablecodec::EncodeRowKeyWithHandle(
+                table_id,
+                Box::new(kv::IntHandle(low.GetInt64())),
+            );
+            if range.LowExclude {
+                start = start.PrefixNext();
+            }
+            let mut end = astersql_tablecodec::EncodeRowKeyWithHandle(
+                table_id,
+                Box::new(kv::IntHandle(high.GetInt64())),
+            );
+            if !range.HighExclude {
+                end = end.PrefixNext();
+            }
+            Ok(KeyRange { start, end })
+        })
+        .collect()
+}
+
 impl SessionBoundAdapterOwner {
+    pub fn PreparedResultMetadata(
+        &self,
+    ) -> Option<(bool, Vec<String>, super::ProcessPlanSnapshot)> {
+        let binding = self.physical_scan.borrow();
+        let binding = binding.as_ref()?;
+        let BoundPhysicalPlan::Prepared(prepared) = &binding.plan else {
+            return None;
+        };
+        Some((
+            prepared.FromPlanCache,
+            prepared.Warnings.clone(),
+            prepared.Snapshot.clone(),
+        ))
+    }
+
+    /// Construct the statement metadata from the bound prepared physical plan.
+    /// This is the canonical session entry for executing a planned KV SELECT
+    /// through ExecStmt instead of duplicating the plan in a summary-only path.
+    pub fn BuildPreparedExecStmt(
+        self: &Arc<Self>,
+    ) -> Result<astersql_executor::adapter::ExecStmt, BuildError> {
+        use astersql_executor::adapter::{
+            FieldName, PlanInfo, PlanKind, SchemaColumn, StatementKind, StatementNode,
+        };
+
+        let binding = self.physical_scan.borrow();
+        let Some(binding) = binding.as_ref() else {
+            return Err(BuildError::new("prepared physical plan was not bound"));
+        };
+        let BoundPhysicalPlan::Prepared(prepared) = &binding.plan else {
+            return Err(BuildError::new("bound plan is not a prepared SELECT"));
+        };
+        let plan = prepared.Plan.as_ref();
+        let evaluation = plan.s_ctx().GetExprCtx().GetEvalCtx();
+        let columns = &plan.schema().Columns;
+        let schema = columns
+            .iter()
+            .map(|column| SchemaColumn {
+                field_type: column.GetType(evaluation).clone(),
+            })
+            .collect();
+        let output_names = columns
+            .iter()
+            .map(|column| FieldName {
+                column_name: column.OrigName.clone(),
+                ..Default::default()
+            })
+            .collect();
+        let sql = prepared.SQLText.clone();
+        let summary = PlanInfo {
+            id: plan.id(),
+            kind: PlanKind::Query,
+            schema,
+            calculate_no_delay: false,
+            projection_child: None,
+            encoded: prepared.Snapshot.Operators.join(" -> "),
+            binary: String::new(),
+            hints: String::new(),
+        };
+        self.BuildExecStmt(
+            summary,
+            StatementNode {
+                kind: StatementKind::Execute,
+                original_text: sql.clone(),
+                text: sql.clone(),
+                secure_text: sql,
+                prepared_text: None,
+            },
+            output_names,
+            true,
+        )
+    }
+
+    /// Build an executable statement from the physical plan currently bound to
+    /// this session owner. The typed tree is cloned from the actual plan used
+    /// by the executor, so RU traversal never falls back to `PlanInfo` text.
+    pub fn BuildExecStmt(
+        self: &Arc<Self>,
+        plan_summary: astersql_executor::adapter::PlanInfo,
+        statement: astersql_executor::adapter::StatementNode,
+        output_names: Vec<astersql_executor::adapter::FieldName>,
+        prepared: bool,
+    ) -> Result<astersql_executor::adapter::ExecStmt, BuildError> {
+        use astersql_executor::adapter::{ExecStmt, StatementContext};
+
+        let binding = self.physical_scan.borrow();
+        let physical = binding
+            .as_ref()
+            .ok_or_else(|| BuildError::new("typed physical plan was not bound"))?;
+        let plan = physical.plan.as_plan();
+        let cloned = plan
+            .clone_physical(plan.s_ctx().clone())
+            .map_err(|error| BuildError::new(error.to_string()))?;
+        let typed_plan: Box<dyn astersql_planner_core_base::Plan> = cloned;
+        let typed_plan = Arc::from(typed_plan);
+        let sql = statement.text.clone();
+        let statement_kind = statement.kind;
+        Ok(ExecStmt {
+            GoCtx: None,
+            InfoSchema: 0,
+            Plan: plan_summary.clone(),
+            TypedPlan: Some(typed_plan),
+            StmtNode: statement,
+            Ctx: self.clone(),
+            LowerPriority: false,
+            isPreparedStmt: prepared,
+            isSelectForUpdate: false,
+            retryCount: 0,
+            retryStartTime: None,
+            phaseBuildDurations: [std::time::Duration::ZERO; 2],
+            phaseOpenDurations: [std::time::Duration::ZERO; 2],
+            phaseNextDurations: [std::time::Duration::ZERO; 2],
+            phaseLockDurations: [std::time::Duration::ZERO; 2],
+            OutputNames: output_names,
+            PsStmt: None,
+            Ti: None,
+            StatementCtx: StatementContext {
+                statement_type: format!("{statement_kind:?}"),
+                sql_normalized: sql,
+                plan: Some(plan_summary),
+                ..Default::default()
+            },
+        })
+    }
+
     pub fn new(session: ConcreteSession) -> Self {
         Self {
             session: Rc::new(session),
             scan: RefCell::new(None),
             physical_scan: RefCell::new(None),
+            prepared_binding: RefCell::new(None),
             dml_sql: RefCell::new(None),
             analyze_sql: RefCell::new(None),
             fk_savepoint: RefCell::new(None),
@@ -350,6 +541,7 @@ impl SessionBoundAdapterOwner {
 
     pub fn BindTypedScan(&self, scan: TypedScanSpec) {
         *self.physical_scan.borrow_mut() = None;
+        self.prepared_binding.borrow_mut().take();
         *self.scan.borrow_mut() = Some(scan);
     }
 
@@ -421,6 +613,7 @@ impl SessionBoundAdapterOwner {
         initial_capacity: usize,
         maximum_chunk_size: usize,
     ) -> Result<(), BuildError> {
+        self.prepared_binding.borrow_mut().take();
         self.bind_physical_plan(
             BoundPhysicalPlan::Plain(plan),
             ranges,
@@ -490,9 +683,9 @@ impl SessionBoundAdapterOwner {
             };
             encode_index_ranges(index_scan, table_id)?
         } else {
-            if scans.is_empty() || scans.iter().any(|scan| !scan.AccessCondition.is_empty()) {
+            if scans.is_empty() {
                 return Err(BuildError::new(
-                    "prepared typed KV range encoder requires full table record scans",
+                    "prepared typed KV range encoder requires one table scan",
                 ));
             }
             if scans.len() > 1 {
@@ -508,11 +701,15 @@ impl SessionBoundAdapterOwner {
                 } else {
                     table.ID
                 };
-                let start = kv::Key(astersql_tablecodec::GenTableRecordPrefix(table_id).0);
-                vec![KeyRange {
-                    end: start.PrefixNext(),
-                    start,
-                }]
+                if scan.AccessCondition.is_empty() {
+                    let start = kv::Key(astersql_tablecodec::GenTableRecordPrefix(table_id).0);
+                    vec![KeyRange {
+                        end: start.PrefixNext(),
+                        start,
+                    }]
+                } else {
+                    encode_table_record_ranges(scan, table_id)?
+                }
             }
         };
         let version = self
@@ -527,7 +724,14 @@ impl SessionBoundAdapterOwner {
             version,
             initial_capacity,
             maximum_chunk_size,
-        )
+        )?;
+        *self.prepared_binding.borrow_mut() = Some(PreparedBinding {
+            statement_id,
+            parameters: parameters.to_vec(),
+            initial_capacity,
+            maximum_chunk_size,
+        });
+        Ok(())
     }
 
     fn bind_physical_plan(

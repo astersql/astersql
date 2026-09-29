@@ -20,7 +20,147 @@
 // 供 `EXPLAIN` 以树状文本展示，并支持 analyze / verbose 附加列。
 
 use crate::{PlanKind, PlanNode, StoreType};
+use base_dependency as base;
+use kv_dependency as kv;
+use physicalop_dependency as physicalop;
 use std::fmt;
+
+/// Borrowed physical operators retain their concrete Rust types and fields.
+/// The preorder indexes follow the order returned by each physical operator.
+pub struct TypedFlatOperator<'a> {
+    pub Origin: &'a dyn base::Plan,
+    pub ChildrenIdx: Vec<usize>,
+    pub ChildrenEndIdx: usize,
+    pub IsRoot: bool,
+    pub StoreType: kv::StoreType,
+    pub ReqType: physicalop::ReadReqType,
+    pub Label: TypedOperatorLabel,
+    pub IsINLProbeChild: bool,
+    pub NeedReverseDriverSide: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TypedOperatorLabel {
+    Empty,
+    BuildSide,
+    ProbeSide,
+    SeedPart,
+    RecursivePart,
+}
+
+/// Flatten a real physical plan without converting it to an EXPLAIN summary.
+pub fn FlattenTypedPhysicalPlan(plan: &dyn base::Plan) -> Option<Vec<TypedFlatOperator<'_>>> {
+    fn append<'a>(
+        plan: &'a dyn base::Plan,
+        tree: &mut Vec<TypedFlatOperator<'a>>,
+        is_root: bool,
+        store_type: kv::StoreType,
+        req_type: physicalop::ReadReqType,
+        label: TypedOperatorLabel,
+        inl_probe_child: bool,
+    ) -> Option<usize> {
+        let physical = plan.as_physical_plan()?;
+        let index = tree.len();
+        tree.push(TypedFlatOperator {
+            Origin: plan,
+            ChildrenIdx: Vec::new(),
+            ChildrenEndIdx: index,
+            IsRoot: is_root,
+            StoreType: store_type,
+            ReqType: req_type,
+            Label: label,
+            IsINLProbeChild: inl_probe_child,
+            NeedReverseDriverSide: false,
+        });
+        let origin = plan.as_any();
+        let reader_context =
+            if let Some(reader) = origin.downcast_ref::<physicalop::PhysicalTableReader>() {
+                Some((reader.StoreType, reader.ReadReqType))
+            } else if origin.is::<physicalop::PhysicalIndexReader>()
+                || origin.is::<physicalop::PhysicalIndexLookUpReader>()
+                || origin.is::<physicalop::PhysicalIndexMergeReader>()
+            {
+                Some((kv::StoreType::TiKV, physicalop::ReadReqType::Cop))
+            } else {
+                None
+            };
+        let children = physical.children();
+        let mut child_labels = vec![TypedOperatorLabel::Empty; children.len()];
+        if children.len() == 2 {
+            let inner = if let Some(join) = origin.downcast_ref::<physicalop::PhysicalApply>() {
+                Some((join.PhysicalHashJoin.BasePhysicalJoin.InnerChildIdx, true))
+            } else if let Some(join) = origin.downcast_ref::<physicalop::PhysicalHashJoin>() {
+                Some((join.BasePhysicalJoin.InnerChildIdx, join.UseOuterToBuild))
+            } else if let Some(join) = origin.downcast_ref::<physicalop::PhysicalIndexJoin>() {
+                Some((join.BasePhysicalJoin.InnerChildIdx, true))
+            } else {
+                None
+            };
+            if let Some((inner, outer_build)) = inner.filter(|(inner, _)| *inner < 2) {
+                child_labels[inner] = if outer_build {
+                    TypedOperatorLabel::ProbeSide
+                } else {
+                    TypedOperatorLabel::BuildSide
+                };
+                child_labels[1 - inner] = if outer_build {
+                    TypedOperatorLabel::BuildSide
+                } else {
+                    TypedOperatorLabel::ProbeSide
+                };
+            } else if let Some(join) = origin.downcast_ref::<physicalop::PhysicalMergeJoin>() {
+                child_labels = if join.BasePhysicalJoin.JoinType == base::JoinType::RightOuterJoin {
+                    vec![TypedOperatorLabel::BuildSide, TypedOperatorLabel::ProbeSide]
+                } else {
+                    vec![TypedOperatorLabel::ProbeSide, TypedOperatorLabel::BuildSide]
+                };
+            } else if origin.is::<physicalop::PhysicalIndexLookUpReader>() {
+                child_labels = vec![TypedOperatorLabel::BuildSide, TypedOperatorLabel::ProbeSide];
+            }
+            tree[index].NeedReverseDriverSide = child_labels[0] == TypedOperatorLabel::ProbeSide
+                && child_labels[1] == TypedOperatorLabel::BuildSide;
+        }
+        if let Some(reader) = origin.downcast_ref::<physicalop::PhysicalIndexMergeReader>() {
+            child_labels = vec![TypedOperatorLabel::BuildSide; children.len()];
+            if reader.TablePlan.is_some() && !child_labels.is_empty() {
+                *child_labels.last_mut().unwrap() = TypedOperatorLabel::ProbeSide;
+            }
+        }
+        for (child_position, child) in children.into_iter().enumerate() {
+            let (child_root, child_store, child_req) = reader_context
+                .map_or((is_root, store_type, req_type), |(store, req)| {
+                    (false, store, req)
+                });
+            let child_inl_probe = inl_probe_child
+                || (origin.is::<physicalop::PhysicalIndexLookUpReader>() && child_position == 1)
+                || (origin.is::<physicalop::PhysicalIndexMergeReader>()
+                    && child_labels[child_position] == TypedOperatorLabel::ProbeSide);
+            let child_index = append(
+                child,
+                tree,
+                child_root,
+                child_store,
+                child_req,
+                child_labels[child_position],
+                child_inl_probe,
+            )?;
+            tree[index].ChildrenIdx.push(child_index);
+        }
+        tree[index].ChildrenEndIdx = tree.len() - 1;
+        Some(index)
+    }
+
+    let mut tree = Vec::new();
+    append(
+        plan,
+        &mut tree,
+        true,
+        kv::StoreType::TiDB,
+        physicalop::ReadReqType::Cop,
+        TypedOperatorLabel::Empty,
+        false,
+    )?;
+    Some(tree)
+}
 
 /// 扁平化后的算子序列（深度优先序）。
 pub type FlatPlanTree = Vec<FlatOperator>;

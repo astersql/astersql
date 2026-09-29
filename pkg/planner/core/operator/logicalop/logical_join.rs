@@ -848,6 +848,7 @@ impl LogicalJoin {
                     self.Schema_mut().PKOrUK.extend(right_keys);
                 }
             }
+            JoinType::FullOuterJoin => {}
         }
     }
 
@@ -910,6 +911,9 @@ impl LogicalJoin {
             JoinType::InnerJoin => inner_count,
             JoinType::LeftOuterJoin => inner_count.max(left_stats.RowCount),
             JoinType::RightOuterJoin => inner_count.max(right_stats.RowCount),
+            JoinType::FullOuterJoin => inner_count
+                .max(left_stats.RowCount)
+                .max(right_stats.RowCount),
             JoinType::SemiJoin
             | JoinType::AntiSemiJoin
             | JoinType::LeftOuterSemiJoin
@@ -1072,6 +1076,7 @@ impl LogicalJoin {
             | JoinType::LeftOuterSemiJoin
             | JoinType::AntiLeftOuterSemiJoin => child_sets.first().cloned().unwrap_or_default(),
             JoinType::RightOuterJoin => child_sets.get(1).cloned().unwrap_or_default(),
+            JoinType::FullOuterJoin => fd::FDSet::default(),
             JoinType::InnerJoin => {
                 let mut set = fd::FDSet::default();
                 for child in &child_sets {
@@ -1384,6 +1389,7 @@ impl LogicalJoin {
             | JoinType::LeftOuterSemiJoin
             | JoinType::AntiLeftOuterSemiJoin => left.GroupNDVs.clone(),
             JoinType::RightOuterJoin => right.GroupNDVs.clone(),
+            JoinType::FullOuterJoin => Vec::new(),
             JoinType::InnerJoin => Vec::new(),
         }
     }

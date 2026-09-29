@@ -18,6 +18,209 @@ use super::*;
 // 为关系型 SELECT 执行真实查询，并把实际行数、耗时及模拟的 TiKV RPC 统计
 // 组织成与执行器树一致的 EXPLAIN ANALYZE 结果。
 impl ConcreteSession {
+    fn explain_analyze_simple_typed_select(
+        &self,
+        statement: &ast::SelectStmt,
+        statement_sql: &str,
+    ) -> SessionResult<Option<ConcreteRecordSet>> {
+        if !Self::simple_typed_select_shape(statement) {
+            return Ok(None);
+        }
+        let state = self.state.borrow();
+        if state.transaction.is_some()
+            || state.transaction_stale_read_ts.is_some()
+            || state.current_statement_is_stale
+            || state.pending_stale_read_ts.is_some()
+        {
+            return Ok(None);
+        }
+        drop(state);
+        let Some(ast::ResultSetNode::TableSource(source)) = statement
+            .From
+            .as_ref()
+            .and_then(|from| from.TableRefs.Left.as_deref())
+        else {
+            return Ok(None);
+        };
+        let database = if source.Source.Schema.L.is_empty() {
+            self.current_database()
+        } else {
+            source.Source.Schema.L.clone()
+        };
+        if ["information_schema", "performance_schema", "mysql", "sys"]
+            .iter()
+            .any(|system| database.eq_ignore_ascii_case(system))
+            || self
+                .state
+                .borrow()
+                .local_temporary_tables
+                .contains_key(&(database.to_lowercase(), source.Source.Name.L.to_lowercase()))
+        {
+            return Ok(None);
+        }
+        if statement.Where.as_ref().is_some_and(|predicate| {
+            !self.simple_typed_primary_key_predicate(&database, &source.Source.Name.L, predicate)
+        }) {
+            return Ok(None);
+        }
+        let mut sql = statement.node_text.Text();
+        let trimmed = statement_sql.trim_start();
+        let prefix = "explain analyze ";
+        if trimmed
+            .get(..prefix.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+        {
+            sql = trimmed[prefix.len()..].trim_end_matches(';').to_owned();
+        }
+        if sql.is_empty()
+            || !parse(&sql)?
+                .first()
+                .is_some_and(|node| node.as_any().is::<ast::SelectStmt>())
+        {
+            return Ok(None);
+        }
+        let statement_id = match self.PreparePlannedKVSelect(&sql, self.domain.info_schema()) {
+            Ok(id) => id,
+            Err(_) => return Ok(None),
+        };
+        let execution = (|| -> SessionResult<Option<ConcreteRecordSet>> {
+            let owner = Arc::new(SessionBoundAdapterOwner::new(self.clone()));
+            if owner
+                .BindPreparedPlannedKVSelect(statement_id, &[], 32, 1024)
+                .is_err()
+            {
+                return Ok(None);
+            }
+            let mut exec_stmt = owner.BuildPreparedExecStmt().map_err(|error| {
+                session_error("build EXPLAIN ANALYZE physical statement", error)
+            })?;
+            let flat = exec_stmt
+                .TypedFlatPlan()
+                .ok_or_else(|| SessionError::new("EXPLAIN ANALYZE lost its physical plan"))?;
+            let mut ancestors = Vec::new();
+            let operators = flat
+                .iter()
+                .enumerate()
+                .map(|(index, node)| {
+                    while ancestors.last().is_some_and(|end| *end < index) {
+                        ancestors.pop();
+                    }
+                    let depth = ancestors.len();
+                    ancestors.push(node.ChildrenEndIdx);
+                    let physical = node
+                        .Origin
+                        .as_physical_plan()
+                        .expect("flattened physical operator");
+                    (
+                        node.Origin.tp(&[]),
+                        depth,
+                        node.IsRoot,
+                        node.StoreType,
+                        physical.stats_info().RowCount,
+                        node.Origin.explain_info(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let started = Instant::now();
+            let mut record_set = exec_stmt
+                .Exec()
+                .map_err(|error| {
+                    session_error("execute EXPLAIN ANALYZE physical statement", error)
+                })?
+                .ok_or_else(|| SessionError::new("EXPLAIN ANALYZE SELECT returned no rows"))?;
+            let mut returned_rows = 0usize;
+            let mut chunk = record_set.NewChunk();
+            let read = (|| -> SessionResult<()> {
+                loop {
+                    record_set
+                        .Next(&mut chunk)
+                        .map_err(|error| session_error("read EXPLAIN ANALYZE result", error))?;
+                    if chunk.NumRows() == 0 {
+                        break;
+                    }
+                    returned_rows += chunk.NumRows();
+                }
+                Ok(())
+            })();
+            let close = record_set
+                .Close()
+                .map_err(|error| session_error("close EXPLAIN ANALYZE result", error));
+            read?;
+            close?;
+            let scanned_rows = owner.Effects().last_scanned_rows;
+            let table = statement
+                .From
+                .as_ref()
+                .and_then(|from| from.TableRefs.Left.as_deref())
+                .and_then(|source| match source {
+                    ast::ResultSetNode::TableSource(source) => Some(source.Source.Name.L.as_str()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            let rows = operators
+                .into_iter()
+                .map(|(name, depth, is_root, store, estimate, info)| {
+                    let scanned = name.contains("Scan");
+                    let actual = if scanned { scanned_rows } else { returned_rows };
+                    let id = if depth == 0 {
+                        name
+                    } else {
+                        format!("{}└─{}", "  ".repeat(depth - 1), name)
+                    };
+                    vec![
+                        id,
+                        format!("{estimate:.2}"),
+                        actual.to_string(),
+                        if is_root {
+                            "root".to_owned()
+                        } else {
+                            format!("cop[{}]", store.Name())
+                        },
+                        if scanned {
+                            format!("table:{table}")
+                        } else {
+                            String::new()
+                        },
+                        format!(
+                            "time:{:?}, loops:1{}",
+                            started.elapsed(),
+                            if scanned {
+                                format!(", total_process_keys: {scanned_rows}")
+                            } else {
+                                String::new()
+                            }
+                        ),
+                        info,
+                        "0 Bytes".to_owned(),
+                        "0 Bytes".to_owned(),
+                    ]
+                })
+                .collect();
+            Ok(Some(ConcreteRecordSet::new(
+                [
+                    "id",
+                    "estRows",
+                    "actRows",
+                    "task",
+                    "access object",
+                    "execution info",
+                    "operator info",
+                    "memory",
+                    "disk",
+                ]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+                rows,
+            )))
+        })();
+        self.state
+            .borrow_mut()
+            .prepared_planned
+            .remove(&statement_id);
+        execution
+    }
+
     /// 标量子查询可能位于投影、过滤、HAVING 或 CTE 查询块中。
     fn select_contains_scalar_subquery(statement: &ast::SelectStmt) -> bool {
         statement
@@ -120,6 +323,9 @@ impl ConcreteSession {
         statement: &ast::SelectStmt,
         statement_sql: &str,
     ) -> SessionResult<ConcreteRecordSet> {
+        if let Some(result) = self.explain_analyze_simple_typed_select(statement, statement_sql)? {
+            return Ok(result);
+        }
         if Self::select_contains_scalar_subquery(statement) {
             let plan = self.explain_scalar_subquery_plan(statement, statement_sql)?;
             return Ok(Self::scalar_plan_to_explain_analyze(plan));

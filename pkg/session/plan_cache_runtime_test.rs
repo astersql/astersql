@@ -317,6 +317,7 @@ fn prepared_uncovered_index_select_uses_a_double_read_physical_plan() {
             binary: String::new(),
             hints: String::new(),
         },
+        TypedPlan: None,
         StmtNode: StatementNode {
             kind: StatementKind::Execute,
             original_text: sql.into(),
@@ -614,6 +615,7 @@ fn canonical_point_get_plan_opens_an_owned_lazy_record_getter() {
             binary: String::new(),
             hints: String::new(),
         },
+        TypedPlan: None,
         StmtNode: StatementNode {
             kind: StatementKind::Select,
             original_text: sql.into(),
