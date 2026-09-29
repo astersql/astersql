@@ -36,6 +36,7 @@
 
 ## 验证
 
+- 格式：Rust 代码修改完成后，先运行 `cargo fmt --all` 自动格式化，再运行 `cargo fmt --all -- --check` 校验；自审格式化产生的差异。
 - 运行：`cargo test --manifest-path pkg/executor/Cargo.toml --lib go_merge_187_mpp_cte_site`
 - 预期：总 RU 和 TiFlash/TiKV 分配吻合 Go 公式。
 - 所需证据：失败与通过输出、分支清单、退出码。

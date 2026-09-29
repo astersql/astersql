@@ -54,6 +54,7 @@
 
 ## 验证
 
+- 格式：Rust 代码修改完成后，先运行 `cargo fmt --all` 自动格式化，再运行 `cargo fmt --all -- --check` 校验；自审格式化产生的差异。
 - 运行：`cargo test --manifest-path pkg/dxf/framework/taskexecutor/Cargo.toml --lib go_merge_136`
 - 运行：`cargo fmt --all -- --check`
 - 运行：`make lint`（代码交付的 Ready 门槛；若环境/基线阻塞，记录具体错误）
