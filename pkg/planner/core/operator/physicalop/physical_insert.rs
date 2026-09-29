@@ -499,6 +499,71 @@ impl FKCascade {
     }
 }
 
+// Go treats foreign-key checks and cascades as Plan nodes even though they are
+// not PhysicalPlan children. Expose the real nodes to the flat-plan walker.
+macro_rules! impl_foreign_key_plan {
+    ($type:ty) => {
+        impl base::Plan for $type {
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+            fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+                self
+            }
+            fn schema(&self) -> &expression::Schema {
+                base::Plan::schema(&self.BasePhysicalPlan)
+            }
+            fn id(&self) -> i32 {
+                base::Plan::id(&self.BasePhysicalPlan)
+            }
+            fn set_id(&mut self, id: i32) {
+                base::Plan::set_id(&mut self.BasePhysicalPlan, id)
+            }
+            fn tp(&self, flags: &[bool]) -> String {
+                base::Plan::tp(&self.BasePhysicalPlan, flags)
+            }
+            fn explain_id(&self, flags: &[bool]) -> Box<dyn std::fmt::Display + '_> {
+                base::Plan::explain_id(&self.BasePhysicalPlan, flags)
+            }
+            fn explain_info(&self) -> String {
+                base::Plan::explain_info(&self.BasePhysicalPlan)
+            }
+            fn replace_expr_columns(&mut self, replace: &HashMap<String, expression::Column>) {
+                base::Plan::replace_expr_columns(&mut self.BasePhysicalPlan, replace)
+            }
+            fn s_ctx(&self) -> &base::ContextRef {
+                base::Plan::s_ctx(&self.BasePhysicalPlan)
+            }
+            fn stats_info(&self) -> &property::StatsInfo {
+                base::Plan::stats_info(&self.BasePhysicalPlan)
+            }
+            fn output_names(&self) -> base::types::NameSlice {
+                base::Plan::output_names(&self.BasePhysicalPlan)
+            }
+            fn set_output_names(&mut self, names: base::types::NameSlice) {
+                base::Plan::set_output_names(&mut self.BasePhysicalPlan, names)
+            }
+            fn query_block_offset(&self) -> i32 {
+                base::Plan::query_block_offset(&self.BasePhysicalPlan)
+            }
+            fn clone_for_plan_cache(
+                &self,
+                _: base::ContextRef,
+            ) -> (Option<Box<dyn base::Plan>>, bool) {
+                (None, false)
+            }
+            fn set_noncacheable_reason(&mut self, reason: String) {
+                base::Plan::set_noncacheable_reason(&mut self.BasePhysicalPlan, reason)
+            }
+            fn get_noncacheable_reason(&self) -> String {
+                base::Plan::get_noncacheable_reason(&self.BasePhysicalPlan)
+            }
+        }
+    };
+}
+impl_foreign_key_plan!(FKCheck);
+impl_foreign_key_plan!(FKCascade);
+
 /// INSERT/REPLACE physical statement plan.
 ///
 /// This keeps the complete DML state consumed by expression rewriting and the

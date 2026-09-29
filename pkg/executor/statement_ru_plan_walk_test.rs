@@ -17,6 +17,7 @@ use astersql_planner_planctx as planctx;
 use astersql_resourcegroup::ruv2::model::StmtUnits;
 use astersql_util_execdetails::ruv2_metrics::NewRUV2Metrics;
 use astersql_util_execdetails::ruv2_metrics::tikvutil;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
 
@@ -51,6 +52,87 @@ impl base::PlanContext for TypedPlanTestContext {
     fn BuiltinFunctionUsageInc(&self, name: &str) {
         self.1.Inc(name)
     }
+}
+
+#[test]
+fn go_merge_187_typed_plan_forest() {
+    let context: base::ContextRef = Arc::new(TypedPlanTestContext(
+        AtomicI32::new(0),
+        base::BuiltinFunctionUsageCounter::default(),
+        planctx::variable::SessionVars::default(),
+    ));
+    let definition = Arc::new(physicalop::PhysicalCTEDefinition::New(
+        context.clone(),
+        17,
+        Box::new(physicalop::PhysicalTableDual::New(context.clone(), 1)),
+        Some(Box::new(physicalop::PhysicalTableDual::New(
+            context.clone(),
+            2,
+        ))),
+    ));
+    let mut root = physicalop::BasePhysicalPlan::New(context.clone(), "Projection", 0);
+    base::PhysicalPlan::set_children(
+        &mut root,
+        vec![
+            Box::new(physicalop::PhysicalCTE::New(
+                context.clone(),
+                definition.clone(),
+            )),
+            Box::new(physicalop::PhysicalCTE::New(context.clone(), definition)),
+        ],
+    );
+    let root: Box<dyn base::Plan> = Box::new(root);
+    let scalar_plan: Arc<dyn base::PhysicalPlan> =
+        Arc::new(physicalop::PhysicalTableDual::New(context.clone(), 3));
+    let scalar = astersql_planner_core::ScalarSubqueryEvalCtx::New(
+        context,
+        0,
+        scalar_plan,
+        astersql_planner_core::context::BackgroundArc(),
+        astersql_infoschema::infoschema::MockInfoSchema(Vec::new()),
+    );
+    let registered: Vec<Rc<dyn std::any::Any>> = vec![Rc::new(scalar)];
+    let forest =
+        astersql_planner_core::FlattenTypedPhysicalPlanForest(root.as_ref(), &registered).unwrap();
+    assert_eq!(forest.Main.len(), 3);
+    assert_eq!(forest.Main[0].ChildrenIdx, vec![1, 2]);
+    assert_eq!(forest.CTEs.len(), 1);
+    let cte = &forest.CTEs[0];
+    assert_eq!(cte.len(), 3);
+    assert!(
+        cte[0]
+            .Origin
+            .as_any()
+            .is::<physicalop::PhysicalCTEDefinition>()
+    );
+    assert_eq!(cte[0].ChildrenIdx, vec![1, 2]);
+    assert_eq!(cte[0].ChildrenEndIdx, 2);
+    assert_eq!(
+        cte[1].Label,
+        astersql_planner_core::TypedOperatorLabel::SeedPart
+    );
+    assert_eq!(
+        cte[2].Label,
+        astersql_planner_core::TypedOperatorLabel::RecursivePart
+    );
+    assert!(cte[1].IsRoot && cte[2].IsRoot);
+    assert!(!cte[1].IsLastChild && cte[2].IsLastChild);
+    assert_eq!(forest.ScalarSubQueries.len(), 1);
+    let scalar_tree = &forest.ScalarSubQueries[0];
+    assert_eq!(scalar_tree[0].ChildrenIdx, vec![1]);
+    assert_eq!(scalar_tree[0].ChildrenEndIdx, 1);
+    assert!(
+        scalar_tree[0]
+            .Origin
+            .as_any()
+            .is::<astersql_planner_core::ScalarSubqueryEvalCtx>()
+    );
+    assert!(
+        scalar_tree[1]
+            .Origin
+            .as_any()
+            .is::<physicalop::PhysicalTableDual>()
+    );
 }
 
 #[test]
@@ -98,6 +180,20 @@ fn go_merge_187_typed_plan_bridge() {
     assert!(!tree[1].IsRoot);
     assert_eq!(tree[1].StoreType, astersql_kv::StoreType::TiFlash);
     assert_eq!(tree[1].ReqType, physicalop::ReadReqType::MPP);
+
+    let context: base::ContextRef = Arc::new(TypedPlanTestContext(
+        AtomicI32::new(0),
+        base::BuiltinFunctionUsageCounter::default(),
+        planctx::variable::SessionVars::default(),
+    ));
+    let mut index_reader = physicalop::PhysicalIndexReader::New(context.clone());
+    index_reader.IndexPlan = Some(Box::new(physicalop::PhysicalIndexScan::New(context)));
+    let root: Box<dyn base::Plan> = Box::new(index_reader);
+    let tree = astersql_planner_core::FlattenTypedPhysicalPlan(root.as_ref()).unwrap();
+    assert_eq!(tree[0].ChildrenIdx, vec![1]);
+    assert!(!tree[1].IsRoot);
+    assert_eq!(tree[1].StoreType, astersql_kv::StoreType::TiKV);
+    assert_eq!(tree[1].ReqType, physicalop::ReadReqType::Cop);
 
     let context: base::ContextRef = Arc::new(TypedPlanTestContext(
         AtomicI32::new(0),
@@ -155,6 +251,106 @@ fn go_merge_187_typed_plan_bridge() {
         tree[2].Label,
         astersql_planner_core::TypedOperatorLabel::BuildSide
     );
+
+    let context: base::ContextRef = Arc::new(TypedPlanTestContext(
+        AtomicI32::new(0),
+        base::BuiltinFunctionUsageCounter::default(),
+        planctx::variable::SessionVars::default(),
+    ));
+    let mut insert = physicalop::Insert::New(context.clone());
+    insert.SelectPlan = Some(Box::new(physicalop::PhysicalTableScan::New(
+        context.clone(),
+    )));
+    insert
+        .FKChecks
+        .push(Box::new(physicalop::FKCheck::New(context.clone())));
+    let mut cascade =
+        physicalop::FKCascade::New(context.clone(), physicalop::FKCascadeType::OnDelete);
+    cascade
+        .CascadePlans
+        .push(Box::new(physicalop::PhysicalTableScan::New(context)));
+    insert.FKCascades.push(Box::new(cascade));
+    let root: Box<dyn base::Plan> = Box::new(insert);
+    let tree = astersql_planner_core::FlattenTypedPhysicalPlan(root.as_ref()).unwrap();
+    assert_eq!(tree.len(), 5);
+    assert_eq!(tree[0].ChildrenIdx, vec![1, 2, 3]);
+    assert_eq!(tree[0].ChildrenEndIdx, 4);
+    assert!(tree[1].IsRoot);
+    assert!(tree[2].Origin.as_any().is::<physicalop::FKCheck>());
+    assert!(!tree[1].IsLastChild);
+    assert!(!tree[2].IsLastChild);
+    assert!(tree[3].Origin.as_any().is::<physicalop::FKCascade>());
+    assert!(tree[3].IsLastChild);
+    assert_eq!(tree[3].ChildrenIdx, vec![4]);
+    assert!(tree[4].IsRoot);
+
+    let context: base::ContextRef = Arc::new(TypedPlanTestContext(
+        AtomicI32::new(0),
+        base::BuiltinFunctionUsageCounter::default(),
+        planctx::variable::SessionVars::default(),
+    ));
+    let receiver = physicalop::PhysicalShuffleReceiverStub::New(
+        context.clone(),
+        Some(Box::new(physicalop::PhysicalTableScan::New(context))),
+    );
+    let root: Box<dyn base::Plan> = Box::new(receiver);
+    let tree = astersql_planner_core::FlattenTypedPhysicalPlan(root.as_ref()).unwrap();
+    assert_eq!(tree.len(), 2);
+    assert_eq!(tree[0].ChildrenIdx, vec![1]);
+    assert!(tree[1].IsRoot);
+    assert!(tree[1].IsLastChild);
+
+    let context: base::ContextRef = Arc::new(TypedPlanTestContext(
+        AtomicI32::new(0),
+        base::BuiltinFunctionUsageCounter::default(),
+        planctx::variable::SessionVars::default(),
+    ));
+    let mut merge = physicalop::PhysicalIndexMergeReader::New(context.clone());
+    merge.PartialPlansRaw = vec![
+        Box::new(physicalop::PhysicalIndexScan::New(context.clone())),
+        Box::new(physicalop::PhysicalIndexScan::New(context.clone())),
+    ];
+    merge.TablePlan = Some(Box::new(physicalop::PhysicalTableScan::New(context)));
+    let root: Box<dyn base::Plan> = Box::new(merge);
+    let tree = astersql_planner_core::FlattenTypedPhysicalPlan(root.as_ref()).unwrap();
+    assert_eq!(tree[0].ChildrenIdx, vec![1, 2, 3]);
+    for partial in &tree[1..3] {
+        assert!(!partial.IsRoot);
+        assert_eq!(partial.StoreType, astersql_kv::StoreType::TiKV);
+        assert_eq!(partial.ReqType, physicalop::ReadReqType::Cop);
+        assert_eq!(
+            partial.Label,
+            astersql_planner_core::TypedOperatorLabel::BuildSide
+        );
+    }
+    assert_eq!(
+        tree[3].Label,
+        astersql_planner_core::TypedOperatorLabel::ProbeSide
+    );
+    assert!(tree[3].IsINLProbeChild);
+    assert!(tree[3].IsLastChild);
+
+    let context: base::ContextRef = Arc::new(TypedPlanTestContext(
+        AtomicI32::new(0),
+        base::BuiltinFunctionUsageCounter::default(),
+        planctx::variable::SessionVars::default(),
+    ));
+    let update = physicalop::Update::New(
+        context.clone(),
+        Box::new(physicalop::PhysicalTableScan::New(context.clone())),
+    );
+    let root: Box<dyn base::Plan> = Box::new(update);
+    let tree = astersql_planner_core::FlattenTypedPhysicalPlan(root.as_ref()).unwrap();
+    assert_eq!(tree[0].ChildrenIdx, vec![1]);
+    assert!(tree[1].IsRoot);
+    let delete = physicalop::Delete::New(
+        context.clone(),
+        Box::new(physicalop::PhysicalTableScan::New(context)),
+    );
+    let root: Box<dyn base::Plan> = Box::new(delete);
+    let tree = astersql_planner_core::FlattenTypedPhysicalPlan(root.as_ref()).unwrap();
+    assert_eq!(tree[0].ChildrenIdx, vec![1]);
+    assert!(tree[1].IsRoot);
 }
 
 #[test]

@@ -23,7 +23,120 @@ use crate::{PlanKind, PlanNode, StoreType};
 use base_dependency as base;
 use kv_dependency as kv;
 use physicalop_dependency as physicalop;
+use std::any::Any;
+use std::collections::HashSet;
 use std::fmt;
+use std::rc::Rc;
+
+/// Borrowed Go-compatible plan forest. Every tree has local, zero-based indexes.
+pub struct TypedFlatPhysicalPlan<'a> {
+    pub Main: Vec<TypedFlatOperator<'a>>,
+    pub CTEs: Vec<Vec<TypedFlatOperator<'a>>>,
+    pub ScalarSubQueries: Vec<Vec<TypedFlatOperator<'a>>>,
+}
+
+/// The caller supplies a borrowed scalar registry snapshot so no self-referential
+/// references to temporary `Rc` values escape this function.
+pub fn FlattenTypedPhysicalPlanForest<'a>(
+    plan: &'a dyn base::Plan,
+    scalar_subqueries: &'a [Rc<dyn Any>],
+) -> Option<TypedFlatPhysicalPlan<'a>> {
+    fn attach<'a>(
+        tree: &mut Vec<TypedFlatOperator<'a>>,
+        child: &'a dyn base::Plan,
+        label: TypedOperatorLabel,
+        last: bool,
+    ) -> Option<()> {
+        let offset = tree.len();
+        let mut branch = FlattenTypedPhysicalPlan(child)?;
+        branch[0].Label = label;
+        branch[0].IsRoot = true;
+        branch[0].IsLastChild = last;
+        for op in &mut branch {
+            op.ChildrenEndIdx += offset;
+            for index in &mut op.ChildrenIdx {
+                *index += offset;
+            }
+        }
+        tree[0].ChildrenIdx.push(offset);
+        tree.extend(branch);
+        tree[0].ChildrenEndIdx = tree.len() - 1;
+        Some(())
+    }
+
+    let main = FlattenTypedPhysicalPlan(plan)?;
+    let mut pending = Vec::new();
+    for op in &main {
+        if op.IsRoot {
+            if let Some(cte) = op.Origin.as_any().downcast_ref::<physicalop::PhysicalCTE>() {
+                pending.push(cte.CTE.as_ref());
+            }
+        }
+    }
+    let mut seen = HashSet::new();
+    let mut ctes = Vec::new();
+    let mut cursor = 0;
+    while cursor < pending.len() {
+        let definition = pending[cursor];
+        cursor += 1;
+        if !seen.insert(definition.IDForStorage) {
+            continue;
+        }
+        let mut tree = FlattenTypedPhysicalPlan(definition)?;
+        attach(
+            &mut tree,
+            definition.SeedPlan.as_ref(),
+            TypedOperatorLabel::SeedPart,
+            definition.RecurPlan.is_none(),
+        )?;
+        if let Some(recursive) = definition.RecurPlan.as_ref() {
+            attach(
+                &mut tree,
+                recursive.as_ref(),
+                TypedOperatorLabel::RecursivePart,
+                true,
+            )?;
+        }
+        for op in &tree {
+            if op.IsRoot {
+                if let Some(cte) = op.Origin.as_any().downcast_ref::<physicalop::PhysicalCTE>() {
+                    pending.push(cte.CTE.as_ref());
+                }
+            }
+        }
+        ctes.push(tree);
+    }
+    let mut scalar = Vec::new();
+    for registered in scalar_subqueries {
+        let Some(ctx) = registered.downcast_ref::<crate::ScalarSubqueryEvalCtx>() else {
+            continue;
+        };
+        let mut tree = vec![TypedFlatOperator {
+            Origin: ctx,
+            ChildrenIdx: Vec::new(),
+            ChildrenEndIdx: 0,
+            IsRoot: true,
+            StoreType: kv::StoreType::TiDB,
+            ReqType: physicalop::ReadReqType::Cop,
+            Label: TypedOperatorLabel::Empty,
+            IsINLProbeChild: false,
+            NeedReverseDriverSide: false,
+            IsLastChild: true,
+        }];
+        attach(
+            &mut tree,
+            ctx.scalar_sub_query.as_ref(),
+            TypedOperatorLabel::Empty,
+            true,
+        )?;
+        scalar.push(tree);
+    }
+    Some(TypedFlatPhysicalPlan {
+        Main: main,
+        CTEs: ctes,
+        ScalarSubQueries: scalar,
+    })
+}
 
 /// Borrowed physical operators retain their concrete Rust types and fields.
 /// The preorder indexes follow the order returned by each physical operator.
@@ -37,6 +150,7 @@ pub struct TypedFlatOperator<'a> {
     pub Label: TypedOperatorLabel,
     pub IsINLProbeChild: bool,
     pub NeedReverseDriverSide: bool,
+    pub IsLastChild: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -50,6 +164,12 @@ pub enum TypedOperatorLabel {
 
 /// Flatten a real physical plan without converting it to an EXPLAIN summary.
 pub fn FlattenTypedPhysicalPlan(plan: &dyn base::Plan) -> Option<Vec<TypedFlatOperator<'_>>> {
+    if let Some(execute) = plan.as_any().downcast_ref::<crate::RuntimeExecute>() {
+        return FlattenTypedPhysicalPlan(execute.Plan.as_ref());
+    }
+    if let Some(explain) = plan.as_any().downcast_ref::<crate::RuntimeExplain>() {
+        return FlattenTypedPhysicalPlan(explain.TargetPlan.as_ref());
+    }
     fn append<'a>(
         plan: &'a dyn base::Plan,
         tree: &mut Vec<TypedFlatOperator<'a>>,
@@ -58,8 +178,19 @@ pub fn FlattenTypedPhysicalPlan(plan: &dyn base::Plan) -> Option<Vec<TypedFlatOp
         req_type: physicalop::ReadReqType,
         label: TypedOperatorLabel,
         inl_probe_child: bool,
+        is_last_child: bool,
     ) -> Option<usize> {
-        let physical = plan.as_physical_plan()?;
+        let physical = plan.as_physical_plan();
+        let origin = plan.as_any();
+        if physical.is_none()
+            && !origin.is::<physicalop::Insert>()
+            && !origin.is::<physicalop::Update>()
+            && !origin.is::<physicalop::Delete>()
+            && !origin.is::<physicalop::FKCheck>()
+            && !origin.is::<physicalop::FKCascade>()
+        {
+            return None;
+        }
         let index = tree.len();
         tree.push(TypedFlatOperator {
             Origin: plan,
@@ -71,8 +202,8 @@ pub fn FlattenTypedPhysicalPlan(plan: &dyn base::Plan) -> Option<Vec<TypedFlatOp
             Label: label,
             IsINLProbeChild: inl_probe_child,
             NeedReverseDriverSide: false,
+            IsLastChild: is_last_child,
         });
-        let origin = plan.as_any();
         let reader_context =
             if let Some(reader) = origin.downcast_ref::<physicalop::PhysicalTableReader>() {
                 Some((reader.StoreType, reader.ReadReqType))
@@ -84,7 +215,7 @@ pub fn FlattenTypedPhysicalPlan(plan: &dyn base::Plan) -> Option<Vec<TypedFlatOp
             } else {
                 None
             };
-        let children = physical.children();
+        let children = physical.map_or_else(Vec::new, |physical| physical.children());
         let mut child_labels = vec![TypedOperatorLabel::Empty; children.len()];
         if children.len() == 2 {
             let inner = if let Some(join) = origin.downcast_ref::<physicalop::PhysicalApply>() {
@@ -125,6 +256,7 @@ pub fn FlattenTypedPhysicalPlan(plan: &dyn base::Plan) -> Option<Vec<TypedFlatOp
                 *child_labels.last_mut().unwrap() = TypedOperatorLabel::ProbeSide;
             }
         }
+        let physical_child_count = children.len();
         for (child_position, child) in children.into_iter().enumerate() {
             let (child_root, child_store, child_req) = reader_context
                 .map_or((is_root, store_type, req_type), |(store, req)| {
@@ -142,6 +274,83 @@ pub fn FlattenTypedPhysicalPlan(plan: &dyn base::Plan) -> Option<Vec<TypedFlatOp
                 child_req,
                 child_labels[child_position],
                 child_inl_probe,
+                child_position + 1 == physical_child_count,
+            )?;
+            tree[index].ChildrenIdx.push(child_index);
+        }
+        // These are Go Plan children rather than PhysicalPlan.Children().
+        // Keep the SELECT tree before foreign-key checks and cascades.
+        let mut special_children: Vec<&dyn base::Plan> = Vec::new();
+        if let Some(insert) = origin.downcast_ref::<physicalop::Insert>() {
+            special_children.extend(
+                insert
+                    .SelectPlan
+                    .iter()
+                    .map(|p| p.as_ref() as &dyn base::Plan),
+            );
+            special_children.extend(
+                insert
+                    .FKChecks
+                    .iter()
+                    .map(|p| p.as_ref() as &dyn base::Plan),
+            );
+            special_children.extend(
+                insert
+                    .FKCascades
+                    .iter()
+                    .map(|p| p.as_ref() as &dyn base::Plan),
+            );
+        } else if let Some(update) = origin.downcast_ref::<physicalop::Update>() {
+            special_children.push(update.SelectPlan.as_ref());
+            special_children.extend(
+                update
+                    .FKChecks
+                    .iter()
+                    .map(|p| p.as_ref() as &dyn base::Plan),
+            );
+            special_children.extend(
+                update
+                    .FKCascades
+                    .iter()
+                    .map(|p| p.as_ref() as &dyn base::Plan),
+            );
+        } else if let Some(delete) = origin.downcast_ref::<physicalop::Delete>() {
+            special_children.push(delete.SelectPlan.as_ref());
+            special_children.extend(
+                delete
+                    .FKChecks
+                    .iter()
+                    .map(|p| p.as_ref() as &dyn base::Plan),
+            );
+            special_children.extend(
+                delete
+                    .FKCascades
+                    .iter()
+                    .map(|p| p.as_ref() as &dyn base::Plan),
+            );
+        } else if let Some(cascade) = origin.downcast_ref::<physicalop::FKCascade>() {
+            special_children.extend(cascade.CascadePlans.iter().map(|p| p.as_ref()));
+        } else if let Some(receiver) =
+            origin.downcast_ref::<physicalop::PhysicalShuffleReceiverStub>()
+        {
+            special_children.extend(
+                receiver
+                    .DataSource
+                    .iter()
+                    .map(|p| p.as_ref() as &dyn base::Plan),
+            );
+        }
+        let child_count = special_children.len();
+        for (position, child) in special_children.into_iter().enumerate() {
+            let child_index = append(
+                child,
+                tree,
+                true,
+                store_type,
+                req_type,
+                TypedOperatorLabel::Empty,
+                false,
+                position + 1 == child_count,
             )?;
             tree[index].ChildrenIdx.push(child_index);
         }
@@ -158,6 +367,7 @@ pub fn FlattenTypedPhysicalPlan(plan: &dyn base::Plan) -> Option<Vec<TypedFlatOp
         physicalop::ReadReqType::Cop,
         TypedOperatorLabel::Empty,
         false,
+        true,
     )?;
     Some(tree)
 }

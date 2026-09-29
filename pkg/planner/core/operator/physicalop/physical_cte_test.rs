@@ -5,8 +5,69 @@ use super::physical_common_plans::{
     Stats, TaskType,
 };
 use super::physical_cte::{
-    CteDefinition, PhysicalCte, PhysicalCteSink, PhysicalCteStorage, exhaust_physical_cte,
+    CteDefinition, PhysicalCTE, PhysicalCTEDefinition, PhysicalCte, PhysicalCteSink,
+    PhysicalCteStorage, exhaust_physical_cte,
 };
+use std::sync::Arc;
+use std::sync::atomic::{AtomicI32, Ordering};
+
+struct TypedCTEPlanContext(AtomicI32, base::BuiltinFunctionUsageCounter);
+
+impl base::PlanContext for TypedCTEPlanContext {
+    fn alloc_plan_id(&self) -> i32 {
+        self.0.fetch_add(1, Ordering::SeqCst) + 1
+    }
+    fn ignore_explain_id_suffix(&self) -> bool {
+        false
+    }
+    fn GetSessionVars(&self) -> &planctx::variable::SessionVars {
+        unreachable!()
+    }
+    fn GetExprCtx(&self) -> &dyn planctx::exprctx::ExprContext {
+        unreachable!()
+    }
+    fn GetRangerCtx(&self) -> &planctx::rangerctx::RangerContext<'_> {
+        unreachable!()
+    }
+    fn GetNullRejectCheckExprCtx(&self) -> &dyn planctx::exprctx::ExprContext {
+        unreachable!()
+    }
+    fn GetBuildPBCtx(&self) -> &base::BuildPBContext {
+        unreachable!()
+    }
+    fn BuiltinFunctionUsageInc(&self, name: &str) {
+        self.1.Inc(name)
+    }
+}
+
+#[test]
+fn typed_cte_references_share_real_seed_and_recursive_plans() {
+    let context: base::ContextRef = Arc::new(TypedCTEPlanContext(
+        AtomicI32::new(0),
+        base::BuiltinFunctionUsageCounter::default(),
+    ));
+    let definition = Arc::new(PhysicalCTEDefinition::New(
+        context.clone(),
+        42,
+        Box::new(crate::PhysicalTableDual::New(context.clone(), 1)),
+        Some(Box::new(crate::PhysicalTableDual::New(context.clone(), 2))),
+    ));
+    let first = PhysicalCTE::New(context.clone(), definition.clone());
+    let second = PhysicalCTE::New(context, definition);
+    assert!(Arc::ptr_eq(&first.CTE, &second.CTE));
+    assert_eq!(first.CTE.IDForStorage, 42);
+    assert!(first.CTE.SeedPlan.as_any().is::<crate::PhysicalTableDual>());
+    assert!(
+        first
+            .CTE
+            .RecurPlan
+            .as_ref()
+            .unwrap()
+            .as_any()
+            .is::<crate::PhysicalTableDual>()
+    );
+    assert!(base::Plan::as_physical_plan(&first).is_some());
+}
 
 fn node(kind: PhysicalKind, children: Vec<PhysicalPlanNode>) -> PhysicalPlanNode {
     PhysicalPlanNode {

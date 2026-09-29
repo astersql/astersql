@@ -53,6 +53,68 @@ pub struct PhysicalShuffle {
     pub DataSourceExplainIDs: Vec<String>,
 }
 
+/// Worker-side receiver; Go keeps its data source outside Children().
+pub struct PhysicalShuffleReceiverStub {
+    pub PhysicalSchemaProducer: PhysicalSchemaProducer,
+    pub DataSource: Option<Box<dyn PhysicalPlan>>,
+}
+
+impl PhysicalShuffleReceiverStub {
+    pub fn New(ctx: ContextRef, data_source: Option<Box<dyn PhysicalPlan>>) -> Self {
+        let mut producer = PhysicalSchemaProducer::New(BasePhysicalPlan::New(
+            ctx,
+            plancodec::TypeShuffleReceiver,
+            0,
+        ));
+        if let Some(source) = &data_source {
+            producer.SetSchema(source.schema().Clone());
+        }
+        Self {
+            PhysicalSchemaProducer: producer,
+            DataSource: data_source,
+        }
+    }
+
+    pub fn Clone(&self, new_ctx: ContextRef) -> Result<Self, expression::Error> {
+        let mut producer = PhysicalSchemaProducer::New(
+            self.PhysicalSchemaProducer
+                .BasePhysicalPlan
+                .CloneWithNewCtx(new_ctx.clone())?,
+        );
+        if let Some(schema) = self.PhysicalSchemaProducer.SchemaRef() {
+            producer.SetSchema(schema.Clone());
+        }
+        Ok(Self {
+            PhysicalSchemaProducer: producer,
+            DataSource: self
+                .DataSource
+                .as_ref()
+                .map(|source| source.clone_physical(new_ctx))
+                .transpose()?,
+        })
+    }
+
+    pub fn GetPlanCostVer1(
+        &mut self,
+        task: property::TaskType,
+        option: &PlanCostOption,
+    ) -> Result<f64, expression::Error> {
+        self.PhysicalSchemaProducer
+            .BasePhysicalPlan
+            .GetPlanCostVer1(task, option)
+    }
+    pub fn GetPlanCostVer2(
+        &mut self,
+        task: property::TaskType,
+        option: &PlanCostOption,
+        inl: &[bool],
+    ) -> Result<CostVer2, expression::Error> {
+        self.PhysicalSchemaProducer
+            .BasePhysicalPlan
+            .GetPlanCostVer2(task, option, inl)
+    }
+}
+
 impl PhysicalShuffle {
     /// 构造 Shuffle 节点骨架。
     pub fn New(ctx: ContextRef, concurrency: usize, data_source_explain_ids: Vec<String>) -> Self {

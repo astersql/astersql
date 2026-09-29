@@ -1529,6 +1529,88 @@ impl ConcretePhysicalOperator for physical_cte::PhysicalCteScan {
 }
 impl_concrete_physical_plan!(physical_cte::PhysicalCteScan);
 
+impl ConcretePhysicalOperator for physical_cte::PhysicalCTE {
+    fn producer(&self) -> &PhysicalSchemaProducer {
+        &self.PhysicalSchemaProducer
+    }
+    fn producer_mut(&mut self) -> &mut PhysicalSchemaProducer {
+        &mut self.PhysicalSchemaProducer
+    }
+    fn explain_operator(&self) -> String {
+        format!("data:CTE_{}", self.CTE.IDForStorage)
+    }
+    fn explain_normalized_operator(&self) -> String {
+        self.explain_operator()
+    }
+    fn resolve_operator(&mut self) -> Result<(), expression::Error> {
+        Ok(())
+    }
+    fn memory_operator(&self) -> i64 {
+        self.PhysicalSchemaProducer.MemoryUsage()
+    }
+    fn cost_v1(
+        &mut self,
+        task: TaskType,
+        option: &costusage::PlanCostOption,
+    ) -> Result<f64, expression::Error> {
+        self.PhysicalSchemaProducer
+            .BasePhysicalPlan
+            .GetPlanCostVer1(task, option)
+    }
+    fn cost_v2(
+        &mut self,
+        task: TaskType,
+        option: &costusage::PlanCostOption,
+        inl: &[bool],
+    ) -> Result<costusage::CostVer2, expression::Error> {
+        self.PhysicalSchemaProducer
+            .BasePhysicalPlan
+            .GetPlanCostVer2(task, option, inl)
+    }
+}
+impl_concrete_physical_plan!(physical_cte::PhysicalCTE);
+
+impl ConcretePhysicalOperator for physical_cte::PhysicalCTEDefinition {
+    fn producer(&self) -> &PhysicalSchemaProducer {
+        &self.PhysicalSchemaProducer
+    }
+    fn producer_mut(&mut self) -> &mut PhysicalSchemaProducer {
+        &mut self.PhysicalSchemaProducer
+    }
+    fn explain_operator(&self) -> String {
+        format!("CTE_{}", self.IDForStorage)
+    }
+    fn explain_normalized_operator(&self) -> String {
+        self.explain_operator()
+    }
+    fn resolve_operator(&mut self) -> Result<(), expression::Error> {
+        Ok(())
+    }
+    fn memory_operator(&self) -> i64 {
+        self.PhysicalSchemaProducer.MemoryUsage()
+    }
+    fn cost_v1(
+        &mut self,
+        task: TaskType,
+        option: &costusage::PlanCostOption,
+    ) -> Result<f64, expression::Error> {
+        self.PhysicalSchemaProducer
+            .BasePhysicalPlan
+            .GetPlanCostVer1(task, option)
+    }
+    fn cost_v2(
+        &mut self,
+        task: TaskType,
+        option: &costusage::PlanCostOption,
+        inl: &[bool],
+    ) -> Result<costusage::CostVer2, expression::Error> {
+        self.PhysicalSchemaProducer
+            .BasePhysicalPlan
+            .GetPlanCostVer2(task, option, inl)
+    }
+}
+impl_concrete_physical_plan!(physical_cte::PhysicalCTEDefinition);
+
 // NominalSort 可在 OnlyColumn 时透传子任务，故覆盖 attach。
 impl ConcretePhysicalOperator for NominalSort {
     fn producer(&self) -> &PhysicalSchemaProducer {
@@ -1723,6 +1805,50 @@ impl ConcretePhysicalOperator for PhysicalShuffle {
     }
 }
 impl_concrete_physical_plan!(PhysicalShuffle);
+
+impl ConcretePhysicalOperator for PhysicalShuffleReceiverStub {
+    fn producer(&self) -> &PhysicalSchemaProducer {
+        &self.PhysicalSchemaProducer
+    }
+    fn producer_mut(&mut self) -> &mut PhysicalSchemaProducer {
+        &mut self.PhysicalSchemaProducer
+    }
+    fn explain_operator(&self) -> String {
+        String::new()
+    }
+    fn explain_normalized_operator(&self) -> String {
+        String::new()
+    }
+    fn resolve_operator(&mut self) -> Result<(), expression::Error> {
+        Ok(())
+    }
+    fn memory_operator(&self) -> i64 {
+        self.PhysicalSchemaProducer.MemoryUsage()
+            + self
+                .DataSource
+                .as_ref()
+                .map_or(0, |source| source.memory_usage())
+    }
+    fn children_operator(&self) -> Vec<&dyn base::PhysicalPlan> {
+        Vec::new()
+    }
+    fn cost_v1(
+        &mut self,
+        task: TaskType,
+        option: &costusage::PlanCostOption,
+    ) -> Result<f64, expression::Error> {
+        self.GetPlanCostVer1(task, option)
+    }
+    fn cost_v2(
+        &mut self,
+        task: TaskType,
+        option: &costusage::PlanCostOption,
+        inl: &[bool],
+    ) -> Result<costusage::CostVer2, expression::Error> {
+        self.GetPlanCostVer2(task, option, inl)
+    }
+}
+impl_concrete_physical_plan!(PhysicalShuffleReceiverStub);
 
 // ---- 同目录 Aster 单元测试通过 path 属性挂入 ----
 #[cfg(test)]

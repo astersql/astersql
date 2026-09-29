@@ -237,6 +237,54 @@ impl ScalarSubqueryEvalCtx {
     }
 }
 
+impl base::Plan for ScalarSubqueryEvalCtx {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+    fn schema(&self) -> &expression::Schema {
+        base::Plan::schema(self.scalar_sub_query.as_ref())
+    }
+    fn id(&self) -> i32 {
+        self.plan_id
+    }
+    fn set_id(&mut self, id: i32) {
+        self.plan_id = id;
+    }
+    fn tp(&self, _: &[bool]) -> String {
+        "ScalarSubQuery".to_owned()
+    }
+    fn explain_id(&self, _: &[bool]) -> Box<dyn std::fmt::Display + '_> {
+        Box::new(format!("ScalarSubQuery_{}", self.plan_id))
+    }
+    fn explain_info(&self) -> String {
+        self.ExplainInfo()
+    }
+    fn replace_expr_columns(&mut self, _: &HashMap<String, expression::Column>) {}
+    fn s_ctx(&self) -> &base::ContextRef {
+        &self.plan_context
+    }
+    fn stats_info(&self) -> &property_dependency::StatsInfo {
+        base::Plan::stats_info(self.scalar_sub_query.as_ref())
+    }
+    fn output_names(&self) -> base::types::NameSlice {
+        base::Plan::output_names(self.scalar_sub_query.as_ref())
+    }
+    fn set_output_names(&mut self, _: base::types::NameSlice) {}
+    fn query_block_offset(&self) -> i32 {
+        self.query_block_offset
+    }
+    fn clone_for_plan_cache(&self, _: base::ContextRef) -> (Option<Box<dyn base::Plan>>, bool) {
+        (None, false)
+    }
+    fn set_noncacheable_reason(&mut self, _: String) {}
+    fn get_noncacheable_reason(&self) -> String {
+        String::new()
+    }
+}
+
 /// 单个 ScalarSubQueryExpr 的求值缓存：是否已求值、错误与值。
 #[derive(Clone)]
 struct ExpressionEvaluation {

@@ -113,6 +113,83 @@ use base::ContextRef;
 use costusage::{CostVer2, PlanCostOption};
 use expression::CorrelatedColumn;
 use property::StatsInfo;
+use std::sync::Arc;
+
+/// Shared, typed CTE producer. Its seed and recursive plans are independent
+/// roots and are never children of a consumer in the main plan tree.
+pub struct PhysicalCTEDefinition {
+    pub PhysicalSchemaProducer: PhysicalSchemaProducer,
+    pub IDForStorage: i64,
+    pub SeedPlan: Box<dyn base::PhysicalPlan>,
+    pub RecurPlan: Option<Box<dyn base::PhysicalPlan>>,
+}
+
+impl PhysicalCTEDefinition {
+    pub fn New(
+        ctx: ContextRef,
+        storage_id: i64,
+        seed: Box<dyn base::PhysicalPlan>,
+        recursive: Option<Box<dyn base::PhysicalPlan>>,
+    ) -> Self {
+        Self {
+            PhysicalSchemaProducer: PhysicalSchemaProducer::New(BasePhysicalPlan::New(
+                ctx,
+                plancodec::TypeCTEDefinition,
+                0,
+            )),
+            IDForStorage: storage_id,
+            SeedPlan: seed,
+            RecurPlan: recursive,
+        }
+    }
+
+    pub fn Clone(&self, ctx: ContextRef) -> Result<Self, expression::Error> {
+        Ok(Self {
+            PhysicalSchemaProducer: PhysicalSchemaProducer::New(
+                self.PhysicalSchemaProducer
+                    .BasePhysicalPlan
+                    .CloneWithNewCtx(ctx.clone())?,
+            ),
+            IDForStorage: self.IDForStorage,
+            SeedPlan: self.SeedPlan.clone_physical(ctx.clone())?,
+            RecurPlan: self
+                .RecurPlan
+                .as_ref()
+                .map(|p| p.clone_physical(ctx.clone()))
+                .transpose()?,
+        })
+    }
+}
+
+/// A main-tree reference to one shared CTE definition.
+pub struct PhysicalCTE {
+    pub PhysicalSchemaProducer: PhysicalSchemaProducer,
+    pub CTE: Arc<PhysicalCTEDefinition>,
+}
+
+impl PhysicalCTE {
+    pub fn New(ctx: ContextRef, definition: Arc<PhysicalCTEDefinition>) -> Self {
+        Self {
+            PhysicalSchemaProducer: PhysicalSchemaProducer::New(BasePhysicalPlan::New(
+                ctx,
+                plancodec::TypeCTE,
+                0,
+            )),
+            CTE: definition,
+        }
+    }
+
+    pub fn Clone(&self, ctx: ContextRef) -> Result<Self, expression::Error> {
+        Ok(Self {
+            PhysicalSchemaProducer: PhysicalSchemaProducer::New(
+                self.PhysicalSchemaProducer
+                    .BasePhysicalPlan
+                    .CloneWithNewCtx(ctx)?,
+            ),
+            CTE: Arc::clone(&self.CTE),
+        })
+    }
+}
 
 /// Runtime physical CTE scan used by the canonical optimizer route.
 ///
