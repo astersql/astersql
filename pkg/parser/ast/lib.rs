@@ -54,6 +54,12 @@ use std::{any::Any, fmt, mem::size_of};
 pub trait Visitor {
     fn enter(&mut self, input: &dyn Node) -> bool;
     fn leave(&mut self, input: &dyn Node) -> bool;
+    fn enter_embedded(&mut self, _input: &dyn Any) -> bool {
+        false
+    }
+    fn leave_embedded(&mut self, _input: &dyn Any) -> bool {
+        true
+    }
     // TableName is a value type in this Rust AST, so it has no Node base fields.
     fn enter_table_name(&mut self, _input: &TableName) -> bool {
         false
@@ -67,12 +73,30 @@ pub trait Visitor {
     fn leave_column_name(&mut self, _input: &ColumnName) -> bool {
         true
     }
+    fn enter_on_delete(&mut self, _input: &OnDeleteOpt) -> bool {
+        false
+    }
+    fn leave_on_delete(&mut self, _input: &OnDeleteOpt) -> bool {
+        true
+    }
+    fn enter_on_update(&mut self, _input: &OnUpdateOpt) -> bool {
+        false
+    }
+    fn leave_on_update(&mut self, _input: &OnUpdateOpt) -> bool {
+        true
+    }
 }
 
 /// Visits an AST without replacing nodes. A `true` enter result skips children.
 pub trait InPlaceVisitor {
     fn enter(&mut self, input: &mut dyn Node) -> bool;
     fn leave(&mut self, input: &mut dyn Node) -> bool;
+    fn enter_embedded(&mut self, _input: &mut dyn Any) -> bool {
+        false
+    }
+    fn leave_embedded(&mut self, _input: &mut dyn Any) -> bool {
+        true
+    }
     fn enter_table_name(&mut self, _input: &mut TableName) -> bool {
         false
     }
@@ -83,6 +107,18 @@ pub trait InPlaceVisitor {
         false
     }
     fn leave_column_name(&mut self, _input: &mut ColumnName) -> bool {
+        true
+    }
+    fn enter_on_delete(&mut self, _input: &mut OnDeleteOpt) -> bool {
+        false
+    }
+    fn leave_on_delete(&mut self, _input: &mut OnDeleteOpt) -> bool {
+        true
+    }
+    fn enter_on_update(&mut self, _input: &mut OnUpdateOpt) -> bool {
+        false
+    }
+    fn leave_on_update(&mut self, _input: &mut OnUpdateOpt) -> bool {
         true
     }
 }
@@ -4986,6 +5022,9 @@ mod go_merge_21_test;
 
 #[cfg(test)]
 mod go_merge_23_test;
+
+#[cfg(test)]
+mod go_merge_25_test;
 #[cfg(test)]
 #[path = "integration_9_aster_unit_test.rs"]
 mod integration_9_aster_unit_test;
