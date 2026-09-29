@@ -34,7 +34,9 @@ use std::thread;
 use crate::{AutoIdStorage, Service, create_grpc_service, mock_for_test};
 use autoid_dependency::{AutoIdKey, AutoIdKeyKind, IdStore, IdTransaction, Result as AutoIdResult};
 use grpcio::{ChannelBuilder, Environment, ServerBuilder, ServerCredentials};
-use kvproto::autoid::{AutoIdAllocClient, AutoIdRequest, AutoIdResponse, RebaseRequest};
+use kvproto::autoid::{
+    AutoIDRequest_oneof_keyspace, AutoIdAllocClient, AutoIdRequest, AutoIdResponse, RebaseRequest,
+};
 
 /// 测试用的数据库 ID。
 const DB_ID: i64 = 41;
@@ -161,7 +163,7 @@ fn request(unsigned: bool, n: u64, increment: i64, offset: i64) -> AutoIdRequest
         n,
         increment,
         offset,
-        keyspace_id: NULLSPACE_ID,
+        keyspace: Some(AutoIDRequest_oneof_keyspace::KeyspaceId(NULLSPACE_ID)),
         ..Default::default()
     }
 }
@@ -398,7 +400,7 @@ fn migration_keyspace_gate_and_owner_cache_reset_match_go_service() {
 
     // 修正 keyspace 后分配成功。
     let mut matching = request(false, 1, 1, 1);
-    matching.keyspace_id = 17;
+    matching.set_keyspace_id(17);
     assert_range(service.allocate(matching.clone()).unwrap(), 0, 1);
 
     // 模拟其他节点把存储层进度推进到 9000；本地缓存段未失效前仍返回旧进度 1。

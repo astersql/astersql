@@ -12,7 +12,7 @@ crossbeam-channel = "0.5"
 futures = "0.3"
 futures-timer = "3"
 grpcio = { version = "=0.13.0", default-features = false, features = ["protobuf-codec"] }
-tikv-client-proto = { package = "kvproto", git = "https://github.com/pingcap/kvproto.git", rev = "a15c348f8713", default-features = false, features = ["protobuf-codec"] }
+tikv-client-proto = { package = "kvproto", git = "https://github.com/astersql/kvproto.git", tag = "v0.0.2-aster.20260929", default-features = false, features = ["protobuf-codec"] }
 url = "2"
 
 [package.metadata.porting]

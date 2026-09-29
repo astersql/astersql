@@ -48,7 +48,10 @@ use autoid_dependency::{
 };
 use etcd_client::{Client as EtcdClient, ConnectOptions};
 use grpcio::{RpcContext, RpcStatus, RpcStatusCode, UnarySink};
-use kvproto::autoid::{AutoIdAlloc, AutoIdRequest, AutoIdResponse, RebaseRequest, RebaseResponse};
+use kvproto::autoid::{
+    AutoIDRequest_oneof_keyspace, AutoIdAlloc, AutoIdRequest, AutoIdResponse, RebaseRequest,
+    RebaseResponse,
+};
 use owner_dependency::{Listener, Manager, NewOwnerManager, OwnerError};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -525,11 +528,12 @@ impl Service {
     /// 则从存储读取一次。正常分配返回区间 `(min, max]`。
     pub fn allocate(&self, request: AutoIdRequest) -> Result<AutoIdResponse> {
         // keyspace 不匹配说明请求发错了服务实例，按非 leader 处理。
-        if request.keyspace_id != self.inner.store.keyspace_id() {
+        let request_keyspace_id = request.get_keyspace_id();
+        if request_keyspace_id != self.inner.store.keyspace_id() {
             log::info!(
                 target: "autoid_service",
                 "request keyspace {} does not match service keyspace {}",
-                request.keyspace_id,
+                request_keyspace_id,
                 self.inner.store.keyspace_id(),
             );
             return Err(AutoIdError::Rpc("not leader".to_owned()));
@@ -660,7 +664,9 @@ impl AutoIdClient for Service {
             n: request.n,
             increment: request.increment,
             offset: request.offset,
-            keyspace_id: request.keyspace_id,
+            keyspace: Some(AutoIDRequest_oneof_keyspace::KeyspaceId(
+                request.keyspace_id,
+            )),
             ..Default::default()
         })?;
         Ok(ClientAutoIdResponse {

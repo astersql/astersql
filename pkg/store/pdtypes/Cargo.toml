@@ -11,7 +11,7 @@ path = "lib.rs"
 anyhow = "1"
 astersql-config-configtypes = { path = "../../config/configtypes" }
 chrono = "0.4"
-kvproto = { git = "https://github.com/pingcap/kvproto.git", rev = "a15c348f8713", default-features = false, features = ["protobuf-codec"] }
+kvproto = { git = "https://github.com/astersql/kvproto.git", tag = "v0.0.2-aster.20260929", default-features = false, features = ["protobuf-codec"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tikv-client = { version = "=0.4.2", git = "ssh://git@github.com/astersql/client-rust.git", tag = "v0.4.2-aster.1", default-features = false }

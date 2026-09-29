@@ -47,6 +47,6 @@ tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 futures-executor = "0.3"
 futures-util = "0.3"
 grpcio = { version = "=0.13.0", default-features = false, features = ["openssl-vendored", "protobuf-codec"] }
-kvproto = { git = "https://github.com/pingcap/kvproto.git", rev = "a15c348f8713", default-features = false, features = ["protobuf-codec"] }
+kvproto = { git = "https://github.com/astersql/kvproto.git", tag = "v0.0.2-aster.20260929", default-features = false, features = ["protobuf-codec"] }
 protobuf = "=2.8.0"
 fail = { version = "0.5.1", features = ["failpoints"] }

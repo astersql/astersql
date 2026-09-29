@@ -36,7 +36,7 @@ legacy-tasks = ["task-1185", "task-1198"]
 "astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../../util/logutil" }
 "astersql-util-memory" = { package = "astersql-util-memory", path = "../../../util/memory" }
 "astersql-util-tiflashcompute" = { package = "astersql-util-tiflashcompute", path = "../../../util/tiflashcompute" }
-kvproto = { git = "https://github.com/pingcap/kvproto.git", rev = "a15c348f8713", default-features = false, features = ["protobuf-codec"] }
+kvproto = { git = "https://github.com/astersql/kvproto.git", tag = "v0.0.2-aster.20260929", default-features = false, features = ["protobuf-codec"] }
 protobuf = "=2.8.0"
 tipb = { git = "https://github.com/pingcap/tipb.git", rev = "07f0ea6b6bffa9d8ac100d81ee51dbbfe4dda3bf", default-features = false, features = ["protobuf-codec"] }
 

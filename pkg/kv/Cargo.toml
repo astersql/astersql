@@ -23,7 +23,7 @@ parser-mysql = { package = "astersql-parser-mysql", path = "../parser/mysql" }
 resourcegrouptag-dependency = { package = "astersql-util-resourcegrouptag", path = "../util/resourcegrouptag" }
 size-dependency = { package = "astersql-util-size", path = "../util/size" }
 fail = { version = "0.5", features = ["failpoints"] }
-kvproto = { git = "https://github.com/pingcap/kvproto.git", rev = "a15c348f8713", default-features = false, features = ["protobuf-codec"] }
+kvproto = { git = "https://github.com/astersql/kvproto.git", tag = "v0.0.2-aster.20260929", default-features = false, features = ["protobuf-codec"] }
 log = "0.4"
 xxhash-rust = { version = "0.8", features = ["xxh64"] }
 protobuf = "=2.8.0"

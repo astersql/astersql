@@ -41,7 +41,8 @@ use astersql_config_kerneltype::{IsClassic, IsNextGen};
 use autoid_dependency::{AutoIdKey, IdStore, IdTransaction, Result as AutoIdResult};
 use grpcio::{ChannelBuilder, Environment, ServerBuilder, ServerCredentials};
 use kvproto::autoid::{
-    AutoIdAllocClient, AutoIdRequest, AutoIdResponse, RebaseRequest, RebaseResponse,
+    AutoIDRequest_oneof_keyspace, AutoIdAllocClient, AutoIdRequest, AutoIdResponse, RebaseRequest,
+    RebaseResponse,
 };
 
 use crate::{AutoIdStorage, Service, create_grpc_service, mock_for_test};
@@ -211,7 +212,7 @@ fn check_curr_value(cli: &Service, to: Dest, minv: i64, maxv: i64, keyspace_id: 
         db_id: to.db_id,
         tbl_id: to.tbl_id,
         n: 0,
-        keyspace_id,
+        keyspace: Some(AutoIDRequest_oneof_keyspace::KeyspaceId(keyspace_id)),
         ..Default::default()
     };
     let resp = cli.allocate(req).expect("AllocAutoID");
@@ -250,7 +251,7 @@ fn auto_id_request(
         n,
         increment,
         offset,
-        keyspace_id,
+        keyspace: Some(AutoIDRequest_oneof_keyspace::KeyspaceId(keyspace_id)),
         ..Default::default()
     };
     match cli.allocate(req) {
@@ -428,6 +429,38 @@ fn test_api_with_keyspace(keyspace_id: Option<u32>) {
         .check_errmsg_eq("[autoid:1467]Failed to read auto-increment value from storage engine");
 }
 
+#[test]
+fn go_merge_1_keyspace_oneof_getter_matches_go() {
+    let store = Arc::new(MemoryStore::new("go-merge-1", 0));
+    let service = Service::new_mock(store);
+    let request = AutoIdRequest {
+        db_id: DB_ID,
+        tbl_id: TABLE_ID,
+        n: 1,
+        increment: 1,
+        offset: 1,
+        ..Default::default()
+    };
+    // Go's GetKeyspaceID returns zero for an unset oneof.
+    assert_eq!(request.get_keyspace_id(), 0);
+    assert_eq!(service.allocate(request.clone()).unwrap().max, 1);
+
+    let mut explicit = request.clone();
+    explicit.set_keyspace_id(0);
+    assert!(explicit.has_keyspace_id());
+    assert_eq!(service.allocate(explicit).unwrap().max, 2);
+
+    let mut mismatched = request;
+    mismatched.set_keyspace_id(1);
+    assert!(
+        service
+            .allocate(mismatched)
+            .unwrap_err()
+            .to_string()
+            .contains("not leader")
+    );
+}
+
 /// Corresponds to Go `TestGRPC`.
 ///
 /// Go spins etcd for leadership; the Rust port uses `Service::new_mock` (always owner)
@@ -471,7 +504,7 @@ fn test_grpc() {
             increment: 1,
             offset: 1,
             is_unsigned: false,
-            keyspace_id,
+            keyspace: Some(AutoIDRequest_oneof_keyspace::KeyspaceId(keyspace_id)),
             ..Default::default()
         })
         .expect("AllocAutoID over gRPC");
