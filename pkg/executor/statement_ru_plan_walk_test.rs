@@ -55,6 +55,117 @@ impl base::PlanContext for TypedPlanTestContext {
 }
 
 #[test]
+fn go_merge_197_wrapped_typed_exec_stmt_plan() {
+    let context: base::ContextRef = Arc::new(TypedPlanTestContext(
+        AtomicI32::new(0),
+        base::BuiltinFunctionUsageCounter::default(),
+        planctx::variable::SessionVars::default(),
+    ));
+    let execute = astersql_planner_core::RuntimeExecute::New(Arc::new(
+        physicalop::PhysicalTableDual::New(context.clone(), 1),
+    ));
+    let flat = astersql_planner_core::FlattenTypedPhysicalPlan(&execute)
+        .expect("EXECUTE must retain the real target plan");
+    assert_eq!(flat.len(), 1);
+    assert!(
+        flat[0]
+            .Origin
+            .as_any()
+            .is::<physicalop::PhysicalTableDual>()
+    );
+    let classified = crate::statement_ru_result::classify_statement_ru_plan(&execute);
+    assert!(
+        classified
+            .plan
+            .as_any()
+            .is::<physicalop::PhysicalTableDual>()
+    );
+    assert_eq!(
+        classified.kind,
+        crate::statement_ru_result::StatementRUPlanKind::Other
+    );
+
+    let explain = astersql_planner_core::RuntimeExplain::New(
+        context.clone(),
+        Box::new(physicalop::PhysicalTableDual::New(context, 1)),
+        "row".to_owned(),
+        true,
+    );
+    let flat = astersql_planner_core::FlattenTypedPhysicalPlan(&explain)
+        .expect("EXPLAIN must retain its target for display");
+    assert_eq!(flat.len(), 1);
+    assert!(
+        flat[0]
+            .Origin
+            .as_any()
+            .is::<physicalop::PhysicalTableDual>()
+    );
+    let classified = crate::statement_ru_result::classify_statement_ru_plan(&explain);
+    assert!(
+        classified
+            .plan
+            .as_any()
+            .is::<physicalop::PhysicalTableDual>()
+    );
+
+    let plain = astersql_planner_core::RuntimeExplain::New(
+        execute.Plan.s_ctx().clone(),
+        Box::new(physicalop::PhysicalTableDual::New(
+            execute.Plan.s_ctx().clone(),
+            1,
+        )),
+        "row".to_owned(),
+        false,
+    );
+    let classified = crate::statement_ru_result::classify_statement_ru_plan(&plain);
+    assert!(
+        classified
+            .plan
+            .as_any()
+            .is::<astersql_planner_core::RuntimeExplain>()
+    );
+    let mut insert = physicalop::Insert::New(execute.Plan.s_ctx().clone());
+    assert_eq!(
+        crate::statement_ru_result::classify_statement_ru_plan(&insert).sql_type,
+        "insert"
+    );
+    insert.IsReplace = true;
+    let classified = crate::statement_ru_result::classify_statement_ru_plan(&insert);
+    assert_eq!(
+        classified.kind,
+        crate::statement_ru_result::StatementRUPlanKind::Write
+    );
+    assert_eq!(classified.sql_type, "replace");
+    let update = physicalop::Update::New(
+        execute.Plan.s_ctx().clone(),
+        Box::new(physicalop::PhysicalTableDual::New(
+            execute.Plan.s_ctx().clone(),
+            1,
+        )),
+    );
+    assert_eq!(
+        crate::statement_ru_result::classify_statement_ru_plan(&update).sql_type,
+        "update"
+    );
+    let delete = physicalop::Delete::New(
+        execute.Plan.s_ctx().clone(),
+        Box::new(physicalop::PhysicalTableDual::New(
+            execute.Plan.s_ctx().clone(),
+            1,
+        )),
+    );
+    assert_eq!(
+        crate::statement_ru_result::classify_statement_ru_plan(&delete).sql_type,
+        "delete"
+    );
+    let point = physicalop::PointGetPlan::New(execute.Plan.s_ctx().clone());
+    assert_eq!(
+        crate::statement_ru_result::classify_statement_ru_plan(&point).kind,
+        crate::statement_ru_result::StatementRUPlanKind::PointLookup
+    );
+}
+
+#[test]
 fn go_merge_187_typed_plan_forest() {
     let context: base::ContextRef = Arc::new(TypedPlanTestContext(
         AtomicI32::new(0),

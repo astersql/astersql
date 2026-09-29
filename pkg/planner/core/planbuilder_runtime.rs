@@ -144,7 +144,7 @@ pub struct RuntimeExplain {
 
 impl RuntimeExplain {
     /// 构造 RuntimeExplain 并初始化空 Schema。
-    fn New(
+    pub fn New(
         ctx: base::ContextRef,
         target: Box<dyn base::PhysicalPlan>,
         format: String,
@@ -243,6 +243,90 @@ impl base::Plan for RuntimeExplain {
         self.SimpleSchemaProducer.Plan.SetNoncacheableReason(reason)
     }
     /// 获取_noncacheable_reason（对应同名 Go 逻辑）。
+    fn get_noncacheable_reason(&self) -> String {
+        self.SimpleSchemaProducer.Plan.GetNoncacheableReason()
+    }
+}
+
+/// The executing prepared plan remains attached until the statement owner is built.
+pub struct RuntimeExecute {
+    pub SimpleSchemaProducer: physicalop::SimpleSchemaProducer,
+    pub Plan: Arc<dyn base::Plan>,
+}
+
+impl RuntimeExecute {
+    pub fn New(plan: Arc<dyn base::Plan>) -> Self {
+        let mut producer =
+            physicalop::SimpleSchemaProducer::New(plan.s_ctx().clone(), "Execute", 0);
+        producer.SetSchema(plan.schema().Clone());
+        Self {
+            SimpleSchemaProducer: producer,
+            Plan: plan,
+        }
+    }
+}
+
+impl base::Plan for RuntimeExecute {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn schema(&self) -> &expression::Schema {
+        self.SimpleSchemaProducer
+            .SchemaRef()
+            .expect("Execute initializes schema")
+    }
+    fn id(&self) -> i32 {
+        self.SimpleSchemaProducer.Plan.ID()
+    }
+    fn set_id(&mut self, id: i32) {
+        self.SimpleSchemaProducer.Plan.SetID(id)
+    }
+    fn tp(&self, flags: &[bool]) -> String {
+        self.SimpleSchemaProducer.Plan.TP(flags)
+    }
+    fn explain_id(&self, flags: &[bool]) -> Box<dyn std::fmt::Display + '_> {
+        self.SimpleSchemaProducer.Plan.ExplainID(flags)
+    }
+    fn explain_info(&self) -> String {
+        self.SimpleSchemaProducer.Plan.ExplainInfo()
+    }
+    fn replace_expr_columns(&mut self, replace: &HashMap<String, expression::Column>) {
+        self.SimpleSchemaProducer.Plan.ReplaceExprColumns(replace)
+    }
+    fn s_ctx(&self) -> &base::ContextRef {
+        self.SimpleSchemaProducer.Plan.SCtx()
+    }
+    fn stats_info(&self) -> &property_dependency::StatsInfo {
+        &EMPTY_EXPLAIN_STATS
+    }
+    fn output_names(&self) -> base::types::NameSlice {
+        self.SimpleSchemaProducer.OutputNames()
+    }
+    fn set_output_names(&mut self, names: base::types::NameSlice) {
+        self.SimpleSchemaProducer.SetOutputNames(names)
+    }
+    fn query_block_offset(&self) -> i32 {
+        self.SimpleSchemaProducer.Plan.QueryBlockOffset()
+    }
+    fn clone_for_plan_cache(
+        &self,
+        new_ctx: base::ContextRef,
+    ) -> (Option<Box<dyn base::Plan>>, bool) {
+        let (plan, ok) = self.Plan.clone_for_plan_cache(new_ctx);
+        if !ok {
+            return (None, false);
+        }
+        let Some(plan) = plan else {
+            return (None, false);
+        };
+        (Some(Box::new(Self::New(Arc::from(plan)))), true)
+    }
+    fn set_noncacheable_reason(&mut self, reason: String) {
+        self.SimpleSchemaProducer.Plan.SetNoncacheableReason(reason)
+    }
     fn get_noncacheable_reason(&self) -> String {
         self.SimpleSchemaProducer.Plan.GetNoncacheableReason()
     }

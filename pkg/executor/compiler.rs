@@ -429,7 +429,17 @@ impl Compiler {
             outputNames: optimized.outputNames,
             prepared: preparedCacheForExec(prepared, reused_prepared),
         });
-        exec_stmt.TypedPlan = Some(typed_plan);
+        exec_stmt.TypedPlan = Some(
+            if exec_stmt.StmtNode.kind == crate::adapter::StatementKind::Execute
+                && !typed_plan
+                    .as_any()
+                    .is::<astersql_planner_core::RuntimeExecute>()
+            {
+                Arc::new(astersql_planner_core::RuntimeExecute::New(typed_plan))
+            } else {
+                typed_plan
+            },
+        );
         Ok(exec_stmt)
     }
 }

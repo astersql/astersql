@@ -835,6 +835,15 @@ impl ExecStmt {
         astersql_planner_core::FlattenTypedPhysicalPlan(self.TypedPlan.as_deref()?)
     }
 
+    /// Classify the current typed target using the same wrapper order as Go RU.
+    pub fn ClassifiedTypedPlan(
+        &self,
+    ) -> Option<crate::statement_ru_result::StatementRUPlanInfo<'_>> {
+        Some(crate::statement_ru_result::classify_statement_ru_plan(
+            self.TypedPlan.as_deref()?,
+        ))
+    }
+
     /// 返回语句节点。
     pub fn GetStmtNode(&self) -> &StatementNode {
         &self.StmtNode

@@ -481,7 +481,7 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
     }
     fn RebuildPlan(
         &self,
-        _statement: &StatementNode,
+        statement: &StatementNode,
         previous_summary: &PlanInfo,
         previous_names: &[FieldName],
     ) -> AdapterResult<astersql_executor::adapter::RebuiltPlan> {
@@ -505,8 +505,16 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
         let cloned = plan
             .clone_physical(plan.s_ctx().clone())
             .map_err(|error| errors::New(error.to_string()))?;
-        let typed: Arc<dyn astersql_planner_core_base::Plan> =
-            Arc::from(cloned as Box<dyn astersql_planner_core_base::Plan>);
+        let typed: Box<dyn astersql_planner_core_base::Plan> =
+            if statement.kind == StatementKind::Execute {
+                let target: Box<dyn astersql_planner_core_base::Plan> = cloned;
+                Box::new(astersql_planner_core::RuntimeExecute::New(Arc::from(
+                    target,
+                )))
+            } else {
+                cloned
+            };
+        let typed: Arc<dyn astersql_planner_core_base::Plan> = Arc::from(typed);
         let mut summary = previous_summary.clone();
         summary.id = plan.id();
         if let super::typed_adapter_bridge::BoundPhysicalPlan::Prepared(prepared) = &physical.plan {

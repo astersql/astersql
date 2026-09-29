@@ -22,6 +22,68 @@ use crate::statement_ru_reporting::{
     StatementRUFullReport, statement_ru_engine_result,
 };
 
+use astersql_planner_core as plannercore;
+use astersql_planner_core_base as base;
+use astersql_planner_core_operator_physicalop as physicalop;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StatementRUPlanKind {
+    Other,
+    Write,
+    Commit,
+    Analyze,
+    PointLookup,
+}
+
+pub struct StatementRUPlanInfo<'a> {
+    pub plan: &'a dyn base::Plan,
+    pub kind: StatementRUPlanKind,
+    pub sql_type: &'static str,
+}
+
+/// Resolve only wrappers whose target is executed, then classify the real plan.
+/// A plain EXPLAIN keeps its own plan identity because its target is rendered.
+pub fn classify_statement_ru_plan(mut plan: &dyn base::Plan) -> StatementRUPlanInfo<'_> {
+    loop {
+        if let Some(execute) = plan.as_any().downcast_ref::<plannercore::RuntimeExecute>() {
+            plan = execute.Plan.as_ref();
+            continue;
+        }
+        if let Some(explain) = plan.as_any().downcast_ref::<plannercore::RuntimeExplain>() {
+            if explain.Analyze {
+                plan = explain.TargetPlan.as_ref();
+                continue;
+            }
+        }
+        let (kind, sql_type) =
+            if let Some(insert) = plan.as_any().downcast_ref::<physicalop::Insert>() {
+                (
+                    StatementRUPlanKind::Write,
+                    if insert.IsReplace {
+                        "replace"
+                    } else {
+                        "insert"
+                    },
+                )
+            } else if plan.as_any().is::<physicalop::Update>() {
+                (StatementRUPlanKind::Write, "update")
+            } else if plan.as_any().is::<physicalop::Delete>() {
+                (StatementRUPlanKind::Write, "delete")
+            } else if plan.as_any().is::<physicalop::PointGetPlan>()
+                || plan.as_any().is::<physicalop::BatchPointGetPlan>()
+            {
+                (StatementRUPlanKind::PointLookup, "select")
+            } else {
+                (StatementRUPlanKind::Other, "select")
+            };
+        return StatementRUPlanInfo {
+            plan,
+            kind,
+            sql_type,
+        };
+    }
+}
+
 /// Read the configured statement weights for each finalization. Go keeps the
 /// weights in the `ru-v2` config section while RU v3 replaces its legacy model.
 pub fn current_statement_ru_weights() -> StmtWeights {

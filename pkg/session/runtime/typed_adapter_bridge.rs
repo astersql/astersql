@@ -434,7 +434,15 @@ impl SessionBoundAdapterOwner {
         let cloned = plan
             .clone_physical(plan.s_ctx().clone())
             .map_err(|error| BuildError::new(error.to_string()))?;
-        let typed_plan: Box<dyn astersql_planner_core_base::Plan> = cloned;
+        let typed_plan: Box<dyn astersql_planner_core_base::Plan> =
+            if statement.kind == astersql_executor::adapter::StatementKind::Execute {
+                let target: Box<dyn astersql_planner_core_base::Plan> = cloned;
+                Box::new(astersql_planner_core::RuntimeExecute::New(Arc::from(
+                    target,
+                )))
+            } else {
+                cloned
+            };
         let typed_plan = Arc::from(typed_plan);
         let sql = statement.text.clone();
         let statement_kind = statement.kind;

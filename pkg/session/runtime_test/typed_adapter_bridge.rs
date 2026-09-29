@@ -596,6 +596,18 @@ fn canonical_prepared_exec_stmt_binds_limit_and_streams_rows_then_restores_plan_
     let typed = first
         .TypedFlatPlan()
         .expect("EXECUTE retains the physical tree");
+    assert!(
+        first
+            .TypedPlan
+            .as_ref()
+            .unwrap()
+            .as_any()
+            .is::<astersql_planner_core::RuntimeExecute>()
+    );
+    assert_eq!(
+        first.ClassifiedTypedPlan().unwrap().plan.id(),
+        typed[0].Origin.id()
+    );
     assert!(typed.iter().any(|operator| {
         operator
             .Origin
@@ -607,6 +619,22 @@ fn canonical_prepared_exec_stmt_binds_limit_and_streams_rows_then_restores_plan_
     let rebuilt = first
         .TypedFlatPlan()
         .expect("rebuilt EXECUTE retains the physical tree");
+    assert!(
+        first
+            .TypedPlan
+            .as_ref()
+            .unwrap()
+            .as_any()
+            .is::<astersql_planner_core::RuntimeExecute>()
+    );
+    assert!(
+        !first
+            .ClassifiedTypedPlan()
+            .unwrap()
+            .plan
+            .as_any()
+            .is::<astersql_planner_core::RuntimeExecute>()
+    );
     assert!(rebuilt.iter().any(|operator| {
         operator
             .Origin
@@ -659,10 +687,9 @@ fn canonical_prepared_exec_stmt_binds_limit_and_streams_rows_then_restores_plan_
     let mut second = prepared_stmt(owner.clone());
     second.RebuildPlan().expect("rebuild cached prepared plan");
     let rebuilt_plan = second
-        .TypedPlan
-        .as_deref()
-        .and_then(|plan| plan.as_physical_plan())
-        .expect("cached rebuild retains physical root");
+        .ClassifiedTypedPlan()
+        .and_then(|classified| classified.plan.as_physical_plan())
+        .expect("cached rebuild retains physical target");
     assert!(physical_limits(rebuilt_plan).contains(&(0, 1)));
     let mut cached = second
         .Exec()
