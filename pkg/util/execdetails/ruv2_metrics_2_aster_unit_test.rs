@@ -116,15 +116,15 @@ fn ruv2_raw_counters_and_bypass_match_go() {
 
     let metrics = NewRUV2Metrics();
     UpdateRUV2MetricsFromRUV2(Some(&metrics), Some(&raw));
-    assert_eq!(metrics.ResourceManagerReadCnt(), 2);
-    assert_eq!(metrics.ResourceManagerWriteCnt(), 3);
-    assert_eq!(metrics.TiKVKVEngineCacheMiss(), 5);
-    assert_eq!(metrics.TiKVStorageProcessedKeysBatchGet(), 7);
-    assert_eq!(metrics.TiKVStorageProcessedKeysGet(), 11);
+    assert_eq!(metrics.ResourceManagerReadCnt(), 0);
+    assert_eq!(metrics.ResourceManagerWriteCnt(), 0);
+    assert_eq!(metrics.TiKVKVEngineCacheMiss(), 0);
+    assert_eq!(metrics.TiKVStorageProcessedKeysBatchGet(), 0);
+    assert_eq!(metrics.TiKVStorageProcessedKeysGet(), 0);
     let detail = FormatRUV2Metrics(Some(&metrics), weights(), 0.0, 0.0);
-    assert!(detail.contains("BatchSelection:13"));
-    assert!(detail.contains("BatchTopN:17"));
-    assert!(!metrics.IsZero());
+    assert!(!detail.contains("BatchSelection:13"));
+    assert!(!detail.contains("BatchTopN:17"));
+    assert!(metrics.IsZero());
 
     let bypassed = NewRUV2Metrics();
     bypassed.SetBypass(true);

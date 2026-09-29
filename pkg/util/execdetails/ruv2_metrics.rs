@@ -13,13 +13,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// 语句级 RU v2 指标：采集、合并、快照与格式化。
+// 语句级 RU v2 指标：采集 TiKV coprocessor response bytes。
 //
-// 对应 Go `ruv2_metrics.go`。热路径计数器用独立原子字段，冷门标签落入 extra map；
-// bypass 为真时跳过累加。RU 是资源组计费单位。
+// Go `ruv2_metrics.go` 已收缩为 response bytes 采集。其余旧计费 API 暂由 Rust
+// 跨包调用方使用，待对应替代调用链移植后移除。bypass 为真时跳过累加。
 
-// 本文件对照 pkg/util/execdetails/ruv2_metrics.go 实现 statement 级 RU v2
-// 指标的采集、合并、快照和格式化逻辑。
+// 本文件的 response bytes 采集路径对照 pkg/util/execdetails/ruv2_metrics.go。
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
@@ -82,56 +81,13 @@ pub fn UpdateRUV2MetricsFromRUV2(m: Option<&RUV2Metrics>, ru: Option<&kvrpcpb::R
 impl RUV2Metrics {
     // applyRawCounters writes ru into m. Caller must check Bypass.
     fn applyRawCounters(&self, ru: &kvrpcpb::Ruv2) {
-        if ru.get_read_rpc_count() != 0 {
-            metrics::RUV2ResourceManagerReadCnt.Add(ru.get_read_rpc_count() as f64);
-            self.resourceManagerReadCnt.fetch_add(ru.get_read_rpc_count() as i64, Ordering::Relaxed);
-        }
-        if ru.get_kv_engine_cache_miss() != 0 {
-            metrics::RUV2TiKVKVEngineCacheMiss.Add(ru.get_kv_engine_cache_miss() as f64);
-            self.tikvKvEngineCacheMiss.fetch_add(ru.get_kv_engine_cache_miss() as i64, Ordering::Relaxed);
-        }
-        if ru.get_storage_processed_keys_batch_get() != 0 {
-            metrics::RUV2TiKVStorageProcessedKeysBatchGet.Add(ru.get_storage_processed_keys_batch_get() as f64);
-            self.tikvStorageProcessedKeysBatchGet.fetch_add(ru.get_storage_processed_keys_batch_get() as i64, Ordering::Relaxed);
-        }
-        if ru.get_storage_processed_keys_get() != 0 {
-            metrics::RUV2TiKVStorageProcessedKeysGet.Add(ru.get_storage_processed_keys_get() as f64);
-            self.tikvStorageProcessedKeysGet.fetch_add(ru.get_storage_processed_keys_get() as i64, Ordering::Relaxed);
-        }
-
-        // Go 通过 ensureExtra 延迟创建 cold counters；同样只在需要时进入 extra。
-        if ru.get_write_rpc_count() != 0 {
-            metrics::RUV2ResourceManagerWriteCnt.Add(ru.get_write_rpc_count() as f64);
-            self.with_extra(|extra| extra.resourceManagerWriteCnt.fetch_add(ru.get_write_rpc_count() as i64, Ordering::Relaxed));
-        }
-        if ru.get_coprocessor_executor_iterations() != 0 {
-            metrics::RUV2TiKVCoprocessorExecutorIterations.Add(ru.get_coprocessor_executor_iterations() as f64);
-            self.with_extra(|extra| extra.tikvCoprocessorExecutorIterations.fetch_add(ru.get_coprocessor_executor_iterations() as i64, Ordering::Relaxed));
-        }
-        if ru.get_coprocessor_response_bytes() != 0 {
-            metrics::RUV2TiKVCoprocessorResponseBytes.Add(ru.get_coprocessor_response_bytes() as f64);
-            self.with_extra(|extra| extra.tikvCoprocessorResponseBytes.fetch_add(ru.get_coprocessor_response_bytes() as i64, Ordering::Relaxed));
-        }
-        if ru.get_raftstore_store_write_trigger_wb_bytes() != 0 {
-            metrics::RUV2TiKVRaftstoreStoreWriteTriggerWB.Add(ru.get_raftstore_store_write_trigger_wb_bytes() as f64);
-            self.with_extra(|extra| extra.tikvRaftstoreStoreWriteTriggerWB.fetch_add(ru.get_raftstore_store_write_trigger_wb_bytes() as i64, Ordering::Relaxed));
-        }
-        { let inputs = ru.get_executor_inputs();
-            // addWork 对应 Go 闭包：过滤 0 值、上报 Prometheus，再累加 label counter。
-            let addWork = |label: &str, v: u64| {
-                if v == 0 {
-                    return;
-                }
-                metrics::RUV2TiKVCoprocessorWorkTotalCounter(label).Add(v as f64);
-                self.with_extra(|extra| addRUV2ExtraLabelCounter(&extra.tikvCoprocessorWorkTotal, label, v as i64));
-            };
-            addWork("BatchIndexScan", inputs.get_tikv_coprocessor_executor_work_total_batch_index_scan());
-            addWork("BatchTableScan", inputs.get_tikv_coprocessor_executor_work_total_batch_table_scan());
-            addWork("BatchSelection", inputs.get_tikv_coprocessor_executor_work_total_batch_selection());
-            addWork("BatchTopN", inputs.get_tikv_coprocessor_executor_work_total_batch_top_n());
-            addWork("BatchLimit", inputs.get_tikv_coprocessor_executor_work_total_batch_limit());
-            addWork("BatchSimpleAggr", inputs.get_tikv_coprocessor_executor_work_total_batch_simple_aggr());
-            addWork("BatchFastHashAggr", inputs.get_tikv_coprocessor_executor_work_total_batch_fast_hash_aggr());
+        let response_bytes = ru.get_coprocessor_response_bytes();
+        if response_bytes != 0 {
+            self.with_extra(|extra| {
+                extra
+                    .tikvCoprocessorResponseBytes
+                    .fetch_add(response_bytes as i64, Ordering::Relaxed);
+            });
         }
     }
 }
@@ -457,7 +413,6 @@ impl RUV2Metrics {
         if self.Bypass() {
             return;
         }
-        metrics::RUV2TiKVCoprocessorResponseBytes.Add(delta as f64);
         self.with_extra(|extra| extra.tikvCoprocessorResponseBytes.fetch_add(delta, Ordering::Relaxed));
     }
 

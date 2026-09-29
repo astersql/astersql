@@ -2,7 +2,20 @@
 
 批次：【批次 4】依赖：批次 3
 
-状态：未开始
+状态：已阻塞
+
+恢复记录（2026-09-29）：调度已确认同子系统前序任务 17 实现完成，其他子系统的任务 15 不阻塞本任务。现继续移植。经源码核对，本组 Go 差异删除了绝大多数 RUv2 计费 API，仅保留 coprocessor response bytes；Rust 的 `ruv2_metrics.rs` 仍有旧 API，`pkg/util/topsql/stmtstats`、`pkg/server/internal/resultset`、`pkg/sessionctx/variable`、`pkg/executor/adapter.rs` 等仍引用旧 API。需核对跨包任务归属，再做受控移植。
+
+实施进度与再次阻塞（2026-09-29）：
+- Go `UpdateRUV2MetricsFromRUV2`/`applyRawCounters` → Rust `ruv2_metrics.rs::applyRawCounters` → 独立 `go_merge_20_test.rs::go_merge_20_only_response_bytes_are_collected`：原始 RUv2 各字段中只累计 coprocessor response bytes，不再上报该字段的 Prometheus 计数。先失败证据：`cargo test --manifest-path pkg/util/execdetails/Cargo.toml --lib go_merge_20`，测试因 read RPC 结果为 3 而预期 0 失败；修复后 3/3 通过。
+- Go `SyncRUV2MetricsFromRUDetails`、`AddTiKVCoprocessorResponseBytes`、`TiKVCoprocessorResponseBytes`、bypass/空值 → Rust 同名函数及 `go_merge_20` 另外两项测试：验证排空只转移一次、零值、bypass、负增量。现有相邻 raw-counter 测试已调整为当前 Go 语义。
+- Go 删除的 `RUV2Weights`、commit details、executor/plan/resource/storage 指标、Clone/Merge、计费与格式化 API → Rust 仍保留旧逻辑，尚未覆盖。Rust 19 个文件仍引用这些旧 API，涉及 `topsql/stmtstats`、`server/internal/resultset`、`sessionctx/variable`、`executor`、`session/runtime` 及各自测试。逐项对照当前 Go 后确认 `topsql/stmtstats/stmtstats.go` 已改用版本判断和 RUDetails（清单任务 40），`server/internal/resultset/resultset.go` 已收缩为只同步 response bytes（任务 139）；新的 RU 计算位于 `pkg/executor/statement_ru_plan_walk.go`（任务 187）及 `statement_ru_result.go`（任务 197），当前尚无对应 Rust 文件，且这些任务文件状态为“未开始”。删除旧 API 会使跨包编译失败；必须在上述替代调用链可用后联动迁移。当前阻塞是具体尚未移植的下游实现，不是格式检查本身。不能将仅完成原始采集路径称为本文件的完整移植，也不能删除本任务文件。
+
+恢复后已运行检查：`cargo test --manifest-path pkg/util/execdetails/Cargo.toml --lib go_merge_20`（先失败，修复后 3/3 通过）；`cargo test --manifest-path pkg/util/execdetails/Cargo.toml --lib`（调整相邻测试后 33/33 通过）；`cargo test --manifest-path pkg/util/execdetails/internal/ruv2/Cargo.toml --lib`（11/11 通过）；`git diff --check -- pkg/util/execdetails`（通过）；`rustfmt --edition 2021 --check pkg/util/execdetails/go_merge_20_test.rs`（通过）；`make lint`（通过）。`cargo fmt --all -- --check` 失败于并行修改的 `pkg/meta/model/engine_attribute.rs` 格式；本组新测试已单独格式检查通过。旧 `ruv2_metrics.rs` 自身还有大量既存格式差异，完整删减时应一起清理。
+
+再次推进检查：用 `rustcodegraph explore 'RUV2Metrics TotalRU CursorRUV2Tracker'` 追踪调用链；Go 现有源码及覆盖清单确认任务 40、139、187、197 的替代路径。`go_merge_20` 测试已去除对待删除旧 API 的依赖，改以保留 API 与全局指标副作用检验；重跑同一聚焦命令 3/3 通过。`rustfmt --edition 2021 --check pkg/util/execdetails/go_merge_20_test.rs` 与 `git diff --check -- pkg/util/execdetails` 重跑通过。
+
+已运行检查：`~/.rustcodegraph/bin/rustcodegraph status`（索引存在）；`git status --short`（工作树有其他任务的并行修改）；`git diff ad193e964b^1 ad193e964b -- pkg/util/execdetails/ruv2_metrics.go`（确认 +2/-962）；`rg` 搜索 Rust 调用方与批次 3 状态。未运行失败/通过 `cargo test --manifest-path pkg/util/execdetails/Cargo.toml --lib go_merge_20`、`cargo fmt --all -- --check`、`make lint`、`git diff --check`：依赖阻塞且尚无任务 20 代码改动，不能取得有效完成证据。
 
 目的：逐项同步本组 Go 文件在合并中引入的行为与测试意图，保持 Rust 实现和 Go 最新逻辑等价。
 

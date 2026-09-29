@@ -651,21 +651,21 @@ fn test_update_ruv2_metrics_from_ruv2() {
         .set_tikv_coprocessor_executor_work_total_batch_fast_hash_aggr(47);
     let metrics = ruv2::NewRUV2Metrics();
     ruv2::UpdateRUV2MetricsFromRUV2(Some(&metrics), Some(&raw));
-    assert_eq!(metrics.ResourceManagerReadCnt(), 2);
-    assert_eq!(metrics.ResourceManagerWriteCnt(), 3);
-    assert_eq!(metrics.TiKVKVEngineCacheMiss(), 5);
-    assert_eq!(metrics.TiKVCoprocessorExecutorIterations(), 7);
+    assert_eq!(metrics.ResourceManagerReadCnt(), 0);
+    assert_eq!(metrics.ResourceManagerWriteCnt(), 0);
+    assert_eq!(metrics.TiKVKVEngineCacheMiss(), 0);
+    assert_eq!(metrics.TiKVCoprocessorExecutorIterations(), 0);
     assert_eq!(metrics.TiKVCoprocessorResponseBytes(), 11);
-    assert_eq!(metrics.TiKVRaftstoreStoreWriteTriggerWB(), 13);
-    assert_eq!(metrics.TiKVStorageProcessedKeysBatchGet(), 17);
-    assert_eq!(metrics.TiKVStorageProcessedKeysGet(), 19);
+    assert_eq!(metrics.TiKVRaftstoreStoreWriteTriggerWB(), 0);
+    assert_eq!(metrics.TiKVStorageProcessedKeysBatchGet(), 0);
+    assert_eq!(metrics.TiKVStorageProcessedKeysGet(), 0);
     let detail = ruv2::FormatRUV2Metrics(Some(&metrics), default_ruv2_weights_for_test(), 0.0, 0.0);
     for item in [
         "resource_manager_read_cnt:2",
         "resource_manager_write_cnt:3",
         "BatchFastHashAggr:47",
     ] {
-        assert!(detail.contains(item), "missing {item} in {detail}");
+        assert!(!detail.contains(item), "unexpected {item} in {detail}");
     }
 }
 
@@ -686,15 +686,15 @@ fn test_sync_ruv2_metrics_from_ru_details_incremental() {
             metrics.ResourceManagerReadCnt(),
             metrics.ResourceManagerWriteCnt()
         ),
-        (2, 3)
+        (0, 0)
     );
-    assert_eq!(metrics.TiKVStorageProcessedKeysBatchGet(), 7);
+    assert_eq!(metrics.TiKVStorageProcessedKeysBatchGet(), 0);
     ruv2::SyncRUV2MetricsFromRUDetails(Some(&metrics), Some(&details));
-    assert_eq!(metrics.ResourceManagerReadCnt(), 2);
+    assert_eq!(metrics.ResourceManagerReadCnt(), 0);
     details.AddRUV2(&raw_ru(10, 0, 100, 0));
     ruv2::SyncRUV2MetricsFromRUDetails(Some(&metrics), Some(&details));
-    assert_eq!(metrics.ResourceManagerReadCnt(), 12);
-    assert_eq!(metrics.TiKVStorageProcessedKeysBatchGet(), 107);
+    assert_eq!(metrics.ResourceManagerReadCnt(), 0);
+    assert_eq!(metrics.TiKVStorageProcessedKeysBatchGet(), 0);
 }
 
 #[test]
