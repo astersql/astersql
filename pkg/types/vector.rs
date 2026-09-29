@@ -71,6 +71,12 @@ pub struct VectorFloat32 {
     data: Vec<u32>,
 }
 
+impl Default for VectorFloat32 {
+    fn default() -> Self {
+        Self { data: Vec::new() }
+    }
+}
+
 /// 返回零维空向量。
 pub fn ZeroVectorFloat32() -> VectorFloat32 {
     InitVectorFloat32(0)

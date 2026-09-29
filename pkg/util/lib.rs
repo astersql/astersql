@@ -19,6 +19,7 @@ pub mod printer;
 pub mod rlimit_other;
 pub mod rlimit_windows;
 pub mod security;
+pub mod service_url;
 pub mod session_pool;
 pub mod split;
 pub mod tokenlimiter;
@@ -37,6 +38,8 @@ mod errors_test;
 #[cfg(test)]
 #[path = "etcd_test.rs"]
 mod etcd_test;
+#[cfg(test)]
+mod go_merge_34_service_url_test;
 #[cfg(test)]
 #[path = "misc_test.rs"]
 mod misc_test;

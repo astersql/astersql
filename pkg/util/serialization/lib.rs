@@ -42,3 +42,6 @@ pub use serialization_util::*;
 #[path = "migration_aster_unit_test.rs"]
 /// AsterSQL 迁移补充回归测试。
 mod migration_aster_unit_test;
+
+#[cfg(test)]
+mod go_merge_34_test;

@@ -145,6 +145,15 @@ pub fn SerializeTypesDuration(value: types::Duration, mut buf: Vec<u8>) -> Vec<u
     SerializeInt(value.Fsp as isize, buf)
 }
 
+// SerializeVectorFloat32 serializes VectorFloat32 type.
+pub fn SerializeVectorFloat32(value: &types::VectorFloat32, buf: Vec<u8>) -> Vec<u8> {
+    if value.SerializedSize() == 0 {
+        let zero = types::ParseVectorFloat32("[]").expect("zero vector is valid");
+        return serializeBuffer(zero.ZeroCopySerialize(), buf);
+    }
+    serializeBuffer(value.ZeroCopySerialize(), buf)
+}
+
 // SerializeJSONTypeCode serializes JSONTypeCode type.
 /// 序列化 JSON 类型码单字节。
 pub fn SerializeJSONTypeCode(value: types::JSONTypeCode, mut buf: Vec<u8>) -> Vec<u8> {

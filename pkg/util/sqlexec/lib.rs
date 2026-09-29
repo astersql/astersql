@@ -47,6 +47,8 @@ pub use restricted_sql_executor::*;
 // 内存中已构造完整内容的简单结果集。
 mod simple_record_set;
 pub use simple_record_set::*;
+#[cfg(test)]
+mod go_merge_34_test;
 
 #[cfg(test)]
 #[path = "migration_aster_unit_test.rs"]

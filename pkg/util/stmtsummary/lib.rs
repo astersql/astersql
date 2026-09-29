@@ -73,6 +73,8 @@ mod statement_summary_test;
 #[path = "evicted_test.rs"]
 /// 对应 Go `evicted_test.go`。
 mod evicted_test;
+#[cfg(test)]
+mod go_merge_34_test;
 
 #[cfg(test)]
 #[path = "main_test.rs"]

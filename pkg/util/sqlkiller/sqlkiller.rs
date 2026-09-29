@@ -159,6 +159,10 @@ pub struct SQLKiller {
     pub IsConnectionAlive: AtomicPointer<ConnectionAliveFn>,
 }
 
+#[cfg(test)]
+#[path = "go_merge_34_test.rs"]
+mod go_merge_34_test;
+
 impl Default for SQLKiller {
     fn default() -> Self {
         Self {
@@ -197,8 +201,7 @@ impl SQLKiller {
     }
 
     /// 将当前事件标为已触发并关闭通道（只生效一次）。
-    fn triggerKillEvent(&self) {
-        let mut event = self.killEvent.lock().expect("killEvent mutex poisoned");
+    fn triggerKillEventLocked(event: &mut KillEventState) {
         if event.triggered {
             return;
         }
@@ -209,8 +212,7 @@ impl SQLKiller {
     }
 
     /// 重置事件状态：关闭未触发的旧通道并清空描述。
-    fn resetKillEvent(&self) {
-        let mut event = self.killEvent.lock().expect("killEvent mutex poisoned");
+    fn resetKillEventLocked(event: &mut KillEventState) {
         if !event.triggered
             && let Some(ch) = &event.ch
         {
@@ -223,17 +225,21 @@ impl SQLKiller {
 
     /// 发送带附加原因描述的 kill 信号（用于内存仲裁等）。
     pub fn SendKillSignalWithKillEventReason(&self, signal: KillSignal, desc: String) {
-        self.killEvent
-            .lock()
-            .expect("killEvent mutex poisoned")
-            .desc = desc;
-        self.sendKillSignal(signal);
-        self.triggerKillEvent();
+        let (sent, event_desc) = {
+            let mut event = self.killEvent.lock().expect("killEvent mutex poisoned");
+            event.desc = desc;
+            let result = self.sendKillSignalLocked(signal, &event);
+            Self::triggerKillEventLocked(&mut event);
+            result
+        };
+        if sent {
+            self.logKillSignal(signal, &event_desc);
+        }
     }
 
-    /// 仅首次成功写入 Signal，并打 warn 日志。
-    fn sendKillSignal(&self, reason: KillSignal) {
-        if self
+    /// 仅首次成功写入 Signal；调用方已持有 killEvent 锁。
+    fn sendKillSignalLocked(&self, reason: KillSignal, event: &KillEventState) -> (bool, String) {
+        let sent = self
             .Signal
             .compare_exchange(
                 UnspecifiedKillSignal,
@@ -241,33 +247,61 @@ impl SQLKiller {
                 Ordering::SeqCst,
                 Ordering::SeqCst,
             )
-            .is_ok()
-        {
-            let error = self.getKillError(reason);
-            BgLogger().log(
-                LogLevel::Warn,
-                "kill initiated",
-                [
-                    LogField::U64(
-                        "connection ID".to_owned(),
-                        self.ConnID.load(Ordering::SeqCst),
-                    ),
-                    LogField::String(
-                        "reason".to_owned(),
-                        error.map_or_else(
-                            || "unspecified kill signal".to_owned(),
-                            |err| err.to_string(),
-                        ),
-                    ),
-                ],
-            );
+            .is_ok();
+        (
+            sent,
+            if sent {
+                event.desc.clone()
+            } else {
+                String::new()
+            },
+        )
+    }
+
+    /// 对内部发送路径也使用同一把锁；日志在锁外输出。
+    fn sendKillSignal(&self, reason: KillSignal) {
+        let (sent, desc) = {
+            let event = self.killEvent.lock().expect("killEvent mutex poisoned");
+            self.sendKillSignalLocked(reason, &event)
+        };
+        if sent {
+            self.logKillSignal(reason, &desc);
         }
+    }
+
+    fn logKillSignal(&self, reason: KillSignal, desc: &str) {
+        let error = self.getKillError(reason, desc);
+        BgLogger().log(
+            LogLevel::Warn,
+            "kill initiated",
+            [
+                LogField::U64(
+                    "connection ID".to_owned(),
+                    self.ConnID.load(Ordering::SeqCst),
+                ),
+                LogField::String(
+                    "reason".to_owned(),
+                    error.map_or_else(
+                        || "unspecified kill signal".to_owned(),
+                        |err| err.to_string(),
+                    ),
+                ),
+            ],
+        );
     }
 
     /// 发送 kill 信号并触发事件广播。
     pub fn SendKillSignal(&self, reason: KillSignal) {
-        self.sendKillSignal(reason);
-        self.triggerKillEvent();
+        let (sent, desc) = {
+            let mut event = self.killEvent.lock().expect("killEvent mutex poisoned");
+            let result = self.sendKillSignalLocked(reason, &event);
+            Self::triggerKillEventLocked(&mut event);
+            result
+        };
+        if sent {
+            fail::eval("go_merge_34_before_log_kill_signal", |_| {});
+            self.logKillSignal(reason, &desc);
+        }
     }
 
     /// 读取当前原子 kill 信号。
@@ -275,17 +309,8 @@ impl SQLKiller {
         self.Signal.load(Ordering::SeqCst)
     }
 
-    /// 读取附加的 kill 事件原因描述。
-    fn getKillEventReason(&self) -> String {
-        self.killEvent
-            .lock()
-            .expect("killEvent mutex poisoned")
-            .desc
-            .clone()
-    }
-
     /// 将信号常量映射为对应的执行错误；未指定则返回 None。
-    fn getKillError(&self, status: KillSignal) -> Option<SharedError> {
+    fn getKillError(&self, status: KillSignal, desc: &str) -> Option<SharedError> {
         let conn_id = self.ConnID.load(Ordering::SeqCst);
         match status {
             QueryInterrupted => Some(exeerrors::ErrQueryInterrupted.GenWithStackByArgs(&[])),
@@ -301,10 +326,12 @@ impl SQLKiller {
                 exeerrors::ErrResourceGroupQueryRunawayInterrupted
                     .FastGenByArgs(&[ErrorArg::from("runaway exceed tidb side")]),
             ),
-            KilledByMemArbitrator => Some(exeerrors::ErrQueryExecStopped.GenWithStackByArgs(&[
-                ErrorArg::from(self.getKillEventReason()),
-                ErrorArg::from(conn_id),
-            ])),
+            KilledByMemArbitrator => {
+                Some(exeerrors::ErrQueryExecStopped.GenWithStackByArgs(&[
+                    ErrorArg::from(desc.to_owned()),
+                    ErrorArg::from(conn_id),
+                ]))
+            }
             _ => None,
         }
     }
@@ -360,6 +387,7 @@ impl SQLKiller {
             && rand::random::<f64>() > f64::from(p) / 1000.0
             && self.ConnID.load(Ordering::SeqCst) != 0
         {
+            let _event = self.killEvent.lock().expect("killEvent mutex poisoned");
             self.Signal
                 .store(rand::random::<u32>() % 5, Ordering::SeqCst);
         }
@@ -384,7 +412,13 @@ impl SQLKiller {
             }
         }
 
-        let status = self.Signal.load(Ordering::SeqCst);
+        let mut status = self.Signal.load(Ordering::SeqCst);
+        let mut desc = String::new();
+        if status == KilledByMemArbitrator {
+            let event = self.killEvent.lock().expect("killEvent mutex poisoned");
+            status = self.Signal.load(Ordering::SeqCst);
+            desc.clone_from(&event.desc);
+        }
         if status == ServerMemoryExceeded {
             BgLogger().log(
                 LogLevel::Warn,
@@ -395,7 +429,7 @@ impl SQLKiller {
                 )],
             );
         }
-        self.getKillError(status).map_or(Ok(()), Err)
+        self.getKillError(status, &desc).map_or(Ok(()), Err)
     }
 
     /// 立即检查连接存活；失活则发送 QueryInterrupted。
@@ -409,7 +443,14 @@ impl SQLKiller {
 
     /// 重置信号与事件，供下一条语句复用同一 SQLKiller。
     pub fn Reset(&self) {
-        if self.Signal.load(Ordering::SeqCst) != UnspecifiedKillSignal {
+        let old_status = {
+            let mut event = self.killEvent.lock().expect("killEvent mutex poisoned");
+            let old = self.Signal.swap(UnspecifiedKillSignal, Ordering::SeqCst);
+            fail::eval("go_merge_34_after_reset_signal_swap", |_| {});
+            Self::resetKillEventLocked(&mut event);
+            old
+        };
+        if old_status != UnspecifiedKillSignal {
             BgLogger().log(
                 LogLevel::Warn,
                 "kill finished",
@@ -419,8 +460,6 @@ impl SQLKiller {
                 )],
             );
         }
-        self.Signal.store(UnspecifiedKillSignal, Ordering::SeqCst);
-        self.resetKillEvent();
         self.lastCheckTime.Store(None);
     }
 }

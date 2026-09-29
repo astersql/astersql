@@ -172,14 +172,14 @@ impl stmtSummaryByDigestEvicted {
             .collect()
     }
 
-    /// 收集最多 `historySize` 条历史淘汰元素（自最旧起）。
+    /// 收集最新的 `historySize` 条历史淘汰元素，并按时间升序返回。
     pub fn collectHistorySummaries(
         &self,
         historySize: usize,
     ) -> Vec<&stmtSummaryByDigestEvictedElement> {
         self.history
             .iter()
-            .take(historySize)
+            .skip(self.history.len().saturating_sub(historySize))
             .map(Box::as_ref)
             .collect()
     }
@@ -306,6 +306,19 @@ pub fn addInfo(addTo: &mut stmtSummaryByDigestElement, addWith: &stmtSummaryByDi
     addTo.maxRocksdbBlockReadByte = addTo
         .maxRocksdbBlockReadByte
         .max(addWith.maxRocksdbBlockReadByte);
+    addTo.iaExecCount += addWith.iaExecCount;
+    addTo.sumIARemoteReadSegmentCount += addWith.sumIARemoteReadSegmentCount;
+    addTo.maxIARemoteReadSegmentCount = addTo
+        .maxIARemoteReadSegmentCount
+        .max(addWith.maxIARemoteReadSegmentCount);
+    addTo.sumIARemoteReadSegmentSize += addWith.sumIARemoteReadSegmentSize;
+    addTo.maxIARemoteReadSegmentSize = addTo
+        .maxIARemoteReadSegmentSize
+        .max(addWith.maxIARemoteReadSegmentSize);
+    addTo.sumIARemoteReadSegmentWaitTime += addWith.sumIARemoteReadSegmentWaitTime;
+    addTo.maxIARemoteReadSegmentWaitTime = addTo
+        .maxIARemoteReadSegmentWaitTime
+        .max(addWith.maxIARemoteReadSegmentWaitTime);
 
     addTo.commitCount += addWith.commitCount;
     addTo.sumPrewriteTime += addWith.sumPrewriteTime;

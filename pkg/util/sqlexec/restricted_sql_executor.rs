@@ -64,6 +64,12 @@ pub type TrackSysProcFn =
 /// 取消系统过程跟踪的回调类型。
 pub type UnTrackSysProcFn = Box<dyn Fn(u64) + Send + Sync>;
 
+/// Configures a restricted SQL session and returns its restoration callback.
+/// The callback receives the same session vars after execution so Rust does not
+/// retain a mutable borrow for the duration of the query.
+pub type SessionVarsSetup =
+    Box<dyn Fn(&mut variable::SessionVars) -> Box<dyn FnOnce(&mut variable::SessionVars)>>;
+
 /// Options applied by `ExecRestrictedStmt` and `ExecRestrictedSQL`.
 /// `ExecRestrictedStmt` / `ExecRestrictedSQL` 使用的执行选项集合。
 #[derive(Default)]
@@ -74,6 +80,7 @@ pub struct ExecOption {
     pub TrackSysProc: Option<TrackSysProcFn>,
     /// 系统过程结束跟踪回调。
     pub UnTrackSysProc: Option<UnTrackSysProcFn>,
+    pub SessionVarsSetup: Option<SessionVarsSetup>,
     /// 分区裁剪模式（Partition Prune Mode）字符串。
     pub PartitionPruneMode: String,
     /// 快照时间戳 SnapshotTS（MVCC 读版本）。
@@ -126,6 +133,11 @@ pub fn ExecOptionUseCurSession(option: &mut ExecOption) {
 /// 强制从会话池取会话执行。
 pub fn ExecOptionUseSessionPool(option: &mut ExecOption) {
     option.UseCurSession = false;
+}
+
+/// Configures the internal session used by restricted SQL execution.
+pub fn ExecOptionWithSessionVarsSetup(setup: SessionVarsSetup) -> OptionFuncAlias {
+    Box::new(move |option| option.SessionVarsSetup = Some(setup))
 }
 
 /// 构造带快照时间戳的选项闭包。
