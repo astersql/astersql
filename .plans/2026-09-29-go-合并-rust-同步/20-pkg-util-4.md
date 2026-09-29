@@ -1,8 +1,10 @@
 # 任务 20: pkg/util 第 4 组 Go 差异移植
 
-批次：【批次 4】依赖：批次 3
+批次：【批次 79】依赖：批次 78、`.plans/2026-09-29-ru-v3-直接移植剩余任务/10-旧调用迁移与回归.md` 完成
 
 状态：已阻塞
+
+调度修订（2026-09-29）：本文件在 Go 同步计划中仅作来源覆盖验收；RU v3 代码由专门的桥接计划及 RU v3 计划按 Go 函数合同实现。前序普通批次不等待本文件；外部计划完成后在本批次核对该来源文件的逐分支证据并按原规则关闭。
 
 恢复记录（2026-09-29）：调度已确认同子系统前序任务 17 实现完成，其他子系统的任务 15 不阻塞本任务。现继续移植。经源码核对，本组 Go 差异删除了绝大多数 RUv2 计费 API，仅保留 coprocessor response bytes；Rust 的 `ruv2_metrics.rs` 仍有旧 API，`pkg/util/topsql/stmtstats`、`pkg/server/internal/resultset`、`pkg/sessionctx/variable`、`pkg/executor/adapter.rs` 等仍引用旧 API。需核对跨包任务归属，再做受控移植。
 

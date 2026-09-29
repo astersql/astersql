@@ -1,8 +1,10 @@
 # 任务 197: pkg/executor 第 27 组 Go 差异移植
 
-批次：【批次 59】依赖：批次 58
+批次：【批次 78】依赖：批次 77
 
 状态：进行中
+
+调度修订（2026-09-29）：本文件在 Go 同步计划中仅作来源覆盖验收；RU v3 代码由专门的桥接计划及 RU v3 计划按 Go 函数合同实现。前序普通批次不等待本文件；外部计划完成后在本批次核对该来源文件的逐分支证据并按原规则关闭。
 
 实施记录（2026-09-29）：任务 20 的旧 RUv2 API 删除依赖本组 Go RU v3 结算代码。已核对 Go `statement_ru_result.go` 的 `currentStatementRUWeights`、`trimStatementRUExplainPrefix`、`classifyStatementRUScanEvidence`，以及 Rust `pkg/resourcegroup/ruv2/model.rs` 的 `StmtUnits`/`calculate`。已在独立 Rust 测试文件加入 `go_merge_197` 回归，并新建 `statement_ru_result.rs` 逐函数移植上述纯函数；覆盖零值、矛盾数据、缺失数据、正常比例、大整数、EXPLAIN 前缀。i64 三项计算的最大乘积仍小于 f64 最大值，因此大整数应为有效估计。曾尝试先造一个只返回 `StmtUnits` 的终端辅助函数；按用户纠正已删除，因为它跳过 Go `statementRUCalculator` 的 engine/report 语义。后续必须直接移植 Go 结算器与生产调用链，不能用简化的替代计算路径。整个 410 行 Go 文件尚未完成，不能删除任务文件。
 

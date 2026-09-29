@@ -1,8 +1,10 @@
 # 任务 187: pkg/executor 第 22 组 Go 差异移植
 
-批次：【批次 54】依赖：批次 53
+批次：【批次 76】依赖：批次 75、`.plans/2026-09-29-ru-v3-直接移植剩余任务/10-旧调用迁移与回归.md` 完成
 
 状态：进行中
+
+调度修订（2026-09-29）：本文件在 Go 同步计划中仅作来源覆盖验收；RU v3 代码由专门的桥接计划及 RU v3 计划按 Go 函数合同实现。前序普通批次不等待本文件；外部计划完成后在本批次核对该来源文件的逐分支证据并按原规则关闭。
 
 实施记录（2026-09-29）：按用户要求直接逐函数移植 Go `statement_ru_plan_walk.go`，不采用另一套 RU 计算路径。已新增 Rust `statement_ru_plan_walk.rs` 和独立测试，先实现 `statementRUWriteSnapshot` / `snapshotStatementRUWrites`，从现有 Rust `tikvutil::CommitDetails` 复制提交键数与字节数；空详情返回零值。该文件其余计划遍历、终端 finalization 和边界尚未移植，不得标记任务完成或删除。
 

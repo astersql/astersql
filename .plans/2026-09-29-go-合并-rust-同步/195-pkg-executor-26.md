@@ -1,8 +1,10 @@
 # 任务 195: pkg/executor 第 26 组 Go 差异移植
 
-批次：【批次 58】依赖：批次 57
+批次：【批次 77】依赖：批次 76
 
 状态：进行中
+
+调度修订（2026-09-29）：本文件在 Go 同步计划中仅作来源覆盖验收；RU v3 代码由专门的桥接计划及 RU v3 计划按 Go 函数合同实现。前序普通批次不等待本文件；外部计划完成后在本批次核对该来源文件的逐分支证据并按原规则关闭。
 
 实施记录（2026-09-29）：Go `statement_ru_result.go` 的 finalize 依赖本组 `statementRUCalculator.engineResult`。已直接对照 `statement_ru_reporting.go` 的三个 engine 计算公式，新建 Rust `statement_ru_reporting.rs` 与独立测试，覆盖 TiDB 本地 CPU 与 TiKV 远端扫描字节分摊；其余 full report、operator 标签和发布逻辑尚未移植，不能删除任务文件。
 
