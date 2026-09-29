@@ -25,6 +25,24 @@
 use crate::privs::*;
 
 #[test]
+fn go_merge_31_operate_view_privilege() {
+    let privilege = PrivilegeType(1_u64 << 33);
+    assert_eq!(privilege.String(), "Operate View");
+    assert_eq!(privilege.SetString(), "Operate View");
+    assert_eq!(NewPrivFromSetEnum("Operate View"), Some(privilege));
+    assert_eq!(privilege.ColumnString(), "Operate_view_priv");
+    assert_eq!(NewPrivFromColumn("Operate_view_priv"), Some(privilege));
+    assert_eq!(AllPriv.0, 1_u64 << 34);
+    assert_eq!(ExtendedPriv.0, 1_u64 << 35);
+    assert_eq!(AllPrivMask.0, (1_u64 << 34) - 1);
+    for scope in [AllGlobalPrivs(), AllDBPrivs(), AllTablePrivs()] {
+        assert!(scope.Has(privilege));
+    }
+    assert!(!AllColumnPrivs().Has(privilege));
+    assert!(!StaticGlobalOnlyPrivs().Has(privilege));
+}
+
+#[test]
 fn test_priv_string() {
     let mut i = 0_u64;
     // 按位左移枚举每个 PrivilegeType，直到超过 AllPriv 哨兵位。

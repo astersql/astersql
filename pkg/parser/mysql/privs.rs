@@ -48,6 +48,7 @@ pub fn Priv2Str() -> HashMap<PrivilegeType, &'static str> {
         (IndexPriv, "Index"),
         (CreateViewPriv, "Create View"),
         (ShowViewPriv, "Show View"),
+        (OperateViewPriv, "Operate View"),
         (CreateRolePriv, "Create Role"),
         (DropRolePriv, "Drop Role"),
         (CreateTMPTablePriv, "CREATE TEMPORARY TABLES"),
@@ -89,6 +90,7 @@ pub fn Priv2SetStr() -> HashMap<PrivilegeType, &'static str> {
         (IndexPriv, "Index"),
         (CreateViewPriv, "Create View"),
         (ShowViewPriv, "Show View"),
+        (OperateViewPriv, "Operate View"),
         (CreateRolePriv, "Create Role"),
         (DropRolePriv, "Drop Role"),
         (ShutdownPriv, "Shutdown Role"),
@@ -119,6 +121,7 @@ pub fn SetStr2Priv() -> HashMap<&'static str, PrivilegeType> {
         ("Index", IndexPriv),
         ("Create View", CreateViewPriv),
         ("Show View", ShowViewPriv),
+        ("Operate View", OperateViewPriv),
         ("Trigger", TriggerPriv),
     ]
     .into_iter()
@@ -147,6 +150,7 @@ pub fn Priv2UserCol() -> HashMap<PrivilegeType, &'static str> {
         (IndexPriv, "Index_priv"),
         (CreateViewPriv, "Create_view_priv"),
         (ShowViewPriv, "Show_view_priv"),
+        (OperateViewPriv, "Operate_view_priv"),
         (CreateRolePriv, "Create_role_priv"),
         (DropRolePriv, "Drop_role_priv"),
         (CreateTMPTablePriv, "Create_tmp_table_priv"),
@@ -187,6 +191,7 @@ pub fn Col2PrivType() -> HashMap<&'static str, PrivilegeType> {
         ("Index_priv", IndexPriv),
         ("Create_view_priv", CreateViewPriv),
         ("Show_view_priv", ShowViewPriv),
+        ("Operate_view_priv", OperateViewPriv),
         ("Create_role_priv", CreateRolePriv),
         ("Drop_role_priv", DropRolePriv),
         ("Create_tmp_table_priv", CreateTMPTablePriv),
@@ -303,10 +308,12 @@ pub const CreateTablespacePriv: PrivilegeType = PrivilegeType(1_u64 << 30);
 pub const ReplicationClientPriv: PrivilegeType = PrivilegeType(1_u64 << 31);
 /// REPLICATION SLAVE：作为从库读取 binlog。
 pub const ReplicationSlavePriv: PrivilegeType = PrivilegeType(1_u64 << 32);
+/// OPERATE VIEW：操作物化视图维护。
+pub const OperateViewPriv: PrivilegeType = PrivilegeType(1_u64 << 33);
 /// ALL PRIVILEGES 哨兵位；具体掩码见 AllPrivMask。
-pub const AllPriv: PrivilegeType = PrivilegeType(1_u64 << 33);
+pub const AllPriv: PrivilegeType = PrivilegeType(1_u64 << 34);
 /// 动态/扩展权限占位，位序在 AllPriv 之后。
-pub const ExtendedPriv: PrivilegeType = PrivilegeType(1_u64 << 34);
+pub const ExtendedPriv: PrivilegeType = PrivilegeType(1_u64 << 35);
 
 /// AllPrivMask 对应 Go 的 AllPriv - 1，覆盖 AllPriv 之前定义的全部静态权限位。
 pub const AllPrivMask: PrivilegeType = PrivilegeType(AllPriv.0 - 1);
@@ -346,6 +353,7 @@ pub fn AllGlobalPrivs() -> Privileges {
         TriggerPriv,
         CreateViewPriv,
         ShowViewPriv,
+        OperateViewPriv,
         CreateRolePriv,
         DropRolePriv,
         CreateTMPTablePriv,
@@ -382,6 +390,7 @@ pub fn AllDBPrivs() -> Privileges {
         IndexPriv,
         CreateViewPriv,
         ShowViewPriv,
+        OperateViewPriv,
         TriggerPriv,
     ]
 }
@@ -400,6 +409,7 @@ pub fn AllTablePrivs() -> Privileges {
         AlterPriv,
         CreateViewPriv,
         ShowViewPriv,
+        OperateViewPriv,
         TriggerPriv,
     ]
 }
