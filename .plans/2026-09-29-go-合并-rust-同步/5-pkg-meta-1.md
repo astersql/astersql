@@ -2,7 +2,9 @@
 
 批次：【批次 1】依赖：无
 
-状态：未开始
+状态：已完成，待回归
+
+本任务行为和包内测试已完成；全工作区 `cargo fmt --all -- --check` 因本任务外已有 Rust 文件格式差异退出 1（例如 `pkg/ddl/job_submitter_test.rs`、`pkg/executor/aggfuncs/func_avg_test.rs`）。本任务三个 Rust 文件单独 `rustfmt --check` 通过。待其他任务处理全工作区格式差异后复跑该检查，再删除本任务文件。
 
 目的：逐项同步本组 Go 文件在合并中引入的行为与测试意图，保持 Rust 实现和 Go 最新逻辑等价。
 
@@ -51,3 +53,12 @@
 ## 完成
 
 获得上述证据后删除本任务文件，并在最终回复报告逐文件覆盖与准确命令。若阻塞，只更新此文件为 `已阻塞` 并记具体原因与检查；若仅因无关基线使验证无法运行，可设为 `已完成，待回归` 并记录可复现证据。不要修改 `plan.md`。
+
+### 本次实施证据
+
+- Go→Rust：`singlePointAlloc.Alloc`、`Rebase`、`ForceRebase`、`Transfer`、`Base`、`End` 对应 `SinglePointAllocator` 的同名 trait 方法及 `alloc_inner` / `rebase_inner`；重试策略、终止错误标记和日志状态分别对应 `RpcRetryPolicy` / `RpcRetryState`、`AutoIdError::RpcRetryLimit`、`RpcRetryLogState`。Go 的 keyspace oneof 在 Rust 本地 RPC 请求抽象中由 `AutoIdRequest.keyspace_id` 承载。Go 测试意图落在独立的 `autoid_service_test.rs` 中。
+- 先失败：`cargo test --manifest-path pkg/meta/autoid/Cargo.toml --lib go_merge_5`，两项初始回归测试分别因 base 为 `10` 而非 `20`、Transfer 后 base 为 `0` 而非 `42` 失败。修复后 7 项 `go_merge_5` 测试通过。
+- 通过：`cargo test --manifest-path pkg/meta/autoid/Cargo.toml --lib`（37/37）；`rustfmt --edition 2024 --check pkg/meta/autoid/autoid_service.rs pkg/meta/autoid/autoid_service_test.rs pkg/meta/autoid/errors.rs`；`git diff --check -- pkg/meta/autoid/autoid_service.rs pkg/meta/autoid/autoid_service_test.rs pkg/meta/autoid/errors.rs`；`make lint`，均通过。
+- 待回归：`cargo fmt --all -- --check` 退出 1，输出指向本任务外多个文件的格式差异。本任务未修改 Go imports、Go 测试或 Bazel 元数据，故无需 `make bazel_prepare`。未做真实 AutoID 服务集成验证；Rust `Context` 通过 30 秒后取消表达 Go 写操作 deadline，当前 RPC 抽象没有暴露绝对 deadline 查询接口。
+- 风险：本地状态以 `Mutex` 保护而非 Go 原子类型，但 RPC 不持有该锁，乱序返回测试通过；日志以标准错误输出字段记录，尚无仓库统一结构化 Rust 日志适配；真实服务对超时取消的响应需集成验证。
+- 延后回归（当前共享工作区）：`cargo test --manifest-path pkg/meta/autoid/Cargo.toml --lib go_merge_5` 7/7 通过；`cargo test --manifest-path pkg/meta/autoid/Cargo.toml --lib` 初次 36/37，通过前发现新增测试把重试调用次数固定要求为至少 3，但调度慢时第二次调用已同时满足错误次数和时长阈值。已改成至少 2 次，重跑包内 37/37 通过。`rustfmt --edition 2024 --check pkg/meta/autoid/autoid_service.rs pkg/meta/autoid/autoid_service_test.rs pkg/meta/autoid/errors.rs`、`git diff --check -- pkg/meta/autoid/autoid_service.rs pkg/meta/autoid/autoid_service_test.rs pkg/meta/autoid/errors.rs`、`make lint` 均通过。`cargo fmt --all -- --check` 仍因本任务外文件（如 `pkg/ddl/job_submitter_test.rs` 和 `pkg/session/runtime/dml.rs`）退出 1，故保持待回归状态，未删除任务文件。

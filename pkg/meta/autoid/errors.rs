@@ -38,6 +38,9 @@ pub enum AutoIdError {
     /// 自增/序列 ID 空间耗尽或读全局水位失败。
     #[error("auto-increment read failed: {0}")]
     AutoIncrementReadFailed(String),
+    /// AutoID RPC reached both the retry count and elapsed-time thresholds.
+    #[error("auto-increment read failed: {0}")]
+    RpcRetryLimit(String),
     /// 元数据中的 AutoID 键类型与预期不符。
     #[error("wrong auto key: {0}")]
     WrongAutoKey(String),
@@ -62,6 +65,11 @@ pub enum AutoIdError {
     /// AutoID 服务端返回的业务错误消息。
     #[error("autoid service error: {0}")]
     Service(String),
+}
+
+/// Reports a terminal AutoID RPC retry-limit error.
+pub fn is_rpc_retry_limit_error(error: &AutoIdError) -> bool {
+    matches!(error, AutoIdError::RpcRetryLimit(_))
 }
 
 /// 构造 increment/offset 非法错误。

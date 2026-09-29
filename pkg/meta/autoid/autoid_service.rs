@@ -23,7 +23,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::autoid::{Allocator, AllocatorType, Context, valid_increment_and_offset};
 use crate::errors::{AutoIdError, Result, autoinc_read_failed, invalid_increment_and_offset};
@@ -245,13 +245,151 @@ struct SinglePointState {
 
 /// 远程单点 AutoID 分配器：每次分配都走 Leader RPC，不本地批量缓存。
 pub struct SinglePointAllocator {
+    operation_lock: RwLock<()>,
     state: Mutex<SinglePointState>,
     is_unsigned: bool,
     discover: Arc<ClientDiscover>,
     keyspace_id: u32,
+    retry_policy: RpcRetryPolicy,
+}
+
+const RPC_RETRY_ACTION: &str =
+    "check AutoID service availability and connectivity, then retry the statement";
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+static RPC_RETRY_REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+struct RpcRetryLogState {
+    operation: &'static str,
+    keyspace_id: u32,
+    database_id: i64,
+    table_id: i64,
+    started: Instant,
+    request_id: u64,
+    errors: usize,
+    active: bool,
+    terminal: bool,
+    recovered: bool,
+    ctx: Context,
+}
+
+impl RpcRetryLogState {
+    fn new(operation: &'static str, allocator: &SinglePointAllocator, ctx: &Context) -> Self {
+        let state = allocator.state.lock().unwrap();
+        Self {
+            operation,
+            keyspace_id: allocator.keyspace_id,
+            database_id: state.database_id,
+            table_id: state.table_id,
+            started: Instant::now(),
+            request_id: 0,
+            errors: 0,
+            active: false,
+            terminal: false,
+            recovered: false,
+            ctx: ctx.clone(),
+        }
+    }
+
+    fn retry(&mut self) {
+        self.errors += 1;
+        if self.active {
+            return;
+        }
+        self.active = true;
+        self.request_id = RPC_RETRY_REQUEST_SEQUENCE.fetch_add(1, Ordering::SeqCst) + 1;
+        eprintln!(
+            "autoid request entered RPC retry: category=autoid client request_id={} operation={} keyspace_id={} db_id={} table_id={} request_elapsed={:?} rpc_error_count={}",
+            self.request_id,
+            self.operation,
+            self.keyspace_id,
+            self.database_id,
+            self.table_id,
+            self.started.elapsed(),
+            self.errors
+        );
+    }
+
+    fn fast_fail(&mut self, error: &AutoIdError, elapsed: Duration) {
+        self.terminal = true;
+        eprintln!(
+            "autoid request stopped after reaching RPC retry limit: category=autoid client request_id={} operation={} keyspace_id={} db_id={} table_id={} request_elapsed={:?} rpc_retry_elapsed={elapsed:?} rpc_error_count={} outcome=fast-failed action={RPC_RETRY_ACTION} error={error}",
+            self.request_id,
+            self.operation,
+            self.keyspace_id,
+            self.database_id,
+            self.table_id,
+            self.started.elapsed(),
+            self.errors
+        );
+    }
+}
+
+impl Drop for RpcRetryLogState {
+    fn drop(&mut self) {
+        if !self.active || self.terminal {
+            return;
+        }
+        let outcome = if self.recovered {
+            "recovered"
+        } else if self.ctx.is_canceled() {
+            "context-canceled"
+        } else {
+            "failed"
+        };
+        eprintln!(
+            "autoid request completed after RPC retry: category=autoid client request_id={} operation={} keyspace_id={} db_id={} table_id={} request_elapsed={:?} rpc_error_count={} outcome={outcome}",
+            self.request_id,
+            self.operation,
+            self.keyspace_id,
+            self.database_id,
+            self.table_id,
+            self.started.elapsed(),
+            self.errors
+        );
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RpcRetryPolicy {
+    min_errors: usize,
+    min_duration: Duration,
+}
+
+impl Default for RpcRetryPolicy {
+    fn default() -> Self {
+        Self {
+            min_errors: 10,
+            min_duration: Duration::from_secs(15),
+        }
+    }
+}
+
+#[derive(Default)]
+struct RpcRetryState {
+    errors: usize,
+    first_error: Option<Instant>,
+}
+
+impl RpcRetryState {
+    fn observe(&mut self, policy: RpcRetryPolicy) -> bool {
+        let now = Instant::now();
+        self.first_error.get_or_insert(now);
+        self.errors += 1;
+        policy.min_errors > 0
+            && self.errors >= policy.min_errors
+            && now.duration_since(self.first_error.unwrap()) >= policy.min_duration
+    }
 }
 
 impl SinglePointAllocator {
+    #[cfg(test)]
+    pub(crate) fn set_retry_policy_for_test(&mut self, min_errors: usize, min_duration: Duration) {
+        self.retry_policy = RpcRetryPolicy {
+            min_errors,
+            min_duration,
+        };
+    }
+
     /// 绑定库表、是否无符号、keyspace 与客户端发现器。
     pub fn new(
         database_id: i64,
@@ -261,6 +399,7 @@ impl SinglePointAllocator {
         discover: Arc<ClientDiscover>,
     ) -> Self {
         Self {
+            operation_lock: RwLock::new(()),
             state: Mutex::new(SinglePointState {
                 database_id,
                 table_id,
@@ -269,12 +408,59 @@ impl SinglePointAllocator {
             is_unsigned,
             discover,
             keyspace_id,
+            retry_policy: RpcRetryPolicy::default(),
         }
+    }
+
+    fn update_last_allocated(&self, new_base: i64) {
+        let mut state = self.state.lock().unwrap();
+        if (self.is_unsigned && (new_base as u64) > (state.last_allocated as u64))
+            || (!self.is_unsigned && new_base > state.last_allocated)
+        {
+            state.last_allocated = new_base;
+        }
+    }
+
+    fn retry_rpc(
+        &self,
+        ctx: &Context,
+        version: u64,
+        operation: &str,
+        error: &AutoIdError,
+        retry: &mut RpcRetryState,
+        request_log: &mut RpcRetryLogState,
+    ) -> Result<()> {
+        ctx.check()?;
+        let policy = if self.retry_policy.min_errors > 0 {
+            self.retry_policy
+        } else {
+            RpcRetryPolicy::default()
+        };
+        let limit = retry.observe(policy);
+        request_log.retry();
+        self.discover.reset_conn_if_version(version);
+        ctx.check()?;
+        if limit {
+            let state = self.state.lock().unwrap();
+            let terminal = AutoIdError::RpcRetryLimit(format!(
+                "autoid {operation} failed after {} RPC errors over {:?}; keyspace_id={}, db_id={}, table_id={}; last RPC error: {error}; {RPC_RETRY_ACTION}",
+                retry.errors,
+                retry.first_error.unwrap().elapsed(),
+                self.keyspace_id,
+                state.database_id,
+                state.table_id
+            ));
+            request_log.fast_fail(&terminal, retry.first_error.unwrap().elapsed());
+            return Err(terminal);
+        }
+        Ok(())
     }
 
     /// 内部 rebase：RPC 失败则重置连接并退避重试，直到成功或取消。
     fn rebase_inner(&self, ctx: &Context, new_base: i64, force: bool) -> Result<()> {
         let mut backoffer = Backoffer::default();
+        let mut retry = RpcRetryState::default();
+        let mut request_log = RpcRetryLogState::new("rebase", self, ctx);
         loop {
             let (client, version) = self.discover.get_client(ctx, self.keyspace_id)?;
             let state = self.state.lock().unwrap();
@@ -292,15 +478,16 @@ impl SinglePointAllocator {
                     if !response.errmsg.is_empty() {
                         return Err(AutoIdError::Service(response.errmsg));
                     }
-                    self.state.lock().unwrap().last_allocated = new_base;
+                    if force {
+                        self.state.lock().unwrap().last_allocated = new_base;
+                    } else {
+                        self.update_last_allocated(new_base);
+                    }
+                    request_log.recovered = true;
                     return Ok(());
                 }
-                Err(AutoIdError::Rpc(_message)) => {
-                    // 上下文已取消则立即退出，避免长时间退避。
-                    if ctx.is_canceled() {
-                        return Err(AutoIdError::Canceled);
-                    }
-                    self.discover.reset_conn_if_version(version);
+                Err(error @ AutoIdError::Rpc(_)) => {
+                    self.retry_rpc(ctx, version, "rebase", &error, &mut retry, &mut request_log)?;
                     backoffer.backoff(Some(ctx))?;
                 }
                 Err(error) => return Err(error),
@@ -311,10 +498,120 @@ impl SinglePointAllocator {
 
 impl Allocator for SinglePointAllocator {
     fn alloc(&self, ctx: &Context, n: u64, increment: i64, offset: i64) -> Result<(i64, i64)> {
+        let _operation = self.operation_lock.read().unwrap();
+        self.alloc_inner(ctx, n, increment, offset)
+    }
+
+    fn alloc_seq_cache(&self) -> Result<(i64, i64, i64)> {
+        Err(AutoIdError::NotImplemented(
+            "AllocSeqCache not implemented".into(),
+        ))
+    }
+
+    fn rebase(&self, ctx: &Context, new_base: i64, _allocate_ids: bool) -> Result<()> {
+        let _operation = self.operation_lock.read().unwrap();
+        self.rebase_inner(ctx, new_base, false)
+    }
+
+    fn force_rebase(&self, new_base: i64) -> Result<()> {
+        if new_base == -1 {
+            return Err(autoinc_read_failed(
+                "Cannot force rebase the next global ID to '0'",
+            ));
+        }
+        let _operation = self.operation_lock.write().unwrap();
+        let ctx = Context::background();
+        self.with_write_timeout(&ctx, |ctx| self.rebase_inner(ctx, new_base, true))
+    }
+
+    fn rebase_seq(&self, _new_base: i64) -> Result<(i64, bool)> {
+        Err(AutoIdError::NotImplemented(
+            "RebaseSeq not implemented".into(),
+        ))
+    }
+
+    fn transfer(&self, database_id: i64, table_id: i64) -> Result<()> {
+        let _operation = self.operation_lock.write().unwrap();
+        let (old_db, old_table) = {
+            let state = self.state.lock().unwrap();
+            if state.database_id == database_id && state.table_id == table_id {
+                return Ok(());
+            }
+            (state.database_id, state.table_id)
+        };
+        let ctx = Context::background();
+        self.with_write_timeout(&ctx, |ctx| {
+            self.alloc_inner(ctx, 0, 1, 1)?;
+            let base = self.base();
+            {
+                let mut state = self.state.lock().unwrap();
+                state.database_id = database_id;
+                state.table_id = table_id;
+            }
+            if let Err(error) = self.rebase_inner(ctx, base, false) {
+                let mut state = self.state.lock().unwrap();
+                state.database_id = old_db;
+                state.table_id = old_table;
+                return Err(error);
+            }
+            Ok(())
+        })
+    }
+
+    fn base(&self) -> i64 {
+        self.state.lock().unwrap().last_allocated
+    }
+
+    fn end(&self) -> i64 {
+        self.state.lock().unwrap().last_allocated
+    }
+
+    fn next_global_auto_id(&self) -> Result<i64> {
+        let (_, maximum) = self.alloc(&Context::background(), 0, 1, 1)?;
+        Ok(maximum.wrapping_add(1))
+    }
+
+    fn get_type(&self) -> AllocatorType {
+        AllocatorType::AutoIncrement
+    }
+}
+
+impl SinglePointAllocator {
+    fn with_write_timeout<T>(
+        &self,
+        ctx: &Context,
+        work: impl FnOnce(&Context) -> Result<T>,
+    ) -> Result<T> {
+        let timed = ctx.clone();
+        let timer = timed.clone();
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let timer_done = done.clone();
+        let timer_thread = thread::spawn(move || {
+            thread::park_timeout(WRITE_TIMEOUT);
+            if !timer_done.load(Ordering::SeqCst) {
+                timer.cancel();
+            }
+        });
+        let result = work(&timed);
+        done.store(true, Ordering::SeqCst);
+        timer_thread.thread().unpark();
+        let _ = timer_thread.join();
+        result
+    }
+
+    fn alloc_inner(
+        &self,
+        ctx: &Context,
+        n: u64,
+        increment: i64,
+        offset: i64,
+    ) -> Result<(i64, i64)> {
         if !valid_increment_and_offset(increment, offset) {
             return Err(invalid_increment_and_offset(increment, offset));
         }
         let mut backoffer = Backoffer::default();
+        let mut retry = RpcRetryState::default();
+        let mut request_log = RpcRetryLogState::new("alloc", self, ctx);
         // 与 rebase_inner 相同的 RPC 重试环。
         loop {
             let (client, version) = self.discover.get_client(ctx, self.keyspace_id)?;
@@ -335,74 +632,16 @@ impl Allocator for SinglePointAllocator {
                     if !response.errmsg.is_empty() {
                         return Err(AutoIdError::Service(response.errmsg));
                     }
-                    self.state.lock().unwrap().last_allocated = response.min;
+                    self.update_last_allocated(response.max);
+                    request_log.recovered = true;
                     return Ok((response.min, response.max));
                 }
-                Err(AutoIdError::Rpc(_message)) => {
-                    if ctx.is_canceled() {
-                        return Err(AutoIdError::Canceled);
-                    }
-                    self.discover.reset_conn_if_version(version);
+                Err(error @ AutoIdError::Rpc(_)) => {
+                    self.retry_rpc(ctx, version, "alloc", &error, &mut retry, &mut request_log)?;
                     backoffer.backoff(Some(ctx))?;
                 }
                 Err(error) => return Err(error),
             }
         }
-    }
-
-    fn alloc_seq_cache(&self) -> Result<(i64, i64, i64)> {
-        Err(AutoIdError::NotImplemented(
-            "AllocSeqCache not implemented".into(),
-        ))
-    }
-
-    fn rebase(&self, ctx: &Context, new_base: i64, _allocate_ids: bool) -> Result<()> {
-        self.rebase_inner(ctx, new_base, false)
-    }
-
-    fn force_rebase(&self, new_base: i64) -> Result<()> {
-        if new_base == -1 {
-            return Err(autoinc_read_failed(
-                "Cannot force rebase the next global ID to '0'",
-            ));
-        }
-        self.rebase_inner(&Context::background(), new_base, true)
-    }
-
-    fn rebase_seq(&self, _new_base: i64) -> Result<(i64, bool)> {
-        Err(AutoIdError::NotImplemented(
-            "RebaseSeq not implemented".into(),
-        ))
-    }
-
-    fn transfer(&self, database_id: i64, table_id: i64) -> Result<()> {
-        // 切换绑定的库表后，把下一全局水位同步到新身份。
-        let next_base = {
-            let mut state = self.state.lock().unwrap();
-            if state.database_id == database_id && state.table_id == table_id {
-                return Ok(());
-            }
-            state.database_id = database_id;
-            state.table_id = table_id;
-            state.last_allocated.wrapping_add(1)
-        };
-        self.rebase(&Context::background(), next_base, false)
-    }
-
-    fn base(&self) -> i64 {
-        self.state.lock().unwrap().last_allocated
-    }
-
-    fn end(&self) -> i64 {
-        self.state.lock().unwrap().last_allocated
-    }
-
-    fn next_global_auto_id(&self) -> Result<i64> {
-        let (_, maximum) = self.alloc(&Context::background(), 0, 1, 1)?;
-        Ok(maximum.wrapping_add(1))
-    }
-
-    fn get_type(&self) -> AllocatorType {
-        AllocatorType::AutoIncrement
     }
 }

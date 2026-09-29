@@ -20,7 +20,7 @@
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -105,6 +105,208 @@ fn new_test_single_point_alloc(mock: Arc<FakeClient>) -> SinglePointAllocator {
     ));
     discover.seed_client_for_test(mock);
     SinglePointAllocator::new(1, 1, false, NULLSPACE_ID, discover)
+}
+
+#[test]
+fn go_merge_5_alloc_tracks_maximum_and_rebase_is_monotonic() {
+    let mock = Arc::new(FakeClient::default());
+    mock.alloc_results
+        .lock()
+        .unwrap()
+        .push_back(Ok(AutoIdResponse {
+            min: 10,
+            max: 20,
+            errmsg: String::new(),
+        }));
+    let alloc = new_test_single_point_alloc(mock);
+    assert_eq!(
+        alloc.alloc(&Context::background(), 10, 1, 1).unwrap(),
+        (10, 20)
+    );
+    assert_eq!(alloc.base(), 20);
+    alloc.rebase(&Context::background(), 5, false).unwrap();
+    assert_eq!(alloc.base(), 20);
+}
+
+#[test]
+fn go_merge_5_transfer_refreshes_source_and_rolls_back_failure() {
+    let mock = Arc::new(FakeClient::default());
+    mock.alloc_results
+        .lock()
+        .unwrap()
+        .push_back(Ok(AutoIdResponse {
+            min: 0,
+            max: 42,
+            errmsg: String::new(),
+        }));
+    mock.rebase_results
+        .lock()
+        .unwrap()
+        .push_back(Err(AutoIdError::Service("denied".into())));
+    let alloc = new_test_single_point_alloc(mock.clone());
+    assert!(alloc.transfer(2, 3).is_err());
+    assert_eq!(alloc.base(), 42);
+    assert_eq!(mock.alloc_calls.load(Ordering::SeqCst), 1);
+    mock.alloc_results
+        .lock()
+        .unwrap()
+        .push_back(Ok(AutoIdResponse {
+            min: 42,
+            max: 43,
+            errmsg: String::new(),
+        }));
+    alloc.alloc(&Context::background(), 1, 1, 1).unwrap();
+    assert_eq!(alloc.base(), 43);
+}
+
+#[test]
+fn go_merge_5_retry_limit_requires_count_and_duration() {
+    let mock = Arc::new(FakeClient::default());
+    for _ in 0..4 {
+        mock.alloc_results
+            .lock()
+            .unwrap()
+            .push_back(Err(AutoIdError::Rpc("rpc error: unavailable".into())));
+    }
+    let mut alloc = new_test_single_point_alloc(mock.clone());
+    alloc.set_retry_policy_for_test(2, Duration::from_millis(15));
+    let error = alloc.alloc(&Context::background(), 1, 1, 1).unwrap_err();
+    assert!(is_rpc_retry_limit_error(&error));
+    assert!(
+        error
+            .to_string()
+            .contains("check AutoID service availability")
+    );
+    assert!(mock.alloc_calls.load(Ordering::SeqCst) >= 2);
+}
+
+#[test]
+fn go_merge_5_rebase_retry_limit_is_marked() {
+    let mock = Arc::new(FakeClient::default());
+    mock.rebase_results
+        .lock()
+        .unwrap()
+        .push_back(Err(AutoIdError::Rpc("rpc error: unavailable".into())));
+    let mut alloc = new_test_single_point_alloc(mock.clone());
+    alloc.set_retry_policy_for_test(1, Duration::ZERO);
+    let error = alloc.rebase(&Context::background(), 10, false).unwrap_err();
+    assert!(is_rpc_retry_limit_error(&error));
+    assert_eq!(mock.rebase_calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn go_merge_5_force_rebase_can_lower_base() {
+    let mock = Arc::new(FakeClient::default());
+    mock.alloc_results
+        .lock()
+        .unwrap()
+        .push_back(Ok(AutoIdResponse {
+            min: 1,
+            max: 50,
+            errmsg: String::new(),
+        }));
+    let alloc = new_test_single_point_alloc(mock);
+    alloc.alloc(&Context::background(), 1, 1, 1).unwrap();
+    alloc.force_rebase(5).unwrap();
+    assert_eq!(alloc.base(), 5);
+}
+
+#[test]
+fn go_merge_5_transfer_uses_authoritative_base_and_unsigned_order() {
+    let mock = Arc::new(FakeClient::default());
+    mock.alloc_results
+        .lock()
+        .unwrap()
+        .push_back(Ok(AutoIdResponse {
+            min: 0,
+            max: 42,
+            errmsg: String::new(),
+        }));
+    let alloc = new_test_single_point_alloc(mock.clone());
+    alloc.transfer(2, 3).unwrap();
+    assert_eq!(mock.alloc_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(mock.rebase_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(alloc.base(), 42);
+    alloc.transfer(2, 3).unwrap();
+    assert_eq!(mock.alloc_calls.load(Ordering::SeqCst), 1);
+
+    let discover = Arc::new(ClientDiscover::new(
+        Arc::new(FakeDiscovery),
+        Arc::new(FakeConnector {
+            client: mock.clone(),
+        }),
+    ));
+    discover.seed_client_for_test(mock.clone());
+    let unsigned = SinglePointAllocator::new(1, 1, true, NULLSPACE_ID, discover);
+    mock.alloc_results
+        .lock()
+        .unwrap()
+        .push_back(Ok(AutoIdResponse {
+            min: 0,
+            max: -2,
+            errmsg: String::new(),
+        }));
+    unsigned.alloc(&Context::background(), 1, 1, 1).unwrap();
+    unsigned.rebase(&Context::background(), 3, false).unwrap();
+    assert_eq!(unsigned.base(), -2);
+    unsigned.force_rebase(3).unwrap();
+    assert_eq!(unsigned.base(), 3);
+}
+
+struct OutOfOrderClient {
+    calls: AtomicUsize,
+    started: mpsc::Sender<()>,
+    release: Mutex<mpsc::Receiver<()>>,
+}
+
+impl AutoIdClient for OutOfOrderClient {
+    fn alloc_auto_id(&self, _ctx: &Context, _request: AutoIdRequest) -> Result<AutoIdResponse> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        if call == 0 {
+            self.started.send(()).unwrap();
+            self.release.lock().unwrap().recv().unwrap();
+        }
+        Ok(AutoIdResponse {
+            min: call as i64,
+            max: call as i64 + 1,
+            errmsg: String::new(),
+        })
+    }
+
+    fn rebase(&self, _ctx: &Context, _request: RebaseRequest) -> Result<RebaseResponse> {
+        Ok(RebaseResponse::default())
+    }
+}
+
+#[test]
+fn go_merge_5_out_of_order_responses_keep_highest_base() {
+    let (started_tx, started_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let client = Arc::new(OutOfOrderClient {
+        calls: AtomicUsize::new(0),
+        started: started_tx,
+        release: Mutex::new(release_rx),
+    });
+    let fallback = Arc::new(FakeClient::default());
+    let discover = Arc::new(ClientDiscover::new(
+        Arc::new(FakeDiscovery),
+        Arc::new(FakeConnector { client: fallback }),
+    ));
+    discover.seed_client_for_test(client);
+    let alloc = Arc::new(SinglePointAllocator::new(
+        1,
+        1,
+        false,
+        NULLSPACE_ID,
+        discover,
+    ));
+    let first = alloc.clone();
+    let first_done = thread::spawn(move || first.alloc(&Context::background(), 1, 1, 1));
+    started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert_eq!(alloc.alloc(&Context::background(), 1, 1, 1).unwrap().1, 2);
+    release_tx.send(()).unwrap();
+    first_done.join().unwrap().unwrap();
+    assert_eq!(alloc.base(), 2);
 }
 
 /// Corresponds to Go `TestAllocCanceledRPCReturnsQuickly`.
