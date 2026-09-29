@@ -2,7 +2,13 @@
 
 批次：【批次 58】依赖：批次 57
 
-状态：未开始
+状态：进行中
+
+实施记录（2026-09-29）：Go `statement_ru_result.go` 的 finalize 依赖本组 `statementRUCalculator.engineResult`。已直接对照 `statement_ru_reporting.go` 的三个 engine 计算公式，新建 Rust `statement_ru_reporting.rs` 与独立测试，覆盖 TiDB 本地 CPU 与 TiKV 远端扫描字节分摊；其余 full report、operator 标签和发布逻辑尚未移植，不能删除任务文件。
+
+继续移植 Go full report 的固定 engine/operator 数组、`add`、`addOperator` 和 `addStatementUnits`，含 TiFlash 原位统计、TiDB/TiKV 远端 scan/net 拆分。隔离定向测试 8/8 通过；新增 finalize/终端测试后正在重跑。operator 标签映射和 Prometheus 发布仍待移植。
+
+最新验证：隔离定向 `go_merge_1` 14/14 通过，含本组引擎计算、远端单位拆分和失败状态标签。`cargo fmt --all -- --check`、`make lint`、`git diff --check` 通过。完整指标发布仍待实现。
 
 目的：逐项同步本组 Go 文件在合并中引入的行为与测试意图，保持 Rust 实现和 Go 最新逻辑等价。
 

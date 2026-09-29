@@ -2,7 +2,17 @@
 
 批次：【批次 54】依赖：批次 53
 
-状态：未开始
+状态：进行中
+
+实施记录（2026-09-29）：按用户要求直接逐函数移植 Go `statement_ru_plan_walk.go`，不采用另一套 RU 计算路径。已新增 Rust `statement_ru_plan_walk.rs` 和独立测试，先实现 `statementRUWriteSnapshot` / `snapshotStatementRUWrites`，从现有 Rust `tikvutil::CommitDetails` 复制提交键数与字节数；空详情返回零值。该文件其余计划遍历、终端 finalization 和边界尚未移植，不得标记任务完成或删除。
+
+验证进度：主工作区 `cargo test --manifest-path pkg/executor/Cargo.toml --lib go_merge_197_scan_evidence_matches_go_validity_contract` 在无关 planner `FullJoin` 两处非穷尽匹配处失败。隔离工作树只为验证临时处理该匹配，首次编译到本组代码后发现 `WriteKeys`/`WriteSize` 实为 `u64`，`i64::from` 不适用。现改为与 Go `int64(uint64)` 同义的 `as i64`，并增加 `u64::MAX -> -1` 边界测试；正在重跑。
+
+继续直接移植 Go `newStatementRUTerminalCalculator`：只有 root EOF 才创建 calculator；从 RUv2Metrics 读取语句级 TiKV coprocessor response bytes 一次，负值失败、bypass 忽略、full report 记入 TiKV/cop transport。相邻测试已加入。隔离工作树第一次 `cargo test --manifest-path pkg/executor/Cargo.toml --lib go_merge_1` 8/8 通过（含本组写入快照），新终端计算器测试正在重跑。
+
+继续直接移植 `statementRUOwner` 的首个结果 CAS、失败消耗、root EOF 与单次 terminal setup；并移植 `validateStatementRUFlatTree` 对连续深度优先子树的校验。隔离工作树定向 `cargo test --manifest-path pkg/executor/Cargo.toml --lib go_merge_1` 11/11 通过。尚未移植完整算子遍历、生产 `ExecStmt` 挂载与发布，不能声称整个 Go 文件已覆盖。
+
+继续移植 `statementRUSortWork`、四种单位累加及 `mergeStatementRUUnitDelta` 的整次提交、`mergeStatementRUOperatorState` 与终端失败原因分类。隔离定向测试最新为 14/14 通过。复杂跨文件后续步骤记录于 `ruv3-direct-port-execplan.md`。
 
 目的：逐项同步本组 Go 文件在合并中引入的行为与测试意图，保持 Rust 实现和 Go 最新逻辑等价。
 
