@@ -30,6 +30,39 @@ fn column(name: &str) -> model::ColumnInfo {
     column
 }
 
+#[test]
+fn go_merge_36_v2_columns_use_unsigned_float_and_execution_count() {
+    let mut record = StmtRecord::default();
+    record.ExecCount = 2;
+    record.CommitCount = 1;
+    record.SumRocksdbDeleteSkippedCount = i64::MAX as u64 + 3;
+    record.SumAffectedRows = i64::MAX as u64 + 3;
+    record.IAExecCount = 1;
+    record.SumIARemoteReadSegmentCount = 3;
+    record.SumKVTotal = Duration::from_nanos(10);
+    let context = ColumnContext::new("instance", chrono_tz::UTC);
+    let names = [
+        AvgRocksdbDeleteSkippedCountStr,
+        AvgAffectedRowsStr,
+        IAExecCountStr,
+        AvgIARemoteReadSegmentCountStr,
+        AvgKvTimeStr,
+    ];
+    let columns = names.map(column);
+    let values = makeColumnFactories(&columns)
+        .into_iter()
+        .map(|factory| factory(&context, &record).into_datum())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        values[0].GetFloat64(),
+        record.SumRocksdbDeleteSkippedCount as f64 / 2.0
+    );
+    assert_eq!(values[1].GetFloat64(), record.SumAffectedRows as f64 / 2.0);
+    assert_eq!(values[2].GetInt64(), 1);
+    assert_eq!(values[3].GetFloat64(), 1.5);
+    assert_eq!(values[4].GetInt64(), 5);
+}
+
 // TestColumn keeps the Go table and checks every requested factory result.
 /// 校验实例地址、digest、延迟与 CPU 等列工厂输出与记录字段一致。
 #[test]

@@ -37,7 +37,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use task_execdetails::execdetails::util::RUDetails;
-use task_execdetails::execdetails::{CopTasksSummary, ExecDetails};
+use task_execdetails::execdetails::{CopTasksSummary, ExecDetails, GetIARemoteReadSegmentStats};
 use task_execdetails::util::LoadTiKVExecDetails;
 use task_execdetails::util::util::ExecDetails as TiKVExecDetails;
 use task_stmtctx::{NewStmtCtx, StatementContext};
@@ -281,6 +281,13 @@ pub struct stmtSummaryStats {
     pub maxRocksdbBlockReadCount: u64,
     pub sumRocksdbBlockReadByte: u64,
     pub maxRocksdbBlockReadByte: u64,
+    pub iaExecCount: i64,
+    pub sumIARemoteReadSegmentCount: u64,
+    pub maxIARemoteReadSegmentCount: u64,
+    pub sumIARemoteReadSegmentSize: u64,
+    pub maxIARemoteReadSegmentSize: u64,
+    pub sumIARemoteReadSegmentWaitTime: Duration,
+    pub maxIARemoteReadSegmentWaitTime: Duration,
     pub commitCount: i64,
     pub sumGetCommitTsTime: Duration,
     pub maxGetCommitTsTime: Duration,
@@ -387,6 +394,13 @@ impl Default for stmtSummaryStats {
             maxRocksdbBlockReadCount: 0,
             sumRocksdbBlockReadByte: 0,
             maxRocksdbBlockReadByte: 0,
+            iaExecCount: 0,
+            sumIARemoteReadSegmentCount: 0,
+            maxIARemoteReadSegmentCount: 0,
+            sumIARemoteReadSegmentSize: 0,
+            maxIARemoteReadSegmentSize: 0,
+            sumIARemoteReadSegmentWaitTime: Duration::ZERO,
+            maxIARemoteReadSegmentWaitTime: Duration::ZERO,
             commitCount: 0,
             sumGetCommitTsTime: Duration::ZERO,
             maxGetCommitTsTime: Duration::ZERO,
@@ -481,7 +495,6 @@ pub struct StmtExecInfo {
     pub KeyspaceID: u32,
     pub ResourceGroupName: String,
     pub RUDetail: Option<RUDetails>,
-    pub TotalRUV2: f64,
     pub CPUUsages: CPUUsages,
     pub PlanCacheUnqualified: String,
     pub LazyInfo: Box<dyn StmtExecLazyInfo>,
@@ -545,7 +558,6 @@ impl Default for StmtExecInfo {
             KeyspaceID: 0,
             ResourceGroupName: String::new(),
             RUDetail: None,
-            TotalRUV2: 0.0,
             CPUUsages: CPUUsages::default(),
             PlanCacheUnqualified: String::new(),
             LazyInfo: Box::new(EmptyLazyInfo),
@@ -673,13 +685,13 @@ impl stmtSummaryByDigestMap {
         self.updateMetricsLocked();
     }
 
-    /// 关闭历史时清空各 digest 的历史队列，仅保留当前区间（队头）。
+    /// 关闭历史时清空各 digest 的历史队列，仅保留最新区间。
     fn clearHistory(&mut self) {
         for (_, summary) in self.summaryMap.iter_mut() {
-            let first = summary.history.front().cloned();
+            let latest = summary.history.back().cloned();
             summary.history.clear();
-            if let Some(first) = first {
-                summary.history.push_front(first);
+            if let Some(latest) = latest {
+                summary.history.push_back(latest);
             }
         }
     }
@@ -886,21 +898,30 @@ impl stmtSummaryByDigest {
 
     /// 按请求的历史深度取出区间元素副本。
     pub fn collectHistorySummaries(&self, historySize: usize) -> Vec<stmtSummaryByDigestElement> {
-        self.history.iter().take(historySize).cloned().collect()
+        let mut latest = self
+            .history
+            .iter()
+            .rev()
+            .take(historySize)
+            .cloned()
+            .collect::<Vec<_>>();
+        latest.reverse();
+        latest
     }
 }
 
 /// 编码计划/二进制计划写入摘要前的大小上限（超限则丢弃占位）。
 pub const MaxEncodedPlanSizeInBytes: usize = 1024 * 1024;
 
-/// 从一次执行信息构造初始 `stmtSummaryStats`；计划编码失败时返回 `None`。
+/// 从一次执行信息构造初始 `stmtSummaryStats`；计划编码失败时保留摘要并标记计划丢弃。
 pub fn newStmtSummaryStats(
     sei: &StmtExecInfo,
     max_sql_length: usize,
 ) -> Option<Box<stmtSummaryStats>> {
-    let (mut samplePlan, planHint, error) = sei.LazyInfo.GetEncodedPlan();
+    let (mut samplePlan, mut planHint, error) = sei.LazyInfo.GetEncodedPlan();
     if error.is_some() {
-        return None;
+        samplePlan = plancodec_dependency::PlanDiscardedEncoded.to_owned();
+        planHint.clear();
     }
     // 超大编码计划用占位串，避免撑爆摘要存储。
     if samplePlan.len() > MaxEncodedPlanSizeInBytes {
@@ -1048,6 +1069,17 @@ impl stmtSummaryStats {
             self.sumRocksdbBlockReadByte += scan.RocksdbBlockReadByte;
             self.maxRocksdbBlockReadByte =
                 self.maxRocksdbBlockReadByte.max(scan.RocksdbBlockReadByte);
+            let ia = GetIARemoteReadSegmentStats(Some(scan));
+            if ia.Count > 0 {
+                self.iaExecCount += 1;
+            }
+            self.sumIARemoteReadSegmentCount += ia.Count;
+            self.maxIARemoteReadSegmentCount = self.maxIARemoteReadSegmentCount.max(ia.Count);
+            self.sumIARemoteReadSegmentSize += ia.Bytes;
+            self.maxIARemoteReadSegmentSize = self.maxIARemoteReadSegmentSize.max(ia.Bytes);
+            self.sumIARemoteReadSegmentWaitTime += ia.WaitTime;
+            self.maxIARemoteReadSegmentWaitTime =
+                self.maxIARemoteReadSegmentWaitTime.max(ia.WaitTime);
         }
 
         // 两阶段提交细节：prewrite/commit、拿 commitTS、resolve lock、写键等。
@@ -1129,7 +1161,7 @@ impl stmtSummaryStats {
         self.sumTikvCPU += sei.CPUUsages.TikvCPUTime;
         self.StmtNetworkTrafficSummary
             .Add(Some(&sei.TiKVExecDetails));
-        self.StmtRUSummary.Add(sei.RUDetail.as_ref(), sei.TotalRUV2);
+        self.StmtRUSummary.Add(sei.RUDetail.as_ref());
         self.storageKV = sei.StmtCtx.IsTiKV.load(Ordering::Relaxed);
         self.storageMPP = sei.StmtCtx.IsTiFlash.load(Ordering::Relaxed);
     }
@@ -1192,6 +1224,19 @@ impl stmtSummaryStats {
         self.maxRocksdbBlockReadByte = self
             .maxRocksdbBlockReadByte
             .max(other.maxRocksdbBlockReadByte);
+        self.iaExecCount += other.iaExecCount;
+        self.sumIARemoteReadSegmentCount += other.sumIARemoteReadSegmentCount;
+        self.maxIARemoteReadSegmentCount = self
+            .maxIARemoteReadSegmentCount
+            .max(other.maxIARemoteReadSegmentCount);
+        self.sumIARemoteReadSegmentSize += other.sumIARemoteReadSegmentSize;
+        self.maxIARemoteReadSegmentSize = self
+            .maxIARemoteReadSegmentSize
+            .max(other.maxIARemoteReadSegmentSize);
+        self.sumIARemoteReadSegmentWaitTime += other.sumIARemoteReadSegmentWaitTime;
+        self.maxIARemoteReadSegmentWaitTime = self
+            .maxIARemoteReadSegmentWaitTime
+            .max(other.maxIARemoteReadSegmentWaitTime);
         self.commitCount += other.commitCount;
         self.sumGetCommitTsTime += other.sumGetCommitTsTime;
         self.maxGetCommitTsTime = self.maxGetCommitTsTime.max(other.maxGetCommitTsTime);
@@ -1304,6 +1349,14 @@ pub fn avgFloat(sum: i64, count: i64) -> f64 {
         0.0
     }
 }
+/// uint64 累计值的浮点平均，避免经 int64 转换后溢出。
+pub fn avgFloat4Uint(sum: u64, count: i64) -> f64 {
+    if count > 0 {
+        sum as f64 / count as f64
+    } else {
+        0.0
+    }
+}
 /// 浮点和的均值；count≤0 时返回 0。
 pub fn avgSumFloat(sum: f64, count: i64) -> f64 {
     if count > 0 { sum / count as f64 } else { 0.0 }
@@ -1322,13 +1375,11 @@ pub struct StmtRUSummary {
     pub MaxRRU: f64,
     pub MaxWRU: f64,
     pub MaxRUWaitDuration: Duration,
-    pub SumRUV2: f64,
-    pub MaxRUV2: f64,
 }
 
 impl StmtRUSummary {
-    /// 累加一次执行的 RU 明细与 v2 总量。
-    pub fn Add(&mut self, info: Option<&RUDetails>, totalRUV2: f64) {
+    /// 累加一次执行的 RU 明细。
+    pub fn Add(&mut self, info: Option<&RUDetails>) {
         if let Some(info) = info {
             let rru = info.RRU();
             self.SumRRU += rru;
@@ -1340,8 +1391,6 @@ impl StmtRUSummary {
             self.SumRUWaitDuration += wait;
             self.MaxRUWaitDuration = self.MaxRUWaitDuration.max(wait);
         }
-        self.SumRUV2 += totalRUV2;
-        self.MaxRUV2 = self.MaxRUV2.max(totalRUV2);
     }
 
     /// 合并另一份 RU 汇总。
@@ -1352,8 +1401,6 @@ impl StmtRUSummary {
         self.MaxRRU = self.MaxRRU.max(other.MaxRRU);
         self.MaxWRU = self.MaxWRU.max(other.MaxWRU);
         self.MaxRUWaitDuration = self.MaxRUWaitDuration.max(other.MaxRUWaitDuration);
-        self.SumRUV2 += other.SumRUV2;
-        self.MaxRUV2 = self.MaxRUV2.max(other.MaxRUV2);
     }
 }
 

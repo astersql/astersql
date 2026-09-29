@@ -222,6 +222,13 @@ pub const AvgRocksdbBlockReadCountStr: &str = "AVG_ROCKSDB_BLOCK_READ_COUNT";
 pub const MaxRocksdbBlockReadCountStr: &str = "MAX_ROCKSDB_BLOCK_READ_COUNT";
 pub const AvgRocksdbBlockReadByteStr: &str = "AVG_ROCKSDB_BLOCK_READ_BYTE";
 pub const MaxRocksdbBlockReadByteStr: &str = "MAX_ROCKSDB_BLOCK_READ_BYTE";
+pub const IAExecCountStr: &str = "IA_EXEC_COUNT";
+pub const AvgIARemoteReadSegmentCountStr: &str = "AVG_IA_REMOTE_READ_SEGMENT_COUNT";
+pub const MaxIARemoteReadSegmentCountStr: &str = "MAX_IA_REMOTE_READ_SEGMENT_COUNT";
+pub const AvgIARemoteReadSegmentSizeStr: &str = "AVG_IA_REMOTE_READ_SEGMENT_SIZE";
+pub const MaxIARemoteReadSegmentSizeStr: &str = "MAX_IA_REMOTE_READ_SEGMENT_SIZE";
+pub const AvgIARemoteReadSegmentWaitTimeStr: &str = "AVG_IA_REMOTE_READ_SEGMENT_WAIT_TIME";
+pub const MaxIARemoteReadSegmentWaitTimeStr: &str = "MAX_IA_REMOTE_READ_SEGMENT_WAIT_TIME";
 pub const AvgPrewriteTimeStr: &str = "AVG_PREWRITE_TIME";
 pub const MaxPrewriteTimeStr: &str = "MAX_PREWRITE_TIME";
 pub const AvgCommitTimeStr: &str = "AVG_COMMIT_TIME";
@@ -286,8 +293,6 @@ pub const AvgRequestUnitWrite: &str = "AVG_REQUEST_UNIT_WRITE";
 pub const MaxRequestUnitWrite: &str = "MAX_REQUEST_UNIT_WRITE";
 pub const AvgQueuedRcTimeStr: &str = "AVG_QUEUED_RC_TIME";
 pub const MaxQueuedRcTimeStr: &str = "MAX_QUEUED_RC_TIME";
-pub const AvgRequestUnitV2: &str = "AVG_REQUEST_UNIT_V2";
-pub const MaxRequestUnitV2: &str = "MAX_REQUEST_UNIT_V2";
 pub const ResourceGroupName: &str = "RESOURCE_GROUP";
 pub const SumUnpackedBytesSentTiKVTotalStr: &str = "SUM_UNPACKED_BYTES_SENT_TIKV_TOTAL";
 pub const SumUnpackedBytesReceivedTiKVTotalStr: &str = "SUM_UNPACKED_BYTES_RECEIVED_TIKV_TOTAL";
@@ -472,9 +477,8 @@ static columnFactoryMap: LazyLock<HashMap<&'static str, ColumnFactory>> = LazyLo
         go_any(record.MaxProcessedKeys)
     });
     factories.insert(AvgRocksdbDeleteSkippedCountStr, |_info, record| {
-        // Go 对 uint64 计数做 int64 强转；用 as i64 标出同一迁移点，未处理溢出语义。
-        go_any(avgInt(
-            record.SumRocksdbDeleteSkippedCount as i64,
+        go_any(avgFloat4Uint(
+            record.SumRocksdbDeleteSkippedCount,
             record.ExecCount,
         ))
     });
@@ -482,8 +486,8 @@ static columnFactoryMap: LazyLock<HashMap<&'static str, ColumnFactory>> = LazyLo
         go_any(record.MaxRocksdbDeleteSkippedCount)
     });
     factories.insert(AvgRocksdbKeySkippedCountStr, |_info, record| {
-        go_any(avgInt(
-            record.SumRocksdbKeySkippedCount as i64,
+        go_any(avgFloat4Uint(
+            record.SumRocksdbKeySkippedCount,
             record.ExecCount,
         ))
     });
@@ -491,8 +495,8 @@ static columnFactoryMap: LazyLock<HashMap<&'static str, ColumnFactory>> = LazyLo
         go_any(record.MaxRocksdbKeySkippedCount)
     });
     factories.insert(AvgRocksdbBlockCacheHitCountStr, |_info, record| {
-        go_any(avgInt(
-            record.SumRocksdbBlockCacheHitCount as i64,
+        go_any(avgFloat4Uint(
+            record.SumRocksdbBlockCacheHitCount,
             record.ExecCount,
         ))
     });
@@ -500,8 +504,8 @@ static columnFactoryMap: LazyLock<HashMap<&'static str, ColumnFactory>> = LazyLo
         go_any(record.MaxRocksdbBlockCacheHitCount)
     });
     factories.insert(AvgRocksdbBlockReadCountStr, |_info, record| {
-        go_any(avgInt(
-            record.SumRocksdbBlockReadCount as i64,
+        go_any(avgFloat4Uint(
+            record.SumRocksdbBlockReadCount,
             record.ExecCount,
         ))
     });
@@ -509,13 +513,41 @@ static columnFactoryMap: LazyLock<HashMap<&'static str, ColumnFactory>> = LazyLo
         go_any(record.MaxRocksdbBlockReadCount)
     });
     factories.insert(AvgRocksdbBlockReadByteStr, |_info, record| {
-        go_any(avgInt(
-            record.SumRocksdbBlockReadByte as i64,
+        go_any(avgFloat4Uint(
+            record.SumRocksdbBlockReadByte,
             record.ExecCount,
         ))
     });
     factories.insert(MaxRocksdbBlockReadByteStr, |_info, record| {
         go_any(record.MaxRocksdbBlockReadByte)
+    });
+    factories.insert(IAExecCountStr, |_info, record| go_any(record.IAExecCount));
+    factories.insert(AvgIARemoteReadSegmentCountStr, |_info, record| {
+        go_any(avgFloat4Uint(
+            record.SumIARemoteReadSegmentCount,
+            record.ExecCount,
+        ))
+    });
+    factories.insert(MaxIARemoteReadSegmentCountStr, |_info, record| {
+        go_any(record.MaxIARemoteReadSegmentCount)
+    });
+    factories.insert(AvgIARemoteReadSegmentSizeStr, |_info, record| {
+        go_any(avgFloat4Uint(
+            record.SumIARemoteReadSegmentSize,
+            record.ExecCount,
+        ))
+    });
+    factories.insert(MaxIARemoteReadSegmentSizeStr, |_info, record| {
+        go_any(record.MaxIARemoteReadSegmentSize)
+    });
+    factories.insert(AvgIARemoteReadSegmentWaitTimeStr, |_info, record| {
+        go_any(avgInt(
+            duration_nanos(record.SumIARemoteReadSegmentWaitTime),
+            record.ExecCount,
+        ))
+    });
+    factories.insert(MaxIARemoteReadSegmentWaitTimeStr, |_info, record| {
+        go_any(duration_nanos(record.MaxIARemoteReadSegmentWaitTime))
     });
     factories.insert(AvgPrewriteTimeStr, |_info, record| {
         go_any(avgInt(
@@ -610,27 +642,21 @@ static columnFactoryMap: LazyLock<HashMap<&'static str, ColumnFactory>> = LazyLo
     });
     factories.insert(MaxDiskStr, |_info, record| go_any(record.MaxDisk));
     factories.insert(AvgKvTimeStr, |_info, record| {
-        go_any(avgInt(
-            duration_nanos(record.SumKVTotal),
-            record.CommitCount,
-        ))
+        go_any(avgInt(duration_nanos(record.SumKVTotal), record.ExecCount))
     });
     factories.insert(AvgPdTimeStr, |_info, record| {
-        go_any(avgInt(
-            duration_nanos(record.SumPDTotal),
-            record.CommitCount,
-        ))
+        go_any(avgInt(duration_nanos(record.SumPDTotal), record.ExecCount))
     });
     factories.insert(AvgBackoffTotalTimeStr, |_info, record| {
         go_any(avgInt(
             duration_nanos(record.SumBackoffTotal),
-            record.CommitCount,
+            record.ExecCount,
         ))
     });
     factories.insert(AvgWriteSQLRespTimeStr, |_info, record| {
         go_any(avgInt(
             duration_nanos(record.SumWriteSQLRespTotal),
-            record.CommitCount,
+            record.ExecCount,
         ))
     });
     factories.insert(AvgTidbCPUTimeStr, |_info, record| {
@@ -650,7 +676,7 @@ static columnFactoryMap: LazyLock<HashMap<&'static str, ColumnFactory>> = LazyLo
     });
     factories.insert(PreparedStr, |_info, record| go_any(record.Prepared));
     factories.insert(AvgAffectedRowsStr, |_info, record| {
-        go_any(avgFloat(record.SumAffectedRows as i64, record.ExecCount))
+        go_any(avgFloat4Uint(record.SumAffectedRows, record.ExecCount))
     });
     factories.insert(FirstSeenStr, |info, record| {
         go_any(timestamp_value(
@@ -719,10 +745,6 @@ static columnFactoryMap: LazyLock<HashMap<&'static str, ColumnFactory>> = LazyLo
     factories.insert(MaxQueuedRcTimeStr, |_info, record| {
         go_any(duration_nanos(record.MaxRUWaitDuration))
     });
-    factories.insert(AvgRequestUnitV2, |_info, record| {
-        go_any(avgSumFloat(record.SumRUV2, record.ExecCount))
-    });
-    factories.insert(MaxRequestUnitV2, |_info, record| go_any(record.MaxRUV2));
     factories.insert(ResourceGroupName, |_info, record| {
         go_any(record.ResourceGroupName.clone())
     });
@@ -835,6 +857,15 @@ pub fn avgFloat(sum: i64, count: i64) -> f64 {
         return sum as f64 / count as f64;
     }
     0.0
+}
+
+/// uint64 累计值的浮点平均，避免 int64 转换溢出。
+pub fn avgFloat4Uint(sum: u64, count: i64) -> f64 {
+    if count > 0 {
+        sum as f64 / count as f64
+    } else {
+        0.0
+    }
 }
 
 // avgSumFloat 对应 Go 函数 avgSumFloat。

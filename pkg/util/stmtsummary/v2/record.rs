@@ -40,6 +40,24 @@ static MAX_ENCODED_PLAN_SIZE_IN_BYTES: AtomicUsize = AtomicUsize::new(1024 * 102
 /// 采样 SQL 最大长度（字符字节上限），可由系统变量改写。
 static GLOBAL_MAX_SQL_LENGTH: AtomicU32 = AtomicU32::new(32768);
 
+mod durationNanosSerde {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::time::Duration;
+
+    pub fn serialize<S: Serializer>(value: &Duration, serializer: S) -> Result<S::Ok, S::Error> {
+        let nanos = i64::try_from(value.as_nanos()).map_err(serde::ser::Error::custom)?;
+        serializer.serialize_i64(nanos)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Duration, D::Error> {
+        let nanos = i64::deserialize(deserializer)?;
+        if nanos < 0 {
+            return Err(serde::de::Error::custom("negative IA wait duration"));
+        }
+        Ok(Duration::from_nanos(nanos as u64))
+    }
+}
+
 /// Upper bound for the textual and binary plans retained by statement summary.
 /// 返回当前允许保留的编码计划最大字节数。
 pub fn MaxEncodedPlanSizeInBytes() -> usize {
@@ -134,6 +152,26 @@ pub struct StmtRecord {
     pub MaxRocksdbBlockReadCount: u64,
     pub SumRocksdbBlockReadByte: u64,
     pub MaxRocksdbBlockReadByte: u64,
+    #[serde(rename = "ia_exec_count")]
+    pub IAExecCount: i64,
+    #[serde(rename = "sum_ia_remote_read_segment_count")]
+    pub SumIARemoteReadSegmentCount: u64,
+    #[serde(rename = "max_ia_remote_read_segment_count")]
+    pub MaxIARemoteReadSegmentCount: u64,
+    #[serde(rename = "sum_ia_remote_read_segment_size")]
+    pub SumIARemoteReadSegmentSize: u64,
+    #[serde(rename = "max_ia_remote_read_segment_size")]
+    pub MaxIARemoteReadSegmentSize: u64,
+    #[serde(
+        rename = "sum_ia_remote_read_segment_wait_time",
+        with = "durationNanosSerde"
+    )]
+    pub SumIARemoteReadSegmentWaitTime: Duration,
+    #[serde(
+        rename = "max_ia_remote_read_segment_wait_time",
+        with = "durationNanosSerde"
+    )]
+    pub MaxIARemoteReadSegmentWaitTime: Duration,
     pub CommitCount: i64,
     pub SumGetCommitTsTime: Duration,
     pub MaxGetCommitTsTime: Duration,
@@ -189,8 +227,6 @@ pub struct StmtRecord {
     pub MaxRRU: f64,
     pub MaxWRU: f64,
     pub MaxRUWaitDuration: Duration,
-    pub SumRUV2: f64,
-    pub MaxRUV2: f64,
     pub PlanCacheUnqualifiedCount: i64,
     pub PlanCacheUnqualifiedLastReason: String,
     pub SumMemArbitration: f64,
@@ -265,6 +301,13 @@ impl Default for StmtRecord {
             MaxRocksdbBlockReadCount: 0,
             SumRocksdbBlockReadByte: 0,
             MaxRocksdbBlockReadByte: 0,
+            IAExecCount: 0,
+            SumIARemoteReadSegmentCount: 0,
+            MaxIARemoteReadSegmentCount: 0,
+            SumIARemoteReadSegmentSize: 0,
+            MaxIARemoteReadSegmentSize: 0,
+            SumIARemoteReadSegmentWaitTime: Duration::ZERO,
+            MaxIARemoteReadSegmentWaitTime: Duration::ZERO,
             CommitCount: 0,
             SumGetCommitTsTime: Duration::ZERO,
             MaxGetCommitTsTime: Duration::ZERO,
@@ -320,8 +363,6 @@ impl Default for StmtRecord {
             MaxRRU: 0.0,
             MaxWRU: 0.0,
             MaxRUWaitDuration: Duration::ZERO,
-            SumRUV2: 0.0,
-            MaxRUV2: 0.0,
             PlanCacheUnqualifiedCount: 0,
             PlanCacheUnqualifiedLastReason: String::new(),
             SumMemArbitration: 0.0,
@@ -345,16 +386,16 @@ pub fn NewStmtRecord(info: &StmtExecInfo) -> Box<StmtRecord> {
     let mut table_names = String::new();
     let logical_plan_tables = info.StmtCtx.LogicalPlanTables();
     // 表名统一小写，格式 db.table，逗号分隔。
-    for (index, table) in logical_plan_tables.iter().enumerate() {
+    for table in &logical_plan_tables {
         if table.Table.is_empty() {
             continue;
+        }
+        if !table_names.is_empty() {
+            table_names.push(',');
         }
         table_names.push_str(&table.DB.to_lowercase());
         table_names.push('.');
         table_names.push_str(&table.Table.to_lowercase());
-        if index < logical_plan_tables.len() - 1 {
-            table_names.push(',');
-        }
     }
 
     let mut plan_digest = info.PlanDigest.clone();
@@ -377,7 +418,7 @@ pub fn NewStmtRecord(info: &StmtExecInfo) -> Box<StmtRecord> {
         Digest: info.Digest.clone(),
         PlanDigest: plan_digest,
         StmtType: info.StmtCtx.StmtType.clone(),
-        NormalizedSQL: info.NormalizedSQL.clone(),
+        NormalizedSQL: formatSQL(info.NormalizedSQL.clone()),
         TableNames: table_names,
         IsInternal: info.IsInternal,
         BindingSQL: binding_sql,
@@ -507,6 +548,28 @@ impl StmtRecord {
                 SumRocksdbBlockReadByte,
                 MaxRocksdbBlockReadByte
             );
+            let ia = task_execdetails::execdetails::GetIARemoteReadSegmentStats(Some(scan));
+            if ia.Count > 0 {
+                self.IAExecCount += 1;
+            }
+            add_sum_max!(
+                self,
+                ia.Count,
+                SumIARemoteReadSegmentCount,
+                MaxIARemoteReadSegmentCount
+            );
+            add_sum_max!(
+                self,
+                ia.Bytes,
+                SumIARemoteReadSegmentSize,
+                MaxIARemoteReadSegmentSize
+            );
+            add_sum_max!(
+                self,
+                ia.WaitTime,
+                SumIARemoteReadSegmentWaitTime,
+                MaxIARemoteReadSegmentWaitTime
+            );
         }
 
         // 两阶段提交细节：prewrite/commit/resolve-lock 等耗时与写键规模。
@@ -626,8 +689,6 @@ impl StmtRecord {
             self.SumRUWaitDuration += wait;
             self.MaxRUWaitDuration = self.MaxRUWaitDuration.max(wait);
         }
-        self.SumRUV2 += info.TotalRUV2;
-        self.MaxRUV2 = self.MaxRUV2.max(info.TotalRUV2);
         self.StorageKV = info.StmtCtx.IsTiKV.load(Ordering::Relaxed);
         self.StorageMPP = info.StmtCtx.IsTiFlash.load(Ordering::Relaxed);
     }
@@ -686,6 +747,25 @@ impl StmtRecord {
             SumRocksdbBlockReadByte,
             MaxRocksdbBlockReadByte
         );
+        self.IAExecCount += other.IAExecCount;
+        merge_sum_max!(
+            self,
+            other,
+            SumIARemoteReadSegmentCount,
+            MaxIARemoteReadSegmentCount
+        );
+        merge_sum_max!(
+            self,
+            other,
+            SumIARemoteReadSegmentSize,
+            MaxIARemoteReadSegmentSize
+        );
+        merge_sum_max!(
+            self,
+            other,
+            SumIARemoteReadSegmentWaitTime,
+            MaxIARemoteReadSegmentWaitTime
+        );
         self.CommitCount += other.CommitCount;
         merge_sum_max!(self, other, SumPrewriteTime, MaxPrewriteTime);
         merge_sum_max!(self, other, SumCommitTime, MaxCommitTime);
@@ -727,8 +807,6 @@ impl StmtRecord {
         self.MaxRRU = self.MaxRRU.max(other.MaxRRU);
         self.MaxWRU = self.MaxWRU.max(other.MaxWRU);
         self.MaxRUWaitDuration = self.MaxRUWaitDuration.max(other.MaxRUWaitDuration);
-        self.SumRUV2 += other.SumRUV2;
-        self.MaxRUV2 = self.MaxRUV2.max(other.MaxRUV2);
     }
 }
 
@@ -870,7 +948,6 @@ pub fn GenerateStmtExecInfo4Test(digest: impl Into<String>) -> Box<StmtExecInfo>
             ru_wait_duration: Duration::from_millis(2),
             ..Default::default()
         }),
-        TotalRUV2: 12_345.0,
         LazyInfo: Box::new(mockLazyInfo),
         MemArbitration: 22_222.0,
         ..Default::default()

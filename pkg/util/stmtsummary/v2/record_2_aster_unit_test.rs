@@ -169,7 +169,6 @@ fn exec_info(digest: &str, user: &str, start: u64) -> StmtExecInfo {
             ru_wait_duration: Duration::from_millis(29),
             ..Default::default()
         }),
-        TotalRUV2: 9.5,
         PlanCacheUnqualified: "too many values".to_owned(),
         LazyInfo: Box::new(LazyInfo {
             sql: "select * from t".to_owned(),
@@ -200,7 +199,6 @@ fn record_new_add_and_merge_match_go_aggregation() {
     assert_eq!(record.BackoffTypes["txnlock"], 2);
     assert_eq!(record.SumRRU, 1.25);
     assert_eq!(record.MaxWRU, 2.5);
-    assert_eq!(record.SumRUV2, 9.5);
     assert_eq!(record.UnpackedBytesSentTiKVTotal, 29);
     assert_eq!(record.UnpackedBytesReceivedTiFlashCrossZone, 59);
     assert!(record.StorageKV);
@@ -213,13 +211,13 @@ fn record_new_add_and_merge_match_go_aggregation() {
     assert_eq!(record.ExecCount, 2);
     assert_eq!(record.SumLatency, info.TotalLatency * 2);
     assert_eq!(record.SumRRU, 2.5);
-    assert_eq!(record.SumRUV2, 19.0);
     assert_eq!(record.SumErrors, 0);
 }
 
 /// 超限 SQL/文本计划/二进制计划应被截断或替换为 discard 占位。
 #[test]
 fn record_truncates_plans_and_sql_at_configured_limits() {
+    let _guard = crate::testkit::SQL_LENGTH_TEST_LOCK.lock().unwrap();
     SetGlobalMaxSQLLengthForTest(4);
     SetMaxEncodedPlanSizeInBytesForTest(3);
     let mut info = exec_info("digest", "alice", 10);

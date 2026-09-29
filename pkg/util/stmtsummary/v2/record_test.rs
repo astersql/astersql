@@ -23,6 +23,30 @@ use std::collections::HashMap;
 use std::time::Duration;
 use task_stmtsummary_v2::*;
 
+#[test]
+fn go_merge_36_v2_ia_stats_accumulate_and_merge() {
+    let mut info = GenerateStmtExecInfo4Test("ia");
+    let scan = info.ExecDetail.CopExecDetails.ScanDetail.as_mut().unwrap();
+    scan.IaRemoteReadSegmentCount = 3;
+    scan.IaRemoteReadSegmentBytes = 4096;
+    scan.IaRemoteReadSegmentDuration = Duration::from_millis(5);
+    let mut first = NewStmtRecord(&info);
+    first.Add(&info);
+    assert_eq!(first.IAExecCount, 1);
+    assert_eq!(first.SumIARemoteReadSegmentCount, 3);
+    assert_eq!(first.SumIARemoteReadSegmentSize, 4096);
+    assert_eq!(
+        first.SumIARemoteReadSegmentWaitTime,
+        Duration::from_millis(5)
+    );
+    let mut merged = NewStmtRecord(&info);
+    merged.Add(&info);
+    merged.Merge(&first);
+    assert_eq!(merged.IAExecCount, 2);
+    assert_eq!(merged.SumIARemoteReadSegmentCount, 6);
+    assert_eq!(merged.MaxIARemoteReadSegmentSize, 4096);
+}
+
 /// 校验新建记录字段、累加/合并指标，以及 marshal 附加字段与 evicted 标记。
 #[test]
 fn TestStmtRecord() {
@@ -75,8 +99,6 @@ fn TestStmtRecord() {
     assert_eq!(record1.SumWRU, wru);
     assert_eq!(record1.MaxRUWaitDuration, wait);
     assert_eq!(record1.SumRUWaitDuration, wait);
-    assert_eq!(record1.MaxRUV2, info.TotalRUV2);
-    assert_eq!(record1.SumRUV2, info.TotalRUV2);
     assert_eq!(record1.SumTidbCPU, info.CPUUsages.TidbCPUTime);
     assert_eq!(record1.SumTikvCPU, info.CPUUsages.TikvCPUTime);
     assert_eq!(record1.SumNumCopTasks, 10);
@@ -103,7 +125,6 @@ fn TestStmtRecord() {
     assert_eq!(record2.SumRRU, rru * 2.0);
     assert_eq!(record2.SumWRU, wru * 2.0);
     assert_eq!(record2.SumRUWaitDuration, wait * 2);
-    assert_eq!(record2.SumRUV2, info.TotalRUV2 * 2.0);
     assert_eq!(record2.SumTidbCPU, info.CPUUsages.TidbCPUTime * 2);
     assert_eq!(record2.SumTikvCPU, info.CPUUsages.TikvCPUTime * 2);
 
