@@ -25,7 +25,6 @@ use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::execdetails::{RUV2Metrics, RUV2Weights};
 use crate::{
     ExecutionContext, NormalizeRUVersion, RU_VERSION_V2, RUIncrement, RUIncrementMap, RUKey,
     RUVersion, SharedRUDetails, global_aggregator,
@@ -68,12 +67,8 @@ pub struct ExecBeginInfo {
     /// from Go's context at statement begin.
     /// 语句开始时缓存的 RU 明细句柄（对应 Go context 中的值）。
     pub RUDetails: Option<SharedRUDetails>,
-    /// RU v2 指标句柄。
-    pub RUV2Metrics: Option<Arc<RUV2Metrics>>,
     /// 执行用户。
     pub User: String,
-    /// RU v2 权重。
-    pub RUV2Weights: RUV2Weights,
     /// 入站网络字节数。
     pub InNetworkBytes: u64,
     /// RU 协议版本。
@@ -87,6 +82,8 @@ pub struct ExecBeginInfo {
 pub struct ExecFinishInfo {
     /// 结束时的 RU 明细句柄。
     pub RUDetails: Option<SharedRUDetails>,
+    /// 语句结束时已经计算完成的 RU v2 总量。
+    pub TotalRUV2: f64,
     /// 执行用户。
     pub User: String,
     /// 出站网络字节数。
@@ -306,9 +303,7 @@ impl StatementStatsInner {
         let key = RUKey::new(info.User.clone(), sql_digest, plan_digest);
         self.exec_ctx = Some(ExecutionContext {
             RUDetails: info.RUDetails.clone(),
-            RUV2Metrics: info.RUV2Metrics.clone(),
             Key: key.clone(),
-            RUV2Weights: info.RUV2Weights,
             LastRUTotal: 0.0,
             RUVersion: NormalizeRUVersion(info.RUVersion),
         });
@@ -326,7 +321,11 @@ impl StatementStatsInner {
             return;
         }
 
-        let current_total = current_ru_total(exec_ctx, info.RUDetails.as_ref());
+        let current_total = if NormalizeRUVersion(exec_ctx.RUVersion) == RU_VERSION_V2 {
+            info.TotalRUV2
+        } else {
+            current_ru_total(exec_ctx, info.RUDetails.as_ref())
+        };
         let last_total = exec_ctx.LastRUTotal;
         if current_total > 0.0 {
             let delta = current_total - last_total;
@@ -359,18 +358,11 @@ impl StatementStatsInner {
     }
 }
 
-/// 按协议版本计算当前 RU 总量：v2 用权重公式，否则 RRU+WRU。
+/// 在执行期间只采样 v1 的 RRU+WRU；v2 总量在语句结束时提供。
 fn current_ru_total(exec_ctx: &ExecutionContext, ru_details: Option<&SharedRUDetails>) -> f64 {
     let details = ru_details.map(|details| details.read().expect("RUDetails lock poisoned"));
     if NormalizeRUVersion(exec_ctx.RUVersion) == RU_VERSION_V2 {
-        let tikv_ru = details.as_ref().map_or(0.0, |details| details.TiKVRUV2());
-        let tiflash_ru = details.as_ref().map_or(0.0, |details| details.TiflashRU());
-        return exec_ctx
-            .RUV2Metrics
-            .as_ref()
-            .map_or(tikv_ru + tiflash_ru, |metrics| {
-                metrics.TotalRU(exec_ctx.RUV2Weights, tikv_ru, tiflash_ru)
-            });
+        return 0.0;
     }
     details
         .as_ref()

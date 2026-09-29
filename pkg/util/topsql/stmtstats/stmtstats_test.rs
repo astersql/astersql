@@ -70,6 +70,31 @@ fn finish_info(
     }
 }
 
+#[test]
+fn go_merge_20_topru_v2_uses_finalized_total_only() {
+    let stats = StatementStats::new();
+    let details = ru_details(3.0, 5.0, 11.0, 13.0);
+    let key = ru_key("user", "sql", "plan");
+    stats.OnExecutionBegin(
+        b"sql",
+        b"plan",
+        Some(&begin_info(
+            "user",
+            true,
+            Some(details.clone()),
+            RU_VERSION_V2,
+        )),
+    );
+    assert_eq!(stats.MergeRUInto()[&key].TotalRU, 0.0);
+
+    let mut finish = finish_info("user", true, Some(details), SECOND_NS);
+    finish.TotalRUV2 = 42.0;
+    stats.OnExecutionFinished(b"sql", b"plan", Some(&finish));
+    let increment = stats.MergeRUInto();
+    assert_eq!(increment[&key].TotalRU, 42.0);
+    assert_eq!(increment[&key].ExecDuration, SECOND_NS as u64);
+}
+
 /// 启动一条已启用 TopRU 的语句，返回统计实例、明细与 RUKey。
 fn begin_ru_case(
     user: &str,
@@ -193,53 +218,12 @@ fn TestCreateStatementStats() {
     assert!(stats.Finished());
 }
 
-/// 验证 RU v2 权重采样与 finish 结算。
+/// RU v2 在执行期间没有可采样的总量，只在 finish 接收最终结果。
 #[test]
 fn TestStatementStatsRUV2Sampling() {
     let stats = CreateStatementStats();
-    let details = ru_details(0.0, 0.0, 11.0, 0.0);
-    let metrics = Arc::new(execdetails::RUV2Metrics::default());
-    metrics.AddPlanCnt(3);
-    let weights = execdetails::RUV2Weights {
-        RUScale: 1.0,
-        PlanCnt: 2.0,
-        ..Default::default()
-    };
-    let mut info = begin_info("u1", true, Some(details.clone()), RU_VERSION_V2);
-    info.RUV2Metrics = Some(metrics.clone());
-    info.RUV2Weights = weights;
-    stats.OnExecutionBegin(b"sql", b"plan", Some(&info));
+    let details = ru_details(0.0, 0.0, 11.0, 4.0);
     let key = ru_key("u1", "sql", "plan");
-    let first = stats.MergeRUInto();
-    assert_eq!(first[&key].ExecCount, 1);
-    assert!((first[&key].TotalRU - 17.0).abs() < 1e-9);
-    add_ru(&details, 0.0, 0.0, 5.0, 0.0);
-    metrics.AddPlanCnt(1);
-    assert!((stats.MergeRUInto()[&key].TotalRU - 7.0).abs() < 1e-9);
-    add_ru(&details, 0.0, 0.0, 4.0, 0.0);
-    metrics.AddPlanCnt(2);
-    stats.OnExecutionFinished(
-        b"sql",
-        b"plan",
-        Some(&finish_info("u1", true, Some(details), SECOND_NS)),
-    );
-    let last = stats.MergeRUInto();
-    assert!((last[&key].TotalRU - 8.0).abs() < 1e-9);
-    assert_eq!(last[&key].ExecDuration, SECOND_NS as u64);
-
-    let stats = CreateStatementStats();
-    let metrics = Arc::new(execdetails::RUV2Metrics::default());
-    metrics.AddPlanCnt(3);
-    let mut info = begin_info("u1", true, None, RU_VERSION_V2);
-    info.RUV2Metrics = Some(metrics.clone());
-    info.RUV2Weights = weights;
-    stats.OnExecutionBegin(b"sql", b"plan", Some(&info));
-    assert!((stats.MergeRUInto()[&key].TotalRU - 6.0).abs() < 1e-9);
-    metrics.AddPlanCnt(1);
-    assert!((stats.MergeRUInto()[&key].TotalRU - 2.0).abs() < 1e-9);
-
-    let stats = CreateStatementStats();
-    let details = ru_details(0.0, 0.0, 11.0, 0.0);
     stats.OnExecutionBegin(
         b"sql",
         b"plan",
@@ -250,42 +234,36 @@ fn TestStatementStatsRUV2Sampling() {
             RU_VERSION_V2,
         )),
     );
-    assert!((stats.MergeRUInto()[&key].TotalRU - 11.0).abs() < 1e-9);
-    add_ru(&details, 0.0, 0.0, 4.0, 0.0);
-    assert!((stats.MergeRUInto()[&key].TotalRU - 4.0).abs() < 1e-9);
+    let first = stats.MergeRUInto();
+    assert_eq!(first[&key].ExecCount, 1);
+    assert_eq!(first[&key].TotalRU, 0.0);
+    add_ru(&details, 0.0, 0.0, 5.0, 3.0);
+    assert!(stats.MergeRUInto().is_empty());
+
+    let mut finish = finish_info("u1", true, Some(details), SECOND_NS);
+    finish.TotalRUV2 = 23.0;
+    stats.OnExecutionFinished(b"sql", b"plan", Some(&finish));
+    let last = stats.MergeRUInto();
+    assert_eq!(last[&key].TotalRU, 23.0);
+    assert_eq!(last[&key].ExecDuration, SECOND_NS as u64);
 }
 
-/// 验证在途采样排除仅 drain 字段，避免噪声。
+/// RU v2 的原始采集字段不会进入执行期间的 TopRU 采样。
 #[test]
 fn TestStatementStatsRUV2InFlightSamplingExcludesDrainOnlyFields() {
     let stats = CreateStatementStats();
     let details = ru_details(0.0, 0.0, 0.0, 0.0);
-    let metrics = Arc::new(execdetails::RUV2Metrics::default());
-    let weights = execdetails::RUV2Weights {
-        RUScale: 1.0,
-        PlanCnt: 1.0,
-        ResourceManagerReadCnt: 0.02,
-        ResourceManagerWriteCnt: 0.07,
-        ..Default::default()
-    };
-    metrics.AddPlanCnt(1);
-    let mut info = begin_info("u1", true, Some(details.clone()), RU_VERSION_V2);
-    info.RUV2Metrics = Some(metrics.clone());
-    info.RUV2Weights = weights;
+    let info = begin_info("u1", true, Some(details.clone()), RU_VERSION_V2);
     stats.OnExecutionBegin(b"sql", b"plan", Some(&info));
     let key = ru_key("u1", "sql", "plan");
-    let in_flight = stats.MergeRUInto();
-    assert!((in_flight[&key].TotalRU - 1.0).abs() < 1e-9);
-    metrics.AddResourceManagerReadCnt(5);
-    metrics.AddResourceManagerWriteCnt(3);
-    stats.OnExecutionFinished(
-        b"sql",
-        b"plan",
-        Some(&finish_info("u1", true, Some(details), SECOND_NS)),
-    );
-    let finish = stats.MergeRUInto();
-    assert!((finish[&key].TotalRU - 0.31).abs() < 1e-9);
-    assert!((in_flight[&key].TotalRU + finish[&key].TotalRU - 1.31).abs() < 1e-9);
+    add_ru(&details, 0.0, 0.0, 9.0, 0.0);
+    assert_eq!(stats.MergeRUInto()[&key].TotalRU, 0.0);
+
+    let mut finish = finish_info("u1", true, Some(details), SECOND_NS);
+    finish.TotalRUV2 = 1.31;
+    stats.OnExecutionFinished(b"sql", b"plan", Some(&finish));
+    let result = stats.MergeRUInto();
+    assert_eq!(result[&key].TotalRU, 1.31);
 }
 
 /// 版本切换清空 RU 状态但保留语句统计。
@@ -305,7 +283,16 @@ fn TestStatementStatsResetRUStateOnVersionChangePreservesStmtStats() {
         stats.ResetRUStateOnVersionChange(current);
         add_ru(&details, 0.0, 0.0, 1.0, 0.0);
         let ru = stats.MergeRUInto();
-        assert_eq!(!ru.is_empty(), context_kept);
+        assert!(ru.is_empty());
+        if context_kept {
+            let mut finish = finish_info("u1", true, Some(details), SECOND_NS);
+            finish.TotalRUV2 = 2.0;
+            stats.OnExecutionFinished(b"sql", b"plan", Some(&finish));
+            assert_eq!(
+                stats.MergeRUInto()[&ru_key("u1", "sql", "plan")].TotalRU,
+                2.0
+            );
+        }
         assert_eq!(stats.Take().len(), 1);
     }
 }

@@ -316,7 +316,7 @@ fn TestAggregatorDetectsRUVersionHandover() {
     let batches = collector.batches.lock().unwrap();
     assert_eq!(batches.len(), 2);
     assert_eq!(batches[1].1, RU_VERSION_V2);
-    assert_eq!(batches[1].0[&key].TotalRU, 7.0);
+    assert_eq!(batches[1].0[&key].TotalRU, 0.0);
     reset_top_state();
 }
 

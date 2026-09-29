@@ -358,7 +358,7 @@ fn aggregator_lifecycle_is_idempotent() {
     }
 }
 
-/// RUv2 使用 TiKV/TiFlash 分量合计 TotalRU（此处 11+3=14）。
+/// RU v2 执行期间不采样 TiKV/TiFlash，结束时使用最终 TotalRUV2。
 #[test]
 fn ru_v2_uses_tikv_tiflash_and_tidb_metric_totals() {
     let _serial = super::test_support::stmtstats_guard();
@@ -371,16 +371,26 @@ fn ru_v2_uses_tikv_tiflash_and_tidb_metric_totals() {
         Some(&ExecBeginInfo {
             User: "u2".to_owned(),
             RUDetails: Some(ru),
-            RUV2Metrics: Some(Arc::new(execdetails::RUV2Metrics::default())),
-            RUV2Weights: execdetails::RUV2Weights::default(),
             RUVersion: RU_VERSION_V2,
             TopRUEnabled: true,
             ..ExecBeginInfo::default()
         }),
     );
     let data = stats.MergeRUInto();
-    assert_eq!(data.get(&key).expect("RU v2 increment").TotalRU, 14.0);
+    assert_eq!(data.get(&key).expect("RU v2 increment").TotalRU, 0.0);
     assert_eq!(data.get(&key).expect("RU v2 increment").ExecCount, 1);
+    stats.OnExecutionFinished(
+        b"sql-v2",
+        b"plan-v2",
+        Some(&ExecFinishInfo {
+            User: "u2".to_owned(),
+            TotalRUV2: 14.0,
+            ExecDuration: SignedDuration::from_nanos(1),
+            TopRUEnabled: true,
+            ..ExecFinishInfo::default()
+        }),
+    );
+    assert_eq!(stats.MergeRUInto()[&key].TotalRU, 14.0);
 }
 
 /// 超过 10k distinct RU key 时裁剪并累加丢弃指标。
