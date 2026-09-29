@@ -23,13 +23,33 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use astersql_resourcegroup::ConsumptionReporter;
 use astersql_server_internal_column as column;
 use astersql_util_chunk as chunk;
-use astersql_util_execdetails::ruv2_metrics::{RUV2Metrics, RUV2Weights, tikvutil};
+use astersql_util_execdetails::ruv2_metrics::{RUV2Metrics, tikvutil};
 use astersql_util_sqlexec as sqlexec;
 
 use crate::*;
+
+#[test]
+fn go_merge_20_cursor_tracks_response_bytes_without_ru_reporting() {
+    let metrics = Arc::new(RUV2Metrics::default());
+    let details = Arc::new(tikvutil::RUDetails::default());
+    let mut raw = astersql_util_execdetails::ruv2_metrics::kvrpcpb::Ruv2::new();
+    raw.set_coprocessor_response_bytes(10);
+    details.AddRUV2(&raw);
+    let tracker = NewCursorRUV2Tracker(Some(Arc::clone(&metrics)), Some(Arc::clone(&details)))
+        .expect("active tracker");
+    assert_eq!(metrics.TiKVCoprocessorResponseBytes(), 10);
+    raw.set_coprocessor_response_bytes(5);
+    details.AddRUV2(&raw);
+    let calls = Arc::new(Calls::default());
+    let mut result_set = New(Box::new(ScriptedRecordSet::new(vec![], false, calls)), None);
+    AttachCursorRUV2Tracker(result_set.as_mut(), Some(tracker));
+    ReportCursorRUV2Delta(result_set.as_mut());
+    assert_eq!(metrics.TiKVCoprocessorResponseBytes(), 15);
+    metrics.SetBypass(true);
+    assert!(NewCursorRUV2Tracker(Some(metrics), Some(details)).is_none());
+}
 
 /// 构造单列 LONGLONG 的 ResultField，供脚本化 RecordSet 使用。
 fn result_field(field_type: u8) -> sqlexec::resolve::ResultField {
@@ -293,69 +313,4 @@ fn lazy_cursor_iterates_across_real_chunks_and_closes_result_set() {
     assert!(iterator.Error().is_none());
     iterator.Close();
     assert_eq!(calls.close.load(Ordering::SeqCst), 1);
-}
-
-/// 记录 RU 上报调用的测试用 ConsumptionReporter。
-#[derive(Default)]
-struct Reporter {
-    reports: Mutex<Vec<(String, f64, f64, f64)>>,
-}
-
-impl ConsumptionReporter for Reporter {
-    type Consumption = ();
-
-    fn report_consumption(&self, _resource_group_name: &str, _consumption: &Self::Consumption) {}
-
-    fn report_ruv2_consumption(
-        &self,
-        resource_group_name: &str,
-        tikv_ruv2: f64,
-        tidb_ruv2: f64,
-        tiflash_ruv2: f64,
-    ) {
-        self.reports.lock().unwrap().push((
-            resource_group_name.to_owned(),
-            tikv_ruv2,
-            tidb_ruv2,
-            tiflash_ruv2,
-        ));
-    }
-}
-
-/// 仅正增量触发上报；零/负的 chunk 增量不累计单元格。
-#[test]
-fn cursor_ruv2_tracker_reports_only_positive_deltas() {
-    let reporter = Arc::new(Reporter::default());
-    let reporter_boundary: Arc<dyn CursorRUV2Reporter> = reporter.clone();
-    let metrics = Arc::new(RUV2Metrics::default());
-    let details = Arc::new(tikvutil::RUDetails::default());
-    let weights = RUV2Weights {
-        RUScale: 1.0,
-        ResultChunkCells: 2.0,
-        ..RUV2Weights::default()
-    };
-    let tracker = NewCursorRUV2Tracker(
-        Some(reporter_boundary),
-        "rg1".to_owned(),
-        Some(Arc::clone(&metrics)),
-        Some(Arc::clone(&details)),
-        weights,
-    )
-    .unwrap();
-    let calls = Arc::new(Calls::default());
-    let mut result_set = New(Box::new(ScriptedRecordSet::new(vec![], false, calls)), None);
-    AttachCursorRUV2Tracker(result_set.as_mut(), Some(tracker));
-
-    // 3 cells * 权重 2.0 = TiDB RU 6.0。
-    ReportCursorRUV2Delta(result_set.as_mut(), 3);
-    details.AddTiKVRUV2(5.0);
-    // delta=0 / 负值不应再增加 ResultChunkCells。
-    ReportCursorRUV2Delta(result_set.as_mut(), 0);
-    ReportCursorRUV2Delta(result_set.as_mut(), -4);
-
-    let reports = reporter.reports.lock().unwrap();
-    assert_eq!(reports.len(), 2);
-    assert_eq!(reports[0], ("rg1".to_owned(), 0.0, 6.0, 0.0));
-    assert_eq!(reports[1], ("rg1".to_owned(), 5.0, 0.0, 0.0));
-    assert_eq!(metrics.ResultChunkCells(), 3);
 }

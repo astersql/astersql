@@ -13,21 +13,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// 查询结果集核心实现与游标 RU v2（Request Unit）消耗追踪。
+// 查询结果集核心实现与游标响应字节同步。
 //
 // `TidbResultSet` 包装 sqlexec::RecordSet，负责列信息缓存、Finish/Close
 // 生命周期与可分离（TryDetach）结果集；`CursorRUV2Tracker` 在游标 fetch
-// 过程中按增量上报 TiDB / TiKV / TiFlash 的 RU 消耗给资源组。
+// 过程中同步 TiKV coprocessor response bytes。
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, TryLockError};
 
 use astersql_planner_core::PlanCacheStmt;
-use astersql_resourcegroup::ConsumptionReporter;
 use astersql_server_internal_column::{ConvertColumnInfo, Info};
 use astersql_util_chunk as chunk;
 use astersql_util_execdetails::ruv2_metrics::{
-    RUV2Metrics, RUV2Weights, SyncRUV2MetricsFromRUDetails, tikvutil,
+    RUV2Metrics, SyncRUV2MetricsFromRUDetails, tikvutil,
 };
 use astersql_util_sqlexec as sqlexec;
 
@@ -62,150 +61,44 @@ pub trait ResultSet {
     fn OnFetchReturned(&mut self);
     /// 挂载游标 RU v2 追踪器。
     fn SetCursorRUV2Tracker(&mut self, tracker: Option<Arc<CursorRUV2Tracker>>);
-    /// 上报结果 chunk 单元格增量并刷新 RU 增量。
-    fn ReportCursorRUV2Delta(&mut self, result_chunk_cells_delta: i64);
+    /// 同步游标读取期间新增的 TiKV coprocessor response bytes。
+    fn ReportCursorRUV2Delta(&mut self);
 }
 
-/// Object-safe view of `resourcegroup.ConsumptionReporter` used by a cursor.
-/// 游标侧 object-safe 的 RU v2 消耗上报接口（对资源组计费）。
-pub trait CursorRUV2Reporter: Send + Sync {
-    fn ReportRUV2Consumption(
-        &self,
-        resource_group_name: &str,
-        tikv_ruv2: f64,
-        tidb_ruv2: f64,
-        tiflash_ruv2: f64,
-    );
-}
-
-impl<T> CursorRUV2Reporter for T
-where
-    T: ConsumptionReporter,
-{
-    fn ReportRUV2Consumption(
-        &self,
-        resource_group_name: &str,
-        tikv_ruv2: f64,
-        tidb_ruv2: f64,
-        tiflash_ruv2: f64,
-    ) {
-        self.report_ruv2_consumption(resource_group_name, tikv_ruv2, tidb_ruv2, tiflash_ruv2);
-    }
-}
-
-/// 已向资源组上报过的 RU 累计值，用于计算增量。
-#[derive(Default)]
-struct CursorRUV2ReportState {
-    reported_tidb_ru: f64,
-    reported_tikv_ruv2: f64,
-    reported_tiflash_ru: f64,
-}
-
-/// 游标执行期间的 RU v2 追踪器：累计 TiDB 侧指标与 TiKV/TiFlash RUDetails，
-/// 并按 fetch 增量上报到资源组。
+/// 游标执行期间的 RUv2 指标追踪器，只同步响应字节。
 pub struct CursorRUV2Tracker {
-    reporter: Option<Arc<dyn CursorRUV2Reporter>>,
-    metrics: Option<Arc<RUV2Metrics>>,
-    ru_details: Option<Arc<tikvutil::RUDetails>>,
-    resource_group_name: String,
-    weights: RUV2Weights,
-    state: Mutex<CursorRUV2ReportState>,
+    metrics: Arc<RUV2Metrics>,
+    ru_details: Arc<tikvutil::RUDetails>,
+    state: Mutex<()>,
 }
 
-/// 构造游标 RU 追踪器；无 metrics/ru_details 或 metrics.Bypass 时返回 None。
+/// 构造游标响应字节追踪器，缺少任一输入或 bypass 时返回 None。
 pub fn NewCursorRUV2Tracker(
-    reporter: Option<Arc<dyn CursorRUV2Reporter>>,
-    resource_group_name: String,
     metrics: Option<Arc<RUV2Metrics>>,
     ru_details: Option<Arc<tikvutil::RUDetails>>,
-    weights: RUV2Weights,
 ) -> Option<Arc<CursorRUV2Tracker>> {
-    if metrics.is_none() && ru_details.is_none() {
+    let (Some(metrics), Some(ru_details)) = (metrics, ru_details) else {
         return None;
-    }
-    if metrics.as_ref().is_some_and(|metrics| metrics.Bypass()) {
-        return None;
-    }
-
-    // 用 RUDetails 同步 metrics，并以当前累计值作为已上报基线。
-    SyncRUV2MetricsFromRUDetails(metrics.as_deref(), ru_details.as_deref());
-    let state = CursorRUV2ReportState {
-        reported_tidb_ru: metrics
-            .as_ref()
-            .map_or(0.0, |metrics| metrics.CalculateRUValues(weights)),
-        reported_tikv_ruv2: ru_details
-            .as_ref()
-            .map_or(0.0, |details| details.TiKVRUV2()),
-        reported_tiflash_ru: ru_details
-            .as_ref()
-            .map_or(0.0, |details| details.TiflashRU()),
     };
-
+    if metrics.Bypass() {
+        return None;
+    }
+    SyncRUV2MetricsFromRUDetails(Some(&metrics), Some(&ru_details));
     Some(Arc::new(CursorRUV2Tracker {
-        reporter,
         metrics,
         ru_details,
-        resource_group_name,
-        weights,
-        state: Mutex::new(state),
+        state: Mutex::new(()),
     }))
 }
 
 impl CursorRUV2Tracker {
-    /// 将结果 chunk 单元格数计入 TiDB 侧 RU 指标。
-    fn addResultChunkCells(&self, delta: i64) {
-        if delta <= 0 {
-            return;
-        }
-        if let Some(metrics) = &self.metrics {
-            metrics.AddResultChunkCells(delta);
-        }
-    }
-
-    /// 计算相对上次上报的正增量，并通知资源组；随后更新已上报基线。
+    /// 串行排空并转移游标 fetch 期间新增的响应字节。
     fn reportDelta(&self) {
-        let mut state = self
+        let _guard = self
             .state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-
-        let current_tidb_ru = if let Some(metrics) = &self.metrics {
-            SyncRUV2MetricsFromRUDetails(Some(metrics), self.ru_details.as_deref());
-            metrics.CalculateRUValues(self.weights)
-        } else {
-            0.0
-        };
-        let current_tikv_ruv2 = self
-            .ru_details
-            .as_ref()
-            .map_or(state.reported_tikv_ruv2, |details| details.TiKVRUV2());
-        let current_tiflash_ru = self
-            .ru_details
-            .as_ref()
-            .map_or(state.reported_tiflash_ru, |details| details.TiflashRU());
-
-        // 仅在资源组名非空时上报正增量，避免空组或回退值产生负计费。
-        if let Some(reporter) = self
-            .reporter
-            .as_ref()
-            .filter(|_| !self.resource_group_name.is_empty())
-        {
-            let delta_tikv = current_tikv_ruv2 - state.reported_tikv_ruv2;
-            let delta_tidb = current_tidb_ru - state.reported_tidb_ru;
-            let delta_tiflash = current_tiflash_ru - state.reported_tiflash_ru;
-            if delta_tikv > 0.0 || delta_tidb > 0.0 || delta_tiflash > 0.0 {
-                reporter.ReportRUV2Consumption(
-                    &self.resource_group_name,
-                    delta_tikv.max(0.0),
-                    delta_tidb.max(0.0),
-                    delta_tiflash.max(0.0),
-                );
-            }
-        }
-
-        state.reported_tidb_ru = current_tidb_ru;
-        state.reported_tikv_ruv2 = current_tikv_ruv2;
-        state.reported_tiflash_ru = current_tiflash_ru;
+            .expect("cursor RUv2 tracker lock poisoned");
+        SyncRUV2MetricsFromRUDetails(Some(&self.metrics), Some(&self.ru_details));
     }
 }
 
@@ -218,8 +111,8 @@ pub fn AttachCursorRUV2Tracker(
 }
 
 /// 向结果集报告 chunk 单元格增量并触发 RU 增量上报。
-pub fn ReportCursorRUV2Delta(result_set: &mut dyn ResultSet, result_chunk_cells_delta: i64) {
-    result_set.ReportCursorRUV2Delta(result_chunk_cells_delta);
+pub fn ReportCursorRUV2Delta(result_set: &mut dyn ResultSet) {
+    result_set.ReportCursorRUV2Delta();
 }
 
 /// 由 sqlexec RecordSet 构造服务端 ResultSet。
@@ -409,9 +302,8 @@ impl ResultSet for TidbResultSet {
         self.cursor_ruv2 = tracker;
     }
 
-    fn ReportCursorRUV2Delta(&mut self, result_chunk_cells_delta: i64) {
+    fn ReportCursorRUV2Delta(&mut self) {
         if let Some(tracker) = &self.cursor_ruv2 {
-            tracker.addResultChunkCells(result_chunk_cells_delta);
             tracker.reportDelta();
         }
     }

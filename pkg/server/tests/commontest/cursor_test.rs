@@ -109,7 +109,7 @@ impl astersql_server_internal_resultset::ResultSet for BatchResultSet {
     ) {
     }
 
-    fn ReportCursorRUV2Delta(&mut self, _result_chunk_cells_delta: i64) {}
+    fn ReportCursorRUV2Delta(&mut self) {}
 }
 
 #[test]

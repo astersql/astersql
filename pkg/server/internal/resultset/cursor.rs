@@ -264,10 +264,8 @@ macro_rules! impl_result_set_forwarder {
                 self.result_set.borrow_mut().SetCursorRUV2Tracker(tracker);
             }
 
-            fn ReportCursorRUV2Delta(&mut self, result_chunk_cells_delta: i64) {
-                self.result_set
-                    .borrow_mut()
-                    .ReportCursorRUV2Delta(result_chunk_cells_delta);
+            fn ReportCursorRUV2Delta(&mut self) {
+                self.result_set.borrow_mut().ReportCursorRUV2Delta();
             }
         }
     };
