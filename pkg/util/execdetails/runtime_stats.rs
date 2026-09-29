@@ -84,6 +84,109 @@ pub const TpFKCascadeRuntimeStats: i32 = 18;
 // TpRURuntimeStats is the tp for RURuntimeStats
 /// RURuntimeStats 类型编号。
 pub const TpRURuntimeStats: i32 = 19;
+pub const TpExplainRURuntimeStats: i32 = 20;
+pub const TpHashStateRuntimeStats: i32 = 21;
+pub const TpWriteRuntimeStats: i32 = 22;
+
+#[derive(Default)]
+pub struct WriteRuntimeStats {
+    pub CPUWork: f64,
+}
+
+impl RuntimeStats for WriteRuntimeStats {
+    fn String(&self) -> String {
+        String::new()
+    }
+    fn Merge(&mut self, other: &dyn RuntimeStats) {
+        if let Some(other) = other.as_any().downcast_ref::<Self>() {
+            self.CPUWork += other.CPUWork;
+        }
+    }
+    fn CloneBox(&self) -> Box<dyn RuntimeStats> {
+        Box::new(Self {
+            CPUWork: self.CPUWork,
+        })
+    }
+    fn Tp(&self) -> i32 {
+        TpWriteRuntimeStats
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct HashStateRowsSnapshot {
+    pub Rows: i64,
+}
+impl HashStateRowsSnapshot {
+    pub fn Invalid(&self) -> bool {
+        self.Rows < 0
+    }
+}
+
+#[derive(Default)]
+pub struct HashStateRuntimeStats {
+    rows: AtomicI64,
+}
+impl HashStateRuntimeStats {
+    pub fn AddRows(&self, rows: u64) {
+        let mut current = self.rows.load(Ordering::Relaxed);
+        loop {
+            if current < 0 {
+                return;
+            }
+            let next = i64::try_from(rows)
+                .ok()
+                .and_then(|rows| current.checked_add(rows))
+                .unwrap_or(-1);
+            match self
+                .rows
+                .compare_exchange(current, next, Ordering::Relaxed, Ordering::Relaxed)
+            {
+                Ok(_) => return,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+    pub fn HashStateRowsSnapshot(&self) -> HashStateRowsSnapshot {
+        HashStateRowsSnapshot {
+            Rows: self.rows.load(Ordering::Relaxed),
+        }
+    }
+    pub fn Clone(&self) -> Self {
+        Self {
+            rows: AtomicI64::new(self.rows.load(Ordering::Relaxed)),
+        }
+    }
+    pub fn String(&self) -> String {
+        String::new()
+    }
+}
+impl RuntimeStats for HashStateRuntimeStats {
+    fn String(&self) -> String {
+        String::new()
+    }
+    fn Merge(&mut self, other: &dyn RuntimeStats) {
+        if let Some(other) = other.as_any().downcast_ref::<Self>() {
+            let rows = other.HashStateRowsSnapshot().Rows;
+            if rows < 0 {
+                self.rows.store(-1, Ordering::Relaxed);
+            } else {
+                self.AddRows(rows as u64);
+            }
+        }
+    }
+    fn CloneBox(&self) -> Box<dyn RuntimeStats> {
+        Box::new(self.Clone())
+    }
+    fn Tp(&self) -> i32 {
+        TpHashStateRuntimeStats
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
 
 // RuntimeStats is used to express the executor runtime information.
 // Rust 额外加入 as_any 以表达 Go type assertion；后续真正编译时可替换为 enum 或 trait object downcast。
@@ -240,7 +343,10 @@ pub struct CopRuntimeStats {
     pub stats: basicCopRuntimeStats,
     pub scanDetail: util::ScanDetail,
     pub timeDetail: util::TimeDetail,
+    pub readPoolTaskDetails: Option<util::PoolTaskDetails>,
     pub storeType: kv::StoreType,
+    summaryRows: i64,
+    summaryCount: u64,
 }
 
 // zeroTimeDetail 对应 Go 的包级零值。
@@ -251,6 +357,12 @@ pub static zeroTimeDetail: util::TimeDetail = util::TimeDetail {
 };
 
 impl CopRuntimeStats {
+    fn recordSummaryEvidence(&mut self, summary: &tipb::ExecutorExecutionSummary) {
+        self.summaryRows = self
+            .summaryRows
+            .wrapping_add(summary.NumProducedRows.unwrap_or_default() as i64);
+        self.summaryCount = self.summaryCount.wrapping_add(1);
+    }
     // GetActRows return total rows of CopRuntimeStats.
     pub fn GetActRows(&self) -> i64 {
         self.stats.rows
@@ -342,6 +454,14 @@ impl CopRuntimeStats {
                     buf.push_str(", ");
                     buf.push_str(&timeDetailStr);
                 }
+            }
+            if let Some(pool) = self
+                .readPoolTaskDetails
+                .as_ref()
+                .filter(|pool| !pool.Empty())
+            {
+                buf.push_str(", read_pool:");
+                buf.push_str(&pool.String());
             }
         }
         buf
@@ -510,6 +630,8 @@ pub struct RuntimeStatsColl {
     /// Stats registered through a shared Arc are merged into rootStats on owned access.
     sharedRootStats: Mutex<HashMap<i32, Vec<Box<dyn RuntimeStats>>>>,
     copStats: HashMap<i32, CopRuntimeStats>,
+    analyzeScanBytes: HashMap<i32, f64>,
+    copResponseSummaryExpected: HashMap<i32, (u64, bool)>,
     stmtCopStats: StmtCopRuntimeStats,
     mu: Mutex<()>,
 }
@@ -530,6 +652,8 @@ pub fn NewRuntimeStatsColl(reuse: Option<RuntimeStatsColl>) -> RuntimeStatsColl 
                 .expect("shared runtime stats lock poisoned")
                 .clear();
             reuse.copStats.clear();
+            reuse.analyzeScanBytes.clear();
+            reuse.copResponseSummaryExpected.clear();
         }
         return reuse;
     }
@@ -537,8 +661,63 @@ pub fn NewRuntimeStatsColl(reuse: Option<RuntimeStatsColl>) -> RuntimeStatsColl 
         rootStats: HashMap::new(),
         sharedRootStats: Mutex::new(HashMap::new()),
         copStats: HashMap::new(),
+        analyzeScanBytes: HashMap::new(),
+        copResponseSummaryExpected: HashMap::new(),
         stmtCopStats: StmtCopRuntimeStats::default(),
         mu: Mutex::new(()),
+    }
+}
+
+pub fn EstimateScanBytes(totalKeys: i64, processedKeys: i64, processedBytes: i64) -> (f64, bool) {
+    if totalKeys < 0 || processedKeys < 0 || processedBytes < 0 {
+        return (0.0, false);
+    }
+    if processedKeys == 0 {
+        return (0.0, processedBytes == 0);
+    }
+    if totalKeys == 0 || processedBytes == 0 {
+        return (0.0, false);
+    }
+    let bytes = processedBytes as f64 / processedKeys as f64 * totalKeys as f64;
+    if !bytes.is_finite() || bytes < 0.0 {
+        (0.0, false)
+    } else {
+        (bytes, true)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RootRowsSnapshot {
+    pub Rows: i64,
+    observed: bool,
+    invalid: bool,
+}
+impl RootRowsSnapshot {
+    pub fn Observed(&self) -> bool {
+        !self.Invalid() && self.observed
+    }
+    pub fn Invalid(&self) -> bool {
+        self.invalid || self.Rows < 0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CopRowsSnapshot {
+    pub Rows: i64,
+    pub ObservedSummaries: u64,
+    pub ExpectedSummaries: u64,
+    pub Invalid: bool,
+}
+impl CopRowsSnapshot {
+    pub fn Observed(&self) -> bool {
+        !self.Invalid
+            && self.Rows >= 0
+            && self.ExpectedSummaries > 0
+            && self.ObservedSummaries > 0
+            && self.ObservedSummaries <= self.ExpectedSummaries
+    }
+    pub fn Complete(&self) -> bool {
+        self.Observed() && self.ObservedSummaries == self.ExpectedSummaries
     }
 }
 
@@ -708,6 +887,100 @@ impl RuntimeStatsColl {
         }
         (0, 0)
     }
+
+    pub fn GetRootStatsIfExists(&self, planID: i32) -> Option<&RootRuntimeStats> {
+        self.rootStats.get(&planID)
+    }
+
+    pub fn GetRootRowsSnapshot(&self, planID: i32) -> RootRowsSnapshot {
+        let Some(basic) = self
+            .rootStats
+            .get(&planID)
+            .and_then(|root| root.basic.as_ref())
+        else {
+            return RootRowsSnapshot::default();
+        };
+        let rows = basic.rows.load(Ordering::Relaxed);
+        let records = basic.loopCount.load(Ordering::Relaxed);
+        RootRowsSnapshot {
+            Rows: rows,
+            observed: records > 0,
+            invalid: rows < 0 || records < 0,
+        }
+    }
+
+    pub fn RecordExpectedCopResponseSummaries(&mut self, planIDs: &[i32]) {
+        for &planID in planIDs.iter().filter(|&&id| id > 0) {
+            let entry = self.copResponseSummaryExpected.entry(planID).or_default();
+            entry.0 = entry.0.wrapping_add(1);
+        }
+    }
+
+    pub fn InvalidateCopResponseSummaries(&mut self, planIDs: &[i32]) {
+        for &planID in planIDs.iter().filter(|&&id| id > 0) {
+            self.copResponseSummaryExpected.entry(planID).or_default().1 = true;
+        }
+    }
+
+    pub fn GetCopRowsSnapshot(&self, planID: i32) -> CopRowsSnapshot {
+        let (expected, invalid) = self
+            .copResponseSummaryExpected
+            .get(&planID)
+            .copied()
+            .unwrap_or_default();
+        let (rows, observed) = self
+            .copStats
+            .get(&planID)
+            .map(|stats| (stats.summaryRows, stats.summaryCount))
+            .unwrap_or_default();
+        CopRowsSnapshot {
+            Rows: rows,
+            ObservedSummaries: observed,
+            ExpectedSummaries: expected,
+            Invalid: invalid || observed > expected,
+        }
+    }
+
+    pub fn GetRootWriteCPUWork(&self, planID: i32) -> Option<f64> {
+        self.rootStats
+            .get(&planID)?
+            .groupRss
+            .iter()
+            .find_map(|stat| {
+                stat.as_any()
+                    .downcast_ref::<WriteRuntimeStats>()
+                    .map(|stat| stat.CPUWork)
+            })
+    }
+
+    pub fn GetRootHashStateRowsSnapshot(&self, planID: i32) -> Option<HashStateRowsSnapshot> {
+        self.rootStats
+            .get(&planID)?
+            .groupRss
+            .iter()
+            .find_map(|stat| {
+                stat.as_any()
+                    .downcast_ref::<HashStateRuntimeStats>()
+                    .map(|stat| stat.HashStateRowsSnapshot())
+            })
+    }
+
+    pub fn GetCopScanDetail(&self, planID: i32) -> Option<util::ScanDetail> {
+        self.copStats
+            .get(&planID)
+            .map(|stats| stats.scanDetail.clone())
+    }
+
+    pub fn RecordAnalyzeScanBytes(&mut self, planID: i32, scanBytes: f64) {
+        if planID <= 0 || scanBytes < 0.0 || !scanBytes.is_finite() {
+            return;
+        }
+        *self.analyzeScanBytes.entry(planID).or_default() += scanBytes;
+    }
+
+    pub fn GetAnalyzeScanBytes(&self, planID: i32) -> Option<f64> {
+        self.analyzeScanBytes.get(&planID).copied()
+    }
 }
 
 // getPlanIDFromExecutionSummary 对应 Go 从 executor id 尾段解析 planID。
@@ -732,6 +1005,7 @@ impl RuntimeStatsColl {
         storeType: kv::StoreType,
         scan: Option<&util::ScanDetail>,
         time: util::TimeDetail,
+        readPoolTaskDetails: Option<&util::PoolTaskDetails>,
         summary: Option<&tipb::ExecutorExecutionSummary>,
     ) -> i32 {
         let _guard = self.mu.lock().expect("runtime stats coll lock poisoned");
@@ -752,6 +1026,16 @@ impl RuntimeStatsColl {
             self.copStats.insert(planID, stats);
         }
 
+        if let Some(details) = readPoolTaskDetails.filter(|details| !details.Empty()) {
+            if let Some(copStats) = self.copStats.get_mut(&planID) {
+                if let Some(existing) = copStats.readPoolTaskDetails.as_mut() {
+                    existing.Merge(details);
+                } else {
+                    copStats.readPoolTaskDetails = Some(details.Clone());
+                }
+            }
+        }
+
         if let Some(summary) = summary {
             // for TiFlash cop response, ExecutorExecutionSummary contains executor id, so if there is a valid executor id in
             // summary, use it overwrite the planID
@@ -766,6 +1050,7 @@ impl RuntimeStatsColl {
                     });
             }
             if let Some(copStats) = self.copStats.get_mut(&planID) {
+                copStats.recordSummaryEvidence(summary);
                 copStats.stats.mergeExecSummary(summary);
             }
             self.stmtCopStats.mergeExecSummary(summary);
@@ -793,6 +1078,7 @@ impl RuntimeStatsColl {
                 storeType,
                 ..Default::default()
             });
+        copStats.recordSummaryEvidence(summary);
         copStats.stats.mergeExecSummary(summary);
         self.stmtCopStats.mergeExecSummary(summary);
         planID

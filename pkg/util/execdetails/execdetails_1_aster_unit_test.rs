@@ -141,7 +141,10 @@ fn runtime_stats_coll_does_not_double_count_the_first_cop_detail() {
         ProcessTime: Duration::from_millis(11),
         WaitTime: Duration::from_millis(3),
     };
-    assert_eq!(coll.RecordCopStats(8, kv::TiKV, Some(&scan), time, None), 8);
+    assert_eq!(
+        coll.RecordCopStats(8, kv::TiKV, Some(&scan), time, None, None),
+        8
+    );
     let stats = coll.GetCopStats(8).expect("cop stats created");
     assert_eq!(stats.scanDetail, scan);
     assert_eq!(stats.timeDetail, time);

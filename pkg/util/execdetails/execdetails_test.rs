@@ -23,6 +23,164 @@ use std::sync::atomic::{AtomicI32, AtomicI64};
 use std::time::Duration;
 
 #[test]
+fn go_merge_14_scan_and_cop_summary_snapshots() {
+    let mut coll = exec::NewRuntimeStatsColl(None);
+    let scan = exec::util::ScanDetail {
+        TotalKeys: 15,
+        ..Default::default()
+    };
+    coll.RecordCopStats(
+        1,
+        exec::kv::TiKV,
+        Some(&scan),
+        Default::default(),
+        None,
+        None,
+    );
+    let mut copy = coll.GetCopScanDetail(1).unwrap();
+    copy.TotalKeys = 0;
+    assert_eq!(coll.GetCopScanDetail(1).unwrap().TotalKeys, 15);
+    assert!(coll.GetCopScanDetail(999).is_none());
+    coll.RecordExpectedCopResponseSummaries(&[2]);
+    coll.RecordExpectedCopResponseSummaries(&[2]);
+    assert!(!coll.GetCopRowsSnapshot(2).Observed());
+    coll.RecordOneCopTask(2, exec::kv::TiKV, &cop_summary(1, 0, 1));
+    let first = coll.GetCopRowsSnapshot(2);
+    assert_eq!((first.ObservedSummaries, first.ExpectedSummaries), (1, 2));
+    assert!(first.Observed());
+    assert!(!first.Complete());
+    coll.RecordOneCopTask(2, exec::kv::TiKV, &cop_summary(1, 0, 1));
+    assert!(coll.GetCopRowsSnapshot(2).Complete());
+    coll.RecordExpectedCopResponseSummaries(&[2]);
+    coll.RecordOneCopTask(2, exec::kv::TiKV, &cop_summary(1, 7, 1));
+    assert_eq!(coll.GetCopRowsSnapshot(2).Rows, 7);
+    assert!(coll.GetCopRowsSnapshot(2).Complete());
+}
+
+#[test]
+fn go_merge_14_analyze_scan_estimates_and_root_rows() {
+    assert_eq!(exec::EstimateScanBytes(10, 1, 100), (1000.0, true));
+    assert_eq!(exec::EstimateScanBytes(10, 0, 0), (0.0, true));
+    assert_eq!(exec::EstimateScanBytes(10, 0, 1), (0.0, false));
+    assert_eq!(exec::EstimateScanBytes(-1, 1, 1), (0.0, false));
+    assert_eq!(exec::EstimateScanBytes(0, 1, 1), (0.0, false));
+    assert_eq!(exec::EstimateScanBytes(1, 1, 0), (0.0, false));
+    let mut coll = exec::NewRuntimeStatsColl(None);
+    coll.RecordAnalyzeScanBytes(1, 1000.0);
+    coll.RecordAnalyzeScanBytes(1, 9.0);
+    assert_eq!(coll.GetAnalyzeScanBytes(1), Some(1009.0));
+    assert_eq!(coll.GetAnalyzeScanBytes(2), None);
+    coll.RecordAnalyzeScanBytes(1, f64::NAN);
+    coll.RecordAnalyzeScanBytes(1, f64::INFINITY);
+    coll.RecordAnalyzeScanBytes(0, 5.0);
+    assert_eq!(coll.GetAnalyzeScanBytes(1), Some(1009.0));
+    assert_eq!(coll.GetAnalyzeScanBytes(0), None);
+    assert!(!coll.GetRootRowsSnapshot(3).Observed());
+    coll.GetBasicRuntimeStats(3, true).unwrap().SetRowNum(0);
+    assert!(!coll.GetRootRowsSnapshot(3).Observed());
+    coll.GetBasicRuntimeStats(3, false)
+        .unwrap()
+        .Record(Duration::ZERO, 0);
+    assert!(coll.GetRootRowsSnapshot(3).Observed());
+    assert_eq!(coll.GetRootRowsSnapshot(3).Rows, 0);
+    assert!(coll.GetRootStatsIfExists(4).is_none());
+    assert!(!coll.ExistsRootStats(4));
+    coll.GetBasicRuntimeStats(3, false).unwrap().SetRowNum(-1);
+    assert!(coll.GetRootRowsSnapshot(3).Invalid());
+    assert!(!coll.GetRootRowsSnapshot(3).Observed());
+    let reused = exec::NewRuntimeStatsColl(Some(coll));
+    assert_eq!(reused.GetAnalyzeScanBytes(1), None);
+    assert!(!reused.GetRootRowsSnapshot(3).Observed());
+}
+
+#[test]
+fn go_merge_14_typed_root_stats() {
+    let mut coll = exec::NewRuntimeStatsColl(None);
+    assert_eq!(coll.GetRootWriteCPUWork(1), None);
+    coll.RegisterStats(1, Box::new(exec::WriteRuntimeStats { CPUWork: 6.0 }));
+    coll.RegisterStats(1, Box::new(exec::WriteRuntimeStats { CPUWork: 3.0 }));
+    assert_eq!(coll.GetRootWriteCPUWork(1), Some(9.0));
+    let state = exec::HashStateRuntimeStats::default();
+    state.AddRows(5);
+    let copy = state.Clone();
+    copy.AddRows(2);
+    assert_eq!(state.HashStateRowsSnapshot().Rows, 5);
+    assert_eq!(copy.HashStateRowsSnapshot().Rows, 7);
+    copy.AddRows(1u64 << 63);
+    assert!(copy.HashStateRowsSnapshot().Invalid());
+    assert_eq!(copy.String(), "");
+}
+
+#[test]
+fn go_merge_14_cop_read_pool_and_invalid_coverage() {
+    let mut coll = exec::NewRuntimeStatsColl(None);
+    let pool = exec::util::PoolTaskDetails {
+        TaskCount: 1,
+        PollCount: 1,
+        MaxPollCount: 1,
+        MinPollCount: 1,
+        DispatchCount: 1,
+        MaxDispatchCount: 1,
+        MinDispatchCount: 1,
+        ..Default::default()
+    };
+    coll.RecordCopStats(
+        1,
+        exec::kv::TiKV,
+        None,
+        Default::default(),
+        Some(&pool),
+        None,
+    );
+    let mut stats = coll.GetCopStats(1).unwrap().clone();
+    assert!(stats.String().contains("read_pool:{tasks:1,"));
+    assert!(!stats.String().contains("read_pool_task:"));
+    coll.RecordExpectedCopResponseSummaries(&[2, 0, -1]);
+    coll.InvalidateCopResponseSummaries(&[2]);
+    coll.RecordOneCopTask(2, exec::kv::TiKV, &cop_summary(1, 0, 1));
+    let snapshot = coll.GetCopRowsSnapshot(2);
+    assert!(snapshot.Invalid);
+    assert!(!snapshot.Observed());
+    assert!(!snapshot.Complete());
+    assert_eq!(coll.GetCopRowsSnapshot(0).ExpectedSummaries, 0);
+}
+
+#[test]
+fn go_merge_14_hash_state_merge_and_overflow() {
+    let state = exec::HashStateRuntimeStats::default();
+    let other = exec::HashStateRuntimeStats::default();
+    other.AddRows(3);
+    other.AddRows(2);
+    let mut merged = state.Clone();
+    exec::RuntimeStats::Merge(&mut merged, &other);
+    assert_eq!(merged.HashStateRowsSnapshot().Rows, 5);
+    assert_eq!(state.HashStateRowsSnapshot().Rows, 0);
+    exec::RuntimeStats::Merge(&mut merged, &exec::HashStateRuntimeStats::default());
+    assert_eq!(merged.HashStateRowsSnapshot().Rows, 5);
+    let concurrent = std::sync::Arc::new(exec::HashStateRuntimeStats::default());
+    let workers: Vec<_> = (0..32)
+        .map(|_| {
+            let shared = concurrent.clone();
+            std::thread::spawn(move || shared.AddRows(1))
+        })
+        .collect();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    assert_eq!(concurrent.HashStateRowsSnapshot().Rows, 32);
+    concurrent.AddRows(1u64 << 63);
+    assert!(concurrent.HashStateRowsSnapshot().Invalid());
+    exec::RuntimeStats::Merge(&mut merged, concurrent.as_ref());
+    exec::RuntimeStats::Merge(&mut merged, &other);
+    assert!(merged.HashStateRowsSnapshot().Invalid());
+    let max = exec::HashStateRuntimeStats::default();
+    max.AddRows(i64::MAX as u64);
+    assert!(!max.HashStateRowsSnapshot().Invalid());
+    max.AddRows(1);
+    assert!(max.HashStateRowsSnapshot().Invalid());
+}
+
+#[test]
 fn go_merge_11_read_pool_merge_and_scan_stats() {
     let summary = exec::SyncExecDetails::default();
     summary.MergeReadPoolTaskDetails(None);
@@ -299,6 +457,7 @@ fn test_cop_runtime_stats() {
             ..Default::default()
         }),
         exec::util::TimeDetail::default(),
+        None,
         None,
     );
     assert!(stats.ExistsCopStats(1));
@@ -916,6 +1075,7 @@ fn test_cop_runtime_stats2() {
         Some(&scan),
         exec::util::TimeDetail::default(),
         None,
+        None,
     );
     let time = exec::util::TimeDetail {
         ProcessTime: Duration::from_millis(10),
@@ -923,7 +1083,7 @@ fn test_cop_runtime_stats2() {
     };
     for _ in 0..1005 {
         let summary = cop_summary(2, 2, 2);
-        stats.RecordCopStats(1, exec::kv::TiKV, Some(&scan), time, Some(&summary));
+        stats.RecordCopStats(1, exec::kv::TiKV, Some(&scan), time, None, Some(&summary));
     }
     assert_eq!(stats.GetCopCountAndRows(1), (1005, 2010));
     let mut cop = stats.GetCopStats(1).cloned().unwrap();
