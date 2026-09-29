@@ -141,16 +141,12 @@ impl MemoryLimitTuner {
     pub fn EnableAdjustMemoryLimit(&self) {
         self.adjustDisabled.fetch_sub(1, Ordering::SeqCst);
         self.UpdateMemoryLimit();
-        resetGlobalArbitratorLimit();
     }
 
     /// 核心调谐：若 `heap_inuse * (1+GOGC/100)` 超过当前 limit，进入两阶段调整。
     pub fn tuning(&self) {
         let _guard = self.tuningLock.lock().expect("memory tuner lock poisoned");
-        // 未配置有效 limit，或全局内存仲裁接管时，跳过本地调谐。
-        if !self.isValidValueSet.load(Ordering::SeqCst)
-            || global_arbitrator::UsingGlobalMemArbitration()
-        {
+        if !self.isValidValueSet.load(Ordering::SeqCst) {
             return;
         }
 
@@ -206,7 +202,6 @@ impl MemoryLimitTuner {
             tuner
                 .adjustPercentageInProgress
                 .store(false, Ordering::SeqCst);
-            resetGlobalArbitratorLimit();
         });
     }
 
@@ -255,9 +250,6 @@ impl MemoryLimitTuner {
     /// 按当前 percentage 刷新 memory limit；调整窗口内若参数未变则保留 fallback。
     pub fn UpdateMemoryLimit(&self) {
         let _guard = self.tuningLock.lock().expect("memory tuner lock poisoned");
-        if global_arbitrator::UsingGlobalMemArbitration() {
-            return;
-        }
         // 调整进行中且服务器上限/比例未变：不覆盖临时 fallback。
         if self.adjustPercentageInProgress.load(Ordering::SeqCst)
             && self.serverMemLimitBeforeAdjust.load(Ordering::SeqCst)
@@ -282,6 +274,11 @@ impl MemoryLimitTuner {
         if self.adjustDisabled.load(Ordering::SeqCst) > 0 {
             return initGOMemoryLimitValue.load(Ordering::SeqCst);
         }
+        let percentage = if global_arbitrator::UsingGlobalMemArbitration() {
+            percentage.min(1.0)
+        } else {
+            percentage
+        };
         let memory_limit = (tracker::ServerMemoryLimit.Load() as f64 * percentage) as i64;
         if memory_limit == 0 {
             i64::MAX
@@ -306,10 +303,9 @@ impl MemoryLimitTuner {
     }
 }
 
-/// 进程级单例调谐器；注册全局内存仲裁回调以便仲裁开启时同步 limit。
+/// 进程级单例调谐器。
 pub static GlobalMemoryLimitTuner: LazyLock<Arc<MemoryLimitTuner>> = LazyLock::new(|| {
     let tuner = MemoryLimitTuner::new();
-    global_arbitrator::RegisterCallbackForGlobalMemArbitrator(resetGlobalArbitratorLimit);
     tuner
 });
 
@@ -323,15 +319,4 @@ pub fn WaitMemoryLimitTunerExitInTest() {
 /// 强制初始化全局 `GlobalMemoryLimitTuner`。
 pub fn init() {
     let _ = LazyLock::force(&GlobalMemoryLimitTuner);
-}
-
-/// 若启用全局内存仲裁，将 runtime limit 同步为 `ServerMemoryLimit`。
-pub fn resetGlobalArbitratorLimit() {
-    let _guard = GlobalMemoryLimitTuner
-        .tuningLock
-        .lock()
-        .expect("memory tuner lock poisoned");
-    if global_arbitrator::UsingGlobalMemArbitration() {
-        setMemoryLimit(tracker::ServerMemoryLimit.Load() as i64);
-    }
 }

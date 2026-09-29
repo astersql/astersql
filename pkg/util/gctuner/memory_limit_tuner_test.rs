@@ -24,6 +24,10 @@ use crate::memory_limit_tuner::{
     initGOMemoryLimitValue,
 };
 use serial_test::serial;
+use task_memory::global_arbitrator::{
+    CleanupGlobalMemArbitratorForTest, SetGlobalMemArbitratorWorkMode,
+    SetupGlobalMemArbitratorForTest,
+};
 use task_memory::tracker::{MemoryLimitGCTotal, ServerMemoryLimit, TriggerMemoryLimitGC};
 
 /// 在超时内轮询直到条件为真，否则断言失败。
@@ -185,6 +189,36 @@ fn test_set_memory_limit() {
     tuner.UpdateMemoryLimit();
     assert_eq!((1_i64 << 30) * 80 / 100, currentMemoryLimit());
     tuner.Stop();
+}
+
+#[test]
+#[serial]
+fn go_merge_22_global_arbitration_caps_percentage() {
+    let original = ServerMemoryLimit.Load();
+    let directory =
+        std::env::temp_dir().join(format!("astersql-go-merge-22-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    SetupGlobalMemArbitratorForTest(directory.display().to_string());
+    assert!(SetGlobalMemArbitratorWorkMode("priority".to_owned()));
+    let tuner = MemoryLimitTuner::withResetInterval(Duration::from_millis(10));
+    ServerMemoryLimit.Store(1 << 30);
+    assert_eq!(tuner.calcMemoryLimit(0.95), (1_i64 << 30) * 95 / 100);
+    assert_eq!(tuner.calcMemoryLimit(1.1), 1_i64 << 30);
+    tuner.SetPercentage(1.1);
+    tuner.UpdateMemoryLimit();
+    assert_eq!(currentMemoryLimit(), 1_i64 << 30);
+    tuner.SetPercentage(0.8);
+    tuner.UpdateMemoryLimit();
+    assert_eq!(currentMemoryLimit(), (1_i64 << 30) * 80 / 100);
+    ServerMemoryLimit.Store(1);
+    tuner.SetPercentage(1.0);
+    tuner.UpdateMemoryLimit();
+    assert!(tuner.runFinalizer());
+    assert!(tuner.nextGCTriggeredByMemoryLimit());
+    tuner.Stop();
+    CleanupGlobalMemArbitratorForTest();
+    ServerMemoryLimit.Store(original);
+    let _ = std::fs::remove_dir_all(directory);
 }
 
 /// `Start` 必须接入生产运行时驱动；不手动调用 `runFinalizer` 也应完成两阶段判定。

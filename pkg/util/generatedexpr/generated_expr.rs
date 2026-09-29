@@ -19,7 +19,7 @@
 // `SELECT` 再经 TiDB 解析器取出字段表达式；`SimpleResolveName` 对照
 // 表元数据校验表达式中出现的列名（大小写不敏感，经 `CIStr.L`）。
 
-use crate::{ast, charset, errors, model, parser, parserutil};
+use crate::{ast, charset, errors, model, parser, parser_core::mysql, parserutil};
 
 /// TiDB 语法错误文案前缀，与 Go 侧 `parser` 报错包装一致。
 const SYNTAX_ERROR_PREFIX: &str = "You have an error in your SQL syntax; check the manual that corresponds to your TiDB version for the right syntax to use";
@@ -217,11 +217,29 @@ fn syntax_error(error: errors::Error) -> errors::Error {
 /// Parses an expression through the TiDB parser, matching the Go select-wrapper path.
 /// 将表达式包进 `select <expr>`，用默认字符集/排序规则解析，再取出唯一投影字段。
 pub fn ParseExpression(expression: &str) -> Result<ast::ExprNode, errors::Error> {
+    parse_expression(expression, None)
+}
+
+/// Parses metadata expressions under the SQL mode used when they were defined.
+pub fn ParseExpressionWithSQLMode(
+    expression: &str,
+    sql_mode: mysql::SQLMode,
+) -> Result<ast::ExprNode, errors::Error> {
+    parse_expression(expression, Some(sql_mode))
+}
+
+fn parse_expression(
+    expression: &str,
+    sql_mode: Option<mysql::SQLMode>,
+) -> Result<ast::ExprNode, errors::Error> {
     let sql = format!("select {expression}");
     let (charset, collation) = charset::GetDefaultCharsetAndCollate();
     let charset = parser::CharsetConnection(charset);
     let collation = parser::CollationConnection(collation);
     let mut parser = parserutil::GetParser();
+    if let Some(mode) = sql_mode {
+        parser.SetSQLMode(mode);
+    }
     let parsed = parser.ParseSQL(&sql, &[&charset, &collation]);
     parserutil::DestroyParser(parser);
 

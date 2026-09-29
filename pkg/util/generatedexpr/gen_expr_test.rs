@@ -18,7 +18,7 @@
 // 对应 Go `TestParseExpression`：经 `ParseExpression` 包装 SELECT 解析
 // `json_extract` 调用，并断言函数名小写形式（`CIStr.L`）。
 
-use crate::{ParseExpression, ast};
+use crate::{ParseExpression, ParseExpressionWithSQLMode, ast, parser_core::mysql};
 
 // test_parse_expression 对应 Go 的 TestParseExpression：解析 json_extract 表达式并检查函数名小写形式。
 /// 解析 `json_extract(a, '$.a')`，确认 AST 为函数调用且 `FnName.L` 为小写。
@@ -31,4 +31,29 @@ fn test_parse_expression() {
         panic!("parsed node should be FuncCallExpr");
     };
     assert_eq!("json_extract", FnName.L);
+}
+
+#[test]
+fn go_merge_22_sql_mode_changes_expression_ast() {
+    crate::main_test::setup_for_common_test();
+    let concat = ParseExpressionWithSQLMode("1 || 2", mysql::ModePipesAsConcat).unwrap();
+    let ast::ExprKind::Function { FnName, .. } = concat.Kind else {
+        panic!("expected concat function")
+    };
+    assert_eq!(FnName.L, "concat");
+    let logical = ParseExpressionWithSQLMode("1 || 2", mysql::SQLMode::default()).unwrap();
+    let ast::ExprKind::Binary { Op, .. } = logical.Kind else {
+        panic!("expected logical or")
+    };
+    assert!(Op.eq_ignore_ascii_case("or"));
+    let escaped = ParseExpressionWithSQLMode("'\\n'", mysql::SQLMode::default()).unwrap();
+    let literal = ParseExpressionWithSQLMode("'\\n'", mysql::ModeNoBackslashEscapes).unwrap();
+    let ast::ExprKind::Value(escaped) = escaped.Kind else {
+        panic!("expected string literal")
+    };
+    let ast::ExprKind::Value(literal) = literal.Kind else {
+        panic!("expected string literal")
+    };
+    assert_eq!(escaped.text(), "\n");
+    assert_eq!(literal.text(), "\\n");
 }

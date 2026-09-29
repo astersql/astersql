@@ -43,3 +43,7 @@ mod tiflash_stats_test;
 #[cfg(test)]
 #[path = "go_merge_20_test.rs"]
 mod go_merge_20_test;
+
+#[cfg(test)]
+#[path = "tiflash_execution_units_test.rs"]
+mod tiflash_execution_units_test;

@@ -632,6 +632,7 @@ pub struct RuntimeStatsColl {
     copStats: HashMap<i32, CopRuntimeStats>,
     analyzeScanBytes: HashMap<i32, f64>,
     copResponseSummaryExpected: HashMap<i32, (u64, bool)>,
+    tiFlashExecutionUnits: Mutex<HashMap<i32, TiFlashExecutionUnits>>,
     stmtCopStats: StmtCopRuntimeStats,
     mu: Mutex<()>,
 }
@@ -654,6 +655,11 @@ pub fn NewRuntimeStatsColl(reuse: Option<RuntimeStatsColl>) -> RuntimeStatsColl 
             reuse.copStats.clear();
             reuse.analyzeScanBytes.clear();
             reuse.copResponseSummaryExpected.clear();
+            reuse
+                .tiFlashExecutionUnits
+                .lock()
+                .expect("TiFlash units lock poisoned")
+                .clear();
         }
         return reuse;
     }
@@ -663,6 +669,7 @@ pub fn NewRuntimeStatsColl(reuse: Option<RuntimeStatsColl>) -> RuntimeStatsColl 
         copStats: HashMap::new(),
         analyzeScanBytes: HashMap::new(),
         copResponseSummaryExpected: HashMap::new(),
+        tiFlashExecutionUnits: Mutex::new(HashMap::new()),
         stmtCopStats: StmtCopRuntimeStats::default(),
         mu: Mutex::new(()),
     }

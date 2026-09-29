@@ -661,13 +661,35 @@ pub mod util {
 /// tipb 执行摘要相关占位类型（group1 内简化版）。
 pub mod tipb {
     #[derive(Clone, Debug, Default)]
-    pub struct TiFlashScanContext;
+    pub struct TiFlashScanContext {
+        pub UserReadBytes: Option<u64>,
+    }
     #[derive(Clone, Debug, Default)]
-    pub struct ColumnarScanContext;
+    pub struct ColumnarScanContext {
+        pub UserReadBytes: Option<u64>,
+        pub MvccInputBytes: Option<u64>,
+    }
     #[derive(Clone, Debug, Default)]
     pub struct TiFlashWaitSummary;
     #[derive(Clone, Debug, Default)]
-    pub struct TiFlashNetworkSummary;
+    pub struct TiFlashNetworkSummary {
+        pub InnerZoneSendBytes: Option<u64>,
+        pub InterZoneSendBytes: Option<u64>,
+    }
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub enum TiFlashHashTableSizeKind {
+        #[default]
+        DistinctKeyCount,
+        BuildRowCount,
+        Unknown(i32),
+    }
+
+    #[derive(Clone, Debug, Default)]
+    pub struct TiFlashHashTableStats {
+        pub Size_: Option<u64>,
+        pub SizeKind: TiFlashHashTableSizeKind,
+    }
 
     #[derive(Clone, Debug, Default)]
     /// 单个执行器的执行摘要字段。
@@ -681,6 +703,7 @@ pub mod tipb {
         pub ColumnarScanContext: Option<ColumnarScanContext>,
         pub TiflashWaitSummary: Option<TiFlashWaitSummary>,
         pub TiflashNetworkSummary: Option<TiFlashNetworkSummary>,
+        pub TiflashHashTableStats: Option<TiFlashHashTableStats>,
     }
 
     impl ExecutorExecutionSummary {
@@ -701,6 +724,9 @@ pub mod tipb {
         }
         pub fn GetTiflashNetworkSummary(&self) -> Option<&TiFlashNetworkSummary> {
             self.TiflashNetworkSummary.as_ref()
+        }
+        pub fn GetTiflashHashTableStats(&self) -> Option<&TiFlashHashTableStats> {
+            self.TiflashHashTableStats.as_ref()
         }
     }
 }
@@ -1038,6 +1064,7 @@ pub use execdetails_impl::*;
 mod runtime_stats_impl {
     use crate::*;
     include!("../../runtime_stats.rs");
+    include!("../../tiflash_execution_units.rs");
 }
 pub use runtime_stats_impl::*;
 
