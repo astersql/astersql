@@ -162,10 +162,11 @@ fn root_pool_digest_await_free_and_runtime_paths_match_go() {
     });
     assert!(m.AtMemRisk());
     assert!(m.AtOOMRisk());
+    assert_eq!(await_free.capacity(), 0);
 
     assert!(m.ResetRootPoolByID(42, 2_000, true));
     assert!(m.ConsumeQuotaFromAwaitFreePool(42, -128));
-    assert_eq!(m.ShrinkAwaitFreePool(0), 128);
+    assert_eq!(m.ShrinkAwaitFreePool(0), 0);
     assert_eq!(m.Allocated(), 0);
     assert!(m.RemoveRootPoolByID(42));
     assert_eq!(m.RootPoolNum(), 0);

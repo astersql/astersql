@@ -26,6 +26,16 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
+#[test]
+fn go_merge_28_approx_allocated_reports_current_pool_usage() {
+    let mut pool = NewResourcePoolDefault("profile".into(), 1);
+    pool.Start(None, 100);
+    let mut budget = pool.CreateBudget();
+    budget.Reserve(25).unwrap();
+    assert_eq!(pool.ApproxAllocated(), pool.Allocated());
+    pool.Stop();
+}
+
 /// 将可变引用转为 PoolLink（NonNull），供 Start 挂父指针。
 fn pool_link(pool: &mut ResourcePool) -> Option<NonNull<ResourcePool>> {
     Some(NonNull::from(pool))

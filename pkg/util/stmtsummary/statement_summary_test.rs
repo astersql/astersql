@@ -67,6 +67,140 @@ fn generate_any_exec_info() -> StmtExecInfo {
     exec_info("digest", "user1", 100)
 }
 
+#[test]
+fn go_merge_36_history_clear_keeps_latest_interval() {
+    let mut map = newStmtSummaryByDigestMap();
+    map.SetRefreshInterval(10).unwrap();
+    map.SetHistorySize(10).unwrap();
+    let info = generate_any_exec_info();
+    let mut starts = Vec::new();
+    for offset in 1..=3 {
+        let begin = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            + offset * 10;
+        map.beginTimeForCurInterval = begin;
+        map.AddStatement(&info);
+        starts.push(begin);
+    }
+    map.SetHistoryEnabled(false).unwrap();
+    let summary = map.summaryMap.iter().next().unwrap().1;
+    let history = summary.collectHistorySummaries(10);
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].beginTime, starts[2]);
+}
+
+#[test]
+fn go_merge_36_plan_error_keeps_statement() {
+    let mut map = newStmtSummaryByDigestMap();
+    let mut info = generate_any_exec_info();
+    info.LazyInfo = Box::new(MockLazyInfo {
+        error: Some("plan encoding failed".into()),
+        ..Default::default()
+    });
+    map.AddStatement(&info);
+    let summary = map.summaryMap.iter().next().expect("statement retained").1;
+    assert_eq!(summary.cumulative.samplePlan, "[discard]");
+    assert_eq!(summary.cumulative.execCount, 1);
+}
+
+#[test]
+fn go_merge_36_current_rows_exclude_previous_evicted_interval() {
+    let mut map = newStmtSummaryByDigestMap();
+    map.SetMaxStmtCount(10).unwrap();
+    map.SetRefreshInterval(10).unwrap();
+    map.set_now_for_test(Some(100));
+    for index in 0..11 {
+        map.AddStatement(&exec_info(&format!("old_{index}"), "user", 100));
+    }
+    assert_eq!(map.other.history.len(), 1);
+    map.set_now_for_test(Some(110));
+    map.AddStatement(&exec_info("current", "user", 110));
+    let map = Box::leak(Box::new(Mutex::new(map)));
+    let mut reader = NewStmtSummaryReader(None, true, Vec::new(), String::new(), chrono_tz::UTC);
+    reader.ssMap = map;
+    assert_eq!(reader.GetStmtSummaryCurrentRows().len(), 1);
+}
+
+#[test]
+fn go_merge_36_table_names_skip_empty_entries() {
+    let mut info = generate_any_exec_info();
+    info.StmtCtx.SetLogicalPlanTables(vec![
+        TableEntry {
+            DB: "empty".into(),
+            Table: String::new(),
+        },
+        TableEntry {
+            DB: "DB1".into(),
+            Table: "T1".into(),
+        },
+        TableEntry {
+            DB: "again".into(),
+            Table: String::new(),
+        },
+        TableEntry {
+            DB: "DB2".into(),
+            Table: "T2".into(),
+        },
+    ]);
+    let mut map = newStmtSummaryByDigestMap();
+    map.AddStatement(&info);
+    assert_eq!(map.Summaries()[0].tableNames, "db1.t1,db2.t2");
+}
+
+#[test]
+fn go_merge_36_history_resize_returns_latest_intervals() {
+    let mut map = newStmtSummaryByDigestMap();
+    map.SetRefreshInterval(10).unwrap();
+    map.SetHistorySize(10).unwrap();
+    for now in [100, 110, 120, 130, 140, 150] {
+        map.set_now_for_test(Some(now));
+        map.AddStatement(&exec_info("history", "user", now as u64));
+    }
+    map.SetHistorySize(3).unwrap();
+    let history = map.Summaries()[0].collectHistorySummaries(3);
+    assert_eq!(
+        history
+            .iter()
+            .map(|element| element.beginTime)
+            .collect::<Vec<_>>(),
+        vec![130, 140, 150]
+    );
+}
+
+#[test]
+fn go_merge_36_disabling_internal_preserves_lru_order() {
+    let mut map = newStmtSummaryByDigestMap();
+    map.SetEnabledInternalQuery(true).unwrap();
+    map.set_now_for_test(Some(100));
+    for digest in ["a", "b", "c"] {
+        map.AddStatement(&exec_info(digest, "user", 100));
+    }
+    let mut internal = exec_info("internal", "user", 100);
+    internal.IsInternal = true;
+    map.AddStatement(&internal);
+    map.AddStatement(&exec_info("a", "user", 100));
+    let before = map
+        .summaryMap
+        .iter()
+        .map(|(_, summary)| summary.digest.clone())
+        .collect::<Vec<_>>();
+    map.SetEnabledInternalQuery(false).unwrap();
+    let after = map
+        .summaryMap
+        .iter()
+        .map(|(_, summary)| summary.digest.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        after,
+        before
+            .into_iter()
+            .filter(|digest| digest != "internal")
+            .collect::<Vec<_>>()
+    );
+}
+
 /// 构造带 Coprocessor/提交细节与 RU/CPU 的完整 StmtExecInfo 夹具。
 pub(crate) fn exec_info(digest: &str, user: &str, start: u64) -> StmtExecInfo {
     let mut stmt_ctx = *NewStmtCtx();
@@ -168,7 +302,7 @@ pub(crate) fn exec_info(digest: &str, user: &str, start: u64) -> StmtExecInfo {
             write_ru: 3.5,
             ..Default::default()
         }),
-        TotalRUV2: 4.5,
+
         CPUUsages: ppcpuusage::CPUUsages {
             TidbCPUTime: Duration::from_millis(47),
             TikvCPUTime: Duration::from_millis(53),

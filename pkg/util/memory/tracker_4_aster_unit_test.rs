@@ -194,7 +194,11 @@ fn tracker_promotes_small_budget_to_shared_root_pool_and_cleans_up() {
     assert!(tracker.InitMemArbitrator(
         Some(core.clone()),
         None,
-        "select-1",
+        {
+            let mut digest = super::NewDigestIDBuilder();
+            digest.AddString("select-1");
+            digest.Sum64()
+        },
         ArbitrationPriorityMedium,
         false,
         0,
@@ -211,7 +215,14 @@ fn tracker_promotes_small_budget_to_shared_root_pool_and_cleans_up() {
     core.ShrinkAwaitFreePool(0);
     assert_eq!(core.Allocated(), 0);
     assert_eq!(
-        core.GetDigestProfileCache(super::HashStr("select-1"), 1),
+        core.GetDigestProfileCache(
+            {
+                let mut digest = super::NewDigestIDBuilder();
+                digest.AddString("select-1");
+                digest.Sum64()
+            },
+            1
+        ),
         Some(15)
     );
 }

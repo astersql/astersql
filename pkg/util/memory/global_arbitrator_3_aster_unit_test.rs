@@ -104,22 +104,23 @@ fn resource_pool_enforces_limit_and_releases_budget() {
 
 #[test]
 fn global_runtime_hook_samples_the_shared_core_arbitrator() {
+    let _guard = super::global_arbitrator::GLOBAL_TEST_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     SetupGlobalMemArbitratorForTest(dir.path().display().to_string());
     assert!(SetGlobalMemArbitratorWorkMode("standard".to_owned()));
     SetRuntimeMemStatsSamplerForTest(|| ArbitratorRuntimeStats {
         heap_alloc: DefMaxLimit,
-        heap_inuse: DefMaxLimit,
+        heap_inuse: DefMaxLimit + 1,
         ..ArbitratorRuntimeStats::default()
     });
-    HandleGlobalMemArbitratorRuntime();
     let arbitrator = GlobalMemArbitrator().unwrap();
+    assert!(arbitrator.allocate(1_000));
+    SetGlobalMemArbitratorSoftLimit("auto".to_owned());
+    HandleGlobalMemArbitratorRuntime();
     assert!(arbitrator.AtMemRisk());
     assert!(arbitrator.AtOOMRisk());
     assert_eq!(GlobalMemArbitratorMetrics().runtime_updates, 1);
 
-    assert!(arbitrator.allocate(1_000));
-    SetGlobalMemArbitratorSoftLimit("auto".to_owned());
     HandleGlobalMemArbitratorRuntime();
     assert_eq!(GlobalMemArbitratorMetrics().record_success, 1);
     let recorded = RuntimeMemStateRecorder::new(dir.path())

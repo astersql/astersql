@@ -27,6 +27,8 @@ pub mod arbitrator;
 pub use arbitrator::*;
 /// 全局内存仲裁器与软限制解析。
 pub mod global_arbitrator;
+/// Threshold-triggered heap profile capture and retention.
+pub mod heap_profile;
 /// 主机/cgroup 内存总量与用量探针。
 pub mod meminfo;
 /// 进程堆内存统计缓存。
@@ -65,6 +67,9 @@ mod global_arbitrator_aster_unit_test;
 #[path = "global_arbitrator_test.rs"]
 mod global_arbitrator_test;
 #[cfg(test)]
+#[path = "heap_profile_test.rs"]
+mod heap_profile_test;
+#[cfg(test)]
 #[path = "meminfo_test.rs"]
 mod meminfo_test;
 #[cfg(test)]
@@ -85,3 +90,7 @@ mod utils_aster_unit_test;
 #[cfg(test)]
 #[path = "utils_test.rs"]
 mod utils_test;
+
+#[cfg(test)]
+#[path = "go_merge_30_test.rs"]
+mod go_merge_30_test;

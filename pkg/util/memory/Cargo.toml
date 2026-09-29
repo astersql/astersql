@@ -13,11 +13,14 @@ mem-arbitrator = []
 
 [dependencies]
 astersql-errno = { path = "../../errno" }
+config_crate = { package = "astersql-config", path = "../../config" }
 cgroup_crate = { package = "astersql-util-cgroup", path = "../cgroup" }
+chrono = "0.4"
 crossbeam-utils = "0.8"
 logutil_crate = { package = "astersql-util-logutil", path = "../logutil" }
 memory-stats = "1"
 serde_json = "1"
+rpprof = { git = "https://github.com/mingley/pprof-rs", tag = "v0.18.1" }
 sqlkiller_crate = { package = "astersql-util-sqlkiller", path = "../sqlkiller" }
 sysinfo = "0.33"
 tempfile = "3"

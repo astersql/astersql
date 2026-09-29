@@ -458,6 +458,14 @@ impl ResourcePool {
         mu.allocated
     }
 
+    // ApproxAllocated returns the pool's current allocated bytes.
+    pub fn ApproxAllocated(&self) -> i64 {
+        self.mu
+            .lock()
+            .expect("ResourcePool.mu poisoned during ApproxAllocated")
+            .allocated
+    }
+
     // capacity 对应 Go 的私有读方法，返回当前 Budget cap。
     fn capacity(&self, mu: &ResourcePoolMu) -> i64 {
         mu.budget.cap

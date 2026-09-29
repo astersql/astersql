@@ -20,23 +20,45 @@
 // 以及 GlobalMemArbitrator 工作模式与软限制。
 
 use super::arbitrator::DefMaxLimit;
+#[cfg(feature = "mem-arbitrator")]
+use super::arbitrator::{ArbitrationPriorityMedium, NewMemArbitrator};
 use super::global_arbitrator::{
-    CleanupGlobalMemArbitratorForTest, GlobalMemArbitrator, RegisterCallbackForGlobalMemArbitrator,
-    RemovePoolFromGlobalMemArbitrator, RuntimeMemStateRecorder, SetGlobalMemArbitratorLimit,
-    SetGlobalMemArbitratorSoftLimit, SetGlobalMemArbitratorWorkMode,
-    SetupGlobalMemArbitratorForTest, SoftLimitMode, WorkMode, parse_soft_limit,
+    CleanupGlobalMemArbitratorForTest, GlobalMemArbitrator, RemovePoolFromGlobalMemArbitrator,
+    RuntimeMemStateRecorder, SetGlobalMemArbitratorLimit, SetGlobalMemArbitratorSoftLimit,
+    SetGlobalMemArbitratorWorkMode, SetupGlobalMemArbitratorForTest, SoftLimitMode, WorkMode,
+    parse_soft_limit,
 };
 use super::tracker::{
     ActionOnExceed, EnableGCAwareMemoryTrack, FormatBytes, NewGlobalTracker, NewTracker,
     TrackMemWhenExceeds, Tracker,
 };
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 
 /// 取得 Box<Tracker> 内对象的裸指针，便于树 API 指针比较。
 fn ptr(tracker: &mut Box<Tracker>) -> *mut Tracker {
     &mut **tracker
+}
+
+#[test]
+#[cfg(feature = "mem-arbitrator")]
+fn go_merge_24_tracker_helper_reports_root_pool_and_heap_usage() {
+    let core = Arc::new(NewMemArbitrator(10_000));
+    let mut tracker = NewTracker(1, -1);
+    assert!(tracker.InitMemArbitrator(
+        Some(core),
+        None,
+        0,
+        ArbitrationPriorityMedium,
+        false,
+        1_000,
+        false,
+    ));
+    tracker.Consume(100);
+    let usage = tracker.MemArbitrator.as_ref().unwrap().MemUsage();
+    assert_eq!(usage.RootPoolUsed, 100);
+    assert_eq!(usage.HeapInuse, 100);
 }
 
 #[derive(Default)]
@@ -481,18 +503,10 @@ fn unbind_middle_hard_limit_action_preserves_fallback_chain() {
     assert_eq!(low_state.calls.load(Ordering::SeqCst), 1);
 }
 
-static GLOBAL_TEST_LOCK: Mutex<()> = Mutex::new(());
-static CALLBACK_CALLS: AtomicUsize = AtomicUsize::new(0);
-
-/// 记录仲裁器启动钩子，供 TestGlobalMemArbitrator。
-fn record_arbitrator_start() {
-    CALLBACK_CALLS.fetch_add(1, Ordering::SeqCst);
-}
-
 #[test]
-/// 全局内存仲裁器 limit/soft/workmode 与回调注册。
+/// 全局内存仲裁器 limit/soft/workmode。
 fn TestGlobalMemArbitrator() {
-    let _guard = GLOBAL_TEST_LOCK.lock().unwrap();
+    let _guard = crate::global_arbitrator::GLOBAL_TEST_LOCK.lock().unwrap();
     let directory = tempfile::tempdir().unwrap();
     SetupGlobalMemArbitratorForTest(directory.path().display().to_string());
 
@@ -527,10 +541,7 @@ fn TestGlobalMemArbitrator() {
     SetGlobalMemArbitratorLimit(10_i64 << 30);
     SetGlobalMemArbitratorSoftLimit("0.88".to_owned());
     assert!(GlobalMemArbitrator().is_none());
-    CALLBACK_CALLS.store(0, Ordering::SeqCst);
-    RegisterCallbackForGlobalMemArbitrator(record_arbitrator_start);
     assert!(SetGlobalMemArbitratorWorkMode("standard".to_owned()));
-    assert_eq!(CALLBACK_CALLS.load(Ordering::SeqCst), 1);
     let arbitrator = GlobalMemArbitrator().unwrap();
     assert_eq!(arbitrator.WorkMode(), WorkMode::Standard);
     assert_eq!(arbitrator.Limit(), 10_i64 << 30);
@@ -560,6 +571,5 @@ fn TestGlobalMemArbitrator() {
         arbitrator.SoftLimitConfig(),
         (0, 0.0, SoftLimitMode::Disable)
     );
-    assert_eq!(CALLBACK_CALLS.load(Ordering::SeqCst), 1);
     CleanupGlobalMemArbitratorForTest();
 }

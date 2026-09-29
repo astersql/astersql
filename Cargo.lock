@@ -8,7 +8,7 @@ version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b5d307320b3181d6d7954e663bd7c774a838b8220fe0593c86d9fb09f498b4b"
 dependencies = [
- "gimli",
+ "gimli 0.32.3",
 ]
 
 [[package]]
@@ -1772,6 +1772,7 @@ dependencies = [
  "astersql-store",
  "astersql-store-driver",
  "astersql-util-signal",
+ "rpprof",
 ]
 
 [[package]]
@@ -5140,6 +5141,7 @@ dependencies = [
  "astersql-types",
  "astersql-util",
  "astersql-util-profile",
+ "tracing",
 ]
 
 [[package]]
@@ -8450,6 +8452,7 @@ dependencies = [
  "astersql-util-logutil",
  "astersql-util-logutil-consistency",
  "astersql-util-memory",
+ "astersql-util-metricsutil",
  "astersql-util-parser",
  "astersql-util-ranger-context",
  "astersql-util-redact",
@@ -12025,13 +12028,16 @@ dependencies = [
 name = "astersql-util-memory"
 version = "0.1.0"
 dependencies = [
+ "astersql-config",
  "astersql-errno",
  "astersql-util-cgroup",
  "astersql-util-logutil",
  "astersql-util-sqlkiller",
+ "chrono",
  "crossbeam-utils",
  "memory-stats",
  "rand 0.9.5",
+ "rpprof",
  "serde_json",
  "sysinfo",
  "tempfile",
@@ -12069,6 +12075,8 @@ dependencies = [
  "astersql-server-metrics",
  "astersql-session-metrics",
  "astersql-session-txninfo",
+ "astersql-sessionctx-stmtctx",
+ "astersql-sessionctx-variable",
  "astersql-sessiontxn-isolation-metrics",
  "astersql-statistics-handle-cache-metrics",
  "astersql-statistics-handle-metrics",
@@ -12096,6 +12104,17 @@ dependencies = [
  "prometheus 0.14.0",
  "thiserror 2.0.19",
  "tokio-util",
+]
+
+[[package]]
+name = "astersql-util-mviewutil"
+version = "0.1.0"
+dependencies = [
+ "astersql-errors",
+ "astersql-meta-model",
+ "astersql-parser-ast",
+ "astersql-parser-mysql",
+ "astersql-util-dbterror",
 ]
 
 [[package]]
@@ -14895,6 +14914,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "fallible-iterator"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2acce4a10f12dc2fb14a218589d4f1f62ef011b2d0cc4b3cb1bba8e94da14649"
+
+[[package]]
 name = "fancy-regex"
 version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -15080,6 +15105,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8878864ba14bb86e818a412bfd6f18f9eabd4ec0f008a28e8f7eb61db532fcf9"
 dependencies = [
  "futures-core",
+]
+
+[[package]]
+name = "framehop"
+version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f54fe4785e899d4d6f43793b151c63c5647240fc630b005509d2614a939f693"
+dependencies = [
+ "arrayvec",
+ "cfg-if",
+ "fallible-iterator",
+ "gimli 0.33.0",
+ "macho-unwind-info",
+ "pe-unwind-info",
 ]
 
 [[package]]
@@ -15304,6 +15343,15 @@ name = "gimli"
 version = "0.32.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
+
+[[package]]
+name = "gimli"
+version = "0.33.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bf7f043f89559805f8c7cacc432749b2fa0d0a0a9ee46ce47164ed5ba7f126c"
+dependencies = [
+ "stable_deref_trait",
+]
 
 [[package]]
 name = "glob"
@@ -16171,6 +16219,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "inferno"
+version = "0.12.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c460d4fa06223667240720ab69a8045133755ae6dfbe100cf481b95e3a014f1"
+dependencies = [
+ "ahash 0.8.12",
+ "indexmap 2.14.0",
+ "itoa",
+ "log",
+ "num-format",
+ "once_cell",
+ "quick-xml 0.41.0",
+ "rgb",
+ "str_stack",
+]
+
+[[package]]
 name = "inout"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -16653,6 +16718,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "macho-unwind-info"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb4bdc8b0ce69932332cf76d24af69c3a155242af95c226b2ab6c2e371ed1149"
+dependencies = [
+ "thiserror 2.0.19",
+ "zerocopy",
+ "zerocopy-derive",
+]
+
+[[package]]
 name = "maplit"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -17006,6 +17082,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "521739c6d2bac4aa25192232afe6841231376b2b26d4d9fae5ecf8ca5772e441"
 
 [[package]]
+name = "num-format"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a652d9771a63711fd3c3deb670acfbe5c30a4072e664d7a3bf5a9e1056ac72c3"
+dependencies = [
+ "arrayvec",
+ "itoa",
+]
+
+[[package]]
 name = "num-integer"
 version = "0.1.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -17076,7 +17162,9 @@ version = "0.37.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
 dependencies = [
+ "flate2",
  "memchr",
+ "ruzstd",
 ]
 
 [[package]]
@@ -17357,6 +17445,19 @@ name = "path-clean"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "17359afc20d7ab31fdb42bb844c8b3bb1dabd7dcf7e68428492da7f16966fcef"
+
+[[package]]
+name = "pe-unwind-info"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e33c6dbf1a8fb7f71742cd70f5e9f0986e60b2d19dc0b28d9ca0d1323259274a"
+dependencies = [
+ "arrayvec",
+ "bitflags 2.13.1",
+ "thiserror 2.0.19",
+ "zerocopy",
+ "zerocopy-derive",
+]
 
 [[package]]
 name = "peeking_take_while"
@@ -18665,6 +18766,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rgb"
+version = "0.8.53"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47b34b781b31e5d73e9fbc8689c70551fd1ade9a19e3e28cfec8580a79290cc4"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
 name = "ring"
 version = "0.17.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -18705,6 +18815,33 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
+]
+
+[[package]]
+name = "rpprof"
+version = "0.18.1"
+source = "git+https://github.com/mingley/pprof-rs?tag=v0.18.1#3247a2e603a1d1d8ccf2addf33a439cdb6e33957"
+dependencies = [
+ "aligned-vec",
+ "backtrace",
+ "cfg-if",
+ "findshlibs",
+ "framehop",
+ "inferno",
+ "libc",
+ "log",
+ "memmap2",
+ "nix 0.31.3",
+ "object",
+ "once_cell",
+ "prost 0.12.6",
+ "prost-build 0.12.6",
+ "sha2 0.10.9",
+ "smallvec",
+ "spin 0.10.1",
+ "symbolic-demangle",
+ "tempfile",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -18919,6 +19056,15 @@ name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
+
+[[package]]
+name = "ruzstd"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7c1c839d570d835527c9a5e4db7cb2198683a988cb9d7293fc8674e6bd58fc8"
+dependencies = [
+ "twox-hash",
+]
 
 [[package]]
 name = "ryu"
@@ -19430,6 +19576,12 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+
+[[package]]
+name = "str_stack"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f446288b699d66d0fd2e30d1cfe7869194312524b3b9252594868ed26ef056a"
 
 [[package]]
 name = "strsim"

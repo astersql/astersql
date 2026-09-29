@@ -114,6 +114,14 @@ impl SimpleLRUCache {
         (Some(value), true)
     }
 
+    /// 查找键值，但不改变最近使用顺序。
+    pub fn Peek(&self, key: &dyn Key) -> (Option<Value>, bool) {
+        let Some(&index) = self.elements.get(&key.Hash()) else {
+            return (None, false);
+        };
+        (Some(Arc::clone(&self.entry(index).value)), true)
+    }
+
     /// 插入或更新；同键更新值并刷新近因性。超出容量或内存阈值时从 back 淘汰。
     pub fn Put(&mut self, key: KeyRef, value: Value) {
         let hash = key.Hash();

@@ -1,5 +1,5 @@
-// Copyright 2018 PingCAP, Inc.
 // Copyright 2026 AsterSQL.
+// Copyright 2018 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -39,12 +39,12 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 #[cfg(feature = "mem-arbitrator")]
-use crate::HashStr;
+use crate::InvalidDigestID;
 #[cfg(feature = "mem-arbitrator")]
 use crate::arbitrator::{
     ArbitrateHelper, ArbitrateOk, ArbitrationContext, ArbitrationPriority,
     ArbitrationPriorityMedium, ArbitratorStopReason, CancelReceiver, ConcurrentBudget,
-    MemArbitrator, RootPoolHandle, TrackedConcurrentBudget,
+    MemArbitrator, MemUsage, RootPoolHandle, TrackedConcurrentBudget,
 };
 #[cfg(feature = "mem-arbitrator")]
 use crate::global_arbitrator::GlobalMemArbitrator;
@@ -714,24 +714,25 @@ impl Tracker {
                 }
                 #[cfg(feature = "mem-arbitrator")]
                 if let Some(m) = (*tracker).MemArbitrator.as_mut() {
-                    // Budget fast path: prefer small budget on positive consumption, fall back to big budget.
-                    if bs > 0 {
-                        if m.useBigBudget() {
-                            if m.addBigBudgetUsed(bs) > m.bigBudgetGrowThreshold() {
-                                m.growBigBudget();
-                            }
-                        } else {
-                            // fast path for small budget
-                            if m.addSmallBudget(bs) > m.small_limit {
+                    if m.state.load(Ordering::Acquire) != memArbitratorStateDown {
+                        // Budget fast path: prefer small budget on positive consumption, fall back to big budget.
+                        if bs > 0 {
+                            if m.useBigBudget() {
+                                if m.addBigBudgetUsed(bs) > m.bigBudgetGrowThreshold() {
+                                    m.growBigBudget();
+                                }
+                            } else if m.addSmallBudget(bs) > m.small_limit {
                                 m.intoBigBudget();
                             }
+                        } else if m.useBigBudget() {
+                            m.addBigBudgetUsed(bs);
+                        } else {
+                            m.addSmallBudget(bs);
                         }
-                    } else if m.useBigBudget() {
-                        // delta <= 0 && use big budget
-                        m.addBigBudgetUsed(bs);
-                    } else {
-                        // delta <= 0 && use small budget
-                        m.addSmallBudget(bs);
+                        if m.state.load(Ordering::Acquire) == memArbitratorStateDown {
+                            m.cleanSmallBudget();
+                            m.helper.heap_inuse.store(0, Ordering::Release);
+                        }
                     }
                 }
 
@@ -1298,6 +1299,8 @@ pub fn MetricsTypes() -> HashMap<i32, [&'static str; 3]> {
 #[cfg(feature = "mem-arbitrator")]
 const memArbitratorStateSmallBudget: i32 = 0;
 #[cfg(feature = "mem-arbitrator")]
+const memArbitratorStateIntoBigBudget: i32 = 1;
+#[cfg(feature = "mem-arbitrator")]
 const memArbitratorStateBigBudget: i32 = 2;
 #[cfg(feature = "mem-arbitrator")]
 const memArbitratorStateDown: i32 = 3;
@@ -1306,6 +1309,8 @@ const memArbitratorStateDown: i32 = 3;
 struct TrackerArbitrateHelper {
     killer: Option<Arc<sqlkiller::SQLKiller>>,
     heap_inuse: AtomicI64,
+    root_pool_used: AtomicI64,
+    reversal: Arc<AtomicI64>,
     finished: AtomicBool,
 }
 
@@ -1325,8 +1330,24 @@ impl ArbitrateHelper for TrackerArbitrateHelper {
         self.heap_inuse.load(Ordering::Acquire)
     }
 
+    fn MemUsage(&self) -> MemUsage {
+        MemUsage {
+            RootPoolUsed: (self.root_pool_used.load(Ordering::Acquire)
+                - self.reversal.load(Ordering::Acquire))
+            .max(0),
+            HeapInuse: self.heap_inuse.load(Ordering::Acquire).max(0),
+        }
+    }
+
     fn Finish(&self) {
         self.finished.store(true, Ordering::Release);
+    }
+
+    fn Done(&self) -> CancelReceiver {
+        self.killer
+            .as_ref()
+            .map(|killer| CancelReceiver::from_kill_event(killer.GetKillEventChan()))
+            .unwrap_or_else(CancelReceiver::none)
     }
 }
 
@@ -1347,6 +1368,7 @@ pub struct memArbitrator {
     small_limit: i64,
     big_budget: ConcurrentBudget,
     big_used: AtomicI64,
+    reversal: Arc<AtomicI64>,
     big_grow_threshold: AtomicI64,
     root: Option<RootPoolHandle>,
     use_big: AtomicBool,
@@ -1356,7 +1378,32 @@ pub struct memArbitrator {
     previous_max: i64,
     is_internal: bool,
     state: AtomicI32,
+    state_lock: Arc<Mutex<()>>,
     pub AwaitAlloc: awaitAlloc,
+}
+
+#[cfg(feature = "mem-arbitrator")]
+pub struct ReversalRes {
+    reversal: Option<Arc<AtomicI64>>,
+    delta: i64,
+}
+
+#[cfg(feature = "mem-arbitrator")]
+impl ReversalRes {
+    pub fn Release(mut self) {
+        if let Some(reversal) = self.reversal.take() {
+            reversal.fetch_sub(self.delta, Ordering::AcqRel);
+        }
+    }
+}
+
+#[cfg(feature = "mem-arbitrator")]
+impl Drop for ReversalRes {
+    fn drop(&mut self) {
+        if let Some(reversal) = self.reversal.take() {
+            reversal.fetch_sub(self.delta, Ordering::AcqRel);
+        }
+    }
 }
 
 #[cfg(feature = "mem-arbitrator")]
@@ -1409,6 +1456,9 @@ impl memArbitrator {
 
     fn addBigBudgetUsed(&self, delta: i64) -> i64 {
         self.helper.heap_inuse.fetch_add(delta, Ordering::AcqRel);
+        self.helper
+            .root_pool_used
+            .fetch_add(delta, Ordering::AcqRel);
         self.big_used.fetch_add(delta, Ordering::AcqRel) + delta
     }
 
@@ -1417,6 +1467,11 @@ impl memArbitrator {
     }
 
     fn intoBigBudget(&mut self) -> bool {
+        let state_lock = self.state_lock.clone();
+        let _state_guard = state_lock.lock().unwrap();
+        if self.state.load(Ordering::Acquire) == memArbitratorStateDown {
+            return false;
+        }
         if self.useBigBudget() {
             return false;
         }
@@ -1429,22 +1484,48 @@ impl memArbitrator {
         {
             return false;
         }
+        self.state
+            .store(memArbitratorStateIntoBigBudget, Ordering::Release);
 
         let small_used = self.smallBudgetUsed().max(0);
-        let initial = self
-            .reserve_size
-            .max(self.previous_max)
-            .max(small_used)
-            .max(self.MemArbitrator.SuggestPoolInitCap());
+        let max_mem_hint = self.previous_max.max(small_used);
+        if max_mem_hint > self.MemArbitrator.PoolAllocProfile().SmallPoolLimit {
+            self.MemArbitrator
+                .TryToUpdateBuffer(max_mem_hint, self.approxUnixTimeSec());
+        }
+        let reserve = if self.reserve_size > 0 {
+            self.reserve_size
+        } else if self.previous_max > 0 {
+            self.previous_max
+        } else if small_used > self.small_limit {
+            self.MemArbitrator.SuggestPoolInitCap()
+        } else {
+            0
+        };
+        let initial = if self
+            .helper
+            .killer
+            .as_ref()
+            .is_some_and(|killer| killer.GetKillSignal() != 0)
+        {
+            0
+        } else {
+            (reserve * 1_115 / 1_000).max(small_used * 1_115 / 1_000)
+        };
         if initial > 0 && self.MemArbitrator.RequestQuota(root, initial) != ArbitrateOk {
             let _ = self.MemArbitrator.ResetRootPoolByID(self.uid, 0, false);
+            self.state
+                .store(memArbitratorStateSmallBudget, Ordering::Release);
             return false;
         }
 
         self.big_budget.Reserve(initial);
         self.big_used.store(small_used, Ordering::Release);
+        self.helper
+            .root_pool_used
+            .store(small_used, Ordering::Release);
         self.big_grow_threshold
-            .store((initial * 95 / 100).max(small_used), Ordering::Release);
+            .store((initial * 90 / 100).max(small_used), Ordering::Release);
         self.cleanSmallBudget();
         self.root = Some(root);
         self.use_big.store(true, Ordering::Release);
@@ -1454,6 +1535,14 @@ impl memArbitrator {
     }
 
     fn growBigBudget(&mut self) {
+        if self
+            .helper
+            .killer
+            .as_ref()
+            .is_some_and(|killer| killer.GetKillSignal() != 0)
+        {
+            return;
+        }
         let Some(root) = self.root else {
             return;
         };
@@ -1463,9 +1552,11 @@ impl memArbitrator {
         }
         let capacity = self.bigBudgetCap();
         let target = ((used * 2_783) >> 10)
-            .max(used)
+            .max(used * 1_115 / 1_000)
             .min(capacity + self.MemArbitrator.PoolAllocProfile().MaxPoolAllocUnit);
-        let extra = (target - capacity).max(used - capacity).max(0);
+        let extra = (target - capacity)
+            .max(used * 1_115 / 1_000 - capacity)
+            .max(0);
         if extra == 0 {
             return;
         }
@@ -1475,7 +1566,7 @@ impl memArbitrator {
         if self.MemArbitrator.RequestQuota(root, extra) == ArbitrateOk {
             self.big_budget.Reserve(extra);
             self.big_grow_threshold.store(
-                (self.bigBudgetCap() * 95 / 100).max(used),
+                (self.bigBudgetCap() * 90 / 100).max(used),
                 Ordering::Release,
             );
         }
@@ -1486,11 +1577,15 @@ impl memArbitrator {
     }
 
     fn reset(&mut self, exception: bool, max_consumed: i64) -> bool {
+        let state_lock = self.state_lock.clone();
+        let _state_guard = state_lock.lock().unwrap();
         if self.state.swap(memArbitratorStateDown, Ordering::AcqRel) == memArbitratorStateDown {
             return false;
         }
         self.cleanSmallBudget();
-        if !exception {
+        self.helper.heap_inuse.store(0, Ordering::Release);
+        self.helper.root_pool_used.store(0, Ordering::Release);
+        if !exception && max_consumed > self.MemArbitrator.PoolAllocProfile().SmallPoolLimit {
             self.MemArbitrator.UpdateDigestProfileCache(
                 self.digest_id,
                 max_consumed,
@@ -1508,6 +1603,10 @@ impl memArbitrator {
         self.helper.Finish();
     }
 
+    pub fn Done(&self) -> CancelReceiver {
+        self.helper.Done()
+    }
+
     pub fn Stop(&self, reason: ArbitratorStopReason) -> bool {
         self.helper.Stop(reason)
     }
@@ -1515,10 +1614,35 @@ impl memArbitrator {
     pub fn HeapInuse(&self) -> i64 {
         self.helper.HeapInuse()
     }
+
+    pub fn MemUsage(&self) -> MemUsage {
+        self.helper.MemUsage()
+    }
 }
 
 #[cfg(feature = "mem-arbitrator")]
 impl Tracker {
+    pub fn AddReversal(&self, delta: i64) -> ReversalRes {
+        if delta > 0 {
+            let mut current = self as *const Tracker;
+            while !current.is_null() {
+                let tracker = unsafe { &*current };
+                if let Some(arbitrator) = tracker.MemArbitrator.as_ref() {
+                    arbitrator.reversal.fetch_add(delta, Ordering::AcqRel);
+                    return ReversalRes {
+                        reversal: Some(arbitrator.reversal.clone()),
+                        delta,
+                    };
+                }
+                current = tracker.getParent();
+            }
+        }
+        ReversalRes {
+            reversal: None,
+            delta: 0,
+        }
+    }
+
     pub fn MemArbitration(&self) -> Duration {
         self.MemArbitrator.as_ref().map_or(Duration::ZERO, |m| {
             Duration::from_nanos(m.AwaitAlloc.TotalDur.Load().max(0) as u64)
@@ -1548,7 +1672,7 @@ impl Tracker {
         self.InitMemArbitrator(
             GlobalMemArbitrator(),
             None,
-            "",
+            InvalidDigestID,
             ArbitrationPriorityMedium,
             false,
             0,
@@ -1560,7 +1684,7 @@ impl Tracker {
         &mut self,
         core: Option<Arc<MemArbitrator>>,
         killer: Option<Box<sqlkiller::SQLKiller>>,
-        digest_key: &str,
+        digest_id: u64,
         mem_priority: ArbitrationPriority,
         wait_averse: bool,
         explicit_reserve_size: i64,
@@ -1578,9 +1702,12 @@ impl Tracker {
             .as_ref()
             .map(|killer| CancelReceiver::from_kill_event(killer.GetKillEventChan()))
             .unwrap_or_else(CancelReceiver::none);
+        let reversal = Arc::new(AtomicI64::new(0));
         let helper = Arc::new(TrackerArbitrateHelper {
             killer,
             heap_inuse: AtomicI64::new(0),
+            root_pool_used: AtomicI64::new(0),
+            reversal: reversal.clone(),
             finished: AtomicBool::new(false),
         });
         let context = crate::NewArbitrationContext(
@@ -1591,8 +1718,7 @@ impl Tracker {
             true,
         );
         let uid = self.SessionID.Load();
-        let digest_id = HashStr(digest_key);
-        let previous_max = if explicit_reserve_size == 0 && !digest_key.is_empty() {
+        let previous_max = if explicit_reserve_size == 0 && digest_id != InvalidDigestID {
             core.GetDigestProfileCache(digest_id, core.approxUnixTimeSec())
                 .unwrap_or(0)
         } else {
@@ -1609,6 +1735,7 @@ impl Tracker {
             small_limit,
             big_budget: ConcurrentBudget::default(),
             big_used: AtomicI64::new(0),
+            reversal,
             big_grow_threshold: AtomicI64::new(0),
             root: None,
             use_big: AtomicBool::new(false),
@@ -1618,6 +1745,7 @@ impl Tracker {
             previous_max,
             is_internal,
             state: AtomicI32::new(memArbitratorStateSmallBudget),
+            state_lock: Arc::new(Mutex::new(())),
             AwaitAlloc: awaitAlloc {
                 TotalDur: atomicutil::Int64::new(0),
                 StartUtime: 0,

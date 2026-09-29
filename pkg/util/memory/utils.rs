@@ -254,6 +254,48 @@ pub fn HashStr(key: &str) -> u64 {
     hashKey
 }
 
+/// Builds an unambiguous digest ID from ordered string components.
+pub struct DigestIDBuilder {
+    hash: u64,
+}
+
+/// Disables digest profile lookup and update.
+pub const InvalidDigestID: u64 = 0;
+
+pub fn NewDigestIDBuilder() -> DigestIDBuilder {
+    DigestIDBuilder { hash: initHashKey }
+}
+
+impl DigestIDBuilder {
+    pub fn AddString(&mut self, value: &str) {
+        let mut bytes = value.as_bytes();
+        let mut hash = self.hash.wrapping_mul(prime64) ^ bytes.len() as u64;
+        while bytes.len() >= 8 {
+            let word = u64::from_le_bytes(bytes[..8].try_into().expect("eight bytes"));
+            hash = hash.wrapping_mul(prime64) ^ word;
+            bytes = &bytes[8..];
+        }
+        if !bytes.is_empty() {
+            let tail = bytes
+                .iter()
+                .enumerate()
+                .fold(0_u64, |word, (index, byte)| word | (*byte as u64) << (index * 8));
+            hash = hash.wrapping_mul(prime64) ^ tail;
+        }
+        self.hash = hash;
+    }
+
+    pub fn Sum64(&self) -> u64 {
+        let mut hash = self.hash;
+        hash ^= hash >> 33;
+        hash = hash.wrapping_mul(0xff51afd7ed558ccd);
+        hash ^= hash >> 33;
+        hash = hash.wrapping_mul(0xc4ceb9fe1a85ec53);
+        hash ^= hash >> 33;
+        if hash == 0 { 1 } else { hash }
+    }
+}
+
 /// 对偶数字键做分片友好的哈希（先混低 8 位再混高位）。
 pub fn HashEvenNum(mut key: u64) -> u64 {
     const STEP: u32 = 8;

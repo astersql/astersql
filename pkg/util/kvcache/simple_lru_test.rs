@@ -164,6 +164,25 @@ fn TestGet() {
     }
 }
 
+#[test]
+fn go_merge_24_peek_keeps_lru_order() {
+    let mut lru = NewSimpleLRUCache(3, 0.0, 0);
+    let keys = (0..4).map(new_mock_hash_key).collect::<Vec<_>>();
+    for (i, key) in keys.iter().take(3).enumerate() {
+        lru.Put(Arc::clone(key), value(i as i64));
+    }
+    let before = hashes(&lru.Keys());
+    let (found, exists) = lru.Peek(keys[0].as_ref());
+    assert!(exists);
+    assert_eq!(0, number(&found.unwrap()));
+    assert_eq!(before, hashes(&lru.Keys()));
+    let (missing, exists) = lru.Peek(keys[3].as_ref());
+    assert!(!exists);
+    assert!(missing.is_none());
+    lru.Put(Arc::clone(&keys[3]), value(3));
+    assert!(!lru.Get(keys[0].as_ref()).1);
+}
+
 /// Delete 移除指定键后 Size 减少，其余键仍可 Get。
 #[test]
 fn TestDelete() {
