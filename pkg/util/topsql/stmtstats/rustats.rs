@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use crate::BinaryDigest;
-use crate::execdetails::{RUDetails, RUV2Metrics, RUV2Weights};
+use crate::execdetails::RUDetails;
 
 /// The wire values used by PD's resource-group controller.
 /// PD（Placement Driver）资源组控制器使用的 RU 协议版本线网取值。
@@ -84,12 +84,8 @@ impl RUKey {
 pub struct ExecutionContext {
     /// 可变 RU 明细（读写侧可能持续累加）。
     pub RUDetails: Option<SharedRUDetails>,
-    /// v2 指标计算器。
-    pub RUV2Metrics: Option<Arc<RUV2Metrics>>,
     /// 本语句对应的 RU 聚合键。
     pub Key: RUKey,
-    /// v2 权重配置。
-    pub RUV2Weights: RUV2Weights,
     /// 上次采样时的 RU 总量，用于计算增量 delta。
     pub LastRUTotal: f64,
     /// 本语句使用的 RU 协议版本。

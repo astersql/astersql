@@ -1364,7 +1364,6 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
         let begin = astersql_util_topsql_stmtstats::ExecBeginInfo {
             InNetworkBytes: sc.network_received_bytes,
             TopRUEnabled: top_ru,
-            RUV2Weights: self.session.WithSessionVars(|vars| vars.RUV2Weights()),
             ..Default::default()
         };
         stats.OnExecutionBegin(sql_digest, plan_digest, Some(&begin));

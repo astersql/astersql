@@ -10,10 +10,9 @@
 /// 重导出 TopSQL/TopRU 全局状态依赖。
 pub use topsql_state_dependency as topsql_state;
 
-/// 执行详情与 RUv2 权重/指标的薄封装重导出。
+/// 执行详情的薄封装重导出。
 pub mod execdetails {
     pub use execdetails_dependency::execdetails::util::RUDetails;
-    pub use execdetails_dependency::ruv2_metrics::{RUV2Metrics, RUV2Weights};
 }
 
 /// 上报侧 Prometheus 指标。
