@@ -21,7 +21,7 @@ use crate::group_3::action_type_string;
 #[test]
 fn test_action_bdr_map() {
     // ActionMap 与 ActionBDRMap 应覆盖同一批 action，长度不一致意味着有 action 缺少反向 BDR 映射。
-    let action_map_len = (0_u8..=84)
+    let action_map_len = (0_u8..=94)
         .filter(|action| action_type_string(*action) != "none")
         .count();
     assert_eq!(action_map_len, ActionBDRMap.len());
@@ -42,6 +42,28 @@ fn test_action_bdr_map() {
 
     // 所有分组内 action 的总数必须等于反向映射大小，避免 ActionBDRMap 出现多余条目。
     assert_eq!(total_actions, ActionBDRMap.len());
+}
+
+#[test]
+fn go_merge_12_materialized_view_action_categories() {
+    let cases = [
+        (ACTION_CREATE_MATERIALIZED_VIEW_LOG, SafeDDL),
+        (ACTION_CREATE_MATERIALIZED_VIEW, SafeDDL),
+        (ACTION_ALTER_MATERIALIZED_VIEW_REFRESH, SafeDDL),
+        (ACTION_ALTER_MATERIALIZED_VIEW_ATTRIBUTES, SafeDDL),
+        (ACTION_ALTER_MATERIALIZED_VIEW_LOG_PURGE, SafeDDL),
+        (ACTION_DROP_MATERIALIZED_VIEW, UnsafeDDL),
+        (ACTION_DROP_MATERIALIZED_VIEW_LOG, UnsafeDDL),
+        (ACTION_DROP_MATERIALIZED_VIEW_SHADOW, UnsafeDDL),
+        (ACTION_MVIEW_REFRESH_OUT_OF_PLACE_CUTOVER, UnsafeDDL),
+        (ACTION_CREATE_MATERIALIZED_VIEW_SHADOW, UnsafeDDL),
+    ];
+    assert_eq!(ACTION_CREATE_MATERIALIZED_VIEW_LOG, 85);
+    assert_eq!(ACTION_DROP_MATERIALIZED_VIEW_SHADOW, 94);
+    for (action, expected) in cases {
+        assert_eq!(ActionBDRMap.get(&action), Some(&expected));
+        assert_ne!(action_type_string(action), "none");
+    }
 }
 use crate::group_1::{ActionBDRMap, BDRActionMap};
 

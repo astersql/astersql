@@ -312,6 +312,26 @@ pub const ACTION_ALTER_MASKING_POLICY: ActionType = 82;
 pub const ACTION_DROP_MASKING_POLICY: ActionType = 83;
 /// 设置表 Region 拆分策略。
 pub const ACTION_ALTER_TABLE_SET_REGION_SPLIT_POLICY: ActionType = 84;
+/// Go DDL ActionType 85.
+pub const ACTION_CREATE_MATERIALIZED_VIEW_LOG: ActionType = 85;
+/// Go DDL ActionType 86.
+pub const ACTION_CREATE_MATERIALIZED_VIEW: ActionType = 86;
+/// Go DDL ActionType 87.
+pub const ACTION_DROP_MATERIALIZED_VIEW_LOG: ActionType = 87;
+/// Go DDL ActionType 88.
+pub const ACTION_DROP_MATERIALIZED_VIEW: ActionType = 88;
+/// Go DDL ActionType 89.
+pub const ACTION_ALTER_MATERIALIZED_VIEW_REFRESH: ActionType = 89;
+/// Go DDL ActionType 90.
+pub const ACTION_ALTER_MATERIALIZED_VIEW_LOG_PURGE: ActionType = 90;
+/// Go DDL ActionType 91.
+pub const ACTION_ALTER_MATERIALIZED_VIEW_ATTRIBUTES: ActionType = 91;
+/// Go DDL ActionType 92.
+pub const ACTION_MVIEW_REFRESH_OUT_OF_PLACE_CUTOVER: ActionType = 92;
+/// Go DDL ActionType 93.
+pub const ACTION_CREATE_MATERIALIZED_VIEW_SHADOW: ActionType = 93;
+/// Go DDL ActionType 94.
+pub const ACTION_DROP_MATERIALIZED_VIEW_SHADOW: ActionType = 94;
 
 /// Schema 对象状态机（DDL 在线变更各阶段）。
 #[repr(transparent)]

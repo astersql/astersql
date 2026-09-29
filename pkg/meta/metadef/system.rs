@@ -226,6 +226,12 @@ pub const TiDBSoftDeleteTableStatusTableID: i64 = ReservedGlobalIDUpperBound - 6
 /// `mysql.tidb_masking_policy` 表 ID：列脱敏（masking）策略元数据。
 // TiDBMaskingPolicyTableID is the table ID of `tidb_masking_policy`.
 pub const TiDBMaskingPolicyTableID: i64 = ReservedGlobalIDUpperBound - 62;
+pub const TiDBStorageClassTransitionHistoryTableID: i64 = ReservedGlobalIDUpperBound - 63;
+pub const TiDBMViewRefreshInfoTableID: i64 = ReservedGlobalIDUpperBound - 64;
+pub const TiDBMLogPurgeInfoTableID: i64 = ReservedGlobalIDUpperBound - 65;
+pub const TiDBMViewRefreshHistTableID: i64 = ReservedGlobalIDUpperBound - 66;
+pub const TiDBMViewRefreshAlertTableID: i64 = ReservedGlobalIDUpperBound - 67;
+pub const TiDBMLogPurgeHistTableID: i64 = ReservedGlobalIDUpperBound - 68;
 
 /// 判断 ID 是否落在系统保留区间 `(lower, upper]`（下界本身仍属用户可用）。
 // IsReservedID 判断 ID 是否落在系统保留区间 (lower, upper]。

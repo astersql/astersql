@@ -29,6 +29,18 @@ fn mutator() -> Mutator {
     new_mutator(kv::Transaction::default(), Vec::new())
 }
 
+#[test]
+fn go_merge_12_starter_bootstrap_version_is_independent() {
+    let mut m = mutator();
+    assert_eq!(m.get_starter_bootstrap_version().unwrap(), 0);
+    m.finish_bootstrap(7).unwrap();
+    m.finish_starter_bootstrap(1).unwrap();
+    assert_eq!(m.get_starter_bootstrap_version().unwrap(), 1);
+    m.finish_starter_bootstrap(10).unwrap();
+    assert_eq!(m.get_starter_bootstrap_version().unwrap(), 10);
+    assert_eq!(m.get_bootstrap_version().unwrap(), 7);
+}
+
 /// Corresponds to Go `TestPlacementPolicy`.
 /// Placement Policy（放置策略）的创建、更新与列表。
 #[test]

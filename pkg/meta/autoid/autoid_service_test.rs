@@ -385,3 +385,41 @@ fn test_backoff_ctx_aware() {
     let _ = bo.backoff(Some(&ctx));
     assert!(started.elapsed() < Duration::from_millis(50));
 }
+
+#[test]
+fn go_merge_12_rpc_retry_recovers_and_service_error_does_not_retry() {
+    let transient = Arc::new(FakeClient::default());
+    transient
+        .alloc_results
+        .lock()
+        .unwrap()
+        .push_back(Err(AutoIdError::Rpc("unavailable".into())));
+    transient
+        .alloc_results
+        .lock()
+        .unwrap()
+        .push_back(Ok(AutoIdResponse {
+            min: 100,
+            max: 101,
+            errmsg: String::new(),
+        }));
+    let alloc = new_test_single_point_alloc(transient.clone());
+    assert_eq!(
+        alloc.alloc(&Context::background(), 1, 1, 1).unwrap(),
+        (100, 101)
+    );
+    assert_eq!(transient.alloc_calls.load(Ordering::SeqCst), 2);
+
+    let service = Arc::new(FakeClient::default());
+    service
+        .alloc_results
+        .lock()
+        .unwrap()
+        .push_back(Err(AutoIdError::Service("denied".into())));
+    let alloc = new_test_single_point_alloc(service.clone());
+    assert!(matches!(
+        alloc.alloc(&Context::background(), 1, 1, 1),
+        Err(AutoIdError::Service(_))
+    ));
+    assert_eq!(service.alloc_calls.load(Ordering::SeqCst), 1);
+}

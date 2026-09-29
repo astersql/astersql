@@ -54,6 +54,7 @@ const TABLE_ID_PREFIX: &str = "TID";
 const INC_ID_PREFIX: &str = "IID";
 const RANDOM_ID_PREFIX: &str = "TARID";
 const BOOTSTRAP_KEY: &[u8] = b"BootstrapKey";
+const STARTER_BOOTSTRAP_KEY: &[u8] = b"StarterBootstrapKey";
 const SCHEMA_DIFF_PREFIX: &str = "Diff";
 const POLICIES: &[u8] = b"Policies";
 const POLICY_PREFIX: &str = "Policy";
@@ -89,6 +90,8 @@ pub enum NextGenBootTableVersion {
     Init = 0,
     Base = 1,
     MaskingPolicy = 2,
+    StorageClassTransition = 3,
+    MaterializedView = 4,
 }
 
 // DDLTableVersion 记录并发 DDL、MDL、分布式回填和 notifier 表的演进阶段。
@@ -856,6 +859,14 @@ impl Mutator {
     }
     pub fn finish_bootstrap(&mut self, version: i64) -> Result<(), errors::Error> {
         self.txn.set(BOOTSTRAP_KEY, version.to_string().as_bytes())
+    }
+
+    pub fn get_starter_bootstrap_version(&self) -> Result<i64, errors::Error> {
+        self.txn.get_i64(STARTER_BOOTSTRAP_KEY)
+    }
+    pub fn finish_starter_bootstrap(&mut self, version: i64) -> Result<(), errors::Error> {
+        self.txn
+            .set(STARTER_BOOTSTRAP_KEY, version.to_string().as_bytes())
     }
 
     // schema diff 按版本独立存储；指标覆盖底层 get/set 的耗时与返回标签。

@@ -140,6 +140,16 @@ pub const ACTION_CREATE_MASKING_POLICY: ActionType = 81;
 pub const ACTION_ALTER_MASKING_POLICY: ActionType = 82;
 pub const ACTION_DROP_MASKING_POLICY: ActionType = 83;
 pub const ACTION_ALTER_TABLE_SET_REGION_SPLIT_POLICY: ActionType = 84;
+pub const ACTION_CREATE_MATERIALIZED_VIEW_LOG: ActionType = 85;
+pub const ACTION_CREATE_MATERIALIZED_VIEW: ActionType = 86;
+pub const ACTION_DROP_MATERIALIZED_VIEW_LOG: ActionType = 87;
+pub const ACTION_DROP_MATERIALIZED_VIEW: ActionType = 88;
+pub const ACTION_ALTER_MATERIALIZED_VIEW_REFRESH: ActionType = 89;
+pub const ACTION_ALTER_MATERIALIZED_VIEW_LOG_PURGE: ActionType = 90;
+pub const ACTION_ALTER_MATERIALIZED_VIEW_ATTRIBUTES: ActionType = 91;
+pub const ACTION_MVIEW_REFRESH_OUT_OF_PLACE_CUTOVER: ActionType = 92;
+pub const ACTION_CREATE_MATERIALIZED_VIEW_SHADOW: ActionType = 93;
+pub const ACTION_DROP_MATERIALIZED_VIEW_SHADOW: ActionType = 94;
 
 // 对应 ActionMap/String；未知或 ActionNone 统一显示 none。
 pub fn action_type_string(action: ActionType) -> &'static str {
@@ -225,6 +235,18 @@ pub fn action_type_string(action: ActionType) -> &'static str {
         ACTION_ALTER_MASKING_POLICY => "alter masking policy",
         ACTION_DROP_MASKING_POLICY => "drop masking policy",
         ACTION_ALTER_TABLE_SET_REGION_SPLIT_POLICY => "alter table set region split policy",
+        ACTION_CREATE_MATERIALIZED_VIEW_LOG => "create materialized view log",
+        ACTION_CREATE_MATERIALIZED_VIEW => "create materialized view",
+        ACTION_DROP_MATERIALIZED_VIEW_LOG => "drop materialized view log",
+        ACTION_DROP_MATERIALIZED_VIEW => "drop materialized view",
+        ACTION_ALTER_MATERIALIZED_VIEW_REFRESH => "alter materialized view refresh",
+        ACTION_ALTER_MATERIALIZED_VIEW_LOG_PURGE => "alter materialized view log purge",
+        ACTION_ALTER_MATERIALIZED_VIEW_ATTRIBUTES => "alter materialized view attributes",
+        ACTION_MVIEW_REFRESH_OUT_OF_PLACE_CUTOVER => {
+            "refresh materialized view complete out-of-place cutover"
+        }
+        ACTION_CREATE_MATERIALIZED_VIEW_SHADOW => "create materialized view shadow table",
+        ACTION_DROP_MATERIALIZED_VIEW_SHADOW => "drop materialized view shadow table",
         DEPRECATED_ACTION_ALTER_TABLE_ALTER_PARTITION => "alter partition",
         _ => "none",
     }

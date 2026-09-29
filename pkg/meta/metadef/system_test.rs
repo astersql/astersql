@@ -31,3 +31,38 @@ fn test_is_reserved_id() {
     assert!(!IsReservedID(ReservedGlobalIDLowerBound));
     assert!(!IsReservedID(123));
 }
+
+#[test]
+fn go_merge_12_system_ids_and_sql() {
+    use super::system_tables_def::*;
+    use super::*;
+    assert_eq!(
+        TiDBStorageClassTransitionHistoryTableID,
+        ReservedGlobalIDUpperBound - 63
+    );
+    assert_eq!(TiDBMViewRefreshInfoTableID, ReservedGlobalIDUpperBound - 64);
+    assert_eq!(TiDBMLogPurgeInfoTableID, ReservedGlobalIDUpperBound - 65);
+    assert_eq!(TiDBMViewRefreshHistTableID, ReservedGlobalIDUpperBound - 66);
+    assert_eq!(
+        TiDBMViewRefreshAlertTableID,
+        ReservedGlobalIDUpperBound - 67
+    );
+    assert_eq!(TiDBMLogPurgeHistTableID, ReservedGlobalIDUpperBound - 68);
+    assert!(CreateUserTable.contains("Operate_view_priv"));
+    assert!(CreateDBTable.contains("Operate_view_priv"));
+    assert!(CreateTablesPrivTable.contains("'Operate View'"));
+    assert!(CreateTiDBTTLTaskTable.contains("scan_index_id bigint DEFAULT NULL"));
+    for (sql, table) in [
+        (CreateTiDBMViewRefreshInfoTable, "tidb_mview_refresh_info"),
+        (CreateTiDBMLogPurgeInfoTable, "tidb_mlog_purge_info"),
+        (CreateTiDBMViewRefreshHistTable, "tidb_mview_refresh_hist"),
+        (CreateTiDBMViewRefreshAlertTable, "tidb_mview_refresh_alert"),
+        (CreateTiDBMLogPurgeHistTable, "tidb_mlog_purge_hist"),
+        (
+            CreateTiDBStorageClassTransitionHistoryTable,
+            "tidb_storage_class_transition_history",
+        ),
+    ] {
+        assert!(sql.contains(&format!("mysql.{table}")));
+    }
+}
