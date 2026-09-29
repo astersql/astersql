@@ -14,6 +14,8 @@
 
 # AsterSQL 傲世数据库
 
+> 包罗天地，无量神通，天元现世，傲视群雄，开！
+
 AsterSQL (/ˈæstərˌsiːkwəl/) is an open-source, cloud-native, distributed SQL database designed for high availability, horizontal and vertical scalability, strong consistency, and high performance.
 
 - [Key Features](#key-features)
