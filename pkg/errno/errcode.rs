@@ -1223,4 +1223,5 @@ pub const ErrTiKVMaxTimestampNotSynced: u16 = 9011;
 pub const ErrTiFlashServerTimeout: u16 = 9012;
 pub const ErrTiFlashServerBusy: u16 = 9013;
 pub const ErrTiFlashBackfillIndex: u16 = 9014;
+pub const ErrSharedLockLost: u16 = 9015;
 pub const ErrUserPrefixMismatch: u16 = 20003;

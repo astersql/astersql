@@ -25,6 +25,17 @@
 use super::{errcode::*, errname::MySQLErrName, infoschema::*};
 use std::sync::{Mutex, MutexGuard};
 
+#[test]
+fn go_merge_3_shared_lock_lost_error_matches_go() {
+    assert_eq!(ErrSharedLockLost, 9015);
+    let message = &MySQLErrName[&ErrSharedLockLost];
+    assert_eq!(
+        message.Raw,
+        "Shared lock was lost during lock upgrade; transaction cannot continue, txnStartTS=%d, key=%s"
+    );
+    assert_eq!(message.RedactArgPos, vec![1]);
+}
+
 /// 保护 infoschema 全局统计的测试互斥锁。
 static STATS_TEST_LOCK: Mutex<()> = Mutex::new(());
 

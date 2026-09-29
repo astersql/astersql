@@ -1210,6 +1210,7 @@ pub static MySQLErrName: LazyLock<HashMap<u16, mysql::ErrMessage>> = LazyLock::n
         ErrTiFlashServerTimeout => mysql::Message("TiFlash server timeout", &[]),
         ErrTiFlashServerBusy =>    mysql::Message("TiFlash server is busy", &[]),
         ErrTiFlashBackfillIndex => mysql::Message("TiFlash backfill index failed: %s", &[]),
+        ErrSharedLockLost => mysql::Message("Shared lock was lost during lock upgrade; transaction cannot continue, txnStartTS=%d, key=%s", &[1]),
         ErrResolveLockTimeout =>   mysql::Message("Resolve lock timeout", &[]),
         ErrRegionUnavailable =>    mysql::Message("Region is unavailable", &[]),
         // In most cases, the error `ErrTxnAbortedByGC` is caused by the transaction runs too long, instead of improper GC
