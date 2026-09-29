@@ -2675,7 +2675,8 @@ impl ConcreteSession {
             astersql_sessionctx_vardef::TiDBOptAdvancedJoinHint
                 | astersql_sessionctx_vardef::TiDBEnableINLJoinInnerMultiPattern
                 | astersql_sessionctx_vardef::TiDBEnableRateLimitAction
-        ) || (global_scope && name == "autocommit") {
+        ) || (global_scope && name == "autocommit")
+        {
             let value = if global_scope {
                 self.domain
                     .global_system_variable(&name)

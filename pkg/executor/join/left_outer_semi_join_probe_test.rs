@@ -18,7 +18,6 @@
 // 验证匹配标记列（true/false/NULL）、重复 build key 只输出一行 outer，
 // 以及 spill/恢复后标记语义不变。
 
-
 use crate::base_join_probe::{HashJoinContext, Probe, new_join_probe};
 use crate::joiner::{JoinType, Joiner, Predicate, Row};
 use crate::row_table_builder::Value;

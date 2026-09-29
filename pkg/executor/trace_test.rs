@@ -17,7 +17,6 @@
 //
 // 可运行用例校验 `dfsTree` 与 `generateLogResult`。
 
-
 use crate::trace::{
     RawSpan, TraceChunk, TraceLog, TraceLogField, TraceNode, TraceTimespan, dfsTree,
     generateLogResult,

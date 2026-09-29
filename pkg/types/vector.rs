@@ -219,8 +219,8 @@ pub fn PeekBytesAsVectorFloat32(bytes: &[u8]) -> Result<usize, errors::SharedErr
 
     // 首 4 字节为维度；总长 = 4 + dims*4
     let elements = u32::from_le_bytes(bytes[..4].try_into().expect("four-byte header"));
-    let total_data_size = elements.wrapping_mul(4).wrapping_add(4);
-    if bytes.len() < total_data_size as usize {
+    let total_data_size = u64::from(elements) * 4 + 4;
+    if (bytes.len() as u64) < total_data_size {
         return Err(new_error(format!(
             "bad VectorFloat32 value (len={}, expected={total_data_size})",
             bytes.len()

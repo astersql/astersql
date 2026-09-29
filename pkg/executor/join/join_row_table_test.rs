@@ -18,7 +18,6 @@
 // 行表是 Hash Join v2 构建侧把构建行按固定内存布局编码后的容器；本测试覆盖：
 // 平台字长能否容纳指针、段（segment）行数/有效键/内存统计，以及多段合并后的全局行定位。
 
-
 use crate::join_row_table::{RowTable, RowTableSegment, SIZE_OF_ELEMENT_SIZE, SIZE_OF_NEXT_PTR};
 use crate::join_table_meta::EncodedRow;
 use std::sync::atomic::{AtomicBool, Ordering};

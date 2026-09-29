@@ -18,7 +18,6 @@
 // 覆盖：重复 key 匹配与 hash miss、other condition 过滤与 chunk 容量切分、
 // restore/spill 后剩余探测行保留，以及探测 key 列越界拒绝。
 
-
 use crate::base_join_probe::{HashJoinContext, Probe, new_join_probe};
 use crate::joiner::{JoinType, Joiner, Predicate, Row};
 use crate::row_table_builder::Value;

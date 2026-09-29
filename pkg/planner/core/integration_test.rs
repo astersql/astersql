@@ -2627,8 +2627,7 @@ fn ordered_table_limit_uses_expected_scan_count() {
             assert!(scan.KeepOrder);
             // Go AdjustRowCountForTableScanByLimit adds the configured
             // ordering selectivity ratio after the uniform LIMIT estimate.
-            let expected = 1.0
-                + 9_999.0 * scan.s_ctx().GetSessionVars().OptOrderingIdxSelRatio;
+            let expected = 1.0 + 9_999.0 * scan.s_ctx().GetSessionVars().OptOrderingIdxSelRatio;
             assert!((scan.stats_count() - expected).abs() < 1e-9);
             return true;
         }

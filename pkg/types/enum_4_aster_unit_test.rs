@@ -279,6 +279,7 @@ fn eval_types_and_explain_formats_preserve_aliases_values_and_order() {
             "cost_trace",
             "plan_cache",
             "plan_tree",
+            "ru",
         ]
     );
 }

@@ -17,7 +17,6 @@
 //
 // 可执行用例验证元素顺序保持、merge 追加顺序以及 reset 后结果为空。
 
-
 use crate::aggfuncs::{
     DEF_BOOL_SIZE, DEF_DURATION_SIZE, DEF_FLOAT64_SIZE, DEF_INT64_SIZE, DEF_INTERFACE_SIZE,
     DEF_TIME_SIZE, DEF_UINT64_SIZE, SpillValue,

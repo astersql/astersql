@@ -15,7 +15,6 @@
 // 测试验证字符串窗口
 // 在 NULL 存在时仍能正确记录 presence，并回报拥有型内存增量。
 
-
 use crate::func_max_min::{BinaryJson, VectorFloat32};
 use crate::func_value::{
     FirstValue, LastValue, NthValue, Value4Decimal, Value4Duration, Value4Float32, Value4Float64,

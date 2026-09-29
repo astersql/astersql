@@ -89,7 +89,10 @@ fn identity_projection_eliminates_but_computed_projection_remains() {
     let mut parent = PlanNode::new(PlanKind::Projection).with_children(vec![identity]);
     parent.expressions = vec![crate::support::expr("a_plus_1", None)];
     let (result, changed) = ProjectionEliminator.Optimize(parent);
-    assert!(!changed, "Go ProjectionEliminator reports planChanged=false");
+    assert!(
+        !changed,
+        "Go ProjectionEliminator reports planChanged=false"
+    );
     assert_eq!(result.kind, PlanKind::Projection);
     assert_eq!(result.children[0].kind, PlanKind::TableScan);
 

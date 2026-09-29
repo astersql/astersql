@@ -18,7 +18,6 @@
 // 覆盖 Inner/LeftOuter 投影列序、条件求值的 Matched/Unmatched/HasNull，
 // 以及 Semi / AntiLeftOuterSemi（含 null-aware）与非法构造参数。
 
-
 use crate::joiner::{JoinType, Joiner, NaajType, OuterRowStatus, Predicate, Row};
 use crate::row_table_builder::Value;
 use std::sync::Arc;

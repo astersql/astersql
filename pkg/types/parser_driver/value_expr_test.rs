@@ -18,8 +18,133 @@
 // 表驱动覆盖 NULL、整数、浮点、字符串转义、二进制字面量、Decimal、
 // Duration 与 Time 等 Datum 种类的 SQL 字面量输出。
 
+use parser_ast::{InPlaceVisitor, Node, Walk};
 use parser_driver::{ValueExpr, format};
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use types_decimal::mydecimal::NewDecFromInt;
+
+thread_local! {
+    static GO_MERGE_10_COUNT_ALLOCATIONS: Cell<bool> = const { Cell::new(false) };
+    static GO_MERGE_10_ALLOCATION_COUNT: Cell<usize> = const { Cell::new(0) };
+}
+
+struct GoMerge10CountingAllocator;
+
+#[global_allocator]
+static GO_MERGE_10_ALLOCATOR: GoMerge10CountingAllocator = GoMerge10CountingAllocator;
+
+unsafe impl GlobalAlloc for GoMerge10CountingAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let _ = GO_MERGE_10_COUNT_ALLOCATIONS.try_with(|enabled| {
+            if enabled.get() {
+                let _ = GO_MERGE_10_ALLOCATION_COUNT.try_with(|count| count.set(count.get() + 1));
+            }
+        });
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(pointer, layout) }
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        let _ = GO_MERGE_10_COUNT_ALLOCATIONS.try_with(|enabled| {
+            if enabled.get() {
+                let _ = GO_MERGE_10_ALLOCATION_COUNT.try_with(|count| count.set(count.get() + 1));
+            }
+        });
+        unsafe { System.alloc_zeroed(layout) }
+    }
+
+    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let _ = GO_MERGE_10_COUNT_ALLOCATIONS.try_with(|enabled| {
+            if enabled.get() {
+                let _ = GO_MERGE_10_ALLOCATION_COUNT.try_with(|count| count.set(count.get() + 1));
+            }
+        });
+        unsafe { System.realloc(pointer, layout, new_size) }
+    }
+}
+
+struct GoMerge10Visitor {
+    events: Vec<&'static str>,
+    skip_children: bool,
+    leave_result: bool,
+}
+
+impl InPlaceVisitor for GoMerge10Visitor {
+    fn enter(&mut self, node: &mut dyn Node) -> bool {
+        self.events.push("enter");
+        if let Some(value) = node.as_any_mut().downcast_mut::<ValueExpr>() {
+            value.SetProjectionOffset(7);
+        } else if let Some(marker) = node
+            .as_any_mut()
+            .downcast_mut::<parser_driver::ParamMarkerExpr>()
+        {
+            marker.SetOrder(7);
+        } else {
+            panic!("unexpected node");
+        }
+        self.skip_children
+    }
+
+    fn leave(&mut self, _node: &mut dyn Node) -> bool {
+        self.events.push("leave");
+        self.leave_result
+    }
+}
+
+#[test]
+fn go_merge_10_value_and_param_marker_walk_in_place() {
+    let mut value = ValueExpr::default();
+    let mut marker = parser_driver::ParamMarkerExpr::default();
+    for skip_children in [false, true] {
+        for leave_result in [false, true] {
+            let mut visitor = GoMerge10Visitor {
+                events: Vec::new(),
+                skip_children,
+                leave_result,
+            };
+            assert_eq!(Walk(&mut value, &mut visitor), leave_result);
+            assert_eq!(visitor.events, ["enter", "leave"]);
+            assert_eq!(value.GetProjectionOffset(), 7);
+
+            visitor.events.clear();
+            assert_eq!(Walk(&mut marker, &mut visitor), leave_result);
+            assert_eq!(visitor.events, ["enter", "leave"]);
+            assert_eq!(marker.Order, 7);
+        }
+    }
+}
+
+#[test]
+fn go_merge_10_value_and_param_marker_walk_without_allocations() {
+    let mut value = ValueExpr::default();
+    let mut marker = parser_driver::ParamMarkerExpr::default();
+    let mut visitor = GoMerge10Visitor {
+        events: Vec::with_capacity(2),
+        skip_children: false,
+        leave_result: true,
+    };
+
+    // Warm up thread-local state and the visitor's event storage before measuring.
+    GO_MERGE_10_ALLOCATION_COUNT.with(|count| count.set(0));
+    assert!(Walk(&mut value, &mut visitor));
+    visitor.events.clear();
+    assert!(Walk(&mut marker, &mut visitor));
+    visitor.events.clear();
+
+    GO_MERGE_10_COUNT_ALLOCATIONS.with(|enabled| enabled.set(true));
+    for _ in 0..100 {
+        assert!(Walk(&mut value, &mut visitor));
+        visitor.events.clear();
+        assert!(Walk(&mut marker, &mut visitor));
+        visitor.events.clear();
+    }
+    GO_MERGE_10_COUNT_ALLOCATIONS.with(|enabled| enabled.set(false));
+    assert_eq!(GO_MERGE_10_ALLOCATION_COUNT.with(Cell::get), 0);
+}
 
 /// 用默认 Restore 标志把 Datum 还原为 SQL 字符串。
 fn restore(datum: types::Datum) -> String {

@@ -70,6 +70,7 @@ pub fn init() -> DriverHooks {
 #[derive(Clone, Default)]
 /// 嵌入 Go `ast.TexprNode` 的表达式节点公共字段（含字段类型）。
 pub struct TexprNode {
+    pub node_text: parser_ast::base::AstNode,
     pub Type: types::FieldType,
 }
 
@@ -93,6 +94,42 @@ impl Deref for ValueExpr {
 impl DerefMut for ValueExpr {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.TexprNode
+    }
+}
+
+impl parser_ast::Node for ValueExpr {
+    fn node_text(&self) -> &parser_ast::base::AstNode {
+        &self.TexprNode.node_text
+    }
+
+    fn node_text_mut(&mut self) -> &mut parser_ast::base::AstNode {
+        &mut self.TexprNode.node_text
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
+    fn into_any(self: Box<Self>) -> Box<dyn Any> {
+        self
+    }
+
+    fn accept(&self, visitor: &mut dyn parser_ast::Visitor) -> bool {
+        if visitor.enter(self) {
+            return visitor.leave(self);
+        }
+        visitor.leave(self)
+    }
+
+    fn accept_in_place(&mut self, visitor: &mut dyn parser_ast::InPlaceVisitor) -> bool {
+        if visitor.enter(self) {
+            return visitor.leave(self);
+        }
+        visitor.leave(self)
     }
 }
 
@@ -330,6 +367,42 @@ impl Deref for ParamMarkerExpr {
 impl DerefMut for ParamMarkerExpr {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.ValueExpr
+    }
+}
+
+impl parser_ast::Node for ParamMarkerExpr {
+    fn node_text(&self) -> &parser_ast::base::AstNode {
+        &self.ValueExpr.TexprNode.node_text
+    }
+
+    fn node_text_mut(&mut self) -> &mut parser_ast::base::AstNode {
+        &mut self.ValueExpr.TexprNode.node_text
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
+    fn into_any(self: Box<Self>) -> Box<dyn Any> {
+        self
+    }
+
+    fn accept(&self, visitor: &mut dyn parser_ast::Visitor) -> bool {
+        if visitor.enter(self) {
+            return visitor.leave(self);
+        }
+        visitor.leave(self)
+    }
+
+    fn accept_in_place(&mut self, visitor: &mut dyn parser_ast::InPlaceVisitor) -> bool {
+        if visitor.enter(self) {
+            return visitor.leave(self);
+        }
+        visitor.leave(self)
     }
 }
 

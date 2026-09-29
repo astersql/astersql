@@ -58,13 +58,14 @@ fn correlate_builds_inner_predicate_and_preserves_apply_contract() {
     let right = crate::support::leaf(2, "inner", vec![10], 4.0);
     let join = crate::support::join(10, JoinType::Semi, left, right, Some((1, 10)));
     let mut join = join;
-    if let JoinNode::Join { preferred_method, .. } = &mut join.node {
+    if let JoinNode::Join {
+        preferred_method, ..
+    } = &mut join.node
+    {
         *preferred_method = Some("correlate".to_owned());
     }
 
-    let (optimized, changed) = CorrelateSolver
-        .Optimize(join)
-        .expect("correlate succeeds");
+    let (optimized, changed) = CorrelateSolver.Optimize(join).expect("correlate succeeds");
 
     assert!(changed);
     let JoinNode::Apply {

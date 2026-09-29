@@ -14,7 +14,6 @@
 //
 // 测试验证整组 MAX/MIN 排序，以及单调队列在入队/过期剔除后的队头极值。
 
-
 use crate::func_max_min::{
     BinaryJson, DurationValue, MaxMin, MinMaxDeque, NamedValue, TimeValue, update_float32,
     update_float64,

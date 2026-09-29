@@ -18,7 +18,6 @@
 // 覆盖匹配输出、未匹配时补默认左列、outer build 扫描未匹配右行，
 // 以及 other condition 拒绝时仍保留 outer 行。
 
-
 use crate::base_join_probe::{HashJoinContext, Probe, new_join_probe};
 use crate::hash_join_v2::{HashJoinCtxV2, HashJoinV2Exec};
 use crate::joiner::{JoinType, Joiner, Predicate, Row};

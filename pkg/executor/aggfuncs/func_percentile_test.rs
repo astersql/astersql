@@ -17,7 +17,6 @@
 //
 // 测试验证 50% 序数秩选择、忽略 NULL，以及合并后源缓冲被清空。
 
-
 /// 验证 50% 百分位对 \[9,1,5,3,7\]（忽略 NULL）选出中位 5，且 merge 清空源。
 #[test]
 fn percentile_selects_one_based_ordinal_and_ignores_nulls() {

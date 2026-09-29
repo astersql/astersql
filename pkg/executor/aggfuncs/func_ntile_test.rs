@@ -14,7 +14,6 @@
 //
 // 测试验证余数优先分配给靠前桶的分桶序列。
 
-
 /// 验证 8 行分 3 桶时，余数 2 使前两桶各多一行：大小为 3/3/2。
 #[test]
 fn ntile_distributes_remainder_to_earlier_buckets() {

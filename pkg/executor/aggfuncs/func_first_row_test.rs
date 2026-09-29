@@ -18,7 +18,6 @@
 // 验证「无行」与「首行为 SQL NULL」的区分，以及 merge 时已锁定的 NULL 首行
 // 不会被对侧非空值覆盖。
 
-
 use crate::func_first_row::{
     FirstRow, FirstRow4Decimal, FirstRow4Duration, FirstRow4Enum, FirstRow4Float32,
     FirstRow4Float64, FirstRow4Int, FirstRow4Json, FirstRow4Set, FirstRow4String, FirstRow4Time,

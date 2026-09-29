@@ -16,7 +16,6 @@
 // 窗口函数（window function）按分区内排序结果编号，不改变结果集行数；
 // peer 指排序键相同的并列行。
 
-
 /// 验证 RANK 与 DENSE_RANK 仅在 peer 出现 gap 后才分叉。
 ///
 /// 输入 `[1,1,3,4]`：并列 1 后，RANK 跳到 3（留出并列占位），DENSE_RANK 连续为 2。

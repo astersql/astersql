@@ -26,7 +26,6 @@
     unused_mut
 )]
 
-
 /// 可执行契约测试依赖的生产聚合实现。
 use crate::func_avg::FloatAvg;
 use crate::func_count::CountAggregator;

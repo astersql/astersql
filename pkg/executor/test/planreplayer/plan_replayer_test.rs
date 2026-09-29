@@ -19,7 +19,6 @@
 // 再在另一环境加载以复现优化器决策。本文件测试基于 `PlanReplayerBackend`
 // mock 的生命周期。
 
-
 use std::collections::HashSet;
 
 use astersql_executor::plan_replayer::{

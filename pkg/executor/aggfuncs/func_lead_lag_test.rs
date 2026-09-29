@@ -18,7 +18,6 @@
 // 测试直接驱动 `Lead`/`Lag`：验证 offset 越界时使用当前行 default 表达式的取值。
 // 窗口函数（window function）按分区（partition）内行序取值，不改变结果集行数。
 
-
 use crate::func_lead_lag::{Lag, Lead, LeadLagRow};
 use crate::func_rank::DEF_ROW_SIZE;
 

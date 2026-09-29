@@ -310,7 +310,10 @@ fn null_rejected_inner_predicate_converts_left_outer_join() {
         row_count: 10.0,
     };
     let (result, changed) = ConvertOuterToInnerJoin.Optimize(selection).unwrap();
-    assert!(!changed, "Go ConvertOuterToInnerJoin reports planChanged=false");
+    assert!(
+        !changed,
+        "Go ConvertOuterToInnerJoin reports planChanged=false"
+    );
     // Selection 根保留，其子 Join 类型应变为 Inner。
     match result.node {
         JoinNode::Selection { child, .. } => match child.node {

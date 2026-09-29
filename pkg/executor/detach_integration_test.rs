@@ -19,7 +19,6 @@
 // Selection/Projection 与会话并发等）；底部可执行用例验证
 // `TableReaderExecutorContext` 拆离后不再绑定真实会话。
 
-
 use crate::detach::{
     DetachableBuildPbContext, DetachableDistSqlContext, DetachableExprContext,
     DetachableRangeContext, TableReaderExecutorContext,

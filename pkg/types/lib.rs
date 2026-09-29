@@ -62,6 +62,8 @@ mod errors_test;
 #[cfg(test)]
 mod etc_test;
 #[cfg(test)]
+mod explain_format_test;
+#[cfg(test)]
 mod export_test;
 #[cfg(test)]
 mod field_type_5_aster_unit_test;

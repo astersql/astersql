@@ -14,7 +14,6 @@
 //
 // 测试覆盖 Float AVG 的 partial 合并、NULL 忽略，以及 DISTINCT AVG。
 
-
 use crate::func_avg::{DecimalAvg, DistinctFloatAvg, FloatAvg};
 use crate::func_sum::Decimal;
 

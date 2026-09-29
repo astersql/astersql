@@ -817,9 +817,9 @@ impl DataSource {
                         filters.retain(|filter| {
                             !path.AccessConds.iter().any(|access| {
                                 access.Equal(eval, filter.as_ref())
-                                    && !remained.iter().any(|residual| {
-                                        residual.Equal(eval, filter.as_ref())
-                                    })
+                                    && !remained
+                                        .iter()
+                                        .any(|residual| residual.Equal(eval, filter.as_ref()))
                             })
                         });
                     }

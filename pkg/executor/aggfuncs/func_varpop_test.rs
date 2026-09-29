@@ -14,7 +14,6 @@
 //
 // 测试验证 `VarianceState::merge` 在分区合并后不损失精度。
 
-
 /// 校验两分区总体方差合并后与一次性累计结果一致（期望值为 1.25）。
 #[test]
 fn population_variance_merges_partitions_without_precision_loss() {

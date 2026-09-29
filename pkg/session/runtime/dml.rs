@@ -422,7 +422,8 @@ impl ConcreteSession {
     pub(super) fn record_transaction_locking_table(&self, table: &astersql_meta_model::TableInfo) {
         self.record_transaction_related_table(table);
         let mut state = self.state.borrow_mut();
-        if state.transaction.is_some() && table.TempTableType == astersql_meta_model::TempTableNone {
+        if state.transaction.is_some() && table.TempTableType == astersql_meta_model::TempTableNone
+        {
             state.transaction_locking_table_ids.insert(table.ID);
         }
     }

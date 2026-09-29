@@ -18,7 +18,6 @@
 // 覆盖：仅输出命中的 probe 行、重复 build 键不重复外表行、other condition / NULL
 // 结果拒绝候选，以及左侧 build 时只扫描已使用的 build 行。
 
-
 use crate::base_join_probe::{HashJoinContext, Probe, new_join_probe};
 use crate::joiner::{JoinType, Joiner, Predicate, Row};
 use crate::row_table_builder::Value;

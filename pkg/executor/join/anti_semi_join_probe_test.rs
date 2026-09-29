@@ -18,7 +18,6 @@
 // 活跃测试覆盖：重复 build key 只输出未匹配行、NULL/恢复 Chunk/reset 路径、
 // 左侧 build 后扫描未命中 build 行，以及 spill 仅保留未处理 probe 行。
 
-
 use crate::base_join_probe::{HashJoinContext, Probe, new_join_probe};
 use crate::joiner::{JoinType, Joiner, Predicate, Row};
 use crate::row_table_builder::Value;

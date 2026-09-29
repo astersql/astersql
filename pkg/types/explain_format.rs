@@ -44,6 +44,8 @@ pub const ExplainFormatCostTrace: &str = "cost_trace";
 pub const ExplainFormatPlanCache: &str = "plan_cache";
 /// 计划树格式。
 pub const ExplainFormatPlanTree: &str = "plan_tree";
+/// RU 代价输出格式。
+pub const ExplainFormatRU: &str = "ru";
 
 /// 全部合法 EXPLAIN 格式名称列表。
 pub const ExplainFormats: &[&str] = &[
@@ -60,4 +62,5 @@ pub const ExplainFormats: &[&str] = &[
     ExplainFormatCostTrace,
     ExplainFormatPlanCache,
     ExplainFormatPlanTree,
+    ExplainFormatRU,
 ];

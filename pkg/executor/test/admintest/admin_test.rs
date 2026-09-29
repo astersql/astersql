@@ -14,7 +14,6 @@
 //
 // 可执行测试用内存 [`AdminTable`] 覆盖核心一致性修复语义。
 
-
 use crate::{AdminSessionVars, AdminTable, Inconsistency};
 use astersql_testkit::mockstore::CreateMockStoreAndDomain;
 use astersql_testkit::{NewTestKit, Rows, TestKit};

@@ -13,7 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 use crate::ddl::{Job, JobState};
 use crate::job_submitter::{
     JobSpec, JobSubmitter, build_query_string_from_jobs, merge_create_table_jobs,

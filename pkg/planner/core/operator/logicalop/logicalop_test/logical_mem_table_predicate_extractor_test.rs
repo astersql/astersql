@@ -120,11 +120,14 @@ fn TestMetricTableExtractor() {
     );
     assert_eq!(extractor.Quantiles, ["0.9".into()].into_iter().collect());
     assert_eq!((extractor.StartTime, extractor.EndTime), (10, 20));
-    assert_eq!(remaining, [
-        Predicate::Eq("instance".into(), text("tidb-0")),
-        Predicate::In("instance".into(), vec![text("tidb-0"), text("tidb-1")]),
-        Predicate::Eq("unhandled".into(), text("keep")),
-    ]);
+    assert_eq!(
+        remaining,
+        [
+            Predicate::Eq("instance".into(), text("tidb-0")),
+            Predicate::In("instance".into(), vec![text("tidb-0"), text("tidb-1")]),
+            Predicate::Eq("unhandled".into(), text("keep")),
+        ]
+    );
 
     extractor.ExtractPredicates(&[Predicate::Eq("quantile".into(), PredicateValue::F64(1.1))]);
     assert!(!extractor.SkipRequest);
@@ -157,7 +160,10 @@ fn TestMetricsSummaryTableExtractor() {
         Predicate::In("metrics_name".into(), vec![text("cpu"), text("memory")]),
         Predicate::Eq("quantile".into(), PredicateValue::F64(0.99)),
     ]);
-    assert_eq!(remained, [Predicate::Eq("quantile".into(), PredicateValue::F64(0.99))]);
+    assert_eq!(
+        remained,
+        [Predicate::Eq("quantile".into(), PredicateValue::F64(0.99))]
+    );
     assert_eq!(extractor.MetricsNames.len(), 2);
     assert!(extractor.Quantiles.contains("0.99"));
 
@@ -184,11 +190,20 @@ fn TestMetricsSummaryTableExtractor() {
         Predicate::Eq("other".into(), text("keep")),
     ]);
     assert_eq!(extractor.Quantiles, ["0.95".into()].into_iter().collect());
-    assert_eq!(remained, [
-        Predicate::In("quantile".into(), vec![PredicateValue::F64(0.999), PredicateValue::F64(0.95)]),
-        Predicate::In("quantile".into(), vec![PredicateValue::F64(0.99), PredicateValue::F64(0.95)]),
-        Predicate::Eq("other".into(), text("keep")),
-    ]);
+    assert_eq!(
+        remained,
+        [
+            Predicate::In(
+                "quantile".into(),
+                vec![PredicateValue::F64(0.999), PredicateValue::F64(0.95)]
+            ),
+            Predicate::In(
+                "quantile".into(),
+                vec![PredicateValue::F64(0.99), PredicateValue::F64(0.95)]
+            ),
+            Predicate::Eq("other".into(), text("keep")),
+        ]
+    );
 }
 
 /// 校验巡检结果表：规则与检查项过滤。

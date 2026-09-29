@@ -2152,11 +2152,7 @@ fn test_cbo_issue_62438_cost_trace_structure() {
         // Candidate enumeration may shift every display ID by one constant;
         // compare the complete Go row and preserve relative IDs across nodes.
         let start = row.find('_').expect("EXPLAIN row has a plan ID") + 1;
-        let end = start
-            + row[start..]
-                .bytes()
-                .take_while(u8::is_ascii_digit)
-                .count();
+        let end = start + row[start..].bytes().take_while(u8::is_ascii_digit).count();
         let id = row[start..end].parse().expect("numeric plan ID");
         let mut normalized = row.to_owned();
         normalized.replace_range(start..end, "#");

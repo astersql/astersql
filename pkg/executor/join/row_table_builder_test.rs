@@ -18,7 +18,6 @@
 // 覆盖 join key 序列化与分区、过滤行丢弃/保留、恢复 chunk 分区形状校验、
 // 最大元素长度检查，以及非 2 的幂分区数拒绝。
 
-
 use crate::join_table_meta::{FieldKind, FieldType, new_table_meta};
 use crate::row_table_builder::{
     Chunk, RowTableBuilder, Value, calculate_fake_length, calculate_row_data_length,

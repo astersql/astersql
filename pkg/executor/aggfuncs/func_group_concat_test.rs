@@ -17,7 +17,6 @@
 //
 // 可执行用例覆盖 DISTINCT 去重、NULL 跳过、分隔符拼接与最大长度截断。
 
-
 use crate::func_group_concat::GroupConcat;
 
 /// 校验 DISTINCT+分隔符拼接，以及非 DISTINCT 下超长截断与 truncated 标志。

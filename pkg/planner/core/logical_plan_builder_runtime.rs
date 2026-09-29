@@ -2905,9 +2905,10 @@ fn build_select_windows(
                 .GetSystemVar(vardef_dependency::TiDBEnablePipelinedWindowFunction)
                 // Match Go's session default when this context has not loaded
                 // the system variable yet.
-                .map_or(vardef_dependency::DefEnablePipelinedWindowFunction, |value| {
-                    matches!(value.to_ascii_lowercase().as_str(), "1" | "on" | "true")
-                });
+                .map_or(
+                    vardef_dependency::DefEnablePipelinedWindowFunction,
+                    |value| matches!(value.to_ascii_lowercase().as_str(), "1" | "on" | "true"),
+                );
             if pipelined_window_enabled {
                 let (use_default, default_frame) = aggregation::UseDefaultFrame(Name);
                 if use_default {

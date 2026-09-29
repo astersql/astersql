@@ -260,8 +260,14 @@ fn test_builtin_int_is_true_false() {
 fn prepared_builtin_range_query_is_safe_across_sessions() {
     let mut harness = Harness::new();
     exec(&mut harness.tk, "use test");
-    exec(&mut harness.tk, "set global tidb_enable_instance_plan_cache=1");
-    exec(&mut harness.tk, "create table t (id int, created_at datetime)");
+    exec(
+        &mut harness.tk,
+        "set global tidb_enable_instance_plan_cache=1",
+    );
+    exec(
+        &mut harness.tk,
+        "create table t (id int, created_at datetime)",
+    );
     exec(
         &mut harness.tk,
         "insert into t values (7, '2026-07-23 00:30:00')",

@@ -21,8 +21,25 @@
 
 use crate::datum::NewDatum;
 use crate::vector::{
-    InitVectorFloat32, ParseVectorFloat32, ZeroCopyDeserializeVectorFloat32, ZeroVectorFloat32,
+    InitVectorFloat32, ParseVectorFloat32, PeekBytesAsVectorFloat32,
+    ZeroCopyDeserializeVectorFloat32, ZeroVectorFloat32,
 };
+
+#[test]
+fn go_merge_10_vector_dimension_overflow_is_rejected() {
+    let header = [0, 0, 0, 0x40];
+    let expected = "bad VectorFloat32 value (len=4, expected=4294967300)";
+    assert_eq!(
+        PeekBytesAsVectorFloat32(&header).unwrap_err().to_string(),
+        expected
+    );
+    assert_eq!(
+        ZeroCopyDeserializeVectorFloat32(&header)
+            .unwrap_err()
+            .to_string(),
+        expected
+    );
+}
 
 /// 校验小端序列化布局：维度字 + 两个 f32 字。
 #[test]

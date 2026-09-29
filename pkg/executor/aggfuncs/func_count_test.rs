@@ -17,7 +17,6 @@
 //
 // 测试覆盖 COUNT 的 NULL/partial/slide，以及多列 DISTINCT 跳过含 NULL 行。
 
-
 use crate::func_count::CountAggregator;
 use crate::func_count_distinct::{CountDistinctMulti, DistinctValue};
 

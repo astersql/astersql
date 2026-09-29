@@ -19,7 +19,6 @@
 // 未命中时为 true（表示“不存在匹配”）；other condition 只改变标记，不丢行。
 // Spill（溢写）场景下未处理完的探测块应保留。
 
-
 use crate::base_join_probe::{HashJoinContext, Probe, new_join_probe};
 use crate::joiner::{JoinType, Joiner, Predicate, Row};
 use crate::row_table_builder::Value;

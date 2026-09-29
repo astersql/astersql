@@ -182,11 +182,18 @@ fn test_mpp_join_plan_golden_is_executed() {
     tk.MustExec("set @@session.tidb_enable_cascades_planner = 1", Vec::new());
     let mut failures = Vec::new();
     for index in 0..20 {
-        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| assert_plan_case(&tk, &suite, "TestMPPJoin", index, true))).is_err() {
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            assert_plan_case(&tk, &suite, "TestMPPJoin", index, true)
+        }))
+        .is_err()
+        {
             failures.push(index);
         }
     }
-    assert!(failures.is_empty(), "mismatched cascades golden indices: {failures:?}");
+    assert!(
+        failures.is_empty(),
+        "mismatched cascades golden indices: {failures:?}"
+    );
 }
 
 #[test]
@@ -234,7 +241,10 @@ fn nested_index_join_preserves_intermediate_lookup_keys() {
     prepare_mpp_join_fixture(&domain, &mut tk);
     for cascades in [false, true] {
         tk.MustExec(
-            &format!("set @@session.tidb_enable_cascades_planner = {}", u8::from(cascades)),
+            &format!(
+                "set @@session.tidb_enable_cascades_planner = {}",
+                u8::from(cascades)
+            ),
             Vec::new(),
         );
         let rows = tk.MustQuery(
@@ -247,7 +257,10 @@ fn nested_index_join_preserves_intermediate_lookup_keys() {
             tk.MustQuery(residual_sql, Vec::new()).Rows(),
             vec![vec!["2".to_owned()]],
         );
-        tk.MustQuery(&format!("explain format = 'plan_tree' {residual_sql}"), Vec::new());
+        tk.MustQuery(
+            &format!("explain format = 'plan_tree' {residual_sql}"),
+            Vec::new(),
+        );
     }
 }
 
@@ -258,7 +271,10 @@ fn rewritten_semi_join_preserves_null_rejecting_filters() {
     prepare_mpp_join_fixture(&domain, &mut tk);
     for cascades in [false, true] {
         tk.MustExec(
-            &format!("set @@session.tidb_enable_cascades_planner = {}", u8::from(cascades)),
+            &format!(
+                "set @@session.tidb_enable_cascades_planner = {}",
+                u8::from(cascades)
+            ),
             Vec::new(),
         );
         assert_plan_case(&tk, &suite, "TestMPPJoin", 12, cascades);
@@ -281,11 +297,18 @@ fn test_mpp_join_legacy_plan_golden_is_executed() {
     tk.MustExec("set @@session.tidb_enable_cascades_planner = 0", Vec::new());
     let mut failures = Vec::new();
     for index in 0..20 {
-        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| assert_plan_case(&tk, &suite, "TestMPPJoin", index, false))).is_err() {
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            assert_plan_case(&tk, &suite, "TestMPPJoin", index, false)
+        }))
+        .is_err()
+        {
             failures.push(index);
         }
     }
-    assert!(failures.is_empty(), "mismatched legacy golden indices: {failures:?}");
+    assert!(
+        failures.is_empty(),
+        "mismatched legacy golden indices: {failures:?}"
+    );
 }
 
 /// Go `TestMPPExchangeSender`：两种 planner 模式都须产生相同的 PassThrough MPP 计划。

@@ -18,7 +18,6 @@
 // 验证 probe 剩余行 spill/恢复后仍保持 Left Outer 未匹配语义，以及
 // `HashJoinSpillHelper` 对 build/probe 两侧的写入、恢复与 round 限制。
 
-
 use crate::base_join_probe::{HashJoinContext, Probe, new_join_probe};
 use crate::hash_join_spill_helper::HashJoinSpillHelper;
 use crate::join_row_table::RowTableSegment;
