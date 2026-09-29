@@ -2,7 +2,24 @@
 
 批次：【批次 1】依赖：无
 
-状态：未开始
+状态：已完成，待回归
+
+## 执行记录（2026-09-29）
+
+Go→Rust 覆盖：
+
+| Go 文件 | Rust 落点与证据 |
+| --- | --- |
+| `checker.go` / `checker_test.go` | `checker.rs` 增加 `MinCount=3022`、`MaxCount=3023` 聚合白名单；`checker_test.rs` 的 `go_merge_4_max_min_count_are_supported` 及既有全枚举测试覆盖。 |
+| `error.go` / `error_test.go` | `error.rs` 增加 TiKV 类 `ErrSharedLockLost`，复用已在 Rust `pkg/errno` 定义的 9015 错误码；`error_test.rs` 验证 SQL 错误码及完整错误原型列表。 |
+| `kv.go` / `kv_test.go` | `kv.rs` 增加同步 `CoprRequestLimiter` 与查询范围的 `QueryCopStoreLimiter`，覆盖非正容量、阻塞/释放、取消、重复释放 panic、32 并发请求容量上限、store 0、同 store 身份复用及跨 store 独立性；`Request` 增加 Go 对应限流器和批处理字段；`kv_test.rs` 的 `go_merge_4_*` 验证。同步等待与现有 `pkg/store/copr` 同步发送模型一致。Rust `Request` 的构造点已同步更新。实际 cop RPC 的限流与批处理消费由清单任务 48 的 `pkg/store/copr/coprocessor.go` 差异负责，distsql 请求设置由任务 42 负责。 |
+| `option.go` | `option.rs` 增加 `InternalTxnMViewMaintenance`；`option_test.rs` 验证常量值。 |
+
+红灯：新增测试后，`cargo test --manifest-path pkg/kv/Cargo.toml --lib go_merge_4` 退出 101，编译器报告缺少 `ErrSharedLockLost`、`NewCoprRequestLimiter`、`NewQueryCopStoreLimiter`。修复后同一命令通过 8 项；补充选项测试后 `cargo test --manifest-path pkg/kv/Cargo.toml --lib` 通过 69 项，1 项既有测试忽略。`make lint`、`git diff --check`、仅针对本任务 Rust 文件的 `rustfmt --edition 2024 --check ...` 通过。`cargo check -p astersql-store-driver --message-format short` 和 `cargo test -p astersql-store-driver --lib --no-run --message-format short` 通过。
+
+待回归原因：`cargo fmt --all -- --check` 退出 1，首个差异位于未改动的 `pkg/ddl/job_submitter_test.rs`，另有大量任务外文件格式差异；`cargo check -p astersql-session -p astersql-store-driver` 退出 101，`pkg/sessionctx/variable/session.rs` 引用当前 `RUV2Config` 不存在的字段（例如 `resource_manager_read_cnt`）。这两项不是本任务 Rust 改动产生的诊断，需在相关并行任务稳定后重跑。风险：`pkg/kv` API 已编译和测试，但端到端 cop RPC 限流与批处理行为须由任务 42/48 接线后验证；当前仅有局部 API 证据。正确性风险集中在跨包接线，兼容性风险集中在 `Request` 新字段的跨包构造点，性能风险为阻塞取消最多 10ms 的轮询延迟。
+
+回归复查：在最新共享工作区重跑 `cargo fmt --all -- --check`，仍有 57 个格式差异，且无一位于本任务改动文件；`cargo check -p astersql-session -p astersql-store-driver --message-format short` 仍因 `pkg/sessionctx/variable/session.rs` 的 13 个 `RUV2Config` 未知字段错误失败。`cargo test --manifest-path pkg/kv/Cargo.toml --lib go_merge_4` 再次通过 8 项；`cargo test -p astersql-store-driver --lib --no-run --message-format short` 与 `git diff --check` 再次通过。状态继续保留为 `已完成，待回归`，等待这两项任务外全局门槛恢复后删除任务文件。
 
 目的：逐项同步本组 Go 文件在合并中引入的行为与测试意图，保持 Rust 实现和 Go 最新逻辑等价。
 

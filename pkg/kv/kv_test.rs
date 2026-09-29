@@ -24,6 +24,125 @@ use protobuf::Message;
 use rand::Rng;
 use resourcegrouptag_dependency::resource_group_tag::DecodeResourceGroupTag;
 
+#[test]
+fn go_merge_4_request_limiter_capacity_and_store_identity() {
+    assert!(kv::NewCoprRequestLimiter(0).is_none());
+    assert!(kv::NewCoprRequestLimiter(-1).is_none());
+    let limiter = kv::NewCoprRequestLimiter(1).unwrap();
+    assert_eq!(limiter.Capacity(), 1);
+    assert!(limiter.TryAcquire());
+    assert!(!limiter.TryAcquire());
+    limiter.Release();
+    assert!(limiter.TryAcquire());
+    limiter.Release();
+
+    assert!(kv::NewQueryCopStoreLimiter(0).is_none());
+    assert!(kv::NewQueryCopStoreLimiter(-1).is_none());
+    let stores = kv::NewQueryCopStoreLimiter(1).unwrap();
+    assert_eq!(stores.Capacity(), 1);
+    assert!(stores.GetStoreLimiter(0).is_none());
+    let first = stores.GetStoreLimiter(1).unwrap();
+    assert!(std::sync::Arc::ptr_eq(
+        &first,
+        &stores.GetStoreLimiter(1).unwrap()
+    ));
+    assert!(!std::sync::Arc::ptr_eq(
+        &first,
+        &stores.GetStoreLimiter(2).unwrap()
+    ));
+}
+
+#[test]
+fn go_merge_4_limiter_waits_releases_and_cancels() {
+    let limiter = kv::NewCoprRequestLimiter(1).unwrap();
+    let done = tokio_util::sync::CancellationToken::new();
+    assert!(limiter.TryAcquire());
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let waiting_limiter = limiter.clone();
+    let waiting_done = done.clone();
+    let worker = std::thread::spawn(move || {
+        let ctx = kv::Context::new();
+        let exit = waiting_limiter.AcquireWithContext(&ctx, &waiting_done);
+        sender.send(exit).unwrap();
+        if !exit {
+            waiting_limiter.Release();
+        }
+    });
+    assert!(
+        receiver
+            .recv_timeout(std::time::Duration::from_millis(30))
+            .is_err()
+    );
+    limiter.Release();
+    assert!(
+        !receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap()
+    );
+    worker.join().unwrap();
+    assert!(limiter.TryAcquire());
+    limiter.Release();
+
+    assert!(limiter.TryAcquire());
+    done.cancel();
+    assert!(limiter.AcquireWithContext(&kv::Context::new(), &done));
+    limiter.Release();
+
+    assert!(limiter.TryAcquire());
+    let cancelled = kv::Context::new();
+    cancelled.cancel();
+    assert!(limiter.AcquireWithContext(&cancelled, &tokio_util::sync::CancellationToken::new()));
+    limiter.Release();
+}
+
+#[test]
+#[should_panic(expected = "release a redundant cop request token")]
+fn go_merge_4_redundant_release_panics() {
+    kv::NewCoprRequestLimiter(1).unwrap().Release();
+}
+
+#[test]
+fn go_merge_4_per_store_limiters_isolate_capacity() {
+    let stores = kv::NewQueryCopStoreLimiter(1).unwrap();
+    let first = stores.GetStoreLimiter(1).unwrap();
+    let second = stores.GetStoreLimiter(2).unwrap();
+    assert!(first.TryAcquire());
+    assert!(!first.TryAcquire());
+    assert!(second.TryAcquire());
+    second.Release();
+    first.Release();
+}
+
+#[test]
+fn go_merge_4_concurrent_attempts_respect_capacity() {
+    let limiter = kv::NewCoprRequestLimiter(3).unwrap();
+    let active = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let peak = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut workers = Vec::new();
+    for _ in 0..32 {
+        let limiter = limiter.clone();
+        let active = active.clone();
+        let peak = peak.clone();
+        workers.push(std::thread::spawn(move || {
+            let ctx = kv::Context::new();
+            let done = tokio_util::sync::CancellationToken::new();
+            for _ in 0..20 {
+                assert!(!limiter.AcquireWithContext(&ctx, &done));
+                let now = active.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                peak.fetch_max(now, std::sync::atomic::Ordering::SeqCst);
+                std::thread::yield_now();
+                active.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                limiter.Release();
+            }
+        }));
+    }
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    assert_eq!(active.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(peak.load(std::sync::atomic::Ordering::SeqCst) <= 3);
+}
+
 /// 生成指定长度的随机十六进制字节序列，用作变长 SQL digest 测试数据。
 fn gen_rand_hex(length: usize) -> Vec<u8> {
     const CHARS: &[u8] = b"0123456789abcdef";

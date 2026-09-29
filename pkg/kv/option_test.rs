@@ -20,6 +20,11 @@
 
 use kv_dependency as kv;
 
+#[test]
+fn go_merge_4_materialized_view_internal_source() {
+    assert_eq!(kv::InternalTxnMViewMaintenance, "mview_maintain");
+}
+
 /// 验证 `SetCDCWriteSource` 合法值写入与越界错误文案。
 #[test]
 fn test_set_cdc_write_source() {

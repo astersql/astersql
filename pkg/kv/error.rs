@@ -84,6 +84,10 @@ pub static ErrWriteConflictInTiDB: LazyLock<Box<errors::Error>> = LazyLock::new(
     dbterror::ClassKV.NewStdErr(errno::ErrWriteConflictInTiDB, &message)
 });
 
+/// Shared-lock ownership may have been lost while upgrading; the transaction must abort.
+pub static ErrSharedLockLost: LazyLock<Box<errors::Error>> =
+    LazyLock::new(|| dbterror::ClassTiKV.NewStd(errno::ErrSharedLockLost));
+
 /// 悲观锁（Pessimistic Lock）过期：持锁时间超过 TTL。
 pub static ErrLockExpire: LazyLock<Box<errors::Error>> =
     LazyLock::new(|| dbterror::ClassTiKV.NewStd(errno::ErrLockExpire));

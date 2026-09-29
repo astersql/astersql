@@ -210,6 +210,8 @@ pub const InternalTxnBootstrap: &str = InternalTxnOthers;
 pub const InternalTxnMeta: &str = InternalTxnOthers;
 /// 内部事务来源：DDL。
 pub const InternalTxnDDL: &str = "ddl";
+/// Materialized view maintenance operations.
+pub const InternalTxnMViewMaintenance: &str = "mview_maintain";
 /// 内部事务来源：DDL backfill 前缀。
 pub const InternalTxnBackfillDDLPrefix: &str = "ddl_";
 /// 内部事务来源：缓存表（归入 others）。

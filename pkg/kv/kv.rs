@@ -25,7 +25,9 @@ use std::any::Any;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicU64};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 
 /// 更新未改变索引值时，以字节 '1' 标记该索引键值无需提交。
 // 更新未改变索引值时，以字节 '1' 标记该索引键值无需提交。
@@ -484,6 +486,102 @@ pub struct Paging {
 }
 
 // Request 是完整 KV/coprocessor 请求结构，字段顺序与 Go 保持一致。
+/// Limits the aggregate number of active coprocessor request attempts.
+pub struct CoprRequestLimiter {
+    in_flight: Mutex<usize>,
+    available: Condvar,
+    capacity: usize,
+}
+
+/// Create a limiter, or None when the requested capacity is nonpositive.
+pub fn NewCoprRequestLimiter(capacity: i32) -> Option<Arc<CoprRequestLimiter>> {
+    (capacity > 0).then(|| {
+        Arc::new(CoprRequestLimiter {
+            in_flight: Mutex::new(0),
+            available: Condvar::new(),
+            capacity: capacity as usize,
+        })
+    })
+}
+
+impl CoprRequestLimiter {
+    /// Return true when cancellation prevents admission; false means Release is required.
+    pub fn AcquireWithContext(&self, ctx: &Context, done: &CancellationToken) -> bool {
+        let mut in_flight = self.in_flight.lock().unwrap();
+        loop {
+            if ctx.is_cancelled() || done.is_cancelled() {
+                return true;
+            }
+            if *in_flight < self.capacity {
+                *in_flight += 1;
+                return false;
+            }
+            // CancellationToken cannot wake a std::Condvar; check it periodically.
+            in_flight = self
+                .available
+                .wait_timeout(in_flight, Duration::from_millis(10))
+                .unwrap()
+                .0;
+        }
+    }
+
+    /// Attempt admission without waiting.
+    pub fn TryAcquire(&self) -> bool {
+        let mut in_flight = self.in_flight.lock().unwrap();
+        if *in_flight >= self.capacity {
+            return false;
+        }
+        *in_flight += 1;
+        true
+    }
+
+    /// Release one attempt; redundant release is a programming error.
+    pub fn Release(&self) {
+        let mut in_flight = self.in_flight.lock().unwrap();
+        assert!(*in_flight > 0, "release a redundant cop request token");
+        *in_flight -= 1;
+        self.available.notify_one();
+    }
+
+    pub fn Capacity(&self) -> usize {
+        self.capacity
+    }
+}
+
+/// Query-scoped collection of independent per-store limiters.
+pub struct QueryCopStoreLimiter {
+    limit: i32,
+    stores: Mutex<HashMap<u64, Arc<CoprRequestLimiter>>>,
+}
+
+pub fn NewQueryCopStoreLimiter(limit: i32) -> Option<Arc<QueryCopStoreLimiter>> {
+    (limit > 0).then(|| {
+        Arc::new(QueryCopStoreLimiter {
+            limit,
+            stores: Mutex::new(HashMap::new()),
+        })
+    })
+}
+
+impl QueryCopStoreLimiter {
+    pub fn GetStoreLimiter(&self, store_id: u64) -> Option<Arc<CoprRequestLimiter>> {
+        if store_id == 0 {
+            return None;
+        }
+        let mut stores = self.stores.lock().unwrap();
+        Some(
+            stores
+                .entry(store_id)
+                .or_insert_with(|| NewCoprRequestLimiter(self.limit).unwrap())
+                .clone(),
+        )
+    }
+
+    pub fn Capacity(&self) -> i32 {
+        self.limit
+    }
+}
+
 pub struct Request {
     pub Tp: i64,
     pub StartTs: u64,
@@ -491,7 +589,8 @@ pub struct Request {
     pub KeyRanges: Option<KeyRanges>,
     pub PartitionIDAndRanges: Vec<PartitionIDAndRanges>,
     pub Concurrency: i32,
-    pub CoprRequestRateLimit: Option<util::RateLimit>,
+    pub CoprRequestLimiter: Option<Arc<CoprRequestLimiter>>,
+    pub QueryCopStoreLimiter: Option<Arc<QueryCopStoreLimiter>>,
     pub IsolationLevel: IsoLevel,
     pub Priority: i32,
     pub MemTracker: Option<memory::Tracker>,
@@ -514,6 +613,8 @@ pub struct Request {
     pub Paging: Paging,
     pub RequestSource: util::RequestSource,
     pub StoreBatchSize: i32,
+    pub AllowBatchTaskDataMerge: bool,
+    pub ExecuteBatchTasksSerially: bool,
     pub ResourceGroupName: String,
     pub LimitSize: u64,
     pub StoreBusyThreshold: Duration,

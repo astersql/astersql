@@ -72,6 +72,7 @@ fn test_error() {
         &*kv::ErrNotImplemented,
         &*kv::ErrWriteConflict,
         &*kv::ErrWriteConflictInTiDB,
+        &*kv::ErrSharedLockLost,
     ];
 
     for error in errors {
@@ -80,4 +81,11 @@ fn test_error() {
         assert_ne!(kv::errno::ErrUnknown, code);
         assert_eq!(error.Code() as u16, code);
     }
+}
+
+#[test]
+fn go_merge_4_shared_lock_lost_has_sql_error_code() {
+    let error = &*kv::ErrSharedLockLost;
+    let code = dbterror_dependency::terror::ToSQLError(error.as_ref()).Code;
+    assert_eq!(9015, code);
 }

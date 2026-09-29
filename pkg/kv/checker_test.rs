@@ -38,14 +38,23 @@ fn test_is_request_type_supported() {
     assert!(!checker.IsRequestTypeSupported(kv::ReqTypeChecksum, 0));
 }
 
+#[test]
+fn go_merge_4_max_min_count_are_supported() {
+    let checker = kv::RequestTypeSupportedChecker;
+    for req in [kv::ReqTypeSelect, kv::ReqTypeIndex, kv::ReqTypeDAG] {
+        assert!(checker.IsRequestTypeSupported(req, 3022));
+        assert!(checker.IsRequestTypeSupported(req, 3023));
+    }
+}
+
 /// Go converts subType to tipb.ExprType (int32), after request-specific checks.
 #[test]
 fn test_expr_type_conversion_matches_go() {
     let checker = kv::RequestTypeSupportedChecker;
     let supported = [
         0, 1, 2, 3, 4, 5, 6, 101, 102, 103, 104, 107, 121, 201, 3001, 3002, 3003, 3004, 3005, 3006,
-        3007, 3008, 3009, 3010, 3020, 3021, 4001, 4002, 4003, 4004, 4005, 4006, 4007, 4008, 4009,
-        4010, 4011, 10000, 10003,
+        3007, 3008, 3009, 3010, 3020, 3021, 3022, 3023, 4001, 4002, 4003, 4004, 4005, 4006, 4007,
+        4008, 4009, 4010, 4011, 10000, 10003,
     ];
     for req in [kv::ReqTypeSelect, kv::ReqTypeIndex, kv::ReqTypeDAG] {
         for offset in [0, 1_i64 << 32, -(1_i64 << 32), i64::MIN] {
@@ -57,7 +66,7 @@ fn test_expr_type_conversion_matches_go() {
                 );
             }
             for subtype in [
-                7, 100, 105, 106, 108, 120, 122, 202, 3000, 3011, 3019, 3022, 4000, 4012, 10001,
+                7, 100, 105, 106, 108, 120, 122, 202, 3000, 3011, 3019, 3024, 4000, 4012, 10001,
                 10002, 10004, 10005,
             ] {
                 let input = offset + subtype;

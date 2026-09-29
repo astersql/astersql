@@ -84,6 +84,10 @@ pub enum ExprType {
     ApproxCountDistinct = 3020,
     /// 整型 SUM 特化聚合。
     SumInt = 3021,
+    /// MIN_COUNT 聚合。
+    MinCount = 3022,
+    /// MAX_COUNT 聚合。
+    MaxCount = 3023,
     /// 窗口函数 ROW_NUMBER。
     RowNumber = 4001,
     /// 窗口函数 RANK。
@@ -168,6 +172,8 @@ impl RequestTypeSupportedChecker {
                         || x == ExprType::Sum as i64
                         || x == ExprType::Avg as i64
                         || x == ExprType::SumInt as i64
+                        || x == ExprType::MaxCount as i64
+                        || x == ExprType::MinCount as i64
                         || x == ExprType::Agg_BitXor as i64
                         || x == ExprType::Agg_BitAnd as i64
                         || x == ExprType::Agg_BitOr as i64
