@@ -2,7 +2,11 @@
 
 批次：【批次 3】依赖：批次 2
 
-状态：未开始
+状态：已完成，待回归
+
+待回归原因：本任务的聚焦测试、包内测试、`pkg/ddl` 编译、格式检查、`make lint` 均通过；但 `cargo check --manifest-path pkg/session/Cargo.toml --quiet` 仍被合并中尚未完成的 FullJoin planner 移植挡住：`pkg/planner/core/logical_plan_builder_runtime.rs:4085,4242` 的 match 缺少 `JoinType::FullJoin` 分支（E0004），与本任务的 meta/model 改动无关。`pkg/util/parser` 相同枚举引起的编译缺口已按现有 SQL 恢复语义补齐并通过聚焦/包内测试；SEM 映射由任务 18 修复。planner 的完整 FullJoin 语义归后续 planner 任务，不以占位分支掩盖。待其落地后重跑 session 编译，再按本文件完成约定删除任务文件。
+
+已运行检查：`~/.rustcodegraph/bin/rustcodegraph status` 显示索引存在；`cargo test --manifest-path pkg/meta/model/Cargo.toml --lib go_merge_15` 初始为 0 项，新回归首次运行因 `may_need_reorg()` 返回 false 而按预期失败，修复后 6/6 通过；`cargo test --manifest-path pkg/meta/model/Cargo.toml --lib --quiet` 为 129/129；`cargo check --manifest-path pkg/ddl/Cargo.toml --quiet`、`cargo fmt --all -- --check`、`make lint`、`git diff --check` 均通过。回归时新增 `pkg/util/parser/ast_test.rs` 的 FullJoin 测试，修复前因缺少分支编译失败；`cargo test --manifest-path pkg/util/parser/Cargo.toml --lib full_outer_join_restores_without_losing_join_kind` 修复后 1/1，`cargo test --manifest-path pkg/util/parser/Cargo.toml --lib --quiet` 为 16/16。`cargo check --manifest-path pkg/session/Cargo.toml --quiet` 先后暴露 util/parser、util/sem 和最终上述 planner E0004，尚未通过；未做真实 TiKV/集成测试。
 
 目的：逐项同步本组 Go 文件在合并中引入的行为与测试意图，保持 Rust 实现和 Go 最新逻辑等价。
 
@@ -65,3 +69,13 @@
 ## 完成
 
 获得上述证据后删除本任务文件，并在最终回复报告逐文件覆盖与准确命令。若阻塞，只更新此文件为 `已阻塞` 并记具体原因与检查；若仅因无关基线使验证无法运行，可设为 `已完成，待回归` 并记录可复现证据。不要修改 `plan.md`。
+
+### 本次实施证据
+
+- `engine_attribute.go` → 新增 `engine_attribute.rs`：空输入/非法 JSON/null 输入、RawMessage 原文、scope 判断、转换秒数与字符串；`flags.go` → `flags.rs` 的 TiKV 短路位；`index.go` → `index.rs` 的 HNSW kind 与 RegionSplitPolicy 时区。两个向量索引构造调用方同步写入 HNSW kind。
+- `job.go` → `job.rs`：85–94 动作编号和动作名原已存在，经检查对齐；新增 RU JSON/克隆/proxy 传递、物化视图 reorg 与回滚边界、SubJob 涉及对象往返和 MultiSchemaInfo 执行期字段。`TimeZoneLocation` 原有 `Clone` 实现保留缓存并由新增测试验证。
+- `job_args.go` → `job_args.rs`：新增物化视图创建/修改/切换与引擎属性参数，扩展影子建表和三类删除作业的 V1 解码，增加 TiFlash gate 与独立的 AutoPreSplit 字段。`internal/group2/lib.rs` 的参数表模型保留物化视图载荷及未知表字段，供任务 18 完善正式 `TableInfo` 前保持 V1/V2 无损往返；V1 null 值沿用 Go 零值语义。
+- `job_args_test.go`、`job_test.go` → 独立的 `go_merge_15_test.rs`：覆盖上述 V1/V2 参数、旧版缺省字段、切换可选值、手动/自动拆分分离、RU 和作业状态。`reorg.go` 仅更新 `UseNewCollate` 注释的来源措辞，Rust `reorg.rs` 行为无需改动。
+- 文件变更：`Cargo.lock`、`pkg/meta/model/{engine_attribute.rs,flags.rs,index.rs,job.rs,job_args.rs,go_merge_15_test.rs,lib.rs}`、`pkg/meta/model/internal/group1/{Cargo.toml,lib.rs}`、`pkg/meta/model/internal/group2/lib.rs`、`pkg/ddl/create_table.rs`、`pkg/session/runtime/ddl.rs`。未改 Go import、Go 测试、Bazel 或 Go module，故无需 `make bazel_prepare`。
+- 延后回归时另修复 `pkg/util/parser/{ast.rs,ast_test.rs}` 的 FullJoin SQL 恢复分支，以解除本任务下游 session 检查遇到的第一个编译缺口；该修复与任务 18 的 SEM 映射以及后续 planner FullJoin 移植相互独立。
+- 验证 profile：Ready 的适用检查已执行；session 下游编译受无关并行改动阻挡，保留待回归状态。正确性风险主要是正式 `TableInfo` 的物化视图类型仍由任务 18 补齐；本任务参数层已经保存其 JSON。兼容性风险由 V1/V2 回归覆盖；性能上仅新增 JSON 字段与参数编解码，无重型路径变化。

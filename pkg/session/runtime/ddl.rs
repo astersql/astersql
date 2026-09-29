@@ -3024,6 +3024,7 @@ impl ConcreteSession {
                                 ..astersql_meta_model::IndexColumn::default()
                             }],
                             Some(astersql_meta_model::VectorIndexInfo {
+                                Kind: astersql_meta_model::VectorIndexKindHNSW.into(),
                                 Dimension: vector_column.GetFlen().max(0) as u64,
                                 DistanceMetric: metric,
                             }),

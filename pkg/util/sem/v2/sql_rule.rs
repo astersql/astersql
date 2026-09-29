@@ -410,6 +410,7 @@ fn showCommand(statement_type: ast::ShowStmtType) -> &'static str {
         PlacementForTable => ast_sem::ShowPlacementForTableCommand,
         PlacementForPartition => ast_sem::ShowPlacementForPartitionCommand,
         PlacementLabels => ast_sem::ShowPlacementLabelsCommand,
+        StorageClassTransitions => ast_sem::ShowStorageClassTransitionsCommand,
         SessionStates => ast_sem::ShowSessionStatesCommand,
         Distributions => ast_sem::ShowDistributionsCommand,
         DistributionJobs => ast_sem::ShowDistributionJobsCommand,

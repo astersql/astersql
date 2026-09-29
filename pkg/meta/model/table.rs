@@ -24,6 +24,7 @@
 use std::collections::HashMap;
 use std::mem::size_of;
 use std::sync::LazyLock;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 /// 执行阶段追加到 schema 中、用于占据行句柄位置的隐藏列 ID。
@@ -161,6 +162,23 @@ pub struct TableInfo {
     /// 视图定义（若本对象是视图）。
     #[serde(rename = "view")]
     pub View: Option<ViewInfo>,
+    #[serde(
+        rename = "materialized_view_base",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub MaterializedViewBase: Option<MaterializedViewBaseInfo>,
+    #[serde(rename = "materialized_view", skip_serializing_if = "Option::is_none")]
+    pub MaterializedView: Option<MaterializedViewInfo>,
+    #[serde(
+        rename = "materialized_view_shadow",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub MaterializedViewShadow: Option<MaterializedViewShadowInfo>,
+    #[serde(
+        rename = "materialized_view_log",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub MaterializedViewLog: Option<MaterializedViewLogInfo>,
     /// 序列定义（若本对象是序列）。
     #[serde(rename = "sequence")]
     pub Sequence: Option<SequenceInfo>,
@@ -215,6 +233,18 @@ pub struct TableInfo {
     /// DBID 在 Go 中不参与 JSON 序列化。
     #[serde(skip)]
     pub DBID: i64,
+    #[serde(rename = "engine_attribute", skip_serializing_if = "String::is_empty")]
+    pub EngineAttribute: String,
+    #[serde(
+        rename = "storage_class_tier",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub StorageClassTier: String,
+    #[serde(
+        rename = "storage_class_transitions",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub StorageClassTransitions: Vec<StorageClassTransitRule>,
     /// 表模式（Normal / Import / Restore）。
     #[serde(rename = "mode", skip_serializing_if = "is_default")]
     pub Mode: TableMode,
@@ -225,6 +255,22 @@ fn is_zero_i64(value: &i64) -> bool {
 }
 fn is_default<T: Default + PartialEq>(value: &T) -> bool {
     value == &T::default()
+}
+
+mod sql_mode_json {
+    use super::mysql;
+    use serde::{Deserialize, Deserializer, Serializer};
+    pub fn serialize<S: Serializer>(
+        value: &mysql::SQLMode,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_i64(value.0)
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<mysql::SQLMode, D::Error> {
+        Ok(mysql::SQLMode(i64::deserialize(deserializer)?))
+    }
 }
 
 impl std::fmt::Debug for TableInfo {
@@ -243,6 +289,10 @@ impl std::fmt::Debug for TableInfo {
 }
 
 impl TableInfo {
+    /// 返回表级存储层级与迁移规则的元数据表示。
+    pub fn StorageClassString(&self) -> String {
+        buildStorageClassString(&self.StorageClassTier, &self.StorageClassTransitions)
+    }
     /// Hash64 对应 Go HashEquals，只把稳定表 ID 写入 hasher。
     pub fn Hash64(&self, h: &mut dyn base::Hasher) {
         h.HashInt64(self.ID);
@@ -670,6 +720,180 @@ pub struct ViewInfo {
     pub Cols: Vec<ast::CIStr>,
 }
 
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+/// 基表与其物化视图、日志表的关系。
+pub struct MaterializedViewBaseInfo {
+    #[serde(rename = "mlog_id")]
+    pub MLogID: i64,
+    #[serde(rename = "mview_ids")]
+    pub MViewIDs: Vec<i64>,
+}
+
+/// 物化视图初始构建状态，保留未知值以匹配 Go 的 byte 枚举。
+#[derive(Clone, Copy, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct MViewInitBuildState(pub u8);
+pub const MViewInitBuildReady: MViewInitBuildState = MViewInitBuildState(0);
+pub const MViewInitBuildDeferred: MViewInitBuildState = MViewInitBuildState(1);
+pub const MViewInitBuildBuilding: MViewInitBuildState = MViewInitBuildState(2);
+impl MViewInitBuildState {
+    pub fn IsReady(self) -> bool {
+        self == MViewInitBuildReady
+    }
+    pub fn AccessErrorMessage(self, object_name: &str) -> String {
+        match self.0 {
+            1 => format!(
+                "materialized view {object_name} is not ready: initial build has not completed"
+            ),
+            2 => format!("materialized view {object_name} initial build is in progress"),
+            _ => String::new(),
+        }
+    }
+}
+impl std::fmt::Display for MViewInitBuildState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            0 => f.write_str("ready"),
+            1 => f.write_str("deferred"),
+            2 => f.write_str("building"),
+            other => write!(f, "unknown({other})"),
+        }
+    }
+}
+
+/// 与 Go TimeZoneLocation 等价的元数据和已解析 location 缓存。
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct TimeZoneLocation {
+    pub name: String,
+    pub offset: i32,
+    #[serde(skip)]
+    pub location: RwLock<Option<Arc<TimeZone>>>,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TimeZone {
+    pub name: String,
+    pub offset: i32,
+}
+impl Clone for TimeZoneLocation {
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            offset: self.offset,
+            location: RwLock::new(self.location.read().unwrap().clone()),
+        }
+    }
+}
+impl TimeZoneLocation {
+    pub fn get_location(&self) -> Result<Arc<TimeZone>, String> {
+        if let Some(location) = self.location.read().unwrap().clone() {
+            return Ok(location);
+        }
+        let mut guard = self.location.write().unwrap();
+        if let Some(location) = guard.clone() {
+            return Ok(location);
+        }
+        if self.offset == 0 && self.name.is_empty() {
+            return Err("empty time zone name".to_owned());
+        }
+        let location = Arc::new(TimeZone {
+            name: self.name.clone(),
+            offset: self.offset,
+        });
+        *guard = Some(location.clone());
+        Ok(location)
+    }
+}
+
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct MaterializedViewInfo {
+    #[serde(rename = "base_table_ids")]
+    pub BaseTableIDs: Vec<i64>,
+    #[serde(rename = "init_build_state", skip_serializing_if = "is_default")]
+    pub InitBuildState: MViewInitBuildState,
+    #[serde(rename = "sql_content")]
+    pub SQLContent: String,
+    #[serde(rename = "refresh_method", skip_serializing_if = "String::is_empty")]
+    pub RefreshMethod: String,
+    #[serde(
+        rename = "refresh_start_with",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub RefreshStartWith: String,
+    #[serde(rename = "refresh_next", skip_serializing_if = "String::is_empty")]
+    pub RefreshNext: String,
+    #[serde(rename = "alert_warning_sec", skip_serializing_if = "is_zero_i64")]
+    pub AlertWarningSec: i64,
+    #[serde(rename = "alert_overdue_sec", skip_serializing_if = "is_zero_i64")]
+    pub AlertOverdueSec: i64,
+    #[serde(
+        rename = "alert_refresh_failed",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub AlertRefreshFailed: bool,
+    #[serde(rename = "definition_sql_mode", with = "sql_mode_json")]
+    pub DefinitionSQLMode: mysql::SQLMode,
+    #[serde(rename = "refresh_schedule_sql_mode", with = "sql_mode_json")]
+    pub RefreshScheduleSQLMode: mysql::SQLMode,
+    #[serde(rename = "definition_div_precision_increment")]
+    pub DefinitionDivPrecisionIncrement: i32,
+    #[serde(rename = "definition_time_zone")]
+    pub DefinitionTimeZone: TimeZoneLocation,
+}
+impl MaterializedViewInfo {
+    pub fn GetInitBuildState(&self) -> MViewInitBuildState {
+        self.InitBuildState
+    }
+}
+
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct MaterializedViewShadowInfo {
+    #[serde(rename = "source_mview_id")]
+    pub SourceMViewID: i64,
+}
+
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct MaterializedViewLogInfo {
+    #[serde(rename = "base_table_id")]
+    pub BaseTableID: i64,
+    #[serde(rename = "dependent_mview_ids", skip_serializing_if = "Vec::is_empty")]
+    pub DependentMViewIDs: Vec<i64>,
+    #[serde(rename = "columns")]
+    pub Columns: Vec<ast::CIStr>,
+    #[serde(rename = "purge_method", skip_serializing_if = "String::is_empty")]
+    pub PurgeMethod: String,
+    #[serde(rename = "purge_start_with", skip_serializing_if = "String::is_empty")]
+    pub PurgeStartWith: String,
+    #[serde(rename = "purge_next", skip_serializing_if = "String::is_empty")]
+    pub PurgeNext: String,
+    #[serde(
+        rename = "log_accumulation_alert_rows",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub LogAccumulationAlertRows: Option<u64>,
+    #[serde(rename = "purge_schedule_sql_mode", with = "sql_mode_json")]
+    pub PurgeScheduleSQLMode: mysql::SQLMode,
+}
+impl MaterializedViewLogInfo {
+    pub fn EffectiveLogAccumulationAlertRows(&self) -> (u64, bool) {
+        match self.LogAccumulationAlertRows {
+            Some(rows) if rows > 0 => (rows, true),
+            _ => (0, false),
+        }
+    }
+}
+pub const MaterializedViewLogTableNamePrefix: &str = "$mlog$";
+pub const MaterializedViewLogDMLTypeColumnName: &str = "_MLOG$_DML_TYPE";
+pub const MaterializedViewLogOldNewColumnName: &str = "_MLOG$_OLD_NEW";
+pub fn MaterializedViewLogTableName(base_table_name: &ast::CIStr) -> ast::CIStr {
+    let max_len = mysql::MaxTableNameLength - MaterializedViewLogTableNamePrefix.chars().count();
+    let suffix: String = base_table_name.O.chars().take(max_len).collect();
+    ast::NewCIStr(&format!("{MaterializedViewLogTableNamePrefix}{suffix}"))
+}
+
 /// 序列 CACHE 选项默认值。
 pub const DefaultSequenceCacheBool: bool = true;
 /// 序列 CYCLE 选项默认值。
@@ -1033,8 +1257,22 @@ pub struct PartitionDefinition {
     /// 分区注释。
     #[serde(rename = "comment", skip_serializing_if = "String::is_empty")]
     pub Comment: String,
+    #[serde(
+        rename = "storage_class_tier",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub StorageClassTier: String,
+    #[serde(
+        rename = "storage_class_transitions",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub StorageClassTransitions: Vec<StorageClassTransitRule>,
 }
 impl PartitionDefinition {
+    /// 返回分区级存储层级与迁移规则的元数据表示。
+    pub fn StorageClassString(&self) -> String {
+        buildStorageClassString(&self.StorageClassTier, &self.StorageClassTransitions)
+    }
     /// 深拷贝分区定义。
     pub fn Clone(&self) -> PartitionDefinition {
         Clone::clone(self)
@@ -1383,6 +1621,7 @@ impl WindowRepeatType {
 
 /// 当前默认 TTL job 间隔。
 pub const DefaultTTLJobInterval: &str = "24h";
+pub const StarterDefaultTTLJobInterval: &str = "15m";
 /// 旧版默认 TTL job 间隔（升级兼容）。
 pub const OldDefaultTTLJobInterval: &str = "1h";
 

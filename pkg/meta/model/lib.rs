@@ -52,6 +52,12 @@ mod db_test;
 #[path = "dependency_tests.rs"]
 mod dependency_tests;
 #[cfg(test)]
+#[path = "go_merge_15_test.rs"]
+mod go_merge_15_test;
+#[cfg(test)]
+#[path = "go_merge_18_test.rs"]
+mod go_merge_18_test;
+#[cfg(test)]
 #[path = "index_test.rs"]
 mod index_test;
 #[cfg(test)]

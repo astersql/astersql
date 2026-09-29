@@ -21,4 +21,5 @@ parser-mysql = { package = "astersql-parser-mysql", path = "../../../../parser/m
 parser-types = { package = "astersql-parser-types", path = "../../../../parser/types" }
 planner-base = { package = "astersql-planner-cascades-base", path = "../../../../planner/cascades/base" }
 serde = { version = "1", features = ["derive", "rc"] }
+serde_json = { version = "1", features = ["raw_value"] }
 serde_repr = "0.1"

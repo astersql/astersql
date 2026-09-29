@@ -693,6 +693,7 @@ impl<'a> Restorer<'a> {
             ast::JoinType::CrossJoin => {}
             ast::JoinType::LeftJoin => output.push_str(" LEFT"),
             ast::JoinType::RightJoin => output.push_str(" RIGHT"),
+            ast::JoinType::FullJoin => output.push_str(" FULL OUTER"),
         }
         output.push_str(if join.StraightJoin {
             " STRAIGHT_JOIN "

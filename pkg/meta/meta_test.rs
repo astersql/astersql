@@ -41,6 +41,14 @@ fn go_merge_12_starter_bootstrap_version_is_independent() {
     assert_eq!(m.get_bootstrap_version().unwrap(), 7);
 }
 
+#[test]
+fn go_merge_18_reader_exposes_starter_bootstrap_version() {
+    let mut m = mutator();
+    m.finish_starter_bootstrap(8).unwrap();
+    let reader: &dyn reader::Reader = &m;
+    assert_eq!(reader.get_starter_bootstrap_version().unwrap(), 8);
+}
+
 /// Corresponds to Go `TestPlacementPolicy`.
 /// Placement Policy（放置策略）的创建、更新与列表。
 #[test]

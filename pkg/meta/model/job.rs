@@ -25,7 +25,7 @@ use serde_repr::{Deserialize_repr, Serialize_repr};
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
 mod raw_json {
     use serde::{
@@ -351,6 +351,7 @@ pub struct Job {
     pub sql_mode: mysql::SQLMode,
     pub session_vars: HashMap<String, String>,
     pub last_schema_version: i64,
+    pub ru: f64,
 }
 
 // 默认构造：V1、无动作、空参数与未开始状态。
@@ -396,6 +397,7 @@ impl Default for Job {
             sql_mode: 0,
             session_vars: HashMap::new(),
             last_schema_version: 0,
+            ru: 0.0,
         }
     }
 }
@@ -450,6 +452,12 @@ struct JobWire {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     session_vars: HashMap<String, String>,
     last_schema_version: i64,
+    #[serde(skip_serializing_if = "is_zero_ru")]
+    ru: f64,
+}
+
+fn is_zero_ru(value: &f64) -> bool {
+    *value == 0.0
 }
 
 impl JobWire {
@@ -500,6 +508,7 @@ impl JobWire {
             sql_mode: job.sql_mode,
             session_vars: job.session_vars.clone(),
             last_schema_version: job.last_schema_version,
+            ru: job.ru,
         }
     }
 
@@ -554,6 +563,7 @@ impl JobWire {
             sql_mode: self.sql_mode,
             session_vars: self.session_vars,
             last_schema_version: self.last_schema_version,
+            ru: self.ru,
         }
     }
 }
@@ -836,6 +846,7 @@ impl Job {
         match self.tp {
             ACTION_ADD_INDEX
             | ACTION_ADD_PRIMARY_KEY
+            | ACTION_CREATE_MATERIALIZED_VIEW
             | ACTION_REORGANIZE_PARTITION
             | ACTION_REMOVE_PARTITIONING
             | ACTION_ALTER_TABLE_PARTITIONING => true,
@@ -846,6 +857,7 @@ impl Job {
                         sub.tp,
                         ACTION_ADD_INDEX
                             | ACTION_ADD_PRIMARY_KEY
+                            | ACTION_CREATE_MATERIALIZED_VIEW
                             | ACTION_REORGANIZE_PARTITION
                             | ACTION_REMOVE_PARTITIONING
                             | ACTION_ALTER_TABLE_PARTITIONING
@@ -866,6 +878,10 @@ impl Job {
                     | SchemaState::WriteOnly
             ),
             ACTION_MODIFY_COLUMN => self.schema_state != SchemaState::Public,
+            ACTION_CREATE_MATERIALIZED_VIEW => matches!(
+                self.schema_state,
+                SchemaState::None | SchemaState::WriteReorganization
+            ),
             ACTION_ADD_TABLE_PARTITION => matches!(
                 self.schema_state,
                 SchemaState::None | SchemaState::ReplicaOnly
@@ -874,6 +890,9 @@ impl Job {
             | ACTION_DROP_SCHEMA
             | ACTION_DROP_TABLE
             | ACTION_DROP_SEQUENCE
+            | ACTION_DROP_MATERIALIZED_VIEW
+            | ACTION_DROP_MATERIALIZED_VIEW_LOG
+            | ACTION_DROP_MATERIALIZED_VIEW_SHADOW
             | ACTION_DROP_FOREIGN_KEY
             | ACTION_DROP_TABLE_PARTITION => self.schema_state == SchemaState::Public,
             ACTION_TRUNCATE_TABLE_PARTITION => matches!(
@@ -882,6 +901,7 @@ impl Job {
             ),
             ACTION_REBASE_AUTO_ID
             | ACTION_SHARD_ROW_ID
+            | ACTION_MVIEW_REFRESH_OUT_OF_PLACE_CUTOVER
             | ACTION_TRUNCATE_TABLE
             | ACTION_ADD_FOREIGN_KEY
             | ACTION_RENAME_TABLE
@@ -1055,6 +1075,8 @@ pub struct SubJob {
     pub reorg_tp: ReorgType,
     pub reorg_stage: ReorgStage,
     pub analyze_state: i8,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub involving_schema_info: Vec<InvolvingSchemaInfo>,
 }
 impl SubJob {
     /// 子任务是否处于正常（非取消/回滚）路径。
@@ -1117,7 +1139,7 @@ impl SubJob {
             seq_num: parent.seq_num,
             charset: parent.charset.clone(),
             collate: parent.collate.clone(),
-            involving_schema_info: vec![],
+            involving_schema_info: self.involving_schema_info.clone(),
             admin_operator: parent.admin_operator,
             pause_reason: None,
             resume_reason: parent.resume_reason.clone(),
@@ -1128,6 +1150,7 @@ impl SubJob {
             sql_mode: parent.sql_mode,
             session_vars: parent.session_vars.clone(),
             last_schema_version: 0,
+            ru: parent.ru,
         }
     }
     // 执行完 proxy job 后把可变进度写回 sub-job，parent 级字段不回写。
@@ -1144,6 +1167,7 @@ impl SubJob {
         self.warning = proxy.warning.clone();
         self.row_count = proxy.get_row_count();
         self.schema_ver = schema_version;
+        self.involving_schema_info = proxy.involving_schema_info.clone();
         if let Some(meta) = &proxy.reorg_meta {
             self.reorg_tp = meta.ReorgTp;
             self.reorg_stage = meta.Stage;
@@ -1192,6 +1216,8 @@ pub struct MultiSchemaInfo {
     pub relative_columns: Vec<ast::CIStr>,
     #[serde(skip)]
     pub position_columns: Vec<ast::CIStr>,
+    #[serde(skip)]
+    pub involving_schema_info: Vec<InvolvingSchemaInfo>,
 }
 /// 新建默认可回滚的 MultiSchemaInfo。
 pub fn new_multi_schema_info() -> MultiSchemaInfo {
@@ -1379,45 +1405,6 @@ impl HistoryInfo {
         self.db_info = None;
         self.table_info = None;
         self.multiple_table_infos.clear();
-    }
-}
-
-// TimeZoneLocation 使用读写锁实现 Go 的 double-check 缓存；首次加载可能读取系统时区数据库，固定 offset 则纯内存构造。
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TimeZoneLocation {
-    pub name: String,
-    pub offset: i32,
-    #[serde(skip)]
-    #[doc(hidden)]
-    pub location: RwLock<Option<Arc<time::Location>>>,
-}
-// 深拷贝名称/偏移，并克隆已缓存的 Location。
-impl Clone for TimeZoneLocation {
-    fn clone(&self) -> Self {
-        Self {
-            name: self.name.clone(),
-            offset: self.offset,
-            location: RwLock::new(self.location.read().unwrap().clone()),
-        }
-    }
-}
-impl TimeZoneLocation {
-    /// 双重检查锁定加载时区；offset!=0 时用固定区，否则按名加载。
-    pub fn get_location(&self) -> Result<Arc<time::Location>, time::Error> {
-        if let Some(location) = self.location.read().unwrap().clone() {
-            return Ok(location);
-        }
-        let mut guard = self.location.write().unwrap();
-        if let Some(location) = guard.clone() {
-            return Ok(location);
-        }
-        let location = Arc::new(if self.offset == 0 {
-            time::load_location(&self.name)?
-        } else {
-            time::fixed_zone(&self.name, self.offset)
-        });
-        *guard = Some(location.clone());
-        Ok(location)
     }
 }
 

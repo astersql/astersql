@@ -42,6 +42,8 @@ pub const FlagInSetOprStmt: u64 = 1 << 9;
 pub const FlagInLoadDataStmt: u64 = 1 << 10;
 /// 当前处于受限 SQL（restricted SQL）上下文。
 pub const FlagInRestrictedSQL: u64 = 1 << 11;
+/// 在 TiKV 中启用短路表达式求值。
+pub const FlagEnableTiKVShortCircuitExpression: u64 = 1 << 12;
 
 /// `FlagIgnoreTruncate` 的 SCREAMING_SNAKE 别名。
 pub const FLAG_IGNORE_TRUNCATE: u64 = FlagIgnoreTruncate;
@@ -67,3 +69,4 @@ pub const FLAG_IN_SET_OPR_STMT: u64 = FlagInSetOprStmt;
 pub const FLAG_IN_LOAD_DATA_STMT: u64 = FlagInLoadDataStmt;
 /// `FlagInRestrictedSQL` 的 SCREAMING_SNAKE 别名。
 pub const FLAG_IN_RESTRICTED_SQL: u64 = FlagInRestrictedSQL;
+pub const FLAG_ENABLE_TIKV_SHORT_CIRCUIT_EXPRESSION: u64 = FlagEnableTiKVShortCircuitExpression;

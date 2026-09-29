@@ -78,6 +78,8 @@ fn partition_definition(id: i64, name: &str) -> PartitionDefinition {
         InValues: Vec::new(),
         PlacementPolicyRef: None,
         Comment: String::new(),
+        StorageClassTier: String::new(),
+        StorageClassTransitions: Vec::new(),
     }
 }
 

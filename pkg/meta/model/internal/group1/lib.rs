@@ -465,6 +465,9 @@ pub use db::*;
 #[path = "../../flags.rs"]
 mod flags;
 pub use flags::*;
+#[path = "../../engine_attribute.rs"]
+mod engine_attribute;
+pub use engine_attribute::*;
 
 #[cfg(test)]
 mod migration_aster_unit_test;

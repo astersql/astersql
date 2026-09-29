@@ -133,6 +133,8 @@ pub trait Reader {
     fn get_schema_cache_size(&self) -> Result<(u64, bool), errors::Error>;
     /// 集群 bootstrap（初始化）版本号。
     fn get_bootstrap_version(&self) -> Result<i64, errors::Error>;
+    /// 已完成的 starter bootstrap 版本号。
+    fn get_starter_bootstrap_version(&self) -> Result<i64, errors::Error>;
 }
 
 /// Mutator 同时实现只读 Reader：各方法直接委托到同名固有方法，保持与 Go 一致的调用面。
@@ -285,6 +287,9 @@ impl Reader for Mutator {
     }
     fn get_bootstrap_version(&self) -> Result<i64, errors::Error> {
         Mutator::get_bootstrap_version(self)
+    }
+    fn get_starter_bootstrap_version(&self) -> Result<i64, errors::Error> {
+        Mutator::get_starter_bootstrap_version(self)
     }
 }
 

@@ -1952,6 +1952,7 @@ pub fn BuildTableInfoWithStmt<C: ?Sized + 'static, E: 'static>(
                 constraint.Option.as_ref(),
             );
             index.VectorInfo = Some(model::VectorIndexInfo {
+                Kind: model::VectorIndexKindHNSW.into(),
                 Dimension: column_info.GetFlen().max(0) as u64,
                 DistanceMetric: metric,
             });

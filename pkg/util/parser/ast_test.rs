@@ -19,6 +19,31 @@
 
 use astersql_parser as parser;
 
+#[test]
+fn full_outer_join_restores_without_losing_join_kind() {
+    let table = |name: &str| {
+        parser::ast::ResultSetNode::TableSource(parser::ast::TableSource {
+            Source: parser::ast::TableName {
+                Name: parser::ast::NewCIStr(name),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+    };
+    let statement = parser::ast::SelectStmt {
+        From: Some(parser::ast::TableRefsClause {
+            TableRefs: parser::ast::Join {
+                Left: Some(Box::new(table("t"))),
+                Right: Some(Box::new(table("u"))),
+                Tp: parser::ast::JoinType::FullJoin,
+                ..Default::default()
+            },
+        }),
+        ..Default::default()
+    };
+    assert!(utilparser::RestoreWithoutDB(&statement).contains(" FULL OUTER JOIN "));
+}
+
 /// 单条 SimpleCases 用例：原始 SQL、默认库、期望补全结果。
 struct SimpleCaseTest {
     /// 待解析的 INSERT SQL。

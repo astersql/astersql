@@ -18,6 +18,18 @@
 // 用真实 parser 解析语句后套用各 `SQLRule`，对齐 Go 表驱动用例（TTL、ATTRIBUTES、
 // SELECT INTO OUTFILE、本地 IMPORT/LOAD DATA 等）。
 
+#[test]
+fn go_merge_18_show_storage_class_transitions_command() {
+    let statement = parser::ast::ShowStmt {
+        Tp: parser::ast::ShowStmtType::StorageClassTransitions,
+        ..Default::default()
+    };
+    assert_eq!(
+        crate::sql_rule::semCommand(&statement),
+        parser::ast::sem::ShowStorageClassTransitionsCommand
+    );
+}
+
 /// 表驱动：对每条 SQL 新建 parser，断言规则布尔结果与 expected 一致。
 #[test]
 fn test_sql_rules() {

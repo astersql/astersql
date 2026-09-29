@@ -185,7 +185,7 @@ pub mod time {
 }
 
 /// Job 历史元数据与表模型共享 group1 的正式类型身份。
-pub use group_1::{DBInfo, TableInfo};
+pub use group_1::{DBInfo, TableInfo, TimeZoneLocation};
 
 /// Job 普通参数接口：V1 数组布局与 JSON 表示。
 pub trait JobArgs {

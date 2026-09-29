@@ -2,7 +2,11 @@
 
 批次：【批次 4】依赖：批次 3
 
-状态：未开始
+状态：已完成，待回归
+
+待回归原因：任务 18 的聚焦测试、包内测试、DDL 下游编译、格式检查、`make lint` 和差异检查已通过。共享 parser 的 `FullJoin` 编译缺口已由任务 15 修复；最新 `cargo check --manifest-path pkg/session/Cargo.toml --quiet` 继续编译到 planner，但 `pkg/planner/core/logical_plan_builder_runtime.rs:4085,4242` 的 match 缺少 `JoinType::FullJoin` 分支（E0004）。Go 的 FullJoin 涉及完整计划语义，不能用占位分支掩盖；该移植属于后续 planner 任务，与本任务的 meta 行为无关。待其落地后重跑 session 编译，再按本文件完成约定删除任务文件。
+
+已运行检查：`~/.rustcodegraph/bin/rustcodegraph status`（索引存在）；`cargo test --manifest-path pkg/meta/Cargo.toml --lib go_merge_18` 初次为 0 项，故改用实际模型包验证；`cargo test --manifest-path pkg/meta/model/Cargo.toml --lib go_merge_18` 首次因 TableInfo/PartitionDefinition 缺少 StorageClass 字段和方法而按预期编译失败，修复后 3/3 通过；meta 包对应 Reader 回归 1/1 通过；`cargo test --manifest-path pkg/meta/model/Cargo.toml --lib --quiet` 为 132/132，`cargo test --manifest-path pkg/meta/Cargo.toml --lib --quiet` 为 35/35；`cargo check --manifest-path pkg/ddl/Cargo.toml --quiet`、`cargo fmt --all -- --check`、`make lint`、`git diff --check` 均通过。回归阶段新增 SEM 对 `SHOW STORAGE_CLASS TRANSITIONS` 的映射，`cargo test --manifest-path pkg/util/sem/v2/Cargo.toml --lib go_merge_18_show_storage_class_transitions_command` 在缺少分支时编译失败，修复后 1/1 通过。任务 15 完成 parser 修复后重跑 `cargo check --manifest-path pkg/session/Cargo.toml --quiet`，现在因上述 planner E0004 失败；未运行真实 TiKV 或 SQL 集成测试。
 
 目的：逐项同步本组 Go 文件在合并中引入的行为与测试意图，保持 Rust 实现和 Go 最新逻辑等价。
 
@@ -55,3 +59,11 @@
 ## 完成
 
 获得上述证据后删除本任务文件，并在最终回复报告逐文件覆盖与准确命令。若阻塞，只更新此文件为 `已阻塞` 并记具体原因与检查；若仅因无关基线使验证无法运行，可设为 `已完成，待回归` 并记录可复现证据。不要修改 `plan.md`。
+
+### 本次实施证据
+
+- `table.go` → `table.rs`：TableInfo 与 PartitionDefinition 加入存储层级、迁移规则及格式化方法；TableInfo 加入引擎属性和四类物化视图元数据；补齐构建状态消息、日志阈值、Unicode 表名截断、TTL starter 间隔。Rust `Clone` 对 Vec 和 Option 载荷深拷贝；把已有 TimeZoneLocation 从 Job 层统一为 group1 正式身份，供 Job 和 TableInfo 共用。`table_4_aster_unit_test.rs` 的显式分区构造同步新字段。
+- `table_test.go` → 独立的 `go_merge_18_test.rs`：覆盖 after_seconds 为 0/17 时的 JSON、表和分区克隆、物化视图 JSON/克隆/时区缓存、构建状态各分支、日志阈值边界、Unicode 名字截断及 15 分钟 TTL 间隔。初次模型包回归在生产字段未补齐时按预期编译失败，修复后通过。
+- `reader.go` → `reader.rs`：Reader trait 新增 starter bootstrap 读取并委托 Mutator 已存在实现；`meta_test.rs` 从 trait object 验证真实读取路径。任务文件给出的顶层 meta 包过滤命令只运行 0 个测试，已额外运行模型包过滤命令。
+- 本任务修改：`pkg/meta/model/{table.rs,go_merge_18_test.rs,table_4_aster_unit_test.rs,lib.rs,job.rs,internal/group3/lib.rs}`、`pkg/meta/{reader.rs,meta_test.rs}`，以及回归阶段的 `pkg/util/sem/v2/{sql_rule.rs,sql_rule_test.rs}`。`job.rs` 与 `lib.rs` 原有未提交的任务 15 变更保留；`pkg/util/parser` 的共享修复归任务 15。未修改 Go import、Go 测试、Bazel 或 Go module，无需 `make bazel_prepare`。
+- 验证 profile：Ready；`make lint` 与相关 Rust 测试、格式和差异检查完成。正确性与兼容性主要风险是 session 下游编译尚无通过证据；物化视图时区加载仍沿用该仓库此前的简化时区设施。性能上仅新增元数据字段与克隆，主要影响随元数据大小线性增长；分区 InValues 的 Rust 克隆策略沿用既有实现。

@@ -103,12 +103,24 @@ pub mod pdhttp {
 data_type!(
     /// 库级元信息桩，仅保留 ID。
     DBInfo { ID: i64 });
-data_type!(
-    /// 表级元信息桩，保留 ID 与名称。
-    TableInfo {
-    ID: i64,
-    Name: ast::CIStr
-});
+/// Job 参数在完整表模型落地前保留未识别的 Go 表字段，避免 V1/V2 往返丢失元数据。
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct TableInfo {
+    #[serde(rename = "id", alias = "ID")]
+    pub ID: i64,
+    #[serde(rename = "name", alias = "Name")]
+    pub Name: ast::CIStr,
+    #[serde(rename = "materialized_view", skip_serializing_if = "Option::is_none")]
+    pub MaterializedView: Option<serde_json::Value>,
+    #[serde(
+        rename = "materialized_view_shadow",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub MaterializedViewShadow: Option<serde_json::Value>,
+    #[serde(flatten)]
+    pub Other: std::collections::BTreeMap<String, serde_json::Value>,
+}
 data_type!(
     /// Placement Policy 引用（ID + 名称）。
     PolicyRefInfo {
@@ -284,7 +296,9 @@ where
 {
     fn decode(self, values: &[serde_json::Value]) -> Result<(), errors::Error> {
         if let Some(value) = values.first() {
-            *self = serde_json::from_value(value.clone()).map_err(errors::Trace)?;
+            if !value.is_null() {
+                *self = serde_json::from_value(value.clone()).map_err(errors::Trace)?;
+            }
         }
         Ok(())
     }
@@ -300,7 +314,9 @@ macro_rules! impl_decode_tuple {
             fn decode(self, values: &[serde_json::Value]) -> Result<(), errors::Error> {
                 $(
                     if let Some(value) = values.get($index) {
-                        *self.$index = serde_json::from_value(value.clone()).map_err(errors::Trace)?;
+                        if !value.is_null() {
+                            *self.$index = serde_json::from_value(value.clone()).map_err(errors::Trace)?;
+                        }
                     }
                 )+
                 Ok(())

@@ -265,7 +265,9 @@ pub struct CreateTableArgs {
 impl JobArgs for CreateTableArgs {
     fn getArgsV1(&self, job: &Job) -> Vec<DynArg> {
         match job.tp {
-            ActionCreateTable => vec![arg(&self.TableInfo), arg(&self.FKCheck)],
+            ActionCreateTable | group_3::ACTION_CREATE_MATERIALIZED_VIEW_SHADOW => {
+                vec![arg(&self.TableInfo), arg(&self.FKCheck)]
+            }
             ActionCreateView => vec![
                 arg(&self.TableInfo),
                 arg(&self.OnExistReplace),
@@ -278,7 +280,7 @@ impl JobArgs for CreateTableArgs {
     fn decodeV1(&mut self, job: &Job) -> JobArgResult<()> {
         self.TableInfo = Some(Box::default());
         match job.tp {
-            ActionCreateTable => {
+            ActionCreateTable | group_3::ACTION_CREATE_MATERIALIZED_VIEW_SHADOW => {
                 job.decodeArgs((self.TableInfo.as_mut().unwrap(), &mut self.FKCheck))
             }
             ActionCreateView => job.decodeArgs((
@@ -294,6 +296,50 @@ impl JobArgs for CreateTableArgs {
 }
 /// 解码创建表类参数。
 pub fn GetCreateTableArgs(job: &mut Job) -> JobArgResult<CreateTableArgs> {
+    getOrDecodeArgs(Default::default(), job)
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CreateMaterializedViewLogArgs {
+    #[serde(rename = "table_info", skip_serializing_if = "is_default")]
+    pub TableInfo: Option<Box<TableInfo>>,
+}
+impl JobArgs for CreateMaterializedViewLogArgs {
+    fn getArgsV1(&self, _: &Job) -> Vec<DynArg> {
+        vec![arg(&self.TableInfo)]
+    }
+    fn decodeV1(&mut self, job: &Job) -> JobArgResult<()> {
+        self.TableInfo = Some(Box::default());
+        job.decodeArgs(self.TableInfo.as_mut().unwrap())
+            .map_err(errors::Trace)
+    }
+}
+pub fn GetCreateMaterializedViewLogArgs(
+    job: &mut Job,
+) -> JobArgResult<CreateMaterializedViewLogArgs> {
+    getOrDecodeArgs(Default::default(), job)
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CreateMaterializedViewArgs {
+    #[serde(rename = "table_info", skip_serializing_if = "is_default")]
+    pub TableInfo: Option<Box<TableInfo>>,
+    #[serde(rename = "mlog_table_ids", skip_serializing_if = "is_default")]
+    pub MLogTableIDs: Vec<i64>,
+}
+impl JobArgs for CreateMaterializedViewArgs {
+    fn getArgsV1(&self, _: &Job) -> Vec<DynArg> {
+        vec![arg(&self.TableInfo), arg(&self.MLogTableIDs)]
+    }
+    fn decodeV1(&mut self, job: &Job) -> JobArgResult<()> {
+        self.TableInfo = Some(Box::default());
+        job.decodeArgs((self.TableInfo.as_mut().unwrap(), &mut self.MLogTableIDs))
+            .map_err(errors::Trace)
+    }
+}
+pub fn GetCreateMaterializedViewArgs(job: &mut Job) -> JobArgResult<CreateMaterializedViewArgs> {
     getOrDecodeArgs(Default::default(), job)
 }
 
@@ -346,14 +392,26 @@ pub struct DropTableArgs {
 }
 impl JobArgs for DropTableArgs {
     fn getArgsV1(&self, job: &Job) -> Vec<DynArg> {
-        if job.tp == ActionDropTable {
+        if matches!(
+            job.tp,
+            ActionDropTable
+                | group_3::ACTION_DROP_MATERIALIZED_VIEW
+                | group_3::ACTION_DROP_MATERIALIZED_VIEW_LOG
+                | group_3::ACTION_DROP_MATERIALIZED_VIEW_SHADOW
+        ) {
             vec![arg(&self.Identifiers), arg(&self.FKCheck)]
         } else {
             vec![]
         }
     }
     fn decodeV1(&mut self, job: &Job) -> JobArgResult<()> {
-        if job.tp == ActionDropTable {
+        if matches!(
+            job.tp,
+            ActionDropTable
+                | group_3::ACTION_DROP_MATERIALIZED_VIEW
+                | group_3::ACTION_DROP_MATERIALIZED_VIEW_LOG
+                | group_3::ACTION_DROP_MATERIALIZED_VIEW_SHADOW
+        ) {
             job.decodeArgs((&mut self.Identifiers, &mut self.FKCheck))
                 .map_err(errors::Trace)
         } else {
@@ -721,6 +779,157 @@ pub fn GetModifyTableCommentArgs(job: &mut Job) -> JobArgResult<ModifyTableComme
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AlterMaterializedViewRefreshArgs {
+    #[serde(rename = "refresh_method", skip_serializing_if = "is_default")]
+    pub RefreshMethod: String,
+    #[serde(rename = "refresh_start_with", skip_serializing_if = "is_default")]
+    pub RefreshStartWith: String,
+    #[serde(rename = "refresh_next", skip_serializing_if = "is_default")]
+    pub RefreshNext: String,
+    #[serde(
+        rename = "refresh_schedule_sql_mode",
+        skip_serializing_if = "is_default"
+    )]
+    pub RefreshScheduleSQLMode: mysql::SQLMode,
+    #[serde(rename = "update_refresh_schedule", skip_serializing_if = "is_default")]
+    pub UpdateRefreshSchedule: bool,
+}
+impl_simple_args!(
+    AlterMaterializedViewRefreshArgs,
+    RefreshMethod,
+    RefreshStartWith,
+    RefreshNext,
+    RefreshScheduleSQLMode,
+    UpdateRefreshSchedule
+);
+pub fn GetAlterMaterializedViewRefreshArgs(
+    job: &mut Job,
+) -> JobArgResult<AlterMaterializedViewRefreshArgs> {
+    getOrDecodeArgs(Default::default(), job)
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AlterMaterializedViewAttributesArgs {
+    #[serde(rename = "alert_warning_sec", skip_serializing_if = "is_default")]
+    pub AlertWarningSec: i64,
+    #[serde(rename = "alert_overdue_sec", skip_serializing_if = "is_default")]
+    pub AlertOverdueSec: i64,
+    #[serde(rename = "alert_refresh_failed", skip_serializing_if = "is_default")]
+    pub AlertRefreshFailed: bool,
+}
+impl JobArgs for AlterMaterializedViewAttributesArgs {
+    fn getArgsV1(&self, _: &Job) -> Vec<DynArg> {
+        vec![
+            arg(&self.AlertWarningSec),
+            arg(&self.AlertOverdueSec),
+            arg(&self.AlertRefreshFailed),
+        ]
+    }
+    fn decodeV1(&mut self, job: &Job) -> JobArgResult<()> {
+        if job
+            .decodeArgs((
+                &mut self.AlertWarningSec,
+                &mut self.AlertOverdueSec,
+                &mut self.AlertRefreshFailed,
+            ))
+            .is_ok()
+        {
+            return Ok(());
+        }
+        self.AlertRefreshFailed = false;
+        job.decodeArgs((&mut self.AlertWarningSec, &mut self.AlertOverdueSec))
+            .map_err(errors::Trace)
+    }
+}
+pub fn GetAlterMaterializedViewAttributesArgs(
+    job: &mut Job,
+) -> JobArgResult<AlterMaterializedViewAttributesArgs> {
+    getOrDecodeArgs(Default::default(), job)
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AlterMaterializedViewLogPurgeArgs {
+    #[serde(rename = "purge_method", skip_serializing_if = "is_default")]
+    pub PurgeMethod: String,
+    #[serde(rename = "purge_start_with", skip_serializing_if = "is_default")]
+    pub PurgeStartWith: String,
+    #[serde(rename = "purge_next", skip_serializing_if = "is_default")]
+    pub PurgeNext: String,
+    #[serde(rename = "purge_schedule_sql_mode", skip_serializing_if = "is_default")]
+    pub PurgeScheduleSQLMode: mysql::SQLMode,
+    #[serde(rename = "update_purge_schedule", skip_serializing_if = "is_default")]
+    pub UpdatePurgeSchedule: bool,
+}
+impl_simple_args!(
+    AlterMaterializedViewLogPurgeArgs,
+    PurgeMethod,
+    PurgeStartWith,
+    PurgeNext,
+    PurgeScheduleSQLMode,
+    UpdatePurgeSchedule
+);
+pub fn GetAlterMaterializedViewLogPurgeArgs(
+    job: &mut Job,
+) -> JobArgResult<AlterMaterializedViewLogPurgeArgs> {
+    getOrDecodeArgs(Default::default(), job)
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RefreshMaterializedViewCompleteOutOfPlaceCutoverArgs {
+    #[serde(rename = "old_mview_id", skip_serializing_if = "is_default")]
+    pub OldMViewID: i64,
+    #[serde(rename = "shadow_table_id", skip_serializing_if = "is_default")]
+    pub ShadowTableID: i64,
+    #[serde(rename = "build_read_tso", skip_serializing_if = "is_default")]
+    pub BuildReadTSO: u64,
+    #[serde(
+        rename = "expected_old_mview_revision",
+        skip_serializing_if = "is_default"
+    )]
+    pub ExpectedOldMViewRevision: Option<u64>,
+    #[serde(
+        rename = "expected_last_success_read_tso",
+        skip_serializing_if = "is_default"
+    )]
+    pub ExpectedLastSuccessReadTSO: u64,
+    #[serde(
+        rename = "expected_last_success_read_tso_null",
+        skip_serializing_if = "is_default"
+    )]
+    pub ExpectedLastSuccessReadTSONull: bool,
+    #[serde(
+        rename = "next_refresh_unix_seconds",
+        skip_serializing_if = "is_default"
+    )]
+    pub NextRefreshUnixSeconds: Option<i64>,
+    #[serde(
+        rename = "should_update_next_refresh_unix_seconds",
+        skip_serializing_if = "is_default"
+    )]
+    pub ShouldUpdateNextRefreshUnixSeconds: bool,
+}
+impl_simple_args!(
+    RefreshMaterializedViewCompleteOutOfPlaceCutoverArgs,
+    OldMViewID,
+    ShadowTableID,
+    BuildReadTSO,
+    ExpectedLastSuccessReadTSO,
+    ExpectedLastSuccessReadTSONull,
+    NextRefreshUnixSeconds,
+    ShouldUpdateNextRefreshUnixSeconds,
+    ExpectedOldMViewRevision
+);
+pub fn GetRefreshMaterializedViewCompleteOutOfPlaceCutoverArgs(
+    job: &mut Job,
+) -> JobArgResult<RefreshMaterializedViewCompleteOutOfPlaceCutoverArgs> {
+    getOrDecodeArgs(Default::default(), job)
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "snake_case")]
 /// 修改表字符集与排序规则。
 pub struct ModifyTableCharsetAndCollateArgs {
@@ -1054,6 +1263,11 @@ pub struct SetTiFlashReplicaArgs {
     pub TiflashReplica: ast::TiFlashReplicaSpec,
     #[serde(rename = "reset_available", skip_serializing_if = "is_default")]
     pub ResetAvailable: bool,
+    #[serde(
+        rename = "skip_columnar_storage_gate",
+        skip_serializing_if = "is_default"
+    )]
+    pub SkipColumnarStorageGate: bool,
 }
 // ResetAvailable 仅存在于 V2，V1 位置数组仍只包含副本规格。
 impl_simple_args!(SetTiFlashReplicaArgs, TiflashReplica);
@@ -1429,6 +1643,8 @@ pub struct IndexArg {
     pub IfExist: bool,
     #[serde(rename = "is_global", skip_serializing_if = "is_default")]
     pub IsGlobal: bool,
+    #[serde(rename = "auto_presplit", skip_serializing_if = "is_default")]
+    pub AutoPreSplit: bool,
     #[serde(rename = "split_opt", skip_serializing_if = "is_default")]
     pub SplitOpt: Option<Box<IndexArgSplitOpt>>,
     #[serde(rename = "condition_string", skip_serializing_if = "is_default")]
@@ -1914,6 +2130,19 @@ impl JobArgs for RefreshMetaArgs {
 }
 /// 解码刷新元信息参数。
 pub fn GetRefreshMetaArgs(job: &mut Job) -> JobArgResult<RefreshMetaArgs> {
+    getOrDecodeArgs(Default::default(), job)
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ModifyTableEngineAttributeArgs {
+    #[serde(rename = "engine_attribute", skip_serializing_if = "is_default")]
+    pub EngineAttribute: String,
+}
+impl_simple_args!(ModifyTableEngineAttributeArgs, EngineAttribute);
+pub fn GetModifyTableEngineAttributeArgs(
+    job: &mut Job,
+) -> JobArgResult<ModifyTableEngineAttributeArgs> {
     getOrDecodeArgs(Default::default(), job)
 }
 

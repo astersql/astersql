@@ -53,6 +53,10 @@ pub const GlobalIndexVersionV1: u8 = 1;
 /// 全局索引版本 V2。
 pub const GlobalIndexVersionV2: u8 = 2;
 
+/// 向量索引算法类型。
+pub type VectorIndexKind = String;
+pub const VectorIndexKindHNSW: &str = "HNSW";
+
 fn is_zero_u8(value: &u8) -> bool {
     *value == 0
 }
@@ -114,6 +118,8 @@ pub fn IndexableDistanceMetricToFnName() -> &'static HashMap<DistanceMetric, &'s
 #[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct VectorIndexInfo {
+    #[serde(rename = "kind")]
+    pub Kind: VectorIndexKind,
     #[serde(rename = "dimension")]
     pub Dimension: u64,
     #[serde(rename = "distance_metric")]
@@ -263,6 +269,8 @@ pub struct RegionSplitPolicy {
     pub Upper: Vec<String>,
     #[serde(rename = "regions")]
     pub Regions: i64,
+    #[serde(rename = "time_zone", skip_serializing_if = "String::is_empty")]
+    pub TimeZone: String,
 }
 impl RegionSplitPolicy {
     /// 克隆本策略。
