@@ -46,6 +46,148 @@ fn load_config(input: &str) -> Result<Config, ConfigError> {
     Ok(config)
 }
 
+#[test]
+fn go_merge_2_storage_and_starter_options() {
+    let config = new_config();
+    assert!(!config.enable_storage_class);
+    assert!(!config.hosted_embedding.enabled);
+    assert_eq!(config.starter_params.max_import_data_size, 0);
+    let config = load_config("enable-storage-class = true\ndeploy-mode = 'starter'\n[hosted-embedding]\nenabled = true\napi-endpoint = 'https://example.com'\napi-key-path = '/tmp/key'\n[starter-params]\nbootstrap-file = '/tmp/bootstrap.json'").unwrap();
+    assert!(config.enable_storage_class);
+    assert!(config.hosted_embedding.enabled);
+    assert_eq!(
+        config.starter_params.max_import_data_size,
+        DEF_STARTER_MAX_IMPORT_DATA_SIZE
+    );
+    assert_eq!(config.starter_params.bootstrap_file, "/tmp/bootstrap.json");
+    assert!(load_config("[hosted-embedding]").is_err());
+    assert!(load_config("[starter-params]\nbootstrap-file = '/tmp/bootstrap.json'").is_err());
+    assert!(load_config("[starter-params]\nbootstrap-file = ''").is_ok());
+    assert!(load_config("[hosted-embedding]\nenabled = false").is_err());
+    let mut configured = new_config();
+    configured.hosted_embedding.api_endpoint = "https://example.com".into();
+    assert!(configured.valid().is_err());
+    let config =
+        load_config("[experimental]\nallow-enable-foreign-key-check-in-shared-lock = true")
+            .unwrap();
+    assert!(
+        config
+            .experimental
+            .allow_enable_foreign_key_check_in_shared_lock
+    );
+    assert_eq!(
+        serde_json::to_value(&config).unwrap()["enable-storage-class"],
+        false
+    );
+    assert_eq!(
+        load_config("deploy-mode = 'starter'\n[starter-params]\nmax-import-data-size = '0B'")
+            .unwrap()
+            .starter_params
+            .max_import_data_size,
+        0
+    );
+}
+
+#[test]
+fn go_merge_2_ru_weights_and_modes() {
+    let mut config = new_config();
+    assert_eq!(config.ruv2.report_mode, RU_REPORT_MODE_RESULT);
+    assert_eq!(config.ruv2.stmt_weights.cpu_work, 1.0);
+    assert_eq!(config.ruv2.ddl_weights.txn_kv_bytes, 1.0);
+    config.ruv2.report_mode = "FULL".into();
+    assert!(config.valid().is_err());
+    config.ruv2.report_mode = RU_REPORT_MODE_FULL.into();
+    config.ruv2.stmt_weights.cpu_work = -1.0;
+    assert!(
+        config
+            .valid()
+            .unwrap_err()
+            .to_string()
+            .contains("ru-v2.stmt-weights.cpu-work")
+    );
+    config.ruv2.stmt_weights.cpu_work = 1.0;
+    config.ruv2.ddl_weights.ingest_kv_bytes = f64::NAN;
+    assert!(
+        config
+            .valid()
+            .unwrap_err()
+            .to_string()
+            .contains("ru-v2.ddl-weights.ingest-kv-bytes")
+    );
+    let config = load_config("[ru-v2]\nreport-mode = 'full'\n[ru-v2.stmt-weights]\ncpu-work = 2\n[ru-v2.ddl-weights]\ntxn-kv-bytes = 3").unwrap();
+    assert_eq!(config.ruv2.stmt_weights.cpu_work, 2.0);
+    assert_eq!(config.ruv2.ddl_weights.txn_kv_bytes, 3.0);
+    let weights: StmtWeights = toml::from_str("CrossAZNetByte = 2\ncross-az-net-byte = 2").unwrap();
+    assert_eq!(weights.cross_az_net_byte, 0.0);
+    let encoded = serde_json::to_string(&weights).unwrap();
+    assert!(!encoded.contains("CrossAZ"));
+    assert!(!encoded.contains("cross-az"));
+    let mut config = new_config();
+    config.ruv2.ddl_weights.txn_kv_bytes = f64::INFINITY;
+    assert!(
+        config
+            .valid()
+            .unwrap_err()
+            .to_string()
+            .contains("ru-v2.ddl-weights.txn-kv-bytes")
+    );
+}
+
+#[test]
+fn go_merge_2_ru_serialization_and_boundaries() {
+    let configured: RUV2Config = toml::from_str(
+        "report-mode = 'full'\n[stmt-weights]\ncpu-work = 2\nscan-byte = 3\nnet-byte = 5\nfrontend-compile-byte = 7\nhash-state-row = 11\njoin-output-row = 13\nwrite-statement = 17\noperator-num = 19\nwrite-key = 23\nwrite-byte = 29\n[ddl-weights]\ntxn-kv-bytes = 31\ningest-kv-bytes = 37",
+    )
+    .unwrap();
+    assert_eq!(configured.report_mode, RU_REPORT_MODE_FULL);
+    assert_eq!(
+        [
+            configured.stmt_weights.cpu_work,
+            configured.stmt_weights.scan_byte,
+            configured.stmt_weights.net_byte,
+            configured.stmt_weights.frontend_compile_byte,
+            configured.stmt_weights.hash_state_row,
+            configured.stmt_weights.join_output_row,
+            configured.stmt_weights.write_statement,
+            configured.stmt_weights.operator_num,
+            configured.stmt_weights.write_key,
+            configured.stmt_weights.write_byte,
+        ],
+        [2.0, 3.0, 5.0, 7.0, 11.0, 13.0, 17.0, 19.0, 23.0, 29.0]
+    );
+    assert_eq!(configured.ddl_weights.txn_kv_bytes, 31.0);
+    assert_eq!(configured.ddl_weights.ingest_kv_bytes, 37.0);
+    let json = serde_json::to_value(&configured).unwrap();
+    assert_eq!(json["stmt-weights"]["cpu-work"], 2.0);
+    assert_eq!(json["ddl-weights"]["ingest-kv-bytes"], 37.0);
+    assert!(json["stmt-weights"].get("cross-az-net-byte").is_none());
+
+    for invalid in [-1.0, f64::NAN, f64::INFINITY] {
+        let mut config = new_config();
+        config.ruv2.stmt_weights.write_byte = invalid;
+        assert!(
+            config
+                .valid()
+                .unwrap_err()
+                .to_string()
+                .contains("ru-v2.stmt-weights.write-byte")
+        );
+        let mut config = new_config();
+        config.ruv2.ddl_weights.ingest_kv_bytes = invalid;
+        assert!(
+            config
+                .valid()
+                .unwrap_err()
+                .to_string()
+                .contains("ru-v2.ddl-weights.ingest-kv-bytes")
+        );
+    }
+    let mut zero_weights = new_config();
+    zero_weights.ruv2.stmt_weights.cpu_work = 0.0;
+    zero_weights.ruv2.ddl_weights.txn_kv_bytes = 0.0;
+    assert!(zero_weights.valid().is_ok());
+}
+
 /// 测试辅助函数：断言结果为错误并返回错误消息文本，便于做子串匹配。
 fn error_text(result: Result<(), ConfigError>) -> String {
     result.unwrap_err().to_string()
@@ -734,12 +876,11 @@ fn test_metering() {
     }
 }
 
-/// 验证 `get_tikv_config` 不会用顶层 ruv2.ru_scale 覆盖 tikv_client 中
+/// 验证 `get_tikv_config` 保留 TiKV 客户端自己的 RU 系数。
 /// 显式设置的 0 值（RU：Request Unit，资源计量单位）。
 #[test]
 fn test_get_tikv_config_keeps_zero_ruv2_ru_scale() {
     let mut config = new_config();
-    config.ruv2.ru_scale = 123.0;
     config.tikv_client.ruv2.ru_scale = 0.0;
     assert_eq!(get_tikv_config(&config).tikv_client.ruv2.ru_scale, 0.0);
 }
@@ -777,13 +918,13 @@ fn test_go_default_config_parity() {
 #[test]
 fn test_go_config_field_names_parity() {
     let config: Config = toml::from_str(
-        "use-autoscaler=true\nkeyspace-activate=true\n[ru-v2]\nru-scale=7.5\n[transaction-summary]\ntransaction-summary-capacity=321\n[experimental]\nallow-expression-index=true\n[instance]\ntidb_slow_log_threshold=123",
+        "use-autoscaler=true\nkeyspace-activate=true\n[ru-v2]\nreport-mode='full'\n[transaction-summary]\ntransaction-summary-capacity=321\n[experimental]\nallow-expression-index=true\n[instance]\ntidb_slow_log_threshold=123",
     )
     .unwrap();
     assert!(config.extra.is_empty());
     assert!(config.use_auto_scaler);
     assert!(config.keyspace_activate_mode);
-    assert_eq!(config.ruv2.ru_scale, 7.5);
+    assert_eq!(config.ruv2.report_mode, RU_REPORT_MODE_FULL);
     assert_eq!(config.trx_summary.transaction_summary_capacity, 321);
     assert!(config.experimental.allows_expression_index);
     assert_eq!(config.instance.slow_threshold, 123);

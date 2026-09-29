@@ -86,6 +86,9 @@ pub const DEF_STATS_LOAD_QUEUE_SIZE_LIMIT: i64 = 1;
 pub const DEF_MAX_OF_STATS_LOAD_QUEUE_SIZE_LIMIT: i64 = 100_000;
 /// DXF（分布式执行框架）资源占用百分比的默认值。
 pub const DEF_DXF_RESOURCE_LIMIT: i64 = 100;
+pub const DEF_STARTER_MAX_IMPORT_DATA_SIZE: u64 = 25 * 1024 * 1024 * 1024;
+pub const RU_REPORT_MODE_RESULT: &str = "result";
+pub const RU_REPORT_MODE_FULL: &str = "full";
 /// DXF 资源占用百分比允许的最小值。
 pub const MIN_DXF_RESOURCE_LIMIT: i64 = 10;
 /// DXF 资源占用百分比允许的最大值。
@@ -119,11 +122,29 @@ pub const SPILLED_FILE_ENCRYPTION_METHOD_PLAINTEXT: &str = "plaintext";
 /// 落盘文件使用 AES128-CTR 加密的方法名。
 pub const SPILLED_FILE_ENCRYPTION_METHOD_AES128_CTR: &str = "aes128-ctr";
 
-/// RU（Request Unit，请求单元）v2 计费模型的系数配置。
-/// RU 是云上资源计量的抽象单位，各字段是不同资源消耗项折算成 RU 的权重系数。
+/// Statement and DDL RU v2 configuration.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct RUV2Config {
+    pub report_mode: String,
+    pub stmt_weights: StmtWeights,
+    pub ddl_weights: DDLWeights,
+}
+
+impl Default for RUV2Config {
+    fn default() -> Self {
+        Self {
+            report_mode: RU_REPORT_MODE_RESULT.into(),
+            stmt_weights: StmtWeights::default(),
+            ddl_weights: DDLWeights::default(),
+        }
+    }
+}
+
+/// TiKV client's legacy RU weights are independent of the server statement model.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct TiKVRUV2Config {
     pub ru_scale: f64,
     pub result_chunk_cells: f64,
     pub executor_l1: f64,
@@ -139,7 +160,7 @@ pub struct RUV2Config {
     pub txn_cnt: f64,
 }
 
-impl Default for RUV2Config {
+impl Default for TiKVRUV2Config {
     fn default() -> Self {
         Self {
             ru_scale: 2.01,
@@ -156,6 +177,95 @@ impl Default for RUV2Config {
             session_parser_total: 0.19230499,
             txn_cnt: 0.03013709,
         }
+    }
+}
+
+/// Statement RU weights, matching the configurable subset of Go's ruv2.StmtWeights.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct StmtWeights {
+    #[serde(skip)]
+    pub cross_az_net_byte: f64,
+    pub cpu_work: f64,
+    pub scan_byte: f64,
+    pub net_byte: f64,
+    pub frontend_compile_byte: f64,
+    pub hash_state_row: f64,
+    pub join_output_row: f64,
+    pub write_statement: f64,
+    pub operator_num: f64,
+    pub write_key: f64,
+    pub write_byte: f64,
+}
+
+impl Default for StmtWeights {
+    fn default() -> Self {
+        Self {
+            cross_az_net_byte: 0.0,
+            cpu_work: 1.0,
+            scan_byte: 1.0,
+            net_byte: 1.0,
+            frontend_compile_byte: 1.0,
+            hash_state_row: 1.0,
+            join_output_row: 1.0,
+            write_statement: 1.0,
+            operator_num: 1.0,
+            write_key: 1.0,
+            write_byte: 1.0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct DDLWeights {
+    pub txn_kv_bytes: f64,
+    pub ingest_kv_bytes: f64,
+}
+
+impl Default for DDLWeights {
+    fn default() -> Self {
+        Self {
+            txn_kv_bytes: 1.0,
+            ingest_kv_bytes: 1.0,
+        }
+    }
+}
+
+fn valid_ru_weight(section: &str, name: &str, value: f64) -> Result<(), ConfigError> {
+    if !value.is_finite() || value < 0.0 {
+        return Err(message(format!(
+            "ru-v2.{section}.{name} must be finite and non-negative, got {value}"
+        )));
+    }
+    Ok(())
+}
+
+impl StmtWeights {
+    fn validate(&self) -> Result<(), ConfigError> {
+        for (name, value) in [
+            ("cpu-work", self.cpu_work),
+            ("scan-byte", self.scan_byte),
+            ("net-byte", self.net_byte),
+            ("cross-az-net-byte", self.cross_az_net_byte),
+            ("frontend-compile-byte", self.frontend_compile_byte),
+            ("hash-state-row", self.hash_state_row),
+            ("join-output-row", self.join_output_row),
+            ("write-statement", self.write_statement),
+            ("operator-num", self.operator_num),
+            ("write-key", self.write_key),
+            ("write-byte", self.write_byte),
+        ] {
+            valid_ru_weight("stmt-weights", name, value)?;
+        }
+        Ok(())
+    }
+}
+
+impl DDLWeights {
+    fn validate(&self) -> Result<(), ConfigError> {
+        valid_ru_weight("ddl-weights", "txn-kv-bytes", self.txn_kv_bytes)?;
+        valid_ru_weight("ddl-weights", "ingest-kv-bytes", self.ingest_kv_bytes)
     }
 }
 
@@ -656,7 +766,7 @@ pub struct TiKVClient {
     /// Coprocessor 结果缓存配置。
     pub copr_cache: CoprCache,
     /// RU v2 计费系数。
-    pub ruv2: RUV2Config,
+    pub ruv2: TiKVRUV2Config,
 }
 
 impl Default for TiKVClient {
@@ -666,7 +776,7 @@ impl Default for TiKVClient {
             enable_rpc_metrics: false,
             async_commit: AsyncCommit::default(),
             copr_cache: CoprCache::default(),
-            ruv2: RUV2Config::default(),
+            ruv2: TiKVRUV2Config::default(),
         }
     }
 }
@@ -736,9 +846,27 @@ pub struct Experimental {
     /// 是否允许创建表达式索引。
     #[serde(rename = "allow-expression-index")]
     pub allows_expression_index: bool,
+    pub allow_enable_foreign_key_check_in_shared_lock: bool,
     /// 是否启用新字符集功能；与 Go 一样不出现在 JSON 中。
     #[serde(skip_serializing)]
     pub enable_new_charset: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct HostedEmbedding {
+    #[serde(skip_serializing_if = "false_flag")]
+    pub enabled: bool,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub api_endpoint: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub api_key_path: String,
+}
+
+impl HostedEmbedding {
+    fn configured(&self) -> bool {
+        self.enabled || !self.api_endpoint.is_empty() || !self.api_key_path.is_empty()
+    }
 }
 
 /// `[transaction-summary]` 配置分区：事务摘要采集设置，用于诊断长事务。
@@ -837,10 +965,14 @@ impl Default for PessimisticTxn {
 pub struct StarterParams {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub export_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub bootstrap_file: String,
     #[serde(default, skip_serializing_if = "false_flag")]
     pub enable_manager_notifier: bool,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub manager_addr: String,
+    #[serde(skip)]
+    pub enable_rg_fallback: bool,
     /// Zero disables the decoded IMPORT INTO data-size limit.
     #[serde(default, skip_serializing_if = "zero_size", with = "starter_byte_size")]
     pub max_import_data_size: u64,
@@ -876,8 +1008,10 @@ impl Default for StarterParams {
     fn default() -> Self {
         Self {
             export_id: String::new(),
+            bootstrap_file: String::new(),
             enable_manager_notifier: false,
             manager_addr: String::new(),
+            enable_rg_fallback: false,
             max_import_data_size: 0,
         }
     }
@@ -914,6 +1048,8 @@ pub struct Config {
     /// 部署模式。
     pub deploy_mode: DeployMode,
     pub starter_params: StarterParams,
+    pub hosted_embedding: HostedEmbedding,
+    pub enable_storage_class: bool,
     /// DXF（分布式执行框架）资源占比限制。
     pub dxf_resource_limit: i64,
     /// keyspace 名称。keyspace 是多租户下逻辑隔离的键空间。
@@ -1007,6 +1143,8 @@ impl Default for Config {
             temp_storage_path: String::new(),
             deploy_mode: DeployMode::Premium,
             starter_params: StarterParams::default(),
+            hosted_embedding: HostedEmbedding::default(),
+            enable_storage_class: false,
             dxf_resource_limit: DEF_DXF_RESOURCE_LIMIT,
             keyspace_name: String::new(),
             tikv_worker_url: String::new(),
@@ -1120,6 +1258,27 @@ impl Config {
                 "error-msg-extension can only be configured when deploy-mode is starter",
             ));
         }
+        if document.contains_key("hosted-embedding") && !loaded.deploy_mode.is_starter() {
+            return Err(message(
+                "hosted-embedding can only be configured for starter deploy mode",
+            ));
+        }
+        let starter_options = document
+            .get("starter-params")
+            .and_then(toml::Value::as_table);
+        if starter_options.is_some_and(|options| options.contains_key("bootstrap-file"))
+            && !loaded.starter_params.bootstrap_file.is_empty()
+            && !loaded.deploy_mode.is_starter()
+        {
+            return Err(message(
+                "starter-params.bootstrap-file can only be configured for starter deploy mode",
+            ));
+        }
+        if loaded.deploy_mode.is_starter()
+            && !starter_options.is_some_and(|options| options.contains_key("max-import-data-size"))
+        {
+            loaded.starter_params.max_import_data_size = DEF_STARTER_MAX_IMPORT_DATA_SIZE;
+        }
         if document.contains_key("dxf-resource-limit")
             && loaded.deploy_mode != DeployMode::PremiumReserved
         {
@@ -1172,6 +1331,17 @@ impl Config {
     /// 全面校验配置合法性：范围检查、模式互斥检查等。
     /// 会顺带做少量规范化（如冲突的新旧日志开关归一、加密方法转小写）。
     pub fn valid(&mut self) -> Result<(), ConfigError> {
+        if !matches!(
+            self.ruv2.report_mode.as_str(),
+            RU_REPORT_MODE_RESULT | RU_REPORT_MODE_FULL
+        ) {
+            return Err(message(format!(
+                "invalid ru-v2.report-mode {:?}, expected result or full",
+                self.ruv2.report_mode
+            )));
+        }
+        self.ruv2.stmt_weights.validate()?;
+        self.ruv2.ddl_weights.validate()?;
         // enable/disable 两个新旧开关同时设置且值冲突时，忽略废弃的 disable 侧。
         if self.log.enable_error_stack == self.log.disable_error_stack
             && self.log.enable_error_stack != NullableBool::UNSET
@@ -1234,6 +1404,16 @@ impl Config {
         if self.starter_params.enable_manager_notifier && !self.deploy_mode.is_starter() {
             return Err(message(
                 "starter-params.enable-manager-notifier can only be configured for starter deploy mode",
+            ));
+        }
+        if !self.starter_params.bootstrap_file.is_empty() && !self.deploy_mode.is_starter() {
+            return Err(message(
+                "starter-params.bootstrap-file can only be configured for starter deploy mode",
+            ));
+        }
+        if self.hosted_embedding.configured() && !self.deploy_mode.is_starter() {
+            return Err(message(
+                "hosted-embedding can only be configured for starter deploy mode",
             ));
         }
         if self.starter_params.max_import_data_size > 0 && !self.deploy_mode.is_starter() {

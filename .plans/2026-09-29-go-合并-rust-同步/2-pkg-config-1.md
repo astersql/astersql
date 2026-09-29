@@ -2,7 +2,15 @@
 
 批次：【批次 1】依赖：无
 
-状态：未开始
+状态：已完成，待回归
+
+延后回归（2026-09-29，最新共享工作区）：`cargo test --manifest-path pkg/config/Cargo.toml --lib go_merge_2` 为 3 passed；`cargo test --manifest-path pkg/config/Cargo.toml --lib` 为 66 passed；`rustfmt --edition 2024 --check pkg/config/config.rs pkg/config/config_test.rs`、`git diff --check -- pkg/config/config.rs pkg/config/config_test.rs .plans/2026-09-29-go-合并-rust-同步/2-pkg-config-1.md`、`make lint` 均退出码 0。`cargo fmt --all -- --check` 仍失败：46 个差异文件均在本任务范围外（DDL、Executor、Planner、Session），`pkg/config` 两文件不在差异清单中。待全工作区格式基线修复后重跑该门槛，故暂不删除本文件。
+
+复核（2026-09-29）：重新运行 `cargo test --manifest-path pkg/config/Cargo.toml --lib go_merge_2`（3 passed）、`rustfmt --edition 2024 --check pkg/config/config.rs pkg/config/config_test.rs`、`git diff --check`、`make lint`，均退出码 0。`cargo fmt --all -- --check` 仍退出码 1，差异位于本任务外的 DDL、Executor、Planner、Session 等文件；维持待回归状态，不删除任务文件。
+
+完成记录（2026-09-29）：用户澄清后按 `pkg/config` 现有配置模式直接移植；资源组任务 8 的计算模型不再作为前置。`pkg/config/config.go` → `pkg/config/config.rs`：同步 storage-class、hosted-embedding、experimental shared-lock、starter bootstrap/导入上限、RU v2 报告模式及 statement/DDL 权重的字段、默认值、TOML/JSON 与校验；TiKV 客户端旧 RU 配置独立保留。`pkg/config/config_test.go` → `pkg/config/config_test.rs`：新增 `go_merge_2_*` 回归测试覆盖上述加载、默认值、部署模式限制、无效权重及 CrossAZ 不参与配置；更新旧 RU 字段测试。Go 删除的旧 RUScale 回归测试意图由现存 TiKV 客户端零值测试继续覆盖。
+
+失败证据：新增回归测试后运行 `cargo test --manifest-path pkg/config/Cargo.toml --lib go_merge_2`，退出码 101，编译错误 E0425/E0609，缺少新常量及配置字段。通过证据：同一命令 3 passed；`cargo test --manifest-path pkg/config/Cargo.toml --lib` 为 66 passed；`rustfmt --edition 2024 --check pkg/config/config.rs pkg/config/config_test.rs`、`git diff --check`、`make lint` 均退出码 0。Ready profile 采用代码交付的 scoped tests + lint。未通过：`cargo fmt --all -- --check` 退出码 1，共 57 处格式差异，均位于本任务之外的 DDL、Executor、Planner、Session 等 Rust 文件；本任务两文件的单独格式检查通过。待统一回归时清理或确认全工作区既有格式差异，再运行全工作区格式检查。未运行跨 crate 集成/完整构建；仍需与任务 8 的 RU 权重模型集成核对。正确性风险集中于该跨包集成；兼容性风险是旧配置的顶层 RU 系数已按 Go 差异移除；性能无新增热路径。
 
 目的：逐项同步本组 Go 文件在合并中引入的行为与测试意图，保持 Rust 实现和 Go 最新逻辑等价。
 
