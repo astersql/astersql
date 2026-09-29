@@ -61,6 +61,12 @@ pub trait Visitor {
     fn leave_table_name(&mut self, _input: &TableName) -> bool {
         true
     }
+    fn enter_column_name(&mut self, _input: &ColumnName) -> bool {
+        false
+    }
+    fn leave_column_name(&mut self, _input: &ColumnName) -> bool {
+        true
+    }
 }
 
 /// Visits an AST without replacing nodes. A `true` enter result skips children.
@@ -73,11 +79,43 @@ pub trait InPlaceVisitor {
     fn leave_table_name(&mut self, _input: &mut TableName) -> bool {
         true
     }
+    fn enter_column_name(&mut self, _input: &mut ColumnName) -> bool {
+        false
+    }
+    fn leave_column_name(&mut self, _input: &mut ColumnName) -> bool {
+        true
+    }
 }
 
 /// Walks a mutable AST in the same child order as `Node::accept`.
 pub fn Walk(node: &mut dyn Node, visitor: &mut dyn InPlaceVisitor) -> bool {
     node.accept_in_place(visitor)
+}
+
+/// Compares expression structure after ignoring the transient fields Go's
+/// `exprCleaner` clears. Clones preserve both inputs even when nested nodes differ.
+pub fn ExpressionDeepEqual(a: &ExprNode, b: &ExprNode) -> bool {
+    struct Cleaner;
+    impl InPlaceVisitor for Cleaner {
+        fn enter(&mut self, node: &mut dyn Node) -> bool {
+            if let Some(expr) = node.as_any_mut().downcast_mut::<ExprNode>() {
+                expr.OriginTextPosition = 0;
+                if let ExprKind::Function { FnName, .. } = &mut expr.Kind {
+                    FnName.O = FnName.L.clone();
+                }
+            }
+            false
+        }
+
+        fn leave(&mut self, _node: &mut dyn Node) -> bool {
+            true
+        }
+    }
+    let mut left = a.clone();
+    let mut right = b.clone();
+    Walk(&mut left, &mut Cleaner);
+    Walk(&mut right, &mut Cleaner);
+    left == right
 }
 
 /// AST 节点基础接口，支持类型擦除与访问者遍历。
@@ -188,6 +226,7 @@ pub enum ShowStmtType {
     Distributions,
     DistributionJobs,
     Affinity,
+    StorageClassTransitions,
 }
 
 /// SHOW 语句节点及其过滤/目标对象字段。
@@ -484,6 +523,7 @@ pub enum JoinType {
     CrossJoin,
     LeftJoin,
     RightJoin,
+    FullJoin,
 }
 
 /// 可产生结果集的节点种类。
@@ -851,6 +891,24 @@ pub struct ExprNode {
 pub trait ExprNodeVisitor {
     fn Enter(&mut self, input: &ExprNode) -> (ExprNode, bool);
     fn Leave(&mut self, input: &ExprNode) -> (ExprNode, bool);
+    fn EnterColumn(&mut self, input: &ColumnName) -> (ColumnName, bool) {
+        (input.clone(), false)
+    }
+    fn LeaveColumn(&mut self, input: &ColumnName) -> (ColumnName, bool) {
+        (input.clone(), true)
+    }
+}
+
+fn accept_column_name<V: ExprNodeVisitor + ?Sized>(
+    column: &mut ColumnName,
+    visitor: &mut V,
+) -> bool {
+    let (entered, _skip_children) = visitor.EnterColumn(column);
+    let (replacement, ok) = visitor.LeaveColumn(&entered);
+    if ok {
+        *column = replacement;
+    }
+    ok
 }
 
 impl Default for ExprNode {
@@ -1185,9 +1243,9 @@ impl ExprNode {
                 accept_box(Expr, visitor) && accept_box(Sel, visitor)
             }
             ExprKind::ExistsSubquery { Sel, .. } => accept_box(Sel, visitor),
+            ExprKind::Column(column) => accept_column_name(column, visitor),
             ExprKind::Value(_)
             | ExprKind::IntroducedValue { .. }
-            | ExprKind::Column(_)
             | ExprKind::NamedDefault(_)
             | ExprKind::MaxValue
             | ExprKind::TimeUnit(_)
@@ -1657,6 +1715,21 @@ pub struct PartitionMethod {
     pub Unit: TimeUnitType,
     pub Limit: u64,
 }
+impl PartitionMethod {
+    /// Visits child nodes in Go `PartitionMethod.accept` order and writes back replacements.
+    pub fn Accept<V: ExprNodeVisitor + ?Sized>(&mut self, visitor: &mut V) -> bool {
+        if let Some(expr) = &mut self.Expr {
+            let (replacement, ok) = expr.Accept(visitor);
+            if !ok {
+                return false;
+            }
+            *expr = replacement;
+        }
+        self.ColumnNames
+            .iter_mut()
+            .all(|column| accept_column_name(column, visitor))
+    }
+}
 /// 分区定义子句枚举。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum PartitionDefinitionClause {
@@ -1667,6 +1740,28 @@ pub enum PartitionDefinitionClause {
     History {
         Current: bool,
     },
+}
+impl PartitionDefinitionClause {
+    /// Visits partition values in source order and writes back replacements.
+    pub fn Accept<V: ExprNodeVisitor + ?Sized>(&mut self, visitor: &mut V) -> bool {
+        fn accept_values<V: ExprNodeVisitor + ?Sized>(
+            values: &mut [ExprNode],
+            visitor: &mut V,
+        ) -> bool {
+            values.iter_mut().all(|value| {
+                let (replacement, ok) = value.Accept(visitor);
+                if ok {
+                    *value = replacement;
+                }
+                ok
+            })
+        }
+        match self {
+            Self::None | Self::History { .. } => true,
+            Self::LessThan(values) => accept_values(values, visitor),
+            Self::In(rows) => rows.iter_mut().all(|row| accept_values(row, visitor)),
+        }
+    }
 }
 /// 子分区定义结构体。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -1681,6 +1776,12 @@ pub struct PartitionDefinition {
     pub Clause: PartitionDefinitionClause,
     pub Options: Vec<TableOption>,
     pub Sub: Vec<SubPartitionDefinition>,
+}
+impl PartitionDefinition {
+    /// Delegates to the clause, matching Go `PartitionDefinition.accept`.
+    pub fn Accept<V: ExprNodeVisitor + ?Sized>(&mut self, visitor: &mut V) -> bool {
+        self.Clause.Accept(visitor)
+    }
 }
 /// 分区选项结构体。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -4785,6 +4886,10 @@ mod format_test;
 #[cfg(test)]
 #[path = "functions_test.rs"]
 mod functions_test;
+
+#[cfg(test)]
+#[path = "go_merge_13_test.rs"]
+mod go_merge_13_test;
 #[cfg(test)]
 #[path = "integration_9_aster_unit_test.rs"]
 mod integration_9_aster_unit_test;

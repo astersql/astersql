@@ -510,6 +510,11 @@ fn restore_table_name(table: &parser_ast::TableName) -> String {
 }
 
 pub fn restore_node(node: &dyn parser_ast::Node) -> Result<String, String> {
+    if let Some(show) = node.as_any().downcast_ref::<parser_ast::ShowStmt>() {
+        if show.Tp == parser_ast::ShowStmtType::StorageClassTransitions {
+            return Ok("SHOW STORAGE_CLASS TRANSITIONS".into());
+        }
+    }
     if let Some(select) = node.as_any().downcast_ref::<parser_ast::SelectStmt>() {
         if select.Fields.Fields.is_empty() {
             let text = node.Text();
@@ -614,6 +619,7 @@ fn restore_join(join: &parser_ast::Join) -> Result<String, String> {
     match join.Tp {
         parser_ast::JoinType::LeftJoin => out.push_str(" LEFT"),
         parser_ast::JoinType::RightJoin => out.push_str(" RIGHT"),
+        parser_ast::JoinType::FullJoin => out.push_str(" FULL OUTER"),
         parser_ast::JoinType::CrossJoin => {}
     }
     out.push_str(if join.StraightJoin {

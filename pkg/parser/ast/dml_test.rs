@@ -1094,6 +1094,7 @@ fn restore_join(join: &parser_ast::Join) -> Result<String, String> {
     match join.Tp {
         parser_ast::JoinType::LeftJoin => out.push_str(" LEFT"),
         parser_ast::JoinType::RightJoin => out.push_str(" RIGHT"),
+        parser_ast::JoinType::FullJoin => out.push_str(" FULL OUTER"),
         parser_ast::JoinType::CrossJoin => {}
     }
     out.push_str(if join.StraightJoin {

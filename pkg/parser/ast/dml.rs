@@ -375,13 +375,14 @@ impl FrameClause {
     }
 }
 
-/// 连接类型：交叉连接、左连接、右连接。
+/// 连接类型：交叉连接、左连接、右连接、全外连接。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum JoinType {
     #[default]
     CrossJoin,
     LeftJoin,
     RightJoin,
+    FullJoin,
 }
 
 /// FROM 子句中的结果集：表、嵌套 Join 或括号查询。
@@ -481,6 +482,7 @@ impl Join {
         match self.join_type {
             JoinType::LeftJoin => output.push_str(" LEFT"),
             JoinType::RightJoin => output.push_str(" RIGHT"),
+            JoinType::FullJoin => output.push_str(" FULL OUTER"),
             JoinType::CrossJoin => {}
         }
         output.push_str(if self.straight_join {

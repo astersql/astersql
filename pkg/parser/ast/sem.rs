@@ -1,3 +1,4 @@
+// Copyright 2026 AsterSQL.
 // Copyright 2025 PingCAP, Inc.
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -139,6 +140,7 @@ pub const ShowDistributionsCommand: &str = "SHOW DISTRIBUTIONS";
 pub const ShowPlanCommand: &str = "SHOW PLAN";
 pub const ShowDistributionJobsCommand: &str = "SHOW DISTRIBUTION JOB";
 pub const ShowAffinityCommand: &str = "SHOW AFFINITY";
+pub const ShowStorageClassTransitionsCommand: &str = "SHOW STORAGE_CLASS TRANSITIONS";
 pub const AdminShowDDLCommand: &str = "ADMIN SHOW DDL";
 pub const AdminCheckTableCommand: &str = "ADMIN CHECK TABLE";
 pub const AdminShowDDLJobsCommand: &str = "ADMIN SHOW DDL JOBS";
@@ -311,6 +313,7 @@ impl SEMCommand for ShowStmt {
             ShowStmtType::Distributions => ShowDistributionsCommand,
             ShowStmtType::DistributionJobs => ShowDistributionJobsCommand,
             ShowStmtType::Affinity => ShowAffinityCommand,
+            ShowStmtType::StorageClassTransitions => ShowStorageClassTransitionsCommand,
         }
     }
 }

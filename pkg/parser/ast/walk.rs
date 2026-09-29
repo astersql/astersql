@@ -240,6 +240,18 @@ impl VisitMut for TableName {
         v.leave_table_name(self)
     }
 }
+impl Visit for ColumnName {
+    fn visit(&self, v: &mut dyn Visitor) -> bool {
+        let _skip = v.enter_column_name(self);
+        v.leave_column_name(self)
+    }
+}
+impl VisitMut for ColumnName {
+    fn visit_mut(&mut self, v: &mut dyn InPlaceVisitor) -> bool {
+        let _skip = v.enter_column_name(self);
+        v.leave_column_name(self)
+    }
+}
 macro_rules! children {
     ($name:ty => $($field:ident),* $(,)?) => {
         impl Children for $name {
@@ -288,10 +300,10 @@ children!(ColumnNameOrUserVar => UserVar);
 children!(TableOption => Value);
 children!(PartitionIntervalExpr => Expr);
 children!(PartitionInterval => IntervalExpr, FirstRangeEnd, LastRangeEnd);
-children!(PartitionMethod => Expr, Interval);
+children!(PartitionMethod => Expr, ColumnNames);
 children!(SubPartitionDefinition => Options);
-children!(PartitionDefinition => Clause, Options, Sub);
-children!(PartitionOptions => PartitionMethod, Sub, Definitions, UpdateIndexes);
+children!(PartitionDefinition => Clause);
+children!(PartitionOptions => PartitionMethod, Sub, Definitions);
 children!(CreateTableStmt => Cols, Constraints, Options, Partition, SplitIndex, Select);
 children!(CreateViewStmt => Select);
 children!(MViewRefreshClause => StartWith, Next);
@@ -460,7 +472,7 @@ impl Children for ExprKind {
         match self {
             Self::Value(_) => true,
             Self::IntroducedValue { .. } => true,
-            Self::Column(_) => true,
+            Self::Column(column) => column.visit(_v),
             Self::Variable { Value, .. } => Value.visit(_v),
             Self::Function { Args, .. } => Args.visit(_v),
             Self::AggregateFunction { Args, Order, .. } => Args.visit(_v) && Order.visit(_v),
@@ -525,7 +537,7 @@ impl MutChildren for ExprKind {
         match self {
             Self::Value(_) => true,
             Self::IntroducedValue { .. } => true,
-            Self::Column(_) => true,
+            Self::Column(column) => column.visit_mut(_v),
             Self::Variable { Value, .. } => Value.visit_mut(_v),
             Self::Function { Args, .. } => Args.visit_mut(_v),
             Self::AggregateFunction { Args, Order, .. } => {
