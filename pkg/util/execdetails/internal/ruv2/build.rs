@@ -10,27 +10,37 @@ use std::process::Command;
 
 /// 查询指定 Go module 在本地模块缓存中的目录路径。
 fn go_module_dir(module: &str) -> PathBuf {
+    // `go list -m` can succeed with an empty `.Dir` in a cold module cache.
+    let download = Command::new("go")
+        .args(["mod", "download", module])
+        .output()
+        .expect("download Go module");
+    assert!(
+        download.status.success(),
+        "go mod download failed for {module}: {}",
+        String::from_utf8_lossy(&download.stderr)
+    );
     let output = Command::new("go")
         .args(["list", "-m", "-f", "{{.Dir}}", module])
         .output()
         .expect("query Go module directory");
     assert!(output.status.success(), "go list failed for {module}");
-    PathBuf::from(String::from_utf8(output.stdout).unwrap().trim())
+    let directory = PathBuf::from(String::from_utf8(output.stdout).unwrap().trim());
+    assert!(
+        directory.is_dir(),
+        "Go module directory missing for {module}"
+    );
+    directory
 }
 
 /// 生成 tipb 绑定：定位依赖、运行 codegen，并补齐方法名兼容层。
 fn main() {
-    let gomodcache = Command::new("go")
-        .args(["env", "GOMODCACHE"])
-        .output()
-        .expect("query GOMODCACHE");
-    assert!(gomodcache.status.success(), "go env GOMODCACHE failed");
-    let gomodcache = String::from_utf8(gomodcache.stdout).expect("GOMODCACHE is UTF-8");
+    println!("cargo:rerun-if-env-changed=GOMODCACHE");
 
     // 官方 tipb schema 与 gogo 依赖路径。
     let tipb = go_module_dir("github.com/pingcap/tipb");
     let proto_dir = tipb.join("proto");
-    let gogo = PathBuf::from(gomodcache.trim()).join("github.com/gogo/protobuf@v1.3.2");
+    let gogo = go_module_dir("github.com/gogo/protobuf@v1.3.2");
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("tipb");
     std::fs::create_dir_all(&out).expect("create generated tipb directory");
 
