@@ -448,7 +448,7 @@ pub fn redact_url(input: &str) -> String {
     };
     let sensitive_keys: &[&str] = match parsed.scheme().to_ascii_lowercase().as_str() {
         "s3" | "ks3" | "oss" => &["access-key", "secret-access-key", "session-token"],
-        "azure" | "azblob" => &["account-key", "encryption-key", "sas-token"],
+        "azure" | "azblob" => &["account-key", "encryption-key", "sas-token", "endpoint"],
         _ => return input.to_owned(),
     };
 
@@ -688,7 +688,9 @@ impl VariableAssignment {
                 sql.push('=');
             }
         }
-        if self.name == TIDB_CLOUD_STORAGE_URI {
+        if self.is_system && is_embedding_api_key_sys_var(&self.name) {
+            sql.push_str("'******'");
+        } else if self.name == TIDB_CLOUD_STORAGE_URI {
             sql.push_str(&redact_url(&self.value));
         } else {
             sql.push_str(&self.value);
@@ -699,6 +701,18 @@ impl VariableAssignment {
         }
         sql
     }
+}
+
+fn is_embedding_api_key_sys_var(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "tidb_exp_embed_jina_ai_api_key"
+            | "tidb_exp_embed_openai_api_key"
+            | "tidb_exp_embed_cohere_api_key"
+            | "tidb_exp_embed_huggingface_api_key"
+            | "tidb_exp_embed_nvidia_nim_api_key"
+            | "tidb_exp_embed_gemini_api_key"
+    )
 }
 
 /// SET 变量赋值语句 AST。

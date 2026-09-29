@@ -510,6 +510,33 @@ fn restore_table_name(table: &parser_ast::TableName) -> String {
 }
 
 pub fn restore_node(node: &dyn parser_ast::Node) -> Result<String, String> {
+    if let Some(stmt) = node
+        .as_any()
+        .downcast_ref::<parser_ast::PurgeMaterializedViewLogStmt>()
+    {
+        return stmt.restore();
+    }
+    if let Some(stmt) = node
+        .as_any()
+        .downcast_ref::<parser_ast::CancelMaterializedViewJobStmt>()
+    {
+        return stmt.restore();
+    }
+    if let Some(stmt) = node
+        .as_any()
+        .downcast_ref::<parser_ast::RefreshMaterializedViewStmt>()
+    {
+        return stmt.restore();
+    }
+    if let Some(stmt) = node
+        .as_any()
+        .downcast_ref::<parser_ast::RefreshMaterializedViewImplementStmt>()
+    {
+        return stmt.restore();
+    }
+    if let Some(stmt) = node.as_any().downcast_ref::<parser_ast::AnalyzeTableStmt>() {
+        return stmt.restore();
+    }
     if let Some(show) = node.as_any().downcast_ref::<parser_ast::ShowStmt>() {
         if show.Tp == parser_ast::ShowStmtType::StorageClassTransitions {
             return Ok("SHOW STORAGE_CLASS TRANSITIONS".into());

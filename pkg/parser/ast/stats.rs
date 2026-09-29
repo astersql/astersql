@@ -1,3 +1,4 @@
+// Copyright 2026 AsterSQL.
 // Copyright 2017 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -10,8 +11,6 @@
 // distributed under the License is distributed on an "AS IS" BASIS,
 // See the License for the specific language governing permissions and
 // limitations under the License.
-// Copyright 2026 AsterSQL.
-
 // 统计相关 AST：ANALYZE / DROP|LOAD|LOCK|UNLOCK|REFRESH STATS 与作用域去重。
 //
 // 对照 stats.go：分析选项、直方图操作、列选择，以及表/库/全局 StatsObject
@@ -77,10 +76,10 @@ pub fn histogram_operation_string(operation: HistogramOperationType) -> &'static
 }
 
 #[derive(Clone, Debug, PartialEq)]
-/// 单条 ANALYZE WITH 选项：种类 + 数值文本。
+/// 单条 ANALYZE WITH 选项。None 表示 DEFAULT，清除持久化值。
 pub struct AnalyzeOpt {
     pub option_type: AnalyzeOptionType,
-    pub value: String,
+    pub value: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -177,9 +176,118 @@ impl AnalyzeTableStmt {
                 }
                 out.push_str(&format!(
                     " {} {}",
-                    option.value,
+                    option.value.as_deref().unwrap_or("DEFAULT"),
                     analyze_option_string(option.option_type)
                 ));
+            }
+        }
+        Ok(out)
+    }
+}
+
+impl crate::AnalyzeTableStmt {
+    /// Restore the parser's canonical ANALYZE AST, including DEFAULT resets.
+    pub fn restore(&self) -> Result<String, String> {
+        use crate::{AnalyzeOptionType, ColumnChoice as AstColumnChoice, HistogramOperationType};
+        let mut out = String::from("ANALYZE ");
+        if self.NoWriteToBinLog {
+            out.push_str("NO_WRITE_TO_BINLOG ");
+        }
+        out.push_str(if self.Incremental {
+            "INCREMENTAL TABLE "
+        } else {
+            "TABLE "
+        });
+        out.push_str(
+            &self
+                .TableNames
+                .iter()
+                .map(|table| {
+                    if table.Schema.O.is_empty() {
+                        quote_name(&table.Name.O)
+                    } else {
+                        format!(
+                            "{}.{}",
+                            quote_name(&table.Schema.O),
+                            quote_name(&table.Name.O)
+                        )
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+        if !self.PartitionNames.is_empty() {
+            out.push_str(" PARTITION ");
+            out.push_str(
+                &self
+                    .PartitionNames
+                    .iter()
+                    .map(|name| quote_name(&name.O))
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+        }
+        match self.HistogramOperation {
+            HistogramOperationType::Nop => {}
+            HistogramOperationType::Update => out.push_str(" UPDATE HISTOGRAM "),
+            HistogramOperationType::Drop => out.push_str(" DROP HISTOGRAM "),
+        }
+        if self.HistogramOperation != HistogramOperationType::Nop && !self.ColumnNames.is_empty() {
+            out.push_str("ON ");
+            out.push_str(
+                &self
+                    .ColumnNames
+                    .iter()
+                    .map(|name| quote_name(&name.O))
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+        }
+        match self.ColumnChoice {
+            AstColumnChoice::All => out.push_str(" ALL COLUMNS"),
+            AstColumnChoice::Predicate => out.push_str(" PREDICATE COLUMNS"),
+            AstColumnChoice::List => {
+                out.push_str(" COLUMNS ");
+                out.push_str(
+                    &self
+                        .ColumnNames
+                        .iter()
+                        .map(|name| quote_name(&name.O))
+                        .collect::<Vec<_>>()
+                        .join(","),
+                );
+            }
+            AstColumnChoice::Default => {}
+        }
+        if self.IndexFlag {
+            out.push_str(" INDEX");
+        }
+        for (index, name) in self.IndexNames.iter().enumerate() {
+            out.push_str(if index == 0 { " " } else { "," });
+            out.push_str(&quote_name(&name.O));
+        }
+        if !self.AnalyzeOpts.is_empty() {
+            out.push_str(" WITH");
+            for (index, option) in self.AnalyzeOpts.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                out.push(' ');
+                if let Some(value) = &option.Value {
+                    out.push_str(&crate::sql_restore::restore_expr(value)?);
+                } else {
+                    out.push_str("DEFAULT");
+                }
+                out.push(' ');
+                out.push_str(match option.Type {
+                    AnalyzeOptionType::NumBuckets => "BUCKETS",
+                    AnalyzeOptionType::NumTopN => "TOPN",
+                    AnalyzeOptionType::CMSketchDepth => "CMSKETCH DEPTH",
+                    AnalyzeOptionType::CMSketchWidth => "CMSKETCH WIDTH",
+                    AnalyzeOptionType::NumSamples => "SAMPLES",
+                    AnalyzeOptionType::SampleRate => "SAMPLERATE",
+                    AnalyzeOptionType::NDVRate => "NDVRATE",
+                });
             }
         }
         Ok(out)

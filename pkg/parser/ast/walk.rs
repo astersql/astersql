@@ -66,6 +66,10 @@ node_visit!(
     AlterMaterializedViewLogStmt,
     DropMaterializedViewStmt,
     DropMaterializedViewLogStmt,
+    PurgeMaterializedViewLogStmt,
+    CancelMaterializedViewJobStmt,
+    RefreshMaterializedViewStmt,
+    RefreshMaterializedViewImplementStmt,
     DeallocateStmt,
     DeleteStmt,
     DistributeTableStmt,
@@ -316,6 +320,10 @@ children!(AlterMaterializedViewLogAction => Purge);
 children!(AlterMaterializedViewLogStmt => Table, Actions);
 children!(DropMaterializedViewStmt => ViewName);
 children!(DropMaterializedViewLogStmt => Table);
+children!(PurgeMaterializedViewLogStmt => Table);
+children!(CancelMaterializedViewJobStmt => );
+children!(RefreshMaterializedViewStmt => ViewName, AsOf);
+children!(RefreshMaterializedViewImplementStmt => RefreshStmt);
 children!(AlterTableSpec => NewColumns, SplitIndex, PartitionExpr, Options, Constraint, MaskingPolicyExpr, PartDefinitions, Partition);
 children!(ReferenceDef => IndexPartSpecifications);
 children!(Constraint => Keys, Option, Refer, Expr);

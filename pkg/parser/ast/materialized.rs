@@ -6,10 +6,140 @@ use crate::sql_restore::{restore_expr as expression, restore_node as restore_sel
 use crate::{
     AlterMaterializedViewAction, AlterMaterializedViewActionType, AlterMaterializedViewLogAction,
     AlterMaterializedViewLogActionType, AlterMaterializedViewLogStmt, AlterMaterializedViewStmt,
-    CreateMaterializedViewLogStmt, CreateMaterializedViewStmt, DropMaterializedViewLogStmt,
-    DropMaterializedViewStmt, MLogAccumulationAlertClause, MLogPurgeClause, MViewRefreshClause,
-    TableName, TableOption, TableOptionType,
+    CancelMaterializedViewJobStmt, CancelMaterializedViewJobType, CreateMaterializedViewLogStmt,
+    CreateMaterializedViewStmt, DropMaterializedViewLogStmt, DropMaterializedViewStmt,
+    MLogAccumulationAlertClause, MLogPurgeClause, MViewRefreshClause, PurgeMaterializedViewLogStmt,
+    RefreshMaterializedViewCompleteType, RefreshMaterializedViewImplementStmt,
+    RefreshMaterializedViewMode, RefreshMaterializedViewObserveType, RefreshMaterializedViewStmt,
+    RefreshMaterializedViewType, TableName, TableOption, TableOptionType,
 };
+
+impl std::fmt::Display for RefreshMaterializedViewType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Fast => "FAST",
+            Self::Complete => "COMPLETE",
+            Self::Unknown(_) => "UNKNOWN",
+        })
+    }
+}
+
+impl std::fmt::Display for RefreshMaterializedViewCompleteType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::InPlace => "IN PLACE",
+            Self::OutOfPlace => "OUT OF PLACE",
+            Self::DeltaApply => "DELTA APPLY",
+            Self::Unknown(_) => "UNKNOWN",
+        })
+    }
+}
+
+impl std::fmt::Display for RefreshMaterializedViewMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Fast => "FAST",
+            Self::CompleteInPlace => "COMPLETE IN PLACE",
+            Self::CompleteOutOfPlace => "COMPLETE OUT OF PLACE",
+            Self::CompleteDeltaApply => "COMPLETE DELTA APPLY",
+        })
+    }
+}
+
+impl PurgeMaterializedViewLogStmt {
+    pub fn restore(&self) -> Result<String, String> {
+        Ok(format!(
+            "PURGE MATERIALIZED VIEW LOG ON {}",
+            required_name(&self.Table, "PurgeMaterializedViewLogStmt.Table")?
+        ))
+    }
+}
+
+impl CancelMaterializedViewJobStmt {
+    pub fn restore(&self) -> Result<String, String> {
+        let prefix = match self.Tp {
+            CancelMaterializedViewJobType::Refresh => "CANCEL MATERIALIZED VIEW REFRESH JOB ",
+            CancelMaterializedViewJobType::LogPurge => "CANCEL MATERIALIZED VIEW LOG PURGE JOB ",
+            CancelMaterializedViewJobType::Unknown(value) => {
+                return Err(format!(
+                    "invalid materialized view job cancel type: {value}"
+                ));
+            }
+        };
+        Ok(format!("{prefix}{}", self.JobID))
+    }
+}
+
+impl RefreshMaterializedViewStmt {
+    pub fn mode(&self) -> Result<RefreshMaterializedViewMode, String> {
+        match self.Type {
+            RefreshMaterializedViewType::Fast => Ok(RefreshMaterializedViewMode::Fast),
+            RefreshMaterializedViewType::Complete => match self.CompleteType {
+                RefreshMaterializedViewCompleteType::InPlace => Ok(RefreshMaterializedViewMode::CompleteInPlace),
+                RefreshMaterializedViewCompleteType::OutOfPlace => Ok(RefreshMaterializedViewMode::CompleteOutOfPlace),
+                RefreshMaterializedViewCompleteType::DeltaApply => Ok(RefreshMaterializedViewMode::CompleteDeltaApply),
+                RefreshMaterializedViewCompleteType::Unknown(_) => Err("RefreshMaterializedViewStmt: COMPLETE refresh mode must be specified explicitly".into()),
+            },
+            RefreshMaterializedViewType::Unknown(_) => Err("RefreshMaterializedViewStmt: unknown REFRESH MATERIALIZED VIEW type".into()),
+        }
+    }
+
+    pub fn restore(&self) -> Result<String, String> {
+        let mut sql = format!(
+            "REFRESH MATERIALIZED VIEW {}",
+            required_name(&self.ViewName, "RefreshMaterializedViewStmt.ViewName")?
+        );
+        if self.WithAsyncMode {
+            sql.push_str(" WITH ASYNC MODE");
+        }
+        match self.Type {
+            RefreshMaterializedViewType::Fast => sql.push_str(" FAST"),
+            RefreshMaterializedViewType::Complete => {
+                sql.push_str(" COMPLETE");
+                sql.push_str(match self.CompleteType {
+                    RefreshMaterializedViewCompleteType::InPlace => " IN PLACE",
+                    RefreshMaterializedViewCompleteType::OutOfPlace => " OUT OF PLACE",
+                    RefreshMaterializedViewCompleteType::DeltaApply => " DELTA APPLY",
+                    RefreshMaterializedViewCompleteType::Unknown(_) => return Err("RefreshMaterializedViewStmt: COMPLETE refresh mode must be specified explicitly".into()),
+                });
+            }
+            RefreshMaterializedViewType::Unknown(_) => sql.push_str(" UNKNOWN"),
+        }
+        if let Some(as_of) = &self.AsOf {
+            sql.push_str(" AS OF TIMESTAMP ");
+            sql.push_str(
+                &expression(&as_of.TsExpr)
+                    .map_err(|e| format!("RefreshMaterializedViewStmt.AsOf: {e}"))?,
+            );
+        }
+        match self.ObserveType {
+            RefreshMaterializedViewObserveType::DryRun => sql.push_str(" DRY RUN"),
+            RefreshMaterializedViewObserveType::Profile => sql.push_str(" WITH PROFILE"),
+            RefreshMaterializedViewObserveType::None => {}
+        }
+        Ok(sql)
+    }
+}
+
+impl RefreshMaterializedViewImplementStmt {
+    pub fn restore(&self) -> Result<String, String> {
+        let refresh = self
+            .RefreshStmt
+            .as_ref()
+            .ok_or("RefreshMaterializedViewImplementStmt: missing RefreshStmt")?;
+        let mut sql = format!("IMPLEMENT FOR {} USING TIMESTAMP {}", refresh.restore().map_err(|e| format!("An error occurred while restore RefreshMaterializedViewImplementStmt.RefreshStmt: {e}"))?, self.LastSuccessfulRefreshReadTSO);
+        if self.TargetRefreshReadTSO > 0 {
+            sql.push_str(&format!(" UP TO TIMESTAMP {}", self.TargetRefreshReadTSO));
+        }
+        if self.MLogRetainedLowerTSO > 0 {
+            sql.push_str(&format!(
+                " MLOG RETAINED LOWER TIMESTAMP {}",
+                self.MLogRetainedLowerTSO
+            ));
+        }
+        Ok(sql)
+    }
+}
 
 fn quote_name(value: &str) -> String {
     format!("`{}`", value.replace('`', "``"))

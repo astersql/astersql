@@ -2394,7 +2394,7 @@ fn apply_rule(rule: AdminRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
             };
             out.item = Some(Box::new(parser_ast::AnalyzeOpt {
                 Type: kind,
-                Value: parser_ast::ExprNode::Value(text),
+                Value: Some(parser_ast::ExprNode::Value(text)),
             }));
         }
         AdminRule::BinlogStmtAlt01 => {

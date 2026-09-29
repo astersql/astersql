@@ -27,6 +27,8 @@ pub trait SEMCommand {
 /// 下列常量为各语句 SEM 分类的稳定字符串，值与 Go 逐项一致。
 pub const AlterDatabaseCommand: &str = "ALTER DATABASE";
 pub const AlterInstanceCommand: &str = "ALTER INSTANCE";
+pub const AlterMaterializedViewCommand: &str = "ALTER MATERIALIZED VIEW";
+pub const AlterMaterializedViewLogCommand: &str = "ALTER MATERIALIZED VIEW LOG";
 pub const AlterPlacementPolicyCommand: &str = "ALTER PLACEMENT POLICY";
 pub const AlterRangeCommand: &str = "ALTER RANGE";
 pub const AlterResourceGroupCommand: &str = "ALTER RESOURCE GROUP";
@@ -36,6 +38,8 @@ pub const AlterUserCommand: &str = "ALTER USER";
 pub const AdminCleanupTableLockCommand: &str = "ADMIN CLEANUP TABLE LOCK";
 pub const CreateDatabaseCommand: &str = "CREATE DATABASE";
 pub const CreateIndexCommand: &str = "CREATE INDEX";
+pub const CreateMaterializedViewCommand: &str = "CREATE MATERIALIZED VIEW";
+pub const CreateMaterializedViewLogCommand: &str = "CREATE MATERIALIZED VIEW LOG";
 pub const CreatePlacementPolicyCommand: &str = "CREATE PLACEMENT POLICY";
 pub const CreateMaskingPolicyCommand: &str = "CREATE MASKING POLICY";
 pub const CreateResourceGroupCommand: &str = "CREATE RESOURCE GROUP";
@@ -45,6 +49,26 @@ pub const CreateUserCommand: &str = "CREATE USER";
 pub const CreateViewCommand: &str = "CREATE VIEW";
 pub const DropDatabaseCommand: &str = "DROP DATABASE";
 pub const DropIndexCommand: &str = "DROP INDEX";
+pub const DropMaterializedViewCommand: &str = "DROP MATERIALIZED VIEW";
+pub const DropMaterializedViewLogCommand: &str = "DROP MATERIALIZED VIEW LOG";
+pub const PurgeMaterializedViewLogCommand: &str = "PURGE MATERIALIZED VIEW LOG";
+pub const CancelMaterializedViewLogPurgeJobCommand: &str = "CANCEL MATERIALIZED VIEW LOG PURGE JOB";
+pub const CancelMaterializedViewRefreshJobCommand: &str = "CANCEL MATERIALIZED VIEW REFRESH JOB";
+pub const RefreshMaterializedViewCommand: &str = "REFRESH MATERIALIZED VIEW";
+
+impl SEMCommand for crate::CancelMaterializedViewJobStmt {
+    fn sem_command(&self) -> &'static str {
+        match self.Tp {
+            crate::CancelMaterializedViewJobType::Refresh => {
+                CancelMaterializedViewRefreshJobCommand
+            }
+            crate::CancelMaterializedViewJobType::LogPurge => {
+                CancelMaterializedViewLogPurgeJobCommand
+            }
+            crate::CancelMaterializedViewJobType::Unknown(_) => UnknownCommand,
+        }
+    }
+}
 pub const DropPlacementPolicyCommand: &str = "DROP PLACEMENT POLICY";
 pub const DropResourceGroupCommand: &str = "DROP RESOURCE GROUP";
 pub const DropSequenceCommand: &str = "DROP SEQUENCE";
@@ -394,6 +418,8 @@ mod typed_sem_impls {
     fixed_sem_command! {
         AlterDatabaseStmt => AlterDatabaseCommand,
         AlterInstanceStmt => AlterInstanceCommand,
+        AlterMaterializedViewStmt => AlterMaterializedViewCommand,
+        AlterMaterializedViewLogStmt => AlterMaterializedViewLogCommand,
         AlterPlacementPolicyStmt => AlterPlacementPolicyCommand,
         AlterRangeStmt => AlterRangeCommand,
         AlterResourceGroupStmt => AlterResourceGroupCommand,
@@ -403,6 +429,8 @@ mod typed_sem_impls {
         CleanupTableLockStmt => AdminCleanupTableLockCommand,
         CreateDatabaseStmt => CreateDatabaseCommand,
         CreateIndexStmt => CreateIndexCommand,
+        CreateMaterializedViewStmt => CreateMaterializedViewCommand,
+        CreateMaterializedViewLogStmt => CreateMaterializedViewLogCommand,
         CreatePlacementPolicyStmt => CreatePlacementPolicyCommand,
         CreateMaskingPolicyStmt => CreateMaskingPolicyCommand,
         CreateResourceGroupStmt => CreateResourceGroupCommand,
@@ -412,6 +440,11 @@ mod typed_sem_impls {
         CreateViewStmt => CreateViewCommand,
         DropDatabaseStmt => DropDatabaseCommand,
         DropIndexStmt => DropIndexCommand,
+        DropMaterializedViewStmt => DropMaterializedViewCommand,
+        DropMaterializedViewLogStmt => DropMaterializedViewLogCommand,
+        PurgeMaterializedViewLogStmt => PurgeMaterializedViewLogCommand,
+        RefreshMaterializedViewStmt => RefreshMaterializedViewCommand,
+        RefreshMaterializedViewImplementStmt => RefreshMaterializedViewCommand,
         DropPlacementPolicyStmt => DropPlacementPolicyCommand,
         DropResourceGroupStmt => DropResourceGroupCommand,
         DropSequenceStmt => DropSequenceCommand,

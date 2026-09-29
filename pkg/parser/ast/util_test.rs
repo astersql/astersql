@@ -21,8 +21,9 @@ use std::fmt::Debug;
 
 use crate::util::IsReadOnly;
 use crate::{
-    AdminStmt, AdminStmtType, DeleteStmt, DoStmt, ExplainStmt, InsertStmt, Node, SelectLockType,
-    SelectStmt, SetOprSelectList, SetOprStmt, ShowStmt, TraceStmt, UpdateStmt, VariableExpr,
+    AdminStmt, AdminStmtType, DeleteStmt, DoStmt, ExplainStmt, InPlaceVisitor, InsertStmt, Node,
+    SelectLockType, SelectStmt, SetOprSelectList, SetOprStmt, ShowStmt, TraceStmt, UpdateStmt,
+    VariableExpr, Walk,
 };
 
 /// Rust counterpart of Go's `nodeTextCleaner` contract.
@@ -308,4 +309,40 @@ fn test_read_only_branch_parity() {
         ]),
         true
     ));
+}
+
+#[test]
+fn go_merge_19_in_place_walk_preserves_read_only_variable_detection() {
+    struct AssignmentChecker {
+        found: bool,
+    }
+
+    impl InPlaceVisitor for AssignmentChecker {
+        fn enter(&mut self, node: &mut dyn Node) -> bool {
+            if let Some(variable) = node.as_any().downcast_ref::<VariableExpr>() {
+                if variable.is_system && variable.value.is_some() {
+                    self.found = true;
+                    return true;
+                }
+            }
+            false
+        }
+
+        fn leave(&mut self, _node: &mut dyn Node) -> bool {
+            !self.found
+        }
+    }
+
+    for (is_system, has_value, expected_read_only) in [
+        (true, true, false),
+        (true, false, true),
+        (false, true, true),
+    ] {
+        let mut statement =
+            SelectStmt::with_child(Box::new(VariableExpr::new(is_system, has_value)));
+        let mut checker = AssignmentChecker { found: false };
+        assert_eq!(Walk(&mut statement, &mut checker), expected_read_only);
+        assert_eq!(IsReadOnly(&statement, true), expected_read_only);
+        assert!(IsReadOnly(&statement, false));
+    }
 }

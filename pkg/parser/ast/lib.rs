@@ -1973,6 +1973,89 @@ pub struct DropMaterializedViewLogStmt {
     pub Table: Option<TableName>,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PurgeMaterializedViewLogStmt {
+    pub node_text: base::AstNode,
+    pub Table: Option<TableName>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CancelMaterializedViewJobType {
+    Unknown(u8),
+    LogPurge,
+    Refresh,
+}
+impl Default for CancelMaterializedViewJobType {
+    fn default() -> Self {
+        Self::Unknown(0)
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CancelMaterializedViewJobStmt {
+    pub node_text: base::AstNode,
+    pub Tp: CancelMaterializedViewJobType,
+    pub JobID: i64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RefreshMaterializedViewType {
+    #[default]
+    Fast,
+    Complete,
+    Unknown(i32),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RefreshMaterializedViewCompleteType {
+    Unknown(i32),
+    InPlace,
+    OutOfPlace,
+    DeltaApply,
+}
+impl Default for RefreshMaterializedViewCompleteType {
+    fn default() -> Self {
+        Self::Unknown(0)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RefreshMaterializedViewMode {
+    #[default]
+    Fast,
+    CompleteInPlace,
+    CompleteOutOfPlace,
+    CompleteDeltaApply,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RefreshMaterializedViewObserveType {
+    #[default]
+    None,
+    DryRun,
+    Profile,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RefreshMaterializedViewStmt {
+    pub node_text: base::AstNode,
+    pub ViewName: Option<TableName>,
+    pub WithAsyncMode: bool,
+    pub Type: RefreshMaterializedViewType,
+    pub CompleteType: RefreshMaterializedViewCompleteType,
+    pub ObserveType: RefreshMaterializedViewObserveType,
+    pub AsOf: Option<AsOfClause>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RefreshMaterializedViewImplementStmt {
+    pub node_text: base::AstNode,
+    pub RefreshStmt: Option<RefreshMaterializedViewStmt>,
+    pub LastSuccessfulRefreshReadTSO: u64,
+    pub TargetRefreshReadTSO: u64,
+    pub MLogRetainedLowerTSO: u64,
+}
+
 /// CREATE VIEW 语句 AST。
 pub struct CreateViewStmt {
     pub node_text: base::AstNode,
@@ -2911,7 +2994,7 @@ pub enum AnalyzeOptionType {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AnalyzeOpt {
     pub Type: AnalyzeOptionType,
-    pub Value: ExprNode,
+    pub Value: Option<ExprNode>,
 }
 
 /// 直方图Operation类型枚举。
@@ -4669,6 +4752,10 @@ simple_node!(
     AlterMaterializedViewLogStmt,
     DropMaterializedViewStmt,
     DropMaterializedViewLogStmt,
+    PurgeMaterializedViewLogStmt,
+    CancelMaterializedViewJobStmt,
+    RefreshMaterializedViewStmt,
+    RefreshMaterializedViewImplementStmt,
     ExprNode,
     DoStmt,
     CallStmt,
@@ -4846,6 +4933,9 @@ pub mod stats;
 /// util模块。
 #[path = "util.rs"]
 pub mod util;
+
+#[cfg(test)]
+mod go_merge_16_test;
 
 #[cfg(test)]
 #[path = "ast_1_aster_unit_test.rs"]
