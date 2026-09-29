@@ -4982,6 +4982,9 @@ mod functions_test;
 mod go_merge_13_test;
 
 #[cfg(test)]
+mod go_merge_21_test;
+
+#[cfg(test)]
 mod go_merge_23_test;
 #[cfg(test)]
 #[path = "integration_9_aster_unit_test.rs"]

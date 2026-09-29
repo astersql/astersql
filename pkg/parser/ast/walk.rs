@@ -498,7 +498,11 @@ impl Children for ExprKind {
             Self::Collate { Expr, .. } => Expr.visit(_v),
             Self::NamedDefault(_) => true,
             Self::MaxValue => true,
-            Self::MatchAgainst { Against, .. } => Against.visit(_v),
+            Self::MatchAgainst {
+                ColumnNames,
+                Against,
+                ..
+            } => ColumnNames.visit(_v) && Against.visit(_v),
             Self::Case {
                 Value,
                 WhenClauses,
@@ -509,7 +513,7 @@ impl Children for ExprKind {
             Self::TimeUnit(_) => true,
             Self::GetFormatSelector(_) => true,
             Self::TrimDirection(_) => true,
-            Self::TableName(_) => true,
+            Self::TableName(table) => table.visit(_v),
             Self::Parentheses(x0) => x0.visit(_v),
             Self::ParamMarker { .. } => true,
             Self::DefaultValue => true,
@@ -565,7 +569,11 @@ impl MutChildren for ExprKind {
             Self::Collate { Expr, .. } => Expr.visit_mut(_v),
             Self::NamedDefault(_) => true,
             Self::MaxValue => true,
-            Self::MatchAgainst { Against, .. } => Against.visit_mut(_v),
+            Self::MatchAgainst {
+                ColumnNames,
+                Against,
+                ..
+            } => ColumnNames.visit_mut(_v) && Against.visit_mut(_v),
             Self::Case {
                 Value,
                 WhenClauses,
@@ -576,7 +584,7 @@ impl MutChildren for ExprKind {
             Self::TimeUnit(_) => true,
             Self::GetFormatSelector(_) => true,
             Self::TrimDirection(_) => true,
-            Self::TableName(_) => true,
+            Self::TableName(table) => table.visit_mut(_v),
             Self::Parentheses(x0) => x0.visit_mut(_v),
             Self::ParamMarker { .. } => true,
             Self::DefaultValue => true,
