@@ -159,7 +159,7 @@ fn exec_info(digest: &str, user: &str, start_offset: u64) -> StmtExecInfo {
             write_ru: 3.5,
             ..Default::default()
         }),
-
+        TotalRUV2: 4.5,
         CPUUsages: ppcpuusage::CPUUsages {
             TidbCPUTime: Duration::from_millis(47),
             TikvCPUTime: Duration::from_millis(53),
@@ -303,12 +303,15 @@ fn formatting_ru_and_network_helpers_match_go() {
         write_ru: 3.0,
         ..Default::default()
     };
-    ru.Add(Some(&detail));
-    ru.Add(None);
-    assert_eq!((ru.SumRRU, ru.SumWRU), (2.0, 3.0));
+    ru.Add(Some(&detail), 4.0);
+    ru.Add(None, 5.0);
+    assert_eq!(
+        (ru.SumRRU, ru.SumWRU, ru.SumRUV2, ru.MaxRUV2),
+        (2.0, 3.0, 9.0, 5.0)
+    );
     let mut merged = StmtRUSummary::default();
     merged.Merge(&ru);
-    assert_eq!((merged.SumRRU, merged.SumWRU), (2.0, 3.0));
+    assert_eq!(merged.SumRUV2, 9.0);
 
     let raw = tikv_util::ExecDetails::default();
     raw.set_all_for_test([0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8]);
@@ -323,7 +326,7 @@ fn formatting_ru_and_network_helpers_match_go() {
     assert_eq!(traffic.UnpackedBytesReceivedTiFlashCrossZone, 8);
 }
 
-/// 计划编码失败保留摘要并标记计划丢弃；SQL 超长按 maxSQLLength 截断。
+/// 计划编码失败丢弃样本；SQL 超长按 maxSQLLength 截断。
 #[test]
 fn plan_errors_and_sql_limits_follow_go_first_sample_rules() {
     let mut bad = exec_info("bad", "u", 1);
@@ -331,9 +334,7 @@ fn plan_errors_and_sql_limits_follow_go_first_sample_rules() {
         error: Some("encode failed".to_owned()),
         ..Default::default()
     });
-    let stats = newStmtSummaryStats(&bad, 32).unwrap();
-    assert_eq!(stats.samplePlan, "[discard]");
-    assert!(stats.planHint.is_empty());
+    assert!(newStmtSummaryStats(&bad, 32).is_none());
 
     let mut summaries = newStmtSummaryByDigestMap();
     summaries.SetMaxSQLLength(8).unwrap();

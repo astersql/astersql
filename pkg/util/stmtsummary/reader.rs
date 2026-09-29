@@ -22,7 +22,7 @@
 // 保留权限过滤、digest checker、完整列工厂、时区转换及计划解码错误处理。
 
 use crate::{
-    StmtSummaryByDigestMap, auth, avgFloat, avgFloat4Uint, avgInt, avgSumFloat, convertEmptyToNil,
+    StmtSummaryByDigestMap, auth, avgFloat, avgInt, avgSumFloat, convertEmptyToNil,
     formatBackoffTypes, model, mysql, plancodec, set, stmtSummaryByDigest,
     stmtSummaryByDigestElement, stmtSummaryByDigestEvicted, stmtSummaryByDigestMap,
     stmtSummaryStats, types,
@@ -131,9 +131,7 @@ impl stmtSummaryReader {
             }
         }
         if self.checker.is_none() {
-            if let Some(other_datum) =
-                self.getStmtEvictedOtherRow(&ssMap.other, ssMap.beginTimeForCurInterval)
-            {
+            if let Some(other_datum) = self.getStmtEvictedOtherRow(&ssMap.other) {
                 rows.push(other_datum);
             }
         }
@@ -254,12 +252,8 @@ impl stmtSummaryReader {
     fn getStmtEvictedOtherRow(
         &self,
         ssbde: &stmtSummaryByDigestEvicted,
-        beginTimeForCurInterval: i64,
     ) -> Option<Vec<types::Datum>> {
         let seElement = ssbde.history.back()?;
-        if seElement.beginTime < beginTimeForCurInterval {
-            return None;
-        }
         let empty_ssbd = stmtSummaryByDigest::default();
         self.getStmtByDigestElementRow(&seElement.otherSummary, &empty_ssbd)
     }
@@ -350,13 +344,6 @@ pub const AvgRocksdbBlockReadCountStr: &str = "AVG_ROCKSDB_BLOCK_READ_COUNT";
 pub const MaxRocksdbBlockReadCountStr: &str = "MAX_ROCKSDB_BLOCK_READ_COUNT";
 pub const AvgRocksdbBlockReadByteStr: &str = "AVG_ROCKSDB_BLOCK_READ_BYTE";
 pub const MaxRocksdbBlockReadByteStr: &str = "MAX_ROCKSDB_BLOCK_READ_BYTE";
-pub const IAExecCountStr: &str = "IA_EXEC_COUNT";
-pub const AvgIARemoteReadSegmentCountStr: &str = "AVG_IA_REMOTE_READ_SEGMENT_COUNT";
-pub const MaxIARemoteReadSegmentCountStr: &str = "MAX_IA_REMOTE_READ_SEGMENT_COUNT";
-pub const AvgIARemoteReadSegmentSizeStr: &str = "AVG_IA_REMOTE_READ_SEGMENT_SIZE";
-pub const MaxIARemoteReadSegmentSizeStr: &str = "MAX_IA_REMOTE_READ_SEGMENT_SIZE";
-pub const AvgIARemoteReadSegmentWaitTimeStr: &str = "AVG_IA_REMOTE_READ_SEGMENT_WAIT_TIME";
-pub const MaxIARemoteReadSegmentWaitTimeStr: &str = "MAX_IA_REMOTE_READ_SEGMENT_WAIT_TIME";
 pub const AvgPrewriteTimeStr: &str = "AVG_PREWRITE_TIME";
 pub const MaxPrewriteTimeStr: &str = "MAX_PREWRITE_TIME";
 pub const AvgCommitTimeStr: &str = "AVG_COMMIT_TIME";
@@ -421,6 +408,8 @@ pub const AvgRequestUnitWriteStr: &str = "AVG_REQUEST_UNIT_WRITE";
 pub const MaxRequestUnitWriteStr: &str = "MAX_REQUEST_UNIT_WRITE";
 pub const AvgQueuedRcTimeStr: &str = "AVG_QUEUED_RC_TIME";
 pub const MaxQueuedRcTimeStr: &str = "MAX_QUEUED_RC_TIME";
+pub const AvgRequestUnitV2Str: &str = "AVG_REQUEST_UNIT_V2";
+pub const MaxRequestUnitV2Str: &str = "MAX_REQUEST_UNIT_V2";
 pub const ResourceGroupName: &str = "RESOURCE_GROUP";
 pub const SumUnpackedBytesSentTiKVTotalStr: &str = "SUM_UNPACKED_BYTES_SENT_TIKV_TOTAL";
 pub const SumUnpackedBytesReceivedTiKVTotalStr: &str = "SUM_UNPACKED_BYTES_RECEIVED_TIKV_TOTAL";
@@ -892,117 +881,62 @@ pub fn columnValueFactoryMap() -> HashMap<&'static str, columnValueFactory> {
     stat_field!(map, ProcessedKeysStr, sumProcessedKeys);
     avg_int_stat!(map, AvgProcessedKeysStr, sumProcessedKeys, execCount);
     stat_field!(map, MaxProcessedKeysStr, maxProcessedKeys);
-    insert_factory!(
+    stat_field!(
         map,
         RocksdbDeleteSkippedCountStr,
-        |_reader, _ssElement, _ssbd, ssStats| { ssStats.sumRocksdbDeleteSkippedCount as f64 }
+        sumRocksdbDeleteSkippedCount
     );
-    insert_factory!(
+    avg_int_stat!(
         map,
         AvgRocksdbDeleteSkippedCountStr,
-        |_reader, _ssElement, _ssbd, ssStats| {
-            avgFloat4Uint(ssStats.sumRocksdbDeleteSkippedCount, ssStats.execCount)
-        }
+        sumRocksdbDeleteSkippedCount,
+        execCount
     );
     stat_field!(
         map,
         MaxRocksdbDeleteSkippedCountStr,
         maxRocksdbDeleteSkippedCount
     );
-    insert_factory!(
-        map,
-        RocksdbKeySkippedCountStr,
-        |_reader, _ssElement, _ssbd, ssStats| { ssStats.sumRocksdbKeySkippedCount as f64 }
-    );
-    insert_factory!(
+    stat_field!(map, RocksdbKeySkippedCountStr, sumRocksdbKeySkippedCount);
+    avg_int_stat!(
         map,
         AvgRocksdbKeySkippedCountStr,
-        |_reader, _ssElement, _ssbd, ssStats| {
-            avgFloat4Uint(ssStats.sumRocksdbKeySkippedCount, ssStats.execCount)
-        }
+        sumRocksdbKeySkippedCount,
+        execCount
     );
     stat_field!(map, MaxRocksdbKeySkippedCountStr, maxRocksdbKeySkippedCount);
-    insert_factory!(
+    stat_field!(
         map,
         RocksdbBlockCacheHitCountStr,
-        |_reader, _ssElement, _ssbd, ssStats| { ssStats.sumRocksdbBlockCacheHitCount as f64 }
+        sumRocksdbBlockCacheHitCount
     );
-    insert_factory!(
+    avg_int_stat!(
         map,
         AvgRocksdbBlockCacheHitCountStr,
-        |_reader, _ssElement, _ssbd, ssStats| {
-            avgFloat4Uint(ssStats.sumRocksdbBlockCacheHitCount, ssStats.execCount)
-        }
+        sumRocksdbBlockCacheHitCount,
+        execCount
     );
     stat_field!(
         map,
         MaxRocksdbBlockCacheHitCountStr,
         maxRocksdbBlockCacheHitCount
     );
-    insert_factory!(
-        map,
-        RocksdbBlockReadCountStr,
-        |_reader, _ssElement, _ssbd, ssStats| { ssStats.sumRocksdbBlockReadCount as f64 }
-    );
-    insert_factory!(
-        map,
-        AvgRocksdbBlockReadCountStr,
-        |_reader, _ssElement, _ssbd, ssStats| {
-            avgFloat4Uint(ssStats.sumRocksdbBlockReadCount, ssStats.execCount)
-        }
-    );
-    stat_field!(map, MaxRocksdbBlockReadCountStr, maxRocksdbBlockReadCount);
-    insert_factory!(
-        map,
-        RocksdbBlockReadByteStr,
-        |_reader, _ssElement, _ssbd, ssStats| { ssStats.sumRocksdbBlockReadByte as f64 }
-    );
-    insert_factory!(
-        map,
-        AvgRocksdbBlockReadByteStr,
-        |_reader, _ssElement, _ssbd, ssStats| {
-            avgFloat4Uint(ssStats.sumRocksdbBlockReadByte, ssStats.execCount)
-        }
-    );
-    stat_field!(map, MaxRocksdbBlockReadByteStr, maxRocksdbBlockReadByte);
-    stat_field!(map, IAExecCountStr, iaExecCount);
-    insert_factory!(
-        map,
-        AvgIARemoteReadSegmentCountStr,
-        |_reader, _ssElement, _ssbd, ssStats| {
-            avgFloat4Uint(ssStats.sumIARemoteReadSegmentCount, ssStats.execCount)
-        }
-    );
-    stat_field!(
-        map,
-        MaxIARemoteReadSegmentCountStr,
-        maxIARemoteReadSegmentCount
-    );
-    insert_factory!(
-        map,
-        AvgIARemoteReadSegmentSizeStr,
-        |_reader, _ssElement, _ssbd, ssStats| {
-            avgFloat4Uint(ssStats.sumIARemoteReadSegmentSize, ssStats.execCount)
-        }
-    );
-    stat_field!(
-        map,
-        MaxIARemoteReadSegmentSizeStr,
-        maxIARemoteReadSegmentSize
-    );
+    stat_field!(map, RocksdbBlockReadCountStr, sumRocksdbBlockReadCount);
     avg_int_stat!(
         map,
-        AvgIARemoteReadSegmentWaitTimeStr,
-        sumIARemoteReadSegmentWaitTime,
+        AvgRocksdbBlockReadCountStr,
+        sumRocksdbBlockReadCount,
         execCount
     );
-    insert_factory!(
+    stat_field!(map, MaxRocksdbBlockReadCountStr, maxRocksdbBlockReadCount);
+    stat_field!(map, RocksdbBlockReadByteStr, sumRocksdbBlockReadByte);
+    avg_int_stat!(
         map,
-        MaxIARemoteReadSegmentWaitTimeStr,
-        |_reader, _ssElement, _ssbd, ssStats| {
-            duration_nanos(ssStats.maxIARemoteReadSegmentWaitTime)
-        }
+        AvgRocksdbBlockReadByteStr,
+        sumRocksdbBlockReadByte,
+        execCount
     );
+    stat_field!(map, MaxRocksdbBlockReadByteStr, maxRocksdbBlockReadByte);
     insert_factory!(
         map,
         PrewriteTimeStr,
@@ -1061,21 +995,13 @@ pub fn columnValueFactoryMap() -> HashMap<&'static str, columnValueFactory> {
         MaxLocalLatchWaitTimeStr,
         |_reader, _ssElement, _ssbd, ssStats| { duration_nanos(ssStats.maxLocalLatchTime) }
     );
-    insert_factory!(map, WriteKeysStr, |_reader, _ssElement, _ssbd, ssStats| {
-        ssStats.sumWriteKeys as f64
-    });
+    stat_field!(map, WriteKeysStr, sumWriteKeys);
     avg_float_stat!(map, AvgWriteKeysStr, sumWriteKeys, commitCount);
     stat_field!(map, MaxWriteKeysStr, maxWriteKeys);
-    insert_factory!(map, WriteSizeStr, |_reader, _ssElement, _ssbd, ssStats| {
-        ssStats.sumWriteSize as f64
-    });
+    stat_field!(map, WriteSizeStr, sumWriteSize);
     avg_float_stat!(map, AvgWriteSizeStr, sumWriteSize, commitCount);
     stat_field!(map, MaxWriteSizeStr, maxWriteSize);
-    insert_factory!(
-        map,
-        PrewriteRegionsStr,
-        |_reader, _ssElement, _ssbd, ssStats| { ssStats.sumPrewriteRegionNum as f64 }
-    );
+    stat_field!(map, PrewriteRegionsStr, sumPrewriteRegionNum);
     avg_float_stat!(
         map,
         AvgPrewriteRegionsStr,
@@ -1087,9 +1013,7 @@ pub fn columnValueFactoryMap() -> HashMap<&'static str, columnValueFactory> {
         MaxPrewriteRegionsStr,
         |_reader, _ssElement, _ssbd, ssStats| { ssStats.maxPrewriteRegionNum as i32 }
     );
-    insert_factory!(map, TxnRetryStr, |_reader, _ssElement, _ssbd, ssStats| {
-        ssStats.sumTxnRetry as f64
-    });
+    stat_field!(map, TxnRetryStr, sumTxnRetry);
     avg_float_stat!(map, AvgTxnRetryStr, sumTxnRetry, commitCount);
     stat_field!(map, MaxTxnRetryStr, maxTxnRetry);
     insert_factory!(map, ExecRetryStr, |_reader, _ssElement, _ssbd, ssStats| {
@@ -1129,40 +1053,41 @@ pub fn columnValueFactoryMap() -> HashMap<&'static str, columnValueFactory> {
     insert_factory!(map, KvTimeStr, |_reader, _ssElement, _ssbd, ssStats| {
         duration_nanos(ssStats.sumKVTotal)
     });
-    avg_int_stat!(map, AvgKvTimeStr, sumKVTotal, execCount);
+    avg_int_stat!(map, AvgKvTimeStr, sumKVTotal, commitCount);
     insert_factory!(map, PdTimeStr, |_reader, _ssElement, _ssbd, ssStats| {
         duration_nanos(ssStats.sumPDTotal)
     });
-    avg_int_stat!(map, AvgPdTimeStr, sumPDTotal, execCount);
+    avg_int_stat!(map, AvgPdTimeStr, sumPDTotal, commitCount);
     insert_factory!(
         map,
         BackoffTotalTimeStr,
         |_reader, _ssElement, _ssbd, ssStats| { duration_nanos(ssStats.sumBackoffTotal) }
     );
-    avg_int_stat!(map, AvgBackoffTotalTimeStr, sumBackoffTotal, execCount);
+    avg_int_stat!(map, AvgBackoffTotalTimeStr, sumBackoffTotal, commitCount);
     insert_factory!(
         map,
         WriteSQLRespTimeStr,
         |_reader, _ssElement, _ssbd, ssStats| { duration_nanos(ssStats.sumWriteSQLRespTotal) }
     );
-    avg_int_stat!(map, AvgWriteSQLRespTimeStr, sumWriteSQLRespTotal, execCount);
+    avg_int_stat!(
+        map,
+        AvgWriteSQLRespTimeStr,
+        sumWriteSQLRespTotal,
+        commitCount
+    );
     avg_int_stat!(map, AvgTidbCPUTimeStr, sumTidbCPU, execCount);
     avg_int_stat!(map, AvgTikvCPUTimeStr, sumTikvCPU, execCount);
     stat_field!(map, ResultRowsStr, sumResultRows);
     stat_field!(map, MaxResultRowsStr, maxResultRows);
     stat_field!(map, MinResultRowsStr, minResultRows);
-    insert_factory!(
-        map,
-        AffectedRowsStr,
-        |_reader, _ssElement, _ssbd, ssStats| { ssStats.sumAffectedRows as f64 }
-    );
+    stat_field!(map, AffectedRowsStr, sumAffectedRows);
     avg_int_stat!(map, AvgResultRowsStr, sumResultRows, execCount);
     stat_field!(map, PreparedStr, prepared);
     insert_factory!(
         map,
         AvgAffectedRowsStr,
         |_reader, _ssElement, _ssbd, ssStats| {
-            avgFloat4Uint(ssStats.sumAffectedRows, ssStats.execCount)
+            avgFloat(ssStats.sumAffectedRows as i64, ssStats.execCount)
         }
     );
     insert_factory!(map, FirstSeenStr, |reader, _ssElement, _ssbd, ssStats| {
@@ -1238,6 +1163,14 @@ pub fn columnValueFactoryMap() -> HashMap<&'static str, columnValueFactory> {
             duration_nanos(ssStats.StmtRUSummary.MaxRUWaitDuration)
         }
     );
+    insert_factory!(
+        map,
+        AvgRequestUnitV2Str,
+        |_reader, _ssElement, _ssbd, ssStats| {
+            avgSumFloat(ssStats.StmtRUSummary.SumRUV2, ssStats.execCount)
+        }
+    );
+    ru_field!(map, MaxRequestUnitV2Str, MaxRUV2);
     stat_field!(map, ResourceGroupName, resourceGroupName);
     stat_field!(map, PlanCacheUnqualifiedStr, planCacheUnqualifiedCount);
     stat_field!(
