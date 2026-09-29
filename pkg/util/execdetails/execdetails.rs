@@ -29,6 +29,7 @@ pub struct ExecDetails {
     pub CommitDetail: Option<util::CommitDetails>,
     pub LockKeysDetail: Option<util::LockKeysDetails>,
     pub SharedLockKeysDetail: Option<util::LockKeysDetails>,
+    pub ReadPoolTaskDetails: Option<util::PoolTaskDetails>,
     pub CopTime: time::Duration,
     pub LockKeysDuration: time::Duration,
     pub RequestCount: i32,
@@ -226,6 +227,30 @@ pub const RocksdbBlockReadByteStr: &str = "Rocksdb_block_read_byte";
 // RocksdbBlockReadTimeStr means the time spent on rocksdb block read.
 /// RocksDB block 读取耗时字段名。
 pub const RocksdbBlockReadTimeStr: &str = "Rocksdb_block_read_time";
+pub const ReadPoolTaskDetailsStr: &str = "Read_pool_task_details";
+pub const IARemoteReadSegmentCountStr: &str = "IA_remote_read_segment_count";
+pub const IARemoteReadSegmentSizeStr: &str = "IA_remote_read_segment_size";
+pub const IARemoteReadSegmentWaitTimeStr: &str = "IA_remote_read_segment_wait_time";
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct IARemoteReadSegmentStats {
+    pub Count: u64,
+    pub Bytes: u64,
+    pub WaitTime: time::Duration,
+}
+
+pub fn GetIARemoteReadSegmentStats(
+    scanDetail: Option<&util::ScanDetail>,
+) -> IARemoteReadSegmentStats {
+    let Some(scanDetail) = scanDetail else {
+        return IARemoteReadSegmentStats::default();
+    };
+    IARemoteReadSegmentStats {
+        Count: scanDetail.IaRemoteReadSegmentCount,
+        Bytes: scanDetail.IaRemoteReadSegmentBytes,
+        WaitTime: scanDetail.IaRemoteReadSegmentDuration,
+    }
+}
 
 // The following constants define the set of fields for SlowQueryLogItems
 // that are relevant to evaluating and triggering SlowLogRules.
@@ -299,6 +324,13 @@ impl ExecDetails {
         }
         if self.RequestCount > 0 {
             parts.push(format!("{}: {}", RequestCountStr, self.RequestCount));
+        }
+        if let Some(pool) = self
+            .ReadPoolTaskDetails
+            .as_ref()
+            .filter(|pool| !pool.Empty())
+        {
+            parts.push(format!("{}: {}", ReadPoolTaskDetailsStr, pool.String()));
         }
 
         if let Some(commitDetails) = &self.CommitDetail {
@@ -510,6 +542,16 @@ impl ExecDetails {
                 self.RequestCount.to_string(),
             ));
         }
+        if let Some(pool) = self
+            .ReadPoolTaskDetails
+            .as_ref()
+            .filter(|pool| !pool.Empty())
+        {
+            fields.push(zap::String(
+                &ReadPoolTaskDetailsStr.to_lowercase(),
+                pool.String(),
+            ));
+        }
         if let Some(scanDetail) = &self.CopExecDetails.ScanDetail {
             if scanDetail.TotalKeys > 0 {
                 fields.push(zap::String(
@@ -699,6 +741,28 @@ impl SyncExecDetails {
         }
         if let Some(existing) = execDetails.CopExecDetails.ScanDetail.as_mut() {
             existing.Merge(scanDetail);
+        }
+    }
+
+    /// 合并扫描明细，不改变 cop 任务次数与耗时。
+    pub fn MergeScanDetail(&self, scanDetail: Option<&util::ScanDetail>) {
+        if scanDetail.is_none() {
+            return;
+        }
+        let mut guard = self.mu.Lock();
+        Self::mergeScanDetailLocked(&mut guard.execDetails, scanDetail);
+    }
+
+    /// 合并读池任务明细，不改变 cop 任务次数与其他执行统计。
+    pub fn MergeReadPoolTaskDetails(&self, details: Option<&util::PoolTaskDetails>) {
+        let Some(details) = details.filter(|details| !details.Empty()) else {
+            return;
+        };
+        let mut guard = self.mu.Lock();
+        if let Some(existing) = guard.execDetails.ReadPoolTaskDetails.as_mut() {
+            existing.Merge(details);
+        } else {
+            guard.execDetails.ReadPoolTaskDetails = Some(details.Clone());
         }
     }
 

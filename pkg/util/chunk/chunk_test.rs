@@ -34,6 +34,20 @@ fn chunk_append_preserves_null_and_value_rows() {
     assert_eq!(chunk.GetRow(2).GetInt64(0), 9);
 }
 
+#[test]
+fn go_merge_11_used_memory_excludes_retained_capacity() {
+    use super::{NewChunkWithCapacity, mysql, types};
+    let mut chunk = NewChunkWithCapacity(vec![*types::NewFieldType(mysql::TypeLonglong)], 8);
+    let initial = chunk.UsedMemoryUsage();
+    assert!(initial < chunk.MemoryUsage());
+    chunk.AppendInt64(0, 42);
+    assert!(chunk.UsedMemoryUsage() > initial);
+    let allocated = chunk.MemoryUsage();
+    chunk.Reset();
+    assert_eq!(chunk.UsedMemoryUsage(), initial);
+    assert_eq!(chunk.MemoryUsage(), allocated);
+}
+
 /// 覆盖 Go TestAppendChunk/TestTruncateTo/TestCopyTo/TestAppendSel 的核心断言。
 #[test]
 fn append_truncate_copy_and_selection_match_go() {

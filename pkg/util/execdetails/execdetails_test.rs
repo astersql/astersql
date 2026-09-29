@@ -22,6 +22,120 @@ use execdetails_integration::{execdetails as exec, ruv2_metrics as ruv2, util as
 use std::sync::atomic::{AtomicI32, AtomicI64};
 use std::time::Duration;
 
+#[test]
+fn go_merge_11_read_pool_merge_and_scan_stats() {
+    let summary = exec::SyncExecDetails::default();
+    summary.MergeReadPoolTaskDetails(None);
+    let first = exec::util::PoolTaskDetails {
+        TaskCount: 1,
+        PollCount: 2,
+        MaxPollCount: 2,
+        MinPollCount: 2,
+        ..Default::default()
+    };
+    summary.MergeReadPoolTaskDetails(Some(&first));
+    let second = exec::util::PoolTaskDetails {
+        TaskCount: 1,
+        PollCount: 4,
+        MaxPollCount: 4,
+        MinPollCount: 4,
+        ..Default::default()
+    };
+    summary.MergeReadPoolTaskDetails(Some(&second));
+    let details = summary.GetExecDetails();
+    let pool = details.ReadPoolTaskDetails.as_ref().unwrap();
+    assert_eq!(pool.TaskCount, 2);
+    assert_eq!(pool.PollCount, 6);
+    assert_eq!(pool.MinPollCount, 2);
+    assert_eq!(pool.MaxPollCount, 4);
+    assert_eq!(details.RequestCount, 0);
+    assert_eq!(
+        pool.String(),
+        "{tasks:2, poll_count:{total:6, avg:3, max:4, min:2}, dispatch_count:{total:0, max:0, min:0}, fair_queue:{enabled:false, waited_task_slices:{total:0, max:0, min:0}}}"
+    );
+    assert!(
+        details
+            .String()
+            .contains("Read_pool_task_details: {tasks:2")
+    );
+    assert!(
+        details
+            .ToZapFields()
+            .iter()
+            .any(|field| field.key == "read_pool_task_details")
+    );
+
+    let scan = exec::util::ScanDetail {
+        IaRemoteReadSegmentCount: 3,
+        IaRemoteReadSegmentBytes: 4096,
+        IaRemoteReadSegmentDuration: Duration::from_millis(5),
+        ..Default::default()
+    };
+    let stats = exec::GetIARemoteReadSegmentStats(Some(&scan));
+    assert_eq!(
+        (stats.Count, stats.Bytes, stats.WaitTime),
+        (3, 4096, Duration::from_millis(5))
+    );
+    assert_eq!(exec::GetIARemoteReadSegmentStats(None).Count, 0);
+    summary.MergeScanDetail(Some(&scan));
+    let merged = summary.GetExecDetails();
+    assert_eq!(
+        merged
+            .CopExecDetails
+            .ScanDetail
+            .unwrap()
+            .IaRemoteReadSegmentCount,
+        3
+    );
+    assert_eq!(merged.RequestCount, 0);
+}
+
+#[test]
+fn go_merge_11_pool_task_string_matches_client_go_sample() {
+    let details = exec::util::PoolTaskDetails {
+        TaskCount: 2,
+        PollCount: 8,
+        MaxPollCount: 5,
+        MinPollCount: 3,
+        DispatchCount: 6,
+        MaxDispatchCount: 4,
+        MinDispatchCount: 2,
+        TotalWallTime: Duration::from_millis(20),
+        TaskWallTimeSampleCount: 2,
+        MaxTaskWallTime: Duration::from_millis(12),
+        MinTaskWallTime: Duration::from_millis(8),
+        TotalQueueWaitTime: Duration::from_millis(12),
+        MaxQueueWaitTime: Duration::from_millis(4),
+        MinQueueWaitTime: Duration::from_millis(1),
+        TotalWakeWaitTime: Duration::from_millis(8),
+        MaxWakeWaitTime: Duration::from_millis(3),
+        MinWakeWaitTime: Duration::from_millis(1),
+        FairQueueSampleCount: 6,
+        TotalFairQueueWaitedTaskSlices: 18,
+        MaxFairQueueWaitedTaskSlices: 5,
+        MinFairQueueWaitedTaskSlices: 2,
+        PollCPUTime: Duration::from_millis(8),
+        MaxPollCPUTime: Duration::from_millis(2),
+        MinPollCPUTime: Duration::from_micros(500),
+        PollWallTime: Duration::from_millis(12),
+        MaxPollWallTime: Duration::from_millis(3),
+        MinPollWallTime: Duration::from_micros(750),
+    };
+    assert_eq!(
+        details.String(),
+        concat!(
+            "{tasks:2, poll_count:{total:8, avg:4, max:5, min:3}, ",
+            "dispatch_count:{total:6, max:4, min:2}, ",
+            "task_wall_time:{total:20ms, avg:10ms, max:12ms, min:8ms}, ",
+            "queue_wait:{total:12ms, avg:2ms, max:4ms, min:1ms}, ",
+            "wake_wait:{total:8ms, avg:2ms, max:3ms, min:1ms}, ",
+            "fair_queue:{enabled:true, waited_task_slices:{total:18, avg:3, max:5, min:2}}, ",
+            "poll_cpu:{total:8ms, avg:1ms, max:2ms, min:500µs}, ",
+            "poll_wall:{total:12ms, avg:1.5ms, max:3ms, min:750µs}}"
+        )
+    );
+}
+
 /// 测试用 RU v2 权重，数值与 Go 测试向量对齐。
 fn default_ruv2_weights_for_test() -> ruv2::RUV2Weights {
     ruv2::RUV2Weights {

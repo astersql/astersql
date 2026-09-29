@@ -143,6 +143,34 @@ innodb_lock_wait_timeout = "88"
     variable::clear_sys_vars_for_test();
 }
 
+#[test]
+#[serial]
+fn go_merge_11_ignores_read_timestamp_overrides() {
+    variable::clear_sys_vars_for_test();
+    for name in [
+        "tidb_low_resolution_tso",
+        "tidb_snapshot",
+        "tidb_read_staleness",
+    ] {
+        variable::RegisterSysVar(session_var(name, variable::vardef::TypeStr));
+    }
+    let mut vars = variable::SessionVars::new(Box::new(EmptyGlobalAccessor));
+    let input = b"tidb_low_resolution_tso = \"ON\"\ntidb_snapshot = \"123\"\ntidb_read_staleness = \"-1\"\n";
+    assert!(
+        LoadConfigForPlanReplayerLoad(&mut vars, &input[..])
+            .unwrap()
+            .is_empty()
+    );
+    for name in [
+        "tidb_low_resolution_tso",
+        "tidb_snapshot",
+        "tidb_read_staleness",
+    ] {
+        assert_eq!(vars.system(name), None, "{name} must not be loaded");
+    }
+    variable::clear_sys_vars_for_test();
+}
+
 /// TOML 畸形或 Reader 失败时应整体中止，且不留下部分变量更新。
 #[test]
 #[serial]

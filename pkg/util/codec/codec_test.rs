@@ -1052,6 +1052,33 @@ fn TestSerializeKeysUsesPreallocatedCapacityWithoutZeroPrefix() {
 }
 
 #[test]
+fn go_merge_11_type_null_marks_join_key_as_null() {
+    let mut field = types::NewFieldType(mysql::TypeNull);
+    let mut chunk = chunk::New(vec![(*field).clone()], 2, 2);
+    chunk.AppendNull(0);
+    chunk.AppendNull(0);
+    let mut null_vector = vec![false; 2];
+    let mut keys = vec![Vec::new(); 2];
+    let mut lengths = vec![0; 2];
+    SerializeKeys(
+        (*types::DefaultStmtNoWarningContext).clone(),
+        &mut *chunk,
+        vec![&mut *field],
+        vec![0],
+        vec![0, 1],
+        None,
+        &mut null_vector,
+        vec![SerializeMode::Normal],
+        &mut keys,
+        &mut lengths,
+        Vec::new(),
+    )
+    .unwrap();
+    assert_eq!(null_vector, [true, true]);
+    assert_eq!(lengths, [0, 0]);
+}
+
+#[test]
 /// DecodeRange 处理末尾边界 flag。
 fn TestDecodeRange() {
     assert!(DecodeRange(Vec::new(), 0, None, time::UTC).is_err());
@@ -1350,6 +1377,37 @@ fn TestHashChunkColumns() {
             assert_eq!(row_hash.finish(), vector_hashes[row].finish());
         }
     }
+}
+
+#[test]
+fn go_merge_11_null_safe_hash_preserves_prior_null() {
+    let type_ctx = types::DefaultStmtNoWarningContext.WithLocation(time::UTC);
+    let (datums, mut fields) = datums_for_test();
+    let mut chunk = chunk_for_test(time::UTC, &datums, &mut fields, 4);
+    let mut hashes: Vec<Box<dyn StdHasher>> = (0..3)
+        .map(|_| Box::new(fnv::FnvHasher::default()) as Box<dyn StdHasher>)
+        .collect();
+    let mut is_null = vec![false; 4];
+    for (ignore_null, expected) in [
+        (true, [false, false, false]),
+        (false, [true, false, true]),
+        (true, [true, false, true]),
+    ] {
+        HashChunkSelected(
+            type_ctx.clone(),
+            &mut hashes,
+            &mut *chunk,
+            &mut fields[0],
+            0,
+            vec![0],
+            &mut is_null,
+            Some(vec![true, false, true, false]),
+            ignore_null,
+        )
+        .unwrap();
+        assert_eq!(is_null[..3], expected);
+    }
+    assert_eq!(is_null[..3], [true, false, true]);
 }
 
 #[test]

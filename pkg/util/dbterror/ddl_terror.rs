@@ -1039,6 +1039,36 @@ pub static ErrUnsupportedTiFlashOperationForUnsupportedCharsetTable: LazyLock<Bo
             ),
         )
     });
+/// Columnar Storage 状态不可验证时拒绝设置 TiFlash 副本。
+pub static ErrTiFlashColumnarStorageCheckFailed: LazyLock<Box<terror::Error>> = LazyLock::new(
+    || {
+        ClassDDL.NewStdErr(
+            mysql::ErrUnsupportedDDLOperation,
+            &parser_mysql::errname::Message(
+                &format_mysql_message(
+                    &mysql::MySQLErrName[&mysql::ErrUnsupportedDDLOperation].Raw,
+                    &["`set TiFlash replica` because the Columnar Storage status of cluster %s cannot be verified, please retry later"],
+                ),
+                &[],
+            ),
+        )
+    },
+);
+/// Columnar Storage 关闭时拒绝设置 TiFlash 副本。
+pub static ErrTiFlashColumnarStorageNotEnabled: LazyLock<Box<terror::Error>> = LazyLock::new(
+    || {
+        ClassDDL.NewStdErr(
+            mysql::ErrUnsupportedDDLOperation,
+            &parser_mysql::errname::Message(
+                &format_mysql_message(
+                    &mysql::MySQLErrName[&mysql::ErrUnsupportedDDLOperation].Raw,
+                    &["`set TiFlash replica` because Columnar Storage is not enabled for cluster %s (tidb_columnar_storage_enabled=%q)"],
+                ),
+                &[],
+            ),
+        )
+    },
+);
 // ErrTiFlashBackfillIndex is the error that tiflash backfill the index failed.
 pub static ErrTiFlashBackfillIndex: LazyLock<Box<terror::Error>> = LazyLock::new(|| {
     ClassDDL.NewStdErr(
@@ -1087,6 +1117,17 @@ pub static ErrUnsupportedTTLReferencedByFK: LazyLock<Box<terror::Error>> =
 // ErrUnsupportedPrimaryKeyTypeWithTTL returns when create or alter a table with TTL options but the primary key is not supported
 pub static ErrUnsupportedPrimaryKeyTypeWithTTL: LazyLock<Box<terror::Error>> =
     LazyLock::new(|| ClassDDL.NewStd(mysql::ErrUnsupportedPrimaryKeyTypeWithTTL));
+/// Starter 部署模式只接受受支持的 TTL job interval。
+pub static ErrUnsupportedTTLJobIntervalInStarter: LazyLock<Box<terror::Error>> =
+    LazyLock::new(|| {
+        ClassDDL.NewStdErr(
+            mysql::ErrUnsupportedDDLOperation,
+            &parser_mysql::errname::Message(
+                "TTL_JOB_INTERVAL other than '%s' is not supported in starter deployment mode",
+                &[],
+            ),
+        )
+    });
 
 // ErrNotSupportedYet returns when tidb does not support this feature.
 pub static ErrNotSupportedYet: LazyLock<Box<terror::Error>> =
@@ -1176,7 +1217,7 @@ pub static ErrForbiddenDDL: LazyLock<Box<terror::Error>> =
 
 // Go 会在包初始化阶段按 var 块顺序构造全部错误。集中保留同一顺序，供 crate
 // 初始化入口在 `terror::RegisterFinish` 前一次性 force，避免冻结后首次访问才注册。
-pub(crate) static DDL_ERRORS: [&LazyLock<Box<terror::Error>>; 228] = [
+pub(crate) static DDL_ERRORS: [&LazyLock<Box<terror::Error>>; 231] = [
     &ErrInvalidWorker,
     &ErrNotOwner,
     &ErrCantDecodeRecord,
@@ -1370,6 +1411,8 @@ pub(crate) static DDL_ERRORS: [&LazyLock<Box<terror::Error>>; 228] = [
     &ErrAlterTiFlashModeForTableWithoutTiFlashReplica,
     &ErrUnsupportedTiFlashOperationForSysOrMemTable,
     &ErrUnsupportedTiFlashOperationForUnsupportedCharsetTable,
+    &ErrTiFlashColumnarStorageCheckFailed,
+    &ErrTiFlashColumnarStorageNotEnabled,
     &ErrTiFlashBackfillIndex,
     &ErrDropIndexNeededInForeignKey,
     &ErrForeignKeyCannotDropParent,
@@ -1383,6 +1426,7 @@ pub(crate) static DDL_ERRORS: [&LazyLock<Box<terror::Error>>; 228] = [
     &ErrTempTableNotAllowedWithTTL,
     &ErrUnsupportedTTLReferencedByFK,
     &ErrUnsupportedPrimaryKeyTypeWithTTL,
+    &ErrUnsupportedTTLJobIntervalInStarter,
     &ErrNotSupportedYet,
     &ErrColumnCheckConstraintReferOther,
     &ErrTableCheckConstraintReferUnknown,

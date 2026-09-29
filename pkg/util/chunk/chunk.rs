@@ -89,8 +89,17 @@ pub fn NewChunkWithCapacity<T: IntoFieldType>(fields: Vec<T>, capacity: usize) -
 
 // NewChunkFromPoolWithCapacity 对应 Go 的对象池入口；这里保留池化调用形状。
 /// 从对象池取出（或新建）指定初始容量的 Chunk。
-pub fn NewChunkFromPoolWithCapacity<T: IntoFieldType>(fields: Vec<T>, initCap: usize) -> Box<Chunk> {
-    getChunkFromPool(initCap, fields.into_iter().map(IntoFieldType::into_field_type).collect())
+pub fn NewChunkFromPoolWithCapacity<T: IntoFieldType>(
+    fields: Vec<T>,
+    initCap: usize,
+) -> Box<Chunk> {
+    getChunkFromPool(
+        initCap,
+        fields
+            .into_iter()
+            .map(IntoFieldType::into_field_type)
+            .collect(),
+    )
 }
 
 // New creates a new chunk.
@@ -222,6 +231,20 @@ impl Chunk {
             sum += col.elemBuf.capacity() as i64;
         }
         sum
+    }
+
+    /// 当前列数据使用的字节数；复用时保留的容量不计入。
+    pub fn UsedMemoryUsage(&self) -> i64 {
+        self.columns
+            .iter()
+            .map(|col| {
+                (std::mem::size_of_val(col)
+                    + col.nullBitmap.len()
+                    + col.offsets.len() * 8
+                    + col.data.len()
+                    + col.elemBuf.len()) as i64
+            })
+            .sum()
     }
 
     // RequiredRows returns how many rows is considered full.

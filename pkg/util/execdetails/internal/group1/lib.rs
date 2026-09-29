@@ -161,6 +161,9 @@ pub mod util {
         pub RocksdbBlockReadCount: u64,
         pub RocksdbBlockReadByte: u64,
         pub RocksdbBlockReadDuration: Duration,
+        pub IaRemoteReadSegmentCount: u64,
+        pub IaRemoteReadSegmentBytes: u64,
+        pub IaRemoteReadSegmentDuration: Duration,
     }
 
     impl ScanDetail {
@@ -174,6 +177,9 @@ pub mod util {
             self.RocksdbBlockReadCount += other.RocksdbBlockReadCount;
             self.RocksdbBlockReadByte += other.RocksdbBlockReadByte;
             self.RocksdbBlockReadDuration += other.RocksdbBlockReadDuration;
+            self.IaRemoteReadSegmentCount += other.IaRemoteReadSegmentCount;
+            self.IaRemoteReadSegmentBytes += other.IaRemoteReadSegmentBytes;
+            self.IaRemoteReadSegmentDuration += other.IaRemoteReadSegmentDuration;
         }
 
         pub fn String(&self) -> String {
@@ -185,6 +191,234 @@ pub mod util {
                 parts.push(format!("total_keys:{}", self.TotalKeys));
             }
             parts.join(", ")
+        }
+    }
+
+    /// TiKV 读池任务聚合；与 client-go PoolTaskDetails 的计数、极值和耗时口径一致。
+    #[derive(Clone, Debug, Default, Eq, PartialEq)]
+    pub struct PoolTaskDetails {
+        pub TaskCount: u64,
+        pub PollCount: u64,
+        pub MaxPollCount: u64,
+        pub MinPollCount: u64,
+        pub DispatchCount: u64,
+        pub MaxDispatchCount: u64,
+        pub MinDispatchCount: u64,
+        pub TotalWallTime: Duration,
+        pub TaskWallTimeSampleCount: u64,
+        pub MaxTaskWallTime: Duration,
+        pub MinTaskWallTime: Duration,
+        pub TotalQueueWaitTime: Duration,
+        pub MaxQueueWaitTime: Duration,
+        pub MinQueueWaitTime: Duration,
+        pub TotalWakeWaitTime: Duration,
+        pub MaxWakeWaitTime: Duration,
+        pub MinWakeWaitTime: Duration,
+        pub FairQueueSampleCount: u64,
+        pub TotalFairQueueWaitedTaskSlices: u64,
+        pub MaxFairQueueWaitedTaskSlices: u64,
+        pub MinFairQueueWaitedTaskSlices: u64,
+        pub PollCPUTime: Duration,
+        pub MaxPollCPUTime: Duration,
+        pub MinPollCPUTime: Duration,
+        pub PollWallTime: Duration,
+        pub MaxPollWallTime: Duration,
+        pub MinPollWallTime: Duration,
+    }
+
+    impl PoolTaskDetails {
+        pub fn Empty(&self) -> bool {
+            self.TaskCount == 0
+        }
+        pub fn Clone(&self) -> Self {
+            self.clone()
+        }
+
+        /// 合并另一聚合，保留仅在存在样本时更新最小值的 Go 语义。
+        pub fn Merge(&mut self, other: &Self) {
+            if other.Empty() {
+                return;
+            }
+            let had_tasks = self.TaskCount > 0;
+            let had_poll = self.PollCount > 0;
+            let had_wall = self.TaskWallTimeSampleCount > 0;
+            let had_queue = !self.TotalQueueWaitTime.is_zero();
+            let had_wake = !self.TotalWakeWaitTime.is_zero();
+            let had_fair = self.FairQueueSampleCount > 0;
+            macro_rules! minimum {
+                ($field:ident, $present:expr) => {
+                    if !$present || other.$field < self.$field {
+                        self.$field = other.$field;
+                    }
+                };
+            }
+            self.TaskCount += other.TaskCount;
+            self.PollCount += other.PollCount;
+            self.MaxPollCount = self.MaxPollCount.max(other.MaxPollCount);
+            minimum!(MinPollCount, had_tasks);
+            self.DispatchCount += other.DispatchCount;
+            self.MaxDispatchCount = self.MaxDispatchCount.max(other.MaxDispatchCount);
+            minimum!(MinDispatchCount, had_tasks);
+            self.TotalWallTime += other.TotalWallTime;
+            self.TaskWallTimeSampleCount += other.TaskWallTimeSampleCount;
+            self.MaxTaskWallTime = self.MaxTaskWallTime.max(other.MaxTaskWallTime);
+            if !other.TotalWallTime.is_zero() {
+                minimum!(MinTaskWallTime, had_wall);
+            }
+            self.TotalQueueWaitTime += other.TotalQueueWaitTime;
+            self.MaxQueueWaitTime = self.MaxQueueWaitTime.max(other.MaxQueueWaitTime);
+            if !other.TotalQueueWaitTime.is_zero() {
+                minimum!(MinQueueWaitTime, had_queue);
+            }
+            self.TotalWakeWaitTime += other.TotalWakeWaitTime;
+            self.MaxWakeWaitTime = self.MaxWakeWaitTime.max(other.MaxWakeWaitTime);
+            if !other.TotalWakeWaitTime.is_zero() {
+                minimum!(MinWakeWaitTime, had_wake);
+            }
+            self.FairQueueSampleCount += other.FairQueueSampleCount;
+            self.TotalFairQueueWaitedTaskSlices += other.TotalFairQueueWaitedTaskSlices;
+            self.MaxFairQueueWaitedTaskSlices = self
+                .MaxFairQueueWaitedTaskSlices
+                .max(other.MaxFairQueueWaitedTaskSlices);
+            if other.FairQueueSampleCount > 0 {
+                minimum!(MinFairQueueWaitedTaskSlices, had_fair);
+            }
+            self.PollCPUTime += other.PollCPUTime;
+            self.MaxPollCPUTime = self.MaxPollCPUTime.max(other.MaxPollCPUTime);
+            self.PollWallTime += other.PollWallTime;
+            self.MaxPollWallTime = self.MaxPollWallTime.max(other.MaxPollWallTime);
+            if other.PollCount > 0 {
+                minimum!(MinPollCPUTime, had_poll);
+                minimum!(MinPollWallTime, had_poll);
+            }
+        }
+
+        pub fn String(&self) -> String {
+            if self.Empty() {
+                return String::new();
+            }
+            let mut result = format!("{{tasks:{}", self.TaskCount);
+            fn average(total: u64, count: u64) -> String {
+                let value = format!("{:.2}", total as f64 / count as f64);
+                value.trim_end_matches('0').trim_end_matches('.').to_owned()
+            }
+            fn count_stats(
+                result: &mut String,
+                name: &str,
+                total: u64,
+                divisor: u64,
+                max: u64,
+                min: u64,
+            ) {
+                result.push_str(&format!(", {name}:{{total:{total}"));
+                if divisor > 0 {
+                    result.push_str(&format!(", avg:{}", average(total, divisor)));
+                }
+                result.push_str(&format!(", max:{max}, min:{min}}}"));
+            }
+            fn time_stats(
+                result: &mut String,
+                name: &str,
+                total: Duration,
+                samples: u64,
+                max: Duration,
+                min: Duration,
+            ) {
+                if total.is_zero() {
+                    return;
+                }
+                result.push_str(&format!(
+                    ", {name}:{{total:{}",
+                    super::FormatDuration(total)
+                ));
+                if samples > 0 {
+                    let average_nanos = total.as_nanos() / u128::from(samples);
+                    let average =
+                        Duration::from_nanos(u64::try_from(average_nanos).unwrap_or(u64::MAX));
+                    result.push_str(&format!(", avg:{}", super::FormatDuration(average)));
+                }
+                result.push_str(&format!(
+                    ", max:{}, min:{}}}",
+                    super::FormatDuration(max),
+                    super::FormatDuration(min)
+                ));
+            }
+            count_stats(
+                &mut result,
+                "poll_count",
+                self.PollCount,
+                self.TaskCount,
+                self.MaxPollCount,
+                self.MinPollCount,
+            );
+            count_stats(
+                &mut result,
+                "dispatch_count",
+                self.DispatchCount,
+                0,
+                self.MaxDispatchCount,
+                self.MinDispatchCount,
+            );
+            time_stats(
+                &mut result,
+                "task_wall_time",
+                self.TotalWallTime,
+                self.TaskWallTimeSampleCount,
+                self.MaxTaskWallTime,
+                self.MinTaskWallTime,
+            );
+            time_stats(
+                &mut result,
+                "queue_wait",
+                self.TotalQueueWaitTime,
+                self.DispatchCount,
+                self.MaxQueueWaitTime,
+                self.MinQueueWaitTime,
+            );
+            time_stats(
+                &mut result,
+                "wake_wait",
+                self.TotalWakeWaitTime,
+                self.DispatchCount.saturating_sub(self.TaskCount),
+                self.MaxWakeWaitTime,
+                self.MinWakeWaitTime,
+            );
+            result.push_str(&format!(
+                ", fair_queue:{{enabled:{}, waited_task_slices:{{total:{}",
+                self.FairQueueSampleCount > 0,
+                self.TotalFairQueueWaitedTaskSlices
+            ));
+            if self.FairQueueSampleCount > 0 {
+                result.push_str(&format!(
+                    ", avg:{}",
+                    average(
+                        self.TotalFairQueueWaitedTaskSlices,
+                        self.FairQueueSampleCount
+                    )
+                ));
+            }
+            result.push_str(&format!(
+                ", max:{}, min:{}}}}}",
+                self.MaxFairQueueWaitedTaskSlices, self.MinFairQueueWaitedTaskSlices
+            ));
+            time_stats(
+                &mut result,
+                "poll_cpu",
+                self.PollCPUTime,
+                self.PollCount,
+                self.MaxPollCPUTime,
+                self.MinPollCPUTime,
+            );
+            time_stats(
+                &mut result,
+                "poll_wall",
+                self.PollWallTime,
+                self.PollCount,
+                self.MaxPollWallTime,
+                self.MinPollWallTime,
+            );
+            result.push('}');
+            result
         }
     }
 

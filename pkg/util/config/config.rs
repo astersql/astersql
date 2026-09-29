@@ -31,7 +31,14 @@ use logutil::log::{BgLogger, LogField, LogLevel};
 ///
 /// 含 `innodb_lock_wait_timeout` 等不宜在回放场景强行改写的项。
 static ignoredSystemVariablesForPlanReplayerLoad: LazyLock<HashSet<&'static str>> =
-    LazyLock::new(|| HashSet::from([variable::vardef::InnodbLockWaitTimeout]));
+    LazyLock::new(|| {
+        HashSet::from([
+            variable::vardef::InnodbLockWaitTimeout,
+            "tidb_low_resolution_tso",
+            "tidb_snapshot",
+            "tidb_read_staleness",
+        ])
+    });
 
 /// `sessionctx.Context` 的窄化子集，仅暴露可变 `SessionVars`。
 ///

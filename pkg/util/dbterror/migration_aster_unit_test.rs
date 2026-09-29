@@ -91,6 +91,31 @@ fn ddl_errors_preserve_go_custom_templates_and_codes() {
 }
 
 #[test]
+fn go_merge_11_new_ddl_errors_keep_codes_and_templates() {
+    for err in [
+        &*ErrTiFlashColumnarStorageCheckFailed,
+        &*ErrTiFlashColumnarStorageNotEnabled,
+        &*ErrUnsupportedTTLJobIntervalInStarter,
+    ] {
+        assert_eq!(err.Code(), errno::ErrUnsupportedDDLOperation as i32);
+    }
+    assert!(
+        ErrTiFlashColumnarStorageCheckFailed
+            .GetMsg()
+            .contains("cannot be verified")
+    );
+    assert!(
+        ErrTiFlashColumnarStorageNotEnabled
+            .GetMsg()
+            .contains("not enabled for cluster %s")
+    );
+    assert_eq!(
+        ErrUnsupportedTTLJobIntervalInStarter.GetMsg(),
+        "TTL_JOB_INTERVAL other than '%s' is not supported in starter deployment mode"
+    );
+}
+
+#[test]
 /// reorg 可重试错误码集合与消息切片完整内容与 Go 一致。
 fn reorg_retryable_lists_match_go_exactly() {
     let expected_codes = HashSet::from([

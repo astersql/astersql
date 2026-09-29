@@ -681,7 +681,11 @@ fn preAllocForSerializedKeyBuffer(
                         + column.GetJSON(*physical_row_index).CalculateHashValueSize() as usize;
                 }
             }
-            mysql::TypeNull => {}
+            mysql::TypeNull => {
+                for physical_row_index in &usedRows {
+                    let _ = can_skip(*physical_row_index);
+                }
+            }
             _ => {
                 return Err(errors::Errorf(format!(
                     "unsupport column type for pre-alloc {}",
@@ -1187,7 +1191,7 @@ pub fn HashChunkSelected(
             continue;
         }
         let (flag, b) = if column.IsNull(i) {
-            isNull[i] = !ignoreNull;
+            isNull[i] = isNull[i] || !ignoreNull;
             (NilFlag, Vec::new())
         } else {
             // 这里借用 EncodeHashChunkRowIdx 的单行单列分支，避免复制 Go 中同一长 switch。
