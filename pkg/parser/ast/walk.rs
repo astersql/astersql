@@ -7,13 +7,22 @@ use super::*;
 pub(crate) trait Children {
     fn visit_children(&self, visitor: &mut dyn Visitor) -> bool;
 }
+pub(crate) trait MutChildren {
+    fn visit_children_mut(&mut self, visitor: &mut dyn InPlaceVisitor) -> bool;
+}
 trait Visit {
     fn visit(&self, visitor: &mut dyn Visitor) -> bool;
+}
+trait VisitMut {
+    fn visit_mut(&mut self, visitor: &mut dyn InPlaceVisitor) -> bool;
 }
 macro_rules! node_visit {
     ($($name:ty),* $(,)?) => {$ (
         impl Visit for $name {
             fn visit(&self, v: &mut dyn Visitor) -> bool { self.accept(v) }
+        }
+        impl VisitMut for $name {
+            fn visit_mut(&mut self, v: &mut dyn InPlaceVisitor) -> bool { self.accept_in_place(v) }
         }
     )*};
 }
@@ -49,6 +58,14 @@ node_visit!(
     CreateTableStmt,
     CreateUserStmt,
     CreateViewStmt,
+    CreateMaterializedViewStmt,
+    CreateMaterializedViewLogStmt,
+    AlterMaterializedViewAction,
+    AlterMaterializedViewStmt,
+    AlterMaterializedViewLogAction,
+    AlterMaterializedViewLogStmt,
+    DropMaterializedViewStmt,
+    DropMaterializedViewLogStmt,
     DeallocateStmt,
     DeleteStmt,
     DistributeTableStmt,
@@ -152,9 +169,19 @@ impl Visit for dyn Node {
         self.accept(v)
     }
 }
+impl VisitMut for dyn Node {
+    fn visit_mut(&mut self, v: &mut dyn InPlaceVisitor) -> bool {
+        self.accept_in_place(v)
+    }
+}
 impl<T: Visit> Visit for Option<T> {
     fn visit(&self, v: &mut dyn Visitor) -> bool {
         self.as_ref().is_none_or(|x| x.visit(v))
+    }
+}
+impl<T: VisitMut> VisitMut for Option<T> {
+    fn visit_mut(&mut self, v: &mut dyn InPlaceVisitor) -> bool {
+        self.as_mut().is_none_or(|x| x.visit_mut(v))
     }
 }
 impl<T: Visit> Visit for Vec<T> {
@@ -162,9 +189,19 @@ impl<T: Visit> Visit for Vec<T> {
         self.iter().all(|x| x.visit(v))
     }
 }
+impl<T: VisitMut> VisitMut for Vec<T> {
+    fn visit_mut(&mut self, v: &mut dyn InPlaceVisitor) -> bool {
+        self.iter_mut().all(|x| x.visit_mut(v))
+    }
+}
 impl<T: Visit + ?Sized> Visit for Box<T> {
     fn visit(&self, v: &mut dyn Visitor) -> bool {
         (**self).visit(v)
+    }
+}
+impl<T: VisitMut + ?Sized> VisitMut for Box<T> {
+    fn visit_mut(&mut self, v: &mut dyn InPlaceVisitor) -> bool {
+        (**self).visit_mut(v)
     }
 }
 impl Visit for WithClauseRef {
@@ -172,9 +209,35 @@ impl Visit for WithClauseRef {
         self.borrow().visit(v)
     }
 }
+impl VisitMut for WithClauseRef {
+    fn visit_mut(&mut self, v: &mut dyn InPlaceVisitor) -> bool {
+        self.borrow_mut().visit_mut(v)
+    }
+}
 impl Visit for NodeRef {
     fn visit(&self, v: &mut dyn Visitor) -> bool {
         self.with_node(|x| x.accept(v)).unwrap_or(true)
+    }
+}
+impl VisitMut for NodeRef {
+    fn visit_mut(&mut self, v: &mut dyn InPlaceVisitor) -> bool {
+        self.with_node_mut(|x| x.accept_in_place(v)).unwrap_or(true)
+    }
+}
+impl Visit for TableName {
+    fn visit(&self, v: &mut dyn Visitor) -> bool {
+        if v.enter_table_name(self) {
+            return v.leave_table_name(self);
+        }
+        v.leave_table_name(self)
+    }
+}
+impl VisitMut for TableName {
+    fn visit_mut(&mut self, v: &mut dyn InPlaceVisitor) -> bool {
+        if v.enter_table_name(self) {
+            return v.leave_table_name(self);
+        }
+        v.leave_table_name(self)
     }
 }
 macro_rules! children {
@@ -184,12 +247,20 @@ macro_rules! children {
                 true $(&& self.$field.visit(_v))*
             }
         }
+        impl MutChildren for $name {
+            fn visit_children_mut(&mut self, _v: &mut dyn InPlaceVisitor) -> bool {
+                true $(&& self.$field.visit_mut(_v))*
+            }
+        }
     };
 }
 macro_rules! embedded {
     ($($name:ty),* $(,)?) => {$ (
         impl Visit for $name {
             fn visit(&self, v: &mut dyn Visitor) -> bool { self.visit_children(v) }
+        }
+        impl VisitMut for $name {
+            fn visit_mut(&mut self, v: &mut dyn InPlaceVisitor) -> bool { self.visit_children_mut(v) }
         }
     )*};
 }
@@ -223,6 +294,16 @@ children!(PartitionDefinition => Clause, Options, Sub);
 children!(PartitionOptions => PartitionMethod, Sub, Definitions, UpdateIndexes);
 children!(CreateTableStmt => Cols, Constraints, Options, Partition, SplitIndex, Select);
 children!(CreateViewStmt => Select);
+children!(MViewRefreshClause => StartWith, Next);
+children!(MLogPurgeClause => StartWith, Next);
+children!(CreateMaterializedViewStmt => ViewName, Options, Refresh, Select);
+children!(CreateMaterializedViewLogStmt => Table, Options, Purge);
+children!(AlterMaterializedViewAction => Refresh);
+children!(AlterMaterializedViewStmt => ViewName, Actions);
+children!(AlterMaterializedViewLogAction => Purge);
+children!(AlterMaterializedViewLogStmt => Table, Actions);
+children!(DropMaterializedViewStmt => ViewName);
+children!(DropMaterializedViewLogStmt => Table);
 children!(AlterTableSpec => NewColumns, SplitIndex, PartitionExpr, Options, Constraint, MaskingPolicyExpr, PartDefinitions, Partition);
 children!(ReferenceDef => IndexPartSpecifications);
 children!(Constraint => Keys, Option, Refer, Expr);
@@ -431,7 +512,76 @@ impl Children for PartitionDefinitionClause {
         }
     }
 }
+impl MutChildren for ResultSetNode {
+    fn visit_children_mut(&mut self, _v: &mut dyn InPlaceVisitor) -> bool {
+        match self {
+            Self::TableSource(x0) => x0.visit_mut(_v),
+            Self::Join(x0) => x0.visit_mut(_v),
+        }
+    }
+}
+impl MutChildren for ExprKind {
+    fn visit_children_mut(&mut self, _v: &mut dyn InPlaceVisitor) -> bool {
+        match self {
+            Self::Value(_) => true,
+            Self::IntroducedValue { .. } => true,
+            Self::Column(_) => true,
+            Self::Variable { Value, .. } => Value.visit_mut(_v),
+            Self::Function { Args, .. } => Args.visit_mut(_v),
+            Self::AggregateFunction { Args, Order, .. } => {
+                Args.visit_mut(_v) && Order.visit_mut(_v)
+            }
+            Self::Binary { L, R, .. } => L.visit_mut(_v) && R.visit_mut(_v),
+            Self::Unary { V, .. } => V.visit_mut(_v),
+            Self::IsTruth { Expr, .. } => Expr.visit_mut(_v),
+            Self::IsNull { Expr, .. } => Expr.visit_mut(_v),
+            Self::InList { Expr, List, .. } => Expr.visit_mut(_v) && List.visit_mut(_v),
+            Self::Between {
+                Expr, Left, Right, ..
+            } => Expr.visit_mut(_v) && Left.visit_mut(_v) && Right.visit_mut(_v),
+            Self::Like { Expr, Pattern, .. } => Expr.visit_mut(_v) && Pattern.visit_mut(_v),
+            Self::Regexp { Expr, Pattern, .. } => Expr.visit_mut(_v) && Pattern.visit_mut(_v),
+            Self::Row(x0) => x0.visit_mut(_v),
+            Self::Collate { Expr, .. } => Expr.visit_mut(_v),
+            Self::NamedDefault(_) => true,
+            Self::MaxValue => true,
+            Self::MatchAgainst { Against, .. } => Against.visit_mut(_v),
+            Self::Case {
+                Value,
+                WhenClauses,
+                ElseClause,
+                ..
+            } => Value.visit_mut(_v) && WhenClauses.visit_mut(_v) && ElseClause.visit_mut(_v),
+            Self::WindowFunction { Args, Spec, .. } => Args.visit_mut(_v) && Spec.visit_mut(_v),
+            Self::TimeUnit(_) => true,
+            Self::GetFormatSelector(_) => true,
+            Self::TrimDirection(_) => true,
+            Self::TableName(_) => true,
+            Self::Parentheses(x0) => x0.visit_mut(_v),
+            Self::ParamMarker { .. } => true,
+            Self::DefaultValue => true,
+            Self::Subquery { Query, .. } => Query.visit_mut(_v),
+            Self::CompareSubquery { L, R, .. } => L.visit_mut(_v) && R.visit_mut(_v),
+            Self::InSubquery { Expr, Sel, .. } => Expr.visit_mut(_v) && Sel.visit_mut(_v),
+            Self::ExistsSubquery { Sel, .. } => Sel.visit_mut(_v),
+            Self::Cast { Expr, .. } => Expr.visit_mut(_v),
+            Self::JSONSumCrc32 { Expr, .. } => Expr.visit_mut(_v),
+        }
+    }
+}
+impl MutChildren for PartitionDefinitionClause {
+    fn visit_children_mut(&mut self, _v: &mut dyn InPlaceVisitor) -> bool {
+        match self {
+            Self::None => true,
+            Self::LessThan(x0) => x0.visit_mut(_v),
+            Self::In(x0) => x0.visit_mut(_v),
+            Self::History { .. } => true,
+        }
+    }
+}
 embedded!(
+    MViewRefreshClause,
+    MLogPurgeClause,
     AlterJobOption,
     AlterTableSpec,
     AnalyzeOpt,

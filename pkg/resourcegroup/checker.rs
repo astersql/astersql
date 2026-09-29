@@ -76,8 +76,8 @@ pub trait ConsumptionReporter: Send + Sync {
     /// 在常规 KV 拦截器不可用时上报消费。
     /// Reports consumption when the normal KV interceptor is unavailable.
     fn report_consumption(&self, resource_group_name: &str, consumption: &Self::Consumption);
-    /// 按引擎拆分上报 RU v2 消费，供观测。
-    /// Reports engine-split RU v2 consumption for observation.
+    /// 通过旧版引擎槽位 API 上报 RU 消费。
+    /// Reports RU consumption through the legacy engine-slot API.
     fn report_ruv2_consumption(
         &self,
         resource_group_name: &str,

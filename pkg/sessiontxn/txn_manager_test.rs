@@ -94,11 +94,23 @@ impl astersql_parser_ast::ast::Node for DummyStmtNode {
         self
     }
 
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
     fn into_any(self: Box<Self>) -> Box<dyn Any> {
         self
     }
 
     fn accept(&self, visitor: &mut dyn astersql_parser_ast::ast::Visitor) -> bool {
+        visitor.enter(self);
+        visitor.leave(self)
+    }
+
+    fn accept_in_place(
+        &mut self,
+        visitor: &mut dyn astersql_parser_ast::ast::InPlaceVisitor,
+    ) -> bool {
         visitor.enter(self);
         visitor.leave(self)
     }

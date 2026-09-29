@@ -21,6 +21,98 @@
 
 use crate::ddl::*;
 
+#[test]
+fn go_merge_7_auto_pre_split_and_table_options() {
+    assert_eq!(crate::TableOptionCompressionNone, "NONE");
+    assert_eq!(
+        crate::TableOption {
+            Tp: crate::TableOptionType::StartTransaction,
+            ..crate::TableOption::default()
+        }
+        .restore()
+        .unwrap(),
+        "START TRANSACTION"
+    );
+    assert!(crate::IndexOption::default().is_empty());
+    assert!(
+        !crate::IndexOption {
+            AutoPreSplit: true,
+            ..crate::IndexOption::default()
+        }
+        .is_empty()
+    );
+    assert_eq!(
+        crate::IndexOption {
+            AutoPreSplit: true,
+            ..crate::IndexOption::default()
+        }
+        .restore_with_special_comments(true),
+        "/*T![auto_presplit] PRE_SPLIT_REGIONS = AUTO */"
+    );
+    let option = IndexOption {
+        auto_pre_split: true,
+        ..IndexOption::default()
+    };
+    assert!(!option.is_empty());
+    assert_eq!(option.restore(), "PRE_SPLIT_REGIONS = AUTO");
+    assert_eq!(
+        option.restore_with_special_comments(true),
+        "/*T![auto_presplit] PRE_SPLIT_REGIONS = AUTO */"
+    );
+    let manual = IndexOption {
+        auto_pre_split: true,
+        split_opt: Some(crate::SplitOption {
+            Num: 4,
+            ..crate::SplitOption::default()
+        }),
+        ..IndexOption::default()
+    };
+    assert_eq!(manual.restore(), "PRE_SPLIT_REGIONS = 4");
+    assert_eq!(
+        manual.restore_with_special_comments(true),
+        "/*T![pre_split] PRE_SPLIT_REGIONS = 4 */"
+    );
+    let mut low = crate::ExprNode::default();
+    crate::Node::SetText(&mut low, None, b"1");
+    let mut high = crate::ExprNode::default();
+    crate::Node::SetText(&mut high, None, b"10");
+    let ranged = IndexOption {
+        split_opt: Some(crate::SplitOption {
+            Lower: vec![low],
+            Upper: vec![high],
+            Num: 3,
+            ..crate::SplitOption::default()
+        }),
+        ..IndexOption::default()
+    };
+    assert_eq!(
+        ranged.restore(),
+        "PRE_SPLIT_REGIONS = (BETWEEN (1) AND (10) REGIONS 3)"
+    );
+    let mut row_value = crate::ExprNode::default();
+    crate::Node::SetText(&mut row_value, None, b"7");
+    let by_values = IndexOption {
+        split_opt: Some(crate::SplitOption {
+            ValueLists: vec![vec![row_value]],
+            ..crate::SplitOption::default()
+        }),
+        ..IndexOption::default()
+    };
+    assert_eq!(by_values.restore(), "PRE_SPLIT_REGIONS = (BY (7))");
+    assert_eq!(
+        TableOption::EngineAttribute("x".into()).restore(TableRestoreFlags::default()),
+        "ENGINE_ATTRIBUTE = 'x'"
+    );
+    assert_eq!(
+        TableOption::StorageClass("hot".into()).restore(TableRestoreFlags::default()),
+        "STORAGE_CLASS = 'hot'"
+    );
+    assert_eq!(
+        TableOption::StartTransaction.restore(TableRestoreFlags::default()),
+        "START TRANSACTION"
+    );
+}
+
 /// 校验各类数据库选项还原出的 SQL 关键字顺序与字面量与 Go 一致。
 #[test]
 fn database_options_restore_like_go() {

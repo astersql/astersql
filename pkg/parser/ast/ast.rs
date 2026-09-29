@@ -19,7 +19,7 @@
 // 表达式标志位，以及 `GetStmtLabel`（按语句种类生成监控/日志用标签，与 Go 类型 switch 对齐）。
 use std::io::Write;
 
-pub use crate::{Node, Visitor};
+pub use crate::{InPlaceVisitor, Node, Visitor};
 pub use parser_types::types::FieldType;
 
 /// 表达式标志：字面常量（无特殊子结构）。
@@ -109,11 +109,20 @@ pub enum StatementKind {
     CreateIndex,
     CreateTable,
     CreateView,
+    CreateMaterializedView,
+    CreateMaterializedViewLog,
+    AlterMaterializedView,
+    AlterMaterializedViewLog,
     CreateUser,
     Delete,
     DropDatabase,
     DropIndex,
     DropTable { is_view: bool },
+    DropMaterializedView,
+    DropMaterializedViewLog,
+    PurgeMaterializedViewLog,
+    RefreshMaterializedView,
+    CancelMaterializedViewJob,
     Explain { show: bool, analyze: bool },
     Insert { is_replace: bool },
     ImportInto,
@@ -153,12 +162,21 @@ pub fn GetStmtLabel(statement: &StatementKind) -> String {
         StatementKind::CreateIndex => "CreateIndex",
         StatementKind::CreateTable => "CreateTable",
         StatementKind::CreateView => "CreateView",
+        StatementKind::CreateMaterializedView => "CreateMaterializedView",
+        StatementKind::CreateMaterializedViewLog => "CreateMaterializedViewLog",
+        StatementKind::AlterMaterializedView => "AlterMaterializedView",
+        StatementKind::AlterMaterializedViewLog => "AlterMaterializedViewLog",
         StatementKind::CreateUser => "CreateUser",
         StatementKind::Delete => "Delete",
         StatementKind::DropDatabase => "DropDatabase",
         StatementKind::DropIndex => "DropIndex",
         StatementKind::DropTable { is_view: true } => "DropView",
         StatementKind::DropTable { is_view: false } => "DropTable",
+        StatementKind::DropMaterializedView => "DropMaterializedView",
+        StatementKind::DropMaterializedViewLog => "DropMaterializedViewLog",
+        StatementKind::PurgeMaterializedViewLog => "PurgeMaterializedViewLog",
+        StatementKind::RefreshMaterializedView => "RefreshMaterializedView",
+        StatementKind::CancelMaterializedViewJob => "CancelMaterializedViewJob",
         StatementKind::Explain { show: true, .. } => "DescTable",
         StatementKind::Explain { analyze: true, .. } => "ExplainAnalyzeSQL",
         StatementKind::Explain { .. } => "ExplainSQL",

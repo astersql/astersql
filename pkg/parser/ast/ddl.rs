@@ -241,6 +241,8 @@ pub struct IndexOption {
     pub visibility: IndexVisibility,
     pub primary_key_tp: PrimaryKeyType,
     pub global: bool,
+    pub split_opt: Option<crate::SplitOption>,
+    pub auto_pre_split: bool,
     pub secondary_engine_attr: String,
     pub add_columnar_replica_on_demand: i32,
     pub condition: Option<String>,
@@ -256,12 +258,18 @@ impl IndexOption {
             && self.comment.is_empty()
             && !self.global
             && self.visibility == IndexVisibility::Default
+            && self.split_opt.is_none()
+            && !self.auto_pre_split
             && self.secondary_engine_attr.is_empty()
             && self.condition.is_none()
     }
 
     /// 按固定顺序拼接非空索引选项为 SQL 片段。
     pub fn restore(&self) -> String {
+        self.restore_with_special_comments(false)
+    }
+
+    pub fn restore_with_special_comments(&self, special_comments: bool) -> String {
         let mut options = Vec::new();
         if self.add_columnar_replica_on_demand > 0 {
             options.push("ADD_COLUMNAR_REPLICA_ON_DEMAND".to_owned());
@@ -290,6 +298,54 @@ impl IndexOption {
             IndexVisibility::Visible => options.push("VISIBLE".to_owned()),
             IndexVisibility::Invisible => options.push("INVISIBLE".to_owned()),
             IndexVisibility::Default => {}
+        }
+        if let Some(split) = &self.split_opt {
+            let value = if split.Num != 0 && split.Lower.is_empty() {
+                split.Num.to_string()
+            } else if split.ValueLists.is_empty() {
+                let lower = split
+                    .Lower
+                    .iter()
+                    .map(crate::Node::Text)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let upper = split
+                    .Upper
+                    .iter()
+                    .map(crate::Node::Text)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!("(BETWEEN ({lower}) AND ({upper}) REGIONS {})", split.Num)
+            } else {
+                let rows = split
+                    .ValueLists
+                    .iter()
+                    .map(|row| {
+                        format!(
+                            "({})",
+                            row.iter()
+                                .map(crate::Node::Text)
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!("(BY {rows})")
+            };
+            let body = format!("PRE_SPLIT_REGIONS = {value}");
+            options.push(if special_comments {
+                format!("/*T![pre_split] {body} */")
+            } else {
+                body
+            });
+        } else if self.auto_pre_split {
+            let body = "PRE_SPLIT_REGIONS = AUTO";
+            options.push(if special_comments {
+                format!("/*T![auto_presplit] {body} */")
+            } else {
+                body.to_owned()
+            });
         }
         if !self.secondary_engine_attr.is_empty() {
             options.push(format!(
@@ -927,6 +983,9 @@ impl SequenceStatement {
 /// 表级选项：放置策略、TTL、预分裂 Region 等。
 /// TTL（Time To Live）按表达式自动过期行；PreSplitRegions 预创建 Region 分片。
 pub enum TableOption {
+    EngineAttribute(String),
+    StorageClass(String),
+    StartTransaction,
     PlacementPolicy(String),
     Ttl(String),
     TtlEnable(bool),
@@ -945,6 +1004,9 @@ impl TableOption {
     /// 按 flags 还原表选项；可包在 `/*T![...]*/` 特殊注释中。
     pub fn restore(&self, flags: TableRestoreFlags) -> String {
         match self {
+            Self::EngineAttribute(value) => format!("ENGINE_ATTRIBUTE = {}", quote_string(value)),
+            Self::StorageClass(value) => format!("STORAGE_CLASS = {}", quote_string(value)),
+            Self::StartTransaction => "START TRANSACTION".to_owned(),
             Self::PlacementPolicy(_) if flags.skip_placement => String::new(),
             Self::PlacementPolicy(policy) => {
                 let body = format!("PLACEMENT POLICY = {}", quote_name(policy));

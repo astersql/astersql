@@ -13,6 +13,7 @@
 )]
 
 pub mod checker;
+pub mod ruv2;
 pub use checker::*;
 
 #[cfg(test)]

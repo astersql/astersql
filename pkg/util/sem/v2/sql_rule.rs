@@ -54,11 +54,20 @@ impl ast::Node for CommandStatement {
         self
     }
 
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
     fn into_any(self: Box<Self>) -> Box<dyn Any> {
         self
     }
 
     fn accept(&self, visitor: &mut dyn ast::Visitor) -> bool {
+        visitor.enter(self);
+        visitor.leave(self)
+    }
+
+    fn accept_in_place(&mut self, visitor: &mut dyn ast::InPlaceVisitor) -> bool {
         visitor.enter(self);
         visitor.leave(self)
     }

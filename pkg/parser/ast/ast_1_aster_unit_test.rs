@@ -19,6 +19,157 @@ use crate::{ast::*, base::*};
 use parser_charset::{CharsetGBK, CharsetUTF8, FindEncoding};
 
 #[test]
+fn go_merge_7_walk_in_place_preserves_order_mutation_and_control_flow() {
+    struct Recorder {
+        events: Vec<&'static str>,
+        skip: bool,
+        stop: bool,
+    }
+    impl crate::InPlaceVisitor for Recorder {
+        fn enter(&mut self, node: &mut dyn crate::Node) -> bool {
+            if let Some(expr) = node.as_any_mut().downcast_mut::<crate::ExprNode>() {
+                expr.OriginTextPosition = 7;
+                self.events.push("expr enter");
+            } else {
+                self.events.push("stmt enter");
+            }
+            self.skip
+        }
+        fn leave(&mut self, node: &mut dyn crate::Node) -> bool {
+            self.events.push(if node.as_any().is::<crate::ExprNode>() {
+                "expr leave"
+            } else {
+                "stmt leave"
+            });
+            !self.stop
+        }
+    }
+    let mut stmt = crate::DoStmt {
+        Exprs: vec![crate::ExprNode::default()],
+        ..crate::DoStmt::default()
+    };
+    let mut visitor = Recorder {
+        events: Vec::new(),
+        skip: false,
+        stop: false,
+    };
+    assert!(crate::Walk(&mut stmt, &mut visitor));
+    assert_eq!(
+        visitor.events,
+        ["stmt enter", "expr enter", "expr leave", "stmt leave"]
+    );
+    assert_eq!(stmt.Exprs[0].OriginTextPosition, 7);
+    let mut visitor = Recorder {
+        events: Vec::new(),
+        skip: true,
+        stop: false,
+    };
+    assert!(crate::Walk(&mut stmt, &mut visitor));
+    assert_eq!(visitor.events, ["stmt enter", "stmt leave"]);
+    let mut visitor = Recorder {
+        events: Vec::new(),
+        skip: false,
+        stop: true,
+    };
+    assert!(!crate::Walk(&mut stmt, &mut visitor));
+    assert_eq!(visitor.events, ["stmt enter", "expr enter", "expr leave"]);
+}
+
+#[test]
+fn go_merge_7_materialized_view_visits_table_name() {
+    struct Rename;
+    impl crate::InPlaceVisitor for Rename {
+        fn enter(&mut self, _node: &mut dyn crate::Node) -> bool {
+            false
+        }
+        fn leave(&mut self, _node: &mut dyn crate::Node) -> bool {
+            true
+        }
+        fn enter_table_name(&mut self, table: &mut crate::TableName) -> bool {
+            table.Name.O = "renamed".into();
+            true
+        }
+    }
+    let mut stmt = crate::DropMaterializedViewStmt {
+        ViewName: Some(crate::TableName::default()),
+        ..crate::DropMaterializedViewStmt::default()
+    };
+    assert!(crate::Walk(&mut stmt, &mut Rename));
+    assert_eq!(stmt.ViewName.unwrap().Name.O, "renamed");
+    let mut absent = crate::DropMaterializedViewStmt::default();
+    assert!(crate::Walk(&mut absent, &mut Rename));
+    assert!(absent.ViewName.is_none());
+}
+
+#[test]
+fn go_merge_7_partition_in_place_stops_in_value_order() {
+    struct StopAfterOne(usize);
+    impl crate::InPlaceVisitor for StopAfterOne {
+        fn enter(&mut self, node: &mut dyn crate::Node) -> bool {
+            if node.as_any().is::<crate::ExprNode>() {
+                self.0 += 1;
+            }
+            false
+        }
+        fn leave(&mut self, _node: &mut dyn crate::Node) -> bool {
+            self.0 < 1
+        }
+    }
+    let mut clause = crate::PartitionDefinitionClause::In(vec![
+        vec![crate::ExprNode::default(), crate::ExprNode::default()],
+        vec![crate::ExprNode::default()],
+    ]);
+    let mut visitor = StopAfterOne(0);
+    assert!(!crate::walk::MutChildren::visit_children_mut(
+        &mut clause,
+        &mut visitor
+    ));
+    assert_eq!(visitor.0, 1);
+}
+
+#[test]
+fn go_merge_7_materialized_view_statement_labels() {
+    let cases = [
+        (
+            StatementKind::CreateMaterializedView,
+            "CreateMaterializedView",
+        ),
+        (
+            StatementKind::CreateMaterializedViewLog,
+            "CreateMaterializedViewLog",
+        ),
+        (
+            StatementKind::AlterMaterializedView,
+            "AlterMaterializedView",
+        ),
+        (
+            StatementKind::AlterMaterializedViewLog,
+            "AlterMaterializedViewLog",
+        ),
+        (StatementKind::DropMaterializedView, "DropMaterializedView"),
+        (
+            StatementKind::DropMaterializedViewLog,
+            "DropMaterializedViewLog",
+        ),
+        (
+            StatementKind::PurgeMaterializedViewLog,
+            "PurgeMaterializedViewLog",
+        ),
+        (
+            StatementKind::RefreshMaterializedView,
+            "RefreshMaterializedView",
+        ),
+        (
+            StatementKind::CancelMaterializedViewJob,
+            "CancelMaterializedViewJob",
+        ),
+    ];
+    for (kind, label) in cases {
+        assert_eq!(GetStmtLabel(&kind), label);
+    }
+}
+
+#[test]
 /// 核对表达式 Flag 常量与 GetStmtLabel 特例标签与 Go 一致。
 fn ast_flags_and_statement_labels_match_go() {
     assert_eq!(FlagConstant, 0);

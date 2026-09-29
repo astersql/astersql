@@ -32,6 +32,8 @@ extern crate url;
 
 /// 集成用 AST 类型聚合模块。
 pub mod integration;
+pub mod materialized;
+pub mod sql_restore;
 
 /// 元数据 JSON 编解码辅助模块。
 pub mod metadata_json {
@@ -52,6 +54,30 @@ use std::{any::Any, fmt, mem::size_of};
 pub trait Visitor {
     fn enter(&mut self, input: &dyn Node) -> bool;
     fn leave(&mut self, input: &dyn Node) -> bool;
+    // TableName is a value type in this Rust AST, so it has no Node base fields.
+    fn enter_table_name(&mut self, _input: &TableName) -> bool {
+        false
+    }
+    fn leave_table_name(&mut self, _input: &TableName) -> bool {
+        true
+    }
+}
+
+/// Visits an AST without replacing nodes. A `true` enter result skips children.
+pub trait InPlaceVisitor {
+    fn enter(&mut self, input: &mut dyn Node) -> bool;
+    fn leave(&mut self, input: &mut dyn Node) -> bool;
+    fn enter_table_name(&mut self, _input: &mut TableName) -> bool {
+        false
+    }
+    fn leave_table_name(&mut self, _input: &mut TableName) -> bool {
+        true
+    }
+}
+
+/// Walks a mutable AST in the same child order as `Node::accept`.
+pub fn Walk(node: &mut dyn Node, visitor: &mut dyn InPlaceVisitor) -> bool {
+    node.accept_in_place(visitor)
 }
 
 /// AST 节点基础接口，支持类型擦除与访问者遍历。
@@ -71,8 +97,10 @@ pub trait Node: Any {
         self.node_text_mut().SetNoBackslashEscapes(value);
     }
     fn as_any(&self) -> &dyn Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
     fn into_any(self: Box<Self>) -> Box<dyn Any>;
     fn accept(&self, visitor: &mut dyn Visitor) -> bool;
+    fn accept_in_place(&mut self, visitor: &mut dyn InPlaceVisitor) -> bool;
 }
 
 /// DO 语句节点：求值表达式但不返回结果集。
@@ -787,6 +815,10 @@ impl NodeRef {
     pub fn with_node<R>(&self, f: impl FnOnce(&dyn Node) -> R) -> Option<R> {
         self.0.borrow().as_deref().map(f)
     }
+
+    pub fn with_node_mut<R>(&self, f: impl FnOnce(&mut dyn Node) -> R) -> Option<R> {
+        self.0.borrow_mut().as_deref_mut().map(f)
+    }
 }
 impl std::fmt::Debug for NodeRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1494,7 +1526,9 @@ pub enum TableOptionType {
     Comment,
     Engine,
     EngineAttribute,
+    StorageClass,
     SecondaryEngineAttribute,
+    StartTransaction,
     InsertMethod,
     DataDirectory,
     IndexDirectory,
@@ -1516,6 +1550,7 @@ pub enum TableOptionType {
     SurvivalPreferences,
     Policy,
 }
+pub const TableOptionCompressionNone: &str = "NONE";
 
 /// 表选项结构体。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -1718,6 +1753,123 @@ pub enum ViewCheckOption {
     #[default]
     Cascaded,
     Local,
+}
+
+/// Materialized-view refresh mode.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MViewRefreshMethod {
+    #[default]
+    Fast,
+    Unknown(i32),
+}
+
+impl std::fmt::Display for MViewRefreshMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Fast => "REFRESH FAST",
+            Self::Unknown(_) => "UNKNOWN",
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct MViewRefreshClause {
+    pub Method: MViewRefreshMethod,
+    pub StartWith: Option<ExprNode>,
+    pub Next: Option<ExprNode>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct MLogPurgeClause {
+    pub Immediate: bool,
+    pub StartWith: Option<ExprNode>,
+    pub Next: Option<ExprNode>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct MLogAccumulationAlertClause {
+    pub Rows: i64,
+}
+
+pub struct CreateMaterializedViewStmt {
+    pub node_text: base::AstNode,
+    pub ViewName: Option<TableName>,
+    pub Cols: Vec<CIStr>,
+    pub Comment: String,
+    pub Refresh: Option<MViewRefreshClause>,
+    pub Attributes: String,
+    pub Options: Vec<TableOption>,
+    pub Select: Option<Box<dyn Node>>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CreateMaterializedViewLogStmt {
+    pub node_text: base::AstNode,
+    pub Table: Option<TableName>,
+    pub Cols: Vec<CIStr>,
+    pub Options: Vec<TableOption>,
+    pub Purge: Option<MLogPurgeClause>,
+    pub AccumulationAlert: Option<MLogAccumulationAlertClause>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum AlterMaterializedViewActionType {
+    #[default]
+    Comment,
+    Refresh,
+    Attributes,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AlterMaterializedViewAction {
+    pub node_text: base::AstNode,
+    pub Tp: AlterMaterializedViewActionType,
+    pub Comment: String,
+    pub Refresh: Option<MViewRefreshClause>,
+    pub Attributes: String,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AlterMaterializedViewStmt {
+    pub node_text: base::AstNode,
+    pub ViewName: Option<TableName>,
+    pub Actions: Vec<AlterMaterializedViewAction>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum AlterMaterializedViewLogActionType {
+    #[default]
+    Purge,
+    AddColumn,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AlterMaterializedViewLogAction {
+    pub node_text: base::AstNode,
+    pub Tp: AlterMaterializedViewLogActionType,
+    pub Purge: Option<MLogPurgeClause>,
+    pub Cols: Vec<CIStr>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AlterMaterializedViewLogStmt {
+    pub node_text: base::AstNode,
+    pub Table: Option<TableName>,
+    pub Actions: Vec<AlterMaterializedViewLogAction>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DropMaterializedViewStmt {
+    pub node_text: base::AstNode,
+    pub IfExists: bool,
+    pub ViewName: Option<TableName>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DropMaterializedViewLogStmt {
+    pub node_text: base::AstNode,
+    pub IfExists: bool,
+    pub Table: Option<TableName>,
 }
 
 /// CREATE VIEW 语句 AST。
@@ -2532,8 +2684,65 @@ pub struct IndexOption {
     pub PrimaryKeyTp: PrimaryKeyType,
     pub Global: bool,
     pub SplitOpt: Option<SplitOption>,
+    pub AutoPreSplit: bool,
     pub SecondaryEngineAttr: String,
     pub Condition: Option<ExprNode>,
+}
+
+impl IndexOption {
+    pub fn is_empty(&self) -> bool {
+        self.PrimaryKeyTp == PrimaryKeyType::Default
+            && self.KeyBlockSize == 0
+            && self.Tp == IndexType::default()
+            && self.ParserName.O.is_empty()
+            && self.Comment.is_empty()
+            && !self.Global
+            && self.Visibility == IndexVisibility::Default
+            && self.SplitOpt.is_none()
+            && !self.AutoPreSplit
+            && self.SecondaryEngineAttr.is_empty()
+            && self.Condition.is_none()
+    }
+
+    pub fn restore_with_special_comments(&self, special_comments: bool) -> String {
+        use ddl::{IndexOption as FormatIndexOption, IndexType as FormatIndexType};
+        let tp = match self.Tp {
+            IndexType::Invalid => FormatIndexType::Invalid,
+            IndexType::Btree => FormatIndexType::Btree,
+            IndexType::Hash => FormatIndexType::Hash,
+            IndexType::Rtree => FormatIndexType::Rtree,
+            IndexType::Hypo => FormatIndexType::Hypo,
+            IndexType::HNSW => FormatIndexType::Hnsw,
+            IndexType::Inverted => FormatIndexType::Inverted,
+        };
+        let option = FormatIndexOption {
+            key_block_size: self.KeyBlockSize,
+            tp,
+            comment: self.Comment.clone(),
+            parser_name: self.ParserName.O.clone(),
+            visibility: match self.Visibility {
+                IndexVisibility::Default => ddl::IndexVisibility::Default,
+                IndexVisibility::Visible => ddl::IndexVisibility::Visible,
+                IndexVisibility::Invisible => ddl::IndexVisibility::Invisible,
+            },
+            primary_key_tp: match self.PrimaryKeyTp {
+                PrimaryKeyType::Default => ddl::PrimaryKeyType::Default,
+                PrimaryKeyType::Clustered => ddl::PrimaryKeyType::Clustered,
+                PrimaryKeyType::NonClustered => ddl::PrimaryKeyType::NonClustered,
+            },
+            global: self.Global,
+            split_opt: self.SplitOpt.clone(),
+            auto_pre_split: self.AutoPreSplit,
+            secondary_engine_attr: self.SecondaryEngineAttr.clone(),
+            add_columnar_replica_on_demand: i32::from(self.AddColumnarReplicaOnDemand > 0),
+            condition: self.Condition.as_ref().map(Node::Text),
+        };
+        option.restore_with_special_comments(special_comments)
+    }
+
+    pub fn restore(&self) -> String {
+        self.restore_with_special_comments(false)
+    }
 }
 
 /// CREATE INDEX 语句 AST。
@@ -3907,6 +4116,9 @@ impl Node for SelectStmt {
     fn as_any(&self) -> &dyn Any {
         self
     }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
     fn into_any(self: Box<Self>) -> Box<dyn Any> {
         self
     }
@@ -3915,6 +4127,15 @@ impl Node for SelectStmt {
             return visitor.leave(self);
         }
         if !walk::Children::visit_children(self, visitor) {
+            return false;
+        }
+        visitor.leave(self)
+    }
+    fn accept_in_place(&mut self, visitor: &mut dyn InPlaceVisitor) -> bool {
+        if visitor.enter(self) {
+            return visitor.leave(self);
+        }
+        if !walk::MutChildren::visit_children_mut(self, visitor) {
             return false;
         }
         visitor.leave(self)
@@ -4324,16 +4545,29 @@ macro_rules! simple_node {
             fn node_text(&self) -> &base::AstNode { &self.node_text }
             fn node_text_mut(&mut self) -> &mut base::AstNode { &mut self.node_text }
             fn as_any(&self) -> &dyn Any { self }
+            fn as_any_mut(&mut self) -> &mut dyn Any { self }
             fn into_any(self: Box<Self>) -> Box<dyn Any> { self }
             fn accept(&self, visitor: &mut dyn Visitor) -> bool {
                 if visitor.enter(self) { return visitor.leave(self); }
                 walk::Children::visit_children(self, visitor) && visitor.leave(self)
+            }
+            fn accept_in_place(&mut self, visitor: &mut dyn InPlaceVisitor) -> bool {
+                if visitor.enter(self) { return visitor.leave(self); }
+                walk::MutChildren::visit_children_mut(self, visitor) && visitor.leave(self)
             }
         }
     )+};
 }
 
 simple_node!(
+    CreateMaterializedViewStmt,
+    CreateMaterializedViewLogStmt,
+    AlterMaterializedViewAction,
+    AlterMaterializedViewStmt,
+    AlterMaterializedViewLogAction,
+    AlterMaterializedViewLogStmt,
+    DropMaterializedViewStmt,
+    DropMaterializedViewLogStmt,
     ExprNode,
     DoStmt,
     CallStmt,
@@ -4591,5 +4825,7 @@ mod util_tests;
 mod node_flags;
 mod walk;
 pub use node_flags::{HasAggFlag, HasWindowFlag, SetFlag};
+#[cfg(test)]
+mod materialized_test;
 #[cfg(test)]
 mod node_flags_test;
