@@ -22,12 +22,128 @@
 
 use std::collections::HashSet;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::sync::Mutex;
 use task_stmtsummary_v2::*;
 
 /// 串行化依赖全局日志路径的文件测试，避免互相覆盖。
 static FILE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+#[test]
+fn go_merge_37_history_reader_preserves_ia_exec_count() {
+    let _guard = FILE_TEST_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let active = dir.path().join("tidb-statements.log");
+    setStmtSummaryFilename(&active);
+    fs::write(
+        &active,
+        b"{\"begin\":1,\"end\":2,\"digest\":\"d\",\"ia_exec_count\":3}\n",
+    )
+    .unwrap();
+    let mut reader = NewHistoryReader(
+        &[column(DigestStr), column(IAExecCountStr)],
+        "",
+        chrono_tz::UTC,
+        None,
+        false,
+        None,
+        Vec::new(),
+        2,
+    )
+    .unwrap();
+    let rows = read_all_rows(&mut reader);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0][0].GetString(), "d");
+    assert_eq!(rows[0][1].GetInt64(), 3);
+}
+
+#[test]
+fn go_merge_37_pins_current_inode_across_rotation() {
+    use crate::reader::StmtFiles;
+    let _guard = FILE_TEST_LOCK.lock().unwrap();
+    for rotate_after_snapshot in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let active = dir.path().join("tidb-statements.log");
+        let rotated = dir
+            .path()
+            .join("tidb-statements-2022-12-27T16-21-20.245.log");
+        setStmtSummaryFilename(&active);
+        fs::write(&active, b"{\"begin\":1,\"end\":2,\"digest\":\"old\"}\n").unwrap();
+        let rotate = || {
+            fs::rename(&active, &rotated).unwrap();
+            fs::write(&active, b"{\"begin\":3,\"end\":4,\"digest\":\"new\"}\n").unwrap();
+        };
+        let mut files = StmtFiles::newWithReadDir(|directory| {
+            if !rotate_after_snapshot {
+                rotate();
+            }
+            let entries = fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
+            if rotate_after_snapshot {
+                rotate();
+            }
+            Ok(entries)
+        })
+        .unwrap();
+        assert_eq!(files.files.len(), 1);
+        let pinned = files.files[0].opened.as_mut().unwrap();
+        let mut contents = String::new();
+        pinned.file.read_to_string(&mut contents).unwrap();
+        assert!(contents.contains("\"old\""));
+        assert!(!contents.contains("\"new\""));
+    }
+}
+
+#[test]
+fn go_merge_37_history_reader_bounds_open_files() {
+    let _guard = FILE_TEST_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let active = dir.path().join("tidb-statements.log");
+    setStmtSummaryFilename(&active);
+    let first = 1_672_444_800_i64;
+    for index in 0..32 {
+        let end = first + index * 7_200;
+        let name = chrono::DateTime::from_timestamp(end, 0)
+            .unwrap()
+            .with_timezone(&chrono::Local)
+            .format(logFileTimeFormat)
+            .to_string();
+        let path = dir.path().join(format!("tidb-statements-{name}.log"));
+        let line = format!(
+            "{{\"begin\":{},\"end\":{end},\"digest\":\"d\"}}\n",
+            end - 60
+        );
+        fs::write(path, line.repeat(20_000)).unwrap();
+    }
+    fs::write(
+        &active,
+        format!("{{\"begin\":{},\"end\":{first}}}\n", first - 60),
+    )
+    .unwrap();
+    let count_fds = || fs::read_dir("/dev/fd").ok().map(|entries| entries.count());
+    let before = count_fds();
+    let mut reader = NewHistoryReader(
+        &[column(DigestStr)],
+        "",
+        chrono_tz::UTC,
+        None,
+        false,
+        None,
+        vec![StmtTimeRange {
+            Begin: first - 100,
+            End: 0,
+        }],
+        2,
+    )
+    .unwrap();
+    if let (Some(before), Some(after)) = (before, count_fds()) {
+        assert!(
+            after <= before + 4,
+            "opened {} file descriptors",
+            after - before
+        );
+    }
+    reader.Close().unwrap();
+}
 
 /// 构造仅含列名的 ColumnInfo 桩。
 fn column(name: &str) -> model::ColumnInfo {

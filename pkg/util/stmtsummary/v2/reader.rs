@@ -315,16 +315,43 @@ pub fn parseEndTs(path: impl AsRef<Path>) -> Result<i64, ReaderError> {
     Ok(local.timestamp())
 }
 
-/// 目录下与配置文件名匹配的日志集合，按 begin 排序。
-struct StmtFiles {
-    files: Vec<StmtFile>,
+/// 目录项只保存路径；活动文件额外钉住打开的 inode，避免轮转竞态。
+pub(crate) struct StmtFileCandidate {
+    pub(crate) path: PathBuf,
+    pub(crate) opened: Option<StmtFile>,
+}
+
+#[cfg(unix)]
+fn sameFile(first: &fs::Metadata, second: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    first.dev() == second.dev() && first.ino() == second.ino()
+}
+
+#[cfg(not(unix))]
+fn sameFile(_first: &fs::Metadata, _second: &fs::Metadata) -> bool {
+    false
+}
+
+/// 目录下与配置文件名匹配的日志集合，按路径排序。
+pub(crate) struct StmtFiles {
+    pub(crate) files: Vec<StmtFileCandidate>,
+    current_file_info: Option<fs::Metadata>,
 }
 
 impl StmtFiles {
-    /// 枚举目录中活动文件与轮转文件，按时间范围过滤。
-    fn new(time_ranges: &[StmtTimeRange]) -> Result<Self, ReaderError> {
+    /// 先打开活动文件，再枚举目录；轮转文件到消费时才打开。
+    fn new() -> Result<Self, ReaderError> {
+        Self::newWithReadDir(|directory| fs::read_dir(directory)?.collect())
+    }
+
+    pub(crate) fn newWithReadDir(
+        read_dir: impl FnOnce(&Path) -> io::Result<Vec<fs::DirEntry>>,
+    ) -> Result<Self, ReaderError> {
         let filename = stmtSummaryFilename();
-        let directory = filename.parent().unwrap_or_else(|| Path::new("."));
+        let directory = filename
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
         let extension = filename
             .extension()
             .and_then(|value| value.to_str())
@@ -333,9 +360,19 @@ impl StmtFiles {
             .file_stem()
             .and_then(|value| value.to_str())
             .unwrap_or_default();
+        let current = openStmtFile(&filename).ok();
+        let current_file_info = current
+            .as_ref()
+            .map(|file| file.file.metadata())
+            .transpose()?;
         let mut files = Vec::new();
-        for entry in fs::read_dir(directory)? {
-            let entry = entry?;
+        if let Some(opened) = current {
+            files.push(StmtFileCandidate {
+                path: filename.clone(),
+                opened: Some(opened),
+            });
+        }
+        for entry in read_dir(directory)? {
             if entry.file_type()?.is_dir() {
                 continue;
             }
@@ -349,19 +386,24 @@ impl StmtFiles {
             {
                 continue;
             }
-            let Ok(file) = openStmtFile(&path) else {
+            if path.file_name() == filename.file_name() {
+                if current_file_info.is_none() {
+                    files.push(StmtFileCandidate { path, opened: None });
+                }
                 continue;
-            };
-            if time_ranges.is_empty()
-                || time_ranges
-                    .iter()
-                    .any(|range| timeRangeOverlap(file.begin, file.end, range.Begin, range.End))
-            {
-                files.push(file);
             }
+            if let (Some(current), Ok(candidate)) = (&current_file_info, entry.metadata()) {
+                if sameFile(current, &candidate) {
+                    continue;
+                }
+            }
+            files.push(StmtFileCandidate { path, opened: None });
         }
-        files.sort_by_key(|file| file.begin);
-        Ok(Self { files })
+        files.sort_by(|left, right| left.path.cmp(&right.path));
+        Ok(Self {
+            files,
+            current_file_info,
+        })
     }
 }
 
@@ -384,7 +426,7 @@ pub fn NewHistoryReader(
     time_ranges: Vec<StmtTimeRange>,
     concurrent: usize,
 ) -> Result<HistoryReader, ReaderError> {
-    let files = StmtFiles::new(&time_ranges)?.files;
+    let files = StmtFiles::new()?;
     let concurrent = concurrent.max(2);
     let (rows_tx, rows_rx) = bounded(concurrent);
     let (error_tx, error_rx) = bounded(concurrent);
@@ -462,7 +504,7 @@ impl Drop for HistoryReader {
 /// 调度文件扫描与解析 worker，并把结果送入 rows/error 通道。
 #[allow(clippy::too_many_arguments)]
 fn scheduleTasks(
-    files: Vec<StmtFile>,
+    files: StmtFiles,
     concurrent: usize,
     context: ColumnContext,
     factories: Vec<ColumnFactory>,
@@ -471,10 +513,11 @@ fn scheduleTasks(
     rows_tx: Sender<Vec<Vec<ColumnValue>>>,
     error_tx: Sender<ReaderError>,
 ) {
-    if files.is_empty() {
+    if files.files.is_empty() {
         return;
     }
-    let (files_tx, files_rx) = bounded(concurrent);
+    // Unbuffered handoff keeps open descriptors bounded by scan workers.
+    let (files_tx, files_rx) = bounded(0);
     let (lines_tx, lines_rx) = bounded(concurrent);
     let (scan_done_tx, scan_done_rx) = bounded(concurrent);
     let scan_count = concurrent / 2;
@@ -532,7 +575,33 @@ fn scheduleTasks(
     drop(files_rx);
     drop(lines_rx);
     drop(scan_done_tx);
-    for file in files {
+    for candidate in files.files {
+        if cancelled.load(Ordering::Acquire) {
+            break;
+        }
+        let file = match candidate.opened {
+            Some(file) => file,
+            None => match openStmtFile(&candidate.path) {
+                Ok(file) => file,
+                Err(_) => continue,
+            },
+        };
+        if let Some(current) = &files.current_file_info {
+            if candidate.path.file_name() != stmtSummaryFilename().file_name() {
+                match file.file.metadata() {
+                    Ok(info) if sameFile(current, &info) => continue,
+                    Ok(_) => {}
+                    Err(error) => {
+                        let _ = error_tx.try_send(error.into());
+                        cancelled.store(true, Ordering::Release);
+                        break;
+                    }
+                }
+            }
+        }
+        if !checker.isTimeValid(file.begin, file.end) {
+            continue;
+        }
         if !sendCancelable(&files_tx, &cancelled, file) {
             break;
         }

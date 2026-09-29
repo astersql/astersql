@@ -50,6 +50,7 @@ pub use stmtsummary::*;
 
 #[cfg(test)]
 pub mod testkit {
+    pub(crate) static SQL_LENGTH_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     pub mod testsetup {
         pub use testsetup_dependency::*;
     }

@@ -22,6 +22,29 @@ use std::thread;
 use std::time::{Duration, Instant};
 use task_stmtsummary_v2::*;
 
+#[test]
+fn go_merge_37_setup_failure_reports_fallback_and_keeps_v1_available() {
+    Close();
+    let dir = tempfile::tempdir().unwrap();
+    let error = Setup(&Config {
+        Filename: dir
+            .path()
+            .join("missing/statement.log")
+            .display()
+            .to_string(),
+        ..Default::default()
+    })
+    .unwrap_err();
+    assert!(error.contains("falling back to v1"), "{error}");
+    assert_eq!(
+        Enabled(),
+        task_stmtsummary::StmtSummaryByDigestMap
+            .lock()
+            .unwrap()
+            .Enabled()
+    );
+}
+
 /// 在超时内轮询谓词，超时则断言失败（对应 Go 侧 Eventually 风格等待）。
 fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
     let deadline = Instant::now() + timeout;

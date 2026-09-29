@@ -711,7 +711,21 @@ fn global() -> &'static RwLock<Option<Arc<StmtSummary>>> {
 
 /// 安装全局 v2 摘要实例。
 pub fn Setup(config: &Config) -> Result<()> {
-    let summary = NewStmtSummary(config)?;
+    let summary = match NewStmtSummary(config) {
+        Ok(summary) => summary,
+        Err(error) => {
+            if let Some(previous) = global()
+                .write()
+                .expect("global statement summary lock poisoned")
+                .take()
+            {
+                previous.Close();
+            }
+            return Err(format!(
+                "stmtsummary v2 persistent mode disabled; falling back to v1 in-memory aggregation: {error}"
+            ));
+        }
+    };
     *global()
         .write()
         .expect("global statement summary lock poisoned") = Some(summary);

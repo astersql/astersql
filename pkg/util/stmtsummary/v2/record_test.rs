@@ -24,6 +24,57 @@ use std::time::Duration;
 use task_stmtsummary_v2::*;
 
 #[test]
+fn go_merge_37_ia_json_keys_match_persisted_log_contract() {
+    let mut record = StmtRecord::default();
+    record.IAExecCount = 2;
+    record.SumIARemoteReadSegmentCount = 3;
+    record.MaxIARemoteReadSegmentCount = 2;
+    record.SumIARemoteReadSegmentWaitTime = Duration::from_millis(5);
+    record.MaxIARemoteReadSegmentWaitTime = Duration::from_millis(4);
+    let json: serde_json::Value =
+        serde_json::from_slice(&marshalStmtRecord(&record).unwrap()).unwrap();
+    assert_eq!(json["ia_exec_count"], 2);
+    assert_eq!(json["sum_ia_remote_read_segment_count"], 3);
+    assert_eq!(json["max_ia_remote_read_segment_count"], 2);
+    assert!(json.get("i_a_exec_count").is_none());
+    assert!(json.get("sum_i_a_remote_read_segment_count").is_none());
+    assert_eq!(json["sum_ia_remote_read_segment_wait_time"], 5_000_000);
+    assert_eq!(json["max_ia_remote_read_segment_wait_time"], 4_000_000);
+    let decoded: StmtRecord = serde_json::from_value(json).unwrap();
+    assert_eq!(
+        decoded.SumIARemoteReadSegmentWaitTime,
+        Duration::from_millis(5)
+    );
+}
+
+#[test]
+fn go_merge_37_skips_empty_table_names_and_formats_digest_text() {
+    let _guard = crate::testkit::SQL_LENGTH_TEST_LOCK.lock().unwrap();
+    let mut info = GenerateStmtExecInfo4Test("digest");
+    info.StmtCtx.SetLogicalPlanTables(vec![
+        TableEntry {
+            DB: "db0".into(),
+            Table: "".into(),
+        },
+        TableEntry {
+            DB: "DB1".into(),
+            Table: "TABLE1".into(),
+        },
+        TableEntry {
+            DB: "db2".into(),
+            Table: "".into(),
+        },
+    ]);
+    info.NormalizedSQL = "s".repeat(defaultMaxSQLLength as usize + 2);
+    let record = NewStmtRecord(&info);
+    assert_eq!(record.TableNames, "db1.table1");
+    assert_eq!(
+        record.NormalizedSQL,
+        format!("{}(len:32770)", "s".repeat(32768))
+    );
+}
+
+#[test]
 fn go_merge_36_v2_ia_stats_accumulate_and_merge() {
     let mut info = GenerateStmtExecInfo4Test("ia");
     let scan = info.ExecDetail.CopExecDetails.ScanDetail.as_mut().unwrap();
@@ -50,6 +101,7 @@ fn go_merge_36_v2_ia_stats_accumulate_and_merge() {
 /// 校验新建记录字段、累加/合并指标，以及 marshal 附加字段与 evicted 标记。
 #[test]
 fn TestStmtRecord() {
+    let _guard = crate::testkit::SQL_LENGTH_TEST_LOCK.lock().unwrap();
     let info = GenerateStmtExecInfo4Test("digest1");
     let mut record1 = NewStmtRecord(&info);
     assert_eq!(info.SchemaName, record1.SchemaName);
@@ -134,6 +186,10 @@ fn TestStmtRecord() {
         serde_json::from_slice(&marshalStmtRecord(&record2).unwrap()).unwrap();
     assert_eq!(items["additional_fields"]["stmt_meta_a"], "value_a");
     assert_eq!(items["digest"], record2.Digest);
+    assert_eq!(items["ia_exec_count"], 0);
+    assert!(items.get("ia_remote_exec_count").is_none());
+    assert!(items.get("sum_ia_remote_read_segment_count").is_some());
+    assert!(items.get("max_ia_remote_read_segment_count").is_some());
 
     let items: serde_json::Value =
         serde_json::from_slice(&marshalEvictedStmtRecord(&record2).unwrap()).unwrap();

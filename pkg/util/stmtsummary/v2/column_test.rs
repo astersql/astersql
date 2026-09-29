@@ -23,6 +23,64 @@
 use std::time::{Duration, UNIX_EPOCH};
 use task_stmtsummary_v2::*;
 
+#[test]
+fn go_merge_37_averages_all_unsigned_and_ia_columns() {
+    let mut record = StmtRecord::default();
+    record.ExecCount = 2;
+    record.CommitCount = 0;
+    let large = 1_u64 << 63;
+    record.SumRocksdbDeleteSkippedCount = large;
+    record.SumRocksdbKeySkippedCount = large;
+    record.SumRocksdbBlockCacheHitCount = large;
+    record.SumRocksdbBlockReadCount = large;
+    record.SumRocksdbBlockReadByte = large;
+    record.SumIARemoteReadSegmentCount = large;
+    record.SumIARemoteReadSegmentSize = large;
+    record.SumAffectedRows = large;
+    record.IAExecCount = 1;
+    record.MaxIARemoteReadSegmentCount = 3;
+    record.MaxIARemoteReadSegmentSize = 4096;
+    record.SumIARemoteReadSegmentWaitTime = Duration::from_millis(5);
+    record.MaxIARemoteReadSegmentWaitTime = Duration::from_millis(5);
+    record.SumKVTotal = Duration::from_nanos(10);
+    record.SumPDTotal = Duration::from_nanos(20);
+    record.SumBackoffTotal = Duration::from_nanos(30);
+    record.SumWriteSQLRespTotal = Duration::from_nanos(40);
+    let context = ColumnContext::new("", chrono_tz::UTC);
+    for name in [
+        AvgRocksdbDeleteSkippedCountStr,
+        AvgRocksdbKeySkippedCountStr,
+        AvgRocksdbBlockCacheHitCountStr,
+        AvgRocksdbBlockReadCountStr,
+        AvgRocksdbBlockReadByteStr,
+        AvgIARemoteReadSegmentCountStr,
+        AvgIARemoteReadSegmentSizeStr,
+        AvgAffectedRowsStr,
+    ] {
+        let value = makeColumnFactories(&[column(name)])[0](&context, &record).into_datum();
+        assert_eq!(value.GetFloat64(), large as f64 / 2.0, "{name}");
+    }
+    for (name, expected) in [
+        (AvgKvTimeStr, 5),
+        (AvgPdTimeStr, 10),
+        (AvgBackoffTotalTimeStr, 15),
+        (AvgWriteSQLRespTimeStr, 20),
+        (AvgIARemoteReadSegmentWaitTimeStr, 2_500_000),
+        (MaxIARemoteReadSegmentWaitTimeStr, 5_000_000),
+    ] {
+        let value = makeColumnFactories(&[column(name)])[0](&context, &record).into_datum();
+        assert_eq!(value.GetInt64(), expected, "{name}");
+    }
+    for (name, expected) in [
+        (IAExecCountStr, 1),
+        (MaxIARemoteReadSegmentCountStr, 3),
+        (MaxIARemoteReadSegmentSizeStr, 4096),
+    ] {
+        let value = makeColumnFactories(&[column(name)])[0](&context, &record).into_datum();
+        assert_eq!(value.GetInt64(), expected, "{name}");
+    }
+}
+
 /// 构造仅填充原始列名（`Name.O`）的 `ColumnInfo` 桩。
 fn column(name: &str) -> model::ColumnInfo {
     let mut column = model::ColumnInfo::default();
