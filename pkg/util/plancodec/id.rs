@@ -155,6 +155,8 @@ pub const TypeScalarSubQuery: &str = "ScalarSubQuery";
 pub const TypePhysicalCTESink: &str = "PhysicalCTESink";
 // TypePhysicalCTESource is the type of CTE source.
 pub const TypePhysicalCTESource: &str = "PhysicalCTESource";
+// TypeAnalyze is the type of Analyze.
+pub const TypeAnalyze: &str = "Analyze";
 
 // plan id.
 // Attention: for compatibility of encode/decode plan, The plan id shouldn't be changed.
@@ -224,6 +226,7 @@ pub const TypeScalarSubQueryID: isize = 60;
 const typeLocalIndexLookUpID: isize = 61;
 const typePhysicalCTESinkID: isize = 62;
 const typePhysicalCTESourceID: isize = 63;
+const typeAnalyzeID: isize = 64;
 
 // TypeStringToPhysicalID converts the plan type string to plan id.
 // TypeStringToPhysicalID 对应 Go 的同名函数，把计划类型字符串转换成稳定的物理计划 ID。
@@ -295,6 +298,7 @@ pub fn TypeStringToPhysicalID(tp: &str) -> isize {
         x if x == TypeScalarSubQuery => TypeScalarSubQueryID,
         x if x == TypePhysicalCTESink => typePhysicalCTESinkID,
         x if x == TypePhysicalCTESource => typePhysicalCTESourceID,
+        x if x == TypeAnalyze => typeAnalyzeID,
         _ => {
             // Should never reach here.
             // Go 源码在未知计划字符串时返回 0；不改成 Result，避免改变原有调用契约。
@@ -373,6 +377,7 @@ pub fn PhysicalIDToTypeString(id: isize) -> String {
         x if x == TypeScalarSubQueryID => TypeScalarSubQuery.to_string(),
         x if x == typePhysicalCTESinkID => TypePhysicalCTESink.to_string(),
         x if x == typePhysicalCTESourceID => TypePhysicalCTESource.to_string(),
+        x if x == typeAnalyzeID => TypeAnalyze.to_string(),
         _ => {
             // Should never reach here.
             // Go 使用 strconv.Itoa(id) 拼接未知 ID；这里用 format! 保留同样的可观察字符串形状。

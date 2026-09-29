@@ -18,3 +18,7 @@ mod split_handle;
 
 /// 再导出 split_handle 的公开 API。
 pub use split_handle::*;
+
+/// 使用真实表元信息与 Datum 的拆分句柄入口。
+mod model_handle;
+pub use model_handle::*;

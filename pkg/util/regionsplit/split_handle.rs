@@ -348,12 +348,12 @@ pub fn BuildHandleColsForSplit(table: &TableInfo) -> Box<dyn SplitHandleCols> {
 }
 
 /// 有符号整数的可比较编码：异或符号位后大端写出（对齐 TiDB codec）。
-fn encode_i64(value: i64) -> [u8; 8] {
+pub(crate) fn encode_i64(value: i64) -> [u8; 8] {
     ((value as u64) ^ (1_u64 << 63)).to_be_bytes()
 }
 
 /// 生成表记录键前缀 `t{table_id}_r`。
-fn gen_table_record_prefix(table_id: i64) -> Vec<u8> {
+pub(crate) fn gen_table_record_prefix(table_id: i64) -> Vec<u8> {
     let mut key = Vec::with_capacity(11);
     key.push(b't');
     key.extend_from_slice(&encode_i64(table_id));
@@ -441,7 +441,7 @@ fn encode_memcomparable_bytes(value: &[u8], output: &mut Vec<u8>) {
 /// 在两条有序键之间按段数等分，生成中间切分键。
 ///
 /// 先取公共前缀，再将后续字节补齐为 u64 做等差插值，最后写回前缀+大端步长。
-fn get_values_list(
+pub(crate) fn get_values_list(
     lower: &[u8],
     upper: &[u8],
     number: usize,

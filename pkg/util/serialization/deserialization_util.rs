@@ -188,6 +188,15 @@ pub fn DeserializeTypesDuration(pos_and_buf: &mut PosAndBuf) -> types::Duration 
     }
 }
 
+// DeserializeVectorFloat32 deserializes VectorFloat32 type.
+/// 读取长度前缀、复制独立载荷，并按 Go 向量线格式解码；非法载荷 panic。
+pub fn DeserializeVectorFloat32(pos_and_buf: &mut PosAndBuf) -> types::VectorFloat32 {
+    let bytes = deserializeBuffer(pos_and_buf).to_vec();
+    let (vector, _) =
+        types::ZeroCopyDeserializeVectorFloat32(&bytes).unwrap_or_else(|error| panic!("{error}"));
+    vector
+}
+
 // DeserializeJSONTypeCode deserializes JSONTypeCode type.
 /// 反序列化 JSON 类型码单字节。
 pub fn DeserializeJSONTypeCode(pos_and_buf: &mut PosAndBuf) -> types::JSONTypeCode {

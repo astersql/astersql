@@ -414,6 +414,59 @@ fn test_unique_index_name_is_preserved() {
 
 struct EmptyRows;
 
+struct ProfileRequestRows {
+    observed: Mutex<Vec<String>>,
+}
+
+impl RowSource for ProfileRequestRows {
+    fn local_profile(&self, _profile: &str) -> Result<Vec<Vec<Datum>>, PerfSchemaError> {
+        Ok(Vec::new())
+    }
+    fn session_variables(&self) -> Result<Vec<Vec<Datum>>, PerfSchemaError> {
+        Ok(Vec::new())
+    }
+    fn session_connect_attrs(&self, _account: bool) -> Result<Vec<Vec<Datum>>, PerfSchemaError> {
+        Ok(Vec::new())
+    }
+    fn status_by_connection(&self) -> Result<Vec<Vec<Datum>>, PerfSchemaError> {
+        Ok(Vec::new())
+    }
+    fn on_profile_request(&self, table: &str) {
+        self.observed.lock().unwrap().push(table.to_owned());
+    }
+}
+
+#[test]
+fn go_merge_32_every_local_profile_query_records_its_table() {
+    let database = build_performance_schema().unwrap();
+    let source = ProfileRequestRows {
+        observed: Mutex::new(Vec::new()),
+    };
+    let expected = [
+        "tidb_profile_cpu",
+        "tidb_profile_memory",
+        "tidb_profile_allocs",
+        "tidb_profile_mutex",
+        "tidb_profile_block",
+        "tidb_profile_goroutines",
+    ];
+    for name in expected {
+        let table = database
+            .tables
+            .iter()
+            .find(|table| table.name == name)
+            .unwrap();
+        let virtual_table = table_from_meta(table).unwrap();
+        virtual_table
+            .get_rows(virtual_table.columns(), &source, &NoRemote, &mut Vec::new())
+            .unwrap();
+    }
+    assert_eq!(
+        *source.observed.lock().unwrap(),
+        expected.map(|name| format!("performance_schema.{name}"))
+    );
+}
+
 impl RowSource for EmptyRows {
     fn local_profile(&self, _profile: &str) -> Result<Vec<Vec<Datum>>, PerfSchemaError> {
         Ok(Vec::new())

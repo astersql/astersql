@@ -211,6 +211,11 @@ pub trait RowSource: Send + Sync {
     fn session_variables(&self) -> Result<Vec<Vec<Datum>>, PerfSchemaError>;
     fn session_connect_attrs(&self, account: bool) -> Result<Vec<Vec<Datum>>, PerfSchemaError>;
     fn status_by_connection(&self) -> Result<Vec<Vec<Datum>>, PerfSchemaError>;
+
+    /// 记录一次本地 profile 表读取；生产默认记录表名，测试可观察调用。
+    fn on_profile_request(&self, table: &str) {
+        tracing::info!(table = table, "profiling request received");
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -345,6 +350,17 @@ impl PerfSchemaTable {
         remote: &dyn RemoteProfileClient,
         warnings: &mut Vec<String>,
     ) -> Result<Vec<Vec<Datum>>, PerfSchemaError> {
+        if matches!(
+            self.meta.name.as_str(),
+            tableNameTiDBProfileCPU
+                | tableNameTiDBProfileMemory
+                | tableNameTiDBProfileMutex
+                | tableNameTiDBProfileAllocs
+                | tableNameTiDBProfileBlock
+                | tableNameTiDBProfileGoroutines
+        ) {
+            source.on_profile_request(&format!("performance_schema.{}", self.meta.name));
+        }
         // 按表名路由到本地 profile、远端 pprof 或会话元数据。
         let full_rows = match self.meta.name.as_str() {
             tableNameTiDBProfileCPU => source.local_profile("cpu")?,

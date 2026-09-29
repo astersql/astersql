@@ -44,4 +44,7 @@ pub use serialization_util::*;
 mod migration_aster_unit_test;
 
 #[cfg(test)]
+#[path = "go_merge_32_test.rs"]
+mod go_merge_32_test;
+#[cfg(test)]
 mod go_merge_34_test;

@@ -82,6 +82,7 @@ fn test_plan_id_changed() {
         (TypeShuffleReceiver, 55),
         (TypeImportInto, 59),
         (TypeLocalIndexLookUp, 61),
+        (TypeAnalyze, 64),
     ];
 
     for (plan_type, expected) in test_cases {
@@ -90,9 +91,15 @@ fn test_plan_id_changed() {
 }
 
 #[test]
-/// 校验 ID 1..=61 的编码/解码往返一致。
+/// 校验 ID 1..=64 的编码/解码往返一致。
 fn test_reverse() {
-    for id in 1..=61 {
+    for id in 1..=64 {
         assert_eq!(TypeStringToPhysicalID(&PhysicalIDToTypeString(id)), id);
     }
+}
+
+#[test]
+fn go_merge_32_analyze_id_and_full_reverse_range() {
+    assert_eq!(TypeStringToPhysicalID("Analyze"), 64);
+    assert_eq!(PhysicalIDToTypeString(64), "Analyze");
 }

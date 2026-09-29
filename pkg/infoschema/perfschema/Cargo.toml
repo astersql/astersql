@@ -11,6 +11,9 @@ path = "lib.rs"
 go-package = "pkg/infoschema/perfschema"
 legacy-tasks = ["task-1037", "task-1394"]
 
+[dependencies]
+tracing = "0.1"
+
 [target.'cfg(any())'.dependencies]
 "astersql-ddl" = { package = "astersql-ddl", path = "../../ddl" }
 "astersql-expression" = { package = "astersql-expression", path = "../../expression" }
