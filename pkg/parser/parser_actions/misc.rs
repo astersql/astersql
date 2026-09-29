@@ -844,8 +844,13 @@ fn apply_rule(rule: MiscRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<
             let errors = rhs[rhs_len - (1)]
                 .item
                 .take()
-                .and_then(|item| item.downcast::<Vec<Box<dyn Any>>>().ok())
-                .map(|item| *item)
+                .and_then(|item| item.downcast::<Vec<Box<dyn parser_ast::Node>>>().ok())
+                .map(|nodes| {
+                    (*nodes)
+                        .into_iter()
+                        .map(|node| Box::new(node) as Box<dyn Any>)
+                        .collect()
+                })
                 .unwrap_or_default();
             out.item = Some(Box::new(parser_ast::ProcedureErrorControl {
                 node_text: Default::default(),
@@ -961,7 +966,7 @@ fn apply_rule(rule: MiscRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<
                 rhs[rhs_len - (1)]
                     .statement
                     .take()
-                    .map(|node| node.into_any())
+                    .map(|node| Box::new(node) as Box<dyn Any>)
             });
             out.item = Some(Box::new(value.into_iter().collect::<Vec<Box<dyn Any>>>()));
         }
@@ -976,7 +981,7 @@ fn apply_rule(rule: MiscRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<
                 rhs[rhs_len - (1)]
                     .statement
                     .take()
-                    .map(|node| node.into_any())
+                    .map(|node| Box::new(node) as Box<dyn Any>)
             }) {
                 values.push(value);
             }

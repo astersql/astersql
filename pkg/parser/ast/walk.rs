@@ -256,6 +256,30 @@ impl VisitMut for ColumnName {
         v.leave_column_name(self)
     }
 }
+impl Visit for OnDeleteOpt {
+    fn visit(&self, v: &mut dyn Visitor) -> bool {
+        let _skip = v.enter_on_delete(self);
+        v.leave_on_delete(self)
+    }
+}
+impl VisitMut for OnDeleteOpt {
+    fn visit_mut(&mut self, v: &mut dyn InPlaceVisitor) -> bool {
+        let _skip = v.enter_on_delete(self);
+        v.leave_on_delete(self)
+    }
+}
+impl Visit for OnUpdateOpt {
+    fn visit(&self, v: &mut dyn Visitor) -> bool {
+        let _skip = v.enter_on_update(self);
+        v.leave_on_update(self)
+    }
+}
+impl VisitMut for OnUpdateOpt {
+    fn visit_mut(&mut self, v: &mut dyn InPlaceVisitor) -> bool {
+        let _skip = v.enter_on_update(self);
+        v.leave_on_update(self)
+    }
+}
 macro_rules! children {
     ($name:ty => $($field:ident),* $(,)?) => {
         impl Children for $name {
@@ -273,20 +297,46 @@ macro_rules! children {
 macro_rules! embedded {
     ($($name:ty),* $(,)?) => {$ (
         impl Visit for $name {
-            fn visit(&self, v: &mut dyn Visitor) -> bool { self.visit_children(v) }
+            fn visit(&self, v: &mut dyn Visitor) -> bool {
+                if v.enter_embedded(self) { return v.leave_embedded(self); }
+                self.visit_children(v) && v.leave_embedded(self)
+            }
         }
         impl VisitMut for $name {
-            fn visit_mut(&mut self, v: &mut dyn InPlaceVisitor) -> bool { self.visit_children_mut(v) }
+            fn visit_mut(&mut self, v: &mut dyn InPlaceVisitor) -> bool {
+                if v.enter_embedded(self) { return v.leave_embedded(self); }
+                if !self.visit_children_mut(v) { return false; }
+                v.leave_embedded(self)
+            }
         }
     )*};
 }
 
 children!(DoStmt => Exprs);
 children!(CallStmt => Procedure);
-children!(ShowStmt => Pattern, Where, ShowProfileLimit);
-children!(TableSource => QuerySource, TableSample, AsOf);
+children!(ShowStmt => Table, Column, Pattern, Where, ShowProfileLimit);
+impl Children for TableSource {
+    fn visit_children(&self, v: &mut dyn Visitor) -> bool {
+        let source_ok = if let Some(query) = &self.QuerySource {
+            query.visit(v)
+        } else {
+            self.Source.visit(v)
+        };
+        source_ok && self.TableSample.visit(v) && self.AsOf.visit(v)
+    }
+}
+impl MutChildren for TableSource {
+    fn visit_children_mut(&mut self, v: &mut dyn InPlaceVisitor) -> bool {
+        let source_ok = if let Some(query) = &mut self.QuerySource {
+            query.visit_mut(v)
+        } else {
+            self.Source.visit_mut(v)
+        };
+        source_ok && self.TableSample.visit_mut(v) && self.AsOf.visit_mut(v)
+    }
+}
 children!(TableSample => Expr, RepeatableSeed);
-children!(Join => Left, Right, On);
+children!(Join => Left, Right, On, Using);
 children!(TableRefsClause => TableRefs);
 children!(WhenClause => Expr, Result);
 children!(ExprNode => Kind);
@@ -294,22 +344,45 @@ children!(SelectField => Expr);
 children!(FieldList => Fields);
 children!(ByItem => Expr);
 children!(Limit => Count, Offset);
-children!(Assignment => Expr);
-children!(InsertStmt => Table, Lists, OnDuplicate, Select, Returning);
-children!(UpdateStmt => TableRefs, List, Where, Order, Limit, Returning, With);
-children!(DeleteStmt => TableRefs, Where, Order, Limit, Returning, With);
-children!(ColumnOption => Expr, Refer);
-children!(ColumnDef => Options);
-children!(ColumnNameOrUserVar => UserVar);
-children!(TableOption => Value);
+children!(Assignment => Column, Expr);
+children!(InsertStmt => Select, Table, Columns, Lists, OnDuplicate, Returning);
+children!(UpdateStmt => With, TableRefs, List, Where, Order, Limit, Returning);
+children!(DeleteStmt => With, TableRefs, Tables, Where, Order, Limit, Returning);
+children!(ColumnOption => Expr);
+children!(ColumnDef => Name, Options);
+children!(ColumnPosition => RelativeColumn);
+children!(IndexLockAndAlgorithm => );
+children!(ResourceGroupRunawayActionOption => );
+children!(AttributesSpec => );
+children!(StatsOptionsSpec => );
+children!(WildCardField => );
+children!(SelectIntoOption => );
+children!(PrivElem => Cols);
+children!(UserToUser => );
+children!(TableOptimizerHint => );
+children!(StoreParameter => );
+children!(ColumnNameOrUserVar => ColumnName, UserVar);
+impl Visit for TimeUnitType {
+    fn visit(&self, v: &mut dyn Visitor) -> bool {
+        let _skip = v.enter_embedded(self);
+        v.leave_embedded(self)
+    }
+}
+impl VisitMut for TimeUnitType {
+    fn visit_mut(&mut self, v: &mut dyn InPlaceVisitor) -> bool {
+        let _skip = v.enter_embedded(self);
+        v.leave_embedded(self)
+    }
+}
+children!(TableOption => Value, TimeUnitValue);
 children!(PartitionIntervalExpr => Expr);
 children!(PartitionInterval => IntervalExpr, FirstRangeEnd, LastRangeEnd);
 children!(PartitionMethod => Expr, ColumnNames);
 children!(SubPartitionDefinition => Options);
 children!(PartitionDefinition => Clause);
 children!(PartitionOptions => PartitionMethod, Sub, Definitions);
-children!(CreateTableStmt => Cols, Constraints, Options, Partition, SplitIndex, Select);
-children!(CreateViewStmt => Select);
+children!(CreateTableStmt => Table, ReferTable, Cols, Constraints, SplitIndex, Select, Partition, Options);
+children!(CreateViewStmt => ViewName, Select);
 children!(MViewRefreshClause => StartWith, Next);
 children!(MLogPurgeClause => StartWith, Next);
 children!(CreateMaterializedViewStmt => ViewName, Options, Refresh, Select);
@@ -324,23 +397,70 @@ children!(PurgeMaterializedViewLogStmt => Table);
 children!(CancelMaterializedViewJobStmt => );
 children!(RefreshMaterializedViewStmt => ViewName, AsOf);
 children!(RefreshMaterializedViewImplementStmt => RefreshStmt);
-children!(AlterTableSpec => NewColumns, SplitIndex, PartitionExpr, Options, Constraint, MaskingPolicyExpr, PartDefinitions, Partition);
-children!(ReferenceDef => IndexPartSpecifications);
-children!(Constraint => Keys, Option, Refer, Expr);
-children!(AlterTableStmt => Specs);
-children!(DropTableStmt => );
+children!(AlterTableSpec => Constraint, NewTable, SplitIndex, NewColumns, OldColumnName, Position, MaskingPolicyColumn, MaskingPolicyExpr, Partition, Options, PartDefinitions);
+children!(ReferenceDef => Table, IndexPartSpecifications, OnDelete, OnUpdate);
+children!(Constraint => Keys, Refer, Option, Expr);
+children!(AlterTableStmt => Table, Specs);
+children!(DropTableStmt => Tables);
 children!(CreateDatabaseStmt => );
 children!(DropDatabaseStmt => );
 children!(AlterDatabaseStmt => );
 children!(AlterInstanceStmt => );
 children!(AlterRangeStmt => );
 children!(StringOrUserVar => UserVar);
-children!(CreateBindingStmt => OriginNode, HintedNode, PlanDigests);
-children!(DropBindingStmt => OriginNode, HintedNode, SQLDigests);
-children!(SetBindingStmt => OriginNode, HintedNode);
-children!(DistributeTableStmt => );
+impl Children for CreateBindingStmt {
+    fn visit_children(&self, v: &mut dyn Visitor) -> bool {
+        if let Some(origin) = &self.OriginNode {
+            origin.visit(v) && self.HintedNode.visit(v)
+        } else {
+            self.PlanDigests.visit(v)
+        }
+    }
+}
+impl MutChildren for CreateBindingStmt {
+    fn visit_children_mut(&mut self, v: &mut dyn InPlaceVisitor) -> bool {
+        if let Some(origin) = &mut self.OriginNode {
+            origin.visit_mut(v) && self.HintedNode.visit_mut(v)
+        } else {
+            self.PlanDigests.visit_mut(v)
+        }
+    }
+}
+impl Children for DropBindingStmt {
+    fn visit_children(&self, v: &mut dyn Visitor) -> bool {
+        if let Some(origin) = &self.OriginNode {
+            origin.visit(v) && self.HintedNode.visit(v)
+        } else {
+            self.SQLDigests.visit(v)
+        }
+    }
+}
+impl MutChildren for DropBindingStmt {
+    fn visit_children_mut(&mut self, v: &mut dyn InPlaceVisitor) -> bool {
+        if let Some(origin) = &mut self.OriginNode {
+            origin.visit_mut(v) && self.HintedNode.visit_mut(v)
+        } else {
+            self.SQLDigests.visit_mut(v)
+        }
+    }
+}
+impl Children for SetBindingStmt {
+    fn visit_children(&self, v: &mut dyn Visitor) -> bool {
+        self.OriginNode
+            .as_ref()
+            .is_none_or(|origin| origin.visit(v) && self.HintedNode.visit(v))
+    }
+}
+impl MutChildren for SetBindingStmt {
+    fn visit_children_mut(&mut self, v: &mut dyn InPlaceVisitor) -> bool {
+        self.OriginNode
+            .as_mut()
+            .is_none_or(|origin| origin.visit_mut(v) && self.HintedNode.visit_mut(v))
+    }
+}
+children!(DistributeTableStmt => Table);
 children!(CancelDistributionJobStmt => );
-children!(RenameUserStmt => );
+children!(RenameUserStmt => UserToUsers);
 children!(DropUserStmt => );
 children!(DropProcedureStmt => );
 children!(DropPlacementPolicyStmt => );
@@ -349,39 +469,67 @@ children!(CreateResourceGroupStmt => );
 children!(AlterResourceGroupStmt => );
 children!(CreatePlacementPolicyStmt => );
 children!(AlterPlacementPolicyStmt => );
-children!(DropQueryWatchStmt => GroupNameExpr);
+children!(DropQueryWatchStmt => );
 children!(ImportIntoActionStmt => );
-children!(CreateSequenceStmt => );
-children!(AlterSequenceStmt => );
-children!(DropSequenceStmt => );
-children!(TruncateTableStmt => );
-children!(RecoverTableStmt => );
-children!(FlashBackToTimestampStmt => FlashbackTS);
-children!(FlashBackTableStmt => );
+children!(CreateSequenceStmt => Name);
+children!(AlterSequenceStmt => Name);
+children!(DropSequenceStmt => Sequences);
+children!(TruncateTableStmt => Table);
+children!(RecoverTableStmt => Table);
+impl Children for FlashBackToTimestampStmt {
+    fn visit_children(&self, v: &mut dyn Visitor) -> bool {
+        self.Tables.visit(v) && (self.FlashbackTSO != 0 || self.FlashbackTS.visit(v))
+    }
+}
+impl MutChildren for FlashBackToTimestampStmt {
+    fn visit_children_mut(&mut self, v: &mut dyn InPlaceVisitor) -> bool {
+        self.Tables.visit_mut(v) && (self.FlashbackTSO != 0 || self.FlashbackTS.visit_mut(v))
+    }
+}
+children!(FlashBackTableStmt => Table);
 children!(FlashBackDatabaseStmt => );
-children!(IndexPartSpecification => Expr);
+impl Children for IndexPartSpecification {
+    fn visit_children(&self, v: &mut dyn Visitor) -> bool {
+        if let Some(expr) = &self.Expr {
+            expr.visit(v)
+        } else {
+            self.Column.visit(v)
+        }
+    }
+}
+impl MutChildren for IndexPartSpecification {
+    fn visit_children_mut(&mut self, v: &mut dyn InPlaceVisitor) -> bool {
+        if let Some(expr) = &mut self.Expr {
+            expr.visit_mut(v)
+        } else {
+            self.Column.visit_mut(v)
+        }
+    }
+}
 children!(SplitOption => Lower, Upper, ValueLists);
-children!(SplitRegionStmt => SplitOpt);
+children!(SplitRegionStmt => Table, SplitOpt);
 children!(SplitIndexOption => SplitOpt);
-children!(IndexOption => SplitOpt, Condition);
-children!(CreateIndexStmt => IndexPartSpecifications, Option);
-children!(DropIndexStmt => );
-children!(RenameTableStmt => );
+children!(IndexOption => SplitOpt);
+children!(CreateIndexStmt => Table, IndexPartSpecifications, Option, LockAlg);
+children!(DropIndexStmt => Table, LockAlg);
+children!(RenameTableStmt => TableToTables);
+children!(TableToTable => OldTable, NewTable);
 children!(AnalyzeOpt => Value);
-children!(AnalyzeTableStmt => AnalyzeOpts);
-children!(CompactTableStmt => );
+children!(AnalyzeTableStmt => TableNames);
+children!(CompactTableStmt => Table);
 children!(OptimizeTableStmt => );
-children!(KillStmt => Expr);
+children!(KillStmt => );
 children!(LoadStatsStmt => );
-children!(LockStatsStmt => );
-children!(UnlockStatsStmt => );
-children!(DropStatsStmt => );
+children!(LockStatsStmt => Tables);
+children!(UnlockStatsStmt => Tables);
+children!(DropStatsStmt => Tables);
 children!(RefreshStatsStmt => );
-children!(FlushStmt => );
-children!(LockTablesStmt => );
+children!(FlushStmt => Tables);
+children!(LockTablesStmt => TableLocks);
+children!(TableLock => Table);
 children!(UseStmt => );
 children!(SetStmt => Variables);
-children!(VariableAssignment => Value, ExtendValue);
+children!(VariableAssignment => Value);
 children!(BeginStmt => AsOf);
 children!(BinlogStmt => );
 children!(DeallocateStmt => );
@@ -390,14 +538,43 @@ children!(ExecuteStmt => UsingVars);
 children!(HelpStmt => );
 children!(SavepointStmt => );
 children!(ReleaseSavepointStmt => );
-children!(RecommendIndexStmt => Options);
+children!(RecommendIndexStmt => );
 children!(RecommendIndexOption => Value);
 children!(AsOfClause => TsExpr);
-children!(PlanReplayerStmt => Stmt, Where, OrderBy, Limit, HistoricalStatsInfo);
+impl Children for PlanReplayerStmt {
+    fn visit_children(&self, v: &mut dyn Visitor) -> bool {
+        if self.Load {
+            return true;
+        }
+        if !self.HistoricalStatsInfo.visit(v) {
+            return false;
+        }
+        if let Some(statement) = &self.Stmt {
+            statement.visit(v)
+        } else {
+            self.Where.visit(v) && self.OrderBy.visit(v) && self.Limit.visit(v)
+        }
+    }
+}
+impl MutChildren for PlanReplayerStmt {
+    fn visit_children_mut(&mut self, v: &mut dyn InPlaceVisitor) -> bool {
+        if self.Load {
+            return true;
+        }
+        if !self.HistoricalStatsInfo.visit_mut(v) {
+            return false;
+        }
+        if let Some(statement) = &mut self.Stmt {
+            statement.visit_mut(v)
+        } else {
+            self.Where.visit_mut(v) && self.OrderBy.visit_mut(v) && self.Limit.visit_mut(v)
+        }
+    }
+}
 children!(TrafficOption => FloatValue);
-children!(TrafficStmt => Options);
+children!(TrafficStmt => );
 children!(DropStatisticsStmt => );
-children!(CreateStatisticsStmt => );
+children!(CreateStatisticsStmt => Table, Columns);
 children!(SetPwdStmt => );
 children!(SetSessionStatesStmt => );
 children!(SetConfigStmt => Value);
@@ -406,21 +583,21 @@ children!(SetRoleStmt => );
 children!(SetDefaultRoleStmt => );
 children!(CreateUserStmt => );
 children!(AlterUserStmt => );
-children!(GrantStmt => );
+children!(GrantStmt => Privs);
 children!(GrantProxyStmt => );
 children!(GrantRoleStmt => );
-children!(RevokeStmt => );
+children!(RevokeStmt => Privs);
 children!(RevokeRoleStmt => );
 children!(LoadDataOpt => Value);
-children!(LoadDataStmt => ColumnsAndUserVars, ColumnAssignments, Options);
-children!(ImportIntoStmt => ColumnsAndUserVars, ColumnAssignments, Select, Options);
-children!(NonTransactionalDMLStmt => DMLStmt);
-children!(CreateMaskingPolicyStmt => Expr);
+children!(LoadDataStmt => Table, Columns, ColumnAssignments, ColumnsAndUserVars);
+children!(ImportIntoStmt => Table, ColumnsAndUserVars, ColumnAssignments, Select);
+children!(NonTransactionalDMLStmt => ShardColumn, DMLStmt);
+children!(CreateMaskingPolicyStmt => Table, Column, Expr);
 children!(DynamicCalibrateResourceOption => Ts);
 children!(CalibrateResourceStmt => DynamicCalibrateResourceOptionList);
 children!(QueryWatchResourceGroupOption => GroupNameExpr);
 children!(QueryWatchTextOption => PatternExpr);
-children!(QueryWatchOption => ResourceGroupOption, TextOption);
+children!(QueryWatchOption => ResourceGroupOption, ActionOption, TextOption);
 children!(AddQueryWatchStmt => QueryWatchOptionList);
 children!(ProcedureDecl => DeclDefault);
 children!(ProcedureOpenCur => );
@@ -429,23 +606,86 @@ children!(ProcedureFetchInto => );
 children!(ProcedureErrorCon => );
 children!(ProcedureErrorVal => );
 children!(ProcedureErrorState => );
-children!(ProcedureCursor => Selectstring);
-children!(ProcedureErrorControl => Operate);
-children!(ProcedureBlock => ProcedureProcStmts);
+children!(ProcedureCursor => );
+macro_rules! procedure_any_visitors {
+    ($($name:ty),* $(,)?) => {
+        fn visit_procedure_any(value: &dyn std::any::Any, visitor: &mut dyn Visitor) -> bool {
+            if let Some(node) = value.downcast_ref::<Box<dyn Node>>() { return node.accept(visitor); }
+            $(if let Some(node) = value.downcast_ref::<$name>() { return node.visit(visitor); })*
+            true
+        }
+        fn visit_procedure_any_mut(value: &mut dyn std::any::Any, visitor: &mut dyn InPlaceVisitor) -> bool {
+            if let Some(node) = value.downcast_mut::<Box<dyn Node>>() { return node.accept_in_place(visitor); }
+            $(if let Some(node) = value.downcast_mut::<$name>() { return node.visit_mut(visitor); })*
+            true
+        }
+    };
+}
+procedure_any_visitors!(
+    ProcedureDecl,
+    ExprNode,
+    ProcedureBlock,
+    ProcedureCursor,
+    ProcedureErrorControl,
+    ProcedureErrorCon,
+    ProcedureErrorVal,
+    ProcedureErrorState,
+    ProcedureIfBlock,
+    ProcedureElseIfBlock,
+    ProcedureElseBlock,
+    ProcedureWhileStmt,
+    ProcedureRepeatStmt,
+    ProcedureOpenCur,
+    ProcedureCloseCur,
+    ProcedureFetchInto,
+    ProcedureLabelBlock,
+    ProcedureLabelLoop,
+    ProcedureJump,
+    SimpleCaseStmt,
+    SearchCaseStmt,
+);
+impl Children for ProcedureBlock {
+    fn visit_children(&self, v: &mut dyn Visitor) -> bool {
+        self.ProcedureVars
+            .iter()
+            .all(|value| visit_procedure_any(value.as_ref(), v))
+    }
+}
+impl MutChildren for ProcedureBlock {
+    fn visit_children_mut(&mut self, v: &mut dyn InPlaceVisitor) -> bool {
+        self.ProcedureVars
+            .iter_mut()
+            .all(|value| visit_procedure_any_mut(value.as_mut(), v))
+    }
+}
+impl Children for ProcedureErrorControl {
+    fn visit_children(&self, v: &mut dyn Visitor) -> bool {
+        self.ErrorCon
+            .iter()
+            .all(|value| visit_procedure_any(value.as_ref(), v))
+    }
+}
+impl MutChildren for ProcedureErrorControl {
+    fn visit_children_mut(&mut self, v: &mut dyn InPlaceVisitor) -> bool {
+        self.ErrorCon
+            .iter_mut()
+            .all(|value| visit_procedure_any_mut(value.as_mut(), v))
+    }
+}
 children!(ProcedureIfInfo => IfBody);
-children!(ProcedureIfBlock => IfExpr, ProcedureIfStmts, ProcedureElseStmt);
+children!(ProcedureIfBlock => IfExpr, ProcedureElseStmt);
 children!(ProcedureElseIfBlock => ProcedureIfStmt);
-children!(ProcedureElseBlock => ProcedureIfStmts);
-children!(SimpleWhenThenStmt => Expr, ProcedureStmts);
-children!(SearchWhenThenStmt => Expr, ProcedureStmts);
+children!(ProcedureElseBlock => );
+children!(SimpleWhenThenStmt => Expr);
+children!(SearchWhenThenStmt => Expr);
 children!(SimpleCaseStmt => Condition, WhenCases, ElseCases);
-children!(SearchCaseStmt => WhenCases, ElseCases);
+children!(SearchCaseStmt => WhenCases);
 children!(ProcedureWhileStmt => Condition, Body);
 children!(ProcedureRepeatStmt => Body, Condition);
 children!(ProcedureLabelBlock => Block);
 children!(ProcedureLabelLoop => Block);
 children!(ProcedureJump => );
-children!(ProcedureInfo => ProcedureBody);
+children!(ProcedureInfo => ProcedureParam, ProcedureBody);
 children!(CommitStmt => );
 children!(RollbackStmt => );
 children!(RowExpr => Values);
@@ -453,19 +693,29 @@ children!(FrameBound => Expr);
 children!(FrameExtent => Start, End);
 children!(FrameClause => Extent);
 children!(WindowSpec => PartitionBy, OrderBy, Frame);
-children!(SelectStmt => From, Where, Fields, GroupBy, Having, OrderBy, Limit, With, children, Lists, WindowSpecs);
+children!(SelectStmt => With, TableHints, Fields, From, Where, GroupBy, Having, Lists, WindowSpecs, OrderBy, Limit, lock_info, children);
+impl Visit for SelectLockInfo {
+    fn visit(&self, v: &mut dyn Visitor) -> bool {
+        self.Tables.visit(v)
+    }
+}
+impl VisitMut for SelectLockInfo {
+    fn visit_mut(&mut self, v: &mut dyn InPlaceVisitor) -> bool {
+        self.Tables.visit_mut(v)
+    }
+}
 children!(ExplainStmt => stmt);
 children!(ExplainForStmt => );
 children!(CommonTableExpression => Query);
 children!(WithClause => CTEs);
-children!(SetOprSelectList => selects, With, OrderBy, Limit);
-children!(SetOprStmt => select_list, OrderBy, Limit, With);
+children!(SetOprSelectList => With, selects, OrderBy, Limit);
+children!(SetOprStmt => With, select_list, OrderBy, Limit);
 children!(AlterJobOption => Value);
-children!(AdminStmt => where_expr, alter_job_options);
-children!(CleanupTableLockStmt => );
-children!(RepairTableStmt => CreateStmt);
+children!(AdminStmt => tables, where_expr);
+children!(CleanupTableLockStmt => Tables);
+children!(RepairTableStmt => Table, CreateStmt);
 children!(TraceStmt => Stmt);
-children!(BRIEStmt => );
+children!(BRIEStmt => Tables);
 children!(VariableExpr => );
 impl Children for ResultSetNode {
     fn visit_children(&self, _v: &mut dyn Visitor) -> bool {
@@ -615,8 +865,10 @@ embedded!(
     AnalyzeOpt,
     AsOfClause,
     Assignment,
+    AttributesSpec,
     ByItem,
     ColumnDef,
+    ColumnPosition,
     ColumnNameOrUserVar,
     ColumnOption,
     CommonTableExpression,
@@ -627,6 +879,7 @@ embedded!(
     FrameBound,
     FrameClause,
     FrameExtent,
+    IndexLockAndAlgorithm,
     IndexOption,
     IndexPartSpecification,
     Join,
@@ -638,25 +891,35 @@ embedded!(
     PartitionIntervalExpr,
     PartitionMethod,
     PartitionOptions,
+    PrivElem,
     ProcedureDecl,
     QueryWatchOption,
     QueryWatchResourceGroupOption,
     QueryWatchTextOption,
+    ResourceGroupRunawayActionOption,
     RecommendIndexOption,
     ReferenceDef,
     ResultSetNode,
     RowExpr,
     SelectField,
+    SelectIntoOption,
     SplitIndexOption,
     SplitOption,
+    StatsOptionsSpec,
+    StoreParameter,
     StringOrUserVar,
     SubPartitionDefinition,
     TableOption,
+    TableLock,
+    TableOptimizerHint,
     TableRefsClause,
     TableSample,
     TableSource,
+    TableToTable,
     TrafficOption,
+    UserToUser,
     VariableAssignment,
+    WildCardField,
     WhenClause,
     WindowSpec,
     WithClause
