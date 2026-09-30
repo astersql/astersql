@@ -100,6 +100,9 @@ mod ttl_runtime_test;
 #[cfg(test)]
 mod ttl_sysvar_test;
 mod ttl_timer;
+pub mod ttl_timer_store;
+#[cfg(test)]
+mod ttl_timer_store_test;
 #[cfg(test)]
 mod ttl_timer_test;
 pub mod ttl_worker_session;

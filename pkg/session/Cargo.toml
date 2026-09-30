@@ -15,6 +15,9 @@ go-package = "pkg/session"
 legacy-tasks = ["task-1257", "task-1258", "task-1261", "task-1267", "task-1268"]
 
 [dependencies]
+"astersql-session-syssession" = { package = "astersql-session-syssession", path = "syssession" }
+"astersql-timer-tablestore" = { package = "astersql-timer-tablestore", path = "../timer/tablestore" }
+"astersql-timer-api" = { package = "astersql-timer-api", path = "../timer/api" }
 "astersql-extworkload" = { package = "astersql-extworkload", path = "../extworkload" }
 "astersql-ttl-ttlworker" = { package = "astersql-ttl-ttlworker", path = "../ttl/ttlworker" }
 "astersql-ttl-cache" = { package = "astersql-ttl-cache", path = "../ttl/cache" }
