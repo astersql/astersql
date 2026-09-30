@@ -19,7 +19,12 @@
 // 组装 ReportData，reportWorker 再 fan-out 到已注册 sink。
 // TopSQL 指按 CPU 等指标统计的高频/高耗 SQL；RU 为 Resource Unit 资源计量。
 
-#![allow(non_snake_case, non_camel_case_types, non_upper_case_globals)]
+#![allow(
+    non_snake_case,
+    non_camel_case_types,
+    non_upper_case_globals,
+    static_mut_refs
+)]
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -38,6 +43,7 @@ use crate::{collector, stmtstats, tipb_protobuf as tipb, topsqlstate};
 pub const reportTimeout: Duration = Duration::from_secs(40);
 /// CPU/Stmt/RU 收集通道缓冲大小。
 pub const collectChanBufferSize: usize = 2;
+pub const reportCollectedDataChanSize: usize = 2;
 
 /// 规范化 plan 二进制解码回调。
 pub type planBinaryDecodeFunc = Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>;
@@ -354,7 +360,7 @@ pub struct RemoteTopSQLReporter {
     collectRUTx: crossbeam_channel::Sender<RUBatch>,
     collectRURx: crossbeam_channel::Receiver<RUBatch>,
     reportTx: crossbeam_channel::Sender<ReportData>,
-    reportRx: crossbeam_channel::Receiver<ReportData>,
+    pub(crate) reportRx: crossbeam_channel::Receiver<ReportData>,
     cancelTx: crossbeam_channel::Sender<()>,
     cancelRx: crossbeam_channel::Receiver<()>,
     collecting: Mutex<TopSQLCollecting>,
@@ -381,7 +387,7 @@ where
     let (collectCPUTx, collectCPURx) = crossbeam_channel::bounded(collectChanBufferSize);
     let (collectStmtTx, collectStmtRx) = crossbeam_channel::bounded(collectChanBufferSize);
     let (collectRUTx, collectRURx) = crossbeam_channel::bounded(collectChanBufferSize);
-    let (reportTx, reportRx) = crossbeam_channel::bounded(1);
+    let (reportTx, reportRx) = crossbeam_channel::bounded(reportCollectedDataChanSize);
     let (cancelTx, cancelRx) = crossbeam_channel::bounded(2);
     let reporter = Arc::new(RemoteTopSQLReporter {
         collectCPUTx,
@@ -615,6 +621,29 @@ impl RemoteTopSQLReporter {
 
     /// 组装 ReportData（含 meta 编解码）并 try_send 到 report 通道。
     pub fn takeDataAndSendToReportChan(&self, timestamp: u64) {
+        // collectWorker is the sole sender, so capacity cannot fill before try_send.
+        if self.reportTx.is_full() {
+            self.metrics
+                .reportChannelFull
+                .fetch_add(1, Ordering::Relaxed);
+            *self.collecting.lock().expect("collecting mutex poisoned") =
+                TopSQLCollecting::default();
+            self.ruAggregator.dropReportData(timestamp);
+            unsafe {
+                if let Some(counter) =
+                    reporter_metrics::reporter_metrics::IgnoreReportChannelFullCounter.as_ref()
+                {
+                    counter.inc();
+                }
+                if let Some(counter) =
+                    reporter_metrics::reporter_metrics::IgnoreReportDataByBackpressureCounter
+                        .as_ref()
+                {
+                    counter.inc();
+                }
+            }
+            return;
+        }
         let keyspace = self
             .keyspaceName
             .lock()

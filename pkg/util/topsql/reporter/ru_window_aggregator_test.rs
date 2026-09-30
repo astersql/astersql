@@ -57,6 +57,30 @@ fn add(aggregator: &RUWindowAggregator, timestamp: u64, data: RUIncrementMap) {
     aggregator.add_batch(timestamp, data, stmtstats::DEFAULT_RU_VERSION);
 }
 
+#[test]
+fn go_merge_39_backpressure_keeps_open_ru_window() {
+    let aggregator = RUWindowAggregator::new();
+    add(
+        &aggregator,
+        1,
+        singleton(key("closed", "sql-closed", "plan"), 1.0),
+    );
+    for timestamp in [61, 76, 91] {
+        add(
+            &aggregator,
+            timestamp,
+            singleton(key("open", "sql-open", "plan"), 2.0),
+        );
+    }
+    aggregator.dropReportData(97);
+    let records = aggregator.takeReportRecords(120, 60, b"ks".to_vec());
+    assert!(find_record(&records, "closed", "sql-closed", "plan").is_none());
+    assert_eq!(
+        record_total(find_record(&records, "open", "sql-open", "plan").unwrap()),
+        6.0
+    );
+}
+
 /// 按用户与 digest 查找记录。
 fn find_record<'a>(
     records: &'a [tipb_protobuf::TopRuRecord],

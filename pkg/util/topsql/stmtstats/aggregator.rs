@@ -150,11 +150,14 @@ impl Aggregator {
         !self.running.load(Ordering::SeqCst)
     }
 
-    /// 注册 StatementStats；超过容量则拒绝，边界条目仍接受（与 Go `>` 一致）。
+    /// 注册 StatementStats；达到容量即拒绝。
     pub fn register(&self, stats: Arc<StatementStats>) {
+        self.register_with_limit(stats, MAX_STMT_STATS_SIZE);
+    }
+
+    pub(crate) fn register_with_limit(&self, stats: Arc<StatementStats>, limit: usize) {
         let mut registered = self.stats.lock().expect("stats set lock poisoned");
-        // Keep Go's strict `>` guard: the boundary entry is accepted.
-        if registered.len() > MAX_STMT_STATS_SIZE {
+        if registered.len() >= limit {
             return;
         }
         if !registered.iter().any(|item| Arc::ptr_eq(item, &stats)) {

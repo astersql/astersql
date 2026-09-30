@@ -214,6 +214,16 @@ impl RUWindowAggregator {
         self.takeReportRecords(now, itemInterval, keyspaceName)
     }
 
+    /// Drop closed report windows while retaining buckets in the still-open window.
+    pub fn dropReportData(&self, now: u64) {
+        let window_end = alignToInterval(now, ruReportWindowSeconds);
+        let mut state = self.state.lock().expect("RU aggregator mutex poisoned");
+        state
+            .buckets
+            .retain(|timestamp, _| *timestamp >= window_end);
+        state.lastReportedEndTs = state.lastReportedEndTs.max(window_end);
+    }
+
     /// 取出上一完整上报窗口的 TopRU 记录；同一窗口只成功 take 一次。
     pub fn takeReportRecords(
         &self,

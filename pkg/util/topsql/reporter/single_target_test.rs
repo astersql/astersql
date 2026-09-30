@@ -27,6 +27,17 @@ use serial_test::serial;
 use tonic::Code;
 use topsql_protocol::server::StartMockAgentServer;
 
+#[tokio::test]
+async fn go_merge_39_recovers_parallel_send_panic() {
+    let result = crate::single_target::recoverSendPanic(async {
+        panic!("mock send panic");
+        #[allow(unreachable_code)]
+        anyhow::Ok(())
+    })
+    .await;
+    assert!(result.unwrap_err().to_string().contains("mock send panic"));
+}
+
 /// 计数型 DataSink 注册器桩。
 #[derive(Default)]
 struct MockSingleTargetDataSinkRegisterer {

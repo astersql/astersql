@@ -27,6 +27,7 @@
     static_mut_refs
 )]
 
+use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
@@ -36,12 +37,30 @@ use std::time::{Duration, Instant};
 use crate::datasink::{DataSink, DataSinkError, DataSinkRegisterer, ReportData};
 use crate::tipb;
 use crate::tipb::top_sql_agent_client::TopSqlAgentClient;
-use futures_util::StreamExt;
+use futures_util::{FutureExt, StreamExt};
 use prost::Message as ProstMessage;
 use protobuf::Message as ProtobufMessage;
 use reporter_metrics::reporter_metrics as metrics;
 use tokio::runtime::{Builder, Runtime};
 use tonic::transport::{Channel, Endpoint};
+
+/// Convert a panic in one parallel send branch into a normal report error.
+pub(crate) async fn recoverSendPanic<F>(future: F) -> anyhow::Result<()>
+where
+    F: Future<Output = anyhow::Result<()>>,
+{
+    match AssertUnwindSafe(future).catch_unwind().await {
+        Ok(result) => result,
+        Err(payload) => {
+            let message = payload
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_owned())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic".to_owned());
+            Err(anyhow::anyhow!("single target send panicked: {message}"))
+        }
+    }
+}
 
 /// 拨号超时。
 const dialTimeout: Duration = Duration::from_secs(5);
@@ -366,10 +385,10 @@ impl SingleTargetDataSink {
             let PlanMetas = protobuf_to_prost_vec(&task.data.plan_metas)?;
 
             let (sql, plan, records, ru) = tokio::join!(
-                self.sendBatchSQLMeta(client.clone(), SQLMetas, task.deadline),
-                self.sendBatchPlanMeta(client.clone(), PlanMetas, task.deadline),
-                self.sendBatchTopSQLRecord(client, DataRecords, task.deadline),
-                self.sendBatchTopRURecord(RURecords),
+                recoverSendPanic(self.sendBatchSQLMeta(client.clone(), SQLMetas, task.deadline)),
+                recoverSendPanic(self.sendBatchPlanMeta(client.clone(), PlanMetas, task.deadline)),
+                recoverSendPanic(self.sendBatchTopSQLRecord(client, DataRecords, task.deadline)),
+                recoverSendPanic(self.sendBatchTopRURecord(RURecords)),
             );
             sql?;
             plan?;

@@ -43,6 +43,8 @@ pub static mut IgnoreCollectStmtChannelFullCounter: Option<prometheus::Counter> 
 pub static mut IgnoreCollectRUChannelFullCounter: Option<prometheus::Counter> = None;
 /// 忽略：上报通道已满。
 pub static mut IgnoreReportChannelFullCounter: Option<prometheus::Counter> = None;
+/// 忽略：背压导致整批报告数据丢弃。
+pub static mut IgnoreReportDataByBackpressureCounter: Option<prometheus::Counter> = None;
 /// 整批上报成功耗时。
 pub static mut ReportAllDurationSuccHistogram: Option<prometheus::Histogram> = None;
 /// 整批上报失败耗时。
@@ -102,6 +104,8 @@ pub fn InitMetricsVars() {
             Some(ignored.with_label_values(&["ignore_collect_ru_channel_full"]));
         IgnoreReportChannelFullCounter =
             Some(ignored.with_label_values(&["ignore_report_channel_full"]));
+        IgnoreReportDataByBackpressureCounter =
+            Some(ignored.with_label_values(&["ignore_report_data_by_backpressure"]));
 
         let duration = metrics::TopSQLReportDurationHistogram
             .as_ref()

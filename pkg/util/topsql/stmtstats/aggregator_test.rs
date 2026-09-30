@@ -28,6 +28,15 @@ const SECOND_NS: i64 = 1_000_000_000;
 /// 与生产聚合器一致的单次 RU key 上限。
 const MAX_RU_KEYS_PER_AGGREGATE: usize = 10_000;
 
+#[test]
+fn go_merge_39_register_stops_at_capacity() {
+    let aggregator = Aggregator::new();
+    for _ in 0..3 {
+        aggregator.register_with_limit(Arc::new(StatementStats::new()), 2);
+    }
+    assert_eq!(aggregator.stats_len(), 2);
+}
+
 /// 取得 stmtstats 测试串行锁。
 fn test_guard() -> std::sync::MutexGuard<'static, ()> {
     super::test_support::stmtstats_guard()

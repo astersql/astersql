@@ -45,6 +45,27 @@ const KEYSPACE_NAME: &[u8] = b"123";
 /// 等待 report 投递的超时。
 const WAIT: Duration = Duration::from_secs(3);
 
+#[test]
+fn go_merge_39_report_backpressure_preserves_metadata_and_discards_samples() {
+    let reporter = NewRemoteTopSQLReporter(decode_plan, compress_plan);
+    assert_eq!(reporter.reportRx.capacity(), Some(2));
+    reporter.takeDataAndSendToReportChan(60);
+    reporter.takeDataAndSendToReportChan(120);
+    assert_eq!(reporter.reportRx.len(), 2);
+    let before = reporter.channelDropCounts().3;
+    reporter.RegisterSQL(b"sql-3".to_vec(), "select 3".to_owned(), false);
+    reporter.RegisterPlan(b"plan-3".to_vec(), "plan 3".to_owned(), false);
+    reporter.takeDataAndSendToReportChan(180);
+    assert_eq!(reporter.channelDropCounts().3, before + 1);
+    reporter.reportRx.recv().unwrap();
+    reporter.reportRx.recv().unwrap();
+    reporter.takeDataAndSendToReportChan(240);
+    let recovered = reporter.reportRx.recv().unwrap();
+    assert_eq!(recovered.SQLMetas.len(), 1);
+    assert_eq!(recovered.PlanMetas.len(), 1);
+    reporter.Close();
+}
+
 /// 恒等 plan 解码。
 fn decode_plan(plan: &str) -> Result<String, String> {
     Ok(plan.to_owned())
@@ -794,6 +815,7 @@ fn test_reporter_channels_full_drops_and_metrics() {
     reporter.CollectRUIncrements(ru, 1);
     reporter.takeDataAndSendToReportChan(60);
     reporter.takeDataAndSendToReportChan(120);
+    reporter.takeDataAndSendToReportChan(180);
     assert_eq!(reporter.channelDropCounts(), (1, 1, 1, 1));
     reporter.Close();
 }
@@ -829,18 +851,23 @@ fn test_reporter_backpressure_and_drop_scenario() {
     let before = reporter.channelDropCounts().3;
     reporter.takeDataAndSendToReportChan(end + 60);
     reporter.takeDataAndSendToReportChan(end + 120);
+    reporter.takeDataAndSendToReportChan(end + 180);
     assert_eq!(reporter.channelDropCounts().3 - before, 1);
 
     gate_tx.send(()).unwrap();
     let first = output_rx.recv_timeout(WAIT).unwrap();
     assert!(!first.RURecords.is_empty());
     assert!(first.DataRecords.is_empty());
-    std::thread::sleep(Duration::from_millis(250));
+    let drain_deadline = Instant::now() + WAIT;
+    while !reporter.reportRx.is_empty() && Instant::now() < drain_deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(reporter.reportRx.is_empty());
 
     let after_recovery = reporter.channelDropCounts().3;
     reporter.CollectRUIncrements(ru_batch("bp-user", "bp-sql", "bp-plan", 2.0), 1);
     std::thread::sleep(Duration::from_millis(150));
-    reporter.takeDataAndSendToReportChan(end + 180);
+    reporter.takeDataAndSendToReportChan(end + 240);
     let second = output_rx.recv_timeout(WAIT).unwrap();
     assert!(!second.RURecords.is_empty());
     assert_eq!(reporter.channelDropCounts().3, after_recovery);
@@ -1031,6 +1058,7 @@ fn benchmark_reporter_scenarios_smoke() {
     drop_reporter.takeDataAndSendToReportChan(60);
     let before = drop_reporter.channelDropCounts().3;
     drop_reporter.takeDataAndSendToReportChan(120);
+    drop_reporter.takeDataAndSendToReportChan(180);
     assert_eq!(drop_reporter.channelDropCounts().3 - before, 1);
     drop_reporter.Close();
 }
