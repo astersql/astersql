@@ -676,6 +676,7 @@ members = [
     "pkg/util/memoryusagealarm",
     "pkg/util/metricsutil",
     "pkg/util/mock",
+    "pkg/util/mviewutil",
     "pkg/util/mvmap",
     "pkg/util/naming",
     "pkg/util/nocopy",

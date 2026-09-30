@@ -76,6 +76,7 @@ pub struct MockSessionVars {
     pub TiFlashMaxQueryMemoryPerNode: i64,
     pub TiFlashQuerySpillRatio: f64,
     pub TiFlashHashJoinVersion: String,
+    pub QueryCopStoreLimit: i32,
     pub ResourceGroupName: String,
 }
 
@@ -112,6 +113,7 @@ impl Default for MockSessionVars {
             TiFlashMaxQueryMemoryPerNode: -1,
             TiFlashQuerySpillRatio: 0.0,
             TiFlashHashJoinVersion: String::new(),
+            QueryCopStoreLimit: 15,
             ResourceGroupName: String::new(),
         }
     }
@@ -349,7 +351,7 @@ pub struct TableLockInfo {
     pub TableID: i64,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone)]
 /// DistSQL（分布式 SQL）执行上下文快照，从会话变量拷贝关键字段。
 pub struct DistSQLContext {
     pub EnabledRateLimitAction: bool,
@@ -362,7 +364,70 @@ pub struct DistSQLContext {
     pub TiFlashMaxQueryMemoryPerNode: i64,
     pub TiFlashQuerySpillRatio: f64,
     pub TiFlashHashJoinVersion: String,
+    pub QueryCopStoreLimiter: Option<Arc<kv::QueryCopStoreLimiter>>,
     pub ResourceGroupName: String,
+}
+
+impl std::fmt::Debug for DistSQLContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DistSQLContext")
+            .field("EnabledRateLimitAction", &self.EnabledRateLimitAction)
+            .field("EnableChunkRPC", &self.EnableChunkRPC)
+            .field("OriginalSQL", &self.OriginalSQL)
+            .field("TiFlashMaxThreads", &self.TiFlashMaxThreads)
+            .field(
+                "TiFlashMaxBytesBeforeExternalJoin",
+                &self.TiFlashMaxBytesBeforeExternalJoin,
+            )
+            .field(
+                "TiFlashMaxBytesBeforeExternalGroupBy",
+                &self.TiFlashMaxBytesBeforeExternalGroupBy,
+            )
+            .field(
+                "TiFlashMaxBytesBeforeExternalSort",
+                &self.TiFlashMaxBytesBeforeExternalSort,
+            )
+            .field(
+                "TiFlashMaxQueryMemoryPerNode",
+                &self.TiFlashMaxQueryMemoryPerNode,
+            )
+            .field("TiFlashQuerySpillRatio", &self.TiFlashQuerySpillRatio)
+            .field("TiFlashHashJoinVersion", &self.TiFlashHashJoinVersion)
+            .field(
+                "QueryCopStoreLimiter",
+                &self
+                    .QueryCopStoreLimiter
+                    .as_ref()
+                    .map(|limiter| limiter.Capacity()),
+            )
+            .field("ResourceGroupName", &self.ResourceGroupName)
+            .finish()
+    }
+}
+
+impl PartialEq for DistSQLContext {
+    fn eq(&self, other: &Self) -> bool {
+        self.EnabledRateLimitAction == other.EnabledRateLimitAction
+            && self.EnableChunkRPC == other.EnableChunkRPC
+            && self.OriginalSQL == other.OriginalSQL
+            && self.TiFlashMaxThreads == other.TiFlashMaxThreads
+            && self.TiFlashMaxBytesBeforeExternalJoin == other.TiFlashMaxBytesBeforeExternalJoin
+            && self.TiFlashMaxBytesBeforeExternalGroupBy
+                == other.TiFlashMaxBytesBeforeExternalGroupBy
+            && self.TiFlashMaxBytesBeforeExternalSort == other.TiFlashMaxBytesBeforeExternalSort
+            && self.TiFlashMaxQueryMemoryPerNode == other.TiFlashMaxQueryMemoryPerNode
+            && self.TiFlashQuerySpillRatio == other.TiFlashQuerySpillRatio
+            && self.TiFlashHashJoinVersion == other.TiFlashHashJoinVersion
+            && self
+                .QueryCopStoreLimiter
+                .as_ref()
+                .map(|limiter| limiter.Capacity())
+                == other
+                    .QueryCopStoreLimiter
+                    .as_ref()
+                    .map(|limiter| limiter.Capacity())
+            && self.ResourceGroupName == other.ResourceGroupName
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -558,6 +623,7 @@ impl Context {
             TiFlashMaxQueryMemoryPerNode: vars.TiFlashMaxQueryMemoryPerNode,
             TiFlashQuerySpillRatio: vars.TiFlashQuerySpillRatio,
             TiFlashHashJoinVersion: vars.TiFlashHashJoinVersion.clone(),
+            QueryCopStoreLimiter: kv::NewQueryCopStoreLimiter(vars.QueryCopStoreLimit),
             ResourceGroupName: vars.ResourceGroupName.clone(),
         }
     }

@@ -61,3 +61,7 @@ mod iter_test;
 #[path = "mock_test.rs"]
 /// Mock 包其它单元测试。
 mod mock_test;
+
+#[cfg(test)]
+#[path = "go_merge_30_test.rs"]
+mod go_merge_30_test;

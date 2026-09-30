@@ -9,7 +9,13 @@
 
 mod common;
 pub use common::*;
+mod db_labels;
+pub use db_labels::GetDBNames;
 
 #[cfg(test)]
 #[path = "common_test.rs"]
 mod common_test;
+
+#[cfg(test)]
+#[path = "go_merge_30_test.rs"]
+mod go_merge_30_test;

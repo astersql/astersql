@@ -1,0 +1,18 @@
+[package]
+name = "astersql-util-mviewutil"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+astersql-meta-model = { path = "../../meta/model" }
+astersql-parser-ast = { path = "../../parser/ast" }
+astersql-parser-mysql = { path = "../../parser/mysql" }
+astersql-util-dbterror = { path = "../dbterror" }
+astersql-errors = { path = "../../errors" }
+
+[package.metadata.porting]
+go-package = "pkg/util/mviewutil"

@@ -7,7 +7,6 @@
 
 #![allow(dead_code)]
 
-use std::collections::BTreeSet;
 use std::fmt;
 
 /// 会话层统一错误：以可读消息描述失败原因。
@@ -64,29 +63,7 @@ impl std::error::Error for SessionError {
 /// 会话层结果别名：默认成功单元类型，失败为 [`SessionError`]。
 pub type SessionResult<T = ()> = Result<T, SessionError>;
 
-/// 返回最近语句涉及的数据库名；未开启标签记录时返回单个空标签。
-#[allow(non_snake_case)]
-pub fn GetDBNames(
-    session_vars: Option<&astersql_sessionctx_variable::session::SessionVars>,
-) -> Vec<String> {
-    let Some(session_vars) = session_vars else {
-        return vec![String::new()];
-    };
-    if !astersql_config::get_global_config().status.record_db_label {
-        return vec![String::new()];
-    }
-
-    let mut database_names = session_vars
-        .StmtCtx
-        .LogicalPlanTables()
-        .into_iter()
-        .map(|table| table.DB)
-        .collect::<BTreeSet<_>>();
-    if database_names.is_empty() {
-        database_names.insert(session_vars.CurrentDB().to_ascii_lowercase());
-    }
-    database_names.into_iter().collect()
-}
+pub use astersql_util_metricsutil::GetDBNames;
 
 pub mod advisory_locks;
 pub mod bootstrap;

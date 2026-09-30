@@ -12,6 +12,8 @@ go-package = "pkg/util/metricsutil"
 legacy-tasks = ["task-1116", "task-1141"]
 
 [dependencies]
+astersql-sessionctx-variable = { path = "../../sessionctx/variable" }
+astersql-sessionctx-stmtctx = { path = "../../sessionctx/stmtctx" }
 "astersql-config" = { package = "astersql-config", path = "../../config" }
 "astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../config/kerneltype" }
 "astersql-domain-metrics" = { package = "astersql-domain-metrics", path = "../../domain/metrics" }

@@ -108,6 +108,7 @@ crc32fast = "1"
 "astersql-sessionctx-stmtctx" = { package = "astersql-sessionctx-stmtctx", path = "../sessionctx/stmtctx" }
 "astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../sessionctx/vardef" }
 "astersql-sessionctx-variable" = { package = "astersql-sessionctx-variable", path = "../sessionctx/variable" }
+astersql-util-metricsutil = { path = "../util/metricsutil" }
 "astersql-sessiontxn" = { package = "astersql-sessiontxn", path = "../sessiontxn" }
 "astersql-sessiontxn-isolation" = { package = "astersql-sessiontxn-isolation", path = "../sessiontxn/isolation" }
 "astersql-sessiontxn-staleread" = { package = "astersql-sessiontxn-staleread", path = "../sessiontxn/staleread" }
