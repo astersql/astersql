@@ -43,6 +43,8 @@ pub fn NewDistAggFunc(
         tipb::ExprType::GroupConcat => ast::AggFuncGroupConcat,
         tipb::ExprType::Max => ast::AggFuncMax,
         tipb::ExprType::Min => ast::AggFuncMin,
+        tipb::ExprType::MaxCount => ast::AggFuncMaxCount,
+        tipb::ExprType::MinCount => ast::AggFuncMinCount,
         tipb::ExprType::First => ast::AggFuncFirstRow,
         tipb::ExprType::AggBitOr => ast::AggFuncBitOr,
         tipb::ExprType::AggBitXor => ast::AggFuncBitXor,
@@ -85,6 +87,25 @@ pub fn NewDistAggFunc(
             Box::new(crate::maxMinFunction {
                 aggFunction: function,
                 isMax: expr.get_tp() == tipb::ExprType::Max,
+                ctor: collator,
+            })
+        }
+        tipb::ExprType::MaxCount | tipb::ExprType::MinCount => {
+            let compare_index = if matches!(descriptor.Mode, FinalMode | Partial2Mode)
+                && descriptor.Args.len() > 1
+            {
+                1
+            } else {
+                0
+            };
+            let collator = collate::GetCollator(
+                descriptor.Args[compare_index]
+                    .GetType(ctx.GetEvalCtx())
+                    .GetCollate(),
+            );
+            Box::new(crate::maxMinCountFunction {
+                aggFunction: function,
+                isMax: expr.get_tp() == tipb::ExprType::MaxCount,
                 ctor: collator,
             })
         }
@@ -259,7 +280,12 @@ impl aggFunction {
 
 /// 该聚合是否需要维护 Count 字段（COUNT/AVG）。
 pub fn NeedCount(name: &str) -> bool {
-    matches!(name, ast::AggFuncCount | ast::AggFuncAvg)
+    matches!(name, ast::AggFuncCount | ast::AggFuncAvg) || IsMaxMinCount(name)
+}
+
+/// Whether the aggregate counts occurrences of its maximum or minimum.
+pub fn IsMaxMinCount(name: &str) -> bool {
+    matches!(name, ast::AggFuncMaxCount | ast::AggFuncMinCount)
 }
 
 /// 该聚合是否需要维护 Value 字段（SUM/MAX/FIRST_ROW 等）。
@@ -272,6 +298,8 @@ pub fn NeedValue(name: &str) -> bool {
             | ast::AggFuncFirstRow
             | ast::AggFuncMax
             | ast::AggFuncMin
+            | ast::AggFuncMaxCount
+            | ast::AggFuncMinCount
             | ast::AggFuncGroupConcat
             | ast::AggFuncBitOr
             | ast::AggFuncBitAnd
@@ -300,6 +328,13 @@ pub fn CheckAggPushDown(
         || (store_type != kv::StoreType::TiFlash
             && function.Name == ast::AggFuncApproxCountDistinct)
         || !checkVectorAggPushDown(ctx, function)
+    {
+        return false;
+    }
+    if IsMaxMinCount(&function.Name)
+        && (store_type != kv::StoreType::TiFlash
+            || function.Args.len() != 1
+            || function.Mode == DedupMode)
     {
         return false;
     }
@@ -340,6 +375,8 @@ pub fn CheckAggPushFlash(ctx: &dyn expression::EvalContext, function: &crate::Ag
         ast::AggFuncCount
         | ast::AggFuncMin
         | ast::AggFuncMax
+        | ast::AggFuncMaxCount
+        | ast::AggFuncMinCount
         | ast::AggFuncFirstRow
         | ast::AggFuncApproxCountDistinct => true,
         ast::AggFuncSum | ast::AggFuncSumInt | ast::AggFuncAvg | ast::AggFuncGroupConcat => {

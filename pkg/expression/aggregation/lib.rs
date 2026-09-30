@@ -37,6 +37,7 @@ mod descriptor;
 mod explain;
 mod first_row;
 mod max_min;
+mod max_min_count;
 mod sum;
 mod sum_int;
 mod util;
@@ -55,6 +56,7 @@ pub use descriptor::*;
 pub use explain::*;
 pub use first_row::*;
 pub use max_min::*;
+pub use max_min_count::*;
 pub use sum::*;
 pub use sum_int::*;
 pub use util::*;
@@ -164,6 +166,9 @@ mod count_test;
 #[cfg(test)]
 #[path = "first_row_test.rs"]
 mod first_row_test;
+#[cfg(test)]
+#[path = "go_merge_44_test.rs"]
+mod go_merge_44_test;
 #[cfg(test)]
 #[path = "main_test.rs"]
 mod main_test;

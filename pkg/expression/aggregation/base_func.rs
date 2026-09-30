@@ -162,7 +162,9 @@ impl baseFuncDesc {
     // TypeInfer infers the arguments and return types of an function.
     pub fn TypeInfer(&mut self, ctx: &dyn expression::BuildContext) -> Result<(), Error> {
         match self.Name.as_str() {
-            ast::AggFuncCount => self.typeInfer4Count(),
+            ast::AggFuncCount | ast::AggFuncMaxCount | ast::AggFuncMinCount => {
+                self.typeInfer4Count()
+            }
             ast::AggFuncApproxCountDistinct => self.typeInfer4ApproxCountDistinct(),
             ast::AggFuncApproxPercentile => {
                 return self.typeInfer4ApproxPercentile(ctx.GetEvalCtx());
@@ -636,7 +638,11 @@ impl baseFuncDesc {
     pub fn GetDefaultValue(&self) -> types::Datum {
         let mut v = types::Datum::default();
         match self.Name.as_str() {
-            ast::AggFuncCount | ast::AggFuncBitOr | ast::AggFuncBitXor => {
+            ast::AggFuncCount
+            | ast::AggFuncMaxCount
+            | ast::AggFuncMinCount
+            | ast::AggFuncBitOr
+            | ast::AggFuncBitXor => {
                 v = types::NewIntDatum(0);
             }
             ast::AggFuncApproxCountDistinct => {
@@ -737,6 +743,8 @@ pub fn noNeedCastAggFuncs() -> HashSet<&'static str> {
         ast::AggFuncApproxPercentile,
         ast::AggFuncMax,
         ast::AggFuncMin,
+        ast::AggFuncMaxCount,
+        ast::AggFuncMinCount,
         ast::AggFuncFirstRow,
         ast::WindowFuncNtile,
         ast::AggFuncJsonArrayagg,

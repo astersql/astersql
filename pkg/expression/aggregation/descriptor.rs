@@ -241,12 +241,18 @@ impl AggFuncDesc {
                     .collect();
             }
             _ => {
-                final_desc.Args.push(column(
-                    ordinal[0],
+                let return_type = if IsMaxMinCount(&self.Name) {
+                    // Split has no caller context; expression types are fixed after
+                    // descriptor construction, so a static evaluation context suffices.
+                    self.Args[0]
+                        .GetType(&exprstatic::NewEvalContext(Vec::new()))
+                        .Clone()
+                } else {
                     self.RetTp
                         .clone()
-                        .expect("aggregate return type must be inferred"),
-                ));
+                        .expect("aggregate return type must be inferred")
+                };
+                final_desc.Args.push(column(ordinal[0], return_type));
                 if matches!(
                     self.Name.as_str(),
                     ast::AggFuncGroupConcat | ast::AggFuncApproxPercentile
@@ -270,7 +276,9 @@ impl AggFuncDesc {
         schema: &expression::Schema,
     ) -> Result<(types::Datum, bool), Error> {
         match self.Name.as_str() {
-            ast::AggFuncCount => self.evalNullValueInOuterJoin4Count(ctx, schema),
+            ast::AggFuncCount | ast::AggFuncMaxCount | ast::AggFuncMinCount => {
+                self.evalNullValueInOuterJoin4Count(ctx, schema)
+            }
             ast::AggFuncSum
             | ast::AggFuncSumInt
             | ast::AggFuncMax
@@ -312,6 +320,23 @@ impl AggFuncDesc {
                 isMax: false,
                 ctor: collate::GetCollator(self.Args[0].GetType(ctx.GetEvalCtx()).GetCollate()),
             }),
+            ast::AggFuncMaxCount | ast::AggFuncMinCount => {
+                let compare_index =
+                    if matches!(self.Mode, FinalMode | Partial2Mode) && self.Args.len() > 1 {
+                        1
+                    } else {
+                        0
+                    };
+                Box::new(maxMinCountFunction {
+                    aggFunction,
+                    isMax: self.Name == ast::AggFuncMaxCount,
+                    ctor: collate::GetCollator(
+                        self.Args[compare_index]
+                            .GetType(ctx.GetEvalCtx())
+                            .GetCollate(),
+                    ),
+                })
+            }
             ast::AggFuncFirstRow => Box::new(firstRowFunction { aggFunction }),
             ast::AggFuncBitOr => Box::new(bitOrFunction { aggFunction }),
             ast::AggFuncBitXor => Box::new(bitXorFunction { aggFunction }),
@@ -385,6 +410,8 @@ impl AggFuncDesc {
     ) -> Result<(), Error> {
         let remove = match self.Name.as_str() {
             ast::AggFuncCount
+            | ast::AggFuncMaxCount
+            | ast::AggFuncMinCount
             | ast::AggFuncApproxCountDistinct
             | ast::AggFuncApproxPercentile
             | ast::AggFuncBitAnd

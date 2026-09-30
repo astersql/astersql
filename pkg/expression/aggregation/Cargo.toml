@@ -14,6 +14,7 @@ codec = { package = "astersql-util-codec", path = "../../util/codec" }
 collate = { package = "astersql-util-collate", path = "../../util/collate" }
 errors = { package = "astersql-errors", path = "../../errors" }
 expression = { package = "astersql-expression", path = ".." }
+exprstatic = { package = "astersql-expression-exprstatic", path = "../exprstatic" }
 kv = { package = "astersql-kv", path = "../../kv" }
 mvmap = { package = "astersql-util-mvmap", path = "../../util/mvmap" }
 planner-util = { package = "astersql-planner-util", path = "../../planner/util" }
@@ -29,6 +30,3 @@ size = { package = "astersql-util-size", path = "../../util/size" }
 
 [package.metadata.porting]
 go-package = "pkg/expression/aggregation"
-
-[dev-dependencies]
-exprstatic = { package = "astersql-expression-exprstatic", path = "../exprstatic" }
