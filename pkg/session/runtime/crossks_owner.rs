@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use astersql_domain::Domain;
 use astersql_domain_crossks::{HistoryJobState, Lifecycle, ManagerError};
-use astersql_domain_serverinfo::{Context, EtcdClient};
+use astersql_domain_serverinfo::EtcdClient;
 use astersql_meta_model::{
     TableMode,
     group_3::{ACTION_ALTER_TABLE_MODE, Job as ModelJob, JobState},
@@ -21,7 +21,6 @@ use super::crossks_schema::CrossKSSchemaSyncer;
 use super::crossks_session_pool::{CrossKSSessionLease, CrossKSSessionPool};
 
 const DDL_OWNER_KEY: &str = astersql_ddl_util::DDLOwnerKey;
-const DDL_OWNER_LEASE_SECONDS: i32 = 45;
 
 fn sql_blob(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2 + 3);
@@ -52,11 +51,9 @@ fn model_mode(value: i64) -> Result<TableMode, String> {
 pub struct CrossKSDdlOwner {
     domain: Arc<Domain>,
     pool: Arc<CrossKSSessionPool>,
-    etcd: Arc<dyn EtcdClient>,
     id: String,
-    lease: Mutex<Option<i64>>,
     schema: Mutex<Option<Arc<CrossKSSchemaSyncer>>>,
-    election: Option<Arc<dyn ElectionManager>>,
+    election: Arc<dyn ElectionManager>,
     election_runtime: Mutex<Option<Runtime>>,
     wake: (Mutex<bool>, Condvar),
     stopped: AtomicBool,
@@ -70,33 +67,33 @@ impl CrossKSDdlOwner {
         etcd: Arc<dyn EtcdClient>,
         id: String,
     ) -> Arc<Self> {
-        Self::new_inner(domain, pool, etcd, id, None)
+        let key = format!("{DDL_OWNER_KEY}/{:p}", Arc::as_ptr(&etcd));
+        let election =
+            astersql_owner::NewMockManager(astersql_owner::Context::new(), id.clone(), None, &key);
+        Self::new_inner(domain, pool, id, election)
     }
 
     /// Use the shared Go-compatible etcd election protocol in production.
     pub fn new_with_election(
         domain: Arc<Domain>,
         pool: Arc<CrossKSSessionPool>,
-        etcd: Arc<dyn EtcdClient>,
+        _etcd: Arc<dyn EtcdClient>,
         id: String,
         election: Arc<dyn ElectionManager>,
     ) -> Arc<Self> {
-        Self::new_inner(domain, pool, etcd, id, Some(election))
+        Self::new_inner(domain, pool, id, election)
     }
 
     fn new_inner(
         domain: Arc<Domain>,
         pool: Arc<CrossKSSessionPool>,
-        etcd: Arc<dyn EtcdClient>,
         id: String,
-        election: Option<Arc<dyn ElectionManager>>,
+        election: Arc<dyn ElectionManager>,
     ) -> Arc<Self> {
         Arc::new(Self {
             domain,
             pool,
-            etcd,
             id,
-            lease: Mutex::new(None),
             schema: Mutex::new(None),
             election,
             election_runtime: Mutex::new(None),
@@ -109,20 +106,18 @@ impl CrossKSDdlOwner {
     /// Elect the owner and start polling the durable queue. A competing
     /// server leaves its queue untouched and retries after the lease changes.
     pub fn start(self: &Arc<Self>) -> Result<(), String> {
-        if let Some(election) = &self.election {
-            let runtime = Builder::new_multi_thread()
-                .worker_threads(2)
-                .enable_all()
-                .build()
-                .map_err(|error| format!("start DDL owner election runtime: {error}"))?;
-            runtime
-                .block_on(election.CampaignOwner(&[]))
-                .map_err(|error| format!("campaign target DDL owner: {error}"))?;
-            *self
-                .election_runtime
-                .lock()
-                .expect("DDL owner election lock poisoned") = Some(runtime);
-        }
+        let runtime = Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .map_err(|error| format!("start DDL owner election runtime: {error}"))?;
+        runtime
+            .block_on(self.election.CampaignOwner(&[]))
+            .map_err(|error| format!("campaign target DDL owner: {error}"))?;
+        *self
+            .election_runtime
+            .lock()
+            .expect("DDL owner election lock poisoned") = Some(runtime);
         let owner = Arc::clone(self);
         let thread = thread::Builder::new()
             .name(format!("crossks-ddl-owner-{}", self.id))
@@ -136,47 +131,7 @@ impl CrossKSDdlOwner {
     }
 
     pub(crate) fn acquire_ownership(&self) -> Result<bool, String> {
-        if let Some(election) = &self.election {
-            return Ok(election.IsOwner());
-        }
-        let current_lease = *self.lease.lock().expect("DDL owner lease lock poisoned");
-        if let Some(lease) = current_lease {
-            let owner = self
-                .etcd
-                .Get(&Context::Background(), DDL_OWNER_KEY, false)
-                .map_err(|error| error.to_string())?;
-            if owner.first().is_some_and(|value| {
-                value.value == self.id.as_bytes() && value.lease == Some(lease)
-            }) {
-                return Ok(true);
-            }
-            self.release_ownership();
-        }
-        let context = Context::Background();
-        let lease = self
-            .etcd
-            .GrantLease(&context, DDL_OWNER_LEASE_SECONDS)
-            .map_err(|error| error.to_string())?;
-        let acquired = self
-            .etcd
-            .CompareAndPut(
-                &context,
-                DDL_OWNER_KEY,
-                None,
-                self.id.as_bytes().to_vec(),
-                lease,
-            )
-            .map_err(|error| error.to_string());
-        match acquired {
-            Ok(true) => {
-                *self.lease.lock().expect("DDL owner lease lock poisoned") = Some(lease);
-                Ok(true)
-            }
-            other => {
-                let _ = self.etcd.RevokeLease(&context, lease);
-                other
-            }
-        }
+        Ok(self.election.IsOwner())
     }
 
     fn run(&self) {
@@ -222,28 +177,13 @@ impl CrossKSDdlOwner {
     }
 
     fn release_ownership(&self) {
-        if let Some(election) = &self.election {
-            if let Some(runtime) = self
-                .election_runtime
-                .lock()
-                .expect("DDL owner election lock poisoned")
-                .take()
-            {
-                runtime.block_on(election.Close());
-            }
-            return;
-        }
-        if let Some(lease) = self
-            .lease
+        if let Some(runtime) = self
+            .election_runtime
             .lock()
-            .expect("DDL owner lease lock poisoned")
+            .expect("DDL owner election lock poisoned")
             .take()
         {
-            let context = Context::Background();
-            let _ =
-                self.etcd
-                    .CompareAndDelete(&context, DDL_OWNER_KEY, (self.id.as_bytes(), lease));
-            let _ = self.etcd.RevokeLease(&context, lease);
+            runtime.block_on(self.election.Close());
         }
     }
 
@@ -285,7 +225,9 @@ impl CrossKSDdlOwner {
             if job.tp != ACTION_ALTER_TABLE_MODE || job.state == JobState::Paused {
                 return Ok(None);
             }
-            job.state = JobState::Running;
+            if job.state != JobState::Cancelling {
+                job.state = JobState::Running;
+            }
             let encoded = job.encode(false).map_err(|error| error.to_string())?;
             lease.query(format!(
                 "UPDATE mysql.tidb_ddl_job SET processing = 1, job_meta = {} WHERE job_id = {job_id}",
@@ -305,18 +247,22 @@ impl CrossKSDdlOwner {
         }) else {
             return Ok(false);
         };
-        let result = (|| {
-            let args: serde_json::Value =
-                serde_json::from_slice(&job.raw_args).map_err(|error| error.to_string())?;
-            let mode = args
-                .get("table_mode")
-                .and_then(serde_json::Value::as_i64)
-                .ok_or_else(|| "AlterTableMode job has no table_mode".to_owned())
-                .and_then(model_mode)?;
-            self.domain
-                .ddl_set_table_mode_by_ids(job.schema_id, job.table_id, mode)
-                .map_err(|error| error.to_string())
-        })();
+        let result = if job.state == JobState::Cancelling {
+            Err("cancelled DDL job".to_owned())
+        } else {
+            (|| {
+                let args: serde_json::Value =
+                    serde_json::from_slice(&job.raw_args).map_err(|error| error.to_string())?;
+                let mode = args
+                    .get("table_mode")
+                    .and_then(serde_json::Value::as_i64)
+                    .ok_or_else(|| "AlterTableMode job has no table_mode".to_owned())
+                    .and_then(model_mode)?;
+                self.domain
+                    .ddl_set_table_mode_by_ids(job.schema_id, job.table_id, mode)
+                    .map_err(|error| error.to_string())
+            })()
+        };
         if result.is_ok() {
             if let Some(syncer) = self
                 .schema
