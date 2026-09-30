@@ -30,6 +30,7 @@ fn table(
     ttl_enabled: bool,
 ) -> PhysicalTable {
     PhysicalTable {
+        partition_name: None,
         table_id,
         physical_id,
         schema: schema.to_owned(),

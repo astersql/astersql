@@ -30,6 +30,7 @@ fn task(name: &str, count: usize) -> DeleteTask {
     DeleteTask {
         job_id: name.into(),
         table: PhysicalTable {
+            partition_name: None,
             table_id: 1,
             physical_id: 1,
             schema: "test".into(),
@@ -44,6 +45,17 @@ fn task(name: &str, count: usize) -> DeleteTask {
         expire_time: 90,
         statistics,
     }
+}
+
+#[test]
+fn delete_sql_targets_the_physical_partition() {
+    let mut delete = task("t", 1);
+    delete.table.partition_name = Some("p0".into());
+    assert!(
+        delete
+            .delete_sql(1)
+            .starts_with("DELETE LOW_PRIORITY FROM `test`.`t` PARTITION (`p0`) WHERE")
+    );
 }
 
 #[test]

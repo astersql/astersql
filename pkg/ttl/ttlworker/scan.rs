@@ -61,6 +61,12 @@ impl TtlStatistics {
         self.success_rows.store(0, Ordering::Relaxed);
         self.error_rows.store(0, Ordering::Relaxed);
     }
+    /// Restore a persisted scan task's counters after owner takeover.
+    pub fn restore(&self, total: u64, success: u64, errors: u64) {
+        self.total_rows.store(total, Ordering::Relaxed);
+        self.success_rows.store(success, Ordering::Relaxed);
+        self.error_rows.store(errors, Ordering::Relaxed);
+    }
     /// 样本量严格超过 `sample_floor` 且错误率超过 `maximum` 时返回 true（熔断条件）。
     pub fn error_rate_too_high(&self, sample_floor: u64, maximum: f64) -> bool {
         let (total, _, errors) = self.snapshot();
@@ -131,8 +137,14 @@ impl TtlScanTask {
             .map(|column| format!("`{column}`"))
             .collect::<Vec<_>>()
             .join(",");
+        let partition = self
+            .table
+            .partition_name
+            .as_ref()
+            .map(|name| format!(" PARTITION (`{}`)", name.replace('`', "``")))
+            .unwrap_or_default();
         let mut sql = format!(
-            "SELECT {columns} FROM `{}`.`{}` WHERE `{}` < %?",
+            "SELECT {columns} FROM `{}`.`{}`{partition} WHERE `{}` < FROM_UNIXTIME(%?)",
             self.table.schema, self.table.table, self.table.ttl_column
         );
         let mut args = vec![Datum::Unsigned(self.expire_time)];
@@ -173,10 +185,24 @@ impl TtlScanTask {
         &self,
         session: &mut dyn WorkerSession,
         statistics: &TtlStatistics,
-        mut emit_delete: impl FnMut(Vec<Row>) -> Result<(), SessionError>,
+        emit_delete: impl FnMut(Vec<Row>) -> Result<(), SessionError>,
         canceled: impl Fn() -> bool,
     ) -> ScanResult {
-        let mut cursor: Option<Row> = None;
+        self.execute_with_checkpoint(session, statistics, None, emit_delete, |_| Ok(()), canceled)
+    }
+
+    /// Continue after a durable cursor and persist each fully dispatched
+    /// batch. The checkpoint callback must succeed before the next page is
+    /// scanned; a failed checkpoint leaves the previous cursor intact.
+    pub fn execute_with_checkpoint(
+        &self,
+        session: &mut dyn WorkerSession,
+        statistics: &TtlStatistics,
+        mut cursor: Option<Row>,
+        mut emit_delete: impl FnMut(Vec<Row>) -> Result<(), SessionError>,
+        mut checkpoint: impl FnMut(&Row) -> Result<(), SessionError>,
+        canceled: impl Fn() -> bool,
+    ) -> ScanResult {
         let mut scanned = 0_u64;
         loop {
             if canceled() {
@@ -224,11 +250,16 @@ impl TtlScanTask {
             if let Err(error) = emit_delete(rows.clone()) {
                 return self.result(TaskTerminateReason::Error, Some(error), scanned);
             }
+            statistics.add_total(rows.len());
+            scanned += rows.len() as u64;
+            if let Some(last) = rows.last()
+                && let Err(error) = checkpoint(last)
+            {
+                return self.result(TaskTerminateReason::Error, Some(error), scanned);
+            }
             // Go increments TotalRows only after the delete task has been
             // dispatched successfully.  Rows rejected by a canceled/full
             // dispatch must not be counted as scanned work.
-            statistics.add_total(rows.len());
-            scanned += rows.len() as u64;
             cursor = rows.last().cloned();
             // 末批不足 batch_size 说明已扫完。
             if rows.len() < self.batch_size.max(1) {

@@ -25,6 +25,7 @@ use astersql_ttl_ttlworker::timer::TtlJobAdapter;
 /// 构造测试用物理表元数据（含是否开启 TTL）。
 fn ttl_table(table_id: i64, physical_id: i64, ttl_enabled: bool) -> PhysicalTable {
     PhysicalTable {
+        partition_name: None,
         table_id,
         physical_id,
         schema: "test".to_owned(),

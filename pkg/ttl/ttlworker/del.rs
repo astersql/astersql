@@ -76,8 +76,14 @@ impl DeleteTask {
         } else {
             values
         };
+        let partition = self
+            .table
+            .partition_name
+            .as_ref()
+            .map(|name| format!(" PARTITION (`{}`)", name.replace('`', "``")))
+            .unwrap_or_default();
         format!(
-            "DELETE LOW_PRIORITY FROM `{}`.`{}` WHERE {key} IN ({}) AND `{}` < FROM_UNIXTIME(%?) LIMIT {row_count}",
+            "DELETE LOW_PRIORITY FROM `{}`.`{}`{partition} WHERE {key} IN ({}) AND `{}` < FROM_UNIXTIME(%?) LIMIT {row_count}",
             self.table.schema,
             self.table.table,
             std::iter::repeat_n(point, row_count)

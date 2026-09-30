@@ -10,6 +10,7 @@ use crate::session::PhysicalTable;
 
 fn table() -> PhysicalTable {
     PhysicalTable {
+        partition_name: None,
         table_id: 7,
         physical_id: 11,
         schema: "app".into(),

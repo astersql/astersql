@@ -24,6 +24,7 @@ use crate::session::{Datum, PhysicalTable, Row, SessionError, SessionState, Work
 
 fn table() -> PhysicalTable {
     PhysicalTable {
+        partition_name: None,
         table_id: 1,
         physical_id: 1,
         schema: "test".into(),
@@ -106,7 +107,7 @@ fn scan_sql_preserves_range_and_cursor_order() {
     let (sql, args) = task(0).scan_sql(Some(&[Datum::Integer(3)]));
     assert_eq!(
         sql,
-        "SELECT `id` FROM `test`.`t1` WHERE `time` < %? AND (`id`) >= (%?) AND (`id`) < (%?) AND (`id`) > (%?) ORDER BY `id` LIMIT 1"
+        "SELECT `id` FROM `test`.`t1` WHERE `time` < FROM_UNIXTIME(%?) AND (`id`) >= (%?) AND (`id`) < (%?) AND (`id`) > (%?) ORDER BY `id` LIMIT 1"
     );
     assert_eq!(
         args,
@@ -117,6 +118,14 @@ fn scan_sql_preserves_range_and_cursor_order() {
             Datum::Integer(3),
         ]
     );
+}
+
+#[test]
+fn scan_sql_targets_the_physical_partition() {
+    let mut task = task(0);
+    task.table.partition_name = Some("p0".into());
+    let (sql, _) = task.scan_sql(None);
+    assert!(sql.starts_with("SELECT `id` FROM `test`.`t1` PARTITION (`p0`) WHERE"));
 }
 
 #[test]
@@ -150,6 +159,27 @@ fn execute_retries_then_advances_cursor_and_counts_dispatched_rows() {
     assert_eq!(session.calls[0], session.calls[1]);
     assert!(session.calls[2].0.contains("AND (`id`) > (%?)"));
     assert_eq!(session.calls[2].1.last(), Some(&Datum::Integer(2)));
+}
+
+#[test]
+fn go_merge_43_scan_restarts_after_durable_cursor_and_stops_on_checkpoint_error() {
+    let mut session = MockSession {
+        replies: VecDeque::from([Ok(vec![vec![Datum::Integer(4)]])]),
+        ..MockSession::default()
+    };
+    let statistics = TtlStatistics::default();
+    let result = task(2).execute_with_checkpoint(
+        &mut session,
+        &statistics,
+        Some(vec![Datum::Integer(3)]),
+        |_| Ok(()),
+        |_| Err(SessionError::Execute("durable checkpoint failed".into())),
+        || false,
+    );
+    assert_eq!(session.calls[0].1.last(), Some(&Datum::Integer(3)));
+    assert_eq!(result.reason, TaskTerminateReason::Error);
+    assert_eq!(result.scanned_rows, 1);
+    assert_eq!(statistics.snapshot(), (1, 0, 0));
 }
 
 #[test]

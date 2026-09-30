@@ -22,6 +22,7 @@ use crate::session::PhysicalTable;
 
 fn ttl_table() -> PhysicalTable {
     PhysicalTable {
+        partition_name: None,
         table_id: 1,
         physical_id: 1,
         schema: "test".to_owned(),

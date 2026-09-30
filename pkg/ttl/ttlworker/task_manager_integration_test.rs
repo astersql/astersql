@@ -32,6 +32,7 @@ fn scan_task(job_id: &str, scan_id: i64) -> TtlScanTask {
         job_id: job_id.into(),
         scan_id,
         table: PhysicalTable {
+            partition_name: None,
             table_id: 7,
             physical_id: 7,
             schema: "test".into(),

@@ -29,6 +29,7 @@ fn empty_task_manager_reschedule_is_stable() {
 #[test]
 fn resigning_a_task_returns_it_to_waiting() {
     let table = crate::session::PhysicalTable {
+        partition_name: None,
         table_id: 1,
         physical_id: 1,
         schema: "test".into(),
@@ -61,6 +62,7 @@ fn resigning_a_task_returns_it_to_waiting() {
 #[test]
 fn scan_error_is_reported_as_a_finished_task() {
     let table = crate::session::PhysicalTable {
+        partition_name: None,
         table_id: 1,
         physical_id: 1,
         schema: "test".into(),

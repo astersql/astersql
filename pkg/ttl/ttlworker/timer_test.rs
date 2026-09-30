@@ -34,6 +34,7 @@ fn ttl_schedule_window_matches_inclusive_go_boundaries() {
     let mut manager = crate::job_manager::JobManager::new("manager", 1);
     manager.is_leader = true;
     manager.refresh_tables([crate::session::PhysicalTable {
+        partition_name: None,
         table_id: 1,
         physical_id: 1,
         schema: "test".into(),

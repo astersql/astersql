@@ -7,6 +7,9 @@ publish.workspace = true
 [lib]
 path = "lib.rs"
 
+[dependencies]
+astersql-ttl-cache = { path = "../cache" }
+
 [package.metadata.porting]
 go-package = "pkg/ttl/ttlworker"
 legacy-tasks = ["task-985", "task-986", "task-987", "task-988", "task-990", "task-1503", "task-1504", "task-1505"]

@@ -25,6 +25,7 @@ use crate::timer::TtlJobAdapter;
 
 fn ttl_table(table_id: i64, physical_id: i64, enabled: bool) -> PhysicalTable {
     PhysicalTable {
+        partition_name: None,
         table_id,
         physical_id,
         schema: "test".to_owned(),

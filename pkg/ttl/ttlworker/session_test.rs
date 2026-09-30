@@ -25,6 +25,7 @@ fn ttl_validation_rejects_disabled_table() {
 
     // 作业启动时快照：TTL 开启，过期列与保留时长已配置。
     let original = PhysicalTable {
+        partition_name: None,
         table_id: 1,
         physical_id: 2,
         schema: "test".to_owned(),
@@ -68,6 +69,7 @@ fn successful_table_session_execution_is_not_retryable() {
 
     let mut session = Session;
     let table = crate::session::PhysicalTable {
+        partition_name: None,
         table_id: 1,
         physical_id: 1,
         schema: "test".into(),
@@ -91,6 +93,7 @@ fn successful_table_session_execution_is_not_retryable() {
 
 fn table() -> crate::session::PhysicalTable {
     crate::session::PhysicalTable {
+        partition_name: None,
         table_id: 1,
         physical_id: 2,
         schema: "test".into(),

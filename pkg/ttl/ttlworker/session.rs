@@ -43,6 +43,8 @@ pub type Row = Vec<Datum>;
 /// TTL 可见的物理表元数据（逻辑表 + 分区/非分区物理 ID）。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PhysicalTable {
+    /// Physical partition name for partitioned TTL tables.
+    pub partition_name: Option<String>,
     /// 逻辑表 ID。
     pub table_id: i64,
     /// 物理表/分区 ID。

@@ -15,6 +15,7 @@ pub mod config;
 pub mod del;
 pub mod job;
 pub mod job_manager;
+pub mod persistent;
 pub mod scan;
 pub mod session;
 pub mod task_manager;

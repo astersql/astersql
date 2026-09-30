@@ -5,6 +5,7 @@ use crate::timer_sync::{TtlTimersSyncer, timer_key};
 
 fn table(ttl_enabled: bool) -> PhysicalTable {
     PhysicalTable {
+        partition_name: None,
         table_id: 1,
         physical_id: 1,
         schema: "test".to_owned(),
