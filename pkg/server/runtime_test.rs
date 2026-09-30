@@ -34,6 +34,118 @@ use crate::runtime::{
 };
 
 #[test]
+fn go_merge_43_extract_archive_view_and_partitions() {
+    use crate::server::Domain as _;
+    use astersql_server_handler_extractorhandler::extractor::{
+        ExtractTask, ExtractType, RequestContext, Timestamp,
+    };
+    use astersql_util_stmtsummary::{StmtExecInfo, StmtExecLazyInfo, StmtSummaryByDigestMap};
+    struct ViewSql;
+    impl StmtExecLazyInfo for ViewSql {
+        fn GetOriginalSQL(&self) -> String {
+            "SELECT id FROM extract_view_outer".into()
+        }
+        fn GetEncodedPlan(&self) -> (String, String, Option<String>) {
+            (String::new(), String::new(), None)
+        }
+        fn GetBinaryPlan(&self) -> String {
+            String::new()
+        }
+        fn GetPlanDigest(&self) -> String {
+            "extract-view-plan".into()
+        }
+        fn GetBindingSQLAndDigest(&self) -> (String, String) {
+            (String::new(), String::new())
+        }
+    }
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let sql = astersql_session::runtime::ConcreteSession::new(Arc::clone(&domain));
+    sql.execute("CREATE TABLE extract_partition_base (id INT PRIMARY KEY) PARTITION BY RANGE (id) (PARTITION p0 VALUES LESS THAN (10), PARTITION p1 VALUES LESS THAN MAXVALUE)").unwrap();
+    sql.execute("INSERT INTO extract_partition_base VALUES (1), (11)")
+        .unwrap();
+    sql.execute("ANALYZE TABLE extract_partition_base").unwrap();
+    sql.execute("CREATE VIEW extract_view_inner AS SELECT id FROM extract_partition_base")
+        .unwrap();
+    sql.execute("CREATE VIEW extract_view_outer AS SELECT id FROM extract_view_inner")
+        .unwrap();
+    let mut statement = StmtExecInfo {
+        SchemaName: "test".into(),
+        Digest: "extract-view-digest".into(),
+        PlanDigest: "extract-view-plan".into(),
+        StartTime: std::time::SystemTime::now(),
+        LazyInfo: Box::new(ViewSql),
+        ..StmtExecInfo::default()
+    };
+    statement.StmtCtx.StmtType = "Select".into();
+    statement
+        .StmtCtx
+        .SetLogicalPlanTables(vec![astersql_sessionctx_stmtctx::TableEntry {
+            DB: "test".into(),
+            Table: "extract_view_outer".into(),
+        }]);
+    StmtSummaryByDigestMap
+        .lock()
+        .unwrap()
+        .AddStatement(&statement);
+    let runtime = CanonicalServerDomain::new(Arc::clone(&domain))
+        .extract_runtime()
+        .unwrap();
+    let name = runtime
+        .extract_task(
+            &RequestContext::default(),
+            ExtractTask {
+                extract_type: ExtractType::Plan,
+                is_background_job: false,
+                begin: Timestamp(0),
+                end: Timestamp(i64::MAX / 2),
+                skip_stats: false,
+                use_history_view: false,
+            },
+        )
+        .unwrap();
+    let path = format!("{}/{name}", runtime.extract_task_directory());
+    let mut reader = runtime
+        .open_extract(&RequestContext::default(), &path)
+        .unwrap();
+    let mut archive = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let count = reader.read(&mut buffer).unwrap();
+        if count == 0 {
+            break;
+        }
+        archive.extend_from_slice(&buffer[..count]);
+    }
+    reader.close().unwrap();
+    if let Ok(path) = std::env::var("ASTERSQL_EXTRACT_VIEW_ARCHIVE_FOR_GO") {
+        std::fs::write(path, &archive).unwrap();
+    }
+    let package = astersql_domain::plan_replayer_dump::decode_replay_archive(&archive).unwrap();
+    for entry in [
+        "view/test.extract_view_outer.view.txt",
+        "view/test.extract_view_inner.view.txt",
+        "schema/test.extract_partition_base.schema.txt",
+        "stats/test.extract_partition_base.json",
+    ] {
+        assert!(
+            package.files.contains_key(entry),
+            "missing archive entry {entry}"
+        );
+    }
+    let stats: serde_json::Value =
+        serde_json::from_slice(&package.files["stats/test.extract_partition_base.json"]).unwrap();
+    assert_eq!(stats["partitions"]["p0"]["count"], 1);
+    assert_eq!(stats["partitions"]["p1"]["count"], 1);
+    let context = astersql_planner_extstore::Context::background();
+    astersql_planner_extstore::GetGlobalExtStorage(&context)
+        .unwrap()
+        .DeleteFile(&context, &path)
+        .unwrap();
+    StmtSummaryByDigestMap.lock().unwrap().Clear();
+    domain.close();
+}
+
+#[test]
 fn go_merge_43_canonical_server_domain_serves_extract_archive() {
     use crate::server::Domain as _;
     use astersql_server_handler_extractorhandler::extractor::{

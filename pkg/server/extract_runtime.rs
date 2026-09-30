@@ -100,10 +100,52 @@ fn table_stats_json(domain: &Domain, database: &str, table: &str) -> Result<Vec<
     let (_, info) = domain
         .stats_table(database, table)
         .ok_or_else(|| format!("statistics table {database}.{table} does not exist"))?;
+    let mut partitions = serde_json::Map::new();
+    if let Some(partition_info) = &info.Partition {
+        for partition in &partition_info.Definitions {
+            if domain
+                .stats_context()
+                .physical_stats(partition.ID)
+                .is_some()
+            {
+                partitions.insert(
+                    partition.Name.L.clone(),
+                    physical_stats_json(domain, &info, database, table, partition.ID)?,
+                );
+            }
+        }
+        if domain.stats_context().physical_stats(info.ID).is_some() {
+            partitions.insert(
+                "global".to_owned(),
+                physical_stats_json(domain, &info, database, table, info.ID)?,
+            );
+        }
+        return serde_json::to_vec(&serde_json::json!({
+            "database_name": database,
+            "table_name": table,
+            "partitions": partitions,
+        }))
+        .map_err(|error| error.to_string());
+    }
+    serde_json::to_vec(&physical_stats_json(
+        domain, &info, database, table, info.ID,
+    )?)
+    .map_err(|error| error.to_string())
+}
+
+fn physical_stats_json(
+    domain: &Domain,
+    info: &astersql_meta_model::TableInfo,
+    database: &str,
+    table: &str,
+    physical_id: i64,
+) -> Result<serde_json::Value, String> {
     let stats = domain
         .stats_context()
-        .physical_stats(info.ID)
-        .ok_or_else(|| format!("statistics for {database}.{table} are unavailable"))?;
+        .physical_stats(physical_id)
+        .ok_or_else(|| {
+            format!("statistics for {database}.{table} physical ID {physical_id} are unavailable")
+        })?;
     let mut columns = serde_json::Map::new();
     for column in &info.Columns {
         let Some(item) = stats.columns.get(&column.ID) else {
@@ -143,7 +185,7 @@ fn table_stats_json(domain: &Domain, database: &str, table: &str) -> Result<Vec<
         }
         indices.insert(index.Name.L.clone(), value);
     }
-    serde_json::to_vec(&serde_json::json!({
+    Ok(serde_json::json!({
         "columns": columns,
         "indices": indices,
         "partitions": {},
@@ -155,7 +197,6 @@ fn table_stats_json(domain: &Domain, database: &str, table: &str) -> Result<Vec<
         "version": stats.version,
         "is_historical_stats": false,
     }))
-    .map_err(|error| error.to_string())
 }
 
 struct ProductionExtractSource {
