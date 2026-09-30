@@ -1,0 +1,410 @@
+[
+  {
+    "id": "catalog.system-schemas",
+    "source": "go",
+    "required": true,
+    "layer": "canonical_session",
+    "setup_sql": [],
+    "query": "select schema_name from information_schema.schemata order by schema_name",
+    "expected": {
+      "contains_rows": [
+        [
+          "mysql"
+        ],
+        [
+          "information_schema"
+        ],
+        [
+          "performance_schema"
+        ],
+        [
+          "sys"
+        ]
+      ]
+    },
+    "normalizers": [
+      "lowercase_names"
+    ],
+    "evidence": [
+      "pkg/session/mysql_metadata_compat_test.rs::datagrip_full_introspection_materializes_system_metadata_in_derived_queries"
+    ]
+  },
+  {
+    "id": "mysql.user-column-identity",
+    "source": "go",
+    "required": true,
+    "layer": "canonical_session",
+    "setup_sql": [],
+    "query": "select column_name from information_schema.columns where table_schema='mysql' and table_name='user' and column_name in ('Host','User') order by ordinal_position",
+    "expected": {
+      "contains_rows": [
+        [
+          "Host"
+        ],
+        [
+          "User"
+        ]
+      ]
+    },
+    "normalizers": [],
+    "evidence": [
+      "pkg/session/mysql_metadata_compat_test.rs::datagrip_full_introspection_materializes_system_metadata_in_derived_queries"
+    ]
+  },
+  {
+    "id": "performance-schema.setup-consumers-catalog",
+    "source": "go",
+    "required": true,
+    "layer": "canonical_session",
+    "setup_sql": [],
+    "query": "select object_name from (select table_name as object_name from information_schema.tables where table_schema='performance_schema') as introspected_objects where object_name='setup_consumers'",
+    "expected": {
+      "rows": [
+        [
+          "setup_consumers"
+        ]
+      ]
+    },
+    "normalizers": [],
+    "evidence": [
+      "pkg/session/mysql_metadata_compat_test.rs::datagrip_full_introspection_materializes_system_metadata_in_derived_queries"
+    ]
+  },
+  {
+    "id": "sys.supported-object-boundary",
+    "source": "go",
+    "required": true,
+    "layer": "canonical_session",
+    "setup_sql": [],
+    "query": "show full tables from sys",
+    "expected": {
+      "rows": [
+        [
+          "schema_unused_indexes",
+          "VIEW"
+        ],
+        [
+          "sys_config",
+          "BASE TABLE"
+        ]
+      ]
+    },
+    "normalizers": [
+      "lowercase_names"
+    ],
+    "evidence": [
+      "pkg/session/mysql_sys_schema_compat_test.rs::sys_schema_and_routine_catalog_respect_compatibility_manifest",
+      "pkg/meta/metadef/system_tables_def.rs::SysSchemaSupportedObjects"
+    ]
+  },
+  {
+    "id": "sys.view-properties",
+    "source": "go",
+    "required": true,
+    "layer": "canonical_session",
+    "setup_sql": [],
+    "query": "select table_name, check_option, is_updatable, security_type from information_schema.views where table_schema='sys' order by table_name",
+    "expected": {
+      "rows": [
+        [
+          "schema_unused_indexes",
+          "NONE",
+          "NO",
+          "DEFINER"
+        ]
+      ]
+    },
+    "normalizers": [],
+    "evidence": [
+      "pkg/session/mysql_sys_schema_compat_test.rs::sys_schema_and_routine_catalog_respect_compatibility_manifest"
+    ]
+  },
+  {
+    "id": "sys.routines-empty",
+    "source": "go",
+    "required": true,
+    "layer": "canonical_session",
+    "setup_sql": [],
+    "query": "select count(*) from information_schema.routines where routine_schema='sys'",
+    "expected": {
+      "rows": [
+        [
+          "0"
+        ]
+      ]
+    },
+    "normalizers": [],
+    "evidence": [
+      "pkg/session/mysql_sys_schema_compat_test.rs::sys_schema_and_routine_catalog_respect_compatibility_manifest"
+    ]
+  },
+  {
+    "id": "sys.routine-parameters-empty",
+    "source": "go",
+    "required": true,
+    "layer": "canonical_session",
+    "setup_sql": [],
+    "query": "select count(*) from information_schema.parameters where specific_schema='sys'",
+    "expected": {
+      "rows": [
+        [
+          "0"
+        ]
+      ]
+    },
+    "normalizers": [],
+    "evidence": [
+      "pkg/session/mysql_sys_schema_compat_test.rs::sys_schema_and_routine_catalog_respect_compatibility_manifest"
+    ]
+  },
+  {
+    "id": "information-schema.column-order",
+    "source": "go",
+    "required": true,
+    "layer": "canonical_session",
+    "setup_sql": [
+      "create database manifest_catalog",
+      "use manifest_catalog",
+      "create table records (id bigint unsigned not null primary key, note varchar(64))"
+    ],
+    "query": "select column_name, ordinal_position from information_schema.columns where table_schema='manifest_catalog' and table_name='records' order by ordinal_position",
+    "expected": {
+      "rows": [
+        [
+          "id",
+          "1"
+        ],
+        [
+          "note",
+          "2"
+        ]
+      ]
+    },
+    "normalizers": [],
+    "evidence": [
+      "pkg/session/mysql_metadata_compat_test.rs"
+    ]
+  },
+  {
+    "id": "information-schema.primary-constraint",
+    "source": "go",
+    "required": true,
+    "layer": "canonical_session",
+    "setup_sql": [],
+    "query": "select constraint_name, constraint_type from information_schema.table_constraints where table_schema='manifest_catalog' and table_name='records' order by constraint_name",
+    "expected": {
+      "rows": [
+        [
+          "PRIMARY",
+          "PRIMARY KEY"
+        ]
+      ]
+    },
+    "normalizers": [],
+    "evidence": [
+      "pkg/session/mysql_metadata_compat_test.rs"
+    ]
+  },
+  {
+    "id": "information-schema.primary-key-usage",
+    "source": "go",
+    "required": true,
+    "layer": "canonical_session",
+    "setup_sql": [],
+    "query": "select column_name, ordinal_position from information_schema.key_column_usage where table_schema='manifest_catalog' and table_name='records' and constraint_name='PRIMARY' order by ordinal_position",
+    "expected": {
+      "rows": [
+        [
+          "id",
+          "1"
+        ]
+      ]
+    },
+    "normalizers": [],
+    "evidence": [
+      "pkg/session/mysql_metadata_compat_test.rs"
+    ]
+  },
+  {
+    "id": "sys.unsupported-view-errors",
+    "source": "go",
+    "required": true,
+    "layer": "canonical_session",
+    "setup_sql": [],
+    "query": "select * from sys.host_summary",
+    "expected": {
+      "error": {
+        "message_contains": [
+          "doesn't exist"
+        ]
+      }
+    },
+    "normalizers": [],
+    "evidence": [
+      "pkg/session/mysql_sys_schema_compat_test.rs::sys_schema_and_routine_catalog_respect_compatibility_manifest"
+    ]
+  },
+  {
+    "id": "protocol.mysql-object-discovery",
+    "source": "shared",
+    "required": true,
+    "layer": "tcp",
+    "setup_sql": [],
+    "query": "show full tables from mysql",
+    "expected": {
+      "contains_objects": [
+        "user"
+      ],
+      "object_type": "BASE TABLE"
+    },
+    "normalizers": [],
+    "evidence": [
+      "pkg/server/mysql_catalog_protocol_test.rs::mysql_catalog_protocol_manifest_matches_wire_metadata",
+      "https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_com_query_response_text_resultset_column_definition.html"
+    ]
+  },
+  {
+    "id": "protocol.performance-schema-object-discovery",
+    "source": "shared",
+    "required": true,
+    "layer": "tcp",
+    "setup_sql": [],
+    "query": "show full tables from performance_schema",
+    "expected": {
+      "contains_objects": [
+        "setup_consumers"
+      ],
+      "object_type": "BASE TABLE"
+    },
+    "normalizers": [],
+    "evidence": [
+      "pkg/server/mysql_catalog_protocol_test.rs::mysql_catalog_protocol_manifest_matches_wire_metadata",
+      "https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_com_query_response_text_resultset_column_definition.html"
+    ]
+  },
+  {
+    "id": "protocol.sys-object-discovery",
+    "source": "shared",
+    "required": true,
+    "layer": "tcp",
+    "setup_sql": [],
+    "query": "show full tables from sys",
+    "expected": {
+      "contains_objects": [
+        "schema_unused_indexes"
+      ],
+      "object_type": "VIEW"
+    },
+    "normalizers": [],
+    "evidence": [
+      "pkg/server/mysql_catalog_protocol_test.rs::mysql_catalog_protocol_manifest_matches_wire_metadata",
+      "https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_com_query_response_text_resultset_column_definition.html"
+    ]
+  },
+  {
+    "id": "protocol.column-definition41-identity",
+    "source": "shared",
+    "required": true,
+    "layer": "tcp",
+    "setup_sql": [
+      "create database manifest_protocol",
+      "use manifest_protocol",
+      "create table records (id int unsigned not null auto_increment primary key, note varchar(64))"
+    ],
+    "query": "select id, note from records",
+    "expected": {
+      "rows": [],
+      "id": {
+        "catalog": "def",
+        "schema": "manifest_protocol",
+        "table": "records",
+        "org_table": "records",
+        "org_name": "id",
+        "type": "MYSQL_TYPE_LONG",
+        "flags": [
+          "NOT_NULL",
+          "PRI_KEY",
+          "UNSIGNED",
+          "AUTO_INCREMENT"
+        ]
+      },
+      "note": {
+        "catalog": "def",
+        "schema": "manifest_protocol",
+        "table": "records",
+        "org_table": "records",
+        "org_name": "note"
+      }
+    },
+    "normalizers": [],
+    "evidence": [
+      "pkg/server/mysql_catalog_protocol_test.rs::mysql_catalog_protocol_manifest_matches_wire_metadata",
+      "https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_com_query_response_text_resultset_column_definition.html"
+    ]
+  },
+  {
+    "id": "protocol.processlist-text-integers",
+    "source": "shared",
+    "required": true,
+    "layer": "tcp",
+    "setup_sql": [],
+    "query": "show processlist",
+    "expected": {
+      "row_values": "ascii_decimal_integers",
+      "Id": {
+        "catalog": "def",
+        "type": "MYSQL_TYPE_LONGLONG"
+      },
+      "Time": {
+        "catalog": "def",
+        "type": "MYSQL_TYPE_LONG"
+      }
+    },
+    "normalizers": [],
+    "evidence": [
+      "pkg/server/mysql_catalog_protocol_test.rs::mysql_catalog_protocol_manifest_matches_wire_metadata",
+      "https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_com_query_response_text_resultset_column_definition.html"
+    ]
+  },
+  {
+    "id": "protocol.information-schema-column-shape",
+    "source": "shared",
+    "required": true,
+    "layer": "tcp",
+    "setup_sql": [],
+    "query": "select table_name from information_schema.tables where table_schema='sys' and table_name='schema_unused_indexes'",
+    "expected": {
+      "rows": [
+        [
+          "schema_unused_indexes"
+        ]
+      ],
+      "table_name": {
+        "catalog": "def",
+        "type": "MYSQL_TYPE_VAR_STRING"
+      }
+    },
+    "normalizers": [],
+    "evidence": [
+      "pkg/server/mysql_catalog_protocol_test.rs::mysql_catalog_protocol_manifest_matches_wire_metadata",
+      "https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_com_query_response_text_resultset_column_definition.html"
+    ]
+  },
+  {
+    "id": "sys.mysql80-native-host-summary",
+    "source": "mysql80",
+    "required": false,
+    "layer": "canonical_session",
+    "setup_sql": [],
+    "query": "select * from sys.host_summary",
+    "expected": {
+      "status": "unsupported",
+      "reason": "The local sys compatibility catalog intentionally excludes MySQL 8 native host_summary; querying it must retain the missing-object error boundary."
+    },
+    "normalizers": [],
+    "evidence": [
+      "pkg/session/mysql_sys_schema_compat_test.rs::sys_schema_and_routine_catalog_respect_compatibility_manifest",
+      "https://dev.mysql.com/doc/refman/8.0/en/sys-schema.html"
+    ]
+  }
+]
