@@ -394,6 +394,28 @@ fn dag_request() -> kv::Request {
 }
 
 #[test]
+fn go_merge_48_adapter_preserves_limiters_and_batch_contract() {
+    let mut request = dag_request();
+    let per_request = kv::NewCoprRequestLimiter(2).unwrap();
+    let per_store = kv::NewQueryCopStoreLimiter(1).unwrap();
+    request.CoprRequestLimiter = Some(Arc::clone(&per_request));
+    request.QueryCopStoreLimiter = Some(Arc::clone(&per_store));
+    request.AllowBatchTaskDataMerge = true;
+    request.ExecuteBatchTasksSerially = true;
+    let adapted = super::kv_adapter::cop_request(&request).unwrap();
+    assert!(Arc::ptr_eq(
+        adapted.copr_request_limiter.as_ref().unwrap(),
+        &per_request
+    ));
+    assert!(Arc::ptr_eq(
+        adapted.query_cop_store_limiter.as_ref().unwrap(),
+        &per_store
+    ));
+    assert!(adapted.allow_batch_task_data_merge);
+    assert!(adapted.execute_batch_tasks_serially);
+}
+
+#[test]
 fn tiflash_batch_dag_request_preserves_store_type() {
     let mut request = dag_request();
     request.StoreType = kv::StoreType::TiFlash;

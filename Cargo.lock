@@ -9738,6 +9738,7 @@ name = "astersql-store-copr"
 version = "0.1.0"
 dependencies = [
  "astersql-config",
+ "astersql-config-kerneltype",
  "astersql-ddl-placement",
  "astersql-domain-infosync",
  "astersql-errno",

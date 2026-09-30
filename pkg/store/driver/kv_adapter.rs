@@ -1726,6 +1726,8 @@ pub(crate) fn cop_request(req: &kv::Request) -> Result<copr::CopRequest, kv::err
         descending: req.Desc,
         concurrency: usize::try_from(req.Concurrency).unwrap_or_default().max(1),
         store_batch_size: usize::try_from(req.StoreBatchSize).unwrap_or_default(),
+        allow_batch_task_data_merge: req.AllowBatchTaskDataMerge,
+        execute_batch_tasks_serially: req.ExecuteBatchTasksSerially,
         replica_read,
         paging: copr::PagingOptions {
             enabled: req.Paging.Enable,
@@ -1749,6 +1751,10 @@ pub(crate) fn cop_request(req: &kv::Request) -> Result<copr::CopRequest, kv::err
         // canonical kv stubs do not yet expose a usable shared limiter/checker
         // object; direct copr callers preserve both through CopRequest.
         copr_request_rate_limit: None,
+        copr_request_limiter: req.CoprRequestLimiter.clone(),
+        query_cop_store_limiter: req.QueryCopStoreLimiter.clone(),
+        resolved_locks: Vec::new(),
+        committed_locks: Vec::new(),
         runaway_checker: req
             .RunawayChecker
             .as_ref()

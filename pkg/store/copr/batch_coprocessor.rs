@@ -80,6 +80,7 @@ pub struct CopRuntimeStats {
     pub backoff_sleep: HashMap<String, Duration>,
     pub backoff_times: HashMap<String, usize>,
     pub callee_address: String,
+    pub read_pool_task_details: Option<crate::pool_task_details::PoolTaskDetails>,
 }
 
 /// 批量协处理器响应封装：protobuf 载荷、运行时详情、起始键与错误。

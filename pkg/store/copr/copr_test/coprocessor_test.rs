@@ -332,18 +332,18 @@ fn TestBuildCopIteratorWithBatchStoreCopr() {
 }
 
 #[test]
-fn TestBuildCopIteratorWithSharedRequestRateLimit() {
+fn go_merge_48_build_iterator_preserves_shared_request_limiter() {
     for keep_order in [true, false] {
-        let shared = Arc::new(RateLimit::new(7));
+        let shared = astersql_kv::NewCoprRequestLimiter(7).unwrap();
         let backend =
             TestBackend::with_locations(vec![located_region(1, vec![key_range("a", "z")])]);
         let client = CopClient::new(backend, None, 4);
         let mut request = cop_request(vec![key_range("a", "z")], Vec::new());
         request.keep_order = keep_order;
-        request.copr_request_rate_limit = Some(Arc::clone(&shared));
+        request.copr_request_limiter = Some(Arc::clone(&shared));
         let iterator = client.build_cop_iterator(&mut request).unwrap();
-        assert!(Arc::ptr_eq(&shared, iterator.request_rate_limit().unwrap()));
-        assert_eq!(iterator.request_rate_limit().unwrap().capacity(), 7);
+        assert!(Arc::ptr_eq(&shared, iterator.request_limiter().unwrap()));
+        assert_eq!(iterator.request_limiter().unwrap().Capacity(), 7);
     }
 }
 

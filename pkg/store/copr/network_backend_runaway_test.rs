@@ -43,3 +43,20 @@ fn legacy_and_store_batch_scan_details_keep_each_processed_key_count() {
     let protocol = super::pb_response(parent, &super::KeyCodec::v1()).unwrap();
     assert_eq!(protocol.batch_responses.get(&12).unwrap().scanned_keys, 5);
 }
+
+#[test]
+fn go_merge_48_paging_read_bytes_follow_kernel_billing_basis() {
+    let mut scan = kvrpcpb::ScanDetailV2::new();
+    scan.set_processed_versions_size(100);
+    scan.set_total_versions_size(300);
+    let mut details = kvrpcpb::ExecDetailsV2::new();
+    details.set_scan_detail_v2(scan);
+    assert_eq!(
+        super::response_read_bytes_v2(&details),
+        if astersql_config_kerneltype::IsNextGen() {
+            300
+        } else {
+            100
+        }
+    );
+}

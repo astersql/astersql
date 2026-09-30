@@ -18,7 +18,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 "astersql-ddl-placement" = { package = "astersql-ddl-placement", path = "../../ddl/placement", optional = true }
 "astersql-domain-infosync" = { package = "astersql-domain-infosync", path = "../../domain/infosync", optional = true }
 "astersql-errno" = { package = "astersql-errno", path = "../../errno", optional = true }
-"astersql-kv" = { package = "astersql-kv", path = "../../kv", optional = true }
+"astersql-kv" = { package = "astersql-kv", path = "../../kv" }
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../config/kerneltype" }
 "astersql-metrics" = { package = "astersql-metrics", path = "../../metrics", optional = true }
 "astersql-parser-terror" = { package = "astersql-parser-terror", path = "../../parser/terror", optional = true }
 "astersql-resourcegroup" = { package = "astersql-resourcegroup", path = "../../resourcegroup", optional = true }

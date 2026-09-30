@@ -16,6 +16,8 @@ pub mod batch_request_sender;
 pub mod coprocessor;
 /// Coprocessor 响应结果缓存。
 pub mod coprocessor_cache;
+/// Time-aware RU prediction for paging scans.
+pub mod ema;
 /// KeyRanges 切片与按键拆分辅助。
 pub mod key_ranges;
 /// MPP（大规模并行处理）相关逻辑。
@@ -24,6 +26,8 @@ pub mod mpp;
 pub mod mpp_probe;
 /// 标准 TiKV DAG 的 PD 元数据与 gRPC transport。
 pub mod network_backend;
+/// Read-pool task statistics decoded from TiKV execution details.
+pub mod pool_task_details;
 /// 键区间诊断工具。
 pub mod range_diagnostics;
 /// Region 元数据缓存（定位键所属分片）。
@@ -41,10 +45,12 @@ pub use batch_request_sender::{
 };
 pub use coprocessor::*;
 pub use coprocessor_cache::*;
+pub use ema::*;
 pub use key_ranges::*;
 pub use mpp::*;
 pub use mpp_probe::*;
 pub use network_backend::*;
+pub use pool_task_details::*;
 pub use range_diagnostics::*;
 pub use region_cache::*;
 pub use store::*;
@@ -73,6 +79,9 @@ mod mpp_test;
 #[cfg(test)]
 #[path = "network_backend_test.rs"]
 mod network_backend_test;
+#[cfg(test)]
+#[path = "pool_task_details_test.rs"]
+mod pool_task_details_test;
 #[cfg(test)]
 #[path = "region_cache_test.rs"]
 mod region_cache_test;

@@ -1291,6 +1291,7 @@ pub fn TestHandleBatchCopResponseUpdatesChildBucketsOnVersionNotMatch(t *testing
 }
 "################;
 
+use protobuf::Message;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -1313,6 +1314,8 @@ struct TestBackend {
     bucket_updates: Mutex<Vec<(RegionVerId, u64, u64)>>,
     allow_batch: AtomicBool,
     transport_error: Mutex<Option<String>>,
+    missing_region_once: AtomicBool,
+    resolved_lock_calls: Mutex<Vec<Vec<u8>>>,
 }
 
 impl TestBackend {
@@ -1355,6 +1358,9 @@ impl CopBackend for TestBackend {
 
     fn send(&self, _task: &CopTask, request: &CopWireRequest) -> BatchResult<CopProtocolResponse> {
         self.wires.lock().unwrap().push(request.clone());
+        if self.missing_region_once.swap(false, Ordering::AcqRel) {
+            return Err(BatchError::MissingRegion(RegionVerId::new(1, 1, 1)));
+        }
         if let Some(error) = self.transport_error.lock().unwrap().take() {
             return Err(BatchError::Transport(error));
         }
@@ -1372,7 +1378,8 @@ impl CopBackend for TestBackend {
             .push((region, old_version, new_version));
     }
 
-    fn resolve_lock(&self, _lock: &[u8], _start_ts: u64) -> BatchResult<()> {
+    fn resolve_lock(&self, lock: &[u8], _start_ts: u64) -> BatchResult<()> {
+        self.resolved_lock_calls.lock().unwrap().push(lock.to_vec());
         Ok(())
     }
 
@@ -1729,6 +1736,500 @@ fn store_batch_coprocessor_only_accepts_leader_requests() {
     req.request_type = RequestType::Dag;
     req.store_type = StoreType::TiFlash;
     assert!(!check_store_batch_coprocessor(&req));
+}
+
+#[test]
+fn go_merge_48_analyze_batch_requires_explicit_merge_contract() {
+    let mut req = request(vec![key_range("a", "z")]);
+    req.request_type = RequestType::Analyze;
+    req.store_batch_size = 3;
+    req.request_source.internal = true;
+    assert!(!check_store_batch_coprocessor(&req));
+    req.allow_batch_task_data_merge = true;
+    req.execute_batch_tasks_serially = true;
+    assert!(check_store_batch_coprocessor(&req));
+}
+
+#[test]
+fn go_merge_48_unhinted_merge_batches_and_forwards_wire_flags() {
+    let backend = TestBackend::with_locations(vec![
+        location(1, 0, vec![key_range("a", "b")]),
+        location(2, 0, vec![key_range("b", "c")]),
+        location(3, 0, vec![key_range("c", "d")]),
+    ]);
+    backend.allow_batch.store(true, Ordering::Release);
+    let mut req = request(vec![key_range("a", "d")]);
+    req.request_type = RequestType::Analyze;
+    req.request_source.internal = true;
+    req.store_batch_size = 3;
+    let ranges = KeyRanges::new(vec![key_range("a", "d")]);
+    let legacy = build_cop_tasks(
+        backend.as_ref(),
+        &req,
+        ranges.clone(),
+        BuildCopTaskOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(legacy.len(), 3);
+    req.allow_batch_task_data_merge = true;
+    req.execute_batch_tasks_serially = true;
+    let merged = build_cop_tasks(
+        backend.as_ref(),
+        &req,
+        ranges,
+        BuildCopTaskOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(merged.len(), 1);
+    assert_eq!(merged[0].batch_task_list.len(), 2);
+    worker(backend.clone(), req)
+        .handle_task_once(&mut Backoffer::new(1), merged[0].clone())
+        .unwrap();
+    let wires = backend.wires.lock().unwrap();
+    assert!(wires[0].allow_batch_task_data_merge);
+    assert!(wires[0].execute_batch_tasks_serially);
+}
+
+#[test]
+fn go_merge_48_query_limiter_is_per_store_and_overrides_request_limiter() {
+    let backend = TestBackend::with_locations(vec![location(1, 0, vec![key_range("a", "b")])]);
+    let mut req = request(vec![key_range("a", "b")]);
+    req.copr_request_limiter = astersql_kv::NewCoprRequestLimiter(1);
+    req.query_cop_store_limiter = astersql_kv::NewQueryCopStoreLimiter(1);
+    worker(backend.clone(), req)
+        .handle_task_once(
+            &mut Backoffer::new(1),
+            CopTask {
+                region: RegionVerId::new(1, 1, 1),
+                ranges: KeyRanges::new(vec![key_range("a", "b")]),
+                ..CopTask::default()
+            },
+        )
+        .unwrap();
+    let admission = backend.wires.lock().unwrap()[0]
+        .attempt_limiter
+        .clone()
+        .unwrap();
+    let first = admission.acquire(1).unwrap().unwrap();
+    let other_store = admission.acquire(2).unwrap().unwrap();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+    let second = admission.clone();
+    let join = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        let _permit = second.acquire(1).unwrap().unwrap();
+        acquired_tx.send(()).unwrap();
+    });
+    started_rx.recv().unwrap();
+    assert!(
+        acquired_rx
+            .recv_timeout(std::time::Duration::from_millis(50))
+            .is_err()
+    );
+    drop(first);
+    acquired_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .unwrap();
+    drop(other_store);
+    join.join().unwrap();
+    let waits = admission.wait_stats();
+    assert!(!waits.is_zero());
+    assert!(waits.max_time <= waits.total_time);
+}
+
+#[test]
+fn go_merge_48_request_limiter_spans_stores() {
+    let backend = TestBackend::with_locations(vec![location(1, 0, vec![key_range("a", "b")])]);
+    let mut req = request(vec![key_range("a", "b")]);
+    req.copr_request_limiter = astersql_kv::NewCoprRequestLimiter(1);
+    worker(backend.clone(), req)
+        .handle_task_once(
+            &mut Backoffer::new(1),
+            CopTask {
+                region: RegionVerId::new(1, 1, 1),
+                ranges: KeyRanges::new(vec![key_range("a", "b")]),
+                ..CopTask::default()
+            },
+        )
+        .unwrap();
+    let admission = backend.wires.lock().unwrap()[0]
+        .attempt_limiter
+        .clone()
+        .unwrap();
+    let first = admission.acquire(1).unwrap().unwrap();
+    let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+    let second = admission.clone();
+    let join = std::thread::spawn(move || {
+        let _permit = second.acquire(2).unwrap().unwrap();
+        acquired_tx.send(()).unwrap();
+    });
+    assert!(
+        acquired_rx
+            .recv_timeout(std::time::Duration::from_millis(50))
+            .is_err()
+    );
+    drop(first);
+    acquired_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .unwrap();
+    join.join().unwrap();
+    assert!(!admission.wait_stats().is_zero());
+}
+
+#[test]
+fn go_merge_48_merged_child_ack_does_not_emit_empty_response() {
+    let backend = TestBackend::with_locations(Vec::new());
+    let child = CopTask {
+        task_id: 2,
+        region: RegionVerId::new(2, 1, 1),
+        ranges: KeyRanges::new(vec![key_range("b", "c")]),
+        ..CopTask::default()
+    };
+    let mut parent = CopTask {
+        task_id: 1,
+        region: RegionVerId::new(1, 1, 1),
+        ranges: KeyRanges::new(vec![key_range("a", "b")]),
+        ..CopTask::default()
+    };
+    parent.batch_task_list.insert(
+        2,
+        BatchedCopTask {
+            task: Box::new(child),
+            store_id: 1,
+            peer: Some(Peer { id: 1, store_id: 1 }),
+            load_based_replica_retry: false,
+        },
+    );
+    backend.response.lock().unwrap().batch_responses.insert(
+        2,
+        CopProtocolResponse {
+            data_merged_into_response: true,
+            read_bytes: 17,
+            ..CopProtocolResponse::default()
+        },
+    );
+    let worker = worker(backend, request(vec![key_range("a", "c")]));
+    let result = worker
+        .handle_task_once(&mut Backoffer::new(1), parent)
+        .unwrap();
+    assert!(result.batch_responses.is_empty());
+    assert!(result.remains.is_empty());
+    assert_eq!(worker.runtime_stats().len(), 1);
+}
+
+#[test]
+fn go_merge_48_pre_dispatch_miss_rebuilds_all_batch_ranges_once() {
+    let backend = TestBackend::with_locations(vec![
+        location(1, 0, vec![key_range("a", "b")]),
+        location(2, 0, vec![key_range("b", "c")]),
+    ]);
+    backend.allow_batch.store(true, Ordering::Release);
+    backend.missing_region_once.store(true, Ordering::Release);
+    let mut req = request(vec![key_range("a", "c")]);
+    req.allow_batch_task_data_merge = true;
+    req.store_batch_size = 2;
+    let mut tasks = build_cop_tasks(
+        backend.as_ref(),
+        &req,
+        KeyRanges::new(vec![key_range("a", "c")]),
+        BuildCopTaskOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].batch_task_list.len(), 1);
+    req.store_batch_size = 0;
+    let result = worker(backend, req)
+        .handle_task_once(&mut Backoffer::new(3), tasks.remove(0))
+        .unwrap();
+    let mut ranges = result
+        .remains
+        .into_iter()
+        .flat_map(|task| {
+            let mut ranges = task.ranges.to_ranges();
+            for child in task.batch_task_list.values() {
+                ranges.extend(child.task.ranges.to_ranges());
+            }
+            ranges
+        })
+        .collect::<Vec<_>>();
+    ranges.sort_by(|a, b| a.start.cmp(&b.start));
+    assert_eq!(ranges, vec![key_range("a", "b"), key_range("b", "c")]);
+}
+
+#[test]
+fn go_merge_48_paging_ema_precharge_updates_only_for_continuation() {
+    let backend = TestBackend::with_locations(Vec::new());
+    let mut req = request(vec![key_range("a", "c")]);
+    req.paging.size_bytes = 4096;
+    let worker = worker(backend.clone(), req);
+    let task = CopTask {
+        region: RegionVerId::new(1, 1, 1),
+        ranges: KeyRanges::new(vec![key_range("a", "c")]),
+        ..CopTask::default()
+    };
+    *backend.response.lock().unwrap() = CopProtocolResponse {
+        range: Some(key_range("a", "b")),
+        read_bytes: 123,
+        ..CopProtocolResponse::default()
+    };
+    worker
+        .handle_task_once(&mut Backoffer::new(1), task.clone())
+        .unwrap();
+    assert_eq!(backend.wires.lock().unwrap()[0].predicted_read_bytes, 4096);
+    *backend.response.lock().unwrap() = CopProtocolResponse {
+        read_bytes: 999,
+        ..CopProtocolResponse::default()
+    };
+    worker
+        .handle_task_once(&mut Backoffer::new(1), task)
+        .unwrap();
+    assert_eq!(backend.wires.lock().unwrap()[1].predicted_read_bytes, 123);
+}
+
+fn go_merge_48_lock(txn_id: u64) -> Vec<u8> {
+    let mut lock = kvproto::kvrpcpb::LockInfo::new();
+    lock.set_lock_version(txn_id);
+    lock.write_to_bytes().unwrap()
+}
+
+#[test]
+fn go_merge_48_lock_hints_back_off_once_and_follow_the_sent_request() {
+    let backend = TestBackend::with_locations(Vec::new());
+    let mut req = request(vec![key_range("a", "b")]);
+    req.resolved_locks = vec![42];
+    req.committed_locks = vec![44];
+    let worker = worker(backend.clone(), req);
+    let task = CopTask {
+        region: RegionVerId::new(1, 1, 1),
+        ranges: KeyRanges::new(vec![key_range("a", "b")]),
+        ..CopTask::default()
+    };
+    *backend.response.lock().unwrap() = CopProtocolResponse {
+        locked: Some(go_merge_48_lock(42)),
+        ..CopProtocolResponse::default()
+    };
+    let mut backoffer = Backoffer::new(3);
+    worker
+        .handle_task_once(&mut backoffer, task.clone())
+        .unwrap();
+    assert_eq!(backoffer.history.len(), 1);
+    let wires = backend.wires.lock().unwrap();
+    assert_eq!(wires[0].resolved_locks, vec![42]);
+    assert_eq!(wires[0].committed_locks, vec![44]);
+    drop(wires);
+    *backend.response.lock().unwrap() = CopProtocolResponse {
+        locked: Some(go_merge_48_lock(43)),
+        ..CopProtocolResponse::default()
+    };
+    worker
+        .handle_task_once(&mut backoffer, task.clone())
+        .unwrap();
+    assert_eq!(
+        backoffer.history.len(),
+        1,
+        "unhinted lock leaves backoff available"
+    );
+    worker.handle_task_once(&mut backoffer, task).unwrap();
+    assert_eq!(
+        backoffer.history.len(),
+        2,
+        "resolved ID is in the next request"
+    );
+    assert_eq!(
+        backend.wires.lock().unwrap()[2].resolved_locks,
+        vec![42, 43]
+    );
+}
+
+#[test]
+fn go_merge_48_batch_child_locks_share_one_hint_backoff() {
+    let backend = TestBackend::with_locations(Vec::new());
+    let mut req = request(vec![key_range("a", "c")]);
+    req.resolved_locks = vec![42];
+    let mut parent = CopTask {
+        region: RegionVerId::new(1, 1, 1),
+        ranges: KeyRanges::new(vec![key_range("a", "b")]),
+        ..CopTask::default()
+    };
+    for id in [2, 3] {
+        parent.batch_task_list.insert(
+            id,
+            BatchedCopTask {
+                task: Box::new(CopTask {
+                    task_id: id,
+                    region: RegionVerId::new(id, 1, 1),
+                    ranges: KeyRanges::new(vec![key_range("b", "c")]),
+                    ..CopTask::default()
+                }),
+                store_id: 1,
+                peer: Some(Peer { id: 1, store_id: 1 }),
+                load_based_replica_retry: false,
+            },
+        );
+        backend.response.lock().unwrap().batch_responses.insert(
+            id,
+            CopProtocolResponse {
+                locked: Some(go_merge_48_lock(42)),
+                ..CopProtocolResponse::default()
+            },
+        );
+    }
+    let mut backoffer = Backoffer::new(3);
+    let result = worker(backend.clone(), req)
+        .handle_task_once(&mut backoffer, parent)
+        .unwrap();
+    assert_eq!(backoffer.history.len(), 1);
+    assert_eq!(result.remains.len(), 2);
+    assert!(result.batch_responses.is_empty());
+    assert_eq!(backend.resolved_lock_calls.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn go_merge_48_store_batch_metrics_count_failed_inputs_once() {
+    let backend = TestBackend::with_locations(vec![location(3, 0, vec![key_range("b", "c")])]);
+    let mut task = CopTask {
+        region: RegionVerId::new(1, 1, 1),
+        ranges: KeyRanges::new(vec![key_range("a", "b")]),
+        ..CopTask::default()
+    };
+    for id in [2, 3] {
+        task.batch_task_list.insert(
+            id,
+            BatchedCopTask {
+                task: Box::new(CopTask {
+                    task_id: id,
+                    region: RegionVerId::new(id, 1, 1),
+                    ranges: KeyRanges::new(vec![key_range("b", "c")]),
+                    ..CopTask::default()
+                }),
+                store_id: 1,
+                peer: Some(Peer { id: 1, store_id: 1 }),
+                load_based_replica_retry: false,
+            },
+        );
+    }
+    *backend.response.lock().unwrap() = CopProtocolResponse {
+        batch_responses: [
+            (
+                2,
+                CopProtocolResponse {
+                    data: b"success".to_vec(),
+                    ..CopProtocolResponse::default()
+                },
+            ),
+            (
+                3,
+                CopProtocolResponse {
+                    region_error: Some("region split".to_owned()),
+                    ..CopProtocolResponse::default()
+                },
+            ),
+        ]
+        .into_iter()
+        .collect(),
+        batch_region_errors: [3].into_iter().collect(),
+        ..CopProtocolResponse::default()
+    };
+    let worker = worker(backend, request(vec![key_range("a", "c")]));
+    let result = worker
+        .handle_task_once(&mut Backoffer::new(1), task)
+        .unwrap();
+    assert_eq!(result.batch_responses.len(), 1);
+    assert_eq!(result.remains.len(), 1);
+    assert_eq!(worker.store_batch_stats(), (1, 1));
+}
+
+#[test]
+fn go_merge_48_child_retry_fanout_does_not_underflow_batch_metrics() {
+    let backend = TestBackend::with_locations(vec![
+        location(3, 0, vec![key_range("b", "c")]),
+        location(4, 0, vec![key_range("c", "d")]),
+    ]);
+    let mut task = CopTask {
+        region: RegionVerId::new(1, 1, 1),
+        ranges: KeyRanges::new(vec![key_range("a", "b")]),
+        ..CopTask::default()
+    };
+    task.batch_task_list.insert(
+        2,
+        BatchedCopTask {
+            task: Box::new(CopTask {
+                task_id: 2,
+                region: RegionVerId::new(2, 1, 1),
+                ranges: KeyRanges::new(vec![key_range("b", "d")]),
+                ..CopTask::default()
+            }),
+            store_id: 1,
+            peer: Some(Peer { id: 1, store_id: 1 }),
+            load_based_replica_retry: false,
+        },
+    );
+    *backend.response.lock().unwrap() = CopProtocolResponse {
+        batch_responses: [(
+            2,
+            CopProtocolResponse {
+                region_error: Some("region split".to_owned()),
+                ..CopProtocolResponse::default()
+            },
+        )]
+        .into_iter()
+        .collect(),
+        batch_region_errors: [2].into_iter().collect(),
+        ..CopProtocolResponse::default()
+    };
+    let worker = worker(backend, request(vec![key_range("a", "d")]));
+    let result = worker
+        .handle_task_once(&mut Backoffer::new(3), task)
+        .unwrap();
+    assert_eq!(result.remains.len(), 2);
+    assert_eq!(worker.store_batch_stats(), (0, 1));
+}
+
+#[test]
+fn go_merge_48_batch_child_errors_are_not_delivered_as_data() {
+    let backend = TestBackend::with_locations(Vec::new());
+    let mut task = CopTask {
+        region: RegionVerId::new(1, 1, 1),
+        ranges: KeyRanges::new(vec![key_range("a", "b")]),
+        ..CopTask::default()
+    };
+    task.batch_task_list.insert(
+        2,
+        BatchedCopTask {
+            task: Box::new(CopTask {
+                task_id: 2,
+                region: RegionVerId::new(2, 1, 1),
+                ranges: KeyRanges::new(vec![key_range("b", "c")]),
+                ..CopTask::default()
+            }),
+            store_id: 1,
+            peer: Some(Peer { id: 1, store_id: 1 }),
+            load_based_replica_retry: false,
+        },
+    );
+    backend.response.lock().unwrap().batch_responses.insert(
+        2,
+        CopProtocolResponse {
+            other_error: "write conflict".to_owned(),
+            ..CopProtocolResponse::default()
+        },
+    );
+    let worker = worker(backend.clone(), request(vec![key_range("a", "c")]));
+    let error = worker
+        .handle_task_once(&mut Backoffer::new(1), task.clone())
+        .unwrap_err();
+    assert!(error.to_string().contains("write conflict"));
+    backend.response.lock().unwrap().batch_responses.clear();
+    backend
+        .response
+        .lock()
+        .unwrap()
+        .batch_responses
+        .insert(99, CopProtocolResponse::default());
+    let error = worker
+        .handle_task_once(&mut Backoffer::new(1), task)
+        .unwrap_err();
+    assert!(error.to_string().contains("task id 99 not found"));
 }
 
 #[test]

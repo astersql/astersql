@@ -33,6 +33,7 @@ use crate::batch_request_sender::{
 use crate::coprocessor_cache::{
     CoprocessorCache, CoprocessorCacheRequest, CoprocessorCacheValue, coprocessor_cache_build_key,
 };
+use crate::ema::RuEma;
 use crate::range_diagnostics::{RangeIssueStats, range_issues_for_key_ranges};
 
 /// 构建 Cop 任务时的最大退避。
@@ -218,16 +219,15 @@ pub struct CopRUDetails {
 pub struct ProductionCopRUInterceptor;
 
 impl CopRUInterceptor for ProductionCopRUInterceptor {
-    fn on_request_wait(
-        &self,
-        _task: &CopTask,
-        _wire: &CopWireRequest,
-    ) -> BatchResult<CopRUDetails> {
+    fn on_request_wait(&self, _task: &CopTask, wire: &CopWireRequest) -> BatchResult<CopRUDetails> {
         const READ_BASE_COST: f64 = 1.0 / 8.0;
         const READ_PER_BATCH_BASE_COST: f64 = 1.0 / 2.0;
         const AVERAGE_BATCH_PROPORTION: f64 = 0.7;
+        const READ_COST_PER_BYTE: f64 = 1.0 / (64.0 * 1024.0);
         Ok(CopRUDetails {
-            read_ru: READ_BASE_COST + READ_PER_BATCH_BASE_COST * AVERAGE_BATCH_PROPORTION,
+            read_ru: READ_BASE_COST
+                + READ_PER_BATCH_BASE_COST * AVERAGE_BATCH_PROPORTION
+                + wire.predicted_read_bytes as f64 * READ_COST_PER_BYTE,
             write_ru: 0.0,
         })
     }
@@ -235,7 +235,7 @@ impl CopRUInterceptor for ProductionCopRUInterceptor {
     fn on_response_wait(
         &self,
         _task: &CopTask,
-        _wire: &CopWireRequest,
+        wire: &CopWireRequest,
         response: &CopProtocolResponse,
     ) -> BatchResult<CopRUDetails> {
         const READ_COST_PER_BYTE: f64 = 1.0 / (64.0 * 1024.0);
@@ -251,7 +251,9 @@ impl CopRUInterceptor for ProductionCopRUInterceptor {
             .map(|child| child.kv_cpu_ms)
             .sum::<f64>();
         Ok(CopRUDetails {
-            read_ru: (response.read_bytes + child_read_bytes) as f64 * READ_COST_PER_BYTE
+            read_ru: ((response.read_bytes + child_read_bytes) as f64
+                - wire.predicted_read_bytes as f64)
+                * READ_COST_PER_BYTE
                 + (response.kv_cpu_ms + child_cpu_ms) * CPU_MS_COST,
             write_ru: 0.0,
         })
@@ -277,7 +279,7 @@ pub struct PartitionKeyRanges {
 }
 
 /// 一次协处理器请求的完整描述（类型、引擎、TS、ranges、并发与超时等）。
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct CopRequest {
     pub read_stats: Option<Arc<tikv_client::ReadStats>>,
     pub request_type: RequestType,
@@ -291,6 +293,8 @@ pub struct CopRequest {
     pub descending: bool,
     pub concurrency: usize,
     pub store_batch_size: usize,
+    pub allow_batch_task_data_merge: bool,
+    pub execute_batch_tasks_serially: bool,
     pub replica_read: ReplicaReadType,
     pub paging: PagingOptions,
     pub limit_size: u64,
@@ -306,11 +310,26 @@ pub struct CopRequest {
     pub connection_alias: String,
     pub resource_group_name: String,
     pub copr_request_rate_limit: Option<Arc<RateLimit>>,
+    pub copr_request_limiter: Option<Arc<astersql_kv::CoprRequestLimiter>>,
+    pub query_cop_store_limiter: Option<Arc<astersql_kv::QueryCopStoreLimiter>>,
+    pub resolved_locks: Vec<u64>,
+    pub committed_locks: Vec<u64>,
     pub runaway_checker: Option<Arc<dyn RunawayChecker>>,
     pub resource_control_interceptor: Option<Arc<dyn CopRUInterceptor>>,
     pub resource_control_ru: Arc<Mutex<CopRUDetails>>,
     pub is_staleness: bool,
     pub maximum_keys_read: u64,
+}
+
+impl fmt::Debug for CopRequest {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CopRequest")
+            .field("request_type", &self.request_type)
+            .field("store_type", &self.store_type)
+            .field("store_batch_size", &self.store_batch_size)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for CopRequest {
@@ -328,6 +347,8 @@ impl Default for CopRequest {
             descending: false,
             concurrency: 1,
             store_batch_size: 0,
+            allow_batch_task_data_merge: false,
+            execute_batch_tasks_serially: false,
             replica_read: ReplicaReadType::Leader,
             paging: PagingOptions::default(),
             limit_size: 0,
@@ -343,6 +364,10 @@ impl Default for CopRequest {
             connection_alias: String::new(),
             resource_group_name: String::new(),
             copr_request_rate_limit: None,
+            copr_request_limiter: None,
+            query_cop_store_limiter: None,
+            resolved_locks: Vec::new(),
+            committed_locks: Vec::new(),
             runaway_checker: None,
             resource_control_interceptor: None,
             resource_control_ru: Arc::new(Mutex::new(CopRUDetails::default())),
@@ -496,7 +521,10 @@ pub struct CopWireRequest {
     pub paging_size: u64,
     pub maximum_keys_read: u64,
     pub paging_size_bytes: u64,
+    pub predicted_read_bytes: u64,
     pub tasks: Vec<StoreBatchWireTask>,
+    pub allow_batch_task_data_merge: bool,
+    pub execute_batch_tasks_serially: bool,
     pub connection_id: u64,
     pub connection_alias: String,
     pub resource_group_name: String,
@@ -509,6 +537,114 @@ pub struct CopWireRequest {
     pub replica_read: ReplicaReadType,
     pub read_type: String,
     pub retry_request: bool,
+    pub attempt_limiter: Option<Arc<CopRequestAttemptLimiter>>,
+    pub resolved_locks: Vec<u64>,
+    pub committed_locks: Vec<u64>,
+}
+
+/// Admission is evaluated for the actual destination of every RPC attempt.
+pub struct CopRequestAttemptLimiter {
+    request: Option<Arc<astersql_kv::CoprRequestLimiter>>,
+    query: Option<Arc<astersql_kv::QueryCopStoreLimiter>>,
+    finish: Option<Arc<AtomicBool>>,
+    wait_stats: Option<Arc<Mutex<LimiterWaitStats>>>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LimiterWaitStats {
+    pub total_time: Duration,
+    pub max_time: Duration,
+}
+
+impl LimiterWaitStats {
+    pub fn record(&mut self, wait: Duration) {
+        self.total_time += wait;
+        self.max_time = self.max_time.max(wait);
+    }
+
+    pub fn merge(&mut self, other: Self) {
+        self.total_time += other.total_time;
+        self.max_time = self.max_time.max(other.max_time);
+    }
+
+    pub fn is_zero(&self) -> bool {
+        self.total_time.is_zero()
+    }
+}
+
+impl fmt::Debug for CopRequestAttemptLimiter {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CopRequestAttemptLimiter")
+            .finish_non_exhaustive()
+    }
+}
+
+pub struct CopRequestAttemptPermit(Arc<astersql_kv::CoprRequestLimiter>);
+
+impl Drop for CopRequestAttemptPermit {
+    fn drop(&mut self) {
+        self.0.Release();
+    }
+}
+
+impl CopRequestAttemptLimiter {
+    pub fn new(
+        request: Option<Arc<astersql_kv::CoprRequestLimiter>>,
+        query: Option<Arc<astersql_kv::QueryCopStoreLimiter>>,
+        finish: Option<Arc<AtomicBool>>,
+    ) -> Self {
+        Self {
+            request,
+            query,
+            finish,
+            wait_stats: None,
+        }
+    }
+
+    fn with_wait_stats(mut self, stats: Arc<Mutex<LimiterWaitStats>>) -> Self {
+        self.wait_stats = Some(stats);
+        self
+    }
+
+    pub fn wait_stats(&self) -> LimiterWaitStats {
+        self.wait_stats
+            .as_ref()
+            .map_or(LimiterWaitStats::default(), |stats| {
+                *stats.lock().expect("limiter wait statistics lock poisoned")
+            })
+    }
+
+    pub fn acquire(&self, store_id: u64) -> BatchResult<Option<CopRequestAttemptPermit>> {
+        let limiter = match &self.query {
+            Some(query) => query.GetStoreLimiter(store_id),
+            None => self.request.clone(),
+        };
+        let Some(limiter) = limiter else {
+            return Ok(None);
+        };
+        let mut wait_started: Option<Instant> = None;
+        loop {
+            if self
+                .finish
+                .as_ref()
+                .is_some_and(|finish| finish.load(Ordering::Acquire))
+            {
+                return Err(BatchError::Cancelled);
+            }
+            if limiter.TryAcquire() {
+                if let (Some(started), Some(stats)) = (wait_started, &self.wait_stats) {
+                    stats
+                        .lock()
+                        .expect("limiter wait statistics lock poisoned")
+                        .record(started.elapsed());
+                }
+                return Ok(Some(CopRequestAttemptPermit(limiter)));
+            }
+            wait_started.get_or_insert_with(Instant::now);
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
 }
 
 /// 存储节点返回的协议层响应。
@@ -526,10 +662,12 @@ pub struct CopProtocolResponse {
     pub scanned_keys: u64,
     pub read_bytes: u64,
     pub kv_cpu_ms: f64,
+    pub read_pool_task_details: Option<crate::pool_task_details::PoolTaskDetails>,
     pub ru_details: Option<CopRUDetails>,
     pub batch_responses: HashMap<u64, CopProtocolResponse>,
     pub batch_region_errors: HashSet<u64>,
     pub batch_locked: HashSet<u64>,
+    pub data_merged_into_response: bool,
 }
 
 /// 对上层暴露的协处理器响应（数据、详情、错误）。
@@ -807,8 +945,8 @@ pub fn build_cop_tasks(
             }
 
             let may_batch = request.store_batch_size > 0
-                && !options.row_hints.is_empty()
-                && is_small_task(&task);
+                && (!options.row_hints.is_empty() || request.allow_batch_task_data_merge)
+                && (request.allow_batch_task_data_merge || is_small_task(&task));
             if may_batch {
                 if let Some(batch) = backend.build_batch_task(&task, request.replica_read)? {
                     append_batched_task(
@@ -877,7 +1015,10 @@ fn build_wire_request(
         paging_size: task.paging_size,
         maximum_keys_read: remaining_key_budget,
         paging_size_bytes: request.paging.size_bytes,
+        predicted_read_bytes: 0,
         tasks: task.to_pb_batch_tasks(),
+        allow_batch_task_data_merge: request.allow_batch_task_data_merge,
+        execute_batch_tasks_serially: request.execute_batch_tasks_serially,
         connection_id: request.connection_id,
         connection_alias: request.connection_alias.clone(),
         resource_group_name: request.resource_group_name.clone(),
@@ -897,6 +1038,9 @@ fn build_wire_request(
         },
         read_type: task.first_read_type.clone(),
         retry_request: !task.first_read_type.is_empty(),
+        attempt_limiter: None,
+        resolved_locks: Vec::new(),
+        committed_locks: Vec::new(),
     }
 }
 
@@ -931,8 +1075,13 @@ fn handle_batch_responses(
     let mut remains = Vec::new();
     for (id, batch) in batches {
         if response.batch_region_errors.contains(id) || response.batch_locked.contains(id) {
-            remains.push((*batch.task).clone());
+            let mut task = (*batch.task).clone();
+            task.meet_lock_fallback = response.batch_locked.contains(id);
+            remains.push(task);
         } else if let Some(value) = response.batch_responses.get(id) {
+            if value.data_merged_into_response {
+                continue;
+            }
             responses.push(CopResponse {
                 start_key: batch
                     .task
@@ -941,7 +1090,10 @@ fn handle_batch_responses(
                     .map(|range| range.start.clone())
                     .unwrap_or_default(),
                 response: Some(value.clone()),
-                detail: Some(CopRuntimeStats::default()),
+                detail: Some(CopRuntimeStats {
+                    read_pool_task_details: value.read_pool_task_details.clone(),
+                    ..CopRuntimeStats::default()
+                }),
                 ..CopResponse::default()
             });
         } else {
@@ -962,6 +1114,18 @@ fn response_cache_key(request: &CopRequest, task: &CopTask) -> BatchResult<Vec<u
     })
 }
 
+fn lock_txn_ids(bytes: &[u8]) -> Vec<u64> {
+    let Ok(lock) = protobuf::parse_from_bytes::<kvproto::kvrpcpb::LockInfo>(bytes) else {
+        return Vec::new();
+    };
+    let locks = lock.get_shared_lock_infos();
+    if locks.is_empty() {
+        vec![lock.get_lock_version()]
+    } else {
+        locks.iter().map(|lock| lock.get_lock_version()).collect()
+    }
+}
+
 /// 执行单个 CopTask 的 worker：发送、处理错误、写回迭代器。
 pub struct CopTaskWorker {
     backend: Arc<dyn CopBackend>,
@@ -970,6 +1134,13 @@ pub struct CopTaskWorker {
     keys_read: Arc<AtomicU64>,
     paging_task_index: Arc<AtomicU32>,
     finish: Option<Arc<AtomicBool>>,
+    ema: Arc<RuEma>,
+    limiter_wait: Arc<Mutex<LimiterWaitStats>>,
+    resolved_locks: Arc<Mutex<HashSet<u64>>>,
+    committed_locks: Arc<Mutex<HashSet<u64>>>,
+    runtime_stats: Arc<Mutex<Vec<CopRuntimeStats>>>,
+    store_batched_num: Arc<AtomicU64>,
+    store_batched_fallback_num: Arc<AtomicU64>,
 }
 
 impl CopTaskWorker {
@@ -980,6 +1151,11 @@ impl CopTaskWorker {
         keys_read: Arc<AtomicU64>,
         paging_task_index: Arc<AtomicU32>,
     ) -> Self {
+        let ema = Arc::new(RuEma::new(request.paging.size_bytes));
+        let resolved_locks = Arc::new(Mutex::new(request.resolved_locks.iter().copied().collect()));
+        let committed_locks = Arc::new(Mutex::new(
+            request.committed_locks.iter().copied().collect(),
+        ));
         Self {
             backend,
             request,
@@ -987,12 +1163,64 @@ impl CopTaskWorker {
             keys_read,
             paging_task_index,
             finish: None,
+            ema,
+            limiter_wait: Arc::new(Mutex::new(LimiterWaitStats::default())),
+            resolved_locks,
+            committed_locks,
+            runtime_stats: Arc::new(Mutex::new(Vec::new())),
+            store_batched_num: Arc::new(AtomicU64::new(0)),
+            store_batched_fallback_num: Arc::new(AtomicU64::new(0)),
         }
     }
 
     fn with_finish(mut self, finish: Arc<AtomicBool>) -> Self {
         self.finish = Some(finish);
         self
+    }
+
+    fn with_ema(mut self, ema: Arc<RuEma>) -> Self {
+        self.ema = ema;
+        self
+    }
+
+    fn with_limiter_wait(mut self, stats: Arc<Mutex<LimiterWaitStats>>) -> Self {
+        self.limiter_wait = stats;
+        self
+    }
+
+    fn with_lock_sets(
+        mut self,
+        resolved: Arc<Mutex<HashSet<u64>>>,
+        committed: Arc<Mutex<HashSet<u64>>>,
+    ) -> Self {
+        self.resolved_locks = resolved;
+        self.committed_locks = committed;
+        self
+    }
+
+    fn with_runtime_stats(mut self, stats: Arc<Mutex<Vec<CopRuntimeStats>>>) -> Self {
+        self.runtime_stats = stats;
+        self
+    }
+
+    fn with_store_batch_stats(mut self, batched: Arc<AtomicU64>, fallback: Arc<AtomicU64>) -> Self {
+        self.store_batched_num = batched;
+        self.store_batched_fallback_num = fallback;
+        self
+    }
+
+    pub fn store_batch_stats(&self) -> (u64, u64) {
+        (
+            self.store_batched_num.load(Ordering::Acquire),
+            self.store_batched_fallback_num.load(Ordering::Acquire),
+        )
+    }
+
+    pub fn runtime_stats(&self) -> Vec<CopRuntimeStats> {
+        self.runtime_stats
+            .lock()
+            .expect("cop runtime stats lock poisoned")
+            .clone()
     }
 
     fn rebuild(
@@ -1012,6 +1240,92 @@ impl CopTaskWorker {
                 ..BuildCopTaskOptions::default()
             },
         )
+    }
+
+    fn rebuild_whole_store_batch(&self, task: &CopTask) -> BatchResult<Vec<CopTask>> {
+        let mut ranges = task.ranges.to_ranges();
+        for child in task.batch_task_list.values() {
+            ranges.extend(child.task.ranges.to_ranges());
+        }
+        ranges.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| a.end.cmp(&b.end)));
+        let mut request = (*self.request).clone();
+        request.store_batch_size = task.batch_task_list.len();
+        build_cop_tasks(
+            self.backend.as_ref(),
+            &request,
+            KeyRanges::new(ranges),
+            BuildCopTaskOptions {
+                ignore_client_read_timeout: true,
+                ..BuildCopTaskOptions::default()
+            },
+        )
+    }
+
+    fn rebuild_failed_batch_children(
+        &self,
+        backoffer: &mut Backoffer,
+        response: &CopProtocolResponse,
+        remains: Vec<CopTask>,
+    ) -> BatchResult<Vec<CopTask>> {
+        let mut rebuilt = Vec::new();
+        for child in remains {
+            if response.batch_region_errors.contains(&child.task_id) {
+                self.backend.invalidate_region(child.region);
+                backoffer.backoff(&BatchError::Transport(
+                    response
+                        .batch_responses
+                        .get(&child.task_id)
+                        .and_then(|response| response.region_error.clone())
+                        .unwrap_or_else(|| "batch child region error".to_owned()),
+                ))?;
+                rebuilt.extend(self.rebuild(&child, false, child.exceeds_bound_retry)?);
+            } else {
+                rebuilt.push(child);
+            }
+        }
+        Ok(rebuilt)
+    }
+
+    fn resolve_response_lock(
+        &self,
+        backoffer: &mut Backoffer,
+        wire: &CopWireRequest,
+        lock: &[u8],
+        backed_off_for_hint: &mut bool,
+    ) -> BatchResult<()> {
+        let ids = lock_txn_ids(lock);
+        if !*backed_off_for_hint
+            && ids
+                .iter()
+                .any(|id| wire.resolved_locks.contains(id) || wire.committed_locks.contains(id))
+        {
+            backoffer.backoff(&BatchError::OtherResponse(
+                "lock was reported despite being included in request hints".to_owned(),
+            ))?;
+            *backed_off_for_hint = true;
+        }
+        self.backend.resolve_lock(lock, self.request.start_ts)?;
+        self.resolved_locks
+            .lock()
+            .expect("resolved locks lock poisoned")
+            .extend(ids.into_iter().filter(|id| *id != 0));
+        Ok(())
+    }
+
+    fn resolve_batch_locks(
+        &self,
+        backoffer: &mut Backoffer,
+        wire: &CopWireRequest,
+        response: &mut CopProtocolResponse,
+        backed_off_for_hint: &mut bool,
+    ) -> BatchResult<()> {
+        for (task_id, child) in &response.batch_responses {
+            if let Some(lock) = &child.locked {
+                self.resolve_response_lock(backoffer, wire, lock, backed_off_for_hint)?;
+                response.batch_locked.insert(*task_id);
+            }
+        }
+        Ok(())
     }
 
     /// 执行任务至多一次完整发送-处理循环（含缓存与错误重试分支）。
@@ -1035,6 +1349,37 @@ impl CopTaskWorker {
             self.request.maximum_keys_read - read
         };
         let mut wire = build_wire_request(&self.request, &task, remaining_budget);
+        wire.resolved_locks = self
+            .resolved_locks
+            .lock()
+            .expect("resolved locks lock poisoned")
+            .iter()
+            .copied()
+            .collect();
+        wire.committed_locks = self
+            .committed_locks
+            .lock()
+            .expect("committed locks lock poisoned")
+            .iter()
+            .copied()
+            .collect();
+        wire.resolved_locks.sort_unstable();
+        wire.committed_locks.sort_unstable();
+        if task.paging || self.request.paging.size_bytes > 0 {
+            wire.predicted_read_bytes = self.ema.predict();
+        }
+        if self.request.copr_request_limiter.is_some()
+            || self.request.query_cop_store_limiter.is_some()
+        {
+            wire.attempt_limiter = Some(Arc::new(
+                CopRequestAttemptLimiter::new(
+                    self.request.copr_request_limiter.clone(),
+                    self.request.query_cop_store_limiter.clone(),
+                    self.finish.clone(),
+                )
+                .with_wait_stats(Arc::clone(&self.limiter_wait)),
+            ));
+        }
         let cache_key = response_cache_key(&self.request, &task)?;
         if let Some(cache) = &self.cache
             && cache.check_request_admission(task.ranges.len())
@@ -1082,9 +1427,19 @@ impl CopTaskWorker {
         };
         let send_result = self.backend.send(&task, &wire);
         drop(request_permit);
-        let response = match send_result {
+        let mut response = match send_result {
             Ok(response) => response,
             Err(error) => {
+                if matches!(error, BatchError::MissingRegion(_))
+                    && self.request.allow_batch_task_data_merge
+                    && !task.batch_task_list.is_empty()
+                {
+                    backoffer.backoff(&error)?;
+                    return Ok(CopTaskResult {
+                        remains: self.rebuild_whole_store_batch(&task)?,
+                        ..CopTaskResult::default()
+                    });
+                }
                 if let Some(checker) = &self.request.runaway_checker {
                     let accumulated_ru = resource_control.map(|_| {
                         *self
@@ -1170,15 +1525,76 @@ impl CopTaskWorker {
                 );
             }
         }
+        for child in response.batch_responses.values() {
+            if child.data_merged_into_response {
+                self.runtime_stats
+                    .lock()
+                    .expect("cop runtime stats lock poisoned")
+                    .push(CopRuntimeStats {
+                        read_pool_task_details: child.read_pool_task_details.clone(),
+                        ..CopRuntimeStats::default()
+                    });
+            }
+        }
+        for (task_id, child) in &response.batch_responses {
+            if !task.batch_task_list.contains_key(task_id) {
+                return Err(BatchError::OtherResponse(format!(
+                    "batch task id {task_id} not found"
+                )));
+            }
+            if !child.other_error.is_empty() {
+                return Err(BatchError::OtherResponse(
+                    if child.other_error.contains("write conflict") {
+                        format!("write conflict: {}", child.other_error)
+                    } else {
+                        format!("other error: {}", child.other_error)
+                    },
+                ));
+            }
+        }
+        let mut backed_off_for_hint = false;
+        if response.region_error.is_none() {
+            if let Some(lock) = &response.locked {
+                self.resolve_response_lock(backoffer, &wire, lock, &mut backed_off_for_hint)?;
+            }
+        }
+        self.resolve_batch_locks(backoffer, &wire, &mut response, &mut backed_off_for_hint)?;
+        if !task.batch_task_list.is_empty()
+            && !response.region_error.as_deref().is_some_and(|error| {
+                !task.busy_threshold.is_zero()
+                    && error.to_ascii_lowercase().contains("server is busy")
+            })
+        {
+            let fallback = task
+                .batch_task_list
+                .keys()
+                .filter(|id| {
+                    response.batch_region_errors.contains(id)
+                        || response.batch_locked.contains(id)
+                        || !response.batch_responses.contains_key(id)
+                })
+                .count() as u64;
+            self.store_batched_num.fetch_add(
+                task.batch_task_list.len() as u64 - fallback,
+                Ordering::AcqRel,
+            );
+            self.store_batched_fallback_num
+                .fetch_add(fallback, Ordering::AcqRel);
+        }
         if let Some(region_error) = &response.region_error {
             backoffer.backoff(&BatchError::Transport(region_error.clone()))?;
             let remains = self.rebuild(&task, false, task.exceeds_bound_retry)?;
-            return Ok(batch_remains_on_error(task, remains, &response));
+            let mut result = batch_remains_on_error(task, remains, &response);
+            result.remains =
+                self.rebuild_failed_batch_children(backoffer, &response, result.remains)?;
+            return Ok(result);
         }
-        if let Some(lock) = &response.locked {
-            self.backend.resolve_lock(lock, self.request.start_ts)?;
+        if response.locked.is_some() {
             task.meet_lock_fallback = true;
-            return Ok(batch_remains_on_error(task.clone(), vec![task], &response));
+            let mut result = batch_remains_on_error(task.clone(), vec![task], &response);
+            result.remains =
+                self.rebuild_failed_batch_children(backoffer, &response, result.remains)?;
+            return Ok(result);
         }
         if !response.other_error.is_empty() {
             if response.other_error.contains("Request range exceeds bound") {
@@ -1192,7 +1608,10 @@ impl CopTaskWorker {
                 backoffer.backoff(&BatchError::Transport(response.other_error.clone()))?;
                 let retry = task.exceeds_bound_retry + 1;
                 let remains = self.rebuild(&task, true, retry)?;
-                return Ok(batch_remains_on_error(task, remains, &response));
+                let mut result = batch_remains_on_error(task, remains, &response);
+                result.remains =
+                    self.rebuild_failed_batch_children(backoffer, &response, result.remains)?;
+                return Ok(result);
             }
             if response.other_error.contains("write conflict") {
                 return Err(BatchError::OtherResponse(format!(
@@ -1232,8 +1651,13 @@ impl CopTaskWorker {
                 },
             );
         }
-        let (batch_responses, mut batch_remains) =
+        let (batch_responses, batch_remains) =
             handle_batch_responses(&response, &task.batch_task_list);
+        let mut batch_remains =
+            self.rebuild_failed_batch_children(backoffer, &response, batch_remains)?;
+        if response.range.is_some() && response.read_bytes > 0 {
+            self.ema.observe(response.read_bytes, Instant::now());
+        }
         if task.paging || response.range.is_some() {
             let remaining = calculate_remain(
                 &task.ranges,
@@ -1249,8 +1673,11 @@ impl CopTaskWorker {
         }
         Ok(CopTaskResult {
             response: Some(CopResponse {
+                detail: Some(CopRuntimeStats {
+                    read_pool_task_details: response.read_pool_task_details.clone(),
+                    ..CopRuntimeStats::default()
+                }),
                 response: Some(response),
-                detail: Some(CopRuntimeStats::default()),
                 start_key,
                 response_time: elapsed,
                 ..CopResponse::default()
@@ -1320,6 +1747,13 @@ pub struct CopIterator {
     killed: Arc<AtomicU32>,
     keys_read: Arc<AtomicU64>,
     paging_task_index: Arc<AtomicU32>,
+    ema: Arc<RuEma>,
+    limiter_wait: Arc<Mutex<LimiterWaitStats>>,
+    resolved_locks: Arc<Mutex<HashSet<u64>>>,
+    committed_locks: Arc<Mutex<HashSet<u64>>>,
+    runtime_stats: Arc<Mutex<Vec<CopRuntimeStats>>>,
+    store_batched_num: Arc<AtomicU64>,
+    store_batched_fallback_num: Arc<AtomicU64>,
     receiver: Option<mpsc::Receiver<IteratorMessage>>,
     workers: Vec<JoinHandle<()>>,
     ordered_buffer: HashMap<usize, VecDeque<CopResponse>>,
@@ -1348,6 +1782,11 @@ impl CopIterator {
         } else {
             worker_capacity
         };
+        let ema = Arc::new(RuEma::new(request.paging.size_bytes));
+        let resolved_locks = Arc::new(Mutex::new(request.resolved_locks.iter().copied().collect()));
+        let committed_locks = Arc::new(Mutex::new(
+            request.committed_locks.iter().copied().collect(),
+        ));
         Self {
             backend,
             request,
@@ -1359,6 +1798,13 @@ impl CopIterator {
             killed: Arc::new(AtomicU32::new(0)),
             keys_read: Arc::new(AtomicU64::new(0)),
             paging_task_index: Arc::new(AtomicU32::new(0)),
+            ema,
+            limiter_wait: Arc::new(Mutex::new(LimiterWaitStats::default())),
+            resolved_locks,
+            committed_locks,
+            runtime_stats: Arc::new(Mutex::new(Vec::new())),
+            store_batched_num: Arc::new(AtomicU64::new(0)),
+            store_batched_fallback_num: Arc::new(AtomicU64::new(0)),
             receiver: None,
             workers: Vec::new(),
             ordered_buffer: HashMap::new(),
@@ -1392,6 +1838,31 @@ impl CopIterator {
         self.request.copr_request_rate_limit.as_ref()
     }
 
+    pub fn request_limiter(&self) -> Option<&Arc<astersql_kv::CoprRequestLimiter>> {
+        self.request.copr_request_limiter.as_ref()
+    }
+
+    pub fn limiter_wait_stats(&self) -> LimiterWaitStats {
+        *self
+            .limiter_wait
+            .lock()
+            .expect("limiter wait statistics lock poisoned")
+    }
+
+    pub fn runtime_stats(&self) -> Vec<CopRuntimeStats> {
+        self.runtime_stats
+            .lock()
+            .expect("cop runtime stats lock poisoned")
+            .clone()
+    }
+
+    pub fn store_batch_stats(&self) -> (u64, u64) {
+        (
+            self.store_batched_num.load(Ordering::Acquire),
+            self.store_batched_fallback_num.load(Ordering::Acquire),
+        )
+    }
+
     /// 启动 worker，开始并行执行任务。
     pub fn open(&mut self) {
         if self.started {
@@ -1419,6 +1890,17 @@ impl CopIterator {
                     self.cache.clone(),
                     Arc::clone(&self.keys_read),
                     Arc::clone(&self.paging_task_index),
+                )
+                .with_ema(Arc::clone(&self.ema))
+                .with_limiter_wait(Arc::clone(&self.limiter_wait))
+                .with_lock_sets(
+                    Arc::clone(&self.resolved_locks),
+                    Arc::clone(&self.committed_locks),
+                )
+                .with_runtime_stats(Arc::clone(&self.runtime_stats))
+                .with_store_batch_stats(
+                    Arc::clone(&self.store_batched_num),
+                    Arc::clone(&self.store_batched_fallback_num),
                 )
                 .with_finish(Arc::clone(&self.finish)),
                 batch_responses: VecDeque::new(),
@@ -1458,6 +1940,13 @@ impl CopIterator {
             let cache = self.cache.clone();
             let keys_read = Arc::clone(&self.keys_read);
             let paging_index = Arc::clone(&self.paging_task_index);
+            let ema = Arc::clone(&self.ema);
+            let limiter_wait = Arc::clone(&self.limiter_wait);
+            let resolved_locks = Arc::clone(&self.resolved_locks);
+            let committed_locks = Arc::clone(&self.committed_locks);
+            let runtime_stats = Arc::clone(&self.runtime_stats);
+            let store_batched_num = Arc::clone(&self.store_batched_num);
+            let store_batched_fallback_num = Arc::clone(&self.store_batched_fallback_num);
             let finish = Arc::clone(&self.finish);
             let queue = Arc::clone(&queue);
             let sender = sender.clone();
@@ -1468,6 +1957,11 @@ impl CopIterator {
             self.workers.push(thread::spawn(move || {
                 let _completion = completion;
                 let worker = CopTaskWorker::new(backend, request, cache, keys_read, paging_index)
+                    .with_ema(ema)
+                    .with_limiter_wait(limiter_wait)
+                    .with_lock_sets(resolved_locks, committed_locks)
+                    .with_runtime_stats(runtime_stats)
+                    .with_store_batch_stats(store_batched_num, store_batched_fallback_num)
                     .with_finish(Arc::clone(&finish));
                 loop {
                     let item = queue.0.lock().expect("cop task queue poisoned").pop_front();
@@ -1921,13 +2415,13 @@ pub fn optimize_row_hint(request: &CopRequest) -> bool {
 
 /// 是否应对该请求启用 store 侧批处理 Coprocessor。
 pub fn check_store_batch_coprocessor(request: &CopRequest) -> bool {
-    request.request_type == RequestType::Dag
+    (request.request_type == RequestType::Dag || request.allow_batch_task_data_merge)
         && request.store_type == StoreType::TiKv
         && request.replica_read == ReplicaReadType::Leader
         && !request.keep_order
         && !request.paging.enabled
         && request.paging.size_bytes == 0
-        && !request.request_source.internal
+        && (!request.request_source.internal || request.allow_batch_task_data_merge)
 }
 
 type LiteWorkerHook = Arc<dyn Fn() + Send + Sync>;

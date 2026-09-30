@@ -14,7 +14,7 @@ use kvproto::kvrpcpb;
 use protobuf::Message;
 
 use crate::batch_request_sender::{BatchResult, KeyRange, Peer, RegionVerId, Store};
-use crate::coprocessor::{CopProtocolResponse, CopTask, CopWireRequest};
+use crate::coprocessor::{CopProtocolResponse, CopRequestAttemptLimiter, CopTask, CopWireRequest};
 use crate::network_backend::{
     CoprocessorResponseStream, KeyCodec, NetworkBackend, RegionMetadataTransport,
     StandardCoprocessorRequest, StandardCoprocessorTransport, TransactionLock,
@@ -123,6 +123,7 @@ struct RecordingCoprocessor {
     requests: Mutex<Vec<StandardCoprocessorRequest>>,
     unary_calls: AtomicUsize,
     stream_closed: Arc<AtomicBool>,
+    admission: Option<Arc<astersql_kv::CoprRequestLimiter>>,
 }
 
 #[derive(Default)]
@@ -147,6 +148,9 @@ impl StandardCoprocessorTransport for RecordingCoprocessor {
         request: &StandardCoprocessorRequest,
         _timeout: Duration,
     ) -> BatchResult<CopProtocolResponse> {
+        if let Some(limiter) = &self.admission {
+            assert!(!limiter.TryAcquire(), "RPC attempt must hold the permit");
+        }
         self.requests.lock().unwrap().push(request.clone());
         let call = self.unary_calls.fetch_add(1, Ordering::AcqRel);
         Ok(if call == 0 {
@@ -190,6 +194,36 @@ impl StandardCoprocessorTransport for RecordingCoprocessor {
     fn close_address(&self, _address: &str) -> BatchResult<()> {
         Ok(())
     }
+}
+
+#[test]
+fn go_merge_48_network_send_holds_and_releases_attempt_permit() {
+    let metadata = Arc::new(RecordingMetadata::default());
+    let limiter = astersql_kv::NewCoprRequestLimiter(1).unwrap();
+    let coprocessor = Arc::new(RecordingCoprocessor {
+        admission: Some(Arc::clone(&limiter)),
+        ..RecordingCoprocessor::default()
+    });
+    let backend = NetworkBackend::from_transports(
+        metadata as Arc<dyn RegionMetadataTransport>,
+        coprocessor as Arc<dyn StandardCoprocessorTransport>,
+        Arc::new(RecordingLockResolver::default()) as Arc<dyn TransactionLockResolver>,
+    );
+    let task = CopTask {
+        region: RegionVerId::new(7, 2, 10),
+        ..CopTask::default()
+    };
+    let wire = CopWireRequest {
+        attempt_limiter: Some(Arc::new(CopRequestAttemptLimiter::new(
+            Some(Arc::clone(&limiter)),
+            None,
+            None,
+        ))),
+        ..CopWireRequest::default()
+    };
+    StoreBackend::send_coprocessor(&backend, &task, &wire).unwrap();
+    assert!(limiter.TryAcquire(), "permit must be released after send");
+    limiter.Release();
 }
 
 #[test]

@@ -19,7 +19,7 @@
 //! SafePoint 继续由 client-rust 承担；路由切分与重试继续复用本 crate 的
 //! `RegionCache`/`CopClient`，本模块不维护第二份 Region 缓存。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -45,6 +45,7 @@ use crate::coprocessor::{
 use crate::mpp::{
     MppCancelRequest, MppConnectionRequest, MppDispatchResponse, MppDispatchWireRequest, MppStream,
 };
+use crate::pool_task_details::PoolTaskDetails;
 use crate::region_cache::{Buckets, KeyLocation, RegionCacheBackend};
 use crate::store::{ClientEventListener, StoreBackend};
 
@@ -413,6 +414,18 @@ impl NetworkBackend {
         }
     }
 
+    fn timeout_for_wire(task: &CopTask, wire: &CopWireRequest) -> Duration {
+        Self::serial_batch_timeout(Self::timeout_for(task), wire)
+    }
+
+    fn serial_batch_timeout(timeout: Duration, wire: &CopWireRequest) -> Duration {
+        if wire.execute_batch_tasks_serially && !wire.tasks.is_empty() {
+            timeout.saturating_mul((wire.tasks.len() + 1).min(u32::MAX as usize) as u32)
+        } else {
+            timeout
+        }
+    }
+
     /// 打开 TiKV 标准 server-streaming Coprocessor RPC。
     pub fn send_coprocessor_stream(
         &self,
@@ -420,8 +433,13 @@ impl NetworkBackend {
         wire: &CopWireRequest,
     ) -> BatchResult<Box<dyn CoprocessorResponseStream>> {
         let request = self.located_request(task, wire)?;
+        let _permit = wire
+            .attempt_limiter
+            .as_ref()
+            .map(|limiter| limiter.acquire(request.peer.as_ref().map_or(0, |peer| peer.store_id)))
+            .transpose()?;
         self.coprocessor
-            .send_stream(&request, Self::timeout_for(task))
+            .send_stream(&request, Self::timeout_for_wire(task, wire))
     }
 }
 
@@ -586,6 +604,14 @@ impl StoreBackend for NetworkBackend {
         let request = self.located_request(task, wire)?;
         let timed_out = |error: &BatchError| matches!(error, BatchError::Transport(message) if message.to_ascii_lowercase().replace('_', "").contains("deadlineexceeded"));
         let send = |request: &StandardCoprocessorRequest, timeout| {
+            let _permit = request
+                .wire
+                .attempt_limiter
+                .as_ref()
+                .map(|limiter| {
+                    limiter.acquire(request.peer.as_ref().map_or(0, |peer| peer.store_id))
+                })
+                .transpose()?;
             let started = std::time::Instant::now();
             let result = self.coprocessor.send_unary(request, timeout);
             if let Some(stats) = &task.read_stats {
@@ -598,8 +624,9 @@ impl StoreBackend for NetworkBackend {
             }
             result
         };
+        let timeout = Self::timeout_for_wire(task, wire);
         let response = if task.client_read_timeout.is_zero() {
-            send(&request, DEFAULT_RPC_TIMEOUT)
+            send(&request, timeout)
         } else {
             let mut response = None;
             for location in self.metadata.read_replicas(task.region.id)? {
@@ -613,14 +640,19 @@ impl StoreBackend for NetworkBackend {
                 if attempt.peer != request.peer {
                     attempt.wire.replica_read = ReplicaReadType::Follower;
                 }
-                let result = send(&attempt, task.client_read_timeout);
+                let result = send(&attempt, timeout);
                 if result.as_ref().err().is_some_and(&timed_out) {
                     continue;
                 }
                 response = Some(result);
                 break;
             }
-            response.unwrap_or_else(|| send(&request, DEFAULT_RPC_TIMEOUT))
+            response.unwrap_or_else(|| {
+                send(
+                    &request,
+                    Self::serial_batch_timeout(DEFAULT_RPC_TIMEOUT, wire),
+                )
+            })
         };
         match &response {
             Ok(response) if response.region_error.is_some() => {
@@ -1555,6 +1587,8 @@ impl GrpcStandardCoprocessorTransport {
         let mut resource = kvrpcpb::ResourceControlContext::new();
         resource.set_resource_group_name(request.wire.resource_group_name.clone());
         context.set_resource_control_context(resource);
+        context.set_resolved_locks(request.wire.resolved_locks.clone());
+        context.set_committed_locks(request.wire.committed_locks.clone());
         if let Some(keyspace_id) = self.codec.keyspace_id {
             context.set_api_version(kvrpcpb::ApiVersion::V2);
             context.set_keyspace_name(self.codec.keyspace_name.clone());
@@ -1574,6 +1608,9 @@ impl GrpcStandardCoprocessorTransport {
         protobuf_request.set_paging_size(request.wire.paging_size);
         protobuf_request.set_max_keys_read(request.wire.maximum_keys_read);
         protobuf_request.set_paging_size_bytes(request.wire.paging_size_bytes);
+        protobuf_request.set_allow_batch_task_data_merge(request.wire.allow_batch_task_data_merge);
+        protobuf_request
+            .set_execute_batch_tasks_serially(request.wire.execute_batch_tasks_serially);
         protobuf_request.set_connection_id(request.wire.connection_id);
         protobuf_request.set_connection_alias(request.wire.connection_alias.clone());
         protobuf_request.set_ranges(protobuf::RepeatedField::from_vec(
@@ -1795,7 +1832,13 @@ fn response_processed_keys_v2(details: &kvrpcpb::ExecDetailsV2) -> u64 {
 
 fn response_read_bytes_v2(details: &kvrpcpb::ExecDetailsV2) -> u64 {
     if details.has_scan_detail_v2() {
-        details.get_scan_detail_v2().get_processed_versions_size()
+        let scan = details.get_scan_detail_v2();
+        if astersql_config_kerneltype::IsNextGen() {
+            scan.get_total_versions_size()
+                .max(scan.get_processed_versions_size())
+        } else {
+            scan.get_processed_versions_size()
+        }
     } else {
         0
     }
@@ -1809,6 +1852,15 @@ fn response_kv_cpu_ms_v2(details: &kvrpcpb::ExecDetailsV2) -> f64 {
     } else {
         0.0
     }
+}
+
+fn pool_task_details(details: &kvrpcpb::ExecDetailsV2) -> Option<PoolTaskDetails> {
+    if !details.has_read_pool_task_details() {
+        return None;
+    }
+    let mut aggregate = PoolTaskDetails::default();
+    aggregate.merge_from_pb(details.get_read_pool_task_details());
+    Some(aggregate)
 }
 
 fn response_processed_keys(response: &coprocessorpb::Response) -> u64 {
@@ -1830,40 +1882,50 @@ fn pb_response(
     mut response: coprocessorpb::Response,
     codec: &KeyCodec,
 ) -> BatchResult<CopProtocolResponse> {
-    let batch_responses = response
-        .take_batch_responses()
-        .into_iter()
-        .map(|mut batch| {
-            let task_id = batch.get_task_id();
-            let locked = if batch.has_locked() {
-                Some(lock_bytes(batch.take_locked(), codec)?)
-            } else {
-                None
-            };
-            let protocol = CopProtocolResponse {
-                data: batch.take_data(),
-                region_error: batch
-                    .has_region_error()
-                    .then(|| error_text(batch.get_region_error())),
-                locked,
-                other_error: batch.take_other_error(),
-                scanned_keys: batch
-                    .has_exec_details_v2()
-                    .then(|| response_processed_keys_v2(batch.get_exec_details_v2()))
-                    .unwrap_or_default(),
-                read_bytes: batch
-                    .has_exec_details_v2()
-                    .then(|| response_read_bytes_v2(batch.get_exec_details_v2()))
-                    .unwrap_or_default(),
-                kv_cpu_ms: batch
-                    .has_exec_details_v2()
-                    .then(|| response_kv_cpu_ms_v2(batch.get_exec_details_v2()))
-                    .unwrap_or_default(),
-                ..CopProtocolResponse::default()
-            };
-            Ok((task_id, protocol))
-        })
-        .collect::<BatchResult<_>>()?;
+    let mut batch_responses = HashMap::new();
+    let mut batch_region_errors = HashSet::new();
+    let mut batch_locked = HashSet::new();
+    for mut batch in response.take_batch_responses().into_iter() {
+        let task_id = batch.get_task_id();
+        if batch.has_region_error() {
+            batch_region_errors.insert(task_id);
+        }
+        if batch.has_locked() {
+            batch_locked.insert(task_id);
+        }
+        let locked = if batch.has_locked() {
+            Some(lock_bytes(batch.take_locked(), codec)?)
+        } else {
+            None
+        };
+        let protocol = CopProtocolResponse {
+            data: batch.take_data(),
+            data_merged_into_response: batch.get_data_merged_into_response(),
+            region_error: batch
+                .has_region_error()
+                .then(|| error_text(batch.get_region_error())),
+            locked,
+            other_error: batch.take_other_error(),
+            scanned_keys: batch
+                .has_exec_details_v2()
+                .then(|| response_processed_keys_v2(batch.get_exec_details_v2()))
+                .unwrap_or_default(),
+            read_bytes: batch
+                .has_exec_details_v2()
+                .then(|| response_read_bytes_v2(batch.get_exec_details_v2()))
+                .unwrap_or_default(),
+            kv_cpu_ms: batch
+                .has_exec_details_v2()
+                .then(|| response_kv_cpu_ms_v2(batch.get_exec_details_v2()))
+                .unwrap_or_default(),
+            read_pool_task_details: batch
+                .has_exec_details_v2()
+                .then(|| pool_task_details(batch.get_exec_details_v2()))
+                .flatten(),
+            ..CopProtocolResponse::default()
+        };
+        batch_responses.insert(task_id, protocol);
+    }
     let range = if response.has_range() {
         Some(key_range(response.get_range(), codec)?)
     } else {
@@ -1897,7 +1959,13 @@ fn pb_response(
         scanned_keys,
         read_bytes,
         kv_cpu_ms,
+        read_pool_task_details: response
+            .has_exec_details_v2()
+            .then(|| pool_task_details(response.get_exec_details_v2()))
+            .flatten(),
         batch_responses,
+        batch_region_errors,
+        batch_locked,
         ..CopProtocolResponse::default()
     })
 }
