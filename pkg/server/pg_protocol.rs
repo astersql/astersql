@@ -1,12 +1,13 @@
 // Copyright 2026 AsterSQL.
 
-//! PostgreSQL 3.2 startup framing. This module does not authenticate, open a
+//! PostgreSQL 3.0/3.2 startup framing. This module does not authenticate, open a
 //! session, or share MySQL packet framing. SSL and cancellation requests belong
 //! to the later negotiation layer and are not startup messages.
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{self, Read};
 
+pub const PROTOCOL_VERSION_30: u32 = 3 << 16;
 pub const PROTOCOL_VERSION: u32 = (3 << 16) | 2;
 /// Includes the length word; checked before allocating the network payload.
 pub const MAX_STARTUP_LENGTH: usize = 10_000;
@@ -14,6 +15,7 @@ const MIN_STARTUP_LENGTH: usize = 9;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartupMessage {
+    pub protocol_version: u32,
     /// Structural parsing preserves unknown parameters for the negotiation layer.
     /// The authentication layer must require a user and validate session options.
     pub parameters: BTreeMap<String, String>,
@@ -37,7 +39,7 @@ impl fmt::Display for StartupError {
             Self::LengthMismatch => f.write_str("PostgreSQL startup length does not match payload"),
             Self::UnsupportedVersion(v) => write!(
                 f,
-                "unsupported PostgreSQL protocol {}.{}; only 3.2 is supported",
+                "unsupported PostgreSQL protocol {}.{}; only 3.0 and 3.2 are supported",
                 v >> 16,
                 v & 0xffff
             ),
@@ -69,7 +71,7 @@ pub fn parse_startup(packet: &[u8]) -> Result<StartupMessage, StartupError> {
         return Err(StartupError::LengthMismatch);
     }
     let version = u32::from_be_bytes(packet[4..8].try_into().unwrap());
-    if version != PROTOCOL_VERSION {
+    if !matches!(version, PROTOCOL_VERSION_30 | PROTOCOL_VERSION) {
         return Err(StartupError::UnsupportedVersion(version));
     }
     let mut remaining = &packet[8..];
@@ -80,7 +82,10 @@ pub fn parse_startup(packet: &[u8]) -> Result<StartupMessage, StartupError> {
             if !remaining.is_empty() {
                 return Err(StartupError::InvalidParameters);
             }
-            return Ok(StartupMessage { parameters });
+            return Ok(StartupMessage {
+                protocol_version: version,
+                parameters,
+            });
         }
         let value = take_string(&mut remaining)?;
         if parameters

@@ -63,7 +63,7 @@ fn startup_auth_roundtrip() {
     let e = message(&mut bad);
     assert_eq!(e.0, b'E');
     assert!(e.1.windows(5).any(|w| w == b"28P01"));
-    let mut old = startup(addr, "root", 196608);
+    let mut old = startup(addr, "root", 196609);
     let e = message(&mut old);
     assert_eq!(e.0, b'E');
     assert!(e.1.windows(5).any(|w| w == b"0A000"));
@@ -73,33 +73,8 @@ fn startup_auth_roundtrip() {
     service.close();
 }
 
-fn authenticated(addr: std::net::SocketAddr) -> (TcpStream, Vec<u8>) {
-    let mut socket = startup(addr, "root", 196610);
-    assert_eq!(message(&mut socket).0, b'R');
-    let key = loop {
-        let (tag, body) = message(&mut socket);
-        if tag == b'K' {
-            break body;
-        }
-    };
-    assert_eq!(message(&mut socket).0, b'Z');
-    (socket, key)
-}
-fn cancel_packet(addr: std::net::SocketAddr, key: &[u8]) {
-    let mut socket = TcpStream::connect(addr).unwrap();
-    socket
-        .set_read_timeout(Some(Duration::from_secs(3)))
-        .unwrap();
-    socket
-        .write_all(&((key.len() + 8) as u32).to_be_bytes())
-        .unwrap();
-    socket.write_all(&80877102u32.to_be_bytes()).unwrap();
-    socket.write_all(key).unwrap();
-    let mut eof = [0];
-    assert_eq!(socket.read(&mut eof).unwrap(), 0);
-}
 #[test]
-fn startup_cancel_is_scoped_and_consumed() {
+fn startup_protocol_30_roundtrip() {
     let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
     let driver = Arc::new(ConcreteSessionDriver::new_for_test(
         domain.clone(),
@@ -115,8 +90,127 @@ fn startup_cancel_is_scoped_and_consumed() {
         false,
     )
     .unwrap();
-    let (mut a, key) = authenticated(addr);
-    let (mut b, other) = authenticated(addr);
+    let mut s = startup(addr, "root", 196608);
+    assert_eq!(message(&mut s), (b'R', 0u32.to_be_bytes().to_vec()));
+    let key = loop {
+        let (tag, body) = message(&mut s);
+        if tag == b'K' {
+            break body;
+        }
+        assert_eq!(tag, b'S');
+    };
+    assert_eq!(key.len(), 8);
+    assert_eq!(message(&mut s), (b'Z', b"I".to_vec()));
+    let mut bad = startup(addr, "intruder", 196608);
+    let e = message(&mut bad);
+    assert_eq!(e.0, b'E');
+    assert!(e.1.windows(5).any(|w| w == b"28P01"));
+    send(&mut s, b'X', b"");
+    let mut eof = [0];
+    assert_eq!(s.read(&mut eof).unwrap(), 0);
+    service.close();
+}
+
+#[test]
+fn startup_server_version_parameter() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    for version in [196608, 196610] {
+        let mut socket = startup(addr, "root", version);
+        assert_eq!(message(&mut socket), (b'R', 0u32.to_be_bytes().to_vec()));
+        for body in [
+            b"client_encoding\0UTF8\0".as_slice(),
+            b"server_encoding\0UTF8\0",
+            b"server_version\018.0 (AsterSQL)\0",
+        ] {
+            assert_eq!(message(&mut socket), (b'S', body.to_vec()));
+        }
+        let (tag, key) = message(&mut socket);
+        assert_eq!(tag, b'K');
+        assert_eq!(key.len(), if version == 196608 { 8 } else { 36 });
+        assert_eq!(message(&mut socket), (b'Z', b"I".to_vec()));
+        send(&mut socket, b'X', b"");
+        let mut bad = startup(addr, "intruder", version);
+        let error = message(&mut bad);
+        assert_eq!(error.0, b'E');
+        assert!(error.1.windows(5).any(|w| w == b"28P01"));
+    }
+    service.close();
+}
+
+fn authenticated(addr: std::net::SocketAddr) -> (TcpStream, Vec<u8>) {
+    authenticated_version(addr, 196610)
+}
+fn authenticated_version(addr: std::net::SocketAddr, version: u32) -> (TcpStream, Vec<u8>) {
+    let mut socket = startup(addr, "root", version);
+    assert_eq!(message(&mut socket).0, b'R');
+    let key = loop {
+        let (tag, body) = message(&mut socket);
+        if tag == b'K' {
+            break body;
+        }
+    };
+    assert_eq!(key.len(), if version == 196608 { 8 } else { 36 });
+    assert_eq!(message(&mut socket), (b'Z', b"I".to_vec()));
+    (socket, key)
+}
+fn cancel_packet(addr: std::net::SocketAddr, key: &[u8]) {
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    socket
+        .write_all(&((key.len() + 8) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&80877102u32.to_be_bytes()).unwrap();
+    socket.write_all(key).unwrap();
+    if key.len() < 8 || key.len() > 260 {
+        let error = message(&mut socket);
+        assert_eq!(error.0, b'E');
+        assert!(error.1.windows(5).any(|w| w == b"08P01"));
+    }
+    let mut eof = [0];
+    assert_eq!(socket.read(&mut eof).unwrap(), 0);
+}
+#[test]
+fn startup_cancel_is_scoped_and_consumed() {
+    for version in [196608, 196610] {
+        cancel_is_scoped_and_consumed(version);
+    }
+}
+fn cancel_is_scoped_and_consumed(version: u32) {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let (mut a, key) = authenticated_version(addr, version);
+    let (mut b, other) = authenticated_version(addr, version);
+    let (mut opposite, opposite_key) =
+        authenticated_version(addr, if version == 196608 { 196610 } else { 196608 });
     let pid = u32::from_be_bytes(key[..4].try_into().unwrap());
     let other_pid = u32::from_be_bytes(other[..4].try_into().unwrap());
     for should_cancel in [false, true] {
@@ -142,6 +236,18 @@ fn startup_cancel_is_scoped_and_consumed() {
             let mut cross = key[..4].to_vec();
             cross.extend_from_slice(&other[4..]);
             cancel_packet(addr, &cross);
+            // Keep malformed lengths inside the initial frame's bounds so the
+            // registry, rather than transport framing, rejects the secret.
+            let mut oversized = key.clone();
+            oversized.push(0);
+            cancel_packet(addr, &oversized);
+            cancel_packet(addr, &key[..key.len() - 1]);
+            let mut different_version = key[..4].to_vec();
+            different_version.extend_from_slice(&opposite_key[4..]);
+            cancel_packet(addr, &different_version);
+            let mut beyond_protocol_maximum = key[..4].to_vec();
+            beyond_protocol_maximum.resize(261, 0);
+            cancel_packet(addr, &beyond_protocol_maximum);
         }
         assert!(
             service
@@ -197,6 +303,7 @@ fn startup_cancel_is_scoped_and_consumed() {
             .is_ok()
     );
     send(&mut b, b'X', b"");
+    send(&mut opposite, b'X', b"");
     service.close();
 }
 

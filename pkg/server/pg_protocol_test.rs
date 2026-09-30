@@ -1,6 +1,7 @@
 // Copyright 2026 AsterSQL.
 use crate::pg_protocol::{
-    MAX_STARTUP_LENGTH, PROTOCOL_VERSION, StartupError, parse_startup, read_startup,
+    MAX_STARTUP_LENGTH, PROTOCOL_VERSION, PROTOCOL_VERSION_30, StartupError, parse_startup,
+    read_startup,
 };
 use std::io::{Cursor, Write};
 use std::net::{TcpListener, TcpStream};
@@ -23,39 +24,47 @@ fn startup_packet_bounds() {
         m.parameters.get("database").map(String::as_str),
         Some("test")
     );
-    for v in [0, 196608, 196609, 196611, 262144, u32::MAX] {
+    for version in [PROTOCOL_VERSION_30, PROTOCOL_VERSION] {
+        let parsed = parse_startup(&packet(version, b"user\0root\0\0")).unwrap();
+        assert_eq!(parsed.protocol_version, version);
+        assert_eq!(parsed.parameters["user"], "root");
+    }
+    for v in [0, 131072, 196609, 196611, 262144, u32::MAX] {
         assert_eq!(
             parse_startup(&packet(v, b"\0")),
             Err(StartupError::UnsupportedVersion(v))
         );
     }
-    for len in [0u32, 3, 4, 7, 8, (MAX_STARTUP_LENGTH + 1) as u32, u32::MAX] {
-        let mut invalid = p.clone();
-        invalid[..4].copy_from_slice(&len.to_be_bytes());
-        assert!(parse_startup(&invalid).is_err());
+    for version in [PROTOCOL_VERSION_30, PROTOCOL_VERSION] {
+        let p = packet(version, b"user\0root\0database\0test\0\0");
+        for len in [0u32, 3, 4, 7, 8, (MAX_STARTUP_LENGTH + 1) as u32, u32::MAX] {
+            let mut invalid = p.clone();
+            invalid[..4].copy_from_slice(&len.to_be_bytes());
+            assert!(parse_startup(&invalid).is_err());
+        }
+        for end in 0..p.len() {
+            assert!(parse_startup(&p[..end]).is_err());
+        }
+        for params in [
+            b"".as_slice(),
+            b"user\0root\0",
+            b"user\0",
+            b"user\0root\0\0x",
+            b"\0\0",
+            b"user\0\xff\0\0",
+            b"user\0a\0user\0b\0\0",
+        ] {
+            assert!(parse_startup(&packet(version, params)).is_err());
+        }
+        assert!(parse_startup(&packet(version, b"application_name\0\0\0")).is_ok());
+        let mut params = b"user\0".to_vec();
+        params.resize(MAX_STARTUP_LENGTH - 10, b'x');
+        params.extend_from_slice(b"\0\0");
+        assert_eq!(packet(version, &params).len(), MAX_STARTUP_LENGTH);
+        assert!(parse_startup(&packet(version, &params)).is_ok());
+        params.insert(5, b'x');
+        assert!(parse_startup(&packet(version, &params)).is_err());
     }
-    for end in 0..p.len() {
-        assert!(parse_startup(&p[..end]).is_err());
-    }
-    for params in [
-        b"".as_slice(),
-        b"user\0root\0",
-        b"user\0",
-        b"user\0root\0\0x",
-        b"\0\0",
-        b"user\0\xff\0\0",
-        b"user\0a\0user\0b\0\0",
-    ] {
-        assert!(parse_startup(&packet(PROTOCOL_VERSION, params)).is_err());
-    }
-    assert!(parse_startup(&packet(PROTOCOL_VERSION, b"application_name\0\0\0")).is_ok());
-    let mut params = b"user\0".to_vec();
-    params.resize(MAX_STARTUP_LENGTH - 10, b'x');
-    params.extend_from_slice(b"\0\0");
-    assert_eq!(packet(PROTOCOL_VERSION, &params).len(), MAX_STARTUP_LENGTH);
-    assert!(parse_startup(&packet(PROTOCOL_VERSION, &params)).is_ok());
-    params.insert(5, b'x');
-    assert!(parse_startup(&packet(PROTOCOL_VERSION, &params)).is_err());
 }
 
 #[test]
@@ -84,8 +93,8 @@ fn startup_raw_tcp_client_v1_requests_32() {
         .write_all(&packet(196608, b"user\0root\0\0"))
         .unwrap();
     assert_eq!(
-        read_startup(&mut server),
-        Err(StartupError::UnsupportedVersion(196608))
+        read_startup(&mut server).unwrap().protocol_version,
+        PROTOCOL_VERSION_30
     );
 }
 

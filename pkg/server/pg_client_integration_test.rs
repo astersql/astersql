@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[test]
-fn postgres_client_workflow() {
+fn postgres_client_protocol_versions() {
     let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
     let driver = Arc::new(ConcreteSessionDriver::new_for_test(
         domain.clone(),
@@ -122,6 +122,8 @@ status = api('PQstatus', integer, ptr)
 error = api('PQerrorMessage', text, ptr)
 finish = api('PQfinish', None, ptr)
 protocol = api('PQfullProtocolVersion', integer, ptr)
+parameter_status = api('PQparameterStatus', text, ptr, text)
+server_version = api('PQserverVersion', integer, ptr)
 execute = api('PQexec', ptr, ptr, text)
 params = api('PQexecParams', ptr, ptr, text, integer, c.POINTER(c.c_uint), c.POINTER(text), c.POINTER(integer), c.POINTER(integer), integer)
 result_status = api('PQresultStatus', integer, ptr)
@@ -134,61 +136,65 @@ txn = api('PQtransactionStatus', integer, ptr)
 cancel_create = api('PQcancelCreate', ptr, ptr)
 cancel_blocking = api('PQcancelBlocking', integer, ptr)
 cancel_finish = api('PQcancelFinish', None, ptr)
-conninfo = f'host=127.0.0.1 port={sys.argv[1]} user=root dbname=test sslmode=disable gssencmode=disable connect_timeout=5 min_protocol_version=3.2 max_protocol_version=3.2'
-conn = connect(conninfo.encode())
-assert conn
-try:
-    assert status(conn) == 0, error(conn).decode()
-    assert protocol(conn) == 30002, protocol(conn)
-    def query(sql, expected=None, parameter=None):
-        if parameter is None:
-            result = execute(conn, sql.encode())
-        else:
-            oids = (c.c_uint * 1)(23)
-            values = (text * 1)(str(parameter).encode())
-            result = params(conn, sql.encode(), 1, oids, values, None, None, 0)
-        assert result
-        try:
-            assert result_status(result) in (1, 2), result_error(result).decode()
-            if expected is not None:
-                actual = [[value(result, r, col).decode() for col in range(columns(result))] for r in range(rows(result))]
-                assert actual == expected, (sql, actual, expected)
-        finally:
-            clear(result)
-    for invalid_info in [conninfo.replace('user=root', 'user=intruder'), conninfo.replace('3.2', '3.0')]:
-        invalid = connect(invalid_info.encode())
-        try:
-            assert status(invalid) != 0, 'invalid identity/version must be rejected'
-        finally:
-            finish(invalid)
-    query('SELECT 1', [['1']])
-    query('CREATE TABLE pg_real_client (id INT PRIMARY KEY, v VARCHAR(30))')
-    query("INSERT INTO pg_real_client VALUES (1, 'one')")
-    query("UPDATE pg_real_client SET v = 'two' WHERE id = 1")
-    query('SELECT v FROM pg_real_client WHERE id = $1', [['two']], parameter=1)
-    query('BEGIN')
-    assert txn(conn) == 2
-    query("INSERT INTO pg_real_client VALUES (2, 'committed')")
-    query('COMMIT')
-    assert txn(conn) == 0
-    query('BEGIN')
-    query("UPDATE pg_real_client SET v = 'rolled back' WHERE id = 1")
-    query('ROLLBACK')
-    assert txn(conn) == 0
-    query('SELECT v FROM pg_real_client ORDER BY id', [['two'], ['committed']])
-    query('DELETE FROM pg_real_client WHERE id = 2')
-    query('SELECT id FROM pg_real_client', [['1']])
-    # libpq owns the variable-length 3.2 BackendKeyData/CancelRequest framing.
-    # An idle cancel must complete without poisoning the next query.
-    cancel = cancel_create(conn)
-    assert cancel
+base_conninfo = f'host=127.0.0.1 port={sys.argv[1]} user=root dbname=test sslmode=disable gssencmode=disable connect_timeout=5'
+for options, expected_protocol in [('', 30000), (' min_protocol_version=3.2 max_protocol_version=3.2', 30002)]:
+    conninfo = base_conninfo + options
+    conn = connect(conninfo.encode())
+    assert conn
     try:
-        assert cancel_blocking(cancel) == 1
+        assert status(conn) == 0, error(conn).decode()
+        assert protocol(conn) == expected_protocol, protocol(conn)
+        assert parameter_status(conn, b'server_version') == b'18.0 (AsterSQL)'
+        assert server_version(conn) == 180000, server_version(conn)
+        def query(sql, expected=None, parameter=None):
+            if parameter is None:
+                result = execute(conn, sql.encode())
+            else:
+                oids = (c.c_uint * 1)(23)
+                values = (text * 1)(str(parameter).encode())
+                result = params(conn, sql.encode(), 1, oids, values, None, None, 0)
+            assert result
+            try:
+                assert result_status(result) in (1, 2), result_error(result).decode()
+                if expected is not None:
+                    actual = [[value(result, r, col).decode() for col in range(columns(result))] for r in range(rows(result))]
+                    assert actual == expected, (sql, actual, expected)
+            finally:
+                clear(result)
+        for invalid_info in [conninfo.replace('user=root', 'user=intruder')]:
+            invalid = connect(invalid_info.encode())
+            try:
+                assert status(invalid) != 0, 'invalid identity must be rejected'
+            finally:
+                finish(invalid)
+        query('SELECT 1', [['1']])
+        query('CREATE TABLE pg_real_client (id INT PRIMARY KEY, v VARCHAR(30))')
+        query("INSERT INTO pg_real_client VALUES (1, 'one')")
+        query("UPDATE pg_real_client SET v = 'two' WHERE id = 1")
+        query('SELECT v FROM pg_real_client WHERE id = $1', [['two']], parameter=1)
+        query('BEGIN')
+        assert txn(conn) == 2
+        query("INSERT INTO pg_real_client VALUES (2, 'committed')")
+        query('COMMIT')
+        assert txn(conn) == 0
+        query('BEGIN')
+        query("UPDATE pg_real_client SET v = 'rolled back' WHERE id = 1")
+        query('ROLLBACK')
+        assert txn(conn) == 0
+        query('SELECT v FROM pg_real_client ORDER BY id', [['two'], ['committed']])
+        query('DELETE FROM pg_real_client WHERE id = 2')
+        query('SELECT id FROM pg_real_client', [['1']])
+        # libpq owns the version-specific BackendKeyData/CancelRequest framing.
+        # An idle cancel must complete without poisoning the next query.
+        cancel = cancel_create(conn)
+        assert cancel
+        try:
+            assert cancel_blocking(cancel) == 1
+        finally:
+            cancel_finish(cancel)
+        query('SELECT 1', [['1']])
+        query('DROP TABLE pg_real_client')
+        print(f'{expected_protocol}: startup, server version, CRUD, typed parameters, transactions and idle cancel passed', flush=True)
     finally:
-        cancel_finish(cancel)
-    query('SELECT 1', [['1']])
-    query('DROP TABLE pg_real_client')
-    print('3.2 startup, CRUD, typed parameters, transactions and idle cancel passed')
-finally:
-    finish(conn)
+        finish(conn)
 "#;

@@ -1,12 +1,12 @@
 // Copyright 2026 AsterSQL.
-//! Independent PostgreSQL 3.2 negotiation and connection lifecycle.
+//! Independent PostgreSQL 3.0/3.2 negotiation and connection lifecycle.
 //! The canonical driver currently supports only insecure root with an empty
 //! password. No trust fallback or PostgreSQL-specific execution semantics exist.
 use crate::conn::{
     AUTH_NATIVE_PASSWORD, AuthIdentity, AuthRequest, CancellationToken, ConnectionDomain,
     SessionDriver, TiDBContext,
 };
-use crate::pg_protocol::{MAX_STARTUP_LENGTH, parse_startup};
+use crate::pg_protocol::{MAX_STARTUP_LENGTH, PROTOCOL_VERSION_30, parse_startup};
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -22,7 +22,18 @@ const GSS_REQUEST: u32 = 80877104;
 const CANCEL_REQUEST: u32 = 80877102;
 const MAX_MESSAGE: usize = 1 << 20;
 
+// The target backend's startup version determines the cancellation format;
+// CancelRequest itself carries no protocol version.
+fn cancel_key_length(protocol_version: u32) -> usize {
+    if protocol_version == PROTOCOL_VERSION_30 {
+        4
+    } else {
+        32
+    }
+}
+
 struct Active {
+    protocol_version: u32,
     key: Vec<u8>,
     context: Arc<dyn TiDBContext>,
     // Cancellation is accepted only during a command. An idle cancellation
@@ -257,7 +268,8 @@ impl PgService {
                     return Ok(false);
                 }
             }
-            let mut key = vec![0; 32];
+            let key_length = cancel_key_length(startup.protocol_version);
+            let mut key = vec![0; key_length];
             rustls::crypto::aws_lc_rs::default_provider()
                 .secure_random
                 .fill(&mut key)
@@ -265,13 +277,19 @@ impl PgService {
             self.active.lock().unwrap().insert(
                 pid,
                 Active {
+                    protocol_version: startup.protocol_version,
                     key: key.clone(),
                     context: context.clone(),
                     executing: false,
                 },
             );
             write_message(socket, b'R', &0u32.to_be_bytes())?;
-            for (name, value) in [("client_encoding", "UTF8"), ("server_encoding", "UTF8")] {
+            // PG protocol compatibility baseline; retain the product identity.
+            for (name, value) in [
+                ("client_encoding", "UTF8"),
+                ("server_encoding", "UTF8"),
+                ("server_version", "18.0 (AsterSQL)"),
+            ] {
                 let mut body = name.as_bytes().to_vec();
                 body.push(0);
                 body.extend_from_slice(value.as_bytes());
@@ -406,7 +424,8 @@ impl PgService {
     pub(crate) fn cancel(&self, pid: u32, key: &[u8]) {
         let active = self.active.lock().unwrap();
         if let Some(entry) = active.get(&pid) {
-            if key.len() == entry.key.len()
+            if key.len() == cancel_key_length(entry.protocol_version)
+                && key.len() == entry.key.len()
                 && key
                     .iter()
                     .zip(&entry.key)
