@@ -13,33 +13,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// `estimate.rs` 中 NDV / 全局 singleton 估算的单元测试。
-//
-// 覆盖 GEE 公式的上下界夹紧，以及多分区 FMSketch 合并时对跨分区重复值的处理。
+// `estimate.rs` 中 NDV 估算的单元测试，覆盖 GEE 公式的上下界夹紧。
 
 use crate::*;
-
-fn sketches_from_samples(max_size: usize, samples: &[i64]) -> (FMSketch, FMSketch) {
-    use std::collections::HashMap;
-
-    let context = stmtctx::NewStmtCtx();
-    let mut ndv = NewFMSketch(max_size);
-    let mut singleton = NewFMSketch(max_size);
-    let mut counts = HashMap::new();
-    for &value in samples {
-        *counts.entry(value).or_insert(0_u64) += 1;
-        ndv.InsertValue(&context, types::NewIntDatum(value))
-            .unwrap();
-    }
-    for (&value, &count) in &counts {
-        if count == 1 {
-            singleton
-                .InsertValue(&context, types::NewIntDatum(value))
-                .unwrap();
-        }
-    }
-    (ndv, singleton)
-}
 
 /// 验证 EstimateNDVByGEE：GEE 修正、四舍五入及上下界与 Go 表格用例一致。
 #[test]
@@ -103,81 +79,4 @@ fn calculate_estimate_ndv_matches_go_special_cases() {
         actualNumTop: 0,
     };
     assert_eq!(calculateEstimateNDV(&no_singletons, 40), (2, 10));
-}
-
-/// 验证 EstimateGlobalSingletonBySketches：分区 A={1,2}、B={2,3}，
-/// singleton 分别为 {1} 与 {3} 时，全局 singleton 为 2（值 2 跨分区重复，不计入）。
-#[test]
-fn singleton_sketch_estimate_handles_cross_partition_duplicates() {
-    let context = stmtctx::NewStmtCtx();
-    let mut ndv_a = NewFMSketch(128);
-    let mut ndv_b = NewFMSketch(128);
-    let mut singleton_a = NewFMSketch(128);
-    let mut singleton_b = NewFMSketch(128);
-    for value in [1, 2] {
-        ndv_a
-            .InsertValue(&context, types::NewIntDatum(value))
-            .unwrap();
-    }
-    for value in [2, 3] {
-        ndv_b
-            .InsertValue(&context, types::NewIntDatum(value))
-            .unwrap();
-    }
-    singleton_a
-        .InsertValue(&context, types::NewIntDatum(1))
-        .unwrap();
-    singleton_b
-        .InsertValue(&context, types::NewIntDatum(3))
-        .unwrap();
-    let estimate =
-        EstimateGlobalSingletonBySketches(&[&ndv_a, &ndv_b], &[&singleton_a, &singleton_b]);
-    assert_eq!(estimate, 2);
-}
-
-#[test]
-fn singleton_sketch_estimate_matches_go_table_cases() {
-    let (ndv_a, singleton_a) = sketches_from_samples(1_000, &[1, 2, 3]);
-    assert_eq!(
-        EstimateGlobalSingletonBySketches(&[&ndv_a], &[&singleton_a]),
-        3
-    );
-
-    let (ndv_a, singleton_a) = sketches_from_samples(1_000, &[1, 2]);
-    let (ndv_b, singleton_b) = sketches_from_samples(1_000, &[3, 4]);
-    let (ndv_c, singleton_c) = sketches_from_samples(1_000, &[5, 6]);
-    assert_eq!(
-        EstimateGlobalSingletonBySketches(
-            &[&ndv_a, &ndv_b, &ndv_c],
-            &[&singleton_a, &singleton_b, &singleton_c],
-        ),
-        6
-    );
-
-    let (ndv_a, singleton_a) = sketches_from_samples(1_000, &[1, 2]);
-    let (ndv_b, singleton_b) = sketches_from_samples(1_000, &[1, 2]);
-    assert_eq!(
-        EstimateGlobalSingletonBySketches(&[&ndv_a, &ndv_b], &[&singleton_a, &singleton_b]),
-        0
-    );
-
-    let (ndv_a, singleton_a) = sketches_from_samples(3, &[0]);
-    let (ndv_b, singleton_b) = sketches_from_samples(3, &[0, 0, 0, 1, 1, 4, 7]);
-    assert_eq!(
-        EstimateGlobalSingletonBySketches(&[&ndv_a, &ndv_b], &[&singleton_a, &singleton_b]),
-        2
-    );
-}
-
-#[test]
-#[should_panic(expected = "ndvSketches shouldn't be empty")]
-fn singleton_sketch_estimate_rejects_empty_input() {
-    EstimateGlobalSingletonBySketches(&[], &[]);
-}
-
-#[test]
-#[should_panic(expected = "sketch lengths must match")]
-fn singleton_sketch_estimate_rejects_mismatched_lengths() {
-    let (ndv, singleton) = sketches_from_samples(1_000, &[1]);
-    EstimateGlobalSingletonBySketches(&[&ndv], &[&singleton, &singleton]);
 }

@@ -134,6 +134,11 @@ impl Default for RuntimeStatsBuilder {
 }
 
 impl RuntimeStatsBuilder {
+    /// Session location used to decode flattened statistics values.
+    pub fn TimeZone(&self) -> chrono_tz::Tz {
+        self.statement_context.TimeZone()
+    }
+
     /// 按指定时区创建构建器。
     pub fn NewWithTimeZone(time_zone: chrono_tz::Tz) -> Self {
         let mut statement_context = stmtctx::NewStmtCtxWithTimeZone(time_zone);

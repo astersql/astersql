@@ -16,9 +16,11 @@ codec = { package = "astersql-util-codec", path = "../util/codec" }
 collate = { package = "astersql-util-collate", path = "../util/collate" }
 protobuf = "=2.8.0"
 stmtctx = { package = "astersql-sessionctx-stmtctx", path = "../sessionctx/stmtctx" }
+tablecodec = { package = "astersql-tablecodec", path = "../tablecodec" }
 tipb = { git = "https://github.com/pingcap/tipb.git", rev = "07f0ea6b6bffa9d8ac100d81ee51dbbfe4dda3bf", default-features = false, features = ["protobuf-codec"] }
 types = { package = "astersql-types-datum", path = "../types/internal/datum" }
 types-field = { package = "astersql-types-field", path = "../types/internal/field" }
+vardef = { package = "astersql-sessionctx-vardef", path = "../sessionctx/vardef" }
 
 [package.metadata.porting]
 go-package = "pkg/statistics"

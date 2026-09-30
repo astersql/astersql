@@ -253,13 +253,19 @@ impl StatsCacheImpl {
             .handle
             .as_ref()
             .ok_or_else(|| stats_types::Error("statistics handle is not configured".into()))?;
-        let mut query = String::from(
-            "SELECT version, table_id, modify_count, count, snapshot, last_stats_histograms_version from mysql.stats_meta where version > %? ",
+        let only_for_analyzed_tables = !ids.is_empty();
+        let index_hint = if only_for_analyzed_tables {
+            "tbl"
+        } else {
+            "idx_ver"
+        };
+        let mut query = format!(
+            "SELECT /*+ use_index(mysql.stats_meta, {index_hint}) */ version, table_id, modify_count, count, snapshot, last_stats_histograms_version from mysql.stats_meta where version > %? "
         );
         let mut args = vec![stats_util::SqlValue::Unsigned(
             self.GetNextCheckVersionWithOffset(),
         )];
-        let skip = !ids.is_empty();
+        let skip = only_for_analyzed_tables;
         if skip {
             let mut ids = ids.to_vec();
             ids.sort_unstable();

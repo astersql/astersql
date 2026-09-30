@@ -1289,6 +1289,25 @@ pub fn MergePartitionHist2GlobalHist(
     is_index: bool,
     analyze_version: i32,
 ) -> Result<Option<Histogram>, astersql_errors::SharedError> {
+    MergePartitionHist2GlobalHistWithLocation(
+        histograms,
+        popped_top_n,
+        expected_bucket_count,
+        is_index,
+        analyze_version,
+        codec::time::UTC,
+    )
+}
+
+/// Merge partition histograms using the session location for flattened TopN values.
+pub fn MergePartitionHist2GlobalHistWithLocation(
+    histograms: &[Histogram],
+    popped_top_n: &[TopNMeta],
+    expected_bucket_count: usize,
+    is_index: bool,
+    analyze_version: i32,
+    location: chrono_tz::Tz,
+) -> Result<Option<Histogram>, astersql_errors::SharedError> {
     if expected_bucket_count == 0 {
         return Err(astersql_errors::New("expBucketNumber can not be zero"));
     }
@@ -1305,11 +1324,7 @@ pub fn MergePartitionHist2GlobalHist(
         .flat_map(Histogram::buildBucket4Merging)
         .collect::<Vec<_>>();
     for item in popped_top_n {
-        let datum = if is_index {
-            types::NewBytesDatum(item.Encoded.clone())
-        } else {
-            codec::DecodeOne(&item.Encoded)?.1
-        };
+        let datum = crate::topNMetaToDatum(item, &first.Tp, is_index, location)?;
         buckets.push(item.buildBucket4Merging(&datum, analyze_version));
     }
     buckets.retain(|bucket| bucket.Bucket.Count != 0);

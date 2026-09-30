@@ -255,6 +255,39 @@ fn TestTruncateTable_inserts_new_and_marks_old() {
     assert!(handler.subscriber().backend().version_updates.contains(&30));
 }
 
+#[test]
+fn go_merge_47_materialized_view_cutover_and_metadata_events() {
+    let mut backend = RecordingBackend::default();
+    backend.historical_enabled = true;
+    backend.cache_ready.insert(30);
+    let mut handler = DdlHandler::new(backend);
+    let old = plain_table(30, &[]);
+    let new = plain_table(31, &[]);
+    handler
+        .handle_ddl_event(&SchemaChangeEvent::MViewRefreshOutOfPlaceCutover {
+            new_table: new,
+            dropped_table: old,
+        })
+        .unwrap();
+    let backend = handler.subscriber().backend();
+    assert!(backend.inserted_tables.contains(&(31, 31)));
+    assert!(backend.version_updates.contains(&30));
+    assert!(backend.historical.iter().any(|(id, _)| *id == 30));
+
+    for event in [
+        SchemaChangeEvent::AlterMaterializedViewRefresh,
+        SchemaChangeEvent::AlterMaterializedViewAttributes,
+        SchemaChangeEvent::AlterMaterializedViewLogPurge,
+        SchemaChangeEvent::CreateMaterializedViewLog,
+        SchemaChangeEvent::CreateMaterializedView,
+    ] {
+        handler.handle_ddl_event(&event).unwrap();
+    }
+    let backend = handler.subscriber().backend();
+    assert_eq!(backend.inserted_tables.len(), 1);
+    assert_eq!(backend.version_updates.len(), 1);
+}
+
 /// 删除分区应对全局表应用负增量并延迟删除分区统计。
 #[test]
 fn TestDropTablePartition_updates_global_delta() {

@@ -1380,6 +1380,34 @@ fn register_getters_and_defaults() {
 /// 注册仅全局作用域的系统变量。
 fn register_global_vars() {
     // 注册仅 GLOBAL 作用域变量（DDL、内存限制、资源控制等）。
+    for (name, default, min, max, state) in [
+        (
+            vardef::TiDBAnalyzeDefaultNumBuckets,
+            vardef::DefTiDBAnalyzeDefaultNumBuckets,
+            vardef::MinTiDBAnalyzeDefaultNumBuckets,
+            vardef::MaxTiDBAnalyzeDefaultNumBuckets,
+            &vardef::AnalyzeDefaultNumBuckets,
+        ),
+        (
+            vardef::TiDBAnalyzeDefaultNumTopN,
+            vardef::DefTiDBAnalyzeDefaultNumTopN,
+            vardef::MinTiDBAnalyzeDefaultNumTopN,
+            vardef::MaxTiDBAnalyzeDefaultNumTopN,
+            &vardef::AnalyzeDefaultNumTopN,
+        ),
+    ] {
+        let mut variable = unsigned_var(name, default, vardef::ScopeGlobal, min, max);
+        variable.GetGlobal = Some(Arc::new(move |_, _| Ok(state.Load().to_string())));
+        variable.SetGlobal = Some(Arc::new(move |_, _, value| {
+            let parsed = value
+                .parse::<u64>()
+                .map_err(|_| VariableError::wrong_value(name, value))?;
+            state.Store(parsed);
+            Ok(())
+        }));
+        RegisterSysVar(variable);
+    }
+
     let mut enable_stmt_summary = bool_var(
         vardef::TiDBEnableStmtSummary,
         vardef::DefTiDBEnableStmtSummary,

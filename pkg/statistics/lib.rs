@@ -79,6 +79,9 @@ mod estimate_test;
 #[path = "fmsketch_test.rs"]
 mod fmsketch_test;
 #[cfg(test)]
+#[path = "go_merge_47_test.rs"]
+mod go_merge_47_test;
+#[cfg(test)]
 #[path = "histogram_bench_test.rs"]
 mod histogram_bench_test;
 #[cfg(test)]

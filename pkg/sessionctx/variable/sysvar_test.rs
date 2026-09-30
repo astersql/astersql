@@ -27,6 +27,76 @@ use astersql_sessionctx_variable::*;
 use chrono::FixedOffset;
 use serial_test::serial;
 
+#[test]
+#[serial]
+fn go_merge_47_analyze_defaults_follow_global_sysvars() {
+    let (mut vars, _) = session();
+    let ctx = Context::default();
+    for (name, global, value, below_min, min, max) in [
+        (
+            vardef::TiDBAnalyzeDefaultNumBuckets,
+            &vardef::AnalyzeDefaultNumBuckets,
+            "100",
+            "0",
+            "1",
+            "100000",
+        ),
+        (
+            vardef::TiDBAnalyzeDefaultNumTopN,
+            &vardef::AnalyzeDefaultNumTopN,
+            "50",
+            "0",
+            "0",
+            "100000",
+        ),
+    ] {
+        let original = global.Load();
+        let variable = sysvar(name);
+        assert_eq!(variable.Scope, vardef::ScopeGlobal);
+        assert_eq!(variable.Type, vardef::TypeUnsigned);
+        let normalized = variable
+            .Validate(&mut vars, value, vardef::ScopeGlobal)
+            .unwrap();
+        variable.SetGlobal.as_ref().unwrap()(&ctx, &mut vars, &normalized).unwrap();
+        assert_eq!(global.Load().to_string(), value);
+        assert_eq!(
+            variable.GetGlobal.as_ref().unwrap()(&ctx, &mut vars).unwrap(),
+            value
+        );
+        global.Store(original);
+        assert_eq!(
+            set_global_system_var(&mut vars, name, value).unwrap(),
+            value
+        );
+        assert_eq!(global.Load().to_string(), value);
+        assert_eq!(
+            variable
+                .Validate(&mut vars, min, vardef::ScopeGlobal)
+                .unwrap(),
+            min
+        );
+        assert_eq!(
+            variable
+                .Validate(&mut vars, max, vardef::ScopeGlobal)
+                .unwrap(),
+            max
+        );
+        assert_eq!(
+            variable
+                .Validate(&mut vars, below_min, vardef::ScopeGlobal)
+                .unwrap(),
+            min
+        );
+        assert_eq!(
+            variable
+                .Validate(&mut vars, "100001", vardef::ScopeGlobal)
+                .unwrap(),
+            max
+        );
+        global.Store(original);
+    }
+}
+
 #[derive(Clone, Default)]
 /// 内存态全局变量 accessor，供测试隔离读写。
 struct MemoryGlobal {

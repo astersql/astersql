@@ -511,6 +511,24 @@ fn refresh_cache(handle: Arc<TestHandle>, quota: bool) -> crate::StatsCacheImpl 
 }
 
 #[test]
+fn go_merge_47_selects_stats_meta_index_for_refresh_mode() {
+    for (ids, hint) in [(Vec::new(), "idx_ver"), (vec![7], "tbl")] {
+        let handle = Arc::new(TestHandle::new(Vec::new()));
+        let cache = refresh_cache(handle.clone(), false);
+        cache
+            .Update(&Default::default(), &infoschema::infoSchema::new(1), &ids)
+            .unwrap();
+        let query = &handle.session.state.lock().unwrap().queries[0].0;
+        assert!(
+            query.starts_with(&format!(
+                "SELECT /*+ use_index(mysql.stats_meta, {hint}) */ version"
+            )),
+            "unexpected query: {query}"
+        );
+    }
+}
+
+#[test]
 fn refresh_sorts_ids_and_preserves_go_version_rules_in_both_backends() {
     for quota in [true, false] {
         let handle = Arc::new(TestHandle::new(vec![meta(2, 8, Some(5)), meta(3, 9, None)]));
@@ -523,7 +541,7 @@ fn refresh_sorts_ids_and_preserves_go_version_rules_in_both_backends() {
         assert_eq!(ids, [3, 2, 3]);
         let state = handle.session.state.lock().unwrap();
         assert_eq!(state.queries[0], (
-            "SELECT version, table_id, modify_count, count, snapshot, last_stats_histograms_version from mysql.stats_meta where version > %? and table_id in (%?) order by version".into(),
+            "SELECT /*+ use_index(mysql.stats_meta, tbl) */ version, table_id, modify_count, count, snapshot, last_stats_histograms_version from mysql.stats_meta where version > %? and table_id in (%?) order by version".into(),
             vec![SqlValue::Unsigned(4), SqlValue::StringList(vec!["2".into(), "3".into()])]
         ));
         assert_eq!(handle.session.returned.load(Ordering::Relaxed), 1);

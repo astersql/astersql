@@ -84,6 +84,15 @@ pub enum SchemaChangeEvent {
         new_table: TableInfo,
         dropped_table: TableInfo,
     },
+    MViewRefreshOutOfPlaceCutover {
+        new_table: TableInfo,
+        dropped_table: TableInfo,
+    },
+    AlterMaterializedViewRefresh,
+    AlterMaterializedViewAttributes,
+    AlterMaterializedViewLogPurge,
+    CreateMaterializedViewLog,
+    CreateMaterializedView,
     DropTable(TableInfo),
     AddColumn {
         table: TableInfo,
@@ -230,15 +239,11 @@ impl<B: StatsBackend> Subscriber<B> {
             SchemaChangeEvent::TruncateTable {
                 new_table,
                 dropped_table,
-            } => {
-                // 新表插入伪统计，旧表仅推进版本（延迟删除）。
-                for id in self.physical_ids(new_table)? {
-                    self.insert_stats_for_physical_id(new_table, id)?;
-                }
-                for id in self.physical_ids(dropped_table)? {
-                    self.delayed_delete_stats_for_physical_id(id)?;
-                }
             }
+            | SchemaChangeEvent::MViewRefreshOutOfPlaceCutover {
+                new_table,
+                dropped_table,
+            } => self.handle_truncate_like_event(new_table, dropped_table)?,
             SchemaChangeEvent::DropTable(table) => {
                 for id in self.physical_ids(table)? {
                     self.delayed_delete_stats_for_physical_id(id)?;
@@ -345,7 +350,12 @@ impl<B: StatsBackend> Subscriber<B> {
             }
             SchemaChangeEvent::FlashbackCluster => self.backend.update_all_stats_versions()?,
             // 加索引当前不改表级 stats_meta。
-            SchemaChangeEvent::AddIndex => {}
+            SchemaChangeEvent::AddIndex
+            | SchemaChangeEvent::AlterMaterializedViewRefresh
+            | SchemaChangeEvent::AlterMaterializedViewAttributes
+            | SchemaChangeEvent::AlterMaterializedViewLogPurge
+            | SchemaChangeEvent::CreateMaterializedViewLog
+            | SchemaChangeEvent::CreateMaterializedView => {}
             SchemaChangeEvent::DropSchema(tables) => {
                 for table in tables {
                     for partition in &table.partitions {
@@ -357,6 +367,20 @@ impl<B: StatsBackend> Subscriber<B> {
             SchemaChangeEvent::Unknown(action) => {
                 return Err(Error(format!("unhandled schema change event: {action}")));
             }
+        }
+        Ok(())
+    }
+
+    fn handle_truncate_like_event(
+        &mut self,
+        new_table: &TableInfo,
+        dropped_table: &TableInfo,
+    ) -> Result<(), Error> {
+        for id in self.physical_ids(new_table)? {
+            self.insert_stats_for_physical_id(new_table, id)?;
+        }
+        for id in self.physical_ids(dropped_table)? {
+            self.delayed_delete_stats_for_physical_id(id)?;
         }
         Ok(())
     }

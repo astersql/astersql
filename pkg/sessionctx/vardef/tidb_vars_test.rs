@@ -21,6 +21,24 @@ use std::thread;
 
 use astersql_sessionctx_vardef::*;
 
+#[test]
+fn go_merge_47_analyze_defaults_are_atomic_and_have_go_bounds() {
+    assert_eq!(DefTiDBAnalyzeDefaultNumBuckets, 256);
+    assert_eq!(DefTiDBAnalyzeDefaultNumTopN, 100);
+    assert_eq!(MinTiDBAnalyzeDefaultNumBuckets, 1);
+    assert_eq!(MaxTiDBAnalyzeDefaultNumBuckets, 100_000);
+    assert_eq!(MinTiDBAnalyzeDefaultNumTopN, 0);
+    assert_eq!(MaxTiDBAnalyzeDefaultNumTopN, 100_000);
+    let previous_buckets = AnalyzeDefaultNumBuckets.Load();
+    let previous_top_n = AnalyzeDefaultNumTopN.Load();
+    AnalyzeDefaultNumBuckets.Store(123);
+    AnalyzeDefaultNumTopN.Store(45);
+    assert_eq!(AnalyzeDefaultNumBuckets.Load(), 123);
+    assert_eq!(AnalyzeDefaultNumTopN.Load(), 45);
+    AnalyzeDefaultNumBuckets.Store(previous_buckets);
+    AnalyzeDefaultNumTopN.Store(previous_top_n);
+}
+
 /// 测试结束时将 `enableMDL` 复位为 false 的 RAII 守卫。
 struct EnableMdlRestore;
 

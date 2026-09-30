@@ -13,13 +13,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// NDV（Number of Distinct Values，不同值个数）与全局 singleton 估算。
+// NDV（Number of Distinct Values，不同值个数）估算。
 //
-// 基于采样 TopN 辅助结构与 FMSketch（Flajolet–Martin 基数草图）合并结果，
-// 用 GEE（Guaranteed Error Estimator）等公式把样本 NDV 外推到全表，
-// 并估计跨分区仅出现一次的 singleton 取值数量。
-
-use crate::FMSketch;
+// 基于采样 TopN 辅助结构，用 GEE（Guaranteed Error Estimator）公式
+// 把样本 NDV 外推到全表。
 
 /// 采样中某个编码值及其出现次数。
 #[derive(Clone, Debug)]
@@ -92,85 +89,4 @@ pub fn EstimateNDVByGEE(
         ndv = ndv.min(row_count);
     }
     ndv
-}
-
-/// 合并各分区的 NDV / singleton FMSketch，估算全局仅出现一次的取值个数。
-///
-/// 分治：左半/右半各自合并 NDV 草图，再交叉估计对方区间内的 singleton 增量。
-pub fn EstimateGlobalSingletonBySketches(
-    ndv_sketches: &[&FMSketch],
-    singleton_sketches: &[&FMSketch],
-) -> u64 {
-    assert!(!ndv_sketches.is_empty(), "ndvSketches shouldn't be empty");
-    assert_eq!(
-        ndv_sketches.len(),
-        singleton_sketches.len(),
-        "sketch lengths must match"
-    );
-    let middle = ndv_sketches.len() - ndv_sketches.len() / 2;
-    // 合并左半分区的 NDV 草图，作为右半区间估计时的“区间外”背景。
-    let mut left = None;
-    for sketch in &ndv_sketches[..middle] {
-        left = mergeCopiedFMSketch(left, Some(*sketch));
-    }
-    // 合并右半分区的 NDV 草图，作为左半区间估计时的“区间外”背景。
-    let mut right = None;
-    for sketch in &ndv_sketches[middle..] {
-        right = mergeCopiedFMSketch(right, Some(*sketch));
-    }
-    let total = estimateGlobalSingletonInRange(
-        &ndv_sketches[..middle],
-        &singleton_sketches[..middle],
-        right,
-    ) + estimateGlobalSingletonInRange(
-        &ndv_sketches[middle..],
-        &singleton_sketches[middle..],
-        left,
-    );
-    total as u64
-}
-
-/// 在给定分区区间内，用前后缀 NDV 草图差分估算真正的全局 singleton 数。
-///
-/// 对每个分区：将「前缀 + 后续分区 + 区间外」合并后的 NDV，与再并入本分区 singleton
-/// 草图后的 NDV 做差，增量即为该分区贡献的全局 singleton。
-fn estimateGlobalSingletonInRange(
-    ndv_sketches: &[&FMSketch],
-    singleton_sketches: &[&FMSketch],
-    outside: Option<FMSketch>,
-) -> i64 {
-    let mut total = 0_i64;
-    let mut prefix = None;
-    for (index, singleton) in singleton_sketches.iter().enumerate() {
-        // 构造“除本分区外”的 NDV 并集：前缀 ∪ 后续分区 ∪ 区间外。
-        let mut other = mergeCopiedFMSketch(None, prefix.as_ref());
-        for sketch in &ndv_sketches[index + 1..] {
-            other = mergeCopiedFMSketch(other, Some(*sketch));
-        }
-        other = mergeCopiedFMSketch(other, outside.as_ref());
-        let before = other.as_ref().map_or(0, FMSketch::NDV);
-        other = mergeCopiedFMSketch(other, Some(*singleton));
-        let after = other.as_ref().map_or(0, FMSketch::NDV);
-        // after - before > 0 表示 singleton 中有值不在其他分区出现。
-        total += (after - before).max(0);
-        prefix = mergeCopiedFMSketch(prefix, Some(ndv_sketches[index]));
-    }
-    total
-}
-
-/// 将 `source` 合并进 `destination` 的副本；任一方为空时按另一侧返回。
-fn mergeCopiedFMSketch(
-    mut destination: Option<FMSketch>,
-    source: Option<&FMSketch>,
-) -> Option<FMSketch> {
-    let Some(source) = source else {
-        return destination;
-    };
-    match destination.as_mut() {
-        Some(existing) => {
-            existing.MergeFMSketch(source);
-            destination
-        }
-        None => Some(source.Copy()),
-    }
 }

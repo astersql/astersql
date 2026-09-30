@@ -13,70 +13,34 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// CMSketch/TopN 相关的 Datum 解码缓存工具。
-//
-// 将 TopN 中的编码字节解码为 `Datum`（列/表达式运行时的通用值包装）时，
-// 用哈希表按编码键缓存结果，避免同一 TopN 值被重复解码。
-
-use std::collections::HashMap;
+// Column TopN keys use the flattened storage representation. Restore the
+// column datum kind before comparing against typed histogram bounds.
 
 use crate::TopNMeta;
 
-/// 按编码字节缓存已解码的 `Datum`，加速 TopN 查询路径上的重复解码。
-pub struct DatumMapCache {
-    datumMap: HashMap<Vec<u8>, types::Datum>,
-}
-
-/// 创建空的 Datum 映射缓存。
-pub fn NewDatumMapCache() -> DatumMapCache {
-    DatumMapCache {
-        datumMap: HashMap::new(),
-    }
-}
-
-impl DatumMapCache {
-    /// 按编码键查找已缓存的 Datum；未命中返回 `None`。
-    pub fn Get(&self, key: &[u8]) -> Option<types::Datum> {
-        self.datumMap.get(key).cloned()
-    }
-
-    /// 将 TopNMeta 解码为 Datum 后写入缓存，并返回该 Datum。
-    ///
-    /// `is_index` 为真时直接把编码字节当作字节 Datum（索引键本身即编码形式）；
-    /// 否则按列字段类型解码时间、浮点或通用编码。
-    pub fn Put(
-        &mut self,
-        value: &TopNMeta,
-        encoded_value: Vec<u8>,
-        field_type: u8,
-        is_index: bool,
-        location: chrono_tz::Tz,
-    ) -> Result<types::Datum, astersql_errors::SharedError> {
-        let datum = topNMetaToDatum(value, field_type, is_index, location)?;
-        self.datumMap.insert(encoded_value, datum.clone());
-        Ok(datum)
-    }
-}
-
-/// 把 TopNMeta 的编码载荷解码为 Datum。
-///
-/// 索引路径直接包装字节；列路径按 MySQL 字段类型选择时间/浮点/通用解码器。
-fn topNMetaToDatum(
+/// Decode a TopN key as an index byte string or a typed column datum.
+pub fn topNMetaToDatum(
     value: &TopNMeta,
-    field_type: u8,
+    field_type: &types::FieldType,
     is_index: bool,
     location: chrono_tz::Tz,
 ) -> Result<types::Datum, astersql_errors::SharedError> {
-    // 索引 TopN 存的是编码键本身，无需再按列类型解码。
     if is_index {
         return Ok(types::NewBytesDatum(value.Encoded.clone()));
     }
-    let (_, datum) = if types_field::IsTypeTime(field_type) {
-        codec::DecodeAsDateTime(&value.Encoded, field_type, location)?
-    } else if field_type == types::mysql::TypeFloat {
-        codec::DecodeAsFloat32(&value.Encoded, field_type)?
-    } else {
-        codec::DecodeOne(&value.Encoded)?
-    };
-    Ok(datum)
+    let (_, decoded) = codec::DecodeOne(&value.Encoded)?;
+    tablecodec::Unflatten(decoded, Box::new(field_type.clone()), Some(location))
+}
+
+/// Decode a column TopN key while preserving raw comparison bytes for strings.
+pub fn DecodeColumnTopNValue(
+    encoded: &[u8],
+    field_type: &types::FieldType,
+    location: chrono_tz::Tz,
+) -> Result<types::Datum, astersql_errors::SharedError> {
+    let (_, decoded) = codec::DecodeOne(encoded)?;
+    if types_field::IsString(field_type.GetType()) {
+        return Ok(decoded);
+    }
+    tablecodec::Unflatten(decoded, Box::new(field_type.clone()), Some(location))
 }

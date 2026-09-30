@@ -1283,6 +1283,8 @@ pub const TiDBEnableColumnTracking: &str = "tidb_enable_column_tracking";
 // `PREDICATE`: Analyze only the columns that are used in the predicates of the query.
 // `ALL`: Analyze all columns in the table.
 pub const TiDBAnalyzeColumnOptions: &str = "tidb_analyze_column_options";
+pub const TiDBAnalyzeDefaultNumBuckets: &str = "tidb_analyze_default_num_buckets";
+pub const TiDBAnalyzeDefaultNumTopN: &str = "tidb_analyze_default_num_topn";
 // TiDBDisableColumnTrackingTime records the last time TiDBEnableColumnTracking is set off.
 // It is used to invalidate the collected predicate columns after turning off TiDBEnableColumnTracking, which avoids physical deletion.
 // It doesn't have cache in memory, and we directly get/set the variable value from/to mysql.tidb.
@@ -1790,6 +1792,12 @@ pub const DefTiDBMemQuotaAnalyze: i64 = -1;
 pub const DefTiDBEnableAutoAnalyze: bool = true;
 pub const DefTiDBEnableAutoAnalyzePriorityQueue: bool = true;
 pub const DefTiDBAnalyzeColumnOptions: &str = "ALL";
+pub const DefTiDBAnalyzeDefaultNumBuckets: u64 = 256;
+pub const DefTiDBAnalyzeDefaultNumTopN: u64 = 100;
+pub const MinTiDBAnalyzeDefaultNumBuckets: i64 = 1;
+pub const MaxTiDBAnalyzeDefaultNumBuckets: u64 = 100_000;
+pub const MinTiDBAnalyzeDefaultNumTopN: i64 = 0;
+pub const MaxTiDBAnalyzeDefaultNumTopN: u64 = 100_000;
 pub const DefTiDBMemOOMAction: &str = "CANCEL";
 pub const DefTiDBMaxAutoAnalyzeTime: i64 = 12 * 60 * 60;
 pub const DefTiDBAutoAnalyzeConcurrency: i64 = 3;
@@ -1968,6 +1976,10 @@ pub static EnableAutoAnalyzePriorityQueue: AtomicBoolValue =
 //    whether to analyze all columns or just the predicate columns.
 pub static AnalyzeColumnOptions: LazyLock<AtomicStringValue> =
     LazyLock::new(|| AtomicStringValue::new(DefTiDBAnalyzeColumnOptions));
+pub static AnalyzeDefaultNumBuckets: AtomicU64Value =
+    AtomicU64Value::new(DefTiDBAnalyzeDefaultNumBuckets);
+pub static AnalyzeDefaultNumTopN: AtomicU64Value =
+    AtomicU64Value::new(DefTiDBAnalyzeDefaultNumTopN);
 pub static GlobalLogMaxDays: AtomicI32Value = AtomicI32Value::new(0);
 pub static QueryLogMaxLen: AtomicI32Value = AtomicI32Value::new((DefTiDBQueryLogMaxLen) as i32);
 pub static EnablePProfSQLCPU: AtomicBoolValue = AtomicBoolValue::new(false);

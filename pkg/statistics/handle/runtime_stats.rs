@@ -226,12 +226,13 @@ pub fn MergeRuntimePartitionHistograms(
             .into_iter()
             .map(|(histogram, _)| histogram)
             .collect::<Vec<_>>();
-        let Some(merged) = astersql_statistics::MergePartitionHist2GlobalHist(
+        let Some(merged) = astersql_statistics::MergePartitionHist2GlobalHistWithLocation(
             &histograms,
             &popped,
             bucket_count,
             false,
             astersql_statistics::Version2,
+            builder.TimeZone(),
         )
         .map_err(|error| error.to_string())?
         else {
@@ -313,12 +314,13 @@ pub fn MergeRuntimePartitionHistograms(
             .into_iter()
             .map(|(histogram, _)| histogram)
             .collect::<Vec<_>>();
-        let Some(merged) = astersql_statistics::MergePartitionHist2GlobalHist(
+        let Some(merged) = astersql_statistics::MergePartitionHist2GlobalHistWithLocation(
             &histograms,
             &popped,
             bucket_count,
             true,
             astersql_statistics::Version2,
+            builder.TimeZone(),
         )
         .map_err(|error| error.to_string())?
         else {

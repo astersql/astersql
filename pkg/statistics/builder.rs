@@ -402,7 +402,7 @@ pub fn BuildHistAndTopN(
     }
     let sample_factor = count as f64 / sample_count as f64;
     // 将样本编码为可比较的字节键（列走 EncodeKey，索引直接取字节）。
-    let allow_pruning = num_top_n == crate::DefaultTopNValue;
+    let allow_pruning = num_top_n as u64 == vardef::AnalyzeDefaultNumTopN.Load();
     let compared = collector
         .Samples
         .iter()
@@ -469,7 +469,8 @@ pub fn BuildHistAndTopN(
         return Ok((histogram, top_n));
     }
     let remaining_ndv = ndv - candidates.len() as i64;
-    if candidates.len() < num_top_n && num_buckets == crate::DefaultHistogramBuckets {
+    if candidates.len() < num_top_n && num_buckets as u64 == vardef::AnalyzeDefaultNumBuckets.Load()
+    {
         num_buckets = (remaining_ndv / bucketNDVDivisor)
             .max(1)
             .min(num_buckets as i64) as usize;
