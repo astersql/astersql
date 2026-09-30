@@ -580,6 +580,7 @@ fn virtual_information_schema_column(
 
     let field_type_code = match column.column_type {
         ColumnType::Varchar => mysql::TypeVarchar,
+        ColumnType::Tiny => mysql::TypeTiny,
         ColumnType::Long => mysql::TypeLong,
         ColumnType::Longlong => mysql::TypeLonglong,
         ColumnType::Double => mysql::TypeDouble,
@@ -3480,6 +3481,60 @@ impl ConcreteSession {
     /// runtime. Rows are derived from Domain metadata and region state, then
     /// filtered/projected through the parsed SELECT AST.
 
+    pub(super) fn execute_embed_text(
+        &self,
+        args: &[ast::ExprNode],
+        row: &HashMap<String, Option<String>>,
+    ) -> SessionResult<String> {
+        if !(2..=3).contains(&args.len()) {
+            return Err(SessionError::new("invalid EMBED_TEXT() usage"));
+        }
+        let Some(model) = relational_expression_value(&args[0], row)? else {
+            return Ok(CONCRETE_NULL_VALUE.into());
+        };
+        let Some(text) = relational_expression_value(&args[1], row)? else {
+            return Ok(CONCRETE_NULL_VALUE.into());
+        };
+        let mut options = astersql_inference::Options::new();
+        if let Some(value) = args
+            .get(2)
+            .map(|arg| relational_expression_value(arg, row))
+            .transpose()?
+            .flatten()
+            && !value.is_empty()
+        {
+            let value = serde_json::from_str::<serde_json::Value>(&value)
+                .map_err(|_| SessionError::new("EMBED_TEXT expects options in JSON format"))?;
+            let object = value
+                .as_object()
+                .ok_or_else(|| SessionError::new("EMBED_TEXT expects options in JSON format"))?;
+            options.extend(
+                object
+                    .iter()
+                    .filter(|(key, _)| !key.ends_with("@search"))
+                    .map(|(key, value)| (key.clone(), value.clone())),
+            );
+        }
+        if !astersql_config_deploymode::IsStarter() {
+            return Err(SessionError::new(
+                "EMBED_TEXT is only supported in starter deployment mode",
+            ));
+        }
+        let embed_fn = self.domain.get_embed_fn().ok_or_else(|| {
+            SessionError::new("EMBED_TEXT requires an initialized Domain embedding runtime")
+        })?;
+        let embedding = embed_fn
+            .embed(&model, &text, &options, &|| {
+                self.sql_killer.GetKillSignal() > 0
+            })
+            .map_err(SessionError::new)?;
+        astersql_types::vector::CheckVectorDimValid(embedding.len() as i32)
+            .map_err(|error| SessionError::new(error.to_string()))?;
+        let vector = astersql_types::vector::CreateVectorFloat32(&embedding)
+            .map_err(|error| SessionError::new(error.to_string()))?;
+        Ok(vector.String())
+    }
+
     /// 执行无表常量 SELECT。
     pub(super) fn execute_constant_select(
         &self,
@@ -3619,6 +3674,11 @@ impl ConcreteSession {
                     "Release Version: None\nEdition: Community".to_owned()
                 }
                 ast::ExprKind::Function { FnName, Args, .. }
+                    if FnName.L.eq_ignore_ascii_case("embed_text") =>
+                {
+                    self.execute_embed_text(Args, &HashMap::new())?
+                }
+                ast::ExprKind::Function { FnName, Args, .. }
                     if FnName.L.eq_ignore_ascii_case("tidb_is_ddl_owner") && Args.is_empty() =>
                 {
                     "1".to_owned()
@@ -3705,8 +3765,12 @@ impl ConcreteSession {
                 {
                     self.state.borrow().last_commit_ts.to_string()
                 }
-                _ => relational_expression_value(expr, &HashMap::new())?
-                    .unwrap_or_else(|| CONCRETE_NULL_VALUE.to_owned()),
+                _ => super::relational_value::relational_expression_value_with_embed(
+                    expr,
+                    &HashMap::new(),
+                    &|args, row| self.execute_embed_text(args, row),
+                )?
+                .unwrap_or_else(|| CONCRETE_NULL_VALUE.to_owned()),
             };
             let column = if !field.AsName.O.is_empty() {
                 field.AsName.O.clone()

@@ -61,43 +61,6 @@ fn ignored_not_null_value(column: &astersql_meta_model::ColumnInfo) -> String {
     }
 }
 
-fn list_partition_value_matches(actual: Option<&str>, configured: &str) -> bool {
-    let configured = configured.trim().trim_matches(['\'', '"']);
-    if configured.eq_ignore_ascii_case("null") {
-        actual.is_none()
-    } else {
-        actual.is_some_and(|actual| actual == configured)
-    }
-}
-
-fn range_columns_row_is_below(
-    row: &HashMap<String, Option<String>>,
-    columns: &[ast::CIStr],
-    upper_bound: &[String],
-) -> bool {
-    use std::cmp::Ordering;
-
-    for (column, upper) in columns.iter().zip(upper_bound) {
-        if upper.eq_ignore_ascii_case("maxvalue") {
-            return true;
-        }
-        let actual = row.get(&column.L).and_then(Option::as_deref);
-        let upper = upper.trim().trim_matches(['\'', '"']);
-        let ordering = match actual {
-            // MySQL RANGE COLUMNS orders NULL before every non-NULL value.
-            None => Ordering::Less,
-            Some(actual) => match (actual.parse::<i128>(), upper.parse::<i128>()) {
-                (Ok(actual), Ok(upper)) => actual.cmp(&upper),
-                _ => actual.cmp(upper),
-            },
-        };
-        if ordering != Ordering::Equal {
-            return ordering == Ordering::Less;
-        }
-    }
-    false
-}
-
 fn relational_dml_limit_window(
     limit: Option<&ast::Limit>,
 ) -> SessionResult<Option<RelationalLimitWindow>> {
@@ -653,6 +616,39 @@ impl ConcreteSession {
         // Pin the schema used by these mutations before any commit pause. The
         // commit check must run regardless of whether a failpoint is enabled.
         let start_schema = self.domain.info_schema();
+        let mut mlog_stats =
+            BTreeMap::<i64, (astersql_statistics_handle::StatsTableKey, i64)>::new();
+        for (key, value) in &mutations {
+            if !astersql_tablecodec::IsRecordKey(&key.0) {
+                continue;
+            }
+            let table_id =
+                astersql_tablecodec::DecodeTableID(astersql_tablecodec::kv::Key(key.0.clone()));
+            let Some(log_table) = start_schema.TableByID(table_id) else {
+                continue;
+            };
+            let log_meta = log_table
+                .ModelMeta()
+                .map_err(|error| session_error("read MLog statistics metadata", error))?;
+            if log_meta.MaterializedViewLog.is_none() || log_meta.Name.L.eq_ignore_ascii_case(table)
+            {
+                continue;
+            }
+            let database =
+                astersql_infoschema::SchemaByTable(start_schema.as_ref(), log_table.Meta())
+                    .ok_or_else(|| SessionError::new("MLog statistics schema is missing"))?;
+            let entry = mlog_stats.entry(table_id).or_insert_with(|| {
+                (
+                    astersql_statistics_handle::StatsTableKey::new(
+                        &database.name.lower,
+                        &log_meta.Name.L,
+                        table_id,
+                    ),
+                    0,
+                )
+            });
+            entry.1 += if value.is_some() { 1 } else { -1 };
+        }
         let write_keys = mutations.len() as u64;
         let write_bytes = mutations
             .iter()
@@ -918,6 +914,11 @@ impl ConcreteSession {
             HasForeignKeyChecks: false,
         });
         drop(state);
+        for (_, (key, delta)) in mlog_stats {
+            if delta != 0 {
+                self.record_stats_delta(key, delta, delta.abs())?;
+            }
+        }
         if !explicit_transaction {
             self.release_all_row_locks();
         }
@@ -929,70 +930,11 @@ impl ConcreteSession {
         table: &astersql_meta_model::TableInfo,
         row: &HashMap<String, Option<String>>,
     ) -> i64 {
-        let Some(partition) = table.GetPartitionInfo() else {
-            return table.ID;
-        };
-        let expression = if partition.Expr.is_empty() {
-            partition
-                .Columns
-                .first()
-                .map(|column| column.L.clone())
-                .unwrap_or_default()
-        } else {
-            partition.Expr.replace('`', "").to_lowercase()
-        };
-        let value = partition_expression_value(&expression, row).unwrap_or_default();
-        match partition.Type {
-            astersql_meta_model::ast::model::PartitionTypeHash
-            | astersql_meta_model::ast::model::PartitionTypeKey => {
-                let position = value.rem_euclid(partition.Definitions.len() as i64) as usize;
-                partition.Definitions[position].ID
-            }
-            astersql_meta_model::ast::model::PartitionTypeRange => partition
-                .Definitions
-                .iter()
-                .find(|definition| {
-                    if partition.Columns.is_empty() {
-                        definition.LessThan.first().is_none_or(|upper| {
-                            upper.eq_ignore_ascii_case("maxvalue")
-                                || value < upper.parse::<i64>().unwrap_or(i64::MAX)
-                        })
-                    } else {
-                        range_columns_row_is_below(row, &partition.Columns, &definition.LessThan)
-                    }
-                })
-                .map_or(table.ID, |definition| definition.ID),
-            astersql_meta_model::ast::model::PartitionTypeList => partition
-                .Definitions
-                .iter()
-                .find(|definition| {
-                    definition.InValues.iter().any(|values| {
-                        if !partition.Columns.is_empty() {
-                            values.len() == partition.Columns.len()
-                                && partition.Columns.iter().zip(values).all(
-                                    |(column, configured)| {
-                                        list_partition_value_matches(
-                                            row.get(&column.L)
-                                                .and_then(Option::as_ref)
-                                                .map(String::as_str),
-                                            configured,
-                                        )
-                                    },
-                                )
-                        } else {
-                            values.len() == 1
-                                && list_partition_value_matches(
-                                    partition_expression_value(&expression, row)
-                                        .map(|value| value.to_string())
-                                        .as_deref(),
-                                    &values[0],
-                                )
-                        }
-                    })
-                })
-                .map_or(table.ID, |definition| definition.ID),
-            _ => table.ID,
-        }
+        astersql_table_tables::canonical_partition::CanonicalPartitionedTable::new(
+            table,
+            astersql_tablecodec::collate::NewCollationEnabled(),
+        )
+        .locate(row, partition_expression_value)
     }
 
     fn unmatched_range_partition_value(
@@ -1009,6 +951,10 @@ impl ConcreteSession {
             partition.Expr.replace('`', "").to_lowercase()
         };
         let value = partition_expression_value(&expression, row)?;
+        let router = astersql_table_tables::canonical_partition::CanonicalPartitionedTable::new(
+            table,
+            astersql_tablecodec::collate::NewCollationEnabled(),
+        );
         let matched = partition.Definitions.iter().any(|definition| {
             if partition.Columns.is_empty() {
                 definition.LessThan.first().is_none_or(|upper| {
@@ -1016,7 +962,7 @@ impl ConcreteSession {
                         || value < upper.parse::<i64>().unwrap_or(i64::MAX)
                 })
             } else {
-                range_columns_row_is_below(row, &partition.Columns, &definition.LessThan)
+                router.range_columns_row_is_below(row, &partition.Columns, &definition.LessThan)
             }
         });
         (!matched).then_some(value)
@@ -1030,6 +976,10 @@ impl ConcreteSession {
         if partition.Type != astersql_meta_model::ast::model::PartitionTypeList {
             return None;
         }
+        let router = astersql_table_tables::canonical_partition::CanonicalPartitionedTable::new(
+            table,
+            astersql_tablecodec::collate::NewCollationEnabled(),
+        );
         if !partition.Columns.is_empty() {
             let matched = partition.Definitions.iter().any(|definition| {
                 definition.InValues.iter().any(|values| {
@@ -1039,11 +989,16 @@ impl ConcreteSession {
                             .iter()
                             .zip(values)
                             .all(|(column, configured)| {
-                                list_partition_value_matches(
+                                router.list_value_matches(
                                     row.get(&column.L)
                                         .and_then(Option::as_ref)
                                         .map(String::as_str),
                                     configured,
+                                    table
+                                        .Columns
+                                        .iter()
+                                        .find(|info| info.Name.L == column.L)
+                                        .map(|info| info.FieldType.GetCollate()),
                                 )
                             })
                 })
@@ -1056,7 +1011,7 @@ impl ConcreteSession {
         let value_text = value.to_string();
         let matched = partition.Definitions.iter().any(|definition| {
             definition.InValues.iter().any(|values| {
-                values.len() == 1 && list_partition_value_matches(Some(&value_text), &values[0])
+                values.len() == 1 && router.list_value_matches(Some(&value_text), &values[0], None)
             })
         });
         (!matched).then(|| format!("Table has no partition for value {value}"))
@@ -1434,6 +1389,7 @@ impl ConcreteSession {
             .collect::<Vec<_>>();
         let flags = self.dml_type_flags();
         for (database, child_name, child) in children {
+            let mlog = RuntimeMLog::for_table(self, &database, &child, flags)?;
             let mut child_rows = self
                 .scan_registered_table(&child)?
                 .into_iter()
@@ -1510,6 +1466,24 @@ impl ConcreteSession {
                     mutations.push((old_key, None));
                 }
                 mutations.push((new_key, Some(new_value)));
+                if let Some(mlog) = &mlog
+                    && mlog.tracked_changed(&child, old, new)
+                {
+                    mlog.append(
+                        &child,
+                        old,
+                        astersql_table::mview_log::MLogDMLType::Update,
+                        -1,
+                        &mut mutations,
+                    )?;
+                    mlog.append(
+                        &child,
+                        new,
+                        astersql_table::mview_log::MLogDMLType::Update,
+                        1,
+                        &mut mutations,
+                    )?;
+                }
             }
             if !mutations.is_empty() {
                 if depth >= 15 {
@@ -1660,6 +1634,7 @@ impl ConcreteSession {
             if relevant_foreign_keys.is_empty() {
                 continue;
             }
+            let mlog = RuntimeMLog::for_table(self, &database, &child, flags)?;
             let parent_key_sets = relevant_foreign_keys
                 .iter()
                 .map(|foreign_key| {
@@ -1769,6 +1744,15 @@ impl ConcreteSession {
                 let (key, _) = encode_relational_row(&child, row, flags)?;
                 mutations.push((key, None));
                 mutations.extend(relational_index_mutations(&child, Some(row), None, flags)?);
+                if let Some(mlog) = &mlog {
+                    mlog.append(
+                        &child,
+                        row,
+                        astersql_table::mview_log::MLogDMLType::Delete,
+                        -1,
+                        &mut mutations,
+                    )?;
+                }
             }
             for (old, new) in &updated_children {
                 let (old_key, _) = encode_relational_row(&child, old, flags)?;
@@ -1784,6 +1768,24 @@ impl ConcreteSession {
                     flags,
                 )?);
                 mutations.push((new_key, Some(new_value)));
+                if let Some(mlog) = &mlog
+                    && mlog.tracked_changed(&child, old, new)
+                {
+                    mlog.append(
+                        &child,
+                        old,
+                        astersql_table::mview_log::MLogDMLType::Update,
+                        -1,
+                        &mut mutations,
+                    )?;
+                    mlog.append(
+                        &child,
+                        new,
+                        astersql_table::mview_log::MLogDMLType::Update,
+                        1,
+                        &mut mutations,
+                    )?;
+                }
             }
             if !mutations.is_empty() {
                 let lock_rows = deleted_children
@@ -1867,6 +1869,7 @@ impl ConcreteSession {
         let mut table = self
             .resolve_runtime_table(database, &plan.Table)
             .ok_or_else(|| SessionError::new(format!("unknown DML table {}", plan.Table)))?;
+        let mlog = RuntimeMLog::for_table(self, database, &table, flags)?;
         let has_foreign_key_checks = !table.ForeignKeys.is_empty();
         self.record_transaction_table_write(&table);
         if let Some(indexes) = RUNTIME_PENDING_WRITE_INDEXES
@@ -2474,6 +2477,15 @@ impl ConcreteSession {
                 }
                 for existing_key in &replaced_unique_keys {
                     if let Some(existing_row) = working_rows.remove(existing_key) {
+                        if let Some(mlog) = &mlog {
+                            mlog.append(
+                                &table,
+                                &existing_row,
+                                astersql_table::mview_log::MLogDMLType::Update,
+                                -1,
+                                &mut mutations,
+                            )?;
+                        }
                         replaced_rows.push(existing_row.clone());
                         mutations.extend(relational_index_mutations(
                             &table,
@@ -2668,6 +2680,24 @@ impl ConcreteSession {
                     .and_then(|value| value.parse::<u64>().ok())
                     .unwrap_or(0);
                 if updated != original {
+                    if let Some(mlog) = &mlog
+                        && mlog.tracked_changed(&table, &original, &updated)
+                    {
+                        mlog.append(
+                            &table,
+                            &original,
+                            astersql_table::mview_log::MLogDMLType::Update,
+                            -1,
+                            &mut mutations,
+                        )?;
+                        mlog.append(
+                            &table,
+                            &updated,
+                            astersql_table::mview_log::MLogDMLType::Update,
+                            1,
+                            &mut mutations,
+                        )?;
+                    }
                     if updated_key.0 != conflict_key {
                         working_rows.remove(&conflict_key);
                         mutations.push((kv::Key(conflict_key), None));
@@ -2722,6 +2752,15 @@ impl ConcreteSession {
                 .Replace
                 .then(|| working_rows.get(&key.0).cloned())
                 .flatten();
+            if let (Some(mlog), Some(previous)) = (&mlog, replaced_primary_row.as_ref()) {
+                mlog.append(
+                    &table,
+                    previous,
+                    astersql_table::mview_log::MLogDMLType::Update,
+                    -1,
+                    &mut mutations,
+                )?;
+            }
             working_rows.insert(key.0.clone(), row);
             // A regular multi-row INSERT is atomic, so validating all unique
             // indexes once after the batch is sufficient.  Re-scanning every
@@ -2759,6 +2798,19 @@ impl ConcreteSession {
                 flags,
             )?);
             mutations.push((key, Some(value)));
+            if let Some(mlog) = &mlog {
+                mlog.append(
+                    &table,
+                    lock_rows.last().expect("inserted row was locked"),
+                    if plan.Replace && (!replaced_unique_keys.is_empty() || existing) {
+                        astersql_table::mview_log::MLogDMLType::Update
+                    } else {
+                        astersql_table::mview_log::MLogDMLType::Insert
+                    },
+                    1,
+                    &mut mutations,
+                )?;
+            }
         }
         if !has_deferred_optimistic_constraint {
             Self::validate_unique_indexes(&table, working_rows.values(), flags)?;
@@ -2845,6 +2897,7 @@ impl ConcreteSession {
         let table = self
             .resolve_runtime_table(database, &plan.Table)
             .ok_or_else(|| SessionError::new(format!("unknown DML table {}", plan.Table)))?;
+        let mlog = RuntimeMLog::for_table(self, database, &table, flags)?;
         self.record_transaction_table_write(&table);
         let matches_plan = |row: &HashMap<String, Option<String>>| -> SessionResult<bool> {
             if let Some(predicate) = plan.Predicate.as_ref() {
@@ -3137,6 +3190,24 @@ impl ConcreteSession {
                 flags,
             )?);
             mutations.push((new_key, Some(new_value)));
+            if let Some(mlog) = &mlog
+                && mlog.tracked_changed(&table, &original, &row)
+            {
+                mlog.append(
+                    &table,
+                    &original,
+                    astersql_table::mview_log::MLogDMLType::Update,
+                    -1,
+                    &mut mutations,
+                )?;
+                mlog.append(
+                    &table,
+                    &row,
+                    astersql_table::mview_log::MLogDMLType::Update,
+                    1,
+                    &mut mutations,
+                )?;
+            }
             affected_rows += 1;
             lock_rows.push(row.clone());
             updated_rows.push(row);
@@ -3248,6 +3319,7 @@ impl ConcreteSession {
             target_source.AsName.L.as_str()
         };
         let flags = self.dml_type_flags();
+        let mlog = RuntimeMLog::for_table(self, &database, &table, flags)?;
         let stats_before = self
             .scan_registered_table(&table)?
             .into_iter()
@@ -3297,6 +3369,24 @@ impl ConcreteSession {
                 flags,
             )?);
             mutations.push((new_key, Some(new_value)));
+            if let Some(mlog) = &mlog
+                && mlog.tracked_changed(&table, &original, &updated)
+            {
+                mlog.append(
+                    &table,
+                    &original,
+                    astersql_table::mview_log::MLogDMLType::Update,
+                    -1,
+                    &mut mutations,
+                )?;
+                mlog.append(
+                    &table,
+                    &updated,
+                    astersql_table::mview_log::MLogDMLType::Update,
+                    1,
+                    &mut mutations,
+                )?;
+            }
             if let Some(row) = updated_rows.iter_mut().find(|row| **row == original) {
                 *row = updated;
             }
@@ -3354,6 +3444,7 @@ impl ConcreteSession {
         let table = self
             .resolve_runtime_table(database, &plan.Table)
             .ok_or_else(|| SessionError::new(format!("unknown DML table {}", plan.Table)))?;
+        let mlog = RuntimeMLog::for_table(self, database, &table, flags)?;
         self.record_transaction_table_write(&table);
         let matches_plan = |row: &HashMap<String, Option<String>>| -> SessionResult<bool> {
             if let Some(predicate) = plan.Predicate.as_ref() {
@@ -3364,7 +3455,7 @@ impl ConcreteSession {
                     | ast::ExprKind::ExistsSubquery { .. } => {
                         self.relational_query_expression_value(predicate, row, None)?
                     }
-                    _ => relational_expression_value(predicate, row)?,
+                    _ => relational_table_expression_value(predicate, row, &table)?,
                 };
                 Ok(relational_truth(value.as_deref()) == Some(true))
             } else {
@@ -3427,6 +3518,15 @@ impl ConcreteSession {
             if selected_keys.contains(&key.0) && matches_plan(&row)? {
                 mutations.push((key, None));
                 mutations.extend(relational_index_mutations(&table, Some(&row), None, flags)?);
+                if let Some(mlog) = &mlog {
+                    mlog.append(
+                        &table,
+                        &row,
+                        astersql_table::mview_log::MLogDMLType::Delete,
+                        -1,
+                        &mut mutations,
+                    )?;
+                }
                 deleted_rows.push(row);
                 affected_rows += 1;
             }
@@ -3515,6 +3615,7 @@ impl ConcreteSession {
                 .ok_or_else(|| {
                     SessionError::new(format!("unknown DML table {}", target_source.Source.Name.O))
                 })?;
+            let mlog = RuntimeMLog::for_table(self, &database, &table, flags)?;
             let qualifier = if target_source.AsName.L.is_empty() {
                 target_source.Source.Name.L.as_str()
             } else {
@@ -3536,6 +3637,15 @@ impl ConcreteSession {
                 }
                 mutations.push((key, None));
                 mutations.extend(relational_index_mutations(&table, Some(&row), None, flags)?);
+                if let Some(mlog) = &mlog {
+                    mlog.append(
+                        &table,
+                        &row,
+                        astersql_table::mview_log::MLogDMLType::Delete,
+                        -1,
+                        &mut mutations,
+                    )?;
+                }
                 deleted_rows.push(row);
             }
             self.cascade_foreign_key_deletes(&table, &deleted_rows)?;

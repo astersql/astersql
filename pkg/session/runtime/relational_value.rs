@@ -2856,6 +2856,93 @@ where
 }
 
 /// 按投影列表输出关系行。
+pub(super) fn relational_expression_value_with_embed(
+    expression: &ast::ExprNode,
+    row: &HashMap<String, Option<String>>,
+    embed_text: &dyn Fn(
+        &[ast::ExprNode],
+        &HashMap<String, Option<String>>,
+    ) -> SessionResult<String>,
+) -> SessionResult<Option<String>> {
+    struct EmbedFinder(bool);
+    impl ast::ExprNodeVisitor for EmbedFinder {
+        fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
+            if let ast::ExprKind::Function { FnName, .. } = &input.Kind
+                && FnName.L.eq_ignore_ascii_case("embed_text")
+            {
+                self.0 = true;
+                return (input.clone(), true);
+            }
+            (input.clone(), false)
+        }
+        fn Leave(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
+            (input.clone(), !self.0)
+        }
+    }
+    let mut finder = EmbedFinder(false);
+    let _ = expression.Accept(&mut finder);
+    if !finder.0 {
+        return relational_expression_value(expression, row);
+    }
+
+    struct EmbedVisitor<'a> {
+        row: &'a HashMap<String, Option<String>>,
+        embed_text:
+            &'a dyn Fn(&[ast::ExprNode], &HashMap<String, Option<String>>) -> SessionResult<String>,
+        error: Option<SessionError>,
+    }
+    impl ast::ExprNodeVisitor for EmbedVisitor<'_> {
+        fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
+            if let ast::ExprKind::Function { FnName, Args, .. } = &input.Kind
+                && FnName.L.eq_ignore_ascii_case("if")
+                && Args.len() == 3
+            {
+                match relational_expression_value_with_embed(&Args[0], self.row, self.embed_text) {
+                    Ok(condition) => {
+                        let selected = if relational_truth(condition.as_deref()) == Some(true) {
+                            &Args[1]
+                        } else {
+                            &Args[2]
+                        };
+                        return (selected.clone(), false);
+                    }
+                    Err(error) => {
+                        self.error = Some(error);
+                        return (input.clone(), true);
+                    }
+                }
+            }
+            (input.clone(), false)
+        }
+
+        fn Leave(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
+            if let ast::ExprKind::Function { FnName, Args, .. } = &input.Kind
+                && FnName.L.eq_ignore_ascii_case("embed_text")
+            {
+                return match (self.embed_text)(Args, self.row) {
+                    Ok(value) if value == CONCRETE_NULL_VALUE => (ast::ExprNode::NullValue(), true),
+                    Ok(value) => (ast::ExprNode::Value(value), true),
+                    Err(error) => {
+                        self.error = Some(error);
+                        (input.clone(), false)
+                    }
+                };
+            }
+            (input.clone(), true)
+        }
+    }
+    let mut visitor = EmbedVisitor {
+        row,
+        embed_text,
+        error: None,
+    };
+    let (rewritten, _) = expression.Accept(&mut visitor);
+    if let Some(error) = visitor.error {
+        return Err(error);
+    }
+    relational_expression_value(&rewritten, row)
+}
+
 pub(super) fn project_relational_rows(
     database: &str,
     table_alias: &ast::CIStr,
@@ -2863,6 +2950,7 @@ pub(super) fn project_relational_rows(
     rows: &[RelationalRow],
     fields: &ast::FieldList,
     window_specs: &[ast::WindowSpec],
+    embed_text: impl Fn(&[ast::ExprNode], &HashMap<String, Option<String>>) -> SessionResult<String>,
 ) -> SessionResult<(
     Vec<String>,
     Vec<Vec<String>>,
@@ -3075,7 +3163,7 @@ pub(super) fn project_relational_rows(
                         })
                         .unwrap_or_else(|| SHOW_NULL_CELL.to_owned())),
                     Projection::Expression(expression) => {
-                        relational_expression_value(expression, row)
+                        relational_expression_value_with_embed(expression, row, &embed_text)
                             .map(|value| value.unwrap_or_else(|| SHOW_NULL_CELL.to_owned()))
                     }
                     Projection::Window(expression) => relational_window_value(

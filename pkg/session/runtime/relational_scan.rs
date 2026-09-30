@@ -145,6 +145,41 @@ pub(super) fn scan_relational_rows(
     scan_relational_rows_with_limit(retriever, table, None)
 }
 
+/// Read committed MLog record keys with their MVCC commit timestamps. A zero
+/// timestamp is unusable for purge fencing, so fail closed rather than delete
+/// rows whose version cannot be proven to precede the safe cutoff.
+pub(crate) fn scan_mlog_record_commit_ts(
+    snapshot: &dyn kv::Snapshot,
+    table_id: i64,
+) -> SessionResult<Vec<(kv::Key, u64)>> {
+    let prefix = kv::Key(astersql_tablecodec::GenTableRecordPrefix(table_id).0);
+    let mut iterator = snapshot
+        .Iter(prefix.clone(), Some(prefix.PrefixNext()))
+        .map_err(|error| session_error("scan MLog record keys", error))?;
+    let result = (|| {
+        let mut records = Vec::new();
+        while iterator.Valid() {
+            let key = iterator.Key();
+            let commit_ts = snapshot
+                .Get(&kv::Context::default(), key.clone(), &[])
+                .map_err(|error| session_error("read MLog record commit ts", error))?
+                .CommitTs;
+            if commit_ts == 0 {
+                return Err(SessionError::new(
+                    "MLog record commit timestamp is unavailable",
+                ));
+            }
+            records.push((key, commit_ts));
+            iterator
+                .Next()
+                .map_err(|error| session_error("advance MLog record scan", error))?;
+        }
+        Ok(records)
+    })();
+    iterator.Close();
+    result
+}
+
 /// 仅推进表记录键迭代器统计行数，不读取、复制或解码行值。
 ///
 /// 与 Go TableReader/HashAgg 的分块消费一致，内存占用不随表行数增长。
@@ -152,6 +187,18 @@ pub(crate) fn count_relational_rows(
     retriever: &dyn kv::Retriever,
     table: &astersql_meta_model::TableInfo,
 ) -> SessionResult<usize> {
+    if let Some(partition) = table.GetPartitionInfo() {
+        let mut total = 0_usize;
+        for definition in &partition.Definitions {
+            let mut physical_table = table.clone();
+            physical_table.ID = definition.ID;
+            physical_table.Partition = None;
+            total = total
+                .checked_add(count_relational_rows(retriever, &physical_table)?)
+                .ok_or_else(|| SessionError::new("relational row count overflow"))?;
+        }
+        return Ok(total);
+    }
     let prefix = kv::Key(astersql_tablecodec::GenTableRecordPrefix(table.ID).0);
     let mut iterator = retriever
         .Iter(prefix.clone(), Some(prefix.PrefixNext()))
@@ -533,6 +580,9 @@ fn scan_relational_rows_with_coprocessor(
     txn_scope: &str,
     connection_id: u64,
 ) -> SessionResult<Option<Vec<RelationalRow>>> {
+    if table.GetPartitionInfo().is_some() {
+        return Ok(None);
+    }
     let client = store.GetClient();
     if !client.IsRequestTypeSupported(kv::ReqTypeDAG, kv::ReqSubTypeBasic) {
         return Ok(None);
@@ -767,6 +817,9 @@ pub(super) fn count_relational_rows_with_coprocessor(
     checker: Option<kv::resourcegroup::SharedRunawayChecker>,
     resource_group_name: &str,
 ) -> SessionResult<Option<usize>> {
+    if table.GetPartitionInfo().is_some() {
+        return Ok(None);
+    }
     let client = store.GetClient();
     if !client.IsRequestTypeSupported(kv::ReqTypeDAG, kv::ReqSubTypeBasic) {
         return Ok(None);
@@ -1192,6 +1245,19 @@ pub(super) fn relational_row_scan_ranges(
     table: &astersql_meta_model::TableInfo,
     primary_key_desc: Option<bool>,
 ) -> Vec<RelationalRowScanRange> {
+    if let Some(partition) = table.GetPartitionInfo() {
+        let mut ranges = Vec::new();
+        for definition in &partition.Definitions {
+            let mut physical_table = table.clone();
+            physical_table.ID = definition.ID;
+            physical_table.Partition = None;
+            ranges.extend(relational_row_scan_ranges(
+                &physical_table,
+                primary_key_desc,
+            ));
+        }
+        return ranges;
+    }
     let prefix = kv::Key(astersql_tablecodec::GenTableRecordPrefix(table.ID).0);
     let table_end = prefix.PrefixNext();
     let unsigned_primary_key = primary_key_desc.is_some()
@@ -1315,6 +1381,20 @@ pub(crate) fn relational_primary_key_scan_ranges(
     predicate: &ast::ExprNode,
     primary_key_desc: Option<bool>,
 ) -> Option<Vec<RelationalRowScanRange>> {
+    if let Some(partition) = table.GetPartitionInfo() {
+        let mut ranges = Vec::new();
+        for definition in &partition.Definitions {
+            let mut physical_table = table.clone();
+            physical_table.ID = definition.ID;
+            physical_table.Partition = None;
+            ranges.extend(relational_primary_key_scan_ranges(
+                &physical_table,
+                predicate,
+                primary_key_desc,
+            )?);
+        }
+        return Some(ranges);
+    }
     if !table.PKIsHandle {
         return None;
     }
@@ -1453,7 +1533,7 @@ pub(super) fn scan_relational_secondary_index_window(
     }
     let mut remaining_offset = offset;
     let mut handles =
-        Vec::<Box<dyn astersql_tablecodec::kv::Handle>>::with_capacity(count.min(1024));
+        Vec::<(i64, Box<dyn astersql_tablecodec::kv::Handle>)>::with_capacity(count.min(1024));
     for (lower, upper, reverse) in &access.ranges {
         if handles.len() >= count {
             break;
@@ -1472,9 +1552,14 @@ pub(super) fn scan_relational_secondary_index_window(
                 remaining_offset -= 1;
             }
             while iterator.Valid() && handles.len() < count {
-                handles.push(
+                let index_key = iterator.Key();
+                let physical_id = astersql_tablecodec::DecodeTableID(astersql_tablecodec::kv::Key(
+                    index_key.0.clone(),
+                ));
+                handles.push((
+                    physical_id,
                     astersql_tablecodec::DecodeIndexHandle(
-                        iterator.Key().0,
+                        index_key.0,
                         iterator.Value().to_vec(),
                         access.index.Columns.len(),
                     )
@@ -1482,7 +1567,7 @@ pub(super) fn scan_relational_secondary_index_window(
                     .ok_or_else(|| {
                         SessionError::new("secondary-index value does not contain a handle")
                     })?,
-                );
+                ));
                 iterator
                     .Next()
                     .map_err(|error| session_error("advance secondary index", error))?;
@@ -1497,8 +1582,8 @@ pub(super) fn scan_relational_secondary_index_window(
     }
     let record_keys = handles
         .iter()
-        .map(|handle| {
-            kv::Key(astersql_tablecodec::EncodeRowKeyWithHandle(table.ID, handle.Copy()).0)
+        .map(|(physical_id, handle)| {
+            kv::Key(astersql_tablecodec::EncodeRowKeyWithHandle(*physical_id, handle.Copy()).0)
         })
         .collect::<Vec<_>>();
     let values = snapshot
@@ -1512,7 +1597,7 @@ pub(super) fn scan_relational_secondary_index_window(
     handles
         .iter()
         .zip(record_keys)
-        .map(|(handle, key)| {
+        .map(|((_, handle), key)| {
             let key_name = kv::KeyMapName(key.as_ref());
             let value = values.get(&key_name).ok_or_else(|| {
                 SessionError::new(format!(
@@ -2107,6 +2192,7 @@ impl ConcreteSession {
             let mut remaining_offset = window.offset;
             let mut start_key = None;
             if access_ranges.is_none()
+                && table.GetPartitionInfo().is_none()
                 && primary_key_desc.is_none()
                 && window.offset >= RELATIONAL_OFFSET_HANDLE_SEEK_THRESHOLD
                 && let Some(candidate) =
@@ -2370,6 +2456,9 @@ impl ConcreteSession {
         read_ts: Option<u64>,
         statement_sql: Option<&str>,
     ) -> SessionResult<Option<usize>> {
+        if table.GetPartitionInfo().is_some() {
+            return Ok(None);
+        }
         let state = self.state.borrow();
         if state.transaction.is_some() {
             return Ok(None);
@@ -2588,7 +2677,7 @@ impl ConcreteSession {
     }
 
     /// 读取原始 KV 值。
-    pub(super) fn read_raw_kv(&self, key: kv::Key) -> SessionResult<Option<Vec<u8>>> {
+    pub(crate) fn read_raw_kv(&self, key: kv::Key) -> SessionResult<Option<Vec<u8>>> {
         let state = self.state.borrow();
         let result = if let Some(transaction) = state.transaction.as_ref() {
             transaction.Get(&kv::Context::default(), key, &[])

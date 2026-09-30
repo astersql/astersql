@@ -53,6 +53,1039 @@ fn concrete_session() -> ConcreteSession {
     ConcreteSession::new(Arc::clone(domain.domain()))
 }
 
+fn canonical_mlog_session() -> ConcreteSession {
+    let bootstrap = concrete_session();
+    crate::runtime::BootstrapCanonicalDomain(Arc::clone(bootstrap.domain())).unwrap()
+}
+
+#[test]
+fn go_merge_49_canonical_bootstrap_installs_purge_history() {
+    let session = canonical_mlog_session();
+    assert!(
+        session
+            .domain()
+            .stats_table("mysql", "tidb_mview_refresh_info")
+            .is_some()
+    );
+    assert!(
+        session
+            .domain()
+            .stats_table("mysql", "tidb_mlog_purge_hist")
+            .is_some()
+    );
+}
+
+#[test]
+fn go_merge_49_mlog_scan_reads_record_commit_ts() {
+    let session = canonical_mlog_session();
+    session
+        .execute("create table t_mlog_commit_ts (a int)")
+        .unwrap();
+    session
+        .execute("create materialized view log on t_mlog_commit_ts (a)")
+        .unwrap();
+    session
+        .execute("insert into t_mlog_commit_ts values (1)")
+        .unwrap();
+    let log = session
+        .domain()
+        .stats_table("test", "$mlog$t_mlog_commit_ts")
+        .unwrap()
+        .1;
+    let commits = session.domain().storage().with_storage(|store| {
+        let version = store.CurrentVersion("global").unwrap();
+        let snapshot = store.GetSnapshot(version);
+        crate::runtime::scan_mlog_record_commit_ts(snapshot.as_ref(), log.ID).unwrap()
+    });
+    assert_eq!(commits.len(), 1);
+    assert!(commits[0].1 > 0);
+}
+
+#[test]
+fn go_merge_49_mlog_purge_batch_respects_commit_fence() {
+    let session = canonical_mlog_session();
+    session
+        .execute("create table t_mlog_fence (a int)")
+        .unwrap();
+    session
+        .execute("create materialized view log on t_mlog_fence (a)")
+        .unwrap();
+    let log = session
+        .domain()
+        .stats_table("test", "$mlog$t_mlog_fence")
+        .unwrap()
+        .1;
+    session
+        .execute("insert into t_mlog_fence values (1)")
+        .unwrap();
+    let first_commit = session.domain().storage().with_storage(|store| {
+        let snapshot = store.GetSnapshot(store.CurrentVersion("global").unwrap());
+        crate::runtime::scan_mlog_record_commit_ts(snapshot.as_ref(), log.ID).unwrap()[0].1
+    });
+    session
+        .execute("insert into t_mlog_fence values (2)")
+        .unwrap();
+    let purged = session.domain().storage().with_storage(|store| {
+        let mut txn = store.Begin(&[]).unwrap();
+        let count =
+            crate::runtime::purge_mlog_snapshot_batch(txn.as_mut(), log.ID, None, first_commit, 16)
+                .unwrap();
+        txn.Commit(&kv::Context::default()).unwrap();
+        count
+    });
+    assert_eq!(purged, 1);
+    let mut rows = session
+        .execute("select a from `$mlog$t_mlog_fence`")
+        .unwrap()
+        .remove(0);
+    assert_eq!(rows.Next().unwrap().unwrap(), vec!["2".to_owned()]);
+    assert!(rows.Next().unwrap().is_none());
+}
+
+#[test]
+fn go_merge_49_sql_purge_uses_configured_batch_size() {
+    let session = canonical_mlog_session();
+    session
+        .execute("create table t_mlog_batch (a int)")
+        .unwrap();
+    session
+        .execute("create materialized view log on t_mlog_batch (a)")
+        .unwrap();
+    session
+        .execute("insert into t_mlog_batch values (1), (2), (3)")
+        .unwrap();
+    session
+        .execute("set @@tidb_mlog_purge_batch_size=1")
+        .unwrap();
+    let mut configured = session
+        .execute("select @@tidb_mlog_purge_batch_size")
+        .unwrap()
+        .remove(0);
+    assert_eq!(configured.Next().unwrap().unwrap(), vec!["1".to_owned()]);
+    session
+        .execute("purge materialized view log on t_mlog_batch")
+        .unwrap();
+    let mut rows = session
+        .execute("select PURGE_ROWS from mysql.tidb_mlog_purge_hist")
+        .unwrap()
+        .remove(0);
+    assert_eq!(rows.Next().unwrap().unwrap(), vec!["3".to_owned()]);
+    session
+        .execute("set @@tidb_mlog_purge_min_rate=2500")
+        .unwrap();
+    session
+        .execute("set @@tidb_mlog_purge_rate_budget_ratio=0.25")
+        .unwrap();
+    assert!(
+        session
+            .execute("set @@tidb_mlog_purge_rate_budget_ratio=0")
+            .is_err()
+    );
+    session
+        .execute("set @@tidb_mlog_purge_batch_size=0")
+        .unwrap();
+    let mut minimum = session
+        .execute("select @@tidb_mlog_purge_batch_size")
+        .unwrap()
+        .remove(0);
+    assert_eq!(minimum.Next().unwrap().unwrap(), vec!["1".to_owned()]);
+}
+
+#[test]
+fn go_merge_49_sql_purge_advances_past_checkpointed_keys() {
+    let session = canonical_mlog_session();
+    session
+        .execute("create table t_mlog_cursor (a int)")
+        .unwrap();
+    session
+        .execute("create materialized view log on t_mlog_cursor (a)")
+        .unwrap();
+    let log = session
+        .domain()
+        .stats_table("test", "$mlog$t_mlog_cursor")
+        .unwrap()
+        .1;
+    session
+        .execute("insert into t_mlog_cursor values (1)")
+        .unwrap();
+    let first_commit = session.domain().storage().with_storage(|store| {
+        let snapshot = store.GetSnapshot(store.CurrentVersion("global").unwrap());
+        crate::runtime::scan_mlog_record_commit_ts(snapshot.as_ref(), log.ID).unwrap()[0].1
+    });
+    session
+        .execute("insert into t_mlog_cursor values (2)")
+        .unwrap();
+    session
+        .execute(&format!(
+            "update mysql.tidb_mlog_purge_info set LAST_PURGED_TSO={first_commit} where MLOG_ID={}",
+            log.ID
+        ))
+        .unwrap();
+    session
+        .execute("set @@tidb_mlog_purge_batch_size=1")
+        .unwrap();
+    session
+        .execute("purge materialized view log on t_mlog_cursor")
+        .unwrap();
+    let mut rows = session
+        .execute("select a from `$mlog$t_mlog_cursor`")
+        .unwrap()
+        .remove(0);
+    assert_eq!(rows.Next().unwrap().unwrap(), vec!["1".to_owned()]);
+    assert!(rows.Next().unwrap().is_none());
+}
+
+#[test]
+fn go_merge_49_sql_purge_requires_operate_view_privilege() {
+    let admin = canonical_mlog_session();
+    admin.execute("create table t_mlog_priv (a int)").unwrap();
+    admin
+        .execute("create materialized view log on t_mlog_priv (a)")
+        .unwrap();
+    admin
+        .execute("create user 'mlog_purge_user'@'localhost'")
+        .unwrap();
+    let mut restricted = ConcreteSession::new(Arc::clone(&admin.domain()));
+    restricted
+        .AuthenticateUserForTest(&astersql_parser_auth::parser::auth::auth::UserIdentity {
+            username: "mlog_purge_user".to_owned(),
+            hostname: "localhost".to_owned(),
+            ..Default::default()
+        })
+        .unwrap();
+    let denied = match restricted.execute("purge materialized view log on test.t_mlog_priv") {
+        Ok(_) => panic!("OPERATE VIEW is required on the log table"),
+        Err(error) => error,
+    };
+    assert!(denied.to_string().contains("OPERATE VIEW"), "{denied}");
+    admin
+        .execute("grant operate view on test.`$mlog$t_mlog_priv` to 'mlog_purge_user'@'localhost'")
+        .unwrap();
+    restricted
+        .execute("purge materialized view log on test.t_mlog_priv")
+        .unwrap();
+}
+
+#[test]
+fn go_merge_49_sql_purge_mlog_updates_history_and_checkpoint() {
+    let session = canonical_mlog_session();
+    session
+        .execute("create table t_mlog_sql_purge (a int)")
+        .unwrap();
+    session
+        .execute("create materialized view log on t_mlog_sql_purge (a)")
+        .unwrap();
+    session
+        .execute("insert into t_mlog_sql_purge values (1), (2)")
+        .unwrap();
+    session
+        .execute("purge materialized view log on t_mlog_sql_purge")
+        .unwrap();
+    let mut rows = session
+        .execute("select count(*) from `$mlog$t_mlog_sql_purge`")
+        .unwrap()
+        .remove(0);
+    assert_eq!(rows.Next().unwrap().unwrap(), vec!["0".to_owned()]);
+    let mut history = session
+        .execute("select PURGE_STATUS, PURGE_ROWS from mysql.tidb_mlog_purge_hist")
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        history.Next().unwrap().unwrap(),
+        vec!["success".to_owned(), "2".to_owned()]
+    );
+    let mut duration = session
+        .execute("select PURGE_DURATION_SEC from mysql.tidb_mlog_purge_hist")
+        .unwrap()
+        .remove(0);
+    assert!(duration.Next().unwrap().unwrap()[0].parse::<f64>().unwrap() >= 0.0);
+}
+
+#[test]
+fn go_merge_49_sql_purge_respects_dependent_view_read_tso() {
+    use astersql_meta_model::MaterializedViewBaseInfo;
+
+    let session = canonical_mlog_session();
+    session.execute("create table t_mlog_dep (a int)").unwrap();
+    let mut base = session
+        .domain()
+        .stats_table("test", "t_mlog_dep")
+        .unwrap()
+        .1;
+    session.execute("drop table t_mlog_dep").unwrap();
+    base.MaterializedViewBase = Some(MaterializedViewBaseInfo {
+        MLogID: 0,
+        MViewIDs: vec![990_049],
+    });
+    session
+        .domain()
+        .ddl_create_table("test", base, false)
+        .unwrap();
+    session
+        .execute("create materialized view log on t_mlog_dep (a)")
+        .unwrap();
+    session.execute("insert into mysql.tidb_mview_refresh_info (MVIEW_ID, LAST_SUCCESS_READ_TSO) values (990049, 0)").unwrap();
+    session
+        .execute("insert into t_mlog_dep values (1)")
+        .unwrap();
+    session
+        .execute("purge materialized view log on t_mlog_dep")
+        .unwrap();
+    let mut count = session
+        .execute("select count(*) from `$mlog$t_mlog_dep`")
+        .unwrap()
+        .remove(0);
+    assert_eq!(count.Next().unwrap().unwrap(), vec!["1".to_owned()]);
+    let current = session
+        .domain()
+        .storage()
+        .with_storage(|store| store.CurrentVersion("global").unwrap().Ver);
+    session.execute(&format!("update mysql.tidb_mview_refresh_info set LAST_SUCCESS_READ_TSO={current} where MVIEW_ID=990049")).unwrap();
+    session
+        .execute("purge materialized view log on t_mlog_dep")
+        .unwrap();
+    let mut count = session
+        .execute("select count(*) from `$mlog$t_mlog_dep`")
+        .unwrap()
+        .remove(0);
+    assert_eq!(count.Next().unwrap().unwrap(), vec!["0".to_owned()]);
+}
+
+#[test]
+fn go_merge_49_sql_purge_records_failure_before_delete() {
+    use astersql_meta_model::MaterializedViewBaseInfo;
+
+    let session = canonical_mlog_session();
+    session.execute("create table t_mlog_fail (a int)").unwrap();
+    let mut base = session
+        .domain()
+        .stats_table("test", "t_mlog_fail")
+        .unwrap()
+        .1;
+    session.execute("drop table t_mlog_fail").unwrap();
+    base.MaterializedViewBase = Some(MaterializedViewBaseInfo {
+        MLogID: 0,
+        MViewIDs: vec![990_050],
+    });
+    session
+        .domain()
+        .ddl_create_table("test", base, false)
+        .unwrap();
+    session
+        .execute("create materialized view log on t_mlog_fail (a)")
+        .unwrap();
+    session
+        .execute("insert into t_mlog_fail values (1)")
+        .unwrap();
+    assert!(
+        session
+            .execute("purge materialized view log on t_mlog_fail")
+            .is_err()
+    );
+    let mut count = session
+        .execute("select count(*) from `$mlog$t_mlog_fail`")
+        .unwrap()
+        .remove(0);
+    assert_eq!(count.Next().unwrap().unwrap(), vec!["1".to_owned()]);
+    let mut history = session
+        .execute("select PURGE_STATUS from mysql.tidb_mlog_purge_hist")
+        .unwrap()
+        .remove(0);
+    assert_eq!(history.Next().unwrap().unwrap(), vec!["failed".to_owned()]);
+}
+
+#[test]
+fn go_merge_49_scheduled_mlog_purge_uses_auto_history() {
+    let session = canonical_mlog_session();
+    session.execute("create table t_mlog_auto (a int)").unwrap();
+    session.execute("create materialized view log on t_mlog_auto (a) purge next cast('2030-01-02 00:00:00' as datetime)").unwrap();
+    session
+        .execute("insert into t_mlog_auto values (1)")
+        .unwrap();
+    assert_eq!(
+        crate::runtime::run_mlog_purge_tick(session.domain(), 1_893_542_400).unwrap(),
+        1
+    );
+    let mut count = session
+        .execute("select count(*) from `$mlog$t_mlog_auto`")
+        .unwrap()
+        .remove(0);
+    assert_eq!(count.Next().unwrap().unwrap(), vec!["0".to_owned()]);
+    let mut history = session
+        .execute("select PURGE_METHOD, PURGE_STATUS from mysql.tidb_mlog_purge_hist")
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        history.Next().unwrap().unwrap(),
+        vec!["auto".to_owned(), "success".to_owned()]
+    );
+}
+
+#[test]
+fn go_merge_49_mlog_purge_worker_stops_with_domain() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let session = concrete_session();
+    let domain = Arc::clone(session.domain());
+    let ticks = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&ticks);
+    assert!(
+        domain
+            .start_mlog_purge_worker(std::time::Duration::from_millis(10), move |_| {
+                observed.fetch_add(1, Ordering::SeqCst);
+            })
+            .unwrap()
+    );
+    assert!(
+        !domain
+            .start_mlog_purge_worker(std::time::Duration::from_millis(10), |_| {})
+            .unwrap()
+    );
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    assert!(ticks.load(Ordering::SeqCst) > 0);
+    domain.close();
+    let stopped = ticks.load(Ordering::SeqCst);
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    assert_eq!(ticks.load(Ordering::SeqCst), stopped);
+}
+
+#[test]
+fn go_merge_49_sql_purge_rejects_explicit_transaction() {
+    let session = canonical_mlog_session();
+    session.execute("create table t_mlog_txn (a int)").unwrap();
+    session
+        .execute("create materialized view log on t_mlog_txn (a)")
+        .unwrap();
+    session
+        .execute("insert into t_mlog_txn values (1)")
+        .unwrap();
+    session.execute("begin").unwrap();
+    assert!(
+        session
+            .execute("purge materialized view log on t_mlog_txn")
+            .is_err()
+    );
+    session.execute("rollback").unwrap();
+    let mut count = session
+        .execute("select count(*) from `$mlog$t_mlog_txn`")
+        .unwrap()
+        .remove(0);
+    assert_eq!(count.Next().unwrap().unwrap(), vec!["1".to_owned()]);
+}
+
+#[test]
+fn go_merge_49_sql_purge_lock_conflict_preserves_log() {
+    let session = canonical_mlog_session();
+    session.execute("create table t_mlog_lock (a int)").unwrap();
+    session
+        .execute("create materialized view log on t_mlog_lock (a)")
+        .unwrap();
+    session
+        .execute("insert into t_mlog_lock values (1)")
+        .unwrap();
+    let log_id = session
+        .domain()
+        .stats_table("test", "$mlog$t_mlog_lock")
+        .unwrap()
+        .1
+        .ID;
+    let blocker = ConcreteSession::new(Arc::clone(session.domain()));
+    blocker.execute("begin pessimistic").unwrap();
+    blocker.execute(&format!("select LAST_PURGED_TSO from mysql.tidb_mlog_purge_info where MLOG_ID={log_id} for update nowait")).unwrap();
+    assert!(
+        session
+            .execute("purge materialized view log on t_mlog_lock")
+            .is_err()
+    );
+    blocker.execute("rollback").unwrap();
+    let mut count = session
+        .execute("select count(*) from `$mlog$t_mlog_lock`")
+        .unwrap()
+        .remove(0);
+    assert_eq!(count.Next().unwrap().unwrap(), vec!["1".to_owned()]);
+}
+
+#[test]
+fn go_merge_49_sql_purge_respects_history_cutoff_fence() {
+    let session = canonical_mlog_session();
+    session
+        .execute("create table t_mlog_hist_fence (a int)")
+        .unwrap();
+    session
+        .execute("create materialized view log on t_mlog_hist_fence (a)")
+        .unwrap();
+    session
+        .execute("insert into t_mlog_hist_fence values (1)")
+        .unwrap();
+    let log_id = session
+        .domain()
+        .stats_table("test", "$mlog$t_mlog_hist_fence")
+        .unwrap()
+        .1
+        .ID;
+    let future = session
+        .domain()
+        .storage()
+        .with_storage(|store| store.CurrentVersion("global").unwrap().Ver + 1_000_000);
+    session.execute(&format!("insert into mysql.tidb_mlog_purge_hist (PURGE_JOB_ID, MLOG_ID, PURGE_METHOD, PURGE_ROWS, PURGE_STATUS, PURGE_CUTOFF_TSO) values (1, {log_id}, 'manual', 0, 'success', {future})")).unwrap();
+    session
+        .execute("purge materialized view log on t_mlog_hist_fence")
+        .unwrap();
+    let mut count = session
+        .execute("select count(*) from `$mlog$t_mlog_hist_fence`")
+        .unwrap()
+        .remove(0);
+    assert_eq!(count.Next().unwrap().unwrap(), vec!["1".to_owned()]);
+    let mut count = session
+        .execute("select count(*) from mysql.tidb_mlog_purge_hist")
+        .unwrap()
+        .remove(0);
+    assert_eq!(count.Next().unwrap().unwrap(), vec!["1".to_owned()]);
+}
+
+#[test]
+fn go_merge_49_sql_cancel_mlog_purge_marks_running_job() {
+    let session = canonical_mlog_session();
+    session.execute("insert into mysql.tidb_mlog_purge_hist (PURGE_JOB_ID, MLOG_ID, PURGE_METHOD, PURGE_ROWS, PURGE_STATUS) values (49001, 1, 'manual', 0, 'running')").unwrap();
+    session
+        .execute("cancel materialized view log purge job 49001")
+        .unwrap();
+    let mut row = session.execute("select CANCEL_REQUEST_TIME is not null from mysql.tidb_mlog_purge_hist where PURGE_JOB_ID=49001").unwrap().remove(0);
+    assert_eq!(row.Next().unwrap().unwrap(), vec!["1".to_owned()]);
+    assert!(
+        session
+            .execute("cancel materialized view log purge job 49001")
+            .is_err()
+    );
+}
+
+#[test]
+fn go_merge_49_sql_cancel_mlog_purge_checks_log_privilege() {
+    let admin = canonical_mlog_session();
+    admin
+        .execute("create table t_mlog_cancel_priv (a int)")
+        .unwrap();
+    admin
+        .execute("create materialized view log on t_mlog_cancel_priv (a)")
+        .unwrap();
+    let log_id = admin
+        .domain()
+        .stats_table("test", "$mlog$t_mlog_cancel_priv")
+        .unwrap()
+        .1
+        .ID;
+    admin.execute(&format!("insert into mysql.tidb_mlog_purge_hist (PURGE_JOB_ID, MLOG_ID, PURGE_METHOD, PURGE_ROWS, PURGE_STATUS) values (49002, {log_id}, 'manual', 0, 'running')")).unwrap();
+    admin
+        .execute("create user 'mlog_cancel_user'@'localhost'")
+        .unwrap();
+    let mut restricted = ConcreteSession::new(Arc::clone(&admin.domain()));
+    restricted
+        .AuthenticateUserForTest(&astersql_parser_auth::parser::auth::auth::UserIdentity {
+            username: "mlog_cancel_user".to_owned(),
+            hostname: "localhost".to_owned(),
+            ..Default::default()
+        })
+        .unwrap();
+    let denied = match restricted.execute("cancel materialized view log purge job 49002") {
+        Ok(_) => panic!("OPERATE VIEW is required to cancel the MLog purge"),
+        Err(error) => error,
+    };
+    assert!(denied.to_string().contains("OPERATE VIEW"), "{denied}");
+    admin.execute("grant operate view on test.`$mlog$t_mlog_cancel_priv` to 'mlog_cancel_user'@'localhost'").unwrap();
+    restricted
+        .execute("cancel materialized view log purge job 49002")
+        .unwrap();
+    let mut requester = admin
+        .execute(
+            "select CANCEL_REQUESTED_BY from mysql.tidb_mlog_purge_hist where PURGE_JOB_ID=49002",
+        )
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        requester.Next().unwrap().unwrap(),
+        vec!["'mlog_cancel_user'@'localhost'".to_owned()]
+    );
+}
+
+#[test]
+fn go_merge_49_sql_purge_updates_mlog_stats_delta() {
+    let session = canonical_mlog_session();
+    session
+        .execute("create table t_mlog_stats (a int)")
+        .unwrap();
+    session
+        .execute("create materialized view log on t_mlog_stats (a)")
+        .unwrap();
+    let log_id = session
+        .domain()
+        .stats_table("test", "$mlog$t_mlog_stats")
+        .unwrap()
+        .1
+        .ID;
+    session
+        .execute("insert into t_mlog_stats values (1), (2)")
+        .unwrap();
+    session.domain().dump_stats_delta_to_kv(true).unwrap();
+    let mut before = session
+        .execute(&format!(
+            "select count from mysql.stats_meta where table_id={log_id}"
+        ))
+        .unwrap()
+        .remove(0);
+    assert_eq!(before.Next().unwrap().unwrap(), vec!["2".to_owned()]);
+    session
+        .execute("purge materialized view log on t_mlog_stats")
+        .unwrap();
+    session.domain().dump_stats_delta_to_kv(true).unwrap();
+    let mut after = session
+        .execute(&format!(
+            "select count from mysql.stats_meta where table_id={log_id}"
+        ))
+        .unwrap()
+        .remove(0);
+    assert_eq!(after.Next().unwrap().unwrap(), vec!["0".to_owned()]);
+}
+
+#[test]
+fn go_merge_49_sql_mlog_dml_shares_transaction() {
+    use astersql_meta_model::{MaterializedViewBaseInfo, MaterializedViewLogInfo};
+    use astersql_parser_ast::NewCIStr;
+
+    let session = concrete_session();
+    session
+        .execute("create table t_mlog (a int primary key, b int)")
+        .unwrap();
+    session.execute("create table `$mlog$t_mlog` (a int, b int, `_MLOG$_DML_TYPE` varchar(1), `_MLOG$_OLD_NEW` int)").unwrap();
+    let domain = session.domain();
+    let mut base = domain.stats_table("test", "t_mlog").unwrap().1;
+    let mut log = domain.stats_table("test", "$mlog$t_mlog").unwrap().1;
+    base.ID = 990_001;
+    log.ID = 990_002;
+    base.MaterializedViewBase = Some(MaterializedViewBaseInfo {
+        MLogID: log.ID,
+        ..Default::default()
+    });
+    log.MaterializedViewLog = Some(MaterializedViewLogInfo {
+        BaseTableID: base.ID,
+        Columns: vec![NewCIStr("a"), NewCIStr("b")],
+        ..Default::default()
+    });
+    session
+        .execute("drop table t_mlog, `$mlog$t_mlog`")
+        .unwrap();
+    domain.ddl_create_table("test", base, false).unwrap();
+    domain.ddl_create_table("test", log, false).unwrap();
+    assert!(
+        domain
+            .stats_table("test", "t_mlog")
+            .unwrap()
+            .1
+            .MaterializedViewBase
+            .is_some()
+    );
+
+    session.execute("begin").unwrap();
+    session
+        .execute("insert into t_mlog values (1, 10)")
+        .unwrap();
+    let mut base_rows = session.execute("select a from t_mlog").unwrap().remove(0);
+    assert_eq!(base_rows.Next().unwrap(), Some(vec!["1".to_owned()]));
+    let mut rows = session
+        .execute("select a, b, `_MLOG$_DML_TYPE`, `_MLOG$_OLD_NEW` from `$mlog$t_mlog`")
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        rows.Next().unwrap(),
+        Some(vec![
+            "1".to_owned(),
+            "10".to_owned(),
+            "I".to_owned(),
+            "1".to_owned()
+        ])
+    );
+    session.execute("rollback").unwrap();
+    let mut rows = session
+        .execute("select a from `$mlog$t_mlog`")
+        .unwrap()
+        .remove(0);
+    assert_eq!(rows.Next().unwrap(), None);
+
+    session
+        .execute("insert into t_mlog values (2, 20)")
+        .unwrap();
+    session
+        .execute("update t_mlog set b = 21 where a = 2")
+        .unwrap();
+    session.execute("delete from t_mlog where a = 2").unwrap();
+    let mut rows = session
+        .execute("select a, b, `_MLOG$_DML_TYPE`, `_MLOG$_OLD_NEW` from `$mlog$t_mlog`")
+        .unwrap()
+        .remove(0);
+    let mut actual = Vec::new();
+    while let Some(row) = rows.Next().unwrap() {
+        actual.push(row);
+    }
+    actual.sort();
+    let mut expected = vec![
+        vec!["2", "20", "I", "1"],
+        vec!["2", "20", "U", "-1"],
+        vec!["2", "21", "U", "1"],
+        vec!["2", "21", "D", "-1"],
+    ]
+    .into_iter()
+    .map(|row| row.into_iter().map(str::to_owned).collect::<Vec<_>>())
+    .collect::<Vec<_>>();
+    expected.sort();
+    assert_eq!(actual, expected);
+
+    session
+        .execute("insert into t_mlog values (3, 30)")
+        .unwrap();
+    session
+        .execute("update t_mlog set a = 4 where a = 3")
+        .unwrap();
+    session
+        .execute("replace into t_mlog values (4, 40)")
+        .unwrap();
+    session
+        .execute("insert into t_mlog values (4, 99) on duplicate key update b = 41")
+        .unwrap();
+    let mut rows = session
+        .execute("select a, b, `_MLOG$_DML_TYPE`, `_MLOG$_OLD_NEW` from `$mlog$t_mlog`")
+        .unwrap()
+        .remove(0);
+    let mut actual = Vec::new();
+    while let Some(row) = rows.Next().unwrap() {
+        if row[0] == "3" || row[0] == "4" {
+            actual.push(row);
+        }
+    }
+    actual.sort();
+    let mut expected = vec![
+        vec!["3", "30", "I", "1"],
+        vec!["3", "30", "U", "-1"],
+        vec!["4", "30", "U", "1"],
+        vec!["4", "30", "U", "-1"],
+        vec!["4", "40", "U", "1"],
+        vec!["4", "40", "U", "-1"],
+        vec!["4", "41", "U", "1"],
+    ]
+    .into_iter()
+    .map(|row| row.into_iter().map(str::to_owned).collect::<Vec<_>>())
+    .collect::<Vec<_>>();
+    expected.sort();
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn go_merge_49_create_mlog_sql_installs_executable_metadata() {
+    let session = canonical_mlog_session();
+    session
+        .execute("create table t_mlog_ddl (a int primary key, b int)")
+        .unwrap();
+    session
+        .execute("create materialized view log on t_mlog_ddl (a, b) shard_row_id_bits=2 pre_split_regions=2 alert rows 10")
+        .unwrap();
+    let log = session
+        .domain()
+        .stats_table("test", "$mlog$t_mlog_ddl")
+        .unwrap()
+        .1;
+    assert_eq!(log.ShardRowIDBits, 2);
+    assert_eq!(log.PreSplitRegions, 2);
+    assert_eq!(
+        log.MaterializedViewLog
+            .as_ref()
+            .unwrap()
+            .LogAccumulationAlertRows,
+        Some(10)
+    );
+    session
+        .execute("insert into t_mlog_ddl values (1, 7)")
+        .unwrap();
+    let mut rows = session
+        .execute("select a, b, `_MLOG$_DML_TYPE`, `_MLOG$_OLD_NEW` from `$mlog$t_mlog_ddl`")
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        rows.Next().unwrap(),
+        Some(vec![
+            "1".to_owned(),
+            "7".to_owned(),
+            "I".to_owned(),
+            "1".to_owned()
+        ])
+    );
+}
+
+#[test]
+fn go_merge_49_create_mlog_truncates_long_physical_name() {
+    let session = canonical_mlog_session();
+    let base_name = "t".repeat(astersql_parser_mysql::r#const::MaxTableNameLength);
+    session
+        .execute(&format!("create table `{base_name}` (a int)"))
+        .unwrap();
+    session
+        .execute(&format!(
+            "create materialized view log on `{base_name}` (a)"
+        ))
+        .unwrap();
+    let log_name = astersql_meta_model::MaterializedViewLogTableName(
+        &astersql_parser_ast::NewCIStr(&base_name),
+    );
+    assert_eq!(
+        log_name.O.chars().count(),
+        astersql_parser_mysql::r#const::MaxTableNameLength
+    );
+    assert!(session.domain().stats_table("test", &log_name.O).is_some());
+}
+
+#[test]
+fn go_merge_49_create_mlog_purge_schedule_metadata() {
+    let session = canonical_mlog_session();
+    session
+        .execute("create table t_mlog_purge (a int)")
+        .unwrap();
+    session
+        .execute("create materialized view log on t_mlog_purge (a) purge next cast('2030-01-02' as date)")
+        .unwrap();
+    let log = session
+        .domain()
+        .stats_table("test", "$mlog$t_mlog_purge")
+        .unwrap()
+        .1;
+    let info = log.MaterializedViewLog.unwrap();
+    assert_eq!(info.PurgeMethod, "DEFERRED");
+    assert!(!info.PurgeNext.is_empty());
+    assert_eq!(info.PurgeStartWith, "");
+    let mut schedule = session
+        .execute(&format!(
+            "select next_purge_unix_seconds from mysql.tidb_mlog_purge_info where mlog_id={}",
+            log.ID,
+        ))
+        .unwrap()
+        .remove(0);
+    assert_eq!(schedule.Next().unwrap(), Some(vec!["1893542400".into()]));
+    session
+        .execute("create table t_mlog_purge_start (a int)")
+        .unwrap();
+    session.execute("create materialized view log on t_mlog_purge_start (a) purge start with cast('2030-01-02 10:00:00' as datetime) next cast('2030-01-03 10:00:00' as datetime)").unwrap();
+    let start_log_id = session
+        .domain()
+        .stats_table("test", "$mlog$t_mlog_purge_start")
+        .unwrap()
+        .1
+        .ID;
+    let mut schedule = session.execute(&format!("select next_purge_unix_seconds from mysql.tidb_mlog_purge_info where mlog_id={start_log_id}")).unwrap().remove(0);
+    assert_eq!(schedule.Next().unwrap(), Some(vec!["1893578400".into()]));
+    session
+        .execute("set time_zone='America/Los_Angeles'")
+        .unwrap();
+    session
+        .execute("create table t_mlog_purge_dst (a int)")
+        .unwrap();
+    session.execute("create materialized view log on t_mlog_purge_dst (a) purge next cast('2021-03-14 02:30:00' as datetime)").unwrap();
+    let dst_log_id = session
+        .domain()
+        .stats_table("test", "$mlog$t_mlog_purge_dst")
+        .unwrap()
+        .1
+        .ID;
+    let mut schedule = session.execute(&format!("select next_purge_unix_seconds from mysql.tidb_mlog_purge_info where mlog_id={dst_log_id}")).unwrap().remove(0);
+    assert_eq!(schedule.Next().unwrap(), Some(vec!["1615689000".into()]));
+    session
+        .execute("create table t_mlog_purge_bad (a int)")
+        .unwrap();
+    assert!(
+        session
+            .execute("create materialized view log on t_mlog_purge_bad (a) purge next 1")
+            .is_err()
+    );
+    assert!(
+        session
+            .execute("create materialized view log on t_mlog_purge_bad (a) purge immediate")
+            .is_err()
+    );
+}
+
+#[test]
+fn go_merge_49_create_mlog_rolls_back_when_purge_table_missing() {
+    let session = concrete_session();
+    session
+        .execute("create table t_mlog_missing_purge (a int)")
+        .unwrap();
+    assert!(
+        session
+            .execute("create materialized view log on t_mlog_missing_purge (a)")
+            .is_err()
+    );
+    let base = session
+        .domain()
+        .stats_table("test", "t_mlog_missing_purge")
+        .unwrap()
+        .1;
+    assert!(
+        base.MaterializedViewBase
+            .as_ref()
+            .is_none_or(|info| info.MLogID == 0)
+    );
+    assert!(
+        session
+            .domain()
+            .stats_table("test", "$mlog$t_mlog_missing_purge")
+            .is_none()
+    );
+}
+
+#[test]
+fn go_merge_49_partition_records_use_physical_ids() {
+    let session = concrete_session();
+    session
+        .execute("create table t_mlog_partition (a int primary key, b int, key idx_b(b)) partition by hash(a) partitions 2")
+        .unwrap();
+    session
+        .execute("insert into t_mlog_partition values (1, 11), (2, 22)")
+        .unwrap();
+    let table = session
+        .domain()
+        .stats_table("test", "t_mlog_partition")
+        .unwrap()
+        .1;
+    let partition = table.GetPartitionInfo().unwrap();
+    let expected_id = partition.Definitions[1].ID;
+    let key = astersql_tablecodec::EncodeRowKeyWithHandle(
+        expected_id,
+        Box::new(astersql_tablecodec::kv::IntHandle(1)),
+    );
+    assert!(session.read_raw_kv(kv::Key(key.0)).unwrap().is_some());
+    let mut rows = session
+        .execute("select a, b from t_mlog_partition order by a")
+        .unwrap()
+        .remove(0);
+    assert_eq!(rows.Next().unwrap(), Some(vec!["1".into(), "11".into()]));
+    assert_eq!(rows.Next().unwrap(), Some(vec!["2".into(), "22".into()]));
+    let mut limited = session
+        .execute("select a from t_mlog_partition order by a limit 1 offset 1")
+        .unwrap()
+        .remove(0);
+    assert_eq!(limited.Next().unwrap(), Some(vec!["2".into()]));
+    session
+        .execute("update t_mlog_partition set b=33 where a=1")
+        .unwrap();
+    let mut rows = session
+        .execute("select a, b from t_mlog_partition where b=33")
+        .unwrap()
+        .remove(0);
+    assert_eq!(rows.Next().unwrap(), Some(vec!["1".into(), "33".into()]));
+    session
+        .execute("delete from t_mlog_partition where a=2")
+        .unwrap();
+    let mut rows = session
+        .execute("select a from t_mlog_partition order by a")
+        .unwrap()
+        .remove(0);
+    assert_eq!(rows.Next().unwrap(), Some(vec!["1".into()]));
+    assert_eq!(rows.Next().unwrap(), None);
+    let mut count = session
+        .execute("select count(*) from t_mlog_partition")
+        .unwrap()
+        .remove(0);
+    assert_eq!(count.Next().unwrap(), Some(vec!["1".into()]));
+    session
+        .execute("update t_mlog_partition set a=4 where a=1")
+        .unwrap();
+    let mut rows = session
+        .execute("select a,b from t_mlog_partition order by a")
+        .unwrap()
+        .remove(0);
+    assert_eq!(rows.Next().unwrap(), Some(vec!["4".into(), "33".into()]));
+    session.execute("begin").unwrap();
+    session
+        .execute("insert into t_mlog_partition values (5, 55)")
+        .unwrap();
+    let mut count = session
+        .execute("select count(*) from t_mlog_partition")
+        .unwrap()
+        .remove(0);
+    assert_eq!(count.Next().unwrap(), Some(vec!["2".into()]));
+    session.execute("rollback").unwrap();
+    let mut count = session
+        .execute("select count(*) from t_mlog_partition")
+        .unwrap()
+        .remove(0);
+    assert_eq!(count.Next().unwrap(), Some(vec!["1".into()]));
+}
+
+#[test]
+fn go_merge_49_key_partition_uses_column_hash() {
+    let session = concrete_session();
+    session
+        .execute("create table t_mlog_key (a varchar(20), b int) partition by key(a) partitions 4")
+        .unwrap();
+    session
+        .execute("insert into t_mlog_key values ('alpha', 1)")
+        .unwrap();
+    let table = session
+        .domain()
+        .stats_table("test", "t_mlog_key")
+        .unwrap()
+        .1;
+    let partition = table.GetPartitionInfo().unwrap();
+    let mut hasher = crc32fast::Hasher::new();
+    hasher.update(
+        &astersql_util_collate::GetCollatorWithCollate(
+            astersql_tablecodec::collate::NewCollationEnabled(),
+            table.Columns[0].FieldType.GetCollate(),
+        )
+        .Key("alpha"),
+    );
+    let physical_id = partition.Definitions[(hasher.finalize() as usize) % 4].ID;
+    let prefix = kv::Key(astersql_tablecodec::GenTableRecordPrefix(physical_id).0);
+    assert!(session.domain().storage().with_storage(|store| {
+        let snapshot = store.GetSnapshot(store.CurrentVersion(kv::GlobalTxnScope).unwrap());
+        let mut iter = snapshot
+            .Iter(prefix.clone(), Some(prefix.PrefixNext()))
+            .unwrap();
+        let valid = iter.Valid();
+        iter.Close();
+        valid
+    }));
+}
+
+#[test]
+fn go_merge_49_list_columns_routes_with_column_collation() {
+    let session = concrete_session();
+    session.execute("create table t_mlog_list (a varchar(20) collate utf8mb4_general_ci, b int) partition by list columns(a) (partition p0 values in ('alpha'), partition p1 values in ('beta'))").unwrap();
+    session
+        .execute("insert into t_mlog_list values ('ALPHA', 1)")
+        .unwrap();
+    let mut rows = session
+        .execute("select a,b from t_mlog_list")
+        .unwrap()
+        .remove(0);
+    assert_eq!(rows.Next().unwrap(), Some(vec!["ALPHA".into(), "1".into()]));
+}
+
+#[test]
+fn go_merge_49_range_columns_routes_with_column_collation() {
+    let session = concrete_session();
+    session.execute("create table t_mlog_range (a varchar(20) collate utf8mb4_general_ci, b int primary key) partition by range columns(a) (partition p0 values less than ('m'), partition p1 values less than (maxvalue))").unwrap();
+    session
+        .execute("insert into t_mlog_range values ('Z', 1)")
+        .unwrap();
+    let table = session
+        .domain()
+        .stats_table("test", "t_mlog_range")
+        .unwrap()
+        .1;
+    let partition = table.GetPartitionInfo().unwrap();
+    let key = astersql_tablecodec::EncodeRowKeyWithHandle(
+        partition.Definitions[1].ID,
+        Box::new(astersql_tablecodec::kv::IntHandle(1)),
+    );
+    assert!(session.read_raw_kv(kv::Key(key.0)).unwrap().is_some());
+}
+
 #[test]
 fn mid_substr_and_substring_follow_mysql_character_bounds() {
     let row = HashMap::from([(

@@ -571,7 +571,8 @@ pub(super) fn encode_relational_row_with_format(
         astersql_tablecodec::rowcodec::Encoder::new(row_encoder_enabled),
     )
     .map_err(|error| session_error("encode relational row", error))?;
-    let key = astersql_tablecodec::EncodeRowKeyWithHandle(table.ID, handle);
+    let physical_id = ConcreteSession::row_physical_id(table, row);
+    let key = astersql_tablecodec::EncodeRowKeyWithHandle(physical_id, handle);
     Ok((kv::Key(key.0), value))
 }
 

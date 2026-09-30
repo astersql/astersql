@@ -169,6 +169,7 @@ fn exec_info(digest: &str, user: &str, start: u64) -> StmtExecInfo {
             ru_wait_duration: Duration::from_millis(29),
             ..Default::default()
         }),
+
         PlanCacheUnqualified: "too many values".to_owned(),
         LazyInfo: Box::new(LazyInfo {
             sql: "select * from t".to_owned(),

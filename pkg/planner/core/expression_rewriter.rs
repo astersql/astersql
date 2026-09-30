@@ -308,7 +308,7 @@ pub fn buildSimpleExpr<'a>(
 ) -> Result<expression::ExprBox, errors::Error> {
     let node = node.ok_or_else(|| errors::New("expression node should be present"))?;
     let mut options = expression::BuildOptions {
-        UseNewCollate: collate::NewCollationEnabled(),
+        UseNewCollate: ctx.NewCollationEnabled(),
         ..expression::BuildOptions::default()
     };
     for option in opts {

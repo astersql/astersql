@@ -193,6 +193,11 @@ pub struct ReservedRowIDAlloc {
 }
 
 impl ReservedRowIDAlloc {
+    /// 当前预留区间；MLog 插入后用它恢复基表的分配进度。
+    pub fn Current(&self) -> (i64, i64) {
+        (self.base, self.max)
+    }
+
     /// 重置可分配区间为 `(base, max]`。
     pub fn Reset(&mut self, base: i64, maxv: i64) {
         self.base = base;
