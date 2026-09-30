@@ -84,3 +84,36 @@ fn go_merge_43_jina_provider_posts_base64_and_rejects_multivector() {
     );
     server.join().unwrap();
 }
+
+#[test]
+fn go_merge_43_jina_provider_reports_error_detail() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buffer = [0_u8; 4096];
+        stream.read(&mut buffer).unwrap();
+        let body = r#"{"detail":"Model missing"}"#;
+        write!(
+            stream,
+            "HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+    });
+    let embedder = JinaEmbedder::new(
+        || "test-key".into(),
+        move || format!("http://{address}/v1/embeddings"),
+    );
+    let error = embedder
+        .create_embeddings(
+            &AtomicBool::new(false),
+            "missing",
+            &["hello".into()],
+            &Options::new(),
+        )
+        .unwrap_err();
+    assert_eq!(error, "JinaAI: status code 404, message: Model missing");
+    server.join().unwrap();
+}

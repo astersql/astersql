@@ -83,7 +83,7 @@ impl Embedder for JinaEmbedder {
         let response = self
             .client
             .post(endpoint)
-            .bearer_auth(api_key)
+            .bearer_auth(&api_key)
             .json(&payload)
             .send()
             .map_err(|error| format!("JinaAI embedding request failed: {error}"))?;
@@ -108,7 +108,23 @@ impl Embedder for JinaEmbedder {
             return Err("JinaAI returns status unauthorized, check your API key. To reconfigure a new API key: SET @@GLOBAL.TIDB_EXP_EMBED_JINA_AI_API_KEY='<API_KEY>'".into());
         }
         if !status.is_success() {
-            return Err(format!("JinaAI: status code {}", status.as_u16()));
+            let detail = serde_json::from_slice::<Value>(&body)
+                .ok()
+                .and_then(|response| response.get("detail")?.as_str().map(str::to_owned))
+                .unwrap_or_else(|| status.canonical_reason().unwrap_or("Unknown").to_owned());
+            let detail = detail.replace(&api_key, "[REDACTED]");
+            let detail = if detail.len() > 4096 {
+                format!(
+                    "{}...[truncated]",
+                    detail.chars().take(4096).collect::<String>()
+                )
+            } else {
+                detail
+            };
+            return Err(format!(
+                "JinaAI: status code {}, message: {detail}",
+                status.as_u16()
+            ));
         }
         decode_indexed_base64_embeddings(&body, texts.len())
     }
