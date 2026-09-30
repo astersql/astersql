@@ -533,6 +533,11 @@ fn register_basic_clamped_vars() {
         vardef::ScopeSession,
     ));
     RegisterSysVar(bool_var(
+        vardef::TiDBEnableFullOuterJoin,
+        vardef::DefTiDBEnableFullOuterJoin,
+        scope_both(),
+    ));
+    RegisterSysVar(bool_var(
         vardef::TiDBEnablePseudoForOutdatedStats,
         vardef::DefTiDBEnablePseudoForOutdatedStats,
         scope_both(),

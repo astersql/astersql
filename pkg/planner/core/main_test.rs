@@ -789,6 +789,294 @@ pub(crate) fn exercise_statement_for_test(sql: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[test]
+fn go_merge_46_full_join_defaults_to_disabled() {
+    let sql = "select * from t t1 full outer join t t2 on t1.a = t2.a";
+    let error = build_logical_for_test(sql)
+        .err()
+        .expect("FULL OUTER JOIN is opt-in");
+    assert!(
+        error.contains("FULL OUTER JOIN"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn go_merge_46_full_join_enabled_builds_logical_and_hash_plan() {
+    let sql = "select * from t t1 full outer join t t2 on t1.a = t2.a";
+    let context = planner_test_context_with_stats_state(0, false, None, false, |vars| {
+        vars.SetSystemVar("tidb_enable_full_outer_join", "ON")
+            .expect("enable FULL OUTER JOIN");
+    });
+    let (context, flags, built) =
+        build_runtime_for_test_with_context(sql, context).expect("build FULL OUTER JOIN");
+    let crate::BuiltRuntimePlan::Logical(mut logical) = built else {
+        panic!("query must build a logical plan");
+    };
+    fn find_logical_join(plan: &dyn logicalop::LogicalPlan) -> Option<&logicalop::LogicalJoin> {
+        plan.as_any()
+            .downcast_ref::<logicalop::LogicalJoin>()
+            .or_else(|| {
+                plan.Children()
+                    .iter()
+                    .find_map(|child| find_logical_join(child.as_ref()))
+            })
+    }
+    let join = find_logical_join(logical.as_ref()).expect("logical join");
+    assert_eq!(join.JoinType, base::JoinType::FullOuterJoin);
+    assert!(join.Schema().Columns.iter().all(|column| {
+        column
+            .RetType
+            .as_ref()
+            .is_some_and(|field| !expression::mysql::HasNotNullFlag(field.GetFlag()))
+    }));
+    let (physical, _) = crate::DoOptimize(crate::context::TODO(), &context, flags, &mut logical)
+        .expect("optimize FULL OUTER JOIN");
+    fn find_hash_join(
+        plan: &dyn base::PhysicalPlan,
+    ) -> Option<&physicalop_dependency::PhysicalHashJoin> {
+        plan.as_any()
+            .downcast_ref::<physicalop_dependency::PhysicalHashJoin>()
+            .or_else(|| {
+                plan.children()
+                    .iter()
+                    .find_map(|child| find_hash_join(*child))
+            })
+    }
+    let join = find_hash_join(physical.as_ref()).expect("physical HashJoin");
+    assert_eq!(
+        join.BasePhysicalJoin.JoinType,
+        base::JoinType::FullOuterJoin
+    );
+    assert!(!join.UseOuterToBuild);
+}
+
+#[test]
+fn go_merge_46_full_join_rejects_unsupported_forms_and_cascades() {
+    for sql in [
+        "select * from t t1 full outer join t t2 using (a)",
+        "select * from t t1 natural full outer join t t2",
+        "select * from t t1 full outer join lateral (select 1 as a) as t2 on false",
+    ] {
+        let context = planner_test_context_with_stats_state(0, false, None, false, |vars| {
+            vars.SetSystemVar("tidb_enable_full_outer_join", "ON")
+                .expect("enable FULL OUTER JOIN");
+        });
+        let error = build_runtime_for_test_with_context(sql, context)
+            .err()
+            .unwrap_or_else(|| panic!("{sql} must be rejected"));
+        assert!(error.contains("FULL OUTER JOIN"), "{sql}: {error}");
+    }
+    let sql = "select * from t t1 full outer join t t2 on t1.a = t2.a";
+    let context = planner_test_context_with_stats_state(0, false, None, false, |vars| {
+        vars.SetSystemVar("tidb_enable_full_outer_join", "ON")
+            .expect("enable FULL OUTER JOIN");
+        vars.SetSystemVar("tidb_enable_cascades_planner", "ON")
+            .expect("enable Cascades");
+    });
+    let error = build_runtime_for_test_with_context(sql, context)
+        .err()
+        .expect("FULL OUTER JOIN with Cascades must be rejected");
+    assert!(
+        error.contains("FULL OUTER JOIN"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn go_merge_46_full_join_null_rejected_predicates_simplify_join_type() {
+    for (predicate, expected) in [
+        ("t1.b > 1", base::JoinType::LeftOuterJoin),
+        ("t2.b > 1", base::JoinType::RightOuterJoin),
+        ("t1.b > 1 and t2.b > 1", base::JoinType::InnerJoin),
+        ("t1.b > 1 or t2.b > 1", base::JoinType::FullOuterJoin),
+    ] {
+        let sql =
+            format!("select * from t t1 full outer join t t2 on t1.a = t2.a where {predicate}");
+        let context = planner_test_context_with_stats_state(0, false, None, false, |vars| {
+            vars.SetSystemVar("tidb_enable_full_outer_join", "ON")
+                .expect("enable FULL OUTER JOIN");
+        });
+        let (_, _, built) =
+            build_runtime_for_test_with_context(&sql, context).expect("build FULL OUTER JOIN");
+        let crate::BuiltRuntimePlan::Logical(mut logical) = built else {
+            panic!("query must build a logical plan");
+        };
+        crate::LogicalOptimizeForTest(rule_dependency::FLAG_PREDICATE_PUSH_DOWN, &mut logical)
+            .expect("simplify FULL OUTER JOIN");
+        fn find_join(plan: &dyn logicalop::LogicalPlan) -> Option<base::JoinType> {
+            plan.as_any()
+                .downcast_ref::<logicalop::LogicalJoin>()
+                .map(|join| join.JoinType)
+                .or_else(|| {
+                    plan.Children()
+                        .iter()
+                        .find_map(|child| find_join(child.as_ref()))
+                })
+        }
+        assert_eq!(find_join(logical.as_ref()), Some(expected), "{sql}");
+    }
+}
+
+#[test]
+fn go_merge_46_non_unique_index_range_includes_signed_handle() {
+    let sql = "select * from t use index(g) where g = 5 and a = 7";
+    let (_, mut logical) =
+        build_logical_for_test(sql).expect("build index and handle access range");
+    crate::LogicalOptimizeForTest(rule_dependency::FLAG_PREDICATE_PUSH_DOWN, &mut logical)
+        .expect("derive index access ranges");
+    fn find_source(plan: &dyn logicalop::LogicalPlan) -> Option<&logicalop::DataSource> {
+        plan.as_any()
+            .downcast_ref::<logicalop::DataSource>()
+            .or_else(|| {
+                plan.Children()
+                    .iter()
+                    .find_map(|child| find_source(child.as_ref()))
+            })
+    }
+    let source = find_source(logical.as_ref()).expect("table source");
+    let path = source
+        .PossibleAccessPaths
+        .iter()
+        .find(|path| path.Index.as_ref().is_some_and(|index| index.Name.L == "g"))
+        .expect("non-unique g index path");
+    assert_eq!(
+        path.IdxCols.len(),
+        2,
+        "index key includes signed primary handle"
+    );
+    assert!(path.Ranges.iter().any(|range| range.LowVal.len() == 2));
+}
+
+#[test]
+fn go_merge_46_unsupported_join_hints_warn() {
+    for (hint, name) in [
+        ("MERGE_JOIN(t1, t2)", "MERGE_JOIN"),
+        ("INL_JOIN(t2)", "INL_JOIN"),
+    ] {
+        let sql = format!("select /*+ {hint} */ * from t t1 full outer join t t2 on t1.a = t2.a");
+        let context = planner_test_context_with_stats_state(0, false, None, false, |vars| {
+            vars.SetSystemVar("tidb_enable_full_outer_join", "ON")
+                .expect("enable FULL OUTER JOIN");
+        });
+        let (context, flags, built) =
+            build_runtime_for_test_with_context(&sql, context).expect("build hinted join");
+        let crate::BuiltRuntimePlan::Logical(mut logical) = built else {
+            panic!("query must build a logical plan");
+        };
+        let (physical, _) =
+            crate::DoOptimize(crate::context::TODO(), &context, flags, &mut logical)
+                .expect("optimize hinted join");
+        assert!(physical.schema().Len() > 0);
+        let warnings = context.GetSessionVars().StmtCtx.GetWarnings();
+        assert!(
+            warnings.iter().any(|warning| warning
+                .Err
+                .as_ref()
+                .is_some_and(|error| error.to_string().contains(name)
+                    && error.to_string().contains("inapplicable"))),
+            "{sql}: {warnings:?}"
+        );
+    }
+}
+
+#[test]
+fn go_merge_46_join_reorder_preserves_two_full_joins() {
+    let sql = "select * from t t1 full outer join t t2 on t1.a = t2.a full outer join t t3 on t2.a = t3.a";
+    let context = planner_test_context_with_stats_state(0, false, None, false, |vars| {
+        vars.SetSystemVar("tidb_enable_full_outer_join", "ON")
+            .expect("enable FULL OUTER JOIN");
+    });
+    let (_, _, built) = build_runtime_for_test_with_context(sql, context).expect("build joins");
+    let crate::BuiltRuntimePlan::Logical(mut logical) = built else {
+        panic!("query must build a logical plan");
+    };
+    crate::LogicalOptimizeForTest(
+        rule_dependency::FLAG_PREDICATE_PUSH_DOWN | rule_dependency::FLAG_JOIN_REORDER,
+        &mut logical,
+    )
+    .expect("reorder joins");
+    fn count_full_joins(plan: &dyn logicalop::LogicalPlan) -> usize {
+        usize::from(
+            plan.as_any()
+                .downcast_ref::<logicalop::LogicalJoin>()
+                .is_some_and(|join| join.JoinType == base::JoinType::FullOuterJoin),
+        ) + plan
+            .Children()
+            .iter()
+            .map(|child| count_full_joins(child.as_ref()))
+            .sum::<usize>()
+    }
+    assert_eq!(count_full_joins(logical.as_ref()), 2);
+}
+
+#[test]
+fn go_merge_46_full_join_tail_scan_increases_both_cost_models() {
+    fn optimize_join(full: bool) -> Box<dyn base::PhysicalPlan> {
+        let join = if full { "full outer join" } else { "join" };
+        let sql = format!("select /*+ HASH_JOIN(t1, t2) */ * from t t1 {join} t t2 on t1.a = t2.a");
+        let context = planner_test_context_with_stats_state(0, false, None, false, |vars| {
+            vars.SetSystemVar("tidb_enable_full_outer_join", "ON")
+                .expect("enable FULL OUTER JOIN");
+        });
+        let (context, flags, built) =
+            build_runtime_for_test_with_context(&sql, context).expect("build cost query");
+        let crate::BuiltRuntimePlan::Logical(mut logical) = built else {
+            panic!("query must build a logical plan");
+        };
+        crate::DoOptimize(crate::context::TODO(), &context, flags, &mut logical)
+            .expect("optimize cost query")
+            .0
+    }
+    fn find_join(plan: &dyn base::PhysicalPlan) -> &physicalop_dependency::PhysicalHashJoin {
+        plan.as_any()
+            .downcast_ref::<physicalop_dependency::PhysicalHashJoin>()
+            .or_else(|| {
+                plan.children().iter().find_map(|child| {
+                    child
+                        .as_any()
+                        .downcast_ref::<physicalop_dependency::PhysicalHashJoin>()
+                })
+            })
+            .expect("physical HashJoin")
+    }
+    let inner = optimize_join(false);
+    let full = optimize_join(true);
+    let inner = find_join(inner.as_ref());
+    let full = find_join(full.as_ref());
+    let option = costusage_dependency::new_default_plan_cost_option();
+    let inner_v1 = crate::plan_cost_ver1::GetCanonicalPlanCostVer1(
+        inner,
+        property_dependency::RootTaskType,
+        &option,
+    )
+    .expect("inner v1 cost");
+    let full_v1 = crate::plan_cost_ver1::GetCanonicalPlanCostVer1(
+        full,
+        property_dependency::RootTaskType,
+        &option,
+    )
+    .expect("full v1 cost");
+    assert!(full_v1 > inner_v1, "v1: full={full_v1}, inner={inner_v1}");
+    let inner_v2 = crate::plan_cost_ver2::GetCanonicalPlanCostVer2(
+        inner,
+        property_dependency::RootTaskType,
+        &option,
+        &[],
+    )
+    .expect("inner v2 cost")
+    .get_cost();
+    let full_v2 = crate::plan_cost_ver2::GetCanonicalPlanCostVer2(
+        full,
+        property_dependency::RootTaskType,
+        &option,
+        &[],
+    )
+    .expect("full v2 cost")
+    .get_cost();
+    assert!(full_v2 > inner_v2, "v2: full={full_v2}, inner={inner_v2}");
+}
+
 /// 过滤出 SELECT/WITH 查询字面量。
 pub(crate) fn sql_literals<'a>(literals: &'a [&'a str]) -> impl Iterator<Item = &'a str> {
     literals.iter().copied().filter(|literal| {

@@ -398,6 +398,341 @@ impl crate::DataSourceProvider for IntegrationStatsProvider {
     }
 }
 
+struct GoMerge46VirtualStatsProvider;
+
+impl crate::DataSourceProvider for GoMerge46VirtualStatsProvider {
+    fn Populate(
+        &self,
+        ctx: &dyn crate::context::Context,
+        plan_ctx: &base::ContextRef,
+        info_schema: &dyn infoschema_dependency::infoschema::InfoSchema,
+        table: &crate::ast::TableName,
+        source: &mut logicalop::DataSource,
+    ) -> Result<(), expression::Error> {
+        IntegrationStatsProvider {
+            row_count: 500.0,
+            pseudo: false,
+            apply_isolation_filter: false,
+        }
+        .Populate(ctx, plan_ctx, info_schema, table, source)?;
+        let field_type = expression::types::NewFieldType(expression::mysql::TypeBlob);
+        let encode = |value: i64| {
+            codec_dependency::EncodeKey(
+                codec_dependency::time::UTC,
+                Vec::new(),
+                vec![expression::types::NewIntDatum(value)],
+            )
+            .expect("encode index statistic key")
+        };
+        let virtual_id = source
+            .Schema()
+            .Columns
+            .iter()
+            .find(|column| column.ID == 3)
+            .expect("virtual column")
+            .UniqueID;
+        let status_id = source
+            .Schema()
+            .Columns
+            .iter()
+            .find(|column| column.ID == 2)
+            .expect("status column")
+            .UniqueID;
+        let mut coll = *statistics_dependency::NewHistColl(
+            source.PhysicalTableID,
+            500,
+            0,
+            source.TableInfo.Columns.len(),
+            source.TableInfo.Indices.len(),
+        );
+        coll.StatsVer = statistics_dependency::Version2;
+        for index in &source.TableInfo.Indices {
+            let mut histogram =
+                statistics_dependency::NewHistogram(index.ID, 10, 0, 0, &field_type, 1, 0);
+            histogram.AppendBucket(
+                &expression::types::NewBytesDatum(encode(0)),
+                &expression::types::NewBytesDatum(encode(9)),
+                500,
+                if index.ID == 3 { 10 } else { 50 },
+            );
+            coll.Indices.insert(
+                index.ID,
+                Box::new(statistics_dependency::Index {
+                    CMSketch: None,
+                    TopN: None,
+                    FMSketch: None,
+                    Info: Some(statistics_dependency::IndexInfo {
+                        ID: index.ID,
+                        Columns: vec![statistics_dependency::IndexColumnInfo::default(); 2],
+                        ..Default::default()
+                    }),
+                    Histogram: histogram,
+                    StatsLoadedStatus: statistics_dependency::NewStatsFullLoadStatus(),
+                    PhysicalID: source.PhysicalTableID,
+                    StatsVer: statistics_dependency::Version2 as i64,
+                }),
+            );
+            coll.Idx2ColUniqueIDs
+                .insert(index.ID, vec![virtual_id, status_id]);
+        }
+        coll.ColUniqueID2IdxIDs.insert(virtual_id, vec![3, 4]);
+        source.TableStats.HistColl = Some(Arc::new(coll));
+        Ok(())
+    }
+}
+
+struct GoMerge46SignedHandleStatsProvider;
+
+impl crate::DataSourceProvider for GoMerge46SignedHandleStatsProvider {
+    fn Populate(
+        &self,
+        ctx: &dyn crate::context::Context,
+        plan_ctx: &base::ContextRef,
+        info_schema: &dyn infoschema_dependency::infoschema::InfoSchema,
+        table: &crate::ast::TableName,
+        source: &mut logicalop::DataSource,
+    ) -> Result<(), expression::Error> {
+        IntegrationStatsProvider {
+            row_count: 100.0,
+            pseudo: false,
+            apply_isolation_filter: false,
+        }
+        .Populate(ctx, plan_ctx, info_schema, table, source)?;
+        let handle = source
+            .Schema()
+            .Columns
+            .iter()
+            .find(|column| column.ID == source.TableInfo.Columns[0].ID)
+            .expect("signed primary handle")
+            .Clone();
+        let index = source.TableInfo.Indices.first().expect("secondary index");
+        let index_column_id = source
+            .Schema()
+            .Columns
+            .iter()
+            .find(|column| column.ID == source.TableInfo.Columns[1].ID)
+            .expect("indexed column")
+            .UniqueID;
+        let mut coll = *statistics_dependency::NewHistColl(
+            source.PhysicalTableID,
+            100,
+            0,
+            source.TableInfo.Columns.len(),
+            1,
+        );
+        coll.StatsVer = statistics_dependency::Version2;
+        let integer_type = expression::types::NewFieldType(expression::mysql::TypeLonglong);
+        let mut handle_hist =
+            statistics_dependency::NewHistogram(handle.UniqueID, 100, 0, 0, &integer_type, 1, 0);
+        handle_hist.AppendBucket(
+            &expression::types::NewIntDatum(1),
+            &expression::types::NewIntDatum(100),
+            100,
+            1,
+        );
+        coll.SetCol(
+            handle.UniqueID,
+            Box::new(statistics_dependency::Column {
+                CMSketch: None,
+                TopN: None,
+                FMSketch: None,
+                Info: None,
+                Histogram: handle_hist,
+                StatsLoadedStatus: statistics_dependency::NewStatsFullLoadStatus(),
+                PhysicalID: source.PhysicalTableID,
+                StatsVer: statistics_dependency::Version2 as i64,
+                IsHandle: true,
+            }),
+        );
+        let mut indexed_hist =
+            statistics_dependency::NewHistogram(index_column_id, 10, 0, 0, &integer_type, 1, 0);
+        indexed_hist.AppendBucket(
+            &expression::types::NewIntDatum(0),
+            &expression::types::NewIntDatum(9),
+            100,
+            10,
+        );
+        coll.SetCol(
+            index_column_id,
+            Box::new(statistics_dependency::Column {
+                CMSketch: None,
+                TopN: None,
+                FMSketch: None,
+                Info: None,
+                Histogram: indexed_hist,
+                StatsLoadedStatus: statistics_dependency::NewStatsFullLoadStatus(),
+                PhysicalID: source.PhysicalTableID,
+                StatsVer: statistics_dependency::Version2 as i64,
+                IsHandle: false,
+            }),
+        );
+        let encode = |value: i64| {
+            codec_dependency::EncodeKey(
+                codec_dependency::time::UTC,
+                Vec::new(),
+                vec![expression::types::NewIntDatum(value)],
+            )
+            .expect("encode secondary index statistic")
+        };
+        let blob_type = expression::types::NewFieldType(expression::mysql::TypeBlob);
+        let mut index_hist =
+            statistics_dependency::NewHistogram(index.ID, 10, 0, 0, &blob_type, 1, 0);
+        index_hist.AppendBucket(
+            &expression::types::NewBytesDatum(encode(0)),
+            &expression::types::NewBytesDatum(encode(9)),
+            100,
+            10,
+        );
+        coll.Indices.insert(
+            index.ID,
+            Box::new(statistics_dependency::Index {
+                CMSketch: None,
+                TopN: None,
+                FMSketch: None,
+                Info: Some(statistics_dependency::IndexInfo {
+                    ID: index.ID,
+                    Columns: vec![statistics_dependency::IndexColumnInfo::default()],
+                    ..Default::default()
+                }),
+                Histogram: index_hist,
+                StatsLoadedStatus: statistics_dependency::NewStatsFullLoadStatus(),
+                PhysicalID: source.PhysicalTableID,
+                StatsVer: statistics_dependency::Version2 as i64,
+            }),
+        );
+        coll.Idx2ColUniqueIDs
+            .insert(index.ID, vec![index_column_id]);
+        source.TableStats.HistColl = Some(Arc::new(coll));
+        Ok(())
+    }
+}
+
+struct GoMerge46CommonHandleStatsProvider;
+
+impl crate::DataSourceProvider for GoMerge46CommonHandleStatsProvider {
+    fn Populate(
+        &self,
+        ctx: &dyn crate::context::Context,
+        plan_ctx: &base::ContextRef,
+        info_schema: &dyn infoschema_dependency::infoschema::InfoSchema,
+        table: &crate::ast::TableName,
+        source: &mut logicalop::DataSource,
+    ) -> Result<(), expression::Error> {
+        IntegrationStatsProvider {
+            row_count: 100.0,
+            pseudo: false,
+            apply_isolation_filter: false,
+        }
+        .Populate(ctx, plan_ctx, info_schema, table, source)?;
+        let index = source
+            .TableInfo
+            .Indices
+            .iter()
+            .find(|index| index.Name.L == "ic")
+            .expect("secondary common-handle index");
+        let index_column_id = source
+            .Schema()
+            .Columns
+            .iter()
+            .find(|column| column.ID == source.TableInfo.Columns[2].ID)
+            .expect("indexed c column")
+            .UniqueID;
+        let encode = |value: i64| {
+            codec_dependency::EncodeKey(
+                codec_dependency::time::UTC,
+                Vec::new(),
+                vec![expression::types::NewIntDatum(value)],
+            )
+            .expect("encode common-handle index statistic")
+        };
+        let blob_type = expression::types::NewFieldType(expression::mysql::TypeBlob);
+        let mut histogram =
+            statistics_dependency::NewHistogram(index.ID, 10, 0, 0, &blob_type, 10, 0);
+        for value in 0..10 {
+            let encoded = expression::types::NewBytesDatum(encode(value));
+            histogram.AppendBucket(&encoded, &encoded, (value + 1) * 10, 10);
+        }
+        let mut coll = *statistics_dependency::NewHistColl(source.PhysicalTableID, 100, 0, 0, 1);
+        coll.StatsVer = statistics_dependency::Version2;
+        let integer_type = expression::types::NewFieldType(expression::mysql::TypeLonglong);
+        let mut column_hist =
+            statistics_dependency::NewHistogram(index_column_id, 10, 0, 0, &integer_type, 10, 0);
+        for value in 0..10 {
+            let datum = expression::types::NewIntDatum(value);
+            column_hist.AppendBucket(&datum, &datum, (value + 1) * 10, 10);
+        }
+        coll.SetCol(
+            index_column_id,
+            Box::new(statistics_dependency::Column {
+                CMSketch: None,
+                TopN: None,
+                FMSketch: None,
+                Info: None,
+                Histogram: column_hist,
+                StatsLoadedStatus: statistics_dependency::NewStatsFullLoadStatus(),
+                PhysicalID: source.PhysicalTableID,
+                StatsVer: statistics_dependency::Version2 as i64,
+                IsHandle: false,
+            }),
+        );
+        coll.Indices.insert(
+            index.ID,
+            Box::new(statistics_dependency::Index {
+                CMSketch: None,
+                TopN: None,
+                FMSketch: None,
+                Info: Some(statistics_dependency::IndexInfo {
+                    ID: index.ID,
+                    Columns: vec![statistics_dependency::IndexColumnInfo::default()],
+                    ..Default::default()
+                }),
+                Histogram: histogram,
+                StatsLoadedStatus: statistics_dependency::NewStatsFullLoadStatus(),
+                PhysicalID: source.PhysicalTableID,
+                StatsVer: statistics_dependency::Version2 as i64,
+            }),
+        );
+        coll.Idx2ColUniqueIDs
+            .insert(index.ID, vec![index_column_id]);
+        source.TableStats.HistColl = Some(Arc::new(coll));
+        Ok(())
+    }
+}
+
+fn optimize_go_merge_46_with_provider(
+    sql: &str,
+    context: &base::ContextRef,
+    schema: Arc<dyn infoschema_dependency::infoschema::InfoSchema>,
+    provider: Arc<dyn crate::DataSourceProvider>,
+) -> Box<dyn base::PhysicalPlan> {
+    let statement = crate::ast::NodeRef::new(
+        parser_dependency::New()
+            .ParseOneStmt(sql, "", "")
+            .expect("parse Go merge 46 SQL"),
+    );
+    let (mut builder, _) = crate::NewPlanBuilder()
+        .withDataSourceProvider(provider)
+        .Init(
+            context.clone(),
+            schema,
+            hint_dependency::NewQBHintHandler(None),
+        );
+    let crate::BuiltRuntimePlan::Logical(mut logical) = builder
+        .BuildNodeRef(crate::context::TODO(), &statement)
+        .expect("build Go merge 46 SQL")
+    else {
+        panic!("Go merge 46 query must build a logical plan");
+    };
+    crate::DoOptimize(
+        crate::context::TODO(),
+        context,
+        builder.GetOptFlag(),
+        &mut logical,
+    )
+    .expect("optimize Go merge 46 SQL")
+    .0
+}
+
 /// 默认表名 `t` 下优化 SQL，返回物理计划。
 fn optimize_integration_query(
     sql: &str,
@@ -660,6 +995,313 @@ fn physical_plan_contains<T: 'static>(plan: &dyn base::PhysicalPlan) -> bool {
             .children()
             .into_iter()
             .any(|child| physical_plan_contains::<T>(child))
+}
+
+#[test]
+fn go_merge_46_sql_mpp_null_eq_hash_join_is_selected() {
+    let context =
+        integration_plan_context(&[kv_dependency::StoreType::TiFlash], "tiflash", false, true);
+    let schema = integration_multi_info_schema(&["t1", "t2"], true, None, &[]);
+    let sql = "select /*+ shuffle_join(t1, t2), read_from_storage(tiflash[t1, t2]) */ * from t1 join t2 on t1.a <=> t2.a";
+    let plan = optimize_integration_query_with_schema(sql, &context, schema.clone());
+    fn find_join(
+        plan: &dyn base::PhysicalPlan,
+    ) -> Option<&physicalop_dependency::PhysicalHashJoin> {
+        plan.as_any()
+            .downcast_ref::<physicalop_dependency::PhysicalHashJoin>()
+            .or_else(|| plan.children().iter().find_map(|child| find_join(*child)))
+    }
+    let join = find_join(plan.as_ref()).expect("MPP PhysicalHashJoin from SQL");
+    assert_eq!(join.BasePhysicalJoin.IsNullEQ, [true]);
+    assert_eq!(join.StoreTp, kv_dependency::StoreType::TiFlash);
+}
+
+#[test]
+fn go_merge_46_sql_signed_handle_ranges_keep_full_bounds() {
+    let context = integration_plan_context(&[kv_dependency::StoreType::TiKV], "tikv", false, false);
+    let schema = integration_multi_info_schema(&["t3"], false, Some(("ib", &["b"])), &[]);
+    for (predicate, point) in [
+        ("b = 5 and a > 10", false),
+        ("b = 5 and a < 10", false),
+        ("b = 5 and a = 7", true),
+    ] {
+        let sql = format!("select * from t3 use index(ib) where {predicate}");
+        let plan = optimize_go_merge_46_with_provider(
+            &sql,
+            &context,
+            schema.clone(),
+            Arc::new(GoMerge46SignedHandleStatsProvider),
+        );
+        fn find_scan(
+            plan: &dyn base::PhysicalPlan,
+        ) -> Option<&physicalop_dependency::PhysicalIndexScan> {
+            plan.as_any()
+                .downcast_ref::<physicalop_dependency::PhysicalIndexScan>()
+                .or_else(|| plan.children().iter().find_map(|child| find_scan(*child)))
+        }
+        let scan = find_scan(plan.as_ref()).expect("index range scan");
+        let expected_rows = if point { 1.0 } else { 10.0 };
+        assert!(
+            (scan.stats_count() - expected_rows).abs() < 1e-9,
+            "{sql}: estimated {} rows, expected {expected_rows}",
+            scan.stats_count()
+        );
+        assert_eq!(scan.IdxCols.len(), 2, "{sql}");
+        assert!(
+            scan.Ranges
+                .0
+                .iter()
+                .any(|range| range.LowVal.len() == 2 && range.HighVal.len() == 2),
+            "{sql}: {} ranges",
+            scan.Ranges.0.len()
+        );
+        if point {
+            assert!(
+                scan.Ranges
+                    .0
+                    .iter()
+                    .all(|range| range.IsPoint(context.GetRangerCtx()))
+            );
+        }
+    }
+}
+
+#[test]
+fn go_merge_46_sql_prefixed_common_handle_keeps_range_dimensions() {
+    let names = ["p1", "p2", "c"];
+    let columns = names
+        .iter()
+        .enumerate()
+        .map(|(offset, name)| expression::model::ColumnInfo {
+            ID: offset as i64 + 1,
+            Name: crate::ast::NewCIStr(name),
+            Offset: offset as isize,
+            State: expression::model::StatePublic,
+            FieldType: *expression::types::NewFieldType(if offset == 0 {
+                expression::mysql::TypeVarchar
+            } else {
+                expression::mysql::TypeLonglong
+            }),
+            ..Default::default()
+        })
+        .collect::<Vec<_>>();
+    let index_column = |name: &str, offset: isize, length: isize| expression::model::IndexColumn {
+        Name: crate::ast::NewCIStr(name),
+        Offset: offset,
+        Length: length,
+        ..Default::default()
+    };
+    let model = Arc::new(expression::model::TableInfo {
+        ID: 4601,
+        Name: crate::ast::NewCIStr("common_t"),
+        Columns: columns,
+        Indices: vec![
+            expression::model::IndexInfo {
+                ID: 1,
+                Name: crate::ast::NewCIStr("PRIMARY"),
+                Columns: vec![index_column("p1", 0, 2), index_column("p2", 1, -1)],
+                Primary: true,
+                Unique: true,
+                State: expression::model::StatePublic,
+                ..Default::default()
+            },
+            expression::model::IndexInfo {
+                ID: 2,
+                Name: crate::ast::NewCIStr("ic"),
+                Columns: vec![index_column("c", 2, -1)],
+                State: expression::model::StatePublic,
+                ..Default::default()
+            },
+        ],
+        IsCommonHandle: true,
+        CommonHandleVersion: 1,
+        ..Default::default()
+    });
+    let schema = infoschema_dependency::infoschema::MockInfoSchema(vec![
+        infoschema_dependency::infoschema::TableInfo {
+            id: model.ID,
+            name: infoschema_dependency::infoschema::CiString::new("common_t"),
+            columns: model
+                .Columns
+                .iter()
+                .map(|column| infoschema_dependency::infoschema::ColumnInfo {
+                    id: column.ID,
+                    name: infoschema_dependency::infoschema::CiString::new(&column.Name.O),
+                    ..Default::default()
+                })
+                .collect(),
+            model_meta: Some(model),
+            ..Default::default()
+        },
+    ]);
+    let context = integration_plan_context(&[kv_dependency::StoreType::TiKV], "tikv", false, false);
+    for (sql, expected_dimensions) in [
+        (
+            "select * from common_t use index(ic) where c = 5 and p1 = 'pp_055'",
+            2,
+        ),
+        (
+            "select * from common_t use index(ic) where c = 5 and p1 = 'pp_055' and p2 = 55",
+            3,
+        ),
+    ] {
+        let plan = optimize_go_merge_46_with_provider(
+            sql,
+            &context,
+            schema.clone(),
+            Arc::new(GoMerge46CommonHandleStatsProvider),
+        );
+        fn find_scan(
+            plan: &dyn base::PhysicalPlan,
+        ) -> Option<&physicalop_dependency::PhysicalIndexScan> {
+            plan.as_any()
+                .downcast_ref::<physicalop_dependency::PhysicalIndexScan>()
+                .or_else(|| plan.children().iter().find_map(|child| find_scan(*child)))
+        }
+        let scan = find_scan(plan.as_ref()).expect("common handle index scan");
+        assert!(
+            (scan.stats_count() - 10.0).abs() < 1e-9,
+            "{sql}: estimated {} rows",
+            scan.stats_count()
+        );
+        assert!(
+            scan.Ranges
+                .0
+                .iter()
+                .any(|range| range.LowVal.len() == expected_dimensions),
+            "{sql}: expected {expected_dimensions} range dimensions; index cols={}, range widths={:?}",
+            scan.IdxCols.len(),
+            scan.Ranges
+                .0
+                .iter()
+                .map(|range| range.LowVal.len())
+                .collect::<Vec<_>>()
+        );
+    }
+    let tuple_sql = "select * from common_t use index(ic) where (c, p1, p2) > (5, 'pp_055', 55)";
+    let tuple_plan = optimize_go_merge_46_with_provider(
+        tuple_sql,
+        &context,
+        schema,
+        Arc::new(GoMerge46CommonHandleStatsProvider),
+    );
+    assert!(
+        physical_plan_contains::<physicalop_dependency::PhysicalIndexScan>(tuple_plan.as_ref()),
+        "tuple predicate must plan against the extended index key"
+    );
+    let tuple_scan = find_physical_index_scan(tuple_plan.as_ref()).expect("tuple index scan");
+    assert!(
+        // The synthetic histogram adds one out-of-range row at the open upper bound.
+        (tuple_scan.stats_count() - 51.0).abs() < 1e-9,
+        "tuple index range estimated {} rows",
+        tuple_scan.stats_count()
+    );
+}
+
+#[test]
+fn go_merge_46_sql_virtual_column_index_uses_composite_range() {
+    crate::InstallPlannerExpressionFactory().expect("install generated-expression builder");
+    let mut primary_type = *expression::types::NewFieldType(expression::mysql::TypeLonglong);
+    primary_type.AddFlag(expression::mysql::PriKeyFlag | expression::mysql::NotNullFlag);
+    let columns = ["a", "status", "v"]
+        .iter()
+        .enumerate()
+        .map(|(offset, name)| expression::model::ColumnInfo {
+            ID: offset as i64 + 1,
+            Name: crate::ast::NewCIStr(name),
+            Offset: offset as isize,
+            State: expression::model::StatePublic,
+            FieldType: if offset == 0 {
+                primary_type.clone()
+            } else {
+                *expression::types::NewFieldType(expression::mysql::TypeLonglong)
+            },
+            GeneratedExprString: if offset == 2 {
+                "a + 1".to_owned()
+            } else {
+                String::new()
+            },
+            ..Default::default()
+        })
+        .collect::<Vec<_>>();
+    let model = Arc::new(expression::model::TableInfo {
+        ID: 4602,
+        Name: crate::ast::NewCIStr("virtual_t"),
+        Columns: columns,
+        Indices: [3, 4]
+            .into_iter()
+            .map(|id| expression::model::IndexInfo {
+                ID: id,
+                Name: crate::ast::NewCIStr(if id == 3 { "iv" } else { "iv2" }),
+                Columns: [("v", 2), ("status", 1)]
+                    .into_iter()
+                    .map(|(name, offset)| expression::model::IndexColumn {
+                        Name: crate::ast::NewCIStr(name),
+                        Offset: offset,
+                        Length: -1,
+                        ..Default::default()
+                    })
+                    .collect(),
+                State: expression::model::StatePublic,
+                ..Default::default()
+            })
+            .collect(),
+        PKIsHandle: true,
+        ..Default::default()
+    });
+    let schema = infoschema_dependency::infoschema::MockInfoSchema(vec![
+        infoschema_dependency::infoschema::TableInfo {
+            id: model.ID,
+            name: infoschema_dependency::infoschema::CiString::new("virtual_t"),
+            columns: model
+                .Columns
+                .iter()
+                .map(|column| infoschema_dependency::infoschema::ColumnInfo {
+                    id: column.ID,
+                    name: infoschema_dependency::infoschema::CiString::new(&column.Name.O),
+                    ..Default::default()
+                })
+                .collect(),
+            model_meta: Some(model),
+            ..Default::default()
+        },
+    ]);
+    let context = integration_plan_context(&[kv_dependency::StoreType::TiKV], "tikv", false, false);
+    let sql = "select * from virtual_t use index(iv) where v = 9 and status = 0";
+    let plan = optimize_integration_query_with_schema(sql, &context, schema.clone());
+    fn find_scan(
+        plan: &dyn base::PhysicalPlan,
+    ) -> Option<&physicalop_dependency::PhysicalIndexScan> {
+        plan.as_any()
+            .downcast_ref::<physicalop_dependency::PhysicalIndexScan>()
+            .or_else(|| plan.children().iter().find_map(|child| find_scan(*child)))
+    }
+    let scan = find_scan(plan.as_ref()).expect("virtual column index scan");
+    assert!(scan.Ranges.0.iter().any(|range| range.LowVal.len() == 2));
+    assert!(
+        scan.IdxCols[0]
+            .OrigName
+            .to_ascii_lowercase()
+            .ends_with(".v")
+    );
+    assert!(scan.IdxCols[0].VirtualExpr.is_some());
+
+    let _scenario = fail::FailScenario::setup();
+    fail::cfg("afterRecursiveIndexEstimation", "return(3)")
+        .expect("inject first recursive index error");
+    let sql = "select * from virtual_t use index(iv2) where v = 9 and status = 0";
+    let physical = optimize_go_merge_46_with_provider(
+        sql,
+        &context,
+        schema,
+        Arc::new(GoMerge46VirtualStatsProvider),
+    );
+    let scan = find_scan(physical.as_ref()).expect("estimated virtual index scan");
+    assert!(
+        (scan.stats_count() - 50.0).abs() < 1e-9,
+        "recursive fallback estimate was {} rows",
+        scan.stats_count()
+    );
 }
 
 /// 深度优先查找第一个 PhysicalIndexScan。

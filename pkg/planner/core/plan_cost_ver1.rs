@@ -371,6 +371,11 @@ pub fn GetCanonicalPlanCostVer1(
         build * variables.GetCPUFactor()
             + build * variables.GetMemoryFactor()
             + rows * variables.GetCPUFactor() / workers
+            + if join.BasePhysicalJoin.JoinType == base::JoinType::FullOuterJoin {
+                build * variables.GetCPUFactor() / workers
+            } else {
+                0.0
+            }
             + (workers + 1.0) * concurrency_factor
     } else if any.is::<physicalop::PhysicalExchangeSender>() {
         0.0

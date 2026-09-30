@@ -35,6 +35,7 @@ vardef-dependency = { package = "astersql-sessionctx-vardef", path = "../../sess
 variable-dependency = { package = "astersql-sessionctx-variable", path = "../../sessionctx/variable" }
 
 [dev-dependencies]
+exprstatic = { package = "astersql-expression-exprstatic", path = "../../expression/exprstatic" }
 testsetup = { package = "astersql-testkit-testsetup", path = "../../testkit/testsetup" }
 
 [package.metadata.porting]

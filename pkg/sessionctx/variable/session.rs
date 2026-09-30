@@ -717,6 +717,7 @@ pub struct SessionVars {
     pub EnableAlternativeLogicalPlans: bool,
     pub EnableCorrelateSubquery: bool,
     pub EnableSemiJoinRewrite: bool,
+    pub EnableFullOuterJoin: bool,
     pub EnableNoDecorrelateInSelect: bool,
     /// 控制 NO_BACKSLASH_ESCAPES 是否改变 LIKE 的默认转义行为。
     /// Controls whether NO_BACKSLASH_ESCAPES changes LIKE's default escape.
@@ -941,6 +942,7 @@ impl SessionVars {
             EnableAlternativeLogicalPlans: vardef::DefOptEnableAlternativeLogicalPlans,
             EnableCorrelateSubquery: false,
             EnableSemiJoinRewrite: vardef::DefOptEnableSemiJoinRewrite,
+            EnableFullOuterJoin: vardef::DefTiDBEnableFullOuterJoin,
             EnableNoDecorrelateInSelect: vardef::DefOptEnableNoDecorrelateInSelect,
             EnableNoBackslashEscapesInLike: vardef::DefTiDBEnableNoBackslashEscapesInLike,
             allowInSubqToJoinAndAgg: vardef::DefOptInSubqToJoinAndAgg,
@@ -1127,6 +1129,11 @@ impl SessionVars {
                 })?;
         } else if name.eq_ignore_ascii_case(vardef::TiDBOptEnableSemiJoinRewrite) {
             self.EnableSemiJoinRewrite = matches!(
+                normalized.to_ascii_lowercase().as_str(),
+                "1" | "on" | "true"
+            );
+        } else if name.eq_ignore_ascii_case(vardef::TiDBEnableFullOuterJoin) {
+            self.EnableFullOuterJoin = matches!(
                 normalized.to_ascii_lowercase().as_str(),
                 "1" | "on" | "true"
             );

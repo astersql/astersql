@@ -4046,6 +4046,27 @@ fn build_join_runtime(
         return Ok((left, left_table));
     };
     let has_lateral = contains_lateral_table_source(right_node);
+    if join.Tp == crate::ast::JoinType::FullJoin {
+        let session_vars = builder.ctx.GetSessionVars();
+        if !session_vars.EnableFullOuterJoin {
+            return Err(expression::errors::New(
+                "FULL OUTER JOIN is not supported yet",
+            ));
+        }
+        if session_vars
+            .GetSystemVar(vardef_dependency::TiDBEnableCascadesPlanner)
+            .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "on" | "1" | "true"))
+        {
+            return Err(expression::errors::New(
+                "FULL OUTER JOIN with cascades planner is not supported yet",
+            ));
+        }
+        if join.NaturalJoin || !join.Using.is_empty() || join.On.is_none() || has_lateral {
+            return Err(expression::errors::New(
+                "FULL OUTER JOIN is not supported yet",
+            ));
+        }
+    }
     let lateral_outer = find_join_full_schema(left.as_ref())
         .unwrap_or_else(|| (left.Schema().Clone(), left.OutputNames().Shallow()));
     if has_lateral {
@@ -4120,7 +4141,25 @@ fn build_join_runtime(
         logical_join.Children()[0].as_ref(),
         logical_join.Children()[1].as_ref(),
     );
-    logical_join.SetPreferredJoinTypeAndOrder(prefer, order);
+    if join_type == base::JoinType::FullOuterJoin {
+        for (bit, name) in [(1 << 1, "MERGE_JOIN"), (1 << 2, "INL_JOIN")] {
+            if prefer & bit != 0 {
+                builder.ctx.GetSessionVars().StmtCtx.AppendWarning(
+                    stmtctx_dependency::errors::NewNoStackError(format!(
+                        "Optimizer Hint {name} is inapplicable to FULL OUTER JOIN"
+                    )),
+                );
+            }
+        }
+    }
+    logical_join.SetPreferredJoinTypeAndOrder(
+        if join_type == base::JoinType::FullOuterJoin {
+            prefer & 1
+        } else {
+            prefer
+        },
+        order,
+    );
     let (left_prefer, right_prefer) = builder.joinHintSidePreference(
         logical_join.Children()[0].as_ref(),
         logical_join.Children()[1].as_ref(),

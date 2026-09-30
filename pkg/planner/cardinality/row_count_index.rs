@@ -501,6 +501,7 @@ pub fn equalRowCountOnIndex(
     let (histCnt, matched) = idx.Histogram.EqualRowCount(&val, true);
     let histNDV = (idx.Histogram.NDV - idx.TopN.Num() as i64) as f64;
     if matched
+        && histCnt > 0.0
         && !IsLastBucketEndValueUnderrepresented(
             sctx,
             &idx.Histogram,
@@ -570,12 +571,25 @@ pub fn expBackoffEstimation(
                     {
                         continue;
                     }
-                    foundStats = true;
-                    let countResult =
-                        GetRowCountByIndexRanges(sctx, coll, *idxID, &[&tmpRan[0]], &[])?;
+                    let injected_error = fail::eval("afterRecursiveIndexEstimation", |value| {
+                        value.and_then(|id| id.parse::<i64>().ok())
+                    })
+                    .flatten()
+                        == Some(*idxID);
+                    let recursive_result = if injected_error {
+                        Err(errors::New(format!(
+                            "injected recursive estimation error for index {idxID}"
+                        )))
+                    } else {
+                        GetRowCountByIndexRanges(sctx, coll, *idxID, &[&tmpRan[0]], &[])
+                    };
+                    let Ok(countResult) = recursive_result else {
+                        continue;
+                    };
                     let (realtimeCnt, _) = coll.GetScaledRealtimeAndModifyCnt(idxStats.unwrap());
                     selectivity = countResult.Est / realtimeCnt as f64;
-                    maxSel = maxSel.min(countResult.MaxEst / coll.RealtimeCount as f64);
+                    maxSel = maxSel.min(countResult.MaxEst / realtimeCnt as f64);
+                    foundStats = true;
                     break;
                 }
             }
@@ -627,6 +641,101 @@ pub fn expBackoffEstimation(
     }
     let multResult = ApplyExponentialBackoff(&singleColumnEstResults, minBound, 1.0);
     Ok((multResult, minSel, maxSel, true))
+}
+
+/// Credit predicates on the complete handle appended to a non-unique index key.
+/// Index statistics cover only declared columns, so the input estimate must be
+/// computed from ranges truncated to those columns before calling this helper.
+pub fn AdjustRowCountForAppendedHandleColumns(
+    sctx: &dyn planctx::PlanContext,
+    coll: &statistics::HistColl,
+    ranges: &[&ranger::Range],
+    idx_cols_with_handle: &[&expression::Column],
+    declared_col_count: usize,
+    prefix_count: statistics::RowEstimate,
+) -> statistics::RowEstimate {
+    let realtime_count = coll.RealtimeCount as f64;
+    if realtime_count <= 0.0
+        || ranges.is_empty()
+        || idx_cols_with_handle.len() <= declared_col_count
+    {
+        return prefix_count;
+    }
+    let mut selectivities = Vec::with_capacity(idx_cols_with_handle.len() - declared_col_count);
+    for dim in declared_col_count..idx_cols_with_handle.len() {
+        let column = idx_cols_with_handle[dim];
+        if statistics::ColumnStatsIsInvalid(coll.GetCol(column.UniqueID), coll.Pseudo) {
+            continue;
+        }
+        let mut column_ranges = Vec::with_capacity(ranges.len());
+        let mut all_bound = true;
+        for range in ranges {
+            if range.LowVal.len() <= dim
+                || range.HighVal.len() <= dim
+                || range.Collators.len() <= dim
+            {
+                all_bound = false;
+                break;
+            }
+            column_ranges.push(ranger::Range {
+                LowVal: vec![range.LowVal[dim].clone()],
+                HighVal: vec![range.HighVal[dim].clone()],
+                Collators: vec![range.Collators[dim].Clone()],
+                LowExclude: range.LowExclude && dim + 1 == range.LowVal.len(),
+                HighExclude: range.HighExclude && dim + 1 == range.HighVal.len(),
+                ..Default::default()
+            });
+        }
+        if !all_bound {
+            continue;
+        }
+        let Ok(merged) =
+            ranger::UnionRanges(sctx.GetRangerCtx(), ranger::Ranges(column_ranges), false)
+        else {
+            continue;
+        };
+        let merged_refs = merged.0.iter().collect::<Vec<_>>();
+        let Ok(estimate) =
+            GetRowCountByColumnRanges(sctx, coll, column.UniqueID, &merged_refs, false)
+        else {
+            continue;
+        };
+        let selectivity = estimate.Est / realtime_count;
+        if selectivity > 0.0 && selectivity < 1.0 {
+            selectivities.push(selectivity);
+        }
+    }
+    let mut adjusted = prefix_count;
+    if !selectivities.is_empty() {
+        selectivities.sort_by(f64::total_cmp);
+        let mut factor = 1.0;
+        let mut independence_factor = 1.0;
+        for (index, selectivity) in selectivities.into_iter().enumerate() {
+            independence_factor *= selectivity;
+            if index + 1 < MaxExponentialBackoffCols {
+                let mut damped = selectivity;
+                for _ in 0..=index {
+                    damped = damped.sqrt();
+                }
+                factor *= damped;
+            }
+        }
+        adjusted.Est *= factor;
+        adjusted.Est = adjusted.Est.max(prefix_count.Est.min(1.0));
+        adjusted.MinEst = (adjusted.MinEst * independence_factor).min(adjusted.Est);
+    }
+    let full_points = ranges.iter().all(|range| {
+        range.LowVal.len() == idx_cols_with_handle.len()
+            && range.HighVal.len() == idx_cols_with_handle.len()
+            && range.IsPoint(sctx.GetRangerCtx())
+    });
+    if full_points {
+        let cap = ranges.len() as f64;
+        adjusted.Est = adjusted.Est.min(cap);
+        adjusted.MinEst = adjusted.MinEst.min(adjusted.Est);
+        adjusted.MaxEst = adjusted.MaxEst.min(cap);
+    }
+    adjusted
 }
 
 /// outOfRangeOnIndex 检查编码后的索引 Datum 是否落在直方图范围外。

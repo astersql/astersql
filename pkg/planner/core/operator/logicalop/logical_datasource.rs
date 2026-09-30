@@ -697,7 +697,7 @@ impl DataSource {
             let Some(index) = path.Index.as_ref() else {
                 continue;
             };
-            let index_columns = index
+            let mut index_columns = index
                 .Columns
                 .iter()
                 .filter_map(|index_column| {
@@ -728,12 +728,50 @@ impl DataSource {
                 path.TableFilters = conditions.clone();
                 continue;
             }
-            let index_lengths = index
+            let declared_col_count = index_columns.len();
+            let mut index_lengths = index
                 .Columns
                 .iter()
                 .take(index_columns.len())
                 .map(|column| column.Length as i32)
                 .collect::<Vec<_>>();
+            if !index.Unique && !index.Primary && index.Columns.len() == declared_col_count {
+                let append_common_handle = self.TableInfo.IsCommonHandle
+                    && !index.Global
+                    && !index.MVIndex
+                    && !index.IsColumnarIndex()
+                    && self.CommonHandleCols.len() == self.CommonHandleLens.len()
+                    && !self.CommonHandleCols.is_empty()
+                    && !(self.TableInfo.CommonHandleVersion == 0
+                        && expression::collate::NewCollationEnabled()
+                        && self.CommonHandleCols.iter().any(|column| {
+                            column.RetType.as_ref().is_some_and(|field| {
+                                field.EvalType() == expression::types::ETString
+                                    && !expression::mysql::HasBinaryFlag(field.GetFlag())
+                            })
+                        }))
+                    && self.CommonHandleCols.iter().all(|handle| {
+                        !index_columns
+                            .iter()
+                            .any(|column| column.UniqueID == handle.UniqueID)
+                    });
+                if append_common_handle {
+                    index_columns.extend(self.CommonHandleCols.iter().map(Column::Clone));
+                    index_lengths.extend(self.CommonHandleLens.iter().map(|length| *length as i32));
+                } else if self.TableInfo.PKIsHandle
+                    && handle_columns.len() == 1
+                    && handle_columns[0]
+                        .RetType
+                        .as_ref()
+                        .is_some_and(|field| !expression::mysql::HasUnsignedFlag(field.GetFlag()))
+                    && !index_columns
+                        .iter()
+                        .any(|column| column.UniqueID == handle_columns[0].UniqueID)
+                {
+                    index_columns.push(handle_columns[0].Clone());
+                    index_lengths.push(expression::types::UnspecifiedLength);
+                }
+            }
             path.IdxCols = index_columns.clone();
             path.IdxColLens = index_lengths
                 .iter()
@@ -901,9 +939,52 @@ impl DataSource {
                     .any(|index_column| index_column.UniqueID == required.UniqueID)
             });
             if let Some(histogram) = histogram {
-                let range_refs = path.Ranges.iter().collect::<Vec<_>>();
-                let column_refs = index_columns.iter().collect::<Vec<_>>();
-                let estimate = cardinality::GetRowCountByIndexRanges(
+                let need_prune = index_columns.len() > declared_col_count
+                    && path.Ranges.iter().any(|range| {
+                        range.LowVal.len() > declared_col_count
+                            || range.HighVal.len() > declared_col_count
+                    });
+                let estimate_ranges = if need_prune {
+                    let truncated = path
+                        .Ranges
+                        .iter()
+                        .map(|range| ranger::Range {
+                            LowVal: range
+                                .LowVal
+                                .iter()
+                                .take(declared_col_count)
+                                .cloned()
+                                .collect(),
+                            HighVal: range
+                                .HighVal
+                                .iter()
+                                .take(declared_col_count)
+                                .cloned()
+                                .collect(),
+                            Collators: range
+                                .Collators
+                                .iter()
+                                .take(declared_col_count)
+                                .map(|collator| collator.Clone())
+                                .collect(),
+                            LowExclude: range.LowExclude
+                                && range.LowVal.len() <= declared_col_count,
+                            HighExclude: range.HighExclude
+                                && range.HighVal.len() <= declared_col_count,
+                            ..Default::default()
+                        })
+                        .collect();
+                    ranger::UnionRanges(context.GetRangerCtx(), ranger::Ranges(truncated), false)
+                        .map_err(|error| PlannerError(error.to_string()))?
+                        .0
+                } else {
+                    path.Ranges.clone()
+                };
+                let range_refs = estimate_ranges.iter().collect::<Vec<_>>();
+                let column_refs = index_columns[..declared_col_count]
+                    .iter()
+                    .collect::<Vec<_>>();
+                let mut estimate = cardinality::GetRowCountByIndexRanges(
                     &cardinality_context,
                     histogram,
                     index.ID,
@@ -911,6 +992,18 @@ impl DataSource {
                     &column_refs,
                 )
                 .map_err(|error| PlannerError(error.to_string()))?;
+                if need_prune && self.TableInfo.PKIsHandle {
+                    let full_range_refs = path.Ranges.iter().collect::<Vec<_>>();
+                    let full_column_refs = index_columns.iter().collect::<Vec<_>>();
+                    estimate = cardinality::AdjustRowCountForAppendedHandleColumns(
+                        &cardinality_context,
+                        histogram,
+                        &full_range_refs,
+                        &full_column_refs,
+                        declared_col_count,
+                        estimate,
+                    );
+                }
                 path.CountAfterAccess = estimate.Est;
                 path.MinCountAfterAccess = estimate.MinEst;
                 path.MaxCountAfterAccess = estimate.MaxEst;
@@ -1270,6 +1363,32 @@ impl DataSource {
             )
             .map_err(|error| PlannerError(error.to_string()))?;
             stats = stats.Scale(context.GetSessionVars(), selectivity);
+        }
+        for path in &mut self.PossibleAccessPaths {
+            let appended_handle_range = path.Index.as_ref().is_some_and(|index| {
+                path.IdxCols.len() > index.Columns.len()
+                    && path.Ranges.iter().any(|range| {
+                        range.LowVal.len() > index.Columns.len()
+                            || range.HighVal.len() > index.Columns.len()
+                    })
+            });
+            let complete_handle_point_cap = path.MaxCountAfterAccess <= path.Ranges.len() as f64
+                && path.Ranges.iter().all(|range| {
+                    range.LowVal.len() == path.IdxCols.len()
+                        && range.HighVal.len() == path.IdxCols.len()
+                });
+            if appended_handle_range
+                && !complete_handle_point_cap
+                && path.CountAfterAccess + 1e-9 < stats.RowCount
+            {
+                path.MinCountAfterAccess = if path.MinCountAfterAccess > 0.0 {
+                    path.MinCountAfterAccess.min(path.CountAfterAccess)
+                } else {
+                    path.CountAfterAccess
+                };
+                path.CountAfterAccess = stats.RowCount;
+                path.MaxCountAfterAccess = path.MaxCountAfterAccess.max(stats.RowCount);
+            }
         }
         self.SetStats(stats.clone());
         Ok((stats, true))

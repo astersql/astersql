@@ -80,6 +80,14 @@ pub fn Selectivity(
             // 表达式索引只使用索引统计，不使用隐藏虚拟列的列统计。
             continue;
         }
+        if col
+            .RetType
+            .as_ref()
+            .is_some_and(|field| field.EvalType() == expression::types::ETJson)
+        {
+            // ANALYZE does not build column statistics for JSON values.
+            continue;
+        }
         let id = col.UniqueID;
         let colStats = coll.GetCol(id);
         if colStats.is_some() {
@@ -160,7 +168,7 @@ pub fn Selectivity(
             for i in 0..idxCols.len().min(idxStats.InfoRef().Columns.len()) {
                 lengths.push(idxStats.InfoRef().Columns[i].Length);
             }
-            if idxCols.len() > idxStats.InfoRef().Columns.len() {
+            while lengths.len() < idxCols.len() {
                 lengths.push(types::UnspecifiedLength);
             }
             let (maskCovered, ranges, partCover, minAccessCondsForDNFCond, _) = getMaskAndRanges(

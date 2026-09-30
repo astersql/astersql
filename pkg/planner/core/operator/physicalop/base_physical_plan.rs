@@ -10790,6 +10790,12 @@ pub fn ExhaustPhysicalPlans(
                     .map(expression::ScalarFunction::clone_scalar)
             })
             .collect();
+        if join.JoinType == base::JoinType::FullOuterJoin
+            && property.TaskTp == property::RootTaskType
+        {
+            // The root path supports only the v1 HashJoin for FULL OUTER JOIN.
+            return Ok(vec![Box::new(physical)]);
+        }
         let broadcast_enabled = context
             .GetSessionVars()
             .GetSystemVar(vardef::TiDBBCJThresholdCount)
@@ -11254,7 +11260,12 @@ fn populate_physical_join_conditions(
         let join_keys = condition
             .as_any()
             .downcast_ref::<expression::ScalarFunction>()
-            .filter(|function| function.FuncName.L == parser_ast::EQ)
+            .filter(|function| {
+                matches!(
+                    function.FuncName.L.as_str(),
+                    parser_ast::EQ | parser_ast::NullEQ
+                )
+            })
             .map(expression::ExtractColumnsFromColOpCol);
         match (join_keys, left_schema, right_schema) {
             (Some((Some(first), Some(second))), Some(left), Some(right))
@@ -11265,7 +11276,12 @@ fn populate_physical_join_conditions(
                     .push(resolve_column(first, left).expect("checked left join column"));
                 base.RightJoinKeys
                     .push(resolve_column(second, right).expect("checked right join column"));
-                base.IsNullEQ.push(false);
+                base.IsNullEQ.push(
+                    condition
+                        .as_any()
+                        .downcast_ref::<expression::ScalarFunction>()
+                        .is_some_and(|function| function.FuncName.L == parser_ast::NullEQ),
+                );
             }
             (Some((Some(first), Some(second))), Some(left), Some(right))
                 if resolve_column(second, left).is_some()
@@ -11275,7 +11291,12 @@ fn populate_physical_join_conditions(
                     .push(resolve_column(second, left).expect("checked left join column"));
                 base.RightJoinKeys
                     .push(resolve_column(first, right).expect("checked right join column"));
-                base.IsNullEQ.push(false);
+                base.IsNullEQ.push(
+                    condition
+                        .as_any()
+                        .downcast_ref::<expression::ScalarFunction>()
+                        .is_some_and(|function| function.FuncName.L == parser_ast::NullEQ),
+                );
             }
             _ => base.OtherConditions.push(condition.CloneExpr()),
         }
@@ -11299,7 +11320,8 @@ fn populate_physical_join_conditions(
                     .push(resolve_column(first, left).expect("checked left join column"));
                 base.RightJoinKeys
                     .push(resolve_column(second, right).expect("checked right join column"));
-                base.IsNullEQ.push(false);
+                base.IsNullEQ
+                    .push(function.FuncName.L == parser_ast::NullEQ);
             }
             (Some(first), Some(second), Some(left), Some(right))
                 if resolve_column(second, left).is_some()
@@ -11309,7 +11331,8 @@ fn populate_physical_join_conditions(
                     .push(resolve_column(second, left).expect("checked left join column"));
                 base.RightJoinKeys
                     .push(resolve_column(first, right).expect("checked right join column"));
-                base.IsNullEQ.push(false);
+                base.IsNullEQ
+                    .push(function.FuncName.L == parser_ast::NullEQ);
             }
             _ => base.OtherConditions.push(equality.CloneExpr()),
         }

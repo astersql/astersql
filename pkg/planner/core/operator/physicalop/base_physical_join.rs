@@ -220,6 +220,7 @@ pub fn BuildPhysicalJoinSchema(join_type: JoinType, join: &dyn PhysicalPlan) -> 
     let nullable = match join_type {
         JoinType::LeftOuterJoin => left_len..result.Len(),
         JoinType::RightOuterJoin => 0..left_len,
+        JoinType::FullOuterJoin => 0..result.Len(),
         _ => 0..0,
     };
     for column in &mut result.Columns[nullable] {

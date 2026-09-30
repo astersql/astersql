@@ -2091,3 +2091,20 @@ fn TestSkipInitIsUsed() {
         "the deprecated skipInit whitelist must remain explicit"
     );
 }
+#[test]
+fn go_merge_46_full_outer_join_sysvar_defaults_off_and_tracks_session_value() {
+    let mut vars = crate::session::SessionVars::default();
+    assert_eq!(
+        vars.EnableFullOuterJoin,
+        crate::vardef::DefTiDBEnableFullOuterJoin
+    );
+    vars.SetSystemVar(crate::vardef::TiDBEnableFullOuterJoin, "ON")
+        .unwrap();
+    assert!(vars.EnableFullOuterJoin);
+    vars.SetSystemVar(crate::vardef::TiDBEnableFullOuterJoin, "0")
+        .unwrap();
+    assert!(!vars.EnableFullOuterJoin);
+    vars.SetSystemVar(crate::vardef::TiDBEnableFullOuterJoin, "1")
+        .unwrap();
+    assert!(vars.EnableFullOuterJoin);
+}

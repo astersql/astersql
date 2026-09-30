@@ -267,8 +267,12 @@ impl PhysicalHashJoin {
     }
     /// 深拷贝并切换计划上下文。
     pub fn Clone(&self, new_ctx: ContextRef) -> Result<Self, expression::Error> {
+        let mut base = self.BasePhysicalJoin.CloneWithSelf(new_ctx)?;
+        // The optimizer clones physical candidates before attachment. Keep the
+        // NULL-safe equality bitmap aligned with the cloned hash join keys.
+        base.IsNullEQ = self.BasePhysicalJoin.IsNullEQ.clone();
         Ok(Self {
-            BasePhysicalJoin: self.BasePhysicalJoin.CloneWithSelf(new_ctx)?,
+            BasePhysicalJoin: base,
             Concurrency: self.Concurrency,
             EqualConditions: self
                 .EqualConditions
@@ -793,6 +797,7 @@ impl PhysicalHashJoin {
         join.set_join_type(match self.BasePhysicalJoin.JoinType {
             JoinType::LeftOuterJoin => tipb::JoinType::TypeLeftOuterJoin,
             JoinType::RightOuterJoin => tipb::JoinType::TypeRightOuterJoin,
+            JoinType::FullOuterJoin => tipb::JoinType::TypeFullOuterJoin,
             JoinType::SemiJoin => tipb::JoinType::TypeSemiJoin,
             JoinType::AntiSemiJoin => tipb::JoinType::TypeAntiSemiJoin,
             JoinType::LeftOuterSemiJoin => tipb::JoinType::TypeLeftOuterSemiJoin,
@@ -809,6 +814,7 @@ impl PhysicalHashJoin {
         join.set_probe_types(probe_types.into());
         join.set_build_types(build_types.into());
         join.set_is_null_aware_semi_join(null_aware);
+        join.set_is_null_eq(self.BasePhysicalJoin.IsNullEQ.clone().into());
         join.set_runtime_filter_list(runtime_filters.into());
         let children = self
             .BasePhysicalJoin

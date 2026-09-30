@@ -1236,6 +1236,9 @@ impl LogicalJoin {
         self.JoinType = match self.JoinType {
             JoinType::LeftOuterJoin if null_reject_right => JoinType::InnerJoin,
             JoinType::RightOuterJoin if null_reject_left => JoinType::InnerJoin,
+            JoinType::FullOuterJoin if null_reject_left && null_reject_right => JoinType::InnerJoin,
+            JoinType::FullOuterJoin if null_reject_left => JoinType::LeftOuterJoin,
+            JoinType::FullOuterJoin if null_reject_right => JoinType::RightOuterJoin,
             other => other,
         };
     }

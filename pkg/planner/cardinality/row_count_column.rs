@@ -133,6 +133,7 @@ pub fn equalRowCountOnColumn(
     let histNDV = (c.Histogram.NDV - c.TopN.Num() as i64) as f64;
     // 桶末值如果疑似被新增数据稀释，则不直接信任 Repeat，转入均匀分布兜底。
     if matched
+        && histCnt > 0.0
         && !IsLastBucketEndValueUnderrepresented(
             sctx,
             &c.Histogram,

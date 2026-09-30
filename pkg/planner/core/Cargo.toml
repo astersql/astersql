@@ -47,6 +47,7 @@ variable-dependency = { package = "astersql-sessionctx-variable", path = "../../
 [dev-dependencies]
 codec-dependency = { package = "astersql-util-codec", path = "../../util/codec" }
 exprstatic-dependency = { package = "astersql-expression-exprstatic", path = "../../expression/exprstatic" }
+fail = { version = "0.5", features = ["failpoints"] }
 parser-dependency = { package = "astersql-parser", path = "../../parser" }
 util-dependency = { package = "astersql-util", path = "../../util" }
 

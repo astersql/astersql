@@ -1,5 +1,5 @@
-// Copyright 2025 PingCAP, Inc.
 // Copyright 2026 AsterSQL.
+// Copyright 2025 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -651,6 +651,9 @@ pub const TiDBPagingSizeBytes: &str = "tidb_paging_size_bytes";
 
 // TiDBEnableCascadesPlanner is used to control whether to enable the cascades planner.
 pub const TiDBEnableCascadesPlanner: &str = "tidb_enable_cascades_planner";
+
+/// Opt-in FULL OUTER JOIN support.
+pub const TiDBEnableFullOuterJoin: &str = "tidb_enable_full_outer_join";
 
 // TiDBSkipUTF8Check skips the UTF8 validate process, validate UTF8 has performance cost, if we can make sure
 // the input string values are valid, we can skip the check.
@@ -1925,6 +1928,7 @@ pub const DefTiDBLockUnchangedKeys: bool = true;
 pub const DefTiDBEnableCheckConstraint: bool = false;
 pub const DefTiDBSkipMissingPartitionStats: bool = true;
 pub const DefTiDBOptEnableHashJoin: bool = true;
+pub const DefTiDBEnableFullOuterJoin: bool = false;
 pub const DefTiDBHashJoinVersion: &str = "optimized";
 pub const DefTiDBOptIndexJoinBuild: bool = true;
 pub const DefTiDBOptObjective: &str = OptObjectiveModerate;

@@ -934,9 +934,32 @@ fn get_canonical_plan_cost_ver2_inner<'a>(
                     canonical_number(probe_rows),
                 ),
             ]);
+            let scan_build_unmatched =
+                if join.BasePhysicalJoin.JoinType == base_dependency::JoinType::FullOuterJoin {
+                    canonical_term(
+                        option,
+                        "cpu",
+                        if task == property_dependency::MppTaskType {
+                            "tiflash_cpu_factor"
+                        } else {
+                            "tidb_cpu_factor"
+                        },
+                        cpu,
+                        build_rows,
+                        format!("scanBuildUnmatched({})", canonical_number(build_rows)),
+                    )
+                } else {
+                    costusage_dependency::new_zero_cost_ver2(costusage_dependency::trace_cost(
+                        Some(option),
+                    ))
+                };
             if task != property_dependency::MppTaskType {
                 let probe_parallel = costusage_dependency::div_cost_ver2(
-                    &costusage_dependency::sum_cost_ver2(&[probe_filter, probe_hash]),
+                    &costusage_dependency::sum_cost_ver2(&[
+                        probe_filter,
+                        probe_hash,
+                        scan_build_unmatched,
+                    ]),
                     join.Concurrency.max(1) as f64,
                 );
                 return Ok(costusage_dependency::mul_cost_ver2(
@@ -964,6 +987,7 @@ fn get_canonical_plan_cost_ver2_inner<'a>(
                     build_filter,
                     probe_hash,
                     probe_filter,
+                    scan_build_unmatched,
                 ]),
                 3.0,
             );
