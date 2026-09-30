@@ -55,7 +55,7 @@ pub fn ParseServiceURL(raw: &str) -> Result<ServiceURL> {
     parse_service_url(raw, "")
 }
 
-fn parse_service_url(raw: &str, default_scheme: &str) -> Result<ServiceURL> {
+pub(crate) fn parse_service_url(raw: &str, default_scheme: &str) -> Result<ServiceURL> {
     let raw = raw.trim();
     if raw.is_empty() {
         return Err(anyhow!("URL must not be empty"));

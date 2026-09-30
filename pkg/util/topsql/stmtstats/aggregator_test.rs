@@ -37,6 +37,28 @@ fn go_merge_39_register_stops_at_capacity() {
     assert_eq!(aggregator.stats_len(), 2);
 }
 
+#[test]
+fn go_merge_40_concurrent_registration_honors_capacity() {
+    for _ in 0..20 {
+        let aggregator = Aggregator::new();
+        let start = Arc::new(std::sync::Barrier::new(32));
+        let workers: Vec<_> = (0..32)
+            .map(|_| {
+                let aggregator = aggregator.clone();
+                let start = start.clone();
+                thread::spawn(move || {
+                    start.wait();
+                    aggregator.register_with_limit(Arc::new(StatementStats::new()), 1);
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert_eq!(aggregator.stats_len(), 1);
+    }
+}
+
 /// 取得 stmtstats 测试串行锁。
 fn test_guard() -> std::sync::MutexGuard<'static, ()> {
     super::test_support::stmtstats_guard()

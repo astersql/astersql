@@ -95,6 +95,31 @@ fn go_merge_20_topru_v2_uses_finalized_total_only() {
     assert_eq!(increment[&key].ExecDuration, SECOND_NS as u64);
 }
 
+#[test]
+fn go_merge_40_finish_uses_version_specific_ru_total() {
+    for (version, expected) in [(RU_VERSION_V1, 30.0), (RU_VERSION_V2, 42.0)] {
+        let stats = StatementStats::new();
+        let key = ru_key("user1", "sql1", "plan1");
+        stats.OnExecutionBegin(
+            b"sql1",
+            b"plan1",
+            Some(&begin_info("user1", true, None, version)),
+        );
+        let mut finish = finish_info(
+            "user1",
+            true,
+            Some(ru_details(10.0, 20.0, 11.0, 13.0)),
+            SECOND_NS,
+        );
+        finish.TotalRUV2 = 42.0;
+        stats.OnExecutionFinished(b"sql1", b"plan1", Some(&finish));
+        let increment = stats.MergeRUInto();
+        assert_eq!(increment[&key].ExecCount, 1);
+        assert_eq!(increment[&key].TotalRU, expected);
+        assert_eq!(increment[&key].ExecDuration, SECOND_NS as u64);
+    }
+}
+
 /// 启动一条已启用 TopRU 的语句，返回统计实例、明细与 RUKey。
 fn begin_ru_case(
     user: &str,

@@ -19,6 +19,21 @@
 
 use crate::urls::ParseHostPortAddr;
 
+#[test]
+fn go_merge_40_parse_host_port_uses_service_url_endpoint() {
+    assert_eq!(
+        ParseHostPortAddr("unix://localhost:m0, unix:///home/tidb/tidb.sock").unwrap(),
+        ["unix://localhost:m0", "unix:///home/tidb/tidb.sock"]
+    );
+    assert!(ParseHostPortAddr("unix://").is_err());
+    assert!(ParseHostPortAddr("http://:2379").is_err());
+    assert!(ParseHostPortAddr("http://localhost:").is_err());
+    assert_eq!(
+        ParseHostPortAddr("http://host:2379?x=1").unwrap(),
+        ["http://host:2379"]
+    );
+}
+
 /// 表驱动校验合法地址原样返回，非法地址返回 Err。
 #[test]
 fn test_parse_host_port_addr() {
@@ -32,8 +47,8 @@ fn test_parse_host_port_addr() {
         "https://127.0.0.1:2379",
         "http://127.0.0.1:2379,http://127.0.0.2:2379",
         "https://127.0.0.1:2379,https://127.0.0.2:2379",
+        "unix://localhost:m0",
         "unix:///home/tidb/tidb.sock",
-        "HTTP://127.0.0.1:2379",
         "http://localhost:mysql",
         "http://localhost:65536",
         "http://localhost:2379?redirect=/health#ready",
@@ -51,11 +66,11 @@ fn test_parse_host_port_addr() {
         &["https://127.0.0.1:2379"],
         &["http://127.0.0.1:2379", "http://127.0.0.2:2379"],
         &["https://127.0.0.1:2379", "https://127.0.0.2:2379"],
+        &["unix://localhost:m0"],
         &["unix:///home/tidb/tidb.sock"],
-        &["http://127.0.0.1:2379"],
         &["http://localhost:mysql"],
         &["http://localhost:65536"],
-        &["http://localhost:2379?redirect=/health#ready"],
+        &["http://localhost:2379"],
         &[":2379"],
         &["localhost:"],
         &[":"],
@@ -74,6 +89,7 @@ fn test_parse_host_port_addr() {
         "127.0.0.1",
         "http:///127.0.0.1:2379",
         "htt://127.0.0.1:2379",
+        "unix://",
         "[::1]:2379:2380",
         "host]:2379",
     ];
