@@ -651,6 +651,38 @@ fn test_watch_timer_retry() {
 }
 
 #[test]
+fn go_merge_43_timer_watch_update_triggers_manual_request_promptly() {
+    let _serial = serial_guard();
+    let store = NewMemoryTimerStore();
+    let client = NewDefaultTimerClient(store.clone());
+    let ctx = Context::background();
+    let timer = client
+        .CreateTimer(
+            &ctx,
+            TimerSpec {
+                Key: "watch-manual".into(),
+                SchedPolicyType: SchedEventInterval.into(),
+                SchedPolicyExpr: "24h".into(),
+                HookClass: "watch-hook".into(),
+                Watermark: Some(Utc::now().fixed_offset()),
+                Enable: true,
+                ..TimerSpec::default()
+            },
+        )
+        .unwrap();
+    let hook = TestHook::new();
+    let runtime = NewTimerRuntimeBuilder("watch-group".into(), store.clone())
+        .RegisterHookFactory("watch-hook".into(), install_hook(hook.clone()))
+        .Build();
+    runtime.Start();
+    wait_until(Duration::from_secs(2), || runtime.fullRefreshCount() > 0);
+    client.ManualTriggerEvent(&ctx, &timer.ID).unwrap();
+    wait_until(Duration::from_secs(5), || !hook.sched_calls().is_empty());
+    runtime.Stop();
+    store.Close();
+}
+
+#[test]
 /// 端到端：从到期到 Hook 回调再到状态收尾。
 fn test_timer_full_process() {
     let _serial = serial_guard();

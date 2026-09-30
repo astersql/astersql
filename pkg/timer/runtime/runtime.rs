@@ -271,7 +271,11 @@ impl TimerGroupRuntime {
                 lastWaitClose = Instant::now();
             }
             if lastBatch.elapsed() >= batchProcessWatchRespInterval {
-                self.batchHandleWatchResponsesWithContext(ctx, std::mem::take(&mut batchResponses));
+                if self
+                    .batchHandleWatchResponsesWithContext(ctx, std::mem::take(&mut batchResponses))
+                {
+                    nextTry = Instant::now();
+                }
                 lastBatch = Instant::now();
             }
             if Instant::now() >= nextTry {

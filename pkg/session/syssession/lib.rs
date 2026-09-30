@@ -26,3 +26,5 @@ mod session_integration_test;
 mod session_test;
 #[cfg(test)]
 mod session_test_util_test;
+#[cfg(test)]
+mod thread_bound_test;

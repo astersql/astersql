@@ -34,6 +34,8 @@ mod job_manager_test;
 #[cfg(test)]
 mod job_test;
 #[cfg(test)]
+mod persistent_test;
+#[cfg(test)]
 mod scan_integration_test;
 #[cfg(test)]
 mod scan_test;

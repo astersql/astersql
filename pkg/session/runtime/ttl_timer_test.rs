@@ -3,9 +3,60 @@
 use astersql_ttl_ttlworker::session::{Datum, PhysicalTable, WorkerSession};
 
 use super::{
-    CreateAnalyzeSession, ttl_metadata::TtlSchedule, ttl_timer::sync_ttl_timers,
+    CreateAnalyzeSession,
+    ttl_metadata::TtlSchedule,
+    ttl_timer::{pre_schedule_delay, sync_ttl_timers},
     ttl_worker_session::TtlWorkerSqlSession,
 };
+
+#[test]
+fn go_merge_43_ttl_hook_delays_outside_window_or_missing_table() {
+    let midnight = 1_700_006_400_u64 - 1_700_006_400_u64 % 86_400;
+    assert_eq!(
+        pre_schedule_delay(
+            true,
+            true,
+            midnight + 12 * 3_600,
+            "22:00 +0000",
+            "02:00 +0000"
+        )
+        .unwrap(),
+        std::time::Duration::from_secs(60)
+    );
+    assert_eq!(
+        pre_schedule_delay(
+            true,
+            true,
+            midnight + 23 * 3_600,
+            "22:00 +0000",
+            "02:00 +0000"
+        )
+        .unwrap(),
+        std::time::Duration::ZERO
+    );
+    assert_eq!(
+        pre_schedule_delay(
+            false,
+            true,
+            midnight + 23 * 3_600,
+            "22:00 +0000",
+            "02:00 +0000"
+        )
+        .unwrap(),
+        std::time::Duration::from_secs(60)
+    );
+    assert_eq!(
+        pre_schedule_delay(
+            true,
+            false,
+            midnight + 23 * 3_600,
+            "22:00 +0000",
+            "02:00 +0000"
+        )
+        .unwrap(),
+        std::time::Duration::from_secs(60)
+    );
+}
 
 #[test]
 fn go_merge_43_ttl_timer_sync_persists_updates_and_disables() {

@@ -235,6 +235,10 @@ impl SessionVariables {
 
 /// 会话上下文：DDL 内部执行 SQL/事务所需的最小能力集。
 pub trait SessionContext: Send + Sync {
+    /// Optional access to a production adapter without requiring test contexts to downcast.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
     /// 会话唯一 ID。
     fn session_id(&self) -> u64;
     /// 会话变量。

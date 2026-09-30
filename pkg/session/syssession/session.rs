@@ -60,6 +60,10 @@ pub type Result<T> = std::result::Result<T, SessionError>;
 /// exclusive ownership and balanced enter/leave operations.
 /// 池使用的具体会话契约：解析与执行由实现方完成，包装层只管所有权与进出配对。
 pub trait SessionContext: Send {
+    /// Optional concrete adapter access; ordinary wrappers need no downcast.
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+        None
+    }
     /// 关闭底层会话资源。
     fn close(&mut self);
     /// 成为 Owner 时的回调（如注册内部会话）。
@@ -453,5 +457,112 @@ impl Session {
 impl Default for Session {
     fn default() -> Self {
         Self::empty()
+    }
+}
+
+/// A Send handle whose non-Send value is created, used and dropped on one thread.
+/// The existing session pool owns this handle; it is not a second resource pool.
+pub struct ThreadBoundSession<T: 'static> {
+    worker: Mutex<Option<ThreadBoundWorker<T>>>,
+}
+
+type ThreadOperation<T> = Box<dyn FnOnce(&mut T) -> bool + Send>;
+struct ThreadBoundWorker<T> {
+    sender: std::sync::mpsc::Sender<ThreadOperation<T>>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+impl<T: 'static> ThreadBoundSession<T> {
+    /// Start one worker and report factory errors before exposing the handle.
+    pub fn new(
+        factory: impl FnOnce() -> Result<T> + Send + 'static,
+        cleanup: fn(&mut T),
+    ) -> Result<Self> {
+        let (sender, receiver) = std::sync::mpsc::channel::<ThreadOperation<T>>();
+        let (started, ready) = std::sync::mpsc::sync_channel(1);
+        let thread = std::thread::Builder::new()
+            .name("system-session".into())
+            .spawn(move || {
+                let mut value = match factory() {
+                    Ok(value) => value,
+                    Err(error) => {
+                        let _ = started.send(Err(error));
+                        return;
+                    }
+                };
+                if started.send(Ok(())).is_ok() {
+                    while let Ok(operation) = receiver.recv() {
+                        if !operation(&mut value) {
+                            break;
+                        }
+                    }
+                }
+                cleanup(&mut value);
+            })
+            .map_err(|error| SessionError::new(format!("start system session: {error}")))?;
+        match ready.recv() {
+            Ok(Ok(())) => Ok(Self {
+                worker: Mutex::new(Some(ThreadBoundWorker { sender, thread })),
+            }),
+            Ok(Err(error)) => {
+                let _ = thread.join();
+                Err(error)
+            }
+            Err(error) => {
+                let _ = thread.join();
+                Err(SessionError::new(error.to_string()))
+            }
+        }
+    }
+
+    /// Run on the owning thread; only the Send result crosses the boundary.
+    /// A panicking operation closes the worker and returns an error.
+    pub fn call<R: Send + 'static>(
+        &self,
+        operation: impl FnOnce(&mut T) -> Result<R> + Send + 'static,
+    ) -> Result<R> {
+        // Serialize close with requests, so cleanup cannot race an accepted operation.
+        let worker = self
+            .worker
+            .lock()
+            .map_err(|_| SessionError::new("system session lock poisoned"))?;
+        let worker = worker
+            .as_ref()
+            .ok_or_else(|| SessionError::new("system session closed"))?;
+        let (reply, response) = std::sync::mpsc::sync_channel(1);
+        worker
+            .sender
+            .send(Box::new(move |value| {
+                let outcome = catch_unwind(AssertUnwindSafe(|| operation(value)));
+                let healthy = outcome.is_ok();
+                let result = outcome.unwrap_or_else(|_| {
+                    Err(SessionError::new("system session operation panicked"))
+                });
+                let _ = reply.send(result);
+                healthy
+            }))
+            .map_err(|_| SessionError::new("system session worker stopped"))?;
+        response
+            .recv()
+            .map_err(|_| SessionError::new("system session worker stopped"))?
+    }
+
+    /// Finish accepted calls, then run cleanup, drop the value and join the worker.
+    pub fn close(&self) {
+        if let Some(worker) = self
+            .worker
+            .lock()
+            .expect("system session lock poisoned")
+            .take()
+        {
+            drop(worker.sender);
+            let _ = worker.thread.join();
+        }
+    }
+}
+
+impl<T: 'static> Drop for ThreadBoundSession<T> {
+    fn drop(&mut self) {
+        self.close();
     }
 }

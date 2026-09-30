@@ -204,3 +204,10 @@ mod upgrade_def_test;
 mod upgrade_run_test;
 #[cfg(test)]
 mod upgrade_test;
+
+// Share the executable regression with the lib-test surface required by the plan.
+#[cfg(test)]
+extern crate self as astersql_session;
+#[cfg(test)]
+#[path = "tests/system_session.rs"]
+mod system_session_alignment_test;

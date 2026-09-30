@@ -1,0 +1,698 @@
+// Copyright 2026 AsterSQL.
+
+//! ConcreteSession adapters for the existing system and DDL session pools.
+
+use std::any::Any;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, Weak};
+
+use super::{ConcreteSession, kv};
+use astersql_ddl_jobsubmit as jobsubmit;
+use astersql_ddl_session as ddl;
+use astersql_ddl_systable as systable;
+use astersql_domain::Domain;
+use astersql_session_syssession as sys;
+use astersql_util_codec as codec;
+
+fn sys_error(error: impl std::fmt::Display) -> sys::SessionError {
+    sys::SessionError::new(error.to_string())
+}
+fn ddl_error(error: impl std::fmt::Display) -> ddl::SessionError {
+    ddl::SessionError::Sql(error.to_string())
+}
+fn job_error(error: impl std::fmt::Display) -> jobsubmit::Error {
+    jobsubmit::Error {
+        kind: jobsubmit::ErrorKind::Storage,
+        message: error.to_string(),
+    }
+}
+fn cleanup(session: &mut ConcreteSession) {
+    let _ = session.execute("ROLLBACK");
+}
+fn query(session: &ConcreteSession, sql: &str) -> sys::Result<Vec<Vec<String>>> {
+    let mut rows = Vec::new();
+    for mut result in session.execute(sql).map_err(sys_error)? {
+        while let Some(row) = result.next_row().map_err(sys_error)? {
+            rows.push(row);
+        }
+        result.close().map_err(sys_error)?;
+    }
+    Ok(rows)
+}
+fn bound_sql(sql: &str, args: &[sys::SqlValue]) -> sys::Result<String> {
+    let literals = args
+        .iter()
+        .map(|arg| {
+            if let Some(value) = arg.downcast_ref::<String>() {
+                Ok(format!(
+                    "'{}'",
+                    value.replace('\\', "\\\\").replace('\'', "''")
+                ))
+            } else if let Some(value) = arg.downcast_ref::<i64>() {
+                Ok(value.to_string())
+            } else if let Some(value) = arg.downcast_ref::<u64>() {
+                Ok(value.to_string())
+            } else {
+                Err(sys_error("unsupported internal SQL argument type"))
+            }
+        })
+        .collect::<sys::Result<Vec<_>>>()?;
+    super::bind_parameter_markers(sql, &literals).map_err(sys_error)
+}
+
+struct ConcreteSystemContext {
+    id: u64,
+    worker: sys::ThreadBoundSession<ConcreteSession>,
+}
+impl sys::SessionContext for ConcreteSystemContext {
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+        Some(self)
+    }
+    fn close(&mut self) {
+        self.worker.close();
+    }
+    fn on_became_owner(&mut self) -> sys::Result<()> {
+        let id = self.id;
+        self.worker.call(move |session| {
+            session.connection_id.store(id, Ordering::Relaxed);
+            session.SetInRestrictedSQL(true);
+            query(session, "SET autocommit = 1").map(|_| ())
+        })
+    }
+    fn on_resign_owner(&mut self) -> sys::Result<()> {
+        Ok(())
+    }
+    fn has_pending_transaction(&self) -> bool {
+        self.worker
+            .call(|session| Ok(session.state.borrow().transaction.is_some()))
+            .unwrap_or(true)
+    }
+    fn rollback_transaction(&mut self) -> sys::Result<()> {
+        self.worker
+            .call(|session| query(session, "ROLLBACK").map(|_| ()))
+    }
+    fn reset_state(&mut self) -> sys::Result<()> {
+        self.worker
+            .call(|session| session.reset_connection().map_err(sys_error))
+    }
+    fn register_internal_session(&mut self) -> bool {
+        // The enclosing DDL pool registers this real, stable ID on Get.
+        ddl::internal_session_ids().contains(&self.id)
+    }
+    fn unregister_internal_session(&mut self) {}
+    fn execute(&mut self, sql: &str) -> sys::Result<Vec<sys::RecordSet>> {
+        let sql = sql.to_owned();
+        self.worker
+            .call(move |session| Ok(vec![Box::new(query(session, &sql)?) as sys::RecordSet]))
+    }
+    fn execute_internal(
+        &mut self,
+        sql: &str,
+        args: &[sys::SqlValue],
+    ) -> sys::Result<sys::RecordSet> {
+        let sql = bound_sql(sql, args)?;
+        self.worker
+            .call(move |session| Ok(Box::new(query(session, &sql)?) as sys::RecordSet))
+    }
+    fn execute_statement(&mut self, statement: &dyn Any) -> sys::Result<sys::RecordSet> {
+        self.execute_internal(
+            statement
+                .downcast_ref::<String>()
+                .ok_or_else(|| sys_error("invalid system SQL statement"))?,
+            &[],
+        )
+    }
+    fn parse_with_params(
+        &mut self,
+        sql: &str,
+        args: &[sys::SqlValue],
+    ) -> sys::Result<sys::Statement> {
+        let sql = bound_sql(sql, args)?;
+        self.worker.call(move |_| {
+            super::parse(&sql).map_err(sys_error)?;
+            Ok(Box::new(sql) as sys::Statement)
+        })
+    }
+    fn exec_restricted_statement(&mut self, statement: &dyn Any) -> sys::Result<Vec<sys::Row>> {
+        self.exec_restricted_sql(
+            statement
+                .downcast_ref::<String>()
+                .ok_or_else(|| sys_error("invalid system SQL statement"))?,
+            &[],
+        )
+    }
+    fn exec_restricted_sql(
+        &mut self,
+        sql: &str,
+        args: &[sys::SqlValue],
+    ) -> sys::Result<Vec<sys::Row>> {
+        let rows = self
+            .execute_internal(sql, args)?
+            .downcast::<Vec<Vec<String>>>()
+            .map_err(|_| sys_error("invalid system rows"))?;
+        Ok(rows
+            .into_iter()
+            .map(|row| Box::new(row) as sys::Row)
+            .collect())
+    }
+}
+
+struct ConcreteDdlContext {
+    closed: AtomicBool,
+    id: u64,
+    session: Arc<sys::Session>,
+    variables: Arc<ddl::SessionVariables>,
+}
+impl ConcreteDdlContext {
+    fn call<R: Send + 'static>(
+        &self,
+        operation: impl FnOnce(&mut ConcreteSession) -> sys::Result<R> + Send + 'static,
+    ) -> sys::Result<R> {
+        self.session.WithSessionContext(move |context| {
+            let concrete = context
+                .as_any_mut()
+                .and_then(|context| context.downcast_mut::<ConcreteSystemContext>())
+                .ok_or_else(|| sys_error("invalid ConcreteSession adapter"))?;
+            concrete.worker.call(operation)
+        })
+    }
+}
+struct Rows(Vec<ddl::Row>);
+impl ddl::RecordSet for Rows {
+    fn drain(&mut self, _: usize) -> Result<Vec<ddl::Row>, ddl::SessionError> {
+        Ok(std::mem::take(&mut self.0))
+    }
+    fn close(&mut self) -> Result<(), ddl::SessionError> {
+        self.0.clear();
+        Ok(())
+    }
+}
+impl ddl::SessionContext for ConcreteDdlContext {
+    fn as_any(&self) -> Option<&dyn Any> {
+        Some(self)
+    }
+    fn session_id(&self) -> u64 {
+        self.id
+    }
+    fn session_variables(&self) -> Arc<ddl::SessionVariables> {
+        Arc::clone(&self.variables)
+    }
+    fn enter_new_transaction(&self, mode: ddl::TransactionMode) -> Result<(), ddl::SessionError> {
+        self.call(move |session| {
+            query(
+                session,
+                if mode == ddl::TransactionMode::Pessimistic {
+                    "BEGIN PESSIMISTIC"
+                } else {
+                    "BEGIN"
+                },
+            )
+            .map(|_| ())
+        })
+        .map_err(ddl_error)
+    }
+    fn statement_commit(&self, _: &ddl::ExecutionContext) {
+        // ConcreteSession writes directly to the KV transaction mem-buffer;
+        // there is no separate statement buffer to flush (see canonical StmtCommit).
+    }
+    fn commit_transaction(&self, _: &ddl::ExecutionContext) -> Result<(), ddl::SessionError> {
+        self.call(|session| query(session, "COMMIT").map(|_| ()))
+            .map_err(ddl_error)?;
+        self.variables.set_in_transaction(false);
+        Ok(())
+    }
+    fn transaction(&self, activate: bool) -> Result<Option<ddl::Transaction>, ddl::SessionError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Ok(None);
+        }
+        self.call(move |session| {
+            if activate && session.state.borrow().transaction.is_none() {
+                query(session, "BEGIN")?;
+            }
+            Ok(session
+                .state
+                .borrow()
+                .transaction
+                .as_ref()
+                .map(|txn| ddl::Transaction {
+                    start_ts: txn.StartTS(),
+                    valid: txn.Valid(),
+                }))
+        })
+        .map_err(ddl_error)
+    }
+    fn statement_rollback(&self, _: &ddl::ExecutionContext, _: bool) {
+        // The canonical SQL executor owns statement cleanup. The DDL wrapper
+        // follows this hook with rollback_transaction for an abandoned job.
+    }
+    fn rollback_transaction(&self, _: &ddl::ExecutionContext) {
+        if self
+            .call(|session| query(session, "ROLLBACK").map(|_| ()))
+            .is_err()
+        {
+            self.session.AvoidReuse();
+        }
+        self.variables.set_in_transaction(false);
+    }
+    fn execute_internal(
+        &self,
+        _: &ddl::ExecutionContext,
+        sql: &str,
+        args: &[ddl::SqlValue],
+    ) -> Result<Option<Box<dyn ddl::RecordSet>>, ddl::SessionError> {
+        let literals = args
+            .iter()
+            .map(|value| match value {
+                ddl::SqlValue::Null => "NULL".into(),
+                ddl::SqlValue::Integer(value) => value.to_string(),
+                ddl::SqlValue::Unsigned(value) => value.to_string(),
+                ddl::SqlValue::Bool(value) => u8::from(*value).to_string(),
+                ddl::SqlValue::String(value) => {
+                    format!("'{}'", value.replace('\\', "\\\\").replace('\'', "''"))
+                }
+                ddl::SqlValue::Bytes(value) => format!(
+                    "X'{}'",
+                    value
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>()
+                ),
+            })
+            .collect::<Vec<_>>();
+        let sql = super::bind_parameter_markers(sql, &literals).map_err(ddl_error)?;
+        let rows = self
+            .call(move |session| query(session, &sql))
+            .map_err(ddl_error)?;
+        Ok(Some(Box::new(Rows(
+            rows.into_iter()
+                .map(|row| ddl::Row {
+                    values: row.into_iter().map(ddl::SqlValue::String).collect(),
+                })
+                .collect(),
+        ))))
+    }
+    fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+        self.session.Close();
+    }
+}
+
+struct ResourceState {
+    closed: bool,
+    borrowed: HashMap<u64, Weak<ConcreteDdlContext>>,
+}
+struct SystemResources {
+    callbacks: SystemSessionCallbacks,
+    pool: sys::AdvancedSessionPool,
+    state: Mutex<ResourceState>,
+}
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+impl Drop for SystemResources {
+    fn drop(&mut self) {
+        ddl::ResourcePool::close(self);
+    }
+}
+impl ddl::ResourcePool for SystemResources {
+    fn get(&self) -> Result<ddl::Resource, ddl::SessionError> {
+        let mut state = self.state.lock().unwrap();
+        if state.closed {
+            return Err(ddl::SessionError::PoolClosed);
+        }
+        let session = Arc::new(self.pool.Get().map_err(ddl_error)?);
+        let id = session
+            .WithSessionContext(|context| {
+                context
+                    .as_any_mut()
+                    .and_then(|context| context.downcast_mut::<ConcreteSystemContext>())
+                    .map(|context| context.id)
+                    .ok_or_else(|| sys_error("invalid system adapter"))
+            })
+            .map_err(ddl_error)?;
+        let context = Arc::new(ConcreteDdlContext {
+            closed: AtomicBool::new(false),
+            id,
+            session,
+            variables: Arc::new(ddl::SessionVariables::default()),
+        });
+        state.borrowed.insert(context.id, Arc::downgrade(&context));
+        (self.callbacks.borrowed)(context.clone());
+        Ok(ddl::Resource::Session(context))
+    }
+    fn put(&self, context: Option<Arc<dyn ddl::SessionContext>>) {
+        if let Some(context) = context {
+            let concrete = context
+                .as_any()
+                .unwrap()
+                .downcast_ref::<ConcreteDdlContext>()
+                .unwrap();
+            let mut state = self.state.lock().unwrap();
+            (self.callbacks.returned)(concrete.id);
+            state.borrowed.remove(&concrete.id);
+            self.pool.Put(&concrete.session);
+        }
+    }
+    fn destroy(&self, context: Arc<dyn ddl::SessionContext>) {
+        (self.callbacks.destroyed)(context.session_id());
+        self.state
+            .lock()
+            .unwrap()
+            .borrowed
+            .remove(&context.session_id());
+        context.close();
+    }
+    fn kind(&self) -> ddl::ResourcePoolKind {
+        ddl::ResourcePoolKind::Destroyable
+    }
+    fn close(&self) {
+        let mut state = self.state.lock().unwrap();
+        if state.closed {
+            return;
+        }
+        state.closed = true;
+        self.pool.Close();
+        for context in state.borrowed.values().filter_map(Weak::upgrade) {
+            (self.callbacks.destroyed)(context.id);
+            ddl::SessionContext::close(context.as_ref());
+        }
+    }
+}
+
+/// Registration hooks supplied by the owning coordinator, in Go Get/Put/Destroy order.
+/// The DDL pool also maintains its ordinary internal-session registry.
+pub struct SystemSessionCallbacks {
+    pub borrowed: Arc<dyn Fn(Arc<dyn ddl::SessionContext>) + Send + Sync>,
+    pub returned: Arc<dyn Fn(u64) + Send + Sync>,
+    pub destroyed: Arc<dyn Fn(u64) + Send + Sync>,
+}
+impl Default for SystemSessionCallbacks {
+    fn default() -> Self {
+        Self {
+            borrowed: Arc::new(|_| {}),
+            returned: Arc::new(|_| {}),
+            destroyed: Arc::new(|_| {}),
+        }
+    }
+}
+
+/// A single common system pool, wrapped by the existing DDL pool.
+/// Go's five-session capacity limits idle resources, not concurrent borrowers.
+pub struct SystemSessionPool {
+    pool: Arc<ddl::Pool>,
+}
+impl SystemSessionPool {
+    pub fn new(domain: Arc<Domain>) -> Arc<Self> {
+        Self::new_with_callbacks(domain, SystemSessionCallbacks::default())
+    }
+    pub fn new_with_callbacks(domain: Arc<Domain>, callbacks: SystemSessionCallbacks) -> Arc<Self> {
+        let resources = Arc::new(SystemResources {
+            callbacks,
+            pool: sys::NewAdvancedSessionPool(5, move || {
+                let domain = Arc::clone(&domain);
+                Ok(Box::new(ConcreteSystemContext {
+                    id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+                    worker: sys::ThreadBoundSession::new(
+                        move || Ok(ConcreteSession::new(domain)),
+                        cleanup,
+                    )?,
+                }))
+            }),
+            state: Mutex::new(ResourceState {
+                closed: false,
+                borrowed: HashMap::new(),
+            }),
+        });
+        Arc::new(Self {
+            pool: Arc::new(ddl::Pool::new(resources)),
+        })
+    }
+    pub fn acquire(&self) -> Result<SystemSessionLease, String> {
+        self.acquire_with_cancellation(&sys::CancellationToken::default())
+    }
+    pub fn acquire_with_cancellation(
+        &self,
+        cancellation: &sys::CancellationToken,
+    ) -> Result<SystemSessionLease, String> {
+        if cancellation.is_cancelled() {
+            return Err("system session acquisition cancelled".into());
+        }
+        let context = self.pool.get().map_err(|error| error.to_string())?;
+        let lease = SystemSessionLease {
+            pool: Arc::clone(&self.pool),
+            context,
+            metadata_error: None,
+        };
+        if cancellation.is_cancelled() {
+            drop(lease);
+            return Err("system session acquisition cancelled".into());
+        }
+        Ok(lease)
+    }
+    pub fn close(&self) {
+        self.pool.close();
+    }
+}
+impl astersql_domain_crossks::SessionPool for SystemSessionPool {
+    fn close(&self) {
+        self.close();
+    }
+}
+
+pub struct SystemSessionLease {
+    metadata_error: Option<String>,
+    pool: Arc<ddl::Pool>,
+    context: Arc<dyn ddl::SessionContext>,
+}
+impl SystemSessionLease {
+    fn concrete(&self) -> &ConcreteDdlContext {
+        self.context.as_any().unwrap().downcast_ref().unwrap()
+    }
+    pub fn session_id(&self) -> u64 {
+        self.context.session_id()
+    }
+    pub fn query(&self, sql: impl Into<String>) -> Result<Vec<Vec<String>>, String> {
+        self.query_with_label(sql.into(), "system")
+    }
+    fn query_with_label(&self, sql: String, label: &str) -> Result<Vec<Vec<String>>, String> {
+        if let Some(error) = &self.metadata_error {
+            return Err(error.clone());
+        }
+        let rows = ddl::Session::new(Arc::clone(&self.context))
+            .execute(&ddl::ExecutionContext::default(), &sql, label, &[])
+            .map_err(|error| error.to_string())?
+            .unwrap_or_default();
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                row.values
+                    .into_iter()
+                    .map(|value| {
+                        if let ddl::SqlValue::String(value) = value {
+                            value
+                        } else {
+                            unreachable!()
+                        }
+                    })
+                    .collect()
+            })
+            .collect())
+    }
+}
+impl Drop for SystemSessionLease {
+    fn drop(&mut self) {
+        // Cancellation and an abandoned transaction have the same cleanup path.
+        self.context
+            .rollback_transaction(&ddl::ExecutionContext::default());
+        if self.pool.put(Arc::clone(&self.context)).is_err() {
+            self.context.close();
+            let _ = self.pool.destroy(Arc::clone(&self.context));
+        }
+    }
+}
+
+fn meta_key(name: &[u8]) -> kv::Key {
+    kv::Key(codec::EncodeUint(
+        codec::EncodeBytes(vec![b'm'], name),
+        u64::from(b's'),
+    ))
+}
+impl jobsubmit::Session for SystemSessionLease {
+    fn begin(&mut self) -> Result<(), jobsubmit::Error> {
+        ddl::Session::new(Arc::clone(&self.context))
+            .begin_pessimistic(&ddl::ExecutionContext::default())
+            .map_err(job_error)
+    }
+    fn rollback(&mut self) {
+        ddl::Session::new(Arc::clone(&self.context)).rollback();
+    }
+    fn commit(&mut self) -> Result<(), jobsubmit::Error> {
+        if let Some(error) = &self.metadata_error {
+            return Err(job_error(error));
+        }
+        ddl::Session::new(Arc::clone(&self.context))
+            .commit(&ddl::ExecutionContext::default())
+            .map_err(job_error)
+    }
+    fn read_bdr_role_and_start_ts(&mut self) -> Result<(String, u64), jobsubmit::Error> {
+        self.concrete()
+            .call(|session| {
+                let temporary = session.state.borrow().transaction.is_none();
+                if temporary {
+                    query(session, "BEGIN PESSIMISTIC")?;
+                }
+                let result = (|| {
+                    let state = session.state.borrow();
+                    let txn = state
+                        .transaction
+                        .as_ref()
+                        .ok_or_else(|| sys_error("active transaction required"))?;
+                    let role = match txn.Get(&kv::Context::default(), meta_key(b"BDRRole"), &[]) {
+                        Ok(value) => String::from_utf8(value.Value).map_err(sys_error)?,
+                        Err(error) if kv::IsErrNotFound(&error) => "none".into(),
+                        Err(error) => return Err(sys_error(error)),
+                    };
+                    Ok((role, txn.StartTS()))
+                })();
+                if temporary {
+                    let rollback = query(session, "ROLLBACK");
+                    return result.and_then(|value| rollback.map(|_| value));
+                }
+                result
+            })
+            .map_err(job_error)
+    }
+    fn transaction_start_ts(&self) -> Result<u64, jobsubmit::Error> {
+        self.context
+            .transaction(false)
+            .map_err(job_error)?
+            .map(|txn| txn.start_ts)
+            .ok_or_else(|| job_error("active transaction required"))
+    }
+    fn set_pessimistic(&mut self) {
+        // begin() already entered the real pessimistic SQL/KV transaction.
+    }
+    fn current_version(&self) -> Result<u64, jobsubmit::Error> {
+        self.concrete()
+            .call(|session| {
+                session
+                    .domain
+                    .storage_handle()
+                    .with_storage(|store| store.CurrentVersion("global"))
+                    .map(|version| version.Ver)
+                    .map_err(sys_error)
+            })
+            .map_err(job_error)
+    }
+    fn lock_global_id_key(&mut self, for_update_ts: u64) -> Result<(), jobsubmit::Error> {
+        self.concrete()
+            .call(move |session| {
+                let mut state = session.state.borrow_mut();
+                let wait_timeout =
+                    i64::try_from(state.innodb_lock_wait_timeout_secs.saturating_mul(1000))
+                        .unwrap_or(i64::MAX);
+                let txn = state
+                    .transaction
+                    .as_mut()
+                    .ok_or_else(|| sys_error("active transaction required"))?;
+                txn.SetOption(kv::SnapshotTS, Some(Box::new(for_update_ts)));
+                txn.LockKeys(
+                    &kv::Context::default(),
+                    &mut kv::LockCtx {
+                        WaitTimeoutMs: wait_timeout,
+                        ..Default::default()
+                    },
+                    &[meta_key(b"NextGlobalID")],
+                )
+                .map_err(sys_error)
+            })
+            .map_err(job_error)
+    }
+    fn set_snapshot_ts(&mut self, timestamp: u64) {
+        let result = self.concrete().call(move |session| {
+            session
+                .state
+                .borrow_mut()
+                .transaction
+                .as_mut()
+                .ok_or_else(|| sys_error("active transaction required"))?
+                .SetOption(kv::SnapshotTS, Some(Box::new(timestamp)));
+            Ok(())
+        });
+        if let Err(error) = result {
+            // The jobsubmit ABI cannot return this error here. Preserve it for
+            // the next SQL/allocation/commit, and prevent returning a dirty resource.
+            self.metadata_error = Some(error.to_string());
+            self.concrete().session.AvoidReuse();
+        }
+    }
+    fn generate_global_ids(&mut self, count: usize) -> Result<Vec<i64>, jobsubmit::Error> {
+        if let Some(error) = &self.metadata_error {
+            return Err(job_error(error));
+        }
+        let count = i64::try_from(count).map_err(job_error)?;
+        self.concrete()
+            .call(move |session| {
+                let mut state = session.state.borrow_mut();
+                let txn = state
+                    .transaction
+                    .as_mut()
+                    .ok_or_else(|| sys_error("active transaction required"))?;
+                let last = kv::IncInt64(txn.as_mut(), &meta_key(b"NextGlobalID"), count)
+                    .map_err(sys_error)?;
+                Ok((last - count + 1..=last).collect())
+            })
+            .map_err(job_error)
+    }
+    fn execute(&mut self, sql: &str, label: &str) -> Result<(), jobsubmit::Error> {
+        self.query_with_label(sql.to_owned(), label)
+            .map(|_| ())
+            .map_err(job_error)
+    }
+}
+impl systable::Session for SystemSessionLease {
+    fn execute(
+        &mut self,
+        _: &systable::Context,
+        sql: &str,
+        label: &str,
+    ) -> Result<Vec<systable::Row>, systable::Error> {
+        self.query_with_label(sql.to_owned(), label)
+            .map(|rows| {
+                rows.into_iter()
+                    .map(|row| {
+                        systable::Row(
+                            row.into_iter()
+                                .map(|value| {
+                                    value.parse::<i64>().map_or_else(
+                                        |_| systable::Value::Bytes(value.into_bytes()),
+                                        systable::Value::Int,
+                                    )
+                                })
+                                .collect(),
+                        )
+                    })
+                    .collect()
+            })
+            .map_err(systable::Error::Execute)
+    }
+}
+impl jobsubmit::SessionPool for SystemSessionPool {
+    fn get(&self) -> Result<Box<dyn jobsubmit::Session>, jobsubmit::Error> {
+        self.acquire()
+            .map(|lease| Box::new(lease) as Box<dyn jobsubmit::Session>)
+            .map_err(job_error)
+    }
+    fn put(&self, session: Box<dyn jobsubmit::Session>) {
+        drop(session);
+    }
+}
+impl systable::SessionPool for SystemSessionPool {
+    fn get(&self) -> Result<Box<dyn systable::Session>, systable::Error> {
+        self.acquire()
+            .map(|lease| Box::new(lease) as Box<dyn systable::Session>)
+            .map_err(systable::Error::Pool)
+    }
+    fn put(&self, session: Box<dyn systable::Session>) {
+        drop(session);
+    }
+}

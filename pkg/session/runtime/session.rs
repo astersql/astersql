@@ -799,6 +799,7 @@ impl CanonicalSessionFactory {
                 ));
             }
         }
+        let mut ttl_watch_transport = None;
         if !etcd_addrs.is_empty() {
             let tls_files = tls.as_ref().map(|tls| {
                 (
@@ -811,6 +812,11 @@ impl CanonicalSessionFactory {
                 astersql_domain_serverinfo::RealEtcdClient::connect(etcd_addrs.clone(), tls_files)
                     .map_err(|error| session_error("connect Domain server-info etcd", error))?
                     .with_namespace(etcd_namespace);
+            ttl_watch_transport = Some(Arc::new(super::ttl_runtime::EtcdTtlWatchTransport::new(
+                client.raw_client(),
+                client.namespace().to_owned(),
+            ))
+                as Arc<dyn super::ttl_runtime::TtlWatchTransport>);
             let id = format!(
                 "{}-{}",
                 std::process::id(),
@@ -859,7 +865,10 @@ impl CanonicalSessionFactory {
                 [LogField::String("error".to_owned(), error.to_string())],
             );
         }
-        if let Err(error) = super::ttl_runtime::start_domain_ttl_job_manager(&factory.domain) {
+        if let Err(error) = super::ttl_runtime::start_domain_ttl_job_manager_with_transport(
+            &factory.domain,
+            ttl_watch_transport,
+        ) {
             factory.domain.close();
             return Err(SessionError::new(format!("start TTL job manager: {error}")));
         }

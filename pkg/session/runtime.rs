@@ -84,6 +84,7 @@ mod scan_adapter_runtime;
 mod scan_adapter_runtime_test;
 mod select_into;
 mod session;
+pub mod system_session;
 use session::RuntimeForeignKeyDeleteCascade;
 #[cfg(test)]
 mod inference_test;
@@ -100,6 +101,9 @@ mod ttl_runtime_test;
 #[cfg(test)]
 mod ttl_sysvar_test;
 mod ttl_timer;
+mod ttl_timer_etcd;
+#[cfg(test)]
+mod ttl_timer_etcd_test;
 pub mod ttl_timer_store;
 #[cfg(test)]
 mod ttl_timer_store_test;

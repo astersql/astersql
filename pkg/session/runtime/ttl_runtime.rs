@@ -5,11 +5,18 @@
 //! scan, delete, retry, and durable completion path.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use astersql_domain::Domain;
+use astersql_timer_api::{
+    Context as TimerContext, NewDefaultTimerClient, NewOptionalVal, TimerClient, TimerCond,
+    TimerStore,
+};
+use astersql_timer_runtime::runtime::{NewTimerRuntimeBuilder, TimerGroupRuntime};
+use astersql_timer_tablestore::NewTableTimerStore;
 use astersql_ttl_ttlworker::del::{DeleteRateLimiter, DeleteRetryBuffer, DeleteTask};
 use astersql_ttl_ttlworker::job_manager::TtlSummary;
 use astersql_ttl_ttlworker::persistent::PersistentJobStore;
@@ -19,8 +26,500 @@ use astersql_util_timeutil::time_zone::WithinDayTimePeriod;
 
 use super::ConcreteSession;
 use super::ttl_metadata::{collect_ttl_schedules, split_ttl_scan_ranges};
-use super::ttl_timer::{mark_ttl_timer_fired, mark_ttl_timer_triggered, sync_ttl_timers};
+use super::ttl_timer::{SqlTtlTimerHook, sync_ttl_timers};
+use super::ttl_timer_store::new_ttl_timer_session_pool;
 use super::ttl_worker_session::TtlWorkerSqlSession;
+
+fn trigger_ttl_command(
+    domain: &Arc<Domain>,
+    store: TimerStore,
+    db_name: &str,
+    table_name: &str,
+    stopped: &AtomicBool,
+) -> Result<serde_json::Value, String> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    if !astersql_sessionctx_vardef::EnableTTLJob.Load() {
+        return Err("tidb_ttl_job_enable is disabled".into());
+    }
+    if !within_ttl_window(
+        now,
+        &astersql_sessionctx_vardef::TTLJobScheduleWindowStartTime.Load(),
+        &astersql_sessionctx_vardef::TTLJobScheduleWindowEndTime.Load(),
+    )? {
+        return Err("not in TTL job window".into());
+    }
+    let schedules = collect_ttl_schedules(domain.info_schema().as_ref(), now)?;
+    let selected: Vec<_> = schedules
+        .iter()
+        .filter(|schedule| {
+            schedule.table.schema.eq_ignore_ascii_case(db_name)
+                && schedule.table.table.eq_ignore_ascii_case(table_name)
+        })
+        .collect();
+    if selected.is_empty() {
+        return Err(format!("table {db_name}.{table_name} not exists"));
+    }
+    let client = NewDefaultTimerClient(store);
+    let context = TimerContext::background();
+    let mut results = Vec::with_capacity(selected.len());
+    let mut pending = Vec::new();
+    for schedule in selected {
+        let table = &schedule.table;
+        let mut result = serde_json::json!({
+            "table_id": table.physical_id,
+            "db_name": db_name,
+            "table_name": table_name,
+        });
+        if let Some(partition_name) = &table.partition_name {
+            result["partition_name"] = partition_name.clone().into();
+        }
+        let outcome = client
+            .GetTimerByKey(
+                &context,
+                &astersql_ttl_ttlworker::timer_sync::timer_key(table.table_id, table.physical_id),
+            )
+            .and_then(|timer| {
+                client
+                    .ManualTriggerEvent(&context, &timer.ID)
+                    .map(|request_id| (timer.ID, request_id))
+            });
+        match outcome {
+            Ok((timer_id, request_id)) => pending.push((results.len(), timer_id, request_id)),
+            Err(error) => result["error_message"] = error.to_string().into(),
+        }
+        results.push(result);
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(300);
+    let mut session = TtlWorkerSqlSession::new(ConcreteSession::new(Arc::clone(domain)));
+    while !pending.is_empty() && !stopped.load(Ordering::Acquire) && !domain.is_closed() {
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        pending.retain(|(index, timer_id, request_id)| {
+            let timer = match client.GetTimerByID(&context, timer_id) {
+                Ok(timer) => timer,
+                Err(error) => {
+                    results[*index]["error_message"] = error.to_string().into();
+                    return false;
+                }
+            };
+            if timer.ManualRequest.ManualRequestID != *request_id {
+                results[*index]["error_message"] = "manual request not found".into();
+                return false;
+            }
+            if !timer.ManualRequest.ManualProcessed {
+                return true;
+            }
+            let job_id = &timer.ManualRequest.ManualEventID;
+            if job_id.is_empty() {
+                results[*index]["error_message"] = "manual request cancelled".into();
+                return false;
+            }
+            match session.execute(
+                "SELECT 1 FROM mysql.tidb_ttl_job_history WHERE job_id=%?",
+                &[Datum::Text(job_id.clone())],
+            ) {
+                Ok(rows) if !rows.is_empty() => {
+                    results[*index]["job_id"] = job_id.clone().into();
+                    false
+                }
+                Ok(_) => true,
+                Err(error) => {
+                    results[*index]["error_message"] =
+                        format!("read TTL job history: {error:?}").into();
+                    false
+                }
+            }
+        });
+        if !pending.is_empty() {
+            std::thread::park_timeout(Duration::from_millis(200));
+        }
+    }
+    for (index, _, _) in pending {
+        results[index]["error_message"] = "timeout".into();
+    }
+    if results.iter().all(|result| result.get("job_id").is_none()) {
+        return Err(results[0]["error_message"]
+            .as_str()
+            .unwrap_or("TTL manual trigger failed")
+            .to_owned());
+    }
+    Ok(serde_json::json!({ "table_result": results }))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum TtlWatchKind {
+    Command,
+    Scan,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum TtlWatchEvent {
+    Command {
+        request_id: String,
+        db_name: String,
+        table_name: String,
+    },
+    Scan,
+}
+
+/// A watch ends when its receiver disconnects. The caller then opens a fresh
+/// subscription against the same transport, as Go's job loop does.
+pub(super) trait TtlWatchTransport: Send + Sync + 'static {
+    fn timer_notifier(&self) -> Option<Arc<dyn astersql_timer_tablestore::EtcdClient>> {
+        None
+    }
+    fn watch(
+        &self,
+        kind: TtlWatchKind,
+        stopped: Arc<AtomicBool>,
+    ) -> Result<mpsc::Receiver<Vec<u8>>, String>;
+    fn take_command(&self, request_id: &str) -> Result<bool, String>;
+    fn response_command(
+        &self,
+        request_id: &str,
+        result: Result<serde_json::Value, String>,
+    ) -> Result<(), String>;
+}
+
+fn decode_ttl_command(value: &[u8]) -> Option<TtlWatchEvent> {
+    let request: serde_json::Value = serde_json::from_slice(value).ok()?;
+    if request.get("cmd_type")?.as_str()? != "trigger_ttl_job" {
+        return None;
+    }
+    Some(TtlWatchEvent::Command {
+        request_id: request.get("request_id")?.as_str()?.to_owned(),
+        db_name: request.get("data")?.get("db_name")?.as_str()?.to_owned(),
+        table_name: request.get("data")?.get("table_name")?.as_str()?.to_owned(),
+    })
+}
+
+pub(super) struct TtlWatchRuntime {
+    stopped: Arc<AtomicBool>,
+    receiver: mpsc::Receiver<TtlWatchEvent>,
+    workers: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl TtlWatchRuntime {
+    pub(super) fn start(
+        transport: Arc<dyn TtlWatchTransport>,
+        manager_thread: std::thread::Thread,
+    ) -> Self {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let (sender, receiver) = mpsc::channel();
+        let workers = [TtlWatchKind::Command, TtlWatchKind::Scan]
+            .into_iter()
+            .map(|kind| {
+                let transport = Arc::clone(&transport);
+                let stopped = Arc::clone(&stopped);
+                let sender = sender.clone();
+                let manager_thread = manager_thread.clone();
+                std::thread::Builder::new()
+                    .name(format!("ttl-{kind:?}-watch"))
+                    .spawn(move || {
+                        while !stopped.load(Ordering::Acquire) {
+                            match transport.watch(kind, Arc::clone(&stopped)) {
+                                Ok(watch) => loop {
+                                    if stopped.load(Ordering::Acquire) {
+                                        return;
+                                    }
+                                    match watch.recv_timeout(Duration::from_millis(100)) {
+                                        Ok(bytes) => {
+                                            let event = match kind {
+                                                TtlWatchKind::Command => decode_ttl_command(&bytes),
+                                                TtlWatchKind::Scan => Some(TtlWatchEvent::Scan),
+                                            };
+                                            if let Some(event) = event {
+                                                if sender.send(event).is_err() {
+                                                    return;
+                                                }
+                                                manager_thread.unpark();
+                                            }
+                                        }
+                                        Err(mpsc::RecvTimeoutError::Timeout) => {}
+                                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                                    }
+                                },
+                                Err(error) => {
+                                    super::BgLogger().log(
+                                        super::LogLevel::Warn,
+                                        "TTL watcher subscription failed",
+                                        [super::LogField::String("error".into(), error)],
+                                    );
+                                }
+                            }
+                            // A failed or closed subscription must not spin while the
+                            // remote transport is unavailable.
+                            if !stopped.load(Ordering::Acquire) {
+                                std::thread::park_timeout(Duration::from_millis(100));
+                            }
+                        }
+                    })
+                    .expect("start TTL watch worker")
+            })
+            .collect();
+        Self {
+            stopped,
+            receiver,
+            workers,
+        }
+    }
+
+    pub(super) fn recv_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<TtlWatchEvent, mpsc::RecvTimeoutError> {
+        self.receiver.recv_timeout(timeout)
+    }
+
+    pub(super) fn try_recv(&self) -> Result<TtlWatchEvent, mpsc::TryRecvError> {
+        self.receiver.try_recv()
+    }
+
+    pub(super) fn stop(&mut self) {
+        self.stopped.store(true, Ordering::Release);
+        for worker in self.workers.drain(..) {
+            worker.thread().unpark();
+            let _ = worker.join();
+        }
+    }
+}
+
+impl Drop for TtlWatchRuntime {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+pub(super) struct EtcdTtlWatchTransport {
+    client: etcd_client::Client,
+    namespace: String,
+    workers: Mutex<Vec<std::thread::JoinHandle<()>>>,
+}
+
+impl EtcdTtlWatchTransport {
+    pub(super) fn new(client: etcd_client::Client, namespace: String) -> Self {
+        Self {
+            client,
+            namespace,
+            workers: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl TtlWatchTransport for EtcdTtlWatchTransport {
+    fn timer_notifier(&self) -> Option<Arc<dyn astersql_timer_tablestore::EtcdClient>> {
+        Some(Arc::new(super::ttl_timer_etcd::RealTimerEtcdClient::new(
+            self.client.clone(),
+            self.namespace.clone(),
+        )))
+    }
+    fn watch(
+        &self,
+        kind: TtlWatchKind,
+        stopped: Arc<AtomicBool>,
+    ) -> Result<mpsc::Receiver<Vec<u8>>, String> {
+        let mut client = self.client.clone();
+        let (sender, receiver) = mpsc::channel();
+        let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
+        let key = format!(
+            "{}{}",
+            self.namespace,
+            match kind {
+                TtlWatchKind::Command => "/tidb/ttl/cmd/req/",
+                TtlWatchKind::Scan => "/tidb/ttl/notification/scan",
+            }
+        );
+        let worker = std::thread::Builder::new()
+            .name(format!("ttl-etcd-{kind:?}-watch"))
+            .spawn(move || {
+                let runtime = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(runtime) => runtime,
+                    Err(error) => {
+                        let _ = ready_sender.send(Err(format!("start TTL etcd watch: {error}")));
+                        return;
+                    }
+                };
+                runtime.block_on(async move {
+                    let options = match kind {
+                        TtlWatchKind::Command => {
+                            Some(etcd_client::WatchOptions::new().with_prefix())
+                        }
+                        TtlWatchKind::Scan => None,
+                    };
+                    let mut stream = match tokio::time::timeout(
+                        Duration::from_secs(5),
+                        client.watch(key, options),
+                    )
+                    .await
+                    {
+                        Ok(Ok(watch)) => watch,
+                        other => {
+                            let _ = ready_sender
+                                .send(Err(format!("subscribe TTL etcd watch: {other:?}")));
+                            return;
+                        }
+                    };
+                    let _ = ready_sender.send(Ok(()));
+                    while !stopped.load(Ordering::Acquire) {
+                        match tokio::time::timeout(Duration::from_millis(100), stream.message())
+                            .await
+                        {
+                            Ok(Ok(Some(response))) if !response.canceled() => {
+                                for event in response.events() {
+                                    if event.event_type() == etcd_client::EventType::Put {
+                                        if let Some(value) = event.kv() {
+                                            if sender.send(value.value().to_vec()).is_err() {
+                                                return;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Ok(Ok(Some(_))) | Ok(Ok(None)) | Ok(Err(_)) => return,
+                            Err(_) => {}
+                        }
+                    }
+                });
+            })
+            .map_err(|error| format!("start TTL etcd watch thread: {error}"))?;
+        let mut workers = self.workers.lock().expect("TTL etcd watch lock poisoned");
+        let mut active = Vec::new();
+        for worker in workers.drain(..) {
+            if worker.is_finished() {
+                let _ = worker.join();
+            } else {
+                active.push(worker);
+            }
+        }
+        active.push(worker);
+        *workers = active;
+        drop(workers);
+        ready_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(|error| format!("wait for TTL etcd watch: {error}"))??;
+        Ok(receiver)
+    }
+
+    fn take_command(&self, request_id: &str) -> Result<bool, String> {
+        let key = format!("{}/tidb/ttl/cmd/req/{request_id}", self.namespace);
+        let txn = etcd_client::Txn::new()
+            .when([etcd_client::Compare::create_revision(
+                key.clone(),
+                etcd_client::CompareOp::Greater,
+                0,
+            )])
+            .and_then([etcd_client::TxnOp::delete(key, None)]);
+        let mut client = self.client.clone();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| format!("start TTL command runtime: {error}"))?;
+        runtime
+            .block_on(async { tokio::time::timeout(Duration::from_secs(5), client.txn(txn)).await })
+            .map_err(|error| format!("take TTL command {request_id} timed out: {error}"))?
+            .map(|response| response.succeeded())
+            .map_err(|error| format!("take TTL command {request_id}: {error}"))
+    }
+
+    fn response_command(
+        &self,
+        request_id: &str,
+        result: Result<serde_json::Value, String>,
+    ) -> Result<(), String> {
+        let (data, error_message) = match result {
+            Ok(data) => (data, String::new()),
+            Err(error) => (serde_json::Value::Null, error),
+        };
+        let value = serde_json::json!({
+            "request_id": request_id,
+            "error_message": error_message,
+            "data": data,
+        });
+        let key = format!("{}/tidb/ttl/cmd/resp/{request_id}", self.namespace);
+        let mut client = self.client.clone();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| format!("start TTL response runtime: {error}"))?;
+        runtime
+            .block_on(async {
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    let lease = client.lease_grant(180, None).await?;
+                    client
+                        .put(
+                            key,
+                            value.to_string(),
+                            Some(etcd_client::PutOptions::new().with_lease(lease.id())),
+                        )
+                        .await?;
+                    Ok::<(), etcd_client::Error>(())
+                })
+                .await
+            })
+            .map_err(|error| format!("respond TTL command {request_id} timed out: {error}"))?
+            .map_err(|error| format!("respond TTL command {request_id}: {error}"))
+    }
+}
+
+impl Drop for EtcdTtlWatchTransport {
+    fn drop(&mut self) {
+        for worker in self
+            .workers
+            .lock()
+            .expect("TTL etcd watch lock poisoned")
+            .drain(..)
+        {
+            let _ = worker.join();
+        }
+    }
+}
+
+struct DomainTtlTimerRuntime {
+    runtime: TimerGroupRuntime,
+    store: TimerStore,
+    pool: Arc<astersql_session_syssession::AdvancedSessionPool>,
+}
+
+#[derive(Default)]
+struct TtlCommandWorkers(Vec<std::thread::JoinHandle<()>>);
+
+impl TtlCommandWorkers {
+    fn reap(&mut self) {
+        let mut remaining = Vec::new();
+        for worker in self.0.drain(..) {
+            if worker.is_finished() {
+                let _ = worker.join();
+            } else {
+                remaining.push(worker);
+            }
+        }
+        self.0 = remaining;
+    }
+}
+
+impl Drop for TtlCommandWorkers {
+    fn drop(&mut self) {
+        for worker in self.0.drain(..) {
+            worker.thread().unpark();
+            let _ = worker.join();
+        }
+    }
+}
+
+impl Drop for DomainTtlTimerRuntime {
+    fn drop(&mut self) {
+        self.runtime.Stop();
+        self.store.Close();
+        self.pool.Close();
+    }
+}
 
 static NEXT_JOB_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -336,6 +835,21 @@ fn checkpoint_cursor(
 /// Install the real TTL SQL loop after the canonical Domain has bootstrapped.
 /// Domain owns its stop flag and joins the worker during `close`.
 pub fn start_domain_ttl_job_manager(domain: &Arc<Domain>) -> Result<bool, String> {
+    start_domain_ttl_job_manager_with_transport(domain, None)
+}
+
+pub(super) fn start_domain_ttl_job_manager_with_transport(
+    domain: &Arc<Domain>,
+    transport: Option<Arc<dyn TtlWatchTransport>>,
+) -> Result<bool, String> {
+    start_domain_ttl_job_manager_with_interval(domain, transport, Duration::from_secs(10))
+}
+
+pub(super) fn start_domain_ttl_job_manager_with_interval(
+    domain: &Arc<Domain>,
+    transport: Option<Arc<dyn TtlWatchTransport>>,
+    interval: Duration,
+) -> Result<bool, String> {
     static NEXT_OWNER_ID: AtomicU64 = AtomicU64::new(1);
     let owner_id = format!(
         "{}-{}-{}",
@@ -344,23 +858,141 @@ pub fn start_domain_ttl_job_manager(domain: &Arc<Domain>) -> Result<bool, String
         NEXT_OWNER_ID.fetch_add(1, Ordering::Relaxed)
     );
     let weak = Arc::downgrade(domain);
+    let mut timer_runtime: Option<DomainTtlTimerRuntime> = None;
+    let mut watcher: Option<TtlWatchRuntime> = None;
+    let mut command_workers = TtlCommandWorkers::default();
     domain
-        .start_ttl_job_manager(Duration::from_secs(10), move |stop| {
+        .start_ttl_job_manager(interval, move |stop| {
             let Some(domain) = weak.upgrade() else {
                 return;
             };
+            if watcher.is_none() {
+                if let Some(transport) = &transport {
+                    watcher = Some(TtlWatchRuntime::start(
+                        Arc::clone(transport),
+                        std::thread::current(),
+                    ));
+                }
+            }
+            let mut notifications = Vec::new();
+            if let Some(watcher) = &watcher {
+                while let Ok(event) = watcher.try_recv() {
+                    notifications.push(event);
+                }
+            }
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
-            if let Err(error) = run_ttl_tick(&domain, &owner_id, now, || {
-                stop.load(Ordering::Acquire) || domain.is_closed()
-            }) {
+            let sync = (|| {
+                let schedules = collect_ttl_schedules(domain.info_schema().as_ref(), now)?;
+                let mut session =
+                    TtlWorkerSqlSession::new(ConcreteSession::new(Arc::clone(&domain)));
+                sync_ttl_timers(&mut session, &schedules, now)?;
+                if timer_runtime.is_none() {
+                    let pool = new_ttl_timer_session_pool(Arc::clone(&domain), 8);
+                    let store = NewTableTimerStore(
+                        1,
+                        pool.clone(),
+                        "mysql",
+                        "tidb_timers",
+                        transport
+                            .as_ref()
+                            .and_then(|source| source.timer_notifier()),
+                    );
+                    let hook_domain = Arc::clone(&domain);
+                    let hook_owner = owner_id.clone();
+                    let runtime = NewTimerRuntimeBuilder("ttl".into(), store.clone())
+                        .SetCond(Arc::new(TimerCond {
+                            Key: NewOptionalVal(
+                                astersql_ttl_ttlworker::timer_sync::TIMER_KEY_PREFIX.into(),
+                            ),
+                            KeyPrefix: true,
+                            ..TimerCond::default()
+                        }))
+                        .RegisterHookFactory(
+                            astersql_ttl_ttlworker::timer_sync::TIMER_HOOK_CLASS.into(),
+                            Arc::new(move |_, client| {
+                                Box::new(SqlTtlTimerHook::new(
+                                    Arc::clone(&hook_domain),
+                                    hook_owner.clone(),
+                                    client,
+                                ))
+                            }),
+                        )
+                        .Build();
+                    runtime.Start();
+                    timer_runtime = Some(DomainTtlTimerRuntime {
+                        runtime,
+                        store,
+                        pool,
+                    });
+                }
+                Ok::<(), String>(())
+            })();
+            if let Err(error) = sync {
                 super::BgLogger().log(
                     super::LogLevel::Error,
-                    "TTL job manager tick failed",
+                    "TTL timer synchronization failed",
                     [super::LogField::String("error".into(), error)],
                 );
+            }
+            command_workers.reap();
+            for event in notifications {
+                match event {
+                    TtlWatchEvent::Scan => {
+                        // The current SQL scan path runs to completion in the
+                        // timer hook. Its notification wakes this manager for
+                        // an immediate timer and metadata pass.
+                    }
+                    TtlWatchEvent::Command {
+                        request_id,
+                        db_name,
+                        table_name,
+                    } => {
+                        let Some(transport) = &transport else {
+                            continue;
+                        };
+                        match transport.take_command(&request_id) {
+                            Ok(true) => {}
+                            Ok(false) => continue,
+                            Err(error) => {
+                                super::BgLogger().log(
+                                    super::LogLevel::Error,
+                                    "take TTL command failed",
+                                    [super::LogField::String("error".into(), error)],
+                                );
+                                continue;
+                            }
+                        }
+                        let Some(runtime) = &timer_runtime else {
+                            let _ = transport.response_command(
+                                &request_id,
+                                Err("TTL timer runtime unavailable".into()),
+                            );
+                            continue;
+                        };
+                        let transport = Arc::clone(transport);
+                        let domain = Arc::clone(&domain);
+                        let store = runtime.store.clone();
+                        let stopped = watcher.as_ref().unwrap().stopped.clone();
+                        command_workers.0.push(
+                            std::thread::Builder::new()
+                                .name("ttl-command-response".into())
+                                .spawn(move || {
+                                    let result = trigger_ttl_command(
+                                        &domain,
+                                        store,
+                                        &db_name,
+                                        &table_name,
+                                        &stopped,
+                                    );
+                                    let _ = transport.response_command(&request_id, result);
+                                })
+                                .expect("start TTL command response worker"),
+                        );
+                    }
+                }
             }
         })
         .map_err(|error| error.to_string())
@@ -394,13 +1026,51 @@ pub fn run_ttl_tick(
     now: u64,
     canceled: impl Fn() -> bool,
 ) -> Result<TtlTickResult, String> {
+    run_ttl_tick_inner(domain, owner_id, now, canceled, None)
+}
+
+pub(super) fn run_ttl_event(
+    domain: &Arc<Domain>,
+    owner_id: &str,
+    now: u64,
+    table_id: i64,
+    physical_id: i64,
+    event_id: &str,
+    canceled: impl Fn() -> bool,
+) -> Result<TtlTickResult, String> {
+    run_ttl_tick_inner(
+        domain,
+        owner_id,
+        now,
+        canceled,
+        Some((table_id, physical_id, event_id)),
+    )
+}
+
+fn run_ttl_tick_inner(
+    domain: &Arc<Domain>,
+    owner_id: &str,
+    now: u64,
+    canceled: impl Fn() -> bool,
+    event: Option<(i64, i64, &str)>,
+) -> Result<TtlTickResult, String> {
     let schedules = collect_ttl_schedules(domain.info_schema().as_ref(), now)?;
+    let schedules: Vec<_> = schedules
+        .into_iter()
+        .filter(|schedule| {
+            event.is_none_or(|(table_id, physical_id, _)| {
+                schedule.table.table_id == table_id && schedule.table.physical_id == physical_id
+            })
+        })
+        .collect();
     let mut result = TtlTickResult {
         tables: schedules.len(),
         ..TtlTickResult::default()
     };
     let mut coordinator = TtlWorkerSqlSession::new(ConcreteSession::new(Arc::clone(domain)));
-    sync_ttl_timers(&mut coordinator, &schedules, now)?;
+    if event.is_none() {
+        sync_ttl_timers(&mut coordinator, &schedules, now)?;
+    }
     if !scheduling_enabled(now)? {
         return Ok(result);
     }
@@ -409,24 +1079,28 @@ pub fn run_ttl_tick(
             break;
         }
         let table = schedule.table;
-        let new_job_id = format!(
-            "ttl-{owner_id}-{}-{now}-{}",
-            table.physical_id,
-            NEXT_JOB_ID.fetch_add(1, Ordering::Relaxed)
-        );
-        let (job_id, expire_time) = if let Some(job_id) = PersistentJobStore::takeover_timeout(
+        let new_job_id = event.map(|(_, _, id)| id.to_owned()).unwrap_or_else(|| {
+            format!(
+                "ttl-{owner_id}-{}-{now}-{}",
+                table.physical_id,
+                NEXT_JOB_ID.fetch_add(1, Ordering::Relaxed)
+            )
+        });
+        let takeover = PersistentJobStore::takeover_timeout_for_job(
             &mut coordinator,
             table.physical_id,
             owner_id,
             now,
             240,
+            event.map(|(_, _, event_id)| event_id),
         )
         .map_err(|error| {
             format!(
                 "take over TTL job for {}.{}: {error:?}",
                 table.schema, table.table
             )
-        })? {
+        })?;
+        let (job_id, expire_time) = if let Some(job_id) = takeover {
             result.resumed += 1;
             let expire_time = persisted_expire_time(&mut coordinator, &job_id)?;
             (job_id, expire_time)
@@ -438,7 +1112,7 @@ pub fn run_ttl_tick(
                 owner_id,
                 &new_job_id,
                 now,
-                Some(schedule.job_interval_seconds),
+                event.is_none().then_some(schedule.job_interval_seconds),
                 &scan_ranges,
             )
             .map_err(|error| {
@@ -453,13 +1127,6 @@ pub fn run_ttl_tick(
             result.claimed += 1;
             (new_job_id, table.expire_time(now))
         };
-        mark_ttl_timer_triggered(
-            &mut coordinator,
-            table.table_id,
-            table.physical_id,
-            &job_id,
-            now,
-        )?;
         let scan_ranges = persisted_scan_ranges(&mut coordinator, &job_id)?;
         let scan_count = scan_ranges.len();
         if scan_count == 0 {
@@ -614,13 +1281,6 @@ pub fn run_ttl_tick(
             &summary_text,
         )
         .map_err(|error| format!("finish TTL job {job_id}: {error:?}"))?;
-        mark_ttl_timer_fired(
-            &mut coordinator,
-            table.table_id,
-            table.physical_id,
-            now,
-            &summary_text,
-        )?;
         result.finished += 1;
     }
     Ok(result)

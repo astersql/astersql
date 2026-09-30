@@ -31,15 +31,31 @@ impl PersistentJobStore {
         now: u64,
         timeout_seconds: u64,
     ) -> Result<Option<String>, SessionError> {
+        Self::takeover_timeout_for_job(session, table_id, new_owner_id, now, timeout_seconds, None)
+    }
+
+    /// Take over only the job belonging to the current timer event.
+    pub fn takeover_timeout_for_job(
+        session: &mut dyn WorkerSession,
+        table_id: i64,
+        new_owner_id: &str,
+        now: u64,
+        timeout_seconds: u64,
+        expected_job_id: Option<&str>,
+    ) -> Result<Option<String>, SessionError> {
         session.execute("BEGIN PESSIMISTIC", &[])?;
         let result = (|| {
-            let rows = session.execute(
-                "SELECT current_job_id FROM mysql.tidb_ttl_table_status WHERE table_id=%? AND current_job_id IS NOT NULL AND current_job_owner_hb_time < FROM_UNIXTIME(%?) FOR UPDATE NOWAIT",
-                &[
-                    Datum::Integer(table_id),
-                    Datum::Unsigned(now.saturating_sub(timeout_seconds)),
-                ],
-            )?;
+            let mut args = vec![
+                Datum::Integer(table_id),
+                Datum::Unsigned(now.saturating_sub(timeout_seconds)),
+            ];
+            let sql = if let Some(expected_job_id) = expected_job_id {
+                args.push(Datum::Text(expected_job_id.into()));
+                "SELECT current_job_id FROM mysql.tidb_ttl_table_status WHERE table_id=%? AND current_job_id IS NOT NULL AND current_job_owner_hb_time < FROM_UNIXTIME(%?) AND current_job_id=%? FOR UPDATE NOWAIT"
+            } else {
+                "SELECT current_job_id FROM mysql.tidb_ttl_table_status WHERE table_id=%? AND current_job_id IS NOT NULL AND current_job_owner_hb_time < FROM_UNIXTIME(%?) FOR UPDATE NOWAIT"
+            };
+            let rows = session.execute(sql, &args)?;
             let Some(Datum::Text(job_id)) = rows.first().and_then(|row| row.first()) else {
                 return Ok(None);
             };
