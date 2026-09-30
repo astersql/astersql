@@ -16,7 +16,7 @@
 // 跨 Keyspace（crossks）Schema 协调器。
 //
 // 负责登记内部 Session，并在 DDL（数据定义语言）推进时，通知各 Session
-// 释放过期的 MDL（Metadata Lock，元数据锁）相关锁，避免旧事务长期占用元数据。
+// 从可推进作业集合中移除仍被旧事务持有的 MDL（元数据锁）作业，避免旧事务长期占用元数据。
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
@@ -34,11 +34,11 @@ pub struct JobMdl {
 pub trait InternalSession: Send + Sync {
     /// 返回 Session 唯一标识。
     fn id(&self) -> u64;
-    /// 根据当前 Job 集合移除本 Session 持有的过期 DDL 锁。
-    fn remove_lock_ddl_jobs(&self, jobs: &HashMap<i64, JobMdl>, print_log: bool);
+    /// 移除仍被本 Session 旧事务阻塞的作业；不释放事务的锁。
+    fn remove_lock_ddl_jobs(&self, jobs: &mut HashMap<i64, JobMdl>, print_log: bool);
 }
 
-/// Schema 协调器：维护内部 Session 集合并驱动 MDL 清理。
+/// Schema 协调器：维护内部 Session 集合并检查 MDL 屏障。
 pub struct SchemaCoordinator {
     /// 上次打印 MDL 相关日志的时间，用于限流。
     print_mdl_log_time: Mutex<Instant>,
@@ -81,10 +81,10 @@ impl SchemaCoordinator {
             .expect("coordinator lock poisoned")
             .len()
     }
-    /// 检查仍在运行的旧事务，并请求各 Session 释放过期 DDL 锁。
+    /// 检查仍在运行的旧事务，并移除被相关表版本阻塞的作业。
     ///
     /// 日志打印间隔至少 10 秒，避免高频刷屏；`print` 为 true 时要求 Session 输出日志。
-    pub fn check_old_running_transaction(&self, jobs: &HashMap<i64, JobMdl>) {
+    pub fn check_old_running_transaction(&self, jobs: &mut HashMap<i64, JobMdl>) {
         // 与 Go 一致，在遍历和回调期间持续持有 Session 读锁，阻止并发增删。
         let sessions = self.sessions.read().expect("coordinator lock poisoned");
         let print = {
@@ -102,6 +102,54 @@ impl SchemaCoordinator {
             session.remove_lock_ddl_jobs(jobs, print);
         }
     }
-    /// 杀死非 flashback 集群相关连接（当前为占位，对齐 Go 接口）。
+    /// crossKS 无外部客户端连接，Go 的此回调同样为空。
     pub fn kill_non_flashback_cluster_connections(&self) {}
+}
+
+/// A borrowed real SQL session's shared MDL state, independent of its worker.
+pub struct RegisteredMDLSession {
+    pub id: u64,
+    pub mdl: Arc<astersql_session_sessmgr::TransactionMDL>,
+}
+impl InternalSession for RegisteredMDLSession {
+    fn id(&self) -> u64 {
+        self.id
+    }
+    fn remove_lock_ddl_jobs(&self, jobs: &mut HashMap<i64, JobMdl>, _print_log: bool) {
+        let mut shared = jobs
+            .iter()
+            .map(|(id, job)| {
+                (
+                    *id,
+                    Arc::new(astersql_session_sessmgr::mdldef::JobMDL {
+                        ver: job.version,
+                        table_ids: job.table_ids.clone(),
+                    }),
+                )
+            })
+            .collect();
+        self.mdl.check_jobs(&mut shared);
+        jobs.retain(|id, _| shared.contains_key(id));
+    }
+}
+impl astersql_infoschema_issyncer::InfoSchemaCoordinator for SchemaCoordinator {
+    fn CheckOldRunningTxn(&self, jobs: &mut HashMap<i64, astersql_infoschema_issyncer::JobMDL>) {
+        let mut local = jobs
+            .iter()
+            .map(|(id, job)| {
+                (
+                    *id,
+                    JobMdl {
+                        version: job.Ver,
+                        table_ids: job.TableIDs.clone(),
+                    },
+                )
+            })
+            .collect();
+        self.check_old_running_transaction(&mut local);
+        jobs.retain(|id, _| local.contains_key(id));
+    }
+    fn KillNonFlashbackClusterConn(&self) {
+        self.kill_non_flashback_cluster_connections();
+    }
 }

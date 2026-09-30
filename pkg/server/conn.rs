@@ -706,6 +706,10 @@ pub struct SessionProcessSnapshot {
 }
 
 pub trait TiDBContext: Send + Sync {
+    fn transaction_mdl(&self) -> Option<Arc<astersql_session_sessmgr::TransactionMDL>> {
+        None
+    }
+
     fn state(&self) -> SessionState;
     fn set_connection_status(&self, status: i32);
     fn wait_timeout(&self) -> Duration;

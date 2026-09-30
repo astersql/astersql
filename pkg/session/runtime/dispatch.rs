@@ -390,8 +390,7 @@ impl ConcreteSession {
             | (ast::ExprKind::Value(_), ast::ExprKind::Column(column)) => &column.Name.L,
             _ => return false,
         };
-        self.domain
-            .stats_table(database, table_name)
+        self.mdl_stats_table(database, table_name)
             .and_then(|(_, table)| table.GetPkColInfo().map(|column| column.Name.L.clone()))
             .is_some_and(|primary| primary == *column_name)
     }
@@ -1357,6 +1356,30 @@ impl ConcreteSession {
         statement: &dyn ast::Node,
         statement_sql: Option<&str>,
     ) -> SessionResult<Option<ConcreteRecordSet>> {
+        struct StatementMDL<'a>(&'a ConcreteSession, bool);
+        impl Drop for StatementMDL<'_> {
+            fn drop(&mut self) {
+                self.0.mdl_autocommit_write.set(self.1);
+                if !self.1 && self.0.state.borrow().transaction.is_none() {
+                    self.0.transaction_mdl.clear();
+                    self.0.mdl_tables.borrow_mut().clear();
+                    self.0.mdl_databases.borrow_mut().clear();
+                    self.0.mdl_metadata_error.borrow_mut().take();
+                }
+            }
+        }
+        let writes = statement.as_any().is::<ast::InsertStmt>()
+            || statement.as_any().is::<ast::UpdateStmt>()
+            || statement.as_any().is::<ast::DeleteStmt>()
+            || statement
+                .as_any()
+                .downcast_ref::<ast::SelectStmt>()
+                .is_some_and(|select| select.lock_info.is_some());
+        let _statement_mdl = StatementMDL(
+            self,
+            self.mdl_autocommit_write
+                .replace(writes || self.mdl_autocommit_write.get()),
+        );
         // Keep the request flag on the session statement context in sync with
         // the SELECT hint before the relational path records its KV request.
         // The compact runtime does not pass through executor/select.go's
@@ -1875,8 +1898,7 @@ impl ConcreteSession {
                 drop_index.Table.Schema.L.as_str()
             };
             let (_, table) = self
-                .domain
-                .stats_table(database, &drop_index.Table.Name.L)
+                .mdl_stats_table(database, &drop_index.Table.Name.L)
                 .ok_or_else(|| {
                     SessionError::new(format!(
                         "unknown table {database}.{}",
@@ -1970,8 +1992,7 @@ impl ConcreteSession {
             };
             if create.OrReplace
                 && self
-                    .domain
-                    .stats_table(&database, &create.ViewName.Name.L)
+                    .mdl_stats_table(&database, &create.ViewName.Name.L)
                     .is_some()
             {
                 self.domain
@@ -2696,6 +2717,7 @@ impl ConcreteSession {
                 ));
             }
             self.ensure_implicit_transaction()?;
+            self.register_statement_mdl(statement)?;
             if self.execute_mysql_tidb_insert(insert, statement_sql.unwrap_or_default())? {
                 return Ok(None);
             }
@@ -2718,6 +2740,7 @@ impl ConcreteSession {
                 ));
             }
             self.ensure_implicit_transaction()?;
+            self.register_statement_mdl(statement)?;
             if self.execute_mysql_tidb_update(update, statement_sql.unwrap_or_default())? {
                 return Ok(None);
             }
@@ -2731,6 +2754,7 @@ impl ConcreteSession {
                 ));
             }
             self.ensure_implicit_transaction()?;
+            self.register_statement_mdl(statement)?;
             if self.execute_mysql_tidb_delete(delete, statement_sql.unwrap_or_default())? {
                 return Ok(None);
             }
@@ -2907,6 +2931,7 @@ impl ConcreteSession {
                     .ok_or_else(|| {
                         SessionError::new("non-ANALYZE EXPLAIN currently requires SELECT")
                     })?;
+                self.register_statement_mdl(select)?;
                 self.validate_grouping_function_arguments(select)?;
                 self.validate_only_full_group_by(select)?;
                 return Ok(Some(self.explain_relational_select(
@@ -2964,6 +2989,7 @@ impl ConcreteSession {
                 self.ensure_implicit_transaction()?;
                 self.validate_table_read_ts_after_last_commit()?;
             }
+            self.register_statement_mdl(select)?;
             self.validate_grouping_function_arguments(select)?;
             self.validate_only_full_group_by(select)?;
             self.observe_alternative_logical_plan(
@@ -3435,8 +3461,7 @@ impl ConcreteSession {
                     } else {
                         source.Source.Schema.L.as_str()
                     };
-                    self.domain
-                        .stats_table(schema, &source.Source.Name.L)
+                    self.mdl_stats_table(schema, &source.Source.Name.L)
                         .map(|(_, table)| table.GetPartitionInfo().is_some())
                 })
                 .unwrap_or(false)
@@ -4192,6 +4217,7 @@ pub(crate) fn split_statement_sql(sql: &str) -> Vec<String> {
 
 impl Drop for super::session::ConcreteSessionInner {
     fn drop(&mut self) {
+        self.transaction_mdl.clear();
         let state = self.state.get_mut();
         let prepared_count = state
             .prepared

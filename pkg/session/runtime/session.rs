@@ -571,6 +571,19 @@ pub struct ConcreteSessionInner {
     /// 同一 Domain 内所有会话共享的线程安全实例计划缓存。
     pub(super) instance_plan_cache: Arc<astersql_planner_core::InstancePlanCache>,
     pub(super) state: RefCell<SessionState>,
+    pub(super) transaction_mdl: Arc<astersql_session_sessmgr::TransactionMDL>,
+    pub(super) mdl_metadata_error: RefCell<Option<String>>,
+    pub(super) mdl_databases: RefCell<HashMap<i64, Arc<astersql_infoschema::infoschema::DBInfo>>>,
+    pub(super) mdl_autocommit_write: std::cell::Cell<bool>,
+    pub(super) mdl_tables: RefCell<
+        HashMap<
+            (String, String),
+            (
+                astersql_statistics_handle::StatsTableKey,
+                astersql_meta_model::TableInfo,
+            ),
+        >,
+    >,
     /// Statement-scoped, materialized non-recursive CTEs. Nested queries search
     /// innermost-to-outermost, matching Go's CTE name-resolution order.
     pub(super) cte_scopes: RefCell<Vec<HashMap<String, InsertSelectRows>>>,
@@ -1040,10 +1053,208 @@ impl ConcreteSession {
         table: &str,
     ) -> Option<astersql_meta_model::TableInfo> {
         self.local_temporary_table(database, table).or_else(|| {
-            self.domain
-                .stats_table(database, table)
+            self.mdl_stats_table(database, table)
                 .map(|(_, table)| table)
         })
+    }
+
+    /// Acquire and pin metadata at the first real table access in a txn.
+    /// Publishing zero before fetching the latest IS prevents schema loops
+    /// from acknowledging a DDL during concurrent metadata lookup.
+    pub(super) fn mdl_stats_table(
+        &self,
+        database: &str,
+        name: &str,
+    ) -> Option<(
+        astersql_statistics_handle::StatsTableKey,
+        astersql_meta_model::TableInfo,
+    )> {
+        let lock = {
+            let state = self.state.borrow();
+            astersql_sessionctx_vardef::IsMDLEnabled()
+                && (state.transaction.is_some() || self.mdl_autocommit_write.get())
+                && !state.in_restricted_sql
+                && state.transaction_stale_read_ts.is_none()
+                && !state.current_statement_is_stale
+                && state.snapshot_read_ts.is_none()
+        };
+        if !lock {
+            return self.domain.stats_table(database, name);
+        }
+        let key = (database.to_lowercase(), name.to_lowercase());
+        if let Some(table) = self.mdl_tables.borrow().get(&key) {
+            return Some(table.clone());
+        }
+        let initial = self
+            .state
+            .borrow()
+            .transaction_info_schema
+            .as_ref()
+            .and_then(|schema| {
+                schema
+                    .ModelTableInfoByName(
+                        &astersql_infoschema::CiString::new(database),
+                        &astersql_infoschema::CiString::new(name),
+                    )
+                    .ok()
+            })
+            .map(|table| {
+                (
+                    astersql_statistics_handle::StatsTableKey::new(database, name, table.ID),
+                    (*table).clone(),
+                )
+            })
+            .or_else(|| self.domain.stats_table(database, name))?;
+        if initial.1.TempTableType == astersql_meta_model::TempTableLocal {
+            return Some(initial);
+        }
+        let skip_lock = initial.1.TempTableType == astersql_meta_model::TempTableGlobal;
+        if !skip_lock {
+            self.transaction_mdl.begin_table(initial.1.ID);
+        }
+        let schema = self.domain.info_schema();
+        let table = schema
+            .TableByName(
+                &astersql_infoschema::CiString::new(database),
+                &astersql_infoschema::CiString::new(name),
+            )
+            .ok()
+            .and_then(|t| t.Meta().model_meta.as_ref().map(|m| (**m).clone()));
+        let Some(mut table) = table else {
+            self.transaction_mdl.remove_table(initial.1.ID);
+            return None;
+        };
+        if table.State != astersql_meta_model::StatePublic {
+            self.transaction_mdl.remove_table(initial.1.ID);
+            return None;
+        }
+        if !skip_lock && table.ID != initial.1.ID {
+            self.transaction_mdl.begin_table(table.ID);
+            self.transaction_mdl.remove_table(initial.1.ID);
+        }
+        if !skip_lock {
+            self.transaction_mdl
+                .finish_table(table.ID, schema.SchemaMetaVersion());
+        }
+        let read_consistency = {
+            let state = self.state.borrow();
+            state.transaction_pessimistic
+                && state
+                    .transaction_isolation
+                    .eq_ignore_ascii_case("READ-COMMITTED")
+        };
+        if table.Revision != initial.1.Revision && !read_consistency {
+            let indices: HashMap<_, _> = initial
+                .1
+                .Indices
+                .iter()
+                .map(|index| (index.Name.L.as_str(), index.ID))
+                .collect();
+            for index in &mut table.Indices {
+                if index.State == astersql_meta_model::StatePublic
+                    && indices
+                        .get(index.Name.L.as_str())
+                        .is_none_or(|id| *id != index.ID)
+                {
+                    index.State = astersql_meta_model::StateWriteReorganization;
+                }
+            }
+            let columns: HashMap<_, _> = initial
+                .1
+                .Columns
+                .iter()
+                .map(|column| (column.Name.L.as_str(), column.ID))
+                .collect();
+            for column in &table.Columns {
+                if column.State == astersql_meta_model::StatePublic
+                    && columns
+                        .get(column.Name.L.as_str())
+                        .is_some_and(|id| *id != column.ID)
+                {
+                    self.transaction_mdl.remove_table(table.ID);
+                    *self.mdl_metadata_error.borrow_mut() = Some(format!(
+                        "Information schema is changed: public column {} has changed",
+                        column.Name.O
+                    ));
+                    return None;
+                }
+            }
+        }
+        if let Some(db) = schema.SchemaByName(&astersql_infoschema::CiString::new(database)) {
+            self.mdl_databases.borrow_mut().insert(table.DBID, db);
+        }
+        let result = (
+            astersql_statistics_handle::StatsTableKey::new(database, name, table.ID),
+            table,
+        );
+        self.mdl_tables.borrow_mut().insert(key, result.clone());
+        Some(result)
+    }
+
+    /// Register physical table names before specialized SQL execution paths.
+    pub(super) fn register_statement_mdl(&self, statement: &dyn ast::Node) -> SessionResult<()> {
+        if !astersql_sessionctx_vardef::IsMDLEnabled() {
+            return Ok(());
+        }
+        struct Tables(Vec<ast::TableName>);
+        impl ast::Visitor for Tables {
+            fn enter(&mut self, _: &dyn ast::Node) -> bool {
+                false
+            }
+            fn leave(&mut self, _: &dyn ast::Node) -> bool {
+                true
+            }
+            fn enter_table_name(&mut self, table: &ast::TableName) -> bool {
+                self.0.push(table.clone());
+                false
+            }
+        }
+        let mut tables = Tables(Vec::new());
+        statement.accept(&mut tables);
+        let current_database = self.current_database();
+        for table in tables.0 {
+            let database = if table.Schema.L.is_empty() {
+                &current_database
+            } else {
+                &table.Schema.L
+            };
+            if self
+                .local_temporary_table(database, &table.Name.L)
+                .is_none()
+            {
+                self.mdl_stats_table(database, &table.Name.L);
+                if let Some(error) = self.mdl_metadata_error.borrow_mut().take() {
+                    return Err(SessionError::new(error));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn transaction_mdl_schema(&self, base: SchemaRef) -> SchemaRef {
+        if self.mdl_tables.borrow().is_empty() {
+            return base;
+        }
+        let mut extended = astersql_infoschema::infoschema::SessionExtendedInfoSchema::new(base);
+        for (_, (_, model)) in self.mdl_tables.borrow().iter() {
+            if let Some(db) = self.mdl_databases.borrow().get(&model.DBID) {
+                // Model DBID is authoritative in Go meta. Retain it on the
+                // pinned table rather than inferring from a later schema.
+                let mut model = model.clone();
+                model.DBID = db.id;
+                extended
+                    .UpdateTableInfo(
+                        (**db).clone(),
+                        astersql_infoschema::Table::from_model(model),
+                    )
+                    .expect("MDL table names are unique within a transaction");
+            }
+        }
+        Arc::new(extended)
+    }
+
+    pub fn transaction_mdl(&self) -> Arc<astersql_session_sessmgr::TransactionMDL> {
+        Arc::clone(&self.transaction_mdl)
     }
 
     /// 创建 ConcreteSession，安装谓词简化直通并初始化默认库。
@@ -1074,6 +1285,11 @@ impl ConcreteSession {
                 domain,
                 instance_plan_cache,
                 state: RefCell::new(state),
+                transaction_mdl: Arc::new(Default::default()),
+                mdl_metadata_error: RefCell::new(None),
+                mdl_databases: RefCell::new(HashMap::new()),
+                mdl_autocommit_write: std::cell::Cell::new(false),
+                mdl_tables: RefCell::new(HashMap::new()),
                 cte_scopes: RefCell::new(Vec::new()),
                 import_files: RefCell::new(Default::default()),
                 session_vars: Arc::new(session_vars),

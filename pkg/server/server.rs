@@ -553,6 +553,10 @@ pub struct TransactionInfo {
 /// remain separate so KILL QUERY does not accidentally terminate a client.
 /// 受管连接契约：进程信息、KILL QUERY 与关闭分离。
 pub trait ManagedConnection: Send + Sync {
+    fn transaction_mdl(&self) -> Option<Arc<astersql_session_sessmgr::TransactionMDL>> {
+        None
+    }
+
     /// 连接 ID。
     fn id(&self) -> u64;
     /// 该连接协商的 capability 位。
@@ -1955,6 +1959,13 @@ impl ManagedConnection for ClientConn {
         })
     }
 
+    fn transaction_mdl(&self) -> Option<Arc<astersql_session_sessmgr::TransactionMDL>> {
+        self.getCtx()
+            .ok()
+            .flatten()
+            .and_then(|ctx| ctx.transaction_mdl())
+    }
+
     fn transaction_info(&self) -> Option<TransactionInfo> {
         None
     }
@@ -2023,10 +2034,13 @@ impl InfoSchemaCoordinator for Server {
 
     fn CheckOldRunningTxn(
         &self,
-        _jobs: &mut HashMap<i64, Arc<astersql_session_sessmgr::mdldef::JobMDL>>,
+        jobs: &mut HashMap<i64, Arc<astersql_session_sessmgr::mdldef::JobMDL>>,
     ) {
-        // Canonical ManagedConnection does not expose MDL yet, so there are no
-        // session-side JobMDL snapshots to merge.
+        for connection in self.clients.read().expect("clients lock poisoned").values() {
+            if let Some(mdl) = connection.transaction_mdl() {
+                mdl.check_jobs(jobs);
+            }
+        }
     }
 
     fn KillNonFlashbackClusterConn(&self) {

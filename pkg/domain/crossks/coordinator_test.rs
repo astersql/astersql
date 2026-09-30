@@ -17,7 +17,7 @@ impl InternalSession for BlockingSession {
         1
     }
 
-    fn remove_lock_ddl_jobs(&self, _jobs: &HashMap<i64, JobMdl>, _print_log: bool) {
+    fn remove_lock_ddl_jobs(&self, _jobs: &mut HashMap<i64, JobMdl>, _print_log: bool) {
         self.entered
             .send(())
             .expect("test must still wait for the callback");
@@ -37,7 +37,7 @@ fn deleting_a_session_waits_for_an_in_progress_mdl_check() {
 
     let checking_coordinator = Arc::clone(&coordinator);
     let checker = std::thread::spawn(move || {
-        checking_coordinator.check_old_running_transaction(&HashMap::new());
+        checking_coordinator.check_old_running_transaction(&mut HashMap::new());
     });
     entered_rx
         .recv_timeout(Duration::from_secs(1))

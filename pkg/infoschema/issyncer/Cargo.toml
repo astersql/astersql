@@ -12,6 +12,12 @@ go-package = "pkg/infoschema/issyncer"
 legacy-tasks = ["task-920", "task-926"]
 
 [dependencies]
+"astersql-sessionctx-vardef" = { path = "../../sessionctx/vardef" }
+"astersql-config-kerneltype" = { path = "../../config/kerneltype" }
+"astersql-ddl-schemaver" = { path = "../../ddl/schemaver" }
+"astersql-ddl-systable" = { path = "../../ddl/systable" }
+"astersql-infoschema-isvalidator" = { path = "../isvalidator" }
+
 "astersql-infoschema" = { path = ".." }
 "astersql-kv" = { path = "../../kv" }
 "astersql-meta-model" = { path = "../../meta/model" }
@@ -49,3 +55,7 @@ metadef = { package = "astersql-meta-metadef", path = "../../meta/metadef" }
 "astersql-parser-ast" = { package = "astersql-parser-ast", path = "../../parser/ast" }
 "astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
 "astersql-store-mockstore" = { package = "astersql-store-mockstore", path = "../../store/mockstore" }
+
+[dev-dependencies]
+astersql-store-mockstore-mockstorage = { path = "../../store/mockstore/mockstorage" }
+astersql-parser-ast = { path = "../../parser/ast" }

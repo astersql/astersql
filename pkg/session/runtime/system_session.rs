@@ -696,3 +696,48 @@ impl systable::SessionPool for SystemSessionPool {
         drop(session);
     }
 }
+
+impl astersql_infoschema_issyncer::MDLSessionPool for SystemSessionPool {
+    fn ReadMDLRows(
+        &self,
+        min_job: i64,
+        version: i64,
+    ) -> Result<
+        HashMap<i64, astersql_infoschema_issyncer::JobMDL>,
+        astersql_infoschema_issyncer::SyncError,
+    > {
+        let lease = self
+            .acquire()
+            .map_err(astersql_infoschema_issyncer::SyncError)?;
+        if let Err(error) = lease.query("rollback") {
+            // Go closes this borrowed resource on rollback failure. Mark it
+            // unusable so the lease's existing return path destroys it.
+            lease.concrete().session.AvoidReuse();
+            return Err(astersql_infoschema_issyncer::SyncError(error));
+        }
+        let rows = lease.query(format!("select job_id, version, table_ids from mysql.tidb_mdl_info where job_id >= {min_job} and version <= {version}"))
+            .map_err(astersql_infoschema_issyncer::SyncError)?;
+        rows.into_iter()
+            .map(|row| {
+                let invalid =
+                    || astersql_infoschema_issyncer::SyncError("invalid tidb_mdl_info row".into());
+                if row.len() != 3 {
+                    return Err(invalid());
+                }
+                let id = row[0].parse().map_err(|_| invalid())?;
+                let ver = row[1].parse().map_err(|_| invalid())?;
+                let tables = row[2]
+                    .split(',')
+                    .map(|value| value.parse::<i64>().unwrap_or(0))
+                    .collect();
+                Ok((
+                    id,
+                    astersql_infoschema_issyncer::JobMDL {
+                        Ver: ver,
+                        TableIDs: tables,
+                    },
+                ))
+            })
+            .collect()
+    }
+}

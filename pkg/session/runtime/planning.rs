@@ -1881,6 +1881,8 @@ impl ConcreteSession {
             ));
         }
         let statement = statements.remove(0);
+        self.register_statement_mdl(statement.as_ref())?;
+        let info_schema = self.transaction_mdl_schema(info_schema);
         if !statement.as_any().is::<ast::SelectStmt>() {
             return Err(SessionError::new(
                 "planned KV execution only supports SELECT",
@@ -2188,6 +2190,18 @@ impl ConcreteSession {
             .SetCacheType(astersql_sessionctx_stmtctx::PlanCacheType::SessionPrepared);
         self.session_vars.StmtCtx.PlanCacheTracker.EnablePlanCache();
         let warning_start = self.session_vars.StmtCtx.GetWarnings().len();
+        let prepared_ast = self
+            .state
+            .borrow()
+            .prepared_planned
+            .get(&statement_id)
+            .map(|prepared| prepared.Ast.clone())
+            .ok_or_else(|| {
+                SessionError::new(format!("unknown prepared statement {statement_id}"))
+            })?;
+        prepared_ast
+            .with_node(|node| self.register_statement_mdl(node))
+            .ok_or_else(|| SessionError::new("prepared SELECT AST is unavailable"))??;
         let mut state = self.state.borrow_mut();
         let prepared = state
             .prepared_planned
@@ -2203,6 +2217,7 @@ impl ConcreteSession {
             )));
         }
 
+        let planning_schema = self.transaction_mdl_schema(Arc::clone(&prepared.InfoSchema));
         let (table_id, reads_table_cache) = prepared
             .Ast
             .with_node(|statement| {
@@ -2217,8 +2232,7 @@ impl ConcreteSession {
                 } else {
                     source.Source.Schema.L.as_str()
                 };
-                prepared
-                    .InfoSchema
+                planning_schema
                     .ModelTableInfoByName(
                         &astersql_infoschema::infoschema::CiString::from(schema),
                         &astersql_infoschema::infoschema::CiString::from(
@@ -2243,7 +2257,9 @@ impl ConcreteSession {
         let isolation = self.session_vars.GetIsolationReadEngines();
         let key_context = astersql_planner_core::PlanCacheKeyContext {
             current_database,
-            latest_schema_version: prepared.InfoSchema.SchemaMetaVersion(),
+            latest_schema_version: if self.mdl_tables.borrow().is_empty() {
+                prepared.InfoSchema.SchemaMetaVersion()
+            } else { self.domain.info_schema().SchemaMetaVersion() },
             statement_read_only: true,
             partition_prune_mode: match self.session_vars.PartitionPruneMode {
                 astersql_sessionctx_variable::session::PartitionPruneMode::Static => "static",
@@ -2344,7 +2360,7 @@ impl ConcreteSession {
                 }))
                 .Init(
                     plan_context.clone(),
-                    Arc::clone(&prepared.InfoSchema),
+                    Arc::clone(&planning_schema),
                     astersql_util_hint::NewQBHintHandler(None),
                 );
             let mut logical = builder

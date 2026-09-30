@@ -2646,6 +2646,8 @@ name = "astersql-domain-crossks"
 version = "0.1.0"
 dependencies = [
  "astersql-domain-serverinfo",
+ "astersql-infoschema-issyncer",
+ "astersql-session-sessmgr",
  "uuid",
 ]
 
@@ -5100,10 +5102,12 @@ name = "astersql-infoschema-issyncer"
 version = "0.1.0"
 dependencies = [
  "astersql-config",
+ "astersql-config-kerneltype",
  "astersql-ddl-schemaver",
  "astersql-ddl-systable",
  "astersql-infoschema",
  "astersql-infoschema-issyncer-mdldef",
+ "astersql-infoschema-isvalidator",
  "astersql-infoschema-metrics",
  "astersql-infoschema-validatorapi",
  "astersql-kv",
@@ -5119,6 +5123,7 @@ dependencies = [
  "astersql-sessionctx-vardef",
  "astersql-store-helper",
  "astersql-store-mockstore",
+ "astersql-store-mockstore-mockstorage",
  "astersql-util",
  "astersql-util-codec",
  "astersql-util-domainutil",
@@ -8375,6 +8380,7 @@ dependencies = [
  "astersql-ddl-jobsubmit",
  "astersql-ddl-placement",
  "astersql-ddl-schematracker",
+ "astersql-ddl-schemaver",
  "astersql-ddl-serverstate",
  "astersql-ddl-session",
  "astersql-ddl-systable",

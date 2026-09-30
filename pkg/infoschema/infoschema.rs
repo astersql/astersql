@@ -1177,7 +1177,7 @@ pub fn maskingPolicyRestrictOpsFromString(
     Ok(result)
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 /// 会话级本地临时表容器。
 pub struct SessionTables {
     schemas: HashMap<String, schemaTables>,
@@ -1268,9 +1268,22 @@ pub fn NewSessionTables() -> SessionTables {
 pub struct SessionExtendedInfoSchema {
     pub base: Arc<dyn InfoSchema>,
     pub temporary: SessionTables,
+    pub mdl_tables: SessionTables,
 }
 
 impl SessionExtendedInfoSchema {
+    pub fn new(base: Arc<dyn InfoSchema>) -> Self {
+        Self {
+            base,
+            temporary: SessionTables::new(),
+            mdl_tables: SessionTables::new(),
+        }
+    }
+    /// Pin complete metadata used under MDL, preserving dropped schema lookup.
+    pub fn UpdateTableInfo(&mut self, db: DBInfo, table: Table) -> Result<(), InfoSchemaError> {
+        self.mdl_tables.AddTable(db, table)
+    }
+
     /// 先查会话临时表，再回落到底层 InfoSchema。
     pub fn TableByName(
         &self,
@@ -1279,6 +1292,7 @@ impl SessionExtendedInfoSchema {
     ) -> Result<Table, InfoSchemaError> {
         self.temporary
             .TableByName(schema, table)
+            .or_else(|| self.mdl_tables.TableByName(schema, table))
             .map(Ok)
             .unwrap_or_else(|| self.base.TableByName(schema, table))
     }
@@ -1286,20 +1300,80 @@ impl SessionExtendedInfoSchema {
     pub fn TableByID(&self, id: i64) -> Option<Table> {
         self.temporary
             .TableByID(id)
+            .or_else(|| self.mdl_tables.TableByID(id))
             .or_else(|| self.base.TableByID(id))
     }
     /// 先查会话临时 schema，再回落底层。
     pub fn SchemaByID(&self, id: i64) -> Option<Arc<DBInfo>> {
         self.temporary
             .SchemaByID(id)
+            .or_else(|| self.mdl_tables.SchemaByID(id))
             .or_else(|| self.base.SchemaByID(id))
     }
     /// 是否登记了全局临时表。
     pub fn HasTemporaryTable(&self) -> bool {
-        self.temporary.Count() != 0
+        self.temporary.Count() != 0 || self.base.HasTemporaryTable()
     }
-    /// 剥离临时表层，仅返回底层 InfoSchema。
+    /// 剥离本地临时表层，保留事务的 MDL 元数据。
     pub fn DetachTemporaryTableInfoSchema(&self) -> Arc<dyn InfoSchema> {
-        self.base.clone()
+        Arc::new(Self {
+            base: self.base.clone(),
+            temporary: SessionTables::new(),
+            mdl_tables: self.mdl_tables.clone(),
+        })
+    }
+}
+
+impl InfoSchema for SessionExtendedInfoSchema {
+    fn SchemaMetaVersion(&self) -> i64 {
+        self.base.SchemaMetaVersion()
+    }
+    fn SchemaByName(&self, schema: &CiString) -> Option<Arc<DBInfo>> {
+        self.base.SchemaByName(schema)
+    }
+    fn SchemaByID(&self, id: i64) -> Option<Arc<DBInfo>> {
+        self.SchemaByID(id)
+    }
+    fn TableByName(&self, schema: &CiString, table: &CiString) -> Result<Table, InfoSchemaError> {
+        self.TableByName(schema, table)
+    }
+    fn TableByID(&self, id: i64) -> Option<Table> {
+        self.TableByID(id)
+    }
+    fn TableItemByID(&self, id: i64) -> Option<TableItem> {
+        self.base.TableItemByID(id)
+    }
+    fn SchemaTableInfos(&self, schema: &CiString) -> Result<Vec<Arc<TableInfo>>, InfoSchemaError> {
+        self.base.SchemaTableInfos(schema)
+    }
+    fn FindTableByPartitionID(&self, id: i64) -> Option<(Table, Arc<DBInfo>, PartitionDefinition)> {
+        self.base.FindTableByPartitionID(id)
+    }
+    fn AllSchemas(&self) -> Vec<Arc<DBInfo>> {
+        self.base.AllSchemas()
+    }
+    fn HasTemporaryTable(&self) -> bool {
+        self.HasTemporaryTable()
+    }
+    fn AllPlacementPolicies(&self) -> Vec<Arc<PolicyInfo>> {
+        self.base.AllPlacementPolicies()
+    }
+    fn PlacementBundleByPhysicalTableID(&self, id: i64) -> Option<Arc<PlacementBundle>> {
+        self.base.PlacementBundleByPhysicalTableID(id)
+    }
+    fn AllPlacementBundles(&self) -> Vec<Arc<PlacementBundle>> {
+        self.base.AllPlacementBundles()
+    }
+    fn MaskingCacheSnapshot(&self) -> (HashMap<i64, HashMap<i64, Arc<MaskingPolicyInfo>>>, bool) {
+        self.base.MaskingCacheSnapshot()
+    }
+    fn MaskingLoader(&self) -> Option<Arc<dyn MaskingPolicyLoader>> {
+        self.base.MaskingLoader()
+    }
+    fn IsV2(&self) -> bool {
+        self.base.IsV2()
+    }
+    fn GCOldVersion(&self, version: i64) -> Option<(usize, i64)> {
+        self.base.GCOldVersion(version)
     }
 }

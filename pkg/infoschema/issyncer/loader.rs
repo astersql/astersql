@@ -56,6 +56,11 @@ pub trait SchemaReader {
     fn MaxDiffVersion(&self) -> Result<i64, SyncError> {
         Ok(0)
     }
+    /// Raw meta schema version, including a version whose diff is not committed.
+    /// Lease recovery must compare this value, not MaxDiffVersion.
+    fn SchemaVersion(&self) -> Result<i64, SyncError> {
+        self.MaxDiffVersion()
+    }
     /// Read one committed diff; missing and IO/decoding errors remain distinct.
     fn GetSchemaDiff(&self, _version: i64) -> Result<Option<SchemaDiff>, SyncError> {
         Ok(None)
@@ -81,6 +86,7 @@ pub trait SchemaReader {
 /// Storage and immutable per-load reader. Snapshots are consumed on the loading
 /// thread; a KV snapshot need not implement Send/Sync.
 pub trait SchemaStore: SchemaReader + Send + Sync {
+    fn DeleteCachedTable(&self, _id: i64) {}
     fn GetKeyspace(&self) -> String {
         String::new()
     }
@@ -103,6 +109,43 @@ struct LoaderCache {
     byVersion: HashMap<i64, SchemaInfo>,
 }
 
+/// Shared cache used by both the syncer and its owning runtime.
+pub struct InfoCache {
+    state: Mutex<LoaderCache>,
+    snapshots: Arc<astersql_infoschema::cache::InfoCache>,
+}
+impl Default for InfoCache {
+    fn default() -> Self {
+        Self::from_shared(Arc::new(astersql_infoschema::cache::NewCache(16)))
+    }
+}
+impl InfoCache {
+    /// Bind the existing Domain/keyspace cache, rather than a private SQL view.
+    pub fn from_shared(snapshots: Arc<astersql_infoschema::cache::InfoCache>) -> Self {
+        Self {
+            state: Mutex::new(LoaderCache::default()),
+            snapshots,
+        }
+    }
+    pub fn snapshots(&self) -> Arc<astersql_infoschema::cache::InfoCache> {
+        self.snapshots.clone()
+    }
+    fn publish(&self, schema: &SchemaInfo, timestamp: u64) {
+        let snapshot = self
+            .snapshots
+            .GetByVersion(schema.Version)
+            .filter(|snapshot| snapshot.SchemaMetaVersion() == schema.Version)
+            .unwrap_or_else(|| schema.CompleteInfoSchema());
+        self.snapshots.Insert(snapshot, timestamp);
+    }
+    fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, LoaderCache>> {
+        self.state.lock()
+    }
+    pub fn latest(&self) -> Option<SchemaInfo> {
+        self.state.lock().unwrap().latest.clone()
+    }
+}
+
 /// Loader is the main structure for syncing the info schema. See the module
 /// doc comment for how this differs from Go's `Loader`.
 ///
@@ -118,43 +161,56 @@ pub struct Loader {
     /// 为 true 表示跨 keyspace 加载器：仅允许加载系统表相关 diff / 库。
     crossKS: bool,
     /// 已加载 schema 的互斥缓存。
-    cache: Mutex<LoaderCache>,
+    cache: Arc<InfoCache>,
 }
 
-/// 构造普通（非跨 KS）Loader；`infoCache`/`deferFn` 占位以对齐 Go 签名。
+/// 构造普通 Loader；共享 schema 缓存，延迟清理由 Syncer 调度。
 pub fn newLoader(
     store: Option<Arc<dyn SchemaStore>>,
-    _infoCache: Option<()>,
-    _deferFn: Option<()>,
+    infoCache: Option<Arc<InfoCache>>,
+    _deferFn: Option<Arc<crate::DeferFn>>,
     filter: Option<Arc<dyn Filter>>,
 ) -> Loader {
     Loader {
         store,
         filter,
         crossKS: false,
-        cache: Mutex::new(LoaderCache::default()),
+        cache: infoCache.unwrap_or_else(|| Arc::new(InfoCache::default())),
     }
 }
 
 /// NewLoaderForCrossKS creates a new Loader instance.
 ///
 /// 构造跨 keyspace 的 Loader：强制 `crossKS = true`，且不带 Filter。
-pub fn NewLoaderForCrossKS(store: Arc<dyn SchemaStore>, _infoCache: Option<()>) -> Loader {
+pub fn NewLoaderForCrossKS(
+    store: Arc<dyn SchemaStore>,
+    infoCache: Option<Arc<InfoCache>>,
+) -> Loader {
     Loader {
         store: Some(store),
         filter: None,
         crossKS: true,
-        cache: Mutex::new(LoaderCache::default()),
+        cache: infoCache.unwrap_or_else(|| Arc::new(InfoCache::default())),
     }
 }
 
 impl Loader {
-    /// initFields initializes some fields of the Loader. Kept as a no-op stub:
-    /// the autoid/sysExecutorFactory wiring it configures in Go is not needed
-    /// by any currently-ported test.
-    ///
-    /// 初始化 Loader 字段的占位；Go 侧 autoid / 系统执行器工厂接线此处不需要。
-    pub fn initFields(&mut self) {}
+    pub(crate) fn delete_cached_table(&self, id: i64) {
+        if let Some(store) = &self.store {
+            store.DeleteCachedTable(id);
+        }
+    }
+
+    pub(crate) fn schema_version_at(&self, timestamp: u64) -> Result<i64, SyncError> {
+        let store = self
+            .store
+            .as_ref()
+            .ok_or_else(|| SyncError("loader has no backing store".into()))?;
+        match store.Snapshot(timestamp)? {
+            Some(snapshot) => snapshot.SchemaVersion(),
+            None => store.SchemaVersion(),
+        }
+    }
 
     /// Return the storage timestamp used by `Syncer::Reload`.
     pub fn currentVersion(&self) -> Result<i64, SyncError> {
@@ -200,6 +256,7 @@ impl Loader {
         if let Some(hit) = cacheHit {
             let mut cache = self.cache.lock().unwrap();
             cache.latest = Some(hit.clone());
+            self.cache.publish(&hit, startTS);
             return Ok((hit, true, 0, None));
         }
 
@@ -216,6 +273,7 @@ impl Loader {
                     let mut cache = self.cache.lock().unwrap();
                     cache.byVersion.insert(neededSchemaVersion, is.clone());
                     cache.latest = Some(is.clone());
+                    self.cache.publish(&is, startTS);
                     return Ok((is, false, currentSchemaVersion, Some(change)));
                 }
                 // We can fall back to full load, don't need to return the error.
@@ -228,6 +286,7 @@ impl Loader {
         let mut cache = self.cache.lock().unwrap();
         cache.byVersion.insert(neededSchemaVersion, is.clone());
         cache.latest = Some(is.clone());
+        self.cache.publish(&is, startTS);
         Ok((is, false, currentSchemaVersion, None))
     }
 
@@ -484,8 +543,8 @@ struct GoAffected {
     old_table_id: i64,
 }
 impl SchemaReader for KvMetaReader {
-    fn MaxDiffVersion(&self) -> Result<i64, SyncError> {
-        let version = self
+    fn SchemaVersion(&self) -> Result<i64, SyncError> {
+        Ok(self
             .get(Self::string_key(b"SchemaVersionKey"))?
             .map(|v| {
                 String::from_utf8(v)
@@ -493,7 +552,10 @@ impl SchemaReader for KvMetaReader {
                     .and_then(|v| v.parse::<i64>().map_err(|e| SyncError(e.to_string())))
             })
             .transpose()?
-            .unwrap_or(0);
+            .unwrap_or(0))
+    }
+    fn MaxDiffVersion(&self) -> Result<i64, SyncError> {
+        let version = self.SchemaVersion()?;
         Ok(if version > 0 && self.GetSchemaDiff(version)?.is_none() {
             version - 1
         } else {
@@ -576,5 +638,94 @@ impl SchemaReader for KvMetaReader {
                 .map_err(SyncError)
         })
         .transpose()
+    }
+}
+
+/// The shared KV source also supports Domain's locked storage handle.
+pub trait KvSchemaSource: Send + Sync {
+    fn current_version(&self) -> Result<u64, SyncError>;
+    fn snapshot(&self, ts: u64) -> Box<dyn astersql_kv::Snapshot>;
+    fn keyspace(&self) -> String;
+    fn delete_cached_table(&self, id: i64);
+}
+impl KvSchemaSource for Arc<dyn astersql_kv::Storage + Send + Sync> {
+    fn current_version(&self) -> Result<u64, SyncError> {
+        self.CurrentVersion("global")
+            .map(|v| v.Ver)
+            .map_err(|e| SyncError(e.to_string()))
+    }
+    fn snapshot(&self, ts: u64) -> Box<dyn astersql_kv::Snapshot> {
+        self.GetSnapshot(astersql_kv::NewVersion(ts))
+    }
+    fn keyspace(&self) -> String {
+        self.GetKeyspace()
+    }
+    fn delete_cached_table(&self, id: i64) {
+        self.GetMemCache().Delete(id);
+    }
+}
+
+/// Go meta storage adapter for the shared schema loader.
+pub struct KvSchemaStore {
+    store: Arc<dyn KvSchemaSource>,
+}
+impl KvSchemaStore {
+    /// Retain the shared target storage; snapshot readers do not close it.
+    pub fn new(store: Arc<dyn astersql_kv::Storage + Send + Sync>) -> Self {
+        Self {
+            store: Arc::new(store),
+        }
+    }
+}
+impl KvSchemaStore {
+    pub fn from_source(store: Arc<dyn KvSchemaSource>) -> Self {
+        Self { store }
+    }
+    fn current_meta_reader(&self) -> Result<crate::KvMetaReader, crate::SyncError> {
+        let version = self.store.current_version()?;
+        Ok(crate::KvMetaReader::new(self.store.snapshot(version)))
+    }
+}
+impl crate::SchemaReader for KvSchemaStore {
+    fn SchemaVersion(&self) -> Result<i64, SyncError> {
+        self.current_meta_reader()?.SchemaVersion()
+    }
+    fn MaxDiffVersion(&self) -> Result<i64, crate::SyncError> {
+        self.current_meta_reader()?.MaxDiffVersion()
+    }
+    fn GetSchemaDiff(&self, version: i64) -> Result<Option<crate::SchemaDiff>, crate::SyncError> {
+        self.current_meta_reader()?.GetSchemaDiff(version)
+    }
+    fn GetDatabase(&self, id: i64) -> Result<Option<crate::DBInfo>, crate::SyncError> {
+        self.current_meta_reader()?.GetDatabase(id)
+    }
+    fn ListDatabases(&self) -> Result<Vec<crate::DBInfo>, crate::SyncError> {
+        self.current_meta_reader()?.ListDatabases()
+    }
+    fn ListTables(&self, db: i64) -> Result<Vec<crate::TableInfo>, crate::SyncError> {
+        self.current_meta_reader()?.ListTables(db)
+    }
+    fn GetTable(&self, db: i64, id: i64) -> Result<Option<crate::TableInfo>, crate::SyncError> {
+        self.current_meta_reader()?.GetTable(db, id)
+    }
+}
+impl crate::SchemaStore for KvSchemaStore {
+    fn DeleteCachedTable(&self, id: i64) {
+        self.store.delete_cached_table(id);
+    }
+    fn GetKeyspace(&self) -> String {
+        self.store.keyspace()
+    }
+    fn Snapshot(
+        &self,
+        start_ts: u64,
+    ) -> Result<Option<Box<dyn crate::SchemaReader>>, crate::SyncError> {
+        Ok(Some(Box::new(crate::KvMetaReader::new(
+            self.store.snapshot(start_ts),
+        ))))
+    }
+
+    fn CurrentVersion(&self) -> Result<i64, crate::SyncError> {
+        self.store.current_version().map(|ts| ts as i64)
     }
 }

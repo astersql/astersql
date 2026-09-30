@@ -116,3 +116,150 @@ fn flashback_start_ts_parser_matches_go() {
     );
     assert_eq!(getFlashbackStartTSFromErrorMsg("unrelated error"), 0);
 }
+
+#[test]
+fn crossks_align_infoschema_reload_publishes_real_go_meta() {
+    struct RestoreMDL(bool);
+    impl Drop for RestoreMDL {
+        fn drop(&mut self) {
+            astersql_ddl_schemaver::SetMDLEnabled(self.0);
+        }
+    }
+    let _restore = RestoreMDL(astersql_ddl_schemaver::IsMDLEnabled());
+    astersql_ddl_schemaver::SetMDLEnabled(false);
+    use astersql_ddl_schemaver::{Context, MemoryEtcdClient, NewEtcdSyncer, Syncer as _};
+    use astersql_kv::{Storage, Transaction};
+    use astersql_util_codec::{EncodeBytes, EncodeUint};
+    let storage = astersql_store_mockstore_mockstorage::NewMockStorage(
+        astersql_store_mockstore_mockstorage::KVStore::NewMemoryWithWallClockTSO(),
+        None,
+    )
+    .unwrap();
+    let string =
+        |name: &[u8]| astersql_kv::Key(EncodeUint(EncodeBytes(vec![b'm'], name), b's' as u64));
+    let hash = |name: &[u8], field: &[u8]| {
+        astersql_kv::Key(EncodeBytes(
+            EncodeUint(EncodeBytes(vec![b'm'], name), b'h' as u64),
+            field,
+        ))
+    };
+    let db = astersql_meta_model::DBInfo {
+        ID: metadef::SystemDatabaseID,
+        Name: astersql_parser_ast::NewCIStr("mysql"),
+        State: astersql_meta_model::StatePublic,
+        ..Default::default()
+    };
+    let table = astersql_meta_model::TableInfo {
+        ID: metadef::ReservedGlobalIDUpperBound,
+        DBID: db.ID,
+        Name: astersql_parser_ast::NewCIStr("tidb_ddl_job"),
+        State: astersql_meta_model::StatePublic,
+        ..Default::default()
+    };
+    let mut tx = Storage::Begin(storage.as_ref(), &[]).unwrap();
+    tx.Set(
+        hash(b"DBs", format!("DB:{}", db.ID).as_bytes()),
+        astersql_meta_model::EncodeDBInfo(&db).unwrap(),
+    )
+    .unwrap();
+    tx.Set(
+        hash(
+            format!("DB:{}", db.ID).as_bytes(),
+            format!("Table:{}", table.ID).as_bytes(),
+        ),
+        astersql_meta_model::EncodeTableInfo(&table).unwrap(),
+    )
+    .unwrap();
+    tx.Set(string(b"SchemaVersionKey"), b"1".to_vec()).unwrap();
+    tx.Set(
+        string(b"Diff:1"),
+        format!(
+            "{{\"version\":1,\"type\":3,\"schema_id\":{},\"table_id\":{}}}",
+            db.ID, table.ID
+        )
+        .into_bytes(),
+    )
+    .unwrap();
+    tx.Commit(&astersql_kv::Context::new()).unwrap();
+    let cache = Arc::new(crate::InfoCache::default());
+    let etcd = Arc::new(MemoryEtcdClient::default());
+    let protocol = NewEtcdSyncer(etcd.clone(), "virtual-target");
+    protocol.Init(Context::Background()).unwrap();
+    let validator = Arc::new(*astersql_infoschema_isvalidator::new(
+        std::time::Duration::from_secs(1),
+    ));
+    let mut syncer = NewCrossKSSyncer(
+        Some(Arc::new(crate::KvSchemaStore::new(storage.clone()))),
+        Some(cache.clone()),
+        1000,
+        None,
+        Some(validator.clone()),
+        "tenant",
+    );
+    syncer.InitRequiredFields(Arc::new(|| None), protocol.clone());
+    syncer.Reload().unwrap();
+    assert_eq!(
+        cache.latest().unwrap().Tables[0].Model.as_ref().unwrap().ID,
+        table.ID
+    );
+    let complete = cache.snapshots().GetLatest().unwrap();
+    assert_eq!(
+        complete
+            .ModelTableInfoByName(
+                &astersql_infoschema::CiString::new("mysql"),
+                &astersql_infoschema::CiString::new("tidb_ddl_job")
+            )
+            .unwrap()
+            .ID,
+        table.ID
+    );
+    let value = astersql_ddl_schemaver::EtcdClient::Get(
+        etcd.as_ref(),
+        &Context::Background(),
+        "/tidb/ddl/all_schema_versions/virtual-target",
+        false,
+    )
+    .unwrap();
+    assert_eq!(value.Kvs[0].Value, b"1");
+    let expiry = validator.snapshot().latest_schema_expire;
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    syncer.Reload().unwrap();
+    assert!(
+        validator.snapshot().latest_schema_expire > expiry,
+        "cache hits must renew the real validator lease"
+    );
+    protocol.Done().Close();
+    let context = Context::Background();
+    let syncer = Arc::new(syncer);
+    let run = syncer.clone();
+    let ctx = context.clone();
+    let worker = std::thread::spawn(move || run.SyncLoop(ctx));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while validator.snapshot().restart_schema_ver != 1 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "schema lease did not recover"
+        );
+        std::thread::yield_now();
+    }
+    assert!(validator.snapshot().is_started);
+    assert!(!protocol.Done().Done());
+    context.Cancel();
+    worker.join().unwrap().unwrap();
+    protocol.Close();
+    // A schema version without its committed diff is deliberately excluded
+    // from loads, but must prevent renewing the older schema's lease.
+    let mut pending = Storage::Begin(storage.as_ref(), &[]).unwrap();
+    pending
+        .Set(string(b"SchemaVersionKey"), b"2".to_vec())
+        .unwrap();
+    pending.Commit(&astersql_kv::Context::new()).unwrap();
+    let timestamp = Storage::CurrentVersion(storage.as_ref(), "global")
+        .unwrap()
+        .Ver;
+    assert_eq!(syncer.loader.schema_version_at(timestamp).unwrap(), 2);
+    assert_eq!(
+        crate::SchemaReader::MaxDiffVersion(&crate::KvSchemaStore::new(storage)).unwrap(),
+        1
+    );
+}

@@ -12,5 +12,7 @@ go-package = "pkg/domain/crossks"
 legacy-tasks = ["task-928", "task-1310"]
 
 [dependencies]
+astersql-infoschema-issyncer = { path = "../../infoschema/issyncer" }
+astersql-session-sessmgr = { path = "../../session/sessmgr" }
 astersql-domain-serverinfo = { path = "../serverinfo" }
 uuid = { version = "1", features = ["v4"] }

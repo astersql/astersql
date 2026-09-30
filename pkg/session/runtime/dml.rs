@@ -238,8 +238,7 @@ impl ConcreteSession {
         }
         let current_database = self.current_database();
         if self
-            .domain
-            .stats_table(&current_database, &info.Name.L)
+            .mdl_stats_table(&current_database, &info.Name.L)
             .is_none()
         {
             self.domain
@@ -437,8 +436,7 @@ impl ConcreteSession {
                 foreign_key.RefSchema.L.as_str()
             };
             let parent = self
-                .domain
-                .stats_table(database, &foreign_key.RefTable.L)
+                .mdl_stats_table(database, &foreign_key.RefTable.L)
                 .map(|(_, table)| table)
                 .ok_or_else(|| {
                     SessionError::new(format!(
@@ -683,8 +681,7 @@ impl ConcreteSession {
             .collect::<Vec<_>>();
         let explicit_transaction = self.state.borrow().transaction.is_some();
         let conflict_context = self
-            .domain
-            .stats_table(&self.current_database(), table)
+            .mdl_stats_table(&self.current_database(), table)
             .and_then(|(_, info)| {
                 mutations.iter().find_map(|(key, _)| {
                     if !astersql_tablecodec::IsRecordKey(&key.0) {
@@ -1026,7 +1023,7 @@ impl ConcreteSession {
         after: &[HashMap<String, Option<String>>],
     ) -> SessionResult<()> {
         let current_database = self.current_database();
-        let Some((key, _)) = self.domain.stats_table(&current_database, table_name) else {
+        let Some((key, _)) = self.mdl_stats_table(&current_database, table_name) else {
             return Ok(());
         };
         let flags = self.dml_type_flags();
@@ -3308,8 +3305,7 @@ impl ConcreteSession {
             target_source.Source.Schema.L.clone()
         };
         let (_, table) = self
-            .domain
-            .stats_table(&database, &target_source.Source.Name.L)
+            .mdl_stats_table(&database, &target_source.Source.Name.L)
             .ok_or_else(|| {
                 SessionError::new(format!("unknown DML table {}", target_source.Source.Name.O))
             })?;
@@ -3610,8 +3606,7 @@ impl ConcreteSession {
                 target_source.Source.Schema.L.clone()
             };
             let (_, table) = self
-                .domain
-                .stats_table(&database, &target_source.Source.Name.L)
+                .mdl_stats_table(&database, &target_source.Source.Name.L)
                 .ok_or_else(|| {
                     SessionError::new(format!("unknown DML table {}", target_source.Source.Name.O))
                 })?;

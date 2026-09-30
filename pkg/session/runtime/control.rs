@@ -772,6 +772,16 @@ impl ConcreteSession {
     }
 
     pub(super) fn finish_transaction(&self, commit: bool) -> SessionResult<()> {
+        struct ReleaseMDL<'a>(&'a ConcreteSession);
+        impl Drop for ReleaseMDL<'_> {
+            fn drop(&mut self) {
+                self.0.transaction_mdl.clear();
+                self.0.mdl_tables.borrow_mut().clear();
+                self.0.mdl_databases.borrow_mut().clear();
+                self.0.mdl_metadata_error.borrow_mut().take();
+            }
+        }
+
         let in_restricted_sql = self.state.borrow().in_restricted_sql;
         // Go checks restricted/super read-only again when committing.  Planning
         // may have happened before an administrator enabled the switch while a
@@ -785,6 +795,7 @@ impl ConcreteSession {
         {
             return Err(runtime_read_only_mode_error());
         }
+        let _release_mdl = ReleaseMDL(self);
         if self.state.borrow().transaction.is_some() {
             self.set_runtime_txn_state(if commit { "Committing" } else { "RollingBack" }, false);
             if commit {
@@ -1222,6 +1233,10 @@ impl ConcreteSession {
             .store(false, std::sync::atomic::Ordering::Release);
         state.transaction = Some(transaction);
         state.transaction_info_schema = Some(transaction_info_schema);
+        self.transaction_mdl.clear();
+        self.mdl_tables.borrow_mut().clear();
+        self.mdl_databases.borrow_mut().clear();
+        self.mdl_metadata_error.borrow_mut().take();
         state.transaction_related_table_ids.clear();
         state.transaction_locking_table_ids.clear();
         state.statement_txn_start_ts = state
@@ -1573,6 +1588,7 @@ impl ConcreteSession {
     /// 标记为内部受限 SQL 会话，使 ANALYZE 记为自动分析任务。
     pub fn SetInRestrictedSQL(&self, restricted: bool) {
         self.state.borrow_mut().in_restricted_sql = restricted;
+        self.transaction_mdl.set_restricted(restricted);
     }
 
     /// Returns the number of statement MemTracker children currently attached to
@@ -1687,8 +1703,7 @@ impl ConcreteSession {
                         } else {
                             source.Source.Schema.L.clone()
                         };
-                        self.domain
-                            .stats_table(&database, &source.Source.Name.L)
+                        self.mdl_stats_table(&database, &source.Source.Name.L)
                             .map(|(_, table)| !table.Indices.is_empty())
                     })
                     .flatten()
@@ -2444,8 +2459,7 @@ impl ConcreteSession {
                 } else {
                     source.Source.Schema.L.as_str()
                 };
-                let Some((_, table)) = self.domain.stats_table(database, &source.Source.Name.L)
-                else {
+                let Some((_, table)) = self.mdl_stats_table(database, &source.Source.Name.L) else {
                     continue;
                 };
                 if visited.insert(table.ID) {

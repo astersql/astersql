@@ -617,7 +617,7 @@ impl SessionDriver for ConcreteSessionDriver {
                 );
             })
             .map_err(packet_error)?;
-        let cancellation = match init_rx.recv().map_err(packet_error)? {
+        let (cancellation, transaction_mdl) = match init_rx.recv().map_err(packet_error)? {
             Ok(cancellation) => cancellation,
             Err(error) => {
                 let _ = worker.join();
@@ -642,6 +642,7 @@ impl SessionDriver for ConcreteSessionDriver {
             }),
             last_statement: Mutex::new(String::new()),
             cancellation,
+            transaction_mdl,
             cancel_requested: AtomicBool::new(false),
             closed: AtomicBool::new(false),
         }))
@@ -665,6 +666,7 @@ struct ConcreteTiDBContext {
     process_info: Mutex<SessionProcessSnapshot>,
     last_statement: Mutex<String>,
     cancellation: Arc<SQLKiller>,
+    transaction_mdl: Arc<astersql_session_sessmgr::TransactionMDL>,
     cancel_requested: AtomicBool,
     closed: AtomicBool,
 }
@@ -714,7 +716,12 @@ fn run_session_worker(
     collation: u8,
     database: String,
     session_manager: Option<Weak<dyn SessionManager>>,
-    init: mpsc::SyncSender<ConnResult<Arc<SQLKiller>>>,
+    init: mpsc::SyncSender<
+        ConnResult<(
+            Arc<SQLKiller>,
+            Arc<astersql_session_sessmgr::TransactionMDL>,
+        )>,
+    >,
     requests: mpsc::Receiver<SessionRequest>,
 ) {
     let setup = (|| {
@@ -740,7 +747,10 @@ fn run_session_worker(
         }
     };
     let cancellation = session.cancellation_handle();
-    if init.send(Ok(cancellation.clone())).is_err() {
+    if init
+        .send(Ok((cancellation.clone(), session.transaction_mdl())))
+        .is_err()
+    {
         return;
     }
     while let Ok(request) = requests.recv() {
@@ -1243,6 +1253,10 @@ impl ConcreteTiDBContext {
 }
 
 impl TiDBContext for ConcreteTiDBContext {
+    fn transaction_mdl(&self) -> Option<Arc<astersql_session_sessmgr::TransactionMDL>> {
+        Some(self.transaction_mdl.clone())
+    }
+
     fn state(&self) -> SessionState {
         self.state
             .lock()

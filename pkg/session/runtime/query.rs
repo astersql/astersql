@@ -1613,8 +1613,7 @@ impl ConcreteSession {
             } else {
                 source.Source.Schema.L.as_str()
             };
-            self.domain
-                .stats_table(database, &source.Source.Name.L)
+            self.mdl_stats_table(database, &source.Source.Name.L)
                 .is_some_and(|(_, table)| table.View.is_some())
         });
         let has_derived_source = select.From.as_ref().is_some_and(|from| {
@@ -1923,8 +1922,7 @@ impl ConcreteSession {
             source.Source.Schema.L.as_str()
         };
         let physical_table = self
-            .domain
-            .stats_table(database, &source.Source.Name.L)
+            .mdl_stats_table(database, &source.Source.Name.L)
             .map(|(_, table)| table);
         let virtual_table = super::system_query::virtual_system_catalog()?.get(&(
             database.to_ascii_lowercase(),
@@ -2114,8 +2112,10 @@ impl ConcreteSession {
                             qualifier == &column.Table.L
                                 && source.QuerySource.is_none()
                                 && self
-                                    .domain
-                                    .stats_table(&self.current_database(), &source.Source.Name.L)
+                                    .mdl_stats_table(
+                                        &self.current_database(),
+                                        &source.Source.Name.L,
+                                    )
                                     .is_none()
                         });
                         if cte_column {
@@ -2481,13 +2481,11 @@ impl ConcreteSession {
                         })
                         .map(|(_, table)| table)
                         .or_else(|| {
-                            self.domain
-                                .stats_table(database, &source.Source.Name.L)
+                            self.mdl_stats_table(database, &source.Source.Name.L)
                                 .map(|(_, table)| table)
                         })
                 } else {
-                    self.domain
-                        .stats_table(database, &source.Source.Name.L)
+                    self.mdl_stats_table(database, &source.Source.Name.L)
                         .map(|(_, table)| table)
                 }
             });
@@ -2575,13 +2573,11 @@ impl ConcreteSession {
                             })
                             .map(|(_, table)| table)
                             .or_else(|| {
-                                self.domain
-                                    .stats_table(right_database, &right_source.Source.Name.L)
+                                self.mdl_stats_table(right_database, &right_source.Source.Name.L)
                                     .map(|(_, table)| table)
                             })
                     } else {
-                        self.domain
-                            .stats_table(right_database, &right_source.Source.Name.L)
+                        self.mdl_stats_table(right_database, &right_source.Source.Name.L)
                             .map(|(_, table)| table)
                     }
                 });

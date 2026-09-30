@@ -204,3 +204,310 @@ fn crossks_align_system_session_callbacks_and_metadata_error() {
     assert_eq!(received.recv().unwrap(), ("put", new_id));
     domain.close();
 }
+
+static CROSSKS_MDL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+struct RestoreCrossKsMDL(bool, bool);
+impl Drop for RestoreCrossKsMDL {
+    fn drop(&mut self) {
+        astersql_sessionctx_vardef::SetEnableMDL(self.0);
+        astersql_ddl_schemaver::SetMDLEnabled(self.1);
+    }
+}
+fn enable_crossks_mdl() -> RestoreCrossKsMDL {
+    let restore = RestoreCrossKsMDL(
+        astersql_sessionctx_vardef::IsMDLEnabled(),
+        astersql_ddl_schemaver::IsMDLEnabled(),
+    );
+    astersql_sessionctx_vardef::SetEnableMDL(true);
+    astersql_ddl_schemaver::SetMDLEnabled(true);
+    restore
+}
+
+#[test]
+fn crossks_align_infoschema_real_system_table_old_transaction() {
+    let _lock = CROSSKS_MDL_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    use astersql_session_sessmgr::mdldef::JobMDL;
+    use std::collections::{HashMap, HashSet};
+    let (domain, session) = crate::runtime::CreateAnalyzeSession().unwrap();
+    let _restore = enable_crossks_mdl();
+    let (_, table) = domain.stats_table("mysql", "tidb").unwrap();
+    session.execute("begin").unwrap();
+    let mut sets = session.execute("select * from mysql.tidb limit 1").unwrap();
+    while sets[0].next_row().unwrap().is_some() {}
+    let mut jobs = HashMap::from([(
+        73,
+        Arc::new(JobMDL {
+            ver: domain.info_schema().SchemaMetaVersion() + 1,
+            table_ids: HashSet::from([table.ID]),
+        }),
+    )]);
+    session.transaction_mdl().check_jobs(&mut jobs);
+    assert!(
+        jobs.is_empty(),
+        "real system-table SELECT must hold the old schema version"
+    );
+}
+
+#[test]
+fn crossks_align_infoschema_sql_mdl_barrier_and_release() {
+    let _lock = CROSSKS_MDL_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    use astersql_ddl_schemaver::{Context, EtcdClient, MemoryEtcdClient, NewEtcdSyncer};
+    use astersql_infoschema_issyncer as issyncer;
+    let (domain, session) = CreateAnalyzeSession().unwrap();
+    let _restore = enable_crossks_mdl();
+    let (_, table) = domain.stats_table("mysql", "tidb").unwrap();
+    session.execute("begin").unwrap();
+    let mut rows = session.execute("select * from mysql.tidb limit 1").unwrap();
+    while rows[0].next_row().unwrap().is_some() {}
+    let ddl = astersql_session::runtime::ConcreteSession::new(domain.clone());
+    ddl.execute("create table mdl_version_advance (id int)")
+        .unwrap();
+    let version = domain.info_schema().SchemaMetaVersion();
+    ddl.execute(&format!(
+        "insert into mysql.tidb_mdl_info (job_id, version, table_ids) values (73, {version}, '{}'), (74, {version}, '{}')",
+        table.ID, table.ID
+    ))
+    .unwrap();
+    let pool = SystemSessionPool::new(domain.clone());
+    let min = Arc::new(astersql_ddl_systable::new_min_job_id_refresher(
+        astersql_ddl_systable::new_manager(pool.clone()),
+    ));
+    let coordinator = Arc::new(astersql_domain_crossks::new_schema_coordinator());
+    coordinator.store_internal_session(Arc::new(astersql_domain_crossks::RegisteredMDLSession {
+        id: 1,
+        mdl: session.transaction_mdl(),
+    }));
+    let etcd = Arc::new(MemoryEtcdClient::default());
+    let protocol = NewEtcdSyncer(etcd.clone(), "virtual-sql");
+    protocol.Init(Context::Background()).unwrap();
+    let getter = coordinator.clone();
+    let mut syncer = issyncer::New(
+        Some(Arc::new(issyncer::KvSchemaStore::from_source(
+            domain.storage_handle(),
+        ))),
+        Some(Arc::new(issyncer::InfoCache::from_shared(
+            domain.info_cache(),
+        ))),
+        1000,
+        Some(pool.clone()),
+        None,
+        None,
+    );
+    syncer.InitRequiredFields(Arc::new(move || Some(getter.clone())), protocol.clone());
+    syncer.SetMinJobIDRefresher(min);
+    syncer.Reload().unwrap();
+    syncer.RefreshMDLFromSQL().unwrap();
+    assert!(syncer.mdlCheckContains(table.ID));
+    let path = format!(
+        "{}/73/virtual-sql",
+        astersql_ddl_schemaver::DDLAllSchemaVersionsByJob
+    );
+    syncer.CheckMDL().unwrap();
+    assert!(
+        EtcdClient::Get(etcd.as_ref(), &Context::Background(), &path, false)
+            .unwrap()
+            .Kvs
+            .is_empty()
+    );
+    session.execute("commit").unwrap();
+    etcd.FailPuts(astersql_ddl_schemaver::keyOpDefaultRetryCnt as usize);
+    assert!(syncer.CheckMDL().is_err());
+    let prefix = astersql_ddl_schemaver::DDLAllSchemaVersionsByJob;
+    assert_eq!(
+        EtcdClient::Get(etcd.as_ref(), &Context::Background(), prefix, true)
+            .unwrap()
+            .Kvs
+            .len(),
+        1,
+        "one failed job must not prevent publishing the other"
+    );
+    let syncer = Arc::new(syncer);
+    let context = Context::Background().WithTimeout(std::time::Duration::from_secs(2));
+    let run = syncer.clone();
+    let ctx = context.clone();
+    let worker = std::thread::spawn(move || run.MDLCheckLoop(ctx));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let published = loop {
+        let value = EtcdClient::Get(etcd.as_ref(), &Context::Background(), prefix, true).unwrap();
+        if value.Kvs.len() == 2 {
+            assert!(
+                value
+                    .Kvs
+                    .iter()
+                    .all(|entry| entry.Value == version.to_string().as_bytes())
+            );
+            break value.Kvs[0].Value.clone();
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "MDL loop did not publish after commit"
+        );
+        std::thread::yield_now();
+    };
+    assert_eq!(published, version.to_string().as_bytes());
+    context.Cancel();
+    worker.join().unwrap().unwrap();
+    protocol.Close();
+    pool.close();
+    domain.close();
+}
+
+#[test]
+fn crossks_align_infoschema_prepared_read_and_transaction_cleanup() {
+    use astersql_session_sessmgr::mdldef::JobMDL;
+    use std::collections::{HashMap, HashSet};
+    let _lock = CROSSKS_MDL_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let (domain, session) = CreateAnalyzeSession().unwrap();
+    let _restore = enable_crossks_mdl();
+    session
+        .execute("create table mdl_planned (id int primary key, value int)")
+        .unwrap();
+    session
+        .execute("insert into mdl_planned values (1, 9)")
+        .unwrap();
+    let (_, table) = domain.stats_table("test", "mdl_planned").unwrap();
+    let jobs = || {
+        HashMap::from([(
+            74,
+            Arc::new(JobMDL {
+                ver: domain.info_schema().SchemaMetaVersion() + 1,
+                table_ids: HashSet::from([table.ID]),
+            }),
+        )])
+    };
+    let mut unblocked = jobs();
+    session.transaction_mdl().check_jobs(&mut unblocked);
+    assert_eq!(
+        unblocked.len(),
+        1,
+        "autocommit writes release MDL after completion"
+    );
+    let prepared = session
+        .PreparePlannedKVSelect(
+            "select value from mdl_planned where id = ?",
+            domain.info_schema(),
+        )
+        .unwrap();
+    session.execute("begin").unwrap();
+    let snapshot = domain.storage_handle().with_storage(|store| {
+        let version = store.CurrentVersion("global").unwrap();
+        store.GetSnapshot(version)
+    });
+    let result = session
+        .ExecutePreparedPlannedKVSelect(
+            prepared,
+            &[astersql_types::datum::NewIntDatum(1)],
+            snapshot.as_ref(),
+        )
+        .unwrap();
+    assert_eq!(result.Rows.len(), 1);
+    let mut blocked = jobs();
+    session.transaction_mdl().check_jobs(&mut blocked);
+    assert!(
+        blocked.is_empty(),
+        "typed prepared execution holds table MDL"
+    );
+    session.execute("rollback").unwrap();
+    let mut unblocked = jobs();
+    session.transaction_mdl().check_jobs(&mut unblocked);
+    assert_eq!(unblocked.len(), 1);
+    session.execute("begin").unwrap();
+    let mut sets = session.execute("select * from mdl_planned").unwrap();
+    while sets[0].next_row().unwrap().is_some() {}
+    let mdl = session.transaction_mdl();
+    drop(sets);
+    drop(session);
+    let mut unblocked = jobs();
+    mdl.check_jobs(&mut unblocked);
+    assert_eq!(unblocked.len(), 1, "session close releases transaction MDL");
+    domain.close();
+}
+
+#[test]
+fn crossks_align_infoschema_public_column_revision_fences_old_transaction() {
+    let _lock = CROSSKS_MDL_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let (domain, session) = CreateAnalyzeSession().unwrap();
+    let _restore = enable_crossks_mdl();
+    session
+        .execute("create table mdl_revision (id int primary key, value int)")
+        .unwrap();
+    session
+        .execute("insert into mdl_revision values (1, 9)")
+        .unwrap();
+    session.execute("begin").unwrap();
+    let (_, mut table) = domain.stats_table("test", "mdl_revision").unwrap();
+    table.Revision += 1;
+    let column = table
+        .Columns
+        .iter_mut()
+        .find(|column| column.Name.L == "value")
+        .unwrap();
+    column.ID += 100;
+    let version = domain.info_schema().SchemaMetaVersion() + 1;
+    let string = |name: &[u8]| {
+        astersql_kv::Key(astersql_util_codec::EncodeUint(
+            astersql_util_codec::EncodeBytes(vec![b'm'], name),
+            b's' as u64,
+        ))
+    };
+    let hash = |name: &[u8], field: &[u8]| {
+        astersql_kv::Key(astersql_util_codec::EncodeBytes(
+            astersql_util_codec::EncodeUint(
+                astersql_util_codec::EncodeBytes(vec![b'm'], name),
+                b'h' as u64,
+            ),
+            field,
+        ))
+    };
+    let mut transaction = domain
+        .storage_handle()
+        .with_storage(|store| store.Begin(&[]))
+        .unwrap();
+    transaction
+        .Set(
+            hash(
+                format!("DB:{}", table.DBID).as_bytes(),
+                format!("Table:{}", table.ID).as_bytes(),
+            ),
+            astersql_meta_model::EncodeTableInfo(&table).unwrap(),
+        )
+        .unwrap();
+    transaction
+        .Set(
+            string(b"SchemaVersionKey"),
+            version.to_string().into_bytes(),
+        )
+        .unwrap();
+    transaction
+        .Set(
+            string(format!("Diff:{version}").as_bytes()),
+            format!(
+                "{{\"version\":{version},\"type\":12,\"schema_id\":{},\"table_id\":{}}}",
+                table.DBID, table.ID
+            )
+            .into_bytes(),
+        )
+        .unwrap();
+    transaction.Commit(&astersql_kv::Context::new()).unwrap();
+    domain.reload().unwrap();
+    let error = match session.execute("select value from mdl_revision") {
+        Ok(_) => panic!("an old transaction must reject a changed public column ID"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("public column value has changed")
+    );
+    session.execute("rollback").unwrap();
+    domain.close();
+}

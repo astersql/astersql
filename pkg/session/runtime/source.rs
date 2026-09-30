@@ -403,8 +403,7 @@ impl ConcreteSession {
         let table = self
             .local_temporary_table(database, &source.Source.Name.L)
             .or_else(|| {
-                self.domain
-                    .stats_table(database, &source.Source.Name.L)
+                self.mdl_stats_table(database, &source.Source.Name.L)
                     .map(|(_, table)| table)
             })
             .ok_or_else(|| {
@@ -1503,8 +1502,7 @@ impl ConcreteSession {
                     table_source.Source.Schema.L.clone()
                 };
                 let (_, table) = self
-                    .domain
-                    .stats_table(&database, &table_source.Source.Name.L)
+                    .mdl_stats_table(&database, &table_source.Source.Name.L)
                     .ok_or_else(|| SessionError::new("TIDB_ROW_CHECKSUM table does not exist"))?;
                 let primary_key = table
                     .Columns
@@ -1765,8 +1763,7 @@ impl ConcreteSession {
                 } else {
                     table_source.Source.Schema.L.clone()
                 };
-                self.domain
-                    .stats_table(&database, &table_source.Source.Name.L)
+                self.mdl_stats_table(&database, &table_source.Source.Name.L)
                     .is_some_and(|(_, table)| {
                         table.Indices.iter().any(|index| {
                             !index.Invisible
@@ -1826,7 +1823,7 @@ impl ConcreteSession {
             } else {
                 target.Source.Schema.L.clone()
             };
-            let Some((_, table)) = self.domain.stats_table(&database, &target.Source.Name.L) else {
+            let Some((_, table)) = self.mdl_stats_table(&database, &target.Source.Name.L) else {
                 return source.columns.clone();
             };
             let target_is_first = physical_sources

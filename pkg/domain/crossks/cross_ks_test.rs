@@ -511,7 +511,7 @@ impl crate::InternalSession for TestSession {
     fn id(&self) -> u64 {
         self.id
     }
-    fn remove_lock_ddl_jobs(&self, _jobs: &HashMap<i64, crate::JobMdl>, _print_log: bool) {
+    fn remove_lock_ddl_jobs(&self, _jobs: &mut HashMap<i64, crate::JobMdl>, _print_log: bool) {
         *self.seen.lock().unwrap() += 1;
     }
 }
