@@ -25,9 +25,328 @@ use std::time::Duration;
 use crate::{
     AlterTableModeJob, AlterTableModeTarget, Cancellation, DdlBackend, DdlClient, Error,
     HistoryJobState, InfoCache, Lifecycle, ManagerError, RuntimeFactory, SYSTEM_KEYSPACE,
-    SchemaCoordinator, SessionManager, SessionPool, SessionVariables, Store, TableMode,
-    new_manager, new_schema_coordinator,
+    SchemaCoordinator, ServerInfoRegistration, ServerInfoSyncer, SessionManager, SessionPool,
+    SessionVariables, Store, TableMode, new_manager, new_schema_coordinator,
 };
+
+#[derive(Default)]
+struct CountingServerInfoSyncer {
+    removed: AtomicUsize,
+    revoked: AtomicUsize,
+}
+
+impl ServerInfoSyncer for CountingServerInfoSyncer {
+    fn server_info_id(&self) -> String {
+        "virtual-server".into()
+    }
+    fn remove_server_info(&self) {
+        self.removed.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn revoke_session(&self) {
+        self.revoked.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn go_merge_43_close_removes_virtual_server_info_and_revokes_session() {
+    let manager = new_session_manager(
+        TestStore::new(SYSTEM_KEYSPACE),
+        TestSessPool::new(),
+        Arc::new(new_schema_coordinator()),
+        Arc::new(DdlClient::new(Arc::new(RecordingDdlBackend::default()))),
+    );
+    let syncer = Arc::new(CountingServerInfoSyncer::default());
+    ServerInfoRegistration::new(syncer.clone()).into_runtime(&manager);
+    assert_eq!(manager.server_info_id().as_deref(), Some("virtual-server"));
+    manager.close();
+    manager.close();
+    assert_eq!(syncer.removed.load(Ordering::SeqCst), 1);
+    assert_eq!(syncer.revoked.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn go_merge_43_failed_bootstrap_removes_virtual_server_info_and_revokes_session() {
+    let syncer = Arc::new(CountingServerInfoSyncer::default());
+    {
+        let _registration = ServerInfoRegistration::new(syncer.clone());
+    }
+    assert_eq!(syncer.removed.load(Ordering::SeqCst), 1);
+    assert_eq!(syncer.revoked.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn go_merge_43_late_registration_after_runtime_close_is_cleaned() {
+    let manager = new_session_manager(
+        TestStore::new(SYSTEM_KEYSPACE),
+        TestSessPool::new(),
+        Arc::new(new_schema_coordinator()),
+        Arc::new(DdlClient::new(Arc::new(RecordingDdlBackend::default()))),
+    );
+    manager.close();
+    let syncer = Arc::new(CountingServerInfoSyncer::default());
+    ServerInfoRegistration::new(syncer.clone()).into_runtime(&manager);
+    assert_eq!(syncer.removed.load(Ordering::SeqCst), 1);
+    assert_eq!(syncer.revoked.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn go_merge_43_real_server_info_registration_cleans_etcd_and_session() {
+    use astersql_domain_serverinfo::{
+        Context, EtcdClient, MemoryEtcdClient, NewCrossKSSyncer, NoopMinStartTSReporter,
+    };
+
+    let etcd = Arc::new(MemoryEtcdClient::default());
+    let mut syncer = NewCrossKSSyncer(
+        "virtual-server".into(),
+        Arc::new(|| 0),
+        Some(etcd.clone()),
+        Arc::new(NoopMinStartTSReporter),
+        "tenant-a".into(),
+    );
+    syncer
+        .NewSessionAndStoreServerInfo(Context::Background())
+        .unwrap();
+    let session = syncer.session.clone().unwrap();
+    assert!(etcd.Snapshot().contains_key(&syncer.serverInfoPath));
+    etcd.Put(
+        &Context::Background(),
+        "/leased-sibling",
+        b"value".to_vec(),
+        Some(session.Lease()),
+    )
+    .unwrap();
+    let syncer = Arc::new(Mutex::new(*syncer));
+    let manager = new_session_manager(
+        TestStore::new(SYSTEM_KEYSPACE),
+        TestSessPool::new(),
+        Arc::new(new_schema_coordinator()),
+        Arc::new(DdlClient::new(Arc::new(RecordingDdlBackend::default()))),
+    );
+    ServerInfoRegistration::new(syncer).into_runtime(&manager);
+    manager.close();
+    assert!(
+        !etcd
+            .Snapshot()
+            .contains_key("/tidb/server/info/virtual-server")
+    );
+    assert!(session.Done());
+    assert!(!etcd.Snapshot().contains_key("/leased-sibling"));
+}
+
+#[test]
+fn go_merge_43_runtime_factory_registers_and_cleans_virtual_server() {
+    use astersql_domain_serverinfo::{MemoryEtcdClient, NoopMinStartTSReporter};
+
+    let etcd = Arc::new(MemoryEtcdClient::default());
+    let manager = crate::new_manager_with_server_info(
+        false,
+        SYSTEM_KEYSPACE,
+        MapFactory::new(),
+        Some(etcd.clone()),
+        Arc::new(NoopMinStartTSReporter),
+    );
+    let runtime = manager.get_or_create("tenant-a").unwrap();
+    let id = runtime.server_info_id().unwrap();
+    assert!(
+        etcd.Snapshot()
+            .contains_key(&format!("/tidb/server/info/{id}"))
+    );
+    manager.close_ks("tenant-a");
+    assert!(
+        !etcd
+            .Snapshot()
+            .contains_key(&format!("/tidb/server/info/{id}"))
+    );
+
+    let failing_factory = MapFactory::new();
+    *failing_factory.fail.lock().unwrap() = Some("bootstrap failed".into());
+    let manager = crate::new_manager_with_server_info(
+        false,
+        SYSTEM_KEYSPACE,
+        failing_factory,
+        Some(etcd.clone()),
+        Arc::new(NoopMinStartTSReporter),
+    );
+    assert!(manager.get_or_create("tenant-b").is_err());
+    assert!(etcd.Snapshot().is_empty());
+}
+
+#[test]
+fn go_merge_43_virtual_server_uses_each_target_etcd_client() {
+    use astersql_domain_serverinfo::{EtcdClient, MemoryEtcdClient, NoopMinStartTSReporter};
+
+    let first = Arc::new(MemoryEtcdClient::default());
+    let second = Arc::new(MemoryEtcdClient::default());
+    let first_client = Arc::clone(&first);
+    let second_client = Arc::clone(&second);
+    let factory = MapFactory::new();
+    let manager = crate::new_manager_with_server_info_provider(
+        false,
+        SYSTEM_KEYSPACE,
+        factory.clone(),
+        Arc::new(move |keyspace| match keyspace {
+            "tenant-a" => Ok(Some(first_client.clone() as Arc<dyn EtcdClient>)),
+            "tenant-b" => Ok(Some(second_client.clone() as Arc<dyn EtcdClient>)),
+            _ => Err(ManagerError("unknown target keyspace".into())),
+        }),
+        Arc::new(NoopMinStartTSReporter),
+    );
+    let a = manager.get_or_create("tenant-a").unwrap();
+    let b = manager.get_or_create("tenant-b").unwrap();
+    let a_key = format!("/tidb/server/info/{}", a.server_info_id().unwrap());
+    let b_key = format!("/tidb/server/info/{}", b.server_info_id().unwrap());
+    assert!(first.Snapshot().contains_key(&a_key));
+    assert!(!first.Snapshot().contains_key(&b_key));
+    assert!(second.Snapshot().contains_key(&b_key));
+    assert!(!second.Snapshot().contains_key(&a_key));
+    assert!(manager.get_or_create("unknown").is_err());
+    assert_eq!(factory.create_count.load(Ordering::SeqCst), 2);
+    manager.close();
+    assert!(first.Snapshot().is_empty());
+    assert!(second.Snapshot().is_empty());
+}
+
+#[test]
+fn go_merge_43_runtime_factory_receives_registered_virtual_server_id() {
+    use astersql_domain_serverinfo::{MemoryEtcdClient, NoopMinStartTSReporter};
+
+    struct RecordingFactory(Mutex<Option<String>>);
+    impl RuntimeFactory for RecordingFactory {
+        fn create(&self, _keyspace: &str) -> Result<Arc<SessionManager>, ManagerError> {
+            Ok(new_session_manager(
+                TestStore::new("tenant-a"),
+                TestSessPool::new(),
+                Arc::new(new_schema_coordinator()),
+                Arc::new(DdlClient::new(Arc::new(RecordingDdlBackend::default()))),
+            ))
+        }
+        fn create_with_server_info(
+            &self,
+            keyspace: &str,
+            server_info_id: &str,
+        ) -> Result<Arc<SessionManager>, ManagerError> {
+            *self.0.lock().unwrap() = Some(server_info_id.to_owned());
+            self.create(keyspace)
+        }
+    }
+    let factory = Arc::new(RecordingFactory(Mutex::new(None)));
+    let manager = crate::new_manager_with_server_info(
+        false,
+        SYSTEM_KEYSPACE,
+        factory.clone(),
+        Some(Arc::new(MemoryEtcdClient::default())),
+        Arc::new(NoopMinStartTSReporter),
+    );
+    let runtime = manager.get_or_create("tenant-a").unwrap();
+    assert_eq!(*factory.0.lock().unwrap(), runtime.server_info_id());
+    manager.close();
+}
+
+#[test]
+fn go_merge_43_registration_error_releases_prepared_factory_resources() {
+    use astersql_domain_serverinfo::{
+        Context, EtcdClient, KeyValue, NoopMinStartTSReporter, SyncError,
+    };
+
+    struct RejectLease;
+    impl EtcdClient for RejectLease {
+        fn GrantLease(&self, _: &Context, _: i32) -> Result<i64, SyncError> {
+            Err(SyncError("lease rejected".into()))
+        }
+        fn Get(&self, _: &Context, _: &str, _: bool) -> Result<Vec<KeyValue>, SyncError> {
+            Ok(vec![])
+        }
+        fn Put(&self, _: &Context, _: &str, _: Vec<u8>, _: Option<i64>) -> Result<(), SyncError> {
+            Ok(())
+        }
+        fn Delete(&self, _: &Context, _: &str) -> Result<(), SyncError> {
+            Ok(())
+        }
+        fn DeletePrefix(&self, _: &Context, _: &str) -> Result<(), SyncError> {
+            Ok(())
+        }
+        fn RevokeLease(&self, _: &Context, _: i64) -> Result<(), SyncError> {
+            Ok(())
+        }
+    }
+    struct PreparedFactory(AtomicUsize);
+    impl RuntimeFactory for PreparedFactory {
+        fn create(&self, _: &str) -> Result<Arc<SessionManager>, ManagerError> {
+            panic!("runtime creation must not follow registration failure")
+        }
+        fn registration_failed(&self, _: &str) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let factory = Arc::new(PreparedFactory(AtomicUsize::new(0)));
+    let manager = crate::new_manager_with_server_info(
+        false,
+        SYSTEM_KEYSPACE,
+        factory.clone(),
+        Some(Arc::new(RejectLease)),
+        Arc::new(NoopMinStartTSReporter),
+    );
+    assert!(manager.get_or_create("tenant-a").is_err());
+    assert_eq!(factory.0.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn go_merge_43_stops_runtime_loops_before_revoking_server_lease() {
+    use std::sync::atomic::AtomicBool;
+
+    struct LoopLifecycle(Arc<AtomicBool>);
+    impl Lifecycle for LoopLifecycle {
+        fn close(&self) -> Result<(), ManagerError> {
+            self.0.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+    struct OrderedSyncer(Arc<AtomicBool>);
+    impl ServerInfoSyncer for OrderedSyncer {
+        fn server_info_id(&self) -> String {
+            "virtual-server".into()
+        }
+        fn remove_server_info(&self) {}
+        fn revoke_session(&self) {
+            assert!(self.0.load(Ordering::SeqCst));
+        }
+    }
+
+    let loop_stopped = Arc::new(AtomicBool::new(false));
+    let manager = SessionManager::new(
+        TestStore::new(SYSTEM_KEYSPACE),
+        Arc::new(DummyInfoCache),
+        TestSessPool::new(),
+        Arc::new(new_schema_coordinator()),
+        Arc::new(DdlClient::new(Arc::new(RecordingDdlBackend::default()))),
+        vec![Arc::new(LoopLifecycle(loop_stopped.clone()))],
+    );
+    ServerInfoRegistration::new(Arc::new(OrderedSyncer(loop_stopped))).into_runtime(&manager);
+    manager.close();
+}
+
+#[test]
+fn go_merge_43_stops_sql_workers_before_closing_their_session_pool() {
+    struct UsingPool(Arc<TestSessPool>);
+    impl Lifecycle for UsingPool {
+        fn close(&self) -> Result<(), ManagerError> {
+            assert_eq!(self.0.close_count.load(Ordering::SeqCst), 0);
+            Ok(())
+        }
+    }
+    let pool = TestSessPool::new();
+    let manager = SessionManager::new(
+        TestStore::new("tenant-a"),
+        Arc::new(DummyInfoCache),
+        pool.clone(),
+        Arc::new(new_schema_coordinator()),
+        Arc::new(DdlClient::new(Arc::new(RecordingDdlBackend::default()))),
+        vec![Arc::new(UsingPool(pool.clone()))],
+    );
+    manager.close();
+    assert_eq!(pool.close_count.load(Ordering::SeqCst), 1);
+}
 
 #[derive(Default)]
 /// 测试 Store。

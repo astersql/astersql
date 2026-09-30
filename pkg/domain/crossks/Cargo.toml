@@ -12,3 +12,5 @@ go-package = "pkg/domain/crossks"
 legacy-tasks = ["task-928", "task-1310"]
 
 [dependencies]
+astersql-domain-serverinfo = { path = "../serverinfo" }
+uuid = { version = "1", features = ["v4"] }

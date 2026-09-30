@@ -40,6 +40,11 @@ pub struct ManagerError(pub String);
 pub trait Store: Send + Sync {
     fn keyspace(&self) -> &str;
     fn close(&self) -> Result<(), ManagerError>;
+    /// An independently opened SYSTEM client is owned by this runtime;
+    /// shared system clients keep the Go default of remaining open.
+    fn close_on_runtime_shutdown(&self) -> bool {
+        self.keyspace() != SYSTEM_KEYSPACE
+    }
 }
 /// 会话池抽象：关闭时释放池内会话。
 pub trait SessionPool: Send + Sync {
@@ -51,9 +56,172 @@ pub trait InfoCache: Send + Sync {}
 pub trait Lifecycle: Send + Sync {
     fn close(&self) -> Result<(), ManagerError>;
 }
+/// Virtual server registration owned by a cross-keyspace runtime.
+pub trait ServerInfoSyncer: Send + Sync {
+    fn server_info_id(&self) -> String;
+    fn remove_server_info(&self);
+    fn revoke_session(&self);
+}
+
+impl ServerInfoSyncer for Mutex<astersql_domain_serverinfo::Syncer> {
+    fn server_info_id(&self) -> String {
+        self.lock()
+            .expect("server info syncer mutex poisoned")
+            .GetLocalServerInfo()
+            .StaticInfo
+            .ID
+    }
+
+    fn remove_server_info(&self) {
+        self.lock()
+            .expect("server info syncer mutex poisoned")
+            .RemoveServerInfo();
+    }
+
+    fn revoke_session(&self) {
+        self.lock()
+            .expect("server info syncer mutex poisoned")
+            .RevokeSession();
+    }
+}
+
+/// Keeps a newly registered virtual server until bootstrap hands it to the runtime.
+pub struct ServerInfoRegistration {
+    syncer: Option<Arc<dyn ServerInfoSyncer>>,
+}
+
+impl ServerInfoRegistration {
+    pub fn new(syncer: Arc<dyn ServerInfoSyncer>) -> Self {
+        Self {
+            syncer: Some(syncer),
+        }
+    }
+
+    pub fn into_runtime(mut self, manager: &SessionManager) {
+        if let Some(syncer) = self.syncer.take() {
+            manager.set_server_info_syncer(syncer);
+        }
+    }
+}
+
+impl Drop for ServerInfoRegistration {
+    fn drop(&mut self) {
+        if let Some(syncer) = self.syncer.take() {
+            syncer.remove_server_info();
+            syncer.revoke_session();
+        }
+    }
+}
 /// 按 keyspace 创建 SessionManager 的工厂。
 pub trait RuntimeFactory: Send + Sync {
     fn create(&self, keyspace: &str) -> Result<Arc<SessionManager>, ManagerError>;
+    /// The registration wrapper passes its virtual server ID so schema
+    /// version publication uses the same instance identity.
+    fn create_with_server_info(
+        &self,
+        keyspace: &str,
+        _server_info_id: &str,
+    ) -> Result<Arc<SessionManager>, ManagerError> {
+        self.create(keyspace)
+    }
+    /// Release resources prepared before virtual server registration when
+    /// registration itself fails.
+    fn registration_failed(&self, _keyspace: &str) {}
+}
+
+/// Wraps the runtime bootstrap with the same virtual ServerInfo registration
+/// and failure cleanup used by Go `createSessionManager`.
+struct RegisteredRuntimeFactory {
+    inner: Arc<dyn RuntimeFactory>,
+    etcd: Arc<
+        dyn Fn(
+                &str,
+            )
+                -> Result<Option<Arc<dyn astersql_domain_serverinfo::EtcdClient>>, ManagerError>
+            + Send
+            + Sync,
+    >,
+    reporter: Arc<dyn astersql_domain_serverinfo::MinStartTSReporter>,
+}
+
+impl RuntimeFactory for RegisteredRuntimeFactory {
+    fn create(&self, keyspace: &str) -> Result<Arc<SessionManager>, ManagerError> {
+        let etcd = (self.etcd)(keyspace)?;
+        let mut syncer = astersql_domain_serverinfo::NewCrossKSSyncer(
+            uuid::Uuid::new_v4().to_string(),
+            Arc::new(|| 0),
+            etcd,
+            Arc::clone(&self.reporter),
+            keyspace.to_owned(),
+        );
+        if let Err(error) =
+            syncer.NewSessionAndStoreServerInfo(astersql_domain_serverinfo::Context::Background())
+        {
+            syncer.RemoveServerInfo();
+            syncer.RevokeSession();
+            self.inner.registration_failed(keyspace);
+            return Err(ManagerError(format!(
+                "register cross-keyspace server info: {error}"
+            )));
+        }
+        let registration = ServerInfoRegistration::new(Arc::new(Mutex::new(*syncer)));
+        let server_info_id = registration
+            .syncer
+            .as_ref()
+            .expect("new registration")
+            .server_info_id();
+        let manager = self
+            .inner
+            .create_with_server_info(keyspace, &server_info_id)?;
+        registration.into_runtime(&manager);
+        Ok(manager)
+    }
+}
+
+/// Build a cross-keyspace manager that registers a virtual server before each
+/// runtime bootstrap and transfers cleanup ownership on success.
+pub fn new_manager_with_server_info(
+    classic_kernel: bool,
+    current_keyspace: impl Into<String>,
+    factory: Arc<dyn RuntimeFactory>,
+    etcd: Option<Arc<dyn astersql_domain_serverinfo::EtcdClient>>,
+    reporter: Arc<dyn astersql_domain_serverinfo::MinStartTSReporter>,
+) -> Arc<Manager> {
+    new_manager_with_server_info_provider(
+        classic_kernel,
+        current_keyspace,
+        factory,
+        Arc::new(move |_| Ok(etcd.clone())),
+        reporter,
+    )
+}
+
+/// Register each virtual server through the target keyspace's own etcd
+/// namespace. The provider resolves the numeric PD keyspace ID before any
+/// target runtime or virtual server is created.
+pub fn new_manager_with_server_info_provider(
+    classic_kernel: bool,
+    current_keyspace: impl Into<String>,
+    factory: Arc<dyn RuntimeFactory>,
+    etcd: Arc<
+        dyn Fn(
+                &str,
+            )
+                -> Result<Option<Arc<dyn astersql_domain_serverinfo::EtcdClient>>, ManagerError>
+            + Send
+            + Sync,
+    >,
+    reporter: Arc<dyn astersql_domain_serverinfo::MinStartTSReporter>,
+) -> Arc<Manager> {
+    new_manager(
+        classic_kernel,
+        current_keyspace,
+        Arc::new(RegisteredRuntimeFactory {
+            inner: factory,
+            etcd,
+            reporter,
+        }),
+    )
 }
 
 /// 单个 keyspace 运行时条目：SessionManager、活跃持有者集合、上次全部释放时间。
@@ -371,6 +539,7 @@ pub struct SessionManager {
     coordinator: Arc<SchemaCoordinator>,
     ddl_client: Arc<DdlClient>,
     lifecycles: Vec<Arc<dyn Lifecycle>>,
+    server_info_syncer: Mutex<Option<Arc<dyn ServerInfoSyncer>>>,
     closed: AtomicBool,
 }
 impl SessionManager {
@@ -390,11 +559,38 @@ impl SessionManager {
             coordinator,
             ddl_client,
             lifecycles,
+            server_info_syncer: Mutex::new(None),
             closed: AtomicBool::new(false),
         }
     }
     pub fn store(&self) -> Arc<dyn Store> {
         Arc::clone(&self.store)
+    }
+    /// Test-facing virtual server ID, matching Go `ServerInfoID`.
+    pub fn server_info_id(&self) -> Option<String> {
+        self.server_info_syncer
+            .lock()
+            .expect("server info syncer mutex poisoned")
+            .as_ref()
+            .map(|syncer| syncer.server_info_id())
+    }
+    /// Takes responsibility for cleaning up the virtual server registration.
+    fn set_server_info_syncer(&self, syncer: Arc<dyn ServerInfoSyncer>) {
+        let cleanup = {
+            let mut slot = self
+                .server_info_syncer
+                .lock()
+                .expect("server info syncer mutex poisoned");
+            if self.closed.load(Ordering::Acquire) {
+                Some(syncer)
+            } else {
+                slot.replace(syncer)
+            }
+        };
+        if let Some(cleanup) = cleanup {
+            cleanup.remove_server_info();
+            cleanup.revoke_session();
+        }
     }
     /// 返回 InfoSchema 缓存。
     pub fn info_cache(&self) -> Arc<dyn InfoCache> {
@@ -416,16 +612,25 @@ impl SessionManager {
     ) -> Result<(), crate::ddl_submit::Error> {
         self.ddl_client.alter_table_mode(cancellation, target)
     }
-    /// 关闭 SessionManager：关闭会话池、逆序关闭 lifecycle，非 SYSTEM KS 时关闭 Store。
+    /// 关闭 SessionManager：先停止使用会话池的后台组件，再关闭池和 Store。
     pub fn close(&self) {
         if self.closed.swap(true, Ordering::AcqRel) {
             return;
         }
-        self.session_pool.close();
         for lifecycle in self.lifecycles.iter().rev() {
             let _ = lifecycle.close();
         }
-        if self.store.keyspace() != SYSTEM_KEYSPACE {
+        self.session_pool.close();
+        if let Some(syncer) = self
+            .server_info_syncer
+            .lock()
+            .expect("server info syncer mutex poisoned")
+            .take()
+        {
+            syncer.remove_server_info();
+            syncer.revoke_session();
+        }
+        if self.store.close_on_runtime_shutdown() {
             let _ = self.store.close();
         }
     }
