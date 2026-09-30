@@ -12,6 +12,12 @@ go-package = "pkg/infoschema/issyncer"
 legacy-tasks = ["task-920", "task-926"]
 
 [dependencies]
+"astersql-infoschema" = { path = ".." }
+"astersql-kv" = { path = "../../kv" }
+"astersql-meta-model" = { path = "../../meta/model" }
+"astersql-util-codec" = { path = "../../util/codec" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 metadef = { package = "astersql-meta-metadef", path = "../../meta/metadef" }
 
 [target.'cfg(any())'.dependencies]

@@ -31,6 +31,7 @@ use std::sync::Arc;
 /// 仅实现 `GetKeyspace` 的 SchemaStore stub，供跨 KS Syncer 构造。
 #[derive(Default)]
 struct TestStoreWithKS;
+impl crate::SchemaReader for TestStoreWithKS {}
 impl SchemaStore for TestStoreWithKS {
     fn GetKeyspace(&self) -> String {
         "test_ks".to_string()

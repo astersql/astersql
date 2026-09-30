@@ -6224,3 +6224,97 @@ pub fn random_duration(min_seconds: u64, max_seconds: u64, entropy: u64) -> Dura
     }
     Duration::from_secs(min_seconds + entropy % (max_seconds - min_seconds))
 }
+
+/// Go meta storage adapter for the shared schema loader.
+pub struct KvSchemaStore {
+    store: Arc<dyn astersql_kv::Storage + Send + Sync>,
+}
+impl KvSchemaStore {
+    /// Retain the shared target storage; snapshot readers do not close it.
+    pub fn new(store: Arc<dyn astersql_kv::Storage + Send + Sync>) -> Self {
+        Self { store }
+    }
+}
+impl KvSchemaStore {
+    fn current_meta_reader(
+        &self,
+    ) -> Result<astersql_infoschema_issyncer::KvMetaReader, astersql_infoschema_issyncer::SyncError>
+    {
+        let version = self
+            .store
+            .CurrentVersion("global")
+            .map_err(|error| astersql_infoschema_issyncer::SyncError(error.to_string()))?;
+        Ok(astersql_infoschema_issyncer::KvMetaReader::new(
+            self.store.GetSnapshot(version),
+        ))
+    }
+}
+impl astersql_infoschema_issyncer::SchemaReader for KvSchemaStore {
+    fn MaxDiffVersion(&self) -> Result<i64, astersql_infoschema_issyncer::SyncError> {
+        self.current_meta_reader()?.MaxDiffVersion()
+    }
+    fn GetSchemaDiff(
+        &self,
+        version: i64,
+    ) -> Result<
+        Option<astersql_infoschema_issyncer::SchemaDiff>,
+        astersql_infoschema_issyncer::SyncError,
+    > {
+        self.current_meta_reader()?.GetSchemaDiff(version)
+    }
+    fn GetDatabase(
+        &self,
+        id: i64,
+    ) -> Result<Option<astersql_infoschema_issyncer::DBInfo>, astersql_infoschema_issyncer::SyncError>
+    {
+        self.current_meta_reader()?.GetDatabase(id)
+    }
+    fn ListDatabases(
+        &self,
+    ) -> Result<Vec<astersql_infoschema_issyncer::DBInfo>, astersql_infoschema_issyncer::SyncError>
+    {
+        self.current_meta_reader()?.ListDatabases()
+    }
+    fn ListTables(
+        &self,
+        db: i64,
+    ) -> Result<Vec<astersql_infoschema_issyncer::TableInfo>, astersql_infoschema_issyncer::SyncError>
+    {
+        self.current_meta_reader()?.ListTables(db)
+    }
+    fn GetTable(
+        &self,
+        db: i64,
+        id: i64,
+    ) -> Result<
+        Option<astersql_infoschema_issyncer::TableInfo>,
+        astersql_infoschema_issyncer::SyncError,
+    > {
+        self.current_meta_reader()?.GetTable(db, id)
+    }
+}
+impl astersql_infoschema_issyncer::SchemaStore for KvSchemaStore {
+    fn GetKeyspace(&self) -> String {
+        self.store.GetKeyspace()
+    }
+    fn Snapshot(
+        &self,
+        start_ts: u64,
+    ) -> Result<
+        Option<Box<dyn astersql_infoschema_issyncer::SchemaReader>>,
+        astersql_infoschema_issyncer::SyncError,
+    > {
+        Ok(Some(Box::new(
+            astersql_infoschema_issyncer::KvMetaReader::new(
+                self.store.GetSnapshot(astersql_kv::NewVersion(start_ts)),
+            ),
+        )))
+    }
+
+    fn CurrentVersion(&self) -> Result<i64, astersql_infoschema_issyncer::SyncError> {
+        self.store
+            .CurrentVersion("global")
+            .map(|v| v.Ver as i64)
+            .map_err(|e| astersql_infoschema_issyncer::SyncError(e.to_string()))
+    }
+}

@@ -80,6 +80,8 @@ pub enum ActionType {
     RebaseAutoRandomBase,
     MultiSchemaChange,
     AddColumn,
+    /// Other Go default-action updates retain their numeric protocol type.
+    TableUpdate(u8),
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -238,7 +240,17 @@ impl Builder {
                 }
             }
             ActionType::DropTable => {
-                affected.extend(self.applyDropTable(diff.schema_id, diff.table_id))
+                let current = metadata.table(diff.schema_id, diff.table_id)?;
+                if current.as_ref().is_some_and(|table| {
+                    table
+                        .model_meta
+                        .as_ref()
+                        .is_some_and(|model| model.State != astersql_meta_model::StateNone)
+                }) {
+                    affected.extend(self.applyTableUpdate(metadata, diff)?);
+                } else {
+                    affected.extend(self.applyDropTable(diff.schema_id, diff.table_id));
+                }
             }
             ActionType::DropMaterializedView
             | ActionType::DropMaterializedViewLog
@@ -330,16 +342,27 @@ impl Builder {
             ActionType::DropResourceGroup => {
                 self.resource_groups.remove(&diff.table_id);
             }
-            // Masking / 仅分配器相关动作在此路径暂不修改结构。
-            ActionType::CreateMaskingPolicy
-            | ActionType::AlterMaskingPolicy
-            | ActionType::DropMaskingPolicy
-            | ActionType::None
+            ActionType::AddColumn
+            | ActionType::TableUpdate(_)
             | ActionType::RebaseAutoID
             | ActionType::ModifyTableAutoIDCache
             | ActionType::RebaseAutoRandomBase
-            | ActionType::MultiSchemaChange
-            | ActionType::AddColumn => {}
+            | ActionType::MultiSchemaChange => {
+                affected.extend(self.applyTableUpdate(metadata, diff)?);
+                for option in &diff.affected_options {
+                    affected.extend(self.apply_table_ids(
+                        metadata,
+                        option.schema_id,
+                        option.table_id,
+                        option.old_table_id,
+                    )?);
+                }
+            }
+            // Masking policies are handled below.
+            ActionType::CreateMaskingPolicy
+            | ActionType::AlterMaskingPolicy
+            | ActionType::DropMaskingPolicy
+            | ActionType::None => {}
         }
         if needRefreshMaskingPoliciesForTableDiff(diff.action_type) {
             self.masking_cache.clear();

@@ -32,8 +32,8 @@
 // 以及 BR（Backup & Restore）Filter 按库名筛选。无真实 mockstore / TiKV 依赖。
 
 use crate::{
-    ActionType, DBInfo, Filter, New, NewLoaderForCrossKS, SchemaDiff, SchemaInfo, SchemaStore,
-    SyncError, TableInfo, newLoader,
+    ActionType, DBInfo, Filter, New, NewLoaderForCrossKS, SchemaDiff, SchemaInfo, SchemaReader,
+    SchemaStore, SyncError, TableInfo, newLoader,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -112,45 +112,51 @@ impl InMemoryStore {
     }
 }
 
-impl SchemaStore for InMemoryStore {
-    fn CurrentVersion(&self) -> Result<i64, SyncError> {
-        Ok(self.currentVersion())
+impl SchemaReader for InMemoryStore {
+    fn MaxDiffVersion(&self) -> Result<i64, SyncError> {
+        Ok(self.state.lock().unwrap().schemaVer)
     }
-    fn MaxDiffVersion(&self) -> i64 {
-        self.state.lock().unwrap().schemaVer
+    fn GetSchemaDiff(&self, version: i64) -> Result<Option<SchemaDiff>, SyncError> {
+        Ok(self.state.lock().unwrap().diffs.get(&version).cloned())
     }
-    fn GetSchemaDiff(&self, version: i64) -> Option<SchemaDiff> {
-        self.state.lock().unwrap().diffs.get(&version).cloned()
+    fn GetDatabase(&self, id: i64) -> Result<Option<DBInfo>, SyncError> {
+        Ok(self.state.lock().unwrap().databases.get(&id).cloned())
     }
-    fn GetDatabase(&self, id: i64) -> Option<DBInfo> {
-        self.state.lock().unwrap().databases.get(&id).cloned()
-    }
-    fn ListDatabases(&self) -> Vec<DBInfo> {
-        self.state
+    fn ListDatabases(&self) -> Result<Vec<DBInfo>, SyncError> {
+        Ok(self
+            .state
             .lock()
             .unwrap()
             .databases
             .values()
             .cloned()
-            .collect()
+            .collect())
     }
-    fn ListTables(&self, schemaID: i64) -> Vec<TableInfo> {
-        self.state
+    fn ListTables(&self, schemaID: i64) -> Result<Vec<TableInfo>, SyncError> {
+        Ok(self
+            .state
             .lock()
             .unwrap()
             .tables
             .get(&schemaID)
             .map(|m| m.values().cloned().collect())
-            .unwrap_or_default()
+            .unwrap_or_default())
     }
-    fn GetTable(&self, schemaID: i64, tableID: i64) -> Option<TableInfo> {
-        self.state
+    fn GetTable(&self, schemaID: i64, tableID: i64) -> Result<Option<TableInfo>, SyncError> {
+        Ok(self
+            .state
             .lock()
             .unwrap()
             .tables
-            .get(&schemaID)?
-            .get(&tableID)
-            .cloned()
+            .get(&schemaID)
+            .and_then(|tables| tables.get(&tableID))
+            .cloned())
+    }
+}
+
+impl SchemaStore for InMemoryStore {
+    fn CurrentVersion(&self) -> Result<i64, SyncError> {
+        Ok(self.currentVersion())
     }
 }
 
@@ -160,6 +166,7 @@ impl SchemaStore for InMemoryStore {
 /// 仅提供 keyspace 名的轻量 SchemaStore stub。
 #[derive(Default)]
 struct TestStoreWithKS;
+impl SchemaReader for TestStoreWithKS {}
 impl SchemaStore for TestStoreWithKS {
     fn GetKeyspace(&self) -> String {
         "test_ks".to_string()

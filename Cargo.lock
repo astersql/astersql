@@ -5120,12 +5120,15 @@ dependencies = [
  "astersql-store-helper",
  "astersql-store-mockstore",
  "astersql-util",
+ "astersql-util-codec",
  "astersql-util-domainutil",
  "astersql-util-intest",
  "astersql-util-logutil",
  "astersql-util-mathutil",
  "astersql-util-sqlexec",
  "astersql-util-syncutil",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -12,6 +12,7 @@ go-package = "pkg/domain"
 legacy-tasks = ["task-1046", "task-1047", "task-1048", "task-1049", "task-1051", "task-1309"]
 
 [dependencies]
+"astersql-infoschema-issyncer" = { path = "../infoschema/issyncer" }
 "astersql-config" = { package = "astersql-config", path = "../config" }
 "astersql-config-deploymode" = { package = "astersql-config-deploymode", path = "../config/deploymode" }
 "astersql-extworkload" = { package = "astersql-extworkload", path = "../extworkload" }

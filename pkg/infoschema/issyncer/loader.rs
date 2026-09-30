@@ -13,23 +13,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Ported from pkg/infoschema/issyncer/loader.go. The full Go implementation
-// depends on kv.Storage/meta.Reader/meta.Mutator and the infoschema.Builder,
-// none of which have a compiling, network-independent Rust port yet. This
-// file instead defines a `SchemaStore` trait that captures the same shape of
-// operations Loader needs from the storage layer (CurrentVersion, schema
-// diffs, database/table listing), so production code can plug in a real
-// store later while tests use an in-memory implementation
-// (see `loader_test.rs`). All the branch logic that Go tests actually
-// exercise (full load vs. diff load, crossKS system-table-only restriction,
-// Filter-based skipping) is preserved faithfully.
-
-// InfoSchema 加载器：从 SchemaStore 全量或按 SchemaDiff 增量构建本地缓存。
-//
-// 对应 Go `issyncer.Loader`。完整实现依赖 kv.Storage / meta.Reader /
-// infoschema.Builder，Rust 侧尚无独立可编译移植，故用 `SchemaStore` trait
-// 抽象存储层操作；测试用内存实现。保留 Go 测试覆盖的分支：全量 vs 增量、
-// 跨 keyspace（多租户命名空间）仅加载系统表、以及 Filter 过滤。
+// Go-compatible schema loading uses one immutable timestamp-bound reader per
+// load, preserves complete table metadata, and delegates diffs to the shared
+// InfoSchema Builder. Cross-keyspace loading remains system-table-only.
 
 use crate::{
     ActionType, DBInfo, Filter, RelatedSchemaChange, SchemaDiff, SchemaInfo, SyncError, TableInfo,
@@ -65,41 +51,46 @@ const MetricsSchemaID: i64 = -2;
 ///
 /// Loader 依赖的存储抽象：对应 Go 侧 `kv.Storage` + `meta.Reader` 的组合能力。
 /// 默认方法返回空结果，便于只测 keyspace / crossKS 的轻量 stub。
-pub trait SchemaStore: Send + Sync {
-    /// 返回当前存储所属 keyspace 名；默认空串。
+pub trait SchemaReader {
+    /// Latest schema version whose diff is committed in this snapshot.
+    fn MaxDiffVersion(&self) -> Result<i64, SyncError> {
+        Ok(0)
+    }
+    /// Read one committed diff; missing and IO/decoding errors remain distinct.
+    fn GetSchemaDiff(&self, _version: i64) -> Result<Option<SchemaDiff>, SyncError> {
+        Ok(None)
+    }
+    /// Read the complete database metadata by ID.
+    fn GetDatabase(&self, _id: i64) -> Result<Option<DBInfo>, SyncError> {
+        Ok(None)
+    }
+    /// Enumerate database metadata in this snapshot.
+    fn ListDatabases(&self) -> Result<Vec<DBInfo>, SyncError> {
+        Ok(Vec::new())
+    }
+    /// Enumerate complete tables belonging to one database.
+    fn ListTables(&self, _schema_id: i64) -> Result<Vec<TableInfo>, SyncError> {
+        Ok(Vec::new())
+    }
+    /// Read the complete table model by database and table ID.
+    fn GetTable(&self, _schema_id: i64, _table_id: i64) -> Result<Option<TableInfo>, SyncError> {
+        Ok(None)
+    }
+}
+
+/// Storage and immutable per-load reader. Snapshots are consumed on the loading
+/// thread; a KV snapshot need not implement Send/Sync.
+pub trait SchemaStore: SchemaReader + Send + Sync {
     fn GetKeyspace(&self) -> String {
         String::new()
     }
-    /// 当前存储版本（原始写版本计数）；默认 0。
     fn CurrentVersion(&self) -> Result<i64, SyncError> {
         Ok(0)
     }
-    /// Mirrors `meta.Reader.GetSchemaVersionWithNonEmptyDiff`: the newest
-    /// schema version that has a non-empty diff recorded, 0 before bootstrap.
-    ///
-    /// 已记录非空 SchemaDiff 的最新 schema 版本；引导完成前为 0。
-    fn MaxDiffVersion(&self) -> i64 {
-        0
-    }
-    /// 按 schema 版本号取对应 SchemaDiff；无则 `None`（可安全跳过空 diff）。
-    fn GetSchemaDiff(&self, _version: i64) -> Option<SchemaDiff> {
-        None
-    }
-    /// 按数据库 ID 取库元信息。
-    fn GetDatabase(&self, _id: i64) -> Option<DBInfo> {
-        None
-    }
-    /// 列出全部数据库。
-    fn ListDatabases(&self) -> Vec<DBInfo> {
-        Vec::new()
-    }
-    /// 列出指定库下的全部表。
-    fn ListTables(&self, _schemaID: i64) -> Vec<TableInfo> {
-        Vec::new()
-    }
-    /// 按库 ID + 表 ID 取单表元信息。
-    fn GetTable(&self, _schemaID: i64, _tableID: i64) -> Option<TableInfo> {
-        None
+    /// In-memory test stores may read themselves; production adapters return
+    /// an immutable reader at exactly start_ts.
+    fn Snapshot(&self, _start_ts: u64) -> Result<Option<Box<dyn SchemaReader>>, SyncError> {
+        Ok(None)
     }
 }
 
@@ -181,10 +172,10 @@ impl Loader {
     ///
     /// 按时间戳/当前存储状态加载 InfoSchema。返回值依次为：
     /// 目标 schema、是否命中缓存、加载前的当前版本、增量变更（全量时为 None）。
-    /// `startTS` 在本移植中尚未驱动读快照，仅保留签名对齐。
+    /// 同次加载的版本、diff 与库表读取使用 startTS 的同一个快照。
     pub fn LoadWithTS(
         &self,
-        _startTS: u64,
+        startTS: u64,
         isSnapshot: bool,
     ) -> Result<(SchemaInfo, bool, i64, Option<RelatedSchemaChange>), SyncError> {
         let store = self
@@ -193,7 +184,9 @@ impl Loader {
             .ok_or_else(|| SyncError("loader has no backing store".to_string()))?;
 
         // 需要加载到的目标 schema 版本 = 已有非空 diff 的最新版本。
-        let neededSchemaVersion = store.MaxDiffVersion();
+        let snapshot = store.Snapshot(startTS)?;
+        let reader: &dyn SchemaReader = snapshot.as_deref().unwrap_or(store.as_ref());
+        let neededSchemaVersion = reader.MaxDiffVersion()?;
 
         // 读取缓存：当前版本、是否已有该目标版本快照、旧的 latest。
         let (currentSchemaVersion, cacheHit, oldLatest) = {
@@ -217,12 +210,9 @@ impl Loader {
             && neededSchemaVersion - currentSchemaVersion < LoadSchemaDiffVersionGapThreshold
         {
             if let Some(old) = oldLatest {
-                if let Ok((is, change)) = self.tryLoadSchemaDiffs(
-                    store.as_ref(),
-                    &old,
-                    currentSchemaVersion,
-                    neededSchemaVersion,
-                ) {
+                if let Ok((is, change)) =
+                    self.tryLoadSchemaDiffs(reader, &old, currentSchemaVersion, neededSchemaVersion)
+                {
                     let mut cache = self.cache.lock().unwrap();
                     cache.byVersion.insert(neededSchemaVersion, is.clone());
                     cache.latest = Some(is.clone());
@@ -234,7 +224,7 @@ impl Loader {
         }
 
         // 全量加载：枚举库表并注入内存虚拟库（非 crossKS）。
-        let is = self.fetchAllSchemasWithTables(store.as_ref(), neededSchemaVersion)?;
+        let is = self.fetchAllSchemasWithTables(reader, neededSchemaVersion)?;
         let mut cache = self.cache.lock().unwrap();
         cache.byVersion.insert(neededSchemaVersion, is.clone());
         cache.latest = Some(is.clone());
@@ -278,71 +268,52 @@ impl Loader {
     /// 返回新 schema 与相关物理表变更集合。
     fn tryLoadSchemaDiffs(
         &self,
-        store: &dyn SchemaStore,
+        store: &dyn SchemaReader,
         old: &SchemaInfo,
         usedVersion: i64,
         newVersion: i64,
     ) -> Result<(SchemaInfo, RelatedSchemaChange), SyncError> {
-        let mut databases = old.Databases.clone();
-        let mut tables = old.Tables.clone();
+        let mut builder = astersql_infoschema::builder::Builder::new(
+            astersql_infoschema::infoschema_v2::NewData(),
+            false,
+        )
+        .WithCrossKS(self.crossKS);
+        let mut databases = old.builder_databases();
+        builder.InitWithDBInfos(&mut databases, vec![], vec![], usedVersion);
+        let metadata = BuilderReader(store);
         let mut change = RelatedSchemaChange::default();
-
-        let mut version = usedVersion;
-        while version < newVersion {
-            version += 1;
-            let diff = match store.GetSchemaDiff(version) {
-                Some(diff) => diff,
-                // Empty diff means the txn of generating schema version is
-                // committed, but the txn of `runDDLJob` is not or failed. It
-                // is safe to skip it.
-                // 空 diff：版本号已提交但 DDL 作业事务未成功，可安全跳过。
-                None => continue,
+        for version in (usedVersion + 1)..=newVersion {
+            let Some(diff) = store.GetSchemaDiff(version)? else {
+                continue;
             };
-
             if self.skipLoadingDiffWithLatest(&diff, Some(old)) {
-                // we still conceptually need to set the schema version even
-                // when skipping, which we do unconditionally below via
-                // `newVersion`.
-                // 跳过仍推进版本号（最终 SchemaInfo.Version = newVersion）。
+                builder.SetSchemaVersion(version);
                 continue;
             }
-
-            match diff.Type {
-                ActionType::CreateTable => {
-                    // 替换同库同 ID 表项，并记录物理表变更。
-                    if let Some(table) = store.GetTable(diff.SchemaID, diff.TableID) {
-                        tables.retain(|t| !(t.SchemaID == diff.SchemaID && t.ID == diff.TableID));
-                        tables.push(table);
-                    }
-                    change.PhyTblIDS.push(diff.TableID);
-                    change.ActionTypes.push(diff.Type);
-                }
-                ActionType::CreateSchema => {
-                    // 替换同 ID 库项。
-                    if let Some(db) = store.GetDatabase(diff.SchemaID) {
-                        databases.retain(|d| d.ID != diff.SchemaID);
-                        databases.push(db);
-                    }
-                }
-                // Placement Policy 等动作在本精简枚举中无额外状态更新。
-                ActionType::None
-                | ActionType::CreatePlacementPolicy
-                | ActionType::AlterPlacementPolicy
-                | ActionType::DropPlacementPolicy
-                | ActionType::CreateResourceGroup
-                | ActionType::DropResourceGroup
-                | ActionType::AlterResourceGroup => {}
+            if diff.RegenerateSchemaMap {
+                return Err(SyncError(
+                    "schema diff requires regenerating schema map".into(),
+                ));
+            }
+            let ids = builder
+                .ApplyDiff(&metadata, &diff.builder_diff())
+                .map_err(SyncError)?;
+            if !matches!(diff.Type.code(), 30 | 31) {
+                change
+                    .ActionTypes
+                    .extend(std::iter::repeat_n(diff.Type, ids.len()));
+                change.PhyTblIDS.extend(ids);
             }
         }
-
-        Ok((
-            SchemaInfo {
-                Version: newVersion,
-                Databases: databases,
-                Tables: tables,
-            },
-            change,
-        ))
+        builder.SetSchemaVersion(newVersion);
+        let schema = builder.Build(0);
+        let mut loaded = SchemaInfo::from_schema(schema.as_ref());
+        for db in &mut loaded.Databases {
+            if let Some(metadata) = store.GetDatabase(db.ID)? {
+                db.Model = metadata.Model;
+            }
+        }
+        Ok((loaded, change))
     }
 
     /// fetchAllSchemasWithTables fetches all schemas with their tables,
@@ -354,7 +325,7 @@ impl Loader {
     /// 并始终注入 `information_schema` / `metrics_schema` 虚拟库。
     fn fetchAllSchemasWithTables(
         &self,
-        store: &dyn SchemaStore,
+        store: &dyn SchemaReader,
         neededSchemaVersion: i64,
     ) -> Result<SchemaInfo, SyncError> {
         let mut databases = Vec::new();
@@ -363,18 +334,18 @@ impl Loader {
         if self.crossKS {
             // 跨 KS：必须存在系统库，且只加载其下表。
             let db = store
-                .GetDatabase(metadef::SystemDatabaseID)
+                .GetDatabase(metadef::SystemDatabaseID)?
                 .ok_or_else(|| SyncError("system database not found".to_string()))?;
-            tables.extend(store.ListTables(db.ID));
+            tables.extend(store.ListTables(db.ID)?);
             databases.push(db);
         } else {
-            let mut dbs = store.ListDatabases();
+            let mut dbs = store.ListDatabases()?;
             // Filter 返回 true 表示跳过该库。
             if let Some(filter) = &self.filter {
                 dbs.retain(|db| !filter.SkipLoadSchema(Some(db)));
             }
             for db in &dbs {
-                tables.extend(store.ListTables(db.ID));
+                tables.extend(store.ListTables(db.ID)?);
             }
             databases.extend(dbs);
             // Memory-only schemas are always present regardless of Filter,
@@ -404,4 +375,206 @@ impl Loader {
     ///
     /// 调整 schema 缓存容量的占位；infoschema v2 缓存策略不在此范围。
     pub fn changeSchemaCacheSize(&self, _size: u64) {}
+}
+
+struct BuilderReader<'a>(&'a dyn SchemaReader);
+impl astersql_infoschema::builder::MetadataReader for BuilderReader<'_> {
+    fn database(&self, id: i64) -> Result<Option<astersql_infoschema::DBInfo>, String> {
+        self.0
+            .GetDatabase(id)
+            .map(|v| v.map(|db| db.builder_database()))
+            .map_err(|e| e.to_string())
+    }
+    fn table(&self, db: i64, id: i64) -> Result<Option<astersql_infoschema::TableInfo>, String> {
+        self.0
+            .GetTable(db, id)
+            .map(|v| v.map(|t| t.builder_table()))
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// A Go meta reader bound to one real MVCC snapshot. No private catalog is read.
+pub struct KvMetaReader {
+    snapshot: Box<dyn astersql_kv::Snapshot>,
+}
+impl KvMetaReader {
+    /// Mark a real immutable KV snapshot as an internal meta read.
+    pub fn new(mut snapshot: Box<dyn astersql_kv::Snapshot>) -> Self {
+        snapshot.SetOption(astersql_kv::RequestSourceInternal, Some(Box::new(true)));
+        snapshot.SetOption(
+            astersql_kv::RequestSourceType,
+            Some(Box::new(astersql_kv::InternalTxnMeta.to_string())),
+        );
+        snapshot.SetOption(astersql_kv::TiKVClientReadTimeout, Some(Box::new(3000_u64)));
+        Self { snapshot }
+    }
+    fn string_key(key: &[u8]) -> astersql_kv::Key {
+        astersql_kv::Key(astersql_util_codec::EncodeUint(
+            astersql_util_codec::EncodeBytes(b"m".to_vec(), key),
+            b's' as u64,
+        ))
+    }
+    fn hash_prefix(key: &[u8]) -> astersql_kv::Key {
+        astersql_kv::Key(astersql_util_codec::EncodeUint(
+            astersql_util_codec::EncodeBytes(b"m".to_vec(), key),
+            b'h' as u64,
+        ))
+    }
+    fn get(&self, key: astersql_kv::Key) -> Result<Option<Vec<u8>>, SyncError> {
+        match self
+            .snapshot
+            .Get(&astersql_kv::Context::default(), key, &[])
+        {
+            Ok(value) => Ok(Some(value.Value)),
+            Err(error) if astersql_kv::IsErrNotFound(&error) => Ok(None),
+            Err(error) => Err(SyncError(error.to_string())),
+        }
+    }
+    fn hash_get(&self, hash: &[u8], field: &[u8]) -> Result<Option<Vec<u8>>, SyncError> {
+        self.get(astersql_kv::Key(astersql_util_codec::EncodeBytes(
+            Self::hash_prefix(hash).0,
+            field,
+        )))
+    }
+    fn scan(&self, hash: &[u8], field_prefix: &[u8]) -> Result<Vec<Vec<u8>>, SyncError> {
+        let prefix = Self::hash_prefix(hash);
+        let mut iter = self
+            .snapshot
+            .Iter(prefix.clone(), Some(prefix.PrefixNext()))
+            .map_err(|e| SyncError(e.to_string()))?;
+        let result = (|| {
+            let mut values = Vec::new();
+            while iter.Valid() {
+                let (_, field) =
+                    astersql_util_codec::DecodeBytes(&iter.Key().0[prefix.0.len()..], None)
+                        .map_err(|e| SyncError(e.to_string()))?;
+                if field.starts_with(field_prefix) {
+                    values.push(iter.Value());
+                }
+                iter.Next().map_err(|e| SyncError(e.to_string()))?;
+            }
+            Ok(values)
+        })();
+        iter.Close();
+        result
+    }
+}
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct GoDiff {
+    version: i64,
+    #[serde(rename = "type")]
+    action: u8,
+    schema_id: i64,
+    table_id: i64,
+    old_schema_id: i64,
+    old_table_id: i64,
+    regenerate_schema_map: bool,
+    read_table_from_meta: bool,
+    sub_action_types: Option<Vec<u8>>,
+    affected_options: Option<Vec<GoAffected>>,
+}
+#[derive(serde::Deserialize)]
+struct GoAffected {
+    schema_id: i64,
+    #[serde(default)]
+    old_schema_id: i64,
+    table_id: i64,
+    #[serde(default)]
+    old_table_id: i64,
+}
+impl SchemaReader for KvMetaReader {
+    fn MaxDiffVersion(&self) -> Result<i64, SyncError> {
+        let version = self
+            .get(Self::string_key(b"SchemaVersionKey"))?
+            .map(|v| {
+                String::from_utf8(v)
+                    .map_err(|e| SyncError(e.to_string()))
+                    .and_then(|v| v.parse::<i64>().map_err(|e| SyncError(e.to_string())))
+            })
+            .transpose()?
+            .unwrap_or(0);
+        Ok(if version > 0 && self.GetSchemaDiff(version)?.is_none() {
+            version - 1
+        } else {
+            version
+        })
+    }
+    fn GetSchemaDiff(&self, version: i64) -> Result<Option<SchemaDiff>, SyncError> {
+        self.get(Self::string_key(format!("Diff:{version}").as_bytes()))?
+            .map(|bytes| {
+                let diff: GoDiff = serde_json::from_slice(&bytes)
+                    .map_err(|e| SyncError(format!("decode schema diff {version}: {e}")))?;
+                Ok(SchemaDiff {
+                    Version: diff.version,
+                    Type: ActionType::from_code(diff.action),
+                    SchemaID: diff.schema_id,
+                    TableID: diff.table_id,
+                    OldSchemaID: diff.old_schema_id,
+                    OldTableID: diff.old_table_id,
+                    RegenerateSchemaMap: diff.regenerate_schema_map,
+                    ReadTableFromMeta: diff.read_table_from_meta,
+                    SubActionTypes: diff.sub_action_types.unwrap_or_default(),
+                    AffectedOptions: diff
+                        .affected_options
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|o| astersql_infoschema::builder::AffectedOption {
+                            schema_id: o.schema_id,
+                            table_id: o.table_id,
+                            old_schema_id: o.old_schema_id,
+                            old_table_id: o.old_table_id,
+                        })
+                        .collect(),
+                })
+            })
+            .transpose()
+    }
+    fn GetDatabase(&self, id: i64) -> Result<Option<DBInfo>, SyncError> {
+        self.hash_get(b"DBs", format!("DB:{id}").as_bytes())?
+            .map(|bytes| {
+                astersql_meta_model::DecodeDBInfo(&bytes)
+                    .map(DBInfo::from_model)
+                    .map_err(SyncError)
+            })
+            .transpose()
+    }
+    fn ListDatabases(&self) -> Result<Vec<DBInfo>, SyncError> {
+        self.scan(b"DBs", b"DB:")?
+            .iter()
+            .map(|bytes| {
+                astersql_meta_model::DecodeDBInfo(bytes)
+                    .map(DBInfo::from_model)
+                    .map_err(SyncError)
+            })
+            .collect()
+    }
+    fn ListTables(&self, db: i64) -> Result<Vec<TableInfo>, SyncError> {
+        if self.GetDatabase(db)?.is_none() {
+            return Err(SyncError(format!("database {db} not found")));
+        }
+        self.scan(format!("DB:{db}").as_bytes(), b"Table:")?
+            .iter()
+            .map(|bytes| {
+                astersql_meta_model::DecodeTableInfo(bytes)
+                    .map(|t| TableInfo::from_model(t, db))
+                    .map_err(SyncError)
+            })
+            .collect()
+    }
+    fn GetTable(&self, db: i64, id: i64) -> Result<Option<TableInfo>, SyncError> {
+        if self.GetDatabase(db)?.is_none() {
+            return Err(SyncError(format!("database {db} not found")));
+        }
+        self.hash_get(
+            format!("DB:{db}").as_bytes(),
+            format!("Table:{id}").as_bytes(),
+        )?
+        .map(|bytes| {
+            astersql_meta_model::DecodeTableInfo(&bytes)
+                .map(|t| TableInfo::from_model(t, db))
+                .map_err(SyncError)
+        })
+        .transpose()
+    }
 }

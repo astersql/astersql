@@ -1265,3 +1265,262 @@ fn system_runtime_lease_is_evicted_after_the_idle_timeout() {
         "idle lease GC must not erase permanent DDL discovery"
     );
 }
+
+#[test]
+fn crossks_align_meta_loader_nonempty_go_snapshot() {
+    let storage = astersql_store_mockstore_mockstorage::NewMockStorage(
+        astersql_store_mockstore_mockstorage::KVStore::NewMemoryWithWallClockTSO(),
+        None,
+    )
+    .unwrap();
+    let db = astersql_meta_model::DBInfo {
+        ID: astersql_meta_metadef::SystemDatabaseID,
+        Name: astersql_parser_ast::NewCIStr("mysql"),
+        State: astersql_meta_model::StatePublic,
+        ..Default::default()
+    };
+    let table = astersql_meta_model::TableInfo {
+        ID: astersql_meta_metadef::ReservedGlobalIDUpperBound,
+        DBID: db.ID,
+        Name: astersql_parser_ast::NewCIStr("tidb_ddl_job"),
+        State: astersql_meta_model::StatePublic,
+        ..Default::default()
+    };
+    let user_db = astersql_meta_model::DBInfo {
+        ID: 101,
+        Name: astersql_parser_ast::NewCIStr("user_schema"),
+        State: astersql_meta_model::StatePublic,
+        ..Default::default()
+    };
+    let mut tx = storage.Begin(&[]).unwrap();
+    tx.Set(
+        super::canonical_domain::tidb_hash_key(b"DBs", format!("DB:{}", db.ID).as_bytes()).0,
+        astersql_meta_model::EncodeDBInfo(&db).unwrap(),
+    );
+    tx.Set(
+        super::canonical_domain::tidb_hash_key(
+            format!("DB:{}", db.ID).as_bytes(),
+            format!("Table:{}", table.ID).as_bytes(),
+        )
+        .0,
+        astersql_meta_model::EncodeTableInfo(&table).unwrap(),
+    );
+    tx.Set(
+        super::canonical_domain::tidb_string_key(b"SchemaVersionKey").0,
+        b"1".to_vec(),
+    );
+    tx.Set(
+        super::canonical_domain::tidb_string_key(b"Diff:1").0,
+        format!(
+            "{{\"version\":1,\"type\":3,\"schema_id\":{},\"table_id\":{}}}",
+            db.ID, table.ID
+        )
+        .into_bytes(),
+    );
+    tx.Set(
+        super::canonical_domain::tidb_hash_key(b"DBs", b"DB:101").0,
+        astersql_meta_model::EncodeDBInfo(&user_db).unwrap(),
+    );
+    // A malformed user-table payload must never be decoded by the crossKS loader.
+    tx.Set(
+        super::canonical_domain::tidb_hash_key(b"DB:101", b"Table:102").0,
+        b"invalid user metadata".to_vec(),
+    );
+    tx.Commit().unwrap();
+    let ts = storage.CurrentVersion("global").unwrap().Ver;
+    // The storage adapter must expose committed Go meta through its public
+    // Reader contract as well as through Loader's timestamp-bound snapshot.
+    let adapter = super::domain::KvSchemaStore::new(storage.clone());
+    assert_eq!(
+        astersql_infoschema_issyncer::SchemaReader::MaxDiffVersion(&adapter).unwrap(),
+        1
+    );
+    assert_eq!(
+        astersql_infoschema_issyncer::SchemaReader::GetTable(&adapter, db.ID, table.ID)
+            .unwrap()
+            .unwrap()
+            .ID,
+        table.ID
+    );
+    assert_eq!(
+        astersql_infoschema_issyncer::SchemaReader::GetSchemaDiff(&adapter, 1)
+            .unwrap()
+            .unwrap()
+            .Version,
+        1
+    );
+    assert_eq!(
+        astersql_infoschema_issyncer::SchemaReader::GetDatabase(&adapter, db.ID)
+            .unwrap()
+            .unwrap()
+            .ID,
+        db.ID
+    );
+    assert_eq!(
+        astersql_infoschema_issyncer::SchemaReader::ListDatabases(&adapter)
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        astersql_infoschema_issyncer::SchemaReader::ListTables(&adapter, db.ID)
+            .unwrap()
+            .len(),
+        1
+    );
+    let loader = astersql_infoschema_issyncer::NewLoaderForCrossKS(
+        Arc::new(super::domain::KvSchemaStore::new(storage.clone())),
+        None,
+    );
+    let (schema, _, _, change) = loader.LoadWithTS(ts, false).unwrap();
+    assert_eq!(schema.Version, 1);
+    assert_eq!(schema.Tables.len(), 1);
+    assert_eq!(schema.Databases.len(), 1);
+    assert_eq!(schema.Tables[0].ID, table.ID);
+    assert!(change.is_none());
+    assert!(schema.Tables[0].Model.is_some());
+    let mut updated = table.clone();
+    updated.Columns.push(astersql_meta_model::ColumnInfo {
+        ID: 1,
+        Name: astersql_parser_ast::NewCIStr("job_id"),
+        State: astersql_meta_model::StatePublic,
+        ..Default::default()
+    });
+    let mut tx = storage.Begin(&[]).unwrap();
+    tx.Set(
+        super::canonical_domain::tidb_hash_key(
+            format!("DB:{}", db.ID).as_bytes(),
+            format!("Table:{}", table.ID).as_bytes(),
+        )
+        .0,
+        astersql_meta_model::EncodeTableInfo(&updated).unwrap(),
+    );
+    tx.Set(
+        super::canonical_domain::tidb_string_key(b"SchemaVersionKey").0,
+        b"2".to_vec(),
+    );
+    tx.Set(
+        super::canonical_domain::tidb_string_key(b"Diff:2").0,
+        format!(
+            "{{\"version\":2,\"type\":5,\"schema_id\":{},\"table_id\":{}}}",
+            db.ID, table.ID
+        )
+        .into_bytes(),
+    );
+    tx.Commit().unwrap();
+    let ts2 = storage.CurrentVersion("global").unwrap().Ver;
+    let (incremental, hit, old_version, change) = loader.LoadWithTS(ts2, false).unwrap();
+    assert!(!hit);
+    assert_eq!(old_version, 1);
+    assert_eq!(incremental.Version, 2);
+    assert_eq!(
+        incremental.Tables[0].Model.as_ref().unwrap().Columns.len(),
+        1
+    );
+    let change = change.unwrap();
+    assert_eq!(change.PhyTblIDS, vec![table.ID]);
+    assert_eq!(
+        change.ActionTypes,
+        vec![astersql_infoschema_issyncer::ActionType::TableUpdate(5)]
+    );
+    let full = astersql_infoschema_issyncer::NewLoaderForCrossKS(
+        Arc::new(super::domain::KvSchemaStore::new(storage.clone())),
+        None,
+    );
+    let (snapshot, _, _, _) = full.LoadWithTS(ts, true).unwrap();
+    assert_eq!(snapshot.Version, 1);
+    assert!(
+        snapshot.Tables[0]
+            .Model
+            .as_ref()
+            .unwrap()
+            .Columns
+            .is_empty()
+    );
+    let (_, hit, _, _) = loader.LoadWithTS(ts2, false).unwrap();
+    assert!(hit);
+    // An allocated version without a committed diff must remain invisible.
+    let mut tx = storage.Begin(&[]).unwrap();
+    tx.Set(
+        super::canonical_domain::tidb_string_key(b"SchemaVersionKey").0,
+        b"3".to_vec(),
+    );
+    tx.Commit().unwrap();
+    let ts3 = storage.CurrentVersion("global").unwrap().Ver;
+    assert_eq!(full.LoadWithTS(ts3, false).unwrap().0.Version, 2);
+    // User-table diffs advance the version without adding user metadata.
+    let mut tx = storage.Begin(&[]).unwrap();
+    tx.Set(
+        super::canonical_domain::tidb_string_key(b"Diff:3").0,
+        b"{\"version\":3,\"type\":12,\"schema_id\":101,\"table_id\":102}".to_vec(),
+    );
+    tx.Commit().unwrap();
+    let user_ts = storage.CurrentVersion("global").unwrap().Ver;
+    let (filtered, _, _, change) = loader.LoadWithTS(user_ts, false).unwrap();
+    assert_eq!(filtered.Version, 3);
+    assert_eq!(filtered.Databases.len(), 1);
+    assert!(change.unwrap().PhyTblIDS.is_empty());
+    // RegenerateSchemaMap is a deliberate full-load fallback, preserving models.
+    updated.Columns.push(astersql_meta_model::ColumnInfo {
+        ID: 2,
+        Name: astersql_parser_ast::NewCIStr("job_meta"),
+        State: astersql_meta_model::StatePublic,
+        ..Default::default()
+    });
+    let mut tx = storage.Begin(&[]).unwrap();
+    tx.Set(
+        super::canonical_domain::tidb_hash_key(
+            format!("DB:{}", db.ID).as_bytes(),
+            format!("Table:{}", table.ID).as_bytes(),
+        )
+        .0,
+        astersql_meta_model::EncodeTableInfo(&updated).unwrap(),
+    );
+    tx.Set(
+        super::canonical_domain::tidb_string_key(b"SchemaVersionKey").0,
+        b"4".to_vec(),
+    );
+    tx.Set(super::canonical_domain::tidb_string_key(b"Diff:4").0, format!("{{\"version\":4,\"type\":5,\"schema_id\":{},\"table_id\":{},\"regenerate_schema_map\":true}}", db.ID, table.ID).into_bytes());
+    tx.Commit().unwrap();
+    let regen_ts = storage.CurrentVersion("global").unwrap().Ver;
+    let (regenerated, _, old, change) = loader.LoadWithTS(regen_ts, false).unwrap();
+    assert_eq!(old, 3);
+    assert_eq!(regenerated.Version, 4);
+    assert!(change.is_none());
+    assert_eq!(
+        regenerated.Tables[0].Model.as_ref().unwrap().Columns.len(),
+        2
+    );
+    assert_eq!(
+        regenerated
+            .CompleteInfoSchema()
+            .TableByID(table.ID)
+            .unwrap()
+            .Meta()
+            .model_meta
+            .as_ref()
+            .unwrap()
+            .Columns
+            .len(),
+        2
+    );
+    // Malformed committed metadata is an error, never an empty schema.
+    let mut tx = storage.Begin(&[]).unwrap();
+    tx.Set(
+        super::canonical_domain::tidb_string_key(b"SchemaVersionKey").0,
+        b"5".to_vec(),
+    );
+    tx.Set(
+        super::canonical_domain::tidb_string_key(b"Diff:5").0,
+        b"invalid JSON".to_vec(),
+    );
+    tx.Commit().unwrap();
+    let ts4 = storage.CurrentVersion("global").unwrap().Ver;
+    assert!(
+        loader
+            .LoadWithTS(ts4, false)
+            .unwrap_err()
+            .to_string()
+            .contains("decode schema diff 5")
+    );
+}

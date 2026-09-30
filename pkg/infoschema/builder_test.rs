@@ -355,3 +355,119 @@ fn test_table_name_2_id_with_unloaded_tables() {
         "UnloadedTable should remain for lazy loading"
     );
 }
+
+#[test]
+fn crossks_align_meta_loader_builder_updates_column_metadata() {
+    let old = TableInfo {
+        id: 100,
+        db_id: 1,
+        name: CiString::new("system_table"),
+        ..Default::default()
+    };
+    let mut db = DBInfo {
+        id: 1,
+        name: CiString::new("mysql"),
+        tables: vec![Arc::new(old.clone())],
+        ..Default::default()
+    };
+    let mut builder = NewBuilder(0, NewData(), false).WithCrossKS(true);
+    builder.InitWithDBInfos(std::slice::from_mut(&mut db), vec![], vec![], 1);
+    let mut updated = old;
+    updated.columns.push(crate::infoschema::ColumnInfo {
+        id: 1,
+        name: CiString::new("job_id"),
+        ..Default::default()
+    });
+    let metadata = MockMetadata {
+        db: Some(db),
+        tables: [((1, 100), updated)].into_iter().collect(),
+    };
+    let affected = builder
+        .ApplyDiff(
+            &metadata,
+            &SchemaDiff {
+                version: 2,
+                action_type: ActionType::AddColumn,
+                schema_id: 1,
+                table_id: 100,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(affected, vec![100]);
+    let schema = builder.Build(2);
+    assert_eq!(schema.SchemaMetaVersion(), 2);
+    assert_eq!(schema.TableByID(100).unwrap().Meta().columns.len(), 1);
+}
+
+#[test]
+fn crossks_align_meta_loader_drop_waits_for_state_none() {
+    let model = astersql_meta_model::TableInfo {
+        ID: 100,
+        DBID: 1,
+        Name: astersql_meta_model::ast::NewCIStr("system_table"),
+        State: astersql_meta_model::StatePublic,
+        ..Default::default()
+    };
+    let old = crate::infoschema::Table::from_model(model.clone())
+        .Meta()
+        .clone();
+    let mut db = DBInfo {
+        id: 1,
+        name: CiString::new("mysql"),
+        tables: vec![Arc::new(old)],
+        ..Default::default()
+    };
+    let mut builder = NewBuilder(0, NewData(), false).WithCrossKS(true);
+    builder.InitWithDBInfos(std::slice::from_mut(&mut db), vec![], vec![], 1);
+    let mut dropping = model;
+    dropping.State = astersql_meta_model::StateWriteOnly;
+    let metadata = MockMetadata {
+        db: Some(db.clone()),
+        tables: [(
+            (1, 100),
+            crate::infoschema::Table::from_model(dropping.clone())
+                .Meta()
+                .clone(),
+        )]
+        .into_iter()
+        .collect(),
+    };
+    let mut diff = SchemaDiff {
+        version: 2,
+        action_type: ActionType::DropTable,
+        schema_id: 1,
+        table_id: 100,
+        ..Default::default()
+    };
+    assert_eq!(builder.ApplyDiff(&metadata, &diff).unwrap(), vec![100]);
+    let schema = builder.Build(2);
+    assert_eq!(
+        schema
+            .TableByID(100)
+            .unwrap()
+            .Meta()
+            .model_meta
+            .as_ref()
+            .unwrap()
+            .State,
+        astersql_meta_model::StateWriteOnly
+    );
+    let mut builder = NewBuilder(0, NewData(), false).WithCrossKS(true);
+    builder.InitWithOldInfoSchema(schema.as_ref());
+    dropping.State = astersql_meta_model::StateNone;
+    let metadata = MockMetadata {
+        db: Some(db),
+        tables: [(
+            (1, 100),
+            crate::infoschema::Table::from_model(dropping)
+                .Meta()
+                .clone(),
+        )]
+        .into_iter()
+        .collect(),
+    };
+    diff.version = 3;
+    assert_eq!(builder.ApplyDiff(&metadata, &diff).unwrap(), vec![100]);
+    assert!(builder.Build(3).TableByID(100).is_none());
+}
