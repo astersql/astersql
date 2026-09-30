@@ -97,8 +97,7 @@ errdoc:tools/bin/errdoc-gen
 .PHONY: lint
 lint:tools/bin/revive
 	@echo "linting"
-	@tools/bin/revive -formatter friendly -config tools/check/revive.toml \
-	-exclude pkg/util/hack/... -exclude ./pkg/util/hack/...  $(FILES_TIDB_TESTS)
+	@./tools/check/lint-go.sh tools/bin/revive
 	@tools/bin/revive -formatter friendly -config tools/check/revive.toml ./lightning/...
 	go run tools/dashboard-linter/main.go pkg/metrics/grafana/overview.json
 	go run tools/dashboard-linter/main.go pkg/metrics/grafana/performance_overview.json
