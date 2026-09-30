@@ -304,9 +304,16 @@ macro_rules! embedded {
         }
         impl VisitMut for $name {
             fn visit_mut(&mut self, v: &mut dyn InPlaceVisitor) -> bool {
-                if v.enter_embedded(self) { return v.leave_embedded(self); }
-                if !self.visit_children_mut(v) { return false; }
-                v.leave_embedded(self)
+                let skip_children = v.enter_embedded(self);
+                if let Some(replacement) = v.enter_embedded_replacement(self) {
+                    *self = *replacement.downcast::<$name>().unwrap_or_else(|_| panic!("visitor replacement must preserve the embedded Rust type"));
+                }
+                if !skip_children && !self.visit_children_mut(v) { return false; }
+                let ok = v.leave_embedded(self);
+                if let Some(replacement) = v.leave_embedded_replacement(self) {
+                    *self = *replacement.downcast::<$name>().unwrap_or_else(|_| panic!("visitor replacement must preserve the embedded Rust type"));
+                }
+                ok
             }
         }
     )*};
