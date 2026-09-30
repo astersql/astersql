@@ -6,6 +6,156 @@ use astersql_parser_ast as ast;
 use std::io;
 use std::net::TcpStream;
 
+/// Recognize the PostgreSQL startup-time probe before the canonical SQL parser.
+/// Its epoch value is fixed at PG service startup, shared by every connection.
+pub(crate) fn adapt_session_query(
+    sql: &str,
+    startup_epoch_micros: u128,
+) -> Result<std::borrow::Cow<'_, str>, (&'static str, String)> {
+    let Some(startup) = startup_time_query(sql, startup_epoch_micros) else {
+        return adapt_query(sql);
+    };
+    adapt_query(&startup).map(|query| std::borrow::Cow::Owned(query.into_owned()))
+}
+
+fn startup_time_query(sql: &str, startup_epoch_micros: u128) -> Option<String> {
+    // Match SQL tokens rather than deleting whitespace or searching substrings:
+    // quoted literals and lookalike identifiers must never become functions.
+    fn token<'a>(remaining: &mut &'a str, expected: &str) -> Option<()> {
+        let input = remaining.trim_start();
+        let head = input.get(..expected.len())?;
+        let matches = if expected.starts_with('\'') {
+            head == expected
+        } else {
+            head.eq_ignore_ascii_case(expected)
+        };
+        if !matches {
+            return None;
+        }
+        let tail = &input[expected.len()..];
+        if expected
+            .as_bytes()
+            .last()
+            .is_some_and(u8::is_ascii_alphanumeric)
+            && tail
+                .as_bytes()
+                .first()
+                .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+        {
+            return None;
+        }
+        *remaining = tail;
+        Some(())
+    }
+    let mut remaining = sql;
+    for expected in [
+        "select",
+        "round",
+        "(",
+        "extract",
+        "(",
+        "epoch",
+        "from",
+        "pg_postmaster_start_time",
+        "(",
+        ")",
+        "at",
+        "time",
+        "zone",
+        "'UTC'",
+        ")",
+        ")",
+    ] {
+        token(&mut remaining, expected)?;
+    }
+    // Keep aliases and any trailing clauses for ordinary parser validation;
+    // multi-statement requests are still rejected by the PG command gate.
+    let suffix = remaining.trim_start();
+    let suffix = if suffix.is_empty() || suffix == ";" {
+        " AS round"
+    } else {
+        remaining
+    };
+    let seconds = startup_epoch_micros / 1_000_000;
+    let micros = startup_epoch_micros % 1_000_000;
+    // PostgreSQL ROUND(numeric) rounds a positive half away from zero. Keep
+    // integer arithmetic here and a decimal literal so Describe and Execute
+    // both derive numeric metadata without a shared-engine function fallback.
+    let rounded = seconds + u128::from(micros >= 500_000);
+    Some(format!("SELECT {rounded}.0{suffix}"))
+}
+
+/// Adapt PostgreSQL catalog identity projections at the PG boundary only.
+/// AST field offsets keep strings, quoted/qualified columns and aliases intact;
+/// DATABASE() obtains the current database from the canonical session at execution.
+pub(crate) fn adapt_query(sql: &str) -> Result<std::borrow::Cow<'_, str>, (&'static str, String)> {
+    if !sql.to_ascii_lowercase().contains("current_catalog") {
+        return Ok(std::borrow::Cow::Borrowed(sql));
+    }
+    let (statements, _) = astersql_parser::New()
+        .ParseSQL(sql, &[])
+        .map_err(|error| ("42601", error.to_string()))?;
+    struct CatalogProjection<'a> {
+        sql: &'a str,
+        replacements: std::collections::BTreeMap<usize, &'static str>,
+    }
+    impl ast::Visitor for CatalogProjection<'_> {
+        fn enter(&mut self, node: &dyn ast::Node) -> bool {
+            if let Some(select) = node.as_any().downcast_ref::<ast::SelectStmt>() {
+                for field in &select.Fields.Fields {
+                    let Some(ast::ExprNode {
+                        Kind: ast::ExprKind::Column(column),
+                        ..
+                    }) = &field.Expr
+                    else {
+                        continue;
+                    };
+                    if column.Schema.L.is_empty()
+                        && column.Table.L.is_empty()
+                        && column.Name.L == "current_catalog"
+                        && self
+                            .sql
+                            .get(field.Offset..field.Offset + "current_catalog".len())
+                            .is_some_and(|text| text.eq_ignore_ascii_case("current_catalog"))
+                    {
+                        self.replacements.insert(
+                            field.Offset,
+                            if field.AsName.L.is_empty() {
+                                "DATABASE() AS current_catalog"
+                            } else {
+                                "DATABASE()"
+                            },
+                        );
+                    }
+                }
+            }
+            false
+        }
+        fn leave(&mut self, _: &dyn ast::Node) -> bool {
+            true
+        }
+    }
+    let mut visitor = CatalogProjection {
+        sql,
+        replacements: Default::default(),
+    };
+    for statement in &statements {
+        statement.accept(&mut visitor);
+    }
+    if visitor.replacements.is_empty() {
+        return Ok(std::borrow::Cow::Borrowed(sql));
+    }
+    let mut output = String::with_capacity(sql.len());
+    let mut previous = 0;
+    for (offset, replacement) in visitor.replacements {
+        output.push_str(&sql[previous..offset]);
+        output.push_str(replacement);
+        previous = offset + "current_catalog".len();
+    }
+    output.push_str(&sql[previous..]);
+    Ok(std::borrow::Cow::Owned(output))
+}
+
 /// Parse before execution: a batched engine error cannot preserve prior results.
 /// No SQL rewriting or multi-statement partial-success claims are permitted.
 pub(crate) fn command(sql: &str) -> Result<Option<&'static str>, (&'static str, String)> {

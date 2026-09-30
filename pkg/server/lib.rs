@@ -28,6 +28,7 @@ pub mod http_handler;
 pub mod http_status;
 /// 测试用 mock 连接。
 pub mod mock_conn;
+mod pg_catalog;
 pub mod pg_conn;
 #[cfg(test)]
 #[path = "pg_conn_test.rs"]

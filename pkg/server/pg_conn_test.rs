@@ -134,6 +134,8 @@ fn startup_server_version_parameter() {
         for body in [
             b"client_encoding\0UTF8\0".as_slice(),
             b"server_encoding\0UTF8\0",
+            b"DateStyle\0ISO, MDY\0",
+            b"TimeZone\0UTC\0",
             b"server_version\018.0 (AsterSQL)\0",
         ] {
             assert_eq!(message(&mut socket), (b'S', body.to_vec()));
@@ -147,6 +149,78 @@ fn startup_server_version_parameter() {
         let error = message(&mut bad);
         assert_eq!(error.0, b'E');
         assert!(error.1.windows(5).any(|w| w == b"28P01"));
+    }
+    service.close();
+}
+
+#[test]
+fn startup_datagrip_date_style() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    for version in [196608u32, 196610] {
+        for (style, zone, digits, error_code) in [
+            ("ISO", "Asia/Shanghai", "3", None),
+            ("iso", "Asia/Shanghai", "2", None),
+            ("ISO, MDY", "Asia/Shanghai", "1", None),
+            ("SQL, DMY", "Asia/Shanghai", "3", Some("0A000")),
+            ("ISO", "NoSuch/Zone", "3", Some("22023")),
+            ("ISO", "UTC'; SET sql_mode='", "3", Some("0A000")),
+            ("ISO", "Asia/Shanghai", "-1", Some("0A000")),
+        ] {
+            let mut socket = TcpStream::connect(addr).unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut body = version.to_be_bytes().to_vec();
+            body.extend_from_slice(
+                format!("user\0root\0client_encoding\0UTF8\0DateStyle\0{style}\0TimeZone\0{zone}\0extra_float_digits\0{digits}\0\0").as_bytes(),
+            );
+            socket
+                .write_all(&((body.len() + 4) as u32).to_be_bytes())
+                .unwrap();
+            socket.write_all(&body).unwrap();
+            if let Some(code) = error_code {
+                let (tag, error) = message(&mut socket);
+                assert_eq!(tag, b'E');
+                assert!(error.windows(5).any(|w| w == code.as_bytes()));
+                continue;
+            }
+            assert_eq!(message(&mut socket), (b'R', 0u32.to_be_bytes().to_vec()));
+            let mut date_style = None;
+            let mut time_zone = None;
+            loop {
+                let (tag, body) = message(&mut socket);
+                if tag == b'S' && body.starts_with(b"DateStyle\0") {
+                    date_style = Some(body.clone());
+                }
+                if tag == b'S' && body.starts_with(b"TimeZone\0") {
+                    time_zone = Some(body.clone());
+                }
+                if tag == b'Z' {
+                    break;
+                }
+                assert!(matches!(tag, b'S' | b'K'));
+            }
+            assert_eq!(date_style, Some(b"DateStyle\0ISO, MDY\0".to_vec()));
+            assert_eq!(time_zone, Some(b"TimeZone\0Asia/Shanghai\0".to_vec()));
+            send(&mut socket, b'Q', b"SELECT 1\0");
+            assert_eq!(message(&mut socket).0, b'T');
+            assert_eq!(message(&mut socket).0, b'D');
+            assert_eq!(message(&mut socket).0, b'C');
+            assert_eq!(message(&mut socket), (b'Z', b"I".to_vec()));
+            send(&mut socket, b'X', b"");
+        }
     }
     service.close();
 }

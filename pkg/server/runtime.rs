@@ -625,6 +625,7 @@ impl SessionDriver for ConcreteSessionDriver {
             }
         };
         Ok(Arc::new(ConcreteTiDBContext {
+            domain: Arc::clone(&self.domain),
             requests: Mutex::new(Some(request_tx)),
             worker: Mutex::new(Some(worker)),
             auth_mode: self.auth_mode,
@@ -657,6 +658,7 @@ impl SessionDriver for ConcreteSessionDriver {
 }
 
 struct ConcreteTiDBContext {
+    domain: Arc<Domain>,
     requests: Mutex<Option<mpsc::Sender<SessionRequest>>>,
     worker: Mutex<Option<JoinHandle<()>>>,
     auth_mode: BootstrapAuthMode,
@@ -1253,6 +1255,10 @@ impl ConcreteTiDBContext {
 }
 
 impl TiDBContext for ConcreteTiDBContext {
+    fn schema_snapshot(&self) -> Option<astersql_infoschema::SchemaRef> {
+        Some(self.domain.info_schema())
+    }
+
     fn transaction_mdl(&self) -> Option<Arc<astersql_session_sessmgr::TransactionMDL>> {
         Some(self.transaction_mdl.clone())
     }

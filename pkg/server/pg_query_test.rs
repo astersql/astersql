@@ -86,6 +86,54 @@ fn simple_query_roundtrip() {
     assert_eq!(metadata.len(), 18);
     assert_eq!(&metadata[6..10], &20u32.to_be_bytes());
     assert_eq!(&metadata[16..], &0i16.to_be_bytes());
+    for sql in [
+        "SELECT current_catalog",
+        "/* DataGrip */ SELECT CURRENT_CATALOG AS catalog",
+    ] {
+        let result = query(&mut socket, sql);
+        assert_eq!(
+            result.iter().map(|m| m.0).collect::<Vec<_>>(),
+            b"TDCZ",
+            "{sql}"
+        );
+        assert_eq!(result[1], (b'D', row(&[Some("test")])));
+        let label = if sql.contains(" AS ") {
+            "catalog"
+        } else {
+            "current_catalog"
+        };
+        assert!(result[0].1[2..].starts_with(&[label.as_bytes(), b"\0"].concat()));
+    }
+    let startup_sql = "SELECT round(extract(epoch from pg_postmaster_start_time() at time zone 'UTC')) as startup_time";
+    let startup_result = query(&mut socket, startup_sql);
+    assert_eq!(
+        startup_result.iter().map(|m| m.0).collect::<Vec<_>>(),
+        b"TDCZ"
+    );
+    assert!(startup_result[0].1[2..].starts_with(b"startup_time\0"));
+    let type_offset = 2 + b"startup_time\0".len() + 6;
+    assert_eq!(
+        &startup_result[0].1[type_offset..type_offset + 4],
+        &1700u32.to_be_bytes()
+    );
+    let timestamp: u64 = std::str::from_utf8(&startup_result[1].1[6..])
+        .unwrap()
+        .trim_end_matches(".0")
+        .parse()
+        .unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    assert!(timestamp <= now + 1 && timestamp + 60 >= now);
+    assert_eq!(query(&mut socket, startup_sql)[1], startup_result[1]);
+    for sql in [
+        "select L.transactionid::varchar::bigint as transaction_id from pg_catalog.pg_locks L where L.transactionid is not null order by pg_catalog.age(L.transactionid) desc limit 1",
+        "select N.oid::bigint as id, datname as name, D.description, datistemplate as is_template, datallowconn as allow_connections, pg_catalog.pg_get_userbyid(N.datdba) as \"owner\" from pg_catalog.pg_database N left join pg_catalog.pg_shdescription D on N.oid = D.objoid order by case when datname = pg_catalog.current_database() then -1::bigint else N.oid::bigint end",
+    ] {
+        let result = query(&mut socket, sql);
+        assert_eq!(result.first().unwrap().0, b'T', "{sql}: {result:?}");
+    }
     let nulls = query(&mut socket, "SELECT NULL, ''");
     assert_eq!(nulls[1], (b'D', row(&[None, Some("")])));
     for (sql, completion) in [
@@ -156,8 +204,47 @@ fn simple_query_roundtrip() {
         query(&mut socket, "ROLLBACK").last().unwrap(),
         &(b'Z', b"I".to_vec())
     );
+    let mut other = TcpStream::connect(addr).unwrap();
+    other
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let startup = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0pg_query_roundtrip\0\0",
+    ]
+    .concat();
+    other
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    other.write_all(&startup).unwrap();
+    assert_eq!(read(&mut other).0, b'R');
+    while read(&mut other).0 != b'Z' {}
+    assert_eq!(
+        query(&mut other, "SELECT current_catalog")[1],
+        (b'D', row(&[Some("pg_query_roundtrip")]))
+    );
+    assert_eq!(query(&mut other, startup_sql)[1], startup_result[1]);
+    send(&mut other, b'X', b"");
     send(&mut socket, b'X', b"");
     service.close();
+}
+
+#[test]
+fn current_catalog_adaptation_preserves_sql_boundaries() {
+    use crate::pg_result::adapt_query;
+    for sql in [
+        "SELECT 'current_catalog' AS current_catalog",
+        "SELECT `current_catalog` FROM t",
+        "SELECT t.current_catalog FROM t",
+        "SELECT current_catalogue FROM t",
+        "SELECT 1 /* current_catalog */",
+    ] {
+        assert_eq!(adapt_query(sql).unwrap(), sql);
+    }
+    assert_eq!(
+        adapt_query("SELECT current_catalog, 'current_catalog', CURRENT_CATALOG AS name").unwrap(),
+        "SELECT DATABASE() AS current_catalog, 'current_catalog', DATABASE() AS name",
+    );
 }
 
 #[test]
@@ -208,4 +295,163 @@ fn simple_query_encoding_rejects_unrepresentable_results() {
             .0,
         "0A000"
     );
+}
+
+#[test]
+fn startup_time_probe_preserves_sql_boundaries() {
+    use crate::pg_result::adapt_session_query;
+    for sql in [
+        "SELECT 'round(extract(epoch from pg_postmaster_start_time() at time zone \"UTC\"))'",
+        "selectround(extract(epoch from pg_postmaster_start_time() at time zone 'UTC'))",
+        "select round(extract(epoch from pg_postmaster_start_time() at time zone 'U TC'))",
+        "select round(extract(epoch from pg_postmaster_start_time_other() at time zone 'UTC'))",
+    ] {
+        assert_eq!(adapt_session_query(sql, 123_500_000).unwrap(), sql);
+    }
+    let sql = "SeLeCt ROUND ( EXTRACT ( EPOCH FROM pg_postmaster_start_time ( ) AT TIME ZONE 'UTC' ) ) AS startup_time;";
+    assert_eq!(
+        adapt_session_query(sql, 123_500_000).unwrap(),
+        "SELECT 124.0 AS startup_time;"
+    );
+}
+
+fn catalog_rows(messages: &[(u8, Vec<u8>)]) -> Vec<Vec<Option<String>>> {
+    messages
+        .iter()
+        .filter(|message| message.0 == b'D')
+        .map(|(_, body)| {
+            let count = i16::from_be_bytes(body[..2].try_into().unwrap());
+            let mut offset = 2;
+            (0..count)
+                .map(|_| {
+                    let length = i32::from_be_bytes(body[offset..offset + 4].try_into().unwrap());
+                    offset += 4;
+                    if length == -1 {
+                        None
+                    } else {
+                        let end = offset + length as usize;
+                        let value = String::from_utf8(body[offset..end].to_vec()).unwrap();
+                        offset = end;
+                        Some(value)
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+#[test]
+fn datagrip_catalog_live_metadata() {
+    use crate::pg_catalog::{CatalogQuery, DATABASES_SQL, TRANSACTIONS_SQL};
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let body = [196608u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    assert_eq!(read(&mut socket).0, b'R');
+    while read(&mut socket).0 != b'Z' {}
+    for sql in [
+        "CREATE DATABASE IF NOT EXISTS test",
+        "CREATE DATABASE pg_catalog_live",
+        "CREATE TABLE test.pg_catalog_tx (id INT)",
+    ] {
+        assert_eq!(query(&mut socket, sql)[0].0, b'C', "{sql}");
+    }
+    let result = query(&mut socket, DATABASES_SQL);
+    assert_eq!(result[0].0, b'T');
+    let rows = catalog_rows(&result);
+    assert_eq!(rows[0][1].as_deref(), Some("test"));
+    let created = rows
+        .iter()
+        .find(|r| r[1].as_deref() == Some("pg_catalog_live"))
+        .unwrap();
+    let schema = domain
+        .info_schema()
+        .AllSchemas()
+        .into_iter()
+        .find(|schema| schema.name.lower == "pg_catalog_live")
+        .unwrap();
+    assert_eq!(created[0], Some(schema.id.to_string()));
+    assert_eq!(created[2], None);
+    assert_eq!(created[3].as_deref(), Some("f"));
+    assert_eq!(created[4].as_deref(), Some("t"));
+    assert_eq!(created[5], None);
+    assert!(catalog_rows(&query(&mut socket, TRANSACTIONS_SQL)).is_empty());
+    assert_eq!(query(&mut socket, "BEGIN")[0].0, b'C');
+    assert_eq!(
+        query(&mut socket, "INSERT INTO test.pg_catalog_tx VALUES (1)")[0].0,
+        b'C'
+    );
+    let live = catalog_rows(&query(&mut socket, TRANSACTIONS_SQL));
+    assert_eq!(live.len(), 1);
+    let native = catalog_rows(&query(
+        &mut socket,
+        "SELECT ID FROM information_schema.tidb_trx",
+    ));
+    assert!(native.iter().any(|row| row[0] == live[0][0]));
+    let mut second = TcpStream::connect(addr).unwrap();
+    second
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    second
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    second.write_all(&body).unwrap();
+    assert_eq!(read(&mut second).0, b'R');
+    while read(&mut second).0 != b'Z' {}
+    assert_eq!(query(&mut second, "BEGIN")[0].0, b'C');
+    assert_eq!(
+        query(&mut second, "INSERT INTO test.pg_catalog_tx VALUES (2)")[0].0,
+        b'C'
+    );
+    assert_eq!(catalog_rows(&query(&mut second, TRANSACTIONS_SQL)), live);
+    assert_eq!(query(&mut socket, "ROLLBACK")[0].0, b'C');
+    let remaining = catalog_rows(&query(&mut socket, TRANSACTIONS_SQL));
+    assert_eq!(remaining.len(), 1);
+    assert!(
+        remaining[0][0].as_ref().unwrap().parse::<i64>().unwrap()
+            > live[0][0].as_ref().unwrap().parse::<i64>().unwrap()
+    );
+    assert_eq!(query(&mut second, "ROLLBACK")[0].0, b'C');
+    assert!(catalog_rows(&query(&mut socket, TRANSACTIONS_SQL)).is_empty());
+    send(&mut second, b'X', b"");
+    assert_eq!(
+        query(&mut socket, "DROP DATABASE pg_catalog_live")[0].0,
+        b'C'
+    );
+    assert!(
+        !catalog_rows(&query(&mut socket, DATABASES_SQL))
+            .iter()
+            .any(|r| r[1].as_deref() == Some("pg_catalog_live"))
+    );
+    for modified in [
+        format!("{DATABASES_SQL}; SELECT 1"),
+        format!("SELECT '{TRANSACTIONS_SQL}'"),
+        TRANSACTIONS_SQL.replace("limit 1", "limit 2"),
+    ] {
+        assert_eq!(CatalogQuery::classify(&modified), None);
+    }
+    assert_eq!(
+        CatalogQuery::classify(&format!("/* intro */ {DATABASES_SQL}; -- done")),
+        Some(CatalogQuery::Databases)
+    );
+    send(&mut socket, b'X', b"");
+    service.close();
 }

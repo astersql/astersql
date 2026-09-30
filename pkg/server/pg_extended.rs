@@ -277,12 +277,15 @@ fn temporal(oid: u32, text: &str) -> Result<(u8, Vec<u8>)> {
     Ok((if oid == 1082 { 10 } else { 12 }, bytes))
 }
 struct Statement {
+    catalog: Option<crate::pg_catalog::CatalogQuery>,
     metadata: PreparedMetadata,
     oids: Vec<u32>,
     mapping: Vec<usize>,
     command: Option<&'static str>,
 }
 struct Portal {
+    catalog: Option<crate::pg_catalog::CatalogQuery>,
+    statement_name: String,
     columns: Vec<crate::conn::ColumnInfo>,
     native_types: Vec<crate::conn::NativeType>,
     statement: u32,
@@ -294,16 +297,25 @@ struct Portal {
 }
 #[derive(Default)]
 pub(crate) struct Extended {
+    startup_epoch_micros: u128,
     statements: HashMap<String, Statement>,
     portals: HashMap<String, Portal>,
     failed: bool,
 }
 impl Extended {
+    pub(crate) fn new(startup_epoch_micros: u128) -> Self {
+        Self {
+            startup_epoch_micros,
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn reset_unnamed(&mut self, context: &Arc<dyn TiDBContext>) {
         if let Some(statement) = self.statements.remove("") {
-            let _ = context.close_prepared_statement(statement.metadata.statement_id);
-            self.portals
-                .retain(|_, p| p.statement != statement.metadata.statement_id);
+            if statement.catalog.is_none() {
+                let _ = context.close_prepared_statement(statement.metadata.statement_id);
+            }
+            self.portals.retain(|_, p| !p.statement_name.is_empty());
         }
         self.portals.remove("");
     }
@@ -313,7 +325,11 @@ impl Extended {
         body: &[u8],
         socket: &mut TcpStream,
         context: &Arc<dyn TiDBContext>,
-        execute: impl FnOnce(u32, &[BinaryParam]) -> io::Result<crate::conn::ConnResult<QueryResult>>,
+        execute: impl FnOnce(
+            u32,
+            &[BinaryParam],
+            Option<crate::pg_catalog::CatalogQuery>,
+        ) -> io::Result<crate::conn::ConnResult<QueryResult>>,
     ) -> io::Result<bool> {
         if self.failed && tag != b'S' {
             return Ok(true);
@@ -364,7 +380,11 @@ impl Extended {
         tag: u8,
         body: &[u8],
         context: &Arc<dyn TiDBContext>,
-        execute: impl FnOnce(u32, &[BinaryParam]) -> io::Result<crate::conn::ConnResult<QueryResult>>,
+        execute: impl FnOnce(
+            u32,
+            &[BinaryParam],
+            Option<crate::pg_catalog::CatalogQuery>,
+        ) -> io::Result<crate::conn::ConnResult<QueryResult>>,
     ) -> Result<Vec<(u8, Vec<u8>)>> {
         let mut reader = Reader { bytes: body };
         match tag {
@@ -380,7 +400,17 @@ impl Extended {
                 if !name.is_empty() && self.statements.contains_key(&name) {
                     return Err(error("42P05", "prepared statement already exists"));
                 }
-                let (sql, mapping) = markers(&sql)?;
+                let catalog = crate::pg_catalog::CatalogQuery::classify(&sql);
+                let (sql, mapping) = if catalog.is_some() {
+                    (sql, Vec::new())
+                } else {
+                    markers(&sql)?
+                };
+                let sql = if catalog.is_some() {
+                    std::borrow::Cow::Borrowed(sql.as_str())
+                } else {
+                    crate::pg_result::adapt_session_query(&sql, self.startup_epoch_micros)?
+                };
                 let n = mapping.iter().max().map_or(0, |n| n + 1);
                 if count > n {
                     return Err(error("08P01", "too many parameter OIDs"));
@@ -414,23 +444,34 @@ impl Extended {
                         return Err(error("0A000", "unsupported text parameter OID"));
                     }
                 }
-                let command = crate::pg_result::command(&sql)?;
+                let command = if catalog.is_some() {
+                    Some("SELECT")
+                } else {
+                    crate::pg_result::command(&sql)?
+                };
                 if command.is_none() {
                     return Err(error("0A000", "empty prepared statements are unsupported"));
                 }
-                let metadata = context
-                    .prepare_statement(&sql, &CancellationToken::new())
-                    .map_err(engine)?;
+                let metadata = if let Some(catalog) = catalog {
+                    catalog.metadata()
+                } else {
+                    context
+                        .prepare_statement(&sql, &CancellationToken::new())
+                        .map_err(engine)?
+                };
                 if metadata.parameter_count != mapping.len() {
-                    let _ = context.close_prepared_statement(metadata.statement_id);
+                    if catalog.is_none() {
+                        let _ = context.close_prepared_statement(metadata.statement_id);
+                    }
                     return Err(error("0A000", "engine parameter count mismatch"));
                 }
                 if let Some(previous) = self.statements.remove(&name) {
-                    context
-                        .close_prepared_statement(previous.metadata.statement_id)
-                        .map_err(engine)?;
-                    self.portals
-                        .retain(|_, p| p.statement != previous.metadata.statement_id);
+                    if previous.catalog.is_none() {
+                        context
+                            .close_prepared_statement(previous.metadata.statement_id)
+                            .map_err(engine)?;
+                    }
+                    self.portals.retain(|_, p| p.statement_name != name);
                 }
                 if name.is_empty() {
                     self.portals.remove("");
@@ -438,6 +479,7 @@ impl Extended {
                 self.statements.insert(
                     name,
                     Statement {
+                        catalog,
                         metadata,
                         oids,
                         mapping,
@@ -497,6 +539,8 @@ impl Extended {
                 self.portals.insert(
                     name,
                     Portal {
+                        catalog: statement.catalog,
+                        statement_name,
                         columns: statement.metadata.columns.clone(),
                         native_types: statement.metadata.native_types.clone(),
                         statement: statement.metadata.statement_id,
@@ -560,7 +604,7 @@ impl Extended {
                     let Some(command) = portal.command else {
                         return Ok(vec![(b'I', vec![])]);
                     };
-                    let execution = execute(portal.statement, &portal.args)
+                    let execution = execute(portal.statement, &portal.args, portal.catalog)
                         .map_err(|e| error("XX000", &e.to_string()))?;
                     let mut result = match execution {
                         Ok(result) => result,
@@ -630,11 +674,12 @@ impl Extended {
                             .statements
                             .remove(&name)
                             .ok_or_else(|| error("26000", "unknown prepared statement"))?;
-                        context
-                            .close_prepared_statement(statement.metadata.statement_id)
-                            .map_err(engine)?;
-                        self.portals
-                            .retain(|_, p| p.statement != statement.metadata.statement_id);
+                        if statement.catalog.is_none() {
+                            context
+                                .close_prepared_statement(statement.metadata.statement_id)
+                                .map_err(engine)?;
+                        }
+                        self.portals.retain(|_, p| p.statement_name != name);
                     }
                     b'P' => {
                         self.portals

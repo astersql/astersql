@@ -16,17 +16,29 @@ psql "host=127.0.0.1 port=<postgres-port> user=root dbname=test sslmode=disable 
 
 当前鉴权仅支持 canonical driver 的 `InsecureRootOnly` 开发模式：driver 验证 root 空 native credentials 成功后才返回 AuthenticationOk。其他身份与 `SecureUnsupported` 模式被拒绝。不提供生产密码鉴权、SCRAM、TLS 或 GSS 加密；SSL/GSS 协商返回 N，要求 secure transport 时拒绝连接。不要将此入口视为生产鉴权方案。
 
-startup 接受 user、database、application_name 和 UTF8/UTF-8 client_encoding；其他参数返回不支持。database 在鉴权成功后通过既有会话接口选择。libpq 连接配置应显式设置 `sslmode=disable gssencmode=disable` 并指定存在的数据库。
+startup 接受 user、database、application_name、UTF8/UTF-8 client_encoding、ISO/ISO, MDY DateStyle 和正值 1/2/3 extra_float_digits。DateStyle 报告为 ISO, MDY；浮点文本使用现有最短可往返编码，非正值舍入模式不支持。TimeZone 在鉴权后设置到 canonical 会话 time_zone，并通过 ParameterStatus 回报；缺省为 UTC，无效时区返回 22023，其他不支持参数返回 0A000。database 在鉴权成功后通过既有会话接口选择。libpq 连接配置应显式设置 `sslmode=disable gssencmode=disable` 并指定存在的数据库。
 
 ## 已验证工作流
 
 真实 TCP/libpq 默认 3.0 与显式 3.2 回归执行 SELECT、CREATE TABLE、INSERT、UPDATE、DELETE、DROP TABLE、显式 int4 OID 的 `$1` 参数及 BEGIN/COMMIT/ROLLBACK。同一 Server 上的 MySQL 连接在 PG 工作流前完成鉴权，之后 COM_PING 仍成功。
 
-简单 Query 只接受一条现有引擎可执行的语句；空查询返回 EmptyQueryResponse，多语句返回 0A000。允许的 AST 命令还包括集合查询、CREATE/DROP DATABASE、ALTER/TRUNCATE TABLE、DROP VIEW、SET；这些命令的全部 SQL 变体没有逐一验收。REPLACE 与其他不支持命令被拒绝。没有全局 SQL 改写或 pg_catalog 仿真。
+简单 Query 只接受一条现有引擎可执行的语句；空查询返回 EmptyQueryResponse，多语句返回 0A000。允许的 AST 命令还包括集合查询、CREATE/DROP DATABASE、ALTER/TRUNCATE TABLE、DROP VIEW、SET；这些命令的全部 SQL 变体没有逐一验收。REPLACE 与其他不支持命令被拒绝。DataGrip 的 `select round(extract(epoch from pg_postmaster_start_time() at time zone 'UTC')) as startup_time` 探测在 PG 适配层按 SQL token 识别，以 PG listener 本次启动时记录的微秒时间计算并四舍五入到 epoch 秒；同一 PG 服务的所有连接和预处理查询共用该值，结果 OID 为 numeric（1700），保留别名。此支持仅覆盖该 UTC 启动时间探测，不代表通用 EXTRACT、AT TIME ZONE 或 PostgreSQL 时间函数兼容。PG 适配层按 AST 投影和源码位置将未引用、未限定的直接 `current_catalog` 投影映射到 canonical 会话的数据库名，保留默认结果列名与显式别名；普通与扩展查询共用该适配。字符串、引用列名、限定列名不改写；完整 PostgreSQL 表达式及 pg_catalog 仿真不作兼容承诺。
 
 扩展查询支持 Parse、Bind、Describe、Execute、Close、Sync、Flush，具备命名 statement/portal、重复和乱序 `$n` 参数映射、分段返回 PortalSuspended、错误后丢弃消息直到 Sync。参数传给既有预处理接口，不通过字符串拼接值。参数必须提供明确类型 OID；没有参数类型推断，参数化投影的结果元数据缺失或 prepare/execute 元数据不一致时明确报错。二进制参数与结果格式被拒绝。美元引用、引擎可执行注释/提示注释及 `?` 参数标记不支持。
 
 3.0 BackendKeyData 使用 4 字节随机取消密钥，3.2 使用 32 字节；CancelRequest 必须匹配当前后端和密钥。真实 libpq 验证 idle cancel 不影响下一条查询；相邻 TCP 测试验证正在执行的命令取消、错误密钥及旧/空闲取消不会污染下一命令。事务状态来自共享会话的 in_transaction；只报告 I/T，不承诺 PostgreSQL 出错事务的 E 状态及其后续语义。
+
+## DataGrip 内省目录探测
+
+PG 独立目录执行器支持日志中的两条完整查询：`pg_database`/`pg_shdescription` 数据库列表（含 `::bigint`、`pg_get_userbyid`、`current_database` 排序），以及 `pg_locks` 的最老事务探测（含 `::varchar::bigint`、`age` 排序和 LIMIT 1）。按完整 SQL token 序列识别，接受大小写、空白、普通注释和末尾单个分号差异；不作通用 `::` 类型转换或完整 pg_catalog 表兼容承诺，修改查询条件或批量 SQL 不会被当成相同探测。
+
+数据库名和 ID 来自当前 canonical InfoSchema，ID 是 AsterSQL 原生 schema ID，并非 PostgreSQL 32 位 OID；当前数据库排在首位，其余按 ID 排序。AsterSQL 数据库不是 PostgreSQL template，root 开发鉴权下允许连接。原生元数据没有 PostgreSQL database owner 或 shared description，因此两列返回 SQL NULL。结果明确报告 bigint、text、boolean 类型。
+
+事务探测读取当前 Domain 的真实 `information_schema.tidb_trx`，返回最小的原生 TSO start timestamp。没有活动事务时返回零行；事务结束后移除。这里的 transaction_id 是原生 64 位事务标识，不是 PG wraparound XID，也不代表完整 PostgreSQL 锁模式、持锁表或 `age(xid)` 语义。
+
+普通 Query 和扩展 Parse/Bind/Describe/Execute 都支持两种探测。PG 目录 statement/portal 生命周期按 PG statement 名字管理，不分配或关闭 engine prepared handle；在 Execute 时重新读取元数据，继续使用统一 portal 分页和 Sync 错误恢复。共享会话接口仅新增协议无关的只读 schema snapshot，没有加入 PG SQL 解析或目录行为。
+
+本机 DataGrip JDBC 42.7.13、42.7.3 对两条原始 SQL 的普通及 PreparedStatement 查询通过，并验证实际新建/删除数据库、boolean/NULL 类型、活动事务及回滚后的变化。真实 TCP 测试另外验证 Parse 后新建库可见、两个目录 statement 的 Close 相互隔离、最老事务跨连接排序。未验证完整 DataGrip 元数据树或 RealTiKV 分布式锁行为。
 
 ## 类型与错误边界
 
@@ -52,6 +64,6 @@ cargo test -p astersql-server --lib mysql_prepared_statements_execute_real_sql_w
 
 真实客户端测试缺少 Python 3 或 libpq >=18 时明确失败。macOS 默认库路径是 `/opt/homebrew/opt/libpq/lib/libpq.dylib`；其他路径可设置 `PG_LIBPQ_LIBRARY`。
 
-实际使用 DataGrip 已安装的 PostgreSQL JDBC 42.7.13 和 42.7.3 驱动连接临时真实 TCP listener，均在 startup 阶段收到 `FATAL: unsupported startup parameter DateStyle`，尚不能完成 JDBC 连接或执行 SELECT 1。默认系统 psql 18 的 SELECT 1 已实测返回 1。DataGrip UI 和元数据浏览未验证。没有验证 RealTiKV、生产鉴权、TLS、COPY、复制、通知、完整 pg_catalog、ORM/JDBC 全组合或完整 PostgreSQL SQL 语法/事务语义。结果和 portal 当前全量物化；增加原始类型向量，必要时进行只读 AST/catalog 元数据解析，没有大结果吞吐或内存基准。
+此前 DataGrip PostgreSQL JDBC 在 startup 阶段被 DateStyle 拒绝；现已补齐 ISO DateStyle、TimeZone 和正值 extra_float_digits 启动参数兼容；DataGrip 已安装的 PostgreSQL JDBC 42.7.13 和 42.7.3 驱动均在临时真实 TCP listener 上完成连接和 SELECT 1；另通过 Statement 和 PreparedStatement 验证 SELECT current_catalog 的数据库值与结果列名，以及 DataGrip ServerStartupTime 原始查询的 numeric 类型、别名和跨连接固定的启动时间。默认系统 psql 18 的 SELECT 1 已实测返回 1。DataGrip UI 和元数据浏览未验证。没有验证 RealTiKV、生产鉴权、TLS、COPY、复制、通知、完整 pg_catalog、ORM/JDBC 全组合或完整 PostgreSQL SQL 语法/事务语义。结果和 portal 当前全量物化；增加原始类型向量，必要时进行只读 AST/catalog 元数据解析，没有大结果吞吐或内存基准。
 
 PG 编解码、OID、SQLSTATE、鉴权协商和连接状态仅在 `pkg/server/pg_*.rs`；共享执行模块不引用 PG。现有入口仅接线配置与独立 listener。后续支持能力应继续沿该边界扩展，并同时验证 MySQL 行为。

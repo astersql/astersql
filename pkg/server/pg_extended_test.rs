@@ -74,6 +74,36 @@ fn parse_bind_execute_sync() {
     socket.write_all(&body).unwrap();
     assert_eq!(read(&mut socket).0, b'R');
     while read(&mut socket).0 != b'Z' {}
+    parse(&mut socket, "catalog", "SELECT current_catalog", &[]);
+    assert_eq!(read(&mut socket), (b'1', vec![]));
+    bind(&mut socket, "", "catalog", &[]);
+    assert_eq!(read(&mut socket), (b'2', vec![]));
+    send(&mut socket, b'D', b"P\0");
+    let description = read(&mut socket);
+    assert_eq!(description.0, b'T');
+    assert!(description.1[2..].starts_with(b"current_catalog\0"));
+    execute(&mut socket, "", 0);
+    assert_eq!(read(&mut socket), (b'D', row(&[Some("test")])));
+    assert_eq!(read(&mut socket), (b'C', b"SELECT 1\0".to_vec()));
+    send(&mut socket, b'S', &[]);
+    assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
+    let startup_sql = "select round(extract(epoch from pg_postmaster_start_time() at time zone 'UTC')) as startup_time;";
+    let startup = query(&mut socket, startup_sql);
+    assert_eq!(
+        startup.iter().map(|message| message.0).collect::<Vec<_>>(),
+        b"TDCZ"
+    );
+    parse(&mut socket, "startup", startup_sql, &[]);
+    assert_eq!(read(&mut socket), (b'1', vec![]));
+    bind(&mut socket, "", "startup", &[]);
+    assert_eq!(read(&mut socket), (b'2', vec![]));
+    send(&mut socket, b'D', b"P\0");
+    assert_eq!(read(&mut socket), startup[0]);
+    execute(&mut socket, "", 0);
+    assert_eq!(read(&mut socket), startup[1]);
+    assert_eq!(read(&mut socket), (b'C', b"SELECT 1\0".to_vec()));
+    send(&mut socket, b'S', &[]);
+    assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
     // Fixed table-column metadata keeps Describe independent of parameter values.
     assert_eq!(query(&mut socket, "CREATE DATABASE pg_extended")[0].0, b'C');
     assert_eq!(
@@ -92,6 +122,57 @@ fn parse_bind_execute_sync() {
         .0,
         b'C'
     );
+    parse(
+        &mut socket,
+        "databases",
+        crate::pg_catalog::DATABASES_SQL,
+        &[],
+    );
+    assert_eq!(read(&mut socket), (b'1', vec![]));
+    assert_eq!(
+        query(&mut socket, "CREATE DATABASE pg_catalog_after_parse")[0].0,
+        b'C'
+    );
+    bind(&mut socket, "db_portal", "databases", &[]);
+    assert_eq!(read(&mut socket), (b'2', vec![]));
+    send(&mut socket, b'D', b"Pdb_portal\0");
+    let catalog_description = read(&mut socket);
+    assert_eq!(catalog_description.0, b'T');
+    execute(&mut socket, "db_portal", 0);
+    let mut found = false;
+    loop {
+        let (tag, body) = read(&mut socket);
+        if tag == b'C' {
+            break;
+        }
+        assert_eq!(tag, b'D');
+        found |= body
+            .windows(b"pg_catalog_after_parse".len())
+            .any(|bytes| bytes == b"pg_catalog_after_parse");
+    }
+    assert!(
+        found,
+        "prepared catalog execution must observe databases created after Parse"
+    );
+    parse(
+        &mut socket,
+        "locks",
+        crate::pg_catalog::TRANSACTIONS_SQL,
+        &[],
+    );
+    assert_eq!(read(&mut socket), (b'1', vec![]));
+    bind(&mut socket, "lock_portal", "locks", &[]);
+    assert_eq!(read(&mut socket), (b'2', vec![]));
+    // Both PG catalog statements lack engine handles; closing one must not
+    // destroy the other's portal or close an unrelated engine statement.
+    send(&mut socket, b'C', b"Sdatabases\0");
+    assert_eq!(read(&mut socket), (b'3', vec![]));
+    execute(&mut socket, "lock_portal", 0);
+    assert_eq!(read(&mut socket), (b'C', b"SELECT 0\0".to_vec()));
+    send(&mut socket, b'C', b"Slocks\0");
+    assert_eq!(read(&mut socket), (b'3', vec![]));
+    send(&mut socket, b'S', &[]);
+    assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
     parse(
         &mut socket,
         "s",

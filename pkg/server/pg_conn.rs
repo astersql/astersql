@@ -42,6 +42,7 @@ struct Active {
 }
 #[derive(Default)]
 pub struct PgService {
+    startup_epoch_micros: u128,
     stopped: AtomicBool,
     accept: Mutex<Option<JoinHandle<()>>>,
     workers: Mutex<Vec<JoinHandle<()>>>,
@@ -56,7 +57,13 @@ impl PgService {
         require_secure_transport: bool,
     ) -> io::Result<Arc<Self>> {
         listener.set_nonblocking(true)?;
-        let service = Arc::new(Self::default());
+        let service = Arc::new(Self {
+            startup_epoch_micros: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(io::Error::other)?
+                .as_micros(),
+            ..Self::default()
+        });
         let owner = service.clone();
         let worker = thread::Builder::new()
             .name("astersql-pg-accept".into())
@@ -209,7 +216,19 @@ impl PgService {
         for (name, value) in &startup.parameters {
             let supported = matches!(name.as_str(), "user" | "database" | "application_name")
                 || (name == "client_encoding"
-                    && matches!(value.to_ascii_uppercase().as_str(), "UTF8" | "UTF-8"));
+                    && matches!(value.to_ascii_uppercase().as_str(), "UTF8" | "UTF-8"))
+                // The text codec uses ISO dates. JDBC requests ISO at startup;
+                // reject alternate formats rather than advertising unsupported output.
+                || (name.eq_ignore_ascii_case("datestyle")
+                    && matches!(value.to_ascii_uppercase().as_str(), "ISO" | "ISO, MDY"))
+                // Positive extra_float_digits requests shortest round-trip output,
+                // which is already the native float text encoding.
+                || (name == "extra_float_digits" && matches!(value.as_str(), "1" | "2" | "3"))
+                || (name.eq_ignore_ascii_case("timezone")
+                    && !value.is_empty()
+                    && value.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || b"/_+-:.".contains(&byte)
+                    }));
             if !supported {
                 write_error(
                     socket,
@@ -268,6 +287,21 @@ impl PgService {
                     return Ok(false);
                 }
             }
+            let time_zone = startup
+                .parameters
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("timezone"))
+                .map_or("UTC", |(_, value)| value.as_str());
+            // Startup values above are restricted to timezone name characters,
+            // so this literal cannot introduce SQL or alter session sql_mode.
+            if let Err(error) = context.execute_query(
+                &format!("SET time_zone = '{time_zone}'"),
+                false,
+                &CancellationToken::new(),
+            ) {
+                write_error(socket, "FATAL", "22023", &error.to_string())?;
+                return Ok(false);
+            }
             let key_length = cancel_key_length(startup.protocol_version);
             let mut key = vec![0; key_length];
             rustls::crypto::aws_lc_rs::default_provider()
@@ -288,6 +322,8 @@ impl PgService {
             for (name, value) in [
                 ("client_encoding", "UTF8"),
                 ("server_encoding", "UTF8"),
+                ("DateStyle", "ISO, MDY"),
+                ("TimeZone", time_zone),
                 ("server_version", "18.0 (AsterSQL)"),
             ] {
                 let mut body = name.as_bytes().to_vec();
@@ -305,7 +341,7 @@ impl PgService {
                 if context.in_transaction() { b"T" } else { b"I" },
             )?;
             socket.set_read_timeout(Some(context.wait_timeout()))?;
-            let mut extended = crate::pg_extended::Extended::default();
+            let mut extended = crate::pg_extended::Extended::new(self.startup_epoch_micros);
             loop {
                 let (tag, body) = match read_message(socket) {
                     Ok(m) => m,
@@ -315,8 +351,11 @@ impl PgService {
                 if tag == b'X' && body.is_empty() {
                     return Ok(true);
                 }
-                if extended.handle(tag, &body, socket, &context, |statement, args| {
+                if extended.handle(tag, &body, socket, &context, |statement, args, catalog| {
                     self.with_query(pid, |context| {
+                        if let Some(catalog) = catalog {
+                            return catalog.execute(context.as_ref());
+                        }
                         context.execute_prepared_statement(
                             statement,
                             args,
@@ -333,11 +372,25 @@ impl PgService {
                         .filter(|sql| !sql.contains(&0))
                         .and_then(|sql| std::str::from_utf8(sql).ok());
                     if let Some(sql) = sql {
-                        match crate::pg_result::command(sql) {
-                            Ok(None) => write_message(socket, b'I', &[])?,
-                            Ok(Some(command)) => {
+                        let catalog = crate::pg_catalog::CatalogQuery::classify(sql);
+                        let parsed = if catalog.is_some() {
+                            Ok((std::borrow::Cow::Borrowed(sql), Some("SELECT")))
+                        } else {
+                            crate::pg_result::adapt_session_query(sql, self.startup_epoch_micros)
+                                .and_then(|sql| {
+                                    crate::pg_result::command(&sql).map(|command| (sql, command))
+                                })
+                        };
+                        match parsed {
+                            Ok((_, None)) => write_message(socket, b'I', &[])?,
+                            Ok((sql, Some(command))) => {
                                 let execution = self.with_query(pid, |context| {
-                                    context.execute_query(sql, false, &CancellationToken::new())
+                                    if let Some(catalog) = catalog {
+                                        return catalog
+                                            .execute(context.as_ref())
+                                            .map(|result| vec![result]);
+                                    }
+                                    context.execute_query(&sql, false, &CancellationToken::new())
                                 })?;
                                 match execution {
                                     Ok(results) => {

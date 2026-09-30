@@ -706,6 +706,11 @@ pub struct SessionProcessSnapshot {
 }
 
 pub trait TiDBContext: Send + Sync {
+    /// Read-only canonical schema metadata, independent of client protocol.
+    fn schema_snapshot(&self) -> Option<astersql_infoschema::SchemaRef> {
+        None
+    }
+
     fn transaction_mdl(&self) -> Option<Arc<astersql_session_sessmgr::TransactionMDL>> {
         None
     }
