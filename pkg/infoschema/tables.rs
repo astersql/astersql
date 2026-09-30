@@ -30,6 +30,12 @@ use std::sync::{Arc, OnceLock};
 
 use crate::cluster::{ClusterTableTiDBIndexUsage, Datum};
 use crate::infoschema::{CiString, ColumnInfo, DBInfo, Table, TableInfo};
+use astersql_meta_model as model_dependency;
+use astersql_parser_charset as charset;
+use astersql_parser_mysql as mysql;
+
+#[path = "catalog_columns_go45.rs"]
+mod catalog_columns_go45;
 
 /// 批量声明 INFORMATION_SCHEMA 表名字符串常量的宏。
 macro_rules! table_constants {
@@ -79,6 +85,10 @@ table_constants!(
     (TableClusterHardware, "CLUSTER_HARDWARE"),
     (TableClusterSystemInfo, "CLUSTER_SYSTEMINFO"),
     (TableTiFlashReplica, "TIFLASH_REPLICA"),
+    (
+        TableStorageClassTransitions,
+        "TIKV_STORAGE_CLASS_TRANSITIONS"
+    ),
     (TableInspectionResult, "INSPECTION_RESULT"),
     (TableMetricTables, "METRICS_TABLES"),
     (TableMetricSummary, "METRICS_SUMMARY"),
@@ -132,6 +142,7 @@ table_constants!(
 /// 虚拟表列的简化类型枚举（对应 MySQL 字段类型子集）。
 pub enum ColumnType {
     Varchar,
+    Tiny,
     Long,
     Longlong,
     Double,
@@ -153,6 +164,8 @@ pub struct columnInfo {
     pub decimal: Option<u8>,
     pub unsigned: bool,
     pub not_null: bool,
+    pub primary_key: bool,
+    pub binary: bool,
     pub default_value: Option<&'static str>,
     pub comment: &'static str,
 }
@@ -167,6 +180,8 @@ impl columnInfo {
             decimal: None,
             unsigned: false,
             not_null: false,
+            primary_key: false,
+            binary: false,
             default_value: None,
             comment: "",
         }
@@ -250,6 +265,7 @@ const TABLE_NAMES: &[&str] = &[
     TableClusterHardware,
     TableClusterSystemInfo,
     TableTiFlashReplica,
+    TableStorageClassTransitions,
     TableInspectionResult,
     TableMetricTables,
     TableMetricSummary,
@@ -330,6 +346,7 @@ fn default_columns(name: &str) -> Vec<columnInfo> {
             columnInfo::varchar("TIDB_PLACEMENT_POLICY_NAME", 64),
             columnInfo::varchar("TIDB_TABLE_MODE", 16),
             columnInfo::varchar("TIDB_AFFINITY", 128),
+            columnInfo::varchar("TIDB_STORAGE_CLASS", 32),
         ],
         TableColumns => vec![
             columnInfo::varchar("TABLE_CATALOG", 64),
@@ -423,6 +440,7 @@ fn default_columns(name: &str) -> Vec<columnInfo> {
             columnInfo::integer("TIDB_PARTITION_ID"),
             columnInfo::varchar("TIDB_PLACEMENT_POLICY_NAME", 64),
             columnInfo::varchar("TIDB_AFFINITY", 128),
+            columnInfo::varchar("TIDB_STORAGE_CLASS", 32),
         ],
         TableKeyColumn => vec![
             columnInfo::varchar("CONSTRAINT_CATALOG", 512).not_null(),
@@ -510,6 +528,26 @@ fn default_columns(name: &str) -> Vec<columnInfo> {
             columnInfo::integer("PERCENTAGE_ACCESS_100"),
             columnInfo::typed("LAST_ACCESS_TIME", ColumnType::Datetime, 21),
         ],
+        TableStorageClassTransitions => vec![
+            columnInfo::varchar("TABLE_SCHEMA", 64),
+            columnInfo::varchar("TABLE_NAME", 64),
+            columnInfo::integer("TABLE_ID"),
+            columnInfo::varchar("PARTITION_NAME", 64),
+            columnInfo::integer("PARTITION_ID"),
+            columnInfo::varchar("DIRECTION", 16),
+            columnInfo::integer("TOTAL_REPLICAS").unsigned(),
+            columnInfo::integer("COMPLETED_REPLICAS").unsigned(),
+            columnInfo::typed("PROGRESS", ColumnType::Double, 22),
+            columnInfo {
+                decimal: Some(6),
+                ..columnInfo::typed("START_TIME", ColumnType::Datetime, 26)
+            },
+            columnInfo::integer("DURATION").unsigned(),
+            columnInfo {
+                decimal: Some(6),
+                ..columnInfo::typed("LAST_UPDATE_TIME", ColumnType::Datetime, 26)
+            },
+        ],
         TableCheckConstraints => vec![
             columnInfo::varchar("CONSTRAINT_CATALOG", 64).not_null(),
             columnInfo::varchar("CONSTRAINT_SCHEMA", 64).not_null(),
@@ -534,11 +572,105 @@ fn default_columns(name: &str) -> Vec<columnInfo> {
             columnInfo::varchar("STATE", 64),
             columnInfo::varchar("INFO", 1024),
         ],
-        _ => vec![
-            columnInfo::varchar("INSTANCE", 64),
-            columnInfo::varchar("NAME", 128),
-            columnInfo::varchar("VALUE", 1024),
-        ],
+        TableSlowQuery => catalog_columns_go45::slow_query_columns(),
+        TableStatementsSummary | TableStatementsSummaryHistory => {
+            catalog_columns_go45::statements_summary_columns()
+        }
+        _ => fallback_columns(),
+    }
+}
+
+fn fallback_columns() -> Vec<columnInfo> {
+    vec![
+        columnInfo::varchar("INSTANCE", 64),
+        columnInfo::varchar("NAME", 128),
+        columnInfo::varchar("VALUE", 1024),
+    ]
+}
+
+// Match the stable offsets in Go tableIDMap; these IDs are persisted in plans.
+fn table_id_offset(name: &str) -> i64 {
+    match name {
+        TableSchemata => 1,
+        TableTables => 2,
+        TableColumns => 3,
+        TableStatistics => 5,
+        TableCharacterSets => 6,
+        TableCollations => 7,
+        TableProfiling => 10,
+        TablePartitions => 11,
+        TableKeyColumn => 12,
+        TableReferConst => 13,
+        TableConstraints => 16,
+        TableTriggers => 17,
+        TableUserPrivileges => 18,
+        TableSchemaPrivileges => 19,
+        TableTablePrivileges => 20,
+        TableColumnPrivileges => 21,
+        TableEngines => 22,
+        TableViews => 23,
+        TableRoutines => 24,
+        TableParameters => 25,
+        TableEvents => 26,
+        TableCollationCharacterSetApplicability => 32,
+        TableProcesslist => 33,
+        TableTiDBIndexes => 34,
+        TableTiDBHotRegions => 36,
+        TableTiDBHotRegionsHistory => 78,
+        TableTiKVStoreStatus => 37,
+        TableAnalyzeStatus => 38,
+        TableTiKVRegionStatus => 39,
+        TableTiKVRegionPeers => 40,
+        TableTiDBServersInfo => 41,
+        TableSlowQuery => 35,
+        TableClusterInfo => 42,
+        TableClusterConfig => 43,
+        TableClusterLog => 48,
+        TableClusterLoad => 44,
+        TableClusterHardware => 49,
+        TableClusterSystemInfo => 50,
+        TableTiFlashReplica => 45,
+        TableStorageClassTransitions => 102,
+        TableInspectionResult => 51,
+        TableMetricTables => 54,
+        TableMetricSummary => 52,
+        TableMetricSummaryByLabel => 53,
+        TableInspectionSummary => 55,
+        TableInspectionRules => 56,
+        TableDDLJobs => 57,
+        TableSequences => 58,
+        TableStatementsSummary => 59,
+        TableStatementsSummaryHistory => 60,
+        TableStatementsSummaryEvicted => 75,
+        TableTiDBStatementsStats => 98,
+        TableStorageStats => 63,
+        TableTiFlashTables => 64,
+        TableTiFlashSegments => 65,
+        TableTiFlashIndexes => 95,
+        TableClientErrorsSummaryGlobal => 67,
+        TableClientErrorsSummaryByUser => 68,
+        TableClientErrorsSummaryByHost => 69,
+        TableTiDBTrx => 70,
+        TableDeadlocks => 72,
+        TableDataLockWaits => 74,
+        TableAttributes => 77,
+        TablePlacementPolicies => 79,
+        TableTrxSummary => 80,
+        TableVariablesInfo => 82,
+        TableUserAttributes => 83,
+        TableMemoryUsage => 84,
+        TableMemoryUsageOpsHistory => 85,
+        TableResourceGroups => 88,
+        TableRunawayWatches => 89,
+        TableCheckConstraints => 90,
+        TableTiDBCheckConstraints => 91,
+        TableKeywords => 92,
+        TableTiDBIndexUsage => 93,
+        TableTiDBPlanCache => 96,
+        TableKeyspaceMeta => 100,
+        TableSchemataExtensions => 101,
+        ClusterTableTiDBIndexUsage => 94,
+        _ => panic!("unregistered information_schema table: {name}"),
     }
 }
 
@@ -549,13 +681,12 @@ pub fn table_registry() -> &'static HashMap<&'static str, VirtualTableMeta> {
     TABLE_REGISTRY.get_or_init(|| {
         TABLE_NAMES
             .iter()
-            .enumerate()
-            .map(|(index, name)| {
+            .map(|name| {
                 (
                     *name,
                     VirtualTableMeta {
-                        id: index as i64 + 1,
-                        name,
+                        id: astersql_meta_autoid::INFORMATION_SCHEMA_DB_ID + table_id_offset(*name),
+                        name: *name,
                         columns: default_columns(name),
                     },
                 )
@@ -575,28 +706,142 @@ pub fn buildColumnInfo(column_id: i64, column: &columnInfo) -> ColumnInfo {
 /// 由列定义构建虚拟表 TableInfo（id 来自注册表）。
 pub fn buildTableMeta(table_name: &str, columns: &[columnInfo]) -> TableInfo {
     let id = table_registry().get(table_name).map_or(0, |table| table.id);
+    let model_columns = columns
+        .iter()
+        .enumerate()
+        .map(|(offset, column)| {
+            let mut info = model_dependency::ColumnInfo::New(
+                offset as i64,
+                astersql_parser_ast::NewCIStr(column.name),
+            );
+            let tp = match column.column_type {
+                ColumnType::Varchar => mysql::r#type::TypeVarchar,
+                ColumnType::Tiny => mysql::r#type::TypeTiny,
+                ColumnType::Long => mysql::r#type::TypeLong,
+                ColumnType::Longlong => mysql::r#type::TypeLonglong,
+                ColumnType::Double => mysql::r#type::TypeDouble,
+                ColumnType::Blob => mysql::r#type::TypeBlob,
+                ColumnType::MediumBlob => mysql::r#type::TypeMediumBlob,
+                ColumnType::LongBlob => mysql::r#type::TypeLongBlob,
+                ColumnType::Timestamp => mysql::r#type::TypeTimestamp,
+                ColumnType::Datetime => mysql::r#type::TypeDatetime,
+                ColumnType::Decimal => mysql::r#type::TypeNewDecimal,
+                ColumnType::Json => mysql::r#type::TypeJSON,
+            };
+            info.FieldType.SetType(tp);
+            let string_type = matches!(
+                column.column_type,
+                ColumnType::Varchar
+                    | ColumnType::Blob
+                    | ColumnType::MediumBlob
+                    | ColumnType::LongBlob
+            );
+            info.FieldType.SetCharset(
+                if string_type {
+                    charset::CharsetUTF8MB4
+                } else {
+                    charset::CharsetBin
+                }
+                .to_owned(),
+            );
+            info.FieldType.SetCollate(
+                if string_type {
+                    charset::charset::CollationUTF8MB4
+                } else {
+                    charset::charset::CollationBin
+                }
+                .to_owned(),
+            );
+            let flen = match column.column_type {
+                ColumnType::Blob => 1 << 16,
+                ColumnType::MediumBlob => 1 << 24,
+                ColumnType::LongBlob => 1 << 32,
+                _ => column.size as isize,
+            };
+            info.FieldType.SetFlen(flen);
+            info.FieldType
+                .SetDecimal(column.decimal.unwrap_or(0) as isize);
+            let mut flags = 0;
+            if column.unsigned {
+                flags |= mysql::r#type::UnsignedFlag;
+            }
+            if column.not_null {
+                flags |= mysql::r#type::NotNullFlag;
+            }
+            if column.primary_key {
+                flags |= mysql::r#type::PriKeyFlag;
+            }
+            if column.binary {
+                flags |= mysql::r#type::BinaryFlag;
+            }
+            info.FieldType.SetFlag(flags);
+            info.Offset = offset as isize;
+            info.State = model_dependency::StatePublic;
+            info.Comment = column.comment.to_owned();
+            info.DefaultValue = column
+                .default_value
+                .map(|value| model_dependency::DefaultValue::String(value.as_bytes().to_vec()));
+            info
+        })
+        .collect();
+    let model = model_dependency::TableInfo {
+        ID: id,
+        DBID: astersql_meta_autoid::INFORMATION_SCHEMA_DB_ID,
+        Name: astersql_parser_ast::NewCIStr(table_name),
+        State: model_dependency::StatePublic,
+        Charset: mysql::charset::DefaultCharset.to_owned(),
+        Collate: mysql::charset::DefaultCollationName.to_owned(),
+        Columns: model_columns,
+        ..Default::default()
+    };
     TableInfo {
         id,
+        db_id: astersql_meta_autoid::INFORMATION_SCHEMA_DB_ID,
         name: CiString::new(table_name),
         columns: columns
             .iter()
             .enumerate()
             .map(|(index, column)| buildColumnInfo(index as i64 + 1, column))
             .collect(),
+        model_meta: Some(Arc::new(model)),
         ..TableInfo::default()
     }
 }
+/// Return fresh column metadata for TIKV_STORAGE_CLASS_TRANSITIONS.
+pub fn GetStorageClassTransitionsTableColumns() -> Vec<ColumnInfo> {
+    let columns = &table_registry()
+        .get(TableStorageClassTransitions)
+        .expect("storage class transitions table is registered")
+        .columns;
+    buildTableMeta(TableStorageClassTransitions, columns).columns
+}
 /// 构造名为 INFORMATION_SCHEMA 的 DBInfo，包含全部已注册虚拟表。
 pub fn information_schema_db() -> DBInfo {
-    DBInfo {
-        id: -1,
-        name: CiString::new("INFORMATION_SCHEMA"),
-        tables: table_registry()
-            .values()
-            .map(|definition| Arc::new(buildTableMeta(definition.name, &definition.columns)))
-            .collect(),
-        table_name_2_id: Default::default(),
+    information_schema_db_with_storage_class(
+        astersql_config::get_global_config().enable_storage_class,
+    )
+}
+
+static INFORMATION_SCHEMA_DB: OnceLock<DBInfo> = OnceLock::new();
+
+/// Build a schema snapshot using the storage-class setting for this instance.
+pub fn information_schema_db_with_storage_class(enable_storage_class: bool) -> DBInfo {
+    let mut db = INFORMATION_SCHEMA_DB
+        .get_or_init(|| DBInfo {
+            id: astersql_meta_autoid::INFORMATION_SCHEMA_DB_ID,
+            name: CiString::new("INFORMATION_SCHEMA"),
+            tables: table_registry()
+                .values()
+                .map(|definition| Arc::new(buildTableMeta(definition.name, &definition.columns)))
+                .collect(),
+            table_name_2_id: Default::default(),
+        })
+        .clone();
+    if !enable_storage_class {
+        db.tables
+            .retain(|table| table.name.original != TableStorageClassTransitions);
     }
+    db
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

@@ -86,6 +86,8 @@ mod bundle_builder_test;
 #[path = "cluster_test.rs"]
 mod cluster_test;
 #[cfg(test)]
+mod go_merge_45_test;
+#[cfg(test)]
 #[path = "infoschema_nokit_test.rs"]
 mod infoschema_nokit_test;
 #[cfg(test)]

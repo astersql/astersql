@@ -27,14 +27,15 @@
 // for the same table names those SQL tests would query.
 
 use std::collections::BTreeSet;
+use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 
 use crate::init::{build_performance_schema, set_eval_simple_ast_ready};
 use crate::tables::{
     ColumnInfo, Datum, IndexInfo, IsPredefinedTable, PERFORMANCE_SCHEMA_DB_ID, PerfSchemaError,
-    RemoteProfileClient, RowSource, ServerInfo, TableMeta, VirtualTablePlugin,
-    data_for_remote_profile, register_plugin_table, table_from_meta, table_id_map,
-    unregister_plugin_table,
+    ProfileRequestIdentity, RemoteProfileClient, RowSource, ServerInfo, TableMeta,
+    VirtualTablePlugin, data_for_remote_profile, register_plugin_table, table_from_meta,
+    table_id_map, unregister_plugin_table,
 };
 
 /// 预定义表名大小写不敏感；未知表名返回 false。
@@ -418,7 +419,81 @@ struct ProfileRequestRows {
     observed: Mutex<Vec<String>>,
 }
 
+struct IdentityRows;
+
+impl RowSource for IdentityRows {
+    fn profile_request_identity(&self) -> ProfileRequestIdentity {
+        ProfileRequestIdentity {
+            connection_id: 42,
+            user: Some("alice".into()),
+            client_ip: Some("127.0.0.1".into()),
+        }
+    }
+    fn local_profile(&self, _profile: &str) -> Result<Vec<Vec<Datum>>, PerfSchemaError> {
+        Ok(vec![])
+    }
+    fn session_variables(&self) -> Result<Vec<Vec<Datum>>, PerfSchemaError> {
+        Ok(vec![])
+    }
+    fn session_connect_attrs(&self, _account: bool) -> Result<Vec<Vec<Datum>>, PerfSchemaError> {
+        Ok(vec![])
+    }
+    fn status_by_connection(&self) -> Result<Vec<Vec<Datum>>, PerfSchemaError> {
+        Ok(vec![])
+    }
+}
+
+#[derive(Clone)]
+struct SharedWriter(Arc<Mutex<Vec<u8>>>);
+
+impl Write for SharedWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn go_merge_45_local_profile_audit_log_has_session_identity() {
+    let output = Arc::new(Mutex::new(Vec::new()));
+    let writer = SharedWriter(output.clone());
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_max_level(tracing::Level::INFO)
+        .with_writer(move || writer.clone())
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        let database = build_performance_schema().unwrap();
+        let table = database
+            .tables
+            .iter()
+            .find(|table| table.name == "tidb_profile_cpu")
+            .unwrap();
+        let virtual_table = table_from_meta(table).unwrap();
+        virtual_table
+            .get_rows(
+                virtual_table.columns(),
+                &IdentityRows,
+                &NoRemote,
+                &mut vec![],
+            )
+            .unwrap();
+    });
+    let log = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+    assert!(log.contains("performance_schema.tidb_profile_cpu"), "{log}");
+    assert!(log.contains("conn=42"), "{log}");
+    assert!(log.contains("alice"), "{log}");
+    assert!(log.contains("127.0.0.1"), "{log}");
+}
+
 impl RowSource for ProfileRequestRows {
+    fn profile_request_identity(&self) -> super::tables::ProfileRequestIdentity {
+        super::tables::ProfileRequestIdentity::default()
+    }
     fn local_profile(&self, _profile: &str) -> Result<Vec<Vec<Datum>>, PerfSchemaError> {
         Ok(Vec::new())
     }
@@ -468,6 +543,9 @@ fn go_merge_32_every_local_profile_query_records_its_table() {
 }
 
 impl RowSource for EmptyRows {
+    fn profile_request_identity(&self) -> super::tables::ProfileRequestIdentity {
+        super::tables::ProfileRequestIdentity::default()
+    }
     fn local_profile(&self, _profile: &str) -> Result<Vec<Vec<Datum>>, PerfSchemaError> {
         Ok(Vec::new())
     }

@@ -59,7 +59,7 @@ pub static MetricTableMap: LazyLock<HashMap<&'static str, MetricTableDef>> = Laz
         (
             "tidb_qps_ideal",
             MetricTableDef {
-                PromQL: r###"sum(tidb_server_connections) * sum(rate(tidb_server_handle_query_duration_seconds_count[$RANGE_DURATION])) / sum(rate(tidb_server_handle_query_duration_seconds_sum[$RANGE_DURATION]))"###,
+                PromQL: r###"sum(tidb_server_connections) * sum(rate(tidb_server_handle_command_duration_seconds_count[$RANGE_DURATION])) / sum(rate(tidb_server_handle_command_duration_seconds_sum[$RANGE_DURATION]))"###,
                 ..MetricTableDef::EMPTY
             },
         ),
@@ -1549,6 +1549,33 @@ pub static MetricTableMap: LazyLock<HashMap<&'static str, MetricTableDef>> = Laz
                 PromQL: r###"sum(tikv_engine_size_bytes{$LABEL_CONDITIONS}) by (instance, type, db)"###,
                 Labels: &["instance", "type", "db"],
                 Comment: "The storage size per TiKV instance",
+                ..MetricTableDef::EMPTY
+            },
+        ),
+        (
+            "tidb_ia_remote_read_segment_count",
+            MetricTableDef {
+                PromQL: "sum(increase(tidb_server_ia_remote_read_segment_count{$LABEL_CONDITIONS}[$RANGE_DURATION])) by (instance)",
+                Labels: &["instance"],
+                Comment: "The total count of IA remote read segments observed by each TiDB instance",
+                ..MetricTableDef::EMPTY
+            },
+        ),
+        (
+            "tidb_ia_remote_read_segment_size",
+            MetricTableDef {
+                PromQL: "sum(increase(tidb_server_ia_remote_read_segment_size_bytes{$LABEL_CONDITIONS}[$RANGE_DURATION])) by (instance)",
+                Labels: &["instance"],
+                Comment: "The total bytes of IA remote read segments observed by each TiDB instance",
+                ..MetricTableDef::EMPTY
+            },
+        ),
+        (
+            "tidb_ia_remote_read_segment_wait_time_histogram",
+            MetricTableDef {
+                PromQL: "sum(rate(tidb_server_ia_remote_read_segment_wait_duration_seconds_bucket{$LABEL_CONDITIONS}[$RANGE_DURATION])) by (instance,le)",
+                Labels: &["instance", "le"],
+                Comment: "The histogram of IA remote read segment wait time observed by each TiDB instance",
                 ..MetricTableDef::EMPTY
             },
         ),

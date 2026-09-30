@@ -86,6 +86,10 @@ impl bundleInfoBuilder {
     pub fn SetDeltaUpdateBundles(&mut self) {
         self.delta_update = true;
     }
+    pub fn inherit_bundles(&mut self, bundles: HashMap<i64, Arc<PlacementBundle>>) {
+        self.bundles = bundles;
+        self.delta_update = true;
+    }
     pub fn deleteBundle(&mut self, table_id: i64) {
         self.bundles.remove(&table_id);
     }

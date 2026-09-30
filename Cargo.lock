@@ -5035,6 +5035,7 @@ dependencies = [
  "astersql-util-stmtsummary",
  "astersql-util-tracing",
  "prometheus 0.14.0",
+ "tracing",
 ]
 
 [[package]]
@@ -5142,6 +5143,7 @@ dependencies = [
  "astersql-util",
  "astersql-util-profile",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

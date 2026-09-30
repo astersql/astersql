@@ -81,7 +81,13 @@ const ALL_TIDB_TABLES: &[(&str, &str)] = &[
     ("TIDB_PLAN_CACHE", ClusterTableTiDBPlanCache),
 ];
 /// 仅向 DDL Owner 请求的表映射（当前为 TiFlash 副本信息）。
-const DDL_OWNER_TABLES: &[(&str, &str)] = &[("TIFLASH_REPLICA", "TIFLASH_REPLICA")];
+const DDL_OWNER_TABLES: &[(&str, &str)] = &[
+    ("TIFLASH_REPLICA", "TIFLASH_REPLICA"),
+    (
+        "TIKV_STORAGE_CLASS_TRANSITIONS",
+        "TIKV_STORAGE_CLASS_TRANSITIONS",
+    ),
+];
 
 /// 集群表 Coprocessor（协处理器）请求的目标节点类型。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

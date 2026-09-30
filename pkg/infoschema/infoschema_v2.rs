@@ -25,8 +25,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crate::infoschema::{
-    CiString, DBInfo, InfoSchema, InfoSchemaError, PartitionDefinition, ReferredFKInfo, Table,
-    TableInfo, TableItem,
+    CiString, DBInfo, InfoSchema, InfoSchemaError, MaskingPolicyInfo, MaskingPolicyLoader,
+    PartitionDefinition, PlacementBundle, PolicyInfo, ReferredFKInfo, Table, TableInfo, TableItem,
 };
 use crate::sieve::{Sieve, newSieve};
 use astersql_infoschema_context as context_dependency;
@@ -320,6 +320,26 @@ impl Data {
             }
         }
     }
+
+    /// Remove the name entry recorded in the v2 index for this ID. The cached
+    /// TableInfo may carry metadata from a different version during a cutover.
+    pub fn remove_by_id(&self, table_id: i64, schema_version: i64) -> bool {
+        let item = {
+            let data = self.inner.read().expect("infoschema v2 lock poisoned");
+            visible_table(data.by_id.get(&table_id), schema_version.saturating_sub(1))
+        };
+        let Some(item) = item else {
+            return false;
+        };
+        self.remove(
+            item.db_name,
+            item.db_id,
+            item.table_name,
+            table_id,
+            schema_version,
+        );
+        true
+    }
     /// 在指定版本以 tomb 删除库。
     pub fn deleteDB(&self, db: DBInfo, schema_version: i64) {
         let db = Arc::new(db);
@@ -547,6 +567,11 @@ pub struct infoschemaV2 {
     pub Data: Arc<Data>,
     schema_meta_version: i64,
     start_ts: u64,
+    bundles: HashMap<i64, Arc<PlacementBundle>>,
+    policies: HashMap<i64, Arc<PolicyInfo>>,
+    masking_cache: HashMap<i64, HashMap<i64, Arc<MaskingPolicyInfo>>>,
+    masking_loaded: bool,
+    masking_loader: Option<Arc<dyn MaskingPolicyLoader>>,
 }
 
 impl infoschemaV2 {
@@ -556,11 +581,42 @@ impl infoschemaV2 {
             Data: data,
             schema_meta_version,
             start_ts,
+            bundles: HashMap::new(),
+            policies: HashMap::new(),
+            masking_cache: HashMap::new(),
+            masking_loaded: false,
+            masking_loader: None,
         }
+    }
+    pub fn with_bundles_and_policies(
+        mut self,
+        bundles: HashMap<i64, Arc<PlacementBundle>>,
+        policies: HashMap<i64, Arc<PolicyInfo>>,
+    ) -> Self {
+        self.bundles = bundles;
+        self.policies = policies;
+        self
+    }
+    pub fn with_masking_cache(
+        mut self,
+        cache: HashMap<i64, HashMap<i64, Arc<MaskingPolicyInfo>>>,
+        loaded: bool,
+        loader: Option<Arc<dyn MaskingPolicyLoader>>,
+    ) -> Self {
+        self.masking_cache = cache;
+        self.masking_loaded = loaded;
+        self.masking_loader = loader;
+        self
     }
     /// 克隆快照并更新读时间戳。
     pub fn CloneAndUpdateTS(&self, start_ts: u64) -> Self {
         Self::new(self.Data.clone(), self.schema_meta_version, start_ts)
+            .with_bundles_and_policies(self.bundles.clone(), self.policies.clone())
+            .with_masking_cache(
+                self.masking_cache.clone(),
+                self.masking_loaded,
+                self.masking_loader.clone(),
+            )
     }
     /// 表是否已在 SIEVE 缓存中。
     pub fn TableIsCached(&self, id: i64) -> bool {
@@ -805,6 +861,21 @@ impl InfoSchema for infoschemaV2 {
             .collect();
         schemas.extend(data.specials.values().map(|special| special.0.clone()));
         schemas
+    }
+    fn AllPlacementPolicies(&self) -> Vec<Arc<PolicyInfo>> {
+        self.policies.values().cloned().collect()
+    }
+    fn PlacementBundleByPhysicalTableID(&self, id: i64) -> Option<Arc<PlacementBundle>> {
+        self.bundles.get(&id).cloned()
+    }
+    fn AllPlacementBundles(&self) -> Vec<Arc<PlacementBundle>> {
+        self.bundles.values().cloned().collect()
+    }
+    fn MaskingCacheSnapshot(&self) -> (HashMap<i64, HashMap<i64, Arc<MaskingPolicyInfo>>>, bool) {
+        (self.masking_cache.clone(), self.masking_loaded)
+    }
+    fn MaskingLoader(&self) -> Option<Arc<dyn MaskingPolicyLoader>> {
+        self.masking_loader.clone()
     }
     fn ListTablesWithSpecialAttribute(
         &self,

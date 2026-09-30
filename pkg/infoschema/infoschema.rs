@@ -339,6 +339,22 @@ pub trait InfoSchema: Send + Sync {
     fn TableItemByID(&self, id: i64) -> Option<TableItem>;
     /// Return all tables in a schema; a missing schema yields an empty list.
     fn SchemaTableInfos(&self, schema: &CiString) -> Result<Vec<Arc<TableInfo>>, InfoSchemaError>;
+    fn SchemaSimpleTableInfos(
+        &self,
+        schema: &CiString,
+    ) -> Result<Vec<Arc<model_dependency::TableNameInfo>>, InfoSchemaError> {
+        self.SchemaTableInfos(schema).map(|tables| {
+            tables
+                .into_iter()
+                .map(|table| {
+                    Arc::new(model_dependency::TableNameInfo {
+                        ID: table.id,
+                        Name: astersql_parser_ast::NewCIStr(table.name.original.clone()),
+                    })
+                })
+                .collect()
+        })
+    }
     /// Whether the snapshot contains a global temporary table.
     fn HasTemporaryTable(&self) -> bool {
         false
@@ -348,6 +364,21 @@ pub trait InfoSchema: Send + Sync {
         partition_id: i64,
     ) -> Option<(Table, Arc<DBInfo>, PartitionDefinition)>;
     fn AllSchemas(&self) -> Vec<Arc<DBInfo>>;
+    fn AllPlacementPolicies(&self) -> Vec<Arc<PolicyInfo>> {
+        Vec::new()
+    }
+    fn PlacementBundleByPhysicalTableID(&self, _id: i64) -> Option<Arc<PlacementBundle>> {
+        None
+    }
+    fn AllPlacementBundles(&self) -> Vec<Arc<PlacementBundle>> {
+        Vec::new()
+    }
+    fn MaskingCacheSnapshot(&self) -> (HashMap<i64, HashMap<i64, Arc<MaskingPolicyInfo>>>, bool) {
+        (HashMap::new(), false)
+    }
+    fn MaskingLoader(&self) -> Option<Arc<dyn MaskingPolicyLoader>> {
+        None
+    }
     fn ListTablesWithSpecialAttribute(
         &self,
         filter: context_dependency::SpecialAttributeFilter,
@@ -422,6 +453,9 @@ impl infoSchema {
             masking_loader: None,
             snapshot_ts: 0,
         }
+    }
+    pub fn set_bundles(&mut self, bundles: HashMap<i64, Arc<PlacementBundle>>) {
+        self.bundles = bundles;
     }
 
     /// 挂载脱敏策略加载器与快照时间戳，供惰性加载使用。
@@ -880,6 +914,24 @@ impl InfoSchema for infoSchema {
             .values()
             .map(|tables| tables.db_info.clone())
             .collect()
+    }
+    fn AllPlacementPolicies(&self) -> Vec<Arc<PolicyInfo>> {
+        infoSchema::AllPlacementPolicies(self)
+    }
+    fn PlacementBundleByPhysicalTableID(&self, id: i64) -> Option<Arc<PlacementBundle>> {
+        infoSchema::PlacementBundleByPhysicalTableID(self, id)
+    }
+    fn AllPlacementBundles(&self) -> Vec<Arc<PlacementBundle>> {
+        infoSchema::AllPlacementBundles(self)
+    }
+    fn MaskingCacheSnapshot(&self) -> (HashMap<i64, HashMap<i64, Arc<MaskingPolicyInfo>>>, bool) {
+        (
+            self.clone_masking_policies(),
+            self.masking_policies_loaded(),
+        )
+    }
+    fn MaskingLoader(&self) -> Option<Arc<dyn MaskingPolicyLoader>> {
+        self.masking_loader.clone()
     }
 }
 

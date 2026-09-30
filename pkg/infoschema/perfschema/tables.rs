@@ -212,10 +212,28 @@ pub trait RowSource: Send + Sync {
     fn session_connect_attrs(&self, account: bool) -> Result<Vec<Vec<Datum>>, PerfSchemaError>;
     fn status_by_connection(&self) -> Result<Vec<Vec<Datum>>, PerfSchemaError>;
 
+    /// Session details included in the audit log for a local TiDB profile read.
+    fn profile_request_identity(&self) -> ProfileRequestIdentity;
+
     /// 记录一次本地 profile 表读取；生产默认记录表名，测试可观察调用。
     fn on_profile_request(&self, table: &str) {
-        tracing::info!(table = table, "profiling request received");
+        let identity = self.profile_request_identity();
+        tracing::info!(
+            table = table,
+            conn = identity.connection_id,
+            user = identity.user.as_deref(),
+            client_ip = identity.client_ip.as_deref(),
+            "profiling request received"
+        );
     }
+}
+
+/// Session identity attached to local profiling requests.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ProfileRequestIdentity {
+    pub connection_id: u64,
+    pub user: Option<String>,
+    pub client_ip: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

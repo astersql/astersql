@@ -93,6 +93,7 @@ fn jdbc_catalog_tables_match_go_column_definitions() {
             "TIDB_PLACEMENT_POLICY_NAME",
             "TIDB_TABLE_MODE",
             "TIDB_AFFINITY",
+            "TIDB_STORAGE_CLASS",
         ],
     );
     assert_eq!(tables[14].column_type, ColumnType::Datetime);
@@ -215,7 +216,12 @@ fn introspection_catalog_tables_match_go_column_definitions() {
         ),
         (
             TablePartitions,
-            &["TABLE_SCHEMA", "TABLE_NAME", "PARTITION_NAME"][..],
+            &[
+                "TABLE_SCHEMA",
+                "TABLE_NAME",
+                "PARTITION_NAME",
+                "TIDB_STORAGE_CLASS",
+            ][..],
         ),
         (
             TableKeyColumn,

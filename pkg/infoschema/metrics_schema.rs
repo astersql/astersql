@@ -68,6 +68,8 @@ impl MetricTableDef {
             decimal: None,
             unsigned: false,
             not_null: false,
+            primary_key: false,
+            binary: false,
             default_value: Some("CURRENT_TIMESTAMP"),
             comment: "",
         }];
@@ -90,6 +92,8 @@ impl MetricTableDef {
                 decimal: None,
                 unsigned: false,
                 not_null: false,
+                primary_key: false,
+                binary: false,
                 default_value: Some(default_value),
                 comment: "",
             });
@@ -101,6 +105,8 @@ impl MetricTableDef {
             decimal: None,
             unsigned: false,
             not_null: false,
+            primary_key: false,
+            binary: false,
             default_value: None,
             comment: "",
         });

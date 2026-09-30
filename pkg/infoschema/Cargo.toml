@@ -8,22 +8,25 @@ publish.workspace = true
 path = "lib.rs"
 
 [dependencies]
+"astersql-config" = { package = "astersql-config", path = "../config" }
 "astersql-infoschema-context" = { package = "astersql-infoschema-context", path = "context" }
 "astersql-infoschema-metrics" = { package = "astersql-infoschema-metrics", path = "metrics" }
 "astersql-meta-autoid" = { package = "astersql-meta-autoid", path = "../meta/autoid" }
 "astersql-meta-model" = { package = "astersql-meta-model", path = "../meta/model" }
 "astersql-parser-ast" = { package = "astersql-parser-ast", path = "../parser/ast" }
+"astersql-parser-charset" = { package = "astersql-parser-charset", path = "../parser/charset" }
+"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../parser/mysql" }
 "astersql-table" = { package = "astersql-table", path = "../table" }
 "astersql-util-dbterror" = { package = "astersql-util-dbterror", path = "../util/dbterror" }
 "astersql-util-size" = { package = "astersql-util-size", path = "../util/size" }
 prometheus = "0.14"
+tracing = "0.1"
 
 [package.metadata.porting]
 go-package = "pkg/infoschema"
 legacy-tasks = ["task-864", "task-865", "task-866", "task-867", "task-868", "task-869", "task-871", "task-1393"]
 
 [target.'cfg(any())'.dependencies]
-"astersql-config" = { package = "astersql-config", path = "../config" }
 "astersql-ddl-placement" = { package = "astersql-ddl-placement", path = "../ddl/placement" }
 "astersql-ddl-resourcegroup" = { package = "astersql-ddl-resourcegroup", path = "../ddl/resourcegroup" }
 "astersql-domain-infosync" = { package = "astersql-domain-infosync", path = "../domain/infosync" }
@@ -34,8 +37,6 @@ legacy-tasks = ["task-864", "task-865", "task-866", "task-867", "task-868", "tas
 "astersql-meta-metadef" = { package = "astersql-meta-metadef", path = "../meta/metadef" }
 "astersql-metrics" = { package = "astersql-metrics", path = "../metrics" }
 "astersql-parser-auth" = { package = "astersql-parser-auth", path = "../parser/auth" }
-"astersql-parser-charset" = { package = "astersql-parser-charset", path = "../parser/charset" }
-"astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../parser/mysql" }
 "astersql-parser-terror" = { package = "astersql-parser-terror", path = "../parser/terror" }
 "astersql-privilege" = { package = "astersql-privilege", path = "../privilege" }
 "astersql-session-txninfo" = { package = "astersql-session-txninfo", path = "../session/txninfo" }

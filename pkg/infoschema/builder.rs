@@ -23,8 +23,13 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use crate::bundle_builder::{
+    BundleSchema, PartitionBundleSpec, TableBundleSpec, bundleInfoBuilder,
+};
+use crate::infoschema::PlacementBundle;
 use crate::infoschema::{
-    DBInfo, InfoSchema, PolicyInfo, ResourceGroupInfo, Table, TableInfo, infoSchema,
+    DBInfo, InfoSchema, MaskingPolicyInfo, MaskingPolicyLoader, PolicyInfo, ResourceGroupInfo,
+    Table, TableInfo, infoSchema,
 };
 use crate::infoschema_v2::{Data, infoschemaV2};
 
@@ -39,8 +44,15 @@ pub enum ActionType {
     ModifySchemaCharsetAndCollate,
     ModifySchemaDefaultPlacement,
     CreateTable,
+    CreateMaterializedView,
+    CreateMaterializedViewLog,
+    CreateMaterializedViewShadow,
     CreateTables,
     DropTable,
+    DropMaterializedView,
+    DropMaterializedViewLog,
+    DropMaterializedViewShadow,
+    MViewRefreshOutOfPlaceCutover,
     TruncateTable,
     RecoverTable,
     RenameTable,
@@ -133,6 +145,14 @@ pub struct Builder {
     info_data: Arc<Data>,
     /// 是否跨 keyspace（多租户键空间）构建。
     cross_keyspace: bool,
+    storage_class_enabled: Option<bool>,
+    masking_cache: HashMap<i64, HashMap<i64, Arc<MaskingPolicyInfo>>>,
+    masking_loaded: bool,
+    masking_loader: Option<Arc<dyn MaskingPolicyLoader>>,
+    bundle_cache: HashMap<i64, Arc<PlacementBundle>>,
+    bundle_updates: HashSet<i64>,
+    bundle_policy_updates: HashSet<i64>,
+    delta_bundles: bool,
 }
 
 impl Builder {
@@ -148,6 +168,14 @@ impl Builder {
             temporary_table_ids: HashSet::new(),
             info_data,
             cross_keyspace: false,
+            storage_class_enabled: None,
+            masking_cache: HashMap::new(),
+            masking_loaded: false,
+            masking_loader: None,
+            bundle_cache: HashMap::new(),
+            bundle_updates: HashSet::new(),
+            bundle_policy_updates: HashSet::new(),
+            delta_bundles: false,
         }
     }
     /// 设置后续 diff 应用使用的 schema 版本。
@@ -161,6 +189,12 @@ impl Builder {
     /// 设置跨 keyspace 标志。
     pub fn WithCrossKS(mut self, cross_keyspace: bool) -> Self {
         self.cross_keyspace = cross_keyspace;
+        self
+    }
+
+    /// Override the instance setting for a snapshot, primarily for deterministic tests.
+    pub fn WithStorageClassEnabled(mut self, enabled: bool) -> Self {
+        self.storage_class_enabled = Some(enabled);
         self
     }
 
@@ -181,8 +215,16 @@ impl Builder {
             | ActionType::ModifySchemaDefaultPlacement => {
                 self.refresh_schema(metadata, diff.schema_id)?
             }
-            ActionType::CreateTable | ActionType::RecoverTable => {
-                affected.extend(self.applyTableUpdate(metadata, diff)?)
+            ActionType::CreateTable
+            | ActionType::CreateMaterializedView
+            | ActionType::CreateMaterializedViewLog
+            | ActionType::CreateMaterializedViewShadow
+            | ActionType::RecoverTable => {
+                if diff.table_id > 0 {
+                    affected.extend(self.applyTableUpdate(metadata, diff)?);
+                } else if diff.old_table_id > 0 {
+                    affected.extend(self.applyDropTable(diff.schema_id, diff.old_table_id));
+                }
             }
             // 主表更新后，再处理 AffectedOptions 中的其余表。
             ActionType::CreateTables => {
@@ -197,6 +239,59 @@ impl Builder {
             }
             ActionType::DropTable => {
                 affected.extend(self.applyDropTable(diff.schema_id, diff.table_id))
+            }
+            ActionType::DropMaterializedView
+            | ActionType::DropMaterializedViewLog
+            | ActionType::DropMaterializedViewShadow => {
+                let current = metadata.table(diff.schema_id, diff.table_id)?;
+                if current.as_ref().is_some_and(|table| {
+                    table
+                        .model_meta
+                        .as_ref()
+                        .is_none_or(|model| model.State != astersql_meta_model::StateNone)
+                }) {
+                    affected.extend(self.applyTableUpdate(metadata, diff)?);
+                } else {
+                    affected.extend(self.applyDropTable(diff.schema_id, diff.table_id));
+                }
+                for option in &diff.affected_options {
+                    if option.schema_id == 0 && option.old_schema_id == 0 {
+                        continue;
+                    }
+                    affected.extend(self.apply_table_ids(
+                        metadata,
+                        option.schema_id,
+                        option.table_id,
+                        option.old_table_id,
+                    )?);
+                }
+            }
+            ActionType::MViewRefreshOutOfPlaceCutover => {
+                if !self.databases.contains_key(&diff.schema_id) {
+                    return Err(format!("database {} not found", diff.schema_id));
+                }
+                if diff.old_table_id > 0 {
+                    affected.extend(self.applyDropTable(diff.schema_id, diff.old_table_id));
+                }
+                if diff.table_id > 0 && diff.table_id != diff.old_table_id {
+                    affected.extend(self.applyDropTable(diff.schema_id, diff.table_id));
+                }
+                if diff.table_id > 0 {
+                    affected.extend(self.apply_table_ids(
+                        metadata,
+                        diff.schema_id,
+                        diff.table_id,
+                        0,
+                    )?);
+                }
+                for option in &diff.affected_options {
+                    affected.extend(self.apply_table_ids(
+                        metadata,
+                        option.schema_id,
+                        option.table_id,
+                        option.old_table_id,
+                    )?);
+                }
             }
             // 截断/重命名/分区变更等：更新主表并处理附属 old/new 表 ID。
             ActionType::TruncateTable
@@ -245,6 +340,36 @@ impl Builder {
             | ActionType::RebaseAutoRandomBase
             | ActionType::MultiSchemaChange
             | ActionType::AddColumn => {}
+        }
+        if needRefreshMaskingPoliciesForTableDiff(diff.action_type) {
+            self.masking_cache.clear();
+            self.masking_loaded = false;
+        }
+        if self.delta_bundles {
+            for id in affected
+                .iter()
+                .copied()
+                .chain([diff.table_id, diff.old_table_id])
+            {
+                if id > 0 {
+                    self.bundle_updates.insert(id);
+                }
+            }
+            for option in &diff.affected_options {
+                for id in [option.table_id, option.old_table_id] {
+                    if id > 0 {
+                        self.bundle_updates.insert(id);
+                    }
+                }
+            }
+            if matches!(
+                diff.action_type,
+                ActionType::CreatePlacementPolicy
+                    | ActionType::AlterPlacementPolicy
+                    | ActionType::DropPlacementPolicy
+            ) {
+                self.bundle_policy_updates.insert(diff.table_id);
+            }
         }
         // 去重排序后返回，便于调用方稳定比较。
         affected.sort_unstable();
@@ -377,12 +502,20 @@ impl Builder {
         old_table_id: i64,
     ) -> Result<Vec<i64>, String> {
         let mut affected = Vec::new();
-        if old_table_id > 0 && old_table_id != new_table_id {
-            affected.extend(self.applyDropTable(schema_id, old_table_id));
-        }
         let mut table_info = metadata
             .table(schema_id, new_table_id)?
             .ok_or_else(|| format!("table {schema_id}/{new_table_id} not found"))?;
+        let current_name = self
+            .databases
+            .get(&schema_id)
+            .and_then(|db| db.tables.get(&new_table_id))
+            .map(|table| table.Meta().name.lower.as_str());
+        if old_table_id > 0
+            && (old_table_id != new_table_id
+                || current_name.is_some_and(|name| name != table_info.name.lower))
+        {
+            affected.extend(self.applyDropTable(schema_id, old_table_id));
+        }
         table_info.db_id = schema_id;
         // 规范化字符集/排序规则大小写，并处理历史 UTF8→UTF8MB4。
         ConvertCharsetCollateToLowerCaseIfNeed(&mut table_info);
@@ -410,13 +543,7 @@ impl Builder {
         self.temporary_table_ids.remove(&table_id);
         self.info_data.removeTemporaryTable(table_id);
         if self.enable_v2 {
-            self.info_data.remove(
-                db.info.name.clone(),
-                db.info.id,
-                table.Meta().name.clone(),
-                table_id,
-                self.schema_version,
-            );
+            self.info_data.remove_by_id(table_id, self.schema_version);
         }
         appendAffectedIDs(Vec::new(), table.Meta())
     }
@@ -471,6 +598,10 @@ impl Builder {
     ) {
         self.schema_version = schema_version;
         self.databases.clear();
+        self.bundle_cache.clear();
+        self.bundle_updates.clear();
+        self.bundle_policy_updates.clear();
+        self.delta_bundles = false;
         if self.enable_v2 {
             self.info_data.resetBeforeFullLoad(schema_version);
         }
@@ -499,7 +630,35 @@ impl Builder {
             }
             self.databases.insert(db.id, state);
         }
+        if !self.cross_keyspace {
+            self.init_information_schema_tables(schema_version);
+        }
         self.initMisc(policies, resource_groups);
+    }
+
+    fn init_information_schema_tables(&mut self, schema_version: i64) {
+        let enabled = self
+            .storage_class_enabled
+            .unwrap_or_else(|| astersql_config::get_global_config().enable_storage_class);
+        let db = crate::tables::information_schema_db_with_storage_class(enabled);
+        if self.databases.contains_key(&db.id) {
+            return;
+        }
+        let tables: HashMap<i64, Table> = db
+            .tables
+            .iter()
+            .cloned()
+            .map(Table)
+            .map(|table| (table.Meta().id, table))
+            .collect();
+        if self.enable_v2 {
+            self.info_data.addDB(schema_version, db.clone());
+            for table in tables.values() {
+                self.info_data.add(&db, table.clone(), schema_version);
+            }
+        }
+        self.databases
+            .insert(db.id, DatabaseState { info: db, tables });
     }
 
     /// 从已有 InfoSchema 拷贝库表到 Builder，继承其 schema 版本。
@@ -507,10 +666,10 @@ impl Builder {
         let schemas = old.AllSchemas();
         self.databases.clear();
         for db in schemas {
-            let tables = db
-                .tables
-                .iter()
-                .cloned()
+            let tables = old
+                .SchemaTableInfos(&db.name)
+                .unwrap_or_default()
+                .into_iter()
                 .map(Table)
                 .map(|table| (table.Meta().id, table))
                 .collect();
@@ -522,20 +681,51 @@ impl Builder {
                 },
             );
         }
+        self.policies = old
+            .AllPlacementPolicies()
+            .into_iter()
+            .map(|policy| (policy.id, (*policy).clone()))
+            .collect();
+        self.bundle_cache = old
+            .AllPlacementBundles()
+            .into_iter()
+            .map(|bundle| (bundle.physical_id, bundle))
+            .collect();
+        self.bundle_updates.clear();
+        self.bundle_policy_updates.clear();
+        self.delta_bundles = true;
+        (self.masking_cache, self.masking_loaded) = old.MaskingCacheSnapshot();
+        self.masking_loader = old.MaskingLoader();
         self.schema_version = old.SchemaMetaVersion();
     }
 
     /// 消费 Builder，产出 v2 `infoschemaV2` 或 v1 `infoSchema`。
     pub fn Build(mut self, schema_ts: u64) -> Arc<dyn InfoSchema> {
         self.schema_ts = schema_ts;
+        let bundles = self.build_bundles();
         if self.enable_v2 {
-            return Arc::new(infoschemaV2::new(
-                self.info_data,
-                self.schema_version,
-                schema_ts,
-            ));
+            return Arc::new(
+                infoschemaV2::new(self.info_data, self.schema_version, schema_ts)
+                    .with_bundles_and_policies(
+                        bundles,
+                        self.policies
+                            .into_iter()
+                            .map(|(id, policy)| (id, Arc::new(policy)))
+                            .collect(),
+                    )
+                    .with_masking_cache(
+                        self.masking_cache,
+                        self.masking_loaded,
+                        self.masking_loader,
+                    ),
+            );
         }
         let mut schema = infoSchema::new(self.schema_version);
+        if let Some(loader) = self.masking_loader {
+            schema = schema.with_masking_loader(loader, schema_ts);
+        }
+        schema.restore_masking_policies(self.masking_cache, self.masking_loaded);
+        schema.set_bundles(bundles);
         schema.set_temporary_table_ids(self.temporary_table_ids.clone());
         for (_, state) in self.databases {
             schema.add_schema(state.info, state.tables.into_values().collect());
@@ -548,6 +738,89 @@ impl Builder {
         }
         Arc::new(schema)
     }
+
+    fn build_bundles(&self) -> HashMap<i64, Arc<PlacementBundle>> {
+        let source = BuilderBundleSchema {
+            databases: &self.databases,
+            policies: &self.policies,
+        };
+        let mut builder = bundleInfoBuilder::new();
+        if self.delta_bundles {
+            builder.inherit_bundles(self.bundle_cache.clone());
+            for id in &self.bundle_updates {
+                builder.markTableBundleShouldUpdate(*id);
+            }
+            for id in &self.bundle_policy_updates {
+                builder.markBundlesReferPolicyShouldUpdate(*id);
+            }
+        }
+        for error in builder.updateInfoSchemaBundles(&source) {
+            tracing::warn!(error = %error, "unable to build placement bundle");
+        }
+        builder.bundles().clone()
+    }
+}
+
+struct BuilderBundleSchema<'a> {
+    databases: &'a HashMap<i64, DatabaseState>,
+    policies: &'a HashMap<i64, PolicyInfo>,
+}
+
+impl BundleSchema for BuilderBundleSchema<'_> {
+    fn policy_by_id(&self, policy_id: i64) -> Option<Arc<PolicyInfo>> {
+        self.policies.get(&policy_id).cloned().map(Arc::new)
+    }
+
+    fn table_bundle_spec(&self, table_id: i64) -> Option<TableBundleSpec> {
+        self.databases.values().find_map(|db| {
+            let table = db.tables.get(&table_id)?;
+            let model = table.Meta().model_meta.as_ref()?;
+            let policy_id = model.PlacementPolicyRef.as_ref().map(|policy| policy.ID);
+            let partitions = model.Partition.as_ref().map_or_else(Vec::new, |partition| {
+                partition
+                    .Definitions
+                    .iter()
+                    .map(|definition| PartitionBundleSpec {
+                        partition_id: definition.ID,
+                        policy_id: definition
+                            .PlacementPolicyRef
+                            .as_ref()
+                            .map_or(policy_id, |policy| Some(policy.ID)),
+                    })
+                    .collect()
+            });
+            Some(TableBundleSpec {
+                table_id,
+                policy_id,
+                partitions,
+            })
+        })
+    }
+
+    fn all_table_bundle_specs(&self) -> Vec<TableBundleSpec> {
+        self.databases
+            .values()
+            .flat_map(|db| db.tables.keys().copied())
+            .filter_map(|table_id| self.table_bundle_spec(table_id))
+            .collect()
+    }
+}
+
+/// Table diffs that invalidate cached masking-policy table/column references.
+pub fn needRefreshMaskingPoliciesForTableDiff(action: ActionType) -> bool {
+    matches!(
+        action,
+        ActionType::CreateMaskingPolicy
+            | ActionType::AlterMaskingPolicy
+            | ActionType::DropMaskingPolicy
+            | ActionType::DropTable
+            | ActionType::DropMaterializedView
+            | ActionType::DropMaterializedViewLog
+            | ActionType::RenameTable
+            | ActionType::RenameTables
+            | ActionType::TruncateTable
+            | ActionType::DropSchema
+    )
 }
 
 /// 将表 ID 及其分区定义 ID 追加到受影响列表。
