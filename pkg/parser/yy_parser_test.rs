@@ -86,6 +86,7 @@ fn real_ast_flags_cover_all_statement_containers() {
             true
         }
     }
+    // Go's ProcedureBlock visitor intentionally skips ProcedureProcStmts.
     for sql in [
         "SELECT abs(a + ?) FROM t WHERE b IN (SELECT c FROM u)",
         "UPDATE t SET a = abs(?) WHERE b = ?",
@@ -97,7 +98,6 @@ fn real_ast_flags_cover_all_statement_containers() {
         "DO abs(?)",
         "SET @a = abs(?)",
         "EXPLAIN SELECT abs(?)",
-        "CREATE PROCEDURE p() BEGIN SET @a = abs(?); SELECT ?; END",
     ] {
         let stmt = New()
             .ParseOneStmt(sql, "", "")

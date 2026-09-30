@@ -19,17 +19,45 @@
 // 与生成状态机 yyhintParse、mysql SQLMode、terror 错误类的跨文件引用保留原调用形状。
 // 以下错误值与 Go 的 parser terror.ClassParser 标准错误一一对应。
 /// 不支持的 hint 名告警（对应 mysql.ErrWarnOptimizerHintUnsupportedHint）。
-static ErrWarnOptimizerHintUnsupportedHint: std::sync::LazyLock<Box<terror::Error>> = std::sync::LazyLock::new(|| terror::ClassParser.NewStd(terror::ErrCode(mysql::ErrWarnOptimizerHintUnsupportedHint as isize)));
+static ErrWarnOptimizerHintUnsupportedHint: std::sync::LazyLock<Box<terror::Error>> =
+    std::sync::LazyLock::new(|| {
+        terror::ClassParser.NewStd(terror::ErrCode(
+            mysql::ErrWarnOptimizerHintUnsupportedHint as isize,
+        ))
+    });
 /// 非法 token 告警。
-static ErrWarnOptimizerHintInvalidToken: std::sync::LazyLock<Box<terror::Error>> = std::sync::LazyLock::new(|| terror::ClassParser.NewStd(terror::ErrCode(mysql::ErrWarnOptimizerHintInvalidToken as isize)));
+static ErrWarnOptimizerHintInvalidToken: std::sync::LazyLock<Box<terror::Error>> =
+    std::sync::LazyLock::new(|| {
+        terror::ClassParser.NewStd(terror::ErrCode(
+            mysql::ErrWarnOptimizerHintInvalidToken as isize,
+        ))
+    });
 /// 内存配额溢出告警。
-static ErrWarnMemoryQuotaOverflow: std::sync::LazyLock<Box<terror::Error>> = std::sync::LazyLock::new(|| terror::ClassParser.NewStd(terror::ErrCode(mysql::ErrWarnMemoryQuotaOverflow as isize)));
+static ErrWarnMemoryQuotaOverflow: std::sync::LazyLock<Box<terror::Error>> =
+    std::sync::LazyLock::new(|| {
+        terror::ClassParser.NewStd(terror::ErrCode(mysql::ErrWarnMemoryQuotaOverflow as isize))
+    });
 /// hint 语法解析错误告警。
-static ErrWarnOptimizerHintParseError: std::sync::LazyLock<Box<terror::Error>> = std::sync::LazyLock::new(|| terror::ClassParser.NewStd(terror::ErrCode(mysql::ErrWarnOptimizerHintParseError as isize)));
+static ErrWarnOptimizerHintParseError: std::sync::LazyLock<Box<terror::Error>> =
+    std::sync::LazyLock::new(|| {
+        terror::ClassParser.NewStd(terror::ErrCode(
+            mysql::ErrWarnOptimizerHintParseError as isize,
+        ))
+    });
 /// 整型字面量非法告警。
-static ErrWarnOptimizerHintInvalidInteger: std::sync::LazyLock<Box<terror::Error>> = std::sync::LazyLock::new(|| terror::ClassParser.NewStd(terror::ErrCode(mysql::ErrWarnOptimizerHintInvalidInteger as isize)));
+static ErrWarnOptimizerHintInvalidInteger: std::sync::LazyLock<Box<terror::Error>> =
+    std::sync::LazyLock::new(|| {
+        terror::ClassParser.NewStd(terror::ErrCode(
+            mysql::ErrWarnOptimizerHintInvalidInteger as isize,
+        ))
+    });
 /// hint 位置非法告警。
-static ErrWarnOptimizerHintWrongPos: std::sync::LazyLock<Box<terror::Error>> = std::sync::LazyLock::new(|| terror::ClassParser.NewStd(terror::ErrCode(mysql::ErrWarnOptimizerHintWrongPos as isize)));
+static ErrWarnOptimizerHintWrongPos: std::sync::LazyLock<Box<terror::Error>> =
+    std::sync::LazyLock::new(|| {
+        terror::ClassParser.NewStd(terror::ErrCode(
+            mysql::ErrWarnOptimizerHintWrongPos as isize,
+        ))
+    });
 
 // hintScanner 嵌入通用 Scanner，并额外记录 SET_VAR 值的词法上下文。
 /// 嵌入通用 Scanner，并跟踪 SET_VAR(name = value) 的词法状态。
@@ -56,16 +84,31 @@ impl hintScanner {
     // Errorf 先让通用 Scanner 附加位置信息，再包装成 optimizer hint 语法错误。
     /// 附加源位置后包装为 Optimizer hint syntax error。
     fn Errorf(&mut self, format: &str, args: &[&dyn std::fmt::Display]) -> Error {
-        let rendered = if args.is_empty() { format.to_owned() } else {
-            format!("{}: {}", format, args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>().join(", "))
+        let rendered = if args.is_empty() {
+            format.to_owned()
+        } else {
+            format!(
+                "{}: {}",
+                format,
+                args.iter()
+                    .map(|arg| arg.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
         };
         let inner = self.scanner.Errorf(&rendered);
-        ErrParse.GenWithStackByArgs(&["Optimizer hint syntax error at".into(), inner.to_string().into()])
+        ErrParse.GenWithStackByArgs(&[
+            "Optimizer hint syntax error at".into(),
+            inner.to_string().into(),
+        ])
     }
 
     /// 当前是否处于可接受 SET_VAR 数值字面量的状态。
     fn acceptSetVarNumericValue(&self) -> bool {
-        matches!(self.setVarValueState, hintSetVarValueState::ExpectValue | hintSetVarValueState::AfterSign)
+        matches!(
+            self.setVarValueState,
+            hintSetVarValueState::ExpectValue | hintSetVarValueState::AfterSign
+        )
     }
 
     // updateSetVarValueState 对应 Go 状态机；任何不符合 SET_VAR 形状的 token 都立即清空上下文。
@@ -78,7 +121,14 @@ impl hintScanner {
             AfterSetVar if token == '(' as i32 => AfterLParen,
             AfterSetVar if token == hintSetVar => AfterSetVar,
             AfterSetVar => None,
-            AfterLParen if token == ')' as i32 || token == ',' as i32 || token == '=' as i32 || token <= 0 => None,
+            AfterLParen
+                if token == ')' as i32
+                    || token == ',' as i32
+                    || token == '=' as i32
+                    || token <= 0 =>
+            {
+                None
+            }
             AfterLParen => AfterName,
             AfterName if token == '=' as i32 => ExpectValue,
             AfterName => None,
@@ -99,36 +149,63 @@ impl hintScanner {
     fn Lex(&mut self, lval: &mut yyhintSymType) -> i32 {
         let (token, position, literal) = self.scanner.scan();
         self.scanner.lastScanOffset = position.Offset;
+        if !self.scanner.updateParenthesesDepth(token) {
+            return hintInvalid;
+        }
         let error_token_type: &str;
 
         match token {
             token::intLit => match literal.parse::<u64>() {
-                Ok(number) => { lval.number = number; return self.returnToken(hintIntLit); }
+                Ok(number) => {
+                    lval.number = number;
+                    return self.returnToken(hintIntLit);
+                }
                 Err(_) => {
-                    self.scanner.AppendError(ErrWarnOptimizerHintInvalidInteger.GenWithStackByArgs(&[literal.into()]));
+                    self.scanner.AppendError(
+                        ErrWarnOptimizerHintInvalidInteger.GenWithStackByArgs(&[literal.into()]),
+                    );
                     return self.returnToken(hintInvalid);
                 }
             },
-            token::singleAtIdentifier => { lval.ident = literal; return self.returnToken(hintSingleAtIdentifier); }
+            token::singleAtIdentifier => {
+                lval.ident = literal;
+                return self.returnToken(hintSingleAtIdentifier);
+            }
             token::identifier => {
                 lval.ident = literal.clone();
                 // 大写后查 hintTokenMap，命中则返回专用 hint 关键字 token。
-                if let Some((_, mapped)) = hintTokenMap.iter().find(|(name, _)| *name == literal.to_uppercase()) { return self.returnToken(*mapped); }
+                if let Some((_, mapped)) = hintTokenMap
+                    .iter()
+                    .find(|(name, _)| *name == literal.to_uppercase())
+                {
+                    return self.returnToken(*mapped);
+                }
                 return self.returnToken(hintIdentifier);
             }
             token::stringLit => {
                 lval.ident = literal;
                 // ANSI_QUOTES 下双引号表示 identifier；读取源字节只用于判别引号类型。
-                if self.scanner.sqlMode.HasANSIQuotesMode() && self.scanner.r.s.as_bytes().get(position.Offset as usize) == Some(&b'"') {
+                if self.scanner.sqlMode.HasANSIQuotesMode()
+                    && self.scanner.r.s.as_bytes().get(position.Offset as usize) == Some(&b'"')
+                {
                     return self.returnToken(hintIdentifier);
                 }
                 return self.returnToken(hintStringLit);
             }
-            token::bitLit if literal.starts_with("0b") => { lval.ident = literal; return self.returnToken(hintIdentifier); }
+            token::bitLit if literal.starts_with("0b") => {
+                lval.ident = literal;
+                return self.returnToken(hintIdentifier);
+            }
             token::bitLit => error_token_type = "bit-value literal",
-            token::hexLit if literal.starts_with("0x") => { lval.ident = literal; return self.returnToken(hintIdentifier); }
+            token::hexLit if literal.starts_with("0x") => {
+                lval.ident = literal;
+                return self.returnToken(hintIdentifier);
+            }
             token::hexLit => error_token_type = "hexadecimal literal",
-            quotedIdentifier => { lval.ident = literal; return self.returnToken(hintIdentifier); }
+            quotedIdentifier => {
+                lval.ident = literal;
+                return self.returnToken(hintIdentifier);
+            }
             token::eq => return self.returnToken('=' as i32),
             token::floatLit | token::decLit if self.acceptSetVarNumericValue() => {
                 lval.ident = literal;
@@ -141,19 +218,32 @@ impl hintScanner {
         }
 
         // 非法 token 同时记录人类可读分类、原文本和底层 token 编号，再交给 grammar 继续恢复。
-        self.scanner.AppendError(ErrWarnOptimizerHintInvalidToken.GenWithStackByArgs(&[
-            error_token_type.into(), literal.into(), token.into(),
-        ]));
+        self.scanner
+            .AppendError(ErrWarnOptimizerHintInvalidToken.GenWithStackByArgs(&[
+                error_token_type.into(),
+                literal.into(),
+                token.into(),
+            ]));
         self.returnToken(hintInvalid)
     }
 }
 
 impl yyhintLexer for hintScanner {
-    fn Lex(&mut self, lval: &mut yyhintSymType) -> i32 { hintScanner::Lex(self, lval) }
-    fn Errorf(&mut self, format: &str, args: &[&dyn std::fmt::Display]) -> Error { hintScanner::Errorf(self, format, args) }
-    fn AppendError(&mut self, error: Error) { self.scanner.AppendError(error); }
-    fn AppendWarn(&mut self, warning: Error) { self.scanner.AppendWarn(warning); }
-    fn Errors(&self) -> (&[Error], &[Error]) { self.scanner.Errors() }
+    fn Lex(&mut self, lval: &mut yyhintSymType) -> i32 {
+        hintScanner::Lex(self, lval)
+    }
+    fn Errorf(&mut self, format: &str, args: &[&dyn std::fmt::Display]) -> Error {
+        hintScanner::Errorf(self, format, args)
+    }
+    fn AppendError(&mut self, error: Error) {
+        self.scanner.AppendError(error);
+    }
+    fn AppendWarn(&mut self, warning: Error) {
+        self.scanner.AppendWarn(warning);
+    }
+    fn Errors(&self) -> (&[Error], &[Error]) {
+        self.scanner.Errors()
+    }
 }
 
 // hintParser 保存 lexer、最终结果和可复用的 goyacc 语义栈，减少重复解析分配。
@@ -169,15 +259,23 @@ pub(super) struct hintParser {
 /// 构造预分配语义栈容量约为 50 的 hintParser。
 pub(super) fn newHintParser() -> hintParser {
     hintParser {
-        lexer: hintScanner::default(), result: Vec::new(),
-        cache: vec![yyhintSymType::default(); 50], yylval: yyhintSymType::default(), yyVAL: None,
+        lexer: hintScanner::default(),
+        result: Vec::new(),
+        cache: vec![yyhintSymType::default(); 50],
+        yylval: yyhintSymType::default(),
+        yyVAL: None,
     }
 }
 
 impl hintParser {
     // parse 跳过开头 /*+ 三字节，重置 scanner/SQL mode/位置，再调用生成 parser。
     /// 解析 hint 正文：跳过 `/*+`，设置 SQLMode 与位置，调用 `yyhintParse`。
-    pub(super) fn parse(&mut self, input: &str, sqlMode: mysql::SQLMode, initPos: Pos) -> (Vec<Box<ast::TableOptimizerHint>>, Vec<Error>) {
+    pub(super) fn parse(
+        &mut self,
+        input: &str,
+        sqlMode: mysql::SQLMode,
+        initPos: Pos,
+    ) -> (Vec<Box<ast::TableOptimizerHint>>, Vec<Error>) {
         self.result.clear();
         self.lexer.scanner.reset(input[3..].to_owned());
         self.lexer.setVarValueState = hintSetVarValueState::None;
@@ -196,7 +294,11 @@ impl hintParser {
 
         // 有 error 时只返回 errors；否则返回 warnings，与 Go 诊断优先级一致。
         let (warnings, errors) = self.lexer.scanner.Errors();
-        let diagnostics = if errors.is_empty() { warnings.to_vec() } else { errors.to_vec() };
+        let diagnostics = if errors.is_empty() {
+            warnings.to_vec()
+        } else {
+            errors.to_vec()
+        };
         (std::mem::take(&mut self.result), diagnostics)
     }
 
@@ -208,11 +310,17 @@ impl hintParser {
 
     // lastErrorAsWarn 用于 memory quota overflow：把刚追加的错误降级为 warning。
     /// 把最近一次错误降级为 warning（如 MEMORY_QUOTA 溢出）。
-    fn lastErrorAsWarn(&mut self) { self.lexer.scanner.lastErrorAsWarn(); }
+    fn lastErrorAsWarn(&mut self) {
+        self.lexer.scanner.lastErrorAsWarn();
+    }
 }
 
 // ParseHint 是公开入口，解析 `/*+ ... */` optimizer hint 并返回 AST 与诊断。
 /// 公开入口：解析 `/*+ ... */` optimizer hint，返回 AST 列表与诊断。
-pub fn ParseHint(input: &str, sqlMode: mysql::SQLMode, initPos: Pos) -> (Vec<Box<ast::TableOptimizerHint>>, Vec<Error>) {
+pub fn ParseHint(
+    input: &str,
+    sqlMode: mysql::SQLMode,
+    initPos: Pos,
+) -> (Vec<Box<ast::TableOptimizerHint>>, Vec<Error>) {
     newHintParser().parse(input, sqlMode, initPos)
 }

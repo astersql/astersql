@@ -42,6 +42,8 @@ const DDL_NONTERMINALS: &[&str] = &[
     "CreateIndexStmt",
     "CreatePolicyStmt",
     "CreateTableOptionListOpt",
+    "CreateTableOptionList",
+    "CreateTableOption",
     "CreateTableSelectOpt",
     "CreateTableStmt",
     "CreateViewSelectOpt",
@@ -203,7 +205,7 @@ fn ddl_rule_coverage() {
         .map(|production| production.rule_id.as_str())
         .collect::<HashSet<_>>();
 
-    assert_eq!(expected.len(), 590, "DDL RuleId inventory changed");
+    assert_eq!(expected.len(), 596, "DDL RuleId inventory changed");
 
     let owned = RULE_IDS_BY_REDUCTION
         .iter()

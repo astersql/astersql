@@ -189,6 +189,7 @@ enum SecurityRule {
     PrivTypeAlt34,
     PrivTypeAlt35,
     PrivTypeAlt36,
+    PrivTypeAlt37,
     ObjectTypeAlt01,
     ObjectTypeAlt02,
     ObjectTypeAlt03,
@@ -413,6 +414,7 @@ fn identify(rule_id: RuleId) -> Option<SecurityRule> {
         "privtype_show_databases--f43ff549bc2578fc" => SecurityRule::PrivTypeAlt16,
         "privtype_show_view--7281fa84760e2f35" => SecurityRule::PrivTypeAlt30,
         "privtype_shutdown--759d4eebec286143" => SecurityRule::PrivTypeAlt36,
+        "privtype_operate_view--c7abd99736880776" => SecurityRule::PrivTypeAlt37,
         "privtype_super--ab5db355bd5a517a" => SecurityRule::PrivTypeAlt15,
         "privtype_trigger--957ed174b417b4fb" => SecurityRule::PrivTypeAlt07,
         "privtype_update--2f6b7fe72255652a" => SecurityRule::PrivTypeAlt17,
@@ -761,7 +763,8 @@ fn apply_rule(rule: SecurityRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Res
         | SecurityRule::PrivTypeAlt33
         | SecurityRule::PrivTypeAlt34
         | SecurityRule::PrivTypeAlt35
-        | SecurityRule::PrivTypeAlt36 => {
+        | SecurityRule::PrivTypeAlt36
+        | SecurityRule::PrivTypeAlt37 => {
             let privilege = match rule {
                 SecurityRule::PrivTypeAlt01 | SecurityRule::PrivTypeAlt02 => {
                     parser_mysql::privs::AllPriv
@@ -800,6 +803,7 @@ fn apply_rule(rule: SecurityRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Res
                 SecurityRule::PrivTypeAlt33 => parser_mysql::privs::CreateRoutinePriv,
                 SecurityRule::PrivTypeAlt34 => parser_mysql::privs::AlterRoutinePriv,
                 SecurityRule::PrivTypeAlt35 => parser_mysql::privs::EventPriv,
+                SecurityRule::PrivTypeAlt37 => parser_mysql::privs::OperateViewPriv,
                 _ => parser_mysql::privs::ShutdownPriv,
             };
             if rule == SecurityRule::PrivTypeAlt22 && !parser_state.enableMariaDB {

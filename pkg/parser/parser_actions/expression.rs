@@ -179,6 +179,8 @@ enum ExpressionRule {
     FunctionCallKeywordAlt11,
     FunctionCallKeywordAlt12,
     FunctionCallKeywordAlt13,
+    FunctionCallKeywordAlt14,
+    FunctionCallKeywordAlt15,
     FunctionCallNonKeywordAlt01,
     FunctionCallNonKeywordAlt02,
     FunctionCallNonKeywordAlt03,
@@ -240,6 +242,10 @@ enum ExpressionRule {
     SumExprAlt26,
     SumExprAlt27,
     SumExprAlt28,
+    SumExprAlt29,
+    SumExprAlt30,
+    SumExprAlt31,
+    SumExprAlt32,
     OptGConcatSeparatorAlt01,
     OptGConcatSeparatorAlt02,
     FunctionCallGenericAlt01,
@@ -412,7 +418,9 @@ fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
         "fulltextsearchmodifieropt_with_query_expansion--72aebd8e05d4d6e9" => {
             Some(ExpressionRule::FulltextSearchModifierOptAlt05)
         }
-        "expressionlist_expression--2c4aeef656c132f0" => Some(ExpressionRule::ExpressionListAlt01),
+        "expressionlist_expression_prec_lowerthancomma--f224464f129f8906" => {
+            Some(ExpressionRule::ExpressionListAlt01)
+        }
         "expressionlist_expressionlist_expression--d4ab1f23eb0b9346" => {
             Some(ExpressionRule::ExpressionListAlt02)
         }
@@ -655,6 +663,12 @@ fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
         "functioncallkeyword_password_expressionlistopt--07a61d7533c81dbc" => {
             Some(ExpressionRule::FunctionCallKeywordAlt13)
         }
+        "functioncallkeyword_interval_expression_expressi--efbbc5befc2950bb" => {
+            Some(ExpressionRule::FunctionCallKeywordAlt14)
+        }
+        "functioncallkeyword_interval_expression_expressi--5df99ccf2f17e2f9" => {
+            Some(ExpressionRule::FunctionCallKeywordAlt15)
+        }
         "functioncallnonkeyword_builtincurtime_funcdateti--bccf2a5b9f73efd3" => {
             Some(ExpressionRule::FunctionCallNonKeywordAlt01)
         }
@@ -786,8 +800,20 @@ fn identify(rule_id: RuleId) -> Option<ExpressionRule> {
         "sumexpr_builtinmax_buggydefaultfalsedistinctopt--4a07f24d170b2143" => {
             Some(ExpressionRule::SumExprAlt15)
         }
+        "sumexpr_builtinmaxcount_expression_optwindowingc--581c81d8689d071b" => {
+            Some(ExpressionRule::SumExprAlt29)
+        }
+        "sumexpr_builtinmaxcount_all_expression_optwindow--ecd47973e6584f02" => {
+            Some(ExpressionRule::SumExprAlt30)
+        }
         "sumexpr_builtinmin_buggydefaultfalsedistinctopt--ae382207893b77cd" => {
             Some(ExpressionRule::SumExprAlt16)
+        }
+        "sumexpr_builtinmincount_expression_optwindowingc--eca313c70d452e81" => {
+            Some(ExpressionRule::SumExprAlt31)
+        }
+        "sumexpr_builtinmincount_all_expression_optwindow--5c27ee9df5bb1570" => {
+            Some(ExpressionRule::SumExprAlt32)
         }
         "sumexpr_builtinsum_buggydefaultfalsedistinctopt--cd52dba6b858ef90" => {
             Some(ExpressionRule::SumExprAlt17)
@@ -1697,6 +1723,27 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                 Box::new(right),
             ));
         }
+        ExpressionRule::FunctionCallKeywordAlt14 | ExpressionRule::FunctionCallKeywordAlt15 => {
+            let (Some(first), Some(second)) = (rhs[3].expr.clone(), rhs[5].expr.clone()) else {
+                return Ok(false);
+            };
+            let mut args = vec![first, second];
+            if rule == ExpressionRule::FunctionCallKeywordAlt15 {
+                args.extend(
+                    rhs[7]
+                        .item
+                        .as_deref()
+                        .and_then(|item| item.downcast_ref::<Vec<parser_ast::ExprNode>>())
+                        .cloned()
+                        .unwrap_or_default(),
+                );
+            }
+            out.expr = Some(parser_ast::ExprNode::Function(
+                parser_ast::CIStr::default(),
+                parser_ast::NewCIStr("INTERVAL"),
+                args,
+            ));
+        }
         ExpressionRule::FunctionCallNonKeywordAlt03
         | ExpressionRule::FunctionCallNonKeywordAlt04
         | ExpressionRule::FunctionCallNonKeywordAlt05
@@ -1935,7 +1982,11 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
         | ExpressionRule::SumExprAlt19
         | ExpressionRule::SumExprAlt20
         | ExpressionRule::SumExprAlt21
-        | ExpressionRule::SumExprAlt22 => {
+        | ExpressionRule::SumExprAlt22
+        | ExpressionRule::SumExprAlt29
+        | ExpressionRule::SumExprAlt30
+        | ExpressionRule::SumExprAlt31
+        | ExpressionRule::SumExprAlt32 => {
             let (name_back, args, distinct) = match rule {
                 ExpressionRule::SumExprAlt02 | ExpressionRule::SumExprAlt03 => (
                     3,
@@ -2002,6 +2053,8 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
                             | ExpressionRule::SumExprAlt06
                             | ExpressionRule::SumExprAlt08
                             | ExpressionRule::SumExprAlt12
+                            | ExpressionRule::SumExprAlt29
+                            | ExpressionRule::SumExprAlt31
                     ) {
                         4
                     } else {

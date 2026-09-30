@@ -27,6 +27,8 @@ pub struct Pos {
     pub Offset: i32,
 }
 
+const MAX_PARENTHESES_DEPTH: usize = 10_000;
+
 // Scanner 对应 yyLexer 实现；字段顺序与 Go 一致，保存编码、诊断、提示和最近关键字状态。
 /// yyLexer 实现：持有 reader、编码、诊断、SQL Mode 与关键字历史。
 pub struct Scanner {
@@ -51,6 +53,8 @@ pub struct Scanner {
     pub(super) lastHintPos: Pos,
     identifierDot: bool,
     keepHint: bool,
+    parenDepth: usize,
+    depthLimitError: Option<usize>,
 }
 
 impl Scanner {
@@ -73,6 +77,8 @@ impl Scanner {
         self.inBangComment = false;
         self.lastKeyword = 0;
         self.identifierDot = false;
+        self.parenDepth = 0;
+        self.depthLimitError = None;
     }
 
     // stmtText 截取当前语句，并按 Go 逻辑只修剪边界上的一个换行。
@@ -229,6 +235,9 @@ impl Scanner {
     pub fn Lex(&mut self, v: &mut yySymType) -> i32 {
         let (mut tok, mut pos, mut lit) = self.scan();
         self.lastScanOffset = pos.Offset;
+        if !self.updateParenthesesDepth(tok) {
+            return token::invalid;
+        }
         self.lastKeyword3 = self.lastKeyword2;
         self.lastKeyword2 = self.lastKeyword;
         self.lastKeyword = 0;
@@ -243,6 +252,10 @@ impl Scanner {
                 tok = keyword;
                 self.lastKeyword = keyword;
             }
+        }
+        if tok == token::full && self.getNextTwoTokens() == (token::outer, token::join) {
+            tok = token::fullJoinType;
+            self.lastKeyword = tok;
         }
         if self.sqlMode.HasANSIQuotesMode()
             && tok == token::stringLit
@@ -560,16 +573,35 @@ impl Scanner {
     // 把最后一个编码 error 降级为 warning，保持两组诊断的相对顺序。
     /// 将最近一次 error 降级为 warning。
     pub(super) fn lastErrorAsWarn(&mut self) {
-        if self.errs.last().is_some_and(|error| {
-            let message = error.to_string();
-            message.contains("parentheses nesting depth exceeds maximum")
-                || message.contains("AST nesting depth exceeds maximum")
-        }) {
+        if self.depthLimitError == self.errs.len().checked_sub(1)
+            || self.errs.last().is_some_and(|error| {
+                let message = error.to_string();
+                message.contains("parentheses nesting depth exceeds maximum")
+                    || message.contains("AST nesting depth exceeds maximum")
+            })
+        {
             return;
         }
         if let Some(err) = self.errs.pop() {
             self.warns.push(err);
         }
+    }
+
+    fn updateParenthesesDepth(&mut self, token: i32) -> bool {
+        if token == '(' as i32 {
+            self.parenDepth += 1;
+            if self.parenDepth > MAX_PARENTHESES_DEPTH {
+                self.AppendError(ErrParse.GenWithStackByArgs(&[
+                    "parentheses nesting depth exceeds maximum".into(),
+                    MAX_PARENTHESES_DEPTH.to_string().into(),
+                ]));
+                self.depthLimitError = self.errs.len().checked_sub(1);
+                return false;
+            }
+        } else if token == ')' as i32 && self.parenDepth > 0 {
+            self.parenDepth -= 1;
+        }
+        true
     }
 
     // empty 集中构造零状态；实际依赖类型的默认值待模块接线时替换。
@@ -594,6 +626,8 @@ impl Scanner {
             lastHintPos: Pos::default(),
             identifierDot: false,
             keepHint: false,
+            parenDepth: 0,
+            depthLimitError: None,
         }
     }
 }

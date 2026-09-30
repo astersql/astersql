@@ -1,7 +1,7 @@
 // Copyright 2026 AsterSQL.
 
 use super::super::{GENERATED_MAIN_ACTION_REQUIRED, RULE_IDS_BY_REDUCTION};
-use super::{admin, ddl, dml, expression, misc, query, security};
+use super::{admin, ddl, dml, expression, misc, mview, query, security};
 
 #[test]
 fn all_action_rules_have_one_owner() {
@@ -14,6 +14,7 @@ fn all_action_rules_have_one_owner() {
     let mut security_count = 0;
     let mut admin_count = 0;
     let mut misc_count = 0;
+    let mut mview_count = 0;
 
     for (&rule_id, &required) in RULE_IDS_BY_REDUCTION
         .iter()
@@ -25,6 +26,8 @@ fn all_action_rules_have_one_owner() {
         security_count += usize::from(security_owned);
         admin_count += usize::from(admin_owned);
         misc_count += usize::from(misc_owned);
+        let mview_owned = mview::owns(rule_id);
+        mview_count += usize::from(mview_owned);
 
         let owners = usize::from(ddl::owns(rule_id))
             + usize::from(dml::owns(rule_id))
@@ -32,7 +35,8 @@ fn all_action_rules_have_one_owner() {
             + usize::from(query::owns(rule_id))
             + usize::from(security_owned)
             + usize::from(admin_owned)
-            + usize::from(misc_owned);
+            + usize::from(misc_owned)
+            + usize::from(mview_owned);
         assert_eq!(
             owners,
             usize::from(required),
@@ -41,9 +45,10 @@ fn all_action_rules_have_one_owner() {
         );
     }
 
-    assert_eq!(security_count, 181, "security RuleId inventory changed");
-    assert_eq!(admin_count, 545, "admin RuleId inventory changed");
+    assert_eq!(security_count, 182, "security RuleId inventory changed");
+    assert_eq!(admin_count, 551, "admin RuleId inventory changed");
     assert_eq!(misc_count, 153, "misc RuleId inventory changed");
+    assert_eq!(mview_count, 53, "materialized view RuleId inventory changed");
 }
 
 #[test]
@@ -52,6 +57,7 @@ fn remaining_modules_have_no_numeric_fallback() {
         include_str!("security.rs"),
         include_str!("admin.rs"),
         include_str!("misc.rs"),
+        include_str!("mview.rs"),
     ] {
         assert!(!source.contains("legacy_rule_number"));
         assert!(!source.contains("apply_numeric"));

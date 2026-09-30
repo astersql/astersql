@@ -425,6 +425,7 @@ enum DdlRule {
     IndexOptionAlt11,
     IndexOptionAlt12,
     IndexOptionAlt13,
+    IndexOptionAlt14,
     IndexNameAndTypeOptAlt01,
     IndexNameAndTypeOptAlt02,
     IndexNameAndTypeOptAlt03,
@@ -491,9 +492,14 @@ enum DdlRule {
     TableOptionAlt43,
     TableOptionAlt44,
     TableOptionAlt45,
+    TableOptionAlt46,
     ForceOptAlt01,
     ForceOptAlt02,
     CreateTableOptionListOptAlt01,
+    CreateTableOptionListAlt01,
+    CreateTableOptionListAlt02,
+    CreateTableOptionListAlt03,
+    CreateTableOptionAlt02,
     TableOptionListAlt01,
     TableOptionListAlt02,
     TableOptionListAlt03,
@@ -1539,6 +1545,9 @@ fn identify(rule_id: RuleId) -> Option<DdlRule> {
             Some(DdlRule::IndexOptionAlt12)
         }
         "indexoption_where_expression--95c29119b3b81632" => Some(DdlRule::IndexOptionAlt13),
+        "indexoption_pre_split_regions_eqopt_auto--24c39646c1dcd9f3" => {
+            Some(DdlRule::IndexOptionAlt14)
+        }
         "indexnameandtypeopt_indexname--eb606e683a56f4c2" => {
             Some(DdlRule::IndexNameAndTypeOptAlt01)
         }
@@ -1701,10 +1710,25 @@ fn identify(rule_id: RuleId) -> Option<DdlRule> {
         "tableoption_ietf_quotes_eqopt_stringname--9711f0fefbb702bc" => {
             Some(DdlRule::TableOptionAlt45)
         }
+        "tableoption_storage_class_eqopt_stringname--ac2c3f5d9cce8d76" => {
+            Some(DdlRule::TableOptionAlt46)
+        }
         "forceopt--0414b46c40bc0ea5" => Some(DdlRule::ForceOptAlt01),
         "forceopt_force--c15469c14f426f25" => Some(DdlRule::ForceOptAlt02),
         "createtableoptionlistopt_prec_lowerthancreatetab--15b3af128ce3a60a" => {
             Some(DdlRule::CreateTableOptionListOptAlt01)
+        }
+        "createtableoptionlist_createtableoption--2484793c867406e4" => {
+            Some(DdlRule::CreateTableOptionListAlt01)
+        }
+        "createtableoptionlist_createtableoptionlist_crea--0c4c46e5e204447d" => {
+            Some(DdlRule::CreateTableOptionListAlt02)
+        }
+        "createtableoptionlist_createtableoptionlist_crea--6a3e3e45fcebd449" => {
+            Some(DdlRule::CreateTableOptionListAlt03)
+        }
+        "createtableoption_start_transaction--fdf9ea8f33ddd6f1" => {
+            Some(DdlRule::CreateTableOptionAlt02)
         }
         "tableoptionlist_tableoption--a670551b2fd5ed9c" => Some(DdlRule::TableOptionListAlt01),
         "tableoptionlist_tableoptionlist_tableoption--3312fc2ee3c074d9" => {
@@ -6354,6 +6378,11 @@ fn apply_rule(rule: DdlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<b
                         left.Global = true;
                     } else if right.SplitOpt.is_some() {
                         left.SplitOpt = right.SplitOpt;
+                        left.AutoPreSplit = false;
+                    } else if right.AutoPreSplit {
+                        if left.SplitOpt.is_none() {
+                            left.AutoPreSplit = true;
+                        }
                     } else if !right.SecondaryEngineAttr.is_empty() {
                         left.SecondaryEngineAttr = right.SecondaryEngineAttr;
                     } else if right.Condition.is_some() {
@@ -6376,7 +6405,8 @@ fn apply_rule(rule: DdlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<b
         | DdlRule::IndexOptionAlt10
         | DdlRule::IndexOptionAlt11
         | DdlRule::IndexOptionAlt12
-        | DdlRule::IndexOptionAlt13 => {
+        | DdlRule::IndexOptionAlt13
+        | DdlRule::IndexOptionAlt14 => {
             let mut option = parser_ast::IndexOption::default();
             match rule {
                 DdlRule::IndexOptionAlt01 => {
@@ -6469,6 +6499,7 @@ fn apply_rule(rule: DdlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<b
                         .expr
                         .clone()
                 }
+                DdlRule::IndexOptionAlt14 => option.AutoPreSplit = true,
                 _ => {}
             }
             out.item = Some(Box::new(option));
@@ -6615,7 +6646,8 @@ fn apply_rule(rule: DdlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<b
         | DdlRule::TableOptionAlt42
         | DdlRule::TableOptionAlt43
         | DdlRule::TableOptionAlt44
-        | DdlRule::TableOptionAlt45 => {
+        | DdlRule::TableOptionAlt45
+        | DdlRule::TableOptionAlt46 => {
             let tp = match rule {
                 DdlRule::TableOptionAlt02 => parser_ast::TableOptionType::Charset,
                 DdlRule::TableOptionAlt03 => parser_ast::TableOptionType::Collate,
@@ -6663,6 +6695,7 @@ fn apply_rule(rule: DdlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<b
                 DdlRule::TableOptionAlt42 => parser_ast::TableOptionType::PageCompressionLevel,
                 DdlRule::TableOptionAlt43 => parser_ast::TableOptionType::Transactional,
                 DdlRule::TableOptionAlt44 => parser_ast::TableOptionType::Sequence,
+                DdlRule::TableOptionAlt46 => parser_ast::TableOptionType::StorageClass,
                 _ => parser_ast::TableOptionType::IetfQuotes,
             };
             let mut option = parser_ast::TableOption {
@@ -6726,12 +6759,16 @@ fn apply_rule(rule: DdlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<b
                     | DdlRule::TableOptionAlt38
                     | DdlRule::TableOptionAlt39
                     | DdlRule::TableOptionAlt45
+                    | DdlRule::TableOptionAlt46
             ) {
                 option.StrValue = rhs
                     .borrow(rhs_len - (0))
                     .expect("DDL RHS position")
                     .ident
                     .clone();
+                if rule == DdlRule::TableOptionAlt46 {
+                    option.StrValue.make_ascii_uppercase();
+                }
             }
             if rule == DdlRule::TableOptionAlt29 {
                 option.StrValue = "MEMORY".to_owned();
@@ -6848,7 +6885,17 @@ fn apply_rule(rule: DdlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<b
         DdlRule::ForceOptAlt01 | DdlRule::ForceOptAlt02 => {
             out.item = Some(Box::new(rule == DdlRule::ForceOptAlt02))
         }
-        DdlRule::TableOptionListAlt01 => {
+        DdlRule::CreateTableOptionAlt02 => {
+            if !parser_state.enableUnsupportedMySQLSyntax {
+                yylex.AppendError(yylex.Errorf("syntax error", &[]));
+                return Err(1);
+            }
+            out.item = Some(Box::new(parser_ast::TableOption {
+                Tp: parser_ast::TableOptionType::StartTransaction,
+                ..Default::default()
+            }));
+        }
+        DdlRule::TableOptionListAlt01 | DdlRule::CreateTableOptionListAlt01 => {
             let values = rhs
                 .borrow(rhs_len - (0))
                 .expect("DDL RHS position")
@@ -6860,8 +6907,11 @@ fn apply_rule(rule: DdlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<b
                 .collect::<Vec<_>>();
             out.item = Some(Box::new(values));
         }
-        DdlRule::TableOptionListAlt02 | DdlRule::TableOptionListAlt03 => {
-            let list_back = if rule == DdlRule::TableOptionListAlt02 {
+        DdlRule::TableOptionListAlt02
+        | DdlRule::TableOptionListAlt03
+        | DdlRule::CreateTableOptionListAlt02
+        | DdlRule::CreateTableOptionListAlt03 => {
+            let list_back = if matches!(rule, DdlRule::TableOptionListAlt02 | DdlRule::CreateTableOptionListAlt02) {
                 1
             } else {
                 2
@@ -7277,7 +7327,9 @@ fn apply_rule(rule: DdlRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result<b
                 complete: semantic.complete,
             }));
         }
-        DdlRule::CreateTableOptionListOptAlt01 => out.item = Some(Box::new(Vec::<String>::new())),
+        DdlRule::CreateTableOptionListOptAlt01 => {
+            out.item = Some(Box::new(Vec::<parser_ast::TableOption>::new()))
+        }
         DdlRule::TruncateTableStmtAlt01 => {
             let table = rhs
                 .borrow(rhs_len - (0))

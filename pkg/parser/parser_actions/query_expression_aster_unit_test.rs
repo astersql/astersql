@@ -215,10 +215,10 @@ fn query_expression_rule_coverage() {
 
     assert_eq!(
         expression_expected.len(),
-        282,
+        288,
         "expression RuleId inventory changed"
     );
-    assert_eq!(query_expected.len(), 234, "query RuleId inventory changed");
+    assert_eq!(query_expected.len(), 235, "query RuleId inventory changed");
     assert!(expression_expected.is_disjoint(&query_expected));
 
     for rule_id in RULE_IDS_BY_REDUCTION.iter().copied() {

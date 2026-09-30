@@ -51,13 +51,19 @@ fn test_keywords() {
     }
     // Go 使用 require.Equal 附带提示信息；这里保留相同检查语义。
     assert!(found, "TiDBKeyword ADMIN is part of the list");
+    assert!(
+        parser::Keywords
+            .iter()
+            .any(|keyword| keyword.Word == "AUTO" && !keyword.Reserved),
+        "AUTO is part of the unreserved keyword list"
+    );
 }
 
 // test_keywords_length 对应 Go 的 TestKeywordsLength：固定总关键字数和保留关键字数量。
-/// 校验总关键字数 683、保留字数 233（与 Go 生成器快照一致）。
+/// 校验总关键字数 695、保留字数 233（与 Go 生成器快照一致）。
 #[test]
 fn test_keywords_length() {
-    require::Equal(683, parser::Keywords.len());
+    require::Equal(695, parser::Keywords.len());
 
     let mut reserved_nr = 0;
     for kw in parser::Keywords.iter() {

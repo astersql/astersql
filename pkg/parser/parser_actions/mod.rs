@@ -8,6 +8,7 @@ mod ddl;
 mod dml;
 mod expression;
 mod misc;
+mod mview;
 mod query;
 mod security;
 
@@ -57,7 +58,9 @@ impl IndexMut<usize> for Rhs<'_> {
 
 /// Dispatch a stable generated rule identifier without exposing numeric rules.
 pub(crate) fn apply(rule_id: RuleId, rhs: Rhs<'_>, context: Context<'_>) -> Result<bool, isize> {
-    if ddl::owns(rule_id) {
+    if mview::owns(rule_id) {
+        mview::apply(rule_id, rhs, context)
+    } else if ddl::owns(rule_id) {
         ddl::apply(rule_id, rhs, context).expect("owned DDL rule has an action")
     } else if dml::owns(rule_id) {
         dml::apply(rule_id, rhs, context).expect("owned DML rule has an action")
@@ -77,7 +80,8 @@ pub(crate) fn apply(rule_id: RuleId, rhs: Rhs<'_>, context: Context<'_>) -> Resu
 }
 
 pub(crate) fn has_semantic_action(rule_id: RuleId) -> bool {
-    ddl::owns(rule_id)
+    mview::owns(rule_id)
+        || ddl::owns(rule_id)
         || dml::owns(rule_id)
         || expression::owns(rule_id)
         || query::owns(rule_id)

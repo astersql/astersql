@@ -188,6 +188,7 @@ enum QueryRule {
     JoinTableAlt10,
     JoinTypeAlt01,
     JoinTypeAlt02,
+    JoinTypeAlt03,
     LimitClauseAlt01,
     LimitClauseAlt02,
     LimitOptionAlt01,
@@ -590,6 +591,7 @@ fn identify(rule_id: RuleId) -> Option<QueryRule> {
         }
         "jointype_left--23e4b6170f2f2db7" => Some(QueryRule::JoinTypeAlt01),
         "jointype_right--90e52b57663562e6" => Some(QueryRule::JoinTypeAlt02),
+        "jointype_full_outer_join--3d2a3bf71e63fb6e" => Some(QueryRule::JoinTypeAlt03),
         "limitclause_prec_empty--03e5a7000a2cb76b" => Some(QueryRule::LimitClauseAlt01),
         "limitclause_limit_limitoption--3f45fdc54e5378d3" => Some(QueryRule::LimitClauseAlt02),
         "limitoption_lengthnum--84b5031e6ebe10fc" => Some(QueryRule::LimitOptionAlt01),
@@ -2649,6 +2651,7 @@ fn apply_rule(rule: QueryRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
         }
         QueryRule::JoinTypeAlt01 => out.item = Some(Box::new(parser_ast::JoinType::LeftJoin)),
         QueryRule::JoinTypeAlt02 => out.item = Some(Box::new(parser_ast::JoinType::RightJoin)),
+        QueryRule::JoinTypeAlt03 => out.item = Some(Box::new(parser_ast::JoinType::FullJoin)),
         QueryRule::LimitClauseAlt01 | QueryRule::SelectStmtLimitOptAlt01 => out.item = None,
         QueryRule::LimitClauseAlt02 | QueryRule::SelectStmtLimitAlt01 => {
             let count = rhs[rhs_len - (0)]

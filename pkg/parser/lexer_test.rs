@@ -49,7 +49,7 @@ fn assert_parse_ok(sql: &str) {
 #[test]
 /// 关键字表经 digester 归一化后的形态。
 fn test_token_id() {
-    assert_eq!(keywords::Keywords.len(), 683);
+    assert_eq!(keywords::Keywords.len(), 695);
     // Go TestTokenID iterates tokenMap, not windowFuncTokenMap. The generated
     // Keywords list contains both groups, so disabled window tokens remain
     // identifiers and are quoted by the digester.

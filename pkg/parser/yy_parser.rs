@@ -110,6 +110,7 @@ pub struct ParserConfig {
     pub EnableWindowFunction: bool,
     pub EnableStrictDoubleTypeCheck: bool,
     pub SkipPositionRecording: bool,
+    pub EnableUnsupportedMySQLSyntax: bool,
 }
 
 // Allow the statement wrappers surrounding a 10,000-level expression.
@@ -253,7 +254,6 @@ pub(crate) fn check_ast_depth_limit(
     Ok(())
 }
 
-
 /// 一次 SQL 解析会话的状态：字符集、词法器、AST 结果与 yacc 符号缓存。
 // Parser 保存一次解析所需的连接字符集、词法器、结果以及 yacc 临时值。
 // Go 的切片复用和指针字段在这里保留为 Vec/Option 形状，以表达生命周期和可空语义。
@@ -270,6 +270,7 @@ pub struct Parser {
     explicitCharset: bool,
     strictDoubleFieldType: bool,
     enableMariaDB: bool,
+    enableUnsupportedMySQLSyntax: bool,
     cache: Vec<yySymType>,
     yylval: yySymType,
     yyVAL: Option<Box<yySymType>>,
@@ -309,6 +310,7 @@ pub fn New() -> Box<Parser> {
         explicitCharset: false,
         strictDoubleFieldType: false,
         enableMariaDB: false,
+        enableUnsupportedMySQLSyntax: false,
         cache: Vec::with_capacity(200),
         yylval: yySymType::default(),
         yyVAL: None,
@@ -351,6 +353,7 @@ impl Parser {
     fn reset(&mut self) {
         self.explicitCharset = false;
         self.strictDoubleFieldType = false;
+        self.enableUnsupportedMySQLSyntax = false;
         self.EnableWindowFunc(true);
         self.SetStrictDoubleTypeCheck(true);
         let mode = mysql::GetSQLMode(mysql::DefaultSQLMode).unwrap_or_default();
@@ -372,6 +375,7 @@ impl Parser {
         self.EnableWindowFunc(config.EnableWindowFunction);
         self.SetStrictDoubleTypeCheck(config.EnableStrictDoubleTypeCheck);
         self.lexer.skipPositionRecording = config.SkipPositionRecording;
+        self.enableUnsupportedMySQLSyntax = config.EnableUnsupportedMySQLSyntax;
     }
 
     // ParseSQL 是主解析入口：重置参数和词法器、依次应用可变参数、调用 yacc，再收集警告与首个错误。

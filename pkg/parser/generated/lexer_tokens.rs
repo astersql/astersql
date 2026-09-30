@@ -931,4 +931,19 @@ mod token {
     pub const lowerThanNot: i32 = 58250;
     pub const lowerThanComma: i32 = 58251;
     pub const higherThanComma: i32 = 58252;
+    pub const fullJoinType: i32 = 58253;
+    pub const alert: i32 = 58254;
+    pub const r#async: i32 = 58255;
+    pub const auto: i32 = 58256;
+    pub const complete: i32 = 58257;
+    pub const delta: i32 = 58258;
+    pub const fast: i32 = 58259;
+    pub const immediate: i32 = 58260;
+    pub const materialized: i32 = 58261;
+    pub const operate: i32 = 58262;
+    pub const place: i32 = 58263;
+    pub const storageClass: i32 = 58264;
+    pub const transitions: i32 = 58265;
+    pub const builtinMaxCount: i32 = 58266;
+    pub const builtinMinCount: i32 = 58267;
 }

@@ -87,15 +87,32 @@ pub trait Visitor {
     }
 }
 
-/// Visits an AST without replacing nodes. A `true` enter result skips children.
+/// Visits a mutable AST. A `true` enter result skips children.
+///
+/// Replacement hooks are optional. They must return the same concrete Rust type
+/// as the visited node or embedded value; a mismatched replacement panics.
 pub trait InPlaceVisitor {
     fn enter(&mut self, input: &mut dyn Node) -> bool;
     fn leave(&mut self, input: &mut dyn Node) -> bool;
+    /// Optionally replace a node after `enter`, before visiting its children.
+    fn enter_replacement(&mut self, _input: &mut dyn Node) -> Option<Box<dyn Any>> {
+        None
+    }
+    /// Optionally replace a node after `leave`.
+    fn leave_replacement(&mut self, _input: &mut dyn Node) -> Option<Box<dyn Any>> {
+        None
+    }
     fn enter_embedded(&mut self, _input: &mut dyn Any) -> bool {
         false
     }
     fn leave_embedded(&mut self, _input: &mut dyn Any) -> bool {
         true
+    }
+    fn enter_embedded_replacement(&mut self, _input: &mut dyn Any) -> Option<Box<dyn Any>> {
+        None
+    }
+    fn leave_embedded_replacement(&mut self, _input: &mut dyn Any) -> Option<Box<dyn Any>> {
+        None
     }
     fn enter_table_name(&mut self, _input: &mut TableName) -> bool {
         false
@@ -126,6 +143,15 @@ pub trait InPlaceVisitor {
 /// Walks a mutable AST in the same child order as `Node::accept`.
 pub fn Walk(node: &mut dyn Node, visitor: &mut dyn InPlaceVisitor) -> bool {
     node.accept_in_place(visitor)
+}
+
+fn replace_node<T: Node>(node: &mut T, replacement: Option<Box<dyn Any>>) {
+    if let Some(replacement) = replacement {
+        let replacement = replacement
+            .downcast::<T>()
+            .unwrap_or_else(|_| panic!("visitor replacement must preserve the node's Rust type"));
+        *node = *replacement;
+    }
 }
 
 /// Compares expression structure after ignoring the transient fields Go's
@@ -2596,7 +2622,7 @@ pub struct CreateSequenceStmt {
     pub IfNotExists: bool,
     pub Name: TableName,
     pub SeqOptions: Vec<SequenceOption>,
-    pub TblOptions: Vec<String>,
+    pub TblOptions: Vec<TableOption>,
 }
 
 /// ALTER序列语句结构体。
@@ -4352,13 +4378,16 @@ impl Node for SelectStmt {
         visitor.leave(self)
     }
     fn accept_in_place(&mut self, visitor: &mut dyn InPlaceVisitor) -> bool {
-        if visitor.enter(self) {
-            return visitor.leave(self);
-        }
-        if !walk::MutChildren::visit_children_mut(self, visitor) {
+        let skip_children = visitor.enter(self);
+        let replacement = visitor.enter_replacement(self);
+        replace_node(self, replacement);
+        if !skip_children && !walk::MutChildren::visit_children_mut(self, visitor) {
             return false;
         }
-        visitor.leave(self)
+        let ok = visitor.leave(self);
+        let replacement = visitor.leave_replacement(self);
+        replace_node(self, replacement);
+        ok
     }
 }
 
@@ -4772,8 +4801,16 @@ macro_rules! simple_node {
                 walk::Children::visit_children(self, visitor) && visitor.leave(self)
             }
             fn accept_in_place(&mut self, visitor: &mut dyn InPlaceVisitor) -> bool {
-                if visitor.enter(self) { return visitor.leave(self); }
-                walk::MutChildren::visit_children_mut(self, visitor) && visitor.leave(self)
+                let skip_children = visitor.enter(self);
+                let replacement = visitor.enter_replacement(self);
+                replace_node(self, replacement);
+                if !skip_children && !walk::MutChildren::visit_children_mut(self, visitor) {
+                    return false;
+                }
+                let ok = visitor.leave(self);
+                let replacement = visitor.leave_replacement(self);
+                replace_node(self, replacement);
+                ok
             }
         }
     )+};
@@ -5025,6 +5062,9 @@ mod go_merge_23_test;
 
 #[cfg(test)]
 mod go_merge_25_test;
+
+#[cfg(test)]
+mod go_merge_27_test;
 #[cfg(test)]
 #[path = "integration_9_aster_unit_test.rs"]
 mod integration_9_aster_unit_test;

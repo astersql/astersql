@@ -86,6 +86,10 @@ enum AdminRule {
     AnalyzeOptionAlt05,
     AnalyzeOptionAlt06,
     AnalyzeOptionAlt07,
+    AnalyzeOptionAlt08,
+    AnalyzeOptionAlt09,
+    AnalyzeOptionAlt10,
+    AnalyzeOptionAlt11,
     BinlogStmtAlt01,
     IdentListWithParenOptAlt01,
     IdentListWithParenOptAlt02,
@@ -358,6 +362,7 @@ enum AdminRule {
     ShowTargetFilterableAlt43,
     ShowTargetFilterableAlt44,
     ShowTargetFilterableAlt45,
+    ShowTargetFilterableAlt46,
     ShowLikeOrWhereOptAlt01,
     ShowLikeOrWhereOptAlt02,
     ShowLikeOrWhereOptAlt03,
@@ -478,6 +483,7 @@ enum AdminRule {
     MaskingPolicyRestrictOperationAlt01,
     CreateMaskingPolicyStmtAlt01,
     CreateSequenceStmtAlt01,
+    CreateSequenceTableOptionListOptAlt01,
     CreateSequenceOptionListOptAlt01,
     SequenceOptionListAlt01,
     SequenceOptionListAlt02,
@@ -699,6 +705,10 @@ fn identify(rule_id: RuleId) -> Option<AdminRule> {
         "analyzeoption_num_topn--8ec91397afdb26fa" => AdminRule::AnalyzeOptionAlt02,
         "analyzeoption_numliteral_ndvrate--74bb35c910b84b4a" => AdminRule::AnalyzeOptionAlt07,
         "analyzeoption_numliteral_samplerate--d6fa25cea0b345a4" => AdminRule::AnalyzeOptionAlt06,
+        "analyzeoption_default_buckets--cd85096ebd5babf3" => AdminRule::AnalyzeOptionAlt08,
+        "analyzeoption_default_topn--c2d926504f665863" => AdminRule::AnalyzeOptionAlt09,
+        "analyzeoption_default_samples--5caa91fa5ed520e7" => AdminRule::AnalyzeOptionAlt10,
+        "analyzeoption_default_samplerate--6d162a23401d8fe2" => AdminRule::AnalyzeOptionAlt11,
         "analyzeoptionlist_analyzeoption--7c63d961e87956a8" => AdminRule::AnalyzeOptionListAlt01,
         "analyzeoptionlist_analyzeoptionlist_analyzeoptio--aedb853e042163ed" => {
             AdminRule::AnalyzeOptionListAlt03
@@ -941,8 +951,11 @@ fn identify(rule_id: RuleId) -> Option<AdminRule> {
         "createsequenceoptionlistopt--ceab03c32575ac12" => {
             AdminRule::CreateSequenceOptionListOptAlt01
         }
-        "createsequencestmt_create_sequence_ifnotexists_t--d4daafd669a00df2" => {
+        "createsequencestmt_create_sequence_ifnotexists_t--331d99e8957a991b" => {
             AdminRule::CreateSequenceStmtAlt01
+        }
+        "createsequencetableoptionlistopt_prec_lowerthanc--f120003cb95db109" => {
+            AdminRule::CreateSequenceTableOptionListOptAlt01
         }
         "createstatisticsstmt_create_statistics_ifnotexis--3b9375cac716b83b" => {
             AdminRule::CreateStatisticsStmtAlt01
@@ -1540,6 +1553,9 @@ fn identify(rule_id: RuleId) -> Option<AdminRule> {
         "showtargetfilterable_databases--371e3b7eb9aacfa8" => AdminRule::ShowTargetFilterableAlt02,
         "showtargetfilterable_distribution_jobs--5093905d6dad9e24" => {
             AdminRule::ShowTargetFilterableAlt45
+        }
+        "showtargetfilterable_storage_class_transitions--44a1c6c4a3e10740" => {
+            AdminRule::ShowTargetFilterableAlt46
         }
         "showtargetfilterable_engines--6aeb24d0cec61223" => AdminRule::ShowTargetFilterableAlt01,
         "showtargetfilterable_errors--eae33fdb13df74b7" => AdminRule::ShowTargetFilterableAlt15,
@@ -2395,6 +2411,20 @@ fn apply_rule(rule: AdminRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
             out.item = Some(Box::new(parser_ast::AnalyzeOpt {
                 Type: kind,
                 Value: Some(parser_ast::ExprNode::Value(text)),
+            }));
+        }
+        AdminRule::AnalyzeOptionAlt08
+        | AdminRule::AnalyzeOptionAlt09
+        | AdminRule::AnalyzeOptionAlt10
+        | AdminRule::AnalyzeOptionAlt11 => {
+            out.item = Some(Box::new(parser_ast::AnalyzeOpt {
+                Type: match rule {
+                    AdminRule::AnalyzeOptionAlt08 => parser_ast::AnalyzeOptionType::NumBuckets,
+                    AdminRule::AnalyzeOptionAlt09 => parser_ast::AnalyzeOptionType::NumTopN,
+                    AdminRule::AnalyzeOptionAlt10 => parser_ast::AnalyzeOptionType::NumSamples,
+                    _ => parser_ast::AnalyzeOptionType::SampleRate,
+                },
+                Value: None,
             }));
         }
         AdminRule::BinlogStmtAlt01 => {
@@ -4408,7 +4438,8 @@ fn apply_rule(rule: AdminRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
         | AdminRule::ShowTargetFilterableAlt42
         | AdminRule::ShowTargetFilterableAlt43
         | AdminRule::ShowTargetFilterableAlt44
-        | AdminRule::ShowTargetFilterableAlt45 => {
+        | AdminRule::ShowTargetFilterableAlt45
+        | AdminRule::ShowTargetFilterableAlt46 => {
             let statement_type = match rule {
                 AdminRule::ShowTargetFilterableAlt01 => parser_ast::ShowStmtType::Engines,
                 AdminRule::ShowTargetFilterableAlt02 => parser_ast::ShowStmtType::Databases,
@@ -4463,6 +4494,9 @@ fn apply_rule(rule: AdminRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
                     parser_ast::ShowStmtType::ImportGroups
                 }
                 AdminRule::ShowTargetFilterableAlt44 => parser_ast::ShowStmtType::ImportJobs,
+                AdminRule::ShowTargetFilterableAlt46 => {
+                    parser_ast::ShowStmtType::StorageClassTransitions
+                }
                 _ => parser_ast::ShowStmtType::DistributionJobs,
             };
             let mut statement = parser_ast::ShowStmt {
@@ -5247,10 +5281,13 @@ fn apply_rule(rule: AdminRule, mut rhs: Rhs<'_>, context: Context<'_>) -> Result
                 TblOptions: rhs[rhs_len - (0)]
                     .item
                     .as_deref()
-                    .and_then(|item| item.downcast_ref::<Vec<String>>())
+                    .and_then(|item| item.downcast_ref::<Vec<parser_ast::TableOption>>())
                     .cloned()
                     .unwrap_or_default(),
             }));
+        }
+        AdminRule::CreateSequenceTableOptionListOptAlt01 => {
+            out.item = Some(Box::new(Vec::<parser_ast::TableOption>::new()));
         }
         AdminRule::CreateSequenceOptionListOptAlt01 => {
             out.item = Some(Box::new(Vec::<parser_ast::SequenceOption>::new()))

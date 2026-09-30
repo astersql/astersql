@@ -104,6 +104,7 @@ pub mod parser_impl {
     }
     include!("generated/main_tables.rs");
     include!("parser.rs");
+    include!("mview_stmt_options.rs");
 
     /// 整型字面量 token 的 i32 形式（供外部比较）。
     pub const intLit: i32 = token::intLit as i32;
@@ -139,6 +140,11 @@ pub mod parser_impl {
         mod lexer_5_aster_unit_test {
             use super::*;
             include!("lexer_5_aster_unit_test.rs");
+        }
+        #[cfg(test)]
+        mod go_merge_29_lexer_test {
+            use super::*;
+            include!("go_merge_29_lexer_test.rs");
         }
 
         #[cfg(test)]
@@ -211,6 +217,10 @@ pub mod generate {
 pub use parser_impl::*;
 
 #[cfg(test)]
+#[path = "go_merge_33_test.rs"]
+mod go_merge_33_test;
+
+#[cfg(test)]
 #[path = "go_merge_35_test.rs"]
 mod go_merge_35_test;
 
@@ -235,6 +245,9 @@ mod consistent_test;
 #[cfg(test)]
 #[path = "digester_test.rs"]
 mod digester_test;
+#[cfg(test)]
+#[path = "go_merge_29_test.rs"]
+mod go_merge_29_test;
 #[cfg(test)]
 #[path = "grant_role_aster_unit_test.rs"]
 mod grant_role_aster_unit_test;

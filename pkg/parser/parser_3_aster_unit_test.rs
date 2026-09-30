@@ -335,7 +335,7 @@ fn parser_3_marks_every_generated_semantic_action_as_implemented() {
         .filter_map(|(required, rule)| required.then_some(*rule))
         .collect::<Vec<_>>();
 
-    assert_eq!(required_rules.len(), 2080);
+    assert_eq!(required_rules.len(), 2153);
     let missing = required_rules
         .into_iter()
         .filter(|rule_id| !parser_actions::has_semantic_action(*rule_id))
