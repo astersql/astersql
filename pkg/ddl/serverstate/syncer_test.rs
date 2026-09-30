@@ -190,3 +190,112 @@ fn state_info_unmarshal_matches_go_field_matching_and_null_semantics() {
         StateInfo::default()
     );
 }
+
+#[test]
+fn crossks_align_schema_protocol_refreshes_state_without_watch_or_session() {
+    use astersql_ddl_schemaver::{
+        Context, EtcdClient, GetResponse, MemoryEtcdClient, Session, SyncError as TransportError,
+        WatchChan,
+    };
+    struct NetworkBoundary(MemoryEtcdClient);
+    impl EtcdClient for NetworkBoundary {
+        fn NewSession(&self, _: &Context, _: i32) -> Result<Session, TransportError> {
+            panic!("crossks must not allocate a state lease")
+        }
+        fn Watch(&self, _: &Context, _: &str, _: bool, _: i64) -> WatchChan {
+            panic!("crossks must not start a state watch")
+        }
+        fn Get(&self, c: &Context, k: &str, p: bool) -> Result<GetResponse, TransportError> {
+            self.0.Get(c, k, p)
+        }
+        fn Put(&self, c: &Context, k: &str, v: &str, l: Option<i64>) -> Result<(), TransportError> {
+            self.0.Put(c, k, v, l)
+        }
+        fn PutMono(&self, c: &Context, k: &str, v: &str) -> Result<(), TransportError> {
+            self.0.PutMono(c, k, v)
+        }
+        fn PutIfAbsent(&self, c: &Context, k: &str, v: &str) -> Result<bool, TransportError> {
+            self.0.PutIfAbsent(c, k, v)
+        }
+        fn Delete(&self, c: &Context, k: &str) -> Result<(), TransportError> {
+            self.0.Delete(c, k)
+        }
+    }
+    let client = Arc::new(NetworkBoundary(MemoryEtcdClient::default()));
+    let syncer = EtcdSyncer::with_client(client.clone(), "/tidb/server/global_state");
+    let ctx = SyncContext::new();
+    assert_eq!(syncer.get_global_state(&ctx).unwrap(), StateInfo::default());
+    syncer
+        .update_global_state(&ctx, StateInfo::new(STATE_UPGRADING))
+        .unwrap();
+    assert!(!syncer.is_upgrading_state());
+    assert_eq!(
+        syncer.get_global_state(&ctx).unwrap(),
+        StateInfo::new(STATE_UPGRADING)
+    );
+    assert!(syncer.is_upgrading_state());
+    client
+        .Put(
+            &Context::Background(),
+            "/tidb/server/global_state",
+            r#"{"STATE":null,"future":[1,true]}"#,
+            None,
+        )
+        .unwrap();
+    assert_eq!(syncer.get_global_state(&ctx).unwrap(), StateInfo::default());
+    assert!(!syncer.is_upgrading_state());
+    client
+        .Put(
+            &Context::Background(),
+            "/tidb/server/global_state",
+            "invalid JSON",
+            None,
+        )
+        .unwrap();
+    assert!(matches!(
+        syncer.get_global_state(&ctx),
+        Err(SyncError::InvalidState(_))
+    ));
+    ctx.cancel();
+    assert_eq!(syncer.get_global_state(&ctx), Err(SyncError::Cancelled));
+}
+
+#[test]
+fn crossks_align_schema_protocol_public_client_preserves_init_and_watch() {
+    let client = Arc::new(astersql_ddl_schemaver::MemoryEtcdClient::default());
+    let ctx = SyncContext::new();
+    let syncer = EtcdSyncer::with_client(client, "/tidb/server/global_state");
+    syncer.init(&ctx).unwrap();
+    syncer
+        .update_global_state(&ctx, StateInfo::new(STATE_UPGRADING))
+        .unwrap();
+    assert_eq!(
+        syncer
+            .watch_chan()
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .value,
+        StateInfo::new(STATE_UPGRADING).marshal().unwrap()
+    );
+    assert!(!syncer.is_upgrading_state());
+    syncer.get_global_state(&ctx).unwrap();
+    assert!(syncer.is_upgrading_state());
+    syncer.rewatch(&ctx);
+    syncer
+        .update_global_state(&ctx, StateInfo::default())
+        .unwrap();
+    assert_eq!(
+        syncer
+            .watch_chan()
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .value,
+        StateInfo::default().marshal().unwrap()
+    );
+    drop(syncer);
+    assert!(
+        ctx.error().is_none(),
+        "closing a watch must not cancel the caller"
+    );
+    ctx.cancel();
+}

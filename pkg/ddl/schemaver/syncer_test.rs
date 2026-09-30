@@ -227,3 +227,138 @@ fn mem_syncer_mdl_versions_and_update_error_match_go() {
     SetMockUpdateMDLError(false);
     SetMDLEnabled(false);
 }
+
+#[test]
+fn crossks_align_schema_protocol_uses_backend_sessions_and_recovers() {
+    use crate::{GetResponse, Session, SyncError, WatchChan};
+    use std::sync::Mutex;
+    struct Backend {
+        kv: MemoryEtcdClient,
+        sessions: Mutex<Vec<Session>>,
+        leases: Mutex<Vec<i64>>,
+        watches: Mutex<Vec<Context>>,
+    }
+    impl EtcdClient for Backend {
+        fn NewSession(&self, _: &Context, ttl: i32) -> Result<Session, SyncError> {
+            assert_eq!(ttl, crate::SessionTTL);
+            let session = Session::New();
+            self.sessions.lock().unwrap().push(session.clone());
+            Ok(session)
+        }
+        fn PutIfAbsent(&self, c: &Context, k: &str, v: &str) -> Result<bool, SyncError> {
+            self.kv.PutIfAbsent(c, k, v)
+        }
+        fn Put(&self, c: &Context, k: &str, v: &str, l: Option<i64>) -> Result<(), SyncError> {
+            if let Some(lease) = l {
+                self.leases.lock().unwrap().push(lease);
+            }
+            self.kv.Put(c, k, v, l)
+        }
+        fn PutMono(&self, c: &Context, k: &str, v: &str) -> Result<(), SyncError> {
+            self.kv.PutMono(c, k, v)
+        }
+        fn Get(&self, c: &Context, k: &str, p: bool) -> Result<GetResponse, SyncError> {
+            self.kv.Get(c, k, p)
+        }
+        fn Delete(&self, c: &Context, k: &str) -> Result<(), SyncError> {
+            self.kv.Delete(c, k)
+        }
+        fn Watch(&self, c: &Context, k: &str, p: bool, r: i64) -> WatchChan {
+            self.watches.lock().unwrap().push(c.clone());
+            self.kv.Watch(c, k, p, r)
+        }
+    }
+    let _guard = TEST_CONFIG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    SetMDLEnabled(false);
+    let backend = Arc::new(Backend {
+        kv: MemoryEtcdClient::default(),
+        sessions: Mutex::new(vec![]),
+        leases: Mutex::new(vec![]),
+        watches: Mutex::new(vec![]),
+    });
+    let ctx = Context::Background();
+    backend
+        .Put(&ctx, DDLGlobalSchemaVersion, "41", None)
+        .unwrap();
+    let syncer = NewEtcdSyncer(backend.clone(), "target");
+    syncer.Init(ctx.clone()).unwrap();
+    assert_eq!(
+        backend.sessions.lock().unwrap().len(),
+        1,
+        "Init must obtain a backend lease"
+    );
+    assert_eq!(
+        backend
+            .Get(&ctx, DDLGlobalSchemaVersion, false)
+            .unwrap()
+            .Kvs[0]
+            .Value,
+        b"41"
+    );
+    syncer.UpdateSelfVersion(ctx.clone(), 0, 41).unwrap();
+    backend.sessions.lock().unwrap()[0].Close();
+    assert!(syncer.Done().Done());
+    syncer.Restart(ctx.clone()).unwrap();
+    assert_eq!(backend.sessions.lock().unwrap().len(), 2);
+    assert!(!syncer.Done().Done());
+    syncer.UpdateSelfVersion(ctx.clone(), 0, 42).unwrap();
+    assert_eq!(
+        backend
+            .Get(&ctx, &syncer.selfSchemaVerPath, false)
+            .unwrap()
+            .Kvs[0]
+            .Value,
+        b"42"
+    );
+    let sessions = backend.sessions.lock().unwrap();
+    assert_eq!(
+        *backend.leases.lock().unwrap(),
+        vec![
+            sessions[0].Lease(),
+            sessions[0].Lease(),
+            sessions[1].Lease(),
+            sessions[1].Lease()
+        ]
+    );
+    drop(sessions);
+    syncer.WatchGlobalSchemaVer(ctx.clone());
+    assert!(backend.watches.lock().unwrap()[0].Done());
+    assert!(!ctx.Done());
+    syncer.Close();
+    assert!(syncer.Done().Done());
+    assert!(backend.watches.lock().unwrap()[1].Done());
+    assert!(!ctx.Done());
+    assert!(
+        backend
+            .Get(&ctx, &syncer.selfSchemaVerPath, false)
+            .unwrap()
+            .Kvs
+            .is_empty()
+    );
+}
+
+#[test]
+fn crossks_align_schema_protocol_session_cleanup_and_child_deadline() {
+    use crate::{DoneSignal, Session};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let revoked = Arc::new(AtomicUsize::new(0));
+    let count = revoked.clone();
+    let session = Session::WithLease(9001, DoneSignal::New(), move || {
+        count.fetch_add(1, Ordering::SeqCst);
+    });
+    let clone = session.clone();
+    session.Close();
+    clone.Close();
+    drop(session);
+    drop(clone);
+    assert_eq!(revoked.load(Ordering::SeqCst), 1);
+    let parent = Context::Background();
+    let child = parent.Child();
+    child.Cancel();
+    assert!(!parent.Done());
+    let child = parent.Child();
+    parent.Cancel();
+    assert!(child.Done());
+    let expired = Context::Background().WithTimeout(Duration::ZERO);
+    assert!(expired.WithTimeout(Duration::from_secs(1)).Done());
+}

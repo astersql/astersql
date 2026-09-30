@@ -117,16 +117,18 @@ impl fmt::Display for SyncError {
 impl std::error::Error for SyncError {}
 
 /// 可取消上下文的内部共享状态。
+#[derive(Debug)]
 struct ContextState {
     cancelled: AtomicBool,
     lock: Mutex<()>,
     wake: Condvar,
 }
 /// 可取消、可选超时的操作上下文（类似 Go 的 `context.Context`）。
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Context {
     state: Arc<ContextState>,
     deadline: Option<Instant>,
+    parent: Option<Box<Context>>,
 }
 impl Context {
     /// 创建永不超时、未被取消的后台上下文。
@@ -138,13 +140,24 @@ impl Context {
                 wake: Condvar::new(),
             }),
             deadline: None,
+            parent: None,
         }
+    }
+    /// 独立取消的子上下文，同时继承父上下文的结束信号。
+    pub fn Child(&self) -> Self {
+        let mut child = Self::Background();
+        child.deadline = self.deadline;
+        child.parent = Some(Box::new(self.clone()));
+        child
     }
     /// 派生一个带超时截止时间的上下文（共享取消状态）。
     pub fn WithTimeout(&self, timeout: Duration) -> Self {
         Self {
             state: Arc::clone(&self.state),
-            deadline: Some(Instant::now() + timeout),
+            deadline: Some(self.deadline.map_or(Instant::now() + timeout, |d| {
+                d.min(Instant::now() + timeout)
+            })),
+            parent: self.parent.clone(),
         }
     }
     /// 取消上下文并唤醒所有等待者。
@@ -155,6 +168,7 @@ impl Context {
     /// 是否已取消或已超过截止时间。
     pub fn Done(&self) -> bool {
         self.state.cancelled.load(Ordering::Acquire)
+            || self.parent.as_ref().is_some_and(|p| p.Done())
             || self.deadline.is_some_and(|d| Instant::now() >= d)
     }
     /// 若已结束则返回对应错误，否则返回 `None`。
@@ -297,6 +311,14 @@ pub struct GetResponse {
 }
 /// etcd 客户端抽象：同步器依赖的最小 KV / Watch 能力。
 pub trait EtcdClient: Send + Sync {
+    /// Establish a lease session; network backends override the in-memory default.
+    fn NewSession(&self, ctx: &Context, ttl: i32) -> Result<Session, SyncError> {
+        if let Some(error) = ctx.Err() {
+            return Err(error);
+        }
+        Ok(Session::New())
+    }
+
     /// 仅在键不存在时写入；返回是否真正写入。
     fn PutIfAbsent(&self, ctx: &Context, key: &str, value: &str) -> Result<bool, SyncError>;
     /// 写入键值，可选绑定 lease（租约）。
@@ -618,6 +640,7 @@ impl EtcdClient for MemoryEtcdClient {
 pub struct Session {
     lease: i64,
     done: DoneSignal,
+    cleanup: Option<Arc<SessionCleanup>>,
 }
 impl Session {
     /// 分配新的单调递增 lease 并创建未关闭的完成信号。
@@ -626,6 +649,22 @@ impl Session {
         Self {
             lease: NEXT.fetch_add(1, Ordering::Relaxed),
             done: DoneSignal::New(),
+            cleanup: None,
+        }
+    }
+    /// Bind the lease completion signal and idempotent backend cleanup.
+    pub fn WithLease(
+        lease: i64,
+        done: DoneSignal,
+        cleanup: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            lease,
+            done,
+            cleanup: Some(Arc::new(SessionCleanup {
+                closed: AtomicBool::new(false),
+                callback: Box::new(cleanup),
+            })),
         }
     }
     /// 返回本会话的 lease ID。
@@ -639,6 +678,25 @@ impl Session {
     /// 关闭会话完成信号。
     pub fn Close(&self) {
         self.done.Close();
+        if let Some(cleanup) = &self.cleanup {
+            cleanup.close();
+        }
+    }
+}
+struct SessionCleanup {
+    closed: AtomicBool,
+    callback: Box<dyn Fn() + Send + Sync>,
+}
+impl SessionCleanup {
+    fn close(&self) {
+        if !self.closed.swap(true, Ordering::AcqRel) {
+            (self.callback)();
+        }
+    }
+}
+impl Drop for SessionCleanup {
+    fn drop(&mut self) {
+        self.close();
     }
 }
 impl Default for Session {
@@ -650,17 +708,23 @@ impl Default for Session {
 /// 全局 schema 版本键的观察器，可重新订阅。
 pub struct Watcher {
     channel: RwLock<WatchChan>,
+    context: Mutex<Option<Context>>,
 }
 impl Watcher {
     /// 创建尚未订阅任何键的观察器。
     pub fn New() -> Self {
         Self {
             channel: RwLock::new(empty_watch_channel()),
+            context: Mutex::new(None),
         }
     }
     /// 订阅指定键的变更，替换当前通道。
     pub fn Watch(&self, ctx: &Context, client: &dyn EtcdClient, key: &str) {
-        *self.channel.write().expect("watcher lock poisoned") = client.Watch(ctx, key, false, 0);
+        let child = ctx.Child();
+        if let Some(old) = self.context.lock().unwrap().replace(child.clone()) {
+            old.Cancel();
+        }
+        *self.channel.write().expect("watcher lock poisoned") = client.Watch(&child, key, false, 0);
     }
     /// 重新订阅（断线或 compaction 后恢复观察）。
     pub fn Rewatch(&self, ctx: &Context, client: &dyn EtcdClient, key: &str) {
@@ -669,6 +733,13 @@ impl Watcher {
     /// 返回当前观察通道。
     pub fn WatchChan(&self) -> WatchChan {
         self.channel.read().expect("watcher lock poisoned").clone()
+    }
+}
+impl Drop for Watcher {
+    fn drop(&mut self) {
+        if let Some(ctx) = self.context.lock().unwrap().take() {
+            ctx.Cancel();
+        }
     }
 }
 impl Default for Watcher {
@@ -858,6 +929,24 @@ impl etcdSyncer {
     fn storeSession(&self, session: Arc<Session>) {
         *self.session.write().expect("session lock poisoned") = session;
     }
+    fn newSession(&self, ctx: &Context, retries: i64) -> Result<Arc<Session>, SyncError> {
+        let mut attempts = 0;
+        loop {
+            if let Some(error) = ctx.Err() {
+                return Err(error);
+            }
+            attempts += 1;
+            match self.etcdCli.NewSession(ctx, SessionTTL) {
+                Ok(session) => return Ok(Arc::new(session)),
+                Err(error) if attempts >= retries => return Err(error),
+                Err(_) => {
+                    if !ctx.Wait(Duration::from_millis(200)) {
+                        return Err(ctx.Err().unwrap());
+                    }
+                }
+            }
+        }
+    }
     /// 带重试的 etcd Put / PutMono。
     fn putRetry(
         &self,
@@ -894,7 +983,7 @@ impl etcdSyncer {
     pub fn Init(&self, ctx: Context) -> Result<(), SyncError> {
         self.etcdCli
             .PutIfAbsent(&ctx, DDLGlobalSchemaVersion, InitialVersion)?;
-        let session = Arc::new(Session::New());
+        let session = self.newSession(&ctx, keyOpDefaultRetryCnt)?;
         self.storeSession(session.clone());
         self.globalVerWatcher
             .Watch(&ctx, self.etcdCli.as_ref(), DDLGlobalSchemaVersion);
@@ -917,7 +1006,7 @@ impl etcdSyncer {
     }
     /// 重建 session 并以无限重试写回本机初始版本路径。
     pub fn Restart(&self, ctx: Context) -> Result<(), SyncError> {
-        let session = Arc::new(Session::New());
+        let session = self.newSession(&ctx, putKeyRetryUnlimited)?;
         self.storeSession(session.clone());
         self.putRetry(
             &ctx.WithTimeout(Duration::from_secs(1)),
@@ -1219,6 +1308,10 @@ impl etcdSyncer {
     /// 关闭同步器：删除本机版本路径。
     pub fn Close(&self) {
         let _ = self.removeSelfVersionPath();
+        self.loadSession().Close();
+        if let Some(ctx) = self.globalVerWatcher.context.lock().unwrap().take() {
+            ctx.Cancel();
+        }
     }
 }
 /// 将 `etcdSyncer` 方法转发为 `Syncer` trait 实现。
@@ -1363,5 +1456,249 @@ pub fn getSvrInfoForLog(info: &serverinfo::ServerInfo) -> String {
             "instance ip {}, port {}, id {}",
             static_info.IP, static_info.Port, static_info.ID
         )
+    }
+}
+
+/// Production schema protocol over a connected, namespaced etcd client.
+/// The shared server-info connection retains TLS/endpoint policy; schema leases
+/// and watch streams belong to this adapter.
+pub struct RealEtcdClient {
+    client: etcd_client::Client,
+    namespace: String,
+    runtime: Arc<tokio::runtime::Runtime>,
+    _connection: Arc<serverinfo::RealEtcdClient>,
+}
+impl RealEtcdClient {
+    pub fn new(connection: Arc<serverinfo::RealEtcdClient>) -> Result<Self, SyncError> {
+        Ok(Self {
+            client: connection.raw_client(),
+            namespace: connection.namespace().to_owned(),
+            _connection: connection,
+            runtime: Arc::new(
+                tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_all()
+                    .build()
+                    .map_err(|e| SyncError(e.to_string()))?,
+            ),
+        })
+    }
+    fn key(&self, key: &str) -> String {
+        format!("{}{key}", self.namespace)
+    }
+    fn run<T>(
+        &self,
+        ctx: &Context,
+        future: impl std::future::Future<Output = Result<T, etcd_client::Error>>,
+    ) -> Result<T, SyncError> {
+        let bounded = ctx.WithTimeout(Duration::from_secs(1));
+        self.runtime.block_on(async {
+            tokio::pin!(future);
+            loop {
+                if let Some(error) = bounded.Err() {
+                    return Err(error);
+                }
+                tokio::select! {
+                    result = &mut future => return result.map_err(|e| SyncError(e.to_string())),
+                    _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+                }
+            }
+        })
+    }
+}
+impl EtcdClient for RealEtcdClient {
+    fn NewSession(&self, ctx: &Context, ttl: i32) -> Result<Session, SyncError> {
+        let mut client = self.client.clone();
+        let lease = self
+            .run(ctx, client.lease_grant(i64::from(ttl), None))?
+            .id();
+        let (mut keeper, mut stream) = match self.run(ctx, client.lease_keep_alive(lease)) {
+            Ok(pair) => pair,
+            Err(error) => {
+                let _ = self.run(
+                    &Context::Background().WithTimeout(Duration::from_secs(1)),
+                    client.lease_revoke(lease),
+                );
+                return Err(error);
+            }
+        };
+        let done = DoneSignal::New();
+        let signal = done.clone();
+        let context = ctx.clone();
+        let task = self.runtime.spawn(async move {
+            let interval = Duration::from_secs((ttl.max(1) as u64 / 3).max(1));
+            let mut ticker = tokio::time::interval(interval);
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        if keeper.keep_alive().await.is_err() { break; }
+                    }
+                    response = stream.message() => {
+                        if !matches!(response, Ok(Some(ref response)) if response.ttl() > 0) { break; }
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(20)) => {
+                        if context.Done() || signal.Done() { break; }
+                    }
+                }
+            }
+            signal.Close();
+        });
+        let abort = task.abort_handle();
+        let client = self.client.clone();
+        let runtime = self.runtime.clone();
+        let connection = self._connection.clone();
+        Ok(Session::WithLease(lease, done, move || {
+            abort.abort();
+            let mut client = client.clone();
+            // Retain the original connection reactor until lease cleanup completes.
+            let _connection = &connection;
+            runtime.block_on(async move {
+                let _ =
+                    tokio::time::timeout(Duration::from_secs(1), client.lease_revoke(lease)).await;
+            });
+        }))
+    }
+
+    fn PutIfAbsent(&self, ctx: &Context, key: &str, value: &str) -> Result<bool, SyncError> {
+        use etcd_client::{Compare, CompareOp, Txn, TxnOp};
+        let key = self.key(key);
+        let txn = Txn::new()
+            .when([Compare::create_revision(key.clone(), CompareOp::Equal, 0)])
+            .and_then([TxnOp::put(key, value, None)]);
+        self.run(ctx, self.client.clone().txn(txn))
+            .map(|r| r.succeeded())
+    }
+    fn Put(
+        &self,
+        ctx: &Context,
+        key: &str,
+        value: &str,
+        lease: Option<i64>,
+    ) -> Result<(), SyncError> {
+        self.run(
+            ctx,
+            self.client.clone().put(
+                self.key(key),
+                value,
+                lease.map(|l| etcd_client::PutOptions::new().with_lease(l)),
+            ),
+        )
+        .map(|_| ())
+    }
+    fn PutMono(&self, ctx: &Context, key: &str, value: &str) -> Result<(), SyncError> {
+        use etcd_client::{Compare, CompareOp, Txn, TxnOp};
+        // One CAS attempt; putRetry applies the Go retry budget on contention.
+        let child = ctx.WithTimeout(Duration::from_secs(1));
+        let response = self.Get(&child, key, false)?;
+        let revision = response.Kvs.first().map_or(0, |kv| kv.ModRevision);
+        let key = self.key(key);
+        let txn = Txn::new()
+            .when([Compare::mod_revision(
+                key.clone(),
+                CompareOp::Equal,
+                revision,
+            )])
+            .and_then([TxnOp::put(key, value, None)]);
+        if self.run(&child, self.client.clone().txn(txn))?.succeeded() {
+            Ok(())
+        } else {
+            Err(SyncError(
+                "performing compare-and-swap during PutKVToEtcd failed".into(),
+            ))
+        }
+    }
+
+    fn Get(&self, ctx: &Context, key: &str, prefix: bool) -> Result<GetResponse, SyncError> {
+        let response = self.run(
+            ctx,
+            self.client.clone().get(
+                self.key(key),
+                prefix.then(|| etcd_client::GetOptions::new().with_prefix()),
+            ),
+        )?;
+        Ok(GetResponse {
+            Revision: response.header().map_or(0, |h| h.revision()),
+            Kvs: response
+                .kvs()
+                .iter()
+                .map(|kv| KeyValue {
+                    Key: kv
+                        .key()
+                        .strip_prefix(self.namespace.as_bytes())
+                        .unwrap_or(kv.key())
+                        .to_vec(),
+                    Value: kv.value().to_vec(),
+                    ModRevision: kv.mod_revision(),
+                })
+                .collect(),
+        })
+    }
+    fn Delete(&self, ctx: &Context, key: &str) -> Result<(), SyncError> {
+        self.run(ctx, self.client.clone().delete(self.key(key), None))
+            .map(|_| ())
+    }
+    fn Watch(&self, ctx: &Context, key: &str, prefix: bool, start_revision: i64) -> WatchChan {
+        let (sender, receiver) = mpsc::channel();
+        let key = self.key(key);
+        let namespace = self.namespace.clone();
+        let context = ctx.clone();
+        let mut client = self.client.clone();
+        self.runtime.spawn(async move {
+            let mut options = etcd_client::WatchOptions::new().with_start_revision(start_revision);
+            if prefix { options = options.with_prefix(); }
+            let opening = client.watch(key, Some(options));
+            tokio::pin!(opening);
+            let mut stream = loop {
+                tokio::select! {
+                    result = &mut opening => {
+                        match result {
+                            Ok(stream) => break stream,
+                            Err(error) => {
+                                let _ = sender.send(WatchResponse { Error: Some(SyncError(error.to_string())), ..Default::default() });
+                                return;
+                            }
+                        }
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(20)) => {
+                        if context.Done() { return; }
+                    }
+                }
+            };
+            loop {
+                tokio::select! {
+                    response = stream.message() => {
+                        match response {
+                            Ok(Some(response)) => {
+                                let events = response.events().iter().filter_map(|event| {
+                                    event.kv().map(|kv| Event {
+                                        Type: if event.event_type() == etcd_client::EventType::Delete { EventType::DELETE } else { EventType::PUT },
+                                        Kv: KeyValue {
+                                            Key: kv.key().strip_prefix(namespace.as_bytes()).unwrap_or(kv.key()).to_vec(),
+                                            Value: kv.value().to_vec(),
+                                            ModRevision: kv.mod_revision(),
+                                        },
+                                    })
+                                }).collect();
+                                let notification = WatchResponse {
+                                    Events: events,
+                                    CompactRevision: response.compact_revision(),
+                                    Error: response.canceled().then(|| SyncError(response.cancel_reason().to_owned())),
+                                };
+                                if sender.send(notification).is_err() || response.canceled() { break; }
+                            }
+                            Ok(None) => break,
+                            Err(error) => {
+                                let _ = sender.send(WatchResponse { Error: Some(SyncError(error.to_string())), ..Default::default() });
+                                break;
+                            }
+                        }
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(20)) => {
+                        if context.Done() { break; }
+                    }
+                }
+            }
+        });
+        WatchChan::New(receiver)
     }
 }

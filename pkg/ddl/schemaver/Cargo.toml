@@ -12,6 +12,8 @@ go-package = "pkg/ddl/schemaver"
 legacy-tasks = ["task-816", "task-830"]
 
 [dependencies]
+etcd-client = { version = "0.19", features = ["tls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "macros"] }
 "astersql-domain-serverinfo" = { package = "astersql-domain-serverinfo", path = "../../domain/serverinfo" }
 
 [target.'cfg(any())'.dependencies]

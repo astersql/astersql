@@ -12,6 +12,7 @@ go-package = "pkg/ddl/serverstate"
 legacy-tasks = ["task-760", "task-831"]
 
 [dependencies]
+"astersql-ddl-schemaver" = { path = "../schemaver" }
 
 [target.'cfg(any())'.dependencies]
 "astersql-ddl-logutil" = { package = "astersql-ddl-logutil", path = "../logutil" }

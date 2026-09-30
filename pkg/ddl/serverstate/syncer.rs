@@ -79,6 +79,7 @@ impl std::error::Error for SyncError {}
 pub struct SyncContext {
     /// 是否已取消。
     cancelled: Arc<AtomicBool>,
+    transport: astersql_ddl_schemaver::Context,
     /// 可选截止时间。
     deadline: Option<Instant>,
 }
@@ -94,6 +95,7 @@ impl SyncContext {
     pub fn new() -> Self {
         Self {
             cancelled: Arc::new(AtomicBool::new(false)),
+            transport: astersql_ddl_schemaver::Context::Background(),
             deadline: None,
         }
     }
@@ -103,6 +105,7 @@ impl SyncContext {
         let requested = Instant::now() + timeout;
         Self {
             cancelled: Arc::clone(&self.cancelled),
+            transport: self.transport.WithTimeout(timeout),
             deadline: Some(
                 self.deadline
                     .map_or(requested, |parent| parent.min(requested)),
@@ -113,6 +116,7 @@ impl SyncContext {
     /// 标记取消。
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release);
+        self.transport.Cancel();
     }
 
     /// 若已取消或超时则返回对应错误。
@@ -124,6 +128,8 @@ impl SyncContext {
             .is_some_and(|deadline| Instant::now() >= deadline)
         {
             Some(SyncError::Timeout)
+        } else if self.transport.Done() {
+            Some(SyncError::Cancelled)
         } else {
             None
         }
@@ -639,13 +645,14 @@ pub struct EtcdSyncer {
     /// 日志前缀。
     prompt: String,
     /// 底层存储。
-    store: Arc<StateStore>,
+    store: StateBackend,
     /// 会话是否已建立。
     session_ready: AtomicBool,
     /// 本地缓存的全局状态。
     cluster_state: RwLock<Arc<StateInfo>>,
     /// 全局状态 watch。
     global_state_watcher: Watcher,
+    watch_context: Mutex<Option<SyncContext>>,
 }
 
 impl EtcdSyncer {
@@ -654,11 +661,39 @@ impl EtcdSyncer {
         Self {
             etcd_path: etcd_path.into(),
             prompt: STATE_PROMPT.to_owned(),
-            store,
+            store: StateBackend::Memory(store),
             session_ready: AtomicBool::new(false),
             cluster_state: RwLock::new(Arc::new(StateInfo::new(STATE_NORMAL_RUNNING))),
             global_state_watcher: Watcher::default(),
+            watch_context: Mutex::new(None),
         }
+    }
+
+    /// Use the public etcd transport. GetGlobalState can be called directly,
+    /// without allocating a lease or watch, as in Go crossks.
+    pub fn with_client(
+        client: Arc<dyn astersql_ddl_schemaver::EtcdClient>,
+        path: impl Into<String>,
+    ) -> Self {
+        let mut syncer = Self::new(Arc::new(StateStore::default()), path);
+        syncer.store = StateBackend::Etcd {
+            client,
+            session: Mutex::new(None),
+        };
+        syncer
+    }
+
+    fn start_watch(&self, ctx: &SyncContext) {
+        let child = SyncContext {
+            cancelled: Arc::new(AtomicBool::new(false)),
+            deadline: ctx.deadline,
+            transport: ctx.transport.Child(),
+        };
+        if let Some(old) = self.watch_context.lock().unwrap().replace(child.clone()) {
+            old.cancel();
+        }
+        self.global_state_watcher
+            .replace(self.store.watch(child, self.etcd_path.clone()));
     }
 
     /// 带重试与子超时地读取键值。
@@ -719,8 +754,7 @@ impl Syncer for EtcdSyncer {
         self.session_ready.store(true, Ordering::Release);
         let state = self.get_global_state(ctx)?;
         *self.cluster_state.write().unwrap() = Arc::new(state);
-        self.global_state_watcher
-            .replace(self.store.watch(ctx.clone(), self.etcd_path.clone()));
+        self.start_watch(ctx);
         Ok(())
     }
 
@@ -762,7 +796,116 @@ impl Syncer for EtcdSyncer {
 
     /// 重新注册对状态键的 watch。
     fn rewatch(&self, ctx: &SyncContext) {
-        self.global_state_watcher
-            .replace(self.store.watch(ctx.clone(), self.etcd_path.clone()));
+        self.start_watch(ctx);
+    }
+}
+
+impl Drop for EtcdSyncer {
+    fn drop(&mut self) {
+        if let Some(ctx) = self.watch_context.lock().unwrap().take() {
+            ctx.cancel();
+        }
+    }
+}
+
+/// Both backends execute the same state decoding, cache and retry logic.
+enum StateBackend {
+    Memory(Arc<StateStore>),
+    Etcd {
+        client: Arc<dyn astersql_ddl_schemaver::EtcdClient>,
+        session: Mutex<Option<astersql_ddl_schemaver::Session>>,
+    },
+}
+impl StateBackend {
+    fn create_session(&self, ctx: &SyncContext, prompt: &str) -> Result<(), SyncError> {
+        match self {
+            Self::Memory(store) => store.create_session(ctx, prompt),
+            Self::Etcd { client, session } => {
+                for attempt in 0..KEY_OP_DEFAULT_RETRY_COUNT {
+                    if let Some(error) = ctx.error() {
+                        return Err(error);
+                    }
+                    match client.NewSession(&ctx.transport, astersql_ddl_schemaver::SessionTTL) {
+                        Ok(new_session) => {
+                            *session.lock().unwrap() = Some(new_session);
+                            return Ok(());
+                        }
+                        Err(error) if attempt + 1 == KEY_OP_DEFAULT_RETRY_COUNT => {
+                            return Err(SyncError::Backend(error.to_string()));
+                        }
+                        Err(_) => thread::sleep(Duration::from_millis(200)),
+                    }
+                }
+
+                Ok(())
+            }
+        }
+    }
+    fn get(&self, ctx: &SyncContext, key: &str) -> Result<Vec<Vec<u8>>, SyncError> {
+        match self {
+            Self::Memory(store) => store.get(ctx, key),
+            Self::Etcd { client, .. } => client
+                .Get(&ctx.transport, key, false)
+                .map(|r| r.Kvs.into_iter().map(|kv| kv.Value).collect())
+                .map_err(|e| SyncError::Backend(e.to_string())),
+        }
+    }
+    fn put(&self, ctx: &SyncContext, key: &str, value: Vec<u8>) -> Result<(), SyncError> {
+        match self {
+            Self::Memory(store) => store.put(ctx, key, value),
+            Self::Etcd { client, .. } => client
+                .Put(
+                    &ctx.transport,
+                    key,
+                    std::str::from_utf8(&value)
+                        .map_err(|e| SyncError::InvalidState(e.to_string()))?,
+                    None,
+                )
+                .map_err(|e| SyncError::Backend(e.to_string())),
+        }
+    }
+    fn watch(&self, ctx: SyncContext, key: String) -> mpsc::Receiver<WatchResponse> {
+        match self {
+            Self::Memory(store) => store.watch(ctx, key),
+            Self::Etcd { client, .. } => {
+                let watch = client.Watch(&ctx.transport, &key, false, 0);
+                let (sender, receiver) = mpsc::channel();
+                thread::spawn(move || {
+                    while ctx.error().is_none() {
+                        match watch.RecvTimeout(Duration::from_millis(20)) {
+                            Ok(response) => {
+                                if response.Error.is_some() || response.CompactRevision > 0 {
+                                    break;
+                                }
+                                for event in response.Events {
+                                    if sender
+                                        .send(WatchResponse {
+                                            key: String::from_utf8_lossy(&event.Kv.Key)
+                                                .into_owned(),
+                                            value: event.Kv.Value,
+                                        })
+                                        .is_err()
+                                    {
+                                        return;
+                                    }
+                                }
+                            }
+                            Err(mpsc::RecvTimeoutError::Timeout) => {}
+                            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                        }
+                    }
+                });
+                receiver
+            }
+        }
+    }
+}
+impl Drop for StateBackend {
+    fn drop(&mut self) {
+        if let Self::Etcd { session, .. } = self {
+            if let Some(session) = session.lock().unwrap().take() {
+                session.Close();
+            }
+        }
     }
 }
