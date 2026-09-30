@@ -34,6 +34,7 @@ pub struct ExprCtxState {
     charset: String,
     collation: String,
     default_collation_for_utf8mb4: String,
+    new_collation_enabled: bool,
     block_encryption_mode: String,
     sysdate_is_now: bool,
     noop_funcs_mode: i32,
@@ -64,6 +65,11 @@ pub fn WithCharset(charset: String, collation: String) -> ExprCtxOption {
 /// 设置 `default_collation_for_utf8mb4`。
 pub fn WithDefaultCollationForUTF8MB4(collation: String) -> ExprCtxOption {
     Box::new(move |state| state.default_collation_for_utf8mb4 = collation)
+}
+
+/// Fix the collation mode for this context, independent of later global changes.
+pub fn WithNewCollationEnabled(enabled: bool) -> ExprCtxOption {
+    Box::new(move |state| state.new_collation_enabled = enabled)
 }
 
 /// 设置块加密模式（如 aes-128-ecb）。
@@ -142,6 +148,7 @@ pub fn NewExprContext(options: Vec<ExprCtxOption>) -> ExprContext {
         charset: charset.Name,
         collation: charset.DefaultCollation,
         default_collation_for_utf8mb4: mysql::DefaultCollationName.to_owned(),
+        new_collation_enabled: collate_crate::NewCollationEnabled(),
         block_encryption_mode: vardef::DefBlockEncryptionMode.to_owned(),
         sysdate_is_now: vardef::DefSysdateIsNow,
         noop_funcs_mode: variable::TiDBOptOnOffWarn(vardef::DefTiDBEnableNoopFuncs),
@@ -326,6 +333,9 @@ impl ExprContext {
 }
 
 impl exprctx::BuildContext for ExprContext {
+    fn NewCollationEnabled(&self) -> bool {
+        self.state.new_collation_enabled
+    }
     fn GetEvalCtx(&self) -> &dyn exprctx::EvalContext {
         ExprContext::GetEvalCtx(self)
     }

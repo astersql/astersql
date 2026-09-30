@@ -91,6 +91,10 @@ pub trait EvalContext: contextutil::WarnHandler + ParamValues {
 
 /// 对应 Go BuildContext：提供表达式构建参数以及计划缓存、列 ID 等可变决策入口。
 pub trait BuildContext {
+    /// Collation semantics captured by this expression-building context.
+    fn NewCollationEnabled(&self) -> bool {
+        collate_crate::NewCollationEnabled()
+    }
     /// 允许会话上下文覆盖简单表达式解析；`None` 使用默认解析器。
     fn ParseSQL(
         &self,

@@ -277,6 +277,9 @@ impl<C: SessionContext> ExprContext<C> {
 
 /// 实现 BuildContext：委托到同名具体方法。
 impl<C: SessionContext> exprctx::BuildContext for ExprContext<C> {
+    fn NewCollationEnabled(&self) -> bool {
+        collate_crate::NewCollationEnabled()
+    }
     fn GetEvalCtx(&self) -> &dyn exprctx::EvalContext {
         self.GetEvalCtx()
     }

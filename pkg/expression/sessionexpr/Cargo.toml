@@ -12,6 +12,7 @@ anyhow = "1"
 auth-crate = { package = "astersql-parser-auth", path = "../../parser/auth" }
 chrono = "0.4"
 chrono-tz = "0.10"
+collate-crate = { package = "astersql-util-collate", path = "../../util/collate" }
 contextutil-crate = { package = "astersql-util-context", path = "../../util/context" }
 errctx-crate = { package = "astersql-errctx", path = "../../errctx" }
 exprctx-crate = { package = "astersql-expression-exprctx", path = "../exprctx" }

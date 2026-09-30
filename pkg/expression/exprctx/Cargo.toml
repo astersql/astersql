@@ -11,6 +11,7 @@ doctest = false
 [dependencies]
 chrono = "0.4"
 chrono-tz = "0.10"
+collate-crate = { package = "astersql-util-collate", path = "../../util/collate" }
 contextutil = { package = "astersql-util-context", path = "../../util/context" }
 errctx_crate = { package = "astersql-errctx", path = "../../errctx" }
 mathutil_crate = { package = "astersql-util-mathutil", path = "../../util/mathutil" }
