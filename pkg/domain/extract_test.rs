@@ -4,6 +4,9 @@ use crate::extract::{
     ExtractHandle, ExtractPlanPackage, ExtractSource, ExtractTask, ExtractType, StatementRecord,
     TableNamePair, view_dependencies_from_sql,
 };
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, UNIX_EPOCH};
 
 #[test]
 fn go_merge_43_extract_walks_nested_view_ast() {
@@ -27,9 +30,160 @@ fn go_merge_43_extract_walks_nested_view_ast() {
             },
         ]
     );
+
+    let tables = view_dependencies_from_sql(
+        "WITH picked AS (SELECT id FROM test.base) SELECT p.id FROM picked p JOIN test.joined j ON j.id = p.id WHERE EXISTS (SELECT 1 FROM test.deep d WHERE d.id = p.id)",
+        "test",
+    )
+    .unwrap();
+    assert_eq!(
+        tables
+            .iter()
+            .map(|table| table.table.as_str())
+            .collect::<Vec<_>>(),
+        ["base", "deep", "joined"]
+    );
+
+    let tables = view_dependencies_from_sql(
+        "WITH RECURSIVE chain AS (SELECT id FROM test.base UNION ALL SELECT id FROM chain) SELECT id FROM chain",
+        "test",
+    )
+    .unwrap();
+    assert_eq!(tables.len(), 1);
+    assert_eq!(tables[0].table, "base");
+
+    nested_view_dependencies_use_domain_schema();
 }
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, UNIX_EPOCH};
+struct ExtractViewSchemaLoader;
+
+impl crate::InfoSchemaLoader for ExtractViewSchemaLoader {
+    fn load_info_schema(
+        &self,
+        _store: &dyn astersql_kv::Storage,
+        _keyspace: &str,
+    ) -> Result<crate::LoadedInfoSchema, astersql_kv::errors::SharedError> {
+        Ok(self.schema())
+    }
+
+    fn load_snapshot_info_schema(
+        &self,
+        _store: &dyn astersql_kv::Storage,
+        _keyspace: &str,
+        _timestamp: u64,
+    ) -> Result<crate::LoadedInfoSchema, astersql_kv::errors::SharedError> {
+        Ok(self.schema())
+    }
+
+    fn keyspace_exists(
+        &self,
+        _store: &dyn astersql_kv::Storage,
+        _keyspace: &str,
+    ) -> Result<bool, astersql_kv::errors::SharedError> {
+        Ok(true)
+    }
+}
+
+impl ExtractViewSchemaLoader {
+    fn schema(&self) -> crate::LoadedInfoSchema {
+        let mut schema = astersql_infoschema::infoschema::infoSchema::new(1);
+        let tables = [
+            ("base", None),
+            (
+                "v2",
+                Some("SELECT b.id FROM test.base b JOIN mysql.user u ON u.id = b.id"),
+            ),
+            ("v1", Some("SELECT id FROM test.v2")),
+            ("cycle1", Some("SELECT id FROM test.cycle2")),
+            ("cycle2", Some("SELECT id FROM test.cycle1")),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (name, sql))| {
+            astersql_infoschema::Table::from_model(astersql_meta_model::TableInfo {
+                ID: index as i64 + 1,
+                DBID: 1,
+                Name: astersql_parser_ast::NewCIStr(name),
+                State: astersql_meta_model::StatePublic,
+                View: sql.map(|sql| astersql_meta_model::ViewInfo {
+                    SelectStmt: sql.into(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+        })
+        .collect();
+        schema.add_schema(
+            astersql_infoschema::DBInfo {
+                id: 1,
+                name: astersql_infoschema::CiString::new("test"),
+                ..Default::default()
+            },
+            tables,
+        );
+        schema.add_schema(
+            astersql_infoschema::DBInfo {
+                id: 2,
+                name: astersql_infoschema::CiString::new("mysql"),
+                ..Default::default()
+            },
+            vec![astersql_infoschema::Table::from_model(
+                astersql_meta_model::TableInfo {
+                    ID: 6,
+                    DBID: 2,
+                    Name: astersql_parser_ast::NewCIStr("user"),
+                    State: astersql_meta_model::StatePublic,
+                    ..Default::default()
+                },
+            )],
+        );
+        crate::LoadedInfoSchema::new(Arc::new(schema), 10)
+    }
+}
+
+fn nested_view_dependencies_use_domain_schema() {
+    let storage = astersql_store_mockstore_mockstorage::NewMockStorage(
+        astersql_store_mockstore_mockstorage::KVStore::NewMemoryWithWallClockTSO(),
+        None,
+    )
+    .unwrap();
+    let domain = Arc::new(crate::domain::Domain::new_mock(
+        Arc::try_unwrap(storage).ok().unwrap(),
+        Arc::new(ExtractViewSchemaLoader),
+    ));
+    domain.init().unwrap();
+    let source = Arc::new(MockSource::default());
+    source.views.lock().unwrap().extend([
+        "v1".into(),
+        "v2".into(),
+        "cycle1".into(),
+        "cycle2".into(),
+    ]);
+    source
+        .records
+        .lock()
+        .unwrap()
+        .push(record("v1", "plan", "SELECT id FROM test.v1", "encoded"));
+    source.records.lock().unwrap().push(record(
+        "cycle1",
+        "plan",
+        "SELECT id FROM test.cycle1",
+        "encoded",
+    ));
+    let handle = ExtractHandle::new_with_domain(domain, source.clone());
+    handle
+        .extract_task(&ExtractTask::new_plan(UNIX_EPOCH, UNIX_EPOCH))
+        .unwrap();
+    let dumped = source.dumped.lock().unwrap();
+    let names = dumped[0]
+        .tables
+        .iter()
+        .map(|table| table.table.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        names,
+        BTreeSet::from(["base", "v1", "v2", "cycle1", "cycle2", "user"])
+    );
+}
 
 #[derive(Default)]
 struct MockSource {
@@ -37,6 +191,7 @@ struct MockSource {
     records: Mutex<Vec<StatementRecord>>,
     decoded: Mutex<Vec<String>>,
     dumped: Mutex<Vec<ExtractPlanPackage>>,
+    views: Mutex<BTreeSet<String>>,
 }
 
 impl ExtractSource for MockSource {
@@ -48,7 +203,7 @@ impl ExtractSource for MockSource {
         Ok(Some(TableNamePair {
             database: database.into(),
             table: table.into(),
-            is_view: false,
+            is_view: self.views.lock().unwrap().contains(table),
         }))
     }
 

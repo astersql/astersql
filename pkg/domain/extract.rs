@@ -713,6 +713,7 @@ pub trait ExtractSource: Send + Sync {
 struct TableDependencyVisitor {
     default_schema: String,
     tables: BTreeSet<TableNamePair>,
+    cte_names: BTreeSet<String>,
 }
 
 impl astersql_parser_ast::InPlaceVisitor for TableDependencyVisitor {
@@ -720,7 +721,16 @@ impl astersql_parser_ast::InPlaceVisitor for TableDependencyVisitor {
         false
     }
 
-    fn leave(&mut self, _input: &mut dyn astersql_parser_ast::Node) -> bool {
+    fn leave(&mut self, input: &mut dyn astersql_parser_ast::Node) -> bool {
+        if let Some(select) = input
+            .as_any_mut()
+            .downcast_mut::<astersql_parser_ast::SelectStmt>()
+        {
+            if let Some(with) = &select.With {
+                self.cte_names
+                    .extend(with.borrow().CTEs.iter().map(|cte| cte.Name.L.clone()));
+            }
+        }
         true
     }
 
@@ -751,6 +761,7 @@ pub fn view_dependencies_from_sql(
     let mut visitor = TableDependencyVisitor {
         default_schema: default_schema.to_owned(),
         tables: BTreeSet::new(),
+        cte_names: BTreeSet::new(),
     };
     let select: &mut dyn astersql_parser_ast::Node = if let Some(view) =
         node.as_any_mut()
@@ -761,7 +772,11 @@ pub fn view_dependencies_from_sql(
         node.as_mut()
     };
     astersql_parser_ast::Walk(select, &mut visitor);
-    Ok(visitor.tables.into_iter().collect())
+    Ok(visitor
+        .tables
+        .into_iter()
+        .filter(|table| !visitor.cte_names.contains(&table.table))
+        .collect())
 }
 
 /// Keep the existing summary/dump source while resolving view dependencies
@@ -769,6 +784,38 @@ pub fn view_dependencies_from_sql(
 struct DomainAstExtractSource {
     domain: Arc<crate::domain::Domain>,
     source: Arc<dyn ExtractSource>,
+}
+
+impl DomainAstExtractSource {
+    fn collect_view_dependencies(
+        &self,
+        view: &TableNamePair,
+        visited: &mut BTreeSet<TableNamePair>,
+        dependencies: &mut BTreeSet<TableNamePair>,
+    ) -> Result<(), String> {
+        if !visited.insert(view.clone()) {
+            return Ok(());
+        }
+        let (_, table) = self
+            .domain
+            .stats_table(&view.database, &view.table)
+            .ok_or_else(|| format!("view {}.{} disappeared", view.database, view.table))?;
+        let definition = table
+            .View
+            .as_ref()
+            .ok_or_else(|| format!("{}.{} is not a view", view.database, view.table))?;
+        for name in view_dependencies_from_sql(&definition.SelectStmt, &view.database)? {
+            let dependency = self
+                .source
+                .table(&name.database, &name.table)?
+                .ok_or_else(|| "view dependency disappeared".to_owned())?;
+            dependencies.insert(dependency.clone());
+            if dependency.is_view {
+                self.collect_view_dependencies(&dependency, visited, dependencies)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 impl ExtractSource for DomainAstExtractSource {
@@ -781,21 +828,9 @@ impl ExtractSource for DomainAstExtractSource {
     }
 
     fn view_dependencies(&self, view: &TableNamePair) -> Result<Vec<TableNamePair>, String> {
-        let (_, table) = self
-            .domain
-            .stats_table(&view.database, &view.table)
-            .ok_or_else(|| format!("view {}.{} disappeared", view.database, view.table))?;
-        let definition = table
-            .View
-            .as_ref()
-            .ok_or_else(|| format!("{}.{} is not a view", view.database, view.table))?;
-        view_dependencies_from_sql(&definition.SelectStmt, &view.database)?
-            .into_iter()
-            .map(|table| self.source.table(&table.database, &table.table))
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .map(|table| table.ok_or_else(|| "view dependency disappeared".to_owned()))
-            .collect()
+        let mut dependencies = BTreeSet::new();
+        self.collect_view_dependencies(view, &mut BTreeSet::new(), &mut dependencies)?;
+        Ok(dependencies.into_iter().collect())
     }
 
     fn decode_binary_plan(&self, encoded: &str) -> Result<String, String> {
