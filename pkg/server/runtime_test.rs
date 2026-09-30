@@ -632,3 +632,26 @@ fn canonical_connection_domain_delegates_id_allocation_and_release() {
     domain.release_connection_id(first);
     domain.release_connection_id(second);
 }
+
+#[test]
+fn query_cancellation_completion_preserves_session_transaction() {
+    let driver = session_driver();
+    let context = driver.open_ctx(71001, 0, 45, "", None).unwrap();
+    context.authenticate(&auth("root", &[])).unwrap();
+    context
+        .execute_query("begin", false, &CancellationToken::new())
+        .unwrap();
+    assert!(context.in_transaction());
+    context.cancel();
+    context.finish_query_cancellation();
+    assert!(context.in_transaction());
+    assert!(
+        context
+            .execute_query("select 1", false, &CancellationToken::new())
+            .is_ok()
+    );
+    context
+        .execute_query("rollback", false, &CancellationToken::new())
+        .unwrap();
+    context.close().unwrap();
+}

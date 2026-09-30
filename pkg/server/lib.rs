@@ -28,6 +28,13 @@ pub mod http_handler;
 pub mod http_status;
 /// 测试用 mock 连接。
 pub mod mock_conn;
+pub mod pg_conn;
+#[cfg(test)]
+#[path = "pg_conn_test.rs"]
+mod pg_conn_test;
+/// PostgreSQL 3.2 startup framing.
+pub mod pg_protocol;
+pub mod pg_result;
 /// gRPC / RPC 服务端。
 pub mod rpc_server;
 /// 真实 TCP PacketIO 与 canonical ConcreteSession 生产适配。
@@ -130,3 +137,29 @@ mod tidb_test;
 #[cfg(test)]
 #[path = "user_connections_test.rs"]
 mod user_connections_test;
+
+#[cfg(test)]
+#[path = "pg_protocol_test.rs"]
+mod pg_protocol_test;
+
+#[cfg(test)]
+#[path = "pg_query_test.rs"]
+mod pg_query_test;
+
+#[cfg(test)]
+#[path = "pg_types_test.rs"]
+mod pg_types_test;
+
+#[cfg(test)]
+#[path = "pg_error_test.rs"]
+mod pg_error_test;
+
+#[cfg(test)]
+#[path = "pg_extended_test.rs"]
+mod pg_extended_test;
+
+mod pg_extended;
+
+#[cfg(test)]
+#[path = "pg_client_integration_test.rs"]
+mod pg_client_integration_test;

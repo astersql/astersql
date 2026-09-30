@@ -427,6 +427,8 @@ impl Default for StatusConfig {
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
+    /// None disables PostgreSQL; Some(0) requests an OS-assigned TCP port.
+    pub postgres_port: Option<u16>,
     pub socket: Option<String>,
     pub max_connections: usize,
     pub proxy_protocol_enabled: bool,
@@ -448,6 +450,7 @@ impl Default for ServerConfig {
         Self {
             host: "0.0.0.0".into(),
             port: 4_000,
+            postgres_port: None,
             socket: None,
             max_connections: 0,
             proxy_protocol_enabled: false,
@@ -682,10 +685,13 @@ pub struct Server {
     driver: Arc<dyn ServerDriver>,
     domain: RwLock<Option<Arc<dyn Domain>>>,
     listener: Mutex<Option<TcpListener>>,
+    postgres_listener: Mutex<Option<TcpListener>>,
+    postgres_service: Mutex<Option<Arc<crate::pg_conn::PgService>>>,
     #[cfg(unix)]
     unix_listener: Mutex<Option<UnixListener>>,
     status_listener: Mutex<Option<TcpListener>>,
     listen_addr: RwLock<Option<SocketAddr>>,
+    postgres_addr: RwLock<Option<SocketAddr>>,
     status_addr: RwLock<Option<SocketAddr>>,
     clients: RwLock<HashMap<u64, Arc<dyn ManagedConnection>>>,
     pending_clients: RwLock<HashMap<u64, Arc<ClientConn>>>,
@@ -744,10 +750,13 @@ impl Server {
             driver,
             domain: RwLock::new(None),
             listener: Mutex::new(None),
+            postgres_listener: Mutex::new(None),
+            postgres_service: Mutex::new(None),
             #[cfg(unix)]
             unix_listener: Mutex::new(None),
             status_listener: Mutex::new(None),
             listen_addr: RwLock::new(None),
+            postgres_addr: RwLock::new(None),
             status_addr: RwLock::new(None),
             clients: RwLock::new(HashMap::new()),
             pending_clients: RwLock::new(HashMap::new()),
@@ -837,6 +846,14 @@ impl Server {
     }
 
     /// MySQL 监听实际地址。
+    /// Address of the independent PostgreSQL listener, if enabled and bound.
+    pub fn postgres_listener_addr(&self) -> Option<SocketAddr> {
+        *self
+            .postgres_addr
+            .read()
+            .expect("PostgreSQL address lock poisoned")
+    }
+
     pub fn listener_addr(&self) -> Option<SocketAddr> {
         *self
             .listen_addr
@@ -1014,6 +1031,11 @@ impl Server {
             self.running.store(false, Ordering::Release);
             return Err(error);
         }
+        if let Err(error) = self.init_postgres_listener() {
+            self.running.store(false, Ordering::Release);
+            self.close_listeners();
+            return Err(error);
+        }
         // MPP executors advertise through the same SQL listener as TiDB.  Keep
         // the coordinator manager in sync with the OS-assigned address (which
         // is especially important when tests bind port 0).
@@ -1034,6 +1056,7 @@ impl Server {
         if let Err(error) = self
             .start_status_http()
             .and_then(|_| self.start_mysql_accept())
+            .and_then(|_| self.start_postgres_accept())
         {
             self.health.store(false, Ordering::Release);
             self.running.store(false, Ordering::Release);
@@ -1041,6 +1064,35 @@ impl Server {
             self.join_listener_workers();
             return Err(error);
         }
+        Ok(())
+    }
+
+    fn start_postgres_accept(&self) -> Result<(), String> {
+        let Some(listener) = self
+            .postgres_listener
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(TcpListener::try_clone)
+            .transpose()
+            .map_err(|e| e.to_string())?
+        else {
+            return Ok(());
+        };
+        let Some(driver) = self.connection_driver.read().unwrap().clone() else {
+            return Ok(());
+        };
+        let Some(domain) = self.connection_domain.read().unwrap().clone() else {
+            return Ok(());
+        };
+        let service = crate::pg_conn::PgService::start(
+            listener,
+            driver,
+            domain,
+            astersql_util::misc::RequireSecureTransportEnabled(),
+        )
+        .map_err(|e| e.to_string())?;
+        *self.postgres_service.lock().unwrap() = Some(service);
         Ok(())
     }
 
@@ -1212,6 +1264,34 @@ impl Server {
         }
     }
 
+    /// Bind the independent PostgreSQL listener before installing its service.
+    fn init_postgres_listener(&self) -> Result<(), String> {
+        let Some(port) = self.config.postgres_port else {
+            return Ok(());
+        };
+        let mut slot = self
+            .postgres_listener
+            .lock()
+            .expect("PostgreSQL listener lock poisoned");
+        if slot.is_some() {
+            return Ok(());
+        }
+        let listener = TcpListener::bind((self.config.host.as_str(), port))
+            .map_err(|error| format!("listen PostgreSQL {}:{port}: {error}", self.config.host))?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|error| format!("set PostgreSQL listener nonblocking: {error}"))?;
+        let address = listener
+            .local_addr()
+            .map_err(|error| format!("read PostgreSQL listener address: {error}"))?;
+        *self
+            .postgres_addr
+            .write()
+            .expect("PostgreSQL address lock poisoned") = Some(address);
+        *slot = Some(listener);
+        Ok(())
+    }
+
     /// 绑定 MySQL TCP 监听（非阻塞）；已存在则跳过。
     pub fn init_tidb_listener(&self) -> Result<(), String> {
         if self
@@ -1309,8 +1389,19 @@ impl Server {
         self.shutdown_mode.load(Ordering::Acquire)
     }
 
-    /// 关闭 MySQL/状态监听并清空地址。
+    /// 关闭 SQL/状态监听并清空地址。
     pub fn close_listeners(&self) {
+        if let Some(service) = self.postgres_service.lock().unwrap().take() {
+            service.close();
+        }
+        self.postgres_listener
+            .lock()
+            .expect("PostgreSQL listener lock poisoned")
+            .take();
+        *self
+            .postgres_addr
+            .write()
+            .expect("PostgreSQL address lock poisoned") = None;
         self.listener.lock().expect("listener lock poisoned").take();
         #[cfg(unix)]
         self.unix_listener
@@ -2242,6 +2333,13 @@ impl StandbyShutdownServer for Server {
 impl Drop for Server {
     fn drop(&mut self) {
         self.health.store(false, Ordering::Release);
+        if let Some(service) = self.postgres_service.get_mut().unwrap().take() {
+            service.close();
+        }
+        self.postgres_listener
+            .get_mut()
+            .expect("PostgreSQL listener lock poisoned")
+            .take();
         self.listener
             .get_mut()
             .expect("listener lock poisoned")

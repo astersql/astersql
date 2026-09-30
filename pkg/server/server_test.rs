@@ -437,3 +437,52 @@ fn real_listener_serves_handshake_ping_select_and_drains_connection() {
     server.close();
     assert!(TcpStream::connect(mysql_addr).is_err());
 }
+
+#[test]
+fn postgres_listener_lifecycle() {
+    let config = ServerConfig {
+        host: "127.0.0.1".into(),
+        port: 0,
+        postgres_port: Some(0),
+        status: StatusConfig {
+            report_status: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let server = Server::new_test(config.clone(), Arc::new(Driver));
+    server.run(Arc::new(TestDomain)).unwrap();
+    let pg = server.postgres_listener_addr().unwrap();
+    let mysql = server.listener_addr().unwrap();
+    assert_ne!(pg, mysql);
+    drop(TcpStream::connect(pg).unwrap());
+    drop(TcpStream::connect(mysql).unwrap());
+    server.close();
+    assert!(server.postgres_listener_addr().is_none());
+    let rebound = std::net::TcpListener::bind(pg).unwrap();
+    drop(rebound);
+
+    let disabled = Server::new_test(
+        ServerConfig {
+            postgres_port: None,
+            ..config.clone()
+        },
+        Arc::new(Driver),
+    );
+    disabled.run(Arc::new(TestDomain)).unwrap();
+    assert!(disabled.postgres_listener_addr().is_none());
+    drop(TcpStream::connect(disabled.listener_addr().unwrap()).unwrap());
+    disabled.close();
+
+    let occupied = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let blocked = Server::new_test(
+        ServerConfig {
+            postgres_port: Some(occupied.local_addr().unwrap().port()),
+            ..config
+        },
+        Arc::new(Driver),
+    );
+    assert!(blocked.run(Arc::new(TestDomain)).is_err());
+    assert!(blocked.listener_addr().is_none());
+    assert!(blocked.postgres_listener_addr().is_none());
+}

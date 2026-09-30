@@ -1034,6 +1034,8 @@ pub struct Config {
     pub labels: HashMap<String, String>,
     /// SQL 服务监听端口。
     pub port: u64,
+    /// Optional independent PostgreSQL TCP port; absent means disabled.
+    pub postgres_port: Option<u16>,
     /// 状态服务的 CORS 跨域配置。
     pub cors: String,
     /// 存储路径；TiKV 模式下为 PD（Placement Driver，集群元信息与调度中心）地址。
@@ -1145,6 +1147,7 @@ impl Default for Config {
             advertise_address: String::new(),
             labels: HashMap::new(),
             port: DEF_PORT,
+            postgres_port: None,
             cors: String::new(),
             path: "/tmp/tidb".into(),
             socket: "/tmp/tidb-{Port}.sock".into(),
@@ -1914,4 +1917,25 @@ impl FromStr for DeployMode {
             _ => Err(message(format!("invalid deploy-mode={value}"))),
         }
     }
+}
+
+/// Load only the optional listener setting for the entry configuration adapter.
+/// Other configuration fields retain their existing entry-loader behavior.
+pub fn load_postgres_port(file: impl AsRef<Path>) -> Result<Option<u16>, ConfigError> {
+    let path = file.as_ref();
+    let input = fs::read_to_string(path).map_err(|source| ConfigError::Io {
+        path: path.into(),
+        source,
+    })?;
+    #[derive(Deserialize)]
+    struct ListenerProjection {
+        #[serde(default, rename = "postgres-port")]
+        postgres_port: Option<u16>,
+    }
+    let projection: ListenerProjection =
+        toml::from_str(&input).map_err(|source| ConfigError::Toml {
+            path: path.into(),
+            source,
+        })?;
+    Ok(projection.postgres_port)
 }

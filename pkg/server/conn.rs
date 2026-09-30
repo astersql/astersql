@@ -555,9 +555,21 @@ impl Drop for ResponseLifecycle {
     }
 }
 
+/// Protocol-independent engine result type information.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeType {
+    pub code: u8,
+    pub flags: usize,
+    pub length: isize,
+    pub decimal: isize,
+}
+
 #[derive(Debug, Clone, Default)]
 /// 一次查询/命令产生的结果集（列、行与会话状态）。
 pub struct QueryResult {
+    /// Original engine types, before MySQL wire metadata truncation.
+    /// Missing metadata is explicit; consumers must not infer types from values.
+    pub native_types: Vec<NativeType>,
     pub columns: Vec<ColumnInfo>,
     pub rows: Vec<Vec<Value>>,
     pub state: SessionState,
@@ -566,6 +578,8 @@ pub struct QueryResult {
 
 #[derive(Debug, Clone)]
 pub struct PreparedMetadata {
+    /// Original engine result types for consumers independent of wire format.
+    pub native_types: Vec<NativeType>,
     pub statement_id: u32,
     pub parameter_count: usize,
     pub columns: Vec<ColumnInfo>,
@@ -733,6 +747,8 @@ pub trait TiDBContext: Send + Sync {
     fn change_user(&self, payload: &[u8], cancel: &CancellationToken) -> ConnResult<()>;
     fn reset_connection(&self, cancel: &CancellationToken) -> ConnResult<()>;
     fn cancel(&self);
+    /// Clear a completed command cancellation without changing transaction state.
+    fn finish_query_cancellation(&self) {}
     fn close(&self) -> ConnResult<()>;
     fn last_statement(&self) -> String;
     fn process_snapshot(&self) -> SessionProcessSnapshot;

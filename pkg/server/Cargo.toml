@@ -117,8 +117,10 @@ toml = "0.8"
 serde_json = "1"
 rustls = "0.23"
 
-[dev-dependencies]
 "astersql-meta-model" = { package = "astersql-meta-model", path = "../meta/model" }
+"astersql-util-plancodec" = { package = "astersql-util-plancodec", path = "../util/plancodec" }
+
+[dev-dependencies]
 "astersql-server-internal-testutil" = { package = "astersql-server-internal-testutil", path = "internal/testutil" }
 "astersql-store-mockstore" = { package = "astersql-store-mockstore", path = "../store/mockstore" }
 "astersql-store-mockstore-unistore" = { package = "astersql-store-mockstore-unistore", path = "../store/mockstore/unistore" }
@@ -126,5 +128,4 @@ rustls = "0.23"
 "astersql-testkit-external" = { package = "astersql-testkit-external", path = "../testkit/external" }
 "astersql-testkit-testmain" = { package = "astersql-testkit-testmain", path = "../testkit/testmain" }
 "astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../testkit/testsetup" }
-"astersql-util-plancodec" = { package = "astersql-util-plancodec", path = "../util/plancodec" }
 "astersql-util-syncutil" = { package = "astersql-util-syncutil", path = "../util/syncutil" }

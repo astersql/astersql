@@ -1000,3 +1000,54 @@ fn test_setup_keyspace_observability_for_starter_skips_non_tikv() {
     deploymode::Set(original_mode).unwrap();
     restore();
 }
+
+#[test]
+fn postgres_listener_config_projection() {
+    let _guard = stubs::test_guard();
+    stubs::reset_all_for_test();
+    let mut cfg = config::NewConfig();
+    assert_eq!(
+        crate::entry::canonicalServerConfig(&cfg)
+            .unwrap()
+            .postgres_port,
+        None
+    );
+    cfg.PostgresPort = Some(0);
+    assert_eq!(
+        crate::entry::canonicalServerConfig(&cfg)
+            .unwrap()
+            .postgres_port,
+        Some(0)
+    );
+    let fset =
+        crate::entry::initFlagSetWithArgs(&["tidb-server".into(), "--postgres-port=5432".into()]);
+    crate::entry::overrideConfig(&mut cfg, &fset);
+    assert_eq!(cfg.PostgresPort, Some(5432));
+    let path = std::env::temp_dir().join(format!("astersql-pg-port-{}.toml", std::process::id()));
+    std::fs::write(&path, "postgres-port = 5433\n").unwrap();
+    assert_eq!(
+        astersql_config::config::load_postgres_port(&path).unwrap(),
+        Some(5433)
+    );
+    let fset = crate::entry::initFlagSetWithArgs(&[
+        "tidb-server".into(),
+        format!("--config={}", path.display()),
+    ]);
+    crate::entry::overrideConfig(&mut cfg, &fset);
+    assert_eq!(cfg.PostgresPort, Some(5433));
+    let fset = crate::entry::initFlagSetWithArgs(&[
+        "tidb-server".into(),
+        format!("--config={}", path.display()),
+        "--postgres-port=5434".into(),
+    ]);
+    crate::entry::overrideConfig(&mut cfg, &fset);
+    assert_eq!(cfg.PostgresPort, Some(5434));
+    std::fs::write(&path, "port = 4000\n").unwrap();
+    assert_eq!(
+        astersql_config::config::load_postgres_port(&path).unwrap(),
+        None
+    );
+    std::fs::write(&path, "postgres-port = 65536\n").unwrap();
+    assert!(astersql_config::config::load_postgres_port(&path).is_err());
+    std::fs::remove_file(path).unwrap();
+}

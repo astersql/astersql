@@ -66,6 +66,7 @@ pub const nmStorePath: &str = "path";
 pub const nmHost: &str = "host";
 pub const nmAdvertiseAddress: &str = "advertise-address";
 pub const nmPort: &str = "P";
+pub const nmPostgresPort: &str = "postgres-port";
 pub const nmCors: &str = "cors";
 pub const nmSocket: &str = "socket";
 pub const nmRunDDL: &str = "run-ddl";
@@ -133,6 +134,7 @@ pub struct FlagValues {
     pub host: String,
     pub advertiseAddress: String,
     pub port: String,
+    pub postgresPort: String,
     pub cors: String,
     pub socket: String,
     pub runDDL: bool,
@@ -195,6 +197,7 @@ impl Default for FlagValues {
             host: "0.0.0.0".into(),
             advertiseAddress: String::new(),
             port: "4000".into(),
+            postgresPort: String::new(),
             cors: String::new(),
             socket: "/tmp/tidb-{Port}.sock".into(),
             runDDL: true,
@@ -319,6 +322,11 @@ pub fn initFlagSetWithArgs(argv: &[String]) -> flag::FlagSet {
     let _ = fset.String(nmHost, "0.0.0.0", "tidb server host");
     let _ = fset.String(nmAdvertiseAddress, "", "tidb server advertise IP");
     let _ = fset.String(nmPort, "4000", "tidb server port");
+    let _ = fset.String(
+        nmPostgresPort,
+        "",
+        "independent PostgreSQL TCP port (disabled when omitted)",
+    );
     let _ = fset.String(nmCors, "", "tidb server allow cors origin");
     let _ = fset.String(
         nmSocket,
@@ -487,6 +495,7 @@ pub fn initFlagSetWithArgs(argv: &[String]) -> flag::FlagSet {
     fv.host = fset.LookupString(nmHost);
     fv.advertiseAddress = fset.LookupString(nmAdvertiseAddress);
     fv.port = fset.LookupString(nmPort);
+    fv.postgresPort = fset.LookupString(nmPostgresPort);
     fv.cors = fset.LookupString(nmCors);
     fv.socket = fset.LookupString(nmSocket);
     fv.runDDL = fset.LookupBool(nmRunDDL);
@@ -1182,6 +1191,19 @@ pub fn overrideConfig(cfg: &mut config::Config, fset: &flag::FlagSet) {
     }
     if cfg.AdvertiseAddress.is_empty() {
         cfg.AdvertiseAddress = cfg.Host.clone();
+    }
+    // The entry adapter owns a separate Config; project only the new optional
+    // listener setting through the canonical loader without changing MySQL fields.
+    if !fv.configPath.is_empty() {
+        cfg.PostgresPort = astersql_config::config::load_postgres_port(&fv.configPath)
+            .unwrap_or_else(|error| stubs::fatal(error.to_string()));
+    }
+    if actualFlags.contains_key(nmPostgresPort) {
+        cfg.PostgresPort = Some(
+            fv.postgresPort
+                .parse::<u16>()
+                .unwrap_or_else(|error| stubs::fatal(format!("invalid PostgreSQL port: {error}"))),
+        );
     }
     if actualFlags.contains_key(nmPort) {
         cfg.Port = fv
@@ -1924,6 +1946,7 @@ pub fn canonicalServerConfig(cfg: &config::Config) -> Result<CanonicalServerConf
     Ok(CanonicalServerConfig {
         host: cfg.Host.clone(),
         port,
+        postgres_port: cfg.PostgresPort,
         socket: (!cfg.Socket.is_empty()).then(|| cfg.Socket.clone()),
         max_connections: cfg.MaxServerConnections as usize,
         proxy_protocol_enabled: !cfg.ProxyProtocol.Networks.trim().is_empty(),

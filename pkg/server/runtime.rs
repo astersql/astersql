@@ -773,6 +773,18 @@ fn run_session_worker(
                     .prepare_protocol_statement(&sql)
                     .and_then(|(statement_id, parameter_count, fields)| {
                         Ok(PreparedMetadata {
+                            native_types: fields
+                                .iter()
+                                .map(|field| {
+                                    let tp = &field.column.FieldType;
+                                    crate::conn::NativeType {
+                                        code: tp.GetType(),
+                                        flags: tp.GetFlag(),
+                                        length: tp.GetFlen(),
+                                        decimal: tp.GetDecimal(),
+                                    }
+                                })
+                                .collect(),
                             statement_id: u32::try_from(statement_id).map_err(|_| {
                                 astersql_session::SessionError::new(
                                     "prepared statement id exceeds protocol width",
@@ -908,11 +920,26 @@ fn execute_on_session(
             });
         } else {
             for record_set in record_sets {
-                results.push(result_from_record_set(
-                    record_set,
-                    state.clone(),
-                    collation,
-                )?);
+                let mut result = result_from_record_set(record_set, state.clone(), collation)?;
+                // Preserve engine metadata separately from existing MySQL wire columns.
+                // Metadata unavailable from the native resolver remains explicit.
+                if !result.columns.is_empty()
+                    && let Ok(fields) = session.describe_result_fields(&statement)
+                {
+                    result.native_types = fields
+                        .iter()
+                        .map(|field| {
+                            let tp = &field.column.FieldType;
+                            crate::conn::NativeType {
+                                code: tp.GetType(),
+                                flags: tp.GetFlag(),
+                                length: tp.GetFlen(),
+                                decimal: tp.GetDecimal(),
+                            }
+                        })
+                        .collect();
+                }
+                results.push(result);
             }
         }
     }
@@ -1085,6 +1112,22 @@ fn result_from_record_set(
     state: SessionState,
     collation: u16,
 ) -> ConnResult<QueryResult> {
+    let native_types = record_set
+        .result_fields()
+        .iter()
+        .map(|field| {
+            field.as_ref().map(|field| {
+                let tp = &field.column.FieldType;
+                crate::conn::NativeType {
+                    code: tp.GetType(),
+                    flags: tp.GetFlag(),
+                    length: tp.GetFlen(),
+                    decimal: tp.GetDecimal(),
+                }
+            })
+        })
+        .collect::<Option<Vec<_>>>()
+        .unwrap_or_default();
     let columns = record_set
         .columns()
         .iter()
@@ -1148,6 +1191,7 @@ fn result_from_record_set(
         .close()
         .map_err(|error| ConnError::Session(error.to_string()))?;
     Ok(QueryResult {
+        native_types,
         columns,
         rows,
         state,
@@ -1439,6 +1483,11 @@ impl TiDBContext for ConcreteTiDBContext {
             .map_err(|_| ConnError::Poisoned("last statement"))?
             .clear();
         Ok(())
+    }
+
+    fn finish_query_cancellation(&self) {
+        self.cancellation.Reset();
+        self.cancel_requested.store(false, Ordering::Release);
     }
 
     fn cancel(&self) {

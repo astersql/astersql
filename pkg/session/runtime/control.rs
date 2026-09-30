@@ -1422,6 +1422,47 @@ impl ConcreteSession {
         self.state.borrow().last_write_sql_resp_duration
     }
 
+    /// Resolve original engine result types without executing or registering a
+    /// statement. This uses the same AST/catalog resolver as prepared metadata.
+    pub fn describe_result_fields(&self, sql: &str) -> SessionResult<Vec<ConcreteResultField>> {
+        let statements = parse(sql)?;
+        if statements.len() != 1 {
+            return Err(SessionError::new("result metadata requires one statement"));
+        }
+        let statement = &statements[0];
+        if statement.as_any().is::<ast::SelectStmt>() || statement.as_any().is::<ast::SetOprStmt>()
+        {
+            let mut fields = self.relational_query_node_result_fields(statement.as_ref(), &[])?;
+            // Preserve explicitly declared CAST types for consumers of original
+            // metadata. The existing MySQL prepared metadata resolver is unchanged.
+            if let Some(select) = statement.as_any().downcast_ref::<ast::SelectStmt>() {
+                if select.Fields.Fields.len() == fields.len()
+                    && select.Fields.Fields.iter().all(|f| f.WildCard.is_none())
+                {
+                    for (field, projection) in fields.iter_mut().zip(&select.Fields.Fields) {
+                        let mut expression = projection.Expr.as_ref();
+                        while let Some(expr) = expression {
+                            match &expr.Kind {
+                                ast::ExprKind::Cast { Tp, .. } => {
+                                    field.column.FieldType = Tp.clone();
+                                    break;
+                                }
+                                ast::ExprKind::Parentheses(inner)
+                                | ast::ExprKind::Collate { Expr: inner, .. } => {
+                                    expression = Some(inner.as_ref());
+                                }
+                                _ => break,
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(fields)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
     /// Parse and register a binary-protocol prepared statement without
     /// executing it. SELECT metadata is derived from the canonical AST and
     /// catalog, matching the normal relational query field resolver.
