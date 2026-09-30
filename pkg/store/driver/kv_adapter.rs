@@ -120,6 +120,26 @@ fn tiflash_http_client(
     Ok((builder.build().map_err(adapter_error)?, scheme))
 }
 
+pub(crate) fn count_tikv_stores(
+    response: &serde_json::Value,
+) -> Result<usize, kv::errors::SharedError> {
+    let stores = response["stores"]
+        .as_array()
+        .ok_or_else(|| adapter_error("invalid PD stores response"))?;
+    Ok(stores
+        .iter()
+        .filter(|entry| {
+            let store = &entry["store"];
+            matches!(store["state_name"].as_str(), Some("Up" | "Disconnected"))
+                && !store["labels"].as_array().is_some_and(|labels| {
+                    labels
+                        .iter()
+                        .any(|label| label["key"] == "engine" && label["value"] == "tiflash")
+                })
+        })
+        .count())
+}
+
 fn runtime_error() -> kv::errors::SharedError {
     adapter_error("TiKV store was opened without the client-rust runtime")
 }
@@ -1909,6 +1929,30 @@ fn mem_manager() -> &'static AdapterMemManager {
 }
 
 impl kv::Storage for TikvStore {
+    fn TTLStoreCount(&self) -> Result<Option<usize>, kv::errors::SharedError> {
+        let (client, scheme) = tiflash_http_client(self)?;
+        let mut last_error = String::new();
+        for address in self.GetPDAddrs().map_err(adapter_error)? {
+            let base = if address.contains("://") {
+                address.trim_end_matches('/').to_owned()
+            } else {
+                format!("{scheme}://{address}")
+            };
+            match client
+                .get(format!("{base}/pd/api/v1/stores"))
+                .send()
+                .and_then(|response| response.error_for_status())
+                .and_then(|response| response.json::<serde_json::Value>())
+            {
+                Ok(response) => return count_tikv_stores(&response).map(Some),
+                Err(error) => last_error = error.to_string(),
+            }
+        }
+        Err(adapter_error(format!(
+            "cannot read TiKV store count from PD: {last_error}"
+        )))
+    }
+
     fn TTLRegionRanges(
         &self,
         start: &[u8],

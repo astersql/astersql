@@ -97,6 +97,20 @@ pub fn split_ttl_scan_ranges(
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
+    let store_count = match domain
+        .storage_handle()
+        .with_storage(|store| store.TTLStoreCount())
+    {
+        Ok(count) => count,
+        Err(error) => {
+            super::BgLogger().log(
+                super::LogLevel::Warn,
+                "read TiKV store count for TTL scan splitting failed; use default",
+                [super::LogField::String("error".into(), error.to_string())],
+            );
+            None
+        }
+    };
     CachePhysicalTable {
         ID: table.physical_id,
         Schema: table.schema.clone(),
@@ -110,7 +124,13 @@ pub fn split_ttl_scan_ranges(
         KeyColumns: key_columns,
         TimeColumn: CacheColumn::default(),
     }
-    .SplitScanRanges(Some(&StorageRegions(domain.storage_handle())), 64)
+    .SplitScanRanges(
+        Some(&StorageRegions(domain.storage_handle())),
+        astersql_ttl_ttlworker::config::scan_split_count(
+            store_count.is_some(),
+            store_count.unwrap_or(0),
+        ),
+    )
 }
 
 pub struct TtlSchedule {

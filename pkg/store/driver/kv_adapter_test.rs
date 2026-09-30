@@ -11,8 +11,8 @@ use astersql_kv as kv;
 use tikv_client::TimestampExt;
 
 use crate::kv_adapter::{
-    CLIENT_SCAN_PAGE_SIZE, ClientIterator, configured_scan_batch_size, option_enabled,
-    scan_region_page, snapshot_timestamp,
+    CLIENT_SCAN_PAGE_SIZE, ClientIterator, configured_scan_batch_size, count_tikv_stores,
+    option_enabled, scan_region_page, snapshot_timestamp,
 };
 use crate::{TiKVDriver, TikvStore};
 
@@ -22,6 +22,17 @@ fn assert_canonical_storage<T: kv::Storage>() {}
 #[test]
 fn kv_adapter_implements_canonical_storage_contract() {
     assert_canonical_storage::<TikvStore>();
+}
+
+#[test]
+fn go_merge_43_ttl_split_count_uses_only_live_tikv_stores() {
+    let stores = serde_json::json!({"stores": [
+        {"store": {"state_name": "Up", "labels": []}},
+        {"store": {"state_name": "Disconnected", "labels": []}},
+        {"store": {"state_name": "Up", "labels": [{"key": "engine", "value": "tiflash"}]}},
+        {"store": {"state_name": "Tombstone", "labels": []}}
+    ]});
+    assert_eq!(count_tikv_stores(&stores).unwrap(), 2);
 }
 
 #[test]

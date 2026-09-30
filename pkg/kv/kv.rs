@@ -741,6 +741,11 @@ pub struct SSTImportStats {
 }
 
 pub trait Storage {
+    /// Number of live TiKV stores for TTL scan splitting. Non-TiKV stores
+    /// return `None` and retain the default split count.
+    fn TTLStoreCount(&self) -> Result<Option<usize>, errors::SharedError> {
+        Ok(None)
+    }
     /// Return TiKV Region boundaries for TTL record keys. Non-Region stores
     /// return `None`, which schedules one full-table scan range.
     fn TTLRegionRanges(
