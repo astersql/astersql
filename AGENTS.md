@@ -19,6 +19,7 @@
 - 完全是我们自己新建的文件，不是 go 代码复刻的，不用添加 PingCAP 版权、
 - 外部 Rust 依赖（尤其是 astersql/client-rust）必须在独立上游仓库中移植、提交并打 tag；AsterSQL 只通过带 tag 的 Git 依赖引用，禁止复制到 vendor/、third_party/，禁止用 [patch] 指向本地副本。
 - 依赖移植完成后删除工作区中的临时副本，并检查所有 Cargo manifest 使用同一个已发布 tag，避免提交后又产生不可复现的本地覆盖。
+- Rust 代码修改完成后，先运行 `cargo fmt --all` 自动格式化。
 
 ## 交接要求
 
