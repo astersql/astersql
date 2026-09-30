@@ -865,7 +865,6 @@ fn restore_limit(limit: &parser_ast::Limit) -> Result<String, String> {
 pub fn restore_select_stmt(stmt: &parser_ast::SelectStmt) -> Result<String, String> {
     let opts = &stmt.SelectStmtOpts;
     let unsupported_options = opts.ExplicitAll
-        || !opts.SQLCache
         || !opts.TableHints.is_empty()
         || opts.Priority != 0
         || opts.SQLSmallResult
@@ -906,6 +905,9 @@ pub fn restore_select_stmt(stmt: &parser_ast::SelectStmt) -> Result<String, Stri
         }
     }
     out.push_str("SELECT ");
+    if !opts.SQLCache {
+        out.push_str("SQL_NO_CACHE ");
+    }
     if stmt.Distinct || opts.Distinct {
         out.push_str("DISTINCT ");
     }

@@ -12,6 +12,16 @@ fn table(name: &str) -> TableName {
     }
 }
 
+fn parsed_select() -> SelectStmt {
+    SelectStmt {
+        SelectStmtOpts: SelectStmtOpts {
+            SQLCache: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
 fn expression(text: &str) -> ExprNode {
     let mut expr = ExprNode::default();
     expr.SetText(None, text.as_bytes());
@@ -34,7 +44,7 @@ fn now_function() -> ExprNode {
 
 #[test]
 fn go_merge_7_materialized_view_restore() {
-    let mut select = SelectStmt::default();
+    let mut select = parsed_select();
     select.SetText(None, b"SELECT 1");
     let stmt = CreateMaterializedViewStmt {
         node_text: base::AstNode::default(),
@@ -201,7 +211,7 @@ fn go_merge_7_materialized_action_branches_and_errors() {
 
 #[test]
 fn go_merge_7_materialized_view_restores_typed_select_without_source_text() {
-    let mut select = SelectStmt::default();
+    let mut select = parsed_select();
     select.Fields.Fields.push(SelectField {
         Expr: Some(NewValueExpr(1_i64, "utf8mb4", "utf8mb4_bin")),
         ..SelectField::default()
@@ -223,6 +233,19 @@ fn go_merge_7_materialized_view_restores_typed_select_without_source_text() {
 }
 
 #[test]
+fn go_merge_27_select_no_cache_restores_without_source_text() {
+    let mut select = SelectStmt::default();
+    select.Fields.Fields.push(SelectField {
+        Expr: Some(NewValueExpr(1_i64, "utf8mb4", "utf8mb4_bin")),
+        ..SelectField::default()
+    });
+    assert_eq!(
+        sql_restore::restore_node(&select).unwrap(),
+        "SELECT SQL_NO_CACHE 1"
+    );
+}
+
+#[test]
 fn go_merge_7_materialized_view_restores_complex_typed_select_without_source_text() {
     fn column() -> ExprNode {
         ExprNode::Column(ColumnName {
@@ -233,7 +256,7 @@ fn go_merge_7_materialized_view_restores_complex_typed_select_without_source_tex
     fn value(number: i64) -> ExprNode {
         NewValueExpr(number, "utf8mb4", "utf8mb4_bin")
     }
-    let mut select = SelectStmt::default();
+    let mut select = parsed_select();
     select.Fields.Fields.push(SelectField {
         Expr: Some(ExprNode::Binary(
             "+".into(),
@@ -343,7 +366,7 @@ fn go_merge_7_structured_expression_restore_without_source_text() {
 #[test]
 fn go_merge_7_structured_cte_and_union_restore_without_source_text() {
     fn select_number(number: i64) -> SelectStmt {
-        let mut select = SelectStmt::default();
+        let mut select = parsed_select();
         select.Fields.Fields.push(SelectField {
             Expr: Some(NewValueExpr(number, "utf8mb4", "utf8mb4_bin")),
             ..SelectField::default()
@@ -379,7 +402,7 @@ fn go_merge_7_structured_cte_and_union_restore_without_source_text() {
 
 #[test]
 fn go_merge_7_nested_expression_restore_without_source_text() {
-    let mut query = SelectStmt::default();
+    let mut query = parsed_select();
     query.Fields.Fields.push(SelectField {
         Expr: Some(NewValueExpr(1_i64, "utf8mb4", "utf8mb4_bin")),
         ..SelectField::default()
