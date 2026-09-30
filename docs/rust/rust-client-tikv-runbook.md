@@ -211,6 +211,12 @@ cargo run -p astersql-cmd-tidb-server \
 相关配置会在启动时显式报错；集群侧 PD/TiKV TLS 与 SQL listener TLS 是
 不同边界。
 
+## 启用 PostgreSQL 协议入口
+
+在上述 Rust server 命令中增加 `--postgres-port=5432`，即可同时提供
+MySQL 和 PG listener。完整启动、test 数据库准备及 psql 3.0/3.2 连接步骤见
+[TiKV + PostgreSQL 启动手册](rust-postgresql-tikv-runbook.md)。
+
 ## tidb-server 存储参数
 
 tidb-server 的存储注册路径由 `--store tikv`、`--path` 和可选 keyspace

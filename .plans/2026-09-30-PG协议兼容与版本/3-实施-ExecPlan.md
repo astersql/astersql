@@ -81,3 +81,16 @@ Ready 用于交付测试与支持文档。精确命令与退出码：
 风险：本次为测试和文档变化，无生产性能影响或新增兼容行为；版本声明只代表协议基线。失败前证据复用前序任务记录，本次未重建旧源码。系统 JDBC 驱动在 /opt/homebrew/share 和 /Users/Shared/work/dir/data 的 jar 搜索中无匹配；DataGrip/JDBC、RealTiKV、全仓库回归、生产鉴权、TLS、完整 PG18/pg_catalog 和性能基准未验证。make lint 使用当前共享工作区的 Makefile 与工具修改，不归属本任务。
 
 更新：已完成全部指定 Ready 检查，批次 3 可交付，总计划未修改。建议后续在实际 DataGrip/JDBC 环境开展限定连接与 SELECT 1 验证。
+
+## 实际 JDBC / psql 验证补充
+
+2026-09-30：扩大检索到 JetBrains Application Support 后找到 JDBC 42.7.13 与 42.7.3，上一轮驱动未找到的结论仅来自过窄检索范围。使用 DataGrip 内置 Java 21 与已安装 jar，没有下载依赖或更改生产代码。
+
+    cargo build -p astersql-cmd-tidb-server --bin astersql-cmd-tidb-server
+    退出 0。
+    python3 /tmp/pg-jdbc-verify.py
+    退出 1；独立临时进程 20 秒内未开放 listener，已终止并清理临时目录。
+    PATH="/tmp/pg-jdbc-client:$PATH" cargo test -p astersql-server postgres_client_protocol_versions --lib -- --nocapture
+    退出 101；通过临时 Python 包装器在原测试的真实 TCP 双 listener 上执行原 libpq 流程、两个真实 JDBC 驱动和 psql。原 libpq 30000/30002 完整流程通过；两个 JDBC 进程退出 1，均 FATAL: unsupported startup parameter DateStyle；psql 退出 0，SELECT 1 返回 1。测试 fixture 关闭 listener，MySQL COM_PING 通过后报告客户端失败。
+
+临时 Java 源码仅使用 DriverManager.getConnection 和 Statement.executeQuery("SELECT 1")，没有调用系统目录元数据 API。JDBC 失败发生在 startup，未执行查询；DataGrip UI 未验证。本次要求为实际验证，未扩围修改 startup 参数或鉴权/执行语义。支持文档已修正 JDBC 边界。推荐后续独立任务研究 DateStyle、其他 JDBC startup 参数及初始化语句兼容，并先保留此次真实失败为回归证据。原任务的双版本 libpq 交付证据仍有效；此追加实验说明 JDBC 兼容尚未实现。

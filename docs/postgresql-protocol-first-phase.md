@@ -52,6 +52,6 @@ cargo test -p astersql-server --lib mysql_prepared_statements_execute_real_sql_w
 
 真实客户端测试缺少 Python 3 或 libpq >=18 时明确失败。macOS 默认库路径是 `/opt/homebrew/opt/libpq/lib/libpq.dylib`；其他路径可设置 `PG_LIBPQ_LIBRARY`。
 
-本机未找到 PG JDBC 驱动，DataGrip/JDBC UI 连接与 SELECT 1 未验证，不承诺 DataGrip 元数据浏览。没有验证 RealTiKV、生产鉴权、TLS、COPY、复制、通知、完整 pg_catalog、ORM/JDBC 全组合或完整 PostgreSQL SQL 语法/事务语义。结果和 portal 当前全量物化；增加原始类型向量，必要时进行只读 AST/catalog 元数据解析，没有大结果吞吐或内存基准。
+实际使用 DataGrip 已安装的 PostgreSQL JDBC 42.7.13 和 42.7.3 驱动连接临时真实 TCP listener，均在 startup 阶段收到 `FATAL: unsupported startup parameter DateStyle`，尚不能完成 JDBC 连接或执行 SELECT 1。默认系统 psql 18 的 SELECT 1 已实测返回 1。DataGrip UI 和元数据浏览未验证。没有验证 RealTiKV、生产鉴权、TLS、COPY、复制、通知、完整 pg_catalog、ORM/JDBC 全组合或完整 PostgreSQL SQL 语法/事务语义。结果和 portal 当前全量物化；增加原始类型向量，必要时进行只读 AST/catalog 元数据解析，没有大结果吞吐或内存基准。
 
 PG 编解码、OID、SQLSTATE、鉴权协商和连接状态仅在 `pkg/server/pg_*.rs`；共享执行模块不引用 PG。现有入口仅接线配置与独立 listener。后续支持能力应继续沿该边界扩展，并同时验证 MySQL 行为。
