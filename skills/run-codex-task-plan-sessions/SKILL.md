@@ -9,7 +9,7 @@ description: 按 prompt.md 的批次顺序在当前 Codex 项目中执行完整�
 
 ## 模型与项目
 
-- 默认不询问模型。每个任务会话显式使用 `model: "gpt-6-sol"` 和 `thinking: "low"`。
+- 默认不询问模型。每个任务会话显式使用 `model: "gpt-6.1-sol"` 和 `thinking: "low"`。
 - 用户明确指定模型或推理强度时，对所有新建任务会话应用该覆盖。
 - 使用 `codex_app__list_projects` 按当前工作目录的绝对路径匹配项目。找不到匹配项目时停止，不猜测 `projectId`。
 - 默认使用 `{ type: "local" }` 环境，让同一计划的会话共享当前项目状态。只有用户明确要求 worktree 时才改用 worktree。

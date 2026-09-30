@@ -13,15 +13,15 @@ description: 加载后将用户粘贴的任务描述分别创建为当前项目�
 
 ## 模型参数
 
-默认不询问模型。每个创建请求必须显式使用 `model: "gpt-5.6-sol"` 和 `thinking: "low"`。用户明确指定新会话的模型或推理强度时，以用户要求覆盖默认值；逐项核对每个创建请求的 `model` 和 `thinking` 与最终选择完全一致后才调用创建工具。
+默认不询问模型。每个创建请求必须显式使用 `model: "gpt-6.1-sol"` 和 `thinking: "low"`。用户明确指定新会话的模型或推理强度时，以用户要求覆盖默认值；逐项核对每个创建请求的 `model` 和 `thinking` 与最终选择完全一致后才调用创建工具。
 
 ## 工作方式
 
 1. 将用户提供的每个任务标题和完整任务正文原样作为一个新会话的标题与初始提示词；不要合并任务、删减执行要求或添加未获授权的工作内容。
-2. 默认不询问模型；每个创建请求均传入 `model: "gpt-5.6-sol"` 与 `thinking: "low"`。只有用户明确要求模型或推理强度时才覆盖相应默认值。
+2. 默认不询问模型；每个创建请求均传入 `model: "gpt-6.1-sol"` 与 `thinking: "low"`。只有用户明确要求模型或推理强度时才覆盖相应默认值。
 3. 使用 `codex_app__list_projects` 列出项目，在结果中按当前工作目录的绝对路径匹配 `path`，取得该项的 `projectId` 和 `isGitRepository`。
 4. 为每个任务调用 `codex_app__create_thread`：传入任务标题和完整任务正文；`target` 设为 `{ type: "project", projectId, environment }`。默认将 `environment` 设为 `{ type: "local" }`，直接在项目中创建会话；只有用户明确要求使用 worktree 时才设为 `{ type: "worktree" }`。
-5. 默认调用参数必须包含 `model: "gpt-5.6-sol"` 与 `thinking: "low"`。对于任何明确指定的模型或推理强度，都必须准确覆盖相应参数，并确认每个创建请求一致。
+5. 默认调用参数必须包含 `model: "gpt-6.1-sol"` 与 `thinking: "low"`。对于任何明确指定的模型或推理强度，都必须准确覆盖相应参数，并确认每个创建请求一致。
 6. 创建所有会话后，遵循上述“停止条件”立刻结束当前响应。
 7. 最终回复只简短确认已创建，并为每个成功创建的会话单独输出 `::created-thread{threadId="..."}`；若返回的是待初始化的 `clientThreadId`，输出对应的 `::created-thread{clientThreadId="..."}`。
 
