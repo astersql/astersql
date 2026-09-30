@@ -28,11 +28,28 @@
 // ===== 当前实现：精简版 SelectResult（不依赖真实 TiKV 响应） =====
 
 use std::cmp::Ordering;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::{DistSqlError, DistSqlResult, ResponseSource, SelectResponse};
+use crate::{
+    CopRuntimeEvidence, DistSqlError, DistSqlResult, LimiterWaitStats, ResponseSource,
+    SelectResponse, StoreType,
+};
+use astersql_util_execdetails::execdetails;
+
+#[derive(Clone)]
+pub struct ResultStatsContext {
+    pub exec_details: Option<Arc<execdetails::SyncExecDetails>>,
+    pub runtime_stats: Option<Arc<Mutex<execdetails::RuntimeStatsColl>>>,
+    pub root_plan_id: i32,
+    pub cop_plan_ids: Vec<i32>,
+    pub store_type: StoreType,
+    pub is_analyze: bool,
+    pub collect_raw_details: bool,
+    pub mpp_reports_directly: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 /// 行内标量值，用于排序比较与结果缓冲。
@@ -104,6 +121,10 @@ pub struct selectResult<S: ResponseSource> {
     concurrency: usize,
     extra_concurrency: usize,
     pub runtime_stats: selectResultRuntimeStats,
+    stats_context: Option<ResultStatsContext>,
+    raw_scan: execdetails::util::ScanDetail,
+    close_error: Option<DistSqlError>,
+    runtime_stats_observed: bool,
 }
 impl<S: ResponseSource + 'static> selectResult<S> {
     /// 用响应源与主并发度构造 selectResult。
@@ -116,29 +137,74 @@ impl<S: ResponseSource + 'static> selectResult<S> {
             concurrency,
             extra_concurrency: 0,
             runtime_stats: selectResultRuntimeStats::default(),
+            stats_context: None,
+            raw_scan: execdetails::util::ScanDetail::default(),
+            close_error: None,
+            runtime_stats_observed: false,
         }
+    }
+    pub fn with_stats_context(mut self, context: ResultStatsContext) -> Self {
+        self.stats_context = Some(context);
+        self
     }
     /// 从 ResponseSource 拉取下一个 SelectResponse 并消费；无更多数据时关闭。
     fn fetchResp(&mut self) -> DistSqlResult<bool> {
         if self.closed {
             return Ok(false);
         }
-        let Some(response) = self
+        let (response, error) = self
             .source
             .as_mut()
             .expect("source exists until close")
-            .next_response()?
-        else {
-            self.Close()?;
-            return Ok(false);
+            .next_response_with_error();
+        let consumed = if let Some(response) = response {
+            self.consume_response(response, error.is_none())?
+        } else {
+            false
         };
-        self.consume_response(response)
+        if let Some(error) = error {
+            return Err(error);
+        }
+        if !consumed {
+            self.Close()?;
+        }
+        Ok(consumed)
     }
     /// 将响应中的行写入缓冲，并更新扫描 key / 告警等统计。
-    fn consume_response(&mut self, response: SelectResponse) -> DistSqlResult<bool> {
+    fn consume_response(
+        &mut self,
+        response: SelectResponse,
+        include_data: bool,
+    ) -> DistSqlResult<bool> {
         self.runtime_stats.response_count += 1;
         self.runtime_stats.scanned_keys += response.scanned_keys;
         self.runtime_stats.warning_count += response.warnings.len();
+        if let Some(context) = &self.stats_context {
+            if context
+                .mpp_reports_directly
+                .as_ref()
+                .is_some_and(|reports| !reports())
+            {
+                if let Some(collection) = &context.runtime_stats {
+                    collection
+                        .lock()
+                        .expect("runtime stats lock poisoned")
+                        .RecordTiFlashExecutionSummaries(
+                            &context.cop_plan_ids,
+                            &response.execution_summaries,
+                        );
+                }
+            }
+        }
+        if let Some(evidence) = response.cop_stats.as_ref() {
+            self.record_cop_evidence(evidence, &response.execution_summaries, false);
+        }
+        if !include_data {
+            return Ok(true);
+        }
+        if let Some(raw) = response.raw_data {
+            self.raw.push_back(raw);
+        }
         if let Some(error) = response.error {
             self.Close()?;
             return Err(DistSqlError(error));
@@ -149,6 +215,160 @@ impl<S: ResponseSource + 'static> selectResult<S> {
                 .push_back(row.into_iter().map(Scalar::String).collect());
         }
         Ok(true)
+    }
+    fn record_cop_evidence(
+        &mut self,
+        evidence: &CopRuntimeEvidence,
+        summaries: &[Option<execdetails::tipb::ExecutorExecutionSummary>],
+        unconsumed: bool,
+    ) {
+        let Some(context) = self.stats_context.clone() else {
+            return;
+        };
+        if context.is_analyze && !context.collect_raw_details {
+            return;
+        }
+        if let Some(details) = &context.exec_details {
+            details.MergeCopExecDetails(Some(&evidence.details), Duration::ZERO);
+            details.MergeReadPoolTaskDetails(evidence.read_pool.as_ref());
+        }
+        let Some(collection) = &context.runtime_stats else {
+            return;
+        };
+        self.runtime_stats_observed = true;
+        self.runtime_stats.mergeCopRuntimeStatsWithDetails(
+            evidence.response_time,
+            evidence
+                .details
+                .ScanDetail
+                .as_ref()
+                .map_or(0, |scan| scan.ProcessedKeys),
+            evidence.details.TimeDetail.ProcessTime,
+            evidence.details.TimeDetail.WaitTime,
+        );
+        let mut collection = collection.lock().expect("runtime stats lock poisoned");
+        let store_type = match context.store_type {
+            StoreType::TiKv => execdetails::kv::TiKV,
+            StoreType::TiFlash => execdetails::kv::TiFlash,
+        };
+        if context.is_analyze {
+            if context.root_plan_id > 0 {
+                collection.RecordCopStats(
+                    context.root_plan_id,
+                    store_type,
+                    evidence.details.ScanDetail.as_ref(),
+                    evidence.details.TimeDetail,
+                    evidence.read_pool.as_ref(),
+                    None,
+                );
+            }
+            if let Some(scan) = &evidence.details.ScanDetail {
+                self.raw_scan.Merge(scan);
+            }
+            return;
+        }
+        if context.root_plan_id <= 0 {
+            return;
+        }
+        let Some(&root_cop_id) = context.cop_plan_ids.last() else {
+            return;
+        };
+        if unconsumed {
+            collection.RecordCopStats(
+                root_cop_id,
+                store_type,
+                evidence.details.ScanDetail.as_ref(),
+                evidence.details.TimeDetail,
+                evidence.read_pool.as_ref(),
+                None,
+            );
+            return;
+        }
+        if context.store_type == StoreType::TiKv {
+            collection.RecordExpectedCopResponseSummaries(&context.cop_plan_ids);
+            if summaries.is_empty() {
+                collection.RecordCopStats(
+                    root_cop_id,
+                    store_type,
+                    evidence.details.ScanDetail.as_ref(),
+                    evidence.details.TimeDetail,
+                    evidence.read_pool.as_ref(),
+                    None,
+                );
+                return;
+            }
+            let malformed = summaries.len() != context.cop_plan_ids.len()
+                || summaries.iter().any(|summary| {
+                    summary.as_ref().is_none_or(|summary| {
+                        summary.TimeProcessedNs.is_none()
+                            || summary.NumProducedRows.is_none()
+                            || summary.NumIterations.is_none()
+                    })
+                });
+            if malformed {
+                collection.InvalidateCopResponseSummaries(&context.cop_plan_ids);
+                return;
+            }
+        }
+        let has_executor = summaries
+            .iter()
+            .flatten()
+            .find(|summary| {
+                summary.TimeProcessedNs.is_some()
+                    && summary.NumProducedRows.is_some()
+                    && summary.NumIterations.is_some()
+            })
+            .is_some_and(|summary| !summary.ExecutorId.is_empty());
+        if has_executor {
+            collection.RecordCopStats(
+                root_cop_id,
+                store_type,
+                evidence.details.ScanDetail.as_ref(),
+                evidence.details.TimeDetail,
+                evidence.read_pool.as_ref(),
+                None,
+            );
+            let mut recorded = HashSet::new();
+            for summary in summaries.iter().flatten().filter(|summary| {
+                summary.TimeProcessedNs.is_some()
+                    && summary.NumProducedRows.is_some()
+                    && summary.NumIterations.is_some()
+            }) {
+                recorded.insert(collection.RecordOneCopTask(-1, store_type, summary));
+            }
+            let dummy = execdetails::tipb::ExecutorExecutionSummary {
+                TimeProcessedNs: Some(0),
+                NumProducedRows: Some(0),
+                NumIterations: Some(0),
+                ..Default::default()
+            };
+            for &plan_id in &context.cop_plan_ids {
+                if !recorded.contains(&plan_id) {
+                    collection.RecordOneCopTask(plan_id, store_type, &dummy);
+                }
+            }
+            return;
+        }
+        if context.store_type != StoreType::TiKv
+            && (summaries.is_empty() || summaries.len() != context.cop_plan_ids.len())
+        {
+            return;
+        }
+        for (index, summary) in summaries.iter().enumerate() {
+            let plan_id = context.cop_plan_ids[index];
+            if index + 1 == context.cop_plan_ids.len() {
+                collection.RecordCopStats(
+                    plan_id,
+                    store_type,
+                    evidence.details.ScanDetail.as_ref(),
+                    evidence.details.TimeDetail,
+                    evidence.read_pool.as_ref(),
+                    summary.as_ref(),
+                );
+            } else if let Some(summary) = summary {
+                collection.RecordOneCopTask(plan_id, store_type, summary);
+            }
+        }
     }
 }
 impl<S: ResponseSource + 'static> SelectResult for selectResult<S> {
@@ -188,15 +408,54 @@ impl<S: ResponseSource + 'static> SelectResult for selectResult<S> {
         }))
     }
     fn Close(&mut self) -> DistSqlResult<()> {
-        if !self.closed {
-            self.closed = true;
-            self.buffered.clear();
-            self.raw.clear();
-            if let Some(source) = self.source.as_mut() {
-                source.close()?;
+        if self.closed {
+            return self.close_error.clone().map_or(Ok(()), Err);
+        }
+        self.closed = true;
+        self.buffered.clear();
+        self.raw.clear();
+        let mut close_result = Ok(());
+        let mut unconsumed = Vec::new();
+        let mut limiter_wait = LimiterWaitStats::default();
+        if let Some(source) = self.source.as_mut() {
+            close_result = source.close();
+            unconsumed = source.collect_unconsumed_cop_stats();
+            limiter_wait = source.limiter_wait_stats();
+        }
+        for evidence in unconsumed {
+            self.record_cop_evidence(&evidence, &[], true);
+        }
+        if let Some(context) = &self.stats_context {
+            if !context.is_analyze {
+                self.runtime_stats.limiter_wait.merge(limiter_wait);
+                self.runtime_stats_observed |= limiter_wait.total_time > Duration::ZERO;
+            }
+            if let Some(collection) = &context.runtime_stats {
+                if context.root_plan_id > 0 {
+                    let mut collection = collection.lock().expect("runtime stats lock poisoned");
+                    if context.is_analyze && context.collect_raw_details {
+                        let (scan_bytes, valid) = execdetails::EstimateScanBytes(
+                            self.raw_scan.TotalKeys,
+                            self.raw_scan.ProcessedKeys,
+                            self.raw_scan.ProcessedKeysSize,
+                        );
+                        if valid {
+                            collection.RecordAnalyzeScanBytes(context.root_plan_id, scan_bytes);
+                        }
+                    }
+                    if (!context.is_analyze || context.collect_raw_details)
+                        && self.runtime_stats_observed
+                    {
+                        collection.RegisterStats(
+                            context.root_plan_id,
+                            Box::new(self.runtime_stats.clone()),
+                        );
+                    }
+                }
             }
         }
-        Ok(())
+        self.close_error = close_result.err();
+        self.close_error.clone().map_or(Ok(()), Err)
     }
     fn concurrency(&self) -> Option<(usize, usize)> {
         Some((self.concurrency, self.extra_concurrency))
@@ -409,6 +668,12 @@ pub struct selectResultRuntimeStats {
     pub cop_cache_hit_num: u64,
     pub store_batched_num: u64,
     pub store_batched_fallback_num: u64,
+    pub limiter_wait: LimiterWaitStats,
+    pub request_stats: Option<HashMap<String, u64>>,
+    pub cop_response_times: Vec<Duration>,
+    pub processed_keys: Vec<i64>,
+    pub total_process_time: Duration,
+    pub total_wait_time: Duration,
 }
 impl selectResultRuntimeStats {
     /// 合并单次 cop 响应的耗时、缓存命中与 store batch 计数。
@@ -420,9 +685,26 @@ impl selectResultRuntimeStats {
         fallback: u64,
     ) {
         self.cop_response_time += response_time;
+        self.cop_response_times.push(response_time);
+        self.processed_keys.push(0);
         self.cop_cache_hit_num += u64::from(cache_hit);
         self.store_batched_num += store_batched;
         self.store_batched_fallback_num += fallback;
+    }
+    pub fn mergeCopRuntimeStatsWithDetails(
+        &mut self,
+        response_time: Duration,
+        processed_keys: i64,
+        process_time: Duration,
+        wait_time: Duration,
+    ) {
+        self.mergeCopRuntimeStats(response_time, false, 0, 0);
+        *self
+            .processed_keys
+            .last_mut()
+            .expect("response just recorded") = processed_keys;
+        self.total_process_time += process_time;
+        self.total_wait_time += wait_time;
     }
     /// 累加另一份 runtime stats。
     pub fn Merge(&mut self, other: &Self) {
@@ -430,9 +712,21 @@ impl selectResultRuntimeStats {
         self.warning_count += other.warning_count;
         self.scanned_keys += other.scanned_keys;
         self.cop_response_time += other.cop_response_time;
+        self.cop_response_times
+            .extend_from_slice(&other.cop_response_times);
+        self.processed_keys.extend_from_slice(&other.processed_keys);
+        self.total_process_time += other.total_process_time;
+        self.total_wait_time += other.total_wait_time;
         self.cop_cache_hit_num += other.cop_cache_hit_num;
         self.store_batched_num += other.store_batched_num;
         self.store_batched_fallback_num += other.store_batched_fallback_num;
+        self.limiter_wait.merge(other.limiter_wait);
+        if let Some(other_stats) = &other.request_stats {
+            let stats = self.request_stats.get_or_insert_with(HashMap::new);
+            for (command, count) in other_stats {
+                *stats.entry(command.clone()).or_default() += count;
+            }
+        }
     }
     /// 计算 copr cache 命中率；store batch 计入总任务数。
     pub fn calcCacheHit(&self) -> f64 {
@@ -446,21 +740,103 @@ impl selectResultRuntimeStats {
 }
 impl fmt::Display for selectResultRuntimeStats {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "cop_task: {}, response_time: {:?}",
-            self.response_count, self.cop_response_time
-        )?;
-        if astersql_config::get_global_config()
-            .tikv_client
-            .copr_cache
-            .capacity_mb
-            > 0
-        {
-            write!(formatter, ", cache_hit_ratio: {:.2}", self.calcCacheHit())
-        } else {
-            write!(formatter, ", copr_cache: disabled")
+        let count = self.cop_response_times.len();
+        if count > 0 {
+            let mut times = self.cop_response_times.clone();
+            times.sort_unstable();
+            let mut keys = self.processed_keys.clone();
+            keys.sort_unstable();
+            if count == 1 {
+                write!(
+                    formatter,
+                    "cop_task: {{num: 1, max: {}, proc_keys: {}",
+                    execdetails::FormatDuration(times[0]),
+                    keys.first().copied().unwrap_or_default()
+                )?;
+            } else {
+                let average = Duration::from_nanos(
+                    (self.cop_response_time.as_nanos() / count as u128).min(u64::MAX as u128)
+                        as u64,
+                );
+                let p95 = ((count as f64 * 0.95) as usize).min(count - 1);
+                write!(
+                    formatter,
+                    "cop_task: {{num: {count}, max: {}, min: {}, avg: {}, p95: {}",
+                    execdetails::FormatDuration(times[count - 1]),
+                    execdetails::FormatDuration(times[0]),
+                    execdetails::FormatDuration(average),
+                    execdetails::FormatDuration(times[p95])
+                )?;
+                if keys.last().copied().unwrap_or_default() > 0 {
+                    write!(
+                        formatter,
+                        ", max_proc_keys: {}, p95_proc_keys: {}",
+                        keys[count - 1],
+                        keys[p95]
+                    )?;
+                }
+            }
+            if self.total_process_time > Duration::ZERO {
+                write!(
+                    formatter,
+                    ", tot_proc: {}",
+                    execdetails::FormatDuration(self.total_process_time)
+                )?;
+                if self.total_wait_time > Duration::ZERO {
+                    write!(
+                        formatter,
+                        ", tot_wait: {}",
+                        execdetails::FormatDuration(self.total_wait_time)
+                    )?;
+                }
+            }
+            if astersql_config::get_global_config()
+                .tikv_client
+                .copr_cache
+                .capacity_mb
+                > 0
+            {
+                write!(
+                    formatter,
+                    ", copr_cache_hit_ratio: {:.2}",
+                    self.calcCacheHit()
+                )?;
+            } else {
+                write!(formatter, ", copr_cache: disabled")?;
+            }
         }
+        if count > 0 && self.limiter_wait.total_time > Duration::ZERO {
+            write!(
+                formatter,
+                ", limiter_wait:{{total:{}, max:{}}}",
+                execdetails::FormatDuration(self.limiter_wait.total_time),
+                execdetails::FormatDuration(self.limiter_wait.max_time)
+            )?;
+        }
+        if count > 0 {
+            write!(formatter, "}}")?;
+        }
+        Ok(())
+    }
+}
+
+impl execdetails::RuntimeStats for selectResultRuntimeStats {
+    fn String(&self) -> String {
+        self.to_string()
+    }
+    fn Merge(&mut self, other: &dyn execdetails::RuntimeStats) {
+        if let Some(other) = other.as_any().downcast_ref::<Self>() {
+            self.Merge(other);
+        }
+    }
+    fn CloneBox(&self) -> Box<dyn execdetails::RuntimeStats> {
+        Box::new(self.clone())
+    }
+    fn Tp(&self) -> i32 {
+        execdetails::TpSelectResultRuntimeStats
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 

@@ -9,7 +9,28 @@
 
 use super::*;
 use crate::request_builder as production;
+use std::sync::Arc;
 use std::time::Duration;
+
+#[test]
+fn go_merge_42_request_builder_forwards_limiters_and_batch_controls() {
+    let limiter = astersql_kv::NewCoprRequestLimiter(2).unwrap();
+    let mut builder = production::RequestBuilder::new();
+    let request = builder
+        .SetCoprRequestLimiter(Arc::clone(&limiter))
+        .SetStoreBatchSize(5)
+        .SetAllowBatchTaskDataMerge(true)
+        .SetExecuteBatchTasksSerially(true)
+        .Build()
+        .unwrap();
+    assert!(Arc::ptr_eq(
+        request.copr_request_limiter.as_ref().unwrap(),
+        &limiter
+    ));
+    assert_eq!(request.store_batch_size, 5);
+    assert!(request.allow_batch_task_data_merge);
+    assert!(request.execute_batch_tasks_serially);
+}
 
 /// 构造半开区间 `[start, end)` 的辅助函数；非法区间会 panic（测试数据已知合法）。
 fn range(start: &[u8], end: &[u8]) -> KeyRange {

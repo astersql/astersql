@@ -10,7 +10,34 @@ use super::*;
 use crate::distsql as production;
 use crate::request_builder as request_production;
 use crate::select_result::{GetSelectResultConcurrency, SelectResult as _};
+use astersql_util_execdetails::execdetails;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+static ANALYZE_CONFIG_LOCK: Mutex<()> = Mutex::new(());
+struct CollectConfigGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    prior: bool,
+}
+impl CollectConfigGuard {
+    fn set(enabled: bool) -> Self {
+        let lock = ANALYZE_CONFIG_LOCK.lock().unwrap();
+        let flag = &astersql_config::get_global_config()
+            .instance
+            .enable_collect_execution_info;
+        let prior = flag.load();
+        flag.store(enabled);
+        Self { _lock: lock, prior }
+    }
+}
+impl Drop for CollectConfigGuard {
+    fn drop(&mut self) {
+        astersql_config::get_global_config()
+            .instance
+            .enable_collect_execution_info
+            .store(self.prior);
+    }
+}
 
 /// DAG / Analyze / Checksum 三类请求在 Build 后应保留各自的 `RequestType`。
 #[test]
@@ -96,6 +123,371 @@ fn production_request(request_type: RequestType) -> request_production::KvReques
         .unwrap()
 }
 
+fn test_context(client: Arc<dyn production::KvClient>) -> production::DistSQLContext {
+    production::DistSQLContext {
+        client,
+        query_cop_store_limiter: None,
+        exec_details: None,
+        runtime_stats: None,
+        in_restricted_sql: false,
+        enable_chunk_rpc: false,
+        streaming: false,
+        concurrency: 1,
+        tiflash_max_threads: -1,
+        tiflash_max_bytes_before_external_join: -1,
+        tiflash_max_bytes_before_external_group_by: -1,
+        tiflash_max_bytes_before_external_sort: -1,
+        tiflash_max_query_memory_per_node: 0,
+        tiflash_query_spill_ratio: 0.7,
+        tiflash_use_hash_join_v2: false,
+    }
+}
+
+#[test]
+fn go_merge_42_select_keeps_explicit_and_query_limiters_independent() {
+    let client = Arc::new(CapturingClient {
+        request: Mutex::new(None),
+    });
+    let query_limiter = astersql_kv::NewQueryCopStoreLimiter(3).unwrap();
+    let explicit_limiter = astersql_kv::NewCoprRequestLimiter(7).unwrap();
+    let context = production::DistSQLContext {
+        client: client.clone(),
+        query_cop_store_limiter: Some(query_limiter.clone()),
+        exec_details: None,
+        runtime_stats: None,
+        in_restricted_sql: false,
+        enable_chunk_rpc: false,
+        streaming: false,
+        concurrency: 1,
+        tiflash_max_threads: -1,
+        tiflash_max_bytes_before_external_join: -1,
+        tiflash_max_bytes_before_external_group_by: -1,
+        tiflash_max_bytes_before_external_sort: -1,
+        tiflash_max_query_memory_per_node: 0,
+        tiflash_query_spill_ratio: 0.7,
+        tiflash_use_hash_join_v2: false,
+    };
+    for store in [StoreType::TiKv, StoreType::TiFlash] {
+        let mut request = production_request(RequestType::Dag);
+        request.store_type = store;
+        request.copr_request_limiter = Some(explicit_limiter.clone());
+        let _result = production::Select(&context, &request, &[]).unwrap();
+        let sent = client.request.lock().unwrap();
+        let sent = sent.as_ref().unwrap();
+        assert!(Arc::ptr_eq(
+            sent.copr_request_limiter.as_ref().unwrap(),
+            &explicit_limiter
+        ));
+        assert!(Arc::ptr_eq(
+            sent.query_cop_store_limiter.as_ref().unwrap(),
+            &query_limiter
+        ));
+        assert!(request.query_cop_store_limiter.is_none());
+    }
+    let no_query_limit = production::DistSQLContext {
+        query_cop_store_limiter: None,
+        ..context
+    };
+    let mut request = production_request(RequestType::Dag);
+    request.copr_request_limiter = Some(explicit_limiter.clone());
+    let _result = production::Select(&no_query_limit, &request, &[]).unwrap();
+    let sent = client.request.lock().unwrap();
+    let sent = sent.as_ref().unwrap();
+    assert!(sent.query_cop_store_limiter.is_none());
+    assert!(Arc::ptr_eq(
+        sent.copr_request_limiter.as_ref().unwrap(),
+        &explicit_limiter
+    ));
+}
+
+struct AnalyzeSource {
+    subset: Option<SelectResponse>,
+    error: Option<DistSqlError>,
+    unconsumed: Vec<CopRuntimeEvidence>,
+    closed: Arc<std::sync::atomic::AtomicUsize>,
+}
+impl ResponseSource for AnalyzeSource {
+    fn next_response(&mut self) -> DistSqlResult<Option<SelectResponse>> {
+        if let Some(error) = self.error.take() {
+            return Err(error);
+        }
+        Ok(self.subset.take())
+    }
+    fn next_response_with_error(&mut self) -> (Option<SelectResponse>, Option<DistSqlError>) {
+        (self.subset.take(), self.error.take())
+    }
+    fn collect_unconsumed_cop_stats(&mut self) -> Vec<CopRuntimeEvidence> {
+        std::mem::take(&mut self.unconsumed)
+    }
+    fn close(&mut self) -> DistSqlResult<()> {
+        self.closed
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+}
+struct AnalyzeClient {
+    source: Mutex<Option<AnalyzeSource>>,
+    request: Mutex<Option<request_production::KvRequest>>,
+    options: Mutex<Option<production::ClientSendOptions>>,
+}
+impl production::KvClient for AnalyzeClient {
+    fn send(
+        &self,
+        request: &request_production::KvRequest,
+    ) -> DistSqlResult<Box<dyn ResponseSource>> {
+        *self.request.lock().unwrap() = Some(request.clone());
+        Ok(Box::new(self.source.lock().unwrap().take().unwrap()))
+    }
+    fn send_with_options(
+        &self,
+        request: &request_production::KvRequest,
+        options: &production::ClientSendOptions,
+    ) -> DistSqlResult<Box<dyn ResponseSource>> {
+        *self.options.lock().unwrap() = Some(*options);
+        self.send(request)
+    }
+}
+fn analyze_evidence(
+    keys: i64,
+    total: i64,
+    bytes: i64,
+    response_time: Duration,
+) -> CopRuntimeEvidence {
+    CopRuntimeEvidence {
+        details: execdetails::CopExecDetails {
+            ScanDetail: Some(execdetails::util::ScanDetail {
+                ProcessedKeys: keys,
+                TotalKeys: total,
+                ProcessedKeysSize: bytes,
+                ..Default::default()
+            }),
+            TimeDetail: execdetails::util::TimeDetail {
+                ProcessTime: Duration::from_millis(3),
+                WaitTime: Duration::from_millis(5),
+            },
+            ..Default::default()
+        },
+        response_time,
+        ..Default::default()
+    }
+}
+#[test]
+fn go_merge_42_analyze_records_raw_details_once_and_estimates_each_request() {
+    let _config = CollectConfigGuard::set(true);
+    let details = Arc::new(execdetails::SyncExecDetails::default());
+    let coll = Arc::new(Mutex::new(execdetails::RuntimeStatsColl::default()));
+    let mut context = test_context(Arc::new(TestClient { responses: vec![] }));
+    context.exec_details = Some(details.clone());
+    context.runtime_stats = Some(coll.clone());
+    let closed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let client = AnalyzeClient {
+        source: Mutex::new(Some(AnalyzeSource {
+            subset: Some(SelectResponse {
+                raw_data: Some(b"analyze payload!".to_vec()),
+                cop_stats: Some(analyze_evidence(13, 17, 19, Duration::from_millis(7))),
+                ..Default::default()
+            }),
+            error: None,
+            unconsumed: Vec::new(),
+            closed: closed.clone(),
+        })),
+        request: Mutex::new(None),
+        options: Mutex::new(None),
+    };
+    let request = production_request(RequestType::Analyze);
+    let mut result = production::Analyze(&client, &request, true, &context, 42).unwrap();
+    assert!(
+        client
+            .options
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .enable_collect_execution_info
+    );
+    assert_eq!(
+        result.NextRaw().unwrap(),
+        Some(b"analyze payload!".to_vec())
+    );
+    result.Close().unwrap();
+    result.Close().unwrap();
+    assert_eq!(closed.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let summary = details.GetExecDetails();
+    assert_eq!(summary.RequestCount, 1);
+    assert_eq!(summary.CopTime, Duration::ZERO);
+    assert_eq!(
+        summary
+            .CopExecDetails
+            .ScanDetail
+            .as_ref()
+            .unwrap()
+            .ProcessedKeysSize,
+        19
+    );
+    let coll = coll.lock().unwrap();
+    assert!(coll.GetCopStats(42).is_some());
+    assert!((coll.GetAnalyzeScanBytes(42).unwrap() - 19.0 / 13.0 * 17.0).abs() < 1e-9);
+}
+
+#[test]
+fn go_merge_42_analyze_preserves_subset_stats_on_error_and_close() {
+    let _config = CollectConfigGuard::set(true);
+    let details = Arc::new(execdetails::SyncExecDetails::default());
+    let coll = Arc::new(Mutex::new(execdetails::RuntimeStatsColl::default()));
+    let mut context = test_context(Arc::new(TestClient { responses: vec![] }));
+    context.exec_details = Some(details.clone());
+    context.runtime_stats = Some(coll.clone());
+    let client = AnalyzeClient {
+        source: Mutex::new(Some(AnalyzeSource {
+            subset: Some(SelectResponse {
+                cop_stats: Some(analyze_evidence(2, 4, 6, Duration::from_millis(11))),
+                ..Default::default()
+            }),
+            error: Some(DistSqlError("response error".into())),
+            unconsumed: vec![analyze_evidence(1, 2, 3, Duration::ZERO)],
+            closed: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        })),
+        request: Mutex::new(None),
+        options: Mutex::new(None),
+    };
+    let mut result = production::Analyze(
+        &client,
+        &production_request(RequestType::Analyze),
+        true,
+        &context,
+        42,
+    )
+    .unwrap();
+    assert_eq!(result.NextRaw().unwrap_err().0, "response error");
+    assert_eq!(result.NextRaw().unwrap(), None);
+    result.Close().unwrap();
+    assert_eq!(details.GetExecDetails().RequestCount, 2);
+    assert!((coll.lock().unwrap().GetAnalyzeScanBytes(42).unwrap() - 18.0).abs() < 1e-9);
+}
+
+#[test]
+fn go_merge_42_analyze_respects_disabled_collection() {
+    let _config = CollectConfigGuard::set(false);
+    let details = Arc::new(execdetails::SyncExecDetails::default());
+    let coll = Arc::new(Mutex::new(execdetails::RuntimeStatsColl::default()));
+    let mut context = test_context(Arc::new(TestClient { responses: vec![] }));
+    context.exec_details = Some(details.clone());
+    context.runtime_stats = Some(coll.clone());
+    let client = AnalyzeClient {
+        source: Mutex::new(Some(AnalyzeSource {
+            subset: Some(SelectResponse {
+                raw_data: Some(b"payload".to_vec()),
+                cop_stats: Some(analyze_evidence(1, 3, 2, Duration::from_millis(1))),
+                ..Default::default()
+            }),
+            error: None,
+            unconsumed: Vec::new(),
+            closed: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        })),
+        request: Mutex::new(None),
+        options: Mutex::new(None),
+    };
+    let mut result = production::Analyze(
+        &client,
+        &production_request(RequestType::Analyze),
+        true,
+        &context,
+        42,
+    )
+    .unwrap();
+    assert!(
+        !client
+            .options
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .enable_collect_execution_info
+    );
+    assert_eq!(result.NextRaw().unwrap(), Some(b"payload".to_vec()));
+    result.Close().unwrap();
+    assert_eq!(details.GetExecDetails().RequestCount, 0);
+    let coll = coll.lock().unwrap();
+    assert!(coll.GetCopStats(42).is_none());
+    assert!(coll.GetAnalyzeScanBytes(42).is_none());
+    assert!(!coll.ExistsRootStats(42));
+}
+
+#[test]
+fn go_merge_42_mpp_uses_current_direct_reporting_route() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let coll = Arc::new(Mutex::new(execdetails::RuntimeStatsColl::default()));
+    let mut context = test_context(Arc::new(TestClient { responses: vec![] }));
+    context.runtime_stats = Some(coll.clone());
+    let directly = Arc::new(AtomicBool::new(true));
+    let reports_directly: Arc<dyn Fn() -> bool + Send + Sync> = {
+        let directly = directly.clone();
+        Arc::new(move || directly.load(Ordering::SeqCst))
+    };
+    let response = |rows| SelectResponse {
+        raw_data: Some(b"raw".to_vec()),
+        execution_summaries: vec![Some(execdetails::tipb::ExecutorExecutionSummary {
+            ExecutorId: "TableScan_10".into(),
+            NumProducedRows: Some(rows),
+            NumIterations: Some(1),
+            TimeProcessedNs: Some(1),
+            ..Default::default()
+        })],
+        ..Default::default()
+    };
+    let mut result = production::GenSelectResultFromMPPResponse(
+        &context,
+        Box::new(VecResponseSource::new(vec![
+            Ok(response(3)),
+            Ok(response(5)),
+        ])),
+        &[],
+        &[10],
+        10,
+        reports_directly,
+    );
+    assert_eq!(result.NextRaw().unwrap(), Some(b"raw".to_vec()));
+    assert!(!coll.lock().unwrap().GetTiFlashExecutionUnits(10).1);
+    directly.store(false, Ordering::SeqCst);
+    assert_eq!(result.NextRaw().unwrap(), Some(b"raw".to_vec()));
+    assert_eq!(coll.lock().unwrap().GetTiFlashExecutionUnits(10).0.Rows, 5);
+}
+
+#[test]
+fn go_merge_42_analyze_sums_estimates_before_flattening_requests() {
+    let _config = CollectConfigGuard::set(true);
+    let coll = Arc::new(Mutex::new(execdetails::RuntimeStatsColl::default()));
+    let mut context = test_context(Arc::new(TestClient { responses: vec![] }));
+    context.runtime_stats = Some(coll.clone());
+    for (keys, total, bytes) in [(1, 10, 100), (9, 9, 9)] {
+        let client = AnalyzeClient {
+            source: Mutex::new(Some(AnalyzeSource {
+                subset: Some(SelectResponse {
+                    raw_data: Some(b"payload".to_vec()),
+                    cop_stats: Some(analyze_evidence(keys, total, bytes, Duration::ZERO)),
+                    ..Default::default()
+                }),
+                error: None,
+                unconsumed: Vec::new(),
+                closed: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            })),
+            request: Mutex::new(None),
+            options: Mutex::new(None),
+        };
+        let mut result = production::Analyze(
+            &client,
+            &production_request(RequestType::Analyze),
+            true,
+            &context,
+            42,
+        )
+        .unwrap();
+        result.NextRaw().unwrap();
+        result.Close().unwrap();
+    }
+    assert_eq!(coll.lock().unwrap().GetAnalyzeScanBytes(42), Some(1009.0));
+}
+
 #[test]
 fn select_sends_request_and_returns_all_rows() {
     let client = TestClient {
@@ -106,6 +498,9 @@ fn select_sends_request_and_returns_all_rows() {
     };
     let context = production::DistSQLContext {
         client: Arc::new(client),
+        query_cop_store_limiter: None,
+        exec_details: None,
+        runtime_stats: None,
         in_restricted_sql: false,
         enable_chunk_rpc: false,
         streaming: false,
@@ -147,6 +542,9 @@ fn select_with_runtime_stats_preserves_request_behavior() {
     let client = TestClient { responses: vec![] };
     let context = production::DistSQLContext {
         client: Arc::new(client),
+        query_cop_store_limiter: None,
+        exec_details: None,
+        runtime_stats: None,
         in_restricted_sql: false,
         enable_chunk_rpc: false,
         streaming: true,
@@ -175,8 +573,9 @@ fn select_with_runtime_stats_preserves_request_behavior() {
 #[test]
 fn analyze_and_checksum_forward_requests_without_rechecking_payload_kind() {
     let client = TestClient { responses: vec![] };
+    let context = test_context(Arc::new(TestClient { responses: vec![] }));
     let dag = production_request(RequestType::Dag);
-    let analyze = production::Analyze(&client, &dag, true).unwrap();
+    let analyze = production::Analyze(&client, &dag, true, &context, 0).unwrap();
     assert_eq!(analyze.label, "analyze");
     assert_eq!(analyze.sql_type, "internal");
     assert_eq!(analyze.store_type, StoreType::TiKv);
@@ -195,7 +594,8 @@ fn analyze_sends_the_request_concurrency_to_transport() {
     let mut request = production_request(RequestType::Analyze);
     request.concurrency = 7;
 
-    let result = production::Analyze(&client, &request, true).unwrap();
+    let context = test_context(Arc::new(TestClient { responses: vec![] }));
+    let result = production::Analyze(&client, &request, true, &context, 0).unwrap();
 
     assert_eq!(GetSelectResultConcurrency(&*result), Some((7, 0)));
     let sent = client.request.lock().unwrap().clone().unwrap();
@@ -208,7 +608,15 @@ fn analyze_marks_the_sent_request_as_internal_stats() {
     let client = CapturingClient {
         request: Mutex::new(None),
     };
-    production::Analyze(&client, &production_request(RequestType::Analyze), false).unwrap();
+    let context = test_context(Arc::new(TestClient { responses: vec![] }));
+    production::Analyze(
+        &client,
+        &production_request(RequestType::Analyze),
+        false,
+        &context,
+        0,
+    )
+    .unwrap();
     assert_eq!(
         client
             .request
@@ -223,7 +631,9 @@ fn analyze_marks_the_sent_request_as_internal_stats() {
 
 #[test]
 fn mpp_result_uses_the_default_result_iterator() {
+    let context = test_context(Arc::new(TestClient { responses: vec![] }));
     let mut result = production::GenSelectResultFromMPPResponse(
+        &context,
         Box::new(VecResponseSource::new(vec![Ok(SelectResponse {
             rows: vec![vec!["mpp".into()]],
             ..Default::default()
@@ -231,6 +641,7 @@ fn mpp_result_uses_the_default_result_iterator() {
         &[],
         &[10],
         10,
+        Arc::new(|| false),
     );
     assert_eq!(result.label, "mpp");
     assert_eq!(result.cop_plan_ids, vec![10]);
@@ -245,6 +656,9 @@ fn mpp_result_uses_the_default_result_iterator() {
 fn tiflash_metadata_matches_go_sentinel_and_quota_rules() {
     let context = production::DistSQLContext {
         client: Arc::new(TestClient { responses: vec![] }),
+        query_cop_store_limiter: None,
+        exec_details: None,
+        runtime_stats: None,
         in_restricted_sql: false,
         enable_chunk_rpc: false,
         streaming: false,
@@ -281,6 +695,9 @@ fn tiflash_metadata_matches_go_sentinel_and_quota_rules() {
 fn encode_type_requires_chunk_flag_and_records_system_endian() {
     let context = production::DistSQLContext {
         client: Arc::new(TestClient { responses: vec![] }),
+        query_cop_store_limiter: None,
+        exec_details: None,
+        runtime_stats: None,
         in_restricted_sql: false,
         enable_chunk_rpc: true,
         streaming: false,

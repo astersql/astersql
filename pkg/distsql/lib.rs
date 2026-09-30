@@ -217,7 +217,7 @@ pub struct SelectStats {
 }
 
 /// 单批 Select 响应：行、告警、扫描统计与可选错误。
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Default)]
 pub struct SelectResponse {
     /// 本批行数据（每行若干字符串列，测试用简化表示）。
     pub rows: Vec<Vec<String>>,
@@ -227,12 +227,51 @@ pub struct SelectResponse {
     pub scanned_keys: u64,
     /// 若存在则表示本批失败原因。
     pub error: Option<String>,
+    /// Raw Analyze payload, carried independently of decoded row batches.
+    pub raw_data: Option<Vec<u8>>,
+    /// Coprocessor execution details for this response, if collection was enabled.
+    pub cop_stats: Option<CopRuntimeEvidence>,
+    /// Per-operator execution summaries returned by the store.
+    pub execution_summaries:
+        Vec<Option<astersql_util_execdetails::execdetails::tipb::ExecutorExecutionSummary>>,
+}
+
+#[derive(Clone, Default)]
+pub struct CopRuntimeEvidence {
+    pub details: astersql_util_execdetails::execdetails::CopExecDetails,
+    pub read_pool: Option<astersql_util_execdetails::execdetails::util::PoolTaskDetails>,
+    pub response_time: Duration,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LimiterWaitStats {
+    pub total_time: Duration,
+    pub max_time: Duration,
+}
+impl LimiterWaitStats {
+    pub fn merge(&mut self, other: Self) {
+        self.total_time += other.total_time;
+        self.max_time = self.max_time.max(other.max_time);
+    }
 }
 
 /// 响应源抽象：按批拉取 `SelectResponse`，并支持关闭。
 pub trait ResponseSource: Send {
     /// 拉取下一批响应；`Ok(None)` 表示结束。
     fn next_response(&mut self) -> DistSqlResult<Option<SelectResponse>>;
+    /// Preserve a subset's statistics even when the transport also reports an error.
+    fn next_response_with_error(&mut self) -> (Option<SelectResponse>, Option<DistSqlError>) {
+        match self.next_response() {
+            Ok(response) => (response, None),
+            Err(error) => (None, Some(error)),
+        }
+    }
+    fn collect_unconsumed_cop_stats(&mut self) -> Vec<CopRuntimeEvidence> {
+        Vec::new()
+    }
+    fn limiter_wait_stats(&self) -> LimiterWaitStats {
+        LimiterWaitStats::default()
+    }
     /// 关闭底层资源；默认空实现。
     fn close(&mut self) -> DistSqlResult<()> {
         Ok(())

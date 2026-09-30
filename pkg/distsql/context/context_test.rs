@@ -37,7 +37,7 @@ fn test_context_detach() {
     let warn_handler = Arc::new(contextutil::NewStaticWarnHandler(5));
     let warn_appender: contextutil::WarnAppenderRef = warn_handler.clone();
     let kv_exec_counter: SharedContextValue = Arc::new(AtomicU64::new(0));
-    let ru_metrics = Arc::new(execdetails::RUV2Metrics::default());
+    let query_limiter = kv::NewQueryCopStoreLimiter(3).unwrap();
     let mem_tracker: Arc<memory::Tracker> = Arc::from(memory::NewTracker(0, -1));
     let location = Arc::new(chrono_tz::UTC);
     let runtime_stats = Arc::new(execdetails::RuntimeStatsColl::default());
@@ -58,7 +58,7 @@ fn test_context_detach() {
             Killed: &sql_killer.Signal,
         }),
         KvExecCounter: Some(kv_exec_counter.clone()),
-        RUV2Metrics: Some(ru_metrics.clone()),
+        QueryCopStoreLimiter: Some(query_limiter.clone()),
         SessionMemTracker: Some(mem_tracker.clone()),
         Location: Some(location.clone()),
         RuntimeStatsColl: Some(runtime_stats.clone()),
@@ -114,15 +114,15 @@ fn test_context_detach() {
     let detached = obj.Detach();
 
     // Go Detach shallow-copies these session/statement-owned values.
-    // 浅拷贝：WarnHandler / SQLKiller / RU 指标 / 内存 Tracker 等仍指向同一对象。
+    // 浅拷贝：WarnHandler / SQLKiller / query limiter / 内存 Tracker 等仍指向同一对象。
     assert!(Arc::ptr_eq(&obj.WarnHandler, &detached.WarnHandler));
     assert!(std::ptr::eq(
         obj.SQLKiller.expect("original SQL killer"),
         detached.SQLKiller.expect("detached SQL killer"),
     ));
     assert!(Arc::ptr_eq(
-        obj.RUV2Metrics.as_ref().unwrap(),
-        detached.RUV2Metrics.as_ref().unwrap(),
+        obj.QueryCopStoreLimiter.as_ref().unwrap(),
+        detached.QueryCopStoreLimiter.as_ref().unwrap(),
     ));
     assert!(Arc::ptr_eq(
         obj.KvExecCounter.as_ref().unwrap(),

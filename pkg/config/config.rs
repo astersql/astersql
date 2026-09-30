@@ -698,6 +698,9 @@ pub struct Instance {
     pub max_connections: u32,
     /// 本实例是否可执行 DDL（数据定义语句，如建表）；可在运行时切换。
     pub tidb_enable_ddl: AtomicBool,
+    /// Whether Analyze requests collect execution details from storage responses.
+    #[serde(rename = "tidb_enable_collect_execution_info")]
+    pub enable_collect_execution_info: AtomicBool,
     /// TiDB 在分布式任务框架中的服务作用域。
     pub tidb_service_scope: String,
 }
@@ -710,6 +713,7 @@ impl Default for Instance {
             memory_usage_alarm_ratio: 0.8,
             max_connections: 0,
             tidb_enable_ddl: AtomicBool::new(true),
+            enable_collect_execution_info: AtomicBool::new(true),
             tidb_service_scope: String::new(),
         }
     }

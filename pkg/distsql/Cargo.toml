@@ -13,6 +13,8 @@ legacy-tasks = ["task-897", "task-898", "task-902", "task-904", "task-905"]
 
 [dependencies]
 "astersql-config" = { package = "astersql-config", path = "../config" }
+"astersql-kv" = { package = "astersql-kv", path = "../kv" }
+"astersql-util-execdetails" = { package = "astersql-util-execdetails", path = "../util/execdetails" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 "astersql-ddl-placement" = { package = "astersql-ddl-placement", path = "../ddl/placement" }

@@ -12,8 +12,258 @@ use crate::select_result as production;
 use crate::select_result::{
     SelectResult as ProductionSelectResult, SelectResultIter as ProductionSelectResultIter,
 };
+use astersql_util_execdetails::execdetails;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+struct StatsResponseSource {
+    responses: std::collections::VecDeque<SelectResponse>,
+    unconsumed: Vec<CopRuntimeEvidence>,
+    wait: LimiterWaitStats,
+}
+impl ResponseSource for StatsResponseSource {
+    fn next_response(&mut self) -> DistSqlResult<Option<SelectResponse>> {
+        Ok(self.responses.pop_front())
+    }
+    fn collect_unconsumed_cop_stats(&mut self) -> Vec<CopRuntimeEvidence> {
+        std::mem::take(&mut self.unconsumed)
+    }
+    fn limiter_wait_stats(&self) -> LimiterWaitStats {
+        self.wait
+    }
+}
+fn stats_context(
+    coll: Arc<Mutex<execdetails::RuntimeStatsColl>>,
+) -> production::ResultStatsContext {
+    production::ResultStatsContext {
+        exec_details: Some(Arc::new(execdetails::SyncExecDetails::default())),
+        runtime_stats: Some(coll),
+        root_plan_id: 42,
+        cop_plan_ids: vec![41, 42],
+        store_type: StoreType::TiKv,
+        is_analyze: false,
+        collect_raw_details: false,
+        mpp_reports_directly: None,
+    }
+}
+fn stats_evidence(keys: i64) -> CopRuntimeEvidence {
+    CopRuntimeEvidence {
+        details: execdetails::CopExecDetails {
+            ScanDetail: Some(execdetails::util::ScanDetail {
+                ProcessedKeys: keys,
+                TotalKeys: keys,
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        response_time: Duration::from_millis(7),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn go_merge_42_missing_summaries_keep_scan_and_unconsumed_evidence() {
+    let coll = Arc::new(Mutex::new(execdetails::RuntimeStatsColl::default()));
+    let source = StatsResponseSource {
+        responses: vec![SelectResponse {
+            raw_data: Some(b"raw".to_vec()),
+            cop_stats: Some(stats_evidence(13)),
+            ..Default::default()
+        }]
+        .into(),
+        unconsumed: vec![stats_evidence(2)],
+        wait: LimiterWaitStats {
+            total_time: Duration::from_millis(3),
+            max_time: Duration::from_millis(2),
+        },
+    };
+    let mut result =
+        production::selectResult::new(source, 1).with_stats_context(stats_context(coll.clone()));
+    assert_eq!(result.NextRaw().unwrap(), Some(b"raw".to_vec()));
+    result.Close().unwrap();
+    result.Close().unwrap();
+    assert_eq!(
+        result.runtime_stats.limiter_wait.total_time,
+        Duration::from_millis(3)
+    );
+    assert_eq!(
+        result.runtime_stats.limiter_wait.max_time,
+        Duration::from_millis(2)
+    );
+    let coll = coll.lock().unwrap();
+    let scan = coll.GetCopScanDetail(42).unwrap();
+    assert_eq!(scan.ProcessedKeys, 15);
+    let snapshot = coll.GetCopRowsSnapshot(41);
+    assert_eq!(snapshot.ExpectedSummaries, 1);
+    assert_eq!(snapshot.ObservedSummaries, 0);
+    assert!(coll.GetRootStatsIfExists(42).is_some());
+}
+
+#[test]
+fn go_merge_42_malformed_summaries_are_invalidated_without_dropping_generic_stats() {
+    let coll = Arc::new(Mutex::new(execdetails::RuntimeStatsColl::default()));
+    let source = StatsResponseSource {
+        responses: vec![SelectResponse {
+            raw_data: Some(b"raw".to_vec()),
+            cop_stats: Some(stats_evidence(3)),
+            execution_summaries: vec![Some(execdetails::tipb::ExecutorExecutionSummary {
+                NumProducedRows: Some(2),
+                NumIterations: None,
+                TimeProcessedNs: Some(1),
+                ..Default::default()
+            })],
+            ..Default::default()
+        }]
+        .into(),
+        unconsumed: vec![],
+        wait: LimiterWaitStats::default(),
+    };
+    let mut result =
+        production::selectResult::new(source, 1).with_stats_context(stats_context(coll.clone()));
+    assert_eq!(result.NextRaw().unwrap(), Some(b"raw".to_vec()));
+    result.Close().unwrap();
+    let coll = coll.lock().unwrap();
+    assert!(coll.GetCopRowsSnapshot(41).Invalid);
+    assert_eq!(
+        result.runtime_stats.cop_response_time,
+        Duration::from_millis(7)
+    );
+}
+
+#[test]
+fn go_merge_42_runtime_stats_clone_and_merge_optional_rpc_and_limiter_wait() {
+    let mut stats = production::selectResultRuntimeStats::default();
+    let cloned = stats.clone();
+    assert!(cloned.request_stats.is_none());
+    let mut other = production::selectResultRuntimeStats::default();
+    other.request_stats = Some(std::collections::HashMap::from([("Cop".to_owned(), 1)]));
+    other.limiter_wait = LimiterWaitStats {
+        total_time: Duration::from_millis(3),
+        max_time: Duration::from_millis(2),
+    };
+    other.mergeCopRuntimeStats(Duration::from_millis(1), false, 0, 0);
+    stats.Merge(&other);
+    stats.Merge(&other);
+    assert_eq!(stats.request_stats.as_ref().unwrap()["Cop"], 2);
+    assert_eq!(stats.limiter_wait.total_time, Duration::from_millis(6));
+    assert_eq!(stats.limiter_wait.max_time, Duration::from_millis(2));
+    assert!(
+        stats
+            .to_string()
+            .contains("limiter_wait:{total:6ms, max:2ms}")
+    );
+}
+
+#[test]
+fn go_merge_42_tiflash_executor_ids_allow_sparse_summaries_and_fill_missing_plans() {
+    let coll = Arc::new(Mutex::new(execdetails::RuntimeStatsColl::default()));
+    let mut context = stats_context(coll.clone());
+    context.store_type = StoreType::TiFlash;
+    let source = StatsResponseSource {
+        responses: vec![SelectResponse {
+            raw_data: Some(b"raw".to_vec()),
+            cop_stats: Some(stats_evidence(5)),
+            execution_summaries: vec![Some(execdetails::tipb::ExecutorExecutionSummary {
+                ExecutorId: "TableScan_41".into(),
+                NumProducedRows: Some(4),
+                NumIterations: Some(1),
+                TimeProcessedNs: Some(1),
+                ..Default::default()
+            })],
+            ..Default::default()
+        }]
+        .into(),
+        unconsumed: Vec::new(),
+        wait: LimiterWaitStats::default(),
+    };
+    let mut result = production::selectResult::new(source, 1).with_stats_context(context);
+    assert_eq!(result.NextRaw().unwrap(), Some(b"raw".to_vec()));
+    result.Close().unwrap();
+    let coll = coll.lock().unwrap();
+    assert_eq!(coll.GetCopRowsSnapshot(41).ObservedSummaries, 1);
+    assert!(coll.GetCopStats(42).is_some());
+}
+
+#[test]
+fn go_merge_42_valid_tikv_summaries_merge_read_pool_details() {
+    let coll = Arc::new(Mutex::new(execdetails::RuntimeStatsColl::default()));
+    let context = stats_context(coll.clone());
+    let details = context.exec_details.as_ref().unwrap().clone();
+    let mut evidence = stats_evidence(8);
+    evidence.read_pool = Some(execdetails::util::PoolTaskDetails {
+        TaskCount: 2,
+        ..Default::default()
+    });
+    let summary = |rows| {
+        Some(execdetails::tipb::ExecutorExecutionSummary {
+            NumProducedRows: Some(rows),
+            NumIterations: Some(1),
+            TimeProcessedNs: Some(1),
+            ..Default::default()
+        })
+    };
+    let source = StatsResponseSource {
+        responses: vec![SelectResponse {
+            raw_data: Some(b"raw".to_vec()),
+            cop_stats: Some(evidence),
+            execution_summaries: vec![summary(4), summary(5)],
+            ..Default::default()
+        }]
+        .into(),
+        unconsumed: Vec::new(),
+        wait: LimiterWaitStats::default(),
+    };
+    let mut result = production::selectResult::new(source, 1).with_stats_context(context);
+    assert_eq!(result.NextRaw().unwrap(), Some(b"raw".to_vec()));
+    result.Close().unwrap();
+    let coll = coll.lock().unwrap();
+    assert_eq!(coll.GetCopRowsSnapshot(41).ObservedSummaries, 1);
+    assert_eq!(coll.GetCopRowsSnapshot(42).ObservedSummaries, 1);
+    assert_eq!(
+        coll.GetCopStats(42)
+            .unwrap()
+            .readPoolTaskDetails
+            .as_ref()
+            .unwrap()
+            .TaskCount,
+        2
+    );
+    assert_eq!(
+        details
+            .GetExecDetails()
+            .ReadPoolTaskDetails
+            .as_ref()
+            .unwrap()
+            .TaskCount,
+        2
+    );
+}
+
+#[test]
+fn go_merge_42_close_returns_first_close_error_on_every_call() {
+    struct FailingClose {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl ResponseSource for FailingClose {
+        fn next_response(&mut self) -> DistSqlResult<Option<SelectResponse>> {
+            Ok(None)
+        }
+        fn close(&mut self) -> DistSqlResult<()> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(DistSqlError("close error".into()))
+        }
+    }
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut result = production::selectResult::new(
+        FailingClose {
+            calls: calls.clone(),
+        },
+        1,
+    );
+    assert_eq!(result.Close().unwrap_err().0, "close error");
+    assert_eq!(result.Close().unwrap_err().0, "close error");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
 
 /// 构造测试用 SelectResponse（行、告警、扫描 key 数）。
 fn response(rows: &[&[&str]], warnings: &[&str], scanned: u64) -> SelectResponse {
@@ -28,6 +278,7 @@ fn response(rows: &[&[&str]], warnings: &[&str], scanned: u64) -> SelectResponse
             .collect(),
         scanned_keys: scanned,
         error: None,
+        ..Default::default()
     }
 }
 

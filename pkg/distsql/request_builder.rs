@@ -66,7 +66,7 @@ pub struct PartitionIDAndRanges {
 }
 
 /// 发往存储层的完整 KV 请求描述。
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct KvRequest {
     /// 请求类型。
     pub request_type: RequestType,
@@ -120,6 +120,13 @@ pub struct KvRequest {
     pub connection_alias: String,
     /// 各 range 预估行数提示。
     pub key_range_hints: Vec<usize>,
+    /// Limits in-flight cop requests across requests that share this limiter.
+    pub copr_request_limiter: Option<Arc<astersql_kv::CoprRequestLimiter>>,
+    /// Limits in-flight cop requests per store for a query.
+    pub query_cop_store_limiter: Option<Arc<astersql_kv::QueryCopStoreLimiter>>,
+    pub store_batch_size: isize,
+    pub allow_batch_task_data_merge: bool,
+    pub execute_batch_tasks_serially: bool,
 }
 
 /// 从会话变量拷贝到请求的 DistSQL 相关字段子集。
@@ -184,6 +191,10 @@ pub struct RequestBuilder {
     connection_id: u64,
     connection_alias: String,
     hints: Vec<usize>,
+    copr_request_limiter: Option<Arc<astersql_kv::CoprRequestLimiter>>,
+    store_batch_size: isize,
+    allow_batch_task_data_merge: bool,
+    execute_batch_tasks_serially: bool,
     used: bool,
     error: Option<DistSqlError>,
     scope_checker: Option<Arc<dyn TxnScopeChecker>>,
@@ -242,6 +253,11 @@ impl RequestBuilder {
             connection_id: self.connection_id,
             connection_alias: self.connection_alias.clone(),
             key_range_hints: self.hints.clone(),
+            copr_request_limiter: self.copr_request_limiter.clone(),
+            query_cop_store_limiter: None,
+            store_batch_size: self.store_batch_size,
+            allow_batch_task_data_merge: self.allow_batch_task_data_merge,
+            execute_batch_tasks_serially: self.execute_batch_tasks_serially,
         })
     }
     /// 设置为 DAG 请求并保存 payload。
@@ -315,6 +331,25 @@ impl RequestBuilder {
     /// 设置并发度。
     pub fn SetConcurrency(&mut self, value: usize) -> &mut Self {
         self.concurrency = value;
+        self
+    }
+    pub fn SetCoprRequestLimiter(
+        &mut self,
+        limiter: Arc<astersql_kv::CoprRequestLimiter>,
+    ) -> &mut Self {
+        self.copr_request_limiter = Some(limiter);
+        self
+    }
+    pub fn SetStoreBatchSize(&mut self, size: isize) -> &mut Self {
+        self.store_batch_size = size;
+        self
+    }
+    pub fn SetAllowBatchTaskDataMerge(&mut self, allow: bool) -> &mut Self {
+        self.allow_batch_task_data_merge = allow;
+        self
+    }
+    pub fn SetExecuteBatchTasksSerially(&mut self, serially: bool) -> &mut Self {
+        self.execute_batch_tasks_serially = serially;
         self
     }
     /// 设置 TiDB server id。

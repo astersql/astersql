@@ -21,10 +21,11 @@
 // DistSQL DAG/Analyze/Checksum 请求如何构造 SelectResult，并记录 TiFlash
 // 元数据、chunk RPC 对齐检查和 client-go interceptor 绑定语义；传输由 `KvClient` 抽象承接。
 
-use std::sync::Arc;
+use astersql_util_execdetails::execdetails;
+use std::sync::{Arc, Mutex};
 
 use crate::request_builder::KvRequest;
-use crate::select_result::{SelectResult, SelectResultIter, selectResult};
+use crate::select_result::{ResultStatsContext, SelectResult, SelectResultIter, selectResult};
 use crate::{DistSqlError, DistSqlResult, ResponseSource, SelectResponse, StoreType};
 
 /// 为装箱的响应源实现委托，便于统一持有 `Box<dyn ResponseSource>`。
@@ -35,12 +36,34 @@ impl ResponseSource for Box<dyn ResponseSource> {
     fn close(&mut self) -> DistSqlResult<()> {
         (**self).close()
     }
+    fn next_response_with_error(&mut self) -> (Option<SelectResponse>, Option<DistSqlError>) {
+        (**self).next_response_with_error()
+    }
+    fn collect_unconsumed_cop_stats(&mut self) -> Vec<crate::CopRuntimeEvidence> {
+        (**self).collect_unconsumed_cop_stats()
+    }
+    fn limiter_wait_stats(&self) -> crate::LimiterWaitStats {
+        (**self).limiter_wait_stats()
+    }
 }
 
 /// KV 客户端抽象：发送 DistSQL 请求并返回响应源。
 pub trait KvClient: Send + Sync {
     /// 发送请求；返回可按批拉取的响应源。
     fn send(&self, request: &KvRequest) -> DistSqlResult<Box<dyn ResponseSource>>;
+    /// Analyze captures the execution-info setting at send time.
+    fn send_with_options(
+        &self,
+        request: &KvRequest,
+        _options: &ClientSendOptions,
+    ) -> DistSqlResult<Box<dyn ResponseSource>> {
+        self.send(request)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ClientSendOptions {
+    pub enable_collect_execution_info: bool,
 }
 
 /// Go `selectResult` 在发送入口处写入、供后续解码和统计使用的请求元数据。
@@ -135,6 +158,10 @@ pub struct DAGRequest {
 pub struct DistSQLContext {
     /// 发送请求的 KV 客户端。
     pub client: Arc<dyn KvClient>,
+    /// Shared per-store cop request limiter for this query.
+    pub query_cop_store_limiter: Option<Arc<astersql_kv::QueryCopStoreLimiter>>,
+    pub exec_details: Option<Arc<execdetails::SyncExecDetails>>,
+    pub runtime_stats: Option<Arc<Mutex<execdetails::RuntimeStatsColl>>>,
     /// 是否为内部受限 SQL；决定结果统计标签。
     pub in_restricted_sql: bool,
     /// 是否允许使用 chunk RPC。
@@ -161,12 +188,14 @@ pub struct DistSQLContext {
 
 /// 从 MPP（Massively Parallel Processing）响应包装 SelectResult；字段类型/计划 ID 占位保留签名。
 pub fn GenSelectResultFromMPPResponse(
+    context: &DistSQLContext,
     response: Box<dyn ResponseSource>,
     _field_types: &[String],
     _plan_ids: &[i32],
     _root_id: i32,
+    reports_directly: Arc<dyn Fn() -> bool + Send + Sync>,
 ) -> Box<DistSQLSelectResult> {
-    Box::new(DistSQLSelectResult {
+    let mut result = DistSQLSelectResult {
         cop_plan_ids: _plan_ids.to_vec(),
         root_plan_id: _root_id,
         ..new_select_result(
@@ -178,7 +207,18 @@ pub fn GenSelectResultFromMPPResponse(
             StoreType::TiFlash,
             false,
         )
-    })
+    };
+    result.inner = result.inner.with_stats_context(ResultStatsContext {
+        exec_details: context.exec_details.clone(),
+        runtime_stats: context.runtime_stats.clone(),
+        root_plan_id: _root_id,
+        cop_plan_ids: _plan_ids.to_vec(),
+        store_type: StoreType::TiFlash,
+        is_analyze: false,
+        collect_raw_details: false,
+        mpp_reports_directly: Some(reports_directly),
+    });
+    Box::new(result)
 }
 
 /// 发送 DAG 类请求并返回 SelectResult。
@@ -187,8 +227,12 @@ pub fn Select(
     request: &KvRequest,
     field_types: &[String],
 ) -> DistSqlResult<Box<DistSQLSelectResult>> {
-    let response = context.client.send(request)?;
-    Ok(Box::new(new_select_result(
+    let mut request = request.clone();
+    if let Some(limiter) = &context.query_cop_store_limiter {
+        request.query_cop_store_limiter = Some(Arc::clone(limiter));
+    }
+    let response = context.client.send(&request)?;
+    let mut result = new_select_result(
         response,
         request.concurrency,
         "dag",
@@ -200,7 +244,18 @@ pub fn Select(
         },
         request.store_type,
         request.paging,
-    )))
+    );
+    result.inner = result.inner.with_stats_context(ResultStatsContext {
+        exec_details: context.exec_details.clone(),
+        runtime_stats: context.runtime_stats.clone(),
+        root_plan_id: 0,
+        cop_plan_ids: Vec::new(),
+        store_type: request.store_type,
+        is_analyze: false,
+        collect_raw_details: false,
+        mpp_reports_directly: None,
+    });
+    Ok(Box::new(result))
 }
 
 /// 与 Select 相同，额外保留运行时统计相关 plan ID，供结果消费阶段归集统计。
@@ -214,6 +269,16 @@ pub fn SelectWithRuntimeStats(
     let mut result = Select(context, request, _field_types)?;
     result.cop_plan_ids = _plan_ids.to_vec();
     result.root_plan_id = _root_id;
+    result.inner = result.inner.with_stats_context(ResultStatsContext {
+        exec_details: context.exec_details.clone(),
+        runtime_stats: context.runtime_stats.clone(),
+        root_plan_id: _root_id,
+        cop_plan_ids: _plan_ids.to_vec(),
+        store_type: request.store_type,
+        is_analyze: false,
+        collect_raw_details: false,
+        mpp_reports_directly: None,
+    });
     Ok(result)
 }
 
@@ -222,18 +287,39 @@ pub fn Analyze(
     client: &dyn KvClient,
     request: &KvRequest,
     is_restricted: bool,
+    context: &DistSQLContext,
+    plan_id: i32,
 ) -> DistSqlResult<Box<DistSQLSelectResult>> {
     let mut request = request.clone();
     request.request_source = "stats".to_owned();
-    Ok(Box::new(new_select_result(
-        client.send(&request)?,
+    let collect_execution_info = astersql_config::get_global_config()
+        .instance
+        .enable_collect_execution_info
+        .load();
+    let options = ClientSendOptions {
+        enable_collect_execution_info: collect_execution_info,
+    };
+    let mut result = new_select_result(
+        client.send_with_options(&request, &options)?,
         request.concurrency,
         "analyze",
         0,
         if is_restricted { "internal" } else { "general" },
         request.store_type,
         false,
-    )))
+    );
+    result.root_plan_id = plan_id;
+    result.inner = result.inner.with_stats_context(ResultStatsContext {
+        exec_details: context.exec_details.clone(),
+        runtime_stats: context.runtime_stats.clone(),
+        root_plan_id: plan_id,
+        cop_plan_ids: Vec::new(),
+        store_type: request.store_type,
+        is_analyze: true,
+        collect_raw_details: options.enable_collect_execution_info,
+        mpp_reports_directly: None,
+    });
+    Ok(Box::new(result))
 }
 
 /// 发送 Checksum 请求；payload 必须为 Checksum 类型。

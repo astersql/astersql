@@ -27,7 +27,10 @@ pub mod errctx {
 
 /// KV 客户端与副本读类型等存储层依赖。
 pub mod kv {
-    pub use kv_dependency::{Client, ReplicaReadType, ResourceGroupTagBuilder};
+    pub use kv_dependency::{
+        Client, NewQueryCopStoreLimiter, QueryCopStoreLimiter, ReplicaReadType,
+        ResourceGroupTagBuilder,
+    };
 }
 
 /// TiKV 请求变量（退避参数、Killed 信号等）。

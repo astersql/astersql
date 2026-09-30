@@ -87,8 +87,6 @@ pub struct DistSQLContext<'a> {
     pub KVVars: Option<tikvstore::Variables<'a>>,
     /// KV 执行计数器，具体类型由下游包持有（类型擦除）。
     pub KvExecCounter: Option<SharedContextValue>,
-    /// RU（Request Unit，资源计量单位）V2 版指标收集器。
-    pub RUV2Metrics: Option<Arc<execdetails::RUV2Metrics>>,
     /// 会话级内存追踪器，用于统计并限制本会话的内存使用。
     pub SessionMemTracker: Option<Arc<memory::Tracker>>,
 
@@ -121,6 +119,9 @@ pub struct DistSQLContext<'a> {
     pub TiFlashQuerySpillRatio: f64,
     /// TiFlash 使用的 Hash Join 算法版本。
     pub TiFlashHashJoinVersion: String,
+
+    /// Query-wide per-store cop request limiter, shared across detached contexts.
+    pub QueryCopStoreLimiter: Option<Arc<kv::QueryCopStoreLimiter>>,
 
     /// DistSQL 并发度：同时向存储层发起的请求并发数。
     pub DistSQLConcurrency: isize,
@@ -204,7 +205,6 @@ impl Clone for DistSQLContext<'_> {
                 Killed: variables.Killed,
             }),
             KvExecCounter: self.KvExecCounter.clone(),
-            RUV2Metrics: self.RUV2Metrics.clone(),
             SessionMemTracker: self.SessionMemTracker.clone(),
             Location: self.Location.clone(),
             RuntimeStatsColl: self.RuntimeStatsColl.clone(),
@@ -219,6 +219,7 @@ impl Clone for DistSQLContext<'_> {
             TiFlashMaxQueryMemoryPerNode: self.TiFlashMaxQueryMemoryPerNode,
             TiFlashQuerySpillRatio: self.TiFlashQuerySpillRatio,
             TiFlashHashJoinVersion: self.TiFlashHashJoinVersion.clone(),
+            QueryCopStoreLimiter: self.QueryCopStoreLimiter.clone(),
             DistSQLConcurrency: self.DistSQLConcurrency,
             ReplicaReadType: self.ReplicaReadType,
             WeakConsistency: self.WeakConsistency,
@@ -267,7 +268,6 @@ impl Default for DistSQLContext<'_> {
             OriginalSQL: String::new(),
             KVVars: None,
             KvExecCounter: None,
-            RUV2Metrics: None,
             SessionMemTracker: None,
             Location: None,
             RuntimeStatsColl: None,
@@ -282,6 +282,7 @@ impl Default for DistSQLContext<'_> {
             TiFlashMaxQueryMemoryPerNode: 0,
             TiFlashQuerySpillRatio: 0.0,
             TiFlashHashJoinVersion: String::new(),
+            QueryCopStoreLimiter: None,
             DistSQLConcurrency: 0,
             ReplicaReadType: kv::ReplicaReadType::ReplicaReadLeader,
             WeakConsistency: false,

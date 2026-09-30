@@ -153,6 +153,7 @@ pub mod util {
     /// 扫描键数与 RocksDB 块读统计。
     pub struct ScanDetail {
         pub ProcessedKeys: i64,
+        pub ProcessedKeysSize: i64,
         pub TotalKeys: i64,
         pub GetSnapshotDuration: Duration,
         pub RocksdbDeleteSkippedCount: u64,
@@ -169,6 +170,7 @@ pub mod util {
     impl ScanDetail {
         pub fn Merge(&mut self, other: &Self) {
             self.ProcessedKeys += other.ProcessedKeys;
+            self.ProcessedKeysSize += other.ProcessedKeysSize;
             self.TotalKeys += other.TotalKeys;
             self.GetSnapshotDuration += other.GetSnapshotDuration;
             self.RocksdbDeleteSkippedCount += other.RocksdbDeleteSkippedCount;

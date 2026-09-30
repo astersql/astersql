@@ -58,7 +58,7 @@ fn append_warning_and_detach_match_go_pointer_rules() {
         TikvCPUTime: Duration::from_secs(3),
     });
     let max_keys_read_counter = Arc::new(AtomicU64::new(17));
-    let shared_ru_metrics = Arc::new(execdetails::RUV2Metrics::default());
+    let shared_query_limiter = kv::NewQueryCopStoreLimiter(3).unwrap();
     let shared_mem_tracker: Arc<memory::Tracker> = Arc::from(memory::NewTracker(42, -1));
     let shared_runtime_stats = Arc::new(execdetails::RuntimeStatsColl::default());
     let shared_exec_details = Arc::new(execdetails::SyncExecDetails::default());
@@ -77,7 +77,7 @@ fn append_warning_and_detach_match_go_pointer_rules() {
             Killed: &sql_killer.Signal,
         }),
         KvExecCounter: Some(shared_opaque.clone()),
-        RUV2Metrics: Some(shared_ru_metrics.clone()),
+        QueryCopStoreLimiter: Some(shared_query_limiter.clone()),
         SessionMemTracker: Some(shared_mem_tracker.clone()),
         Location: Some(Arc::new(chrono_tz::UTC)),
         RuntimeStatsColl: Some(shared_runtime_stats.clone()),
@@ -192,8 +192,8 @@ fn append_warning_and_detach_match_go_pointer_rules() {
 
     // 会话/语句级 Arc 字段保持共享（RU、KV 计数、内存、时区、运行时统计、执行细节等）。
     assert!(Arc::ptr_eq(
-        context.RUV2Metrics.as_ref().unwrap(),
-        detached.RUV2Metrics.as_ref().unwrap(),
+        context.QueryCopStoreLimiter.as_ref().unwrap(),
+        detached.QueryCopStoreLimiter.as_ref().unwrap(),
     ));
     assert!(Arc::ptr_eq(
         context.KvExecCounter.as_ref().unwrap(),
