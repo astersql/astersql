@@ -140,7 +140,9 @@ pub mod config {
     impl ClusterSecurity {
         /// 转为客户端 TLS 配置；桩实现恒成功返回空配置。
         pub fn ToTLSConfig(&self) -> Result<crate::client::TlsConfig, crate::client::ClientError> {
-            Ok(crate::client::TlsConfig)
+            Ok(crate::client::TlsConfig(
+                tonic::transport::ClientTlsConfig::new(),
+            ))
         }
     }
     /// 全局配置容器。
@@ -255,9 +257,9 @@ pub mod client {
     use crate::{context, grpc};
     use std::fmt;
 
-    /// TLS 配置桩。
+    /// TLS configuration forwarded to the production gRPC client.
     #[derive(Clone)]
-    pub struct TlsConfig;
+    pub struct TlsConfig(pub tonic::transport::ClientTlsConfig);
     /// 创建客户端所需的连接与身份选项。
     pub struct Option {
         /// keyspace 数值 ID，写入请求头。
@@ -408,6 +410,13 @@ pub mod client {
     }
     /// 按选项构造客户端；地址为 stub://ping-error 时 Ping 将失败。
     pub fn New(option: std::option::Option<&Option>) -> Result<Box<dyn Client>, ClientError> {
+        if let Some(option) = option {
+            if !option.ControllerAddr.starts_with("stub://") {
+                return Ok(Box::new(crate::real_client::RealController::connect(
+                    option,
+                )?));
+            }
+        }
         // 测试用特殊地址：创建阶段 Ping 失败，验证 NewManager 错误路径。
         let ping_error = option
             .map(|option| option.ControllerAddr == "stub://ping-error")
@@ -416,6 +425,9 @@ pub mod client {
     }
 }
 
+#[path = "real_client.rs"]
+mod real_client;
+
 /// Manager 接口定义（Close / Role / GC·TTL·Analyze 上报）。
 #[path = "external_workload.rs"]
 mod external_workload;
@@ -423,7 +435,7 @@ pub use external_workload::*;
 /// Manager 具体实现与 NewManager 构造。
 #[path = "manager.rs"]
 pub mod manager_impl;
-pub use manager_impl::{NewManager, manager};
+pub use manager_impl::{NewManager, NewManagerWithTLS, manager};
 /// 角色谓词工具（IsMaster / IsGCV2Worker 等）。
 #[path = "util.rs"]
 mod util;

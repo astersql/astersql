@@ -82,6 +82,17 @@ pub fn NewManager(
     keyspaceMeta: Option<&keyspacepb::KeyspaceMeta>,
     config: config::ExternalWorkload,
 ) -> Result<Option<Box<dyn Manager>>, ManagerError> {
+    NewManagerWithTLS(context, keyspaceMeta, config, None)
+}
+
+/// Construct the production manager with the cluster's CA and client identity.
+#[allow(non_snake_case)]
+pub fn NewManagerWithTLS(
+    context: &context::Context,
+    keyspaceMeta: Option<&keyspacepb::KeyspaceMeta>,
+    config: config::ExternalWorkload,
+    tls_files: Option<(&str, &str, &str)>,
+) -> Result<Option<Box<dyn Manager>>, ManagerError> {
     if !config.Enable {
         return Ok(None);
     }
@@ -89,7 +100,7 @@ pub fn NewManager(
         boxedError("external workload controller requires a non-nil keyspace meta")
     })?;
 
-    let client = dialClient(context, keyspace_meta, &config)
+    let client = dialClient(context, keyspace_meta, &config, tls_files)
         .map_err(|error| annotateError("init external workload client", error))?;
     let result = manager {
         cli: client,
@@ -116,9 +127,22 @@ fn dialClient(
     context: &context::Context,
     keyspaceMeta: &keyspacepb::KeyspaceMeta,
     config: &config::ExternalWorkload,
+    tls_files: Option<(&str, &str, &str)>,
 ) -> Result<Box<dyn client::Client>, ManagerError> {
     let security = config::GetGlobalConfig().Security;
-    let tls_config = if !security.ClusterSSLCA.is_empty() {
+    let tls_config = if let Some((ca_path, cert_path, key_path)) = tls_files {
+        let mut tls = tonic::transport::ClientTlsConfig::new();
+        if !ca_path.is_empty() {
+            let ca = std::fs::read(ca_path)?;
+            tls = tls.ca_certificate(tonic::transport::Certificate::from_pem(ca));
+        }
+        if !cert_path.is_empty() || !key_path.is_empty() {
+            let cert = std::fs::read(cert_path)?;
+            let key = std::fs::read(key_path)?;
+            tls = tls.identity(tonic::transport::Identity::from_pem(cert, key));
+        }
+        Some(client::TlsConfig(tls))
+    } else if !security.ClusterSSLCA.is_empty() {
         // 仅配置了集群 CA 时才建立 TLS 配置；证书解析错误在创建客户端前返回。
         let cluster_security = security.ClusterSecurity();
         Some(

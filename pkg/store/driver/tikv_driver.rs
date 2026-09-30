@@ -774,6 +774,11 @@ pub struct WaitForEntry {
 }
 
 impl TikvStore {
+    /// Whether this store owns a connected production client-rust runtime.
+    pub fn has_real_client_runtime(&self) -> bool {
+        self.inner.lock().unwrap().client_runtime.is_some()
+    }
+
     pub(crate) fn client_runtime(&self) -> Option<Arc<RwLock<ClientRuntime>>> {
         self.inner.lock().unwrap().client_runtime.clone()
     }
@@ -981,6 +986,33 @@ impl TikvStore {
     /// Keyspace 名。
     pub fn GetKeyspace(&self) -> String {
         self.inner.lock().unwrap().keyspace.clone()
+    }
+
+    /// Resolve the numeric PD keyspace ID used by etcd's TiDB namespace.
+    pub fn etcd_namespace(&self) -> Result<String, DriverError> {
+        let keyspace = self.GetKeyspace();
+        if keyspace.is_empty() {
+            return Ok(String::new());
+        }
+        let tls = self.TLSConfig();
+        let security = tls
+            .as_ref()
+            .map(|tls| astersql_store_copr::NetworkSecurity {
+                ca_path: tls.ca_path.clone(),
+                cert_path: tls.cert_path.clone(),
+                key_path: tls.key_path.clone(),
+            });
+        let client = astersql_store_copr::NetworkPdKeyspaceClient::connect(
+            &self.GetPDAddrs()?,
+            security.as_ref(),
+            Duration::from_secs(5),
+            "astersql-server-info",
+        )
+        .map_err(|error| DriverError::Backend(error.to_string()))?;
+        let id = client
+            .load_keyspace(&keyspace)
+            .map_err(|error| DriverError::Backend(error.to_string()))?;
+        Ok(format!("/keyspaces/tidb/{id}"))
     }
 
     /// 本地锁存容量（未启用则为 `None`）。

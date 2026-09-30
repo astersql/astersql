@@ -2665,7 +2665,8 @@ impl ConcreteSession {
         // 对齐 Go `attach2Task4PhysicalLimit` 的安全条件。自动提交快照可以进一步
         // 在 KV 游标层消费 OFFSET，只解码最终 count 行。整数聚簇主键 ORDER BY
         // 和精确主键 WHERE 直接使用正向/反向 handle range，避免为 TopN 物化整表。
-        let limit_pushdown_safe = !read_committed
+        let limit_pushdown_safe = table.GetPartitionInfo().is_none()
+            && !read_committed
             && right_table.is_none()
             && (statement.Where.is_none()
                 || primary_key_access_ranges.is_some()
@@ -3313,6 +3314,7 @@ impl ConcreteSession {
             &rows,
             &statement.Fields,
             &statement.WindowSpecs,
+            |args, row| self.execute_embed_text(args, row),
         )?;
         let projected = if statement.Distinct {
             let mut seen = HashSet::new();

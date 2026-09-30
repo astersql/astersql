@@ -1624,6 +1624,9 @@ impl ConcreteSession {
         let implicit_commit_ddl = statement.as_any().is::<ast::CreateDatabaseStmt>()
             || statement.as_any().is::<ast::DropDatabaseStmt>()
             || (statement.as_any().is::<ast::CreateTableStmt>() && !creates_local_temporary_table)
+            || statement
+                .as_any()
+                .is::<ast::CreateMaterializedViewLogStmt>()
             || statement.as_any().is::<ast::DropTableStmt>()
             || statement.as_any().is::<ast::CreateSequenceStmt>()
             || statement.as_any().is::<ast::DropSequenceStmt>()
@@ -1930,6 +1933,27 @@ impl ConcreteSession {
             let pre_split_regions =
                 statement_sql.and_then(|sql| sql_option_u64(sql, "pre_split_regions"));
             self.execute_create_table(create, shard_row_id_bits, pre_split_regions)?;
+            return Ok(None);
+        }
+        if let Some(create) = statement
+            .as_any()
+            .downcast_ref::<ast::CreateMaterializedViewLogStmt>()
+        {
+            self.execute_create_materialized_view_log(create)?;
+            return Ok(None);
+        }
+        if let Some(purge) = statement
+            .as_any()
+            .downcast_ref::<ast::PurgeMaterializedViewLogStmt>()
+        {
+            self.execute_purge_materialized_view_log(purge, false)?;
+            return Ok(None);
+        }
+        if let Some(cancel) = statement
+            .as_any()
+            .downcast_ref::<ast::CancelMaterializedViewJobStmt>()
+        {
+            self.execute_cancel_materialized_view_job(cancel)?;
             return Ok(None);
         }
         if let Some(create) = statement.as_any().downcast_ref::<ast::CreateViewStmt>() {

@@ -99,3 +99,34 @@ fn rebuild_uses_defaults_config_overrides_and_returns_independent_session_copy()
         "skip-session-default"
     );
 }
+
+#[test]
+fn go_merge_43_rebuild_reapplies_unchanged_internal_summary_callback() {
+    let cache = SysVarCache::default();
+    let source = Source(BTreeMap::from([(
+        "tidb_stmt_summary_internal_query".into(),
+        "OFF".into(),
+    )]));
+    let definitions = [definition("tidb_stmt_summary_internal_query", true)];
+    let mut applied = Vec::new();
+
+    for _ in 0..2 {
+        cache
+            .rebuild(&source, &definitions, &BTreeMap::new(), |name, value| {
+                applied.push((name.to_owned(), value.to_owned()));
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    assert_eq!(applied.len(), 2);
+    assert!(
+        applied
+            .iter()
+            .all(|(name, value)| { name == "tidb_stmt_summary_internal_query" && value == "OFF" })
+    );
+    assert_eq!(
+        cache.global_var("tidb_stmt_summary_internal_query"),
+        Ok("OFF".into())
+    );
+}

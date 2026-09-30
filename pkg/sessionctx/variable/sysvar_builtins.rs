@@ -238,6 +238,48 @@ fn register_noop_compatibility_vars() {
 
 /// 注册 Go `sysvar.go` 中仍由会话变量测试直接依赖的基础兼容变量。
 fn register_compatibility_vars() {
+    let scope = vardef::ScopeGlobal | vardef::ScopeSession;
+    RegisterSysVar(unsigned_var(
+        vardef::TiDBMLogPurgeBatchSize,
+        vardef::DefTiDBMLogPurgeBatchSize,
+        scope,
+        vardef::DefTiDBMLogPurgeBatchMinSize,
+        vardef::DefTiDBMLogPurgeBatchMaxSize,
+    ));
+    RegisterSysVar(unsigned_var(
+        vardef::TiDBMLogPurgeMinRate,
+        vardef::DefTiDBMLogPurgeMinRate,
+        scope,
+        1,
+        i32::MAX as u64,
+    ));
+    let mut budget_ratio = float_var(
+        vardef::TiDBMLogPurgeRateBudgetRatio,
+        vardef::DefTiDBMLogPurgeRateBudgetRatio,
+        scope,
+        0,
+        1,
+    );
+    budget_ratio.Validation = Some(Arc::new(|_, normalized, original, _| {
+        let ratio = original.parse::<f64>().map_err(|_| {
+            VariableError::wrong_value(vardef::TiDBMLogPurgeRateBudgetRatio, original)
+        })?;
+        if !ratio.is_finite() || ratio <= 0.0 || ratio > 1.0 {
+            return Err(VariableError::wrong_value(
+                vardef::TiDBMLogPurgeRateBudgetRatio,
+                original,
+            ));
+        }
+        Ok(normalized.to_owned())
+    }));
+    RegisterSysVar(budget_ratio);
+    RegisterSysVar(int_var(
+        vardef::TiDBMLogPurgeDeleteTiFlashThreads,
+        vardef::DefTiDBMLogPurgeDeleteTiFlashThreads,
+        scope,
+        0,
+        vardef::MaxConfigurableConcurrency as u64,
+    ));
     RegisterSysVar(unsigned_var(
         vardef::Port,
         4000,

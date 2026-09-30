@@ -249,6 +249,7 @@ members = [
     "pkg/extension/extensionimpl",
     "pkg/extworkload",
     "pkg/extworkload/client",
+    "pkg/inference",
     "pkg/format/textrow",
     "pkg/importsdk",
     "pkg/importsdk/mock",

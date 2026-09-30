@@ -93,6 +93,8 @@ pub const ConfigPriv: PrivilegeType = 1 << 28;
 pub const ReplClientPriv: PrivilegeType = 1 << 29;
 /// REPLICATION SLAVE 权限。
 pub const ReplSlavePriv: PrivilegeType = 1 << 30;
+/// OPERATE VIEW permission for materialized-view maintenance.
+pub const OperateViewPriv: PrivilegeType = 1 << 31;
 
 // 对齐 Go 的 AllGlobalPrivs/AllDBPrivs/AllTablePrivs：列表刻意不含 GrantPriv。
 // Matches Go's mysql.AllGlobalPrivs/AllDBPrivs/AllTablePrivs (pkg/parser/mysql/privs.go):
@@ -119,6 +121,7 @@ pub const ALL_GLOBAL_PRIVS: &[PrivilegeType] = &[
     TriggerPriv,
     CreateViewPriv,
     ShowViewPriv,
+    OperateViewPriv,
     CreateRolePriv,
     DropRolePriv,
     CreateTMPTablePriv,
@@ -152,6 +155,7 @@ pub const ALL_DB_PRIVS: &[PrivilegeType] = &[
     IndexPriv,
     CreateViewPriv,
     ShowViewPriv,
+    OperateViewPriv,
     TriggerPriv,
 ];
 /// 表级可枚举特权列表。
@@ -167,6 +171,7 @@ pub const ALL_TABLE_PRIVS: &[PrivilegeType] = &[
     AlterPriv,
     CreateViewPriv,
     ShowViewPriv,
+    OperateViewPriv,
     TriggerPriv,
 ];
 
@@ -189,6 +194,7 @@ pub const globalDBVisible: PrivilegeType = CreatePriv
     | IndexPriv
     | CreateViewPriv
     | ShowViewPriv
+    | OperateViewPriv
     | GrantPriv
     | TriggerPriv
     | ReferencesPriv
@@ -1549,6 +1555,7 @@ pub(crate) fn privilege_name(privilege: PrivilegeType) -> &'static str {
         AlterPriv => "ALTER",
         CreateViewPriv => "CREATE VIEW",
         ShowViewPriv => "SHOW VIEW",
+        OperateViewPriv => "OPERATE VIEW",
         TriggerPriv => "TRIGGER",
         ReferencesPriv => "REFERENCES",
         ExecutePriv => "EXECUTE",
@@ -1835,6 +1842,7 @@ fn setStrToPrivilege(name: &str) -> PrivilegeType {
         "Index" => IndexPriv,
         "Create View" => CreateViewPriv,
         "Show View" => ShowViewPriv,
+        "Operate View" => OperateViewPriv,
         "Trigger" => TriggerPriv,
         _ => 0,
     }

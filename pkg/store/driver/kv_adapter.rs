@@ -828,9 +828,13 @@ impl kv::Getter for ClientSnapshot {
         guard
             .runtime()
             .map_err(adapter_error)?
-            .block_on(snapshot.get(key.0))
+            .block_on(snapshot.get_with_commit_ts(key.0))
             .map_err(map_client_error)
-            .and_then(canonical_value)
+            .and_then(|entry| {
+                entry
+                    .map(|(value, commit_ts)| kv::NewValueEntry(value, commit_ts))
+                    .ok_or_else(|| kv::ErrNotExist.FastGenByArgs(&[]))
+            })
     }
 }
 
@@ -1905,6 +1909,33 @@ fn mem_manager() -> &'static AdapterMemManager {
 }
 
 impl kv::Storage for TikvStore {
+    fn TTLRegionRanges(
+        &self,
+        start: &[u8],
+        end: &[u8],
+    ) -> Result<Option<Vec<(Vec<u8>, Vec<u8>)>>, kv::errors::SharedError> {
+        let Some(store) = self.coprocessor_store() else {
+            return Ok(None);
+        };
+        let ranges = store
+            .kv_store()
+            .region_cache()
+            .split_region_ranges(
+                vec![copr::batch_request_sender::KeyRange {
+                    start: start.to_vec(),
+                    end: end.to_vec(),
+                }],
+                -1,
+            )
+            .map_err(adapter_error)?;
+        Ok(Some(
+            ranges
+                .into_iter()
+                .map(|range| (range.start, range.end))
+                .collect(),
+        ))
+    }
+
     fn ObserveTiFlashReplicaProgress(
         &self,
         table_id: i64,

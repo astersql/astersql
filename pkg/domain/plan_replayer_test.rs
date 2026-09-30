@@ -75,3 +75,25 @@ fn gc_matches_go_by_continuing_after_walk_delete_and_status_errors() {
         vec!["plan_replayer_100.zip"]
     );
 }
+
+#[test]
+fn go_merge_43_dump_gc_uses_current_plan_replayer_retention() {
+    let original = astersql_sessionctx_vardef::GetPlanReplayerFileRetentionTime();
+    struct Restore(Duration);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            astersql_sessionctx_vardef::SetPlanReplayerFileRetentionTime(self.0);
+        }
+    }
+    let _restore = Restore(original);
+    astersql_sessionctx_vardef::SetPlanReplayerFileRetentionTime(Duration::from_secs(1));
+    let store = FaultTolerantStore::default();
+    let checker = DumpFileGcChecker::new(vec!["good".to_string()]);
+
+    let deleted = checker
+        .gc_with_current_retention(&store, UNIX_EPOCH + Duration::from_secs(2))
+        .unwrap();
+    assert!(deleted.contains(&"plan_replayer_100.zip".to_string()));
+    assert!(deleted.contains(&"trace_100.zip".to_string()));
+    assert!(!deleted.contains(&"plan_replayer_capture_100.zip".to_string()));
+}

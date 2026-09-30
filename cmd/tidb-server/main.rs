@@ -38,6 +38,7 @@ use astersql_server::server::{
     Server as CanonicalServer, ServerConfig as CanonicalServerConfig,
     StatusConfig as CanonicalStatusConfig,
 };
+use astersql_session::runtime::ttl_runtime::start_domain_ttl_job_manager;
 use astersql_session::runtime::{CanonicalSessionFactory, CreateAnalyzeSession};
 use astersql_store as store_registry;
 use astersql_store_driver::{PdClientConfig, Security as TiKVSecurity, TiKVDriver};
@@ -1861,6 +1862,12 @@ pub fn createServer(storage: &kv::Storage, dom: &domain::Domain) -> server::Serv
             (domain, driver)
         }
     };
+    if let Err(error) = start_domain_ttl_job_manager(&canonical_domain) {
+        closeDDLOwnerMgrDomainAndStorage(storage, dom);
+        log::Fatal(&format!(
+            "failed to start canonical TTL job manager: {error}"
+        ));
+    }
     let svr = match assembleCanonicalServer(canonical_config, canonical_domain, session_driver) {
         Ok(server) => server,
         Err(err) => {

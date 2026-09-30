@@ -427,6 +427,7 @@ impl WorkerHandle {
     fn stop(mut self) {
         self.stop.store(true, Ordering::Release);
         if let Some(join) = self.join.take() {
+            join.thread().unpark();
             let _ = join.join();
         }
     }
@@ -766,6 +767,12 @@ pub struct Domain {
     schema_loader: Arc<dyn InfoSchemaLoader>,
     ddl_metadata: Arc<DdlMetadataService>,
     ddl: RwLock<Option<Arc<dyn DdlService>>>,
+    external_workload_manager: RwLock<Option<Arc<Mutex<Box<dyn astersql_extworkload::Manager>>>>>,
+    server_info_syncer: RwLock<Option<Arc<Mutex<Box<astersql_domain_serverinfo::Syncer>>>>>,
+    cross_ks_manager: RwLock<Option<Arc<astersql_domain_crossks::Manager>>>,
+    embed_fn: RwLock<Option<Arc<astersql_inference::EmbedFn>>>,
+    ttl_job_manager_started: AtomicBool,
+    mlog_purge_worker_started: AtomicBool,
     info_cache: Arc<InfoCache>,
     keyspace_runtimes: Mutex<BTreeMap<String, KeyspaceRuntime>>,
     initialized: AtomicBool,
@@ -778,16 +785,16 @@ pub struct Domain {
     privilege_events: Mutex<VecDeque<PrivilegeEvent>>,
     sysvar_reload_requested: AtomicBool,
     expired_plan_cache_ts: RwLock<Option<SystemTime>>,
-    server_id: Mutex<Option<ServerIdLease>>,
+    server_id: Arc<Mutex<Option<ServerIdLease>>>,
     connection_id: AtomicU64,
     stats_updating: AtomicBool,
     stats_owner: AtomicBool,
     resource_group_version: AtomicU64,
+    ru_version: AtomicU64,
     plan_cache: RwLock<Option<Arc<Mutex<PlanCache>>>>,
     ruv2_consumption_reporter:
         RwLock<Option<Arc<dyn crate::ruv2_reporter::RUV2ConsumptionReporter>>>,
     runaway_manager: RwLock<Option<Arc<astersql_resourcegroup_runaway::manager::Manager>>>,
-    ru_version: AtomicU64,
     sys_processes: Arc<SysProcesses>,
     on_close: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     schema_reload_count: AtomicU64,
@@ -819,7 +826,8 @@ pub struct Domain {
     auto_analyze_ratio: AtomicU64,
     stats_session_vars: Arc<RwLock<StatsSessionVars>>,
     /// Global system-variable values shared by SQL sessions in this Domain.
-    global_system_variables: RwLock<BTreeMap<String, String>>,
+    global_system_variables: Arc<RwLock<BTreeMap<String, String>>>,
+    embedding_config_version: AtomicU64,
     /// Per-instance global value inherited by newly-created SQL sessions.
     global_scatter_region: RwLock<String>,
     /// Global transaction mode inherited by newly-created SQL sessions.
@@ -835,6 +843,10 @@ pub struct Domain {
     historical_stats_worker: HistoricalStatsWorker,
     auto_analyze_executor: RwLock<Option<std::sync::Weak<dyn AutoAnalyzeExecutor>>>,
     cross_keyspace: RwLock<Option<CrossKeyspaceBinding>>,
+}
+
+pub(crate) fn hosted_embedding_enabled(config: &astersql_config::Config, starter: bool) -> bool {
+    starter && config.hosted_embedding.enabled
 }
 
 /// Go's auto-analyze worker submits `analyze table ...` through a system
@@ -1405,6 +1417,12 @@ impl Domain {
             schema_loader,
             ddl_metadata: Arc::new(DdlMetadataService::new()),
             ddl: RwLock::new(None),
+            external_workload_manager: RwLock::new(None),
+            server_info_syncer: RwLock::new(None),
+            cross_ks_manager: RwLock::new(None),
+            embed_fn: RwLock::new(None),
+            ttl_job_manager_started: AtomicBool::new(false),
+            mlog_purge_worker_started: AtomicBool::new(false),
             info_cache: cache,
             keyspace_runtimes: Mutex::new(BTreeMap::new()),
             initialized: AtomicBool::new(false),
@@ -1416,11 +1434,12 @@ impl Domain {
             privilege_events: Mutex::new(VecDeque::new()),
             sysvar_reload_requested: AtomicBool::new(false),
             expired_plan_cache_ts: RwLock::new(None),
-            server_id: Mutex::new(None),
+            server_id: Arc::new(Mutex::new(None)),
             connection_id: AtomicU64::new(0),
             stats_updating: AtomicBool::new(false),
             stats_owner: AtomicBool::new(false),
             resource_group_version: AtomicU64::new(0),
+            ru_version: AtomicU64::new(1),
             plan_cache: RwLock::new(None),
             ruv2_consumption_reporter: RwLock::new(None),
             runaway_manager: RwLock::new(None),
@@ -1428,7 +1447,6 @@ impl Domain {
             on_close: Mutex::new(None),
             schema_reload_count: AtomicU64::new(0),
             ddl_notifier_sequence: AtomicI64::new(0),
-            ru_version: AtomicU64::new(1),
             stats_handle,
             stats_store,
             stats_catalog: Arc::new(RwLock::new(BTreeMap::new())),
@@ -1447,7 +1465,8 @@ impl Domain {
             pending_stats_deltas: Arc::new(Mutex::new(BTreeMap::new())),
             auto_analyze_ratio: AtomicU64::new(0.5_f64.to_bits()),
             stats_session_vars: Arc::new(RwLock::new(StatsSessionVars::default())),
-            global_system_variables: RwLock::new(BTreeMap::new()),
+            global_system_variables: Arc::new(RwLock::new(BTreeMap::new())),
+            embedding_config_version: AtomicU64::new(0),
             global_scatter_region: RwLock::new(vardef::ScatterOff.to_owned()),
             // Go registers `tidb_txn_mode` with `DefTiDBTxnMode` (pessimistic).
             // Keeping this empty made an unqualified BEGIN silently optimistic.
@@ -1727,16 +1746,6 @@ impl Domain {
             .clone()
     }
 
-    pub fn bind_runaway_manager(
-        &self,
-        manager: Option<Arc<astersql_resourcegroup_runaway::manager::Manager>>,
-    ) {
-        *self
-            .runaway_manager
-            .write()
-            .expect("runaway manager lock poisoned") = manager;
-    }
-
     /// Active RU accounting version; the default matches a controller-free domain.
     pub fn ru_version(&self) -> u64 {
         self.ru_version.load(Ordering::Acquire)
@@ -1745,6 +1754,16 @@ impl Domain {
     /// Update the RU version when the resource-group controller changes policy.
     pub fn set_ru_version(&self, version: u64) {
         self.ru_version.store(version, Ordering::Release);
+    }
+
+    pub fn bind_runaway_manager(
+        &self,
+        manager: Option<Arc<astersql_resourcegroup_runaway::manager::Manager>>,
+    ) {
+        *self
+            .runaway_manager
+            .write()
+            .expect("runaway manager lock poisoned") = manager;
     }
 
     pub fn runaway_manager(&self) -> Option<Arc<astersql_resourcegroup_runaway::manager::Manager>> {
@@ -2392,10 +2411,22 @@ impl Domain {
 
     /// Store a global system-variable value for current and future sessions.
     pub fn set_global_system_variable(&self, name: &str, value: &str) {
+        let name = name.to_ascii_lowercase();
         self.global_system_variables
             .write()
             .expect("global system variable lock poisoned")
-            .insert(name.to_ascii_lowercase(), value.to_owned());
+            .insert(name.clone(), value.to_owned());
+        if matches!(
+            name.as_str(),
+            "tidb_exp_embed_openai_api_key"
+                | "tidb_exp_embed_openai_api_base"
+                | "tidb_exp_embed_jina_ai_api_key"
+        ) {
+            let version = self.embedding_config_version.fetch_add(1, Ordering::AcqRel) + 1;
+            if let Some(embed_fn) = self.get_embed_fn() {
+                embed_fn.set_config_version(version);
+            }
+        }
     }
 
     /// Read one global system-variable override.
@@ -3365,6 +3396,7 @@ impl Domain {
             .with_storage(|store| self.ddl_metadata.drop_database(store, database, if_exists))
             .map_err(|error| DomainError::Ddl(error.to_string()))?;
         let change = self.publish_ddl_metadata_change(change)?;
+        self.remove_ttl_tables_from_external_workload(&change.old_tables)?;
         self.remove_tiflash_rules_for_dropped_tables(&change.old_tables)
     }
 
@@ -3390,13 +3422,66 @@ impl Domain {
                     .create_table(store, database, table, if_not_exists)
             })
             .map_err(|error| DomainError::Ddl(error.to_string()))?;
+        let created_now = change.changed;
         let change = self.publish_ddl_metadata_change(change)?;
-        change
+        let created = change
             .new_tables
             .into_iter()
             .next()
             .map(|(_, table)| table)
-            .ok_or_else(|| DomainError::Ddl("CREATE TABLE produced no metadata".to_owned()))
+            .ok_or_else(|| DomainError::Ddl("CREATE TABLE produced no metadata".to_owned()))?;
+        if created_now && created.TTLInfo.as_ref().is_some_and(|ttl| ttl.Enable) {
+            self.sync_ttl_table_to_external_workload(&created)?;
+        }
+        Ok(created)
+    }
+
+    fn sync_ttl_table_to_external_workload(
+        &self,
+        table: &astersql_meta_model::TableInfo,
+    ) -> Result<(), DomainError> {
+        let Some(manager) = self.external_workload_manager() else {
+            return Ok(());
+        };
+        let mut manager = manager
+            .lock()
+            .expect("external workload manager lock poisoned");
+        let context = astersql_extworkload::context::Background();
+        let result = if table.TTLInfo.as_ref().is_some_and(|ttl| ttl.Enable) {
+            manager.RegisterTTLTask(
+                &context,
+                table.ID,
+                astersql_sessionctx_vardef::EnableTTLJob.Load(),
+            )
+        } else {
+            manager.DeleteTTLTableInfo(&context, table.ID)
+        };
+        result.map_err(|error| {
+            DomainError::Ddl(format!("sync TTL table with external workload: {error}"))
+        })
+    }
+
+    /// Persist a materialized-view log and link its base table atomically.
+    pub fn ddl_create_materialized_view_log(
+        &self,
+        database: &str,
+        base_name: &str,
+        log: astersql_meta_model::TableInfo,
+        next_purge_unix_seconds: Option<i64>,
+    ) -> Result<(), DomainError> {
+        let change = self
+            .store
+            .with_storage(|store| {
+                self.ddl_metadata.create_materialized_view_log(
+                    store,
+                    database,
+                    base_name,
+                    log,
+                    next_purge_unix_seconds,
+                )
+            })
+            .map_err(|error| DomainError::Ddl(error.to_string()))?;
+        self.publish_ddl_metadata_change(change).map(|_| ())
     }
 
     /// Install an available virtual TiFlash replica for planner casetests.
@@ -3508,7 +3593,30 @@ impl Domain {
             .with_storage(|store| self.ddl_metadata.drop_tables(store, tables, if_exists))
             .map_err(|error| DomainError::Ddl(error.to_string()))?;
         let change = self.publish_ddl_metadata_change(change)?;
+        self.remove_ttl_tables_from_external_workload(&change.old_tables)?;
         self.remove_tiflash_rules_for_dropped_tables(&change.old_tables)
+    }
+
+    fn remove_ttl_tables_from_external_workload(
+        &self,
+        tables: &[(String, astersql_meta_model::TableInfo)],
+    ) -> Result<(), DomainError> {
+        if let Some(manager) = self.external_workload_manager() {
+            let mut manager = manager
+                .lock()
+                .expect("external workload manager lock poisoned");
+            let context = astersql_extworkload::context::Background();
+            for (_, table) in tables {
+                manager
+                    .DeleteTTLTableInfo(&context, table.ID)
+                    .map_err(|error| {
+                        DomainError::Ddl(format!(
+                            "remove TTL table from external workload: {error}"
+                        ))
+                    })?;
+            }
+        }
+        Ok(())
     }
 
     fn remove_tiflash_rules_for_dropped_tables(
@@ -4994,6 +5102,439 @@ impl Domain {
         self.ddl.read().expect("ddl lock poisoned").clone()
     }
 
+    /// Register this serving Domain with the cluster's server-info and
+    /// topology keys. The caller supplies its connected, namespaced etcd
+    /// client and the construction options used by Go's InfoSyncer.
+    pub fn install_server_info_syncer(
+        &self,
+        id: String,
+        client: Arc<dyn astersql_domain_serverinfo::EtcdClient>,
+        options: &[astersql_domain_serverinfo::SyncerOption],
+    ) -> Result<(), DomainError> {
+        let server_id = Arc::clone(&self.server_id);
+        let getter = Arc::new(move || {
+            server_id
+                .lock()
+                .expect("server id lock poisoned")
+                .as_ref()
+                .filter(|lease| lease.expires_at > Instant::now())
+                .map(|lease| lease.id)
+                .unwrap_or(0)
+        });
+        let mut syncer = astersql_domain_serverinfo::NewSyncerWithOptions(
+            id,
+            getter,
+            Some(client),
+            Arc::new(astersql_domain_serverinfo::NoopMinStartTSReporter),
+            options,
+        );
+        let context = astersql_domain_serverinfo::Context::Background();
+        syncer
+            .NewSessionAndStoreServerInfo(context.clone())
+            .map_err(|error| DomainError::Worker(format!("register server info: {error}")))?;
+        if let Err(error) = syncer.NewTopologySessionAndStoreServerInfo(context) {
+            syncer.RemoveServerInfo();
+            syncer.RevokeSession();
+            syncer.RevokeTopologySession();
+            return Err(DomainError::Worker(format!(
+                "register topology info: {error}"
+            )));
+        }
+        let mut slot = self
+            .server_info_syncer
+            .write()
+            .expect("server info syncer lock poisoned");
+        if let Some(previous) = slot.replace(Arc::new(Mutex::new(syncer))) {
+            let previous = previous.lock().expect("server info syncer lock poisoned");
+            previous.RemoveServerInfo();
+            previous.RemoveTopologyInfo();
+            previous.RevokeSession();
+            previous.RevokeTopologySession();
+        }
+        Ok(())
+    }
+
+    /// Return the live server-info syncer when this Domain registered in etcd.
+    pub fn server_info_syncer(
+        &self,
+    ) -> Option<Arc<Mutex<Box<astersql_domain_serverinfo::Syncer>>>> {
+        self.server_info_syncer
+            .read()
+            .expect("server info syncer lock poisoned")
+            .clone()
+    }
+
+    /// Install the cross-keyspace session manager used by this serving Domain.
+    /// Closing the Domain drains every target runtime before its own etcd lease.
+    pub fn install_cross_ks_manager(&self, manager: Arc<astersql_domain_crossks::Manager>) {
+        let previous = self
+            .cross_ks_manager
+            .write()
+            .expect("cross-keyspace manager lock poisoned")
+            .replace(manager);
+        if let Some(previous) = previous {
+            previous.close();
+        }
+    }
+
+    /// Return the installed cross-keyspace manager.
+    pub fn cross_ks_manager(&self) -> Option<Arc<astersql_domain_crossks::Manager>> {
+        self.cross_ks_manager
+            .read()
+            .expect("cross-keyspace manager lock poisoned")
+            .clone()
+    }
+
+    /// Install the controller used by background workloads.
+    pub fn set_external_workload_manager(
+        &self,
+        manager: Option<Box<dyn astersql_extworkload::Manager>>,
+    ) {
+        let previous = std::mem::replace(
+            &mut *self
+                .external_workload_manager
+                .write()
+                .expect("external workload manager lock poisoned"),
+            manager.map(|manager| Arc::new(Mutex::new(manager))),
+        );
+        if let Some(previous) = previous {
+            let _ = previous
+                .lock()
+                .expect("external workload manager lock poisoned")
+                .Close();
+        }
+    }
+
+    /// Returns the controller if it is installed on this Domain.
+    pub fn external_workload_manager(
+        &self,
+    ) -> Option<Arc<Mutex<Box<dyn astersql_extworkload::Manager>>>> {
+        self.external_workload_manager
+            .read()
+            .expect("external workload manager lock poisoned")
+            .clone()
+    }
+
+    /// Returns the embedding function shared by sessions on this Domain.
+    pub fn get_embed_fn(&self) -> Option<Arc<astersql_inference::EmbedFn>> {
+        self.embed_fn
+            .read()
+            .expect("embedding function lock poisoned")
+            .clone()
+    }
+
+    fn init_inference_providers(&self) {
+        let embed_fn = astersql_inference::EmbedFn::new();
+        let key_variables = Arc::clone(&self.global_system_variables);
+        let base_variables = Arc::clone(&self.global_system_variables);
+        embed_fn
+            .register(
+                "openai",
+                Arc::new(astersql_inference::openai::OpenAIEmbedder::new(
+                    move || {
+                        key_variables
+                            .read()
+                            .expect("global system variable lock poisoned")
+                            .get("tidb_exp_embed_openai_api_key")
+                            .cloned()
+                            .unwrap_or_default()
+                    },
+                    move || {
+                        base_variables
+                            .read()
+                            .expect("global system variable lock poisoned")
+                            .get("tidb_exp_embed_openai_api_base")
+                            .cloned()
+                            .unwrap_or_default()
+                    },
+                )),
+            )
+            .expect("register OpenAI embedding provider");
+        let jina_key_variables = Arc::clone(&self.global_system_variables);
+        embed_fn
+            .register(
+                "jina_ai",
+                Arc::new(astersql_inference::jina::JinaEmbedder::new(
+                    move || {
+                        jina_key_variables
+                            .read()
+                            .expect("global system variable lock poisoned")
+                            .get("tidb_exp_embed_jina_ai_api_key")
+                            .cloned()
+                            .unwrap_or_default()
+                    },
+                    String::new,
+                )),
+            )
+            .expect("register Jina embedding provider");
+        let cohere_key_variables = Arc::clone(&self.global_system_variables);
+        embed_fn
+            .register(
+                "cohere",
+                Arc::new(astersql_inference::cohere::CohereEmbedder::new(
+                    move || {
+                        cohere_key_variables
+                            .read()
+                            .expect("global system variable lock poisoned")
+                            .get("tidb_exp_embed_cohere_api_key")
+                            .cloned()
+                            .unwrap_or_default()
+                    },
+                    String::new,
+                )),
+            )
+            .expect("register Cohere embedding provider");
+        let huggingface_key_variables = Arc::clone(&self.global_system_variables);
+        embed_fn
+            .register(
+                "huggingface",
+                Arc::new(astersql_inference::huggingface::HuggingFaceEmbedder::new(
+                    move || {
+                        huggingface_key_variables
+                            .read()
+                            .expect("global system variable lock poisoned")
+                            .get("tidb_exp_embed_huggingface_api_key")
+                            .cloned()
+                            .unwrap_or_default()
+                    },
+                    String::new,
+                )),
+            )
+            .expect("register HuggingFace embedding provider");
+        let nvidia_key_variables = Arc::clone(&self.global_system_variables);
+        embed_fn
+            .register(
+                "nvidia_nim",
+                Arc::new(astersql_inference::nvidia::NvidiaEmbedder::new(
+                    move || {
+                        nvidia_key_variables
+                            .read()
+                            .expect("global system variable lock poisoned")
+                            .get("tidb_exp_embed_nvidia_nim_api_key")
+                            .cloned()
+                            .unwrap_or_default()
+                    },
+                    String::new,
+                )),
+            )
+            .expect("register NVIDIA NIM embedding provider");
+        let gemini_key_variables = Arc::clone(&self.global_system_variables);
+        embed_fn
+            .register(
+                "gemini",
+                Arc::new(astersql_inference::gemini::GeminiEmbedder::new(
+                    move || {
+                        gemini_key_variables
+                            .read()
+                            .expect("global system variable lock poisoned")
+                            .get("tidb_exp_embed_gemini_api_key")
+                            .cloned()
+                            .unwrap_or_default()
+                    },
+                    String::new,
+                )),
+            )
+            .expect("register Gemini embedding provider");
+        if hosted_embedding_enabled(
+            astersql_config::get_global_config().as_ref(),
+            astersql_config_deploymode::IsStarter(),
+        ) {
+            embed_fn
+                .register(
+                    "tidbcloud_free",
+                    Arc::new(astersql_inference::tidbcloud::TiDBCloudFreeEmbedder::new(
+                        || {
+                            let cluster_id = astersql_config::get_global_config()
+                                .auto_scaler_cluster_id
+                                .clone();
+                            if cluster_id.is_empty() {
+                                String::new()
+                            } else {
+                                format!("cluster_{cluster_id}")
+                            }
+                        },
+                        || {
+                            let path = astersql_config::get_global_config()
+                                .hosted_embedding
+                                .api_key_path
+                                .clone();
+                            if path.is_empty() {
+                                return String::new();
+                            }
+                            std::fs::read_to_string(path)
+                                .map(|key| key.trim().to_owned())
+                                .unwrap_or_default()
+                        },
+                        || {
+                            astersql_config::get_global_config()
+                                .hosted_embedding
+                                .api_endpoint
+                                .clone()
+                        },
+                    )),
+                )
+                .expect("register TiDB Cloud embedding provider");
+        }
+        embed_fn.set_config_version(self.embedding_config_version.load(Ordering::Acquire));
+        #[cfg(test)]
+        embed_fn
+            .register("mock", Arc::new(astersql_inference::MockEmbedder))
+            .expect("register test embedding provider");
+        *self
+            .embed_fn
+            .write()
+            .expect("embedding function lock poisoned") = Some(Arc::new(embed_fn));
+    }
+
+    fn close_inference_providers(&self) {
+        if let Some(embed_fn) = self
+            .embed_fn
+            .write()
+            .expect("embedding function lock poisoned")
+            .take()
+        {
+            embed_fn.close();
+        }
+    }
+
+    /// Go `ttlExternalWorkloadRole`: a live manager takes priority over config.
+    pub fn ttl_external_workload_role(&self) -> (String, bool) {
+        if let Some(manager) = self.external_workload_manager() {
+            return (
+                manager
+                    .lock()
+                    .expect("external workload manager poisoned")
+                    .Role(),
+                true,
+            );
+        }
+        let config = astersql_config::get_global_config();
+        if !config.external_workload.Enable {
+            return (String::new(), false);
+        }
+        let role = &config.external_workload.Role;
+        (
+            if role.is_empty() {
+                astersql_config::RoleMaster.to_owned()
+            } else {
+                role.clone()
+            },
+            true,
+        )
+    }
+
+    /// Go `shouldStartTTLJobManager`: never schedule locally without a live
+    /// controller once external workloads are configured.
+    pub fn should_start_ttl_job_manager(&self) -> bool {
+        let (role, configured) = self.ttl_external_workload_role();
+        !configured
+            || (self.external_workload_manager().is_some()
+                && role == astersql_config::RoleTTLTaskWorker)
+    }
+
+    /// Own and stop the concrete SQL-backed TTL manager loop with this Domain.
+    /// The session layer supplies its executable tick after bootstrap, keeping
+    /// the Domain crate independent of `pkg/session`.
+    pub fn start_ttl_job_manager<F>(
+        &self,
+        interval: Duration,
+        mut tick: F,
+    ) -> Result<bool, DomainError>
+    where
+        F: FnMut(&AtomicBool) + Send + 'static,
+    {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(DomainError::Closed);
+        }
+        if !self.should_start_ttl_job_manager() {
+            return Ok(false);
+        }
+        if self.ttl_job_manager_started.swap(true, Ordering::AcqRel) {
+            return Ok(false);
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let join = thread::Builder::new()
+            .name("ttl-job-manager".into())
+            .spawn(move || {
+                while !worker_stop.load(Ordering::Acquire) {
+                    tick(&worker_stop);
+                    thread::park_timeout(interval);
+                }
+            })
+            .map_err(|error| {
+                self.ttl_job_manager_started.store(false, Ordering::Release);
+                DomainError::Worker(format!("start TTL job manager: {error}"))
+            })?;
+        self.workers
+            .lock()
+            .expect("worker lock poisoned")
+            .push(WorkerHandle {
+                name: "ttl-job-manager".into(),
+                stop,
+                join: Some(join),
+            });
+        Ok(true)
+    }
+
+    /// Own the SQL-backed MLog purge scheduler and stop it with the Domain.
+    pub fn start_mlog_purge_worker<F>(
+        &self,
+        interval: Duration,
+        mut tick: F,
+    ) -> Result<bool, DomainError>
+    where
+        F: FnMut(&AtomicBool) + Send + 'static,
+    {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(DomainError::Closed);
+        }
+        if self.mlog_purge_worker_started.swap(true, Ordering::AcqRel) {
+            return Ok(false);
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let join = thread::Builder::new()
+            .name("mlog-purge-worker".into())
+            .spawn(move || {
+                while !worker_stop.load(Ordering::Acquire) {
+                    tick(&worker_stop);
+                    thread::park_timeout(interval);
+                }
+            })
+            .map_err(|error| {
+                self.mlog_purge_worker_started
+                    .store(false, Ordering::Release);
+                DomainError::Worker(format!("start MLog purge worker: {error}"))
+            })?;
+        self.workers
+            .lock()
+            .expect("worker lock poisoned")
+            .push(WorkerHandle {
+                name: "mlog-purge-worker".into(),
+                stop,
+                join: Some(join),
+            });
+        Ok(true)
+    }
+
+    /// Only the master forwards `tidb_ttl_job_enable` changes to the controller.
+    pub fn update_external_workload_ttl_job_enable(
+        &self,
+        context: &astersql_extworkload::context::Context,
+        enable: bool,
+    ) -> Result<(), String> {
+        if let Some(manager) = self.external_workload_manager() {
+            let mut manager = manager.lock().expect("external workload manager poisoned");
+            if manager.Role() == astersql_config::RoleMaster {
+                manager
+                    .UpdateTTLJobEnable(context, enable)
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        Ok(())
+    }
+
     /// 加载指定 KS 的 InfoSchema。
     fn load_info_schema(&self, keyspace: &str) -> Result<LoadedInfoSchema, DomainError> {
         self.store
@@ -5065,6 +5606,14 @@ impl Domain {
                 self.started.store(false, Ordering::Release);
                 return Err(DomainError::Ddl(error));
             }
+        }
+        if let Some(syncer) = self.server_info_syncer() {
+            self.start_periodic_worker("server-info-sync", Duration::from_secs(15), move || {
+                let syncer = syncer.lock().expect("server info syncer lock poisoned");
+                let context = astersql_domain_serverinfo::Context::Background();
+                let _ = syncer.StoreServerInfo(context.clone());
+                let _ = syncer.updateTopologyAliveness(context);
+            });
         }
         self.start_periodic_worker(
             "schema-reload",
@@ -5141,6 +5690,7 @@ impl Domain {
                 }
             }
         });
+        self.init_inference_providers();
         Ok(())
     }
 
@@ -5494,7 +6044,39 @@ impl Domain {
         if let Some(ddl) = self.ddl() {
             let _ = ddl.stop();
         }
+        if let Some(manager) = self
+            .cross_ks_manager
+            .write()
+            .expect("cross-keyspace manager lock poisoned")
+            .take()
+        {
+            manager.close();
+        }
+        if let Some(syncer) = self
+            .server_info_syncer
+            .write()
+            .expect("server info syncer lock poisoned")
+            .take()
+        {
+            let syncer = syncer.lock().expect("server info syncer lock poisoned");
+            syncer.RemoveServerInfo();
+            syncer.RemoveTopologyInfo();
+            syncer.RevokeSession();
+            syncer.RevokeTopologySession();
+        }
+        if let Some(manager) = self
+            .external_workload_manager
+            .write()
+            .expect("external workload manager lock poisoned")
+            .take()
+        {
+            let _ = manager
+                .lock()
+                .expect("external workload manager lock poisoned")
+                .Close();
+        }
         self.release_server_id();
+        self.close_inference_providers();
         self.started.store(false, Ordering::Release);
         if let Some(callback) = self.on_close.lock().expect("on-close lock poisoned").take() {
             callback();

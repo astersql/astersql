@@ -239,6 +239,14 @@ pub const TiDBBatchCommit: &str = "tidb_batch_commit";
 // Its default value is 20000. When the row size is large, 20k rows could be larger than 100MB.
 // User could change it to a smaller one to avoid breaking the transaction size limitation.
 pub const TiDBDMLBatchSize: &str = "tidb_dml_batch_size";
+/// Maximum rows deleted by one materialized-view-log purge batch.
+pub const TiDBMLogPurgeBatchSize: &str = "tidb_mlog_purge_batch_size";
+/// Minimum target row deletion rate for adaptive MLog purge.
+pub const TiDBMLogPurgeMinRate: &str = "tidb_mlog_purge_min_rate";
+/// Fraction of the available schedule window allocated to MLog purge.
+pub const TiDBMLogPurgeRateBudgetRatio: &str = "tidb_mlog_purge_rate_budget_ratio";
+/// TiFlash thread limit for MLog purge DELETE statements.
+pub const TiDBMLogPurgeDeleteTiFlashThreads: &str = "tidb_mlog_purge_delete_tiflash_threads";
 
 // The following session variables controls the memory quota during query execution.
 
@@ -1632,6 +1640,12 @@ pub const DefMaxPagingSize: i64 = 50_000;
 pub const DefPagingSizeBytes: i64 = 0;
 pub const DefMaxChunkSize: i64 = 1024;
 pub const DefDMLBatchSize: i64 = 0;
+pub const DefTiDBMLogPurgeBatchSize: u64 = 10_000;
+pub const DefTiDBMLogPurgeBatchMinSize: i64 = 1;
+pub const DefTiDBMLogPurgeBatchMaxSize: u64 = 1_000_000;
+pub const DefTiDBMLogPurgeMinRate: u64 = 2_000;
+pub const DefTiDBMLogPurgeRateBudgetRatio: f64 = 0.5;
+pub const DefTiDBMLogPurgeDeleteTiFlashThreads: i64 = 0;
 pub const DefMaxPreparedStmtCount: i64 = -1;
 pub const DefWaitTimeout: i64 = 28800;
 pub const DefTiDBMemQuotaApplyCache: i64 = 32 << 20; // 32MB.;

@@ -85,6 +85,21 @@ fn test_new_manager_ping_failure() {
     );
 }
 
+#[test]
+fn go_merge_43_production_controller_uses_grpc_client() {
+    let meta = keyspacepb::KeyspaceMeta {
+        id: 42,
+        name: "starter-ks".to_owned(),
+    };
+    let config = config::ExternalWorkload {
+        Enable: true,
+        Role: config::RoleTTLTaskWorker.to_owned(),
+        ControllerAddr: "not a valid controller address".to_owned(),
+        ..Default::default()
+    };
+    assert!(NewManager(&context::Background(), Some(&meta), config).is_err());
+}
+
 /// FakeClient 累积的最近一次调用观测状态。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct FakeState {

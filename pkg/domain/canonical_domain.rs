@@ -120,6 +120,17 @@ impl DdlMetadataService {
             &mut MetadataCatalog,
         ) -> Result<DdlMetadataChange, kv::errors::SharedError>,
     ) -> Result<DdlMetadataChange, kv::errors::SharedError> {
+        self.mutate_with_kv(store, |catalog, _transaction| operation(catalog))
+    }
+
+    fn mutate_with_kv(
+        &self,
+        store: &dyn kv::Storage,
+        operation: impl FnOnce(
+            &mut MetadataCatalog,
+            &mut dyn kv::Transaction,
+        ) -> Result<DdlMetadataChange, kv::errors::SharedError>,
+    ) -> Result<DdlMetadataChange, kv::errors::SharedError> {
         let _writer = self
             .writer
             .lock()
@@ -131,7 +142,7 @@ impl DdlMetadataService {
         transaction.SetDiskFullOpt(kv::kvrpcpb::DiskFullOpt::AllowedOnAlmostFull);
         let mut catalog = read_catalog(transaction.as_ref())?;
         let previous = catalog.clone();
-        let mut change = operation(&mut catalog)?;
+        let mut change = operation(&mut catalog, transaction.as_mut())?;
         // 无实际变更：回滚事务，仍返回当前 schema_version。
         if !change.changed {
             change.schema_version = catalog.version;
@@ -183,6 +194,12 @@ impl DdlMetadataService {
             diff.into_bytes(),
         )?;
         transaction.Set(schema_version_key, catalog.version.to_string().into_bytes())?;
+        if catalog.next_id > previous.next_id {
+            transaction.Set(
+                tidb_string_key(b"NextGlobalID"),
+                catalog.next_id.to_string().into_bytes(),
+            )?;
+        }
         transaction.Set(kv::Key(DDL_CATALOG_KEY.to_vec()), encode_catalog(&catalog)?)?;
         transaction.Commit(&kv::Context::default())?;
         Ok(change)
@@ -315,6 +332,83 @@ impl DdlMetadataService {
             catalog.tables.insert(key, table.clone());
             Ok(DdlMetadataChange {
                 new_tables: vec![(database, table)],
+                changed: true,
+                ..DdlMetadataChange::default()
+            })
+        })
+    }
+
+    /// Install an MLog and its base-table link in one committed catalog change.
+    pub fn create_materialized_view_log(
+        &self,
+        store: &dyn kv::Storage,
+        database: &str,
+        base_name: &str,
+        mut log: TableInfo,
+        next_purge_unix_seconds: Option<i64>,
+    ) -> Result<DdlMetadataChange, kv::errors::SharedError> {
+        let database = database.to_ascii_lowercase();
+        let base_name = base_name.to_ascii_lowercase();
+        self.mutate_with_kv(store, move |catalog, transaction| {
+            let purge_info = catalog.tables.get(&("mysql".to_owned(), "tidb_mlog_purge_info".to_owned()))
+                .cloned().ok_or_else(|| kv::errors::New("create materialized view log: required system table mysql.tidb_mlog_purge_info does not exist"))?;
+            if !purge_info.PKIsHandle {
+                return Err(kv::errors::New("MLog purge info requires an integer primary key"));
+            }
+            let base_key = (database.clone(), base_name.clone());
+            let old_base = catalog.tables.get(&base_key).cloned().ok_or_else(|| {
+                kv::errors::New(format!("base table {database}.{base_name} does not exist"))
+            })?;
+            if old_base
+                .MaterializedViewBase
+                .as_ref()
+                .is_some_and(|info| info.MLogID != 0)
+            {
+                return Err(kv::errors::New("materialized view log already exists"));
+            }
+            let log_key = (database.clone(), log.Name.L.clone());
+            if catalog.tables.contains_key(&log_key) {
+                return Err(kv::errors::New(format!(
+                    "table {}.{} already exists",
+                    log_key.0, log_key.1
+                )));
+            }
+            log.DBID = old_base.DBID;
+            assign_table_physical_ids(catalog, &mut log);
+            if let Some(info) = log.MaterializedViewLog.as_mut() {
+                info.BaseTableID = old_base.ID;
+            }
+            let mut base = old_base.clone();
+            base.MaterializedViewBase
+                .get_or_insert_with(Default::default)
+                .MLogID = log.ID;
+            let mut values = Vec::with_capacity(purge_info.Columns.len());
+            let mut ids = Vec::with_capacity(purge_info.Columns.len());
+            for column in &purge_info.Columns {
+                let value = match column.Name.L.as_str() {
+                    "mlog_id" => astersql_types::datum::NewIntDatum(log.ID),
+                    "next_purge_unix_seconds" => next_purge_unix_seconds
+                        .map(astersql_types::datum::NewIntDatum).unwrap_or_default(),
+                    _ => astersql_types::datum::Datum::default(),
+                };
+                values.push(value);
+                ids.push(column.ID);
+            }
+            let encoded = astersql_tablecodec::EncodeRow(
+                Some(astersql_tablecodec::time::UTC),
+                values, ids, Vec::new(), None, None,
+                astersql_tablecodec::rowcodec::Encoder::new(true),
+            ).map_err(|error| kv::errors::New(error.to_string()))?;
+            let record_key = astersql_tablecodec::EncodeRowKeyWithHandle(
+                purge_info.ID,
+                Box::new(astersql_tablecodec::kv::IntHandle(log.ID)),
+            );
+            transaction.Set(kv::Key(record_key.0), encoded)?;
+            catalog.tables.insert(base_key, base.clone());
+            catalog.tables.insert(log_key, log.clone());
+            Ok(DdlMetadataChange {
+                old_tables: vec![(database.clone(), old_base)],
+                new_tables: vec![(database.clone(), base), (database, log)],
                 changed: true,
                 ..DdlMetadataChange::default()
             })
@@ -1295,15 +1389,54 @@ impl DdlMetadataService {
     }
 }
 
-fn tidb_string_key(key: &[u8]) -> kv::Key {
+pub(super) fn tidb_string_key(key: &[u8]) -> kv::Key {
     let encoded = astersql_util_codec::EncodeBytes(b"m".to_vec(), key);
     kv::Key(astersql_util_codec::EncodeUint(encoded, b's' as u64))
 }
 
-fn tidb_hash_key(key: &[u8], field: &[u8]) -> kv::Key {
+pub(super) fn tidb_hash_key(key: &[u8], field: &[u8]) -> kv::Key {
     let encoded = astersql_util_codec::EncodeBytes(b"m".to_vec(), key);
     let encoded = astersql_util_codec::EncodeUint(encoded, b'h' as u64);
     kv::Key(astersql_util_codec::EncodeBytes(encoded, field))
+}
+
+fn tidb_hash_prefix(key: &[u8]) -> kv::Key {
+    let encoded = astersql_util_codec::EncodeBytes(b"m".to_vec(), key);
+    kv::Key(astersql_util_codec::EncodeUint(encoded, b'h' as u64))
+}
+
+fn read_tidb_string(
+    retriever: &dyn kv::Retriever,
+    key: &[u8],
+) -> Result<Option<Vec<u8>>, kv::errors::SharedError> {
+    match retriever.Get(&kv::Context::default(), tidb_string_key(key), &[]) {
+        Ok(value) => Ok(Some(value.Value)),
+        Err(error) if kv::IsErrNotFound(&error) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn scan_tidb_hash(
+    retriever: &dyn kv::Retriever,
+    key: &[u8],
+) -> Result<Vec<(Vec<u8>, Vec<u8>)>, kv::errors::SharedError> {
+    let prefix = tidb_hash_prefix(key);
+    let mut iterator = retriever.Iter(prefix.clone(), Some(prefix.PrefixNext()))?;
+    let mut values = Vec::new();
+    let result = (|| {
+        while iterator.Valid() {
+            let encoded_key = iterator.Key();
+            let (_, field) =
+                astersql_util_codec::DecodeBytes(&encoded_key.0[prefix.0.len()..], None)
+                    .map_err(|error| kv::errors::New(error.to_string()))?;
+            values.push((field, iterator.Value()));
+            iterator.Next()?;
+        }
+        Ok::<(), kv::errors::SharedError>(())
+    })();
+    iterator.Close();
+    result?;
+    Ok(values)
 }
 
 fn publish_tidb_schema_metadata(
@@ -1483,15 +1616,66 @@ impl InfoSchemaLoader for KvInfoSchemaLoader {
 
 /// 从 KV 读取并解码 DDL 目录；键不存在时返回空目录。
 fn read_catalog(retriever: &dyn kv::Retriever) -> Result<MetadataCatalog, kv::errors::SharedError> {
-    match retriever.Get(
+    let private_catalog = match retriever.Get(
         &kv::Context::default(),
         kv::Key(DDL_CATALOG_KEY.to_vec()),
         &[],
     ) {
-        Ok(value) => decode_catalog(&value.Value),
-        Err(error) if kv::IsErrNotFound(&error) => Ok(MetadataCatalog::default()),
-        Err(error) => Err(error),
+        Ok(value) => Some(decode_catalog(&value.Value)?),
+        Err(error) if kv::IsErrNotFound(&error) => None,
+        Err(error) => return Err(error),
+    };
+    let schema_version = read_tidb_string(retriever, b"SchemaVersionKey")?
+        .map(|value| {
+            std::str::from_utf8(&value)
+                .map_err(|error| kv::errors::New(error.to_string()))?
+                .parse::<i64>()
+                .map_err(|error| kv::errors::New(error.to_string()))
+        })
+        .transpose()?
+        .unwrap_or(0);
+    let next_id = read_tidb_string(retriever, b"NextGlobalID")?
+        .map(|value| {
+            std::str::from_utf8(&value)
+                .map_err(|error| kv::errors::New(error.to_string()))?
+                .parse::<i64>()
+                .map_err(|error| kv::errors::New(error.to_string()))
+        })
+        .transpose()?
+        .unwrap_or(0);
+    if private_catalog
+        .as_ref()
+        .is_some_and(|catalog| catalog.version >= schema_version)
+    {
+        let mut catalog = private_catalog.expect("catalog checked above");
+        catalog.next_id = catalog.next_id.max(next_id);
+        return Ok(catalog);
     }
+    let mut catalog = MetadataCatalog {
+        version: schema_version,
+        next_id,
+        ..MetadataCatalog::default()
+    };
+    for (field, value) in scan_tidb_hash(retriever, b"DBs")? {
+        if !field.starts_with(b"DB:") {
+            continue;
+        }
+        let database = DecodeDBInfo(&value).map_err(kv::errors::New)?;
+        let name = database.Name.L.clone();
+        for (table_field, table_value) in
+            scan_tidb_hash(retriever, format!("DB:{}", database.ID).as_bytes())?
+        {
+            if !table_field.starts_with(b"Table:") {
+                continue;
+            }
+            let table = DecodeTableInfo(&table_value).map_err(kv::errors::New)?;
+            catalog
+                .tables
+                .insert((name.clone(), table.Name.L.clone()), table);
+        }
+        catalog.databases.insert(name, database);
+    }
+    Ok(catalog)
 }
 
 /// 将 MetadataCatalog 转为 infoschema 运行时结构。

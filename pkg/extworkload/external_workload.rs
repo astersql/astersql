@@ -31,7 +31,7 @@ pub type ManagerError = Box<dyn std::error::Error + Send + Sync>;
 /// 所有带 Context 的方法都保留调用方取消和超时的传递位置。
 // Manager 对应 Go 同名接口，协调 TiDB 后台工作负载与外部工作负载控制器。
 // 所有带 Context 的方法都保留调用方取消和超时的传递位置。
-pub trait Manager {
+pub trait Manager: Send {
     /// 释放控制器客户端及管理器持有的资源。
     // Close 释放控制器客户端及管理器持有的资源。
     fn Close(&mut self) -> Result<(), ManagerError>;

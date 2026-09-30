@@ -72,6 +72,15 @@ fn runtime_leases_keep_go_defaults_and_round_trip() {
 }
 
 #[test]
+fn go_merge_43_plan_replayer_file_retention_tracks_runtime_changes() {
+    let original = GetPlanReplayerFileRetentionTime();
+    assert_eq!(original, Duration::from_secs(7 * 24 * 60 * 60));
+    SetPlanReplayerFileRetentionTime(Duration::from_secs(60));
+    assert_eq!(GetPlanReplayerFileRetentionTime(), Duration::from_secs(60));
+    SetPlanReplayerFileRetentionTime(original);
+}
+
+#[test]
 /// 验证 NextGen 只读变量列表及大小写不敏感匹配；无关名称应返回 false。
 fn next_gen_read_only_variables_match_go_case_insensitively() {
     for name in [

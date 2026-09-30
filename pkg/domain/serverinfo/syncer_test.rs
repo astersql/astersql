@@ -17,6 +17,7 @@
 //
 // 通过内存 etcd 与全局 `ServerConfig` 隔离锁，验证与 Go `TestTopology` 等对齐的行为。
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::{
@@ -44,6 +45,129 @@ fn with_config<T>(config: ServerConfig, body: impl FnOnce() -> T) -> T {
         Ok(value) => value,
         Err(payload) => std::panic::resume_unwind(payload),
     }
+}
+
+#[test]
+fn go_merge_43_status_endpoint_claim_respects_syncer_option() {
+    with_config(ServerConfig::default(), || {
+        let client = Arc::new(MemoryEtcdClient::default());
+        let mut primary = crate::NewSyncerWithOptions(
+            "primary".into(),
+            Arc::new(|| 1),
+            Some(client.clone()),
+            Arc::new(NoopMinStartTSReporter),
+            &[],
+        );
+        primary
+            .NewSessionAndStoreServerInfo(Context::Background())
+            .unwrap();
+        assert!(
+            client
+                .Snapshot()
+                .keys()
+                .any(|key| key.starts_with("/tidb/server/status_addr/"))
+        );
+        let mut bootstrap = crate::NewSyncerWithOptions(
+            "bootstrap".into(),
+            Arc::new(|| 2),
+            Some(client.clone()),
+            Arc::new(NoopMinStartTSReporter),
+            &[crate::SyncerOption::WithoutStatusEndpointClaim],
+        );
+        bootstrap
+            .NewSessionAndStoreServerInfo(Context::Background())
+            .unwrap();
+        assert_eq!(
+            client
+                .Snapshot()
+                .keys()
+                .filter(|key| key.starts_with("/tidb/server/status_addr/"))
+                .count(),
+            1
+        );
+        let mut conflict = NewSyncer(
+            "conflict".into(),
+            Arc::new(|| 3),
+            Some(client.clone()),
+            Arc::new(NoopMinStartTSReporter),
+        );
+        conflict
+            .NewSessionAndStoreServerInfo(Context::Background())
+            .unwrap();
+        assert_eq!(
+            client
+                .Snapshot()
+                .values()
+                .find(|item| item.key.starts_with("/tidb/server/status_addr/"))
+                .unwrap()
+                .value,
+            b"primary"
+        );
+        conflict.RemoveServerInfo();
+        assert!(
+            client
+                .Snapshot()
+                .keys()
+                .any(|key| key.starts_with("/tidb/server/status_addr/"))
+        );
+        primary.RemoveServerInfo();
+        assert!(
+            !client
+                .Snapshot()
+                .keys()
+                .any(|key| key.starts_with("/tidb/server/status_addr/"))
+        );
+    });
+}
+
+#[test]
+fn go_merge_43_failed_server_info_store_revokes_new_session() {
+    struct FailingPutEtcd {
+        inner: MemoryEtcdClient,
+        revoked: AtomicUsize,
+    }
+    impl EtcdClient for FailingPutEtcd {
+        fn Get(
+            &self,
+            context: &Context,
+            key: &str,
+            prefix: bool,
+        ) -> Result<Vec<crate::KeyValue>, SyncError> {
+            self.inner.Get(context, key, prefix)
+        }
+        fn Put(&self, _: &Context, _: &str, _: Vec<u8>, _: Option<i64>) -> Result<(), SyncError> {
+            Err(SyncError("store failed".into()))
+        }
+        fn Delete(&self, context: &Context, key: &str) -> Result<(), SyncError> {
+            self.inner.Delete(context, key)
+        }
+        fn DeletePrefix(&self, context: &Context, prefix: &str) -> Result<(), SyncError> {
+            self.inner.DeletePrefix(context, prefix)
+        }
+        fn RevokeLease(&self, context: &Context, lease: i64) -> Result<(), SyncError> {
+            self.revoked.fetch_add(1, Ordering::SeqCst);
+            self.inner.RevokeLease(context, lease)
+        }
+    }
+
+    let etcd = Arc::new(FailingPutEtcd {
+        inner: MemoryEtcdClient::default(),
+        revoked: AtomicUsize::new(0),
+    });
+    let mut syncer = NewCrossKSSyncer(
+        "virtual-server".into(),
+        Arc::new(|| 0),
+        Some(etcd.clone()),
+        Arc::new(NoopMinStartTSReporter),
+        "tenant-a".into(),
+    );
+    assert!(
+        syncer
+            .NewSessionAndStoreServerInfo(Context::Background())
+            .is_err()
+    );
+    assert!(syncer.session.as_ref().unwrap().Done());
+    assert_eq!(etcd.revoked.load(Ordering::SeqCst), 1);
 }
 
 impl Syncer {
@@ -311,6 +435,7 @@ fn test_assumed_server_info_syncer() {
             assert!(info.StaticInfo.IsAssumed());
             assert_eq!(info.StaticInfo.AssumedKeyspace, "ks1");
             assert_eq!(info.StaticInfo.Keyspace, "SYSTEM");
+            assert!(syncer.statusEndpointClaimKey.is_none());
         },
     );
 }

@@ -29,6 +29,24 @@
 
 mod admin;
 mod control;
+pub mod crossks_job_submit;
+#[cfg(test)]
+mod crossks_job_submit_test;
+pub mod crossks_owner;
+#[cfg(test)]
+mod crossks_owner_test;
+pub mod crossks_runtime;
+#[cfg(test)]
+mod crossks_runtime_test;
+pub mod crossks_schema;
+#[cfg(test)]
+mod crossks_schema_test;
+pub mod crossks_session_pool;
+#[cfg(test)]
+mod crossks_session_pool_test;
+pub mod crossks_store;
+#[cfg(test)]
+mod crossks_store_test;
 mod ddl;
 mod ddl_index_validation;
 mod dispatch;
@@ -43,6 +61,11 @@ mod import_file;
 mod import_sst;
 pub use import_sst::NewImportLocalBackend;
 mod load_data;
+mod mlog;
+mod mlog_purge;
+pub(crate) use mlog_purge::purge_mlog_snapshot_batch;
+pub(crate) use mlog_purge::run_mlog_purge_tick;
+mod mview_ddl;
 pub use import_file::{ImportFileSubtask, ImportFileTask};
 mod planning;
 mod query;
@@ -50,6 +73,7 @@ mod query;
 mod query_binary_test;
 mod recovery;
 mod relational_scan;
+pub(crate) use relational_scan::scan_mlog_record_commit_ts;
 mod relational_value;
 pub(crate) use relational_value::{relational_compare, relational_window_value};
 mod row_codec;
@@ -61,10 +85,26 @@ mod scan_adapter_runtime_test;
 mod select_into;
 mod session;
 use session::RuntimeForeignKeyDeleteCascade;
+#[cfg(test)]
+mod inference_test;
 mod source;
 mod statistics;
 pub(crate) mod system_query;
 mod transaction;
+pub mod ttl_metadata;
+#[cfg(test)]
+mod ttl_metadata_test;
+pub mod ttl_runtime;
+#[cfg(test)]
+mod ttl_runtime_test;
+#[cfg(test)]
+mod ttl_sysvar_test;
+mod ttl_timer;
+#[cfg(test)]
+mod ttl_timer_test;
+pub mod ttl_worker_session;
+#[cfg(test)]
+mod ttl_worker_session_test;
 mod typed_adapter_bridge;
 mod typed_analyze_executor;
 mod typed_dml_executor;
@@ -77,6 +117,7 @@ pub(super) use dml::*;
 use explain_analyze::*;
 use explain_query::*;
 use explain_select::*;
+use mlog::RuntimeMLog;
 pub use planning::PlannedKVResult;
 pub(crate) use planning::{
     SessionDomainDataSourceProvider, SessionKVDataSourceProvider, SessionStatsSyncLoadAdapter,

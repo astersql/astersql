@@ -690,23 +690,184 @@ pub struct CanonicalSessionFactory {
 }
 
 impl CanonicalSessionFactory {
-    /// Build the production session boundary from the exact `TikvStore` clone
-    /// exposed by the store registry. This constructor never opens PD/TiKV.
-    pub fn from_tikv_store(store: astersql_store::TikvStore) -> SessionResult<Self> {
+    /// Load an already bootstrapped target keyspace without registering a
+    /// primary server or modifying that keyspace's schema during construction.
+    pub(crate) fn from_crossks_tikv_store(store: astersql_store::TikvStore) -> SessionResult<Self> {
         let mut config = DomainConfig::default();
         config.keyspace = store.GetKeyspace();
         let factory = Self::from_storage(store, config)?;
-        BootstrapCanonicalDomain(Arc::clone(&factory.domain))?;
-        factory
-            .domain
-            .start(StartMode::Normal)
-            .map_err(|error| session_error("start canonical Domain", error))?;
+        for table in ["tidb_ddl_job", "tidb_ddl_history"] {
+            if let Err(error) = factory.domain.table_by_name("mysql", table) {
+                factory.domain.close();
+                return Err(SessionError::new(format!(
+                    "target keyspace is not bootstrapped: mysql.{table}: {error}"
+                )));
+            }
+        }
+        Ok(factory)
+    }
+
+    /// Build the production session boundary from the exact `TikvStore` clone
+    /// exposed by the store registry. This constructor never opens PD/TiKV.
+    pub fn from_tikv_store(store: astersql_store::TikvStore) -> SessionResult<Self> {
+        Self::from_tikv_store_with_server_info_options(store, &[])
+    }
+
+    /// Build the serving Domain and pass server-info Syncer options through
+    /// its production initialization chain.
+    pub fn from_tikv_store_with_server_info_options(
+        store: astersql_store::TikvStore,
+        options: &[astersql_domain_serverinfo::SyncerOption],
+    ) -> SessionResult<Self> {
+        let etcd_addrs = if store.has_real_client_runtime() {
+            store
+                .EtcdAddrs()
+                .map_err(|error| session_error("read etcd endpoints", error))?
+        } else {
+            Vec::new()
+        };
+        let tls = store.TLSConfig();
+        let pd_addrs = if store.has_real_client_runtime() && astersql_config_kerneltype::IsNextGen()
+        {
+            store
+                .GetPDAddrs()
+                .map_err(|error| session_error("read cross-keyspace PD endpoints", error))?
+        } else {
+            Vec::new()
+        };
+        let etcd_namespace = if etcd_addrs.is_empty() {
+            String::new()
+        } else {
+            store
+                .etcd_namespace()
+                .map_err(|error| session_error("resolve Domain etcd namespace", error))?
+        };
+        let mut config = DomainConfig::default();
+        config.keyspace = store.GetKeyspace();
+        let keyspace_name = config.keyspace.clone();
+        let factory = Self::from_storage(store, config)?;
+        let workload_config = astersql_config::get_global_config()
+            .external_workload
+            .clone();
+        if astersql_config_deploymode::IsStarter() && workload_config.Enable {
+            let keyspace_id = etcd_namespace
+                .rsplit_once('/')
+                .and_then(|(_, id)| id.parse::<u32>().ok());
+            if let Some(id) = keyspace_id {
+                let meta = astersql_extworkload::keyspacepb::KeyspaceMeta {
+                    id,
+                    name: keyspace_name.clone(),
+                };
+                let options = astersql_extworkload::config::ExternalWorkload {
+                    Enable: true,
+                    Role: workload_config.Role.clone(),
+                    TidbPool: workload_config.TidbPool.clone(),
+                    ControllerAddr: workload_config.ControllerAddr.clone(),
+                };
+                let controller_tls = tls.as_ref().map(|tls| {
+                    (
+                        tls.ca_path.as_str(),
+                        tls.cert_path.as_str(),
+                        tls.key_path.as_str(),
+                    )
+                });
+                match astersql_extworkload::NewManagerWithTLS(
+                    &astersql_extworkload::context::Background(),
+                    Some(&meta),
+                    options,
+                    controller_tls,
+                ) {
+                    Ok(manager) => factory.domain.set_external_workload_manager(manager),
+                    Err(error) => {
+                        if workload_config.Role == astersql_extworkload::config::RoleGCV2Worker {
+                            factory.domain.close();
+                            return Err(SessionError::new(format!(
+                                "initialize external workload GCV2 manager: {error}"
+                            )));
+                        }
+                        BgLogger().log(
+                            LogLevel::Error,
+                            "initialize external workload manager failed",
+                            [LogField::String("error".to_owned(), error.to_string())],
+                        );
+                    }
+                }
+            } else if workload_config.Role == astersql_extworkload::config::RoleGCV2Worker {
+                factory.domain.close();
+                return Err(SessionError::new(
+                    "external workload GCV2 role requires keyspace metadata",
+                ));
+            }
+        }
+        if !etcd_addrs.is_empty() {
+            let tls_files = tls.as_ref().map(|tls| {
+                (
+                    tls.ca_path.as_str(),
+                    tls.cert_path.as_str(),
+                    tls.key_path.as_str(),
+                )
+            });
+            let client =
+                astersql_domain_serverinfo::RealEtcdClient::connect(etcd_addrs.clone(), tls_files)
+                    .map_err(|error| session_error("connect Domain server-info etcd", error))?
+                    .with_namespace(etcd_namespace);
+            let id = format!(
+                "{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            );
+            factory
+                .domain
+                .install_server_info_syncer(id, Arc::new(client), options)
+                .map_err(|error| {
+                    factory.domain.close();
+                    session_error("register Domain server info", error)
+                })?;
+        }
+        if !pd_addrs.is_empty() && !etcd_addrs.is_empty() {
+            let tls_files = tls.as_ref().map(|tls| {
+                (
+                    tls.ca_path.clone(),
+                    tls.cert_path.clone(),
+                    tls.key_path.clone(),
+                )
+            });
+            Arc::new(
+                super::crossks_runtime::CrossKSProductionRuntimeFactory::new(
+                    pd_addrs,
+                    etcd_addrs.clone(),
+                    tls_files,
+                ),
+            )
+            .install_on_domain(&factory.domain, keyspace_name);
+        }
+        if let Err(error) = BootstrapCanonicalDomain(Arc::clone(&factory.domain)) {
+            factory.domain.close();
+            return Err(error);
+        }
+        if let Err(error) = factory.domain.start(StartMode::Normal) {
+            factory.domain.close();
+            return Err(session_error("start canonical Domain", error));
+        }
         if let Err(error) = factory.domain.initialize_stats() {
             BgLogger().log(
                 LogLevel::Error,
                 "initialize statistics failed",
                 [LogField::String("error".to_owned(), error.to_string())],
             );
+        }
+        if let Err(error) = super::ttl_runtime::start_domain_ttl_job_manager(&factory.domain) {
+            factory.domain.close();
+            return Err(SessionError::new(format!("start TTL job manager: {error}")));
+        }
+        if let Err(error) = super::mlog_purge::start_domain_mlog_purge_worker(&factory.domain) {
+            factory.domain.close();
+            return Err(SessionError::new(format!(
+                "start MLog purge worker: {error}"
+            )));
         }
         Ok(factory)
     }
@@ -1354,6 +1515,18 @@ fn ensure_canonical_ddl_system_tables(
         (
             "tidb_ddl_notifier",
             astersql_meta_metadef::CreateTiDBDDLNotifierTable,
+        ),
+        (
+            "tidb_mlog_purge_info",
+            astersql_meta_metadef::CreateTiDBMLogPurgeInfoTable,
+        ),
+        (
+            "tidb_mview_refresh_info",
+            astersql_meta_metadef::CreateTiDBMViewRefreshInfoTable,
+        ),
+        (
+            "tidb_mlog_purge_hist",
+            astersql_meta_metadef::CreateTiDBMLogPurgeHistTable,
         ),
     ] {
         if domain.stats_table("mysql", name).is_none() {

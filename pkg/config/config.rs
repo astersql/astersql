@@ -1053,6 +1053,13 @@ pub struct Config {
     pub deploy_mode: DeployMode,
     pub starter_params: StarterParams,
     pub hosted_embedding: HostedEmbedding,
+    /// AutoScaler cluster identity used by hosted embedding billing.
+    #[serde(
+        default,
+        rename = "autoscaler-cluster-id",
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub auto_scaler_cluster_id: String,
     pub enable_storage_class: bool,
     /// DXF（分布式执行框架）资源占比限制。
     pub dxf_resource_limit: i64,
@@ -1148,6 +1155,7 @@ impl Default for Config {
             deploy_mode: DeployMode::Premium,
             starter_params: StarterParams::default(),
             hosted_embedding: HostedEmbedding::default(),
+            auto_scaler_cluster_id: String::new(),
             enable_storage_class: false,
             dxf_resource_limit: DEF_DXF_RESOURCE_LIMIT,
             keyspace_name: String::new(),

@@ -29,8 +29,138 @@ use crate::conn::{
     ResponseLifecycle, SessionDriver, TiDBContext, Value,
 };
 use crate::runtime::{
-    BootstrapAuthMode, CanonicalConnectionDomain, ConcreteSessionDriver, TcpPacketIo,
+    BootstrapAuthMode, CanonicalConnectionDomain, CanonicalServerDomain, ConcreteSessionDriver,
+    TcpPacketIo,
 };
+
+#[test]
+fn go_merge_43_canonical_server_domain_serves_extract_archive() {
+    use crate::server::Domain as _;
+    use astersql_server_handler_extractorhandler::extractor::{
+        ExtractTask, ExtractType, RequestContext, Timestamp,
+    };
+    use astersql_util_stmtsummary::{StmtExecInfo, StmtExecLazyInfo, StmtSummaryByDigestMap};
+    struct SampleSql;
+    impl StmtExecLazyInfo for SampleSql {
+        fn GetOriginalSQL(&self) -> String {
+            "SELECT id FROM extract_runtime_sample".into()
+        }
+        fn GetEncodedPlan(&self) -> (String, String, Option<String>) {
+            (String::new(), String::new(), None)
+        }
+        fn GetBinaryPlan(&self) -> String {
+            String::new()
+        }
+        fn GetPlanDigest(&self) -> String {
+            "extract-runtime-plan".into()
+        }
+        fn GetBindingSQLAndDigest(&self) -> (String, String) {
+            (String::new(), String::new())
+        }
+    }
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let sql = astersql_session::runtime::ConcreteSession::new(Arc::clone(&domain));
+    sql.execute("CREATE TABLE extract_runtime_sample (id INT PRIMARY KEY)")
+        .unwrap();
+    let mut statement = StmtExecInfo {
+        SchemaName: "test".into(),
+        Digest: "extract-runtime-digest".into(),
+        PlanDigest: "extract-runtime-plan".into(),
+        StartTime: std::time::SystemTime::now(),
+        LazyInfo: Box::new(SampleSql),
+        ..StmtExecInfo::default()
+    };
+    statement.StmtCtx.StmtType = "Select".into();
+    statement
+        .StmtCtx
+        .SetLogicalPlanTables(vec![astersql_sessionctx_stmtctx::TableEntry {
+            DB: "test".into(),
+            Table: "extract_runtime_sample".into(),
+        }]);
+    StmtSummaryByDigestMap
+        .lock()
+        .unwrap()
+        .AddStatement(&statement);
+    let runtime = CanonicalServerDomain::new(Arc::clone(&domain))
+        .extract_runtime()
+        .expect("production Extract runtime");
+    let name = runtime
+        .extract_task(
+            &RequestContext::default(),
+            ExtractTask {
+                extract_type: ExtractType::Plan,
+                is_background_job: false,
+                begin: Timestamp(0),
+                end: Timestamp(i64::MAX / 2),
+                skip_stats: false,
+                use_history_view: false,
+            },
+        )
+        .unwrap();
+    let path = format!("{}/{name}", runtime.extract_task_directory());
+    let mut reader = runtime
+        .open_extract(&RequestContext::default(), &path)
+        .unwrap();
+    let mut archive = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let count = reader.read(&mut buffer).unwrap();
+        if count == 0 {
+            break;
+        }
+        archive.extend_from_slice(&buffer[..count]);
+    }
+    reader.close().unwrap();
+    let package = astersql_domain::plan_replayer_dump::decode_replay_archive(&archive).unwrap();
+    assert!(package.files.contains_key("extract_meta.txt"));
+    assert_eq!(
+        package.files["extract_meta.txt"],
+        b"SkipStats = \"false\"\ntaskType = \"Plan\"\n"
+    );
+    assert!(package.files.contains_key("schema/schema_meta.txt"));
+    assert!(package.files.contains_key("variables.toml"));
+    let config = std::str::from_utf8(&package.files["config.toml"]).unwrap();
+    let config: toml::Value = toml::from_str(config).unwrap();
+    assert!(config.get("store").is_some());
+    assert!(
+        package
+            .files
+            .contains_key("schema/test.extract_runtime_sample.schema.txt")
+    );
+    assert!(
+        package
+            .files
+            .contains_key("SQLs/extract-runtime-digest.json")
+    );
+    assert!(
+        package
+            .files
+            .contains_key("stats/test.extract_runtime_sample.json")
+    );
+    assert_eq!(
+        runtime
+            .extract_task(
+                &RequestContext::default(),
+                ExtractTask {
+                    extract_type: ExtractType::Plan,
+                    is_background_job: true,
+                    begin: Timestamp(0),
+                    end: Timestamp(i64::MAX / 2),
+                    skip_stats: true,
+                    use_history_view: false,
+                },
+            )
+            .unwrap(),
+        ""
+    );
+    let context = astersql_planner_extstore::Context::background();
+    astersql_planner_extstore::GetGlobalExtStorage(&context)
+        .unwrap()
+        .DeleteFile(&context, &path)
+        .unwrap();
+    StmtSummaryByDigestMap.lock().unwrap().Clear();
+    domain.close();
+}
 
 /// 创建一对已经建立连接的回环 TCP 流，分别模拟客户端和服务端。
 fn tcp_pair() -> (TcpStream, TcpStream) {

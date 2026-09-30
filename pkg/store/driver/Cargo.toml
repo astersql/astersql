@@ -13,7 +13,7 @@ astersql-kv = { package = "astersql-kv", path = "../../kv" }
 astersql-store-copr = { package = "astersql-store-copr", path = "../copr" }
 astersql-store-driver-txn = { package = "astersql-store-driver-txn", path = "txn" }
 thiserror = "2"
-tikv-client = { version = "=0.4.2", git = "ssh://git@github.com/astersql/client-rust.git", tag = "v0.4.2-aster.1", default-features = false }
+tikv-client = { version = "=0.4.2", git = "ssh://git@github.com/astersql/client-rust.git", tag = "v0.4.2-aster.2", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 url = "2"
 tonic = { version = "0.12", features = ["tls"] }

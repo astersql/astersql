@@ -5616,10 +5616,28 @@ impl ConcreteSession {
                     }
                     self.state.borrow_mut().redact_log = mode;
                 }
+                astersql_sessionctx_vardef::TiDBMLogPurgeBatchSize
+                | astersql_sessionctx_vardef::TiDBMLogPurgeMinRate
+                | astersql_sessionctx_vardef::TiDBMLogPurgeRateBudgetRatio
+                | astersql_sessionctx_vardef::TiDBMLogPurgeDeleteTiFlashThreads => {
+                    self.session_vars
+                        .SetHintSystemVarWithOldState(&name, value.trim_matches(['\'', '"']))
+                        .map_err(|error| session_error("set MLog purge system variable", error))?;
+                }
                 _ => {}
             }
             if is_global {
                 let raw_value = value.trim_matches(['\'', '"']);
+                if name == astersql_sessionctx_vardef::TiDBTTLJobEnable {
+                    let enabled = astersql_sessionctx_variable::TiDBOptOn(raw_value);
+                    self.domain
+                        .update_external_workload_ttl_job_enable(
+                            &astersql_extworkload::context::Background(),
+                            enabled,
+                        )
+                        .map_err(SessionError::new)?;
+                    astersql_sessionctx_vardef::EnableTTLJob.Store(enabled);
+                }
                 let global_value = astersql_sessionctx_variable::GetSysVar(&name).map_or_else(
                     || raw_value.to_owned(),
                     |variable| {

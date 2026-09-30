@@ -15,6 +15,10 @@ go-package = "pkg/session"
 legacy-tasks = ["task-1257", "task-1258", "task-1261", "task-1267", "task-1268"]
 
 [dependencies]
+"astersql-extworkload" = { package = "astersql-extworkload", path = "../extworkload" }
+"astersql-ttl-ttlworker" = { package = "astersql-ttl-ttlworker", path = "../ttl/ttlworker" }
+"astersql-ttl-cache" = { package = "astersql-ttl-cache", path = "../ttl/cache" }
+"astersql-parser-duration" = { package = "astersql-parser-duration", path = "../parser/duration" }
 astersql-dxf-framework-taskexecutor-execute = { path = "../dxf/framework/taskexecutor/execute" }
 astersql-lightning-backend = { path = "../lightning/backend" }
 astersql-lightning-backend-encode = { path = "../lightning/backend/encode" }
@@ -34,6 +38,15 @@ crc32fast = "1"
 "astersql-ddl-util" = { package = "astersql-ddl-util", path = "../ddl/util" }
 "astersql-distsql-context" = { package = "astersql-distsql-context", path = "../distsql/context" }
 "astersql-domain" = { package = "astersql-domain", path = "../domain" }
+"astersql-domain-crossks" = { package = "astersql-domain-crossks", path = "../domain/crossks" }
+"astersql-ddl-jobsubmit" = { package = "astersql-ddl-jobsubmit", path = "../ddl/jobsubmit" }
+"astersql-ddl-systable" = { package = "astersql-ddl-systable", path = "../ddl/systable" }
+"astersql-ddl-bdr" = { package = "astersql-ddl-bdr", path = "../ddl/bdr" }
+"astersql-store-driver" = { package = "astersql-store-driver", path = "../store/driver" }
+"astersql-store-copr" = { package = "astersql-store-copr", path = "../store/copr" }
+url = "2"
+"astersql-domain-serverinfo" = { package = "astersql-domain-serverinfo", path = "../domain/serverinfo" }
+"astersql-inference" = { package = "astersql-inference", path = "../inference" }
 "astersql-domain-infosync" = { package = "astersql-domain-infosync", path = "../domain/infosync" }
 "astersql-domain-sqlsvrapi" = { package = "astersql-domain-sqlsvrapi", path = "../domain/sqlsvrapi" }
 "astersql-dxf-framework-proto" = { package = "astersql-dxf-framework-proto", path = "../dxf/framework/proto" }
@@ -67,6 +80,7 @@ crc32fast = "1"
 "astersql-meta-model" = { package = "astersql-meta-model", path = "../meta/model" }
 "astersql-metrics" = { package = "astersql-metrics", path = "../metrics" }
 "astersql-owner" = { package = "astersql-owner", path = "../owner" }
+tokio = { version = "1", features = ["rt-multi-thread"] }
 "astersql-objstore" = { package = "astersql-objstore", path = "../objstore" }
 "astersql-objstore-compressedio" = { package = "astersql-objstore-compressedio", path = "../objstore/compressedio" }
 "astersql-param" = { package = "astersql-param", path = "../param" }
@@ -161,9 +175,9 @@ astersql-util-metricsutil = { path = "../util/metricsutil" }
 "astersql-util-topsql-state" = { package = "astersql-util-topsql-state", path = "../util/topsql/state" }
 "astersql-util-topsql-stmtstats" = { package = "astersql-util-topsql-stmtstats", path = "../util/topsql/stmtstats" }
 "astersql-util-stmtsummary" = { package = "astersql-util-stmtsummary", path = "../util/stmtsummary" }
+"astersql-util-stmtsummary-v2" = { package = "astersql-util-stmtsummary-v2", path = "../util/stmtsummary/v2" }
 "astersql-util-traceevent" = { package = "astersql-util-traceevent", path = "../util/traceevent" }
 "astersql-util-tracing" = { package = "astersql-util-tracing", path = "../util/tracing" }
-"astersql-util-stmtsummary-v2" = { package = "astersql-util-stmtsummary-v2", path = "../util/stmtsummary/v2" }
 chrono = "0.4"
 chrono-tz = "0.10"
 protobuf = "=2.8.0"

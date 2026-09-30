@@ -549,7 +549,7 @@ mod mpp_2_aster_unit_test;
 
 /// test_fixtures 收敛测试专用的最小 Storage/Transaction/Retriever 实现，
 /// 对应 Go 测试文件里散落定义的 mockTxn/mockStorage/mockSnapshot/mockMap。
-#[cfg(test)]
+#[cfg(any(test, feature = "test-fixtures"))]
 pub mod test_fixtures {
     use crate::*;
     use std::any::Any;
@@ -579,9 +579,10 @@ pub mod test_fixtures {
 
     impl oracle::Oracle for NullOracle {}
 
-    /// MockTxn 对应 Go `mockTxn`：Commit 始终返回可重试错误，其余读写为空操作。
+    /// MockTxn 对应 Go `mockTxn`：Commit 始终返回可重试错误；本地写集合用于事务回归。
     pub struct MockTxn {
         opts: HashMap<i32, Box<dyn Any>>,
+        writes: HashMap<Key, Vec<u8>>,
         valid: bool,
         startTs: u64,
         checkpoint: tikv::MemDBCheckpoint,
@@ -591,6 +592,7 @@ pub mod test_fixtures {
         fn default() -> Self {
             Self {
                 opts: HashMap::new(),
+                writes: HashMap::new(),
                 valid: true,
                 startTs: 0,
                 checkpoint: tikv::MemDBCheckpoint::default(),
@@ -599,6 +601,10 @@ pub mod test_fixtures {
     }
 
     impl MockTxn {
+        /// Pending KV mutations visible to transaction-focused tests.
+        pub fn pending_writes(&self) -> &HashMap<Key, Vec<u8>> {
+            &self.writes
+        }
         /// with_start_ts 对应 Go 测试里通过 tikv.WithStartTS 间接设置的起始时间戳。
         pub fn with_start_ts(startTs: u64) -> Self {
             Self {
@@ -638,10 +644,12 @@ pub mod test_fixtures {
     }
 
     impl Mutator for MockTxn {
-        fn Set(&mut self, _k: Key, _v: Vec<u8>) -> Result<(), Error> {
+        fn Set(&mut self, k: Key, v: Vec<u8>) -> Result<(), Error> {
+            self.writes.insert(k, v);
             Ok(())
         }
-        fn Delete(&mut self, _k: Key) -> Result<(), Error> {
+        fn Delete(&mut self, k: Key) -> Result<(), Error> {
+            self.writes.remove(&k);
             Ok(())
         }
     }
@@ -686,6 +694,7 @@ pub mod test_fixtures {
         }
         fn Rollback(&mut self) -> Result<(), Error> {
             self.valid = false;
+            self.writes.clear();
             Ok(())
         }
         fn String(&self) -> String {

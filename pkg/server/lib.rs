@@ -21,6 +21,7 @@ pub mod driver_tidb;
 pub mod extension;
 /// 从数据包中抽取字段/结果集辅助。
 pub mod extract;
+mod extract_runtime;
 /// HTTP 管理/诊断 handler。
 pub mod http_handler;
 /// HTTP status 端口与健康检查。

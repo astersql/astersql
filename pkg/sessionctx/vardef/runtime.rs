@@ -1,5 +1,5 @@
-// Copyright 2025 PingCAP, Inc.
 // Copyright 2026 AsterSQL.
+// Copyright 2025 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -31,6 +31,8 @@ use std::time::Duration;
 static SCHEMA_LEASE: AtomicI64 = AtomicI64::new(1_000_000_000);
 static STATS_LEASE: AtomicI64 = AtomicI64::new(3_000_000_000);
 static PLAN_REPLAYER_GC_LEASE: AtomicI64 = AtomicI64::new(600_000_000_000);
+static PLAN_REPLAYER_FILE_RETENTION_TIME: AtomicI64 =
+    AtomicI64::new(7 * 24 * 60 * 60 * 1_000_000_000);
 
 // SetSchemaLease 修改 DDL 默认 schema lease；Go 明确警告该函数危险，不能随意调用。
 /// 设置 DDL 默认 schema lease（危险：影响全局 schema 变更等待时间）。
@@ -64,6 +66,16 @@ pub fn SetPlanReplayerGCLease(lease: Duration) {
 /// 原子读取当前 plan replayer GC lease。
 pub fn GetPlanReplayerGCLease() -> Duration {
     Duration::from_nanos(PLAN_REPLAYER_GC_LEASE.load(Ordering::SeqCst) as u64)
+}
+
+/// Set the retention duration for non-capture plan replayer files.
+pub fn SetPlanReplayerFileRetentionTime(duration: Duration) {
+    PLAN_REPLAYER_FILE_RETENTION_TIME.store(duration.as_nanos() as i64, Ordering::SeqCst);
+}
+
+/// Read the retention duration used by Domain dump-file GC.
+pub fn GetPlanReplayerFileRetentionTime() -> Duration {
+    Duration::from_nanos(PLAN_REPLAYER_FILE_RETENTION_TIME.load(Ordering::SeqCst) as u64)
 }
 
 // IsReadOnlyVarInNextGen 对变量名做不区分大小写的判断；Go 的 strings.ToLower 与 switch 语义在此显式保留。

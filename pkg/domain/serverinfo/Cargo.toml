@@ -12,3 +12,7 @@ go-package = "pkg/domain/serverinfo"
 legacy-tasks = ["task-761", "task-773"]
 
 [dependencies]
+base64 = "0.22"
+astersql-config = { path = "../../config" }
+etcd-client = { version = "0.19", features = ["tls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }

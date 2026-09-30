@@ -102,6 +102,9 @@ legacy-tasks = ["task-1286", "task-1287", "task-1288", "task-1289", "task-1293",
 "astersql-util-sqlkiller" = { package = "astersql-util-sqlkiller", path = "../util/sqlkiller" }
 "astersql-util-sys-linux" = { package = "astersql-util-sys-linux", path = "../util/sys/linux" }
 "astersql-util-timeutil" = { package = "astersql-util-timeutil", path = "../util/timeutil" }
+"astersql-util-stmtsummary" = { package = "astersql-util-stmtsummary", path = "../util/stmtsummary" }
+chrono = "0.4"
+toml = "0.8"
 "astersql-util-tls" = { package = "astersql-util-tls", path = "../util/tls" }
 "astersql-util-topsql" = { package = "astersql-util-topsql", path = "../util/topsql" }
 "astersql-util-topsql-state" = { package = "astersql-util-topsql-state", path = "../util/topsql/state" }

@@ -17,6 +17,9 @@ lane = 0
 name = "astersql-cmd-tidb-server"
 path = "bin_main.rs"
 
+[features]
+nextgen = ["astersql-session/nextgen", "astersql-store/nextgen"]
+
 # Local stubs continue to cover server/session/domain/config/signal/metrics.
 # The production TiKV storage path is linked to the canonical store registry.
 [dependencies]

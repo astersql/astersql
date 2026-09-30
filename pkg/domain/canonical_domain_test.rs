@@ -30,6 +30,426 @@ use astersql_kv as kv;
 use super::domain::CrossKeyspaceCoordinator;
 use super::{Domain, DomainConfig, InfoSchemaLoader, LoadedInfoSchema};
 
+#[test]
+fn go_merge_43_loader_reads_go_meta_without_private_catalog() {
+    let storage = astersql_store_mockstore_mockstorage::NewMockStorage(
+        astersql_store_mockstore_mockstorage::KVStore::NewMemoryWithWallClockTSO(),
+        None,
+    )
+    .unwrap();
+    let database = astersql_meta_model::DBInfo {
+        ID: 101,
+        Name: astersql_parser_ast::NewCIStr("go_target"),
+        ..Default::default()
+    };
+    let table = astersql_meta_model::TableInfo {
+        ID: 102,
+        DBID: database.ID,
+        Name: astersql_parser_ast::NewCIStr("items"),
+        ..Default::default()
+    };
+    let mut transaction = storage.Begin(&[]).unwrap();
+    transaction.Set(
+        super::canonical_domain::tidb_string_key(b"SchemaVersionKey").0,
+        b"1".to_vec(),
+    );
+    transaction.Set(
+        super::canonical_domain::tidb_string_key(b"NextGlobalID").0,
+        b"102".to_vec(),
+    );
+    transaction.Set(
+        super::canonical_domain::tidb_hash_key(b"DBs", b"DB:101").0,
+        astersql_meta_model::EncodeDBInfo(&database).unwrap(),
+    );
+    transaction.Set(
+        super::canonical_domain::tidb_hash_key(b"DB:101", b"Table:102").0,
+        astersql_meta_model::EncodeTableInfo(&table).unwrap(),
+    );
+    transaction.Set(
+        super::canonical_domain::tidb_hash_key(b"DB:101", b"TID:102").0,
+        b"4".to_vec(),
+    );
+    transaction.Commit().unwrap();
+    let loader = super::canonical_domain::KvInfoSchemaLoader::new();
+    let loaded = loader.load_info_schema(storage.as_ref(), "target").unwrap();
+    assert_eq!(loaded.schema.SchemaMetaVersion(), 1);
+    assert!(
+        loaded
+            .schema
+            .TableByName(
+                &infoschema::CiString::new("go_target"),
+                &infoschema::CiString::new("items"),
+            )
+            .is_ok()
+    );
+    super::canonical_domain::DdlMetadataService::new()
+        .set_table_mode(
+            storage.as_ref(),
+            "go_target",
+            "items",
+            astersql_meta_model::TableMode::TableModeImport,
+        )
+        .unwrap();
+    let reloaded = loader.load_info_schema(storage.as_ref(), "target").unwrap();
+    assert_eq!(reloaded.schema.SchemaMetaVersion(), 2);
+    let table = reloaded
+        .schema
+        .TableByName(
+            &infoschema::CiString::new("go_target"),
+            &infoschema::CiString::new("items"),
+        )
+        .unwrap();
+    assert_eq!(
+        table.Meta().model_meta.as_ref().unwrap().Mode,
+        astersql_meta_model::TableMode::TableModeImport
+    );
+}
+
+struct GoMerge43ExternalManager {
+    role: String,
+    updated: Arc<Mutex<Vec<bool>>>,
+    ttl_events: Arc<Mutex<Vec<(String, i64, bool)>>>,
+}
+
+impl astersql_extworkload::Manager for GoMerge43ExternalManager {
+    fn Close(&mut self) -> Result<(), astersql_extworkload::ManagerError> {
+        Ok(())
+    }
+    fn Role(&self) -> String {
+        self.role.clone()
+    }
+    fn Meta(&self) -> Option<&astersql_extworkload::keyspacepb::KeyspaceMeta> {
+        None
+    }
+    fn InitializeGCV2(
+        &mut self,
+        _: &astersql_extworkload::context::Context,
+    ) -> Result<(), astersql_extworkload::ManagerError> {
+        Ok(())
+    }
+    fn AbortGCV2(
+        &mut self,
+        _: &astersql_extworkload::context::Context,
+    ) -> Result<(), astersql_extworkload::ManagerError> {
+        Ok(())
+    }
+    fn RegisterGCV2(
+        &mut self,
+        _: &astersql_extworkload::context::Context,
+        _: u64,
+        _: i64,
+    ) -> Result<(), astersql_extworkload::ManagerError> {
+        Ok(())
+    }
+    fn RecycleGCV2(
+        &mut self,
+        _: &astersql_extworkload::context::Context,
+        _: u64,
+    ) -> Result<(), astersql_extworkload::ManagerError> {
+        Ok(())
+    }
+    fn UpdateGCLifeTime(
+        &mut self,
+        _: &astersql_extworkload::context::Context,
+        _: i64,
+    ) -> Result<(), astersql_extworkload::ManagerError> {
+        Ok(())
+    }
+    fn RegisterTTLTask(
+        &mut self,
+        _: &astersql_extworkload::context::Context,
+        table_id: i64,
+        enabled: bool,
+    ) -> Result<(), astersql_extworkload::ManagerError> {
+        self.ttl_events
+            .lock()
+            .unwrap()
+            .push(("register".into(), table_id, enabled));
+        Ok(())
+    }
+    fn DeleteTTLTableInfo(
+        &mut self,
+        _: &astersql_extworkload::context::Context,
+        table_id: i64,
+    ) -> Result<(), astersql_extworkload::ManagerError> {
+        self.ttl_events
+            .lock()
+            .unwrap()
+            .push(("delete".into(), table_id, false));
+        Ok(())
+    }
+    fn RecycleTTLTask(
+        &mut self,
+        _: &astersql_extworkload::context::Context,
+        _: u64,
+    ) -> Result<(), astersql_extworkload::ManagerError> {
+        Ok(())
+    }
+    fn UpdateTTLJobEnable(
+        &mut self,
+        _: &astersql_extworkload::context::Context,
+        enabled: bool,
+    ) -> Result<(), astersql_extworkload::ManagerError> {
+        self.updated.lock().unwrap().push(enabled);
+        Ok(())
+    }
+    fn RegisterAutoAnalyze(
+        &mut self,
+        _: &astersql_extworkload::context::Context,
+        _: u64,
+    ) -> Result<(), astersql_extworkload::ManagerError> {
+        Ok(())
+    }
+    fn RecycleAutoAnalyze(
+        &mut self,
+        _: &astersql_extworkload::context::Context,
+        _: u64,
+    ) -> Result<(), astersql_extworkload::ManagerError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn go_merge_43_external_workload_role_gates_ttl_and_master_updates() {
+    let domain = Domain::new(
+        TestStorage::new(),
+        Arc::new(TestSchemaLoader::new(1)),
+        DomainConfig::default(),
+    );
+    let updated = Arc::new(Mutex::new(Vec::new()));
+    let ttl_events = Arc::new(Mutex::new(Vec::new()));
+    let context = astersql_extworkload::context::Background();
+
+    domain.set_external_workload_manager(Some(Box::new(GoMerge43ExternalManager {
+        role: astersql_config::RoleMaster.into(),
+        updated: Arc::clone(&updated),
+        ttl_events: Arc::clone(&ttl_events),
+    })));
+    assert!(!domain.should_start_ttl_job_manager());
+    domain
+        .update_external_workload_ttl_job_enable(&context, false)
+        .unwrap();
+    assert_eq!(*updated.lock().unwrap(), [false]);
+
+    domain.set_external_workload_manager(Some(Box::new(GoMerge43ExternalManager {
+        role: astersql_config::RoleTTLTaskWorker.into(),
+        updated: Arc::clone(&updated),
+        ttl_events: Arc::clone(&ttl_events),
+    })));
+    assert!(domain.should_start_ttl_job_manager());
+    domain
+        .update_external_workload_ttl_job_enable(&context, true)
+        .unwrap();
+    assert_eq!(*updated.lock().unwrap(), [false]);
+}
+
+#[test]
+fn go_merge_43_ddl_registers_and_deletes_ttl_table_with_external_manager() {
+    let storage = Arc::try_unwrap(
+        astersql_store_mockstore_mockstorage::NewMockStorage(
+            astersql_store_mockstore_mockstorage::KVStore::NewMemoryWithWallClockTSO(),
+            None,
+        )
+        .unwrap(),
+    )
+    .unwrap_or_else(|_| panic!("mock storage has another owner"));
+    let domain = Domain::new(
+        storage,
+        Arc::new(TestSchemaLoader::new(1)),
+        DomainConfig::default(),
+    );
+    domain.init().unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    domain.set_external_workload_manager(Some(Box::new(GoMerge43ExternalManager {
+        role: astersql_config::RoleMaster.into(),
+        updated: Arc::new(Mutex::new(Vec::new())),
+        ttl_events: Arc::clone(&events),
+    })));
+    let table = astersql_meta_model::TableInfo {
+        Name: astersql_parser_ast::NewCIStr("external_ttl"),
+        TTLInfo: Some(astersql_meta_model::TTLInfo {
+            ColumnName: astersql_parser_ast::NewCIStr("expire_at"),
+            IntervalExprStr: "1".into(),
+            IntervalTimeUnit: astersql_parser_ast::TimeUnitType::Day as i32,
+            Enable: true,
+            JobInterval: "24h".into(),
+        }),
+        ..Default::default()
+    };
+    let created = domain.ddl_create_table("test", table, false).unwrap();
+    assert_eq!(
+        *events.lock().unwrap(),
+        vec![(
+            "register".to_owned(),
+            created.ID,
+            astersql_sessionctx_vardef::EnableTTLJob.Load(),
+        )]
+    );
+    domain
+        .ddl_drop_tables(vec![("test".into(), "external_ttl".into())], false)
+        .unwrap();
+    assert_eq!(
+        events.lock().unwrap()[1],
+        ("delete".into(), created.ID, false)
+    );
+}
+
+#[test]
+fn go_merge_43_domain_passes_server_info_option_and_cleans_registration() {
+    let domain = Domain::new(
+        TestStorage::new(),
+        Arc::new(TestSchemaLoader::new(1)),
+        DomainConfig::default(),
+    );
+    domain.init().unwrap();
+    let etcd = Arc::new(astersql_domain_serverinfo::MemoryEtcdClient::default());
+    domain
+        .install_server_info_syncer(
+            "bootstrap".into(),
+            etcd.clone(),
+            &[astersql_domain_serverinfo::SyncerOption::WithoutStatusEndpointClaim],
+        )
+        .unwrap();
+    let keys = etcd.Snapshot();
+    assert!(keys.contains_key("/tidb/server/info/bootstrap"));
+    assert!(keys.keys().any(|key| key.starts_with("/topology/tidb/")));
+    assert!(
+        !keys
+            .keys()
+            .any(|key| key.starts_with("/tidb/server/status_addr/"))
+    );
+    domain.start(super::domain::StartMode::Normal).unwrap();
+    domain.close();
+    let keys = etcd.Snapshot();
+    assert!(!keys.contains_key("/tidb/server/info/bootstrap"));
+    assert!(!keys.keys().any(|key| key.starts_with("/topology/tidb/")));
+}
+
+struct GoMerge43UnavailableCrossKSFactory;
+
+impl astersql_domain_crossks::RuntimeFactory for GoMerge43UnavailableCrossKSFactory {
+    fn create(
+        &self,
+        _: &str,
+    ) -> Result<Arc<astersql_domain_crossks::SessionManager>, astersql_domain_crossks::ManagerError>
+    {
+        Err(astersql_domain_crossks::ManagerError(
+            "runtime unavailable".into(),
+        ))
+    }
+}
+
+#[test]
+fn go_merge_43_domain_closes_installed_cross_ks_manager() {
+    let domain = Domain::new(
+        TestStorage::new(),
+        Arc::new(TestSchemaLoader::new(1)),
+        DomainConfig::default(),
+    );
+    let manager = astersql_domain_crossks::new_manager(
+        false,
+        "SYSTEM",
+        Arc::new(GoMerge43UnavailableCrossKSFactory),
+    );
+    domain.install_cross_ks_manager(manager.clone());
+    assert!(domain.cross_ks_manager().is_some());
+    domain.close();
+    assert!(manager.get_or_create("tenant").is_err());
+    assert!(domain.cross_ks_manager().is_none());
+}
+
+#[test]
+fn go_merge_43_domain_owns_inference_provider_lifecycle() {
+    let domain = Domain::new(
+        TestStorage::new(),
+        Arc::new(TestSchemaLoader::new(1)),
+        DomainConfig::default(),
+    );
+    assert!(domain.get_embed_fn().is_none());
+    domain.init().unwrap();
+    domain.start(crate::domain::StartMode::Normal).unwrap();
+    let embed_fn = domain
+        .get_embed_fn()
+        .expect("provider initialized on start");
+    assert!(embed_fn.has_embedder("openai"));
+    assert!(embed_fn.has_embedder("jina_ai"));
+    assert!(embed_fn.has_embedder("cohere"));
+    assert!(embed_fn.has_embedder("huggingface"));
+    assert!(embed_fn.has_embedder("nvidia_nim"));
+    assert!(embed_fn.has_embedder("gemini"));
+    assert!(
+        embed_fn
+            .embed("openai/model", "text", &Default::default(), &|| false)
+            .unwrap_err()
+            .contains("API key is not configured")
+    );
+    domain.set_global_system_variable("tidb_exp_embed_openai_api_key", "test-key");
+    domain.set_global_system_variable("tidb_exp_embed_openai_api_base", "invalid-url");
+    assert!(
+        embed_fn
+            .embed("openai/model", "text", &Default::default(), &|| false)
+            .unwrap_err()
+            .contains("invalid OpenAI API base URL")
+    );
+    assert_eq!(
+        embed_fn
+            .embed("mock/json", "[1,2]", &Default::default(), &|| false)
+            .unwrap(),
+        [1.0, 2.0]
+    );
+    domain.close();
+    assert!(domain.get_embed_fn().is_none());
+    assert!(
+        embed_fn
+            .embed("mock/json", "[1]", &Default::default(), &|| false)
+            .is_err()
+    );
+}
+
+#[test]
+fn go_merge_43_hosted_embedding_registration_requires_starter_and_enabled() {
+    let mut config = astersql_config::new_config();
+    assert!(!super::domain::hosted_embedding_enabled(&config, true));
+    config.hosted_embedding.enabled = true;
+    assert!(!super::domain::hosted_embedding_enabled(&config, false));
+    assert!(super::domain::hosted_embedding_enabled(&config, true));
+    config.auto_scaler_cluster_id = "tenant-1".into();
+    assert_eq!(config.auto_scaler_cluster_id, "tenant-1");
+}
+
+#[test]
+fn go_merge_43_ttl_does_not_start_with_config_but_no_controller() {
+    struct Restore(Arc<astersql_config::Config>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            astersql_config::store_global_config((*self.0).clone());
+        }
+    }
+    let _restore = Restore(astersql_config::get_global_config());
+    let domain = Domain::new(
+        TestStorage::new(),
+        Arc::new(TestSchemaLoader::new(1)),
+        DomainConfig::default(),
+    );
+    astersql_config::update_global(|config| {
+        config.external_workload.Enable = false;
+    });
+    assert!(domain.should_start_ttl_job_manager());
+    astersql_config::update_global(|config| {
+        config.external_workload.Enable = true;
+        config.external_workload.Role.clear();
+    });
+    assert_eq!(
+        domain.ttl_external_workload_role(),
+        (astersql_config::RoleMaster.into(), true)
+    );
+    assert!(!domain.should_start_ttl_job_manager());
+    astersql_config::update_global(|config| {
+        config.external_workload.Role = astersql_config::RoleTTLTaskWorker.into();
+    });
+    assert!(!domain.should_start_ttl_job_manager());
+}
+
 /// 可配置版本号并记录观测到的 Storage UUID 的 InfoSchemaLoader。
 struct TestSchemaLoader {
     version: AtomicI64,

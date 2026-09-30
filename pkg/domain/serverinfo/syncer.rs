@@ -25,6 +25,8 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, mpsc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use base64::Engine;
+
 use crate::info::*;
 
 #[derive(Clone)]
@@ -90,6 +92,10 @@ pub struct KeyValue {
 
 /// Syncer 依赖的 etcd 客户端抽象（Get/Put/Delete）。
 pub trait EtcdClient: Send + Sync {
+    /// Grant a lease used by the server-info session.
+    fn GrantLease(&self, _context: &Context, _ttl: i32) -> Result<i64, SyncError> {
+        Ok(NEXT_LEASE_ID.fetch_add(1, Ordering::SeqCst))
+    }
     /// 按精确键或前缀读取。
     fn Get(&self, context: &Context, key: &str, prefix: bool) -> Result<Vec<KeyValue>, SyncError>;
     /// 写入键值，可选绑定 lease。
@@ -104,6 +110,32 @@ pub trait EtcdClient: Send + Sync {
     fn Delete(&self, context: &Context, key: &str) -> Result<(), SyncError>;
     /// 删除前缀下全部键。
     fn DeletePrefix(&self, context: &Context, prefix: &str) -> Result<(), SyncError>;
+    /// Revoke a lease and remove all keys attached to it.
+    fn RevokeLease(&self, context: &Context, lease: i64) -> Result<(), SyncError>;
+    /// Atomically replace a key only when its value and lease match the observation.
+    fn CompareAndPut(
+        &self,
+        _context: &Context,
+        _key: &str,
+        _expected: Option<(&[u8], Option<i64>)>,
+        _value: Vec<u8>,
+        _lease: i64,
+    ) -> Result<bool, SyncError> {
+        Err(SyncError(
+            "atomic etcd compare-and-put is unavailable".into(),
+        ))
+    }
+    /// Remove a claim only when it still has this server ID and lease.
+    fn CompareAndDelete(
+        &self,
+        _context: &Context,
+        _key: &str,
+        _expected: (&[u8], i64),
+    ) -> Result<bool, SyncError> {
+        Err(SyncError(
+            "atomic etcd compare-and-delete is unavailable".into(),
+        ))
+    }
 }
 
 #[derive(Default)]
@@ -187,6 +219,68 @@ impl EtcdClient for MemoryEtcdClient {
             .retain(|key, _| !key.starts_with(prefix));
         Ok(())
     }
+
+    fn RevokeLease(&self, context: &Context, lease: i64) -> Result<(), SyncError> {
+        if context.Done() {
+            return Err(SyncError("context cancelled".into()));
+        }
+        self.values
+            .lock()
+            .expect("etcd lock poisoned")
+            .retain(|_, value| value.lease != Some(lease));
+        Ok(())
+    }
+
+    fn CompareAndPut(
+        &self,
+        context: &Context,
+        key: &str,
+        expected: Option<(&[u8], Option<i64>)>,
+        value: Vec<u8>,
+        lease: i64,
+    ) -> Result<bool, SyncError> {
+        if context.Done() {
+            return Err(SyncError("context cancelled".into()));
+        }
+        let mut values = self.values.lock().expect("etcd lock poisoned");
+        let matches = match (values.get(key), expected) {
+            (None, None) => true,
+            (Some(current), Some((value, lease))) => {
+                current.value == value && current.lease == lease
+            }
+            _ => false,
+        };
+        if matches {
+            values.insert(
+                key.into(),
+                KeyValue {
+                    key: key.into(),
+                    value,
+                    lease: Some(lease),
+                },
+            );
+        }
+        Ok(matches)
+    }
+
+    fn CompareAndDelete(
+        &self,
+        context: &Context,
+        key: &str,
+        expected: (&[u8], i64),
+    ) -> Result<bool, SyncError> {
+        if context.Done() {
+            return Err(SyncError("context cancelled".into()));
+        }
+        let mut values = self.values.lock().expect("etcd lock poisoned");
+        let matches = values.get(key).is_some_and(|current| {
+            current.value == expected.0 && current.lease == Some(expected.1)
+        });
+        if matches {
+            values.remove(key);
+        }
+        Ok(matches)
+    }
 }
 
 static NEXT_LEASE_ID: AtomicI64 = AtomicI64::new(1);
@@ -202,8 +296,12 @@ pub struct Session {
 impl Session {
     /// 分配新的 lease_id 并记录 TTL。
     pub fn New(ttl: i32) -> Self {
+        Self::WithLease(ttl, NEXT_LEASE_ID.fetch_add(1, Ordering::SeqCst))
+    }
+    /// Bind the session to a lease granted by the actual etcd client.
+    pub fn WithLease(ttl: i32, lease_id: i64) -> Self {
         Self {
-            lease_id: NEXT_LEASE_ID.fetch_add(1, Ordering::SeqCst),
+            lease_id,
             ttl,
             done: Arc::new(AtomicBool::new(false)),
         }
@@ -310,6 +408,15 @@ pub struct Syncer {
     pub session: Option<Session>,
     /// 拓扑 ttl 写入所用 session。
     pub topologySession: Option<Session>,
+    /// Key for the advertised status endpoint claim, if enabled.
+    pub statusEndpointClaimKey: Option<String>,
+}
+
+/// Construction option for the serving or temporary Domain's server-info syncer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SyncerOption {
+    /// Temporary global-variable Domains must not claim the serving endpoint.
+    WithoutStatusEndpointClaim,
 }
 
 /// 由节点 ID 拼出 ServerInfo etcd 键。
@@ -324,7 +431,25 @@ pub fn NewSyncer(
     etcd_client: Option<Arc<dyn EtcdClient>>,
     reporter: Arc<dyn MinStartTSReporter>,
 ) -> Box<Syncer> {
-    newSyncer(uuid, server_id_getter, etcd_client, reporter, String::new())
+    NewSyncerWithOptions(uuid, server_id_getter, etcd_client, reporter, &[])
+}
+
+/// Construct a syncer with explicit status-endpoint claim options.
+pub fn NewSyncerWithOptions(
+    uuid: String,
+    server_id_getter: Arc<dyn Fn() -> u64 + Send + Sync>,
+    etcd_client: Option<Arc<dyn EtcdClient>>,
+    reporter: Arc<dyn MinStartTSReporter>,
+    options: &[SyncerOption],
+) -> Box<Syncer> {
+    newSyncer(
+        uuid,
+        server_id_getter,
+        etcd_client,
+        reporter,
+        String::new(),
+        options,
+    )
 }
 
 /// 创建跨 keyspace（cross-KS）Syncer，写入假定目标 keyspace。
@@ -341,6 +466,7 @@ pub fn NewCrossKSSyncer(
         etcd_client,
         reporter,
         target_keyspace,
+        &[],
     )
 }
 
@@ -351,22 +477,87 @@ fn newSyncer(
     etcd_client: Option<Arc<dyn EtcdClient>>,
     reporter: Arc<dyn MinStartTSReporter>,
     assumed_keyspace: String,
+    options: &[SyncerOption],
 ) -> Box<Syncer> {
+    let info = *getServerInfo(uuid.clone(), server_id_getter, assumed_keyspace);
+    let claim_enabled = astersql_config::get_global_config().status.report_status
+        && !options.contains(&SyncerOption::WithoutStatusEndpointClaim)
+        && !info.StaticInfo.IsAssumed();
+    let statusEndpointClaimKey = if claim_enabled {
+        let raw_host = info.StaticInfo.IP.trim();
+        let host = raw_host
+            .parse::<std::net::IpAddr>()
+            .map(|address| address.to_string())
+            .unwrap_or_else(|_| raw_host.trim_end_matches('.').to_lowercase());
+        if host.is_empty() {
+            None
+        } else {
+            let host = if host.contains(':') {
+                format!("[{host}]")
+            } else {
+                host
+            };
+            let port = if info.StaticInfo.StatusPort == 0 {
+                astersql_config::DEF_STATUS_PORT as u32
+            } else {
+                info.StaticInfo.StatusPort
+            };
+            let endpoint = format!("{host}:{port}");
+            Some(format!(
+                "/tidb/server/status_addr/{}",
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(endpoint.as_bytes())
+            ))
+        }
+    } else {
+        None
+    };
     Box::new(Syncer {
         serverInfoPath: serverInfoKeyPath(&uuid),
         etcdCli: etcd_client,
         reporter,
-        info: Arc::new(RwLock::new(*getServerInfo(
-            uuid,
-            server_id_getter,
-            assumed_keyspace,
-        ))),
+        info: Arc::new(RwLock::new(info)),
         session: None,
         topologySession: None,
+        statusEndpointClaimKey,
     })
 }
 
 impl Syncer {
+    fn tryClaimStatusEndpoint(&self, context: &Context) {
+        let (Some(client), Some(key), Some(session)) =
+            (&self.etcdCli, &self.statusEndpointClaimKey, &self.session)
+        else {
+            return;
+        };
+        let id = self
+            .info
+            .read()
+            .expect("server info lock poisoned")
+            .StaticInfo
+            .ID
+            .clone();
+        let lease = session.Lease();
+        match client.CompareAndPut(context, key, None, id.as_bytes().to_vec(), lease) {
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(_) => return,
+        }
+        let Ok(observed) = client.Get(context, key, false) else {
+            return;
+        };
+        if let Some(existing) = observed.first()
+            && existing.value == id.as_bytes()
+        {
+            let _ = client.CompareAndPut(
+                context,
+                key,
+                Some((&existing.value, existing.lease)),
+                id.into_bytes(),
+                lease,
+            );
+        }
+    }
+
     /// 清理陈旧登记后新建 session，并把本节点 ServerInfo 写入 etcd。
     pub fn NewSessionAndStoreServerInfo(&mut self, context: Context) -> Result<(), SyncError> {
         if self.etcdCli.is_none() {
@@ -374,8 +565,18 @@ impl Syncer {
         }
         // 先清同地址陈旧节点，再建立 session 并落盘。
         self.cleanupStaleServerAndOwnerInfo(context.clone());
-        self.session = Some(Session::New(45));
-        self.StoreServerInfo(context)
+        let lease = self
+            .etcdCli
+            .as_ref()
+            .expect("etcd checked above")
+            .GrantLease(&context, 45)?;
+        self.session = Some(Session::WithLease(45, lease));
+        self.tryClaimStatusEndpoint(&context);
+        if let Err(error) = self.StoreServerInfo(context) {
+            self.RevokeSession();
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// 将本地 ServerInfo Marshal 后 Put 到 etcd（绑定 session lease）。
@@ -561,8 +762,40 @@ impl Syncer {
     /// 从 etcd 删除本节点 ServerInfo 键。
     pub fn RemoveServerInfo(&self) {
         if let Some(client) = &self.etcdCli {
+            if let (Some(key), Some(session)) = (&self.statusEndpointClaimKey, &self.session) {
+                let info = self.info.read().expect("server info lock poisoned");
+                let _ = client.CompareAndDelete(
+                    &Context::Background(),
+                    key,
+                    (info.StaticInfo.ID.as_bytes(), session.Lease()),
+                );
+            }
             let _ = client.Delete(&Context::Background(), &self.serverInfoPath);
         }
+    }
+
+    /// Stop the server-info session and revoke every key bound to its lease.
+    pub fn RevokeSession(&self) {
+        let (Some(client), Some(session)) = (&self.etcdCli, &self.session) else {
+            return;
+        };
+        session.Close();
+        let _ = client.RevokeLease(
+            &Context::Background().WithTimeout(KeyOpDefaultTimeout),
+            session.Lease(),
+        );
+    }
+
+    /// Revoke the topology aliveness key when its owner shuts down.
+    pub fn RevokeTopologySession(&self) {
+        let (Some(client), Some(session)) = (&self.etcdCli, &self.topologySession) else {
+            return;
+        };
+        session.Close();
+        let _ = client.RevokeLease(
+            &Context::Background().WithTimeout(KeyOpDefaultTimeout),
+            session.Lease(),
+        );
     }
 
     /// 后台循环：session 失效则重启，并按间隔上报 min start TS。
@@ -597,7 +830,12 @@ impl Syncer {
         if self.etcdCli.is_none() {
             return Ok(());
         }
-        self.topologySession = Some(Session::New(TopologySessionTTL));
+        let lease = self
+            .etcdCli
+            .as_ref()
+            .expect("etcd checked above")
+            .GrantLease(&context, TopologySessionTTL)?;
+        self.topologySession = Some(Session::WithLease(TopologySessionTTL, lease));
         self.StoreTopologyInfo(context)
     }
 

@@ -741,6 +741,15 @@ pub struct SSTImportStats {
 }
 
 pub trait Storage {
+    /// Return TiKV Region boundaries for TTL record keys. Non-Region stores
+    /// return `None`, which schedules one full-table scan range.
+    fn TTLRegionRanges(
+        &self,
+        _start: &[u8],
+        _end: &[u8],
+    ) -> Result<Option<Vec<(Vec<u8>, Vec<u8>)>>, errors::SharedError> {
+        Ok(None)
+    }
     /// Publish a TiFlash learner placement rule for a physical table. Stores
     /// without PD (for example the in-memory test store) have no rule target.
     fn PublishTiFlashPlacementRule(

@@ -2,8 +2,32 @@
 
 use crate::extract::{
     ExtractHandle, ExtractPlanPackage, ExtractSource, ExtractTask, ExtractType, StatementRecord,
-    TableNamePair,
+    TableNamePair, view_dependencies_from_sql,
 };
+
+#[test]
+fn go_merge_43_extract_walks_nested_view_ast() {
+    let tables = view_dependencies_from_sql(
+        "CREATE VIEW test.v AS SELECT a.id FROM test.a AS a WHERE EXISTS (SELECT 1 FROM b WHERE b.id = a.id)",
+        "test",
+    )
+    .unwrap();
+    assert_eq!(
+        tables,
+        vec![
+            TableNamePair {
+                database: "test".into(),
+                table: "a".into(),
+                is_view: false
+            },
+            TableNamePair {
+                database: "test".into(),
+                table: "b".into(),
+                is_view: false
+            },
+        ]
+    );
+}
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 

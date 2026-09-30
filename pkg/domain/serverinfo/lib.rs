@@ -16,10 +16,12 @@
 
 /// ServerInfo / TopologyInfo 类型与编解码。
 mod info;
+mod real_etcd;
 /// Syncer：向 etcd 写入/查询服务器与拓扑信息。
 mod syncer;
 
 pub use info::*;
+pub use real_etcd::*;
 pub use syncer::*;
 
 /// ServerInfo JSON、克隆与 Go 行为一致性单测。

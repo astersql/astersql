@@ -493,6 +493,7 @@ fn real_client_rust_mvcc_commit_rollback_and_snapshot() {
     )
     .expect("new snapshot must see committed value");
     assert_eq!(committed.Value, b"committed-value");
+    assert_eq!(committed.CommitTs, optimistic.CommitTS());
 
     // 回滚写入在新快照与最终范围扫描中都必须保持不可见。
     let mut rolled_back = kv::Storage::Begin(&store, &[]).expect("rollback transaction must begin");

@@ -11,6 +11,7 @@ path = "lib.rs"
 # Match Go: Classic by default, NextGen only when explicitly selected.
 default = []
 nextgen = ["kerneltype/nextgen", "keyspace/nextgen"]
+test-fixtures = []
 
 [dependencies]
 codec-dependency = { package = "astersql-util-codec", path = "../util/codec" }

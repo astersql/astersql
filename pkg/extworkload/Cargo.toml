@@ -7,6 +7,11 @@ publish.workspace = true
 [lib]
 path = "lib.rs"
 
+[dependencies]
+astersql-extworkload-client = { path = "client" }
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+tonic = { version = "0.12", features = ["transport", "tls"] }
+
 [package.metadata.porting]
 go-package = "pkg/extworkload"
 legacy-tasks = ["task-277", "task-304", "task-324"]

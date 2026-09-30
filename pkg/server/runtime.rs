@@ -410,6 +410,7 @@ pub struct CanonicalConnectionDomain {
 pub struct CanonicalServerDomain {
     domain: Arc<Domain>,
     start_timestamp: i64,
+    extract_runtime: Arc<crate::extract_runtime::CanonicalExtractRuntime>,
 }
 
 impl CanonicalServerDomain {
@@ -419,6 +420,9 @@ impl CanonicalServerDomain {
             .unwrap_or_default()
             .as_secs() as i64;
         Self {
+            extract_runtime: Arc::new(crate::extract_runtime::CanonicalExtractRuntime::new(
+                Arc::clone(&domain),
+            )),
             domain,
             start_timestamp,
         }
@@ -430,6 +434,12 @@ impl CanonicalServerDomain {
 }
 
 impl ServerDomain for CanonicalServerDomain {
+    fn extract_runtime(
+        &self,
+    ) -> Option<Arc<dyn astersql_server_handler_extractorhandler::extractor::ExtractRuntime>> {
+        Some(self.extract_runtime.clone())
+    }
+
     fn schema_snapshot(&self) -> Option<astersql_infoschema::SchemaRef> {
         Some(self.domain.info_schema())
     }

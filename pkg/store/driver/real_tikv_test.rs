@@ -278,6 +278,7 @@ fn real_tikv_client_rust_end_to_end() {
     let committed_value = kv::Getter::Get(new_snapshot.as_ref(), &ctx, kv::Key(committed_key), &[])
         .expect("snapshot after commit must see the value");
     assert_eq!(committed_value.Value, b"committed-value");
+    assert_eq!(committed_value.CommitTs, committed.CommitTS());
 
     // 回滚路径使用独立键，确保未提交写入不会泄漏到后续快照。
     let mut rolled_back = kv::Storage::Begin(&store, &[]).expect("rollback transaction must begin");

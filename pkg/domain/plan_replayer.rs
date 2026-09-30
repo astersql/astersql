@@ -719,6 +719,21 @@ impl DumpFileGcChecker {
         }
     }
 
+    /// Run the Domain GC pass with the current sysvar retention for ordinary
+    /// files and the fixed seven-day capture retention used by Go.
+    pub fn gc_with_current_retention<S: DumpFileStore>(
+        &self,
+        store: &S,
+        now: SystemTime,
+    ) -> Result<Vec<String>, String> {
+        self.gc(
+            store,
+            now,
+            astersql_sessionctx_vardef::GetPlanReplayerFileRetentionTime(),
+            Duration::from_secs(7 * 24 * 60 * 60),
+        )
+    }
+
     /// 按默认租约与 capture 租约删除过期文件。
     ///
     /// capture 类文件通常保留更久；删除 replayer 文件时同步清理 status。

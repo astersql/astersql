@@ -710,6 +710,112 @@ pub trait ExtractSource: Send + Sync {
     fn persistent_statement_summary_enabled(&self) -> bool;
 }
 
+struct TableDependencyVisitor {
+    default_schema: String,
+    tables: BTreeSet<TableNamePair>,
+}
+
+impl astersql_parser_ast::InPlaceVisitor for TableDependencyVisitor {
+    fn enter(&mut self, _input: &mut dyn astersql_parser_ast::Node) -> bool {
+        false
+    }
+
+    fn leave(&mut self, _input: &mut dyn astersql_parser_ast::Node) -> bool {
+        true
+    }
+
+    fn enter_table_name(&mut self, table: &mut astersql_parser_ast::TableName) -> bool {
+        self.tables.insert(TableNamePair {
+            database: if table.Schema.L.is_empty() {
+                self.default_schema.clone()
+            } else {
+                table.Schema.L.clone()
+            },
+            table: table.Name.L.clone(),
+            is_view: false,
+        });
+        false
+    }
+}
+
+/// Parse a stored view definition and traverse its real AST, including nested
+/// queries and table expressions. A CREATE VIEW wrapper visits its SELECT only.
+pub fn view_dependencies_from_sql(
+    select_sql: &str,
+    default_schema: &str,
+) -> Result<Vec<TableNamePair>, String> {
+    let mut parser = astersql_parser::New();
+    let mut node = parser
+        .ParseOneStmt(select_sql, "utf8mb4", "utf8mb4_bin")
+        .map_err(|error| format!("parse view definition: {error}"))?;
+    let mut visitor = TableDependencyVisitor {
+        default_schema: default_schema.to_owned(),
+        tables: BTreeSet::new(),
+    };
+    let select: &mut dyn astersql_parser_ast::Node = if let Some(view) =
+        node.as_any_mut()
+            .downcast_mut::<astersql_parser_ast::CreateViewStmt>()
+    {
+        view.Select.as_mut()
+    } else {
+        node.as_mut()
+    };
+    astersql_parser_ast::Walk(select, &mut visitor);
+    Ok(visitor.tables.into_iter().collect())
+}
+
+/// Keep the existing summary/dump source while resolving view dependencies
+/// through the Domain's current InfoSchema and the production parser AST.
+struct DomainAstExtractSource {
+    domain: Arc<crate::domain::Domain>,
+    source: Arc<dyn ExtractSource>,
+}
+
+impl ExtractSource for DomainAstExtractSource {
+    fn statement_records(&self, task: &ExtractTask) -> Result<Vec<StatementRecord>, String> {
+        self.source.statement_records(task)
+    }
+
+    fn table(&self, database: &str, table: &str) -> Result<Option<TableNamePair>, String> {
+        self.source.table(database, table)
+    }
+
+    fn view_dependencies(&self, view: &TableNamePair) -> Result<Vec<TableNamePair>, String> {
+        let (_, table) = self
+            .domain
+            .stats_table(&view.database, &view.table)
+            .ok_or_else(|| format!("view {}.{} disappeared", view.database, view.table))?;
+        let definition = table
+            .View
+            .as_ref()
+            .ok_or_else(|| format!("{}.{} is not a view", view.database, view.table))?;
+        view_dependencies_from_sql(&definition.SelectStmt, &view.database)?
+            .into_iter()
+            .map(|table| self.source.table(&table.database, &table.table))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|table| table.ok_or_else(|| "view dependency disappeared".to_owned()))
+            .collect()
+    }
+
+    fn decode_binary_plan(&self, encoded: &str) -> Result<String, String> {
+        self.source.decode_binary_plan(encoded)
+    }
+
+    fn dump_package(
+        &self,
+        file_name: &str,
+        task: &ExtractTask,
+        package: &ExtractPlanPackage,
+    ) -> Result<(), String> {
+        self.source.dump_package(file_name, task, package)
+    }
+
+    fn persistent_statement_summary_enabled(&self) -> bool {
+        self.source.persistent_statement_summary_enabled()
+    }
+}
+
 /// Extract 入口句柄：串行执行抽取任务（对应 Go `ExtractHandle` + worker）。
 pub struct ExtractHandle {
     source: Arc<dyn ExtractSource>,
@@ -724,6 +830,14 @@ impl ExtractHandle {
             source,
             serial: Mutex::new(()),
         }
+    }
+
+    /// Construct the extract worker with real InfoSchema view definitions.
+    pub fn new_with_domain(
+        domain: Arc<crate::domain::Domain>,
+        source: Arc<dyn ExtractSource>,
+    ) -> Self {
+        Self::new(Arc::new(DomainAstExtractSource { domain, source }))
     }
 
     /// 同步执行抽取：收集记录 → 解析视图依赖 → dump zip。
