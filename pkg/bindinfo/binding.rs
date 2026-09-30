@@ -311,16 +311,21 @@ pub fn MatchSQLBindingWithCache(
     stmtNode: &Statement,
     info: Option<&mut BindingMatchInfo>,
 ) -> (Option<Arc<Binding>>, bool, String) {
-    // 功能未开启或 SQL 为空时直接返回未命中。
-    if !sctx.use_plan_baselines() || stmtNode.SQL.is_empty() {
+    // INSERT/REPLACE VALUES 和 SET 没有可应用的 SQL binding；解析失败时
+    // 保留旧匹配路径，由后续规范化处理错误。
+    if !sctx.use_plan_baselines() || !mayHaveSQLBinding(stmtNode) {
         return (None, false, String::new());
     }
     // 优先复用缓存的匹配结果，避免重复归一化与查找。
     let key = statement_cache_key(stmtNode);
     let cache = getMatchSQLBindingCache(sctx, &key);
     if sctx.in_test_mode() {
+        // PREPARE 的缓存可能在 AST 重写前生成，不能再用重写后的语句复算。
+        if let Some(cache) = cache.as_ref().filter(|_| info.is_none()) {
+            return (cache.Binding.clone(), cache.Matched, cache.Scope.clone());
+        }
         let started = Instant::now();
-        let result = matchSQLBindingCore(sctx, stmtNode, None);
+        let result = matchSQLBindingCore(sctx, stmtNode, info);
         sctx.record_binding_match_duration(started.elapsed());
         assert!(assertMatchSQLBinding(
             cache.as_ref(),
@@ -339,6 +344,28 @@ pub fn MatchSQLBindingWithCache(
     setMatchSQLBindingCache(sctx, key, result.1, result.0.clone(), result.2.clone());
     sctx.record_binding_match_duration(started.elapsed());
     result
+}
+
+fn mayHaveSQLBinding(stmt: &Statement) -> bool {
+    if stmt.SQL.is_empty() {
+        return false;
+    }
+    parse_sql(&stmt.SQL, "", "")
+        .map(|node| may_have_sql_binding_node(node.as_ref()))
+        .unwrap_or(true)
+}
+
+fn may_have_sql_binding_node(node: &dyn ast::Node) -> bool {
+    if let Some(insert) = node.as_any().downcast_ref::<ast::InsertStmt>() {
+        return insert.Select.is_some();
+    }
+    if let Some(explain) = node.as_any().downcast_ref::<ast::ExplainStmt>() {
+        return explain
+            .stmt
+            .as_ref()
+            .is_none_or(|stmt| may_have_sql_binding_node(stmt.as_ref()));
+    }
+    true
 }
 
 /// 生成语句级缓存键：由 SQL 文本与表数量组合而成。

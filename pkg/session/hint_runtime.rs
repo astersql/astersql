@@ -119,11 +119,16 @@ pub struct StatementHintGuard<'a> {
     effective_hints: hint::StmtHints,
     /// 解析/应用过程中积累的警告。
     warnings: Vec<String>,
+    binding_sql: Option<String>,
     /// 是否已显式 `Finish`，避免 Drop 重复收尾。
     finished: bool,
 }
 
 impl<'a> StatementHintGuard<'a> {
+    /// 返回本语句匹配并成功解析的绑定 SQL。
+    pub fn BindingSQL(&self) -> Option<&str> {
+        self.binding_sql.as_deref()
+    }
     /// 返回查询文本解析出的 Hint。
     pub fn QueryHints(&self) -> &hint::StmtHints {
         &self.query_hints
@@ -201,6 +206,7 @@ pub fn StartStatementHints<'a>(
         query_hints,
         effective_hints,
         warnings,
+        binding_sql: None,
         finished: false,
     }
 }
@@ -266,6 +272,34 @@ pub fn BindingStatementFromAST(
     }
     binding_statement.HasParamMarker = astersql_bindinfo::hasParam(&binding_statement);
     binding_statement
+}
+
+fn binding_sql_for_warning(binding: &astersql_bindinfo::Binding) -> String {
+    let mut parser = astersql_parser::Parser::default();
+    let Ok(statement) = parser.ParseOneStmt(&binding.BindSQL, &binding.Charset, &binding.Collation)
+    else {
+        return binding.BindSQL.clone();
+    };
+    let restored = astersql_util_parser::RestoreWithDefaultDB(
+        statement.as_ref(),
+        &binding.Db,
+        &binding.BindSQL,
+    );
+    if restored.is_empty() {
+        return binding.BindSQL.clone();
+    }
+    let hints = hint::ExtractTableHintsFromStmtNode(statement.as_ref(), None);
+    if hints.is_empty() {
+        return restored;
+    }
+    let hint_text = hint::RestoreOptimizerHints(hints);
+    if let Some(rest) = restored.strip_prefix("SELECT ") {
+        return format!("SELECT /*+ {hint_text}*/ {rest}");
+    }
+    // The generic SQL restorer does not write optimizer comments for other
+    // statement forms. Keep their original hint text until those forms have a
+    // dedicated canonical restoration path.
+    binding.BindSQL.clone()
 }
 
 /// Session-owned binding matcher used by the production execution entry.
@@ -495,6 +529,9 @@ pub fn StartStatementHintsWithBindings<'a>(
         astersql_bindinfo::MatchSQLBinding(bindings, &binding_statement);
     let mut binding_parse_warnings = Vec::new();
     // 匹配成功则解析绑定 SQL 中的 Hint 集合；解析失败记入警告并视为无绑定。
+    let binding_sql = binding
+        .as_ref()
+        .map(|binding| binding_sql_for_warning(binding));
     let parsed_binding = binding.and_then(|binding| {
         let mut parser = astersql_parser::Parser::default();
         let binding_db = if binding.TableNames.iter().any(|table| table.Schema == "*") {
@@ -529,6 +566,9 @@ pub fn StartStatementHintsWithBindings<'a>(
             None
         },
     );
+    if matched && parsed_binding.is_some() {
+        guard.binding_sql = binding_sql;
+    }
     for warning in binding_parse_warnings {
         variables.StmtCtx.SetHintWarning(warning.clone());
         guard.warnings.push(warning);

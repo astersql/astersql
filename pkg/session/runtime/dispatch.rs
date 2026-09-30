@@ -3756,12 +3756,55 @@ impl ConcreteSession {
                 stmt_tracker.AttachTo(parent);
             }
             self.sync_global_bindings();
+            let prepared_binding_sql = statement
+                .as_any()
+                .downcast_ref::<ast::ExecuteStmt>()
+                .and_then(|execute| {
+                    self.state
+                        .borrow()
+                        .prepared_by_name
+                        .get(&execute.Name.to_lowercase())
+                        .map(|prepared| prepared.sql.clone())
+                });
+            let prepared_binding_ast = prepared_binding_sql
+                .as_deref()
+                .and_then(|sql| parse(sql).ok())
+                .and_then(|mut statements| (statements.len() == 1).then(|| statements.remove(0)));
+            let explain = statement.as_any().downcast_ref::<ast::ExplainStmt>();
+            let explain_inner_sql = explain.and_then(|_| {
+                let trimmed = current_sql.trim_start();
+                (trimmed
+                    .get(.."explain".len())
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("explain")))
+                .then(|| trimmed["explain".len()..].trim_start())
+            });
+            let (hint_statement, hint_sql): (&dyn ast::Node, &str) =
+                if let (Some(prepared), Some(sql)) = (
+                    prepared_binding_ast.as_deref(),
+                    prepared_binding_sql.as_deref(),
+                ) {
+                    (prepared, sql)
+                } else if let (Some(inner), Some(sql)) = (
+                    explain.and_then(|explain| explain.stmt.as_deref()),
+                    explain_inner_sql,
+                ) {
+                    (inner, sql)
+                } else {
+                    (statement.as_ref(), current_sql)
+                };
             let guard = crate::hint_runtime::StartStatementHintsWithBindings(
                 &variables,
-                statement.as_ref(),
-                current_sql,
+                hint_statement,
+                hint_sql,
                 &mut *self.bindings.borrow_mut(),
             );
+            if guard.QueryHints().QueryHasHints
+                && let Some(binding_sql) = guard.BindingSQL()
+            {
+                self.set_warning(format!(
+                    "The system ignores the hints in the current query and uses the hints specified in the bindSQL: {binding_sql}"
+                ));
+            }
             self.state.borrow_mut().last_statement_hints_for_test = (
                 guard.EffectiveHints().MemQuotaQuery,
                 guard.EffectiveHints().MaxExecutionTime,

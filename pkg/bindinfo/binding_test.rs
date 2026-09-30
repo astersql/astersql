@@ -271,9 +271,13 @@ struct MatchContext {
     session: Option<Arc<Binding>>,
     global: Option<Arc<Binding>>,
     global_calls: Cell<usize>,
+    test_mode: bool,
 }
 
 impl BindingMatchContext for MatchContext {
+    fn in_test_mode(&self) -> bool {
+        self.test_mode
+    }
     fn use_plan_baselines(&self) -> bool {
         true
     }
@@ -324,6 +328,7 @@ fn matching_avoids_cache_aliases_recomputes_partial_info_and_session_usage() {
         session: None,
         global: Some(global),
         global_calls: Cell::new(0),
+        test_mode: false,
     };
     let first = Statement {
         SQL: "select * from t".to_owned(),
@@ -354,7 +359,84 @@ fn matching_avoids_cache_aliases_recomputes_partial_info_and_session_usage() {
         session: Some(session.clone()),
         global: None,
         global_calls: Cell::new(0),
+        test_mode: false,
     };
     assert!(MatchSQLBinding(&mut session_context, &first).1);
     assert_eq!(session.UsageInfo.last_used_at(), None);
+}
+
+#[test]
+fn go_merge_41_insert_values_skip_binding_lookup_and_info_mutation() {
+    let mut context = MatchContext {
+        cache: HashMap::new(),
+        session: None,
+        global: Some(binding("global", "test", 1)),
+        global_calls: Cell::new(0),
+        test_mode: false,
+    };
+    for sql in [
+        "insert into t values (1)",
+        "insert into t values (1) on duplicate key update a = values(a)",
+        "insert into t set a = 1",
+        "replace into t values (1)",
+        "explain insert into t values (1)",
+    ] {
+        let mut info = BindingMatchInfo::default();
+        let result = MatchSQLBindingWithCache(
+            &mut context,
+            &Statement {
+                SQL: sql.to_owned(),
+                ..Default::default()
+            },
+            Some(&mut info),
+        );
+        assert!(!result.1, "{sql}");
+        assert!(result.0.is_none(), "{sql}");
+        assert!(info.NoDBDigest.is_empty(), "{sql}");
+        assert!(info.TableNames.is_empty(), "{sql}");
+    }
+    assert_eq!(context.global_calls.get(), 0);
+    for sql in [
+        "insert into t select * from s",
+        "replace into t select * from s",
+        "explain insert into t select * from s",
+        "select * from t",
+        "update t set a = 1",
+        "delete from t where a = 1",
+    ] {
+        let mut info = BindingMatchInfo::default();
+        let _ = MatchSQLBindingWithCache(
+            &mut context,
+            &Statement {
+                SQL: sql.to_owned(),
+                ..Default::default()
+            },
+            Some(&mut info),
+        );
+        assert!(!info.NoDBDigest.is_empty(), "{sql}");
+    }
+}
+
+#[test]
+fn go_merge_41_test_mode_reuses_prepared_cache_and_populates_match_info() {
+    let mut context = MatchContext {
+        cache: HashMap::new(),
+        session: None,
+        global: Some(binding("global", "test", 1)),
+        global_calls: Cell::new(0),
+        test_mode: true,
+    };
+    let statement = Statement {
+        SQL: "select * from t".to_owned(),
+        ..Default::default()
+    };
+    assert!(MatchSQLBinding(&mut context, &statement).1);
+    assert_eq!(context.global_calls.get(), 1);
+    assert!(MatchSQLBinding(&mut context, &statement).1);
+    assert_eq!(context.global_calls.get(), 1);
+    context.cache.clear();
+    let mut info = BindingMatchInfo::default();
+    assert!(MatchSQLBindingWithCache(&mut context, &statement, Some(&mut info)).1);
+    assert!(!info.NoDBDigest.is_empty());
+    assert_eq!(context.global_calls.get(), 2);
 }

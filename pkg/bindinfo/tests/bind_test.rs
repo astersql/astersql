@@ -133,6 +133,72 @@ fn test_prepare_cache_with_binding() {
 }
 
 #[test]
+fn go_merge_41_prepared_binding_survives_group_by_alias_rewrite() {
+    let (store, _domain) = testkit::mockstore::CreateMockStoreAndDomain();
+    let mut tk = testkit::NewTestKit(store);
+    let args = Vec::new();
+    tk.MustExec("use test", args.clone());
+    tk.MustExec("create table t_issue57992(d datetime)", args.clone());
+    let query = "select hour(`d`) as `hour` from t_issue57992 group by `hour`";
+    tk.MustExec(
+        &format!("create global binding for {query} using {query}"),
+        args.clone(),
+    );
+    tk.MustQuery(query, args.clone()).Check(testkit::Rows(&[]));
+    tk.MustQuery("select @@last_plan_from_binding", args.clone())
+        .Check(testkit::Rows(&["ON"]));
+    tk.MustExec(
+        &format!("prepare stmt_issue57992 from '{query}'"),
+        args.clone(),
+    );
+    tk.MustExec("execute stmt_issue57992", args.clone());
+    tk.MustQuery("select @@last_plan_from_binding", args)
+        .Check(testkit::Rows(&["ON"]));
+}
+
+#[test]
+fn go_merge_41_explain_conflicting_hint_reports_binding_warning() {
+    let (store, _domain) = testkit::mockstore::CreateMockStoreAndDomain();
+    let mut tk = testkit::NewTestKit(store);
+    let args = Vec::new();
+    tk.MustExec("use test", args.clone());
+    tk.MustExec(
+        "create table t (a int, b int, key(a), key(b))",
+        args.clone(),
+    );
+    tk.MustExec(
+        "create global binding using select /*+ use_index(t, a) */ * from t where a=1 and b=1",
+        args.clone(),
+    );
+    let warning = "Warning 1105 The system ignores the hints in the current query and uses the hints specified in the bindSQL: SELECT /*+ use_index(`t` `a`)*/ * FROM `test`.`t` WHERE `a` = 1 AND `b` = 1";
+    tk.MustQuery(
+        "explain select /*+ use_index(t, b) */ * from t where a=1 and b=1",
+        args.clone(),
+    );
+    tk.MustQuery("show warnings", args.clone())
+        .Check(testkit::Rows(&[warning]));
+    tk.MustQuery(
+        "select /*+ use_index(t, b) */ * from t where a=1 and b=1",
+        args.clone(),
+    );
+    tk.MustQuery("show warnings", args.clone())
+        .Check(testkit::Rows(&[warning]));
+    tk.MustQuery("explain select * from t where a=1 and b=1", args.clone());
+    tk.MustQuery("show warnings", args.clone())
+        .Check(testkit::Rows(&[]));
+    tk.MustExec(
+        "drop global binding for select * from t where a=1 and b=1",
+        args.clone(),
+    );
+    tk.MustQuery(
+        "explain select /*+ use_index(t, b) */ * from t where a=1 and b=1",
+        args.clone(),
+    );
+    tk.MustQuery("show warnings", args)
+        .Check(testkit::Rows(&[]));
+}
+
+#[test]
 fn test_issue_50646() {
     let mut item = bindinfo::Binding {
         OriginalSQL: "delete t, t1 from t join t1 on t.a=t1.a".to_owned(),
