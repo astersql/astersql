@@ -1255,6 +1255,9 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
     fn RUV2Weights(&self) -> RUV2Weights {
         self.session.WithSessionVars(|vars| vars.RUV2Weights())
     }
+    fn RUVersion(&self) -> u8 {
+        self.session.domain.ru_version() as u8
+    }
     fn RUV2ReporterAvailable(&self) -> bool {
         self.session.domain.ruv2_consumption_reporter().is_some()
     }
@@ -1367,10 +1370,13 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
         };
         info.StmtCtx.StmtType = stmt_type;
         info.StmtCtx.SetAffectedRows(affected);
-        astersql_util_stmtsummary::StmtSummaryByDigestMap
-            .lock()
-            .expect("statement summary map lock poisoned")
-            .AddStatement(&info);
+        info.RUDetail = astersql_util_stmtsummary_v2::SelectRUDetailsForStatementSummary(
+            summary.ru_details.clone(),
+            summary.ru_version,
+            summary.total_ru_v2,
+            summary.is_write,
+        );
+        astersql_util_stmtsummary_v2::Add(&info);
     }
     fn UpdatePreviousStatement(&self, sql: &str, digest: &str) {
         self.effects.borrow_mut().previous_statement = Some((sql.to_owned(), digest.to_owned()));

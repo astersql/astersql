@@ -70,8 +70,8 @@ fn migration_like_compilation_and_matching_match_go_tables() {
         );
     }
 
-    assert_eq!(CompileLike2Regexp(r"$a$%"), r"^\$a\$.*$");
-    assert_eq!(CompileLike2Regexp(r"\\_a"), r"^\\.a$");
+    assert_eq!(CompileLike2Regexp(r"$a$%", b'\\'), r"^\$a\$.*$");
+    assert_eq!(CompileLike2Regexp(r"\\_a", b'\\'), r"^\\.a$");
     let (_, exact) = CompilePattern(r"a\%", b'\\');
     assert!(IsExactMatch(&exact));
 }

@@ -230,8 +230,14 @@ fn test_compile_like_2_regexp() {
         ("%_%_aA", "^...*aA$"),
     ];
     for (pattern, expected) in cases {
-        assert_eq!(CompileLike2Regexp(pattern), expected, "pattern: {pattern}");
+        assert_eq!(CompileLike2Regexp(pattern, b'\\'), expected, "pattern: {pattern}");
     }
+}
+
+#[test]
+fn go_merge_38_compile_like_uses_selected_escape() {
+    assert_eq!(CompileLike2Regexp("a!_%", b'!'), "^a_.*$");
+    assert_eq!(CompileLike2Regexp("a\\_%", b'!'), r"^a\\..*$");
 }
 
 /// 验证编译后模式是否全为精确匹配（无 '_' / '%'）。

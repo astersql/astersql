@@ -162,6 +162,7 @@ crc32fast = "1"
 "astersql-util-stmtsummary" = { package = "astersql-util-stmtsummary", path = "../util/stmtsummary" }
 "astersql-util-traceevent" = { package = "astersql-util-traceevent", path = "../util/traceevent" }
 "astersql-util-tracing" = { package = "astersql-util-tracing", path = "../util/tracing" }
+"astersql-util-stmtsummary-v2" = { package = "astersql-util-stmtsummary-v2", path = "../util/stmtsummary/v2" }
 chrono = "0.4"
 chrono-tz = "0.10"
 protobuf = "=2.8.0"

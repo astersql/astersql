@@ -20,7 +20,66 @@
 // 这里由 harness 建模 SQL 执行及会话状态，不依赖完整的 mockstore/session 栈。
 
 use crate::harness::{self, Env, RecordOpts};
+use astersql_util_stmtsummary_v2::{
+    AvgQueuedRcTimeStr, AvgRequestUnitRead, AvgRequestUnitWrite, DigestStr, ExecCountStr,
+    GenerateStmtExecInfo4Test, MaxQueuedRcTimeStr, MaxRequestUnitRead, MaxRequestUnitWrite,
+    NewMemReader, NewStmtSummary4Test, SelectRUDetailsForStatementSummary, UTC, model,
+};
 use std::sync::MutexGuard;
+
+#[test]
+fn go_merge_38_ru_versions_reach_statement_summary_table() {
+    let names = [
+        DigestStr,
+        ExecCountStr,
+        AvgRequestUnitRead,
+        MaxRequestUnitRead,
+        AvgRequestUnitWrite,
+        MaxRequestUnitWrite,
+        AvgQueuedRcTimeStr,
+        MaxQueuedRcTimeStr,
+    ];
+    let columns = names.map(|name| {
+        let mut column = model::ColumnInfo::default();
+        column.Name.O = name.into();
+        column
+    });
+    for version in [1_u8, 2] {
+        for is_write in [false, true] {
+            let summary = NewStmtSummary4Test(10);
+            let digest = format!("ru_v{version}_{is_write}");
+            let mut info = GenerateStmtExecInfo4Test(&digest);
+            let raw = info.RUDetail.take();
+            info.RUDetail = SelectRUDetailsForStatementSummary(raw, version, Some(27.0), is_write);
+            summary.Add(&info);
+            let reader = NewMemReader(
+                Some(summary.as_ref()),
+                &columns,
+                "",
+                UTC,
+                None,
+                false,
+                None,
+                vec![],
+            );
+            let rows = reader.Rows();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0][0].GetString(), digest);
+            assert_eq!(rows[0][1].GetInt64(), 1);
+            let (read, write) = if version == 2 {
+                if is_write { (0.0, 27.0) } else { (27.0, 0.0) }
+            } else {
+                (1.2, 3.4)
+            };
+            for (index, expected) in [(2, read), (3, read), (4, write), (5, write)] {
+                assert_eq!(rows[0][index].GetFloat64(), expected);
+            }
+            assert_eq!(rows[0][6].GetInt64(), 2_000_000);
+            assert_eq!(rows[0][7].GetInt64(), 2_000_000);
+            summary.Close();
+        }
+    }
+}
 
 /// 持有独占测试锁和隔离的语句摘要环境，避免全局配置在并行测试间相互污染。
 struct Fixture {

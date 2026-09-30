@@ -27,14 +27,34 @@ pub trait ColumnFilter: Debug {
     fn MatchColumn(&self, column: &str) -> bool;
 }
 
-/// 内部实现：按顺序保存的列规则列表（reverse 后“后写优先”）。
-#[derive(Debug)]
-struct columnFilter(Vec<columnRule>);
+/// 已解析的列规则列表，按后写优先的顺序保存。
+#[derive(Debug, Default)]
+pub struct ColumnFilterRules(Vec<columnRule>);
+
+impl ColumnFilterRules {
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// 判断列名是否被规则允许。
+    pub fn MatchColumn(&self, column: &str) -> bool {
+        <Self as ColumnFilter>::MatchColumn(self, column)
+    }
+}
 
 /// 解析命令行风格的列过滤参数，返回可匹配的 `ColumnFilter`。
 ///
 /// `args` 中每项为一条规则或 `@file` 导入；解析失败返回 `FilterError`。
 pub fn ParseColumnFilter(args: Vec<String>) -> Result<Box<dyn ColumnFilter>, FilterError> {
+    Ok(Box::new(ParseColumnFilterRules(args)?))
+}
+
+/// 解析并返回可供调用方保存的具体规则类型。
+pub fn ParseColumnFilterRules(args: Vec<String>) -> Result<ColumnFilterRules, FilterError> {
     let mut parser = columnRulesParser {
         rules: Vec::with_capacity(args.len()),
         matcher_parser: matcherParser {
@@ -48,10 +68,10 @@ pub fn ParseColumnFilter(args: Vec<String>) -> Result<Box<dyn ColumnFilter>, Fil
     }
     // 反转后迭代时先遇到后写规则，实现“后写优先”。
     parser.rules.reverse();
-    Ok(Box::new(columnFilter(parser.rules)))
+    Ok(ColumnFilterRules(parser.rules))
 }
 
-impl ColumnFilter for columnFilter {
+impl ColumnFilter for ColumnFilterRules {
     fn MatchColumn(&self, column: &str) -> bool {
         // Go 的 strings.ToLower 对每个 rune 使用简单大小写映射；Rust 的
         // str::to_lowercase 可能把一个字符扩展成多个字符（例如 İ -> i + ◌̇）。

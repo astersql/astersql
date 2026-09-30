@@ -481,6 +481,9 @@ pub trait AdapterRuntime {
     fn ObservePhase(&self, phase: &str, internal: bool, duration: Duration);
     fn RecordDMLMetric(&self, statement_type: &str, value: i64);
     fn RUV2Weights(&self) -> RUV2Weights;
+    fn RUVersion(&self) -> u8 {
+        1
+    }
     fn RUV2ReporterAvailable(&self) -> bool;
     fn ResourceGroupName(&self) -> String;
     fn ReportRUV2Consumption(&self, resource_group: &str, tikv: f64, tidb: f64, tiflash: f64);
@@ -1578,7 +1581,7 @@ pub struct SupplementaryFinishMetrics {
     pub read_from_table_cache: bool,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default)]
 /// 语句摘要信息（供 statements_summary 系统表）。
 pub struct StatementSummary {
     pub original_sql: String,
@@ -1588,6 +1591,10 @@ pub struct StatementSummary {
     pub binary_plan: String,
     pub encoded_plan: String,
     pub success: bool,
+    pub ru_version: u8,
+    pub total_ru_v2: Option<f64>,
+    pub is_write: bool,
+    pub ru_details: Option<astersql_util_execdetails::execdetails::util::RUDetails>,
 }
 
 impl ExecStmt {
@@ -1786,6 +1793,24 @@ impl ExecStmt {
     /// 构造并上报语句摘要。
     pub fn SummaryStmt(&mut self, success: bool) {
         let (_, plan_digest) = GetPlanDigest(&mut self.StatementCtx, self.Ctx.as_ref());
+        let ru_details = self
+            .GoCtx
+            .as_ref()
+            .and_then(|context| context.ru_details.as_deref())
+            .map(
+                |details| astersql_util_execdetails::execdetails::util::RUDetails {
+                    read_ru: details.RRU(),
+                    write_ru: details.WRU(),
+                    ru_wait_duration: details.RUWaitDuration(),
+                    ..Default::default()
+                },
+            );
+        let total_ru_v2 = self
+            .StatementCtx
+            .ru_metrics
+            .as_deref()
+            .filter(|metrics| !metrics.Bypass())
+            .map(|_| self.StatementCtx.total_ru);
         let summary = StatementSummary {
             original_sql: self.GetOriginalSQL(),
             normalized_sql: self.StatementCtx.sql_normalized.clone(),
@@ -1794,6 +1819,18 @@ impl ExecStmt {
             binary_plan: self.GetBinaryPlan(),
             encoded_plan: self.GetEncodedPlan().0,
             success,
+            ru_version: self.Ctx.RUVersion(),
+            total_ru_v2,
+            is_write: matches!(
+                self.Plan.kind,
+                PlanKind::Insert | PlanKind::Update | PlanKind::Delete
+            ) || self
+                .StmtNode
+                .text
+                .trim()
+                .trim_end_matches(';')
+                .eq_ignore_ascii_case("commit"),
+            ru_details,
         };
         self.Ctx.Summary(&summary);
     }

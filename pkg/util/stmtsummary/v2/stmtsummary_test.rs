@@ -23,6 +23,189 @@ use std::time::{Duration, Instant};
 use task_stmtsummary_v2::*;
 
 #[test]
+fn go_merge_38_internal_cleanup_keeps_mixed_record_and_capacity() {
+    let summary = NewStmtSummary4Test(6);
+    summary.SetEnableInternalQuery(true).unwrap();
+    for digest in ["digest_0", "digest_1", "digest_2", "digest_3"] {
+        summary.Add(&GenerateStmtExecInfo4Test(digest));
+    }
+    let mut pure = GenerateStmtExecInfo4Test("pure_internal_digest");
+    pure.IsInternal = true;
+    summary.Add(&pure);
+    let mut mixed = GenerateStmtExecInfo4Test("mixed_digest");
+    mixed.IsInternal = true;
+    summary.Add(&mixed);
+    summary.Add(&GenerateStmtExecInfo4Test("mixed_digest"));
+    for digest in ["digest_0", "digest_1"] {
+        summary.Add(&GenerateStmtExecInfo4Test(digest));
+    }
+    let digests = |summary: &StmtSummary| {
+        summary
+            .currentWindowSnapshot()
+            .unwrap()
+            .records
+            .into_iter()
+            .map(|record| record.Digest)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        digests(&summary),
+        [
+            "digest_1",
+            "digest_0",
+            "mixed_digest",
+            "pure_internal_digest",
+            "digest_3",
+            "digest_2"
+        ]
+    );
+    summary.SetEnableInternalQuery(false).unwrap();
+    assert_eq!(
+        digests(&summary),
+        [
+            "digest_1",
+            "digest_0",
+            "mixed_digest",
+            "digest_3",
+            "digest_2"
+        ]
+    );
+    assert_eq!(summary.Len(), 5);
+    for digest in ["new_0", "new_1", "new_2"] {
+        summary.Add(&GenerateStmtExecInfo4Test(digest));
+    }
+    assert_eq!(summary.Len(), 6);
+    assert_eq!(summary.EvictedCount(), 2);
+    assert_eq!(
+        digests(&summary),
+        [
+            "new_2",
+            "new_1",
+            "new_0",
+            "digest_1",
+            "digest_0",
+            "mixed_digest"
+        ]
+    );
+    summary.Close();
+}
+
+#[test]
+fn go_merge_38_evicted_and_cleanup_are_safe_during_updates() {
+    let summary = NewStmtSummary4Test(2);
+    summary.SetEnableInternalQuery(true).unwrap();
+    let reader = std::sync::Arc::clone(&summary);
+    let inspector = thread::spawn(move || {
+        for _ in 0..200 {
+            let _ = reader.Evicted();
+            reader.ClearInternal();
+        }
+    });
+    for i in 0..200 {
+        let mut info = GenerateStmtExecInfo4Test(&format!("digest_{i}"));
+        info.IsInternal = i % 2 == 0;
+        summary.Add(&info);
+    }
+    inspector.join().unwrap();
+    assert!(summary.Len() <= 2);
+    summary.Close();
+}
+
+#[test]
+fn go_merge_38_internal_cleanup_waits_for_record_update() {
+    let summary = NewStmtSummary4Test(1);
+    let mut internal = GenerateStmtExecInfo4Test("internal_digest");
+    internal.IsInternal = true;
+    summary.Add(&internal);
+    let record = summary.recordForTest("internal_digest").unwrap();
+    let guard = record.lock();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn({
+        let summary = std::sync::Arc::clone(&summary);
+        move || {
+            summary.ClearInternal();
+            sender.send(()).unwrap();
+        }
+    });
+    assert!(receiver.recv_timeout(Duration::from_millis(100)).is_err());
+    drop(guard);
+    receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+    worker.join().unwrap();
+    assert_eq!(summary.Len(), 0);
+    summary.Close();
+}
+
+#[test]
+fn go_merge_38_new_summary_surfaces_logger_open_error() {
+    let directory = tempfile::tempdir().unwrap();
+    let error = NewStmtSummary(&Config {
+        Filename: directory.path().display().to_string(),
+        ..Default::default()
+    })
+    .err()
+    .expect("opening a directory as the log must fail");
+    assert!(!error.is_empty());
+}
+
+#[test]
+fn go_merge_38_failed_setup_keeps_previous_instance_and_falls_back() {
+    Close();
+    let directory = tempfile::tempdir().unwrap();
+    let valid = directory.path().join("statements.log");
+    Setup(&Config {
+        Filename: valid.display().to_string(),
+        ..Default::default()
+    })
+    .unwrap();
+    let previous = crate::stmtsummary::installedForTest().unwrap();
+    let error = Setup(&Config {
+        Filename: directory.path().display().to_string(),
+        ..Default::default()
+    })
+    .unwrap_err();
+    assert!(error.contains("falling back to v1"));
+    let current = crate::stmtsummary::installedForTest().unwrap();
+    assert!(std::sync::Arc::ptr_eq(&previous, &current));
+    assert!(!previous.IsClosed());
+    assert_eq!(
+        Enabled(),
+        task_stmtsummary::StmtSummaryByDigestMap
+            .lock()
+            .unwrap()
+            .Enabled()
+    );
+    Add(&GenerateStmtExecInfo4Test("setup_fallback"));
+    Close();
+}
+
+#[test]
+fn go_merge_38_evicted_is_safe_during_rotation() {
+    let summary = NewStmtSummary4Test(2);
+    summary.SetRefreshInterval(1).unwrap();
+    for digest in ["digest_1", "digest_2", "digest_3"] {
+        summary.Add(&GenerateStmtExecInfo4Test(digest));
+    }
+    let reader = std::sync::Arc::clone(&summary);
+    let worker = thread::spawn(move || {
+        for _ in 0..100 {
+            let _ = reader.Evicted();
+        }
+    });
+    for i in 0..50 {
+        summary.rotateForTest();
+        for digest in [
+            format!("new_{i}_1"),
+            format!("new_{i}_2"),
+            format!("new_{i}_3"),
+        ] {
+            summary.Add(&GenerateStmtExecInfo4Test(digest));
+        }
+    }
+    worker.join().unwrap();
+    summary.Close();
+}
+
+#[test]
 fn go_merge_37_setup_failure_reports_fallback_and_keeps_v1_available() {
     Close();
     let dir = tempfile::tempdir().unwrap();

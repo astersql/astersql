@@ -20,8 +20,80 @@
 // 聚合后的“最耗资源 SQL”上报。
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::thread;
 
 use super::*;
+
+#[test]
+fn go_merge_38_metadata_admission_and_take_are_atomic() {
+    let sql = Arc::new(NormalizedSqlMap::new(1));
+    let plan = Arc::new(NormalizedPlanMap::new(1));
+    let mut workers = Vec::new();
+    for i in 0..256_u16 {
+        let sql = Arc::clone(&sql);
+        let plan = Arc::clone(&plan);
+        workers.push(thread::spawn(move || {
+            let digest = i.to_le_bytes();
+            sql.register(&digest, format!("sql-{i}"), false);
+            plan.register(&digest, format!("plan-{i}"), false);
+        }));
+    }
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    assert_eq!(sql.len(), 1);
+    assert_eq!(sql.to_proto(Vec::new()).len(), 1);
+    assert_eq!(plan.len(), 1);
+    assert_eq!(plan.to_proto(Vec::new(), |s| Ok(s.into()), |_| String::new()).len(), 1);
+
+    let taken_sql = sql.take();
+    let taken_plan = plan.take();
+    assert_eq!(taken_sql.len(), 1);
+    assert_eq!(taken_plan.len(), 1);
+    assert_eq!(sql.len(), 0);
+    assert_eq!(plan.len(), 0);
+    sql.register(b"new", "new".into(), false);
+    plan.register(b"new", "new".into(), false);
+    assert_eq!(sql.len(), 1);
+    assert_eq!(plan.len(), 1);
+}
+
+#[test]
+fn go_merge_38_registration_during_take_is_not_lost() {
+    use std::collections::HashSet;
+    use std::sync::Barrier;
+    let sql = Arc::new(NormalizedSqlMap::new(1024));
+    let plan = Arc::new(NormalizedPlanMap::new(1024));
+    let start = Arc::new(Barrier::new(2));
+    let worker = {
+        let sql = Arc::clone(&sql);
+        let plan = Arc::clone(&plan);
+        let start = Arc::clone(&start);
+        thread::spawn(move || {
+            start.wait();
+            for digest in 0..1000_u16 {
+                let key = digest.to_le_bytes();
+                sql.register(&key, digest.to_string(), false);
+                plan.register(&key, digest.to_string(), false);
+            }
+        })
+    };
+    start.wait();
+    let mut sql_seen = HashSet::new();
+    let mut plan_seen = HashSet::new();
+    for _ in 0..100 {
+        sql_seen.extend(sql.take().to_proto(Vec::new()).into_iter().map(|meta| meta.get_sql_digest().to_vec()));
+        plan_seen.extend(plan.take().to_proto(Vec::new(), |s| Ok(s.into()), |_| String::new())
+            .into_iter().map(|meta| meta.get_plan_digest().to_vec()));
+    }
+    worker.join().unwrap();
+    sql_seen.extend(sql.take().to_proto(Vec::new()).into_iter().map(|meta| meta.get_sql_digest().to_vec()));
+    plan_seen.extend(plan.take().to_proto(Vec::new(), |s| Ok(s.into()), |_| String::new())
+        .into_iter().map(|meta| meta.get_plan_digest().to_vec()));
+    assert_eq!(sql_seen.len(), 1000);
+    assert_eq!(plan_seen.len(), 1000);
+}
 
 /// 构造仅含执行次数与总耗时的语句统计项。
 fn stats(exec_count: u64, duration: u64) -> StatementStatsItem {

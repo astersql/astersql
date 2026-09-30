@@ -787,6 +787,7 @@ pub struct Domain {
     ruv2_consumption_reporter:
         RwLock<Option<Arc<dyn crate::ruv2_reporter::RUV2ConsumptionReporter>>>,
     runaway_manager: RwLock<Option<Arc<astersql_resourcegroup_runaway::manager::Manager>>>,
+    ru_version: AtomicU64,
     sys_processes: Arc<SysProcesses>,
     on_close: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     schema_reload_count: AtomicU64,
@@ -1427,6 +1428,7 @@ impl Domain {
             on_close: Mutex::new(None),
             schema_reload_count: AtomicU64::new(0),
             ddl_notifier_sequence: AtomicI64::new(0),
+            ru_version: AtomicU64::new(1),
             stats_handle,
             stats_store,
             stats_catalog: Arc::new(RwLock::new(BTreeMap::new())),
@@ -1733,6 +1735,16 @@ impl Domain {
             .runaway_manager
             .write()
             .expect("runaway manager lock poisoned") = manager;
+    }
+
+    /// Active RU accounting version; the default matches a controller-free domain.
+    pub fn ru_version(&self) -> u64 {
+        self.ru_version.load(Ordering::Acquire)
+    }
+
+    /// Update the RU version when the resource-group controller changes policy.
+    pub fn set_ru_version(&self, version: u64) {
+        self.ru_version.store(version, Ordering::Release);
     }
 
     pub fn runaway_manager(&self) -> Option<Arc<astersql_resourcegroup_runaway::manager::Manager>> {

@@ -20,6 +20,7 @@
 
 #![allow(non_snake_case)]
 
+use chrono::TimeZone;
 use std::collections::HashSet;
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
@@ -28,6 +29,62 @@ use task_stmtsummary_v2::*;
 
 /// 串行化依赖全局日志路径的文件测试，避免互相覆盖。
 static FILE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+#[test]
+fn go_merge_38_history_reader_open_ended_ranges() {
+    let _guard = FILE_TEST_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let active = dir.path().join("tidb-statements.log");
+    setStmtSummaryFilename(&active);
+    let intervals = [
+        (1672120800_i64, 1672121400_i64, "history_early"),
+        (1672135200, 1672135800, "history_middle"),
+        (1672149600, 1672150200, "history_late"),
+    ];
+    for (begin, end, digest) in intervals {
+        let suffix = chrono::Local
+            .timestamp_opt(end, 0)
+            .single()
+            .unwrap()
+            .format("%Y-%m-%dT%H-%M-%S.000");
+        let rotated = dir.path().join(format!("tidb-statements-{suffix}.log"));
+        fs::write(
+            rotated,
+            format!(
+                "{{\"begin\":{begin},\"end\":{end},\"digest\":\"{digest}\",\"exec_count\":1}}\n"
+            ),
+        )
+        .unwrap();
+    }
+    let columns = [column(DigestStr)];
+    let digests = Some(HashSet::from([
+        "history_early".into(),
+        "history_middle".into(),
+        "history_late".into(),
+    ]));
+    assert_eq!(
+        history_digests(
+            &columns,
+            digests.clone(),
+            vec![StmtTimeRange {
+                Begin: 1672128000,
+                End: 0
+            }]
+        ),
+        ["history_late", "history_middle"]
+    );
+    assert_eq!(
+        history_digests(
+            &columns,
+            digests,
+            vec![StmtTimeRange {
+                Begin: 0,
+                End: 1672142400
+            }]
+        ),
+        ["history_early", "history_middle"]
+    );
+}
 
 #[test]
 fn go_merge_37_history_reader_preserves_ia_exec_count() {

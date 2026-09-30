@@ -346,11 +346,11 @@ fn matchRune(a: char, b: char) -> bool {
     */
 }
 
-// CompileLike2Regexp convert a like `lhs` to a regular expression
+// CompileLike2Regexp converts a LIKE pattern using the caller's escape byte.
 // CompileLike2Regexp 把 SQL LIKE 模式转换成正则表达式文本。
 // Go 依赖 regexp.QuoteMeta；用局部 helper 表达同样的“普通字符转义”意图。
-pub fn CompileLike2Regexp(str_: &str) -> String {
-    let (pat_chars, pat_types) = CompilePattern(str_, b'\\');
+pub fn CompileLike2Regexp(str_: &str, escape: u8) -> String {
+    let (pat_chars, pat_types) = CompilePattern(str_, escape);
     let mut result = String::with_capacity(pat_chars.len() * 2 + 2);
     result.push('^');
     for i in 0..pat_chars.len() {

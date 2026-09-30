@@ -198,3 +198,18 @@ fn TestStmtRecord() {
     assert_eq!(items["digest"], record2.Digest);
     setStmtLogAdditionalFields(HashMap::new());
 }
+#[test]
+fn go_merge_38_ru_version_selects_summary_values() {
+    let raw = GenerateStmtExecInfo4Test("ru").RUDetail.unwrap();
+    let v1 = SelectRUDetailsForStatementSummary(Some(raw.clone()), 1, Some(19.0), true).unwrap();
+    assert_eq!((v1.RRU(), v1.WRU()), (1.2, 3.4));
+    let v2_read =
+        SelectRUDetailsForStatementSummary(Some(raw.clone()), 2, Some(19.0), false).unwrap();
+    assert_eq!((v2_read.RRU(), v2_read.WRU()), (19.0, 0.0));
+    let v2_write =
+        SelectRUDetailsForStatementSummary(Some(raw.clone()), 2, Some(19.0), true).unwrap();
+    assert_eq!((v2_write.RRU(), v2_write.WRU()), (0.0, 19.0));
+    assert_eq!(v2_write.RUWaitDuration(), raw.RUWaitDuration());
+    let pending = SelectRUDetailsForStatementSummary(Some(raw.clone()), 2, None, true).unwrap();
+    assert_eq!((pending.RRU(), pending.WRU()), (raw.RRU(), raw.WRU()));
+}

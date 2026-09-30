@@ -1124,6 +1124,7 @@ fn canonical_adapter_summary_reaches_formal_statement_digest_map() {
         binary_plan: "binary-plan".into(),
         encoded_plan: "encoded-plan".into(),
         success: true,
+        ..Default::default()
     });
     let summaries = astersql_util_stmtsummary::StmtSummaryByDigestMap
         .lock()
@@ -1136,6 +1137,51 @@ fn canonical_adapter_summary_reaches_formal_statement_digest_map() {
     assert_eq!(entry.cumulative.execCount, 1);
     assert_eq!(entry.cumulative.sampleSQL, "select b from t where a=1");
     assert_eq!(entry.cumulative.samplePlan, "encoded-plan");
+}
+
+#[test]
+fn go_merge_38_session_ru_version_reaches_summary_accounting() {
+    use astersql_executor::adapter::StatementSummary;
+    use astersql_util_execdetails::execdetails::util::RUDetails;
+    let owner = SessionBoundAdapterOwner::new(canonical_dml_session());
+    astersql_util_stmtsummary_v2::Close();
+    for (version, is_write) in [(1, false), (1, true), (2, false), (2, true)] {
+        owner.session.domain.set_ru_version(version);
+        assert_eq!(u64::from(owner.RUVersion()), version);
+        let digest = format!("go_merge_38_ru_{version}_{is_write}");
+        owner.Summary(&StatementSummary {
+            original_sql: "select 1".into(),
+            normalized_sql: "select ?".into(),
+            sql_digest: digest.clone(),
+            ru_version: owner.RUVersion(),
+            total_ru_v2: Some(27.0),
+            is_write,
+            ru_details: Some(RUDetails {
+                read_ru: 11.0,
+                write_ru: 7.0,
+                ru_wait_duration: std::time::Duration::from_millis(20),
+                ..Default::default()
+            }),
+            success: true,
+            ..Default::default()
+        });
+        let summaries = astersql_util_stmtsummary::StmtSummaryByDigestMap
+            .lock()
+            .unwrap()
+            .Summaries();
+        let entry = summaries
+            .iter()
+            .find(|entry| entry.digest == digest)
+            .unwrap();
+        let ru = &entry.cumulative.StmtRUSummary;
+        let (read, write) = if version == 2 {
+            if is_write { (0.0, 27.0) } else { (27.0, 0.0) }
+        } else {
+            (11.0, 7.0)
+        };
+        assert_eq!((ru.SumRRU, ru.SumWRU), (read, write));
+        assert_eq!(ru.SumRUWaitDuration, std::time::Duration::from_millis(20));
+    }
 }
 
 #[test]

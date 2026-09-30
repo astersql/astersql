@@ -519,6 +519,21 @@ impl StmtSummary {
     pub fn Len(&self) -> usize {
         self.inner.window.lock().lru.len()
     }
+    #[cfg(test)]
+    pub(crate) fn recordForTest(&self, digest: &str) -> Option<Arc<Mutex<StmtRecord>>> {
+        self.inner
+            .window
+            .lock()
+            .lru
+            .iter()
+            .find(|(_, record)| record.lock().Digest == digest)
+            .map(|(_, record)| Arc::clone(record))
+    }
+    #[cfg(test)]
+    pub(crate) fn rotateForTest(&self) {
+        let begin = self.inner.window.lock().begin;
+        rotateWindow(&self.inner, begin + Duration::from_secs(2));
+    }
     pub fn EvictedCount(&self) -> i64 {
         self.inner.window.lock().evictedCount
     }
@@ -653,21 +668,22 @@ fn rotateLoop(inner: Arc<StmtSummaryInner>) {
         if ticker.recv_timeout(Duration::from_millis(100)).is_err() {
             continue;
         }
-        let now = SystemTime::now();
-        let snapshot = {
-            let mut window = inner.window.lock();
-            let elapsed = now.duration_since(window.begin).unwrap_or_default();
-            if elapsed
-                <= Duration::from_secs(inner.optRefreshInterval.load(Ordering::Acquire) as u64)
-            {
-                continue;
-            }
-            let replacement = stmtWindow::new(now, inner.optMaxStmtCount.load(Ordering::Acquire));
-            std::mem::replace(&mut *window, replacement).snapshot()
-        };
-        if !snapshot.records.is_empty() {
-            inner.storage.persist(snapshot, now);
+        rotateWindow(&inner, SystemTime::now());
+    }
+}
+
+fn rotateWindow(inner: &StmtSummaryInner, now: SystemTime) {
+    let snapshot = {
+        let mut window = inner.window.lock();
+        let elapsed = now.duration_since(window.begin).unwrap_or_default();
+        if elapsed <= Duration::from_secs(inner.optRefreshInterval.load(Ordering::Acquire) as u64) {
+            return;
         }
+        let replacement = stmtWindow::new(now, inner.optMaxStmtCount.load(Ordering::Acquire));
+        std::mem::replace(&mut *window, replacement).snapshot()
+    };
+    if !snapshot.records.is_empty() {
+        inner.storage.persist(snapshot, now);
     }
 }
 
@@ -705,8 +721,25 @@ pub fn NewStmtSummary4Test(maxStmtCount: u32) -> Arc<StmtSummary> {
 }
 
 static GLOBAL_STMT_SUMMARY: OnceLock<RwLock<Option<Arc<StmtSummary>>>> = OnceLock::new();
+static GLOBAL_PERSISTENT_ENABLED: AtomicBool = AtomicBool::new(false);
 fn global() -> &'static RwLock<Option<Arc<StmtSummary>>> {
     GLOBAL_STMT_SUMMARY.get_or_init(|| RwLock::new(None))
+}
+
+fn activeGlobal() -> Option<Arc<StmtSummary>> {
+    if GLOBAL_PERSISTENT_ENABLED.load(Ordering::Acquire) {
+        global()
+            .read()
+            .expect("global statement summary lock poisoned")
+            .clone()
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn installedForTest() -> Option<Arc<StmtSummary>> {
+    global().read().unwrap().clone()
 }
 
 /// 安装全局 v2 摘要实例。
@@ -714,26 +747,26 @@ pub fn Setup(config: &Config) -> Result<()> {
     let summary = match NewStmtSummary(config) {
         Ok(summary) => summary,
         Err(error) => {
-            if let Some(previous) = global()
-                .write()
-                .expect("global statement summary lock poisoned")
-                .take()
-            {
-                previous.Close();
-            }
+            GLOBAL_PERSISTENT_ENABLED.store(false, Ordering::Release);
             return Err(format!(
                 "stmtsummary v2 persistent mode disabled; falling back to v1 in-memory aggregation: {error}"
             ));
         }
     };
-    *global()
+    let previous = global()
         .write()
-        .expect("global statement summary lock poisoned") = Some(summary);
+        .expect("global statement summary lock poisoned")
+        .replace(summary);
+    GLOBAL_PERSISTENT_ENABLED.store(true, Ordering::Release);
+    if let Some(previous) = previous {
+        previous.Close();
+    }
     Ok(())
 }
 
 /// 关闭并卸下全局实例。
 pub fn Close() {
+    GLOBAL_PERSISTENT_ENABLED.store(false, Ordering::Release);
     if let Some(summary) = global()
         .write()
         .expect("global statement summary lock poisoned")
@@ -745,11 +778,7 @@ pub fn Close() {
 
 /// 全局 Add：优先 v2，未 Setup 时回退 v1。
 pub fn Add(info: &StmtExecInfo) {
-    if let Some(summary) = global()
-        .read()
-        .expect("global statement summary lock poisoned")
-        .clone()
-    {
+    if let Some(summary) = activeGlobal() {
         summary.Add(info);
     } else {
         task_stmtsummary::StmtSummaryByDigestMap
@@ -760,43 +789,31 @@ pub fn Add(info: &StmtExecInfo) {
 }
 
 pub fn Enabled() -> bool {
-    global()
-        .read()
-        .expect("global statement summary lock poisoned")
-        .as_ref()
-        .map_or_else(
-            || {
-                task_stmtsummary::StmtSummaryByDigestMap
-                    .lock()
-                    .expect("v1 summary lock poisoned")
-                    .Enabled()
-            },
-            |summary| summary.Enabled(),
-        )
+    activeGlobal().as_ref().map_or_else(
+        || {
+            task_stmtsummary::StmtSummaryByDigestMap
+                .lock()
+                .expect("v1 summary lock poisoned")
+                .Enabled()
+        },
+        |summary| summary.Enabled(),
+    )
 }
 
 pub fn EnabledInternal() -> bool {
-    global()
-        .read()
-        .expect("global statement summary lock poisoned")
-        .as_ref()
-        .map_or_else(
-            || {
-                task_stmtsummary::StmtSummaryByDigestMap
-                    .lock()
-                    .expect("v1 summary lock poisoned")
-                    .EnabledInternal()
-            },
-            |summary| summary.EnableInternalQuery(),
-        )
+    activeGlobal().as_ref().map_or_else(
+        || {
+            task_stmtsummary::StmtSummaryByDigestMap
+                .lock()
+                .expect("v1 summary lock poisoned")
+                .EnabledInternal()
+        },
+        |summary| summary.EnableInternalQuery(),
+    )
 }
 
 pub fn SetEnabled(value: bool) -> Result<()> {
-    if let Some(summary) = global()
-        .read()
-        .expect("global statement summary lock poisoned")
-        .clone()
-    {
+    if let Some(summary) = activeGlobal() {
         summary.SetEnabled(value)
     } else {
         task_stmtsummary::StmtSummaryByDigestMap
@@ -807,11 +824,7 @@ pub fn SetEnabled(value: bool) -> Result<()> {
 }
 
 pub fn SetEnableInternalQuery(value: bool) -> Result<()> {
-    if let Some(summary) = global()
-        .read()
-        .expect("global statement summary lock poisoned")
-        .clone()
-    {
+    if let Some(summary) = activeGlobal() {
         summary.SetEnableInternalQuery(value)
     } else {
         task_stmtsummary::StmtSummaryByDigestMap
@@ -822,11 +835,7 @@ pub fn SetEnableInternalQuery(value: bool) -> Result<()> {
 }
 
 pub fn SetRefreshInterval(value: i64) -> Result<()> {
-    if let Some(summary) = global()
-        .read()
-        .expect("global statement summary lock poisoned")
-        .clone()
-    {
+    if let Some(summary) = activeGlobal() {
         summary.SetRefreshInterval(value.max(1) as u32)
     } else {
         task_stmtsummary::StmtSummaryByDigestMap
@@ -838,11 +847,7 @@ pub fn SetRefreshInterval(value: i64) -> Result<()> {
 
 /// v2 无 history size 概念；已 Setup 时为 no-op，否则转发给 v1。
 pub fn SetHistorySize(value: i32) -> Result<()> {
-    if global()
-        .read()
-        .expect("global statement summary lock poisoned")
-        .is_some()
-    {
+    if activeGlobal().is_some() {
         Ok(())
     } else {
         task_stmtsummary::StmtSummaryByDigestMap
@@ -853,11 +858,7 @@ pub fn SetHistorySize(value: i32) -> Result<()> {
 }
 
 pub fn SetMaxStmtCount(value: i32) -> Result<()> {
-    if let Some(summary) = global()
-        .read()
-        .expect("global statement summary lock poisoned")
-        .clone()
-    {
+    if let Some(summary) = activeGlobal() {
         summary.SetMaxStmtCount(value.max(1) as u32)
     } else {
         task_stmtsummary::StmtSummaryByDigestMap

@@ -322,3 +322,11 @@ fn test_recursive_import() {
         "missing import",
     );
 }
+#[test]
+fn go_merge_38_column_filter_rules_are_public_and_match() {
+    let rules = filter::ParseColumnFilterRules(vec!["*".into(), "!secret*".into()]).unwrap();
+    assert_eq!(rules.len(), 2);
+    assert!(filter::ColumnFilterRules::default().is_empty());
+    assert!(rules.MatchColumn("PUBLIC"));
+    assert!(!rules.MatchColumn("SecretToken"));
+}

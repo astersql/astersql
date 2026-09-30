@@ -33,6 +33,32 @@ use task_execdetails::util::LoadTiKVExecDetails;
 use task_stmtctx::{NewStmtCtx, TableEntry};
 use task_stmtsummary::{StmtExecInfo, StmtExecLazyInfo};
 
+/// Select the RU values shown by statement summary for the active RU version.
+/// A statement without a finalized v2 total (for example a cursor fetch)
+/// continues to expose its original RU details.
+pub fn SelectRUDetailsForStatementSummary(
+    raw: Option<RUDetails>,
+    version: u8,
+    total_ru_v2: Option<f64>,
+    is_write: bool,
+) -> Option<RUDetails> {
+    if version != 2 {
+        return raw;
+    }
+    let Some(total) = total_ru_v2 else {
+        return raw;
+    };
+    let wait = raw
+        .as_ref()
+        .map_or(Duration::ZERO, RUDetails::RUWaitDuration);
+    Some(RUDetails {
+        read_ru: if is_write { 0.0 } else { total },
+        write_ru: if is_write { total } else { 0.0 },
+        ru_wait_duration: wait,
+        ..Default::default()
+    })
+}
+
 /// 文本执行计划超限时的占位串。
 const PLAN_DISCARDED_ENCODED: &str = "[discard]";
 /// 编码计划（文本/二进制）保留上限，默认 1MiB。
