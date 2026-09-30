@@ -60,8 +60,13 @@ fn go_merge_43_canonical_server_domain_serves_extract_archive() {
     }
     let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
     let sql = astersql_session::runtime::ConcreteSession::new(Arc::clone(&domain));
-    sql.execute("CREATE TABLE extract_runtime_sample (id INT PRIMARY KEY)")
+    sql.execute(
+        "CREATE TABLE extract_runtime_sample (id INT PRIMARY KEY, value INT, KEY ix_value(value))",
+    )
+    .unwrap();
+    sql.execute("INSERT INTO extract_runtime_sample VALUES (1, 10), (2, 20), (3, 30)")
         .unwrap();
+    sql.execute("ANALYZE TABLE extract_runtime_sample").unwrap();
     let mut statement = StmtExecInfo {
         SchemaName: "test".into(),
         Digest: "extract-runtime-digest".into(),
@@ -111,6 +116,9 @@ fn go_merge_43_canonical_server_domain_serves_extract_archive() {
         archive.extend_from_slice(&buffer[..count]);
     }
     reader.close().unwrap();
+    if let Ok(path) = std::env::var("ASTERSQL_EXTRACT_ARCHIVE_FOR_GO") {
+        std::fs::write(path, &archive).unwrap();
+    }
     let package = astersql_domain::plan_replayer_dump::decode_replay_archive(&archive).unwrap();
     assert!(package.files.contains_key("extract_meta.txt"));
     assert_eq!(
@@ -122,10 +130,20 @@ fn go_merge_43_canonical_server_domain_serves_extract_archive() {
     let config = std::str::from_utf8(&package.files["config.toml"]).unwrap();
     let config: toml::Value = toml::from_str(config).unwrap();
     assert!(config.get("store").is_some());
+    assert!(package.files["meta.txt"].starts_with(b"Release Version: "));
+    assert!(package.files.contains_key("global_bindings.sql"));
+    assert_eq!(
+        std::str::from_utf8(&package.files["schema/schema_meta.txt"]).unwrap(),
+        "test.extract_runtime_sample;"
+    );
     assert!(
         package
             .files
             .contains_key("schema/test.extract_runtime_sample.schema.txt")
+    );
+    assert!(
+        package.files["schema/test.extract_runtime_sample.schema.txt"]
+            .starts_with(b"create database if not exists `test`; use `test`;CREATE TABLE")
     );
     assert!(
         package
@@ -137,6 +155,59 @@ fn go_merge_43_canonical_server_domain_serves_extract_archive() {
             .files
             .contains_key("stats/test.extract_runtime_sample.json")
     );
+    let sql_record: serde_json::Value =
+        serde_json::from_slice(&package.files["SQLs/extract-runtime-digest.json"]).unwrap();
+    assert_eq!(sql_record["schema"], "test");
+    assert_eq!(sql_record["sql"], "SELECT id FROM extract_runtime_sample");
+    assert_eq!(sql_record["digest"], "extract-runtime-digest");
+    let stats: serde_json::Value =
+        serde_json::from_slice(&package.files["stats/test.extract_runtime_sample.json"]).unwrap();
+    assert_eq!(stats["database_name"], "test");
+    assert_eq!(stats["table_name"], "extract_runtime_sample");
+    assert!(stats["columns"].is_object());
+    assert_eq!(stats["count"], 3);
+    assert!(stats["columns"]["id"]["histogram"]["ndv"].is_number());
+    assert!(stats["indices"]["ix_value"]["histogram"]["ndv"].is_number());
+    assert!(stats["indices"].is_object());
+    assert!(stats["count"].is_number());
+    assert!(stats["modify_count"].is_number());
+    assert!(stats["version"].is_number());
+    let skip_name = runtime
+        .extract_task(
+            &RequestContext::default(),
+            ExtractTask {
+                extract_type: ExtractType::Plan,
+                is_background_job: false,
+                begin: Timestamp(0),
+                end: Timestamp(i64::MAX / 2),
+                skip_stats: true,
+                use_history_view: false,
+            },
+        )
+        .unwrap();
+    let skip_path = format!("{}/{}", runtime.extract_task_directory(), skip_name);
+    let mut skip_reader = runtime
+        .open_extract(&RequestContext::default(), &skip_path)
+        .unwrap();
+    let mut skip_archive = Vec::new();
+    loop {
+        let count = skip_reader.read(&mut buffer).unwrap();
+        if count == 0 {
+            break;
+        }
+        skip_archive.extend_from_slice(&buffer[..count]);
+    }
+    skip_reader.close().unwrap();
+    if let Ok(path) = std::env::var("ASTERSQL_EXTRACT_SKIP_ARCHIVE_FOR_GO") {
+        std::fs::write(path, &skip_archive).unwrap();
+    }
+    let skipped =
+        astersql_domain::plan_replayer_dump::decode_replay_archive(&skip_archive).unwrap();
+    assert_eq!(
+        skipped.files["extract_meta.txt"],
+        b"SkipStats = \"true\"\ntaskType = \"Plan\"\n"
+    );
+    assert!(!skipped.files.keys().any(|name| name.starts_with("stats/")));
     assert_eq!(
         runtime
             .extract_task(
@@ -157,6 +228,10 @@ fn go_merge_43_canonical_server_domain_serves_extract_archive() {
     astersql_planner_extstore::GetGlobalExtStorage(&context)
         .unwrap()
         .DeleteFile(&context, &path)
+        .unwrap();
+    astersql_planner_extstore::GetGlobalExtStorage(&context)
+        .unwrap()
+        .DeleteFile(&context, &skip_path)
         .unwrap();
     StmtSummaryByDigestMap.lock().unwrap().Clear();
     domain.close();

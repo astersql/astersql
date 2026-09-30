@@ -13,6 +13,7 @@ go-package = "pkg/server"
 legacy-tasks = ["task-1286", "task-1287", "task-1288", "task-1289", "task-1293", "task-1618", "task-1619", "task-1620"]
 
 [dependencies]
+base64 = "0.22"
 "astersql-autoid_service" = { package = "astersql-autoid_service", path = "../autoid_service" }
 "astersql-config" = { package = "astersql-config", path = "../config" }
 "astersql-config-deploymode" = { package = "astersql-config-deploymode", path = "../config/deploymode" }
@@ -73,6 +74,7 @@ legacy-tasks = ["task-1286", "task-1287", "task-1288", "task-1289", "task-1293",
 "astersql-sessionctx-variable" = { package = "astersql-sessionctx-variable", path = "../sessionctx/variable" }
 "astersql-sessiontxn" = { package = "astersql-sessiontxn", path = "../sessiontxn" }
 "astersql-statistics-handle" = { package = "astersql-statistics-handle", path = "../statistics/handle" }
+"astersql-statistics" = { package = "astersql-statistics", path = "../statistics" }
 "astersql-statistics-handle-initstats" = { package = "astersql-statistics-handle-initstats", path = "../statistics/handle/initstats" }
 "astersql-statistics-handle-util" = { package = "astersql-statistics-handle-util", path = "../statistics/handle/util" }
 "astersql-store" = { package = "astersql-store", path = "../store" }

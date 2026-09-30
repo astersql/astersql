@@ -20,6 +20,7 @@ use astersql_server_handler_extractorhandler::extractor::{
 };
 use astersql_session::runtime::ConcreteSession;
 use astersql_util_stmtsummary::StmtSummaryByDigestMap;
+use base64::Engine as _;
 
 const EXTRACT_DIRECTORY: &str = "extract";
 
@@ -37,6 +38,124 @@ fn sql_rows(domain: &Arc<Domain>, sql: &str) -> Result<Vec<Vec<String>>, String>
         record_set.close().map_err(|error| error.to_string())?;
     }
     Ok(rows)
+}
+
+fn stats_histogram(ndv: i64, buckets: &[astersql_statistics_handle::Bucket]) -> serde_json::Value {
+    let mut histogram = serde_json::json!({"ndv": ndv});
+    if !buckets.is_empty() {
+        histogram["buckets"] = serde_json::Value::Array(
+            buckets
+                .iter()
+                .map(|bucket| {
+                    let mut value = serde_json::json!({
+                        "count": bucket.count,
+                        "repeats": bucket.repeats,
+                        "ndv": bucket.ndv,
+                    });
+                    if !bucket.lower.is_empty() {
+                        value["lower_bound"] = serde_json::json!(
+                            base64::engine::general_purpose::STANDARD.encode(&bucket.lower)
+                        );
+                    }
+                    if !bucket.upper.is_empty() {
+                        value["upper_bound"] = serde_json::json!(
+                            base64::engine::general_purpose::STANDARD.encode(&bucket.upper)
+                        );
+                    }
+                    value
+                })
+                .collect(),
+        );
+    }
+    histogram
+}
+
+fn stats_sketch(top_n: &[(Vec<u8>, u64)]) -> Option<serde_json::Value> {
+    (!top_n.is_empty()).then(|| {
+        serde_json::json!({
+            "top_n": top_n.iter().map(|(data, count)| serde_json::json!({
+                "data": base64::engine::general_purpose::STANDARD.encode(data),
+                "count": count,
+            })).collect::<Vec<_>>(),
+            "default_value": 0,
+        })
+    })
+}
+
+fn stats_fm_sketch(bytes: &[u8]) -> Result<Option<serde_json::Value>, String> {
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    let sketch = astersql_statistics::DecodeFMSketch(Some(bytes))
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "nonempty FM sketch decoded as absent".to_owned())?;
+    let proto = astersql_statistics::FMSketchToProto(Some(&sketch));
+    Ok(Some(serde_json::json!({
+        "mask": proto.get_mask(),
+        "hashset": proto.get_hashset(),
+    })))
+}
+
+fn table_stats_json(domain: &Domain, database: &str, table: &str) -> Result<Vec<u8>, String> {
+    let (_, info) = domain
+        .stats_table(database, table)
+        .ok_or_else(|| format!("statistics table {database}.{table} does not exist"))?;
+    let stats = domain
+        .stats_context()
+        .physical_stats(info.ID)
+        .ok_or_else(|| format!("statistics for {database}.{table} are unavailable"))?;
+    let mut columns = serde_json::Map::new();
+    for column in &info.Columns {
+        let Some(item) = stats.columns.get(&column.ID) else {
+            continue;
+        };
+        let mut value = serde_json::json!({
+            "histogram": stats_histogram(item.ndv, &item.buckets),
+            "stats_ver": item.stats_version,
+            "null_count": item.null_count,
+            "tot_col_size": item.total_column_size,
+            "last_update_version": item.version,
+            "correlation": item.correlation,
+        });
+        if let Some(sketch) = stats_sketch(&item.top_n) {
+            value["cm_sketch"] = sketch;
+        }
+        if let Some(sketch) = stats_fm_sketch(&item.fm_sketch)? {
+            value["fm_sketch"] = sketch;
+        }
+        columns.insert(column.Name.L.clone(), value);
+    }
+    let mut indices = serde_json::Map::new();
+    for index in &info.Indices {
+        let Some(item) = stats.indexes.get(&index.ID) else {
+            continue;
+        };
+        let mut value = serde_json::json!({
+            "histogram": stats_histogram(item.ndv, &item.buckets),
+            "stats_ver": item.stats_version,
+            "null_count": item.null_count,
+            "tot_col_size": item.total_column_size,
+            "last_update_version": item.version,
+            "correlation": item.correlation,
+        });
+        if let Some(sketch) = stats_sketch(&item.top_n) {
+            value["cm_sketch"] = sketch;
+        }
+        indices.insert(index.Name.L.clone(), value);
+    }
+    serde_json::to_vec(&serde_json::json!({
+        "columns": columns,
+        "indices": indices,
+        "partitions": {},
+        "database_name": database,
+        "table_name": table,
+        "predicate_columns": [],
+        "count": stats.realtime_count,
+        "modify_count": stats.modify_count,
+        "version": stats.version,
+        "is_historical_stats": false,
+    }))
+    .map_err(|error| error.to_string())
 }
 
 struct ProductionExtractSource {
@@ -137,22 +256,19 @@ impl ExtractSource for ProductionExtractSource {
             "extract_meta.txt",
             format!("SkipStats = \"{}\"\ntaskType = \"Plan\"\n", task.skip_stats),
         )?;
-        archive.write(
-            "meta.txt",
-            format!("AsterSQL {}\n", env!("CARGO_PKG_VERSION")),
-        )?;
+        archive.write("meta.txt", astersql_util_printer::GetTiDBInfo())?;
         archive.write(
             "config.toml",
             toml::to_string(&*astersql_config::config::get_global_config())
                 .map_err(|error| error.to_string())?,
         )?;
-        archive.write(
-            "schema/schema_meta.txt",
-            format!(
-                "schema_version = {}\n",
-                self.domain.info_schema().SchemaMetaVersion()
-            ),
-        )?;
+        let schema_meta = package
+            .tables
+            .iter()
+            .filter(|table| !table.is_view)
+            .map(|table| format!("{}.{};", table.database, table.table))
+            .collect::<String>();
+        archive.write("schema/schema_meta.txt", schema_meta)?;
         let variables = sql_rows(&self.domain, "SHOW VARIABLES")?;
         archive.write(
             "variables.toml",
@@ -163,12 +279,11 @@ impl ExtractSource for ProductionExtractSource {
         )?;
         let bindings = sql_rows(&self.domain, "SHOW GLOBAL BINDINGS")?;
         archive.write(
-            "bindings.sql",
+            "global_bindings.sql",
             bindings
                 .into_iter()
-                .filter_map(|row| row.first().cloned())
-                .collect::<Vec<_>>()
-                .join(";\n"),
+                .map(|row| format!("{}\n", row.join("\t")))
+                .collect::<String>(),
         )?;
         let mut replicas = String::new();
         for table in &package.tables {
@@ -186,34 +301,25 @@ impl ExtractSource for ProductionExtractSource {
             let suffix = if table.is_view { "view" } else { "schema" };
             archive.write(
                 format!("{path}/{}.{}.{suffix}.txt", table.database, table.table),
-                create,
+                format!(
+                    "create database if not exists {db}; use {db};{create}",
+                    db = sql_identifier(&table.database)
+                ),
             )?;
             if let Some((_, info)) = self.domain.stats_table(&table.database, &table.table) {
                 if let Some(replica) = info.TiFlashReplica {
-                    replicas.push_str(&format!(
-                        "{}.{}: {}\n",
-                        table.database, table.table, replica.Count
-                    ));
+                    if replica.Count > 0 {
+                        replicas.push_str(&format!(
+                            "{}.{}\t{}\n",
+                            table.database, table.table, replica.Count
+                        ));
+                    }
                 }
             }
             if !task.skip_stats && !table.is_view {
-                let mut stats = serde_json::Map::new();
-                for kind in ["META", "HISTOGRAMS", "BUCKETS", "TOPN"] {
-                    let rows = sql_rows(&self.domain, &format!("SHOW STATS_{kind}"))?
-                        .into_iter()
-                        .filter(|row| {
-                            row.first()
-                                .is_some_and(|name| name.eq_ignore_ascii_case(&table.database))
-                                && row
-                                    .get(1)
-                                    .is_some_and(|name| name.eq_ignore_ascii_case(&table.table))
-                        })
-                        .collect::<Vec<_>>();
-                    stats.insert(kind.to_owned(), serde_json::json!(rows));
-                }
                 archive.write(
                     format!("stats/{}.{}.json", table.database, table.table),
-                    serde_json::to_vec(&stats).map_err(|error| error.to_string())?,
+                    table_stats_json(&self.domain, &table.database, &table.table)?,
                 )?;
             }
         }
