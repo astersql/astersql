@@ -404,6 +404,8 @@ fn go_merge_43_domain_owns_inference_provider_lifecycle() {
             .embed("mock/json", "[1]", &Default::default(), &|| false)
             .is_err()
     );
+    domain.close();
+    assert!(domain.get_embed_fn().is_none());
 }
 
 #[test]
