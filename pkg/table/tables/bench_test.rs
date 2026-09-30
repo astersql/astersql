@@ -31,11 +31,15 @@ fn benchmark_table() -> TableCommon {
         id: 1,
         name: "a".to_owned(),
         needs_restored_data: false,
+        field_type: 8, // MySQL BIGINT
+        collation: String::new(),
     };
     let value = ColumnInfo {
         id: 2,
         name: "b".to_owned(),
         needs_restored_data: false,
+        field_type: 253, // MySQL VARSTRING
+        collation: "utf8mb4_bin".to_owned(),
     };
     TableCommon::new(
         TableInfo {

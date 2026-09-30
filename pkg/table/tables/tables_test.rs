@@ -28,8 +28,8 @@ use crate::partition::{
 use crate::tables::{
     Column, Constraint, PbColumnInfo, SequenceAllocator, SequenceCommon, SequenceInfo, TableCommon,
     TableError, TemporaryTable, build_partition_table_scan, build_table_scan, can_skip,
-    convert_datum_to_tail_space_count, find_index_by_column_name, find_primary_index,
-    overflow_shard_bits, primary_prefix_column_ids, seek_sequence_value,
+    can_skip_with_collation, convert_datum_to_tail_space_count, find_index_by_column_name,
+    find_primary_index, overflow_shard_bits, primary_prefix_column_ids, seek_sequence_value,
     set_pb_columns_default_value, try_get_common_pk_column_ids, try_truncate_restored_data,
 };
 use crate::testutil::swap_reorg_part_fields;
@@ -41,6 +41,8 @@ fn column(offset: usize, state: SchemaState, hidden: bool) -> Column {
             id: offset as i64 + 1,
             name: format!("c{offset}"),
             needs_restored_data: false,
+            field_type: 8, // MySQL BIGINT
+            collation: String::new(),
         },
         offset,
         state,
@@ -118,6 +120,115 @@ fn index_info(name: &str, offset: usize, unique: bool) -> IndexInfo {
         backfill_state: BackfillState::Inapplicable,
         condition: None,
     }
+}
+
+// The planner owns SQL expression rewriting. This table-local callback gives
+// the mutation test a compiled predicate while ParseSimpleExpr still parses SQL.
+#[cfg(feature = "expression-runtime")]
+static PARTIAL_INDEX_EXPECTED_COLLATION: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(feature = "expression-runtime")]
+fn partial_index_test_factory<'a>(
+    ctx: &dyn expression::BuildContext,
+    _node: &expression::ast::ExprNode,
+    _options: Vec<expression::BuildOption<'a>>,
+) -> Result<expression::ExprBox, expression::errors::Error> {
+    assert_eq!(
+        ctx.NewCollationEnabled(),
+        PARTIAL_INDEX_EXPECTED_COLLATION.load(std::sync::atomic::Ordering::SeqCst)
+    );
+    assert_eq!(ctx.GetEvalCtx().SQLMode(), expression::mysql::ModeNone);
+    assert_eq!(
+        ctx.GetEvalCtx().TypeCtx().Flags(),
+        expression::types::DefaultStmtFlags
+    );
+    assert_eq!(
+        ctx.GetEvalCtx().ErrCtx().LevelMap(),
+        stmtctx_dependency::DefaultStmtErrLevels()
+    );
+    let mut column = expression::Column::default();
+    column.Index = 0;
+    column.RetType = Some(*expression::types::NewFieldType(
+        expression::mysql::TypeLonglong,
+    ));
+    expression::NewFunction(
+        ctx,
+        "gt",
+        *expression::types::NewFieldType(expression::mysql::TypeLonglong),
+        vec![Box::new(column), Box::new(expression::NewInt64Const(0))],
+    )
+}
+
+#[test]
+#[cfg(feature = "expression-runtime")]
+fn go_merge_49_partial_index_parses_at_construction_and_filters_dml() {
+    expression::InstallBuildSimpleExpr(partial_index_test_factory).unwrap();
+    let columns = vec![
+        column(0, SchemaState::Public, false),
+        column(1, SchemaState::Public, false),
+    ];
+    let meta = TableInfo {
+        id: 21,
+        columns: columns.iter().map(|c| c.info.clone()).collect(),
+    };
+    let mut index = index_info("partial_b", 1, true);
+    index.condition = Some("c0 >".to_owned());
+    assert!(matches!(
+        TableCommon::new(
+            meta.clone(),
+            21,
+            columns.clone(),
+            vec![index.clone()],
+            vec![],
+            false
+        ),
+        Err(TableError::IndexCondition(_))
+    ));
+    index.condition = Some("c0 > 0".to_owned());
+    PARTIAL_INDEX_EXPECTED_COLLATION.store(true, std::sync::atomic::Ordering::SeqCst);
+    TableCommon::new(
+        meta.clone(),
+        21,
+        columns.clone(),
+        vec![index.clone()],
+        vec![],
+        true,
+    )
+    .unwrap();
+    PARTIAL_INDEX_EXPECTED_COLLATION.store(false, std::sync::atomic::Ordering::SeqCst);
+    let mut table = TableCommon::new(meta, 21, columns, vec![index], vec![], false).unwrap();
+    assert!(
+        table
+            .add_record(vec![Datum::Int(-1), Datum::Bytes(b"x".to_vec())], Some(1))
+            .is_ok()
+    );
+    assert!(
+        table
+            .add_record(vec![Datum::Int(1), Datum::Bytes(b"x".to_vec())], Some(2))
+            .is_ok()
+    );
+    assert!(matches!(
+        table.add_record(vec![Datum::Int(2), Datum::Bytes(b"x".to_vec())], Some(3)),
+        Err(TableError::DuplicateIndex { .. })
+    ));
+    table
+        .update_record(
+            2,
+            &[Datum::Int(1), Datum::Bytes(b"x".to_vec())],
+            vec![Datum::Int(-2), Datum::Bytes(b"x".to_vec())],
+            &[true, false],
+        )
+        .unwrap();
+    table
+        .add_record(vec![Datum::Int(3), Datum::Bytes(b"x".to_vec())], Some(4))
+        .unwrap();
+    table
+        .remove_record(4, &[Datum::Int(3), Datum::Bytes(b"x".to_vec())])
+        .unwrap();
+    table
+        .add_record(vec![Datum::Int(4), Datum::Bytes(b"x".to_vec())], Some(5))
+        .unwrap();
 }
 
 fn two_column_table() -> TableCommon {
@@ -526,6 +637,27 @@ fn can_skip_matches_pk_default_and_generated_column_rules() {
     assert!(can_skip(&candidate, &Datum::Int(1), Some(&primary)));
     primary.columns[0].length = Some(2);
     assert!(!can_skip(&candidate, &Datum::Int(1), Some(&primary)));
+}
+
+#[test]
+fn go_merge_49_common_handle_skip_uses_table_collation_mode() {
+    let mut candidate = column(0, SchemaState::Public, false);
+    candidate.common_handle = true;
+    candidate.info.needs_restored_data = true;
+    let mut primary = index_info("primary", 0, true);
+    primary.primary = true;
+    assert!(!can_skip_with_collation(
+        true,
+        &candidate,
+        &Datum::Int(1),
+        Some(&primary)
+    ));
+    assert!(can_skip_with_collation(
+        false,
+        &candidate,
+        &Datum::Int(1),
+        Some(&primary)
+    ));
 }
 
 #[test]

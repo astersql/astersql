@@ -24,6 +24,29 @@ use std::sync::Arc;
 
 use expression::{Column, ExprBox};
 
+/// Construct the partition expression context with the owning table's mode.
+pub fn NewPartitionExprBuildCtx(
+    table: &crate::tables::TableCommon,
+) -> exprstatic_dependency::ExprContext {
+    let flags = expression::types::StrictFlags
+        .WithIgnoreTruncateErr(true)
+        .WithIgnoreZeroDateErr(true)
+        .WithIgnoreZeroInDate(true)
+        .WithIgnoreInvalidDateErr(true);
+    let mut levels = [expression::errctx::Level::LevelError; expression::errctx::errGroupCount];
+    levels[expression::errctx::ErrGroup::ErrGroupTruncate as usize] =
+        expression::errctx::Level::LevelIgnore;
+    let eval = exprstatic_dependency::NewEvalContext(vec![
+        exprstatic_dependency::WithSQLMode(expression::mysql::ModeAllowInvalidDates),
+        exprstatic_dependency::WithTypeFlags(flags),
+        exprstatic_dependency::WithErrLevelMap(levels),
+    ]);
+    exprstatic_dependency::NewExprContext(vec![
+        exprstatic_dependency::WithEvalCtx(Arc::new(eval)),
+        exprstatic_dependency::WithNewCollationEnabled(table.use_new_collation()),
+    ])
+}
+
 /// 分区规划与行路由共享的表达式及裁剪元数据。
 /// 可选字段对应 Go 中可为 nil 的接口与嵌入指针。
 /// The expression and pruning metadata shared by partition planning and row routing.
@@ -53,6 +76,22 @@ pub struct PartitionExpr {
 }
 
 impl PartitionExpr {
+    /// Bind KEY and LIST COLUMNS encoders to the same mode as their table.
+    /// Call for both the active and reorganization expressions at construction.
+    pub fn ForTable(table: &crate::tables::TableCommon, mut expression: Self) -> Self {
+        let context = NewPartitionExprBuildCtx(table);
+        let use_new_collation = expression::BuildContext::NewCollationEnabled(&context);
+        if let Some(pruning) = expression.ForKeyPruning.as_mut() {
+            pruning.UseNewCollate = use_new_collation;
+        }
+        if let Some(list) = expression.ForListPruning.as_mut() {
+            for pruning in &mut list.ColPrunes {
+                pruning.UseNewCollate = use_new_collation;
+            }
+        }
+        expression
+    }
+
     /// 返回 KEY 分区列，并把列 Index 改写为分区键行内下标（与 Go 指针原地修改一致）。
     /// Returns key-partition columns with indices rewritten for the partition-key
     /// row. The source columns are updated too, preserving Go's pointer mutation.
@@ -90,6 +129,7 @@ pub struct ForRangeColumnsPruning {
 #[derive(Clone, Default)]
 pub struct ForKeyPruning {
     pub KeyPartCols: Vec<Column>,
+    pub UseNewCollate: bool,
 }
 
 impl ForKeyPruning {
@@ -108,7 +148,14 @@ impl ForKeyPruning {
             if value.Kind() == expression::types::KindNull {
                 hasher.update(&[0]);
             } else {
-                hasher.update(&value.ToHashKey()?);
+                let text = value.ToString()?;
+                hasher.update(
+                    &expression::collate::GetCollatorWithCollate(
+                        self.UseNewCollate,
+                        &value.Collation(),
+                    )
+                    .Key(&text),
+                );
             }
         }
 
@@ -207,12 +254,39 @@ impl ForListPruning {
 pub struct ForListColumnPruning {
     pub ExprCol: Option<Column>,
     pub ValueType: Option<expression::types::FieldType>,
+    pub UseNewCollate: bool,
     pub ValueMap: Arc<BTreeMap<String, ListPartitionLocation>>,
     pub Sorted: Arc<BTreeMap<String, ListPartitionLocation>>,
     pub DefaultPartID: i64,
 }
 
 impl ForListColumnPruning {
+    /// Convert and encode a LIST COLUMNS value with this pruner's collation mode
+    /// and the statement's error policy.
+    pub fn GenKey(
+        &self,
+        context: expression::types::Context,
+        error_context: &expression::errctx::Context,
+        value: expression::types::Datum,
+    ) -> Result<Vec<u8>, expression::errors::Error> {
+        let value_type = self
+            .ValueType
+            .as_ref()
+            .ok_or_else(|| expression::errors::New("LIST COLUMNS value type is missing"))?;
+        let converted = value.ConvertTo(context.clone(), value_type)?;
+        match expression::codec::NewEncoder(self.UseNewCollate).EncodeKey(
+            context.Location(),
+            Vec::new(),
+            vec![converted],
+        ) {
+            Ok(encoded) => Ok(encoded),
+            Err(error) => match error_context.HandleError(Some(error)) {
+                Some(error) => Err(expression::errors::New(error.to_string())),
+                None => Ok(Vec::new()),
+            },
+        }
+    }
+
     /// `DefaultPartID > 0` 表示存在 DEFAULT 分区；零值表示尚未初始化。
     pub fn HasDefault(&self) -> bool {
         self.DefaultPartID > 0

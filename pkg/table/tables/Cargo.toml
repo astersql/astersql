@@ -10,12 +10,16 @@ path = "lib.rs"
 doctest = false
 
 [features]
-default = []
-expression-runtime = ["dep:expression"]
+default = ["expression-runtime"]
+expression-runtime = ["dep:expression", "dep:exprstatic-dependency", "dep:stmtctx-dependency"]
 
 [dependencies]
 crc32fast = "1"
+model-dependency = { package = "astersql-meta-model", path = "../../meta/model" }
+collate-dependency = { package = "astersql-util-collate", path = "../../util/collate" }
 expression = { package = "astersql-expression", path = "../../expression", optional = true }
+exprstatic-dependency = { package = "astersql-expression-exprstatic", path = "../../expression/exprstatic", optional = true }
+stmtctx-dependency = { package = "astersql-sessionctx-stmtctx", path = "../../sessionctx/stmtctx", optional = true }
 
 [package.metadata.porting]
 go-package = "pkg/table/tables"

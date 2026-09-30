@@ -108,6 +108,10 @@ mod db_driver_test;
 mod testkit_test;
 
 #[cfg(test)]
+#[path = "go_merge_49_partial_index_test.rs"]
+mod go_merge_49_partial_index_test;
+
+#[cfg(test)]
 #[path = "asynctestkit_test.rs"]
 mod asynctestkit_test;
 

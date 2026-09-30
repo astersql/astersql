@@ -21,6 +21,9 @@ pub mod column;
 pub mod constraint;
 /// 索引契约与索引 KV 生成器。
 pub mod index;
+/// Materialized-view log table wrapper for synchronous DML logging.
+pub mod mview_log;
+pub mod raw_row;
 /// 表契约实现（对应 Go `pkg/table/table.go`），路径别名避免与 crate 名冲突。
 #[path = "table.rs"]
 pub mod table_impl;
@@ -31,6 +34,8 @@ pub use column::*;
 pub use constraint::*;
 /// 再导出索引相关公共类型与函数。
 pub use index::*;
+pub use mview_log::*;
+pub use raw_row::*;
 /// 再导出表契约相关公共类型与函数。
 pub use table_impl::*;
 
@@ -68,3 +73,11 @@ mod table_migration_aster_unit_test;
 #[cfg(test)]
 #[path = "table_test.rs"]
 mod table_test;
+
+#[cfg(test)]
+#[path = "go_merge_49_test.rs"]
+mod go_merge_49_test;
+
+#[cfg(test)]
+#[path = "mview_log_test.rs"]
+mod mview_log_test;

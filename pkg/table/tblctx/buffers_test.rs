@@ -139,7 +139,6 @@ fn TestEncodeRow() {
         let mut mem_buffer = MockMemBuffer::default();
         buffer
             .WriteMemBufferEncoded(
-                codec::NewEncoder(collate::NewCollationEnabled()),
                 RowEncodingConfig {
                     RowEncoder: Some(rowcodec::Encoder::new(!case.old_format)),
                     IsRowLevelChecksumEnabled: case.row_level_checksum,
@@ -199,7 +198,6 @@ fn TestEncodeBufferReserve() {
     let mut mem_buffer = MockMemBuffer::default();
     buffer
         .WriteMemBufferEncoded(
-            codec::NewEncoder(collate::NewCollationEnabled()),
             RowEncodingConfig {
                 RowEncoder: Some(rowcodec::Encoder::new(true)),
                 IsRowLevelChecksumEnabled: false,

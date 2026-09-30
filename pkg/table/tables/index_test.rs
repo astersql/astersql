@@ -57,11 +57,15 @@ fn table_info() -> TableInfo {
                 id: 1,
                 name: "a".to_owned(),
                 needs_restored_data: false,
+                field_type: 8, // MySQL BIGINT
+                collation: String::new(),
             },
             ColumnInfo {
                 id: 2,
                 name: "b".to_owned(),
                 needs_restored_data: true,
+                field_type: 253, // MySQL VARSTRING
+                collation: "utf8mb4_bin".to_owned(),
             },
         ],
     }
@@ -130,6 +134,29 @@ fn index_constructor_rejects_out_of_range_column_offset() {
         Index::new(false, 1, table_info(), info),
         Err(IndexError::ColumnOffset(9))
     );
+}
+
+#[test]
+fn empty_partial_index_condition_is_unconditional() {
+    let mut info = index_info(SchemaState::Public);
+    info.condition = Some(String::new());
+    let index = Index::new(false, 1, table_info(), info).unwrap();
+    assert!(
+        index
+            .meet_partial_condition(&[], |_, _| unreachable!())
+            .unwrap()
+    );
+}
+
+#[test]
+#[cfg(not(feature = "expression-runtime"))]
+fn partial_index_requires_expression_runtime() {
+    let mut info = index_info(SchemaState::Public);
+    info.condition = Some("a > 0".to_owned());
+    assert!(matches!(
+        Index::new(false, 1, table_info(), info),
+        Err(IndexError::Evaluation(_))
+    ));
 }
 
 // 唯一索引仅在键值均非空时可省略句柄；NULL 或非唯一索引必须携带句柄以消歧。
@@ -212,6 +239,23 @@ fn partial_index_condition_treats_null_as_false_and_propagates_error() {
         }),
         Err(IndexError::Evaluation("bad expression".to_owned()))
     );
+}
+
+#[test]
+fn go_merge_49_partial_index_uses_its_own_collation_mode() {
+    let mut index = build_index(false, SchemaState::Public);
+    index.index_info.condition = Some("a = 'x'".to_owned());
+    for use_new in [false, true] {
+        index.use_new_collation = use_new;
+        assert_eq!(
+            index.meet_partial_condition_with_collation(&[], |sql, _, mode| {
+                assert_eq!(sql, "a = 'x'");
+                assert_eq!(mode, use_new);
+                Ok(Some(true))
+            }),
+            Ok(true)
+        );
+    }
 }
 
 // 在线回填状态决定是否双写原始键与临时键，以及临时索引值采用的版本。

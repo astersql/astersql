@@ -76,7 +76,6 @@ fn encode_buffer_matches_go_old_new_checksum_and_flag_paths() {
         let mut mem_buffer = RecordingMemBuffer::default();
         buffer
             .WriteMemBufferEncoded(
-                codec::NewEncoder(false),
                 RowEncodingConfig {
                     IsRowLevelChecksumEnabled: checksum,
                     RowEncoder: Some(rowcodec::Encoder::new(new_format)),

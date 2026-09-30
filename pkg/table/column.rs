@@ -493,17 +493,38 @@ pub fn CastColumnValue(
     force_ignore_truncate: bool,
 ) -> CastResult {
     let eval_context = context.GetEvalCtx();
-    castColumnValue(
+    let legacy_enum_set = matches!(column.FieldType.GetType(), mysql::TypeEnum | mysql::TypeSet)
+        && !context.NewCollationEnabled()
+        && expression_dependency::collate::NewCollationEnabled();
+    let mut field_type = column.FieldType.clone();
+    if legacy_enum_set {
+        field_type.SetCollate("binary".to_owned());
+    }
+    let result = castColumnValue(
         eval_context.TypeCtx(),
         eval_context.ErrCtx(),
         eval_context.SQLMode(),
         value,
-        &column.FieldType,
+        &field_type,
         &column.Name.O,
         context.ConnectionID(),
         return_error,
         force_ignore_truncate,
-    )
+    );
+    match result {
+        Ok(mut casted) => {
+            if legacy_enum_set {
+                casted.SetCollation(column.GetCollate().to_owned());
+            }
+            Ok(casted)
+        }
+        Err(mut error) => {
+            if legacy_enum_set {
+                error.casted.SetCollation(column.GetCollate().to_owned());
+            }
+            Err(error)
+        }
+    }
 }
 
 /// 核心转换：部分恢复、零日期处理、非法字符与截断策略。
@@ -1040,6 +1061,15 @@ pub trait HandleTableInfo {
     fn IsCommonHandle(&self) -> bool;
 }
 
+impl HandleTableInfo for model::TableInfo {
+    fn PKIsHandle(&self) -> bool {
+        self.PKIsHandle
+    }
+    fn IsCommonHandle(&self) -> bool {
+        self.IsCommonHandle
+    }
+}
+
 #[allow(non_camel_case_types)]
 /// 取原始默认值时的选项（是否严格 SQL Mode）。
 pub struct getColOriginDefaultValue {
@@ -1131,6 +1161,41 @@ pub fn GetColDefaultValue(
         column,
         &String::from_utf8_lossy(&default_expression),
     )
+}
+
+/// Resolve a column being changed by online DDL from its prior column value.
+/// When the old row lacks that value, use and cache the target column default.
+pub fn GetChangingColVal(
+    context: &dyn BuildContext,
+    columns: &[Arc<Column>],
+    column: &Column,
+    row_map: &std::collections::HashMap<i64, types::Datum>,
+    default_values: &mut [Option<types::Datum>],
+) -> Result<(types::Datum, bool), types::errors::Error> {
+    let change = column
+        .ColumnInfo
+        .ChangeStateInfo
+        .as_ref()
+        .ok_or_else(|| types::errors::New("column has no change-state information"))?;
+    let dependency_offset = usize::try_from(change.DependencyColumnOffset)
+        .map_err(|_| types::errors::New("negative dependency column offset"))?;
+    let relative = columns
+        .get(dependency_offset)
+        .ok_or_else(|| types::errors::New("dependency column offset out of range"))?;
+    if let Some(value) = row_map.get(&relative.ColumnInfo.ID) {
+        return CastColumnValue(context, value.clone(), &column.ColumnInfo, false, false)
+            .map(|value| (value, false))
+            .map_err(|error| types::errors::New(error.to_string()));
+    }
+    let offset = usize::try_from(column.ColumnInfo.Offset)
+        .map_err(|_| types::errors::New("negative target column offset"))?;
+    let cached = default_values
+        .get_mut(offset)
+        .ok_or_else(|| types::errors::New("target column offset out of range"))?;
+    if cached.is_none() {
+        *cached = Some(GetColDefaultValue(context, column)?);
+    }
+    Ok((cached.as_ref().expect("default value cached").clone(), true))
 }
 
 /// 对已解析的默认值表达式求值并转换为列类型。

@@ -59,6 +59,7 @@ pub struct Constraint {
 /// 表操作错误：列偏移、行长、记录/索引冲突与序列异常。
 pub enum TableError {
     InvalidColumnOffset(usize),
+    IndexCondition(String),
     RowLength { expected: usize, actual: usize },
     RecordExists(i64),
     RecordNotFound(i64),
@@ -260,8 +261,14 @@ impl TableCommon {
         let indices = index_info
             .into_iter()
             .map(|info| {
-                Index::new(use_new_collation, physical_table_id, meta.clone(), info)
-                    .map_err(|_| TableError::InvalidColumnOffset(meta.columns.len()))
+                Index::new(use_new_collation, physical_table_id, meta.clone(), info).map_err(
+                    |error| match error {
+                        crate::index::IndexError::ColumnOffset(offset) => {
+                            TableError::InvalidColumnOffset(offset)
+                        }
+                        other => TableError::IndexCondition(format!("{other:?}")),
+                    },
+                )
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
@@ -297,6 +304,25 @@ impl TableCommon {
     /// 是否启用新排序规则（new collation）。
     pub fn use_new_collation(&self) -> bool {
         self.use_new_collation
+    }
+
+    /// Bind canonical SQL partition routing to this table instance's collation
+    /// mode, as partition expression construction does through `ForTable`.
+    pub fn canonical_partition_router<'a>(
+        &self,
+        metadata: &'a model_dependency::TableInfo,
+    ) -> crate::canonical_partition::CanonicalPartitionedTable<'a> {
+        crate::canonical_partition::CanonicalPartitionedTable::new(metadata, self.use_new_collation)
+    }
+
+    /// Decide whether a column can be omitted using this table's collation mode.
+    pub fn can_skip(
+        &self,
+        column: &Column,
+        value: &Datum,
+        primary_index: Option<&IndexInfo>,
+    ) -> bool {
+        can_skip_with_collation(self.use_new_collation, column, value, primary_index)
     }
 
     /// 返回全部索引。
@@ -441,7 +467,7 @@ impl TableCommon {
         if !self.rows.contains_key(&handle) {
             return Err(TableError::RecordNotFound(handle));
         }
-        self.remove_index_entries(handle, old_row);
+        self.remove_index_entries(handle, old_row)?;
         match self.build_index_entries(handle, &new_row) {
             Ok(entries) => {
                 self.rows.insert(handle, new_row);
@@ -461,10 +487,11 @@ impl TableCommon {
 
     /// 删除一行及其索引条目。
     pub fn remove_record(&mut self, handle: i64, row: &[Datum]) -> Result<(), TableError> {
-        if self.rows.remove(&handle).is_none() {
+        if !self.rows.contains_key(&handle) {
             return Err(TableError::RecordNotFound(handle));
         }
-        self.remove_index_entries(handle, row);
+        self.remove_index_entries(handle, row)?;
+        self.rows.remove(&handle);
         Ok(())
     }
 
@@ -540,6 +567,13 @@ impl TableCommon {
     ) -> Result<Vec<(Vec<u8>, i64)>, TableError> {
         let mut entries = Vec::new();
         for index in self.writable_indices() {
+            #[cfg(feature = "expression-runtime")]
+            if !index
+                .matches_partial_condition(row)
+                .map_err(|error| TableError::IndexCondition(format!("{error:?}")))?
+            {
+                continue;
+            }
             let values = index
                 .index_info
                 .columns
@@ -568,24 +602,38 @@ impl TableCommon {
     }
 
     /// 删除该行在所有可删索引上的键。
-    fn remove_index_entries(&mut self, handle: i64, row: &[Datum]) {
+    fn remove_index_entries(&mut self, handle: i64, row: &[Datum]) -> Result<(), TableError> {
         let keys = self
             .indices
             .iter()
             .filter(|index| index.index_info.state != SchemaState::None)
-            .filter_map(|index| {
+            .map(|index| {
+                #[cfg(feature = "expression-runtime")]
+                if !index
+                    .matches_partial_condition(row)
+                    .map_err(|error| TableError::IndexCondition(format!("{error:?}")))?
+                {
+                    return Ok(None);
+                }
                 let values = index
                     .index_info
                     .columns
                     .iter()
                     .map(|column| row.get(column.offset).cloned())
-                    .collect::<Option<Vec<_>>>()?;
-                index.gen_index_key(&values, handle).ok().map(|pair| pair.0)
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or(TableError::InvalidColumnOffset(row.len()))?;
+                index
+                    .gen_index_key(&values, handle)
+                    .map(|pair| Some(pair.0))
+                    .map_err(|error| TableError::IndexCondition(format!("{error:?}")))
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
         for key in keys {
-            self.index_entries.remove(&key);
+            if let Some(key) = key {
+                self.index_entries.remove(&key);
+            }
         }
+        Ok(())
     }
 }
 
@@ -649,6 +697,15 @@ pub fn overflow_shard_bits(
 
 /// 写行时可否跳过该列：主键/公共句柄完整列、无默认 NULL、或虚拟生成列。
 pub fn can_skip(column: &Column, value: &Datum, primary_index: Option<&IndexInfo>) -> bool {
+    can_skip_with_collation(true, column, value, primary_index)
+}
+
+pub fn can_skip_with_collation(
+    use_new_collation: bool,
+    column: &Column,
+    value: &Datum,
+    primary_index: Option<&IndexInfo>,
+) -> bool {
     // 主键列、完整公共句柄列、无默认的 NULL、以及虚拟生成列可跳过存储。
     if column.primary_key {
         return true;
@@ -658,7 +715,7 @@ pub fn can_skip(column: &Column, value: &Datum, primary_index: Option<&IndexInfo
             index.columns.iter().any(|index_column| {
                 index_column.offset == column.offset
                     && index_column.length.is_none()
-                    && !column.info.needs_restored_data
+                    && (!use_new_collation || !column.info.needs_restored_data)
             })
         })
     {

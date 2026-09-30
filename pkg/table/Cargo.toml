@@ -23,12 +23,14 @@ parser-mysql-dependency = { package = "astersql-parser-mysql", path = "../parser
 sqlexec-dependency = { package = "astersql-util-sqlexec", path = "../util/sqlexec" }
 types-dependency = { package = "astersql-types", path = "../types" }
 tblctx-dependency = { package = "astersql-table-tblctx", path = "tblctx" }
+tablecodec-dependency = { package = "astersql-tablecodec", path = "../tablecodec" }
 
 [package.metadata.porting]
 go-package = "pkg/table"
 legacy-tasks = ["task-713", "task-714", "task-721", "task-724"]
 
 [dev-dependencies]
+kv-dependency = { package = "astersql-kv", path = "../kv", features = ["test-fixtures"] }
 chrono = "0.4"
 collate-test = { package = "astersql-util-collate", path = "../util/collate" }
 contextutil-test = { package = "astersql-util-context", path = "../util/context" }

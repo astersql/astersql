@@ -65,6 +65,10 @@ pub struct ColumnInfo {
     pub name: String,
     /// 列是否需要在索引 value 中保存原始字节以便还原比较。
     pub needs_restored_data: bool,
+    /// MySQL field type used to compile partial-index predicates.
+    pub field_type: u8,
+    /// Column collation retained when compiling and evaluating predicates.
+    pub collation: String,
 }
 
 /// 索引列定义：列名、在表中的偏移、可选前缀长度。
@@ -115,7 +119,7 @@ pub fn need_restored_data(
 }
 
 /// 可执行索引对象：绑定物理表 ID、表/索引元信息及 restored_data 标志。
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone)]
 pub struct Index {
     /// 物理表 ID（分区表则为分区物理 ID）。
     pub physical_id: i64,
@@ -123,7 +127,36 @@ pub struct Index {
     pub index_info: IndexInfo,
     pub use_new_collation: bool,
     pub restored_data: bool,
+    #[cfg(feature = "expression-runtime")]
+    condition_expr: Option<expression::ExprBox>,
+    #[cfg(feature = "expression-runtime")]
+    condition_ctx: Option<std::sync::Arc<exprstatic_dependency::ExprContext>>,
+    #[cfg(feature = "expression-runtime")]
+    condition_row_pool: std::sync::Arc<std::sync::Mutex<Vec<expression::chunk::mutrow::MutRow>>>,
 }
+
+impl std::fmt::Debug for Index {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Index")
+            .field("physical_id", &self.physical_id)
+            .field("table_info", &self.table_info)
+            .field("index_info", &self.index_info)
+            .field("use_new_collation", &self.use_new_collation)
+            .field("restored_data", &self.restored_data)
+            .finish()
+    }
+}
+
+impl PartialEq for Index {
+    fn eq(&self, other: &Self) -> bool {
+        self.physical_id == other.physical_id
+            && self.table_info == other.table_info
+            && self.index_info == other.index_info
+            && self.use_new_collation == other.use_new_collation
+            && self.restored_data == other.restored_data
+    }
+}
+impl Eq for Index {}
 
 impl Index {
     /// 构造索引；校验列偏移合法，并计算是否需要 restored data。
@@ -140,12 +173,79 @@ impl Index {
         }
         let restored_data =
             need_restored_data(use_new_collation, &index_info.columns, &table_info.columns);
+        #[cfg(not(feature = "expression-runtime"))]
+        if index_info
+            .condition
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+        {
+            return Err(IndexError::Evaluation(
+                "partial index requires expression-runtime".to_owned(),
+            ));
+        }
+        #[cfg(feature = "expression-runtime")]
+        let (condition_expr, condition_ctx) = match index_info
+            .condition
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            Some(condition) => {
+                let eval_ctx = exprstatic_dependency::NewEvalContext(vec![
+                    exprstatic_dependency::WithSQLMode(expression::mysql::ModeNone),
+                    exprstatic_dependency::WithTypeFlags(expression::types::DefaultStmtFlags),
+                    exprstatic_dependency::WithErrLevelMap(
+                        stmtctx_dependency::DefaultStmtErrLevels(),
+                    ),
+                ]);
+                let ctx = exprstatic_dependency::NewExprContext(vec![
+                    exprstatic_dependency::WithEvalCtx(std::sync::Arc::new(eval_ctx)),
+                    exprstatic_dependency::WithNewCollationEnabled(use_new_collation),
+                ]);
+                let model_table = expression::model::TableInfo {
+                    ID: table_info.id,
+                    Columns: table_info
+                        .columns
+                        .iter()
+                        .enumerate()
+                        .map(|(offset, col)| {
+                            let mut field_type = *expression::types::NewFieldType(col.field_type);
+                            if !col.collation.is_empty() {
+                                field_type.SetCollate(col.collation.clone());
+                            }
+                            expression::model::ColumnInfo {
+                                ID: col.id,
+                                Name: expression::ast::NewCIStr(&col.name),
+                                Offset: offset as isize,
+                                FieldType: field_type,
+                                State: expression::model::StatePublic,
+                                ..Default::default()
+                            }
+                        })
+                        .collect(),
+                    ..Default::default()
+                };
+                let compiled = expression::ParseSimpleExpr(
+                    &ctx,
+                    condition,
+                    vec![expression::WithTableInfo("", &model_table)],
+                )
+                .map_err(|error| IndexError::Evaluation(error.to_string()))?;
+                (Some(compiled), Some(std::sync::Arc::new(ctx)))
+            }
+            None => (None, None),
+        };
         Ok(Self {
             physical_id,
             table_info,
             index_info,
             use_new_collation,
             restored_data,
+            #[cfg(feature = "expression-runtime")]
+            condition_expr,
+            #[cfg(feature = "expression-runtime")]
+            condition_ctx,
+            #[cfg(feature = "expression-runtime")]
+            condition_row_pool: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         })
     }
 
@@ -206,10 +306,99 @@ impl Index {
         row: &[Datum],
         evaluate: impl Fn(&str, &[Datum]) -> Result<Option<bool>, IndexError>,
     ) -> Result<bool, IndexError> {
-        match self.index_info.condition.as_deref() {
+        self.meet_partial_condition_with_collation(row, |condition, row, _| {
+            evaluate(condition, row)
+        })
+    }
+
+    /// Evaluate a partial-index predicate with the collation mode fixed at construction.
+    pub fn meet_partial_condition_with_collation(
+        &self,
+        row: &[Datum],
+        evaluate: impl Fn(&str, &[Datum], bool) -> Result<Option<bool>, IndexError>,
+    ) -> Result<bool, IndexError> {
+        match self
+            .index_info
+            .condition
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
             None => Ok(true),
-            Some(condition) => Ok(evaluate(condition, row)?.unwrap_or(false)),
+            Some(condition) => {
+                Ok(evaluate(condition, row, self.use_new_collation)?.unwrap_or(false))
+            }
         }
+    }
+
+    /// Evaluate the condition compiled when the index was constructed.
+    #[cfg(feature = "expression-runtime")]
+    pub fn matches_partial_condition(&self, row: &[Datum]) -> Result<bool, IndexError> {
+        let Some(expr) = &self.condition_expr else {
+            return Ok(true);
+        };
+        let values: Vec<expression::types::Datum> = row
+            .iter()
+            .enumerate()
+            .map(|(offset, value)| {
+                let mut datum = match value {
+                    Datum::Null => expression::types::Datum::default(),
+                    Datum::Int(value) => expression::types::NewIntDatum(*value),
+                    Datum::Uint(value) => expression::types::NewUintDatum(*value),
+                    Datum::Bytes(value) => expression::types::NewBytesDatum(value.clone()),
+                };
+                if let Some(column) = self.table_info.columns.get(offset)
+                    && !column.collation.is_empty()
+                {
+                    datum.SetCollation(column.collation.clone());
+                }
+                datum
+            })
+            .collect();
+        let available_row = {
+            let mut pool = self
+                .condition_row_pool
+                .lock()
+                .expect("partial-index row pool poisoned");
+            pool.iter()
+                .position(|row| row.Len() == values.len())
+                .map(|position| pool.swap_remove(position))
+        };
+        let row = if let Some(mut row) = available_row {
+            row.SetDatums(values);
+            row
+        } else {
+            expression::chunk::mutrow::MutRowFromDatums(values)
+        };
+        let ctx = self
+            .condition_ctx
+            .as_ref()
+            .expect("compiled predicate has eval context");
+        let evaluation = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            expr.EvalInt(ctx.GetEvalCtx(), row.ToRow())
+        }));
+        let mut pool = self
+            .condition_row_pool
+            .lock()
+            .expect("partial-index row pool poisoned");
+        // A fixed cap avoids retaining every concurrent writer's row buffer.
+        if pool.len() < 64 {
+            pool.push(row);
+        }
+        drop(pool);
+        let (value, is_null) = match evaluation {
+            Ok(result) => result.map_err(|error| IndexError::Evaluation(error.to_string()))?,
+            Err(payload) => {
+                let message = payload
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| payload.downcast_ref::<&str>().copied())
+                    .unwrap_or("unknown panic");
+                return Err(IndexError::Evaluation(format!(
+                    "panic in partial-index condition: {message}"
+                )));
+            }
+        };
+        Ok(!is_null && value > 0)
     }
 }
 

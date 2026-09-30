@@ -15,6 +15,7 @@
 
 // 表列查找、类型转换、默认值与 DESC 描述等行为的单测。
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::{TimeZone, Utc};
@@ -36,6 +37,190 @@ use types_dependency::datum as types;
 
 use super::column::*;
 use crate::{CheckRowConstraint, Constraint};
+
+#[test]
+fn go_merge_49_raw_row_decode_restores_changing_column() {
+    let ctx = test_context(
+        true,
+        chrono_tz::UTC,
+        errctx_dependency::errctx::Level::LevelError,
+    );
+    let mut old = Column::New(Box::new(model::ColumnInfo::New(
+        1,
+        model::ast::NewCIStr("old"),
+    )));
+    info_mut(&mut old).Offset = 0;
+    info_mut(&mut old).FieldType = *types::NewFieldType(mysql::TypeLonglong);
+    let mut changed = Column::New(Box::new(model::ColumnInfo::New(
+        2,
+        model::ast::NewCIStr("changed"),
+    )));
+    info_mut(&mut changed).Offset = 1;
+    info_mut(&mut changed).FieldType = *types::NewFieldType(mysql::TypeLonglong);
+    info_mut(&mut changed).ChangeStateInfo = Some(model::ChangeStateInfo {
+        DependencyColumnOffset: 0,
+    });
+    let meta = model::TableInfo {
+        Columns: vec![
+            old.ColumnInfo.as_ref().clone(),
+            changed.ColumnInfo.as_ref().clone(),
+        ],
+        ..Default::default()
+    };
+    let encoded = tablecodec_dependency::EncodeRow(
+        Some(chrono_tz::UTC),
+        vec![types::NewIntDatum(12)],
+        vec![1],
+        vec![],
+        None,
+        None,
+        tablecodec_dependency::rowcodec::Encoder::new(false),
+    )
+    .unwrap();
+    let (row, raw) = crate::DecodeRawRowDataWithMeta(
+        &ctx,
+        &meta,
+        false,
+        &kv_dependency::IntHandle(5),
+        &[old, changed],
+        &encoded,
+    )
+    .unwrap();
+    assert_eq!(row[0].GetInt64(), 12);
+    assert_eq!(row[1].GetInt64(), 12);
+    assert_eq!(raw.len(), 1);
+}
+
+#[test]
+fn go_merge_49_raw_row_decode_restores_integer_handle() {
+    let ctx = test_context(
+        true,
+        chrono_tz::UTC,
+        errctx_dependency::errctx::Level::LevelError,
+    );
+    let mut pk = Column::New(Box::new(model::ColumnInfo::New(
+        1,
+        model::ast::NewCIStr("id"),
+    )));
+    info_mut(&mut pk).Offset = 0;
+    info_mut(&mut pk).FieldType = *types::NewFieldType(mysql::TypeLonglong);
+    info_mut(&mut pk).FieldType.AddFlag(mysql::PriKeyFlag);
+    let meta = model::TableInfo {
+        PKIsHandle: true,
+        Columns: vec![pk.ColumnInfo.as_ref().clone()],
+        ..Default::default()
+    };
+    let encoded = tablecodec_dependency::EncodeRow(
+        Some(chrono_tz::UTC),
+        vec![],
+        vec![],
+        vec![],
+        None,
+        None,
+        tablecodec_dependency::rowcodec::Encoder::new(true),
+    )
+    .unwrap();
+    let (row, raw) = crate::DecodeRawRowDataWithMeta(
+        &ctx,
+        &meta,
+        false,
+        &kv_dependency::IntHandle(42),
+        &[pk],
+        &encoded,
+    )
+    .unwrap();
+    assert_eq!(row[0].GetInt64(), 42);
+    assert!(raw.is_empty());
+}
+
+#[test]
+fn go_merge_49_raw_row_defaults_use_full_table_column_count() {
+    let ctx = test_context(
+        true,
+        chrono_tz::UTC,
+        errctx_dependency::errctx::Level::LevelError,
+    );
+    let mut old = Column::New(Box::new(model::ColumnInfo::New(
+        1,
+        model::ast::NewCIStr("old"),
+    )));
+    info_mut(&mut old).Offset = 0;
+    let hidden = model::ColumnInfo::New(2, model::ast::NewCIStr("hidden"));
+    let mut changed = Column::New(Box::new(model::ColumnInfo::New(
+        3,
+        model::ast::NewCIStr("changed"),
+    )));
+    info_mut(&mut changed).Offset = 2;
+    info_mut(&mut changed).FieldType = *types::NewFieldType(mysql::TypeLonglong);
+    info_mut(&mut changed).ChangeStateInfo = Some(model::ChangeStateInfo {
+        DependencyColumnOffset: 0,
+    });
+    info_mut(&mut changed).DefaultValue = Some(model::DefaultValue::Int(9));
+    let meta = model::TableInfo {
+        Columns: vec![
+            old.ColumnInfo.as_ref().clone(),
+            hidden,
+            changed.ColumnInfo.as_ref().clone(),
+        ],
+        ..Default::default()
+    };
+    let encoded = tablecodec_dependency::EncodeRow(
+        Some(chrono_tz::UTC),
+        vec![],
+        vec![],
+        vec![],
+        None,
+        None,
+        tablecodec_dependency::rowcodec::Encoder::new(true),
+    )
+    .unwrap();
+    let (row, _) = crate::DecodeRawRowDataWithMeta(
+        &ctx,
+        &meta,
+        false,
+        &kv_dependency::IntHandle(1),
+        &[old, changed],
+        &encoded,
+    )
+    .unwrap();
+    assert_eq!(row[1].GetInt64(), 9);
+}
+
+#[test]
+fn go_merge_49_changing_column_uses_relative_value_then_default() {
+    let ctx = test_context(
+        true,
+        chrono_tz::UTC,
+        errctx_dependency::errctx::Level::LevelError,
+    );
+    let mut original = Column::New(Box::new(model::ColumnInfo::New(
+        1,
+        model::ast::NewCIStr("old"),
+    )));
+    let mut changing = Column::New(Box::new(model::ColumnInfo::New(
+        2,
+        model::ast::NewCIStr("new"),
+    )));
+    info_mut(&mut original).Offset = 0;
+    let target = info_mut(&mut changing);
+    target.Offset = 1;
+    target.FieldType = *types::NewFieldType(mysql::TypeLonglong);
+    target.ChangeStateInfo = Some(model::ChangeStateInfo {
+        DependencyColumnOffset: 0,
+    });
+    target.DefaultValue = Some(model::DefaultValue::Int(7));
+    let cols = vec![original, changing.clone()];
+    let mut row = HashMap::new();
+    row.insert(1, types::NewStringDatum("12".to_owned()));
+    let mut cache = vec![None; 2];
+    let (value, is_default) = GetChangingColVal(&ctx, &cols, &changing, &row, &mut cache).unwrap();
+    assert_eq!(value.GetInt64(), 12);
+    assert!(!is_default);
+    let (value, is_default) =
+        GetChangingColVal(&ctx, &cols, &changing, &HashMap::new(), &mut cache).unwrap();
+    assert_eq!(value.GetInt64(), 7);
+    assert!(is_default);
+}
 
 #[test]
 /// Go parity: a nil reconstruction constructor falls back to the stored AST.
@@ -177,9 +362,13 @@ struct TestBuildContext {
     eval: TestEvalContext,
     /// 可复现随机数。
     rng: Box<mathutil::MysqlRng>,
+    new_collation_enabled: bool,
 }
 
 impl BuildContext for TestBuildContext {
+    fn NewCollationEnabled(&self) -> bool {
+        self.new_collation_enabled
+    }
     fn GetEvalCtx(&self) -> &dyn EvalContext {
         &self.eval
     }
@@ -270,7 +459,50 @@ fn test_context(
             now,
         },
         rng: mathutil::NewWithSeed(1),
+        new_collation_enabled: false,
     }
+}
+
+#[test]
+fn go_merge_49_legacy_enum_set_cast_uses_binary_matching() {
+    let original = collate::NewCollationEnabled();
+    collate::SetNewCollationEnabledForTest(true);
+    for tp in [mysql::TypeEnum, mysql::TypeSet] {
+        let mut info = model::ColumnInfo::default();
+        info.FieldType = *types::NewFieldType(tp);
+        info.SetCharset("utf8mb4".to_owned());
+        info.SetCollate("utf8mb4_general_ci".to_owned());
+        info.SetElems(vec!["A".to_owned(), "a".to_owned(), "B".to_owned()]);
+        let mut context = test_context(
+            false,
+            chrono_tz::UTC,
+            errctx_dependency::errctx::Level::LevelError,
+        );
+        context.new_collation_enabled = false;
+        let casted = CastColumnValue(
+            &context,
+            types::NewStringDatum("a".to_owned()),
+            &info,
+            false,
+            false,
+        )
+        .unwrap_or_else(|error| panic!("{}", error));
+        assert_eq!(casted.GetString(), "a");
+        assert_eq!(casted.GetUint64(), 2);
+        assert_eq!(casted.Collation(), "utf8mb4_general_ci");
+        context.new_collation_enabled = true;
+        let casted = CastColumnValue(
+            &context,
+            types::NewStringDatum("a".to_owned()),
+            &info,
+            false,
+            false,
+        )
+        .unwrap_or_else(|error| panic!("{}", error));
+        assert_eq!(casted.GetString(), "A");
+        assert_eq!(casted.GetUint64(), 1);
+    }
+    collate::SetNewCollationEnabledForTest(original);
 }
 
 /// 创建 Public 状态的测试列。

@@ -25,6 +25,8 @@
 pub mod assertion;
 /// 缓存表：将整表数据缓存在 TiDB 进程内存中以加速只读查询。
 pub mod cache;
+/// SQL execution partition routing over the canonical catalog table model.
+pub mod canonical_partition;
 /// 二级索引键/值编码与 DDL 状态相关的临时索引逻辑。
 pub mod index;
 /// 行与索引 Mutation 的数据一致性检查。

@@ -20,6 +20,141 @@
 
 use super::*;
 
+#[test]
+fn go_merge_49_partition_expr_binds_table_collation() {
+    let table = tables::TableCommon::new(
+        index::TableInfo {
+            id: 1,
+            columns: vec![],
+        },
+        1,
+        vec![],
+        vec![],
+        vec![],
+        true,
+    )
+    .unwrap();
+    assert!(expression::BuildContext::NewCollationEnabled(
+        &NewPartitionExprBuildCtx(&table)
+    ));
+    let build = NewPartitionExprBuildCtx(&table);
+    assert_eq!(
+        build.GetEvalCtx().SQLMode(),
+        expression::mysql::ModeAllowInvalidDates
+    );
+    let flags = build.GetEvalCtx().TypeCtx().Flags();
+    assert!(flags.IgnoreTruncateErr());
+    assert!(flags.IgnoreZeroDateErr());
+    assert!(flags.IgnoreZeroInDate());
+    assert!(flags.IgnoreInvalidDateErr());
+    let partition = PartitionExpr {
+        ForKeyPruning: Some(ForKeyPruning::default()),
+        ForListPruning: Some(ForListPruning {
+            ColPrunes: vec![ForListColumnPruning::default()],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let bound = PartitionExpr::ForTable(&table, partition);
+    assert!(bound.ForKeyPruning.unwrap().UseNewCollate);
+    assert!(bound.ForListPruning.unwrap().ColPrunes[0].UseNewCollate);
+    let legacy_table = tables::TableCommon::new(
+        index::TableInfo {
+            id: 2,
+            columns: vec![],
+        },
+        2,
+        vec![],
+        vec![],
+        vec![],
+        false,
+    )
+    .unwrap();
+    let legacy = PartitionExpr::ForTable(
+        &legacy_table,
+        PartitionExpr {
+            ForKeyPruning: Some(ForKeyPruning {
+                UseNewCollate: true,
+                ..Default::default()
+            }),
+            ForListPruning: Some(ForListPruning {
+                ColPrunes: vec![ForListColumnPruning {
+                    UseNewCollate: true,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+    assert!(!legacy.ForKeyPruning.unwrap().UseNewCollate);
+    assert!(!legacy.ForListPruning.unwrap().ColPrunes[0].UseNewCollate);
+}
+
+#[test]
+fn go_merge_49_table_common_routes_canonical_partition_metadata() {
+    let table = tables::TableCommon::new(
+        index::TableInfo {
+            id: 7,
+            columns: vec![],
+        },
+        7,
+        vec![],
+        vec![],
+        vec![],
+        true,
+    )
+    .unwrap();
+    let metadata = model_dependency::TableInfo {
+        ID: 7,
+        Partition: Some(model_dependency::PartitionInfo {
+            Type: model_dependency::ast::model::PartitionTypeHash,
+            Expr: "x".to_owned(),
+            Enable: true,
+            Definitions: vec![
+                model_dependency::PartitionDefinition {
+                    ID: 71,
+                    ..Default::default()
+                },
+                model_dependency::PartitionDefinition {
+                    ID: 72,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let row = std::collections::HashMap::from([("x".to_owned(), Some("1".to_owned()))]);
+    let physical_id = table
+        .canonical_partition_router(&metadata)
+        .locate(&row, |name, row| {
+            row.get(name)
+                .and_then(Option::as_deref)
+                .and_then(|value| value.parse().ok())
+        });
+    assert_eq!(physical_id, 72);
+}
+
+#[test]
+fn go_merge_49_list_column_key_accepts_statement_error_context() {
+    let pruning = ForListColumnPruning {
+        ValueType: Some(*expression::types::NewFieldType(
+            expression::mysql::TypeLonglong,
+        )),
+        ..Default::default()
+    };
+    let warnings = std::sync::Arc::new(expression::contextutil::ignoreWarn {});
+    let error_context = expression::errctx::NewContext(warnings);
+    let context = expression::types::DefaultStmtNoWarningContext.clone();
+    assert!(
+        !pruning
+            .GenKey(context, &error_context, expression::types::NewIntDatum(7))
+            .unwrap()
+            .is_empty()
+    );
+}
+
 /// 构造用于分区测试的整型表达式列：指定 UniqueID、行内 Index 与显示长度 Flen。
 fn column(unique_id: i64, index: isize, flen: isize) -> expression::Column {
     let mut field_type = expression::types::NewFieldType(expression::mysql::TypeLonglong);
@@ -59,6 +194,7 @@ fn key_partition_columns_are_cloned_and_reindexed() {
 fn key_partition_uses_ieee_crc32_and_null_marker() {
     let pruning = ForKeyPruning {
         KeyPartCols: vec![column(1, 0, 8), column(2, 1, 8)],
+        UseNewCollate: false,
     };
     let row = vec![
         expression::types::Datum::default(),
@@ -72,6 +208,60 @@ fn key_partition_uses_ieee_crc32_and_null_marker() {
     let expected = (expected.finalize() % 17) as usize;
 
     assert_eq!(pruning.LocateKeyPartition(17, &row).unwrap(), expected);
+}
+
+#[test]
+fn go_merge_49_key_partition_uses_instance_collation_mode() {
+    let mut upper = expression::types::NewStringDatum("A".to_owned());
+    let mut lower = expression::types::NewStringDatum("a".to_owned());
+    upper.SetCollation("utf8mb4_general_ci".to_owned());
+    lower.SetCollation("utf8mb4_general_ci".to_owned());
+    let mut pruning = ForKeyPruning {
+        KeyPartCols: vec![column(1, 0, 8)],
+        UseNewCollate: true,
+    };
+    assert_eq!(
+        pruning.LocateKeyPartition(65535, &[upper.clone()]).unwrap(),
+        pruning.LocateKeyPartition(65535, &[lower.clone()]).unwrap()
+    );
+    pruning.UseNewCollate = false;
+    assert_ne!(
+        pruning.LocateKeyPartition(65535, &[upper]).unwrap(),
+        pruning.LocateKeyPartition(65535, &[lower]).unwrap()
+    );
+}
+
+#[test]
+fn go_merge_49_list_column_key_uses_instance_collation_mode() {
+    let mut value_type = expression::types::NewFieldType(expression::mysql::TypeVarchar);
+    value_type.SetCharset("utf8mb4".to_owned());
+    value_type.SetCollate("utf8mb4_general_ci".to_owned());
+    let mut pruning = ForListColumnPruning {
+        ValueType: Some(*value_type),
+        UseNewCollate: true,
+        ..Default::default()
+    };
+    let context = expression::types::DefaultStmtNoWarningContext.clone();
+    let error_context =
+        expression::errctx::NewContext(std::sync::Arc::new(expression::contextutil::ignoreWarn {}));
+    let mut upper = expression::types::NewStringDatum("A".to_owned());
+    let mut lower = expression::types::NewStringDatum("a".to_owned());
+    upper.SetCollation("utf8mb4_general_ci".to_owned());
+    lower.SetCollation("utf8mb4_general_ci".to_owned());
+    let upper_key = pruning
+        .GenKey(context.clone(), &error_context, upper.clone())
+        .unwrap();
+    let lower_key = pruning
+        .GenKey(context.clone(), &error_context, lower.clone())
+        .unwrap();
+    assert_eq!(upper_key, lower_key);
+    pruning.UseNewCollate = false;
+    assert_ne!(
+        pruning
+            .GenKey(context.clone(), &error_context, upper)
+            .unwrap(),
+        pruning.GenKey(context, &error_context, lower).unwrap()
+    );
 }
 
 /// 验证 LIST 分区位置集合的 Union 保持 Go 侧 append 语义（含重复 GroupIdx）。

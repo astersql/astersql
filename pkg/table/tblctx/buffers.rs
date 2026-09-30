@@ -21,9 +21,7 @@
 use std::cell::{RefCell, RefMut};
 use std::rc::Rc;
 
-use crate::{
-    chunk, codec, collate, errctx, errors, intest, kv, rowcodec, tablecodec, time, types, variable,
-};
+use crate::{chunk, errctx, errors, intest, kv, rowcodec, tablecodec, time, types, variable};
 
 use super::RowEncodingConfig;
 
@@ -53,7 +51,6 @@ impl EncodeRowBuffer {
     /// 将当前行编码后写入 MemBuffer；可选行级校验和与写入标志。
     pub fn WriteMemBufferEncoded(
         &mut self,
-        enc: codec::Encoder,
         cfg: RowEncodingConfig,
         loc: Option<time::Location>,
         ec: errctx::Context,

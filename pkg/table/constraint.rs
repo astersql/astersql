@@ -154,6 +154,7 @@ const UNSUPPORTED_FUNCTIONS: &[&str] = &[
     "uuid_v7",
     "uuid_short",
     "sleep",
+    "embed_text",
 ];
 
 /// 递归遍历表达式 AST，标记不支持的构造。
