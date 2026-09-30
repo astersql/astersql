@@ -121,9 +121,16 @@ fn table_stats_json(domain: &Domain, database: &str, table: &str) -> Result<Vec<
             );
         }
         return serde_json::to_vec(&serde_json::json!({
+            "columns": null,
+            "indices": null,
             "database_name": database,
             "table_name": table,
             "partitions": partitions,
+            "predicate_columns": null,
+            "count": 0,
+            "modify_count": 0,
+            "version": 0,
+            "is_historical_stats": false,
         }))
         .map_err(|error| error.to_string());
     }
@@ -153,6 +160,8 @@ fn physical_stats_json(
         };
         let mut value = serde_json::json!({
             "histogram": stats_histogram(item.ndv, &item.buckets),
+            "cm_sketch": null,
+            "fm_sketch": null,
             "stats_ver": item.stats_version,
             "null_count": item.null_count,
             "tot_col_size": item.total_column_size,
@@ -174,6 +183,8 @@ fn physical_stats_json(
         };
         let mut value = serde_json::json!({
             "histogram": stats_histogram(item.ndv, &item.buckets),
+            "cm_sketch": null,
+            "fm_sketch": null,
             "stats_ver": item.stats_version,
             "null_count": item.null_count,
             "tot_col_size": item.total_column_size,
@@ -188,10 +199,10 @@ fn physical_stats_json(
     Ok(serde_json::json!({
         "columns": columns,
         "indices": indices,
-        "partitions": {},
+        "partitions": null,
         "database_name": database,
         "table_name": table,
-        "predicate_columns": [],
+        "predicate_columns": null,
         "count": stats.realtime_count,
         "modify_count": stats.modify_count,
         "version": stats.version,

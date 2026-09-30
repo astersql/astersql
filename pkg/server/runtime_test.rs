@@ -134,8 +134,16 @@ fn go_merge_43_extract_archive_view_and_partitions() {
     }
     let stats: serde_json::Value =
         serde_json::from_slice(&package.files["stats/test.extract_partition_base.json"]).unwrap();
+    assert!(stats["columns"].is_null());
+    assert!(stats["indices"].is_null());
+    assert!(stats["predicate_columns"].is_null());
+    assert_eq!(stats["count"], 0);
+    assert_eq!(stats["modify_count"], 0);
+    assert_eq!(stats["version"], 0);
+    assert_eq!(stats["is_historical_stats"], false);
     assert_eq!(stats["partitions"]["p0"]["count"], 1);
     assert_eq!(stats["partitions"]["p1"]["count"], 1);
+    assert!(stats["partitions"]["p0"]["partitions"].is_null());
     let context = astersql_planner_extstore::Context::background();
     astersql_planner_extstore::GetGlobalExtStorage(&context)
         .unwrap()
