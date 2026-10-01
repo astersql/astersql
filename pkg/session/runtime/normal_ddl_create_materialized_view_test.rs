@@ -832,3 +832,84 @@ fn normal_ddl_plan_create_materialized_view_2_definition_precision() {
         "5.666667"
     );
 }
+
+#[test]
+fn normal_ddl_plan_create_materialized_view_3_publication() {
+    for v in [JobVersion::V1, JobVersion::V2] {
+        let (f, t, mut j) = setup(v);
+        run(&f, &mut j).unwrap();
+        f.domain.reload().unwrap();
+        run(&f, &mut j).unwrap();
+        run(&f, &mut j).unwrap();
+        assert_eq!(j.state, JobState::Done, "{:?}", j.error);
+        assert_eq!(j.schema_state, SchemaState::Public);
+        assert!(
+            f.reader()
+                .get_table(f.db, t.ID)
+                .unwrap()
+                .unwrap()
+                .MaterializedView
+                .unwrap()
+                .InitBuildState
+                == astersql_meta_model::MViewInitBuildReady
+        );
+        let rows=f.pool.acquire().unwrap().query(format!("SELECT LAST_SUCCESS_READ_TSO,LAST_SUCCESS_REFRESH_END_UNIX_SECONDS,NEXT_REFRESH_UNIX_SECONDS FROM mysql.tidb_mview_refresh_info WHERE MVIEW_ID={}",t.ID)).unwrap();
+        assert_eq!(rows[0][0], j.snapshot_ver.to_string());
+        assert!(rows[0][1].parse::<i64>().unwrap() > 0);
+        assert!(rows[0][2].parse::<i64>().unwrap() > rows[0][1].parse::<i64>().unwrap());
+        assert!(astersql_ddl::persistent_actions::handler_available(86));
+    }
+}
+
+#[test]
+fn normal_ddl_plan_create_materialized_view_3_cancel_dispatch_prerequisite() {
+    use astersql_ddl::table_mode::{DdlJobPolicy, DdlSchemaBarrier, NormalDdlExecutor};
+    struct Barrier;
+    impl DdlSchemaBarrier for Barrier {
+        fn recover(&mut self, _: &Job, _: &dyn JobLease) -> Result<(), String> {
+            Ok(())
+        }
+        fn wait(&mut self, _: &Job, _: i64, _: &dyn JobLease) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    struct Policy;
+    impl DdlJobPolicy for Policy {
+        fn runnable(&mut self, _: &mut dyn DurableJobSession, _: &Job) -> Result<bool, String> {
+            Ok(true)
+        }
+        fn error_limit(&self) -> i64 {
+            3
+        }
+        fn mdl_owner(&self) -> Option<String> {
+            None
+        }
+    }
+    let (f, t, mut j) = setup(JobVersion::V2);
+    run(&f, &mut j).unwrap();
+    assert!(f.reader().get_table(f.db, t.ID).unwrap().is_some());
+    j.state = JobState::Cancelling;
+    replace(&f, &mut j);
+    let bytes = astersql_meta::encode_go_ddl_job(&mut j, false).unwrap();
+    let mut executor = NormalDdlExecutor {
+        barrier: Barrier,
+        policy: Policy,
+        sequence: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
+    };
+    JobWorker::new(WorkerType::General)
+        .transit_persisted_job_step(
+            &mut f.pool.acquire().unwrap(),
+            &Lease,
+            &mut executor,
+            &mut j,
+            &bytes,
+        )
+        .unwrap();
+    assert_eq!(
+        j.state,
+        JobState::Rollingback,
+        "normal dispatcher must retain rollback before history; object remains: {}",
+        f.reader().get_table(f.db, t.ID).unwrap().is_some()
+    );
+    assert!(f.queue(j.id).is_some());
+}

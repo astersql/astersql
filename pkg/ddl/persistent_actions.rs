@@ -19,7 +19,10 @@ use astersql_meta_model::group_3::{Job, JobState};
 
 pub fn handler_available(action: u8) -> bool {
     action == astersql_meta_model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_ATTRIBUTES
-        || matches!(action, 1 | 3 | 10 | 17 | 26 | 39 | 55 | 75 | 76 | 85 | 93)
+        || matches!(
+            action,
+            1 | 3 | 10 | 17 | 26 | 39 | 55 | 75 | 76 | 85 | 86 | 93
+        )
 }
 
 pub fn step(

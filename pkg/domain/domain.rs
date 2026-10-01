@@ -5775,6 +5775,32 @@ impl Domain {
             .map(|schema| schema.SchemaMetaVersion())
             .unwrap_or(i64::MIN);
         if version >= current {
+            // Persisted DDL can introduce an MLog (or other row-ID table)
+            // without passing through the SQL stats catalog registration path.
+            // Construct/reuse its canonical allocator before publishing schema.
+            let catalog = loaded
+                .schema
+                .AllSchemas()
+                .into_iter()
+                .flat_map(|db| {
+                    let name = db.name.lower.clone();
+                    db.tables
+                        .iter()
+                        .filter_map(move |table| {
+                            table.model_meta.as_ref().map(|meta| {
+                                (
+                                    (name.clone(), meta.Name.L.clone()),
+                                    (
+                                        StatsTableKey::new(&name, &meta.Name.L, meta.ID),
+                                        meta.as_ref().clone(),
+                                    ),
+                                )
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect::<BTreeMap<_, _>>();
+            self.reconcile_stats_auto_id_allocators(&catalog)?;
             self.info_cache.Insert(loaded.schema, loaded.timestamp);
         }
         self.schema_reload_count.fetch_add(1, Ordering::Relaxed);
