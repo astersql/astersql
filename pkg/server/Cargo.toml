@@ -121,6 +121,8 @@ rustls = "0.23"
 "astersql-util-plancodec" = { package = "astersql-util-plancodec", path = "../util/plancodec" }
 
 [dev-dependencies]
+"astersql-domain-crossks" = { package = "astersql-domain-crossks", path = "../domain/crossks" }
+"astersql-infoschema-issyncer" = { package = "astersql-infoschema-issyncer", path = "../infoschema/issyncer" }
 "astersql-server-internal-testutil" = { package = "astersql-server-internal-testutil", path = "internal/testutil" }
 "astersql-store-mockstore" = { package = "astersql-store-mockstore", path = "../store/mockstore" }
 "astersql-store-mockstore-unistore" = { package = "astersql-store-mockstore-unistore", path = "../store/mockstore/unistore" }

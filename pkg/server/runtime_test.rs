@@ -663,3 +663,213 @@ fn query_cancellation_completion_preserves_session_transaction() {
         .unwrap();
     context.close().unwrap();
 }
+
+#[test]
+fn normal_ddl_plan_user_mdl_real_driver_and_domain_lifecycle() {
+    use crate::server::{Server, ServerConfig};
+    use astersql_infoschema_issyncer::{InfoSchemaCoordinator, JobMDL};
+    struct RestoreMdl(bool);
+    impl Drop for RestoreMdl {
+        fn drop(&mut self) {
+            astersql_sessionctx_vardef::SetEnableMDL(self.0);
+        }
+    }
+    let _restore_mdl = RestoreMdl(astersql_sessionctx_vardef::IsMDLEnabled());
+    astersql_sessionctx_vardef::SetEnableMDL(true);
+    let driver = Arc::new(session_driver());
+    let domain = driver.domain().clone();
+    let server = Server::new_test(
+        ServerConfig::default(),
+        Arc::new(crate::runtime::CanonicalServerDriver),
+    );
+    server
+        .set_connection_runtime(
+            driver.clone(),
+            Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        )
+        .unwrap();
+    assert!(
+        domain.schema_coordinator().is_some(),
+        "driver installation wires Domain before any session is opened"
+    );
+    let (mut peer, socket) = tcp_pair();
+    let connection = crate::conn::newClientConn(
+        server.clone(),
+        Box::new(TcpPacketIo::new(socket, 32 * 1024 * 1024).unwrap()),
+        vec![7; 20],
+        false,
+    );
+    let handshake = thread::spawn(move || {
+        let mut header = [0; 4];
+        peer.read_exact(&mut header).unwrap();
+        let size =
+            usize::from(header[0]) | (usize::from(header[1]) << 8) | (usize::from(header[2]) << 16);
+        let mut initial = vec![0; size];
+        peer.read_exact(&mut initial).unwrap();
+        assert_eq!(initial[0], 10);
+        let capability = (1_u32 << 9) | (1 << 15) | (1 << 19);
+        let mut response = capability.to_le_bytes().to_vec();
+        response.extend_from_slice(&(64_u32 << 20).to_le_bytes());
+        response.push(45);
+        response.extend_from_slice(&[0; 23]);
+        response.extend_from_slice(b"root\0\0mysql_native_password\0");
+        let len = response.len();
+        peer.write_all(&[len as u8, (len >> 8) as u8, (len >> 16) as u8, 1])
+            .unwrap();
+        peer.write_all(&response).unwrap();
+        peer
+    });
+    connection.handshake().unwrap();
+    let _peer = handshake.join().unwrap();
+    let context = connection.getCtx().unwrap().unwrap();
+    let connection_id = connection.connection_id();
+    let query = |sql: &str| {
+        context
+            .execute_query(sql, true, &CancellationToken::new())
+            .unwrap()
+    };
+    query(
+        "USE test; CREATE TABLE user_mdl_target (id INT PRIMARY KEY, payload VARCHAR(30)); INSERT INTO user_mdl_target VALUES (1, 'held')",
+    );
+    let table = domain.table_by_name("test", "user_mdl_target").unwrap();
+    assert_eq!(table.Columns.len(), 2);
+    // The registration API accepts non-restricted sessions too. Acquire MDL
+    // through real SQL, while the production restricted pool is covered below
+    // in normal_ddl_test and must preserve Go's restricted-SQL bypass.
+    let internal_session = astersql_session::runtime::ConcreteSession::new(domain.clone());
+    internal_session.execute("CREATE TABLE internal_mdl_target (id INT PRIMARY KEY, payload VARCHAR(30)); INSERT INTO internal_mdl_target VALUES (2, 'internal')").unwrap();
+    let internal_table = domain.table_by_name("test", "internal_mdl_target").unwrap();
+    let internal = Arc::new(astersql_domain_crossks::new_schema_coordinator());
+    internal.store_internal_session(Arc::new(astersql_domain_crossks::RegisteredMDLSession {
+        id: 9,
+        mdl: internal_session.transaction_mdl(),
+    }));
+    let coordinator = astersql_session::runtime::normal_ddl_service::NormalSchemaCoordinator {
+        domain: Arc::downgrade(&domain),
+        internal: internal.clone(),
+    };
+    let version = domain.info_schema().SchemaMetaVersion();
+    let jobs = || {
+        std::collections::HashMap::from([
+            (
+                1,
+                JobMDL {
+                    Ver: version + 1,
+                    TableIDs: [table.ID].into_iter().collect(),
+                },
+            ),
+            (
+                2,
+                JobMDL {
+                    Ver: version,
+                    TableIDs: [table.ID].into_iter().collect(),
+                },
+            ),
+            (
+                3,
+                JobMDL {
+                    Ver: version + 1,
+                    TableIDs: [table.ID + 1000].into_iter().collect(),
+                },
+            ),
+            (
+                4,
+                JobMDL {
+                    Ver: version + 1,
+                    TableIDs: [internal_table.ID].into_iter().collect(),
+                },
+            ),
+        ])
+    };
+    internal_session.execute("BEGIN").unwrap();
+    let mut internal_rows = internal_session
+        .execute("SELECT * FROM internal_mdl_target")
+        .unwrap();
+    assert_eq!(
+        internal_rows[0].next_row().unwrap(),
+        Some(vec!["2".into(), "internal".into()])
+    );
+    assert!(internal_rows[0].next_row().unwrap().is_none());
+    internal_rows[0].close().unwrap();
+    query("BEGIN");
+    assert_eq!(
+        query("SELECT * FROM user_mdl_target")[0].rows,
+        vec![vec![Value::Text("1".into()), Value::Text("held".into())]]
+    );
+    for _ in 0..2 {
+        let mut pending = jobs();
+        coordinator.CheckOldRunningTxn(&mut pending);
+        assert!(!pending.contains_key(&1) && !pending.contains_key(&4));
+        assert!(pending.contains_key(&2) && pending.contains_key(&3));
+    }
+    query("COMMIT");
+    let mut pending = jobs();
+    coordinator.CheckOldRunningTxn(&mut pending);
+    assert_eq!(pending.len(), 3);
+    assert!(
+        !pending.contains_key(&4),
+        "user COMMIT must not release an internal transaction's MDL"
+    );
+    internal_session.execute("COMMIT").unwrap();
+    let mut pending = jobs();
+    coordinator.CheckOldRunningTxn(&mut pending);
+    assert_eq!(pending.len(), 4);
+    internal.delete_internal_session(9);
+    drop(internal_session);
+    query("BEGIN; SELECT * FROM user_mdl_target");
+    let mdl = context.transaction_mdl().unwrap();
+    assert!(server.unregister_connection(connection.connection_id()));
+    let mut pending = jobs()
+        .into_iter()
+        .map(|(id, job)| {
+            (
+                id,
+                Arc::new(astersql_session_sessmgr::mdldef::JobMDL {
+                    ver: job.Ver,
+                    table_ids: job.TableIDs,
+                }),
+            )
+        })
+        .collect();
+    mdl.check_jobs(&mut pending);
+    assert!(
+        !pending.contains_key(&1),
+        "unregister must not release a user's transaction lock"
+    );
+    server.register_connection(connection.clone()).unwrap();
+    connection.Close().unwrap();
+    connection.Close().unwrap();
+    let mut pending = jobs()
+        .into_iter()
+        .map(|(id, job)| {
+            (
+                id,
+                Arc::new(astersql_session_sessmgr::mdldef::JobMDL {
+                    ver: job.Ver,
+                    table_ids: job.TableIDs,
+                }),
+            )
+        })
+        .collect();
+    mdl.check_jobs(&mut pending);
+    assert_eq!(
+        pending.len(),
+        4,
+        "closing the session rolls back its transaction"
+    );
+    assert!(
+        !server.unregister_connection(connection_id),
+        "Close must invoke connection cleanup"
+    );
+    server.close();
+    server.close();
+    let weak = Arc::downgrade(&server);
+    drop(connection);
+    drop(server);
+    assert!(
+        weak.upgrade().is_none(),
+        "Domain and driver must weakly retain Server"
+    );
+    assert!(domain.schema_coordinator().is_none());
+    domain.close();
+}

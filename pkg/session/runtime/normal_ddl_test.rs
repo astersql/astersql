@@ -1943,3 +1943,94 @@ fn crossks_align_normal_ddl_coordinator_fences_user_and_internal_transactions() 
         "Domain must not retain Server"
     );
 }
+
+#[test]
+fn normal_ddl_plan_user_mdl_real_internal_pool_preserves_go_restricted_bypass() {
+    use super::system_session::{SystemSessionCallbacks, transaction_mdl};
+    use astersql_infoschema_issyncer::InfoSchemaCoordinator;
+    struct RestoreMdl(bool);
+    impl Drop for RestoreMdl {
+        fn drop(&mut self) {
+            astersql_sessionctx_vardef::SetEnableMDL(self.0);
+        }
+    }
+    let _restore = RestoreMdl(astersql_sessionctx_vardef::IsMDLEnabled());
+    astersql_sessionctx_vardef::SetEnableMDL(true);
+    let f = Fixture::new();
+    f.pool
+        .acquire()
+        .unwrap()
+        .query("INSERT INTO test.normal_ddl_target VALUES (1, 'internal-held')")
+        .unwrap();
+    let internal = Arc::new(astersql_domain_crossks::new_schema_coordinator());
+    let borrowed = internal.clone();
+    let returned = internal.clone();
+    let destroyed = internal.clone();
+    let pool = SystemSessionPool::new_with_callbacks(
+        f.domain.clone(),
+        SystemSessionCallbacks {
+            borrowed: Arc::new(move |session| {
+                borrowed.store_internal_session(Arc::new(
+                    astersql_domain_crossks::RegisteredMDLSession {
+                        id: session.session_id(),
+                        mdl: transaction_mdl(session.as_ref()).unwrap(),
+                    },
+                ));
+            }),
+            returned: Arc::new(move |id| returned.delete_internal_session(id)),
+            destroyed: Arc::new(move |id| destroyed.delete_internal_session(id)),
+        },
+    );
+    let lease = pool.acquire().unwrap();
+    let coordinator = super::normal_ddl_service::NormalSchemaCoordinator {
+        domain: Arc::downgrade(&f.domain),
+        internal: internal.clone(),
+    };
+    lease.query("BEGIN").unwrap();
+    assert_eq!(
+        lease.query("SELECT * FROM test.normal_ddl_target").unwrap(),
+        vec![vec!["1".to_owned(), "internal-held".to_owned()]]
+    );
+    assert!(internal.contains_internal_session(lease.session_id()));
+    let mut jobs = std::collections::HashMap::from([(
+        77,
+        astersql_infoschema_issyncer::JobMDL {
+            Ver: f.domain.info_schema().SchemaMetaVersion() + 1,
+            TableIDs: [f.table].into_iter().collect(),
+        },
+    )]);
+    coordinator.CheckOldRunningTxn(&mut jobs);
+    assert!(
+        jobs.contains_key(&77),
+        "Go RemoveLockDDLJobs skips the real pool's InRestrictedSQL sessions"
+    );
+    let id = lease.session_id();
+    lease.query("COMMIT").unwrap();
+    drop(lease);
+    assert_eq!(internal.internal_session_count(), 0);
+    let lease = pool.acquire().unwrap();
+    assert_eq!(lease.session_id(), id, "a clean borrowed session is reused");
+    lease
+        .query("BEGIN; INSERT INTO test.normal_ddl_target VALUES (2, 'rollback')")
+        .unwrap();
+    drop(lease);
+    assert_eq!(internal.internal_session_count(), 0);
+    let lease = pool.acquire().unwrap();
+    assert_eq!(
+        lease.query("SELECT * FROM test.normal_ddl_target").unwrap(),
+        vec![vec!["1".to_owned(), "internal-held".to_owned()]]
+    );
+    let id = lease.session_id();
+    assert!(internal.contains_internal_session(id));
+    pool.close();
+    pool.close();
+    assert_eq!(
+        internal.internal_session_count(),
+        0,
+        "closing a pool destroys and unregisters outstanding leases"
+    );
+    assert!(lease.query("SELECT * FROM test.normal_ddl_target").is_err());
+    drop(lease);
+    assert!(!internal.contains_internal_session(id));
+    assert!(pool.acquire().is_err());
+}
