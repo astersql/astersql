@@ -867,3 +867,7 @@ mod expression_files_36 {
         pub use crate::infer_pushdown_kernel::*;
     }
 }
+
+#[cfg(test)]
+#[path = "builtin_now_test.rs"]
+mod builtin_now_test;

@@ -3717,6 +3717,7 @@ pub mod formal_registry {
         Atan,
         Pow,
         DateAddSub(bool),
+        Now,
         Sleep,
         Substring(bool),
         Trim,
@@ -4698,6 +4699,34 @@ pub mod formal_registry {
                         Ok(first)
                     }
                 }
+                CoreBuiltinKind::Now => {
+                    let fsp = if let Some(argument) = self.base.args.first() {
+                        let (fsp, null) = argument.EvalInt(ctx, row)?;
+                        if null {
+                            0
+                        } else {
+                            validate_now_fsp(fsp, "now")?
+                        }
+                    } else {
+                        0
+                    };
+                    // Go evalNowWithFsp uses the statement timestamp, never a
+                    // per-row clock. MySQL truncates fractional seconds here.
+                    let now = ctx.CurrentTime()?.with_timezone(&ctx.Location());
+                    use chrono::Timelike;
+                    let quantum = 10_u32.pow(9 - fsp as u32);
+                    let truncated = now
+                        .with_nanosecond(now.nanosecond() / quantum * quantum)
+                        .ok_or_else(|| errors::New("invalid NOW fractional precision"))?;
+                    Ok((
+                        types_dependency::time::NewTime(
+                            types_dependency::time::FromGoTime(truncated),
+                            mysql::TypeDatetime,
+                            fsp,
+                        ),
+                        false,
+                    ))
+                }
                 CoreBuiltinKind::DateAddSub(add) => {
                     let (time, time_null) = self.base.args[0].EvalTime(ctx, row.clone())?;
                     let (interval, interval_null) = self.base.args[1].EvalInt(ctx, row.clone())?;
@@ -5105,6 +5134,24 @@ pub mod formal_registry {
         };
         result.SetFlenUnderLimit((integer_digits + result.GetDecimal()).min(maximum));
         result
+    }
+
+    fn validate_now_fsp(fsp: i64, name: &str) -> Result<i32, Error> {
+        if fsp < 0 || fsp > i64::from(i32::MAX) {
+            return Err(errors::New(
+                types_dependency::errors::ErrSyntax
+                    .GenWithStack("You have an error in your SQL syntax", &[])
+                    .to_string(),
+            ));
+        }
+        if fsp > 6 {
+            return Err(errors::New(
+                types_dependency::errors::ErrTooBigPrecision
+                    .GenWithStackByArgs(&[fsp.into(), name.into(), 6_i64.into()])
+                    .to_string(),
+            ));
+        }
+        Ok(fsp as i32)
     }
 
     fn core_builtin_factory(
@@ -5627,6 +5674,41 @@ pub mod formal_registry {
                 return_type.SetFlen(mysql::MaxRealWidth as isize);
                 (CoreBuiltinKind::Pow, return_type, "builtinPowSig")
             }
+            "now" | "current_timestamp" | "localtimestamp" | "localtime" => {
+                let fsp = if let Some(argument) = args.first() {
+                    if argument.as_any().is::<crate::Constant>() {
+                        let (fsp, null) =
+                            argument.EvalInt(ctx.GetEvalCtx(), chunk::Row::default())?;
+                        if null {
+                            0
+                        } else {
+                            validate_now_fsp(fsp, name)?
+                        }
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                };
+                if let Some(argument) = args.first_mut() {
+                    *argument = crate::WrapWithCastAsInt(ctx, argument.CloneExpr(), None);
+                }
+                let mut return_type = *types::NewFieldType(mysql::TypeDatetime);
+                return_type.SetDecimal(fsp as isize);
+                return_type.SetFlen(19 + if fsp > 0 { fsp as isize + 1 } else { 0 });
+                return_type.AddFlag(mysql::BinaryFlag);
+                return_type.SetCharset(crate::charset::CharsetBin.to_owned());
+                return_type.SetCollate(crate::charset::CollationBin.to_owned());
+                (
+                    CoreBuiltinKind::Now,
+                    return_type,
+                    if args.is_empty() {
+                        "builtinNowWithoutArgSig"
+                    } else {
+                        "builtinNowWithArgSig"
+                    },
+                )
+            }
             "date_add" | "adddate" | "date_sub" | "subdate" => {
                 let mut time_type = *types::NewFieldType(mysql::TypeDatetime);
                 time_type.SetDecimal(args[0].GetType(ctx.GetEvalCtx()).GetDecimal());
@@ -5918,6 +6000,10 @@ pub mod formal_registry {
             CoreBuiltinKind::Atan => tipb::ScalarFuncSig::Atan2Args as i32,
             CoreBuiltinKind::Pow => tipb::ScalarFuncSig::Pow as i32,
             CoreBuiltinKind::Md5 => tipb::ScalarFuncSig::Md5 as i32,
+            CoreBuiltinKind::Now if base.args.is_empty() => {
+                tipb::ScalarFuncSig::NowWithoutArg as i32
+            }
+            CoreBuiltinKind::Now => tipb::ScalarFuncSig::NowWithArg as i32,
             CoreBuiltinKind::DateAddSub(true) => tipb::ScalarFuncSig::AddDateDatetimeInt as i32,
             CoreBuiltinKind::DateAddSub(false) => tipb::ScalarFuncSig::SubDateDatetimeInt as i32,
             CoreBuiltinKind::CharLength(true) => tipb::ScalarFuncSig::CharLength as i32,
@@ -6067,6 +6153,10 @@ pub mod formal_registry {
     core_factory!(atan2_factory, "atan2");
     core_factory!(pow_factory, "pow");
     core_factory!(power_factory, "power");
+    core_factory!(now_factory, "now");
+    core_factory!(current_timestamp_factory, "current_timestamp");
+    core_factory!(localtimestamp_factory, "localtimestamp");
+    core_factory!(localtime_factory, "localtime");
     core_factory!(date_add_factory, "date_add");
     core_factory!(adddate_factory, "adddate");
     core_factory!(date_sub_factory, "date_sub");
@@ -6141,6 +6231,10 @@ pub mod formal_registry {
         ("atan2", atan2_factory),
         ("pow", pow_factory),
         ("power", power_factory),
+        ("now", now_factory),
+        ("current_timestamp", current_timestamp_factory),
+        ("localtimestamp", localtimestamp_factory),
+        ("localtime", localtime_factory),
         ("date_add", date_add_factory),
         ("adddate", adddate_factory),
         ("date_sub", date_sub_factory),
