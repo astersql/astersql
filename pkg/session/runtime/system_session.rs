@@ -22,8 +22,28 @@ fn ddl_error(error: impl std::fmt::Display) -> ddl::SessionError {
     ddl::SessionError::Sql(error.to_string())
 }
 fn job_error(error: impl std::fmt::Display) -> jobsubmit::Error {
+    // The DDL session ABI carries text errors. Canonical KV retryable errors
+    // preserve TiDB's explicit retry marker through that boundary.
+    let message = error.to_string();
+    let kind = if message.contains(kv::TxnRetryableMark) {
+        jobsubmit::ErrorKind::Retryable
+    } else {
+        jobsubmit::ErrorKind::Storage
+    };
+    jobsubmit::Error { kind, message }
+}
+fn job_kv_error(error: kv::Error) -> jobsubmit::Error {
+    let kind = if kv::ErrWriteConflict.Equal(Some(&error))
+        || kv::ErrWriteConflictInTiDB.Equal(Some(&error))
+    {
+        jobsubmit::ErrorKind::WriteConflict
+    } else if kv::IsTxnRetryableError(Some(&error)) {
+        jobsubmit::ErrorKind::Retryable
+    } else {
+        jobsubmit::ErrorKind::Storage
+    };
     jobsubmit::Error {
-        kind: jobsubmit::ErrorKind::Storage,
+        kind,
         message: error.to_string(),
     }
 }
@@ -520,6 +540,21 @@ impl jobsubmit::Session for SystemSessionLease {
     fn begin(&mut self) -> Result<(), jobsubmit::Error> {
         ddl::Session::new(Arc::clone(&self.context))
             .begin_pessimistic(&ddl::ExecutionContext::default())
+            .map_err(job_error)?;
+        self.concrete()
+            .call(|session| {
+                let mut state = session.state.borrow_mut();
+                let txn = state
+                    .transaction
+                    .as_mut()
+                    .ok_or_else(|| sys_error("active transaction required"))?;
+                txn.SetOption(kv::RequestSourceInternal, Some(Box::new(true)));
+                txn.SetOption(
+                    kv::RequestSourceType,
+                    Some(Box::new(kv::InternalTxnDDL.to_owned())),
+                );
+                Ok(())
+            })
             .map_err(job_error)
     }
     fn rollback(&mut self) {
@@ -536,31 +571,39 @@ impl jobsubmit::Session for SystemSessionLease {
     fn read_bdr_role_and_start_ts(&mut self) -> Result<(String, u64), jobsubmit::Error> {
         self.concrete()
             .call(|session| {
-                let temporary = session.state.borrow().transaction.is_none();
-                if temporary {
-                    query(session, "BEGIN PESSIMISTIC")?;
-                }
-                let result = (|| {
-                    let state = session.state.borrow();
-                    let txn = state
-                        .transaction
-                        .as_ref()
-                        .ok_or_else(|| sys_error("active transaction required"))?;
-                    let role = match txn.Get(&kv::Context::default(), meta_key(b"BDRRole"), &[]) {
-                        Ok(value) => String::from_utf8(value.Value).map_err(sys_error)?,
+                let context =
+                    kv::WithInternalSourceType(kv::Context::default(), kv::InternalTxnDDL);
+                let read = |txn: &dyn kv::Transaction| -> Result<(String, u64), kv::Error> {
+                    let role = match txn.Get(&context, meta_key(b"BDRRole"), &[]) {
+                        Ok(value) => String::from_utf8(value.Value)
+                            .map_err(|e| kv::errors::New(e.to_string()))?,
                         Err(error) if kv::IsErrNotFound(&error) => "none".into(),
-                        Err(error) => return Err(sys_error(error)),
+                        Err(error) => return Err(error),
                     };
                     Ok((role, txn.StartTS()))
-                })();
-                if temporary {
-                    let rollback = query(session, "ROLLBACK");
-                    return result.and_then(|value| rollback.map(|_| value));
+                };
+                // Existing transaction affinity is preserved for callers already
+                // in a transaction. SubmitBatch instead uses Go's separate,
+                // retried metadata transaction before allocating IDs.
+                if let Some(txn) = session.state.borrow().transaction.as_ref() {
+                    return read(txn.as_ref()).map_err(sys_error);
                 }
-                result
+                let mut value = None;
+                session
+                    .domain
+                    .storage_handle()
+                    .with_storage(|store| {
+                        kv::RunInNewTxn(&context, store, true, |_, txn| {
+                            value = Some(read(txn)?);
+                            Ok(())
+                        })
+                    })
+                    .map_err(sys_error)?;
+                value.ok_or_else(|| sys_error("BDR metadata transaction did not run"))
             })
             .map_err(job_error)
     }
+
     fn transaction_start_ts(&self) -> Result<u64, jobsubmit::Error> {
         self.context
             .transaction(false)
@@ -595,17 +638,18 @@ impl jobsubmit::Session for SystemSessionLease {
                     .as_mut()
                     .ok_or_else(|| sys_error("active transaction required"))?;
                 txn.SetOption(kv::SnapshotTS, Some(Box::new(for_update_ts)));
-                txn.LockKeys(
-                    &kv::Context::default(),
-                    &mut kv::LockCtx {
-                        WaitTimeoutMs: wait_timeout,
-                        ..Default::default()
-                    },
-                    &[meta_key(b"NextGlobalID")],
-                )
-                .map_err(sys_error)
+                Ok(txn
+                    .LockKeys(
+                        &kv::Context::default(),
+                        &mut kv::LockCtx {
+                            WaitTimeoutMs: wait_timeout,
+                            ..Default::default()
+                        },
+                        &[meta_key(b"NextGlobalID")],
+                    )
+                    .map_err(job_kv_error))
             })
-            .map_err(job_error)
+            .map_err(job_error)?
     }
     fn set_snapshot_ts(&mut self, timestamp: u64) {
         let result = self.concrete().call(move |session| {
@@ -739,5 +783,89 @@ impl astersql_infoschema_issyncer::MDLSessionPool for SystemSessionPool {
                 ))
             })
             .collect()
+    }
+}
+
+struct TableModeBdrPolicy;
+impl jobsubmit::BdrPolicy for TableModeBdrPolicy {
+    fn is_denied(&self, role: &str, tp: jobsubmit::JobType, _: &jobsubmit::JobArgs) -> bool {
+        // These options are exclusively for BuildAlterTableModeJob.
+        if tp != jobsubmit::JobType::AlterTableMode {
+            return true;
+        }
+        let role = match role {
+            "primary" => astersql_ddl_bdr::ast::BDRRole::Primary,
+            "secondary" => astersql_ddl_bdr::ast::BDRRole::Secondary,
+            "none" | "" => astersql_ddl_bdr::ast::BDRRole::None,
+            _ => astersql_ddl_bdr::ast::BDRRole::Unknown,
+        };
+        astersql_ddl_bdr::IsDenied(role, tp.code() as u8, None)
+    }
+}
+struct SubmitGuard(Arc<dyn systable::Manager>);
+impl jobsubmit::SystemTableManager for SubmitGuard {
+    fn has_flashback_cluster_job(&self, min_id: i64) -> Result<bool, jobsubmit::Error> {
+        self.0
+            .has_flashback_cluster_job(&systable::Context::default(), min_id)
+            .map_err(job_error)
+    }
+}
+struct SubmitMinId(Arc<systable::MinJobIdRefresher>);
+impl jobsubmit::MinJobIdProvider for SubmitMinId {
+    fn current_min_job_id(&self) -> i64 {
+        self.0.current_min_job_id()
+    }
+}
+impl SystemSessionPool {
+    /// Construct Go table-mode submission dependencies without starting an owner.
+    /// The caller manages the shared MinJobID refresh loop and serverstate lifecycle.
+    pub fn table_mode_submit_options(
+        self: &Arc<Self>,
+        manager: Arc<dyn systable::Manager>,
+        min_id: Arc<systable::MinJobIdRefresher>,
+        state: Option<Arc<dyn jobsubmit::ServerState>>,
+    ) -> jobsubmit::SubmitOptions {
+        jobsubmit::SubmitOptions {
+            session_pool: self.clone(),
+            system_table_manager: Arc::new(SubmitGuard(manager)),
+            min_job_id_provider: Arc::new(SubmitMinId(min_id)),
+            server_state: state,
+            bdr_policy: Arc::new(TableModeBdrPolicy),
+            before_insert_with_assigned_ids: None,
+            max_retry_count: kv::MaxRetryCnt.load(Ordering::Relaxed) as usize,
+            backoff: Arc::new(|attempt| {
+                kv::BackOff(u32::try_from(attempt).unwrap_or(u32::MAX));
+            }),
+        }
+    }
+}
+impl SystemSessionLease {
+    /// Read the real pooled session's variables, including the CDC bypass source.
+    pub fn ddl_session_variables(
+        &self,
+    ) -> Result<astersql_domain_crossks::SessionVariables, String> {
+        self.concrete()
+            .call(|session| {
+                let sql_mode =
+                    astersql_parser_mysql::r#const::GetSQLMode(&session.state.borrow().sql_mode)
+                        .map_err(sys_error)?;
+                let source = session
+                    .session_vars
+                    .GetHintSystemVar("tidb_cdc_write_source")
+                    .map_err(sys_error)?;
+                Ok(astersql_domain_crossks::SessionVariables {
+                    cdc_write_source: source.parse::<u64>().map_err(sys_error)?,
+                    sql_mode: sql_mode.0 as u64,
+                })
+            })
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Jobsubmit uses the synchronously refreshed cache of the public state syncer.
+pub struct JobSubmitServerState(pub Arc<dyn astersql_ddl_serverstate::Syncer>);
+impl jobsubmit::ServerState for JobSubmitServerState {
+    fn is_upgrading(&self) -> bool {
+        self.0.is_upgrading_state()
     }
 }

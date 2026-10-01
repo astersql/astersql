@@ -231,6 +231,8 @@ pub struct SessionVars {
     systems: HashMap<String, String>,
     /// 当前会话累计的警告数，对应 Go `SessionVars.SysWarningCount`。
     pub SysWarningCount: i32,
+    /// Nonzero values identify CDC writes and bypass BDR DDL restrictions.
+    pub CDCWriteSource: u64,
     pub DMLBatchSize: i64,
     pub KVVars: SessionKVVars,
     pub StmtCtx: StatementContext,
@@ -279,6 +281,7 @@ impl SessionVars {
         Self {
             systems: HashMap::new(),
             SysWarningCount: 0,
+            CDCWriteSource: 0,
             DMLBatchSize: vardef::DefDMLBatchSize,
             KVVars: SessionKVVars::default(),
             StmtCtx: StatementContext::default(),

@@ -556,6 +556,14 @@ fn register_basic_clamped_vars() {
         vardef::DefBatchInsert,
         vardef::ScopeSession,
     ));
+    let mut cdc_source = int_var(vardef::TiDBCDCWriteSource, 0, vardef::ScopeSession, 0, 15);
+    cdc_source.SetSession = Some(Arc::new(|vars, value| {
+        vars.CDCWriteSource = value
+            .parse()
+            .map_err(|_| VariableError::wrong_value(vardef::TiDBCDCWriteSource, value))?;
+        Ok(())
+    }));
+    RegisterSysVar(cdc_source);
     let dml_batch_size = unsigned_var(
         vardef::TiDBDMLBatchSize,
         vardef::DefDMLBatchSize as u64,

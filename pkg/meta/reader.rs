@@ -304,3 +304,142 @@ pub fn new_reader(mut snapshot: kv::Snapshot) -> Box<dyn Reader> {
         start_ts: 0,
     })
 }
+
+/// Go metadata read from a real immutable KV snapshot. Unlike the harness
+/// Reader, this reader retains the target storage's MVCC and error semantics.
+pub struct SnapshotReader {
+    snapshot: Box<dyn astersql_kv::Snapshot>,
+}
+impl SnapshotReader {
+    /// Mark the provided real MVCC snapshot as internal metadata traffic.
+    pub fn new(mut snapshot: Box<dyn astersql_kv::Snapshot>) -> Self {
+        snapshot.SetOption(astersql_kv::RequestSourceInternal, Some(Box::new(true)));
+        snapshot.SetOption(
+            astersql_kv::RequestSourceType,
+            Some(Box::new(astersql_kv::InternalTxnMeta.to_string())),
+        );
+        snapshot.SetOption(astersql_kv::TiKVClientReadTimeout, Some(Box::new(3000_u64)));
+        Self { snapshot }
+    }
+    fn hash_get(&self, hash: &[u8], field: &[u8]) -> Result<Option<Vec<u8>>, errors::Error> {
+        let key = transaction_meta_hash_key(hash, field);
+        match self
+            .snapshot
+            .Get(&astersql_kv::Context::default(), key, &[])
+        {
+            Ok(value) => Ok(Some(value.Value)),
+            Err(error) if astersql_kv::IsErrNotFound(&error) => Ok(None),
+            Err(error) => Err(errors::new(error)),
+        }
+    }
+    /// Read Go DBs/DB:<id> metadata from this snapshot.
+    pub fn get_database(
+        &self,
+        id: i64,
+    ) -> Result<Option<astersql_meta_model::DBInfo>, errors::Error> {
+        self.hash_get(b"DBs", format!("DB:{id}").as_bytes())?
+            .map(|raw| astersql_meta_model::DecodeDBInfo(&raw).map_err(errors::new))
+            .transpose()
+    }
+    /// Read a table in the requested database without consulting InfoSchema.
+    pub fn get_table(
+        &self,
+        db: i64,
+        id: i64,
+    ) -> Result<Option<astersql_meta_model::TableInfo>, errors::Error> {
+        if self.get_database(db)?.is_none() {
+            return Err(errors::new(format!("database {db} not found")));
+        }
+        self.hash_get(
+            format!("DB:{db}").as_bytes(),
+            format!("Table:{id}").as_bytes(),
+        )?
+        .map(|raw| astersql_meta_model::DecodeTableInfo(&raw).map_err(errors::new))
+        .transpose()
+    }
+    /// Read Go DDLJobHistory, keyed by the big-endian job ID.
+    pub fn get_history_ddl_job(
+        &self,
+        id: i64,
+    ) -> Result<Option<astersql_meta_model::group_3::Job>, errors::Error> {
+        self.hash_get(b"DDLJobHistory", &id.to_be_bytes())?
+            .map(|raw| decode_go_history_job(&raw))
+            .transpose()
+    }
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct GoHistoryError {
+    class: i64,
+    code: i64,
+    message: String,
+    rfccode: String,
+}
+impl GoHistoryError {
+    fn display(self) -> String {
+        // github.com/pingcap/errors compatible_shim.go, pinned by go.mod.
+        let class = match self.class {
+            1 => "autoid",
+            2 => "ddl",
+            3 => "domain",
+            4 => "evaluator",
+            5 => "executor",
+            6 => "expression",
+            7 => "admin",
+            8 => "kv",
+            9 => "meta",
+            10 => "planner",
+            11 => "parser",
+            12 => "perfschema",
+            13 => "privilege",
+            14 => "schema",
+            15 => "server",
+            16 => "struct",
+            17 => "variable",
+            18 => "xeval",
+            19 => "table",
+            20 => "types",
+            21 => "global",
+            22 => "mocktikv",
+            23 => "json",
+            24 => "tikv",
+            25 => "session",
+            26 => "plugin",
+            27 => "util",
+            _ => "",
+        };
+        let code = if self.rfccode.is_empty() && self.class > 0 {
+            format!("{class}:{}", self.code)
+        } else {
+            self.rfccode
+        };
+        format!("[{code}]{}", self.message)
+    }
+}
+pub fn decode_go_history_job(
+    raw: &[u8],
+) -> Result<astersql_meta_model::group_3::Job, errors::Error> {
+    // The current Job error ABI is a display string. Adapt Go's structured
+    // terror JSON to Error() at the read boundary without rewriting stored
+    // history or dropping fields from the complete Job model.
+    let mut value: serde_json::Value = serde_json::from_slice(raw)?;
+    for field in ["err", "warning"] {
+        if let Some(error) = value.get_mut(field)
+            && error.is_object()
+        {
+            let wire: GoHistoryError = serde_json::from_value(error.clone())?;
+            *error = serde_json::Value::String(wire.display());
+        }
+    }
+    astersql_meta_model::group_3::Job::decode(&serde_json::to_vec(&value)?).map_err(errors::new)
+}
+
+/// Go structure hash key shared by real metadata readers and writers.
+pub fn transaction_meta_hash_key(hash: &[u8], field: &[u8]) -> astersql_kv::Key {
+    use astersql_util_codec::{EncodeBytes, EncodeUint};
+    astersql_kv::Key(EncodeBytes(
+        EncodeUint(EncodeBytes(vec![b'm'], hash), b'h' as u64),
+        field,
+    ))
+}

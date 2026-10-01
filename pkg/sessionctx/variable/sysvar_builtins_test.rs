@@ -84,3 +84,29 @@ fn gogc_tuner_bounds_and_strict_order_match_go() {
         "Go rejects a minimum equal to the current maximum"
     );
 }
+
+#[test]
+fn crossks_align_submit_only_cdc_source_is_a_go_session_variable() {
+    crate::register_builtin_sysvars();
+    let variable = GetSysVar(vardef::TiDBCDCWriteSource)
+        .expect("DDL job construction needs the real CDC source");
+    assert_eq!(variable.Scope, vardef::ScopeSession);
+    assert_eq!(variable.Value, "0");
+    assert_eq!(variable.MaxValue, 15);
+    let mut vars = SessionVars::new(Box::new(NoopAccessor));
+    let value = variable
+        .Validate(&mut vars, "7", vardef::ScopeSession)
+        .unwrap();
+    variable.SetSessionFromHook(&mut vars, &value).unwrap();
+    assert_eq!(vars.system(vardef::TiDBCDCWriteSource), Some("7"));
+    assert_eq!(vars.CDCWriteSource, 7);
+    let clamped = variable
+        .Validate(&mut vars, "16", vardef::ScopeSession)
+        .unwrap();
+    assert_eq!(clamped, "15");
+    assert!(
+        variable
+            .Validate(&mut vars, "invalid", vardef::ScopeSession)
+            .is_err()
+    );
+}

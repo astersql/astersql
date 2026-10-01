@@ -118,3 +118,18 @@ pub fn build_alter_table_mode_job(
     };
     Ok((Some(job), Some(args), false))
 }
+
+/// Encode the same version-2 payload as Go model.AlterTableModeArgs.
+pub fn table_mode_args(args: AlterTableModeArgs) -> crate::JobArgs {
+    let mode = match args.table_mode {
+        TableMode::Normal => 0,
+        TableMode::Import => 1,
+        TableMode::Restore => 2,
+    };
+    crate::JobArgs::Opaque(
+        serde_json::to_vec(&serde_json::json!({
+            "table_mode": mode, "schema_id": args.schema_id, "table_id": args.table_id,
+        }))
+        .expect("serialize table-mode arguments"),
+    )
+}

@@ -2645,8 +2645,12 @@ dependencies = [
 name = "astersql-domain-crossks"
 version = "0.1.0"
 dependencies = [
+ "astersql-ddl-jobsubmit",
  "astersql-domain-serverinfo",
  "astersql-infoschema-issyncer",
+ "astersql-kv",
+ "astersql-meta",
+ "astersql-meta-model",
  "astersql-session-sessmgr",
  "uuid",
 ]
@@ -5692,6 +5696,9 @@ name = "astersql-meta"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "astersql-kv",
+ "astersql-meta-model",
+ "astersql-util-codec",
  "futures",
  "serde",
  "serde_json",

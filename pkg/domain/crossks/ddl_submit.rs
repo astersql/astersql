@@ -37,16 +37,12 @@ pub enum TableMode {
     Restore,
 }
 impl TableMode {
-    /// 判断当前模式是否允许迁移到目标模式。
-    fn can_transition(self, target: Self) -> bool {
-        self == target
-            || matches!(
-                (self, target),
-                (Self::Normal, Self::Import)
-                    | (Self::Normal, Self::Restore)
-                    | (Self::Import, Self::Normal)
-                    | (Self::Restore, Self::Normal)
-            )
+    fn jobsubmit_mode(self) -> astersql_ddl_jobsubmit::TableMode {
+        match self {
+            Self::Normal => astersql_ddl_jobsubmit::TableMode::Normal,
+            Self::Import => astersql_ddl_jobsubmit::TableMode::Import,
+            Self::Restore => astersql_ddl_jobsubmit::TableMode::Restore,
+        }
     }
 }
 #[derive(Clone, Debug)]
@@ -116,6 +112,20 @@ pub trait DdlBackend: Send + Sync {
         schema_id: i64,
         table_id: i64,
     ) -> Result<Option<(String, TableMode)>, Error>;
+    /// Resolve both objects in one snapshot when the backend supports MVCC.
+    fn resolve_metadata(
+        &self,
+        schema_id: i64,
+        table_id: i64,
+    ) -> Result<(Option<String>, Option<(String, TableMode)>), Error> {
+        let database = self.resolve_database(schema_id)?;
+        let table = if database.is_some() {
+            self.resolve_table(schema_id, table_id)?
+        } else {
+            None
+        };
+        Ok((database, table))
+    }
     /// 读取提交 Job 所需的会话变量。
     fn session_variables(&self) -> Result<SessionVariables, Error>;
     /// 刷新本节点 server state（与集群状态对齐）。
@@ -156,52 +166,57 @@ impl DdlClient {
         &self,
         target: &AlterTableModeTarget,
     ) -> Result<Option<AlterTableModeJob>, Error> {
-        if !target.current_mode.can_transition(target.target_mode) {
-            return Err(Error(format!(
-                "invalid table mode transition {:?} -> {:?}",
-                target.current_mode, target.target_mode
-            )));
-        }
-        if target.current_mode == target.target_mode {
+        let (job, _, _) = astersql_ddl_jobsubmit::build_alter_table_mode_job(
+            astersql_ddl_jobsubmit::SessionVariables::default(),
+            astersql_ddl_jobsubmit::AlterTableModeTarget {
+                schema_id: target.schema_id,
+                table_id: target.table_id,
+                schema_name: target.schema_name.clone(),
+                table_name: target.table_name.clone(),
+                current_mode: target.current_mode.jobsubmit_mode(),
+                target_mode: target.target_mode.jobsubmit_mode(),
+            },
+        )
+        .map_err(|error| Error(error.to_string()))?;
+        let Some(mut job) = job else {
             return Ok(None);
-        }
+        };
         let vars = self.backend.session_variables()?;
+        job.cdc_write_source = vars.cdc_write_source;
+        job.sql_mode = vars.sql_mode;
         Ok(Some(AlterTableModeJob {
-            id: 0,
-            schema_id: target.schema_id,
-            table_id: target.table_id,
-            // Go persists CIStr.L in the DDL job rather than the original spelling.
-            schema_name: target.schema_name.to_lowercase(),
-            table_name: target.table_name.to_lowercase(),
+            id: job.id,
+            schema_id: job.schema_id,
+            table_id: job.table_id,
+            schema_name: job.schema_name,
+            table_name: job.table_name,
             target_mode: target.target_mode,
-            query: "skip".into(),
-            cdc_write_source: vars.cdc_write_source,
-            sql_mode: vars.sql_mode,
+            query: job.query,
+            cdc_write_source: job.cdc_write_source,
+            sql_mode: job.sql_mode,
         }))
     }
+
     /// 用后端元数据校验请求中的 schema/表名，并补齐 current_mode。
     pub fn resolve_alter_table_mode_target(
         &self,
         request: AlterTableModeTarget,
     ) -> Result<AlterTableModeTarget, Error> {
-        let database = self
+        let (database, table) = self
             .backend
-            .resolve_database(request.schema_id)?
-            .ok_or_else(|| {
-                Error(format!(
-                    "database does not exist (Schema ID {})",
-                    request.schema_id
-                ))
-            })?;
-        let (table, mode) = self
-            .backend
-            .resolve_table(request.schema_id, request.table_id)?
-            .ok_or_else(|| {
-                Error(format!(
-                    "table does not exist (Schema ID {}, Table ID {})",
-                    request.schema_id, request.table_id
-                ))
-            })?;
+            .resolve_metadata(request.schema_id, request.table_id)?;
+        let database = database.ok_or_else(|| {
+            Error(format!(
+                "database does not exist (Schema ID {})",
+                request.schema_id
+            ))
+        })?;
+        let (table, mode) = table.ok_or_else(|| {
+            Error(format!(
+                "table does not exist (Schema ID {}, Table ID {})",
+                request.schema_id, request.table_id
+            ))
+        })?;
         if database.to_lowercase() != request.schema_name.to_lowercase() {
             return Err(Error(format!(
                 "expected schema name {} does not match target schema name {database}",
@@ -239,5 +254,157 @@ impl DdlClient {
                 }
             }
         }
+    }
+}
+
+/// Open a fresh target snapshot while retaining the shared target store.
+pub type SnapshotProvider =
+    Arc<dyn Fn() -> Result<Box<dyn astersql_kv::Snapshot>, Error> + Send + Sync>;
+/// Read variables from a real borrowed target system session.
+pub type SessionVariablesProvider = Arc<dyn Fn() -> Result<SessionVariables, Error> + Send + Sync>;
+/// Refresh the public serverstate cache before enqueueing.
+pub type ServerStateRefresh = Arc<dyn Fn() -> Result<(), Error> + Send + Sync>;
+
+/// Go crossks submission adapter. It owns no election, scheduler or worker.
+/// The caller supplies existing jobsubmit/session/systable components; target
+/// owner startup remains a responsibility of the normal target service.
+pub struct SubmitOnlyBackend {
+    options: astersql_ddl_jobsubmit::SubmitOptions,
+    snapshot: SnapshotProvider,
+    variables: SessionVariablesProvider,
+    refresh: ServerStateRefresh,
+    notifier: Option<Arc<dyn astersql_ddl_jobsubmit::OwnerNotifier>>,
+}
+impl SubmitOnlyBackend {
+    /// Assemble existing submission components; no background work is started.
+    pub fn new(
+        options: astersql_ddl_jobsubmit::SubmitOptions,
+        snapshot: SnapshotProvider,
+        variables: SessionVariablesProvider,
+        refresh: ServerStateRefresh,
+        notifier: Option<Arc<dyn astersql_ddl_jobsubmit::OwnerNotifier>>,
+    ) -> Self {
+        Self {
+            options,
+            snapshot,
+            variables,
+            refresh,
+            notifier,
+        }
+    }
+    fn reader(&self) -> Result<astersql_meta::SnapshotReader, Error> {
+        (self.snapshot)().map(astersql_meta::SnapshotReader::new)
+    }
+    fn mode(mode: astersql_meta_model::TableMode) -> TableMode {
+        match mode {
+            astersql_meta_model::TableMode::TableModeNormal => TableMode::Normal,
+            astersql_meta_model::TableMode::TableModeImport => TableMode::Import,
+            astersql_meta_model::TableMode::TableModeRestore => TableMode::Restore,
+        }
+    }
+}
+impl DdlBackend for SubmitOnlyBackend {
+    fn resolve_database(&self, id: i64) -> Result<Option<String>, Error> {
+        self.reader()?
+            .get_database(id)
+            .map(|v| v.map(|db| db.Name.L))
+            .map_err(|e| Error(e.to_string()))
+    }
+    fn resolve_table(&self, db: i64, id: i64) -> Result<Option<(String, TableMode)>, Error> {
+        self.reader()?
+            .get_table(db, id)
+            .map(|v| v.map(|t| (t.Name.L, Self::mode(t.Mode))))
+            .map_err(|e| Error(e.to_string()))
+    }
+    fn resolve_metadata(
+        &self,
+        db: i64,
+        id: i64,
+    ) -> Result<(Option<String>, Option<(String, TableMode)>), Error> {
+        let reader = self.reader()?;
+        let database = reader.get_database(db).map_err(|e| Error(e.to_string()))?;
+        let table = if database.is_some() {
+            reader.get_table(db, id).map_err(|e| Error(e.to_string()))?
+        } else {
+            None
+        };
+        Ok((
+            database.map(|db| db.Name.L),
+            table.map(|t| (t.Name.L, Self::mode(t.Mode))),
+        ))
+    }
+    fn session_variables(&self) -> Result<SessionVariables, Error> {
+        (self.variables)()
+    }
+    fn refresh_server_state(&self) -> Result<(), Error> {
+        (self.refresh)()
+    }
+    fn submit(&self, job: &mut AlterTableModeJob) -> Result<(), Error> {
+        use astersql_ddl_jobsubmit as submit;
+        let mut spec = submit::JobSpec {
+            job: submit::Job {
+                version: 2,
+                schema_id: job.schema_id,
+                table_id: job.table_id,
+                schema_name: job.schema_name.clone(),
+                table_name: job.table_name.clone(),
+                job_type: submit::JobType::AlterTableMode,
+                query: job.query.clone(),
+                binlog_info_present: true,
+                cdc_write_source: job.cdc_write_source,
+                sql_mode: job.sql_mode,
+                involving_schemas: vec![(job.schema_name.clone(), job.table_name.clone())],
+                ..Default::default()
+            },
+            args: submit::table_mode_args(submit::AlterTableModeArgs {
+                table_mode: job.target_mode.jobsubmit_mode(),
+                schema_id: job.schema_id,
+                table_id: job.table_id,
+            }),
+            id_allocated: true,
+        };
+        submit::submit_batch(&self.options, std::slice::from_mut(&mut spec))
+            .map_err(|e| Error(e.to_string()))?;
+        job.id = spec.job.id;
+        Ok(())
+    }
+    fn notify_owner(&self) -> Result<(), Error> {
+        self.notifier
+            .as_ref()
+            .map_or(Ok(()), |n| n.notify().map_err(|e| Error(e.to_string())))
+    }
+    fn history_job(&self, id: i64) -> Result<Option<HistoryJobState>, Error> {
+        let job = self
+            .reader()?
+            .get_history_ddl_job(id)
+            .map_err(|e| Error(e.to_string()))?;
+        Ok(job.map(|job| {
+            if job.state == astersql_meta_model::group_3::JobState::Synced {
+                HistoryJobState::Synced
+            } else if let Some(error) = job.error {
+                HistoryJobState::Failed(error)
+            } else {
+                HistoryJobState::Unexpected(job.state.to_string())
+            }
+        }))
+    }
+}
+
+/// Go NotifyDDLOwnerByEtcd sends an advisory general-job notification.
+/// A failed notification never rolls back an already committed job.
+pub struct EtcdOwnerNotifier(pub Arc<dyn astersql_domain_serverinfo::EtcdClient>);
+impl astersql_ddl_jobsubmit::OwnerNotifier for EtcdOwnerNotifier {
+    fn notify(&self) -> Result<(), astersql_ddl_jobsubmit::Error> {
+        self.0
+            .Put(
+                &astersql_domain_serverinfo::Context::Background(),
+                "/tidb/ddl/add_ddl_job_general",
+                b"0".to_vec(),
+                None,
+            )
+            .map_err(|e| astersql_ddl_jobsubmit::Error {
+                kind: astersql_ddl_jobsubmit::ErrorKind::Storage,
+                message: e.to_string(),
+            })
     }
 }
