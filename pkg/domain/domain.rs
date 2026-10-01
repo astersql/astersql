@@ -75,6 +75,11 @@ pub static ERR_INFO_SCHEMA_CHANGED: LazyLock<Box<astersql_util_dbterror::terror:
 /// DDL 服务抽象：启动/停止、查询 Owner、以及 Alter Table Mode 入口。
 /// DDL Owner 是集群中唯一负责推进 DDL 任务的节点。
 pub trait DdlService: Send + Sync {
+    /// Whether this service owns the public schema synchronization loops.
+    fn manages_schema_sync(&self) -> bool {
+        false
+    }
+
     /// 按 StartMode 启动 Domain 与后台 worker。
     fn start(&self, mode: StartMode) -> Result<(), String>;
     /// 停止后台 worker。
@@ -5639,29 +5644,31 @@ impl Domain {
                 let _ = syncer.updateTopologyAliveness(context);
             });
         }
-        self.start_periodic_worker(
-            "schema-reload",
-            self.config.schema_lease.max(Duration::from_millis(10)),
-            {
-                let store = self.store.clone();
-                let schema_loader = self.schema_loader.clone();
-                let cache = self.info_cache.clone();
-                let keyspace = self.config.keyspace.clone();
-                move || {
-                    if let Ok(loaded) =
-                        store.with_storage(|store| schema_loader.load_info_schema(store, &keyspace))
-                    {
-                        let current = cache
-                            .GetLatest()
-                            .map(|schema| schema.SchemaMetaVersion())
-                            .unwrap_or(i64::MIN);
-                        if loaded.schema.SchemaMetaVersion() > current {
-                            cache.Insert(loaded.schema, loaded.timestamp);
+        if !self.ddl().is_some_and(|ddl| ddl.manages_schema_sync()) {
+            self.start_periodic_worker(
+                "schema-reload",
+                self.config.schema_lease.max(Duration::from_millis(10)),
+                {
+                    let store = self.store.clone();
+                    let schema_loader = self.schema_loader.clone();
+                    let cache = self.info_cache.clone();
+                    let keyspace = self.config.keyspace.clone();
+                    move || {
+                        if let Ok(loaded) = store
+                            .with_storage(|store| schema_loader.load_info_schema(store, &keyspace))
+                        {
+                            let current = cache
+                                .GetLatest()
+                                .map(|schema| schema.SchemaMetaVersion())
+                                .unwrap_or(i64::MIN);
+                            if loaded.schema.SchemaMetaVersion() > current {
+                                cache.Insert(loaded.schema, loaded.timestamp);
+                            }
                         }
                     }
-                }
-            },
-        );
+                },
+            );
+        }
         self.start_periodic_worker("tiflash-replica-progress", Duration::from_secs(2), {
             let store = self.store.clone();
             let metadata = self.ddl_metadata.clone();
@@ -5719,6 +5726,16 @@ impl Domain {
     }
 
     /// 启动周期性后台 worker。
+    /// Names of currently registered Domain background workers for diagnostics.
+    pub fn background_worker_names(&self) -> Vec<String> {
+        self.workers
+            .lock()
+            .expect("worker lock poisoned")
+            .iter()
+            .map(|w| w.name.clone())
+            .collect()
+    }
+
     fn start_periodic_worker<F>(&self, name: &str, interval: Duration, mut task: F)
     where
         F: FnMut() + Send + 'static,

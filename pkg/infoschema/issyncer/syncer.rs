@@ -212,6 +212,9 @@ impl Syncer {
     }
     /// One iteration, shared by the loop and deterministic network-boundary tests.
     pub fn CheckMDL(&self) -> Result<(), SyncError> {
+        self.check_mdl_with_context(Context::Background())
+    }
+    fn check_mdl_with_context(&self, context: Context) -> Result<(), SyncError> {
         self.configure_protocol();
         let (version, mut jobs) = self.mdlCheckSnapshot();
         let mut progress = self.mdl_progress.lock().unwrap();
@@ -242,7 +245,7 @@ impl Syncer {
             }
             match self
                 .version_syncer()?
-                .UpdateSelfVersion(Context::Background(), id, job.Ver)
+                .UpdateSelfVersion(context.clone(), id, job.Ver)
             {
                 Ok(()) => {
                     progress.published.insert(id, job.Ver);
@@ -272,7 +275,7 @@ impl Syncer {
                 break;
             }
             if astersql_sessionctx_vardef::IsMDLEnabled() {
-                if let Err(error) = self.CheckMDL() {
+                if let Err(error) = self.check_mdl_with_context(context.clone()) {
                     eprintln!("MDL version update failed: {error}");
                 }
             }
@@ -299,7 +302,7 @@ impl Syncer {
                         return Ok(());
                     }
                 }
-                while self.Reload().is_err() {
+                while self.ReloadWithContext(context.clone()).is_err() {
                     if !context.Wait(Duration::from_millis(200)) {
                         return Ok(());
                     }
@@ -313,7 +316,7 @@ impl Syncer {
                 let reload = match watch.RecvTimeout(timeout) {
                     Ok(_) => true,
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                        syncer.WatchGlobalSchemaVer(Context::Background());
+                        syncer.WatchGlobalSchemaVer(context.clone());
                         watch = syncer.GlobalVersionCh();
                         true
                     }
@@ -322,7 +325,7 @@ impl Syncer {
                 if !reload {
                     continue;
                 }
-                if let Err(error) = self.Reload() {
+                if let Err(error) = self.ReloadWithContext(context.clone()) {
                     eprintln!("schema reload failed: {error}");
                 }
             }
@@ -412,6 +415,13 @@ impl Syncer {
     ///
     /// 重载 InfoSchema：未命中缓存时通过校验器 `Update` 通知版本变更。
     pub fn Reload(&self) -> Result<(), SyncError> {
+        self.ReloadWithContext(Context::Background())
+    }
+    /// Service-owned reloads must cancel version publication with their loops.
+    pub fn ReloadWithContext(&self, context: Context) -> Result<(), SyncError> {
+        if let Some(error) = context.Err() {
+            return Err(SyncError(error.to_string()));
+        }
         self.configure_protocol();
         let _reload = self.reload_lock.lock().unwrap();
         let started = Instant::now();
@@ -432,7 +442,7 @@ impl Syncer {
             if old < schema.Version {
                 if let Some(protocol) = &self.versionSyncer {
                     if let Err(error) =
-                        protocol.UpdateSelfVersion(Context::Background(), 0, schema.Version)
+                        protocol.UpdateSelfVersion(context.clone(), 0, schema.Version)
                     {
                         eprintln!("schema version publication failed: {error}");
                     }

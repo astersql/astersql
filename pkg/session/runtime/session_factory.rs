@@ -474,3 +474,92 @@ impl RuntimeFactory for KeyspaceSessionFactory {
         self.prepared.lock().unwrap().remove(keyspace);
     }
 }
+
+/// Assemble the ordinary schema runtime against the Domain's shared cache.
+/// The returned pool and validator must also be used by the ordinary DDL service.
+pub fn prepare_normal_schema_runtime(
+    domain: &Arc<Domain>,
+    protocol: Arc<dyn version::Syncer>,
+    lease: Duration,
+) -> Result<Arc<super::normal_ddl_service::NormalSchemaRuntime>, String> {
+    use super::normal_ddl_service::{
+        NormalSchemaCoordinator, NormalSchemaRuntime, SchemaLifecycle,
+    };
+    if lease.as_millis() == 0 {
+        return Err("normal schema lease must be positive".into());
+    }
+    let lease_millis = lease
+        .as_millis()
+        .try_into()
+        .map_err(|_| "normal schema lease overflow")?;
+    let internal = Arc::new(crossks::new_schema_coordinator());
+    let borrowed = internal.clone();
+    let returned = internal.clone();
+    let destroyed = internal.clone();
+    let validator: Arc<astersql_infoschema_isvalidator::Validator> =
+        Arc::from(astersql_infoschema_isvalidator::new(lease));
+    let pool = SystemSessionPool::new_with_validator(
+        domain.clone(),
+        SystemSessionCallbacks {
+            borrowed: Arc::new(move |session| {
+                if let Some(mdl) = super::system_session::transaction_mdl(session.as_ref()) {
+                    borrowed.store_internal_session(Arc::new(crossks::RegisteredMDLSession {
+                        id: session.session_id(),
+                        mdl,
+                    }));
+                }
+            }),
+            returned: Arc::new(move |id| returned.delete_internal_session(id)),
+            destroyed: Arc::new(move |id| destroyed.delete_internal_session(id)),
+        },
+        Some(validator.clone()),
+    );
+    let refresher = Arc::new(astersql_ddl_systable::new_min_job_id_refresher(
+        astersql_ddl_systable::new_manager(pool.clone()),
+    ));
+    let coordinator = Arc::new(NormalSchemaCoordinator {
+        domain: Arc::downgrade(domain),
+        internal,
+    });
+    let mut syncer = schema::New(
+        Some(Arc::new(schema::KvSchemaStore::from_source(
+            domain.storage_handle(),
+        ))),
+        Some(Arc::new(schema::InfoCache::from_shared(
+            domain.info_cache(),
+        ))),
+        lease_millis,
+        Some(pool.clone()),
+        Some(validator.clone()),
+        None,
+    );
+    syncer.InitRequiredFields(
+        Arc::new(move || Some(coordinator.clone())),
+        protocol.clone(),
+    );
+    syncer.SetMinJobIDRefresher(refresher.clone());
+    let runtime = Arc::new(NormalSchemaRuntime {
+        syncer: Arc::new(syncer),
+        validator,
+        pool,
+        refresher,
+        protocol,
+        context: version::Context::Background(),
+        min_cancel: Default::default(),
+        lifecycle: Mutex::new(SchemaLifecycle {
+            started: false,
+            closed: false,
+            loops: Vec::new(),
+        }),
+    });
+    // RAII closes the protocol and pool if Init or the initial reload fails.
+    runtime
+        .protocol
+        .Init(runtime.context.clone())
+        .map_err(|e| e.to_string())?;
+    runtime
+        .syncer
+        .ReloadWithContext(runtime.context.clone())
+        .map_err(|e| e.to_string())?;
+    Ok(runtime)
+}

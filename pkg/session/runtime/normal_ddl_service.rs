@@ -58,6 +58,7 @@ pub struct NormalDdlService {
     submit: Arc<SubmitTableMode>,
     cancel_schema_wait: Arc<CancelSchemaWait>,
     campaign_enabled: bool,
+    schema_runtime: Option<Arc<NormalSchemaRuntime>>,
     lifecycle: Mutex<Lifecycle>,
     last_error: Arc<Mutex<Option<String>>>,
 }
@@ -83,6 +84,7 @@ impl NormalDdlService {
             submit,
             cancel_schema_wait,
             campaign_enabled,
+            schema_runtime: None,
             lifecycle: Mutex::new(Lifecycle {
                 started: false,
                 closed: false,
@@ -91,11 +93,22 @@ impl NormalDdlService {
             last_error: Arc::new(Mutex::new(None)),
         }
     }
+    /// Attach the prepared ordinary schema resources before installing the service.
+    pub fn with_schema_runtime(mut self, schema: Arc<NormalSchemaRuntime>) -> Self {
+        self.pool = schema.pool.clone();
+        self.schema_loader = schema.clone();
+        self.schema_runtime = Some(schema);
+        self
+    }
     pub fn last_error(&self) -> Option<String> {
         self.last_error.lock().unwrap().clone()
     }
 }
 impl DdlService for NormalDdlService {
+    fn manages_schema_sync(&self) -> bool {
+        self.schema_runtime.is_some()
+    }
+
     fn start(&self, mode: StartMode) -> Result<(), String> {
         let mut state = self.lifecycle.lock().unwrap();
         if state.closed {
@@ -196,6 +209,13 @@ impl DdlService for NormalDdlService {
             };
             state.worker = Some(Worker { stop, thread });
         }
+        if let Some(schema) = &self.schema_runtime {
+            if let Err(error) = schema.start() {
+                drop(state);
+                let _ = self.stop();
+                return Err(error);
+            }
+        }
         state.started = true;
         Ok(())
     }
@@ -210,6 +230,13 @@ impl DdlService for NormalDdlService {
         };
         self.cancellation.cancel();
         (self.cancel_schema_wait)();
+        // The scheduler can be inside the shared schema loader when stop is
+        // requested. Cancel publication before joining it, while keeping the
+        // pool alive until all users have exited.
+        if let Some(schema) = &self.schema_runtime {
+            schema.context.Cancel();
+            schema.min_cancel.cancel();
+        }
         let joined = if let Some(worker) = worker {
             let _ = worker.stop.send(());
             worker
@@ -220,8 +247,9 @@ impl DdlService for NormalDdlService {
             Ok(())
         };
         self.owner_runtime.block_on(self.owner.Close());
+        let schema_result = self.schema_runtime.as_ref().map_or(Ok(()), |s| s.close());
         self.pool.close();
-        joined
+        joined.and(schema_result)
     }
     fn owner_id(&self) -> Option<String> {
         self.owner_runtime
@@ -282,5 +310,121 @@ impl astersql_infoschema_issyncer::InfoSchemaCoordinator for NormalSchemaCoordin
         {
             manager.KillNonFlashbackClusterConn();
         }
+    }
+}
+
+/// Ordinary Domain schema resources, owned by its DDL service. Construction
+/// reloads before internal workers start, as in Go Domain.Init/Start.
+pub struct NormalSchemaRuntime {
+    pub syncer: Arc<astersql_infoschema_issyncer::Syncer>,
+    pub validator: Arc<astersql_infoschema_isvalidator::Validator>,
+    pub pool: Arc<SystemSessionPool>,
+    pub refresher: Arc<astersql_ddl_systable::MinJobIdRefresher>,
+    pub(crate) protocol: Arc<dyn astersql_ddl_schemaver::Syncer>,
+    pub(crate) context: astersql_ddl_schemaver::Context,
+    pub(crate) min_cancel: astersql_ddl_systable::Cancellation,
+    pub(crate) lifecycle: Mutex<SchemaLifecycle>,
+}
+pub(crate) struct SchemaLifecycle {
+    pub(crate) started: bool,
+    pub(crate) closed: bool,
+    pub(crate) loops: Vec<thread::JoinHandle<()>>,
+}
+impl NormalSchemaRuntime {
+    pub fn start(&self) -> Result<(), String> {
+        let mut state = self.lifecycle.lock().unwrap();
+        if state.closed || self.context.Done() {
+            return Err("normal schema runtime is closed or cancelled".into());
+        }
+        if state.started {
+            return Ok(());
+        }
+        // A failed partial start cancels and joins every successfully spawned
+        // loop before releasing the pool or protocol.
+        let result = (|| {
+            let syncer = self.syncer.clone();
+            let context = self.context.clone();
+            state.loops.push(
+                thread::Builder::new()
+                    .name("normal-schema-sync".into())
+                    .spawn(move || {
+                        if let Err(e) = syncer.SyncLoop(context) {
+                            eprintln!("normal schema sync: {e}");
+                        }
+                    })
+                    .map_err(|e| e.to_string())?,
+            );
+            let syncer = self.syncer.clone();
+            let context = self.context.clone();
+            state.loops.push(
+                thread::Builder::new()
+                    .name("normal-mdl-check".into())
+                    .spawn(move || {
+                        if let Err(e) = syncer.MDLCheckLoop(context) {
+                            eprintln!("normal MDL check: {e}");
+                        }
+                    })
+                    .map_err(|e| e.to_string())?,
+            );
+            let refresher = self.refresher.clone();
+            let cancel = self.min_cancel.clone();
+            state.loops.push(
+                thread::Builder::new()
+                    .name("normal-min-job-id".into())
+                    .spawn(move || {
+                        refresher.start(&Default::default(), &cancel);
+                    })
+                    .map_err(|e| e.to_string())?,
+            );
+            Ok(())
+        })();
+        if result.is_ok() {
+            state.started = true;
+        }
+        drop(state);
+        if result.is_err() {
+            let _ = self.close();
+        }
+        result
+    }
+    pub fn close(&self) -> Result<(), String> {
+        let mut state = self.lifecycle.lock().unwrap();
+        if state.closed {
+            return Ok(());
+        }
+        state.closed = true;
+        self.context.Cancel();
+        self.min_cancel.cancel();
+        let mut result = Ok(());
+        for join in state.loops.drain(..) {
+            if join.join().is_err() {
+                result = Err("normal schema loop panicked".into());
+            }
+        }
+        self.protocol.Close();
+        astersql_infoschema_issyncer::SchemaValidator::Stop(self.validator.as_ref());
+        self.pool.close();
+        result
+    }
+    pub fn active_loop_count(&self) -> usize {
+        self.lifecycle
+            .lock()
+            .unwrap()
+            .loops
+            .iter()
+            .filter(|t| !t.is_finished())
+            .count()
+    }
+}
+impl astersql_ddl::SchemaLoader for NormalSchemaRuntime {
+    fn reload(&self) -> Result<(), astersql_ddl::SchemaLoaderError> {
+        self.syncer
+            .ReloadWithContext(self.context.clone())
+            .map_err(|e| astersql_ddl::SchemaLoaderError::new(e.to_string()))
+    }
+}
+impl Drop for NormalSchemaRuntime {
+    fn drop(&mut self) {
+        let _ = self.close();
     }
 }

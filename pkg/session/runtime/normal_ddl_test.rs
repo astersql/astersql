@@ -4278,3 +4278,323 @@ fn normal_ddl_plan_backfill_owner_handoff_recovers_committed_prefix_on_new_pool(
     drop(session);
     next_pool.close();
 }
+
+static NORMAL_SCHEMA_RUNTIME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[test]
+fn normal_ddl_plan_schema_runtime_reads_user_kv_and_closes_loops() {
+    let _serial = NORMAL_SCHEMA_RUNTIME_TEST_LOCK.lock().unwrap();
+    use astersql_ddl_schemaver::{MemoryEtcdClient, NewEtcdSyncer};
+    let f = Fixture::new();
+    struct RestoreMdl(bool);
+    impl Drop for RestoreMdl {
+        fn drop(&mut self) {
+            astersql_sessionctx_vardef::SetEnableMDL(self.0);
+        }
+    }
+    let _restore = RestoreMdl(astersql_sessionctx_vardef::IsMDLEnabled());
+    astersql_sessionctx_vardef::SetEnableMDL(true);
+
+    f.pool
+        .acquire()
+        .unwrap()
+        .query("INSERT INTO test.normal_ddl_target VALUES (1,'existing row')")
+        .unwrap();
+    let client = Arc::new(MemoryEtcdClient::default());
+    let runtime = super::session_factory::prepare_normal_schema_runtime(
+        &f.domain,
+        NewEtcdSyncer(client.clone(), "normal-schema"),
+        std::time::Duration::from_millis(100),
+    )
+    .unwrap();
+    f.insert(99344, JobState::Queueing);
+    runtime.start().unwrap();
+    runtime.start().unwrap();
+    let mut table = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+    table.Comment = "direct KV user metadata".into();
+    let next = version(&f) + 20;
+    runtime.pool.acquire().unwrap().query(format!(
+        "INSERT INTO mysql.tidb_mdl_info (job_id, version, table_ids) VALUES (99345,{next},'{}')", f.table
+    )).unwrap();
+    let mut txn = f
+        .domain
+        .storage_handle()
+        .with_storage(|s| s.Begin(&[]))
+        .unwrap();
+    txn.Set(
+        hash(
+            format!("DB:{}", f.db).as_bytes(),
+            format!("Table:{}", f.table).as_bytes(),
+        ),
+        astersql_meta_model::EncodeTableInfo(&table).unwrap(),
+    )
+    .unwrap();
+    txn.Set(
+        astersql_meta::transaction_meta_string_key(b"SchemaVersionKey"),
+        next.to_string().into_bytes(),
+    )
+    .unwrap();
+    txn.Set(astersql_meta::transaction_meta_string_key(format!("Diff:{next}").as_bytes()),
+        serde_json::to_vec(&serde_json::json!({"version": next, "type": 17, "schema_id": f.db, "table_id": f.table})).unwrap()).unwrap();
+    txn.Commit(&astersql_kv::Context::default()).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while f
+        .domain
+        .table_by_name("test", "normal_ddl_target")
+        .unwrap()
+        .Comment
+        != table.Comment
+        || runtime.validator.snapshot().latest_schema_ver != next
+        || !runtime.refresher.is_running()
+        || runtime.refresher.current_min_job_id() != 99344
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "user metadata/validator/min-job runtime did not refresh"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(f.domain.info_schema().SchemaMetaVersion(), next);
+    assert_eq!(
+        runtime
+            .pool
+            .acquire()
+            .unwrap()
+            .query("SELECT payload FROM test.normal_ddl_target WHERE id=1")
+            .unwrap()[0][0],
+        "existing row"
+    );
+    assert!(
+        !runtime
+            .syncer
+            .skipMDLCheck(&[f.table].into_iter().collect())
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while !runtime.syncer.mdlCheckContains(f.table) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "SyncLoop did not read user-table MDL row"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(runtime.syncer.mdlCheckSnapshot().1[&99345].Ver, next);
+    assert!(
+        astersql_sessionctx_vardef::IsMDLEnabled(),
+        "MDL publication regression requires enabled MDL"
+    );
+    {
+        use astersql_ddl_schemaver::{Context, DDLAllSchemaVersionsByJob, EtcdClient};
+        loop {
+            let publication = client
+                .Get(
+                    &Context::Background(),
+                    &format!("{DDLAllSchemaVersionsByJob}/99345/normal-schema"),
+                    false,
+                )
+                .unwrap();
+            if publication
+                .Kvs
+                .first()
+                .is_some_and(|kv| kv.Value == next.to_string().as_bytes())
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "MDLCheckLoop did not publish user-table version"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+    runtime.close().unwrap();
+    runtime.close().unwrap();
+    assert!(!runtime.refresher.is_running());
+    assert!(runtime.pool.acquire().is_err());
+    assert!(runtime.start().is_err());
+}
+
+#[test]
+fn normal_ddl_plan_schema_runtime_service_owns_domain_loops() {
+    let _serial = NORMAL_SCHEMA_RUNTIME_TEST_LOCK.lock().unwrap();
+    use astersql_domain::domain::{DdlService, StartMode};
+    let f = Fixture::new();
+    let runtime = super::session_factory::prepare_normal_schema_runtime(
+        &f.domain,
+        astersql_ddl_schemaver::NewEtcdSyncer(
+            Arc::new(astersql_ddl_schemaver::MemoryEtcdClient::default()),
+            "normal-lifecycle",
+        ),
+        std::time::Duration::from_millis(100),
+    )
+    .unwrap();
+    let cancel = astersql_owner::manager::Context::new();
+    let owner = astersql_owner::mock::NewMockManager(
+        cancel.clone(),
+        "schema-only",
+        None,
+        format!("/schema-only/{}", f.db),
+    );
+    let service = Arc::new(
+        super::normal_ddl_service::NormalDdlService::new(
+            owner,
+            Arc::new(tokio::runtime::Runtime::new().unwrap()),
+            cancel,
+            runtime.pool.clone(),
+            runtime.clone(),
+            Arc::new(|| Ok(Box::new(executor()))),
+            Arc::new(|_| Ok(())),
+            Arc::new(|| {}),
+            false,
+        )
+        .with_schema_runtime(runtime.clone()),
+    );
+    f.domain.set_ddl(service.clone());
+    assert!(service.manages_schema_sync());
+    f.domain.start(StartMode::Normal).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while runtime.active_loop_count() != 3 || !runtime.refresher.is_running() {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        !f.domain
+            .background_worker_names()
+            .iter()
+            .any(|name| name == "schema-reload"),
+        "legacy Domain reload loop still runs"
+    );
+    f.domain.close();
+    assert_eq!(runtime.active_loop_count(), 0);
+    assert!(!runtime.refresher.is_running());
+    assert!(!runtime.validator.snapshot().is_started);
+    assert!(runtime.pool.acquire().is_err());
+    service.stop().unwrap();
+    assert!(runtime.start().is_err());
+}
+
+#[test]
+fn normal_ddl_plan_schema_runtime_constructor_failures_clean_protocol() {
+    let _serial = NORMAL_SCHEMA_RUNTIME_TEST_LOCK.lock().unwrap();
+    use astersql_ddl_schemaver::{
+        Context, DDLAllSchemaVersions, EtcdClient, MemoryEtcdClient, NewEtcdSyncer,
+    };
+    let f = Fixture::new();
+    let client = Arc::new(MemoryEtcdClient::default());
+    let protocol = NewEtcdSyncer(client.clone(), "constructor-failure");
+    assert!(
+        super::session_factory::prepare_normal_schema_runtime(
+            &f.domain,
+            protocol.clone(),
+            std::time::Duration::ZERO
+        )
+        .is_err()
+    );
+    client.FailPuts(1);
+    assert!(
+        super::session_factory::prepare_normal_schema_runtime(
+            &f.domain,
+            protocol.clone(),
+            std::time::Duration::from_millis(100)
+        )
+        .is_err()
+    );
+    assert!(
+        client
+            .Get(
+                &Context::Background(),
+                &format!("{DDLAllSchemaVersions}/constructor-failure"),
+                false
+            )
+            .unwrap()
+            .Kvs
+            .is_empty()
+    );
+    let mut txn = f
+        .domain
+        .storage_handle()
+        .with_storage(|s| s.Begin(&[]))
+        .unwrap();
+    txn.Set(
+        hash(b"DBs", format!("DB:{}", f.db).as_bytes()),
+        b"invalid Go database JSON".to_vec(),
+    )
+    .unwrap();
+    txn.Commit(&astersql_kv::Context::default()).unwrap();
+    assert!(
+        super::session_factory::prepare_normal_schema_runtime(
+            &f.domain,
+            protocol,
+            std::time::Duration::from_millis(100)
+        )
+        .is_err()
+    );
+    assert!(
+        client
+            .Get(
+                &Context::Background(),
+                &format!("{DDLAllSchemaVersions}/constructor-failure"),
+                false
+            )
+            .unwrap()
+            .Kvs
+            .is_empty()
+    );
+}
+
+#[test]
+fn normal_ddl_plan_schema_runtime_cancel_during_version_publication() {
+    let _serial = NORMAL_SCHEMA_RUNTIME_TEST_LOCK.lock().unwrap();
+    struct RestoreMdl(bool);
+    impl Drop for RestoreMdl {
+        fn drop(&mut self) {
+            astersql_sessionctx_vardef::SetEnableMDL(self.0);
+        }
+    }
+    let _restore = RestoreMdl(astersql_sessionctx_vardef::IsMDLEnabled());
+    astersql_sessionctx_vardef::SetEnableMDL(false);
+    let f = Fixture::new();
+    let client = Arc::new(astersql_ddl_schemaver::MemoryEtcdClient::default());
+    let runtime = super::session_factory::prepare_normal_schema_runtime(
+        &f.domain,
+        astersql_ddl_schemaver::NewEtcdSyncer(client.clone(), "normal-cancel"),
+        std::time::Duration::from_millis(100),
+    )
+    .unwrap();
+    runtime.start().unwrap();
+    client.FailPuts(usize::MAX);
+    let next = version(&f) + 20;
+    let mut txn = f
+        .domain
+        .storage_handle()
+        .with_storage(|s| s.Begin(&[]))
+        .unwrap();
+    txn.Set(
+        astersql_meta::transaction_meta_string_key(b"SchemaVersionKey"),
+        next.to_string().into_bytes(),
+    )
+    .unwrap();
+    txn.Set(astersql_meta::transaction_meta_string_key(format!("Diff:{next}").as_bytes()),
+        serde_json::to_vec(&serde_json::json!({"version": next, "type": 17, "schema_id": f.db, "table_id": f.table})).unwrap()).unwrap();
+    txn.Commit(&astersql_kv::Context::default()).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while f.domain.info_schema().SchemaMetaVersion() != next {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let closing = runtime.clone();
+    let join = std::thread::spawn(move || {
+        tx.send(closing.close()).unwrap();
+    });
+    let closed = rx.recv_timeout(std::time::Duration::from_secs(2));
+    // Always release the fault and join before asserting, including red runs.
+    client.FailPuts(0);
+    join.join().unwrap();
+    assert!(
+        closed.is_ok(),
+        "closing schema runtime could not cancel version publication"
+    );
+    closed.unwrap().unwrap();
+    assert_eq!(runtime.active_loop_count(), 0);
+    assert!(!runtime.refresher.is_running());
+}
