@@ -22,6 +22,12 @@
 
 use crate::{Context, Error, errors};
 
+/// Shared transaction schema validation, invoked at the storage commit timestamp.
+#[derive(Clone)]
+pub struct TransactionSchemaChecker(
+    pub std::sync::Arc<dyn Fn(u64) -> Result<(), crate::errors::SharedError> + Send + Sync>,
+);
+
 // Transaction option IDs are an ABI shared by Transaction implementations.
 /// 事务选项：binlog 相关信息。
 pub const BinlogInfo: i32 = 1;

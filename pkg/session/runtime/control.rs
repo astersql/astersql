@@ -918,6 +918,47 @@ impl ConcreteSession {
                 return Ok(());
             };
             if commit {
+                let schema_checker = if !transaction.IsReadOnly() {
+                    self.schema_validator
+                        .borrow()
+                        .as_ref()
+                        .cloned()
+                        .zip(transaction_info_schema.as_ref())
+                        .map(|(validator, schema)| {
+                            let mut tables = transaction_write_keys
+                                .iter()
+                                .map(|key| {
+                                    astersql_tablecodec::DecodeTableID(
+                                        astersql_tablecodec::kv::Key(key.key.clone()),
+                                    )
+                                })
+                                .chain(transaction_locking_table_ids.iter().copied())
+                                .filter(|id| *id != 0)
+                                .filter(|id| {
+                                    schema
+                                        .TableByID(*id)
+                                        .and_then(|table| table.ModelMeta().ok())
+                                        .is_none_or(|table| {
+                                            table.TempTableType
+                                                == astersql_meta_model::TempTableNone
+                                        })
+                                })
+                                .collect::<Vec<_>>();
+                            tables.sort_unstable();
+                            tables.dedup();
+                            super::schema_validation::checker(
+                                validator,
+                                schema.SchemaMetaVersion(),
+                                tables,
+                                !self.session_vars.TxnCtx.noNeedToRestore.EnableMDL,
+                            )
+                        })
+                } else {
+                    None
+                };
+                if let Some(checker) = schema_checker.clone() {
+                    transaction.SetOption(kv::SchemaChecker, Some(Box::new(checker)));
+                }
                 if was_stale && transaction_write_keys.is_empty() {
                     transaction.Rollback().map_err(|error| {
                         session_error("close read-only stale transaction", error)
@@ -1069,6 +1110,9 @@ impl ConcreteSession {
                             .map_err(|error| {
                                 session_error("apply restricted transaction retry", error)
                             })?;
+                        }
+                        if let Some(checker) = schema_checker {
+                            retry.SetOption(kv::SchemaChecker, Some(Box::new(checker)));
                         }
                         retry.Commit(&kv::Context::default()).map_err(|error| {
                             session_error("commit restricted transaction retry", error)

@@ -50,8 +50,12 @@ pub trait Store: Send + Sync {
 pub trait SessionPool: Send + Sync {
     fn close(&self);
 }
-/// InfoSchema 缓存桩接口（跨 KS 侧不关心具体实现）。
-pub trait InfoCache: Send + Sync {}
+/// Shared target InfoSchema cache published by the common schema loader.
+pub trait InfoCache: Send + Sync {
+    fn schema(&self) -> Option<astersql_infoschema_issyncer::SchemaInfo> {
+        None
+    }
+}
 /// 随 SessionManager 关闭的可逆生命周期组件。
 pub trait Lifecycle: Send + Sync {
     fn close(&self) -> Result<(), ManagerError>;
@@ -114,6 +118,10 @@ impl Drop for ServerInfoRegistration {
 }
 /// 按 keyspace 创建 SessionManager 的工厂。
 pub trait RuntimeFactory: Send + Sync {
+    /// Prepare the target Store and pool before publishing virtual server info.
+    fn prepare(&self, _keyspace: &str) -> Result<(), ManagerError> {
+        Ok(())
+    }
     fn create(&self, keyspace: &str) -> Result<Arc<SessionManager>, ManagerError>;
     /// The registration wrapper passes its virtual server ID so schema
     /// version publication uses the same instance identity.
@@ -127,6 +135,59 @@ pub trait RuntimeFactory: Send + Sync {
     /// Release resources prepared before virtual server registration when
     /// registration itself fails.
     fn registration_failed(&self, _keyspace: &str) {}
+}
+
+/// Runs the existing server-info lease recovery loop and joins it before cleanup.
+struct RegisteredServerInfo {
+    id: String,
+    syncer: Arc<Mutex<astersql_domain_serverinfo::Syncer>>,
+    worker: Mutex<Option<(std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>)>>,
+}
+impl RegisteredServerInfo {
+    fn new(syncer: astersql_domain_serverinfo::Syncer) -> Arc<Self> {
+        let id = syncer.GetLocalServerInfo().StaticInfo.ID;
+        Arc::new(Self {
+            id,
+            syncer: Arc::new(Mutex::new(syncer)),
+            worker: Mutex::new(None),
+        })
+    }
+    fn start(&self, store: Arc<dyn Store>) -> Result<(), ManagerError> {
+        let (exit, receive) = std::sync::mpsc::channel();
+        let syncer = self.syncer.clone();
+        let join = std::thread::Builder::new()
+            .name("keyspace-server-info".into())
+            .spawn(move || {
+                syncer.lock().unwrap().ServerInfoSyncLoop(&store, receive);
+            })
+            .map_err(|e| ManagerError(e.to_string()))?;
+        *self.worker.lock().unwrap() = Some((exit, join));
+        Ok(())
+    }
+    fn stop(&self) {
+        if let Some((exit, join)) = self.worker.lock().unwrap().take() {
+            let _ = exit.send(());
+            let _ = join.join();
+        }
+    }
+}
+impl ServerInfoSyncer for RegisteredServerInfo {
+    fn server_info_id(&self) -> String {
+        self.id.clone()
+    }
+    fn remove_server_info(&self) {
+        self.stop();
+        self.syncer.lock().unwrap().RemoveServerInfo();
+    }
+    fn revoke_session(&self) {
+        self.stop();
+        self.syncer.lock().unwrap().RevokeSession();
+    }
+}
+impl Drop for RegisteredServerInfo {
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 /// Wraps the runtime bootstrap with the same virtual ServerInfo registration
@@ -146,7 +207,14 @@ struct RegisteredRuntimeFactory {
 
 impl RuntimeFactory for RegisteredRuntimeFactory {
     fn create(&self, keyspace: &str) -> Result<Arc<SessionManager>, ManagerError> {
-        let etcd = (self.etcd)(keyspace)?;
+        self.inner.prepare(keyspace)?;
+        let etcd = match (self.etcd)(keyspace) {
+            Ok(etcd) => etcd,
+            Err(error) => {
+                self.inner.registration_failed(keyspace);
+                return Err(error);
+            }
+        };
         let mut syncer = astersql_domain_serverinfo::NewCrossKSSyncer(
             uuid::Uuid::new_v4().to_string(),
             Arc::new(|| 0),
@@ -164,7 +232,8 @@ impl RuntimeFactory for RegisteredRuntimeFactory {
                 "register cross-keyspace server info: {error}"
             )));
         }
-        let registration = ServerInfoRegistration::new(Arc::new(Mutex::new(*syncer)));
+        let registered = RegisteredServerInfo::new(*syncer);
+        let registration = ServerInfoRegistration::new(registered.clone());
         let server_info_id = registration
             .syncer
             .as_ref()
@@ -173,6 +242,10 @@ impl RuntimeFactory for RegisteredRuntimeFactory {
         let manager = self
             .inner
             .create_with_server_info(keyspace, &server_info_id)?;
+        if let Err(error) = registered.start(manager.store()) {
+            manager.close();
+            return Err(error);
+        }
         registration.into_runtime(&manager);
         Ok(manager)
     }
@@ -241,6 +314,7 @@ pub struct Manager {
     factory: Arc<dyn RuntimeFactory>,
     state: Mutex<ManagerState>,
     closed: AtomicBool,
+    idle_gc: Mutex<Option<(std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>)>>,
 }
 
 /// 构造 Manager；classic_kernel 为真时禁用跨 KS。
@@ -257,6 +331,7 @@ pub fn new_manager(
             runtimes: HashMap::new(),
         }),
         closed: AtomicBool::new(false),
+        idle_gc: Mutex::new(None),
     })
 }
 impl Manager {
@@ -459,6 +534,36 @@ impl Manager {
             manager.close();
         }
     }
+    /// Start the idle sweep worker owned by this manager.
+    pub fn start_idle_gc(self: &Arc<Self>) -> Result<(), ManagerError> {
+        let mut worker = self.idle_gc.lock().expect("crossks GC mutex poisoned");
+        if worker.is_some() || self.closed.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let manager = Arc::downgrade(self);
+        let (stop, receiver) = std::sync::mpsc::channel();
+        let thread = std::thread::Builder::new()
+            .name("crossks-idle-gc".into())
+            .spawn(move || {
+                loop {
+                    match receiver.recv_timeout(CROSS_KEYSPACE_RUNTIME_SWEEP_INTERVAL) {
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            let Some(manager) = manager.upgrade() else {
+                                break;
+                            };
+                            if manager.closed.load(Ordering::Acquire) {
+                                break;
+                            }
+                            manager.sweep_idle_runtimes(CROSS_KEYSPACE_RUNTIME_IDLE_TIMEOUT);
+                        }
+                        _ => break,
+                    }
+                }
+            })
+            .map_err(|error| ManagerError(format!("start crossks idle GC: {error}")))?;
+        *worker = Some((stop, thread));
+        Ok(())
+    }
     /// 系统 KS 上的 GC 循环：按扫描间隔调用 sweep_idle_runtimes，直到取消。
     pub fn run_system_keyspace_gc_loop(&self, cancellation: &Cancellation) {
         let mut waited = Duration::ZERO;
@@ -475,6 +580,18 @@ impl Manager {
     pub fn close(&self) {
         if self.closed.swap(true, Ordering::AcqRel) {
             return;
+        }
+        if let Some((stop, thread)) = self
+            .idle_gc
+            .lock()
+            .expect("crossks GC mutex poisoned")
+            .take()
+        {
+            let _ = stop.send(());
+            // The worker may release the last manager reference after a sweep.
+            if thread.thread().id() != std::thread::current().id() {
+                let _ = thread.join();
+            }
         }
         let runtimes = {
             let mut state = self.state.lock().expect("crossks mutex poisoned");
@@ -617,10 +734,10 @@ impl SessionManager {
         if self.closed.swap(true, Ordering::AcqRel) {
             return;
         }
+        self.session_pool.close();
         for lifecycle in self.lifecycles.iter().rev() {
             let _ = lifecycle.close();
         }
-        self.session_pool.close();
         if let Some(syncer) = self
             .server_info_syncer
             .lock()

@@ -981,3 +981,20 @@ fn job_state_strings_cover_terminal_and_rollback_states() {
         assert_ne!(job.state.to_string(), "none");
     }
 }
+
+#[test]
+fn crossks_align_job_pause_resume_reason_reads_go_type_wire() {
+    let job=crate::group_3::Job::decode(br#"{"id":7,"type":75,"state":9,"admin_operator":2,"pause_reason":{"type":"tikv_disk_full"},"resume_reason":{"type":"tikv_disk_full"}}"#).unwrap();
+    assert!(job.is_paused_by_system_for_kv_disk_full());
+    assert!(job.pause_reason.as_ref().unwrap().message.is_empty());
+    assert!(job.has_resume_reason(crate::group_3::JOB_RESUME_REASON_KV_DISK_FULL));
+}
+#[test]
+fn crossks_align_job_pause_resume_reason_writes_go_type_wire() {
+    let mut job = crate::group_3::Job::default();
+    job.set_pause_reason("tikv_disk_full".into(), "TiKV lacks space".into());
+    job.set_resume_reason("tikv_disk_full".into());
+    let encoded = String::from_utf8(job.encode(false).unwrap()).unwrap();
+    assert!(encoded.contains("\"type\":\"tikv_disk_full\""));
+    assert!(!encoded.contains("reason_type"));
+}

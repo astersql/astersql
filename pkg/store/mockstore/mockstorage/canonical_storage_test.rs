@@ -195,3 +195,67 @@ fn test_async_commit_reuses_prewrite_oracle_upper_bound() {
 
     assert_eq!(transaction.CommitTS(), prewrite_oracle_upper_bound);
 }
+
+#[test]
+fn crossks_align_schema_checker_rejection_preserves_error_and_uncommitted_writes() {
+    let _guard = transaction_test_guard();
+    let mut storage = new_storage();
+    let store: &mut dyn kv::Storage = &mut storage;
+    let mut txn = store.Begin(&[]).unwrap();
+    let key = kv::Key(b"schema-rejected-write".to_vec());
+    txn.Set(key.clone(), b"private".to_vec()).unwrap();
+    txn.SetOption(
+        kv::SchemaChecker,
+        Some(Box::new(kv::TransactionSchemaChecker(Arc::new(|_| {
+            Err(kv::ErrTxnRetryable.FastGenByArgs(&[]))
+        })))),
+    );
+    let error = txn.Commit(&kv::Context::default()).unwrap_err();
+    assert!(kv::ErrTxnRetryable.Equal(Some(&error)));
+    assert!(txn.Valid());
+    assert_eq!(
+        txn.Get(&kv::Context::default(), key.clone(), &[])
+            .unwrap()
+            .Value,
+        b"private"
+    );
+    txn.Rollback().unwrap();
+    let version = store.CurrentVersion("global").unwrap();
+    assert!(kv::IsErrNotFound(
+        &store
+            .GetSnapshot(version)
+            .Get(&kv::Context::default(), key, &[])
+            .unwrap_err()
+    ));
+}
+
+#[test]
+fn crossks_align_schema_checker_validates_the_timestamp_published_by_mvcc() {
+    let _guard = transaction_test_guard();
+    for asynchronous in [false, true] {
+        let mut storage = new_storage();
+        let store: &mut dyn kv::Storage = &mut storage;
+        let checked = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let observed = checked.clone();
+        let mut txn = store.Begin(&[]).unwrap();
+        let key = kv::Key(b"schema-checked-write".to_vec());
+        txn.Set(key.clone(), b"published".to_vec()).unwrap();
+        txn.SetOption(kv::EnableAsyncCommit, Some(Box::new(asynchronous)));
+        txn.SetOption(
+            kv::SchemaChecker,
+            Some(Box::new(kv::TransactionSchemaChecker(Arc::new(
+                move |timestamp| {
+                    observed.store(timestamp, Ordering::Release);
+                    Ok(())
+                },
+            )))),
+        );
+        txn.Commit(&kv::Context::default()).unwrap();
+        assert_eq!(checked.load(Ordering::Acquire), txn.CommitTS());
+        let published = store
+            .GetSnapshot(kv::NewVersion(txn.CommitTS()))
+            .Get(&kv::Context::default(), key, &[])
+            .unwrap();
+        assert_eq!(published.Value, b"published");
+    }
+}

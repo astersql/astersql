@@ -133,3 +133,33 @@ fn placement_settings_render_all_non_default_constraints() {
     );
     assert!(PlacementSettings::default().String().is_empty());
 }
+
+#[test]
+fn crossks_align_policy_decode_go_missing_settings() {
+    let policy: PolicyInfo = crate::ast::metadata_json::decode(
+        br#"{"id":98001,"name":{"O":"placement","L":"placement"},"state":5}"#,
+    )
+    .unwrap();
+    assert_eq!(policy.ID, 98001);
+    assert_eq!(policy.Name.L, "placement");
+    assert_eq!(policy.State, crate::group_3::SchemaState::Public);
+    assert!(policy.PlacementSettings.String().is_empty());
+}
+
+#[test]
+fn crossks_align_policy_go_wire_names_and_partial_settings() {
+    let policy: PolicyInfo = crate::ast::metadata_json::decode(br#"{"id":7,"name":{"O":"P","L":"p"},"state":5,"primary_region":"east","followers":3,"leader_constraints":"[+zone=east]"}"#).unwrap();
+    assert_eq!(policy.PlacementSettings.PrimaryRegion, "east");
+    assert_eq!(policy.PlacementSettings.Followers, 3);
+    assert_eq!(policy.PlacementSettings.LeaderConstraints, "[+zone=east]");
+    let wire = String::from_utf8(crate::ast::metadata_json::encode(&policy).unwrap()).unwrap();
+    assert!(wire.contains("\"primary_region\":\"east\""));
+    assert!(wire.contains("\"name\":"));
+    assert!(!wire.contains("PrimaryRegion"));
+    let legacy: PolicyInfo = crate::ast::metadata_json::decode(
+        br#"{"id":7,"Name":{"O":"P","L":"p"},"State":5,"PrimaryRegion":"west"}"#,
+    )
+    .unwrap();
+    assert_eq!(legacy.PlacementSettings.PrimaryRegion, "west");
+    assert_eq!(legacy.Name.L, "p");
+}

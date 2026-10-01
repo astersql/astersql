@@ -828,6 +828,11 @@ impl ConcreteSession {
 
     /// 对齐 Go `session.SetSessionManager`。
     pub fn SetSessionManager(&mut self, manager: Weak<dyn astersql_session_sessmgr::Manager>) {
+        if let Some(manager) = manager.upgrade() {
+            let coordinator: Arc<dyn astersql_session_sessmgr::InfoSchemaCoordinator> = manager;
+            self.domain
+                .set_schema_coordinator(Arc::downgrade(&coordinator));
+        }
         self.session_manager = Some(manager);
     }
 

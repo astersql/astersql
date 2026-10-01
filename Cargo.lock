@@ -1978,6 +1978,7 @@ dependencies = [
  "astersql-util-topsql-state",
  "astersql-util-traceevent",
  "astersql-util-tracing",
+ "serde",
  "serde_json",
 ]
 
@@ -8424,6 +8425,7 @@ dependencies = [
  "astersql-infoschema",
  "astersql-infoschema-context",
  "astersql-infoschema-issyncer",
+ "astersql-infoschema-isvalidator",
  "astersql-infoschema-perfschema",
  "astersql-infoschema-validatorapi",
  "astersql-ingestor-ingestctrl",

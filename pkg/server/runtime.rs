@@ -650,6 +650,11 @@ impl SessionDriver for ConcreteSessionDriver {
     }
 
     fn set_session_manager(&self, manager: Weak<dyn SessionManager>) {
+        if let Some(manager) = manager.upgrade() {
+            let coordinator: Arc<dyn astersql_session_sessmgr::InfoSchemaCoordinator> = manager;
+            self.domain
+                .set_schema_coordinator(Arc::downgrade(&coordinator));
+        }
         *self
             .session_manager
             .write()

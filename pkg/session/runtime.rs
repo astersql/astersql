@@ -79,6 +79,9 @@ pub(crate) use relational_value::{relational_compare, relational_window_value};
 #[cfg(test)]
 mod durable_scheduler_test;
 #[cfg(test)]
+mod lifecycle_test;
+pub mod normal_ddl_service;
+#[cfg(test)]
 mod normal_ddl_test;
 mod row_codec;
 #[cfg(test)]
@@ -88,6 +91,7 @@ mod scan_adapter_runtime;
 mod scan_adapter_runtime_test;
 mod select_into;
 mod session;
+pub mod session_factory;
 pub mod system_session;
 use session::RuntimeForeignKeyDeleteCascade;
 #[cfg(test)]
@@ -1731,3 +1735,5 @@ fn select_key(statement: &ast::SelectStmt) -> SessionResult<String> {
         _ => Err(SessionError::new("SELECT requires WHERE k = literal")),
     }
 }
+
+mod schema_validation;

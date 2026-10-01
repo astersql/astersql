@@ -639,6 +639,38 @@ impl KVTxn {
         Ok(commit_ts)
     }
 
+    /// Commit at the same timestamp that was checked, keeping rejected writes private.
+    pub fn CommitWithSchemaChecker<E>(
+        &mut self,
+        asynchronous: bool,
+        check: impl FnOnce(u64) -> std::result::Result<(), E>,
+        storage_error: impl Fn(MockStorageError) -> E,
+    ) -> std::result::Result<u64, E> {
+        if !self.valid {
+            return Err(storage_error(MockStorageError::Closed));
+        }
+        let timestamp = if asynchronous {
+            self.store
+                .inner
+                .current_ts
+                .load(Ordering::Acquire)
+                .max(self.start_ts.saturating_add(1))
+        } else {
+            self.store.allocate_timestamp()
+        };
+        if !self.writes.is_empty() {
+            check(timestamp)?;
+        }
+        let writes = std::mem::take(&mut self.writes);
+        self.buffered_write_size = 0;
+        let committed = self
+            .store
+            .commit_at_with_conflict_check(self.start_ts, writes, timestamp, !self.pessimistic)
+            .map_err(storage_error)?;
+        self.valid = false;
+        Ok(committed)
+    }
+
     /// Async Commit uses the maximum TSO already allocated during prewrite,
     /// while still keeping commit_ts strictly above start_ts.
     pub fn CommitAsync(&mut self) -> Result<u64> {

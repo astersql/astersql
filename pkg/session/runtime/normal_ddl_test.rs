@@ -796,3 +796,1150 @@ fn crossks_align_normal_ddl_consumes_task6_submit_only_backend_job() {
     assert_eq!(mode(&f), astersql_meta_model::TableMode::TableModeImport);
     runtime.block_on(manager.Close());
 }
+
+#[test]
+fn crossks_align_normal_ddl_dispatches_create_schema_with_table_mode_in_one_queue() {
+    let f = Fixture::new();
+    let db = astersql_meta_model::DBInfo {
+        ID: 91001,
+        Name: astersql_meta_model::ast::NewCIStr("mixed_queue_schema"),
+        Charset: "utf8mb4".into(),
+        Collate: "utf8mb4_bin".into(),
+        State: astersql_meta_model::SchemaState::None,
+        ..Default::default()
+    };
+    let mut job = Job::default();
+    job.id = 91001;
+    job.tp = 1;
+    job.schema_id = db.ID;
+    job.schema_name = db.Name.O.clone();
+    job.state = JobState::Queueing;
+    job.version = astersql_meta_model::group_3::JobVersion::V2;
+    job.raw_args = serde_json::to_vec(&serde_json::json!({"db_info": db})).unwrap();
+    f.pool.acquire().unwrap().query(format!("INSERT INTO mysql.tidb_ddl_job (job_id, reorg, schema_ids, table_ids, job_meta, type, processing) VALUES (91001,0,'91001','',X'{}',1,0)",hex(&job.encode(false).unwrap()))).unwrap();
+    f.insert(91002, JobState::Queueing);
+    let lease = Lease(AtomicBool::new(true));
+    let mut executor = executor();
+    let mut session = f.pool.acquire().unwrap();
+    let mut scheduler = scheduler();
+    for _ in 0..4 {
+        scheduler
+            .schedule_persisted(&mut session, &lease, &mut executor, 0)
+            .unwrap();
+    }
+    assert!(f.queue(91001).is_none());
+    assert!(f.queue(91002).is_none());
+    let database = f.reader().get_database(91001).unwrap().unwrap();
+    assert_eq!(database.State, astersql_meta_model::SchemaState::Public);
+    assert_eq!(database.Name.O, "mixed_queue_schema");
+    assert_eq!(database.Charset, "utf8mb4");
+    assert_eq!(database.Collate, "utf8mb4_bin");
+    let history = f.reader().get_history_ddl_job(91001).unwrap().unwrap();
+    assert_eq!(history.state, JobState::Synced);
+    assert_eq!(history.binlog_info.unwrap().db_info.unwrap().ID, 91001);
+    assert_eq!(
+        f.reader().get_table(f.db, f.table).unwrap().unwrap().Mode,
+        astersql_meta_model::TableMode::TableModeImport
+    );
+}
+
+#[test]
+fn crossks_align_normal_ddl_create_schema_v1_cancels_name_conflict_without_metadata_change() {
+    let f = Fixture::new();
+    let before = f.reader().get_schema_version_with_non_empty_diff().unwrap();
+    let database = astersql_meta_model::DBInfo {
+        ID: 92001,
+        Name: astersql_meta_model::ast::NewCIStr("TEST"),
+        Charset: "utf8mb4".into(),
+        Collate: "utf8mb4_bin".into(),
+        ..Default::default()
+    };
+    let mut job = Job::default();
+    job.id = 92001;
+    job.tp = 1;
+    job.schema_id = 92001;
+    job.schema_name = "TEST".into();
+    job.state = JobState::Queueing;
+    job.version = astersql_meta_model::group_3::JobVersion::V1;
+    job.raw_args = serde_json::to_vec(&vec![database]).unwrap();
+    f.pool.acquire().unwrap().query(format!("INSERT INTO mysql.tidb_ddl_job (job_id, reorg, schema_ids, table_ids, job_meta, type, processing) VALUES (92001,0,'92001','',X'{}',1,0)",hex(&job.encode(false).unwrap()))).unwrap();
+    let mut session = f.pool.acquire().unwrap();
+    let mut scheduler = scheduler();
+    scheduler
+        .schedule_persisted(
+            &mut session,
+            &Lease(AtomicBool::new(true)),
+            &mut executor(),
+            0,
+        )
+        .unwrap();
+    assert!(f.queue(92001).is_none());
+    assert!(f.reader().get_database(92001).unwrap().is_none());
+    assert_eq!(
+        f.reader().get_schema_version_with_non_empty_diff().unwrap(),
+        before
+    );
+    let history = f.reader().get_history_ddl_job(92001).unwrap().unwrap();
+    assert_eq!(history.state, JobState::Cancelled);
+    assert!(history.error.unwrap().contains("1007"));
+}
+
+impl Fixture {
+    fn insert_job(&self, job: &mut Job) {
+        let wire = hex(&job.encode(false).unwrap());
+        self.pool.acquire().unwrap().query(format!("INSERT INTO mysql.tidb_ddl_job (job_id, reorg, schema_ids, table_ids, job_meta, type, processing) VALUES ({},0,'{}','{}',X'{}',{},0)", job.id,job.schema_id,job.table_id,wire,job.tp)).unwrap();
+    }
+}
+
+#[test]
+fn crossks_align_normal_ddl_modify_schema_charset_changes_metadata_and_noop_has_no_diff() {
+    let f = Fixture::new();
+    let mut scheduler = scheduler();
+    let mut executor = executor();
+    let mut session = f.pool.acquire().unwrap();
+    let lease = Lease(AtomicBool::new(true));
+    for id in [93001, 93002] {
+        let mut job = Job::default();
+        job.id = id;
+        job.tp = 26;
+        job.schema_id = f.db;
+        job.schema_name = "test".into();
+        job.state = JobState::Queueing;
+        job.version = astersql_meta_model::group_3::JobVersion::V1;
+        job.raw_args = serde_json::to_vec(&vec!["latin1", "latin1_bin"]).unwrap();
+        f.insert_job(&mut job);
+        let before = f.reader().get_schema_version_with_non_empty_diff().unwrap();
+        for _ in 0..2 {
+            scheduler
+                .schedule_persisted(&mut session, &lease, &mut executor, 0)
+                .unwrap();
+        }
+        assert!(f.queue(id).is_none());
+        let database = f.reader().get_database(f.db).unwrap().unwrap();
+        assert_eq!(database.Charset, "latin1");
+        assert_eq!(database.Collate, "latin1_bin");
+        let history = f.reader().get_history_ddl_job(id).unwrap().unwrap();
+        assert_eq!(history.state, JobState::Synced);
+        if id == 93002 {
+            assert_eq!(history.binlog_info.unwrap().schema_version, 0);
+            assert_eq!(
+                f.reader().get_schema_version_with_non_empty_diff().unwrap(),
+                before
+            );
+        } else {
+            assert!(history.binlog_info.unwrap().schema_version > before);
+        }
+    }
+}
+
+#[test]
+fn crossks_align_normal_ddl_unavailable_handler_preserves_legal_job_without_cancellation() {
+    let f = Fixture::new();
+    let mut job = Job::default();
+    job.id = 94001;
+    job.tp = 3;
+    job.schema_id = f.db;
+    job.table_id = 94001;
+    job.schema_name = "test".into();
+    job.table_name = "pending_create".into();
+    job.state = JobState::Queueing;
+    f.insert_job(&mut job);
+    let mut scheduler = scheduler();
+    let mut executor = executor();
+    let mut session = f.pool.acquire().unwrap();
+    for _ in 0..6 {
+        let error = scheduler
+            .schedule_persisted(
+                &mut session,
+                &Lease(AtomicBool::new(true)),
+                &mut executor,
+                0,
+            )
+            .unwrap_err();
+        assert!(error.contains("handler unavailable"));
+        let retained = f.queue(94001).unwrap();
+        assert_eq!(retained.state, JobState::Queueing);
+        assert_eq!(retained.error_count, 0);
+    }
+    assert!(f.reader().get_history_ddl_job(94001).unwrap().is_none());
+}
+
+#[test]
+fn crossks_align_normal_ddl_table_mode_cancels_stale_table_name_like_go() {
+    let f = Fixture::new();
+    f.insert(95001, JobState::Queueing);
+    let mut job = f.queue(95001).unwrap();
+    job.table_name = "old_name_before_rename".into();
+    let wire = hex(&astersql_meta::encode_go_ddl_job(&mut job, false).unwrap());
+    f.pool
+        .acquire()
+        .unwrap()
+        .query(format!(
+            "UPDATE mysql.tidb_ddl_job SET job_meta=X'{wire}' WHERE job_id=95001"
+        ))
+        .unwrap();
+    let mut scheduler = scheduler();
+    let mut executor = executor();
+    let mut session = f.pool.acquire().unwrap();
+    let lease = Lease(AtomicBool::new(true));
+    for _ in 0..2 {
+        scheduler
+            .schedule_persisted(&mut session, &lease, &mut executor, 0)
+            .unwrap();
+    }
+    let history = f.reader().get_history_ddl_job(95001).unwrap().unwrap();
+    assert_eq!(history.state, JobState::Cancelled);
+    assert!(history.error.unwrap().contains("1146"));
+    assert_eq!(
+        f.reader().get_table(f.db, f.table).unwrap().unwrap().Mode,
+        astersql_meta_model::TableMode::TableModeNormal
+    );
+}
+
+fn metadata_table_action(action: u8, multi: bool) {
+    let f = Fixture::new();
+    let before = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+    let mut job = Job::default();
+    job.id = 97000 + i64::from(action);
+    job.tp = action;
+    job.schema_id = f.db;
+    job.table_id = f.table;
+    job.schema_name = "test".into();
+    job.table_name = "normal_ddl_target".into();
+    job.state = JobState::Queueing;
+    job.version = astersql_meta_model::group_3::JobVersion::V1;
+    job.raw_args = match action {
+        17 => serde_json::to_vec(&vec!["updated persistent comment"]).unwrap(),
+        39 => serde_json::to_vec(&vec![16]).unwrap(),
+        _ => unreachable!(),
+    };
+    if multi {
+        job.multi_schema_info = Some(astersql_meta_model::group_3::MultiSchemaInfo {
+            revertible: true,
+            ..Default::default()
+        });
+    }
+    f.insert_job(&mut job);
+    let mut scheduler = scheduler();
+    let mut executor = executor();
+    let mut session = f.pool.acquire().unwrap();
+    let lease = Lease(AtomicBool::new(true));
+    scheduler
+        .schedule_persisted(&mut session, &lease, &mut executor, 0)
+        .unwrap();
+    if multi {
+        assert!(
+            !f.queue(job.id)
+                .unwrap()
+                .multi_schema_info
+                .unwrap()
+                .revertible
+        );
+        assert_eq!(
+            f.reader()
+                .get_table(f.db, f.table)
+                .unwrap()
+                .unwrap()
+                .Comment,
+            before.Comment
+        );
+    }
+    for _ in 0..2 {
+        scheduler
+            .schedule_persisted(&mut session, &lease, &mut executor, 0)
+            .unwrap();
+    }
+    let table = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+    assert_eq!(table.ID, before.ID);
+    assert_eq!(table.Columns.len(), before.Columns.len());
+    assert_eq!(table.Mode, before.Mode);
+    assert_eq!(table.Revision, before.Revision + 1);
+    if action == 17 {
+        assert_eq!(table.Comment, "updated persistent comment");
+    }
+    if action == 39 {
+        assert_eq!(table.AutoIDCache, 16);
+    }
+    let history = f.reader().get_history_ddl_job(job.id).unwrap().unwrap();
+    assert_eq!(history.state, JobState::Synced);
+    assert_eq!(
+        history.binlog_info.unwrap().table_info.unwrap().Revision,
+        table.Revision
+    );
+}
+
+#[test]
+fn crossks_align_normal_ddl_metadata_comment_preserves_full_table_and_multi_boundary() {
+    metadata_table_action(17, false);
+    metadata_table_action(17, true);
+}
+
+#[test]
+fn crossks_align_normal_ddl_metadata_auto_id_cache_preserves_full_table() {
+    metadata_table_action(39, false);
+}
+
+#[test]
+fn crossks_align_normal_ddl_schema_placement_checks_policy_and_preserves_go_noop_rules() {
+    let f = Fixture::new();
+    let mut txn = f
+        .domain
+        .storage_handle()
+        .with_storage(|s| s.Begin(&[]))
+        .unwrap();
+    let mut encoded = vec![0];
+    encoded.extend(
+        serde_json::to_vec(
+            &serde_json::json!({"id": 98001, "name": {"O":"placement","L":"placement"},"state":5}),
+        )
+        .unwrap(),
+    );
+    txn.Set(hash(b"Policies", b"Policy:98001"), encoded)
+        .unwrap();
+    txn.Commit(&astersql_kv::Context::default()).unwrap();
+    let reference = astersql_meta_model::PolicyRefInfo {
+        ID: 98001,
+        Name: astersql_meta_model::ast::NewCIStr("placement"),
+    };
+    let mut scheduler = scheduler();
+    let mut executor = executor();
+    let mut session = f.pool.acquire().unwrap();
+    for (index, policy) in [
+        Some(reference.clone()),
+        Some(reference),
+        None,
+        None,
+        Some(astersql_meta_model::PolicyRefInfo {
+            ID: 98099,
+            Name: astersql_meta_model::ast::NewCIStr("missing"),
+        }),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut job = Job::default();
+        job.id = 98500 + index as i64;
+        job.tp = 55;
+        job.schema_id = f.db;
+        job.schema_name = "test".into();
+        job.state = JobState::Queueing;
+        job.version = astersql_meta_model::group_3::JobVersion::V2;
+        job.raw_args = serde_json::to_vec(&serde_json::json!({"policy_ref":policy})).unwrap();
+        f.insert_job(&mut job);
+        let before = f.reader().get_schema_version_with_non_empty_diff().unwrap();
+        for _ in 0..2 {
+            scheduler
+                .schedule_persisted(
+                    &mut session,
+                    &Lease(AtomicBool::new(true)),
+                    &mut executor,
+                    0,
+                )
+                .unwrap();
+        }
+        let history = f.reader().get_history_ddl_job(job.id).unwrap().unwrap();
+        let database = f.reader().get_database(f.db).unwrap().unwrap();
+        if index == 4 {
+            assert_eq!(history.state, JobState::Cancelled);
+            assert!(history.error.unwrap().contains("8239"));
+            assert!(database.PlacementPolicyRef.is_none());
+            assert_eq!(
+                f.reader().get_schema_version_with_non_empty_diff().unwrap(),
+                before
+            );
+        } else {
+            assert_eq!(history.state, JobState::Synced);
+            if index < 2 {
+                assert_eq!(database.PlacementPolicyRef.unwrap().ID, 98001);
+            } else {
+                assert!(database.PlacementPolicyRef.is_none());
+            }
+            if index == 1 {
+                assert_eq!(history.binlog_info.unwrap().schema_version, 0);
+            } else {
+                assert!(history.binlog_info.unwrap().schema_version > before);
+            }
+        }
+    }
+}
+
+#[test]
+fn crossks_align_normal_ddl_modify_schema_missing_database_uses_go_drop_exists_error() {
+    let f = Fixture::new();
+    let mut job = Job::default();
+    job.id = 98601;
+    job.tp = 26;
+    job.schema_id = 98601;
+    job.schema_name = "missing_database".into();
+    job.state = JobState::Queueing;
+    job.raw_args = serde_json::to_vec(&vec!["latin1", "latin1_bin"]).unwrap();
+    f.insert_job(&mut job);
+    let mut session = f.pool.acquire().unwrap();
+    scheduler()
+        .schedule_persisted(
+            &mut session,
+            &Lease(AtomicBool::new(true)),
+            &mut executor(),
+            0,
+        )
+        .unwrap();
+    let history = f.reader().get_history_ddl_job(job.id).unwrap().unwrap();
+    assert_eq!(history.state, JobState::Cancelled);
+    assert!(history.error.unwrap().contains("1008"));
+}
+
+#[test]
+fn crossks_align_normal_ddl_drop_foreign_key_preserves_other_keys_and_missing_error() {
+    let f = Fixture::new();
+    let mut table = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+    table.ForeignKeys = ["remove_me", "keep_me"]
+        .into_iter()
+        .enumerate()
+        .map(|(id, name)| astersql_meta_model::FKInfo {
+            ID: id as i64 + 1,
+            Name: astersql_meta_model::ast::NewCIStr(name),
+            State: astersql_meta_model::SchemaState::Public,
+            ..Default::default()
+        })
+        .collect();
+    let mut txn = f
+        .domain
+        .storage_handle()
+        .with_storage(|s| s.Begin(&[]))
+        .unwrap();
+    txn.Set(
+        hash(
+            format!("DB:{}", f.db).as_bytes(),
+            format!("Table:{}", f.table).as_bytes(),
+        ),
+        astersql_meta_model::EncodeTableInfo(&table).unwrap(),
+    )
+    .unwrap();
+    txn.Commit(&astersql_kv::Context::default()).unwrap();
+    let mut scheduler = scheduler();
+    let mut executor = executor();
+    let mut session = f.pool.acquire().unwrap();
+    for (index, name) in ["REMOVE_ME", "missing"].into_iter().enumerate() {
+        let before = f.reader().get_schema_version_with_non_empty_diff().unwrap();
+        let mut job = Job::default();
+        job.id = 99001 + index as i64;
+        job.tp = 10;
+        job.schema_id = f.db;
+        job.table_id = f.table;
+        job.schema_name = "test".into();
+        job.table_name = "normal_ddl_target".into();
+        job.state = JobState::Queueing;
+        job.version = astersql_meta_model::group_3::JobVersion::V1;
+        job.raw_args = serde_json::to_vec(&vec![astersql_meta_model::ast::NewCIStr(name)]).unwrap();
+        f.insert_job(&mut job);
+        for _ in 0..2 {
+            scheduler
+                .schedule_persisted(
+                    &mut session,
+                    &Lease(AtomicBool::new(true)),
+                    &mut executor,
+                    0,
+                )
+                .unwrap();
+        }
+        let history = f.reader().get_history_ddl_job(job.id).unwrap().unwrap();
+        let actual = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+        assert_eq!(actual.ForeignKeys.len(), 1);
+        assert_eq!(actual.ForeignKeys[0].Name.L, "keep_me");
+        assert_eq!(actual.Columns.len(), table.Columns.len());
+        if index == 0 {
+            assert_eq!(history.state, JobState::Synced);
+            assert_eq!(history.schema_state, astersql_meta_model::SchemaState::None);
+            assert!(f.reader().get_schema_version_with_non_empty_diff().unwrap() > before);
+        } else {
+            assert_eq!(history.state, JobState::Cancelled);
+            assert!(history.error.unwrap().contains("1091"));
+            assert_eq!(
+                f.reader().get_schema_version_with_non_empty_diff().unwrap(),
+                before
+            );
+        }
+    }
+}
+
+#[test]
+fn crossks_align_normal_ddl_drop_foreign_key_rollback_finishes_rollback_done() {
+    let f = Fixture::new();
+    let mut table = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+    table.ForeignKeys.push(astersql_meta_model::FKInfo {
+        ID: 1,
+        Name: astersql_meta_model::ast::NewCIStr("rollback_fk"),
+        State: astersql_meta_model::SchemaState::Public,
+        ..Default::default()
+    });
+    let mut txn = f
+        .domain
+        .storage_handle()
+        .with_storage(|s| s.Begin(&[]))
+        .unwrap();
+    txn.Set(
+        hash(
+            format!("DB:{}", f.db).as_bytes(),
+            format!("Table:{}", f.table).as_bytes(),
+        ),
+        astersql_meta_model::EncodeTableInfo(&table).unwrap(),
+    )
+    .unwrap();
+    txn.Commit(&astersql_kv::Context::default()).unwrap();
+    let mut job = Job::default();
+    job.id = 99009;
+    job.tp = 10;
+    job.schema_id = f.db;
+    job.table_id = f.table;
+    job.schema_name = "test".into();
+    job.table_name = "normal_ddl_target".into();
+    job.state = JobState::Rollingback;
+    job.version = astersql_meta_model::group_3::JobVersion::V1;
+    job.raw_args =
+        serde_json::to_vec(&vec![astersql_meta_model::ast::NewCIStr("rollback_fk")]).unwrap();
+    f.insert_job(&mut job);
+    let mut scheduler = scheduler();
+    let mut executor = executor();
+    let mut session = f.pool.acquire().unwrap();
+    for _ in 0..2 {
+        scheduler
+            .schedule_persisted(
+                &mut session,
+                &Lease(AtomicBool::new(true)),
+                &mut executor,
+                0,
+            )
+            .unwrap();
+    }
+    let history = f.reader().get_history_ddl_job(job.id).unwrap().unwrap();
+    assert_eq!(history.state, JobState::RollbackDone);
+    assert_eq!(history.schema_state, astersql_meta_model::SchemaState::None);
+    assert!(
+        f.reader()
+            .get_table(f.db, f.table)
+            .unwrap()
+            .unwrap()
+            .ForeignKeys
+            .is_empty()
+    );
+}
+
+#[test]
+fn crossks_align_normal_ddl_keeps_multi_schema_skip_version_in_worker_transaction() {
+    use astersql_ddl::job_worker::DurableJobExecutor;
+    let f = Fixture::new();
+    let before = version(&f);
+    let before_table = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+    let mut job = Job::default();
+    job.id = 99101;
+    job.tp = 17;
+    job.schema_id = f.db;
+    job.table_id = f.table;
+    job.schema_name = "test".into();
+    job.table_name = "normal_ddl_target".into();
+    job.state = JobState::Running;
+    job.version = astersql_meta_model::group_3::JobVersion::V1;
+    job.raw_args = serde_json::to_vec(&vec!["batched comment"]).unwrap();
+    job.multi_schema_info = Some(astersql_meta_model::group_3::MultiSchemaInfo {
+        skip_version: true,
+        revertible: false,
+        ..Default::default()
+    });
+    let mut session = f.pool.acquire().unwrap();
+    astersql_ddl::job_worker::DurableJobSession::begin(&mut session).unwrap();
+    let step = executor().step(&mut session, &mut job).unwrap();
+    astersql_ddl::job_worker::DurableJobSession::commit(&mut session).unwrap();
+    assert_eq!(step.schema_version, 0);
+    assert_eq!(version(&f), before);
+    assert!(job.multi_schema_info.as_ref().unwrap().skip_version);
+    let actual = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+    assert_eq!(actual.Comment, "batched comment");
+    assert_eq!(actual.Revision, before_table.Revision + 1);
+    assert_eq!(actual.Columns.len(), before_table.Columns.len());
+}
+
+#[test]
+fn crossks_align_normal_ddl_service_consumes_mixed_queue_and_stops_owner() {
+    use astersql_domain::domain::{DdlService, StartMode};
+    use astersql_owner::manager::Context;
+    let f = Fixture::new();
+    f.insert(99201, JobState::Queueing);
+    let mut job = Job::default();
+    job.id = 99202;
+    job.tp = 1;
+    job.schema_id = 99203;
+    job.schema_name = "normal_service_schema".into();
+    job.state = JobState::Queueing;
+    job.version = astersql_meta_model::group_3::JobVersion::V1;
+    job.raw_args = serde_json::to_vec(&vec![astersql_meta_model::DBInfo {
+        ID: job.schema_id,
+        Name: astersql_meta_model::ast::NewCIStr("normal_service_schema"),
+        ..Default::default()
+    }])
+    .unwrap();
+    f.insert_job(&mut job);
+    let cancellation = Context::new();
+    let owner = astersql_owner::mock::NewMockManager(
+        cancellation.clone(),
+        "normal-service",
+        None,
+        format!("/normal-service/{}", f.db),
+    );
+    let runtime = Arc::new(tokio::runtime::Runtime::new().unwrap());
+    let service = Arc::new(super::normal_ddl_service::NormalDdlService::new(
+        owner.clone(),
+        runtime,
+        cancellation,
+        f.pool.clone(),
+        Arc::new(super::normal_ddl_service::DomainSchemaLoader(
+            Arc::downgrade(&f.domain),
+        )),
+        Arc::new(|| Ok(Box::new(executor()))),
+        Arc::new(|_| Err("test does not submit table mode through string interface".into())),
+        Arc::new(|| {}),
+        true,
+    ));
+    f.domain.set_ddl(service.clone());
+    service.start(StartMode::Normal).unwrap();
+    service.start(StartMode::Normal).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        if f.reader().get_history_ddl_job(99201).unwrap().is_some()
+            && f.reader().get_history_ddl_job(99202).unwrap().is_some()
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "normal DDL service did not consume mixed queue: {:?}",
+            service.last_error()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(mode(&f), astersql_meta_model::TableMode::TableModeImport);
+    assert!(f.reader().get_database(99203).unwrap().is_some());
+    assert_eq!(service.owner_id(), Some("normal-service".into()));
+    service.stop().unwrap();
+    service.stop().unwrap();
+    assert!(!owner.IsOwner());
+    assert!(
+        service
+            .start(StartMode::Normal)
+            .unwrap_err()
+            .contains("closed")
+    );
+    assert!(f.pool.acquire().is_err());
+    f.domain.close();
+}
+
+#[test]
+fn crossks_align_normal_ddl_service_domain_close_releases_owned_service_and_pool() {
+    let f = Fixture::new();
+    let weak = Arc::downgrade(&f.domain);
+    let cancellation = astersql_owner::manager::Context::new();
+    let owner = astersql_owner::mock::NewMockManager(
+        cancellation.clone(),
+        "normal-close",
+        None,
+        format!("/normal-close/{}", f.db),
+    );
+    let service = Arc::new(super::normal_ddl_service::NormalDdlService::new(
+        owner,
+        Arc::new(tokio::runtime::Runtime::new().unwrap()),
+        cancellation,
+        f.pool.clone(),
+        Arc::new(super::normal_ddl_service::DomainSchemaLoader(
+            Arc::downgrade(&f.domain),
+        )),
+        Arc::new(|| Ok(Box::new(executor()))),
+        Arc::new(|_| Ok(())),
+        Arc::new(|| {}),
+        false,
+    ));
+    f.domain.set_ddl(service.clone());
+    f.domain.close();
+    drop(service);
+    drop(f);
+    assert!(
+        weak.upgrade().is_none(),
+        "closed Domain retains its DDL service/pool cycle"
+    );
+}
+
+#[test]
+fn crossks_align_normal_ddl_table_mode_uses_shared_multi_schema_version() {
+    use astersql_ddl::job_worker::{DurableJobExecutor, DurableJobSession};
+    let f = Fixture::new();
+    f.insert(99301, JobState::Running);
+    let mut job = f.queue(99301).unwrap();
+    job.multi_schema_info = Some(astersql_meta_model::group_3::MultiSchemaInfo {
+        skip_version: true,
+        ..Default::default()
+    });
+    let before = version(&f);
+    let mut session = f.pool.acquire().unwrap();
+    session.begin().unwrap();
+    let result = executor().step(&mut session, &mut job).unwrap();
+    session.commit().unwrap();
+    assert_eq!(result.schema_version, 0);
+    assert_eq!(version(&f), before);
+    assert_eq!(mode(&f), astersql_meta_model::TableMode::TableModeImport);
+    assert_eq!(job.binlog_info.unwrap().schema_version, 0);
+}
+
+#[test]
+fn crossks_align_normal_ddl_service_public_owner_handoff_consumes_same_queue() {
+    use astersql_domain::domain::{DdlService, StartMode};
+    use astersql_owner::manager::Context;
+    let f = Fixture::new();
+    let key = format!("/normal-handoff/{}", f.db);
+    let runtime = Arc::new(tokio::runtime::Runtime::new().unwrap());
+    let pool2 = SystemSessionPool::new(f.domain.clone());
+    let mut owners = Vec::new();
+    let mut services = Vec::new();
+    for (id, pool) in [("first", f.pool.clone()), ("second", pool2.clone())] {
+        let cancellation = Context::new();
+        let owner =
+            astersql_owner::mock::NewMockManager(cancellation.clone(), id, None, key.clone());
+        let service = Arc::new(super::normal_ddl_service::NormalDdlService::new(
+            owner.clone(),
+            runtime.clone(),
+            cancellation,
+            pool,
+            Arc::new(super::normal_ddl_service::DomainSchemaLoader(
+                Arc::downgrade(&f.domain),
+            )),
+            Arc::new(|| Ok(Box::new(executor()))),
+            Arc::new(|_| Err("unused submission adapter".into())),
+            Arc::new(|| {}),
+            true,
+        ));
+        service.start(StartMode::Normal).unwrap();
+        owners.push(owner);
+        services.push(service);
+    }
+    assert!(owners[0].IsOwner());
+    assert!(!owners[1].IsOwner());
+    f.insert(99401, JobState::Queueing);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while f.reader().get_history_ddl_job(99401).unwrap().is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "first owner did not consume persisted job"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    services[0].stop().unwrap();
+    let second = Fixture {
+        domain: f.domain.clone(),
+        pool: pool2,
+        db: f.db,
+        table: f.table,
+    };
+    second.insert(99402, JobState::Queueing);
+    while second
+        .reader()
+        .get_history_ddl_job(99402)
+        .unwrap()
+        .is_none()
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "second owner did not take over queue: {:?}",
+            services[1].last_error()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(owners[1].IsOwner());
+    assert!(!owners[0].IsOwner());
+    assert_eq!(
+        second
+            .reader()
+            .get_history_ddl_job(99402)
+            .unwrap()
+            .unwrap()
+            .state,
+        JobState::Synced
+    );
+    services[1].stop().unwrap();
+    f.domain.close();
+}
+
+#[test]
+fn crossks_align_normal_ddl_refresh_meta_only_updates_schema_and_diff() {
+    let f = Fixture::new();
+    let original = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+    let mut scheduler = scheduler();
+    let mut executor = executor();
+    let mut session = f.pool.acquire().unwrap();
+    for (index, job_version) in [
+        astersql_meta_model::group_3::JobVersion::V1,
+        astersql_meta_model::group_3::JobVersion::V2,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let before = version(&f);
+        let mut job = Job::default();
+        job.id = 99501 + index as i64;
+        job.tp = 76;
+        job.schema_id = f.db;
+        job.table_id = f.table;
+        job.schema_name = "test".into();
+        job.table_name = "normal_ddl_target".into();
+        job.state = JobState::Queueing;
+        job.version = job_version;
+        let args = serde_json::json!({"schema_id":f.db,"table_id":f.table,"involved_db":"test","involved_table":"normal_ddl_target"});
+        job.raw_args = serde_json::to_vec(&if index == 0 {
+            serde_json::json!([args])
+        } else {
+            args
+        })
+        .unwrap();
+        f.insert_job(&mut job);
+        for _ in 0..2 {
+            scheduler
+                .schedule_persisted(
+                    &mut session,
+                    &Lease(AtomicBool::new(true)),
+                    &mut executor,
+                    0,
+                )
+                .unwrap();
+        }
+        let history = f.reader().get_history_ddl_job(job.id).unwrap().unwrap();
+        assert_eq!(history.state, JobState::Synced);
+        assert_eq!(
+            history.schema_state,
+            astersql_meta_model::SchemaState::Public
+        );
+        assert!(version(&f) > before);
+        assert_eq!(
+            astersql_meta_model::EncodeTableInfo(
+                &f.reader().get_table(f.db, f.table).unwrap().unwrap()
+            )
+            .unwrap(),
+            astersql_meta_model::EncodeTableInfo(&original).unwrap()
+        );
+        let snapshot = f
+            .domain
+            .storage_handle()
+            .with_storage(|s| {
+                let v = s.CurrentVersion("global")?;
+                Ok::<_, astersql_kv::Error>(s.GetSnapshot(v))
+            })
+            .unwrap();
+        let diff = snapshot
+            .Get(
+                &astersql_kv::Context::default(),
+                astersql_meta::transaction_meta_string_key(
+                    format!("Diff:{}", version(&f)).as_bytes(),
+                ),
+                &[],
+            )
+            .unwrap();
+        let diff: serde_json::Value = serde_json::from_slice(&diff.Value).unwrap();
+        assert_eq!(diff["type"], 76);
+        assert_eq!(diff["table_id"], f.table);
+    }
+}
+
+fn normal_upgrade_policy() -> (
+    Arc<astersql_ddl_serverstate::EtcdSyncer>,
+    astersql_ddl::normal_policy::NormalDdlJobPolicy,
+) {
+    let state = Arc::new(astersql_ddl_serverstate::EtcdSyncer::new(
+        Arc::new(astersql_ddl_serverstate::StateStore::default()),
+        "/normal-policy-state",
+    ));
+    let context = astersql_ddl_serverstate::SyncContext::new();
+    astersql_ddl_serverstate::Syncer::init(state.as_ref(), &context).unwrap();
+    let policy = astersql_ddl::normal_policy::NormalDdlJobPolicy {
+        state: state.clone(),
+        context,
+        owner_id: "normal-policy-owner".into(),
+    };
+    (state, policy)
+}
+#[test]
+fn crossks_align_normal_ddl_policy_upgrade_pauses_then_resumes_durable_job() {
+    use astersql_ddl_serverstate::Syncer;
+    let f = Fixture::new();
+    f.insert(99601, JobState::Queueing);
+    let before = version(&f);
+    let (state, policy) = normal_upgrade_policy();
+    state
+        .update_global_state(
+            &policy.context,
+            astersql_ddl_serverstate::StateInfo {
+                state: astersql_ddl_serverstate::STATE_UPGRADING.into(),
+            },
+        )
+        .unwrap();
+    let mut executor = NormalDdlExecutor {
+        barrier: Barrier {
+            fail: false,
+            seen: vec![],
+        },
+        policy,
+        sequence: Arc::new(AtomicI64::new(0)),
+    };
+    let mut scheduler = scheduler();
+    let mut session = f.pool.acquire().unwrap();
+    let lease = Lease(AtomicBool::new(true));
+    assert_eq!(
+        scheduler
+            .schedule_persisted(&mut session, &lease, &mut executor, 0)
+            .unwrap(),
+        0
+    );
+    assert_eq!(f.queue(99601).unwrap().state, JobState::Pausing);
+    assert_eq!(
+        f.queue(99601).unwrap().admin_operator,
+        astersql_meta_model::group_3::AdminCommandOperator::System
+    );
+    assert_eq!(
+        scheduler
+            .schedule_persisted(&mut session, &lease, &mut executor, 0)
+            .unwrap(),
+        1
+    );
+    assert_eq!(f.queue(99601).unwrap().state, JobState::Paused);
+    assert_eq!(
+        scheduler
+            .schedule_persisted(&mut session, &lease, &mut executor, 0)
+            .unwrap(),
+        0
+    );
+    assert_eq!(version(&f), before);
+    assert_eq!(mode(&f), astersql_meta_model::TableMode::TableModeNormal);
+    state
+        .update_global_state(
+            &executor.policy.context,
+            astersql_ddl_serverstate::StateInfo {
+                state: astersql_ddl_serverstate::STATE_NORMAL_RUNNING.into(),
+            },
+        )
+        .unwrap();
+    assert!(
+        scheduler
+            .schedule_persisted(&mut session, &lease, &mut executor, 0)
+            .unwrap_err()
+            .contains("need to be resumed")
+    );
+    let resumed = f.queue(99601).unwrap();
+    assert_eq!(resumed.state, JobState::Queueing);
+    assert!(resumed.error.is_none());
+    assert!(resumed.pause_reason.is_none());
+    for _ in 0..2 {
+        scheduler
+            .schedule_persisted(&mut session, &lease, &mut executor, 0)
+            .unwrap();
+    }
+    assert_eq!(
+        f.reader()
+            .get_history_ddl_job(99601)
+            .unwrap()
+            .unwrap()
+            .state,
+        JobState::Synced
+    );
+    assert_eq!(mode(&f), astersql_meta_model::TableMode::TableModeImport);
+    drop(state);
+}
+#[test]
+fn crossks_align_normal_ddl_policy_retains_user_and_disk_full_pauses() {
+    let f = Fixture::new();
+    let (state, mut policy) = normal_upgrade_policy();
+    let mut session = f.pool.acquire().unwrap();
+    for (index, system) in [false, true].into_iter().enumerate() {
+        let id = 99611 + index as i64;
+        f.insert(id, JobState::Paused);
+        let mut job = f.queue(id).unwrap();
+        job.admin_operator = if system {
+            astersql_meta_model::group_3::AdminCommandOperator::System
+        } else {
+            astersql_meta_model::group_3::AdminCommandOperator::EndUser
+        };
+        if system {
+            job.set_pause_reason(
+                astersql_meta_model::group_3::JOB_PAUSE_REASON_KV_DISK_FULL.into(),
+                "insufficient TiKV space".into(),
+            );
+        }
+        let bytes = astersql_meta::encode_go_ddl_job(&mut job, false).unwrap();
+        session
+            .query(format!(
+                "update mysql.tidb_ddl_job set job_meta=X'{}' where job_id={id}",
+                hex(&bytes)
+            ))
+            .unwrap();
+        assert!(!policy.runnable(&mut session, &job).unwrap());
+        let actual = f.queue(id).unwrap();
+        assert_eq!(actual.state, JobState::Paused);
+        assert_eq!(actual.admin_operator, job.admin_operator);
+        assert_eq!(
+            actual
+                .pause_reason
+                .as_ref()
+                .map(|reason| &reason.reason_type),
+            job.pause_reason.as_ref().map(|reason| &reason.reason_type)
+        );
+    }
+    drop(state);
+}
+
+struct ConflictOnPolicyCommit<'a> {
+    session: &'a mut super::system_session::SystemSessionLease,
+    peer: Arc<SystemSessionPool>,
+    replacement: Option<(i64, Vec<u8>)>,
+}
+impl astersql_ddl::job_worker::DurableJobSession for ConflictOnPolicyCommit<'_> {
+    fn begin(&mut self) -> Result<(), String> {
+        astersql_ddl::job_worker::DurableJobSession::begin(self.session)
+    }
+    fn commit(&mut self) -> Result<(), String> {
+        if let Some((id, bytes)) = self.replacement.take() {
+            self.peer.acquire()?.query(format!(
+                "update mysql.tidb_ddl_job set job_meta=X'{}' where job_id={id}",
+                hex(&bytes)
+            ))?;
+        }
+        astersql_ddl::job_worker::DurableJobSession::commit(self.session)
+    }
+    fn rollback(&mut self) {
+        astersql_ddl::job_worker::DurableJobSession::rollback(self.session)
+    }
+    fn query(&mut self, sql: &str, purpose: &str) -> Result<Vec<Vec<String>>, String> {
+        astersql_ddl::job_worker::DurableJobSession::query(self.session, sql, purpose)
+    }
+    fn with_transaction(
+        &mut self,
+        operation: astersql_ddl::job_worker::TransactionOperation,
+    ) -> Result<Vec<u8>, String> {
+        astersql_ddl::job_worker::DurableJobSession::with_transaction(self.session, operation)
+    }
+}
+#[test]
+fn crossks_align_normal_ddl_policy_commit_conflict_preserves_concurrent_user_pause() {
+    use astersql_ddl_serverstate::Syncer;
+    let f = Fixture::new();
+    f.insert(99621, JobState::Queueing);
+    let before = version(&f);
+    let job = f.queue(99621).unwrap();
+    let mut user_pause = f.queue(99621).unwrap();
+    user_pause.state = JobState::Paused;
+    user_pause.admin_operator = astersql_meta_model::group_3::AdminCommandOperator::EndUser;
+    let bytes = astersql_meta::encode_go_ddl_job(&mut user_pause, false).unwrap();
+    let (state, mut policy) = normal_upgrade_policy();
+    state
+        .update_global_state(
+            &policy.context,
+            astersql_ddl_serverstate::StateInfo {
+                state: astersql_ddl_serverstate::STATE_UPGRADING.into(),
+            },
+        )
+        .unwrap();
+    let mut session = f.pool.acquire().unwrap();
+    let mut conflict = ConflictOnPolicyCommit {
+        session: &mut session,
+        peer: f.pool.clone(),
+        replacement: Some((job.id, bytes)),
+    };
+    assert!(!policy.runnable(&mut conflict, &job).unwrap());
+    let actual = f.queue(job.id).unwrap();
+    assert_eq!(actual.state, JobState::Paused);
+    assert_eq!(
+        actual.admin_operator,
+        astersql_meta_model::group_3::AdminCommandOperator::EndUser
+    );
+    assert_eq!(version(&f), before);
+    assert_eq!(mode(&f), astersql_meta_model::TableMode::TableModeNormal);
+}
+
+// The connection-manager boundary uses the same TransactionMDL as real SQL
+// sessions; the adapter must retain unrelated jobs and never clear held locks.
+struct NormalConnectionCoordinator {
+    mdl: Arc<astersql_session_sessmgr::TransactionMDL>,
+    kills: std::sync::atomic::AtomicUsize,
+}
+impl astersql_session_sessmgr::InfoSchemaCoordinator for NormalConnectionCoordinator {
+    fn StoreInternalSession(&self, _: astersql_session_sessmgr::InternalSession) {
+        unreachable!("internal SQL uses the shared pool registry")
+    }
+    fn DeleteInternalSession(&self, _: &astersql_session_sessmgr::InternalSession) {
+        unreachable!("internal SQL uses the shared pool registry")
+    }
+    fn ContainsInternalSession(&self, _: &astersql_session_sessmgr::InternalSession) -> bool {
+        false
+    }
+    fn InternalSessionCount(&self) -> isize {
+        0
+    }
+    fn CheckOldRunningTxn(
+        &self,
+        jobs: &mut std::collections::HashMap<i64, Arc<astersql_session_sessmgr::mdldef::JobMDL>>,
+    ) {
+        self.mdl.check_jobs(jobs);
+    }
+    fn KillNonFlashbackClusterConn(&self) {
+        self.kills.fetch_add(1, Ordering::SeqCst);
+    }
+}
+#[test]
+fn crossks_align_normal_ddl_coordinator_fences_user_and_internal_transactions() {
+    use astersql_infoschema_issyncer::InfoSchemaCoordinator;
+    let f = Fixture::new();
+    let manager = Arc::new(NormalConnectionCoordinator {
+        mdl: Arc::new(astersql_session_sessmgr::TransactionMDL::default()),
+        kills: std::sync::atomic::AtomicUsize::new(0),
+    });
+    manager.mdl.finish_table(101, 9);
+    let erased: Arc<dyn astersql_session_sessmgr::InfoSchemaCoordinator> = manager.clone();
+    f.domain.set_schema_coordinator(Arc::downgrade(&erased));
+    let internal = Arc::new(astersql_domain_crossks::new_schema_coordinator());
+    let internal_mdl = Arc::new(astersql_session_sessmgr::TransactionMDL::default());
+    internal_mdl.finish_table(102, 9);
+    internal.store_internal_session(Arc::new(astersql_domain_crossks::RegisteredMDLSession {
+        id: 7,
+        mdl: internal_mdl.clone(),
+    }));
+    let coordinator = super::normal_ddl_service::NormalSchemaCoordinator {
+        domain: Arc::downgrade(&f.domain),
+        internal: internal.clone(),
+    };
+    let make_jobs = || {
+        [101, 102, 103]
+            .into_iter()
+            .map(|table| {
+                (
+                    table,
+                    astersql_infoschema_issyncer::JobMDL {
+                        Ver: 10,
+                        TableIDs: [table].into_iter().collect(),
+                    },
+                )
+            })
+            .collect::<std::collections::HashMap<_, _>>()
+    };
+    let mut jobs = make_jobs();
+    coordinator.CheckOldRunningTxn(&mut jobs);
+    assert_eq!(jobs.keys().copied().collect::<Vec<_>>(), vec![103]);
+    coordinator.KillNonFlashbackClusterConn();
+    assert_eq!(manager.kills.load(Ordering::SeqCst), 1);
+    // Rechecking still blocks both transactions: checking did not release MDL.
+    let mut jobs = make_jobs();
+    coordinator.CheckOldRunningTxn(&mut jobs);
+    assert_eq!(jobs.len(), 1);
+    manager.mdl.clear();
+    internal.delete_internal_session(7);
+    let mut jobs = make_jobs();
+    coordinator.CheckOldRunningTxn(&mut jobs);
+    assert_eq!(jobs.len(), 3);
+    drop(erased);
+    drop(manager);
+    assert!(
+        f.domain.schema_coordinator().is_none(),
+        "Domain must not retain Server"
+    );
+}

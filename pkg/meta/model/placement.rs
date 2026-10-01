@@ -41,28 +41,40 @@ pub struct PolicyRefInfo {
 #[serde(rename_all = "snake_case")]
 pub struct PlacementSettings {
     /// 主区域名称。
+    #[serde(default, rename = "primary_region", alias = "PrimaryRegion")]
     pub PrimaryRegion: String,
     /// 参与调度的区域列表（逗号分隔）。
+    #[serde(default, rename = "regions", alias = "Regions")]
     pub Regions: String,
     /// learner 副本数。
+    #[serde(default, rename = "learners", alias = "Learners")]
     pub Learners: u64,
     /// follower 副本数。
+    #[serde(default, rename = "followers", alias = "Followers")]
     pub Followers: u64,
     /// voter 副本数。
+    #[serde(default, rename = "voters", alias = "Voters")]
     pub Voters: u64,
     /// 调度策略名（如 EVEN）。
+    #[serde(default, rename = "schedule", alias = "Schedule")]
     pub Schedule: String,
     /// 通用约束表达式。
+    #[serde(default, rename = "constraints", alias = "Constraints")]
     pub Constraints: String,
     /// Leader 约束。
+    #[serde(default, rename = "leader_constraints", alias = "LeaderConstraints")]
     pub LeaderConstraints: String,
     /// Learner 约束。
+    #[serde(default, rename = "learner_constraints", alias = "LearnerConstraints")]
     pub LearnerConstraints: String,
     /// Follower 约束。
+    #[serde(default, rename = "follower_constraints", alias = "FollowerConstraints")]
     pub FollowerConstraints: String,
     /// Voter 约束。
+    #[serde(default, rename = "voter_constraints", alias = "VoterConstraints")]
     pub VoterConstraints: String,
     /// 存活偏好（survival preferences）。
+    #[serde(default, rename = "survival_preferences", alias = "SurvivalPreferences")]
     pub SurvivalPreferences: String,
 }
 
@@ -271,11 +283,13 @@ pub struct PolicyInfo {
     #[serde(flatten)]
     pub PlacementSettings: PlacementSettings,
     /// 策略 ID。
-    #[serde(rename = "id")]
+    #[serde(default, rename = "id", alias = "ID")]
     /// 策略名称。
     pub ID: i64,
     /// schema 状态。
+    #[serde(default, rename = "name", alias = "Name")]
     pub Name: ast::CIStr,
+    #[serde(default, rename = "state", alias = "State")]
     pub State: SchemaState,
 }
 

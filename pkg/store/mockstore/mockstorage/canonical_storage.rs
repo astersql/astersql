@@ -574,6 +574,19 @@ impl kv::Transaction for Transaction {
             .and_then(|value| value.downcast_ref::<bool>())
             .copied()
             .unwrap_or(false);
+        if let Some(checker) = self
+            .options
+            .get(&kv::SchemaChecker)
+            .and_then(|value| value.downcast_ref::<kv::TransactionSchemaChecker>())
+            .cloned()
+        {
+            self.commit_ts = self.inner.CommitWithSchemaChecker(
+                async_commit,
+                |timestamp| (checker.0)(timestamp),
+                transaction_error,
+            )?;
+            return Ok(());
+        }
         let commit_ts = if async_commit {
             self.inner.CommitAsync()
         } else {

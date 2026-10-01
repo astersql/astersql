@@ -327,11 +327,12 @@ fn go_merge_43_stops_runtime_loops_before_revoking_server_lease() {
 }
 
 #[test]
-fn go_merge_43_stops_sql_workers_before_closing_their_session_pool() {
+fn crossks_align_lifecycle_closes_session_pool_before_stopping_sync_loops() {
     struct UsingPool(Arc<TestSessPool>);
     impl Lifecycle for UsingPool {
         fn close(&self) -> Result<(), ManagerError> {
-            assert_eq!(self.0.close_count.load(Ordering::SeqCst), 0);
+            // Go SessionManager.close closes sessPool before cancellation/wait.
+            assert_eq!(self.0.close_count.load(Ordering::SeqCst), 1);
             Ok(())
         }
     }

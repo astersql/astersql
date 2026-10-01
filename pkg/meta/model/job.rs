@@ -1338,15 +1338,20 @@ impl fmt::Display for AdminCommandOperator {
 pub const JOB_PAUSE_REASON_KV_DISK_FULL: &str = "tikv_disk_full";
 /// 磁盘满解除后恢复的原因类型常量。
 pub const JOB_RESUME_REASON_KV_DISK_FULL: &str = "tikv_disk_full";
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 /// Job 暂停原因：类型键 + 人类可读说明。
 pub struct JobPauseReason {
+    #[serde(rename = "type", alias = "reason_type", alias = "Type")]
     pub reason_type: String,
+    #[serde(alias = "Message", skip_serializing_if = "String::is_empty")]
     pub message: String,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 /// Job 恢复原因类型。
 pub struct JobResumeReason {
+    #[serde(rename = "type", alias = "reason_type", alias = "Type")]
     pub reason_type: String,
 }
 

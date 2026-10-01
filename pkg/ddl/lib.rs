@@ -281,3 +281,6 @@ mod table_test;
 mod tiflash_replica_test;
 #[cfg(test)]
 mod ttl_test;
+
+pub mod normal_policy;
+pub mod persistent_actions;

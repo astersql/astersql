@@ -767,6 +767,8 @@ pub struct Domain {
     schema_loader: Arc<dyn InfoSchemaLoader>,
     ddl_metadata: Arc<DdlMetadataService>,
     ddl: RwLock<Option<Arc<dyn DdlService>>>,
+    schema_coordinator:
+        RwLock<Option<std::sync::Weak<dyn astersql_session_sessmgr::InfoSchemaCoordinator>>>,
     external_workload_manager: RwLock<Option<Arc<Mutex<Box<dyn astersql_extworkload::Manager>>>>>,
     server_info_syncer: RwLock<Option<Arc<Mutex<Box<astersql_domain_serverinfo::Syncer>>>>>,
     cross_ks_manager: RwLock<Option<Arc<astersql_domain_crossks::Manager>>>,
@@ -1417,6 +1419,7 @@ impl Domain {
             schema_loader,
             ddl_metadata: Arc::new(DdlMetadataService::new()),
             ddl: RwLock::new(None),
+            schema_coordinator: RwLock::new(None),
             external_workload_manager: RwLock::new(None),
             server_info_syncer: RwLock::new(None),
             cross_ks_manager: RwLock::new(None),
@@ -5093,6 +5096,27 @@ impl Domain {
             .write()
             .expect("expired timestamp lock poisoned") = Some(timestamp);
     }
+    /// The serving connection manager is weakly held so Domain and Server
+    /// cannot keep each other alive after shutdown.
+    pub fn set_schema_coordinator(
+        &self,
+        coordinator: std::sync::Weak<dyn astersql_session_sessmgr::InfoSchemaCoordinator>,
+    ) {
+        *self
+            .schema_coordinator
+            .write()
+            .expect("schema coordinator lock poisoned") = Some(coordinator);
+    }
+    pub fn schema_coordinator(
+        &self,
+    ) -> Option<Arc<dyn astersql_session_sessmgr::InfoSchemaCoordinator>> {
+        self.schema_coordinator
+            .read()
+            .expect("schema coordinator lock poisoned")
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+    }
+
     /// 注入 DDL 服务实现。
     pub fn set_ddl(&self, ddl: Arc<dyn DdlService>) {
         *self.ddl.write().expect("ddl lock poisoned") = Some(ddl);
@@ -6041,7 +6065,10 @@ impl Domain {
         for worker in workers {
             worker.stop();
         }
-        if let Some(ddl) = self.ddl() {
+        // Drop the service reference after stopping: its pool owns sessions
+        // referring to this Domain, so retaining it would form an Arc cycle.
+        let ddl = self.ddl.write().expect("DDL service lock poisoned").take();
+        if let Some(ddl) = ddl {
             let _ = ddl.stop();
         }
         if let Some(manager) = self

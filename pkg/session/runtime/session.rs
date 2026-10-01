@@ -572,6 +572,7 @@ pub struct ConcreteSessionInner {
     pub(super) instance_plan_cache: Arc<astersql_planner_core::InstancePlanCache>,
     pub(super) state: RefCell<SessionState>,
     pub(super) transaction_mdl: Arc<astersql_session_sessmgr::TransactionMDL>,
+    pub(super) schema_validator: RefCell<Option<Arc<astersql_infoschema_isvalidator::Validator>>>,
     pub(super) mdl_metadata_error: RefCell<Option<String>>,
     pub(super) mdl_databases: RefCell<HashMap<i64, Arc<astersql_infoschema::infoschema::DBInfo>>>,
     pub(super) mdl_autocommit_write: std::cell::Cell<bool>,
@@ -854,14 +855,16 @@ impl CanonicalSessionFactory {
                     tls.key_path.clone(),
                 )
             });
-            Arc::new(
-                super::crossks_runtime::CrossKSProductionRuntimeFactory::new(
-                    pd_addrs,
-                    etcd_addrs.clone(),
-                    tls_files,
-                ),
-            )
-            .install_on_domain(&factory.domain, keyspace_name);
+            Arc::new(super::session_factory::KeyspaceSessionFactory::new(
+                pd_addrs,
+                etcd_addrs.clone(),
+                tls_files,
+            ))
+            .install_on_domain(&factory.domain, keyspace_name)
+            .map_err(|error| {
+                factory.domain.close();
+                session_error("install cross-keyspace session factory", error.0)
+            })?;
         }
         if let Err(error) = BootstrapCanonicalDomain(Arc::clone(&factory.domain)) {
             factory.domain.close();
@@ -1286,6 +1289,7 @@ impl ConcreteSession {
                 instance_plan_cache,
                 state: RefCell::new(state),
                 transaction_mdl: Arc::new(Default::default()),
+                schema_validator: RefCell::new(None),
                 mdl_metadata_error: RefCell::new(None),
                 mdl_databases: RefCell::new(HashMap::new()),
                 mdl_autocommit_write: std::cell::Cell::new(false),

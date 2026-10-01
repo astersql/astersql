@@ -508,6 +508,81 @@ impl<'a> TransactionMutator<'a> {
         .map(|raw| astersql_meta_model::DecodeDBInfo(&raw))
         .transpose()
     }
+    pub fn list_databases(&self) -> Result<Vec<astersql_meta_model::DBInfo>, String> {
+        use astersql_util_codec::{EncodeBytes, EncodeUint};
+        let prefix = EncodeUint(EncodeBytes(vec![b'm'], b"DBs"), b'h' as u64);
+        let mut iterator = self
+            .txn
+            .Iter(astersql_kv::Key(prefix.clone()), None)
+            .map_err(|e| e.to_string())?;
+        let mut databases = Vec::new();
+        while iterator.Valid() && iterator.Key().0.starts_with(&prefix) {
+            databases.push(astersql_meta_model::DecodeDBInfo(&iterator.Value())?);
+            iterator.Next().map_err(|e| e.to_string())?;
+        }
+        iterator.Close();
+        Ok(databases)
+    }
+    pub fn create_database(
+        &mut self,
+        database: &astersql_meta_model::DBInfo,
+    ) -> Result<(), String> {
+        if self.get_database(database.ID)?.is_some() {
+            return Err(format!(
+                "[schema:1007]Can't create database '{}'; database exists",
+                database.Name.O
+            ));
+        }
+        self.txn
+            .Set(
+                transaction_meta_hash_key(b"DBs", format!("DB:{}", database.ID).as_bytes()),
+                astersql_meta_model::EncodeDBInfo(database)?,
+            )
+            .map_err(|e| e.to_string())
+    }
+    pub fn get_placement_policy(
+        &self,
+        id: i64,
+    ) -> Result<Option<astersql_meta_model::group_3::PolicyInfo>, String> {
+        let Some(raw) = self.get(transaction_meta_hash_key(
+            b"Policies",
+            format!("Policy:{id}").as_bytes(),
+        ))?
+        else {
+            return Ok(None);
+        };
+        let Some((&magic, data)) = raw.split_first() else {
+            return Err("empty placement policy encoding".into());
+        };
+        if magic != 0 {
+            return Err(if magic <= 0x3f {
+                "incompatible magic type handling module"
+            } else {
+                "unknown magic type handling module"
+            }
+            .into());
+        }
+        serde_json::from_slice(data)
+            .map(Some)
+            .map_err(|e| e.to_string())
+    }
+    pub fn update_database(
+        &mut self,
+        database: &astersql_meta_model::DBInfo,
+    ) -> Result<(), String> {
+        if self.get_database(database.ID)?.is_none() {
+            return Err(format!(
+                "[meta:1049]database {} does not exist",
+                database.ID
+            ));
+        }
+        self.txn
+            .Set(
+                transaction_meta_hash_key(b"DBs", format!("DB:{}", database.ID).as_bytes()),
+                astersql_meta_model::EncodeDBInfo(database)?,
+            )
+            .map_err(|e| e.to_string())
+    }
     pub fn get_table(
         &self,
         db: i64,

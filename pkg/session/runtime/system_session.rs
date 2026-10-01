@@ -425,14 +425,26 @@ impl SystemSessionPool {
         Self::new_with_callbacks(domain, SystemSessionCallbacks::default())
     }
     pub fn new_with_callbacks(domain: Arc<Domain>, callbacks: SystemSessionCallbacks) -> Arc<Self> {
+        Self::new_with_validator(domain, callbacks, None)
+    }
+    pub(crate) fn new_with_validator(
+        domain: Arc<Domain>,
+        callbacks: SystemSessionCallbacks,
+        validator: Option<Arc<astersql_infoschema_isvalidator::Validator>>,
+    ) -> Arc<Self> {
         let resources = Arc::new(SystemResources {
             callbacks,
             pool: sys::NewAdvancedSessionPool(5, move || {
                 let domain = Arc::clone(&domain);
+                let validator = validator.clone();
                 Ok(Box::new(ConcreteSystemContext {
                     id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
                     worker: sys::ThreadBoundSession::new(
-                        move || Ok(ConcreteSession::new(domain)),
+                        move || {
+                            let session = ConcreteSession::new(domain);
+                            *session.schema_validator.borrow_mut() = validator;
+                            Ok(session)
+                        },
                         cleanup,
                     )?,
                 }))
@@ -930,4 +942,15 @@ impl astersql_ddl::job_worker::JobLease for DdlOwnerLease {
     fn is_cancelled(&self) -> bool {
         self.cancellation.is_cancelled()
     }
+}
+
+/// Shared transaction MDL state of the real thread-bound system session.
+pub(crate) fn transaction_mdl(
+    context: &dyn ddl::SessionContext,
+) -> Option<Arc<astersql_session_sessmgr::TransactionMDL>> {
+    context
+        .as_any()?
+        .downcast_ref::<ConcreteDdlContext>()?
+        .call(|session| Ok(session.transaction_mdl()))
+        .ok()
 }

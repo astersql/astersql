@@ -150,7 +150,7 @@ pub trait DdlJobPolicy {
     fn error_limit(&self) -> i64;
     fn mdl_owner(&self) -> Option<String>;
 }
-/// Executes persistent TableMode jobs through the normal worker transaction.
+/// Executes persistent DDL jobs through the normal worker transaction.
 pub struct NormalDdlExecutor<B, P> {
     pub barrier: B,
     pub policy: P,
@@ -187,9 +187,14 @@ impl<B: DdlSchemaBarrier, P: DdlJobPolicy> crate::job_worker::DurableJobExecutor
         job: &mut astersql_meta_model::group_3::Job,
     ) -> Result<crate::job_worker::DurableJobStep, String> {
         use astersql_meta_model::group_3::JobState;
-        if job.tp != 75 {
+        if !crate::persistent_actions::handler_available(job.tp)
+            && !matches!(
+                job.state,
+                JobState::Done | JobState::Synced | JobState::Cancelled | JobState::RollbackDone
+            )
+        {
             return Err(format!(
-                "normal TableMode executor cannot execute action {}",
+                "normal DDL persistent handler unavailable for action {}",
                 job.tp
             ));
         }
@@ -225,14 +230,23 @@ impl<B: DdlSchemaBarrier, P: DdlJobPolicy> crate::job_worker::DurableJobExecutor
             &job.encode(false).map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
+        // Go executes a proxy Job in memory. Multi-schema flags and decoded
+        // sub-job arguments are deliberately absent from the persisted JSON.
+        current.multi_schema_info = job.multi_schema_info.clone();
+        current.need_reorg = job.need_reorg;
+        current.args = job.args.clone();
+        let executed = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let completed = executed.clone();
         let limit = self.policy.error_limit();
-        let encoded = session.with_transaction(Box::new(move |txn| {
+        let _encoded = session.with_transaction(Box::new(move |txn| {
             let stage = txn.StageStatement().map_err(|e| e.to_string())?;
-            current.state = JobState::Running;
+            if current.state != JobState::Rollingback {
+                current.state = JobState::Running;
+            }
             if current.real_start_ts == 0 {
                 current.real_start_ts = txn.StartTS()
             }
-            let action = on_persistent_alter_table_mode(txn, &mut current);
+            let action = crate::persistent_actions::step(txn, &mut current);
             match action {
                 Ok(version) => {
                     txn.ReleaseStatement(stage).map_err(|e| e.to_string())?;
@@ -248,9 +262,15 @@ impl<B: DdlSchemaBarrier, P: DdlJobPolicy> crate::job_worker::DurableJobExecutor
                     }
                 }
             }
-            current.encode(false).map_err(|e| e.to_string())
+            let encoded = current.encode(false).map_err(|e| e.to_string())?;
+            *completed.lock().unwrap() = Some(current);
+            Ok(encoded)
         }))?;
-        *job = astersql_meta_model::group_3::Job::decode(&encoded).map_err(|e| e.to_string())?;
+        *job = executed
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or("DDL transaction did not return its executed job")?;
         if job.state == JobState::Cancelled {
             return self.finish(session, job);
         }
@@ -385,17 +405,7 @@ pub fn on_persistent_alter_table_mode(
             ));
         }
     }
-    let Some(mut table) = meta.get_table(job.schema_id, job.table_id)? else {
-        job.state = JobState::Cancelled;
-        return Err(format!(
-            "[schema:1146]Table '{}.{}' doesn't exist",
-            job.schema_id, job.table_id
-        ));
-    };
-    if table.State != astersql_meta_model::SchemaState::Public {
-        job.state = JobState::Cancelled;
-        return Err(format!("[ddl:8210]table {} is not in public", table.Name.O));
-    }
+    let mut table = crate::persistent_actions::public_table(&meta, job)?;
     let target = match requested {
         0 => astersql_meta_model::TableMode::TableModeNormal,
         1 => astersql_meta_model::TableMode::TableModeImport,
@@ -419,9 +429,7 @@ pub fn on_persistent_alter_table_mode(
         ));
     }
     table.Mode = target;
-    let version = meta.gen_schema_version()?;
-    meta.set_table_schema_diff(job, version)?;
-    meta.update_table(job.schema_id, &mut table)?;
+    let version = crate::persistent_actions::update_version_and_table(&mut meta, job, &mut table)?;
     job.finish_table_job(
         JobState::Done,
         astersql_meta_model::SchemaState::Public,

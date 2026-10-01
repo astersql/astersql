@@ -12,6 +12,7 @@ go-package = "pkg/domain"
 legacy-tasks = ["task-1046", "task-1047", "task-1048", "task-1049", "task-1051", "task-1309"]
 
 [dependencies]
+"astersql-session-sessmgr" = { package = "astersql-session-sessmgr", path = "../session/sessmgr" }
 "astersql-infoschema-issyncer" = { path = "../infoschema/issyncer" }
 "astersql-config" = { package = "astersql-config", path = "../config" }
 "astersql-config-deploymode" = { package = "astersql-config-deploymode", path = "../config/deploymode" }
@@ -86,7 +87,6 @@ zip = { version = "0.6.6", default-features = false }
 "astersql-planner-core-metrics" = { package = "astersql-planner-core-metrics", path = "../planner/core/metrics" }
 "astersql-planner-extstore" = { package = "astersql-planner-extstore", path = "../planner/extstore" }
 "astersql-privilege-privileges" = { package = "astersql-privilege-privileges", path = "../privilege/privileges" }
-"astersql-session-sessmgr" = { package = "astersql-session-sessmgr", path = "../session/sessmgr" }
 "astersql-session-syssession" = { package = "astersql-session-syssession", path = "../session/syssession" }
 "astersql-sessionctx" = { package = "astersql-sessionctx", path = "../sessionctx" }
 "astersql-sessionctx-sessionstates" = { package = "astersql-sessionctx-sessionstates", path = "../sessionctx/sessionstates" }

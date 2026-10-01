@@ -15,6 +15,8 @@ go-package = "pkg/session"
 legacy-tasks = ["task-1257", "task-1258", "task-1261", "task-1267", "task-1268"]
 
 [dependencies]
+"astersql-ddl-schemaver" = { package = "astersql-ddl-schemaver", path = "../ddl/schemaver" }
+astersql-infoschema-isvalidator = { path = "../infoschema/isvalidator" }
 astersql-ddl-session = { path = "../ddl/session" }
 "astersql-session-syssession" = { package = "astersql-session-syssession", path = "syssession" }
 "astersql-timer-tablestore" = { package = "astersql-timer-tablestore", path = "../timer/tablestore" }
@@ -193,7 +195,6 @@ regex = "1"
 tipb = { git = "https://github.com/pingcap/tipb.git", rev = "07f0ea6b6bffa9d8ac100d81ee51dbbfe4dda3bf", default-features = false, features = ["protobuf-codec"] }
 
 [dev-dependencies]
-"astersql-ddl-schemaver" = { package = "astersql-ddl-schemaver", path = "../ddl/schemaver" }
 "astersql-autoid_service" = { package = "astersql-autoid_service", path = "../autoid_service" }
 "astersql-keyspace" = { package = "astersql-keyspace", path = "../keyspace" }
 "astersql-store-mockstore-teststore" = { package = "astersql-store-mockstore-teststore", path = "../store/mockstore/teststore" }
