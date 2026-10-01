@@ -51,6 +51,53 @@ struct Lifecycle {
     worker: Option<Worker>,
 }
 
+#[derive(Clone)]
+struct UpgradeState {
+    syncer: Arc<dyn astersql_ddl_serverstate::Syncer>,
+    context: astersql_ddl_serverstate::SyncContext,
+    upgrading: Arc<std::sync::atomic::AtomicBool>,
+}
+impl UpgradeState {
+    fn sync(
+        &self,
+        lease: &Lease,
+        runtime: &tokio::runtime::Runtime,
+        force: bool,
+    ) -> Result<(), String> {
+        let changed = match self.syncer.watch_chan().recv_timeout(Duration::ZERO) {
+            Ok(_) => true,
+            Err(astersql_ddl_serverstate::SyncError::Timeout) => false,
+            Err(_) => {
+                self.syncer.rewatch(&self.context);
+                true
+            }
+        };
+        if !force && !changed {
+            return Ok(());
+        }
+        let epoch = lease.owner_epoch();
+        let info = self
+            .syncer
+            .get_global_state(&self.context.with_timeout(Duration::from_secs(3)))
+            .map_err(|e| e.to_string())?;
+        let upgrading = info.state == astersql_ddl_serverstate::STATE_UPGRADING;
+        let op = if upgrading {
+            astersql_owner::OpType::OpSyncUpgradingState
+        } else {
+            astersql_owner::OpType::OpNone
+        };
+        if !lease.is_owner() || lease.owner_epoch() != epoch || lease.is_cancelled() {
+            return Err("not DDL owner".into());
+        }
+        runtime
+            .block_on(lease.owner.SetOwnerOpValue(&lease.cancellation, op))
+            .map_err(|e| e.to_string())?;
+        self.upgrading
+            .store(upgrading, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+}
+
 pub struct NormalDdlService {
     owner: Arc<dyn Manager>,
     owner_runtime: Arc<tokio::runtime::Runtime>,
@@ -62,6 +109,7 @@ pub struct NormalDdlService {
     cancel_schema_wait: Arc<CancelSchemaWait>,
     campaign_enabled: bool,
     schema_runtime: Option<Arc<NormalSchemaRuntime>>,
+    upgrade_state: Option<UpgradeState>,
     lifecycle: Mutex<Lifecycle>,
     last_error: Arc<Mutex<Option<String>>>,
 }
@@ -88,6 +136,7 @@ impl NormalDdlService {
             cancel_schema_wait,
             campaign_enabled,
             schema_runtime: None,
+            upgrade_state: None,
             lifecycle: Mutex::new(Lifecycle {
                 started: false,
                 closed: false,
@@ -101,6 +150,40 @@ impl NormalDdlService {
         self.pool = schema.pool.clone();
         self.schema_loader = schema.clone();
         self.schema_runtime = Some(schema);
+        self
+    }
+    /// Install the normal policy and its shared cluster state together. The
+    /// barrier factory retains the ordinary schema/MDL protocol.
+    pub fn with_upgrade_policy<B, F>(
+        mut self,
+        state: Arc<dyn astersql_ddl_serverstate::Syncer>,
+        context: astersql_ddl_serverstate::SyncContext,
+        barrier: F,
+        sequence: Arc<std::sync::atomic::AtomicI64>,
+    ) -> Self
+    where
+        B: astersql_ddl::table_mode::DdlSchemaBarrier + 'static,
+        F: Fn() -> Result<B, String> + Send + Sync + 'static,
+    {
+        let upgrading = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.upgrade_state = Some(UpgradeState {
+            syncer: state.clone(),
+            context: context.clone(),
+            upgrading: upgrading.clone(),
+        });
+        let owner_id = self.owner.ID();
+        self.executor = Arc::new(move || {
+            Ok(Box::new(astersql_ddl::table_mode::NormalDdlExecutor {
+                barrier: barrier()?,
+                policy: astersql_ddl::normal_policy::NormalDdlJobPolicy {
+                    state: state.clone(),
+                    context: context.clone(),
+                    owner_id: owner_id.clone(),
+                    round_upgrading: Some(upgrading.clone()),
+                },
+                sequence: sequence.clone(),
+            }))
+        });
         self
     }
     pub fn last_error(&self) -> Option<String> {
@@ -138,6 +221,8 @@ impl DdlService for NormalDdlService {
             let make_executor = self.executor.clone();
             let schema_loader = self.schema_loader.clone();
             let error = self.last_error.clone();
+            let upgrade_state = self.upgrade_state.clone();
+            let owner_runtime = self.owner_runtime.clone();
             let (stop, receiver) = mpsc::channel();
             let thread = match thread::Builder::new()
                 .name("normal-ddl-scheduler".into())
@@ -151,45 +236,73 @@ impl DdlService for NormalDdlService {
                         JobWorker::new(WorkerType::AddIndex),
                     );
                     let mut executor = None;
-                    let mut was_owner = false;
+                    let mut owner_epoch = None;
+                    let mut retry_state = true;
                     loop {
                         if lease.is_cancelled() {
                             break;
                         }
                         if lease.is_owner() {
-                            if !was_owner {
-                                scheduler.must_reload_schemas_with(
-                                    schema_loader.as_ref(),
-                                    Duration::from_millis(200),
-                                    || lease.is_cancelled() || !lease.is_owner(),
-                                );
-                                if lease.is_cancelled() || !lease.is_owner() {
-                                    continue;
+                            let epoch = lease.owner_epoch();
+                            let new_owner = owner_epoch != Some(epoch);
+                            // Go checkAndUpdateClusterState runs before takeover
+                            // reload and before queue loading. A failed publication
+                            // must retry even if the watch event was consumed.
+                            let state_result = upgrade_state.as_ref().map_or(Ok(()), |state| {
+                                state.sync(&lease, &owner_runtime, new_owner || retry_state)
+                            });
+                            retry_state = state_result.is_err();
+                            if let Err(message) = state_result {
+                                *error.lock().unwrap() = Some(message);
+                            } else {
+                                if new_owner {
+                                    executor = None;
+                                    scheduler.close();
+                                    scheduler = JobScheduler::new(
+                                        JobWorker::new(WorkerType::General),
+                                        JobWorker::new(WorkerType::AddIndex),
+                                    );
+                                    scheduler.must_reload_schemas_with(
+                                        schema_loader.as_ref(),
+                                        Duration::from_millis(200),
+                                        || {
+                                            lease.is_cancelled()
+                                                || !lease.is_owner()
+                                                || lease.owner_epoch() != epoch
+                                        },
+                                    );
+                                    if lease.is_cancelled()
+                                        || !lease.is_owner()
+                                        || lease.owner_epoch() != epoch
+                                    {
+                                        continue;
+                                    }
+                                    owner_epoch = Some(epoch);
                                 }
-                                was_owner = true;
-                            }
-                            let result = (|| {
-                                if executor.is_none() {
-                                    executor = Some(make_executor()?);
-                                }
-                                let mut session = pool.acquire()?;
-                                scheduler.schedule_persisted(
-                                    &mut session,
-                                    &lease,
-                                    executor.as_mut().unwrap().as_mut(),
-                                    0,
-                                )
-                            })();
-                            match result {
-                                Ok(_) => *error.lock().unwrap() = None,
-                                Err(message) => {
-                                    eprintln!("normal DDL scheduler: {message}");
-                                    *error.lock().unwrap() = Some(message);
+                                let result = (|| {
+                                    if executor.is_none() {
+                                        executor = Some(make_executor()?);
+                                    }
+                                    let mut session = pool.acquire()?;
+                                    scheduler.schedule_persisted(
+                                        &mut session,
+                                        &lease,
+                                        executor.as_mut().unwrap().as_mut(),
+                                        0,
+                                    )
+                                })();
+                                match result {
+                                    Ok(_) => *error.lock().unwrap() = None,
+                                    Err(message) => {
+                                        eprintln!("normal DDL scheduler: {message}");
+                                        *error.lock().unwrap() = Some(message);
+                                    }
                                 }
                             }
                         }
                         if !lease.is_owner() {
-                            was_owner = false;
+                            owner_epoch = None;
+                            retry_state = true;
                             executor = None;
                             scheduler.close();
                             scheduler = JobScheduler::new(
@@ -232,6 +345,9 @@ impl DdlService for NormalDdlService {
             state.worker.take()
         };
         self.cancellation.cancel();
+        if let Some(state) = &self.upgrade_state {
+            state.context.cancel();
+        }
         (self.cancel_schema_wait)();
         // The scheduler can be inside the shared schema loader when stop is
         // requested. Cancel publication before joining it, while keeping the

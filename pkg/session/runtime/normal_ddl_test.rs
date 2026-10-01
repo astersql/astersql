@@ -1541,6 +1541,7 @@ fn normal_upgrade_policy() -> (
         state: state.clone(),
         context,
         owner_id: "normal-policy-owner".into(),
+        round_upgrading: None,
     };
     (state, policy)
 }
@@ -1559,6 +1560,7 @@ fn crossks_align_normal_ddl_policy_upgrade_pauses_then_resumes_durable_job() {
             },
         )
         .unwrap();
+    state.get_global_state(&policy.context).unwrap();
     let mut executor = NormalDdlExecutor {
         barrier: Barrier {
             fail: false,
@@ -1604,6 +1606,7 @@ fn crossks_align_normal_ddl_policy_upgrade_pauses_then_resumes_durable_job() {
             },
         )
         .unwrap();
+    state.get_global_state(&executor.policy.context).unwrap();
     assert!(
         scheduler
             .schedule_persisted(&mut session, &lease, &mut executor, 0)
@@ -1724,6 +1727,7 @@ fn crossks_align_normal_ddl_policy_commit_conflict_preserves_concurrent_user_pau
         )
         .unwrap();
     let mut session = f.pool.acquire().unwrap();
+    state.get_global_state(&policy.context).unwrap();
     let mut conflict = ConflictOnPolicyCommit {
         session: &mut session,
         peer: f.pool.clone(),
@@ -5235,4 +5239,455 @@ fn normal_ddl_plan_schema_barrier_publication_deadline_matches_go_mdl_branch() {
         owner_runtime.block_on(owner.Close());
         schema.close().unwrap();
     }
+}
+
+#[test]
+fn normal_ddl_plan_upgrade_owner_service_round_pauses_and_publishes() {
+    let _serial = NORMAL_SCHEMA_RUNTIME_TEST_LOCK.lock().unwrap();
+    let _restore = barrier_set_mdl(false);
+    use astersql_ddl_serverstate::Syncer;
+    use astersql_domain::domain::{DdlService, StartMode};
+    use astersql_owner::{Context, GetOwnerOpValue, OpType};
+    let f = Fixture::new();
+    f.pool
+        .acquire()
+        .unwrap()
+        .query("INSERT INTO test.normal_ddl_target VALUES (7,'upgrade row')")
+        .unwrap();
+    f.insert(99701, JobState::Queueing);
+    let old_comment = f
+        .domain
+        .table_by_name("test", "normal_ddl_target")
+        .unwrap()
+        .Comment
+        .clone();
+    upgrade_owner_write_latest_schema(&f, "latest before takeover");
+    assert_eq!(
+        f.domain
+            .table_by_name("test", "normal_ddl_target")
+            .unwrap()
+            .Comment,
+        old_comment
+    );
+    for (id, system) in [(99702, false), (99703, true)] {
+        f.insert(id, JobState::Paused);
+        let mut job = f.queue(id).unwrap();
+        job.admin_operator = if system {
+            astersql_meta_model::group_3::AdminCommandOperator::System
+        } else {
+            astersql_meta_model::group_3::AdminCommandOperator::EndUser
+        };
+        if system {
+            job.set_pause_reason(
+                astersql_meta_model::group_3::JOB_PAUSE_REASON_KV_DISK_FULL.into(),
+                "disk full".into(),
+            );
+        }
+        let bytes = astersql_meta::encode_go_ddl_job(&mut job, false).unwrap();
+        f.pool
+            .acquire()
+            .unwrap()
+            .query(format!(
+                "update mysql.tidb_ddl_job set job_meta=X'{}' where job_id={id}",
+                hex(&bytes)
+            ))
+            .unwrap();
+    }
+    let mut system_job = Job::default();
+    system_job.id = 99704;
+    system_job.tp = 26;
+    system_job.schema_id = f
+        .domain
+        .info_schema()
+        .AllSchemas()
+        .into_iter()
+        .find(|d| d.name.lower == "sys")
+        .unwrap()
+        .id;
+    system_job.schema_name = "sys".into();
+    system_job.state = JobState::Queueing;
+    system_job.version = astersql_meta_model::group_3::JobVersion::V1;
+    system_job.raw_args = serde_json::to_vec(&vec!["latin1", "latin1_bin"]).unwrap();
+    f.insert_job(&mut system_job);
+    let before = version(&f);
+    let store = Arc::new(astersql_ddl_serverstate::StateStore::default());
+    let state = Arc::new(astersql_ddl_serverstate::EtcdSyncer::new(
+        store.clone(),
+        "/upgrade-service-state",
+    ));
+    let state_context = astersql_ddl_serverstate::SyncContext::new();
+    state.init(&state_context).unwrap();
+    store.set_raw_values(
+        "/upgrade-service-state",
+        vec![b"broken state JSON".to_vec()],
+    );
+    let cancellation = Context::new();
+    let owner = astersql_owner::NewMockManager(
+        cancellation.clone(),
+        "upgrade-owner",
+        None,
+        format!("/upgrade-owner/{}", f.db),
+    );
+    let runtime = Arc::new(tokio::runtime::Runtime::new().unwrap());
+    let client = Arc::new(astersql_ddl_schemaver::MemoryEtcdClient::default());
+    let schema = super::session_factory::prepare_normal_schema_runtime(
+        &f.domain,
+        astersql_ddl_schemaver::NewEtcdSyncer(client.clone(), "upgrade-owner"),
+        std::time::Duration::from_millis(50),
+    )
+    .unwrap();
+    let make_schema = schema.clone();
+    let make_domain = Arc::downgrade(&f.domain);
+    let make_owner = owner.clone();
+    let make_cancel = cancellation.clone();
+
+    let service = super::normal_ddl_service::NormalDdlService::new(
+        owner.clone(),
+        runtime.clone(),
+        cancellation.clone(),
+        f.pool.clone(),
+        Arc::new(super::normal_ddl_service::DomainSchemaLoader(
+            Arc::downgrade(&f.domain),
+        )),
+        Arc::new(|| Err("upgrade policy must install executor".into())),
+        Arc::new(|_| Ok(())),
+        Arc::new(|| {}),
+        true,
+    )
+    .with_schema_runtime(schema.clone())
+    .with_upgrade_policy(
+        state.clone(),
+        state_context.clone(),
+        move || {
+            Ok(make_schema.schema_barrier(
+                &make_domain.upgrade().ok_or("normal Domain closed")?,
+                make_owner.clone(),
+                make_cancel.clone(),
+                "upgrade-owner".into(),
+                Some(client.clone()),
+            ))
+        },
+        Arc::new(AtomicI64::new(0)),
+    );
+    service.start(StartMode::Normal).unwrap();
+    upgrade_owner_wait(|| {
+        service
+            .last_error()
+            .is_some_and(|e| e.contains("invalid state"))
+    });
+    assert_eq!(f.queue(99701).unwrap().state, JobState::Queueing);
+    assert_eq!(version(&f), before);
+
+    // No watch event: recovery must force another Get after the failed round.
+    store.set_raw_values(
+        "/upgrade-service-state",
+        vec![
+            astersql_ddl_serverstate::StateInfo::new(astersql_ddl_serverstate::STATE_UPGRADING)
+                .marshal()
+                .unwrap(),
+        ],
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while f.queue(99701).is_some_and(|j| j.state != JobState::Paused) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{:?}",
+            service.last_error()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(
+        runtime
+            .block_on(GetOwnerOpValue(&cancellation, None, "/upgrade-owner"))
+            .unwrap(),
+        OpType::OpSyncUpgradingState
+    );
+    upgrade_owner_wait(|| f.reader().get_history_ddl_job(99704).unwrap().is_some());
+    assert_eq!(
+        f.reader()
+            .get_database(system_job.schema_id)
+            .unwrap()
+            .unwrap()
+            .Charset,
+        "latin1"
+    );
+    assert_eq!(
+        f.reader()
+            .get_history_ddl_job(99704)
+            .unwrap()
+            .unwrap()
+            .state,
+        JobState::Synced
+    );
+    assert_eq!(
+        f.domain
+            .table_by_name("test", "normal_ddl_target")
+            .unwrap()
+            .Comment,
+        "latest before takeover"
+    );
+    assert_eq!(
+        f.pool
+            .acquire()
+            .unwrap()
+            .query("SELECT payload FROM test.normal_ddl_target WHERE id=7")
+            .unwrap(),
+        vec![vec!["upgrade row".to_string()]]
+    );
+    assert_eq!(version(&f), before + 1);
+    assert_eq!(mode(&f), astersql_meta_model::TableMode::TableModeNormal);
+    runtime.block_on(owner.CampaignCancel());
+    runtime.block_on(owner.RetireOwner());
+    assert!(!owner.IsOwner());
+    upgrade_owner_write_latest_schema(&f, "latest after owner loss");
+    state
+        .update_global_state(
+            &state_context,
+            astersql_ddl_serverstate::StateInfo::default(),
+        )
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(650));
+    assert_eq!(f.queue(99701).unwrap().state, JobState::Paused);
+    assert!(f.reader().get_history_ddl_job(99701).unwrap().is_none());
+    runtime.block_on(owner.CampaignOwner(&[])).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while f.reader().get_history_ddl_job(99701).unwrap().is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{:?}",
+            service.last_error()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(
+        runtime
+            .block_on(GetOwnerOpValue(&cancellation, None, "/upgrade-owner"))
+            .unwrap(),
+        OpType::OpNone
+    );
+    assert_eq!(mode(&f), astersql_meta_model::TableMode::TableModeImport);
+    assert_eq!(
+        f.reader()
+            .get_table(f.db, f.table)
+            .unwrap()
+            .unwrap()
+            .Comment,
+        "latest after owner loss"
+    );
+    assert_eq!(
+        f.domain
+            .table_by_name("test", "normal_ddl_target")
+            .unwrap()
+            .Comment,
+        "latest after owner loss"
+    );
+    assert_eq!(f.queue(99702).unwrap().state, JobState::Paused);
+    assert_eq!(
+        f.queue(99702).unwrap().admin_operator,
+        astersql_meta_model::group_3::AdminCommandOperator::EndUser
+    );
+    assert_eq!(f.queue(99703).unwrap().state, JobState::Paused);
+    assert!(
+        f.queue(99703)
+            .unwrap()
+            .has_pause_reason(astersql_meta_model::group_3::JOB_PAUSE_REASON_KV_DISK_FULL)
+    );
+    service.stop().unwrap();
+}
+
+fn upgrade_owner_wait(predicate: impl Fn() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    while !predicate() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "upgrade owner observation timed out"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+fn upgrade_owner_write_latest_schema(f: &Fixture, comment: &str) {
+    let mut table = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+    table.Comment = comment.into();
+    let next = version(f) + 1;
+    let mut txn = f
+        .domain
+        .storage_handle()
+        .with_storage(|s| s.Begin(&[]))
+        .unwrap();
+    txn.Set(
+        hash(
+            format!("DB:{}", f.db).as_bytes(),
+            format!("Table:{}", f.table).as_bytes(),
+        ),
+        astersql_meta_model::EncodeTableInfo(&table).unwrap(),
+    )
+    .unwrap();
+    txn.Set(
+        astersql_meta::transaction_meta_string_key(b"SchemaVersionKey"),
+        next.to_string().into_bytes(),
+    )
+    .unwrap();
+    txn.Set(
+        astersql_meta::transaction_meta_string_key(format!("Diff:{next}").as_bytes()),
+        serde_json::to_vec(
+            &serde_json::json!({"version":next,"type":17,"schema_id":f.db,"table_id":f.table}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    txn.Commit(&astersql_kv::Context::default()).unwrap();
+}
+
+#[test]
+fn normal_ddl_plan_upgrade_owner_cached_state_and_unpausable_jobs() {
+    use astersql_ddl_serverstate::Syncer;
+    let f = Fixture::new();
+    f.insert(99721, JobState::Queueing);
+    let store = Arc::new(astersql_ddl_serverstate::StateStore::default());
+    let state = Arc::new(astersql_ddl_serverstate::EtcdSyncer::new(
+        store.clone(),
+        "/round-state",
+    ));
+    let context = astersql_ddl_serverstate::SyncContext::new();
+    state.init(&context).unwrap();
+    let mut policy = astersql_ddl::normal_policy::NormalDdlJobPolicy {
+        state: state.clone(),
+        context: context.clone(),
+        owner_id: "round-owner".into(),
+        round_upgrading: None,
+    };
+    let job = f.queue(99721).unwrap();
+    store.set_raw_values("/round-state", vec![b"malformed backend".to_vec()]);
+    let mut session = f.pool.acquire().unwrap();
+    // Admission must use this round's cache, without another backend request.
+    assert!(policy.runnable(&mut session, &job).unwrap());
+    state
+        .update_global_state(
+            &context,
+            astersql_ddl_serverstate::StateInfo::new(astersql_ddl_serverstate::STATE_UPGRADING),
+        )
+        .unwrap();
+    let round = Arc::new(AtomicBool::new(false));
+    policy.round_upgrading = Some(round.clone());
+    state.get_global_state(&context).unwrap();
+    // A different cache reader cannot change admission partway through a round.
+    assert!(policy.runnable(&mut session, &job).unwrap());
+    round.store(true, Ordering::Release);
+    assert!(!policy.runnable(&mut session, &job).unwrap());
+    assert_eq!(f.queue(job.id).unwrap().state, JobState::Pausing);
+    // A completed durable job cannot pause; Go still allows history finalization.
+    f.insert(99722, JobState::Done);
+    let mut finished = f.queue(99722).unwrap();
+    finished.last_schema_version = version(&f);
+    finished.binlog_info = Some(astersql_meta_model::group_3::HistoryInfo::default());
+    let bytes = astersql_meta::encode_go_ddl_job(&mut finished, false).unwrap();
+    session
+        .query(format!(
+            "update mysql.tidb_ddl_job set job_meta=X'{}' where job_id={}",
+            hex(&bytes),
+            finished.id
+        ))
+        .unwrap();
+    assert!(policy.runnable(&mut session, &finished).unwrap());
+    let mut executor = NormalDdlExecutor {
+        barrier: Barrier {
+            fail: false,
+            seen: vec![],
+        },
+        policy,
+        sequence: Arc::new(AtomicI64::new(0)),
+    };
+    scheduler()
+        .schedule_persisted(
+            &mut session,
+            &Lease(AtomicBool::new(true)),
+            &mut executor,
+            finished.id,
+        )
+        .unwrap();
+    assert_eq!(
+        f.reader()
+            .get_history_ddl_job(finished.id)
+            .unwrap()
+            .unwrap()
+            .state,
+        JobState::Synced
+    );
+}
+
+#[test]
+fn normal_ddl_plan_upgrade_owner_dynamic_limits_and_mdl() {
+    let _serial = NORMAL_SCHEMA_RUNTIME_TEST_LOCK.lock().unwrap();
+    struct Restore(i64, bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            astersql_sessionctx_vardef::SetDDLErrorCountLimit(self.0);
+            astersql_sessionctx_vardef::SetEnableMDL(self.1);
+        }
+    }
+    let _restore = Restore(
+        astersql_sessionctx_vardef::GetDDLErrorCountLimit(),
+        astersql_sessionctx_vardef::IsMDLEnabled(),
+    );
+    let f = Fixture::new();
+    f.insert(99731, JobState::Queueing);
+    let mut broken = f.queue(99731).unwrap();
+    broken.raw_args = b"[]".to_vec();
+    let bytes = astersql_meta::encode_go_ddl_job(&mut broken, false).unwrap();
+    let mut session = f.pool.acquire().unwrap();
+    session
+        .query(format!(
+            "update mysql.tidb_ddl_job set job_meta=X'{}' where job_id={}",
+            hex(&bytes),
+            broken.id
+        ))
+        .unwrap();
+    let (_, policy) = normal_upgrade_policy();
+    let mut executor = NormalDdlExecutor {
+        barrier: Barrier {
+            fail: false,
+            seen: vec![],
+        },
+        policy,
+        sequence: Arc::new(AtomicI64::new(0)),
+    };
+    let lease = Lease(AtomicBool::new(true));
+    let mut scheduler = scheduler();
+    astersql_sessionctx_vardef::SetDDLErrorCountLimit(5);
+    scheduler
+        .schedule_persisted(&mut session, &lease, &mut executor, 0)
+        .unwrap();
+    assert_eq!(f.queue(broken.id).unwrap().state, JobState::Running);
+    assert_eq!(f.queue(broken.id).unwrap().error_count, 1);
+    astersql_sessionctx_vardef::SetDDLErrorCountLimit(0);
+    scheduler
+        .schedule_persisted(&mut session, &lease, &mut executor, 0)
+        .unwrap();
+    assert_eq!(f.queue(broken.id).unwrap().state, JobState::Cancelling);
+    scheduler
+        .schedule_persisted(&mut session, &lease, &mut executor, 0)
+        .unwrap();
+    assert_eq!(
+        f.reader()
+            .get_history_ddl_job(broken.id)
+            .unwrap()
+            .unwrap()
+            .state,
+        JobState::Cancelled
+    );
+    astersql_sessionctx_vardef::SetEnableMDL(false);
+    assert_eq!(executor.policy.mdl_owner(), None);
+    astersql_sessionctx_vardef::SetEnableMDL(true);
+    f.insert(99732, JobState::Queueing);
+    scheduler
+        .schedule_persisted(&mut session, &lease, &mut executor, 99732)
+        .unwrap();
+    assert_eq!(
+        session
+            .query("SELECT owner_id FROM mysql.tidb_mdl_info WHERE job_id=99732")
+            .unwrap(),
+        vec![vec!["normal-policy-owner".to_string()]]
+    );
+    assert_eq!(mode(&f), astersql_meta_model::TableMode::TableModeImport);
+    assert_eq!(f.queue(99732).unwrap().state, JobState::Done);
 }

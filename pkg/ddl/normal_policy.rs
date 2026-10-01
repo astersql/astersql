@@ -25,13 +25,18 @@ pub struct NormalDdlJobPolicy {
     pub state: Arc<dyn astersql_ddl_serverstate::Syncer>,
     pub context: astersql_ddl_serverstate::SyncContext,
     pub owner_id: String,
+    /// Service-owned snapshot, fixed for the entire queue dispatch round.
+    pub round_upgrading: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 impl DdlJobPolicy for NormalDdlJobPolicy {
     fn runnable(&mut self, session: &mut dyn DurableJobSession, job: &Job) -> Result<bool, String> {
-        self.state
-            .get_global_state(&self.context)
-            .map_err(|error| error.to_string())?;
-        if self.state.is_upgrading_state() {
+        // The normal service refreshes this cache once per scheduling round,
+        // before publishing the owner operation and loading the durable queue.
+        let upgrading = self.round_upgrading.as_ref().map_or_else(
+            || self.state.is_upgrading_state(),
+            |state| state.load(std::sync::atomic::Ordering::Acquire),
+        );
+        if upgrading {
             if job.is_paused() {
                 return Ok(false);
             }
