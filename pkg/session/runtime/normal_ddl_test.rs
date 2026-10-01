@@ -3050,3 +3050,211 @@ fn normal_ddl_plan_delete_range_gc_commit_conflict_rolls_back_batch() {
     );
     assert_eq!(delete_range_rows(&f, 86401).len(), 2);
 }
+
+#[test]
+fn normal_ddl_plan_reorg_checkpoint_restart_and_conflict() {
+    use astersql_ddl::reorg::{PersistentReorgHandler, ReorgElement, ReorgInfo};
+    let f = Fixture::new();
+    f.pool
+        .acquire()
+        .unwrap()
+        .query("INSERT INTO test.normal_ddl_target VALUES (1,'existing'),(9,'last')")
+        .unwrap();
+    f.insert(87001, JobState::Running);
+    let mut job = f.queue(87001).unwrap();
+    job.snapshot_ver = f
+        .domain
+        .storage_handle()
+        .with_storage(|s| s.CurrentVersion("global"))
+        .unwrap()
+        .Ver;
+    f.pool
+        .acquire()
+        .unwrap()
+        .query(format!(
+            "UPDATE mysql.tidb_ddl_job SET job_meta=X'{}' WHERE job_id={}",
+            hex(&job.encode(false).unwrap()),
+            job.id
+        ))
+        .unwrap();
+    let mut start = b"t".to_vec();
+    start.extend_from_slice(&((f.table as u64) ^ (1u64 << 63)).to_be_bytes());
+    start.extend_from_slice(b"_r");
+    start.extend_from_slice(&((1u64) ^ (1u64 << 63)).to_be_bytes());
+    let mut end = start[..11].to_vec();
+    end.extend_from_slice(&((9u64) ^ (1u64 << 63)).to_be_bytes());
+    end.push(0);
+    let mut info = ReorgInfo {
+        job_id: job.id,
+        physical_table_id: f.table,
+        start_key: start.clone(),
+        end_key: end.clone(),
+        element: ReorgElement {
+            id: 11,
+            element_type: b"_idx_".to_vec(),
+        },
+        ..Default::default()
+    };
+    let mut a = f.pool.acquire().unwrap();
+    PersistentReorgHandler::initialize(&mut a, &info).unwrap();
+    drop(a);
+    let replacement_pool = SystemSessionPool::new(f.domain.clone());
+    let mut b = replacement_pool.acquire().unwrap();
+    let restored = PersistentReorgHandler::restore(&mut b, &mut f.queue(job.id).unwrap()).unwrap();
+    assert_eq!(restored.snapshot_ver, job.snapshot_ver);
+    assert_eq!(restored.info, info);
+    assert_eq!(restored.runtime.row_count(), 0);
+    let mut recovered_job = f.queue(job.id).unwrap();
+    let expected_info = info.clone();
+    let expected_snapshot = job.snapshot_ver;
+    b.begin().unwrap();
+    b.with_execution_context(Box::new(move |context| {
+        let recovered = context.restore_reorg(&mut recovered_job)?;
+        assert_eq!(recovered.info, expected_info);
+        assert_eq!(recovered.snapshot_ver, expected_snapshot);
+        Ok(Vec::new())
+    }))
+    .unwrap();
+    b.rollback();
+    let meta = b
+        .query(format!(
+            "SELECT reorg_meta FROM mysql.tidb_ddl_reorg WHERE job_id={}",
+            job.id
+        ))
+        .unwrap();
+    let meta: serde_json::Value = serde_json::from_str(&meta[0][0]).unwrap();
+    assert_eq!(meta["reorg_checkpoint"]["physical_id"], f.table);
+    assert_eq!(meta["reorg_checkpoint"]["version"], 1);
+
+    let mut next = start.clone();
+    next.push(0);
+    b.begin().unwrap();
+    PersistentReorgHandler::stage_update(&mut b, &info, &next).unwrap();
+    let mut c = f.pool.acquire().unwrap();
+    PersistentReorgHandler::update(&mut c, &mut info, next.clone()).unwrap();
+    assert!(b.commit().is_err());
+    b.rollback();
+    assert_eq!(
+        PersistentReorgHandler::restore(&mut c, &mut job)
+            .unwrap()
+            .info
+            .start_key,
+        next
+    );
+    assert_eq!(
+        f.pool
+            .acquire()
+            .unwrap()
+            .query("SELECT payload FROM test.normal_ddl_target ORDER BY id")
+            .unwrap(),
+        vec![vec!["existing".to_string()], vec!["last".to_string()]]
+    );
+}
+
+// Inject a competing real MVCC commit at the committing session boundary.
+struct ReorgCommitConflict<'a> {
+    session: &'a mut dyn DurableJobSession,
+    competing: &'a mut dyn DurableJobSession,
+    info: astersql_ddl::reorg::ReorgInfo,
+}
+impl DurableJobSession for ReorgCommitConflict<'_> {
+    fn query(&mut self, sql: &str, label: &str) -> Result<Vec<Vec<String>>, String> {
+        self.session.query(sql, label)
+    }
+    fn begin(&mut self) -> Result<(), String> {
+        self.session.begin()
+    }
+    fn rollback(&mut self) {
+        self.session.rollback();
+    }
+    fn commit(&mut self) -> Result<(), String> {
+        astersql_ddl::reorg::PersistentReorgHandler::update(
+            self.competing,
+            &mut self.info,
+            vec![2, 128, 255],
+        )?;
+        self.session.commit()
+    }
+    fn with_transaction(
+        &mut self,
+        op: astersql_ddl::job_worker::TransactionOperation,
+    ) -> Result<Vec<u8>, String> {
+        self.session.with_transaction(op)
+    }
+}
+#[test]
+fn normal_ddl_plan_reorg_checkpoint_failed_commit_and_lifecycle() {
+    use astersql_ddl::reorg::{PersistentReorgHandler, ReorgElement, ReorgInfo};
+    let f = Fixture::new();
+    f.insert(87002, JobState::Running);
+    let mut job = f.queue(87002).unwrap();
+    job.snapshot_ver = 42;
+    let mut info = ReorgInfo {
+        job_id: job.id,
+        physical_table_id: f.table,
+        start_key: vec![0, 128, 255],
+        end_key: vec![255, 0],
+        element: ReorgElement {
+            id: 12,
+            element_type: b"_col_".to_vec(),
+        },
+        ..Default::default()
+    };
+    let mut a = f.pool.acquire().unwrap();
+    PersistentReorgHandler::initialize(&mut a, &info).unwrap();
+    for state in [
+        JobState::Paused,
+        JobState::Cancelling,
+        JobState::Rollingback,
+    ] {
+        job.state = state;
+        PersistentReorgHandler::cleanup(&mut a, &job).unwrap();
+        assert_eq!(
+            PersistentReorgHandler::restore(&mut a, &mut job)
+                .unwrap()
+                .info,
+            info
+        );
+    }
+    let original = info.clone();
+    let mut b = f.pool.acquire().unwrap();
+    let mut conflict = ReorgCommitConflict {
+        session: &mut a,
+        competing: &mut b,
+        info: info.clone(),
+    };
+    let error =
+        PersistentReorgHandler::update(&mut conflict, &mut info, vec![1, 128, 255]).unwrap_err();
+    assert!(error.contains(astersql_kv::TxnRetryableMark), "{error}");
+    assert_eq!(
+        info, original,
+        "failed commit must not advance local checkpoint"
+    );
+    info.start_key = vec![2, 128, 255];
+    assert_eq!(
+        PersistentReorgHandler::restore(&mut b, &mut job)
+            .unwrap()
+            .info,
+        info
+    );
+    drop(a);
+    drop(b);
+    let mut restarted = f.pool.acquire().unwrap();
+    assert_eq!(
+        PersistentReorgHandler::restore(&mut restarted, &mut job)
+            .unwrap()
+            .info,
+        info
+    );
+    job.state = JobState::RollbackDone;
+    PersistentReorgHandler::cleanup(&mut restarted, &job).unwrap();
+    assert!(PersistentReorgHandler::restore(&mut restarted, &mut job).is_err());
+    assert_eq!(job.snapshot_ver, 0);
+    job.reorg_meta = Some(Default::default());
+    job.reorg_meta.as_mut().unwrap().Version = 0;
+    PersistentReorgHandler::initialize(&mut restarted, &info).unwrap();
+    let legacy = PersistentReorgHandler::restore(&mut restarted, &mut job).unwrap();
+    let mut legacy_end = info.end_key.clone();
+    legacy_end.push(0);
+    assert_eq!(legacy.info.end_key, legacy_end);
+}

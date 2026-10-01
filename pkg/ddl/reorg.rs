@@ -430,3 +430,157 @@ pub fn adjust_end_key_across_version(reorg_meta_version: Option<u32>, mut end_ke
     }
     end_key
 }
+
+/// Durable reorg state recovered by an owner from the job and SQL system table.
+pub struct PersistentReorgContext {
+    pub snapshot_ver: u64,
+    pub info: ReorgInfo,
+    pub runtime: ReorgContext,
+}
+/// SQL reorg handler; it never uses the legacy in-memory handle map.
+pub struct PersistentReorgHandler;
+impl PersistentReorgHandler {
+    /// Initialize in an independent transaction, matching Go initDDLReorgHandle.
+    pub fn initialize(
+        session: &mut dyn crate::job_worker::DurableJobSession,
+        info: &ReorgInfo,
+    ) -> Result<(), String> {
+        let meta = serde_json::json!({"reorg_checkpoint": {"local_sync_key": null, "local_key_count":0,"global_sync_key":null,"global_key_count":0,"instance_addr":"","physical_id":info.physical_table_id,"ts":0,"version":1}}).to_string();
+        reorg_transaction(session, |session| {
+            session.query(
+                &format!(
+                    "delete from mysql.tidb_ddl_reorg where job_id = {}",
+                    info.job_id
+                ),
+                "init_handle",
+            )?;
+            session.query(&format!("insert into mysql.tidb_ddl_reorg(job_id,ele_id,ele_type,start_key,end_key,physical_id,reorg_meta) values ({},{},X'{}',X'{}',X'{}',{},X'{}')",info.job_id,info.element.id,key_hex(&info.element.element_type),key_hex(&info.start_key),key_hex(&info.end_key),info.physical_table_id,key_hex(meta.as_bytes())),"init_handle")?;
+            Ok(())
+        })
+    }
+    pub fn restore(
+        session: &mut dyn crate::job_worker::DurableJobSession,
+        job: &mut astersql_meta_model::group_3::Job,
+    ) -> Result<PersistentReorgContext, String> {
+        restore_reorg(job, |sql| session.query(sql, "get_handle"))
+    }
+    /// Stage only; callers needing conflict injection own the transaction boundary.
+    pub fn stage_update(
+        session: &mut dyn crate::job_worker::DurableJobSession,
+        info: &ReorgInfo,
+        start: &[u8],
+    ) -> Result<(), String> {
+        session.query(&format!("update mysql.tidb_ddl_reorg set ele_id={},ele_type=X'{}',start_key=X'{}',end_key=X'{}',physical_id={} where job_id={}", info.element.id,key_hex(&info.element.element_type),key_hex(start),key_hex(&info.end_key),info.physical_table_id,info.job_id),"update_handle")?;
+        Ok(())
+    }
+    /// Publish the in-memory cursor only after the independent commit succeeds.
+    pub fn update(
+        session: &mut dyn crate::job_worker::DurableJobSession,
+        info: &mut ReorgInfo,
+        start: Vec<u8>,
+    ) -> Result<(), String> {
+        if start.is_empty() && info.end_key.is_empty() {
+            return Ok(());
+        }
+        reorg_transaction(session, |session| Self::stage_update(session, info, &start))?;
+        info.start_key = start;
+        Ok(())
+    }
+    /// Paused, cancelling and rolling-back jobs retain their recovery record.
+    pub fn cleanup(
+        session: &mut dyn crate::job_worker::DurableJobSession,
+        job: &astersql_meta_model::group_3::Job,
+    ) -> Result<(), String> {
+        use astersql_meta_model::group_3::JobState;
+        if !matches!(
+            job.state,
+            JobState::Done | JobState::Synced | JobState::Cancelled | JobState::RollbackDone
+        ) {
+            return Ok(());
+        }
+        reorg_transaction(session, |session| {
+            session.query(
+                &format!("delete from mysql.tidb_ddl_reorg where job_id={}", job.id),
+                "clean_handle",
+            )?;
+            Ok(())
+        })
+    }
+}
+fn key_hex(key: &[u8]) -> String {
+    key.iter().map(|b| format!("{b:02x}")).collect()
+}
+fn decode_key_hex(value: &str) -> Result<Vec<u8>, String> {
+    if value.len() % 2 != 0 {
+        return Err("invalid reorg key hex".into());
+    }
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|p| {
+            let a = (p[0] as char).to_digit(16).ok_or("invalid reorg key hex")?;
+            let b = (p[1] as char).to_digit(16).ok_or("invalid reorg key hex")?;
+            Ok((a * 16 + b) as u8)
+        })
+        .collect()
+}
+fn reorg_transaction(
+    session: &mut dyn crate::job_worker::DurableJobSession,
+    operation: impl FnOnce(&mut dyn crate::job_worker::DurableJobSession) -> Result<(), String>,
+) -> Result<(), String> {
+    if let Err(error) = session.begin() {
+        session.rollback();
+        return Err(error);
+    }
+    let result = operation(session).and_then(|_| session.commit());
+    if result.is_err() {
+        session.rollback();
+    }
+    result
+}
+pub(crate) fn restore_reorg(
+    job: &mut astersql_meta_model::group_3::Job,
+    mut query: impl FnMut(&str) -> Result<Vec<Vec<String>>, String>,
+) -> Result<PersistentReorgContext, String> {
+    // The session ABI uses UTF-8 rows. HEX preserves arbitrary binary handles.
+    let rows = query(&format!(
+        "select ele_id,HEX(ele_type),HEX(start_key),HEX(end_key),physical_id from mysql.tidb_ddl_reorg where job_id={}",
+        job.id
+    ))?;
+    let Some(row) = rows.first() else {
+        // Go restarts initialization when upgrading a job with no element row.
+        job.snapshot_ver = 0;
+        return Err("DDL reorg element does not exist".into());
+    };
+    if row.len() != 5 {
+        return Err("invalid DDL reorg row".into());
+    }
+    let info = ReorgInfo {
+        job_id: job.id,
+        physical_table_id: row[4].parse().map_err(|_| "invalid reorg physical ID")?,
+        start_key: decode_key_hex(&row[2])?,
+        end_key: adjust_end_key_across_version(
+            job.reorg_meta.as_ref().map(|m| m.Version as u32),
+            decode_key_hex(&row[3])?,
+        ),
+        element: ReorgElement {
+            id: row[0].parse().map_err(|_| "invalid reorg element ID")?,
+            element_type: decode_key_hex(&row[1])?,
+        },
+        ..Default::default()
+    };
+    let runtime = ReorgContext {
+        resource_group_name: job
+            .reorg_meta
+            .as_ref()
+            .map(|m| m.ResourceGroupName.clone())
+            .unwrap_or_default(),
+        ..Default::default()
+    };
+    runtime.set_row_count(job.get_row_count());
+    Ok(PersistentReorgContext {
+        snapshot_ver: job.snapshot_ver,
+        info,
+        runtime,
+    })
+}

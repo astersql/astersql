@@ -230,6 +230,13 @@ pub type TransactionOperation =
 /// SQL and metadata access to the same worker session. Transaction callbacks
 /// release their borrow before SQL execution; handlers cannot open another session.
 pub trait JobExecutionContext {
+    /// Recover durable reorg state on this worker's real SQL session.
+    fn restore_reorg(
+        &mut self,
+        job: &mut astersql_meta_model::group_3::Job,
+    ) -> Result<crate::reorg::PersistentReorgContext, String> {
+        crate::reorg::restore_reorg(job, |sql| self.query(sql, "get_handle"))
+    }
     fn query(&mut self, sql: &str, label: &str) -> Result<Vec<Vec<String>>, String>;
     fn with_transaction(
         &mut self,

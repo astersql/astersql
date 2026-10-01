@@ -60,6 +60,26 @@ fn query(session: &ConcreteSession, sql: &str) -> sys::Result<Vec<Vec<String>>> 
     }
     Ok(rows)
 }
+// The DDL string-row ABI carries reorg key columns as hex. Decode the
+// runtime's binary representation before converting, preserving non-UTF8 keys.
+fn query_reorg(session: &ConcreteSession, sql: &str) -> sys::Result<Vec<Vec<String>>> {
+    if !sql.starts_with("select ele_id,HEX(ele_type),HEX(start_key),HEX(end_key),physical_id from mysql.tidb_ddl_reorg") {
+        return query(session,sql);
+    }
+    let sql = sql
+        .replace("HEX(ele_type)", "ele_type")
+        .replace("HEX(start_key)", "start_key")
+        .replace("HEX(end_key)", "end_key");
+    let mut rows = query(session, &sql)?;
+    for row in &mut rows {
+        for value in row.iter_mut().take(4).skip(1) {
+            let bytes = super::row_codec::binary_runtime_bytes(value)
+                .unwrap_or_else(|| value.as_bytes().to_vec());
+            *value = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        }
+    }
+    Ok(rows)
+}
 fn bound_sql(sql: &str, args: &[sys::SqlValue]) -> sys::Result<String> {
     let literals = args
         .iter()
@@ -302,7 +322,7 @@ impl ddl::SessionContext for ConcreteDdlContext {
             .collect::<Vec<_>>();
         let sql = super::bind_parameter_markers(sql, &literals).map_err(ddl_error)?;
         let rows = self
-            .call(move |session| query(session, &sql))
+            .call(move |session| query_reorg(session, &sql))
             .map_err(ddl_error)?;
         Ok(Some(Box::new(Rows(
             rows.into_iter()
@@ -900,7 +920,7 @@ impl astersql_ddl::job_worker::JobExecutionContext for ConcreteJobExecutionConte
         {
             return Err("DDL execution context requires one transactional DML statement".into());
         }
-        query(self.0, sql).map_err(|e| e.to_string())
+        query_reorg(self.0, sql).map_err(|e| e.to_string())
     }
     fn with_transaction(
         &mut self,
