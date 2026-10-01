@@ -945,6 +945,14 @@ impl astersql_ddl::delete_range::DeleteRangeExecutor for SystemSessionLease {
     }
 }
 impl astersql_ddl::job_worker::DurableJobSession for SystemSessionLease {
+    fn backfill_index_batch(
+        &mut self,
+        request: astersql_ddl::backfilling::IndexBackfillBatch,
+    ) -> Result<astersql_ddl::backfilling::BackfillTaskContext, String> {
+        self.concrete()
+            .call(move |session| backfill_index_batch(session, request).map_err(sys_error))
+            .map_err(|e| e.to_string())
+    }
     fn register_delete_ranges(
         &mut self,
         job: &mut astersql_meta_model::group_3::Job,
@@ -1024,6 +1032,9 @@ pub struct DdlOwnerLease {
     pub cancellation: Arc<sys::CancellationToken>,
 }
 impl astersql_ddl::job_worker::JobLease for DdlOwnerLease {
+    fn owner_epoch(&self) -> u64 {
+        self.owner.OwnerEpoch()
+    }
     fn is_owner(&self) -> bool {
         self.owner.IsOwner()
     }
@@ -1041,4 +1052,324 @@ pub(crate) fn transaction_mdl(
         .downcast_ref::<ConcreteDdlContext>()?
         .call(|session| Ok(session.transaction_mdl()))
         .ok()
+}
+
+/// Go addIndexTxnWorker.BackfillData/fetchRowColVals: stream the transaction's
+/// snapshot, decode full catalog rows, check unique handles and lock source rows.
+/// The outer worker owns commit/retry and publishes statistics only after commit.
+fn backfill_index_batch(
+    session: &mut ConcreteSession,
+    request: astersql_ddl::backfilling::IndexBackfillBatch,
+) -> Result<astersql_ddl::backfilling::BackfillTaskContext, String> {
+    use super::row_codec::{
+        datum_to_runtime_value, origin_default_runtime_value, relational_index_value_rows,
+        runtime_value_to_datum,
+    };
+    use astersql_ddl::backfilling::BackfillTaskContext;
+    let mode = astersql_parser_mysql::r#const::SQLMode(request.sql_mode);
+    let strict = mode.HasStrictMode();
+    let flags = astersql_types::scalar::StrictFlags
+        .WithTruncateAsWarning(!strict)
+        .WithIgnoreInvalidDateErr(mode.HasAllowInvalidDatesMode())
+        .WithIgnoreZeroInDate(
+            !mode.HasNoZeroInDateMode() || !strict || mode.HasAllowInvalidDatesMode(),
+        )
+        .WithIgnoreZeroDateErr(!mode.HasNoZeroDateMode() || !strict);
+    let mut state = session.state.borrow_mut();
+    let txn = state
+        .transaction
+        .as_mut()
+        .ok_or("active transaction required")?;
+    let table = astersql_meta::TransactionMutator::new(txn.as_mut())
+        .get_table(request.schema_id, request.table_id)?
+        .ok_or("DDL backfill table missing")?;
+    let indexes = request
+        .index_ids
+        .iter()
+        .map(|id| {
+            table
+                .Indices
+                .iter()
+                .find(|idx| idx.ID == *id)
+                .cloned()
+                .ok_or("DDL backfill index missing".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if indexes
+        .iter()
+        .any(|index| index.State != astersql_meta_model::SchemaState::WriteReorganization)
+    {
+        return Err("DDL backfill index is not in write reorganization".into());
+    }
+    // Transactional add-index explicitly rejects partial indexes in Go.
+    if indexes
+        .iter()
+        .any(|index| !index.ConditionExprString.is_empty())
+    {
+        return Err("[ddl:8200]Unsupported add partial index without fast reorg".into());
+    }
+    txn.SetOption(kv::Priority, Some(Box::new(request.task.priority)));
+    txn.SetOption(
+        kv::ResourceGroupName,
+        Some(Box::new(request.resource_group)),
+    );
+    txn.SetOption(kv::RequestSourceInternal, Some(Box::new(true)));
+    txn.SetOption(
+        kv::RequestSourceType,
+        Some(Box::new(kv::InternalTxnDDL.to_owned())),
+    );
+    let fields = table
+        .Columns
+        .iter()
+        .map(|col| (col.ID, Box::new(col.FieldType.clone())))
+        .collect::<HashMap<_, _>>();
+    let handle_ids = if table.PKIsHandle {
+        table
+            .GetPkColInfo()
+            .map(|col| vec![col.ID])
+            .unwrap_or_default()
+    } else if table.IsCommonHandle {
+        table
+            .Indices
+            .iter()
+            .find(|idx| idx.Primary)
+            .map(|idx| {
+                idx.Columns
+                    .iter()
+                    .map(|col| table.Columns[col.Offset as usize].ID)
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let prefix = astersql_tablecodec::GenTableRecordPrefix(request.task.physical_table_id).0;
+    if !request.task.start_key.starts_with(&prefix)
+        || request.task.end_key > kv::Key(prefix.clone()).PrefixNext().0
+    {
+        return Err("backfill range does not belong to physical table".into());
+    }
+    let mut iterator = txn
+        .GetSnapshot()
+        .Iter(
+            kv::Key(request.task.start_key.clone()),
+            Some(kv::Key(request.task.end_key.clone())),
+        )
+        .map_err(|e| e.to_string())?;
+    let mut context = BackfillTaskContext {
+        finish_ts: txn.StartTS(),
+        ..Default::default()
+    };
+    let generated = (|| {
+        // A bounded batch buffer contains encoded index records, never an
+        // in-memory substitute for the source table or MVCC snapshot.
+        let mut records = Vec::new();
+        while iterator.Valid() && records.len() < request.batch_size {
+            let row_key = iterator.Key();
+            if !row_key.0.starts_with(&prefix) {
+                break;
+            }
+            let (_, handle) = astersql_tablecodec::DecodeRecordKey(astersql_tablecodec::kv::Key(
+                row_key.0.clone(),
+            ))
+            .map_err(|e| e.to_string())?;
+            let datums = astersql_tablecodec::DecodeRowToDatumMap(
+                Some(iterator.Value()),
+                fields.clone(),
+                Some(astersql_tablecodec::time::UTC),
+            )
+            .map_err(|e| e.to_string())?;
+            let mut datums = astersql_tablecodec::DecodeHandleToDatumMap(
+                Some(handle.Copy()),
+                handle_ids.clone(),
+                fields.clone(),
+                Some(astersql_tablecodec::time::UTC),
+                Some(datums),
+            )
+            .map_err(|e| e.to_string())?;
+            let mut row = HashMap::new();
+            for col in &table.Columns {
+                let value = match datums.get(&col.ID) {
+                    Some(datum) => {
+                        datum_to_runtime_value(datum, Some(col)).map_err(|e| e.to_string())?
+                    }
+                    None => origin_default_runtime_value(col),
+                };
+                row.insert(col.Name.L.clone(), value);
+            }
+            for col in table
+                .Columns
+                .iter()
+                .filter(|col| col.IsGenerated() && !col.GeneratedStored)
+            {
+                let expr = crate::dml_runtime::ParseGeneratedExpr(&col.GeneratedExprString)
+                    .map_err(|e| e.to_string())?;
+                let value =
+                    crate::dml_runtime::EvalExpr(&expr, &row, None).map_err(|e| e.to_string())?;
+                let datum = runtime_value_to_datum(value.as_ref(), col, flags)
+                    .map_err(|e| e.to_string())?;
+                row.insert(col.Name.L.clone(), value);
+                datums.insert(col.ID, datum);
+            }
+            for index in &indexes {
+                let values = if index.MVIndex {
+                    relational_index_value_rows(&table, index, &row, flags)
+                        .map_err(|e| e.to_string())?
+                } else {
+                    vec![
+                        index
+                            .Columns
+                            .iter()
+                            .map(|part| {
+                                let col = table
+                                    .Columns
+                                    .get(part.Offset as usize)
+                                    .ok_or("invalid backfill index column offset")?;
+                                datums.get(&col.ID).cloned().map(Ok).unwrap_or_else(|| {
+                                    runtime_value_to_datum(
+                                        row.get(&col.Name.L).and_then(Option::as_ref),
+                                        col,
+                                        flags,
+                                    )
+                                    .map_err(|e| e.to_string())
+                                })
+                            })
+                            .collect::<Result<Vec<_>, String>>()?,
+                    ]
+                };
+                let actual_handle: Box<dyn astersql_tablecodec::kv::Handle> = if index.Global
+                    && index.GlobalIndexVersion >= astersql_meta_model::GlobalIndexVersionV1
+                {
+                    Box::new(astersql_tablecodec::kv::NewPartitionHandle(
+                        request.task.physical_table_id,
+                        handle.Copy(),
+                    ))
+                } else {
+                    handle.Copy()
+                };
+                let codec_table = astersql_tablecodec::model::TableInfo {
+                    Columns: table.Columns.clone(),
+                    Indices: table.Indices.clone(),
+                    PKIsHandle: table.PKIsHandle,
+                    IsCommonHandle: table.IsCommonHandle,
+                    CommonHandleVersion: table.CommonHandleVersion,
+                    ..Default::default()
+                };
+                let mut entries = Vec::new();
+                for values in values {
+                    let restored = index.Columns.iter().any(|part| {
+                        astersql_tablecodec::types::NeedRestoredDataWithCollate(
+                            &table.Columns[part.Offset as usize].FieldType,
+                            astersql_tablecodec::collate::NewCollationEnabled(),
+                        )
+                    });
+                    let (key, distinct) = astersql_tablecodec::GenIndexKey(
+                        astersql_tablecodec::codec::NewEncoder(
+                            astersql_tablecodec::collate::NewCollationEnabled(),
+                        ),
+                        Some(astersql_tablecodec::time::UTC),
+                        Box::new(codec_table.clone()),
+                        Box::new(index.clone()),
+                        if index.Global {
+                            table.ID
+                        } else {
+                            request.task.physical_table_id
+                        },
+                        values.clone(),
+                        Some(actual_handle.Copy()),
+                        None,
+                    )
+                    .map_err(|e| e.to_string())?;
+                    let restored_data = astersql_tablecodec::TryGetCommonPkColumnRestoredIds(
+                        astersql_tablecodec::collate::NewCollationEnabled(),
+                        Box::new(codec_table.clone()),
+                    )
+                    .iter()
+                    .filter_map(|id| datums.get(id).cloned())
+                    .collect();
+                    let value = astersql_tablecodec::GenIndexValuePortal(
+                        astersql_tablecodec::collate::NewCollationEnabled(),
+                        Some(astersql_tablecodec::time::UTC),
+                        Box::new(codec_table.clone()),
+                        Box::new(index.clone()),
+                        restored,
+                        distinct,
+                        false,
+                        values,
+                        actual_handle.Copy(),
+                        if index.Global {
+                            request.task.physical_table_id
+                        } else {
+                            0
+                        },
+                        restored_data,
+                        None,
+                    )
+                    .map_err(|e| e.to_string())?;
+                    entries.push((kv::Key(key), value, distinct));
+                }
+                records.push((
+                    row_key.clone(),
+                    index.clone(),
+                    actual_handle.Copy(),
+                    entries,
+                ));
+            }
+            context.next_key = row_key.Next().0;
+            kv::NextUntil(iterator.as_mut(), |key| !key.0.starts_with(&row_key.0))
+                .map_err(|e| e.to_string())?;
+        }
+        context.done = !iterator.Valid() || !iterator.Key().0.starts_with(&prefix);
+        if context.done {
+            context.next_key = request.task.end_key.clone();
+        }
+        Ok::<_, String>(records)
+    })();
+    iterator.Close();
+    let records = generated?;
+    for (row_key, index, handle, entries) in records {
+        context.scan_count += 1;
+        let mut pending = Vec::new();
+        for (key, value, distinct) in entries {
+            if index.Unique {
+                match kv::GetValue(&kv::Context::default(), txn.as_ref(), key.clone()) {
+                    Ok(existing) => {
+                        if distinct {
+                            let old = astersql_tablecodec::DecodeIndexHandle(
+                                key.0.clone(),
+                                existing,
+                                index.Columns.len(),
+                            )
+                            .map_err(|e| e.to_string())?
+                            .ok_or("missing index handle")?;
+                            if !old.Equal(handle.as_ref()) {
+                                return Err(format!(
+                                    "[kv:1062]Duplicate entry for key '{}'",
+                                    index.Name.O
+                                ));
+                            }
+                        }
+                        continue;
+                    }
+                    Err(error) if kv::ErrNotExist.Equal(Some(&error)) => {}
+                    Err(error) => return Err(error.to_string()),
+                }
+            }
+            pending.push((key, value));
+        }
+        if pending.is_empty() {
+            continue;
+        }
+        txn.LockKeys(
+            &kv::Context::default(),
+            &mut kv::LockCtx::default(),
+            &[row_key],
+        )
+        .map_err(|e| e.to_string())?;
+        for (key, value) in pending {
+            txn.Set(key, value).map_err(|e| e.to_string())?;
+        }
+        context.added_count += 1;
+    }
+    Ok(context)
 }

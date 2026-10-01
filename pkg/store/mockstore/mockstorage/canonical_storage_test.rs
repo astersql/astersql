@@ -259,3 +259,39 @@ fn crossks_align_schema_checker_validates_the_timestamp_published_by_mvcc() {
         assert_eq!(published.Value, b"published");
     }
 }
+
+#[test]
+fn test_canonical_optimistic_lock_retains_mvcc_conflict_dependency() {
+    let _guard = transaction_test_guard();
+    let mut store = new_storage();
+    let ctx = kv::Context::default();
+    let key = kv::Key(b"backfill-source".to_vec());
+    let mut seed = kv::Storage::Begin(&mut store, &[]).unwrap();
+    seed.Set(key.clone(), b"old".to_vec()).unwrap();
+    seed.Commit(&ctx).unwrap();
+    let mut reader = kv::Storage::Begin(&mut store, &[]).unwrap();
+    reader
+        .LockKeys(&ctx, &mut kv::LockCtx::default(), &[key.clone()])
+        .unwrap();
+    reader
+        .Set(kv::Key(b"index".to_vec()), b"old".to_vec())
+        .unwrap();
+    let mut writer = kv::Storage::Begin(&mut store, &[]).unwrap();
+    writer.Set(key.clone(), b"new".to_vec()).unwrap();
+    writer.Commit(&ctx).unwrap();
+    let error = reader.Commit(&ctx).unwrap_err();
+    assert!(kv::IsTxnRetryableError(Some(&error)), "{error}");
+    reader.Rollback().unwrap();
+    let snapshot = kv::Storage::GetSnapshot(
+        &store,
+        kv::Storage::CurrentVersion(&store, "global").unwrap(),
+    );
+    assert_eq!(kv::GetValue(&ctx, snapshot.as_ref(), key).unwrap(), b"new");
+    assert!(
+        kv::ErrNotExist.Equal(
+            kv::GetValue(&ctx, snapshot.as_ref(), kv::Key(b"index".to_vec()))
+                .as_ref()
+                .err()
+        )
+    );
+}

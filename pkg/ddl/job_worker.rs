@@ -214,6 +214,12 @@ pub trait DurableJobSession {
         Err("DDL delete-range session unavailable".into())
     }
 
+    fn backfill_index_batch(
+        &mut self,
+        _: crate::backfilling::IndexBackfillBatch,
+    ) -> Result<crate::backfilling::BackfillTaskContext, String> {
+        Err("transactional index backfill adapter unavailable".into())
+    }
     fn query(&mut self, sql: &str, label: &str) -> Result<Vec<Vec<String>>, String>;
     fn begin(&mut self) -> Result<(), String>;
     fn commit(&mut self) -> Result<(), String>;
@@ -248,6 +254,11 @@ pub type ExecutionOperation =
 
 /// The owner manager and scheduler cancellation must both permit every commit.
 pub trait JobLease {
+    /// Identifies one leadership tenure, preventing an old task from resuming
+    /// after this same process loses and regains ownership.
+    fn owner_epoch(&self) -> u64 {
+        0
+    }
     fn is_owner(&self) -> bool;
     fn is_cancelled(&self) -> bool;
 }
@@ -361,4 +372,213 @@ impl JobWorker {
         }
         outcome
     }
+}
+
+impl JobWorker {
+    /// Execute only the transaction backend; mode selection remains with the
+    /// action. This is a production stage entrypoint, not a complete ADD INDEX handler.
+    pub fn run_transactional_index_backfill(
+        &mut self,
+        session: &mut dyn DurableJobSession,
+        lease: &dyn JobLease,
+        job: &astersql_meta_model::group_3::Job,
+        reorg: &mut crate::reorg::PersistentReorgContext,
+        index_ids: &[i64],
+    ) -> Result<crate::backfilling::BackfillResult, String> {
+        use crate::backfilling::{
+            BackfillResult, IndexBackfillBatch, ReorgBackfillTask, merge_warnings_and_counts,
+        };
+        use astersql_meta_model::group_3::{JobState, ReorgType};
+        if self.closed {
+            return Err("DDL worker is closed".into());
+        }
+        check_job_lease(lease)?;
+        let epoch = lease.owner_epoch();
+        if epoch == 0 {
+            return Err("DDL owner tenure unavailable".into());
+        }
+        let meta = job
+            .reorg_meta
+            .as_ref()
+            .ok_or("DDL reorg metadata missing")?;
+        // Never silently route an ingest/DXF job through ordinary transactions.
+        // The action retains responsibility for selecting/starting those backends.
+        if meta.IsDistReorg || meta.ReorgTp != ReorgType::ReorgTypeTxn {
+            return Err("transaction worker cannot execute selected ingest/DXF backend".into());
+        }
+        if job.state != JobState::Running
+            || job.schema_state != astersql_meta_model::SchemaState::WriteReorganization
+            || !matches!(
+                job.tp,
+                astersql_meta_model::group_3::ACTION_ADD_INDEX
+                    | astersql_meta_model::group_3::ACTION_ADD_PRIMARY_KEY
+            )
+            || reorg.info.job_id != job.id
+            || reorg.info.element.element_type != b"_idx_"
+            || !index_ids.contains(&reorg.info.element.id)
+        {
+            return Err("DDL backfill job is not running or has invalid elements".into());
+        }
+        let rows = session.query(
+            &format!(
+                "select job_meta from mysql.tidb_ddl_job where job_id = {}",
+                job.id
+            ),
+            "get_job",
+        )?;
+        let expected = rows
+            .first()
+            .and_then(|row| row.first())
+            .ok_or("DDL job disappeared")?
+            .clone();
+        let persisted =
+            astersql_meta::decode_go_history_job(expected.as_bytes()).map_err(|e| e.to_string())?;
+        if persisted.state != JobState::Running
+            || persisted.tp != job.tp
+            || persisted.raw_args != job.raw_args
+            || persisted.schema_id != job.schema_id
+            || persisted.table_id != job.table_id
+            || persisted.schema_state != job.schema_state
+        {
+            return Err("job meta changed by others".into());
+        }
+        let mut result = BackfillResult {
+            next_key: reorg.info.start_key.clone(),
+            ..Default::default()
+        };
+        let batch_size =
+            usize::try_from(meta.GetBatchSize()).map_err(|_| "invalid backfill batch size")?;
+        if batch_size == 0 {
+            return Err("invalid backfill batch size".into());
+        }
+        while reorg.info.start_key < reorg.info.end_key {
+            let request = IndexBackfillBatch {
+                schema_id: job.schema_id,
+                table_id: job.table_id,
+                index_ids: index_ids.to_vec(),
+                task: ReorgBackfillTask {
+                    physical_table_id: reorg.info.physical_table_id,
+                    job_id: job.id,
+                    start_key: reorg.info.start_key.clone(),
+                    end_key: reorg.info.end_key.clone(),
+                    priority: job.priority as i32,
+                    ..Default::default()
+                },
+                batch_size,
+                resource_group: meta.ResourceGroupName.clone(),
+                sql_mode: meta.SQLMode as i64,
+            };
+            let mut attempts = 0;
+            let context = loop {
+                check_job_lease_epoch(lease, epoch)?;
+                if let Err(error) = session.begin() {
+                    session.rollback();
+                    return Err(error);
+                }
+                let batch = (|| {
+                    let rows = session.query(
+                        &format!(
+                            "select job_meta from mysql.tidb_ddl_job where job_id = {}",
+                            job.id
+                        ),
+                        "get_job",
+                    )?;
+                    if rows.first().and_then(|r| r.first()) != Some(&expected) {
+                        return Err("job meta changed by others (paused or cancelled)".into());
+                    }
+                    let context = session.backfill_index_batch(request.clone())?;
+                    if context.next_key <= reorg.info.start_key
+                        || context.next_key > reorg.info.end_key
+                    {
+                        return Err("backfill adapter returned invalid progress".into());
+                    }
+                    check_job_lease_epoch(lease, epoch)?;
+                    // Touch the observed job row in this same transaction. A
+                    // concurrent ADMIN cancel/pause commits a conflicting write,
+                    // even though this snapshot cannot see its new state yet.
+                    let job_id = job.id;
+                    session.with_transaction(Box::new(move |txn| {
+                        let key = astersql_kv::Key(
+                            astersql_tablecodec::EncodeRowKeyWithHandle(
+                                astersql_meta_metadef::TiDBDDLJobTableID,
+                                Box::new(astersql_tablecodec::kv::IntHandle(job_id)),
+                            )
+                            .0,
+                        );
+                        let value = astersql_kv::GetValue(
+                            &astersql_kv::Context::default(),
+                            txn,
+                            key.clone(),
+                        )
+                        .map_err(|e| e.to_string())?;
+                        // SQL UPDATE may elide unchanged values. The KV write
+                        // intentionally remains in the transaction write set.
+                        txn.Set(key, value).map_err(|e| e.to_string())?;
+                        Ok(Vec::new())
+                    }))?;
+                    check_job_lease_epoch(lease, epoch)?;
+                    session.commit()?;
+                    Ok::<_, String>(context)
+                })();
+                match batch {
+                    Ok(context) => break context,
+                    Err(error) => {
+                        session.rollback();
+                        // Go RunInNewTxn retries only storage retryable failures;
+                        // the whole batch is regenerated in the new snapshot.
+                        if !error.contains(astersql_kv::TxnRetryableMark)
+                            || attempts
+                                >= astersql_kv::MaxRetryCnt
+                                    .load(std::sync::atomic::Ordering::Relaxed)
+                        {
+                            return Err(error);
+                        }
+                        attempts += 1;
+                        astersql_kv::BackOff(attempts);
+                    }
+                }
+            };
+            result.total_added_count += context.added_count;
+            result.total_scan_count += context.scan_count;
+            merge_warnings_and_counts(&mut result.warnings, &mut result.warning_counts, &context);
+            reorg.runtime.increase_row_count(context.added_count);
+            reorg
+                .runtime
+                .merge_warnings(&context.warnings, &context.warning_counts);
+            // Checkpoint publication is independent, as in Go. If it fails,
+            // committed index entries remain idempotently replayable.
+            check_job_lease_epoch(lease, epoch)?;
+            if let Err(error) = session.begin() {
+                session.rollback();
+                return Err(error);
+            }
+            let publish = (|| {
+                crate::reorg::PersistentReorgHandler::stage_update(
+                    session,
+                    &reorg.info,
+                    &context.next_key,
+                )?;
+                check_job_lease_epoch(lease, epoch)?;
+                session.commit()
+            })();
+            if let Err(error) = publish {
+                session.rollback();
+                return Err(error);
+            }
+            reorg.info.start_key = context.next_key.clone();
+            result.next_key = context.next_key;
+            if context.done {
+                break;
+            }
+        }
+        Ok(result)
+    }
+}
+
+fn check_job_lease_epoch(lease: &dyn JobLease, epoch: u64) -> Result<(), String> {
+    check_job_lease(lease)?;
+    if lease.owner_epoch() != epoch {
+        return Err("DDL owner tenure changed".into());
+    }
+    Ok(())
 }

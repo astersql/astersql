@@ -18,7 +18,7 @@
 // Owner 指集群中某类后台任务（如 DDL、统计信息）在同一时刻仅由一个 TiDB 实例持有的领导权。
 // 本模块用进程内状态模拟 etcd 竞选，供单测在无真实 etcd 时验证竞选、卸任与监听回调。
 use std::any::Any;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 use std::time::Duration;
 
@@ -70,6 +70,7 @@ struct MockManagerInner {
     campaign: Mutex<Option<MockCampaign>>,
     resign: Notify,
     closed: AtomicBool,
+    epoch: AtomicU64,
 }
 
 /// 本地存储用的 Owner 管理器；同一 store 与 owner key 下各实例仍会互相竞争。
@@ -101,6 +102,7 @@ pub fn NewMockManager(
             campaign: Mutex::new(None),
             resign: Notify::new(),
             closed: AtomicBool::new(false),
+            epoch: AtomicU64::new(0),
         }),
     })
 }
@@ -113,6 +115,12 @@ impl MockManager {
 
     /// 尝试将自身登记为 Owner；成功则触发 OnBecomeOwner 监听回调。
     async fn try_become_owner(&self) {
+        if self.IsOwner() {
+            return;
+        }
+        // Publish the new epoch before publishing ownership. Old work must
+        // never see a reacquired owner paired with the previous tenure.
+        self.inner.epoch.fetch_add(1, Ordering::AcqRel);
         if self.selector().SetOwner(self.inner.id.clone()) {
             tracing::info!(owner_key = %self.inner.key, id = %self.inner.id, "mock manager gets owner");
             if let Some(listener) = self.inner.listener.read().await.clone() {
@@ -180,6 +188,10 @@ impl Manager for MockManager {
     /// 判断本实例是否为当前 Owner。
     fn IsOwner(&self) -> bool {
         self.selector().IsOwner(&self.inner.id)
+    }
+
+    fn OwnerEpoch(&self) -> u64 {
+        self.inner.epoch.load(Ordering::Acquire)
     }
 
     /// 卸任（若当前持有 Owner）。

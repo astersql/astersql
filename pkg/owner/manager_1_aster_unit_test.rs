@@ -118,6 +118,7 @@ async fn mock_managers_compete_resign_and_notify_like_go() {
     .await
     .unwrap();
     assert!(!second.IsOwner());
+    assert!(first.OwnerEpoch()>0);
     assert_eq!(first.GetOwnerID(&ctx).await.unwrap(), "node-1");
 
     first.ResignOwner(&ctx).await.unwrap();
@@ -137,6 +138,7 @@ async fn mock_managers_compete_resign_and_notify_like_go() {
     .await
     .unwrap();
     assert!(!first.IsOwner());
+    assert!(second.OwnerEpoch()>0);
     assert!(second_listener.owner.load(Ordering::SeqCst));
 
     first.Close().await;

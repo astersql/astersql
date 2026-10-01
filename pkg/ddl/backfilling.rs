@@ -466,3 +466,16 @@ impl LocalRowCountCollector {
         self.processed_rows += rows;
     }
 }
+
+/// Canonical index conversion on a real pooled session transaction. The full
+/// catalog and row decoder are owned by the session adapter, not the worker.
+#[derive(Clone)]
+pub struct IndexBackfillBatch {
+    pub schema_id: i64,
+    pub table_id: i64,
+    pub index_ids: Vec<i64>,
+    pub task: ReorgBackfillTask,
+    pub batch_size: usize,
+    pub resource_group: String,
+    pub sql_mode: i64,
+}

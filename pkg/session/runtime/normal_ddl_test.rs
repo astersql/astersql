@@ -3782,3 +3782,499 @@ fn normal_ddl_plan_reorg_checkpoint_failed_commit_and_lifecycle() {
     legacy_end.push(0);
     assert_eq!(legacy.info.end_key, legacy_end);
 }
+
+fn backfill_owner_fixture(
+    unique: bool,
+    values: &str,
+) -> (Fixture, Job, astersql_ddl::reorg::PersistentReorgContext) {
+    use astersql_ddl::reorg::{PersistentReorgHandler, ReorgElement, ReorgInfo};
+    let f = Fixture::new();
+    f.pool
+        .acquire()
+        .unwrap()
+        .query(format!(
+            "INSERT INTO test.normal_ddl_target VALUES {values}"
+        ))
+        .unwrap();
+    let mut table = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+    table.Indices.push(astersql_meta_model::IndexInfo {
+        ID: 81,
+        Name: astersql_meta_model::ast::NewCIStr("payload_idx"),
+        Columns: vec![astersql_meta_model::IndexColumn {
+            Name: astersql_meta_model::ast::NewCIStr("payload"),
+            Offset: 1,
+            Length: astersql_meta_model::types::UnspecifiedLength,
+            ..Default::default()
+        }],
+        Unique: unique,
+        State: astersql_meta_model::SchemaState::WriteReorganization,
+        ..Default::default()
+    });
+    let mut txn = f
+        .domain
+        .storage_handle()
+        .with_storage(|s| s.Begin(&[]))
+        .unwrap();
+    txn.Set(
+        hash(
+            format!("DB:{}", f.db).as_bytes(),
+            format!("Table:{}", f.table).as_bytes(),
+        ),
+        astersql_meta_model::EncodeTableInfo(&table).unwrap(),
+    )
+    .unwrap();
+    txn.Commit(&astersql_kv::Context::default()).unwrap();
+    f.insert(89001, JobState::Running);
+    let mut job = f.queue(89001).unwrap();
+    job.tp = astersql_meta_model::group_3::ACTION_ADD_INDEX;
+    job.schema_state = astersql_meta_model::SchemaState::WriteReorganization;
+    job.raw_args = serde_json::json!({"index_args":[{"unique":unique,"index_name":{"O":"payload_idx","L":"payload_idx"},"index_id":81,"index_part_specifications":[]}]}).to_string().into_bytes();
+    job.reorg_meta = Some(astersql_meta_model::group_3::DDLReorgMeta {
+        ReorgTp: astersql_meta_model::group_3::ReorgType::ReorgTypeTxn,
+        Version: astersql_meta_model::group_3::CurrentReorgMetaVersion,
+        ..Default::default()
+    });
+    job.reorg_meta.as_mut().unwrap().SetBatchSize(1);
+    job.snapshot_ver = f
+        .domain
+        .storage_handle()
+        .with_storage(|s| s.CurrentVersion("global"))
+        .unwrap()
+        .Ver;
+    f.pool
+        .acquire()
+        .unwrap()
+        .query(format!(
+            "UPDATE mysql.tidb_ddl_job SET type={},reorg=1,job_meta=X'{}' WHERE job_id=89001",
+            astersql_meta_model::group_3::ACTION_ADD_INDEX,
+            hex(&astersql_meta::encode_go_ddl_job(&mut job, false).unwrap())
+        ))
+        .unwrap();
+    let start = astersql_tablecodec::GenTableRecordPrefix(f.table).0;
+    let end = astersql_kv::Key(start.clone()).PrefixNext().0;
+    let info = ReorgInfo {
+        job_id: job.id,
+        physical_table_id: f.table,
+        start_key: start,
+        end_key: end,
+        element: ReorgElement {
+            id: 81,
+            element_type: b"_idx_".to_vec(),
+        },
+        ..Default::default()
+    };
+    let mut session = f.pool.acquire().unwrap();
+    PersistentReorgHandler::initialize(&mut session, &info).unwrap();
+    let reorg = PersistentReorgHandler::restore(&mut session, &mut job).unwrap();
+    (f, job, reorg)
+}
+fn backfill_owner_entries(f: &Fixture) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let prefix = astersql_tablecodec::EncodeTableIndexPrefix(f.table, 81).0;
+    let mut txn = f
+        .domain
+        .storage_handle()
+        .with_storage(|s| s.Begin(&[]))
+        .unwrap();
+    let mut iter = txn
+        .Iter(
+            astersql_kv::Key(prefix.clone()),
+            Some(astersql_kv::Key(prefix).PrefixNext()),
+        )
+        .unwrap();
+    let mut rows = Vec::new();
+    while iter.Valid() {
+        rows.push((iter.Key().0, iter.Value()));
+        iter.Next().unwrap();
+    }
+    iter.Close();
+    txn.Rollback().unwrap();
+    rows
+}
+#[test]
+fn normal_ddl_plan_backfill_owner_real_rows_checkpoint_and_replay() {
+    let (f, job, mut reorg) = backfill_owner_fixture(true, "(1,'one'),(2,'two'),(3,NULL)");
+    let mut session = f.pool.acquire().unwrap();
+    let mut worker = JobWorker::new(WorkerType::AddIndex);
+    let result = worker
+        .run_transactional_index_backfill(
+            &mut session,
+            &backfill_election(),
+            &job,
+            &mut reorg,
+            &[81],
+        )
+        .unwrap();
+    assert_eq!(result.total_scan_count, 3);
+    assert_eq!(result.total_added_count, 3);
+    assert_eq!(reorg.info.start_key, reorg.info.end_key);
+    assert_eq!(backfill_owner_entries(&f).len(), 3);
+    assert_eq!(reorg.runtime.row_count(), 3);
+    // Checkpoint lag is possible in Go: replay committed rows with actual
+    // canonical unique keys, including a non-distinct NULL entry.
+    let prior = backfill_owner_entries(&f);
+    reorg.info.start_key = astersql_tablecodec::GenTableRecordPrefix(f.table).0;
+    let replay = worker
+        .run_transactional_index_backfill(
+            &mut session,
+            &backfill_election(),
+            &job,
+            &mut reorg,
+            &[81],
+        )
+        .unwrap();
+    assert_eq!(replay.total_added_count, 0);
+    assert_eq!(backfill_owner_entries(&f), prior);
+    assert_eq!(
+        f.pool
+            .acquire()
+            .unwrap()
+            .query("SELECT id,payload FROM test.normal_ddl_target ORDER BY id")
+            .unwrap()
+            .len(),
+        3
+    );
+}
+
+struct BackfillElection {
+    owner: AtomicBool,
+    epoch: std::sync::atomic::AtomicU64,
+    cancelled: AtomicBool,
+}
+impl JobLease for BackfillElection {
+    fn is_owner(&self) -> bool {
+        self.owner.load(Ordering::Acquire)
+    }
+    fn owner_epoch(&self) -> u64 {
+        self.epoch.load(Ordering::Acquire)
+    }
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+}
+struct BackfillBoundaryFault {
+    session: super::system_session::SystemSessionLease,
+    after_scan: Option<Box<dyn FnOnce()>>,
+    attempts: usize,
+    stop_after: usize,
+}
+impl DurableJobSession for BackfillBoundaryFault {
+    fn query(&mut self, sql: &str, label: &str) -> Result<Vec<Vec<String>>, String> {
+        DurableJobSession::query(&mut self.session, sql, label)
+    }
+    fn begin(&mut self) -> Result<(), String> {
+        DurableJobSession::begin(&mut self.session)
+    }
+    fn commit(&mut self) -> Result<(), String> {
+        DurableJobSession::commit(&mut self.session)
+    }
+    fn rollback(&mut self) {
+        DurableJobSession::rollback(&mut self.session)
+    }
+    fn with_transaction(
+        &mut self,
+        op: astersql_ddl::job_worker::TransactionOperation,
+    ) -> Result<Vec<u8>, String> {
+        DurableJobSession::with_transaction(&mut self.session, op)
+    }
+    fn backfill_index_batch(
+        &mut self,
+        request: astersql_ddl::backfilling::IndexBackfillBatch,
+    ) -> Result<astersql_ddl::backfilling::BackfillTaskContext, String> {
+        self.attempts += 1;
+        let result = self.session.backfill_index_batch(request)?;
+        if self.attempts == self.stop_after {
+            if let Some(fault) = self.after_scan.take() {
+                fault();
+            }
+        }
+        Ok(result)
+    }
+}
+#[test]
+fn normal_ddl_plan_backfill_owner_fences_loss_cancel_pause_and_same_owner_new_term() {
+    use astersql_ddl::reorg::PersistentReorgHandler;
+    for case in 0..5 {
+        let (f, mut job, mut reorg) = backfill_owner_fixture(false, "(1,'one'),(2,'two')");
+        let lease = Arc::new(BackfillElection {
+            owner: AtomicBool::new(true),
+            epoch: std::sync::atomic::AtomicU64::new(1),
+            cancelled: AtomicBool::new(false),
+        });
+        let fault_lease = lease.clone();
+        let pool = f.pool.clone();
+        let start = reorg.info.start_key.clone();
+        let mut fault = BackfillBoundaryFault {
+            attempts: 0,
+            stop_after: 1,
+            session: f.pool.acquire().unwrap(),
+            after_scan: Some(Box::new(move || match case {
+                0 => fault_lease.owner.store(false, Ordering::Release),
+                1 => fault_lease.cancelled.store(true, Ordering::Release),
+                2 => {
+                    fault_lease.epoch.fetch_add(1, Ordering::AcqRel);
+                }
+                _ => {
+                    let mut admin = astersql_meta::decode_go_history_job(
+                        pool.acquire()
+                            .unwrap()
+                            .query("SELECT job_meta FROM mysql.tidb_ddl_job WHERE job_id=89001")
+                            .unwrap()[0][0]
+                            .as_bytes(),
+                    )
+                    .unwrap();
+                    admin.state = if case == 3 {
+                        JobState::Pausing
+                    } else {
+                        JobState::Cancelling
+                    };
+                    pool.acquire()
+                        .unwrap()
+                        .query(format!(
+                            "UPDATE mysql.tidb_ddl_job SET job_meta=X'{}' WHERE job_id=89001",
+                            hex(&astersql_meta::encode_go_ddl_job(&mut admin, false).unwrap())
+                        ))
+                        .unwrap();
+                }
+            })),
+        };
+        let error = JobWorker::new(WorkerType::AddIndex)
+            .run_transactional_index_backfill(&mut fault, lease.as_ref(), &job, &mut reorg, &[81])
+            .unwrap_err();
+        assert!(
+            error.contains("owner")
+                || error.contains("cancel")
+                || error.contains("changed")
+                || error.contains(astersql_kv::TxnRetryableMark),
+            "{error}"
+        );
+        assert!(backfill_owner_entries(&f).is_empty(), "case {case}");
+        assert_eq!(reorg.info.start_key, start);
+        assert_eq!(reorg.runtime.row_count(), 0);
+        assert_eq!(
+            PersistentReorgHandler::restore(&mut fault.session, &mut job)
+                .unwrap()
+                .info
+                .start_key,
+            start
+        );
+        // A fresh owner/session resumes from the same durable cursor.
+        lease.owner.store(true, Ordering::Release);
+        lease.cancelled.store(false, Ordering::Release);
+        let mut active = f.queue(job.id).unwrap();
+        active.state = JobState::Running;
+        f.pool
+            .acquire()
+            .unwrap()
+            .query(format!(
+                "UPDATE mysql.tidb_ddl_job SET job_meta=X'{}' WHERE job_id=89001",
+                hex(&astersql_meta::encode_go_ddl_job(&mut active, false).unwrap())
+            ))
+            .unwrap();
+        JobWorker::new(WorkerType::AddIndex)
+            .run_transactional_index_backfill(
+                &mut f.pool.acquire().unwrap(),
+                lease.as_ref(),
+                &active,
+                &mut reorg,
+                &[81],
+            )
+            .unwrap();
+        assert_eq!(backfill_owner_entries(&f).len(), 2);
+    }
+}
+#[test]
+fn normal_ddl_plan_backfill_owner_unique_conflict_retains_committed_prefix() {
+    let (f, job, mut reorg) = backfill_owner_fixture(true, "(1,'same'),(2,'same')");
+    let lease = backfill_election();
+    let mut session = f.pool.acquire().unwrap();
+    let error = JobWorker::new(WorkerType::AddIndex)
+        .run_transactional_index_backfill(&mut session, &lease, &job, &mut reorg, &[81])
+        .unwrap_err();
+    assert!(error.contains("1062"), "{error}");
+    assert_eq!(backfill_owner_entries(&f).len(), 1);
+    assert_eq!(reorg.runtime.row_count(), 1);
+    f.pool
+        .acquire()
+        .unwrap()
+        .query("UPDATE test.normal_ddl_target SET payload='other' WHERE id=2")
+        .unwrap();
+    let resumed = astersql_ddl::reorg::PersistentReorgHandler::restore(
+        &mut session,
+        &mut f.queue(job.id).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(resumed.info.start_key, reorg.info.start_key);
+    JobWorker::new(WorkerType::AddIndex)
+        .run_transactional_index_backfill(&mut session, &lease, &job, &mut reorg, &[81])
+        .unwrap();
+    assert_eq!(backfill_owner_entries(&f).len(), 2);
+}
+
+fn backfill_election() -> BackfillElection {
+    BackfillElection {
+        owner: AtomicBool::new(true),
+        epoch: std::sync::atomic::AtomicU64::new(1),
+        cancelled: AtomicBool::new(false),
+    }
+}
+#[test]
+fn normal_ddl_plan_backfill_owner_mvcc_retry_regenerates_changed_row() {
+    let (f, job, mut reorg) = backfill_owner_fixture(false, "(1,'old'),(2,'two')");
+    let pool = f.pool.clone();
+    let mut fault = BackfillBoundaryFault {
+        attempts: 0,
+        stop_after: 1,
+        session: f.pool.acquire().unwrap(),
+        after_scan: Some(Box::new(move || {
+            pool.acquire()
+                .unwrap()
+                .query("UPDATE test.normal_ddl_target SET payload='new' WHERE id=1")
+                .unwrap();
+        })),
+    };
+    let result = JobWorker::new(WorkerType::AddIndex)
+        .run_transactional_index_backfill(&mut fault, &backfill_election(), &job, &mut reorg, &[81])
+        .unwrap();
+    assert_eq!(result.total_added_count, 2);
+    assert_eq!(
+        result.total_scan_count, 2,
+        "failed batch is excluded from statistics"
+    );
+    let entries = backfill_owner_entries(&f);
+    assert_eq!(
+        entries.len(),
+        2,
+        "abandoned snapshot must not leave old index value"
+    );
+    let table = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+    let index = table.Indices.iter().find(|idx| idx.ID == 81).unwrap();
+    let mut row = std::collections::HashMap::new();
+    row.insert("id".into(), Some("1".into()));
+    row.insert("payload".into(), Some("new".into()));
+    let expected = super::row_codec::encode_relational_index_value_row(
+        &table,
+        index,
+        &row,
+        astersql_types::scalar::StrictFlags,
+        vec![astersql_types::datum::NewStringDatum("new".into())],
+    )
+    .unwrap();
+    // The production backfiller retains restored collation data in the value;
+    // the older DML convenience encoder does not. Compare its canonical key,
+    // and independently decode the persisted handle from the full value.
+    let actual = entries
+        .iter()
+        .find(|entry| entry.0 == expected.0.0)
+        .expect("index must use the retry snapshot's new value");
+    assert_eq!(
+        astersql_tablecodec::DecodeIndexHandle(actual.0.clone(), actual.1.clone(), 1)
+            .unwrap()
+            .unwrap()
+            .IntValue(),
+        1
+    );
+    assert_eq!(
+        fault.attempts, 3,
+        "one failed batch and two committed batches"
+    );
+}
+#[test]
+fn normal_ddl_plan_backfill_owner_preserves_ingest_dxf_selection() {
+    for case in 0..3 {
+        let (f, mut job, mut reorg) = backfill_owner_fixture(false, "(1,'one')");
+        let meta = job.reorg_meta.as_mut().unwrap();
+        if case == 0 {
+            meta.ReorgTp = astersql_meta_model::group_3::ReorgType::ReorgTypeIngest;
+        }
+        if case == 1 {
+            meta.IsDistReorg = true;
+        }
+        if case == 2 {
+            meta.ReorgTp = astersql_meta_model::group_3::ReorgType::ReorgTypeTxnMerge;
+        }
+        let before = job.encode(false).unwrap();
+        let error = JobWorker::new(WorkerType::AddIndex)
+            .run_transactional_index_backfill(
+                &mut f.pool.acquire().unwrap(),
+                &backfill_election(),
+                &job,
+                &mut reorg,
+                &[81],
+            )
+            .unwrap_err();
+        assert!(error.contains("ingest/DXF"), "{error}");
+        assert_eq!(job.encode(false).unwrap(), before);
+        assert!(backfill_owner_entries(&f).is_empty());
+    }
+}
+#[test]
+fn normal_ddl_plan_backfill_owner_public_manager_reacquisition_changes_tenure() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let cancel = astersql_owner::manager::Context::new();
+        let manager = astersql_owner::mock::NewMockManager(
+            cancel.clone(),
+            "backfill-epoch",
+            None,
+            format!("/ddl/backfill-epoch/{}", std::process::id()),
+        );
+        manager.CampaignOwner(&[]).await.unwrap();
+        assert!(manager.IsOwner());
+        let old = manager.OwnerEpoch();
+        assert!(old > 0);
+        manager.RetireOwner().await;
+        manager.CampaignCancel().await;
+        manager.CampaignOwner(&[]).await.unwrap();
+        assert!(manager.IsOwner());
+        assert!(manager.OwnerEpoch() > old);
+        let lease = super::system_session::DdlOwnerLease {
+            owner: manager.clone(),
+            cancellation: Arc::new(astersql_session_syssession::CancellationToken::default()),
+        };
+        assert_eq!(lease.owner_epoch(), manager.OwnerEpoch());
+        manager.Close().await;
+    });
+}
+
+#[test]
+fn normal_ddl_plan_backfill_owner_handoff_recovers_committed_prefix_on_new_pool() {
+    let (f, mut job, mut reorg) = backfill_owner_fixture(true, "(1,'one'),(2,'two'),(3,'three')");
+    let lease = Arc::new(backfill_election());
+    let retiring = lease.clone();
+    let mut fault = BackfillBoundaryFault {
+        session: f.pool.acquire().unwrap(),
+        attempts: 0,
+        stop_after: 2,
+        after_scan: Some(Box::new(move || {
+            retiring.owner.store(false, Ordering::Release);
+        })),
+    };
+    let error = JobWorker::new(WorkerType::AddIndex)
+        .run_transactional_index_backfill(&mut fault, lease.as_ref(), &job, &mut reorg, &[81])
+        .unwrap_err();
+    assert!(error.contains("owner"), "{error}");
+    assert_eq!(backfill_owner_entries(&f).len(), 1);
+    assert_eq!(reorg.runtime.row_count(), 1);
+    let expected = reorg.info.start_key.clone();
+    drop(fault);
+    let next_pool = SystemSessionPool::new(f.domain.clone());
+    let mut session = next_pool.acquire().unwrap();
+    let mut resumed =
+        astersql_ddl::reorg::PersistentReorgHandler::restore(&mut session, &mut job).unwrap();
+    assert_eq!(resumed.info.start_key, expected);
+    let result = JobWorker::new(WorkerType::AddIndex)
+        .run_transactional_index_backfill(
+            &mut session,
+            &backfill_election(),
+            &job,
+            &mut resumed,
+            &[81],
+        )
+        .unwrap();
+    assert_eq!(result.total_scan_count, 2);
+    assert_eq!(result.total_added_count, 2);
+    assert_eq!(backfill_owner_entries(&f).len(), 3);
+    assert_eq!(resumed.info.start_key, resumed.info.end_key);
+    drop(session);
+    next_pool.close();
+}

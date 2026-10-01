@@ -608,22 +608,34 @@ impl kv::Transaction for Transaction {
 
     fn LockKeys(
         &mut self,
-        _ctx: &kv::context::Context,
+        ctx: &kv::context::Context,
         _lock_ctx: &mut kv::LockCtx,
-        _keys: &[kv::Key],
+        keys: &[kv::Key],
     ) -> Result<(), kv::errors::SharedError> {
+        // Model an optimistic lock-only mutation as a same-value write. It
+        // participates in the engine's atomic MVCC conflict check without
+        // changing the snapshot value. The client-rust adapter uses real locks.
+        for key in keys {
+            match kv::GetValue(ctx, self, key.clone()) {
+                Ok(value) => kv::Mutator::Set(self, key.clone(), value)?,
+                Err(error) if kv::ErrNotExist.Equal(Some(&error)) => {
+                    kv::Mutator::Delete(self, key.clone())?
+                }
+                Err(error) => return Err(error),
+            }
+        }
         Ok(())
     }
 
     fn LockKeysFunc(
         &mut self,
-        _ctx: &kv::context::Context,
-        _lock_ctx: &mut kv::LockCtx,
+        ctx: &kv::context::Context,
+        lock_ctx: &mut kv::LockCtx,
         callback: &mut dyn FnMut(),
-        _keys: &[kv::Key],
+        keys: &[kv::Key],
     ) -> Result<(), kv::errors::SharedError> {
         callback();
-        Ok(())
+        self.LockKeys(ctx, lock_ctx, keys)
     }
 
     fn SetOption(&mut self, option: i32, value: Option<Box<dyn Any>>) {

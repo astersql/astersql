@@ -103,6 +103,11 @@ pub trait Manager: Send + Sync + Any {
     fn ID(&self) -> String;
     /// 当前是否持有 Owner。
     fn IsOwner(&self) -> bool;
+    /// Leadership tenure used to reject work started by a previous owner.
+    /// Zero denies backfill; managers must provide a monotonic local tenure.
+    fn OwnerEpoch(&self) -> u64 {
+        0
+    }
     /// 主动标记退位并通知 Listener。
     async fn RetireOwner(&self);
     /// 查询当前 Owner 的节点 ID。
@@ -208,6 +213,7 @@ struct OwnerManagerInner {
     prompt: String,
     client: Client,
     leader: RwLock<Option<LeaderKey>>,
+    epoch: AtomicU64,
     session_lease: AtomicI64,
     session: Mutex<Option<SessionRuntime>>,
     campaign: Mutex<Option<CampaignRuntime>>,
@@ -238,6 +244,7 @@ pub fn NewOwnerManager(
             prompt: prompt.into(),
             client,
             leader: RwLock::new(None),
+            epoch: AtomicU64::new(0),
             session_lease: AtomicI64::new(0),
             session: Mutex::new(None),
             campaign: Mutex::new(None),
@@ -356,7 +363,12 @@ impl OwnerManager {
 
     /// 记录 LeaderKey、打日志并回调 OnBecomeOwner。
     async fn become_owner(&self, leader: LeaderKey) {
-        *self.inner.leader.write().await = Some(leader);
+        {
+            let mut current = self.inner.leader.write().await;
+            // A new tenure can reuse the same etcd election key/revision.
+            self.inner.epoch.fetch_add(1, Ordering::AcqRel);
+            *current = Some(leader);
+        }
         tracing::info!(prompt = %self.inner.prompt, id = %self.inner.id, "become owner");
         if let Some(listener) = self.inner.listener.read().await.clone() {
             listener.OnBecomeOwner();
@@ -525,6 +537,19 @@ impl Manager for OwnerManager {
             .try_read()
             .map(|leader| leader.is_some())
             .unwrap_or(false)
+    }
+
+    fn OwnerEpoch(&self) -> u64 {
+        self.inner
+            .leader
+            .try_read()
+            .ok()
+            .and_then(|leader| {
+                leader
+                    .as_ref()
+                    .map(|_| self.inner.epoch.load(Ordering::Acquire))
+            })
+            .unwrap_or(0)
     }
 
     async fn RetireOwner(&self) {

@@ -249,10 +249,14 @@ async fn test_single() {
     let close_manager = NewOwnerManager(Context::new(), client.clone(), "ddl", "close", close_path);
     close_manager.CampaignOwner(&[]).await.unwrap();
     wait_owner(&close_manager, true).await;
+    let first_epoch=close_manager.OwnerEpoch();
+    assert!(first_epoch>0);
     close_manager.CampaignCancel().await;
     wait_owner(&close_manager, false).await;
+    assert_eq!(close_manager.OwnerEpoch(),0);
     close_manager.CampaignOwner(&[]).await.unwrap();
     wait_owner(&close_manager, true).await;
+    assert!(close_manager.OwnerEpoch()>first_epoch);
     close_manager.Close().await;
 
     // retry on lease revoked before election
@@ -273,6 +277,7 @@ async fn test_single() {
     revoke_manager.SetListener(revoke_listener.clone()).await;
     revoke_manager.CampaignOwner(&[]).await.unwrap();
     wait_owner(&revoke_manager, true).await;
+    let revoke_epoch=revoke_manager.OwnerEpoch();
     let lease_id = client
         .leases()
         .await
@@ -285,6 +290,7 @@ async fn test_single() {
     client.lease_revoke(lease_id).await.unwrap();
     wait_events(&revoke_listener, 3).await;
     wait_owner(&revoke_manager, true).await;
+    assert!(revoke_manager.OwnerEpoch()>revoke_epoch);
     revoke_manager.Close().await;
 
     let path = "/task-547/single";
