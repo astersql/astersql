@@ -4452,7 +4452,7 @@ fn normal_ddl_plan_schema_runtime_service_owns_domain_loops() {
     assert!(service.manages_schema_sync());
     f.domain.start(StartMode::Normal).unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    while runtime.active_loop_count() != 3 || !runtime.refresher.is_running() {
+    while runtime.active_loop_count() != 4 || !runtime.refresher.is_running() {
         assert!(std::time::Instant::now() < deadline);
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
@@ -4597,4 +4597,642 @@ fn normal_ddl_plan_schema_runtime_cancel_during_version_publication() {
     closed.unwrap().unwrap();
     assert_eq!(runtime.active_loop_count(), 0);
     assert!(!runtime.refresher.is_running());
+}
+
+fn schema_barrier_owner() -> (
+    Arc<tokio::runtime::Runtime>,
+    Arc<dyn astersql_owner::manager::Manager>,
+    astersql_owner::manager::Context,
+) {
+    let runtime = Arc::new(tokio::runtime::Runtime::new().unwrap());
+    let cancel = astersql_owner::manager::Context::new();
+    let owner = astersql_owner::mock::NewMockManager(
+        cancel.clone(),
+        "schema-barrier-owner",
+        None,
+        format!("/ddl/schema-barrier/{}", std::process::id()),
+    );
+    runtime.block_on(owner.CampaignOwner(&[])).unwrap();
+    (runtime, owner, cancel)
+}
+#[test]
+fn normal_ddl_plan_schema_barrier_unsynced_nodes_prevent_history_and_restart_recovers() {
+    let _serial = NORMAL_SCHEMA_RUNTIME_TEST_LOCK.lock().unwrap();
+    use astersql_ddl_schemaver::{Context, MemoryEtcdClient, NewEtcdSyncer};
+    let f = Fixture::new();
+    astersql_sessionctx_vardef::SetEnableMDL(false);
+    astersql_ddl_schemaver::SetMDLEnabled(false);
+    f.pool
+        .acquire()
+        .unwrap()
+        .query("INSERT INTO test.normal_ddl_target VALUES (1,'barrier existing row')")
+        .unwrap();
+    let client = Arc::new(MemoryEtcdClient::default());
+    let first = NewEtcdSyncer(client.clone(), "barrier-first");
+    let second = NewEtcdSyncer(client.clone(), "barrier-second");
+    second.Init(Context::Background()).unwrap();
+    let schema = super::session_factory::prepare_normal_schema_runtime(
+        &f.domain,
+        first.clone(),
+        std::time::Duration::from_millis(50),
+    )
+    .unwrap();
+    let (owner_runtime, owner, cancel) = schema_barrier_owner();
+    let lease = Lease(AtomicBool::new(true));
+    let mut e = NormalDdlExecutor {
+        barrier: schema.schema_barrier(
+            &f.domain,
+            owner.clone(),
+            cancel.clone(),
+            "schema-barrier-owner".into(),
+            Some(client.clone()),
+        ),
+        policy: Policy(None),
+        sequence: Arc::new(AtomicI64::new(0)),
+    };
+    let parent = e.barrier.context.clone();
+    e.barrier.context = parent.WithTimeout(std::time::Duration::from_millis(100));
+    f.insert(99501, JobState::Queueing);
+    assert!(
+        scheduler()
+            .schedule_persisted(&mut f.pool.acquire().unwrap(), &lease, &mut e, 0)
+            .is_err(),
+        "unsynchronized follower must hold the committed step"
+    );
+    let committed = f.queue(99501).unwrap();
+    assert_eq!(committed.state, JobState::Done);
+    assert!(committed.last_schema_version > 0);
+    assert_eq!(mode(&f), astersql_meta_model::TableMode::TableModeImport);
+    assert!(f.reader().get_history_ddl_job(99501).unwrap().is_none());
+    // A fresh scheduler and executor must recover the committed version before
+    // a terminal step can delete the queue or add history.
+    owner_runtime.block_on(owner.Close());
+    let (owner_runtime, owner, cancel) = schema_barrier_owner();
+    e.barrier = schema.schema_barrier(
+        &f.domain,
+        owner.clone(),
+        cancel,
+        "schema-barrier-owner".into(),
+        Some(client.clone()),
+    );
+    let parent = e.barrier.context.clone();
+    e.barrier.context = parent.WithTimeout(std::time::Duration::from_millis(100));
+    assert!(
+        scheduler()
+            .schedule_persisted(&mut f.pool.acquire().unwrap(), &lease, &mut e, 0)
+            .is_err()
+    );
+    assert!(f.queue(99501).is_some());
+    e.barrier.context = parent.WithTimeout(std::time::Duration::from_secs(2));
+    first
+        .UpdateSelfVersion(Context::Background(), 0, committed.last_schema_version)
+        .unwrap();
+    second
+        .UpdateSelfVersion(Context::Background(), 0, committed.last_schema_version)
+        .unwrap();
+    assert_eq!(
+        scheduler()
+            .schedule_persisted(&mut f.pool.acquire().unwrap(), &lease, &mut e, 0)
+            .unwrap(),
+        1
+    );
+    assert!(f.queue(99501).is_none());
+    assert_eq!(
+        f.reader()
+            .get_history_ddl_job(99501)
+            .unwrap()
+            .unwrap()
+            .state,
+        JobState::Synced
+    );
+    assert_eq!(
+        f.pool
+            .acquire()
+            .unwrap()
+            .query("SELECT payload FROM test.normal_ddl_target WHERE id=1")
+            .unwrap()[0][0],
+        "barrier existing row"
+    );
+    // No-op requests must not wait on an unrelated stale follower or allocate
+    // another schema version. They still finish through the durable history path.
+    let before = version(&f);
+    second
+        .UpdateSelfVersion(Context::Background(), 0, 0)
+        .unwrap();
+    f.insert(99504, JobState::Queueing);
+    e.barrier.context = parent.WithTimeout(std::time::Duration::from_millis(100));
+    assert_eq!(
+        scheduler()
+            .schedule_persisted(&mut f.pool.acquire().unwrap(), &lease, &mut e, 0)
+            .unwrap(),
+        1
+    );
+    assert_eq!(f.queue(99504).unwrap().last_schema_version, 0);
+    assert_eq!(
+        scheduler()
+            .schedule_persisted(&mut f.pool.acquire().unwrap(), &lease, &mut e, 0)
+            .unwrap(),
+        1
+    );
+    assert_eq!(version(&f), before);
+    assert_eq!(
+        f.reader()
+            .get_history_ddl_job(99504)
+            .unwrap()
+            .unwrap()
+            .state,
+        JobState::Synced
+    );
+    owner_runtime.block_on(owner.Close());
+    schema.close().unwrap();
+    second.Close();
+}
+
+struct BarrierMdlRestore(bool, bool);
+impl Drop for BarrierMdlRestore {
+    fn drop(&mut self) {
+        astersql_sessionctx_vardef::SetEnableMDL(self.0);
+        astersql_ddl_schemaver::SetMDLEnabled(self.1);
+    }
+}
+fn barrier_set_mdl(enabled: bool) -> BarrierMdlRestore {
+    let restore = BarrierMdlRestore(
+        astersql_sessionctx_vardef::IsMDLEnabled(),
+        astersql_ddl_schemaver::IsMDLEnabled(),
+    );
+    astersql_sessionctx_vardef::SetEnableMDL(enabled);
+    astersql_ddl_schemaver::SetMDLEnabled(enabled);
+    restore
+}
+fn barrier_wait_for(mut predicate: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !predicate() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "schema barrier observation timed out"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+#[test]
+fn normal_ddl_plan_schema_barrier_mdl_old_transaction_and_second_node_hold_history() {
+    let _serial = NORMAL_SCHEMA_RUNTIME_TEST_LOCK.lock().unwrap();
+    use astersql_ddl_schemaver::{
+        Context, DDLAllSchemaVersionsByJob, EtcdClient, MemoryEtcdClient, NewEtcdSyncer,
+    };
+    use astersql_domain_serverinfo as info;
+    let f = Fixture::new();
+    let _restore = barrier_set_mdl(true);
+    f.pool
+        .acquire()
+        .unwrap()
+        .query("INSERT INTO test.normal_ddl_target VALUES (1,'mdl existing row')")
+        .unwrap();
+    let client = Arc::new(MemoryEtcdClient::default());
+    let first = NewEtcdSyncer(client.clone(), "mdl-first");
+    let second = NewEtcdSyncer(client.clone(), "mdl-second");
+    second.Init(Context::Background()).unwrap();
+    let infos = Arc::new(info::MemoryEtcdClient::default());
+    for (id, port) in [("mdl-first", 4000), ("mdl-second", 4001)] {
+        let mut server = info::ServerInfo {
+            StaticInfo: info::StaticInfo {
+                ID: id.into(),
+                IP: "127.0.0.1".into(),
+                Port: port,
+                StartTimestamp: 1,
+                ServerIDGetter: Some(Arc::new(|| 1)),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        info::EtcdClient::Put(
+            infos.as_ref(),
+            &info::Context::Background(),
+            &info::serverInfoKeyPath(id),
+            server.Marshal().unwrap(),
+            None,
+        )
+        .unwrap();
+    }
+    first.SetServerInfoSyncer(Some(Arc::from(info::NewSyncer(
+        "mdl-first".into(),
+        Arc::new(|| 1),
+        Some(infos),
+        Arc::new(info::NoopMinStartTSReporter),
+    ))));
+    let schema = super::session_factory::prepare_normal_schema_runtime(
+        &f.domain,
+        first.clone(),
+        std::time::Duration::from_millis(50),
+    )
+    .unwrap();
+    schema.start().unwrap();
+    let old = super::ConcreteSession::new(f.domain.clone());
+    // Forward the actual SQL transaction signal through Domain's connection
+    // registry hook; never seed synthetic lock versions or a completion flag.
+    let manager: Arc<dyn astersql_session_sessmgr::InfoSchemaCoordinator> =
+        Arc::new(NormalConnectionCoordinator {
+            mdl: old.transaction_mdl(),
+            kills: std::sync::atomic::AtomicUsize::new(0),
+        });
+    f.domain.set_schema_coordinator(Arc::downgrade(&manager));
+    let user_query = |sql: &str| {
+        let mut rows = Vec::new();
+        for mut set in old.execute(sql).unwrap() {
+            while let Some(row) = set.next_row().unwrap() {
+                rows.push(row);
+            }
+            set.close().unwrap();
+        }
+        rows
+    };
+    user_query("BEGIN");
+    assert_eq!(
+        user_query("SELECT payload FROM test.normal_ddl_target WHERE id=1")[0][0],
+        "mdl existing row"
+    );
+    let (owner_runtime, owner, cancel) = schema_barrier_owner();
+    f.insert(99502, JobState::Queueing);
+    let mut e = NormalDdlExecutor {
+        barrier: schema.schema_barrier(
+            &f.domain,
+            owner.clone(),
+            cancel,
+            "schema-barrier-owner".into(),
+            Some(client.clone()),
+        ),
+        policy: Policy(Some("schema-barrier-owner".into())),
+        sequence: Arc::new(AtomicI64::new(0)),
+    };
+    e.barrier.context = e
+        .barrier
+        .context
+        .WithTimeout(std::time::Duration::from_secs(15));
+    let pool = f.pool.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let result = scheduler().schedule_persisted(
+            &mut pool.acquire().unwrap(),
+            &Lease(AtomicBool::new(true)),
+            &mut e,
+            0,
+        );
+        tx.send((result, e)).unwrap();
+    });
+    barrier_wait_for(|| {
+        f.queue(99502)
+            .is_some_and(|job| job.state == JobState::Done)
+    });
+    let committed = f.queue(99502).unwrap();
+    let rows = f
+        .pool
+        .acquire()
+        .unwrap()
+        .query("SELECT version,table_ids,owner_id FROM mysql.tidb_mdl_info WHERE job_id=99502")
+        .unwrap();
+    assert_eq!(
+        rows[0],
+        vec![
+            committed.last_schema_version.to_string(),
+            f.table.to_string(),
+            "schema-barrier-owner".into()
+        ]
+    );
+    barrier_wait_for(|| schema.syncer.mdlCheckContains(f.table));
+    assert!(
+        rx.recv_timeout(std::time::Duration::from_millis(100))
+            .is_err()
+    );
+    assert!(
+        client
+            .Get(
+                &Context::Background(),
+                &format!("{DDLAllSchemaVersionsByJob}/99502/mdl-first"),
+                false
+            )
+            .unwrap()
+            .Kvs
+            .is_empty(),
+        "old real SQL transaction must prevent local MDL publication"
+    );
+    assert!(f.reader().get_history_ddl_job(99502).unwrap().is_none());
+    user_query("ROLLBACK");
+    barrier_wait_for(|| {
+        client
+            .Get(
+                &Context::Background(),
+                &format!("{DDLAllSchemaVersionsByJob}/99502/mdl-first"),
+                false,
+            )
+            .unwrap()
+            .Kvs
+            .first()
+            .is_some_and(|kv| kv.Value == committed.last_schema_version.to_string().as_bytes())
+    });
+    assert!(
+        rx.recv_timeout(std::time::Duration::from_millis(100))
+            .is_err(),
+        "second live node still has not acknowledged"
+    );
+    second
+        .UpdateSelfVersion(Context::Background(), 99502, committed.last_schema_version)
+        .unwrap();
+    let (result, mut e) = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    assert_eq!(result.unwrap(), 1);
+    worker.join().unwrap();
+    assert!(
+        f.pool
+            .acquire()
+            .unwrap()
+            .query("SELECT job_id FROM mysql.tidb_mdl_info WHERE job_id=99502")
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        scheduler()
+            .schedule_persisted(
+                &mut f.pool.acquire().unwrap(),
+                &Lease(AtomicBool::new(true)),
+                &mut e,
+                0
+            )
+            .unwrap(),
+        1
+    );
+    assert!(f.queue(99502).is_none());
+    assert_eq!(
+        f.reader()
+            .get_history_ddl_job(99502)
+            .unwrap()
+            .unwrap()
+            .state,
+        JobState::Synced
+    );
+    assert!(
+        client
+            .Get(
+                &Context::Background(),
+                &format!("{DDLAllSchemaVersionsByJob}/99502/"),
+                true
+            )
+            .unwrap()
+            .Kvs
+            .is_empty()
+    );
+    owner_runtime.block_on(owner.Close());
+    schema.close().unwrap();
+    second.Close();
+}
+
+#[test]
+fn normal_ddl_plan_schema_barrier_owner_loss_close_and_deadline_interrupt_wait() {
+    let _serial = NORMAL_SCHEMA_RUNTIME_TEST_LOCK.lock().unwrap();
+    use astersql_ddl_schemaver::{Context, MemoryEtcdClient, NewEtcdSyncer};
+    for scenario in 0..3 {
+        let f = Fixture::new();
+        let _restore = barrier_set_mdl(false);
+        f.pool
+            .acquire()
+            .unwrap()
+            .query("INSERT INTO test.normal_ddl_target VALUES (1,'cancel existing row')")
+            .unwrap();
+        let client = Arc::new(MemoryEtcdClient::default());
+        let follower = NewEtcdSyncer(client.clone(), "cancel-follower");
+        follower.Init(Context::Background()).unwrap();
+        let schema = super::session_factory::prepare_normal_schema_runtime(
+            &f.domain,
+            NewEtcdSyncer(client.clone(), "cancel-owner"),
+            std::time::Duration::from_millis(50),
+        )
+        .unwrap();
+        let (owner_runtime, owner, cancel) = schema_barrier_owner();
+        let mut e = NormalDdlExecutor {
+            barrier: schema.schema_barrier(
+                &f.domain,
+                owner.clone(),
+                cancel,
+                "schema-barrier-owner".into(),
+                Some(client),
+            ),
+            policy: Policy(None),
+            sequence: Arc::new(AtomicI64::new(0)),
+        };
+        e.barrier.context = e
+            .barrier
+            .context
+            .WithTimeout(std::time::Duration::from_millis(if scenario == 2 {
+                500
+            } else {
+                5000
+            }));
+        f.insert(99503, JobState::Queueing);
+        let pool = f.pool.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            tx.send(scheduler().schedule_persisted(
+                &mut pool.acquire().unwrap(),
+                &Lease(AtomicBool::new(true)),
+                &mut e,
+                0,
+            ))
+            .unwrap();
+        });
+        barrier_wait_for(|| {
+            f.queue(99503)
+                .is_some_and(|job| job.state == JobState::Done)
+        });
+        if scenario == 0 {
+            owner_runtime.block_on(owner.RetireOwner());
+        }
+        if scenario == 1 {
+            schema.close().unwrap();
+        }
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap()
+                .is_err()
+        );
+        worker.join().unwrap();
+        assert!(f.queue(99503).is_some());
+        assert!(f.reader().get_history_ddl_job(99503).unwrap().is_none());
+        assert_eq!(mode(&f), astersql_meta_model::TableMode::TableModeImport);
+        owner_runtime.block_on(owner.Close());
+        schema.close().unwrap();
+        follower.Close();
+    }
+}
+
+#[test]
+fn normal_ddl_plan_schema_barrier_mdl_cleanup_preserves_other_owner_and_system_exception() {
+    let _serial = NORMAL_SCHEMA_RUNTIME_TEST_LOCK.lock().unwrap();
+    let f = Fixture::new();
+    let _restore = barrier_set_mdl(true);
+    let client = Arc::new(astersql_ddl_schemaver::MemoryEtcdClient::default());
+    let schema = super::session_factory::prepare_normal_schema_runtime(
+        &f.domain,
+        astersql_ddl_schemaver::NewEtcdSyncer(client.clone(), "cleanup"),
+        std::time::Duration::from_millis(50),
+    )
+    .unwrap();
+    let (owner_runtime, owner, cancel) = schema_barrier_owner();
+    let mut barrier = schema.schema_barrier(
+        &f.domain,
+        owner.clone(),
+        cancel,
+        "current-owner".into(),
+        Some(client),
+    );
+    let session = f.pool.acquire().unwrap();
+    session.query(format!("INSERT INTO mysql.tidb_mdl_info (job_id,version,table_ids,owner_id) VALUES (99505,{},'{}','previous-owner')",version(&f),f.table)).unwrap();
+    let mut job = Job {
+        id: 99505,
+        schema_name: "test".into(),
+        table_id: f.table,
+        state: JobState::Synced,
+        ..Default::default()
+    };
+    barrier
+        .wait(&job, 0, &Lease(AtomicBool::new(true)))
+        .unwrap();
+    assert_eq!(
+        session
+            .query("SELECT owner_id FROM mysql.tidb_mdl_info WHERE job_id=99505")
+            .unwrap()[0][0],
+        "previous-owner"
+    );
+    job.schema_name = "mysql".into();
+    barrier
+        .wait(&job, 0, &Lease(AtomicBool::new(true)))
+        .unwrap();
+    assert!(
+        session
+            .query("SELECT job_id FROM mysql.tidb_mdl_info WHERE job_id=99505")
+            .unwrap()
+            .is_empty()
+    );
+    owner_runtime.block_on(owner.Close());
+    schema.close().unwrap();
+}
+
+#[test]
+fn normal_ddl_plan_schema_barrier_service_stop_joins_inflight_worker() {
+    let _serial = NORMAL_SCHEMA_RUNTIME_TEST_LOCK.lock().unwrap();
+    use astersql_ddl_schemaver::{Context, MemoryEtcdClient, NewEtcdSyncer};
+    use astersql_domain::domain::{DdlService, StartMode};
+    let f = Fixture::new();
+    let _restore = barrier_set_mdl(false);
+    f.pool
+        .acquire()
+        .unwrap()
+        .query("INSERT INTO test.normal_ddl_target VALUES (1,'service existing row')")
+        .unwrap();
+    let client = Arc::new(MemoryEtcdClient::default());
+    let follower = NewEtcdSyncer(client.clone(), "service-follower");
+    follower.Init(Context::Background()).unwrap();
+    let schema = super::session_factory::prepare_normal_schema_runtime(
+        &f.domain,
+        NewEtcdSyncer(client.clone(), "service-owner"),
+        std::time::Duration::from_millis(50),
+    )
+    .unwrap();
+    let (owner_runtime, owner, cancellation) = schema_barrier_owner();
+    let make_schema = schema.clone();
+    let domain = Arc::downgrade(&f.domain);
+    let make_owner = owner.clone();
+    let make_cancel = cancellation.clone();
+    let service = super::normal_ddl_service::NormalDdlService::new(
+        owner.clone(),
+        owner_runtime.clone(),
+        cancellation,
+        f.pool.clone(),
+        schema.clone(),
+        Arc::new(move || {
+            Ok(Box::new(NormalDdlExecutor {
+                barrier: make_schema.schema_barrier(
+                    &domain.upgrade().ok_or("normal Domain closed")?,
+                    make_owner.clone(),
+                    make_cancel.clone(),
+                    "schema-barrier-owner".into(),
+                    Some(client.clone()),
+                ),
+                policy: Policy(None),
+                sequence: Arc::new(AtomicI64::new(0)),
+            }))
+        }),
+        Arc::new(|_| Err("unused submit interface".into())),
+        Arc::new(|| {}),
+        true,
+    )
+    .with_schema_runtime(schema.clone());
+    f.insert(99506, JobState::Queueing);
+    service.start(StartMode::Normal).unwrap();
+    barrier_wait_for(|| {
+        f.queue(99506)
+            .is_some_and(|job| job.state == JobState::Done)
+    });
+    assert!(f.reader().get_history_ddl_job(99506).unwrap().is_none());
+    let start = std::time::Instant::now();
+    service.stop().unwrap();
+    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    service.stop().unwrap();
+    assert_eq!(schema.active_loop_count(), 0);
+    assert!(!owner.IsOwner());
+    assert!(f.queue(99506).is_some());
+    assert!(f.reader().get_history_ddl_job(99506).unwrap().is_none());
+    follower.Close();
+}
+
+#[test]
+fn normal_ddl_plan_schema_barrier_publication_deadline_matches_go_mdl_branch() {
+    let _serial = NORMAL_SCHEMA_RUNTIME_TEST_LOCK.lock().unwrap();
+    for mdl in [false, true] {
+        let f = Fixture::new();
+        let _restore = barrier_set_mdl(mdl);
+        f.pool
+            .acquire()
+            .unwrap()
+            .query("INSERT INTO test.normal_ddl_target VALUES (1,'publication existing row')")
+            .unwrap();
+        let client = Arc::new(astersql_ddl_schemaver::MemoryEtcdClient::default());
+        let schema = super::session_factory::prepare_normal_schema_runtime(
+            &f.domain,
+            astersql_ddl_schemaver::NewEtcdSyncer(client.clone(), "publication"),
+            std::time::Duration::from_millis(50),
+        )
+        .unwrap();
+        let (owner_runtime, owner, cancel) = schema_barrier_owner();
+        let mut e = NormalDdlExecutor {
+            barrier: schema.schema_barrier(
+                &f.domain,
+                owner.clone(),
+                cancel,
+                "schema-barrier-owner".into(),
+                Some(client.clone()),
+            ),
+            policy: Policy(mdl.then(|| "schema-barrier-owner".into())),
+            sequence: Arc::new(AtomicI64::new(0)),
+        };
+        f.insert(99507, JobState::Queueing);
+        e.barrier.context = e
+            .barrier
+            .context
+            .WithTimeout(std::time::Duration::from_millis(100));
+        client.FailPuts(usize::MAX);
+        let result = scheduler().schedule_persisted(
+            &mut f.pool.acquire().unwrap(),
+            &Lease(AtomicBool::new(true)),
+            &mut e,
+            0,
+        );
+        client.FailPuts(0);
+        assert_eq!(
+            result.is_err(),
+            mdl,
+            "Go propagates MDL publication errors but accepts non-MDL publication deadline expiration: {result:?}"
+        );
+        assert_eq!(f.queue(99507).unwrap().state, JobState::Done);
+        assert!(f.reader().get_history_ddl_job(99507).unwrap().is_none());
+        owner_runtime.block_on(owner.Close());
+        schema.close().unwrap();
+    }
 }

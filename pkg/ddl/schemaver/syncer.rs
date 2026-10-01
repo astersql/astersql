@@ -124,11 +124,12 @@ struct ContextState {
     wake: Condvar,
 }
 /// 可取消、可选超时的操作上下文（类似 Go 的 `context.Context`）。
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Context {
     state: Arc<ContextState>,
     deadline: Option<Instant>,
     parent: Option<Box<Context>>,
+    done_check: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
 }
 impl Context {
     /// 创建永不超时、未被取消的后台上下文。
@@ -141,6 +142,7 @@ impl Context {
             }),
             deadline: None,
             parent: None,
+            done_check: None,
         }
     }
     /// 独立取消的子上下文，同时继承父上下文的结束信号。
@@ -158,7 +160,14 @@ impl Context {
                 d.min(Instant::now() + timeout)
             })),
             parent: self.parent.clone(),
+            done_check: self.done_check.clone(),
         }
+    }
+    /// Attach the owning scheduler's lease signal without an auxiliary worker.
+    pub fn WithDoneCheck(&self, check: Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
+        let mut child = self.Child();
+        child.done_check = Some(check);
+        child
     }
     /// 取消上下文并唤醒所有等待者。
     pub fn Cancel(&self) {
@@ -169,7 +178,20 @@ impl Context {
     pub fn Done(&self) -> bool {
         self.state.cancelled.load(Ordering::Acquire)
             || self.parent.as_ref().is_some_and(|p| p.Done())
+            || self.done_check.as_ref().is_some_and(|check| check())
             || self.deadline.is_some_and(|d| Instant::now() >= d)
+    }
+    /// Explicit cancellation (including owner retirement) is distinct from a
+    /// lease deadline: only the latter permits Go's non-MDL publication fallback.
+    pub fn Cancelled(&self) -> bool {
+        self.state.cancelled.load(Ordering::Acquire)
+            || self.parent.as_ref().is_some_and(|p| p.Cancelled())
+            || self.done_check.as_ref().is_some_and(|check| check())
+    }
+    pub fn DeadlineExceeded(&self) -> bool {
+        !self.Cancelled()
+            && (self.deadline.is_some_and(|d| Instant::now() >= d)
+                || self.parent.as_ref().is_some_and(|p| p.DeadlineExceeded()))
     }
     /// 若已结束则返回对应错误，否则返回 `None`。
     pub fn Err(&self) -> Option<SyncError> {
@@ -193,6 +215,14 @@ impl Context {
             .wait_timeout(guard, wait)
             .expect("context lock poisoned");
         !self.Done()
+    }
+}
+impl fmt::Debug for Context {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Context")
+            .field("deadline", &self.deadline)
+            .field("done", &self.Done())
+            .finish()
     }
 }
 impl Default for Context {
@@ -428,18 +458,18 @@ impl MemoryEtcdClient {
         if Self::consume(&self.put_failures) {
             return Err(SyncError("injected etcd put failure".into()));
         }
+        // Snapshot revision and contents must describe the same commit. A
+        // writer blocked behind Get must not advance the snapshot's revision.
+        let mut values = self.values.write().expect("etcd values lock poisoned");
         let revision = self.revision.fetch_add(1, Ordering::AcqRel) + 1;
-        self.values
-            .write()
-            .expect("etcd values lock poisoned")
-            .insert(
-                key.into(),
-                StoredValue {
-                    value: value.as_bytes().to_vec(),
-                    mod_revision: revision,
-                    lease,
-                },
-            );
+        values.insert(
+            key.into(),
+            StoredValue {
+                value: value.as_bytes().to_vec(),
+                mod_revision: revision,
+                lease,
+            },
+        );
         self.record_and_notify(
             Event {
                 Kv: KeyValue {
@@ -476,7 +506,6 @@ impl EtcdClient for MemoryEtcdClient {
                 lease: None,
             },
         );
-        drop(values);
         self.record_and_notify(
             Event {
                 Kv: KeyValue {
@@ -532,7 +561,6 @@ impl EtcdClient for MemoryEtcdClient {
                 lease: None,
             },
         );
-        drop(values);
         self.record_and_notify(
             Event {
                 Kv: KeyValue {
@@ -578,13 +606,8 @@ impl EtcdClient for MemoryEtcdClient {
         if ctx.Done() {
             return Err(ctx.Err().unwrap());
         }
-        if self
-            .values
-            .write()
-            .expect("etcd values lock poisoned")
-            .remove(key)
-            .is_some()
-        {
+        let mut values = self.values.write().expect("etcd values lock poisoned");
+        if values.remove(key).is_some() {
             let revision = self.revision.fetch_add(1, Ordering::AcqRel) + 1;
             self.record_and_notify(
                 Event {
@@ -1192,7 +1215,7 @@ impl etcdSyncer {
     /// 从 serverinfo 同步器获取参与 info schema 同步的实例集合。
     pub fn getServersForISSync(
         &self,
-        _ctx: Context,
+        ctx: Context,
         checkAssumedSvr: bool,
     ) -> Result<HashMap<String, serverinfo::ServerInfo>, SyncError> {
         let syncer = self
@@ -1202,7 +1225,9 @@ impl etcdSyncer {
             .clone()
             .ok_or_else(|| SyncError("server info syncer is not set".into()))?;
         let mut servers = syncer
-            .GetAllServerInfo(serverinfo::Context::Background())
+            .GetAllServerInfo(serverinfo::Context::WithDoneCheck(Arc::new(move || {
+                ctx.Done()
+            })))
             .map_err(|e| SyncError(e.to_string()))?;
         // next-gen 且不检查 assumed 时，过滤掉假定实例。
         if NEXT_GEN.load(Ordering::Acquire) && !checkAssumedSvr {

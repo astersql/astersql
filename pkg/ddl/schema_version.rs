@@ -231,8 +231,8 @@ impl NormalDdlSchemaBarrier {
             String::new()
         } else {
             format!(
-                " AND owner_id={}",
-                crate::table_mode::sql_text(&self.owner_id)
+                " AND owner_id='{}'",
+                self.owner_id.replace('\\', "\\\\").replace('\'', "''")
             )
         };
         if let Err(error) = session.query(
@@ -338,6 +338,11 @@ impl crate::table_mode::DdlSchemaBarrier for NormalDdlSchemaBarrier {
         {
             if self.mdl_enabled {
                 return Err(error.to_string());
+            }
+            // Go accepts publication deadline expiration without another etcd
+            // wait in non-MDL mode; explicit shutdown/owner loss never qualifies.
+            if self.context.DeadlineExceeded() && lease.is_owner() && !lease.is_cancelled() {
+                return Ok(());
             }
             // Go continues to wait after a transient non-MDL publication error.
             // A cancelled scheduler must never use the lease-expiry fast path.

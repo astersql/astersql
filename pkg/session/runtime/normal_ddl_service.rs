@@ -31,6 +31,9 @@ struct Lease {
     cancellation: Context,
 }
 impl JobLease for Lease {
+    fn owner_epoch(&self) -> u64 {
+        self.owner.OwnerEpoch()
+    }
     fn is_owner(&self) -> bool {
         self.owner.IsOwner()
     }
@@ -366,6 +369,14 @@ impl NormalSchemaRuntime {
                     })
                     .map_err(|e| e.to_string())?,
             );
+            let protocol = self.protocol.clone();
+            let context = self.context.clone();
+            state.loops.push(
+                thread::Builder::new()
+                    .name("normal-job-schema-versions".into())
+                    .spawn(move || protocol.SyncJobSchemaVerLoop(context))
+                    .map_err(|e| e.to_string())?,
+            );
             let refresher = self.refresher.clone();
             let cancel = self.min_cancel.clone();
             state.loops.push(
@@ -426,5 +437,44 @@ impl astersql_ddl::SchemaLoader for NormalSchemaRuntime {
 impl Drop for NormalSchemaRuntime {
     fn drop(&mut self) {
         let _ = self.close();
+    }
+}
+
+impl NormalSchemaRuntime {
+    /// Prepare the public worker barrier for one elected owner's tenure.
+    /// Each new tenure gets a new context; retiring it cannot revive old waits.
+    pub fn schema_barrier(
+        &self,
+        domain: &Arc<astersql_domain::Domain>,
+        owner: Arc<dyn Manager>,
+        cancellation: Context,
+        owner_id: String,
+        etcd: Option<Arc<dyn astersql_ddl_schemaver::EtcdClient>>,
+    ) -> astersql_ddl::schema_version::NormalDdlSchemaBarrier {
+        let epoch = owner.OwnerEpoch();
+        let context = self.context.WithDoneCheck(Arc::new(move || {
+            cancellation.is_cancelled() || !owner.IsOwner() || owner.OwnerEpoch() != epoch
+        }));
+        let domain = Arc::downgrade(domain);
+        let pool = self.pool.clone();
+        astersql_ddl::schema_version::NormalDdlSchemaBarrier {
+            syncer: self.protocol.clone(),
+            context,
+            etcd,
+            snapshot: Box::new(move || {
+                let domain = domain.upgrade().ok_or("normal Domain is closed")?;
+                domain
+                    .storage_handle()
+                    .with_storage(|store| {
+                        let version = store.CurrentVersion("global")?;
+                        Ok::<_, astersql_kv::Error>(store.GetSnapshot(version))
+                    })
+                    .map_err(|e| e.to_string())
+            }),
+            session: Box::new(move || Ok(Box::new(pool.acquire()?))),
+            mdl_enabled: astersql_sessionctx_vardef::IsMDLEnabled(),
+            owner_id,
+            nextgen: astersql_config_kerneltype::IsNextGen(),
+        }
     }
 }

@@ -34,6 +34,7 @@ use crate::info::*;
 pub struct Context {
     cancelled: Arc<AtomicBool>,
     deadline: Option<Instant>,
+    done_check: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
 }
 
 impl Context {
@@ -42,14 +43,24 @@ impl Context {
         Self {
             cancelled: Arc::new(AtomicBool::new(false)),
             deadline: None,
+            done_check: None,
         }
     }
     /// 派生带超时的上下文（共享取消标志）。
     pub fn WithTimeout(&self, timeout: Duration) -> Self {
         Self {
             cancelled: self.cancelled.clone(),
-            deadline: Some(Instant::now() + timeout),
+            deadline: Some(self.deadline.map_or(Instant::now() + timeout, |d| {
+                d.min(Instant::now() + timeout)
+            })),
+            done_check: self.done_check.clone(),
         }
+    }
+    /// Bridge another subsystem's parent signal, including its deadline.
+    pub fn WithDoneCheck(check: Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
+        let mut context = Self::Background();
+        context.done_check = Some(check);
+        context
     }
     /// 标记已取消。
     pub fn Cancel(&self) {
@@ -58,6 +69,7 @@ impl Context {
     /// 是否已取消或超过截止时间。
     pub fn Done(&self) -> bool {
         self.cancelled.load(Ordering::SeqCst)
+            || self.done_check.as_ref().is_some_and(|check| check())
             || self
                 .deadline
                 .is_some_and(|deadline| Instant::now() >= deadline)

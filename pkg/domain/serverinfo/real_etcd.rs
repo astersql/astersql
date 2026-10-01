@@ -106,6 +106,27 @@ impl RealEtcdClient {
     }
 }
 
+/// Run the RPC in its owning reactor and drop its future when the caller ends.
+/// This is the transport cancellation boundary, matching schemaver's RPC runner.
+pub(crate) fn run_with_context<T>(
+    runtime: &Runtime,
+    context: &Context,
+    future: impl std::future::Future<Output = Result<T, etcd_client::Error>>,
+) -> Result<T, SyncError> {
+    runtime.block_on(async {
+        tokio::pin!(future);
+        loop {
+            if context.Done() {
+                return Err(SyncError("context cancelled or deadline exceeded".into()));
+            }
+            match tokio::time::timeout(Duration::from_millis(20), &mut future).await {
+                Ok(result) => return result.map_err(|e| SyncError(e.to_string())),
+                Err(_) => continue,
+            }
+        }
+    })
+}
+
 impl EtcdClient for RealEtcdClient {
     fn GrantLease(&self, context: &Context, ttl: i32) -> Result<i64, SyncError> {
         if context.Done() {
@@ -149,9 +170,7 @@ impl EtcdClient for RealEtcdClient {
         let mut client = self.client();
         let physical_key = self.key(key);
         let options = prefix.then(|| GetOptions::new().with_prefix());
-        let response = self
-            .runtime
-            .block_on(async { client.get(physical_key, options).await })
+        let response = run_with_context(&self.runtime, context, client.get(physical_key, options))
             .map_err(|error| SyncError(format!("get etcd key {key}: {error}")))?;
         Ok(response
             .kvs()

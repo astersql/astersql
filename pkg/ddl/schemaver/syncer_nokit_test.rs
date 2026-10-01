@@ -401,3 +401,84 @@ fn get_servers_for_info_schema_sync_matches_go() {
     assert_eq!(all.len(), 3);
     SetNextGen(false);
 }
+
+#[test]
+fn normal_schema_barrier_server_enumeration_inherits_cancellation_and_deadline() {
+    struct Boundary {
+        parent: Context,
+        deadline: bool,
+        observed: Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl serverinfo::EtcdClient for Boundary {
+        fn Get(
+            &self,
+            ctx: &serverinfo::Context,
+            _: &str,
+            _: bool,
+        ) -> Result<Vec<serverinfo::KeyValue>, serverinfo::SyncError> {
+            if !self.deadline {
+                self.parent.Cancel();
+            }
+            self.observed
+                .store(ctx.Done(), std::sync::atomic::Ordering::SeqCst);
+            Err(serverinfo::SyncError("network boundary interrupted".into()))
+        }
+        fn Put(
+            &self,
+            _: &serverinfo::Context,
+            _: &str,
+            _: Vec<u8>,
+            _: Option<i64>,
+        ) -> Result<(), serverinfo::SyncError> {
+            Ok(())
+        }
+        fn Delete(&self, _: &serverinfo::Context, _: &str) -> Result<(), serverinfo::SyncError> {
+            Ok(())
+        }
+        fn DeletePrefix(
+            &self,
+            _: &serverinfo::Context,
+            _: &str,
+        ) -> Result<(), serverinfo::SyncError> {
+            Ok(())
+        }
+        fn RevokeLease(
+            &self,
+            _: &serverinfo::Context,
+            _: i64,
+        ) -> Result<(), serverinfo::SyncError> {
+            Ok(())
+        }
+    }
+    for deadline in [false, true] {
+        let parent = Context::Background();
+        let context = if deadline {
+            parent.WithTimeout(Duration::ZERO)
+        } else {
+            parent.clone()
+        };
+        let observed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let backend = Arc::new(Boundary {
+            parent,
+            deadline,
+            observed: observed.clone(),
+        });
+        let info = Arc::from(serverinfo::NewSyncer(
+            "barrier".into(),
+            Arc::new(|| 1),
+            Some(backend),
+            Arc::new(serverinfo::NoopMinStartTSReporter),
+        ));
+        let protocol = NewEtcdSyncer(Arc::new(MemoryEtcdClient::default()), "barrier");
+        protocol.SetServerInfoSyncer(Some(info));
+        assert!(protocol.getServersForISSync(context, false).is_err());
+        // Cancellation may reject before entering Get, but an in-flight Get
+        // must see its parent's cancellation as well.
+        if !deadline {
+            assert!(
+                observed.load(std::sync::atomic::Ordering::SeqCst),
+                "server enumeration discarded its parent cancellation"
+            );
+        }
+    }
+}

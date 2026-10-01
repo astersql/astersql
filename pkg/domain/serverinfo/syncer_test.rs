@@ -439,3 +439,42 @@ fn test_assumed_server_info_syncer() {
         },
     );
 }
+
+#[test]
+fn normal_schema_barrier_transport_cancellation_and_parent_deadline() {
+    use std::time::Duration;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    for deadline in [false, true] {
+        let parent = Context::Background();
+        let context = if deadline {
+            parent.WithTimeout(Duration::from_millis(30))
+        } else {
+            parent.clone()
+        };
+        let context = context.WithTimeout(Duration::from_secs(2));
+        let cancel = parent.clone();
+        let rpc = async move {
+            if !deadline {
+                cancel.Cancel();
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            Ok::<(), etcd_client::Error>(())
+        };
+        let start = std::time::Instant::now();
+        assert!(crate::real_etcd::run_with_context(&runtime, &context, rpc).is_err());
+        assert!(
+            start.elapsed() < Duration::from_millis(200),
+            "network future outlived its parent"
+        );
+    }
+}
+
+#[test]
+fn normal_schema_barrier_nested_timeout_cannot_extend_parent() {
+    use std::time::Duration;
+    let expired = Context::Background().WithTimeout(Duration::ZERO);
+    assert!(expired.WithTimeout(Duration::from_secs(2)).Done());
+}
