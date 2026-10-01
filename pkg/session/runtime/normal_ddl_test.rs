@@ -3370,29 +3370,17 @@ fn normal_ddl_plan_table_validation_partition_structure_and_deferred_loading() {
 }
 
 #[test]
-fn normal_ddl_plan_table_validation_expressions_are_explicitly_deferred() {
-    for case in 0..4 {
-        let f = table_validation_fixture();
-        let mut table = f.reader().get_table(f.db, f.table).unwrap().unwrap();
-        match case {
-            0 => table.Columns[1].GeneratedExprString = "id + 1".into(),
-            1 => table.Columns[1].DefaultIsExpr = true,
-            2 => table.Constraints.push(astersql_meta_model::ConstraintInfo {
-                Name: astersql_meta_model::ast::NewCIStr("positive_id"),
-                ExprString: "id > 0".into(),
-                Enforced: true,
-                State: astersql_meta_model::SchemaState::Public,
-                ..Default::default()
-            }),
-            _ => {
-                let mut key = table_validation_index(&table);
-                key.ConditionExprString = "id > 0".into();
-                table.Indices.push(key);
-            }
-        }
-        table_validation_seed(&f, &table);
-        table_validation_run(&f, Some("loading is not supported"));
-    }
+fn normal_ddl_plan_table_validation_partial_index_is_explicitly_deferred() {
+    let f = table_validation_fixture();
+    let mut table = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+    let mut key = table_validation_index(&table);
+    key.ConditionExprString = "id > 0".into();
+    table.Indices.push(key);
+    table_validation_seed(&f, &table);
+    table_validation_run(
+        &f,
+        Some("partial index expression loading is not supported"),
+    );
 }
 
 #[test]
@@ -3412,6 +3400,23 @@ fn normal_ddl_plan_table_validation_checked_update_commit_rollback_and_skip_vers
         let before_version = version(&f);
         let mut candidate = before_table.clone();
         candidate.Comment = "checked worker context".into();
+        candidate.Columns[1].GeneratedExprString = "id + 1".into();
+        candidate.Columns[0].DefaultIsExpr = true;
+        candidate.Columns[0].DefaultValue = Some(astersql_meta_model::DefaultValue::String(
+            b"abs(-7)".to_vec(),
+        ));
+        for column in ["id", "missing"] {
+            candidate
+                .Constraints
+                .push(astersql_meta_model::ConstraintInfo {
+                    Name: astersql_meta_model::ast::NewCIStr(format!("check_{column}")),
+                    ConstraintCols: vec![astersql_meta_model::ast::NewCIStr(column)],
+                    ExprString: format!("{column} > 0"),
+                    State: astersql_meta_model::SchemaState::Public,
+                    Enforced: true,
+                    ..Default::default()
+                });
+        }
         let mut session = f.pool.acquire().unwrap();
         session.begin().unwrap();
         let result = session
@@ -3447,6 +3452,127 @@ fn normal_ddl_plan_table_validation_checked_update_commit_rollback_and_skip_vers
             vec![vec!["validation row".to_string()]]
         );
     }
+}
+
+// Full Go-wire catalog candidates run through the checked worker transaction.
+fn expression_validation_run(
+    mut candidate: astersql_meta_model::TableInfo,
+    expected: Option<&str>,
+    expected_constraints: usize,
+) {
+    let f = table_validation_fixture();
+    let old = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+    candidate.ID = old.ID;
+    candidate.Name = old.Name.clone();
+    let before = astersql_meta_model::EncodeTableInfo(&old).unwrap();
+    let before_version = version(&f);
+    f.insert(88101, JobState::Queueing);
+    let mut job = f.queue(88101).unwrap();
+    let expected = expected.map(str::to_string);
+    let reject = expected.is_some();
+    let mut session = f.pool.acquire().unwrap();
+    session.begin().unwrap();
+    let output = session
+        .with_execution_context(Box::new(move |context| {
+            context.with_transaction(&mut |txn| {
+                let mut meta = astersql_meta::TransactionMutator::new(txn);
+                let result = astersql_ddl::persistent_actions::update_version_and_table_with_check(
+                    &mut meta,
+                    &mut job,
+                    &mut candidate,
+                );
+                if let Some(expected) = &expected {
+                    let error = result.unwrap_err();
+                    assert!(error.contains(expected), "{error}");
+                    assert_eq!(job.state, JobState::Cancelled);
+                } else {
+                    assert_eq!(result?, before_version + 1);
+                    assert_eq!(candidate.Constraints.len(), expected_constraints);
+                }
+                astersql_meta_model::EncodeTableInfo(&candidate).map_err(|e| e.to_string())
+            })
+        }))
+        .unwrap();
+    // Committing the surrounding transaction must not expose any action writes on error.
+    session.commit().unwrap();
+    let after = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+    assert_eq!(
+        astersql_meta_model::EncodeTableInfo(&after).unwrap(),
+        if reject { before } else { output }
+    );
+    assert_eq!(version(&f), before_version + if reject { 0 } else { 1 });
+    assert_eq!(
+        session
+            .query("SELECT id,payload FROM test.normal_ddl_target")
+            .unwrap(),
+        vec![vec!["7".to_string(), "validation row".to_string()]]
+    );
+}
+
+fn expression_validation_candidate() -> astersql_meta_model::TableInfo {
+    let f = table_validation_fixture();
+    f.reader().get_table(f.db, f.table).unwrap().unwrap()
+}
+
+#[test]
+fn normal_ddl_plan_expression_validation_generated_and_defaults() {
+    for expression in [
+        "ID + 1",
+        "case when id > 0 then abs(id) else 0 end",
+        "test.normal_ddl_target.id + 2",
+    ] {
+        let mut table = expression_validation_candidate();
+        table.Columns[1].GeneratedExprString = expression.into();
+        table.Columns[0].DefaultIsExpr = true;
+        // Go default parsing intentionally does not resolve column names.
+        table.Columns[0].DefaultValue = Some(astersql_meta_model::DefaultValue::String(
+            b"unknown_default_name + 1".to_vec(),
+        ));
+        expression_validation_run(table, None, 0);
+    }
+}
+
+#[test]
+fn normal_ddl_plan_expression_validation_rejects_generated_and_default_errors() {
+    for (generated, expression, error) in [
+        (true, "missing_column + id", "can't find column"),
+        (true, "id +", "1064"),
+        (false, "abs(", "1064"),
+    ] {
+        let mut table = expression_validation_candidate();
+        if generated {
+            table.Columns[1].GeneratedExprString = expression.into();
+        } else {
+            table.Columns[1].DefaultIsExpr = true;
+            table.Columns[1].DefaultValue = Some(astersql_meta_model::DefaultValue::String(
+                expression.as_bytes().to_vec(),
+            ));
+        }
+        expression_validation_run(table, Some(error), 0);
+    }
+}
+
+#[test]
+fn normal_ddl_plan_expression_validation_check_loading_go_boundaries() {
+    let mut table = expression_validation_candidate();
+    for (name, column, expr) in [
+        ("keep", "id", "id > 0"),
+        ("keep_unparsed", "id", "id >"),
+        ("remove_missing", "missing", "missing > 0"),
+        ("remove_nonpublic", "payload", "payload <> ''"),
+    ] {
+        table.Constraints.push(astersql_meta_model::ConstraintInfo {
+            ID: table.Constraints.len() as i64 + 1,
+            Name: astersql_meta_model::ast::NewCIStr(name),
+            ConstraintCols: vec![astersql_meta_model::ast::NewCIStr(column)],
+            ExprString: expr.into(),
+            Enforced: true,
+            State: astersql_meta_model::SchemaState::Public,
+            ..Default::default()
+        });
+    }
+    table.Columns[1].State = astersql_meta_model::SchemaState::WriteOnly;
+    expression_validation_run(table, None, 2);
 }
 
 #[test]

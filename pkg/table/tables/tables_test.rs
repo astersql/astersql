@@ -977,8 +977,9 @@ fn normal_ddl_plan_table_validation_full_model_states_and_go_offsets() {
         meta.State = state;
         meta.Columns[0].State = state;
         meta.Indices[0].State = state;
-        let table = table_from_meta_for_validation(&meta).unwrap();
-        assert!(std::ptr::eq(table.meta, &meta));
+        let original = std::ptr::from_ref(&meta);
+        let table = table_from_meta_for_validation(&mut meta).unwrap();
+        assert!(std::ptr::eq(table.meta, original));
         assert_eq!(table.kind, MetadataTableKind::Common);
         assert_eq!(
             table.public_columns().count(),
@@ -995,7 +996,7 @@ fn normal_ddl_plan_table_validation_full_model_states_and_go_offsets() {
     }
     meta.State = State::None;
     assert!(
-        table_from_meta_for_validation(&meta)
+        table_from_meta_for_validation(&mut meta)
             .err()
             .unwrap()
             .starts_with("[table:8042]")
@@ -1003,7 +1004,7 @@ fn normal_ddl_plan_table_validation_full_model_states_and_go_offsets() {
     meta.State = State::Public;
     meta.Columns[0].State = State::None;
     assert!(
-        table_from_meta_for_validation(&meta)
+        table_from_meta_for_validation(&mut meta)
             .err()
             .unwrap()
             .starts_with("[table:8046]")
@@ -1011,7 +1012,7 @@ fn normal_ddl_plan_table_validation_full_model_states_and_go_offsets() {
     meta.Columns[0].State = State::Public;
     meta.Indices[0].State = State::None;
     assert!(
-        table_from_meta_for_validation(&meta)
+        table_from_meta_for_validation(&mut meta)
             .err()
             .unwrap()
             .starts_with("[table:8044]")
@@ -1027,7 +1028,7 @@ fn normal_ddl_plan_table_validation_full_model_cache_and_partition_order() {
         model_dependency::TableCacheStatusSwitching,
     ] {
         meta.TableCacheStatusType = status;
-        let table = table_from_meta_for_validation(&meta).unwrap();
+        let table = table_from_meta_for_validation(&mut meta).unwrap();
         assert_eq!(table.kind, MetadataTableKind::Cached);
         assert_eq!(table.meta.Comment, "full model remains borrowed");
         assert_eq!(table.meta.AutoIDCache, 17);
@@ -1039,16 +1040,105 @@ fn normal_ddl_plan_table_validation_full_model_cache_and_partition_order() {
         ..Default::default()
     });
     assert!(
-        table_from_meta_for_validation(&meta)
+        table_from_meta_for_validation(&mut meta)
             .err()
             .unwrap()
             .starts_with("[table:1735]")
     );
     meta.Partition.as_mut().unwrap().Enable = false;
     assert!(
-        table_from_meta_for_validation(&meta)
+        table_from_meta_for_validation(&mut meta)
             .err()
             .unwrap()
             .starts_with("[table:8044]")
     );
+}
+
+#[test]
+fn normal_ddl_plan_expression_validation_loaded_ast_and_check_metadata() {
+    use crate::tables::table_from_meta_for_validation;
+    let mut meta = validation_full_model();
+    meta.Columns[1].GeneratedExprString = "C0 + 1".into();
+    meta.Columns[0].DefaultIsExpr = true;
+    meta.Columns[0].DefaultValue = Some(model_dependency::DefaultValue::String(
+        b"abs(unknown_default_name)".to_vec(),
+    ));
+    // Generation resolves against all columns, even a non-public column, like Go.
+    meta.Columns[0].State = model_dependency::SchemaState::WriteOnly;
+    meta.Constraints = vec![
+        model_dependency::ConstraintInfo {
+            ID: 1,
+            Name: model_dependency::ast::NewCIStr("removed"),
+            ConstraintCols: vec![meta.Columns[0].Name.clone()],
+            ExprString: "c0 > 0".into(),
+            ..Default::default()
+        },
+        model_dependency::ConstraintInfo {
+            ID: 2,
+            Name: model_dependency::ast::NewCIStr("kept"),
+            ConstraintCols: vec![meta.Columns[1].Name.clone()],
+            ExprString: "c1 >".into(),
+            State: model_dependency::SchemaState::WriteOnly,
+            Enforced: false,
+            ..Default::default()
+        },
+    ];
+    let loaded = table_from_meta_for_validation(&mut meta).unwrap();
+    let generatedexpr::ast::ExprKind::Binary { L, .. } = &loaded.generated_expressions[&1].Kind
+    else {
+        panic!("generated expression must load a binary AST");
+    };
+    let generatedexpr::ast::ExprKind::Column(column) = &L.Kind else {
+        panic!("generated expression must retain a resolved column-name AST");
+    };
+    assert_eq!(column.Name.L, "c0");
+    assert!(matches!(
+        loaded.default_expressions[&0].Kind,
+        generatedexpr::ast::ExprKind::Function { .. }
+    ));
+    assert_eq!(loaded.constraints.len(), 1);
+    let constraint = &loaded.constraints[0].ConstraintInfo;
+    assert_eq!(constraint.ID, 2);
+    assert_eq!(constraint.ExprString, "c1 >");
+    assert_eq!(constraint.State, model_dependency::SchemaState::WriteOnly);
+    assert!(!constraint.Enforced);
+    assert_eq!(loaded.meta.Constraints.len(), 1);
+}
+
+#[test]
+fn normal_ddl_plan_expression_validation_go_loading_error_order() {
+    use crate::tables::table_from_meta_for_validation;
+    let mut meta = validation_full_model();
+    meta.Columns[0].GeneratedExprString = "missing + 1".into();
+    meta.Columns[1].DefaultIsExpr = true;
+    meta.Columns[1].DefaultValue = Some(model_dependency::DefaultValue::String(b"abs(".to_vec()));
+    meta.Constraints.push(model_dependency::ConstraintInfo {
+        ConstraintCols: vec![model_dependency::ast::NewCIStr("missing")],
+        ..Default::default()
+    });
+    meta.Indices[0].State = model_dependency::SchemaState::None;
+    assert!(
+        table_from_meta_for_validation(&mut meta)
+            .err()
+            .unwrap()
+            .contains("can't find column missing")
+    );
+    assert_eq!(meta.Constraints.len(), 1);
+    meta.Columns[0].GeneratedExprString.clear();
+    assert!(
+        table_from_meta_for_validation(&mut meta)
+            .err()
+            .unwrap()
+            .contains("1064")
+    );
+    assert_eq!(meta.Constraints.len(), 1);
+    meta.Columns[1].DefaultIsExpr = false;
+    assert!(
+        table_from_meta_for_validation(&mut meta)
+            .err()
+            .unwrap()
+            .starts_with("[table:8044]")
+    );
+    // CHECK repair occurs before an index error, matching Go constructor order.
+    assert!(meta.Constraints.is_empty());
 }

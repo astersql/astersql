@@ -37,7 +37,9 @@
 
 /// Go checkTableInfoValid: full catalog construction checks, then explicit or
 /// implicit primary-key visibility. Integer clustered handles bypass the latter.
-pub(crate) fn check_table_info_valid(table: &astersql_meta_model::TableInfo) -> Result<(), String> {
+pub(crate) fn check_table_info_valid(
+    table: &mut astersql_meta_model::TableInfo,
+) -> Result<(), String> {
     astersql_table_tables::tables::table_from_meta_for_validation(table)?;
     if !table.PKIsHandle && table.GetPrimaryKey().is_some_and(|key| key.Invisible) {
         return Err("[ddl:3522]A primary key index cannot be invisible".into());

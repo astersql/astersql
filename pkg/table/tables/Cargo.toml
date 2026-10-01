@@ -14,6 +14,8 @@ default = ["expression-runtime"]
 expression-runtime = ["dep:expression", "dep:exprstatic-dependency", "dep:stmtctx-dependency"]
 
 [dependencies]
+generatedexpr = { package = "astersql-util-generatedexpr", path = "../../util/generatedexpr" }
+table-dependency = { package = "astersql-table", path = ".." }
 crc32fast = "1"
 model-dependency = { package = "astersql-meta-model", path = "../../meta/model" }
 collate-dependency = { package = "astersql-util-collate", path = "../../util/collate" }

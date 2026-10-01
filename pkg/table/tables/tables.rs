@@ -38,6 +38,11 @@ pub enum MetadataTableKind {
 pub struct ValidatedTableMetadata<'a> {
     pub meta: &'a model_dependency::TableInfo,
     pub kind: MetadataTableKind,
+    /// ASTs resolved against the complete catalog, keyed by column position.
+    pub generated_expressions: BTreeMap<usize, generatedexpr::ast::ExprNode>,
+    /// Default expressions are parsed without column-name resolution, as in Go.
+    pub default_expressions: BTreeMap<usize, generatedexpr::ast::ExprNode>,
+    pub constraints: Vec<Box<table_dependency::constraint::Constraint>>,
 }
 
 impl ValidatedTableMetadata<'_> {
@@ -59,13 +64,12 @@ impl ValidatedTableMetadata<'_> {
     }
 }
 
-/// Structural portion of Go TableFromMetaWithCollate over the full Go model.
-/// Expression loading is a separate stage: reject it explicitly until that
-/// stage can build and resolve the same expressions as Go. Do not call
+/// Go TableFromMetaWithCollate validation and expression loading over the full model.
+/// CHECK loading may repair the supplied metadata before index construction. Do not call
 /// TableCommon::new here: Go logs column offset mismatches and accepts offsets
 /// in unconditional indexes, whereas that constructor rejects them.
 pub fn table_from_meta_for_validation(
-    meta: &model_dependency::TableInfo,
+    meta: &mut model_dependency::TableInfo,
 ) -> Result<ValidatedTableMetadata<'_>, String> {
     use model_dependency::SchemaState;
     if meta.State == SchemaState::None {
@@ -74,6 +78,8 @@ pub fn table_from_meta_for_validation(
             meta.Name.O
         ));
     }
+    let mut generated_expressions = BTreeMap::new();
+    let mut default_expressions = BTreeMap::new();
     for (offset, column) in meta.Columns.iter().enumerate() {
         if column.State == SchemaState::None {
             return Err(format!(
@@ -91,17 +97,28 @@ pub fn table_from_meta_for_validation(
             );
         }
         if !column.GeneratedExprString.is_empty() {
-            return Err("[ddl:8200]generated expression loading is not supported".into());
+            let expression = generatedexpr::ParseExpression(&column.GeneratedExprString)
+                .and_then(|expression| generatedexpr::SimpleResolveName(expression, meta))
+                .map_err(|error| error.to_string())?;
+            generated_expressions.insert(offset, expression);
         }
         if column.DefaultIsExpr {
-            return Err("[ddl:8200]default expression loading is not supported".into());
+            let Some(model_dependency::DefaultValue::String(value)) = &column.DefaultValue else {
+                return Err(format!(
+                    "invalid expression default for column '{}'",
+                    column.Name.O
+                ));
+            };
+            let value = std::str::from_utf8(value).map_err(|error| error.to_string())?;
+            let expression =
+                generatedexpr::ParseExpression(value).map_err(|error| error.to_string())?;
+            default_expressions.insert(offset, expression);
         }
     }
-    if !meta.Constraints.is_empty() {
-        // Go LoadCheckConstraint also removes references to missing public
-        // columns. Never silently omit that mutation or expression binding.
-        return Err("[ddl:8200]check constraint loading is not supported".into());
-    }
+    // Go loads CHECK metadata here; executable CHECK expressions are built by
+    // BuildConstraintExprWithCtx at the later evaluation stage.
+    let constraints = table_dependency::constraint::LoadCheckConstraint(meta)
+        .map_err(|error| error.to_string())?;
     let partition = meta.GetPartitionInfo();
     if let Some(partition) = partition {
         if partition.Definitions.is_empty() {
@@ -123,6 +140,9 @@ pub fn table_from_meta_for_validation(
         }
     }
     Ok(ValidatedTableMetadata {
+        generated_expressions,
+        default_expressions,
+        constraints,
         meta,
         kind: if meta.TableCacheStatusType != model_dependency::TableCacheStatusDisable {
             MetadataTableKind::Cached

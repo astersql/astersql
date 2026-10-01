@@ -10288,7 +10288,9 @@ dependencies = [
  "astersql-expression-exprstatic",
  "astersql-meta-model",
  "astersql-sessionctx-stmtctx",
+ "astersql-table",
  "astersql-util-collate",
+ "astersql-util-generatedexpr",
  "crc32fast",
 ]
 
