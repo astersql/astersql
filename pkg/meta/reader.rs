@@ -332,6 +332,35 @@ impl SnapshotReader {
             Err(error) => Err(errors::new(error)),
         }
     }
+    /// Recovery reads the newest committed version with an actual diff, as Go.
+    pub fn get_schema_version_with_non_empty_diff(&self) -> Result<i64, String> {
+        let ctx = astersql_kv::Context::default();
+        let version =
+            match self
+                .snapshot
+                .Get(&ctx, transaction_meta_string_key(b"SchemaVersionKey"), &[])
+            {
+                Ok(raw) => std::str::from_utf8(&raw.Value)
+                    .map_err(|e| e.to_string())?
+                    .parse::<i64>()
+                    .map_err(|e| e.to_string())?,
+                Err(e) if astersql_kv::IsErrNotFound(&e) => 0,
+                Err(e) => return Err(e.to_string()),
+            };
+        if version > 0 {
+            match self.snapshot.Get(
+                &ctx,
+                transaction_meta_string_key(format!("Diff:{version}").as_bytes()),
+                &[],
+            ) {
+                Ok(raw) if !raw.Value.is_empty() => return Ok(version),
+                Ok(_) => return Ok(version - 1),
+                Err(e) if astersql_kv::IsErrNotFound(&e) => return Ok(version - 1),
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+        Ok(version)
+    }
     /// Read Go DBs/DB:<id> metadata from this snapshot.
     pub fn get_database(
         &self,
@@ -442,4 +471,165 @@ pub fn transaction_meta_hash_key(hash: &[u8], field: &[u8]) -> astersql_kv::Key 
         EncodeUint(EncodeBytes(vec![b'm'], hash), b'h' as u64),
         field,
     ))
+}
+pub fn transaction_meta_string_key(key: &[u8]) -> astersql_kv::Key {
+    use astersql_util_codec::{EncodeBytes, EncodeUint};
+    astersql_kv::Key(EncodeUint(EncodeBytes(vec![b'm'], key), b's' as u64))
+}
+/// Borrow the existing SQL transaction; never opens or commits another Store.
+/// The key layouts follow structure/type.go and meta/meta.go.
+pub struct TransactionMutator<'a> {
+    txn: &'a mut dyn astersql_kv::Transaction,
+}
+impl<'a> TransactionMutator<'a> {
+    pub fn new(txn: &'a mut dyn astersql_kv::Transaction) -> Self {
+        txn.SetOption(
+            astersql_kv::Priority,
+            Some(Box::new(astersql_kv::PriorityHigh)),
+        );
+        txn.SetDiskFullOpt(astersql_kv::kvrpcpb::DiskFullOpt::AllowedOnAlmostFull);
+        Self { txn }
+    }
+    pub fn start_ts(&self) -> u64 {
+        self.txn.StartTS()
+    }
+    fn get(&self, key: astersql_kv::Key) -> Result<Option<Vec<u8>>, String> {
+        match self.txn.Get(&astersql_kv::Context::default(), key, &[]) {
+            Ok(entry) => Ok(Some(entry.Value)),
+            Err(e) if astersql_kv::IsErrNotFound(&e) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+    pub fn get_database(&self, id: i64) -> Result<Option<astersql_meta_model::DBInfo>, String> {
+        self.get(transaction_meta_hash_key(
+            b"DBs",
+            format!("DB:{id}").as_bytes(),
+        ))?
+        .map(|raw| astersql_meta_model::DecodeDBInfo(&raw))
+        .transpose()
+    }
+    pub fn get_table(
+        &self,
+        db: i64,
+        id: i64,
+    ) -> Result<Option<astersql_meta_model::TableInfo>, String> {
+        self.get(transaction_meta_hash_key(
+            format!("DB:{db}").as_bytes(),
+            format!("Table:{id}").as_bytes(),
+        ))?
+        .map(|raw| astersql_meta_model::DecodeTableInfo(&raw))
+        .transpose()
+    }
+    /// Inspect Go's numeric mode before decoding the Rust enum. Go retains
+    /// unknown mode values so the DDL handler can cancel them explicitly.
+    pub fn get_table_mode_value(&self, db: i64, id: i64) -> Result<Option<i64>, String> {
+        self.get(transaction_meta_hash_key(
+            format!("DB:{db}").as_bytes(),
+            format!("Table:{id}").as_bytes(),
+        ))?
+        .map(|raw| {
+            let value: serde_json::Value =
+                serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
+            Ok(value.get("mode").and_then(|m| m.as_i64()).unwrap_or(0))
+        })
+        .transpose()
+    }
+    pub fn update_table(
+        &mut self,
+        db: i64,
+        table: &mut astersql_meta_model::TableInfo,
+    ) -> Result<(), String> {
+        if self.get_database(db)?.is_none() || self.get_table(db, table.ID)?.is_none() {
+            return Err("table metadata disappeared".into());
+        }
+        table.Revision = table.Revision.wrapping_add(1);
+        if table.State == astersql_meta_model::SchemaState::Public {
+            table.UpdateTS = self.start_ts()
+        }
+        self.txn
+            .Set(
+                transaction_meta_hash_key(
+                    format!("DB:{db}").as_bytes(),
+                    format!("Table:{}", table.ID).as_bytes(),
+                ),
+                astersql_meta_model::EncodeTableInfo(table)?,
+            )
+            .map_err(|e| e.to_string())
+    }
+    pub fn gen_schema_version(&mut self) -> Result<i64, String> {
+        astersql_kv::IncInt64(
+            self.txn,
+            &transaction_meta_string_key(b"SchemaVersionKey"),
+            1,
+        )
+        .map_err(|e| e.to_string())
+    }
+    /// The Go default diff for a single metadata-only action.
+    pub fn set_table_schema_diff(
+        &mut self,
+        job: &astersql_meta_model::group_3::Job,
+        version: i64,
+    ) -> Result<(), String> {
+        let diff = serde_json::json!({"version":version,"type":job.tp,"schema_id":job.schema_id,"table_id":job.table_id,"old_table_id":0,"old_schema_id":0,"regenerate_schema_map":false,"affected_options":null});
+        self.txn
+            .Set(
+                transaction_meta_string_key(format!("Diff:{version}").as_bytes()),
+                serde_json::to_vec(&diff).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())
+    }
+    pub fn add_history_ddl_job(
+        &mut self,
+        job: &mut astersql_meta_model::group_3::Job,
+    ) -> Result<(), String> {
+        self.txn
+            .Set(
+                transaction_meta_hash_key(b"DDLJobHistory", &job.id.to_be_bytes()),
+                encode_go_ddl_job(job, false)?,
+            )
+            .map_err(|e| e.to_string())
+    }
+}
+/// Convert the existing display-string error ABI at the durable Go wire boundary.
+/// Go jobs use structured terror errors; plain strings would fail Go decoding.
+pub fn encode_go_ddl_job(
+    job: &mut astersql_meta_model::group_3::Job,
+    update_args: bool,
+) -> Result<Vec<u8>, String> {
+    let raw = job.encode(update_args).map_err(|e| e.to_string())?;
+    let mut value: serde_json::Value = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
+    for field in ["err", "warning"] {
+        if let Some(serde_json::Value::String(message)) = value.get(field) {
+            let mut class = 2;
+            let mut code = 1105;
+            let mut text = message.as_str();
+            let mut rfc = "ddl:1105".to_owned();
+            if let Some((prefix, rest)) = message.strip_prefix('[').and_then(|m| m.split_once(']'))
+            {
+                if let Some((name, n)) = prefix.split_once(':') {
+                    if let Ok(n) = n.parse::<i64>() {
+                        class = match name {
+                            "schema" => 14,
+                            "ddl" => 2,
+                            _ => 2,
+                        };
+                        code = n;
+                        text = rest;
+                        rfc = prefix.to_owned();
+                    }
+                }
+            }
+            value[field] =
+                serde_json::json!({"class":class,"code":code,"message":text,"rfccode":rfc});
+        }
+    }
+    serde_json::to_vec(&value).map_err(|e| e.to_string())
+}
+
+/// SQL history timestamp from Go's physical TSO milliseconds, in UTC.
+pub fn tso_history_datetime(ts: u64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis((ts >> 18) as i64)
+        .expect("u64 TSO physical milliseconds fit chrono range")
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string()
 }

@@ -310,9 +310,7 @@ impl JobWorker {
             let result = executor.step(session, job)?;
             check_job_lease(lease)?;
             if !result.removed {
-                let bytes = job
-                    .encode(result.update_raw_args)
-                    .map_err(|e| e.to_string())?;
+                let bytes = astersql_meta::encode_go_ddl_job(job, result.update_raw_args)?;
                 let hex = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
                 session.query(
                     &format!(

@@ -78,6 +78,8 @@ mod relational_value;
 pub(crate) use relational_value::{relational_compare, relational_window_value};
 #[cfg(test)]
 mod durable_scheduler_test;
+#[cfg(test)]
+mod normal_ddl_test;
 mod row_codec;
 #[cfg(test)]
 mod row_codec_test;

@@ -196,3 +196,166 @@ pub fn wait_version_synced(
         Err(format!("schema version {target} is not synced"))
     }
 }
+
+/// Normal owner's public schema sync adapter. The scheduler supplies its
+/// cancellation context and pooled SQL sessions; this never starts another owner.
+/// Retiring the scheduler must cancel `context` to interrupt an in-flight wait.
+pub struct NormalDdlSchemaBarrier {
+    pub syncer: std::sync::Arc<dyn astersql_ddl_schemaver::Syncer>,
+    pub context: astersql_ddl_schemaver::Context,
+    pub etcd: Option<std::sync::Arc<dyn astersql_ddl_schemaver::EtcdClient>>,
+    pub snapshot: Box<dyn Fn() -> Result<Box<dyn astersql_kv::Snapshot>, String> + Send + Sync>,
+    pub session: Box<
+        dyn Fn() -> Result<Box<dyn crate::job_worker::DurableJobSession>, String> + Send + Sync,
+    >,
+    pub mdl_enabled: bool,
+    pub owner_id: String,
+    pub nextgen: bool,
+}
+impl NormalDdlSchemaBarrier {
+    fn check(&self, lease: &dyn crate::job_worker::JobLease) -> Result<(), String> {
+        if !lease.is_owner() {
+            return Err("not DDL owner".into());
+        }
+        if lease.is_cancelled() || self.context.Done() {
+            return Err("DDL scheduler cancelled".into());
+        }
+        Ok(())
+    }
+    fn clean_mdl(&self, job: &astersql_meta_model::group_3::Job) -> Result<(), String> {
+        if !self.mdl_enabled {
+            return Ok(());
+        }
+        let mut session = (self.session)()?;
+        let predicate = if crate::table_mode::is_system_related_schema(&job.schema_name) {
+            String::new()
+        } else {
+            format!(
+                " AND owner_id={}",
+                crate::table_mode::sql_text(&self.owner_id)
+            )
+        };
+        if let Err(error) = session.query(
+            &format!(
+                "DELETE FROM mysql.tidb_mdl_info WHERE job_id={}{}",
+                job.id, predicate
+            ),
+            "clean-mdl-info",
+        ) {
+            eprintln!("failed to clean MDL info for job {}: {error}", job.id);
+        }
+        if job.state == astersql_meta_model::group_3::JobState::Synced {
+            if let Some(client) = &self.etcd {
+                let prefix = format!(
+                    "{}/{}/",
+                    astersql_ddl_schemaver::DDLAllSchemaVersionsByJob,
+                    job.id
+                );
+                match client.Get(&self.context, &prefix, true) {
+                    Ok(rows) => {
+                        for entry in rows.Kvs {
+                            if let Ok(key) = std::str::from_utf8(&entry.Key) {
+                                if let Err(error) = client.Delete(&self.context, key) {
+                                    eprintln!("failed to clean job schema version {key}: {error}");
+                                }
+                            }
+                        }
+                    }
+                    Err(error) => eprintln!("failed to enumerate job schema versions: {error}"),
+                }
+            }
+        }
+        Ok(())
+    }
+}
+impl crate::table_mode::DdlSchemaBarrier for NormalDdlSchemaBarrier {
+    fn recover(
+        &mut self,
+        job: &astersql_meta_model::group_3::Job,
+        lease: &dyn crate::job_worker::JobLease,
+    ) -> Result<(), String> {
+        self.check(lease)?;
+        if !job.started() {
+            return Ok(());
+        }
+        if self.mdl_enabled {
+            let mut session = (self.session)()?;
+            let rows = session.query(
+                &format!(
+                    "SELECT version FROM mysql.tidb_mdl_info WHERE job_id={}",
+                    job.id
+                ),
+                "get-mdl-ver",
+            )?;
+            if let Some(row) = rows.first() {
+                let version = row
+                    .first()
+                    .ok_or("empty MDL version row")?
+                    .parse::<i64>()
+                    .map_err(|e| e.to_string())?;
+                self.syncer
+                    .WaitVersionSynced(
+                        self.context.clone(),
+                        job.id,
+                        version,
+                        self.nextgen
+                            && job.table_id > RESERVED_GLOBAL_ID_LOWER_BOUND
+                            && job.table_id <= RESERVED_GLOBAL_ID_UPPER_BOUND,
+                    )
+                    .map_err(|e| e.to_string())?;
+                self.check(lease)?;
+                self.clean_mdl(job)?;
+            }
+        } else if job.last_schema_version > 0 {
+            let reader = astersql_meta::SnapshotReader::new((self.snapshot)()?);
+            let version = reader.get_schema_version_with_non_empty_diff()?;
+            self.wait(job, version, lease)?;
+        }
+        self.check(lease)
+    }
+    fn wait(
+        &mut self,
+        job: &astersql_meta_model::group_3::Job,
+        version: i64,
+        lease: &dyn crate::job_worker::JobLease,
+    ) -> Result<(), String> {
+        self.check(lease)?;
+        if version == 0 {
+            return self.clean_mdl(job);
+        }
+        if !matches!(
+            job.state,
+            astersql_meta_model::group_3::JobState::Running
+                | astersql_meta_model::group_3::JobState::Rollingback
+                | astersql_meta_model::group_3::JobState::Done
+                | astersql_meta_model::group_3::JobState::RollbackDone
+        ) {
+            return Ok(());
+        }
+        if let Err(error) = self
+            .syncer
+            .OwnerUpdateGlobalVersion(self.context.clone(), version)
+        {
+            if self.mdl_enabled {
+                return Err(error.to_string());
+            }
+            // Go continues to wait after a transient non-MDL publication error.
+            // A cancelled scheduler must never use the lease-expiry fast path.
+            self.check(lease)?;
+            eprintln!("failed to publish schema version {version}: {error}");
+        }
+        self.syncer
+            .WaitVersionSynced(
+                self.context.clone(),
+                job.id,
+                version,
+                self.nextgen
+                    && job.table_id > RESERVED_GLOBAL_ID_LOWER_BOUND
+                    && job.table_id <= RESERVED_GLOBAL_ID_UPPER_BOUND,
+            )
+            .map_err(|e| e.to_string())?;
+        self.check(lease)?;
+        self.clean_mdl(job)?;
+        Ok(())
+    }
+}

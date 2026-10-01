@@ -1922,6 +1922,7 @@ dependencies = [
  "astersql-store-gcworker",
  "astersql-store-helper",
  "astersql-store-mockstore",
+ "astersql-store-mockstore-mockstorage",
  "astersql-table",
  "astersql-table-tables",
  "astersql-table-tblctx",
@@ -1977,6 +1978,7 @@ dependencies = [
  "astersql-util-topsql-state",
  "astersql-util-traceevent",
  "astersql-util-tracing",
+ "serde_json",
 ]
 
 [[package]]
@@ -5699,6 +5701,7 @@ dependencies = [
  "astersql-kv",
  "astersql-meta-model",
  "astersql-util-codec",
+ "chrono",
  "futures",
  "serde",
  "serde_json",

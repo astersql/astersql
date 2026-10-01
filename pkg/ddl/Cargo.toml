@@ -5,6 +5,9 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+astersql-meta = { path = "../meta" }
+serde_json = "1"
+astersql-ddl-schemaver = { path = "schemaver" }
 "astersql-config-deploymode" = { package = "astersql-config-deploymode", path = "../config/deploymode" }
 "ddl-systable" = { package = "astersql-ddl-systable", path = "systable" }
 "astersql-kv" = { package = "astersql-kv", path = "../kv" }
@@ -25,6 +28,7 @@ go-package = "pkg/ddl"
 legacy-tasks = ["task-1005", "task-1006", "task-1007", "task-1008", "task-1009", "task-1010", "task-1011", "task-1012", "task-1013", "task-1014", "task-1015", "task-1016", "task-1017", "task-1018", "task-1019", "task-1020", "task-1021", "task-1022", "task-1023", "task-1024", "task-1025", "task-1026", "task-1027", "task-1028", "task-1029", "task-1030", "task-1032", "task-1526", "task-1527", "task-1528", "task-1529", "task-1530", "task-1531", "task-1532", "task-1533", "task-1534", "task-1535", "task-1536", "task-1537", "task-1538", "task-1539", "task-1540", "task-1541", "task-1542", "task-1543"]
 
 [dev-dependencies]
+astersql-store-mockstore-mockstorage = { path = "../store/mockstore/mockstorage" }
 "astersql-ddl-mock" = { package = "astersql-ddl-mock", path = "mock" }
 "astersql-ddl-util" = { package = "astersql-ddl-util", path = "util" }
 "astersql-meta-metabuild" = { package = "astersql-meta-metabuild", path = "../meta/metabuild" }
