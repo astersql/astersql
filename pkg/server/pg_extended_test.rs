@@ -154,6 +154,58 @@ fn parse_bind_execute_sync() {
         found,
         "prepared catalog execution must observe databases created after Parse"
     );
+    // Catalog metadata exists even when there are no rows, at both Describe targets.
+    for (name, sql) in [
+        (
+            "empty_namespaces",
+            "SELECT oid::bigint AS id, xmin AS state_number, nspname AS name FROM pg_catalog.pg_namespace LIMIT 0",
+        ),
+        (
+            "tablespaces",
+            "SELECT oid::bigint AS id, spcname AS name, spcacl, spcoptions FROM pg_catalog.pg_tablespace ORDER BY oid",
+        ),
+    ] {
+        let simple = query(&mut socket, sql);
+        assert_eq!(simple.iter().map(|m| m.0).collect::<Vec<_>>(), b"TCZ");
+        parse(&mut socket, name, sql, &[]);
+        assert_eq!(read(&mut socket), (b'1', vec![]));
+        send(&mut socket, b'D', &[b"S", name.as_bytes(), b"\0"].concat());
+        assert_eq!(read(&mut socket), (b't', 0i16.to_be_bytes().to_vec()));
+        assert_eq!(read(&mut socket), simple[0]);
+        bind(&mut socket, name, name, &[]);
+        assert_eq!(read(&mut socket), (b'2', vec![]));
+        send(&mut socket, b'D', &[b"P", name.as_bytes(), b"\0"].concat());
+        assert_eq!(read(&mut socket), simple[0]);
+        execute(&mut socket, name, 0);
+        assert_eq!(read(&mut socket), (b'C', b"SELECT 0\0".to_vec()));
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
+        send(&mut socket, b'C', &[b"S", name.as_bytes(), b"\0"].concat());
+        assert_eq!(read(&mut socket), (b'3', vec![]));
+    }
+    let namespace_sql = "SELECT nspname AS name, xmin AS state_number FROM pg_catalog.pg_namespace WHERE nspname = 'pg_namespace_after_parse'";
+    parse(&mut socket, "namespace_live", namespace_sql, &[]);
+    assert_eq!(read(&mut socket), (b'1', vec![]));
+    send(&mut socket, b'D', b"Snamespace_live\0");
+    assert_eq!(read(&mut socket), (b't', 0i16.to_be_bytes().to_vec()));
+    let namespace_description = read(&mut socket);
+    assert_eq!(namespace_description.0, b'T');
+    assert_eq!(
+        query(&mut socket, "CREATE DATABASE pg_namespace_after_parse")[0].0,
+        b'C'
+    );
+    bind(&mut socket, "namespace_live", "namespace_live", &[]);
+    assert_eq!(read(&mut socket), (b'2', vec![]));
+    send(&mut socket, b'D', b"Pnamespace_live\0");
+    assert_eq!(read(&mut socket), namespace_description);
+    execute(&mut socket, "namespace_live", 0);
+    assert_eq!(
+        read(&mut socket),
+        (b'D', row(&[Some("pg_namespace_after_parse"), None]))
+    );
+    assert_eq!(read(&mut socket), (b'C', b"SELECT 1\0".to_vec()));
+    send(&mut socket, b'S', &[]);
+    assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
     parse(
         &mut socket,
         "locks",
@@ -242,6 +294,24 @@ fn parse_bind_execute_sync() {
     send(&mut socket, b'S', b"");
     assert_eq!(read(&mut socket).0, b'Z');
     assert_eq!(query(&mut socket, "SELECT 1")[1], (b'D', row(&[Some("1")])));
+    // JDBC closes a statement whose Parse failed before pipelining the next
+    // query. A missing Close target is successful, so recovery must not discard
+    // that query until another Sync. Portals have the same Close contract.
+    for target in [b"Signored\0".as_slice(), b"Pabsent_portal\0".as_slice()] {
+        send(&mut socket, b'C', target);
+        parse(&mut socket, "close_recovery", "SELECT 1", &[]);
+        bind(&mut socket, "close_recovery", "close_recovery", &[]);
+        execute(&mut socket, "close_recovery", 0);
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket), (b'3', vec![]));
+        assert_eq!(read(&mut socket), (b'1', vec![]));
+        assert_eq!(read(&mut socket), (b'2', vec![]));
+        assert_eq!(read(&mut socket), (b'D', row(&[Some("1")])));
+        assert_eq!(read(&mut socket), (b'C', b"SELECT 1\0".to_vec()));
+        assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
+        send(&mut socket, b'C', b"Sclose_recovery\0");
+        assert_eq!(read(&mut socket), (b'3', vec![]));
+    }
     // Parameter occurrence order is independent of indexed client order.
     parse(
         &mut socket,

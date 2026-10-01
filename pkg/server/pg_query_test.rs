@@ -444,14 +444,212 @@ fn datagrip_catalog_live_metadata() {
     for modified in [
         format!("{DATABASES_SQL}; SELECT 1"),
         format!("SELECT '{TRANSACTIONS_SQL}'"),
-        TRANSACTIONS_SQL.replace("limit 1", "limit 2"),
     ] {
         assert_eq!(CatalogQuery::classify(&modified), None);
     }
     assert_eq!(
         CatalogQuery::classify(&format!("/* intro */ {DATABASES_SQL}; -- done")),
-        Some(CatalogQuery::Databases)
+        CatalogQuery::classify(DATABASES_SQL)
     );
+    let multiple_transactions =
+        CatalogQuery::parse(&TRANSACTIONS_SQL.replace("limit 1", "limit 2"))
+            .unwrap()
+            .unwrap();
+    assert_eq!(multiple_transactions.select.limit, Some(2));
+    send(&mut socket, b'X', b"");
+    service.close();
+}
+
+#[test]
+fn namespace_catalog_live_metadata() {
+    use crate::pg_catalog::namespace_oid;
+    assert_eq!(namespace_oid(1).unwrap(), 2);
+    assert_eq!(namespace_oid(-1).unwrap(), 1);
+    assert_eq!(namespace_oid(-2000).unwrap(), 3999);
+    assert_eq!(
+        namespace_oid(i64::from(u32::MAX / 2)).unwrap(),
+        i64::from(u32::MAX - 1)
+    );
+    assert_eq!(namespace_oid(-2147483648).unwrap(), i64::from(u32::MAX));
+    for id in [0, 2147483648, -2147483649, i64::MIN, i64::MAX] {
+        assert!(namespace_oid(id).is_err(), "{id}");
+    }
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let body = [196608u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    let sql = r#"select N.oid::bigint as id, N.xmin as state_number, nspname as name, D.description, pg_catalog.pg_get_userbyid(N.nspowner) as "owner" from pg_catalog.pg_namespace N left join pg_catalog.pg_description D on N.oid = D.objoid order by case when nspname = pg_catalog.current_schema() then -1::bigint else N.oid::bigint end"#;
+    let before = query(&mut socket, sql);
+    assert_eq!(before[0].0, b'T', "{before:?}");
+    let before_rows = catalog_rows(&before);
+    assert_eq!(before_rows[0][2].as_deref(), Some("test"));
+    assert!(
+        !before_rows
+            .iter()
+            .any(|r| r[2].as_deref() == Some("public"))
+    );
+    assert_eq!(
+        query(&mut socket, "CREATE DATABASE namespace_live")[0].0,
+        b'C'
+    );
+    let result = query(&mut socket, sql);
+    assert_eq!(result[0].0, b'T', "{result:?}");
+    let rows = catalog_rows(&result);
+    assert_eq!(rows.len(), before_rows.len() + 1);
+    let ids: std::collections::HashSet<_> = rows.iter().map(|r| r[0].clone()).collect();
+    assert_eq!(ids.len(), rows.len());
+    for r in &rows {
+        assert!(r[0].as_ref().unwrap().parse::<u32>().unwrap() > 0);
+        assert_eq!(r[1], None);
+        assert_eq!(r[3], None);
+        assert_eq!(r[4], None);
+    }
+    for pair in rows[1..].windows(2) {
+        assert!(
+            pair[0][0].as_ref().unwrap().parse::<u32>().unwrap()
+                < pair[1][0].as_ref().unwrap().parse::<u32>().unwrap()
+        );
+    }
+    let mut offset = 2;
+    for (name, oid) in [
+        ("id", 20u32),
+        ("state_number", 20),
+        ("name", 25),
+        ("description", 25),
+        ("owner", 25),
+    ] {
+        assert!(result[0].1[offset..].starts_with(&[name.as_bytes(), b"\0"].concat()));
+        offset += name.len() + 1;
+        assert_eq!(&result[0].1[offset + 6..offset + 10], &oid.to_be_bytes());
+        offset += 18;
+    }
+    let created = rows
+        .iter()
+        .find(|r| r[2].as_deref() == Some("namespace_live"))
+        .unwrap();
+    let native = domain
+        .info_schema()
+        .AllSchemas()
+        .into_iter()
+        .find(|s| s.name.lower == "namespace_live")
+        .unwrap();
+    assert_eq!(created[0], Some((native.id * 2).to_string()));
+    let mut second = TcpStream::connect(addr).unwrap();
+    second
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let startup = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0namespace_live\0\0",
+    ]
+    .concat();
+    second
+        .write_all(&((startup.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    second.write_all(&startup).unwrap();
+    while read(&mut second).0 != b'Z' {}
+    let current = catalog_rows(&query(&mut second, sql));
+    assert_eq!(current[0], *created);
+    send(&mut second, b'X', b"");
+    assert_eq!(
+        query(&mut socket, "DROP DATABASE namespace_live")[0].0,
+        b'C'
+    );
+    assert_eq!(catalog_rows(&query(&mut socket, sql)), before_rows);
+    assert_eq!(query(&mut socket, "SELECT 1")[1], (b'D', row(&[Some("1")])));
+    send(&mut socket, b'X', b"");
+    service.close();
+}
+
+#[test]
+fn tablespace_catalog_empty_relation() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let body = [196608u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    for (sql, fields) in [
+        (
+            "SELECT oid::bigint AS id, spcname AS name FROM pg_catalog.pg_tablespace ORDER BY oid",
+            vec![("id", 20u32), ("name", 25)],
+        ),
+        (
+            "SELECT T.oid, T.spcname, T.spcowner, T.spcacl, T.spcoptions, D.description, pg_catalog.pg_get_userbyid(T.spcowner) AS owner FROM pg_catalog.pg_tablespace T LEFT JOIN pg_catalog.pg_shdescription D ON T.oid = D.objoid ORDER BY T.oid",
+            vec![
+                ("oid", 20),
+                ("spcname", 25),
+                ("spcowner", 20),
+                ("spcacl", 25),
+                ("spcoptions", 25),
+                ("description", 25),
+                ("owner", 25),
+            ],
+        ),
+    ] {
+        let result = query(&mut socket, sql);
+        assert_eq!(
+            result.iter().map(|m| m.0).collect::<Vec<_>>(),
+            b"TCZ",
+            "{result:?}"
+        );
+        assert!(catalog_rows(&result).is_empty());
+        assert_eq!(result[1], (b'C', b"SELECT 0\0".to_vec()));
+        assert_eq!(&result[0].1[..2], &(fields.len() as i16).to_be_bytes());
+        let mut offset = 2;
+        for (name, oid) in fields {
+            assert!(result[0].1[offset..].starts_with(&[name.as_bytes(), b"\0"].concat()));
+            offset += name.len() + 1;
+            assert_eq!(&result[0].1[offset + 6..offset + 10], &oid.to_be_bytes());
+            offset += 18;
+        }
+    }
+    let unknown = query(
+        &mut socket,
+        "SELECT oid FROM pg_catalog.pg_missing_tablespace",
+    );
+    assert_eq!(unknown[0].0, b'E');
+    assert!(
+        unknown[0].1.windows(8).any(|w| w == b"C42P01\0M"),
+        "{unknown:?}"
+    );
+    assert_eq!(query(&mut socket, "SELECT 1")[1], (b'D', row(&[Some("1")])));
     send(&mut socket, b'X', b"");
     service.close();
 }

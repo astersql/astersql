@@ -50,6 +50,15 @@ pub struct PgService {
     active: Mutex<HashMap<u32, Active>>,
 }
 impl PgService {
+    #[cfg(test)]
+    pub(crate) fn resource_counts(&self) -> (usize, usize, usize) {
+        (
+            self.active.lock().unwrap().len(),
+            self.sockets.lock().unwrap().len(),
+            self.workers.lock().unwrap().len(),
+        )
+    }
+
     pub fn start(
         listener: TcpListener,
         driver: Arc<dyn SessionDriver>,
@@ -372,8 +381,10 @@ impl PgService {
                         .filter(|sql| !sql.contains(&0))
                         .and_then(|sql| std::str::from_utf8(sql).ok());
                     if let Some(sql) = sql {
-                        let catalog = crate::pg_catalog::CatalogQuery::classify(sql);
-                        let parsed = if catalog.is_some() {
+                        let catalog = crate::pg_catalog::CatalogQuery::parse(sql);
+                        let parsed = if let Err(error) = &catalog {
+                            Err(error.clone())
+                        } else if catalog.as_ref().is_ok_and(|query| query.is_some()) {
                             Ok((std::borrow::Cow::Borrowed(sql), Some("SELECT")))
                         } else {
                             crate::pg_result::adapt_session_query(sql, self.startup_epoch_micros)
@@ -385,7 +396,9 @@ impl PgService {
                             Ok((_, None)) => write_message(socket, b'I', &[])?,
                             Ok((sql, Some(command))) => {
                                 let execution = self.with_query(pid, |context| {
-                                    if let Some(catalog) = catalog {
+                                    if let Some(catalog) =
+                                        catalog.as_ref().ok().and_then(|query| query.as_ref())
+                                    {
                                         return catalog
                                             .execute(context.as_ref())
                                             .map(|result| vec![result]);

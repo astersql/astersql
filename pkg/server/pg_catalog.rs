@@ -14,49 +14,236 @@ left join pg_catalog.pg_shdescription D on N.oid = D.objoid
 order by case when datname = pg_catalog.current_database() then -1::bigint else N.oid::bigint end"#;
 pub(crate) const TRANSACTIONS_SQL: &str = "select L.transactionid::varchar::bigint as transaction_id from pg_catalog.pg_locks L where L.transactionid is not null order by pg_catalog.age(L.transactionid) desc limit 1";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CatalogQuery {
-    Databases,
-    OldestTransaction,
+use crate::pg_catalog_query::{self, CastType, Expr, ParseResult, Select};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CatalogQuery {
+    pub(crate) select: Select,
 }
 impl CatalogQuery {
+    pub(crate) fn parse(sql: &str) -> ParseResult<Option<Self>> {
+        let Some(select) = pg_catalog_query::parse(sql)? else {
+            return Ok(None);
+        };
+        let query = Self { select };
+        query.validate()?;
+        Ok(Some(query))
+    }
     pub(crate) fn classify(sql: &str) -> Option<Self> {
-        if !sql
-            .as_bytes()
-            .windows(b"pg_catalog".len())
-            .any(|bytes| bytes.eq_ignore_ascii_case(b"pg_catalog"))
-        {
-            return None;
+        Self::parse(sql).ok().flatten()
+    }
+    fn validate(&self) -> ParseResult<()> {
+        if !matches!(
+            self.select.from.name.as_str(),
+            "pg_database"
+                | "pg_locks"
+                | "pg_namespace"
+                | "pg_tablespace"
+                | "pg_description"
+                | "pg_shdescription"
+        ) {
+            return Err(("0A000", "catalog provider is not implemented yet".into()));
         }
-        let input = tokens(sql)?;
-        if input == tokens(DATABASES_SQL)? {
-            Some(Self::Databases)
-        } else if input == tokens(TRANSACTIONS_SQL)? {
-            Some(Self::OldestTransaction)
-        } else {
-            None
+        if let Some(join) = &self.select.join {
+            if !matches!(
+                (self.select.from.name.as_str(), join.relation.name.as_str()),
+                ("pg_database", "pg_shdescription")
+                    | ("pg_namespace", "pg_description")
+                    | ("pg_tablespace", "pg_shdescription")
+            ) || join.relation.alias == self.select.from.alias
+            {
+                return Err(("0A000", "unsupported catalog join".into()));
+            }
+            if self.expr_type(&join.on)?.0 != 1 {
+                return Err(("0A000", "catalog JOIN must be a predicate".into()));
+            }
+        }
+        for projection in &self.select.projections {
+            if contains_age(&projection.expr) {
+                return Err((
+                    "0A000",
+                    "native transaction age is only available for ordering".into(),
+                ));
+            }
+            self.expr_type(&projection.expr)?;
+        }
+        if let Some(filter) = &self.select.filter {
+            if contains_age(filter) {
+                return Err((
+                    "0A000",
+                    "native transaction age is only available for ordering".into(),
+                ));
+            }
+            if self.expr_type(filter)?.0 != 1 {
+                return Err(("0A000", "catalog WHERE must be a predicate".into()));
+            }
+        }
+        for order in &self.select.order {
+            self.expr_type(self.order_expr(&order.expr)?)?;
+        }
+        Ok(())
+    }
+    fn order_expr<'a>(&'a self, expr: &'a Expr) -> ParseResult<&'a Expr> {
+        if let Expr::Column(path) = expr {
+            if let [name] = path.as_slice() {
+                let mut projections = self
+                    .select
+                    .projections
+                    .iter()
+                    .filter(|projection| projection.name == *name);
+                if let Some(projection) = projections.next() {
+                    if projections.next().is_some() {
+                        return Err(("0A000", "ambiguous catalog ORDER BY alias".into()));
+                    }
+                    return Ok(&projection.expr);
+                }
+            }
+        }
+        Ok(expr)
+    }
+    fn column(&self, path: &[String]) -> ParseResult<(usize, u8, usize)> {
+        let name = path.last().unwrap().as_str();
+        let qualifier = match path {
+            [_] => None,
+            [qualifier, _] => Some(qualifier.as_str()),
+            [catalog, relation, _] if catalog == "pg_catalog" => Some(relation.as_str()),
+            _ => return Err(("0A000", "unsupported column qualification".into())),
+        };
+        let main = &self.select.from;
+        let belongs_main = qualifier.is_none_or(|q| q == main.alias);
+        if belongs_main {
+            let boolean = astersql_parser_mysql::r#type::IsBooleanFlag;
+            let field = match (main.name.as_str(), name) {
+                ("pg_database", "oid") => Some((0, 8, 0)),
+                ("pg_database", "datname") => Some((1, 253, 0)),
+                ("pg_database", "datistemplate") => Some((3, 1, boolean)),
+                ("pg_database", "datallowconn") => Some((4, 1, boolean)),
+                ("pg_database", "datdba") => Some((5, 8, 0)),
+                ("pg_namespace", "oid") => Some((0, 8, 0)),
+                ("pg_namespace", "nspname") => Some((1, 253, 0)),
+                ("pg_namespace", "nspowner") => Some((5, 8, 0)),
+                ("pg_namespace", "xmin") => Some((8, 8, 0)),
+                ("pg_tablespace", "oid") => Some((0, 8, 0)),
+                ("pg_tablespace", "spcname") => Some((1, 253, 0)),
+                ("pg_tablespace", "spcowner") => Some((5, 8, 0)),
+                // Optional ACL/options use the bounded catalog's nullable text
+                // representation; no native tablespace rows currently exist.
+                ("pg_tablespace", "spcacl") => Some((8, 253, 0)),
+                ("pg_tablespace", "spcoptions") => Some((10, 253, 0)),
+                ("pg_locks", "transactionid") => Some((0, 8, 0)),
+                ("pg_description" | "pg_shdescription", _) => description_column(&main.name, name),
+                _ => None,
+            };
+            if let Some(field) = field {
+                return Ok(field);
+            }
+        }
+        if let Some(join) = &self.select.join {
+            if qualifier.is_none_or(|q| q == join.relation.alias) {
+                if let Some(field) = description_column(&join.relation.name, name) {
+                    return Ok(field);
+                }
+            }
+        }
+        Err((
+            "0A000",
+            format!("unsupported catalog column {}", path.join(".")),
+        ))
+    }
+    fn expr_type(&self, expr: &Expr) -> ParseResult<(u8, usize)> {
+        match expr {
+            Expr::Column(path) => self.column(path).map(|(_, code, flags)| (code, flags)),
+            Expr::Null | Expr::Text(_) => Ok((253, 0)),
+            Expr::Integer(_) => Ok((8, 0)),
+            Expr::Cast(inner, target) => {
+                let (code, _) = self.expr_type(inner)?;
+                if *target == CastType::Bigint && code == 1 {
+                    return Err((
+                        "0A000",
+                        "boolean to bigint catalog casts are unsupported".into(),
+                    ));
+                }
+                Ok((
+                    match target {
+                        CastType::Bigint => 8,
+                        CastType::Varchar => 253,
+                    },
+                    0,
+                ))
+            }
+            Expr::Call(path, args) => {
+                let name = match path.as_slice() {
+                    [name] => name.as_str(),
+                    [catalog, name] if catalog == "pg_catalog" => name.as_str(),
+                    _ => return Err(("0A000", "unsupported function qualification".into())),
+                };
+                for arg in args {
+                    self.expr_type(arg)?;
+                }
+                match (name, args.as_slice()) {
+                    ("current_database" | "current_catalog", [])
+                        if self.select.from.name == "pg_database" =>
+                    {
+                        Ok((253, 0))
+                    }
+                    ("current_schema", []) if self.select.from.name == "pg_namespace" => {
+                        Ok((253, 0))
+                    }
+                    ("pg_get_userbyid", [arg])
+                        if matches!(arg, Expr::Null) || self.expr_type(arg)?.0 == 8 =>
+                    {
+                        Ok((253, 0))
+                    }
+                    ("age", [Expr::Column(path)])
+                        if self.select.from.name == "pg_locks" && self.column(path)?.0 == 0 =>
+                    {
+                        Ok((8, 0))
+                    }
+                    _ => Err(("0A000", "unsupported catalog function or arguments".into())),
+                }
+            }
+            Expr::Equal(left, right) => {
+                let left_type = self.expr_type(left)?.0;
+                let right_type = self.expr_type(right)?.0;
+                if left_type != right_type
+                    && !(matches!(left_type, 3 | 8) && matches!(right_type, 3 | 8))
+                {
+                    return Err(("0A000", "incompatible catalog equality types".into()));
+                }
+                Ok((1, astersql_parser_mysql::r#type::IsBooleanFlag))
+            }
+            Expr::And(left, right) => {
+                if self.expr_type(left)?.0 != 1 || self.expr_type(right)?.0 != 1 {
+                    return Err(("0A000", "catalog AND requires predicates".into()));
+                }
+                Ok((1, astersql_parser_mysql::r#type::IsBooleanFlag))
+            }
+            Expr::NotNull(inner) => {
+                self.expr_type(inner)?;
+                Ok((1, astersql_parser_mysql::r#type::IsBooleanFlag))
+            }
+            Expr::Case { condition, yes, no } => {
+                if self.expr_type(condition)?.0 != 1
+                    || self.expr_type(yes)? != self.expr_type(no)?
+                {
+                    return Err(("0A000", "unsupported CASE types".into()));
+                }
+                self.expr_type(yes)
+            }
         }
     }
-    pub(crate) fn metadata(self) -> PreparedMetadata {
-        let fields = match self {
-            Self::Databases => vec![
-                ("id", 8, 0),
-                ("name", 253, 0),
-                ("description", 253, 0),
-                (
-                    "is_template",
-                    1,
-                    astersql_parser_mysql::r#type::IsBooleanFlag,
-                ),
-                (
-                    "allow_connections",
-                    1,
-                    astersql_parser_mysql::r#type::IsBooleanFlag,
-                ),
-                ("owner", 253, 0),
-            ],
-            Self::OldestTransaction => vec![("transaction_id", 8, 0)],
-        };
+    pub(crate) fn metadata(&self) -> PreparedMetadata {
+        let fields = self
+            .select
+            .projections
+            .iter()
+            .map(|projection| {
+                let (code, flags) = self
+                    .expr_type(&projection.expr)
+                    .expect("validated catalog expression");
+                (projection.name.as_str(), code, flags)
+            })
+            .collect::<Vec<_>>();
         let columns = fields
             .iter()
             .map(|(name, code, flags)| ColumnInfo {
@@ -91,35 +278,48 @@ impl CatalogQuery {
             native_types,
         }
     }
-    pub(crate) fn execute(self, context: &dyn TiDBContext) -> ConnResult<QueryResult> {
+    pub(crate) fn execute(&self, context: &dyn TiDBContext) -> ConnResult<QueryResult> {
         let metadata = self.metadata();
-        let rows = match self {
-            Self::Databases => {
+        let mut database = String::new();
+        let rows = match self.select.from.name.as_str() {
+            "pg_database" | "pg_namespace" => {
                 let snapshot = context
                     .schema_snapshot()
                     .ok_or_else(|| ConnError::Session("schema snapshot is unavailable".into()))?;
                 let current =
                     context.execute_query("SELECT DATABASE()", false, &CancellationToken::new())?;
-                let database = current
+                let selected_database = current
                     .first()
                     .and_then(|r| r.rows.first())
                     .and_then(|r| r.first());
-                let database = match database {
-                    Some(Value::Text(name)) => name.as_str(),
-                    _ => "",
+                database = match selected_database {
+                    Some(Value::Text(name)) => name.clone(),
+                    _ => String::new(),
                 };
-                let mut schemas = snapshot.AllSchemas();
-                schemas.sort_by_key(|schema| {
-                    (
-                        !schema.name.original.eq_ignore_ascii_case(database),
-                        schema.id,
-                    )
-                });
+                let schemas = snapshot.AllSchemas();
+                // PG namespaces expose each native database as one schema;
+                // the session's selected database is its current schema. No
+                // additional public schema or search_path is synthesized.
+                if self.select.from.name == "pg_namespace" {
+                    database = schemas
+                        .iter()
+                        .find(|s| s.name.lower == database.to_lowercase())
+                        .map(|s| s.name.original.clone())
+                        .unwrap_or_default();
+                }
+                // Native schema metadata has no shared-description rows. A
+                // LEFT JOIN to this empty relation keeps every schema and
+                // gives all right-side fields NULL, regardless of its predicate.
                 schemas
                     .into_iter()
                     .map(|schema| {
-                        vec![
-                            Value::Signed(schema.id),
+                        let oid = if self.select.from.name == "pg_namespace" {
+                            namespace_oid(schema.id)?
+                        } else {
+                            schema.id
+                        };
+                        Ok(vec![
+                            Value::Signed(oid),
                             Value::Text(schema.name.original.clone()),
                             // Native schemas have no PostgreSQL owner or description,
                             // and are neither template databases nor disabled databases.
@@ -127,11 +327,25 @@ impl CatalogQuery {
                             Value::Text("false".into()),
                             Value::Text("true".into()),
                             Value::Null,
-                        ]
+                            Value::Null,
+                            Value::Null,
+                            // There is no PG XID source. Expose an explicitly
+                            // nullable bigint state_number, never a native TSO.
+                            Value::Null,
+                            Value::Null,
+                        ])
                     })
-                    .collect()
+                    .collect::<ConnResult<Vec<_>>>()?
             }
-            Self::OldestTransaction => {
+            // Native database/schema metadata has no comment source. These
+            // relations are empty, not one NULL-description row per object.
+            // The same column definitions serve direct queries and LEFT JOINs.
+            "pg_description" | "pg_shdescription" => Vec::new(),
+            // Native storage has no PostgreSQL tablespace source. Keep the
+            // typed relation empty, without synthetic pg_default/pg_global
+            // rows or exposing paths from the server host.
+            "pg_tablespace" => Vec::new(),
+            "pg_locks" => {
                 // Native TSO start timestamps are monotonically ordered. They
                 // are not PostgreSQL wraparound XIDs or fabricated lock rows.
                 let results = context.execute_query(
@@ -139,7 +353,7 @@ impl CatalogQuery {
                     false,
                     &CancellationToken::new(),
                 )?;
-                let mut oldest = None;
+                let mut transactions = Vec::new();
                 for result in &results {
                     for row in &result.rows {
                         let id = match row.first() {
@@ -159,14 +373,14 @@ impl CatalogQuery {
                                 ));
                             }
                         };
-                        oldest = Some(oldest.map_or(id, |previous: i64| previous.min(id)));
+                        transactions.push(vec![Value::Signed(id)]);
                     }
                 }
-                oldest
-                    .map(|id| vec![vec![Value::Signed(id)]])
-                    .unwrap_or_default()
+                transactions
             }
+            _ => unreachable!("validated catalog provider"),
         };
+        let rows = self.project(rows, &database)?;
         Ok(QueryResult {
             columns: metadata.columns,
             native_types: metadata.native_types,
@@ -175,76 +389,178 @@ impl CatalogQuery {
             response_lifecycle: None,
         })
     }
-}
-
-/// A complete token comparison tolerates formatting/comments, while rejecting
-/// query variants, batches and quoted SQL that merely contain a catalog name.
-fn tokens(sql: &str) -> Option<Vec<String>> {
-    let bytes = sql.as_bytes();
-    let mut i = 0;
-    let mut output = Vec::new();
-    while i < bytes.len() {
-        if bytes[i].is_ascii_whitespace() {
-            i += 1;
-            continue;
-        }
-        if bytes[i..].starts_with(b"--") {
-            while i < bytes.len() && bytes[i] != b'\n' {
-                i += 1;
-            }
-            continue;
-        }
-        if bytes[i..].starts_with(b"/*") {
-            i += 2;
-            let mut depth = 1;
-            while i < bytes.len() && depth != 0 {
-                if bytes[i..].starts_with(b"/*") {
-                    depth += 1;
-                    i += 2;
-                } else if bytes[i..].starts_with(b"*/") {
-                    depth -= 1;
-                    i += 2;
-                } else {
-                    i += 1;
+    fn evaluate(&self, expr: &Expr, row: &[Value], database: &str) -> ConnResult<Value> {
+        let evaluate = |expr: &Expr| self.evaluate(expr, row, database);
+        Ok(match expr {
+            Expr::Column(path) => row[self.column(path).expect("validated column").0].clone(),
+            Expr::Null => Value::Null,
+            Expr::Integer(n) => Value::Signed(*n),
+            Expr::Text(s) => Value::Text(s.clone()),
+            Expr::Cast(inner, target) => match (evaluate(inner)?, target) {
+                (Value::Null, _) => Value::Null,
+                (Value::Signed(n), CastType::Bigint) => Value::Signed(n),
+                (Value::Signed(n), CastType::Varchar) => Value::Text(n.to_string()),
+                (Value::Text(s), CastType::Varchar) => Value::Text(s),
+                (Value::Text(s), CastType::Bigint) => {
+                    Value::Signed(s.parse().map_err(|_| {
+                        ConnError::Session("catalog bigint conversion failed".into())
+                    })?)
                 }
-            }
-            if depth != 0 {
-                return None;
-            }
-            continue;
-        }
-        let start = i;
-        if matches!(bytes[i], b'\'' | b'"' | b'`') {
-            let quote = bytes[i];
-            i += 1;
-            loop {
-                let next = *bytes.get(i)?;
-                i += 1;
-                if next == quote {
-                    if bytes.get(i) == Some(&quote) {
-                        i += 1;
+                _ => return Err(ConnError::Session("unsupported catalog conversion".into())),
+            },
+            Expr::Call(path, args) => match path.last().unwrap().as_str() {
+                "current_database" | "current_catalog" => Value::Text(database.into()),
+                "current_schema" => {
+                    if database.is_empty() {
+                        Value::Null
                     } else {
-                        break;
+                        Value::Text(database.into())
                     }
                 }
+                "pg_get_userbyid" => {
+                    evaluate(&args[0])?;
+                    Value::Null
+                }
+                // Preserve the native oldest-transaction meaning: smaller TSO
+                // has greater age. This is ordering, not a fabricated PG XID.
+                "age" => match evaluate(&args[0])? {
+                    Value::Signed(n) => Value::Signed(n.checked_neg().ok_or_else(|| {
+                        ConnError::Session(
+                            "native transaction age ordering overflows bigint".into(),
+                        )
+                    })?),
+                    _ => Value::Null,
+                },
+                _ => unreachable!("validated function"),
+            },
+            Expr::Equal(left, right) => match (evaluate(left)?, evaluate(right)?) {
+                (Value::Null, _) | (_, Value::Null) => Value::Null,
+                (left, right) => Value::Text((left == right).to_string()),
+            },
+            Expr::And(left, right) => match (evaluate(left)?, evaluate(right)?) {
+                (Value::Text(left), _) if left == "false" => Value::Text("false".into()),
+                (_, Value::Text(right)) if right == "false" => Value::Text("false".into()),
+                (Value::Null, _) | (_, Value::Null) => Value::Null,
+                _ => Value::Text("true".into()),
+            },
+            Expr::NotNull(inner) => {
+                Value::Text((!matches!(evaluate(inner)?, Value::Null)).to_string())
             }
-            output.push(sql.get(start..i)?.to_owned());
-        } else if bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' {
-            i += 1;
-            while bytes
-                .get(i)
-                .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
-            {
-                i += 1;
+            Expr::Case { condition, yes, no } => {
+                if matches!(evaluate(condition)?, Value::Text(s) if s == "true") {
+                    evaluate(yes)?
+                } else {
+                    evaluate(no)?
+                }
             }
-            output.push(sql[start..i].to_ascii_lowercase());
-        } else {
-            i += 1;
-            output.push(sql.get(start..i)?.to_owned());
+        })
+    }
+    fn project(&self, rows: Vec<Vec<Value>>, database: &str) -> ConnResult<Vec<Vec<Value>>> {
+        let mut selected = Vec::new();
+        for row in rows {
+            if let Some(filter) = &self.select.filter {
+                if !matches!(self.evaluate(filter, &row, database)?, Value::Text(s) if s == "true")
+                {
+                    continue;
+                }
+            }
+            let keys = self
+                .select
+                .order
+                .iter()
+                .map(|order| {
+                    self.evaluate(
+                        self.order_expr(&order.expr)
+                            .expect("validated order expression"),
+                        &row,
+                        database,
+                    )
+                })
+                .collect::<ConnResult<Vec<_>>>()?;
+            selected.push((row, keys));
         }
+        selected.sort_by(|(_, a), (_, b)| {
+            for ((a, b), order) in a.iter().zip(b).zip(&self.select.order) {
+                let comparison = match (a, b) {
+                    (Value::Null, Value::Null) => std::cmp::Ordering::Equal,
+                    (Value::Null, _) => std::cmp::Ordering::Greater,
+                    (_, Value::Null) => std::cmp::Ordering::Less,
+                    (Value::Signed(a), Value::Signed(b)) => a.cmp(b),
+                    (Value::Text(a), Value::Text(b)) => a.cmp(b),
+                    _ => std::cmp::Ordering::Equal,
+                };
+                let comparison = if order.descending {
+                    comparison.reverse()
+                } else {
+                    comparison
+                };
+                if !comparison.is_eq() {
+                    return comparison;
+                }
+            }
+            std::cmp::Ordering::Equal
+        });
+        selected
+            .into_iter()
+            .take(self.select.limit.unwrap_or(usize::MAX))
+            .map(|(row, _)| {
+                self.select
+                    .projections
+                    .iter()
+                    .map(|projection| self.evaluate(&projection.expr, &row, database))
+                    .collect()
+            })
+            .collect()
     }
-    if output.last().is_some_and(|token| token == ";") {
-        output.pop();
+}
+
+// All description fields are NULL-extended for an unmatched LEFT JOIN.
+// Their row slots also define direct access to the empty description providers.
+fn description_column(relation: &str, name: &str) -> Option<(usize, u8, usize)> {
+    match (relation, name) {
+        ("pg_description" | "pg_shdescription", "description") => Some((2, 253, 0)),
+        ("pg_description" | "pg_shdescription", "objoid") => Some((6, 8, 0)),
+        ("pg_description" | "pg_shdescription", "classoid") => Some((7, 8, 0)),
+        ("pg_description", "objsubid") => Some((9, 3, 0)),
+        _ => None,
     }
-    Some(output)
+}
+
+fn contains_age(expr: &Expr) -> bool {
+    match expr {
+        Expr::Call(path, args) => {
+            path.last().is_some_and(|name| name == "age") || args.iter().any(contains_age)
+        }
+        Expr::Cast(inner, _) | Expr::NotNull(inner) => contains_age(inner),
+        Expr::Equal(left, right) | Expr::And(left, right) => {
+            contains_age(left) || contains_age(right)
+        }
+        Expr::Case { condition, yes, no } => {
+            contains_age(condition) || contains_age(yes) || contains_age(no)
+        }
+        _ => false,
+    }
+}
+
+/// Stable injective encoding for native signed schema IDs: positive IDs use
+/// even OIDs, negative system IDs use odd OIDs. Reject zero and values outside
+/// the representable range rather than truncate or hash into collisions.
+pub(crate) fn namespace_oid(id: i64) -> ConnResult<i64> {
+    let encoded = if id > 0 {
+        (id as u64).checked_mul(2)
+    } else if id < 0 {
+        id.unsigned_abs()
+            .checked_mul(2)
+            .and_then(|n| n.checked_sub(1))
+    } else {
+        None
+    };
+    encoded
+        .and_then(|n| u32::try_from(n).ok())
+        .map(i64::from)
+        .ok_or_else(|| {
+            ConnError::Session(format!(
+                "native schema ID {id} cannot be represented as a PostgreSQL namespace OID"
+            ))
+        })
 }

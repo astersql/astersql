@@ -400,7 +400,7 @@ impl Extended {
                 if !name.is_empty() && self.statements.contains_key(&name) {
                     return Err(error("42P05", "prepared statement already exists"));
                 }
-                let catalog = crate::pg_catalog::CatalogQuery::classify(&sql);
+                let catalog = crate::pg_catalog::CatalogQuery::parse(&sql)?;
                 let (sql, mapping) = if catalog.is_some() {
                     (sql, Vec::new())
                 } else {
@@ -452,7 +452,7 @@ impl Extended {
                 if command.is_none() {
                     return Err(error("0A000", "empty prepared statements are unsupported"));
                 }
-                let metadata = if let Some(catalog) = catalog {
+                let metadata = if let Some(catalog) = &catalog {
                     catalog.metadata()
                 } else {
                     context
@@ -539,7 +539,7 @@ impl Extended {
                 self.portals.insert(
                     name,
                     Portal {
-                        catalog: statement.catalog,
+                        catalog: statement.catalog.clone(),
                         statement_name,
                         columns: statement.metadata.columns.clone(),
                         native_types: statement.metadata.native_types.clone(),
@@ -604,7 +604,7 @@ impl Extended {
                     let Some(command) = portal.command else {
                         return Ok(vec![(b'I', vec![])]);
                     };
-                    let execution = execute(portal.statement, &portal.args, portal.catalog)
+                    let execution = execute(portal.statement, &portal.args, portal.catalog.clone())
                         .map_err(|e| error("XX000", &e.to_string()))?;
                     let mut result = match execution {
                         Ok(result) => result,
@@ -670,21 +670,20 @@ impl Extended {
                 reader.end()?;
                 match kind {
                     b'S' => {
-                        let statement = self
-                            .statements
-                            .remove(&name)
-                            .ok_or_else(|| error("26000", "unknown prepared statement"))?;
-                        if statement.catalog.is_none() {
-                            context
-                                .close_prepared_statement(statement.metadata.statement_id)
-                                .map_err(engine)?;
+                        // Clients also close names whose Parse failed. PG Close
+                        // succeeds for absent objects, allowing the next pipeline
+                        // to proceed after Sync instead of starting another error.
+                        if let Some(statement) = self.statements.remove(&name) {
+                            if statement.catalog.is_none() {
+                                context
+                                    .close_prepared_statement(statement.metadata.statement_id)
+                                    .map_err(engine)?;
+                            }
                         }
                         self.portals.retain(|_, p| p.statement_name != name);
                     }
                     b'P' => {
-                        self.portals
-                            .remove(&name)
-                            .ok_or_else(|| error("34000", "unknown portal"))?;
+                        self.portals.remove(&name);
                     }
                     _ => return Err(error("08P01", "invalid Close target")),
                 }

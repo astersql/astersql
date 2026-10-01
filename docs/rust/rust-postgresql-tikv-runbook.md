@@ -136,12 +136,15 @@ SELECT 1;
 
 - `Connection refused`：确认启动命令包含 `--postgres-port=5432`、进程启动成功且 5432 已监听。只启动 PD/TiKV 或只启动 MySQL listener 不会开放 PG。
 - `Address already in use`：用 `lsof` 确认占用者，选择空闲端口并修改服务端及客户端配置。
+- JDBC 报 `binary results are unsupported`：设置连接属性 `binaryTransfer=false`；当前只支持文本结果，JDBC 达到 prepareThreshold 后可能请求二进制格式。
 - 客户端不识别 `min_protocol_version`：检查当前调用的 psql/libpq 版本；显式 3.2 使用 libpq 18。
 - 数据库不存在：通过 MySQL 入口执行第 3 节命令，或将 `dbname` 改为已有数据库。
 - TLS/GSS 或身份错误：使用文中的禁用加密参数和 root 空密码开发模式；当前不支持生产 PG 密码鉴权。
-- `unsupported startup parameter DateStyle`：本机 DataGrip 的 JDBC 42.7.13 和 42.7.3 实测均在此处失败，目前不能照搬 psql 的成功结论到 JDBC。
+- `unsupported startup parameter DateStyle`：当前接受 ISO 和 ISO, MDY，并报告 ISO, MDY；此前 JDBC 启动失败说明已过期。其他 DateStyle 值仍不支持，先检查客户端实际发送值。此前两版本机 JDBC 驱动已验证连接；这不代表完整 DataGrip UI 内省通过。
 - `\dt`、`\d`、DataGrip 表结构浏览：这些操作可能查询 PostgreSQL 系统目录，当前不承诺完整 pg_catalog。先用明确的 SQL `SELECT 1` 验证入口。
 
 已实测临时双 listener 上的默认 psql 18 查询，以及 libpq 18 的 3.0/3.2 查询、文本参数、事务和取消。本文的真实 TiKV + PG 启动组合尚未重新执行端到端验证；DataGrip UI、完整 PostgreSQL SQL 语义和生产鉴权也未验证。
 
 日常退出前台 Rust server 可在其启动终端按 Ctrl-C。PD/TiKV 的停止与重启仍按原手册执行，保留数据目录。
+
+基础内省边界与回归：参见 [PostgreSQL 首期协议说明](../postgresql-protocol-first-phase.md#datagrip-内省目录探测)。2026-10-01 libpq 18 的 3.0/3.2 首轮统一测试通过，覆盖数据库、namespace、空 tablespace 元数据及错误恢复。扩展协议与本机 JDBC 42.7.13/42.7.3 文本结果回归已通过；DataGrip 安装资源中的 tablespace SQL 已提取并通过 JDBC 验证支持边界。完整 tablespace 查询仍返回 0A000，错误后连接可恢复；UI 内省未验收。

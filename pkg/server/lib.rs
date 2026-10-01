@@ -164,3 +164,10 @@ mod pg_extended;
 #[cfg(test)]
 #[path = "pg_client_integration_test.rs"]
 mod pg_client_integration_test;
+
+#[cfg(test)]
+mod pg_catalog_test;
+
+mod pg_catalog_query;
+#[cfg(test)]
+mod pg_catalog_query_test;

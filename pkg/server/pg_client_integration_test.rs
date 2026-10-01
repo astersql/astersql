@@ -53,6 +53,7 @@ fn postgres_client_protocol_versions() {
         .arg("-c")
         .arg(LIBPQ_WORKFLOW)
         .arg(address.port().to_string())
+        .arg(crate::pg_catalog::DATABASES_SQL)
         .output();
     // The authenticated MySQL connection stays usable after the PG workload.
     mysql_packet(&mut mysql, 0, &[0x0e]); // COM_PING
@@ -131,6 +132,10 @@ result_error = api('PQresultErrorMessage', text, ptr)
 rows = api('PQntuples', integer, ptr)
 columns = api('PQnfields', integer, ptr)
 value = api('PQgetvalue', text, ptr, integer, integer)
+is_null = api('PQgetisnull', integer, ptr, integer, integer)
+field_name = api('PQfname', text, ptr, integer)
+field_type = api('PQftype', c.c_uint, ptr, integer)
+error_field = api('PQresultErrorField', text, ptr, integer)
 clear = api('PQclear', None, ptr)
 txn = api('PQtransactionStatus', integer, ptr)
 cancel_create = api('PQcancelCreate', ptr, ptr)
@@ -146,8 +151,10 @@ for options, expected_protocol in [('', 30000), (' min_protocol_version=3.2 max_
         assert protocol(conn) == expected_protocol, protocol(conn)
         assert parameter_status(conn, b'server_version') == b'18.0 (AsterSQL)'
         assert server_version(conn) == 180000, server_version(conn)
-        def query(sql, expected=None, parameter=None):
-            if parameter is None:
+        def query(sql, expected=None, parameter=None, metadata=None, extended=False, sqlstate=None):
+            if extended:
+                result = params(conn, sql.encode(), 0, None, None, None, None, 0)
+            elif parameter is None:
                 result = execute(conn, sql.encode())
             else:
                 oids = (c.c_uint * 1)(23)
@@ -155,10 +162,18 @@ for options, expected_protocol in [('', 30000), (' min_protocol_version=3.2 max_
                 result = params(conn, sql.encode(), 1, oids, values, None, None, 0)
             assert result
             try:
+                if sqlstate is not None:
+                    assert result_status(result) == 7, result_status(result)
+                    assert error_field(result, ord('C')) == sqlstate.encode(), result_error(result).decode()
+                    return
                 assert result_status(result) in (1, 2), result_error(result).decode()
+                if metadata is not None:
+                    actual_metadata = [(field_name(result, col).decode(), field_type(result, col)) for col in range(columns(result))]
+                    assert actual_metadata == metadata, (sql, actual_metadata, metadata)
+                actual = [[None if is_null(result, r, col) else value(result, r, col).decode() for col in range(columns(result))] for r in range(rows(result))]
                 if expected is not None:
-                    actual = [[value(result, r, col).decode() for col in range(columns(result))] for r in range(rows(result))]
                     assert actual == expected, (sql, actual, expected)
+                return actual
             finally:
                 clear(result)
         for invalid_info in [conninfo.replace('user=root', 'user=intruder')]:
@@ -168,6 +183,36 @@ for options, expected_protocol in [('', 30000), (' min_protocol_version=3.2 max_
             finally:
                 finish(invalid)
         query('SELECT 1', [['1']])
+        namespace_sql = """select N.oid::bigint as id, N.xmin as state_number, nspname as name,
+            D.description, pg_catalog.pg_get_userbyid(N.nspowner) as "owner"
+            from pg_catalog.pg_namespace N left join pg_catalog.pg_description D on N.oid = D.objoid
+            order by case when nspname = pg_catalog.current_schema() then -1::bigint else N.oid::bigint end"""
+        tablespace_sql = 'SELECT oid::bigint AS id, spcname AS name, pg_catalog.pg_get_userbyid(spcowner) AS "owner", spcacl, spcoptions FROM pg_catalog.pg_tablespace ORDER BY oid'
+        query('CREATE DATABASE pg_client_catalog_live')
+        for extended in [False, True]:
+            databases = query(sys.argv[2], metadata=[('id', 20), ('name', 25), ('description', 25), ('is_template', 16), ('allow_connections', 16), ('owner', 25)], extended=extended)
+            assert databases[0][1] == 'test', databases
+            assert any(r[1] == 'pg_client_catalog_live' for r in databases), databases
+            assert all(int(r[0]) != 0 and r[2:] == [None, 'f', 't', None] for r in databases), databases
+            assert [int(r[0]) for r in databases[1:]] == sorted(int(r[0]) for r in databases[1:]), databases
+            namespaces = query(namespace_sql, metadata=[('id', 20), ('state_number', 20), ('name', 25), ('description', 25), ('owner', 25)], extended=extended)
+            assert namespaces[0][2] == 'test', namespaces
+            assert any(r[2] == 'pg_client_catalog_live' for r in namespaces), namespaces
+            assert all(int(r[0]) > 0 and r[1] is None and r[3:] == [None, None] for r in namespaces), namespaces
+            assert [int(r[0]) for r in namespaces[1:]] == sorted(int(r[0]) for r in namespaces[1:]), namespaces
+            assert len({r[0] for r in namespaces}) == len(namespaces)
+            query(tablespace_sql, [], metadata=[('id', 20), ('name', 25), ('owner', 25), ('spcacl', 25), ('spcoptions', 25)], extended=extended)
+            # Extracted from DataGrip PgIntroQueries.sql: the ID-only probe is
+            # supported; full introspection requires features beyond this phase.
+            query('select oid::bigint from pg_catalog.pg_tablespace', [], metadata=[('oid', 20)], extended=extended)
+            full_tablespace_sql = 'select T.oid::bigint as id, T.spcname as name, T.xmin as state_number, pg_catalog.pg_get_userbyid(T.spcowner) as owner, pg_catalog.pg_tablespace_location(T.oid) as location, T.spcoptions as options, D.description as comment from pg_catalog.pg_tablespace T left join pg_catalog.pg_shdescription D on D.objoid = T.oid'
+            query(full_tablespace_sql, extended=extended, sqlstate='0A000')
+            query('SELECT 1', [['1']], extended=extended)
+            for sql, state in [('SELECT oid FROM pg_catalog.pg_missing', '42P01'), ('SELECT oid FROM pg_catalog.pg_namespace GROUP BY oid', '0A000'), ('SELECT (', '42601')]:
+                query(sql, extended=extended, sqlstate=state)
+                query('SELECT 1', [['1']], extended=extended)
+        query('DROP DATABASE pg_client_catalog_live')
+        assert not any(r[1] == 'pg_client_catalog_live' for r in query(sys.argv[2]))
         query('CREATE TABLE pg_real_client (id INT PRIMARY KEY, v VARCHAR(30))')
         query("INSERT INTO pg_real_client VALUES (1, 'one')")
         query("UPDATE pg_real_client SET v = 'two' WHERE id = 1")
@@ -194,7 +239,7 @@ for options, expected_protocol in [('', 30000), (' min_protocol_version=3.2 max_
             cancel_finish(cancel)
         query('SELECT 1', [['1']])
         query('DROP TABLE pg_real_client')
-        print(f'{expected_protocol}: startup, server version, CRUD, typed parameters, transactions and idle cancel passed', flush=True)
+        print(f'{expected_protocol}: startup, catalogs (simple/extended metadata, NULL, rows, ordering), error recovery, CRUD, typed parameters, transactions and idle cancel passed', flush=True)
     finally:
         finish(conn)
 "#;

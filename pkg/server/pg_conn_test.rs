@@ -485,3 +485,131 @@ fn startup_real_dual_listener_shutdown_closes_pending_and_authenticated_clients(
     assert!(server.postgres_listener_addr().is_none());
     assert!(TcpStream::connect(addr).is_err());
 }
+
+/// Exercise recovery on the wire and observe ownership after disconnect/shutdown.
+#[test]
+fn catalog_error_recovery_and_cleanup() {
+    fn select_one(socket: &mut TcpStream) {
+        send(socket, b'Q', b"SELECT 1\0");
+        assert_eq!(message(socket).0, b'T');
+        assert_eq!(message(socket), (b'D', vec![0, 1, 0, 0, 0, 1, b'1']));
+        assert_eq!(message(socket), (b'C', b"SELECT 1\0".to_vec()));
+        assert_eq!(message(socket), (b'Z', b"I".to_vec()));
+    }
+    fn assert_error(socket: &mut TcpStream, state: &str) {
+        let (tag, body) = message(socket);
+        assert_eq!(tag, b'E');
+        let field = [b"C", state.as_bytes(), b"\0"].concat();
+        assert!(
+            body.windows(field.len()).any(|part| part == field),
+            "{body:?}"
+        );
+    }
+    fn wait_until(mut predicate: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while !predicate() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "resources were not released"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let (mut socket, key) = authenticated(addr);
+    let pid = u32::from_be_bytes(key[..4].try_into().unwrap());
+    let context = service.with_query(pid, Arc::downgrade).unwrap();
+    let (mut unaffected, _) = authenticated(addr);
+    for (sql, state) in [
+        ("SELECT oid FROM pg_catalog.pg_missing", "42P01"),
+        (
+            "SELECT oid FROM pg_catalog.pg_namespace GROUP BY oid",
+            "0A000",
+        ),
+        ("SELECT (", "42601"),
+    ] {
+        send(&mut socket, b'Q', &[sql.as_bytes(), b"\0"].concat());
+        assert_error(&mut socket, state);
+        assert_eq!(message(&mut socket), (b'Z', b"I".to_vec()));
+        select_one(&mut socket);
+        select_one(&mut unaffected);
+    }
+    // Parse fails; queued Query/Execute are ignored until Sync, with no output.
+    send(
+        &mut socket,
+        b'P',
+        b"bad\0SELECT oid FROM pg_catalog.pg_missing\0\0\0",
+    );
+    assert_error(&mut socket, "42P01");
+    send(&mut socket, b'Q', b"SELECT 99\0");
+    send(&mut socket, b'E', b"missing\0\0\0\0\0");
+    send(&mut socket, b'S', b"");
+    assert_eq!(message(&mut socket), (b'Z', b"I".to_vec()));
+    select_one(&mut socket);
+    // A catalog portal is valid at Parse/Bind; Execute errors on a negative limit.
+    send(
+        &mut socket,
+        b'P',
+        b"catalog\0SELECT oid FROM pg_catalog.pg_namespace\0\0\0",
+    );
+    assert_eq!(message(&mut socket), (b'1', vec![]));
+    send(&mut socket, b'B', b"portal\0catalog\0\0\0\0\0\0\0");
+    assert_eq!(message(&mut socket), (b'2', vec![]));
+    send(&mut socket, b'E', b"portal\0\xff\xff\xff\xff");
+    assert_error(&mut socket, "08P01");
+    send(&mut socket, b'Q', b"SELECT 99\0");
+    send(&mut socket, b'S', b"");
+    assert_eq!(message(&mut socket), (b'Z', b"I".to_vec()));
+    select_one(&mut socket);
+    drop(socket);
+    wait_until(|| {
+        context.upgrade().is_none()
+            && service.resource_counts().0 == 1
+            && service.resource_counts().1 == 1
+    });
+    // Partial startup and authenticated frames terminate only their own worker.
+    let mut partial = TcpStream::connect(addr).unwrap();
+    partial.write_all(&[0, 0]).unwrap();
+    drop(partial);
+    for _ in 0..12 {
+        let (mut client, key) = authenticated(addr);
+        let pid = u32::from_be_bytes(key[..4].try_into().unwrap());
+        let context = service.with_query(pid, Arc::downgrade).unwrap();
+        client.write_all(&[b'Q', 0, 0, 0, 20, b'S']).unwrap();
+        drop(client);
+        wait_until(|| {
+            context.upgrade().is_none()
+                && service.resource_counts().0 == 1
+                && service.resource_counts().1 == 1
+        });
+        select_one(&mut unaffected);
+    }
+    // Close interrupts an accepted client still waiting for a startup body.
+    let mut pending = TcpStream::connect(addr).unwrap();
+    pending
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    pending.write_all(&8u32.to_be_bytes()).unwrap();
+    pending.write_all(&80877103u32.to_be_bytes()).unwrap();
+    let mut byte = [0];
+    pending.read_exact(&mut byte).unwrap();
+    assert_eq!(byte, [b'N']);
+    service.close();
+    service.close(); // Idempotent shutdown.
+    assert_eq!(service.resource_counts(), (0, 0, 0));
+    assert_eq!(unaffected.read(&mut byte).unwrap(), 0);
+    assert_eq!(pending.read(&mut byte).unwrap(), 0);
+    assert!(TcpStream::connect(addr).is_err());
+}
