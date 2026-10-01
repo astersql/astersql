@@ -9565,16 +9565,35 @@ fn optimize_by_shuffle_for_window(
         return Ok(plan);
     };
 
+    // Keep Go's typed source and partition keys for the statement-RU splitter
+    // formula. An ExplainID alone cannot recover runtime rows or key slots.
+    let window = plan
+        .as_any()
+        .downcast_ref::<physicalop::PhysicalWindow>()
+        .ok_or_else(|| expression::errors::New("shuffle requires a Window plan"))?;
+    let by_items = window
+        .PartitionBy
+        .iter()
+        .map(|item| Box::new(item.Col.Clone()) as expression::ExprBox)
+        .collect();
+    let source = plan
+        .children()
+        .first()
+        .and_then(|sort| sort.children().first().copied())
+        .ok_or_else(|| expression::errors::New("shuffle Window requires a Sort data source"))?
+        .clone_physical(context.clone())?;
     let stats = plan.stats_info().clone();
     let query_block_offset = plan.query_block_offset();
-    Ok(Box::new(
-        physicalop::PhysicalShuffle::New(
-            context.clone(),
-            window_concurrency.min(data_source_count as usize),
-            vec![data_source_explain_id],
-        )
-        .Init(context, stats, query_block_offset, plan),
-    ))
+    let mut shuffle = physicalop::PhysicalShuffle::New(
+        context.clone(),
+        window_concurrency.min(data_source_count as usize),
+        vec![data_source_explain_id],
+    )
+    .Init(context, stats, query_block_offset, plan);
+    shuffle.DataSources = vec![source];
+    shuffle.ByItemArrays = vec![by_items];
+    shuffle.SplitterType = physicalop::physical_shuffle::PartitionSplitterType::Hash;
+    Ok(Box::new(shuffle))
 }
 
 /// 处理细粒度 shuffle 标记在算子上的传播。

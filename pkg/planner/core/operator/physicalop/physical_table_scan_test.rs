@@ -139,3 +139,13 @@ fn signed_integer_handle_does_not_treat_unsigned_domain_as_full_scan() {
 
     assert!(!scan.IsFullScan());
 }
+
+#[test]
+fn ru_columnar_index_metadata_is_cloned_and_rejects_plan_cache() {
+    let mut scan = PhysicalTableScan::New(context());
+    scan.UsedColumnarIndexes
+        .push(crate::ColumnarIndexExtra::default());
+    let clone = scan.Clone(context()).unwrap();
+    assert_eq!(clone.UsedColumnarIndexes.len(), 1);
+    assert!(crate::cache_snapshot::CachedPlan::try_capture(&scan).is_err());
+}

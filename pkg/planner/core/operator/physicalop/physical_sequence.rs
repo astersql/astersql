@@ -316,3 +316,30 @@ pub fn exhaust_physical_sequence(
         .collect();
     (plans, true)
 }
+
+/// Go's concrete Sequence occurrence retained by the physical-plan RU bridge.
+pub struct TypedPhysicalSequence {
+    pub PhysicalSchemaProducer: crate::PhysicalSchemaProducer,
+}
+impl TypedPhysicalSequence {
+    pub fn New(ctx: base::ContextRef) -> Self {
+        Self {
+            PhysicalSchemaProducer: crate::PhysicalSchemaProducer::New(
+                crate::BasePhysicalPlan::New(ctx, "Sequence", 0),
+            ),
+        }
+    }
+    pub fn Clone(&self, ctx: base::ContextRef) -> Result<Self, expression::Error> {
+        let mut producer = crate::PhysicalSchemaProducer::New(
+            self.PhysicalSchemaProducer
+                .BasePhysicalPlan
+                .CloneWithNewCtx(ctx)?,
+        );
+        if let Some(schema) = self.PhysicalSchemaProducer.SchemaRef() {
+            producer.SetSchema(schema.Clone());
+        }
+        Ok(Self {
+            PhysicalSchemaProducer: producer,
+        })
+    }
+}

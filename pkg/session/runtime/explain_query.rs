@@ -979,8 +979,7 @@ impl ConcreteSession {
         }
         if show_costs
             && let Some(join) =
-                plan.as_any()
-                    .downcast_ref::<astersql_planner_core_operator_physicalop::PhysicalIndexJoin>()
+                astersql_planner_core_operator_physicalop::index_join_base_any(plan.as_any())
         {
             let children = plan.children();
             let inner_index = join.BasePhysicalJoin.InnerChildIdx.min(1);
@@ -1172,14 +1171,14 @@ impl ConcreteSession {
         } else {
             format!("{branch_indent}{}", if last_child { "  " } else { "│ " })
         };
-        let index_join_outer_rows = plan
-            .as_any()
-            .downcast_ref::<astersql_planner_core_operator_physicalop::PhysicalIndexJoin>()
-            .and_then(|join| {
-                children
-                    .get(1 - join.BasePhysicalJoin.InnerChildIdx.min(1))
-                    .map(|outer| outer.stats_info().RowCount.max(1.0))
-            });
+        let index_join_outer_rows = astersql_planner_core_operator_physicalop::index_join_base_any(
+            plan.as_any(),
+        )
+        .and_then(|join| {
+            children
+                .get(1 - join.BasePhysicalJoin.InnerChildIdx.min(1))
+                .map(|outer| outer.stats_info().RowCount.max(1.0))
+        });
         let ordered_children = if let Some(join) =
             plan.as_any()
                 .downcast_ref::<astersql_planner_core_operator_physicalop::PhysicalHashJoin>()
@@ -1214,9 +1213,8 @@ impl ConcreteSession {
             && children.len() == 2
         {
             vec![(children[0], Some("Build")), (children[1], Some("Probe"))]
-        } else if plan
-            .as_any()
-            .is::<astersql_planner_core_operator_physicalop::PhysicalIndexJoin>()
+        } else if astersql_planner_core_operator_physicalop::index_join_base_any(plan.as_any())
+            .is_some()
             && children.len() == 2
         {
             // IndexHashJoin builds its hash table from the outer input and
@@ -1234,8 +1232,7 @@ impl ConcreteSession {
             .map(|selection| selection.Conditions.as_slice());
         for (index, (child, role)) in ordered_children.iter().enumerate() {
             let child_dynamic_range = if *role == Some("Probe") {
-                plan.as_any()
-                    .downcast_ref::<astersql_planner_core_operator_physicalop::PhysicalIndexJoin>()
+                astersql_planner_core_operator_physicalop::index_join_base_any(plan.as_any())
                     .and_then(|join| {
                         join.BasePhysicalJoin
                             .InnerJoinKeys
@@ -1264,12 +1261,11 @@ impl ConcreteSession {
             } else {
                 None
             };
-            let child_lookup_outer_rows = plan
-                .as_any()
-                .downcast_ref::<astersql_planner_core_operator_physicalop::PhysicalIndexJoin>()
-                .filter(|_| *role == Some("Probe"))
-                .and(index_join_outer_rows)
-                .or(index_lookup_outer_rows);
+            let child_lookup_outer_rows =
+                astersql_planner_core_operator_physicalop::index_join_base_any(plan.as_any())
+                    .filter(|_| *role == Some("Probe"))
+                    .and(index_join_outer_rows)
+                    .or(index_lookup_outer_rows);
             self.explain_scalar_physical_tree_with_lookup_context(
                 *child,
                 level + 1,
@@ -1843,8 +1839,7 @@ impl ConcreteSession {
             .filter(|character| !character.is_ascii_whitespace())
             .collect::<String>();
         fn contains_index_join(plan: &dyn astersql_planner_core_base::PhysicalPlan) -> bool {
-            plan.as_any()
-                .is::<astersql_planner_core_operator_physicalop::PhysicalIndexJoin>()
+            astersql_planner_core_operator_physicalop::index_join_base_any(plan.as_any()).is_some()
                 || plan.children().into_iter().any(contains_index_join)
         }
         fn contains_recursive_cte(

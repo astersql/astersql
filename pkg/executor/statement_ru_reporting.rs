@@ -200,13 +200,7 @@ pub fn statement_ru_engine_result(
     weights: StmtWeights,
 ) -> StatementRUEngineResult {
     let [tidb, tikv, tiflash] = compute;
-    let tiflash_ru = weights.cpu_work * tiflash.cpu_work
-        + weights.hash_state_row * tiflash.hash_state_rows
-        + weights.operator_num * tiflash.operator_num
-        + weights.join_output_row * tiflash.join_output_rows
-        + weights.scan_byte * tiflash.scan_bytes
-        + weights.net_byte * tiflash.net_bytes
-        + weights.cross_az_net_byte * tiflash.cross_az_net_bytes;
+    let tiflash_ru = statement_ru_tiflash_ru(tiflash, weights);
     StatementRUEngineResult {
         tidb: weights.cpu_work * tidb.cpu_work
             + weights.hash_state_row * tidb.hash_state_rows
@@ -223,4 +217,76 @@ pub fn statement_ru_engine_result(
             + weights.write_byte * units.write_bytes,
         tiflash: tiflash_ru,
     }
+}
+
+/// Raw TiFlash RU shared by engine attribution and per-occurrence EXPLAIN.
+pub fn statement_ru_tiflash_ru(tiflash: StatementRUComputeUnits, weights: StmtWeights) -> f64 {
+    weights.cpu_work * tiflash.cpu_work
+        + weights.hash_state_row * tiflash.hash_state_rows
+        + weights.operator_num * tiflash.operator_num
+        + weights.join_output_row * tiflash.join_output_rows
+        + weights.scan_byte * tiflash.scan_bytes
+        + weights.net_byte * tiflash.net_bytes
+        + weights.cross_az_net_byte * tiflash.cross_az_net_bytes
+}
+
+/// Go full-mode labels are bounded independently of SQL and plan identifiers.
+pub fn publish_statement_ru_full_metrics(
+    sink: &dyn crate::statement_ru_result::StatementRUPublicationSink,
+    snapshot: &crate::statement_ru_result::StatementRUFinalizedSnapshot,
+) {
+    const ENGINES: [&str; 3] = ["tidb", "tikv", "tiflash"];
+    const OPERATORS: [&str; 23] = [
+        "wrapper",
+        "projection",
+        "selection",
+        "limit",
+        "sort",
+        "topn",
+        "window",
+        "hash_agg",
+        "stream_agg",
+        "hash_join",
+        "merge_join",
+        "lookup_join",
+        "reader",
+        "lookup_reader",
+        "union_scan",
+        "shuffle",
+        "range_scan",
+        "point_lookup",
+        "write",
+        "analyze",
+        "sql_frontend",
+        "coprocessor",
+        "kv_write",
+    ];
+    let Some(report) = &snapshot.report else {
+        return;
+    };
+    for (engine, operators) in report.units.iter().enumerate() {
+        for (operator, units) in operators.iter().enumerate() {
+            if !report.seen[engine][operator] {
+                continue;
+            }
+            for (name, value) in [
+                ("cpu_work", units.cpu_work),
+                ("scan_bytes", units.scan_bytes),
+                ("net_bytes", units.net_bytes),
+                ("cross_az_net_bytes", units.cross_az_net_bytes),
+                ("frontend_compile_bytes", units.frontend_compile_bytes),
+                ("hash_state_rows", units.hash_state_rows),
+                ("join_output_rows", units.join_output_rows),
+                ("write_statement", units.write_statement),
+                ("operator_num", units.operator_num),
+                ("write_keys", units.write_keys),
+                ("write_bytes", units.write_bytes),
+            ] {
+                if value != 0.0 {
+                    sink.unit(ENGINES[engine], OPERATORS[operator], name, value);
+                }
+            }
+        }
+    }
+    sink.statement("success", snapshot.calibration_state.label());
 }

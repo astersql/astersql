@@ -5,7 +5,7 @@
 use base::{ContextRef, PhysicalPlan as _};
 use baseimpl::{NewBasePlan, Plan};
 
-use crate::physical_index_hash_join::PhysicalIndexHashJoin;
+use crate::physical_index_hash_join::LegacyPhysicalIndexHashJoin;
 use crate::{
     AggMppRunMode, BasePhysicalAgg, BasePhysicalJoin, BasePhysicalPlan, BatchPointGetPlan, Delete,
     DeleteIndexLayout, DeleteIndexRowLayout, Insert, LegacyPhysicalLock, PhysicalHashAgg,
@@ -330,6 +330,15 @@ pub enum CachedPlan {
     HashJoin(CachedHashJoin),
     MergeJoin(CachedMergeJoin),
     IndexJoin(CachedIndexJoin),
+    IndexHashJoin(CachedIndexJoin, bool),
+    IndexMergeJoin(
+        CachedIndexJoin,
+        Vec<i32>,
+        Vec<crate::JoinCompareFunc>,
+        Vec<crate::JoinCompareFunc>,
+        bool,
+        bool,
+    ),
     IndexReader(CachedIndexReader),
     TableReader(CachedTableReader),
     IndexLookupReader(CachedIndexLookupReader),
@@ -378,6 +387,25 @@ impl CachedPlan {
         }
         if let Some(value) = plan.as_any().downcast_ref::<PhysicalMergeJoin>() {
             return Ok(Self::MergeJoin(CachedMergeJoin::capture(value)?));
+        }
+        if let Some(value) = plan.as_any().downcast_ref::<crate::PhysicalIndexHashJoin>() {
+            return Ok(Self::IndexHashJoin(
+                CachedIndexJoin::capture(&value.PhysicalIndexJoin)?,
+                value.KeepOuterOrder,
+            ));
+        }
+        if let Some(value) = plan
+            .as_any()
+            .downcast_ref::<crate::PhysicalIndexMergeJoin>()
+        {
+            return Ok(Self::IndexMergeJoin(
+                CachedIndexJoin::capture(&value.PhysicalIndexJoin)?,
+                value.KeyOff2KeyOffOrderByIdx.clone(),
+                value.CompareFuncs.clone(),
+                value.OuterCompareFuncs.clone(),
+                value.NeedOuterSort,
+                value.Desc,
+            ));
         }
         if let Some(value) = plan.as_any().downcast_ref::<PhysicalIndexJoin>() {
             return Ok(Self::IndexJoin(CachedIndexJoin::capture(value)?));
@@ -456,6 +484,20 @@ impl CachedPlan {
             Self::HashJoin(plan) => Ok(Box::new(plan.restore(context)?)),
             Self::MergeJoin(plan) => Ok(Box::new(plan.restore(context)?)),
             Self::IndexJoin(plan) => Ok(Box::new(plan.restore(context)?)),
+            Self::IndexHashJoin(plan, keep) => Ok(Box::new(crate::PhysicalIndexHashJoin {
+                PhysicalIndexJoin: plan.restore(context)?,
+                KeepOuterOrder: *keep,
+            })),
+            Self::IndexMergeJoin(plan, keys, compare, outer, sort, desc) => {
+                Ok(Box::new(crate::PhysicalIndexMergeJoin {
+                    PhysicalIndexJoin: plan.restore(context)?,
+                    KeyOff2KeyOffOrderByIdx: keys.clone(),
+                    CompareFuncs: compare.clone(),
+                    OuterCompareFuncs: outer.clone(),
+                    NeedOuterSort: *sort,
+                    Desc: *desc,
+                }))
+            }
             Self::IndexReader(plan) => Ok(Box::new(plan.restore(context)?)),
             Self::TableReader(plan) => Ok(Box::new(plan.restore(context)?)),
             Self::IndexLookupReader(plan) => Ok(Box::new(plan.restore(context)?)),
@@ -1111,6 +1153,7 @@ impl CachedHashJoin {
 pub struct CachedMergeJoin {
     base: CachedBasePhysicalJoin,
     descending: bool,
+    compare_functions: Vec<crate::JoinCompareFunc>,
 }
 
 impl CachedMergeJoin {
@@ -1118,12 +1161,14 @@ impl CachedMergeJoin {
         Ok(Self {
             base: CachedBasePhysicalJoin::capture(&value.BasePhysicalJoin)?,
             descending: value.Desc,
+            compare_functions: value.CompareFuncs.clone(),
         })
     }
     fn restore(&self, context: ContextRef) -> Result<PhysicalMergeJoin, CacheSnapshotError> {
         Ok(PhysicalMergeJoin {
             BasePhysicalJoin: self.base.restore(context)?,
             Desc: self.descending,
+            CompareFuncs: self.compare_functions.clone(),
         })
     }
 }
@@ -1271,16 +1316,16 @@ impl CachedIndexJoin {
 
 #[derive(Clone)]
 pub struct CachedIndexHashJoin {
-    value: PhysicalIndexHashJoin,
+    value: LegacyPhysicalIndexHashJoin,
 }
 
 impl CachedIndexHashJoin {
-    pub fn capture(value: &PhysicalIndexHashJoin) -> Self {
+    pub fn capture(value: &LegacyPhysicalIndexHashJoin) -> Self {
         Self {
             value: value.clone(),
         }
     }
-    pub fn restore(&self) -> PhysicalIndexHashJoin {
+    pub fn restore(&self) -> LegacyPhysicalIndexHashJoin {
         self.value.clone()
     }
 }
@@ -1754,6 +1799,9 @@ pub struct CachedTableScan {
 
 impl CachedTableScan {
     fn capture(value: &PhysicalTableScan) -> Result<Self, CacheSnapshotError> {
+        if !value.UsedColumnarIndexes.is_empty() {
+            return Err(unsupported("TableScan columnar indexes are not cacheable"));
+        }
         Ok(Self {
             producer: CachedSchemaProducer::try_from_producer(&value.PhysicalSchemaProducer)?,
             table: value.Table.clone(),
@@ -1811,6 +1859,7 @@ impl CachedTableScan {
             KeepOrder: self.keep_order,
             IsCommonHandle: self.is_common_handle,
             TblColHists: self.table_column_histograms.clone(),
+            UsedColumnarIndexes: Vec::new(),
             Prop: self
                 .property
                 .as_ref()

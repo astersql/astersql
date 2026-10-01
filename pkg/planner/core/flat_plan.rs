@@ -188,6 +188,8 @@ pub fn FlattenTypedPhysicalPlan(plan: &dyn base::Plan) -> Option<Vec<TypedFlatOp
             && !origin.is::<physicalop::Delete>()
             && !origin.is::<physicalop::FKCheck>()
             && !origin.is::<physicalop::FKCascade>()
+            && !origin.is::<crate::RuntimeAnalyze>()
+            && !origin.is::<crate::RuntimeSimple>()
         {
             return None;
         }
@@ -222,7 +224,7 @@ pub fn FlattenTypedPhysicalPlan(plan: &dyn base::Plan) -> Option<Vec<TypedFlatOp
                 Some((join.PhysicalHashJoin.BasePhysicalJoin.InnerChildIdx, true))
             } else if let Some(join) = origin.downcast_ref::<physicalop::PhysicalHashJoin>() {
                 Some((join.BasePhysicalJoin.InnerChildIdx, join.UseOuterToBuild))
-            } else if let Some(join) = origin.downcast_ref::<physicalop::PhysicalIndexJoin>() {
+            } else if let Some(join) = physicalop::index_join_base(plan) {
                 Some((join.BasePhysicalJoin.InnerChildIdx, true))
             } else {
                 None

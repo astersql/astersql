@@ -60,6 +60,19 @@ pub struct TypedPointGet {
 }
 
 impl TypedPointGet {
+    /// A cached actor gets the current statement's pinned snapshot and statistics.
+    pub fn RebindRetriever(
+        &mut self,
+        retriever: Arc<dyn kv::Retriever + Send + Sync>,
+    ) -> AdapterResult {
+        if !self.IsReusable() {
+            return Err(errors::New("PointGet executor is still open"));
+        }
+        self.retriever = retriever.clone();
+        self.decoder.RebindRetriever(retriever);
+        Ok(())
+    }
+
     pub fn WithIndexMetadata(
         mut self,
         table: astersql_meta_model::TableInfo,

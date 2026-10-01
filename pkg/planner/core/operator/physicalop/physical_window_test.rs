@@ -178,3 +178,53 @@ fn resolve_indices_updates_passthrough_schema_columns_like_go() {
     assert_eq!(columns[0].Index, 0);
     assert_eq!(columns[1].Index, 100);
 }
+
+pub(super) fn ru_orchestration_context() -> base::ContextRef {
+    Arc::new(TestPlanContext::new())
+}
+
+#[test]
+fn ru_shuffle_clone_preserves_sources_keys_and_splitter() {
+    let ctx = ru_orchestration_context();
+    let mut source = PhysicalTableScan::New(ctx.clone());
+    let source_id = source.id();
+    source
+        .PhysicalSchemaProducer
+        .SetSchema(expression::NewSchema(vec![expression::Column::new(
+            (*expression::types::NewFieldType(mysql::r#type::TypeLonglong)).clone(),
+            7,
+            7,
+            0,
+        )]));
+    let mut shuffle = crate::PhysicalShuffle::New(ctx.clone(), 4, vec![]);
+    shuffle.DataSources = vec![Box::new(source)];
+    shuffle.ByItemArrays = vec![vec![Box::new(expression::Column::new(
+        (*expression::types::NewFieldType(mysql::r#type::TypeLonglong)).clone(),
+        7,
+        7,
+        99,
+    ))]];
+    shuffle.SplitterType = crate::physical_shuffle::PartitionSplitterType::Range;
+    shuffle.ResolveIndices().unwrap();
+    assert_eq!(
+        shuffle.ByItemArrays[0][0]
+            .as_any()
+            .downcast_ref::<expression::Column>()
+            .unwrap()
+            .Index,
+        0
+    );
+    let cloned = shuffle.Clone(ctx).unwrap();
+    assert_eq!(cloned.DataSources[0].id(), source_id);
+    assert_eq!(
+        cloned.SplitterType,
+        crate::physical_shuffle::PartitionSplitterType::Range
+    );
+    assert_eq!(cloned.ByItemArrays[0].len(), 1);
+    assert!(!std::ptr::eq(
+        cloned.DataSources[0].as_any(),
+        shuffle.DataSources[0].as_any()
+    ));
+    shuffle.ByItemArrays.clear();
+    assert!(shuffle.ResolveIndices().is_err());
+}

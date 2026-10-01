@@ -147,3 +147,80 @@ fn go_merge_195_failure_status_matches_go_metric_labels() {
     );
     assert_eq!((Panic.status(), Panic.label()), ("failed", "panic"));
 }
+
+#[test]
+fn go_merge_195_197_publish_snapshot_all_full_units() {
+    use crate::statement_ru_result::*;
+    use std::cell::RefCell;
+    #[derive(Default)]
+    struct Sink(RefCell<Vec<(String, String, String, f64)>>);
+    impl StatementRUPublicationSink for Sink {
+        fn consumption(&self, _: StatementRUEngineResult) {}
+        fn results(&self, _: &StatementRUFinalizedSnapshot) {}
+        fn unit(&self, engine: &str, operator: &str, unit: &str, value: f64) {
+            self.0
+                .borrow_mut()
+                .push((engine.into(), operator.into(), unit.into(), value));
+        }
+        fn statement(&self, status: &str, reason: &str) {
+            assert_eq!((status, reason), ("success", "incomplete"));
+        }
+        fn calibration(&self, _: StatementRUCalibrationState, _: StmtUnits) {}
+    }
+    let units = StmtUnits {
+        cpu_work: 1.0,
+        scan_bytes: 2.0,
+        net_bytes: 3.0,
+        cross_az_net_bytes: 4.0,
+        frontend_compile_bytes: 5.0,
+        hash_state_rows: 6.0,
+        join_output_rows: 7.0,
+        write_statement: 8.0,
+        operator_num: 9.0,
+        write_keys: 10.0,
+        write_bytes: 11.0,
+    };
+    let mut report = StatementRUFullReport::default();
+    report.add(
+        StatementRUEngine::TiFlash,
+        StatementRUOperator::CopTransport,
+        units,
+    );
+    // Unseen entries and zero-valued seen entries must not emit unit metrics.
+    report.units[1][0] = units;
+    report.add(
+        StatementRUEngine::TiDB,
+        StatementRUOperator::Wrapper,
+        StmtUnits::default(),
+    );
+    let snapshot = StatementRUFinalizedSnapshot {
+        units,
+        result: Default::default(),
+        engine_ru: Default::default(),
+        report: Some(report),
+        calibration_state: StatementRUCalibrationState::Incomplete,
+        sql_type: "select".into(),
+    };
+    let sink = Sink::default();
+    crate::statement_ru_reporting::publish_statement_ru_full_metrics(&sink, &snapshot);
+    let labels = [
+        "cpu_work",
+        "scan_bytes",
+        "net_bytes",
+        "cross_az_net_bytes",
+        "frontend_compile_bytes",
+        "hash_state_rows",
+        "join_output_rows",
+        "write_statement",
+        "operator_num",
+        "write_keys",
+        "write_bytes",
+    ];
+    assert_eq!(sink.0.borrow().len(), 11);
+    for (index, (engine, operator, unit, value)) in sink.0.borrow().iter().enumerate() {
+        assert_eq!(
+            (engine.as_str(), operator.as_str(), unit.as_str(), *value),
+            ("tiflash", "coprocessor", labels[index], (index + 1) as f64)
+        );
+    }
+}

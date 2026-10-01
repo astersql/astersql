@@ -51,6 +51,11 @@ pub struct PhysicalShuffle {
     pub Concurrency: usize,
     /// 喂入 splitter 的数据源 ExplainID 列表。
     pub DataSourceExplainIDs: Vec<String>,
+    /// Typed sources feeding the splitter; they are not additional flat children.
+    pub DataSources: Vec<Box<dyn PhysicalPlan>>,
+    /// Go's per-source partition keys, used for shuffle work and index resolution.
+    pub ByItemArrays: Vec<Vec<expression::ExprBox>>,
+    pub SplitterType: crate::physical_shuffle::PartitionSplitterType,
 }
 
 /// Worker-side receiver; Go keeps its data source outside Children().
@@ -126,6 +131,9 @@ impl PhysicalShuffle {
             )),
             Concurrency: concurrency,
             DataSourceExplainIDs: data_source_explain_ids,
+            DataSources: Vec::new(),
+            ByItemArrays: Vec::new(),
+            SplitterType: Default::default(),
         }
     }
 
@@ -167,7 +175,7 @@ impl PhysicalShuffle {
         let mut producer = PhysicalSchemaProducer::New(
             self.PhysicalSchemaProducer
                 .BasePhysicalPlan
-                .CloneWithNewCtx(new_ctx)?,
+                .CloneWithNewCtx(new_ctx.clone())?,
         );
         if let Some(schema) = self.PhysicalSchemaProducer.SchemaRef() {
             producer.SetSchema(schema.Clone());
@@ -176,21 +184,51 @@ impl PhysicalShuffle {
             PhysicalSchemaProducer: producer,
             Concurrency: self.Concurrency,
             DataSourceExplainIDs: self.DataSourceExplainIDs.clone(),
+            DataSources: self
+                .DataSources
+                .iter()
+                .map(|source| source.clone_physical(new_ctx.clone()))
+                .collect::<Result<_, _>>()?,
+            ByItemArrays: self
+                .ByItemArrays
+                .iter()
+                .map(|items| items.iter().map(|item| item.CloneExpr()).collect())
+                .collect(),
+            SplitterType: self.SplitterType,
         })
     }
 
     /// Explain：并发度与数据源 ID。
     pub fn ExplainInfo(&self) -> String {
+        let source_ids = if self.DataSources.is_empty() {
+            self.DataSourceExplainIDs.clone()
+        } else {
+            self.DataSources
+                .iter()
+                .map(|source| source.explain_id(&[]).to_string())
+                .collect()
+        };
         format!(
             "execution info: concurrency:{}, data sources:[{}]",
             self.Concurrency,
-            self.DataSourceExplainIDs.join(",")
+            source_ids.join(",")
         )
     }
 
     /// 解析子树列下标。
     pub fn ResolveIndices(&mut self) -> Result<(), expression::Error> {
-        self.PhysicalSchemaProducer.ResolveIndices()
+        self.PhysicalSchemaProducer.ResolveIndices()?;
+        if self.DataSources.len() != self.ByItemArrays.len() {
+            return Err(expression::errors::New(
+                "shuffle data sources and partition keys differ",
+            ));
+        }
+        for (source, items) in self.DataSources.iter().zip(&mut self.ByItemArrays) {
+            for item in items {
+                *item = item.ResolveIndices(source.schema())?;
+            }
+        }
+        Ok(())
     }
 
     /// 估算 Shuffle 内存占用。
@@ -201,6 +239,17 @@ impl PhysicalShuffle {
                 .iter()
                 .map(String::capacity)
                 .sum::<usize>() as i64
+            + self
+                .DataSources
+                .iter()
+                .map(|source| source.memory_usage())
+                .sum::<i64>()
+            + self
+                .ByItemArrays
+                .iter()
+                .flatten()
+                .map(|item| item.MemoryUsage())
+                .sum::<i64>()
     }
 
     /// Shuffle 本身不含相关列。

@@ -472,7 +472,7 @@ fn canonical_prepared_exec_stmt_binds_limit_and_streams_rows_then_restores_plan_
 
     fn prepared_stmt(owner: Arc<crate::runtime::SessionBoundAdapterOwner>) -> ExecStmt {
         let execute = "execute prepared_limit";
-        owner
+        let stmt = owner
             .BuildExecStmt(
                 PlanInfo {
                     id: 42,
@@ -501,7 +501,12 @@ fn canonical_prepared_exec_stmt_binds_limit_and_streams_rows_then_restores_plan_
                 }],
                 true,
             )
-            .expect("build prepared ExecStmt from bound physical plan")
+            .expect("build prepared ExecStmt from bound physical plan");
+        assert!(
+            stmt.StatementCtx.statement_ru_owner.is_some(),
+            "prepared SELECT must install its owner before EXECUTE unwraps"
+        );
+        stmt
     }
 
     fn physical_limits(plan: &dyn astersql_planner_core_base::PhysicalPlan) -> Vec<(u64, u64)> {

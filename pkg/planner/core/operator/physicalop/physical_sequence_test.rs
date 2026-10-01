@@ -146,3 +146,23 @@ fn schema_attach_and_explain_follow_the_main_query_like_go() {
     assert_eq!(attached.schema, vec![20, 21]);
     assert_eq!(attached.stats.row_count, 42.0);
 }
+
+#[test]
+fn ru_concrete_sequence_clone_retains_child_order() {
+    use base::{PhysicalPlan as _, Plan as _};
+    let ctx = crate::physical_window_test::ru_orchestration_context();
+    let mut plan = crate::PhysicalSequence::New(ctx.clone());
+    let first = crate::PhysicalCTETable::New(ctx.clone(), 17);
+    let second = crate::PhysicalTableDual::New(ctx.clone(), 1);
+    let ids = vec![first.id(), second.id()];
+    plan.set_children(vec![Box::new(first), Box::new(second)]);
+    let clone = plan.Clone(ctx).unwrap();
+    assert_eq!(
+        clone
+            .children()
+            .iter()
+            .map(|child| child.id())
+            .collect::<Vec<_>>(),
+        ids
+    );
+}

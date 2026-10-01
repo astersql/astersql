@@ -2128,6 +2128,7 @@ impl ConcreteSession {
             }
             Ok(())
         })();
+        statement.RecordStatementRUFinalOutcome(read.is_ok());
         let close = record_set
             .Close()
             .map_err(|error| session_error("close prepared result", error));

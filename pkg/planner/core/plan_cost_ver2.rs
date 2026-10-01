@@ -639,7 +639,7 @@ fn get_canonical_plan_cost_ver2_inner<'a>(
             });
     }
 
-    if let Some(join) = any.downcast_ref::<physicalop::PhysicalIndexJoin>() {
+    if let Some(join) = physicalop::index_join_base_any(any) {
         let children = plan.children();
         if children.len() == 2 {
             let inner_index = join.BasePhysicalJoin.InnerChildIdx.min(1);
@@ -1284,7 +1284,7 @@ fn get_canonical_plan_cost_ver2_inner<'a>(
             .filter(|inner| {
                 grouped_index_join_projection
                     || inner.as_any().is::<physicalop::PhysicalHashJoin>()
-                    || inner.as_any().is::<physicalop::PhysicalIndexJoin>()
+                    || physicalop::index_join_base_any(inner.as_any()).is_some()
                     || matches!(inner.tp(&[]).as_str(), "IndexHashJoin" | "IndexMergeJoin")
             })
             .unwrap_or(child);

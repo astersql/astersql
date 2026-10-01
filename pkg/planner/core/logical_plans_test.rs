@@ -979,3 +979,38 @@ fn unique_key_and_delete_fixtures_are_typed_and_reach_real_planner_paths() {
         }
     }
 }
+
+#[test]
+fn go_merge_187_mpp_cte_site_optimizer_retains_shuffle_evidence_fields() {
+    let fixture = plan_fixture("TestWindowParallelFunction");
+    let sql = fixture
+        .cases
+        .iter()
+        .zip(&fixture.expected)
+        .find_map(|(case, expected)| {
+            matches!(expected, FixtureExpected::Plan(plan) if plan.contains("Partition("))
+                .then(|| case.sql())
+        })
+        .expect("parallel window fixture must contain a shuffle");
+    let plan = optimize_query_without_post_with_window_concurrency_for_test(sql, 4).unwrap();
+    let tree = super::FlattenTypedPhysicalPlan(plan.as_ref()).unwrap();
+    let shuffle = tree
+        .iter()
+        .find_map(|op| {
+            op.Origin
+                .as_any()
+                .downcast_ref::<physicalop::PhysicalShuffle>()
+        })
+        .unwrap();
+    assert_eq!(shuffle.DataSources.len(), 1);
+    assert_eq!(shuffle.ByItemArrays.len(), 1);
+    assert!(!shuffle.ByItemArrays[0].is_empty());
+    assert_eq!(
+        shuffle.SplitterType,
+        physicalop::physical_shuffle::PartitionSplitterType::Hash
+    );
+    assert!(
+        tree.iter()
+            .any(|op| op.Origin.id() == shuffle.DataSources[0].id())
+    );
+}

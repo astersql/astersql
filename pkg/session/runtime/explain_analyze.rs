@@ -142,6 +142,7 @@ impl ConcreteSession {
                 }
                 Ok(())
             })();
+            exec_stmt.RecordStatementRUFinalOutcome(read.is_ok());
             let close = record_set
                 .Close()
                 .map_err(|error| session_error("close EXPLAIN ANALYZE result", error));

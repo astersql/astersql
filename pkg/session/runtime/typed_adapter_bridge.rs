@@ -27,6 +27,7 @@ use super::ConcreteSession;
 pub struct OwnedKVSnapshotSource {
     domain: Arc<astersql_domain::Domain>,
     version: kv::Version,
+    read_stats: Option<Arc<astersql_store_driver::ReadStats>>,
 }
 
 /// The original statement keeps the canonical, thread-local session alive.
@@ -50,6 +51,8 @@ pub struct SessionBoundAdapterOwner {
     pub(super) runaway_checker:
         RefCell<Option<Arc<astersql_resourcegroup_runaway::checker::Checker>>>,
     pub(super) runaway_resource_group_override: RefCell<Option<String>>,
+    pub(super) point_read_stats_active: Cell<bool>,
+    pub(super) point_read_stats: Arc<std::sync::Mutex<Arc<astersql_store_driver::ReadStats>>>,
     pub(super) point_cache: RefCell<
         HashMap<String, Arc<std::sync::Mutex<astersql_executor::typed_point_get::TypedPointGet>>>,
     >,
@@ -446,7 +449,7 @@ impl SessionBoundAdapterOwner {
         let typed_plan = Arc::from(typed_plan);
         let sql = statement.text.clone();
         let statement_kind = statement.kind;
-        Ok(ExecStmt {
+        let mut stmt = ExecStmt {
             GoCtx: None,
             InfoSchema: 0,
             Plan: plan_summary.clone(),
@@ -471,7 +474,9 @@ impl SessionBoundAdapterOwner {
                 plan: Some(plan_summary),
                 ..Default::default()
             },
-        })
+        };
+        astersql_executor::statement_ru_result::install_statement_ru_owner(&mut stmt);
+        Ok(stmt)
     }
 
     pub fn new(session: ConcreteSession) -> Self {
@@ -493,6 +498,10 @@ impl SessionBoundAdapterOwner {
             top_sql_current: RefCell::new(None),
             runaway_checker: RefCell::new(None),
             runaway_resource_group_override: RefCell::new(None),
+            point_read_stats_active: Cell::new(false),
+            point_read_stats: Arc::new(std::sync::Mutex::new(Arc::new(
+                astersql_store_driver::ReadStats::default(),
+            ))),
             point_cache: RefCell::new(HashMap::new()),
         }
     }
@@ -952,8 +961,20 @@ impl SessionBoundAdapterOwner {
 }
 
 impl OwnedKVSnapshotSource {
+    pub(super) fn with_read_stats(
+        mut self,
+        stats: Option<Arc<astersql_store_driver::ReadStats>>,
+    ) -> Self {
+        self.read_stats = stats;
+        self
+    }
+
     pub fn new(domain: Arc<astersql_domain::Domain>, version: kv::Version) -> Self {
-        Self { domain, version }
+        Self {
+            domain,
+            version,
+            read_stats: None,
+        }
     }
 }
 
@@ -964,9 +985,13 @@ impl kv::Getter for OwnedKVSnapshotSource {
         key: kv::Key,
         options: &[kv::GetOption],
     ) -> Result<kv::ValueEntry, astersql_errors::SharedError> {
-        self.domain
-            .storage()
-            .with_storage(|storage| storage.GetSnapshot(self.version).Get(context, key, options))
+        self.domain.storage().with_storage(|storage| {
+            let mut snapshot = storage.GetSnapshot(self.version);
+            if let Some(stats) = &self.read_stats {
+                snapshot.SetOption(kv::CollectRuntimeStats, Some(Box::new(stats.clone())));
+            }
+            snapshot.Get(context, key, options)
+        })
     }
 }
 

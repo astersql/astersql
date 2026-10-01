@@ -594,8 +594,8 @@
 // ---- 以下为可执行的 Rust 克隆接线 ----
 
 use crate::physical_common_plans::{Delete, Insert, PhysicalPlanNode, Update};
-use crate::physical_index_hash_join::PhysicalIndexHashJoin;
-use crate::physical_index_merge_join::PhysicalIndexMergeJoin;
+use crate::physical_index_hash_join::LegacyPhysicalIndexHashJoin;
+use crate::physical_index_merge_join::LegacyPhysicalIndexMergeJoin;
 use crate::physical_indexlookup::PhysicalLocalIndexLookup;
 use crate::{PhysicalHashJoin, PhysicalIndexJoin, PhysicalMergeJoin};
 
@@ -663,6 +663,7 @@ impl CloneForPlanCache for PhysicalMergeJoin {
                     .clone(),
             )?,
             Desc: self.Desc,
+            CompareFuncs: self.CompareFuncs.clone(),
         })
     }
 }
@@ -745,7 +746,7 @@ impl CloneForPlanCache for Delete {
     }
 }
 /// 分别克隆 outer/inner 子计划。
-impl CloneForPlanCache for PhysicalIndexHashJoin {
+impl CloneForPlanCache for LegacyPhysicalIndexHashJoin {
     fn clone_for_plan_cache(&self) -> Option<Self> {
         Some(Self {
             outer: self.outer.clone_for_plan_cache()?,
@@ -755,7 +756,7 @@ impl CloneForPlanCache for PhysicalIndexHashJoin {
     }
 }
 /// 分别克隆 outer/inner 子计划。
-impl CloneForPlanCache for PhysicalIndexMergeJoin {
+impl CloneForPlanCache for LegacyPhysicalIndexMergeJoin {
     fn clone_for_plan_cache(&self) -> Option<Self> {
         Some(Self {
             outer: self.outer.clone_for_plan_cache()?,
@@ -806,7 +807,7 @@ pub enum CachePlan {
     HashJoin(PhysicalPlanNode),
     MergeJoin(PhysicalPlanNode),
     IndexJoin(PhysicalPlanNode),
-    IndexHashJoin(PhysicalIndexHashJoin),
+    IndexHashJoin(LegacyPhysicalIndexHashJoin),
     IndexReader(PhysicalPlanNode),
     TableReader(PhysicalPlanNode),
     IndexMergeReader(PhysicalPlanNode),

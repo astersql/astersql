@@ -135,7 +135,7 @@ pub struct RuntimeExplain {
     /// 简单 Schema 生产者基座。
     pub SimpleSchemaProducer: physicalop::SimpleSchemaProducer,
     /// EXPLAIN 目标物理计划。
-    pub TargetPlan: Box<dyn base::PhysicalPlan>,
+    pub TargetPlan: Box<dyn base::Plan>,
     /// EXPLAIN 输出格式。
     pub Format: String,
     /// 是否 EXPLAIN ANALYZE。
@@ -146,7 +146,7 @@ impl RuntimeExplain {
     /// 构造 RuntimeExplain 并初始化空 Schema。
     pub fn New(
         ctx: base::ContextRef,
-        target: Box<dyn base::PhysicalPlan>,
+        target: Box<dyn base::Plan>,
         format: String,
         analyze: bool,
     ) -> Self {
@@ -225,8 +225,21 @@ impl base::Plan for RuntimeExplain {
         &self,
         new_ctx: base::ContextRef,
     ) -> (Option<Box<dyn base::Plan>>, bool) {
-        let Ok(target) = self.TargetPlan.clone_physical(new_ctx.clone()) else {
-            return (None, false);
+        let target = if let Some(physical) = self.TargetPlan.as_physical_plan() {
+            let Ok(target) = physical.clone_physical(new_ctx.clone()) else {
+                return (None, false);
+            };
+            let target: Box<dyn base::Plan> = target;
+            target
+        } else {
+            let (target, ok) = self.TargetPlan.clone_for_plan_cache(new_ctx.clone());
+            if !ok {
+                return (None, false);
+            }
+            let Some(target) = target else {
+                return (None, false);
+            };
+            target
         };
         (
             Some(Box::new(Self {
@@ -323,6 +336,155 @@ impl base::Plan for RuntimeExecute {
             return (None, false);
         };
         (Some(Box::new(Self::New(Arc::from(plan)))), true)
+    }
+    fn set_noncacheable_reason(&mut self, reason: String) {
+        self.SimpleSchemaProducer.Plan.SetNoncacheableReason(reason)
+    }
+    fn get_noncacheable_reason(&self) -> String {
+        self.SimpleSchemaProducer.Plan.GetNoncacheableReason()
+    }
+}
+
+/// Nonphysical ANALYZE plan retains all planned tasks and options.
+pub struct RuntimeAnalyze {
+    pub SimpleSchemaProducer: physicalop::SimpleSchemaProducer,
+    pub Analyze: crate::Analyze,
+}
+impl RuntimeAnalyze {
+    pub fn New(ctx: base::ContextRef, analyze: crate::Analyze) -> Self {
+        let mut producer = physicalop::SimpleSchemaProducer::New(ctx, "Analyze", 0);
+        producer.SetSchema(expression::NewSchema(Vec::new()));
+        Self {
+            SimpleSchemaProducer: producer,
+            Analyze: analyze,
+        }
+    }
+}
+/// A simple plan retains the actual AST, including COMMIT completion semantics.
+pub struct RuntimeSimple {
+    pub SimpleSchemaProducer: physicalop::SimpleSchemaProducer,
+    pub Statement: ast::NodeRef,
+}
+impl RuntimeSimple {
+    pub fn New(ctx: base::ContextRef, statement: ast::NodeRef) -> Self {
+        let mut producer = physicalop::SimpleSchemaProducer::New(ctx, "Simple", 0);
+        producer.SetSchema(expression::NewSchema(Vec::new()));
+        Self {
+            SimpleSchemaProducer: producer,
+            Statement: statement,
+        }
+    }
+}
+impl base::Plan for RuntimeAnalyze {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn schema(&self) -> &expression::Schema {
+        self.SimpleSchemaProducer
+            .SchemaRef()
+            .expect("nonphysical plan initializes schema")
+    }
+    fn id(&self) -> i32 {
+        self.SimpleSchemaProducer.Plan.ID()
+    }
+    fn set_id(&mut self, id: i32) {
+        self.SimpleSchemaProducer.Plan.SetID(id)
+    }
+    fn tp(&self, flags: &[bool]) -> String {
+        self.SimpleSchemaProducer.Plan.TP(flags)
+    }
+    fn explain_id(&self, flags: &[bool]) -> Box<dyn std::fmt::Display + '_> {
+        self.SimpleSchemaProducer.Plan.ExplainID(flags)
+    }
+    fn explain_info(&self) -> String {
+        self.SimpleSchemaProducer.Plan.ExplainInfo()
+    }
+    fn replace_expr_columns(&mut self, replace: &HashMap<String, expression::Column>) {
+        self.SimpleSchemaProducer.Plan.ReplaceExprColumns(replace)
+    }
+    fn s_ctx(&self) -> &base::ContextRef {
+        self.SimpleSchemaProducer.Plan.SCtx()
+    }
+    fn stats_info(&self) -> &property_dependency::StatsInfo {
+        &EMPTY_EXPLAIN_STATS
+    }
+    fn output_names(&self) -> base::types::NameSlice {
+        self.SimpleSchemaProducer.OutputNames()
+    }
+    fn set_output_names(&mut self, names: base::types::NameSlice) {
+        self.SimpleSchemaProducer.SetOutputNames(names)
+    }
+    fn query_block_offset(&self) -> i32 {
+        self.SimpleSchemaProducer.Plan.QueryBlockOffset()
+    }
+    // Go does not cache ANALYZE or transaction-control simple plans.
+    fn clone_for_plan_cache(
+        &self,
+        _new_ctx: base::ContextRef,
+    ) -> (Option<Box<dyn base::Plan>>, bool) {
+        (None, false)
+    }
+    fn set_noncacheable_reason(&mut self, reason: String) {
+        self.SimpleSchemaProducer.Plan.SetNoncacheableReason(reason)
+    }
+    fn get_noncacheable_reason(&self) -> String {
+        self.SimpleSchemaProducer.Plan.GetNoncacheableReason()
+    }
+}
+impl base::Plan for RuntimeSimple {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn schema(&self) -> &expression::Schema {
+        self.SimpleSchemaProducer
+            .SchemaRef()
+            .expect("nonphysical plan initializes schema")
+    }
+    fn id(&self) -> i32 {
+        self.SimpleSchemaProducer.Plan.ID()
+    }
+    fn set_id(&mut self, id: i32) {
+        self.SimpleSchemaProducer.Plan.SetID(id)
+    }
+    fn tp(&self, flags: &[bool]) -> String {
+        self.SimpleSchemaProducer.Plan.TP(flags)
+    }
+    fn explain_id(&self, flags: &[bool]) -> Box<dyn std::fmt::Display + '_> {
+        self.SimpleSchemaProducer.Plan.ExplainID(flags)
+    }
+    fn explain_info(&self) -> String {
+        self.SimpleSchemaProducer.Plan.ExplainInfo()
+    }
+    fn replace_expr_columns(&mut self, replace: &HashMap<String, expression::Column>) {
+        self.SimpleSchemaProducer.Plan.ReplaceExprColumns(replace)
+    }
+    fn s_ctx(&self) -> &base::ContextRef {
+        self.SimpleSchemaProducer.Plan.SCtx()
+    }
+    fn stats_info(&self) -> &property_dependency::StatsInfo {
+        &EMPTY_EXPLAIN_STATS
+    }
+    fn output_names(&self) -> base::types::NameSlice {
+        self.SimpleSchemaProducer.OutputNames()
+    }
+    fn set_output_names(&mut self, names: base::types::NameSlice) {
+        self.SimpleSchemaProducer.SetOutputNames(names)
+    }
+    fn query_block_offset(&self) -> i32 {
+        self.SimpleSchemaProducer.Plan.QueryBlockOffset()
+    }
+    // Go does not cache ANALYZE or transaction-control simple plans.
+    fn clone_for_plan_cache(
+        &self,
+        _new_ctx: base::ContextRef,
+    ) -> (Option<Box<dyn base::Plan>>, bool) {
+        (None, false)
     }
     fn set_noncacheable_reason(&mut self, reason: String) {
         self.SimpleSchemaProducer.Plan.SetNoncacheableReason(reason)

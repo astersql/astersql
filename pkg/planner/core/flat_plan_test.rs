@@ -96,3 +96,65 @@ fn physical_children_inherit_root_status_like_go() {
     assert!(flat.Main[0].IsRoot);
     assert!(flat.Main[1].IsRoot);
 }
+
+use base::Plan;
+use base_dependency as base;
+use std::sync::{
+    Arc,
+    atomic::{AtomicI32, Ordering},
+};
+struct TypedPlanTestContext(
+    AtomicI32,
+    base::BuiltinFunctionUsageCounter,
+    variable_dependency::session::SessionVars,
+);
+
+impl base::PlanContext for TypedPlanTestContext {
+    fn alloc_plan_id(&self) -> i32 {
+        self.0.fetch_add(1, Ordering::SeqCst) + 1
+    }
+    fn ignore_explain_id_suffix(&self) -> bool {
+        false
+    }
+    fn GetSessionVars(&self) -> &variable_dependency::session::SessionVars {
+        &self.2
+    }
+    fn GetExprCtx(&self) -> &dyn expression_dependency::exprctx::ExprContext {
+        unreachable!()
+    }
+    fn GetRangerCtx(&self) -> &base::RangerContext<'_> {
+        unreachable!()
+    }
+    fn GetNullRejectCheckExprCtx(&self) -> &dyn expression_dependency::exprctx::ExprContext {
+        unreachable!()
+    }
+    fn GetBuildPBCtx(&self) -> &base::BuildPBContext {
+        unreachable!()
+    }
+    fn BuiltinFunctionUsageInc(&self, name: &str) {
+        self.1.Inc(name)
+    }
+}
+
+#[test]
+fn go_merge_187_analyze_and_commit_flat_leaves() {
+    let context: base::ContextRef = Arc::new(TypedPlanTestContext(
+        AtomicI32::new(0),
+        Default::default(),
+        Default::default(),
+    ));
+    let analyze = crate::RuntimeAnalyze::New(context.clone(), Default::default());
+    let tree = crate::FlattenTypedPhysicalPlan(&analyze).expect("ANALYZE must reach the RU walker");
+    assert_eq!(tree.len(), 1);
+    assert_eq!(tree[0].Origin.id(), analyze.id());
+    assert!(tree[0].IsRoot);
+    assert!(tree[0].ChildrenIdx.is_empty());
+    let commit = crate::RuntimeSimple::New(
+        context,
+        crate::ast::NodeRef::new(Box::new(crate::ast::CommitStmt::default())),
+    );
+    let tree = crate::FlattenTypedPhysicalPlan(&commit).expect("COMMIT must reach the RU walker");
+    assert_eq!(tree.len(), 1);
+    assert!(tree[0].IsRoot);
+    assert!(tree[0].ChildrenIdx.is_empty());
+}

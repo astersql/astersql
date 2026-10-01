@@ -109,7 +109,7 @@
 use crate::physical_common_plans::{PhysicalKind, PhysicalPlanNode};
 #[derive(Clone, Debug, PartialEq)]
 /// 索引哈希连接骨架：outer/inner 子计划、是否保序与并发度。
-pub struct PhysicalIndexHashJoin {
+pub struct LegacyPhysicalIndexHashJoin {
     /// 外表（驱动侧）物理计划节点。
     pub outer: PhysicalPlanNode,
     /// 内表（索引探测侧）物理计划节点。
@@ -121,7 +121,7 @@ pub struct PhysicalIndexHashJoin {
     /// 缓存的 V1 计划代价，避免重复计算。
     pub cached_cost: Option<f64>,
 }
-impl PhysicalIndexHashJoin {
+impl LegacyPhysicalIndexHashJoin {
     /// 合并两侧 Schema，组装 IndexHashJoin 计划节点。
     pub fn attach_to_task(&self) -> PhysicalPlanNode {
         let mut schema = self.outer.schema.clone();
@@ -181,5 +181,43 @@ impl PhysicalIndexHashJoin {
     /// 估算本结构及子计划内存。
     pub fn memory_usage(&self) -> i64 {
         std::mem::size_of::<Self>() as i64 + self.outer.memory_usage() + self.inner.memory_usage()
+    }
+}
+
+/// Go-compatible index join retaining the complete execution contract.
+pub struct PhysicalIndexHashJoin {
+    pub PhysicalIndexJoin: crate::PhysicalIndexJoin,
+    pub KeepOuterOrder: bool,
+}
+impl std::ops::Deref for PhysicalIndexHashJoin {
+    type Target = crate::PhysicalIndexJoin;
+    fn deref(&self) -> &Self::Target {
+        &self.PhysicalIndexJoin
+    }
+}
+impl std::ops::DerefMut for PhysicalIndexHashJoin {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.PhysicalIndexJoin
+    }
+}
+impl PhysicalIndexHashJoin {
+    pub fn New(mut join: crate::PhysicalIndexJoin) -> Self {
+        join.BasePhysicalJoin
+            .PhysicalSchemaProducer
+            .BasePhysicalPlan
+            .SetTP("IndexHashJoin");
+        Self {
+            PhysicalIndexJoin: join,
+            KeepOuterOrder: false,
+        }
+    }
+    pub fn MemoryUsage(&self) -> i64 {
+        self.PhysicalIndexJoin.MemoryUsage() + std::mem::size_of::<bool>() as i64
+    }
+    pub fn Clone(&self, context: base::ContextRef) -> Result<Self, expression::Error> {
+        Ok(Self {
+            PhysicalIndexJoin: self.PhysicalIndexJoin.Clone(context)?,
+            KeepOuterOrder: self.KeepOuterOrder,
+        })
     }
 }

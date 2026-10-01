@@ -342,6 +342,7 @@ pub struct CopRuntimeStats {
     // executed on each instance.
     pub stats: basicCopRuntimeStats,
     pub scanDetail: util::ScanDetail,
+    scanDetailObserved: bool,
     pub timeDetail: util::TimeDetail,
     pub readPoolTaskDetails: Option<util::PoolTaskDetails>,
     pub storeType: kv::StoreType,
@@ -765,6 +766,10 @@ impl RuntimeStatsColl {
     }
 
     fn shared_group_stats_string(&self, planID: i32, root: &RootRuntimeStats) -> String {
+        self.shared_group_stats(planID, root).String()
+    }
+
+    fn shared_group_stats(&self, planID: i32, root: &RootRuntimeStats) -> RootRuntimeStats {
         let mut combined = RootRuntimeStats::default();
         combined.groupRss = root.groupRss.iter().map(|group| group.CloneBox()).collect();
         let shared = self
@@ -784,7 +789,7 @@ impl RuntimeStatsColl {
                 }
             }
         }
-        combined.String()
+        combined
     }
 
     // RegisterStats register execStat for a executor.
@@ -949,8 +954,8 @@ impl RuntimeStatsColl {
     }
 
     pub fn GetRootWriteCPUWork(&self, planID: i32) -> Option<f64> {
-        self.rootStats
-            .get(&planID)?
+        let empty = RootRuntimeStats::default();
+        self.shared_group_stats(planID, self.rootStats.get(&planID).unwrap_or(&empty))
             .groupRss
             .iter()
             .find_map(|stat| {
@@ -961,8 +966,8 @@ impl RuntimeStatsColl {
     }
 
     pub fn GetRootHashStateRowsSnapshot(&self, planID: i32) -> Option<HashStateRowsSnapshot> {
-        self.rootStats
-            .get(&planID)?
+        let empty = RootRuntimeStats::default();
+        self.shared_group_stats(planID, self.rootStats.get(&planID).unwrap_or(&empty))
             .groupRss
             .iter()
             .find_map(|stat| {
@@ -973,8 +978,13 @@ impl RuntimeStatsColl {
     }
 
     pub fn GetCopScanDetail(&self, planID: i32) -> Option<util::ScanDetail> {
-        self.copStats
-            .get(&planID)
+        self.copStats.get(&planID).map(|stats| stats.scanDetail.clone())
+    }
+
+    /// Presence-aware bridge snapshot; legacy Go-compatible getters keep their
+    /// best-effort zero value when only a runtime summary was recorded.
+    pub fn GetObservedCopScanDetail(&self, planID: i32) -> Option<util::ScanDetail> {
+        self.copStats.get(&planID).filter(|stats| stats.scanDetailObserved)
             .map(|stats| stats.scanDetail.clone())
     }
 
@@ -1019,6 +1029,7 @@ impl RuntimeStatsColl {
         if let Some(copStats) = self.copStats.get_mut(&planID) {
             if let Some(scan) = scan {
                 copStats.scanDetail.Merge(scan);
+                copStats.scanDetailObserved = true;
             }
             copStats.timeDetail.Merge(&time);
         } else {
@@ -1029,6 +1040,7 @@ impl RuntimeStatsColl {
             };
             if let Some(scan) = scan {
                 stats.scanDetail = scan.clone();
+                stats.scanDetailObserved = true;
             }
             self.copStats.insert(planID, stats);
         }

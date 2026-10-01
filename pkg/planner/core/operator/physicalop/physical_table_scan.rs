@@ -78,6 +78,8 @@ pub struct PhysicalTableScan {
     pub TblColHists: Option<HistCollRef>,
     /// 物化时记录的物理属性（排序等）。
     pub Prop: Option<PhysicalProperty>,
+    /// Columnar search operators are outside the ordinary MPP RU model.
+    pub UsedColumnarIndexes: Vec<ColumnarIndexExtra>,
 }
 
 impl PhysicalTableScan {
@@ -136,6 +138,7 @@ impl PhysicalTableScan {
             IsCommonHandle: false,
             TblColHists: None,
             Prop: None,
+            UsedColumnarIndexes: Vec::new(),
         }
     }
 
@@ -184,6 +187,7 @@ impl PhysicalTableScan {
             IsCommonHandle: self.IsCommonHandle,
             TblColHists: self.TblColHists.clone(),
             Prop: self.Prop.clone(),
+            UsedColumnarIndexes: self.UsedColumnarIndexes.clone(),
         })
     }
 

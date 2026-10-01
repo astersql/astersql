@@ -268,6 +268,7 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
         plan: &PlanInfo,
         telemetry: Option<&TelemetryInfo>,
     ) -> AdapterResult<Box<dyn ExecExecutor>> {
+        self.point_read_stats_active.set(false);
         if plan.kind == PlanKind::Analyze {
             let sql =
                 self.analyze_sql.borrow().clone().ok_or_else(|| {
@@ -371,6 +372,9 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
         if plan.kind != PlanKind::PointGet {
             return Err(errors::New("point get requires a PointGet plan"));
         }
+        self.point_read_stats_active.set(self.RUVersion() == 3);
+        *self.point_read_stats.lock().unwrap() =
+            Arc::new(astersql_store_driver::ReadStats::default());
         let physical = self.physical_scan.borrow();
         let binding = physical
             .as_ref()
@@ -412,6 +416,19 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
                     let reusable = {
                         let mut actor = cached.lock().expect("PointGet actor lock poisoned");
                         if actor.RecreatedFromPlan(point).is_ok() {
+                            // Reusing the actor must not reuse the preceding statement's RPC statistics.
+                            let source = Arc::new(
+                                super::typed_adapter_bridge::OwnedKVSnapshotSource::new(
+                                    Arc::clone(&self.session.domain),
+                                    binding.version,
+                                )
+                                .with_read_stats(
+                                    self.point_read_stats_active
+                                        .get()
+                                        .then(|| self.point_read_stats.lock().unwrap().clone()),
+                                ),
+                            );
+                            actor.RebindRetriever(source)?;
                             actor.SetDiagnosticMode(weak_consistency, redact_mode.clone());
                             true
                         } else {
@@ -431,10 +448,17 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
                         ));
                     }
                 }
-                let source = Arc::new(super::typed_adapter_bridge::OwnedKVSnapshotSource::new(
-                    Arc::clone(&self.session.domain),
-                    binding.version,
-                ));
+                let source = Arc::new(
+                    super::typed_adapter_bridge::OwnedKVSnapshotSource::new(
+                        Arc::clone(&self.session.domain),
+                        binding.version,
+                    )
+                    .with_read_stats(
+                        self.point_read_stats_active
+                            .get()
+                            .then(|| self.point_read_stats.lock().unwrap().clone()),
+                    ),
+                );
                 let mut fresh = astersql_executor::builder::BuildTypedPointGet(
                     point,
                     source,
@@ -452,10 +476,17 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
                 ));
             }
         }
-        let source = Arc::new(super::typed_adapter_bridge::OwnedKVSnapshotSource::new(
-            Arc::clone(&self.session.domain),
-            binding.version,
-        ));
+        let source = Arc::new(
+            super::typed_adapter_bridge::OwnedKVSnapshotSource::new(
+                Arc::clone(&self.session.domain),
+                binding.version,
+            )
+            .with_read_stats(
+                self.point_read_stats_active
+                    .get()
+                    .then(|| self.point_read_stats.lock().unwrap().clone()),
+            ),
+        );
         let mut executor = astersql_executor::builder::BuildTypedPointGet(
             point,
             source,
@@ -1514,6 +1545,85 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
                 })
         })
     }
+    fn StatementRURuntimeEvidence(
+        &self,
+        plan_ids: &[i32],
+    ) -> astersql_executor::statement_ru_plan_walk::StatementRURuntimeEvidence {
+        use astersql_executor::statement_ru_plan_walk::{
+            StatementRUPointSnapshot, snapshot_statement_ru_runtime_evidence,
+        };
+        let point = self.point_read_stats.lock().unwrap().point_response_stats();
+        let point = StatementRUPointSnapshot {
+            total_keys: point.total_keys,
+            processed_keys: point.processed_keys,
+            processed_bytes: point.processed_bytes,
+            payload_bytes: point.payload_bytes,
+            valid: point.is_valid(),
+            payload_complete: point.payload_complete(),
+            scan_detail_complete: point.scan_detail_complete(),
+        };
+        self.session.WithSessionVars(|vars| {
+            let details = vars.StmtCtx.GetExecDetails();
+            snapshot_statement_ru_runtime_evidence(
+                vars.StmtCtx.RuntimeStatsColl.as_deref(),
+                plan_ids,
+                self.point_read_stats_active.get().then_some(point),
+                details.CommitDetail.as_ref().map(|d| {
+                    astersql_executor::statement_ru_plan_walk::StatementRUWriteSnapshot {
+                        keys: d.WriteKeys as i64,
+                        bytes: d.WriteSize as i64,
+                    }
+                }),
+                self.statement_context.borrow().ru_metrics.as_deref(),
+            )
+        })
+    }
+    fn StatementRUScalarSubqueries(&self) -> Vec<std::rc::Rc<dyn std::any::Any>> {
+        self.session.session_vars.SnapshotScalarSubQueries()
+    }
+    fn StatementRUInstallState(
+        &self,
+        node: &StatementNode,
+    ) -> Option<astersql_executor::statement_ru_result::StatementRUInstallState> {
+        let sql = if node.kind == StatementKind::Execute {
+            node.prepared_text
+                .clone()
+                .filter(|sql| !sql.is_empty())
+                .unwrap_or_else(|| self.PreparedStatementSQL())
+        } else if node.text.is_empty() {
+            node.original_text.clone()
+        } else {
+            node.text.clone()
+        };
+        let mode =
+            astersql_parser_mysql::r#const::GetSQLMode(&self.session.state.borrow().sql_mode)
+                .ok()?;
+        let parsed = super::parse_with_sql_mode(&sql, mode).ok()?;
+        if parsed.len() != 1 {
+            return None;
+        }
+        let mut state = self
+            .session
+            .WithSessionVars(statement_ru_install_state_from_session_vars);
+        // The direct adapter bypasses CompilerDependencies::SetStatementReadOnly.
+        // Use its actual AST for the same statement-context flags as that compiler stage.
+        state.is_read_only = astersql_parser_ast::util::IsReadOnly(parsed[0].as_ref(), true);
+        state.in_select_stmt = parsed[0].as_any().is::<astersql_parser_ast::SelectStmt>()
+            || parsed[0].as_any().is::<astersql_parser_ast::SetOprStmt>();
+        Some(state)
+    }
+    fn StatementRUFrontendCompileBytes(&self, node: &StatementNode) -> f64 {
+        let cached = self.session.state.borrow().last_plan_from_cache;
+        self.session.WithSessionVars(|vars| {
+            let (normalized, _) = vars.StmtCtx.SQLDigest();
+            astersql_executor::statement_ru_result::statement_ru_frontend_compile_bytes(
+                node,
+                cached,
+                &vars.StmtCtx.OriginalSQL,
+                &normalized,
+            )
+        })
+    }
     fn AttachFinishRuntimeStats(&self, plan_id: i32) {
         self.session.WithSessionVars(|vars| {
             let details = vars.StmtCtx.GetExecDetails();
@@ -1671,5 +1781,20 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
             vars.GetSystemVar("tidb_redact_log")
                 .is_some_and(|value| value.eq_ignore_ascii_case("ON") || value == "1")
         })
+    }
+}
+
+pub(super) fn statement_ru_install_state_from_session_vars(
+    vars: &astersql_sessionctx_variable::session::SessionVars,
+) -> astersql_executor::statement_ru_result::StatementRUInstallState {
+    astersql_executor::statement_ru_result::StatementRUInstallState {
+        statement_context_present: true,
+        is_read_only: vars.StmtCtx.IsReadOnly,
+        in_select_stmt: vars.StmtCtx.InSelectStmt,
+        restricted_sql: vars.InRestrictedSQL,
+        request_source_type: vars.RequestSourceType.clone(),
+        ttl_job_id: vars.TTLJobID.clone(),
+        cursor_exists: vars.Status & astersql_parser_mysql::r#const::ServerStatusCursorExists != 0,
+        flat_plan_cached: vars.StmtCtx.GetFlatPlan().is_some(),
     }
 }

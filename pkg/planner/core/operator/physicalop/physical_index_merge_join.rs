@@ -111,7 +111,7 @@
 use crate::physical_common_plans::{PhysicalKind, PhysicalPlanNode};
 #[derive(Clone, Debug, PartialEq)]
 /// 索引归并连接骨架：键序映射、比较函数名、是否需 outer 排序与降序。
-pub struct PhysicalIndexMergeJoin {
+pub struct LegacyPhysicalIndexMergeJoin {
     /// 外表物理计划。
     pub outer: PhysicalPlanNode,
     /// 内表（索引有序）物理计划。
@@ -129,7 +129,7 @@ pub struct PhysicalIndexMergeJoin {
     /// 并发度，用于代价分摊。
     pub concurrency: usize,
 }
-impl PhysicalIndexMergeJoin {
+impl LegacyPhysicalIndexMergeJoin {
     /// 生成 EXPLAIN；归一化时隐藏具体键序细节。
     pub fn explain_info(&self, normalized: bool) -> String {
         if normalized {
@@ -194,5 +194,67 @@ impl PhysicalIndexMergeJoin {
                     .iter()
                     .map(String::capacity)
                     .sum::<usize>()) as i64
+    }
+}
+
+/// Go-compatible index join retaining the complete execution contract.
+pub struct PhysicalIndexMergeJoin {
+    pub PhysicalIndexJoin: crate::PhysicalIndexJoin,
+    pub KeyOff2KeyOffOrderByIdx: Vec<i32>,
+    pub CompareFuncs: Vec<crate::JoinCompareFunc>,
+    pub OuterCompareFuncs: Vec<crate::JoinCompareFunc>,
+    pub NeedOuterSort: bool,
+    pub Desc: bool,
+}
+impl std::ops::Deref for PhysicalIndexMergeJoin {
+    type Target = crate::PhysicalIndexJoin;
+    fn deref(&self) -> &Self::Target {
+        &self.PhysicalIndexJoin
+    }
+}
+impl std::ops::DerefMut for PhysicalIndexMergeJoin {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.PhysicalIndexJoin
+    }
+}
+impl PhysicalIndexMergeJoin {
+    pub fn New(mut join: crate::PhysicalIndexJoin) -> Self {
+        join.BasePhysicalJoin
+            .PhysicalSchemaProducer
+            .BasePhysicalPlan
+            .SetTP("IndexMergeJoin");
+        Self {
+            PhysicalIndexJoin: join,
+            KeyOff2KeyOffOrderByIdx: Vec::new(),
+            CompareFuncs: Vec::new(),
+            OuterCompareFuncs: Vec::new(),
+            NeedOuterSort: false,
+            Desc: false,
+        }
+    }
+    pub fn ExplainInfo(&self) -> String {
+        self.PhysicalIndexJoin.ExplainInfoInternal(false, true)
+    }
+    pub fn ExplainNormalizedInfo(&self) -> String {
+        self.PhysicalIndexJoin.ExplainInfoInternal(true, true)
+    }
+    pub fn MemoryUsage(&self) -> i64 {
+        self.PhysicalIndexJoin.MemoryUsage()
+            + (self.KeyOff2KeyOffOrderByIdx.capacity() * std::mem::size_of::<i32>()) as i64
+            + ((self.CompareFuncs.capacity() + self.OuterCompareFuncs.capacity())
+                * std::mem::size_of::<crate::JoinCompareFunc>()) as i64
+            + (std::mem::size_of::<Vec<i32>>()
+                + 2 * std::mem::size_of::<Vec<crate::JoinCompareFunc>>()
+                + 2 * std::mem::size_of::<bool>()) as i64
+    }
+    pub fn Clone(&self, context: base::ContextRef) -> Result<Self, expression::Error> {
+        Ok(Self {
+            PhysicalIndexJoin: self.PhysicalIndexJoin.Clone(context)?,
+            KeyOff2KeyOffOrderByIdx: self.KeyOff2KeyOffOrderByIdx.clone(),
+            CompareFuncs: self.CompareFuncs.clone(),
+            OuterCompareFuncs: self.OuterCompareFuncs.clone(),
+            NeedOuterSort: self.NeedOuterSort,
+            Desc: self.Desc,
+        })
     }
 }

@@ -296,3 +296,43 @@ fn indexed_point_get_mismatch_uses_structured_consistency_reporter() {
     assert_eq!(page.NumRows(), 0);
     assert_eq!(logger.0.lock().unwrap().len(), 1);
 }
+
+#[test]
+fn go_merge_187_runtime_evidence_bridge_point_rebind() {
+    let previous = Arc::new(MemoryRetriever::default());
+    let current = Arc::new(MemoryRetriever::default());
+    let (key, old_value) = encode_row(96, 4, 27, "previous");
+    let (_, new_value) = encode_row(96, 4, 45, "current");
+    previous.Put(key.clone(), old_value);
+    current.Put(key, new_value);
+    let mut point = TypedPointGet::new(
+        previous,
+        96,
+        96,
+        false,
+        columns(),
+        Some(4),
+        None,
+        Vec::new(),
+        0,
+        false,
+        1,
+        1,
+    );
+    point.RebindRetriever(current).unwrap();
+    point.Open().unwrap();
+    let mut output = point.NewChunk();
+    point.Next(&mut output).unwrap();
+    assert_eq!(
+        output.GetRow(0).GetInt64(0),
+        45,
+        "a reused point actor must use the current statement's snapshot"
+    );
+    assert!(
+        point
+            .RebindRetriever(Arc::new(MemoryRetriever::default()))
+            .is_err(),
+        "an open actor cannot replace its statement source"
+    );
+    point.Close().unwrap();
+}

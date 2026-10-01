@@ -60,7 +60,9 @@ thread_local! {
 }
 
 pub(crate) fn is_canonical_index_join_type(type_id: TypeId) -> bool {
-    type_id == TypeId::of::<crate::PhysicalIndexJoin>()
+    type_id == TypeId::of::<crate::physical_index_hash_join::LegacyPhysicalIndexHashJoin>()
+        || type_id == TypeId::of::<crate::physical_index_merge_join::LegacyPhysicalIndexMergeJoin>()
+        || type_id == TypeId::of::<crate::PhysicalIndexJoin>()
         || type_id == TypeId::of::<crate::physical_index_hash_join::PhysicalIndexHashJoin>()
         || type_id == TypeId::of::<crate::physical_index_merge_join::PhysicalIndexMergeJoin>()
 }
@@ -1245,7 +1247,7 @@ pub fn AlignFinalSemiIndexJoinPlanIDs(
     let aggregate_children = aggregate.children();
     let Some(join) = aggregate_children
         .first()
-        .filter(|node| node.as_any().is::<crate::PhysicalIndexJoin>())
+        .filter(|node| crate::index_join_base_any(node.as_any()).is_some())
     else {
         return Ok(false);
     };
@@ -1281,9 +1283,7 @@ pub fn AlignFinalSemiIndexJoinPlanIDs(
         aligned_children.push(assign_preorder(child, &ids, &mut 0)?);
     }
     aligned_join.set_children(aligned_children);
-    if let Some(index_join) = aligned_join
-        .as_any()
-        .downcast_ref::<crate::PhysicalIndexJoin>()
+    if let Some(index_join) = crate::index_join_base_any(aligned_join.as_any())
         && let (Some(inner), Some(outer)) = (
             index_join.BasePhysicalJoin.InnerJoinKeys.first(),
             index_join.BasePhysicalJoin.OuterJoinKeys.first(),
@@ -1480,9 +1480,9 @@ pub fn AlignNestedSemiIndexJoinPlanIDs(
     if !plan.as_any().is::<crate::PhysicalProjection>()
         || !top_n.as_any().is::<crate::PhysicalTopN>()
         || !aggregate.as_any().is::<crate::PhysicalHashAgg>()
-        || !first_join.as_any().is::<crate::PhysicalIndexJoin>()
-        || !second_join.as_any().is::<crate::PhysicalIndexJoin>()
-        || !third_join.as_any().is::<crate::PhysicalIndexJoin>()
+        || crate::index_join_base_any(first_join.as_any()).is_none()
+        || crate::index_join_base_any(second_join.as_any()).is_none()
+        || crate::index_join_base_any(third_join.as_any()).is_none()
         || first_children.len() != 2
         || second_children.len() != 2
         || third_join.children().len() != 2
@@ -2687,7 +2687,7 @@ fn canonical_find_best_task_router_inner(
                 && plan.children().into_iter().all(all_table_scans_are_pseudo)
         }
         if uses_selective_index_access(task.plan())
-            || (physical.as_any().is::<crate::PhysicalIndexJoin>()
+            || (crate::index_join_base_any(physical.as_any()).is_some()
                 && uses_selective_table_range(task.plan())
                 && all_table_scans_are_pseudo(task.plan()))
         {
@@ -2696,7 +2696,7 @@ fn canonical_find_best_task_router_inner(
             // comparing DataSource access paths when a parent recomputes cost.
             cost *= 0.01;
         }
-        if !physical.as_any().is::<crate::PhysicalIndexJoin>()
+        if crate::index_join_base_any(physical.as_any()).is_none()
             && contains_canonical_index_join(task.plan())
             && uses_selective_table_range(task.plan())
             && all_table_scans_are_pseudo(task.plan())
@@ -3189,7 +3189,7 @@ pub fn PopulateIndexJoinInnerPlans(plan: &mut dyn PhysicalPlan) -> Result<(), ex
         PopulateIndexJoinInnerPlans(child.as_mut())?;
     }
     plan.set_children(children);
-    let Some(join) = plan.as_any_mut().downcast_mut::<crate::PhysicalIndexJoin>() else {
+    let Some(join) = crate::index_join_base_mut(plan) else {
         return Ok(());
     };
     if join
@@ -3474,7 +3474,7 @@ pub(crate) fn FlattenNestedMPPReaders(
     // An IndexJoin is a Root executor whose MPP outer child is consumed
     // through its TableReader boundary. That reader is not a nested MPP
     // fragment wrapper and must remain intact for both execution and cost.
-    if plan.as_any().is::<crate::PhysicalIndexJoin>() {
+    if crate::index_join_base_any(plan.as_any()).is_some() {
         return plan.clone_physical(context.clone());
     }
     let plan_children = plan.children();
@@ -5311,7 +5311,7 @@ fn attach_canonical_index_join(
     child_tasks: &[Box<dyn Task>],
     required: &PhysicalProperty,
 ) -> Result<Option<Box<dyn Task>>, expression::Error> {
-    let Some(index_join) = physical.as_any().downcast_ref::<crate::PhysicalIndexJoin>() else {
+    let Some(index_join) = crate::index_join_base_any(physical.as_any()) else {
         return Ok(None);
     };
     let mut attached = index_join.Clone(index_join.s_ctx().clone())?;
@@ -5468,10 +5468,7 @@ fn attach_canonical_index_join(
     // An ancestor index join can discard columns produced only for an MPP
     // join's local equality check. Propagate its output schema through the
     // nested index join before costing the TiFlash reader.
-    if let Some(outer_join) = outer_plan
-        .as_any()
-        .downcast_ref::<crate::PhysicalIndexJoin>()
-    {
+    if let Some(outer_join) = crate::index_join_base_any(outer_plan.as_any()) {
         let mut keep = attached.schema().Columns.clone();
         for column in attached
             .BasePhysicalJoin
@@ -5858,7 +5855,10 @@ fn attach_canonical_index_join(
             projection
                 .PhysicalSchemaProducer
                 .SetSchema(expression::NewSchema(columns));
-            projection.set_children(vec![Box::new(attached)]);
+            projection.set_children(vec![crate::preserve_index_join_variant(
+                physical.as_any(),
+                attached,
+            )]);
             return Ok(Some(Box::new(crate::RootTask::New(
                 Box::new(projection),
                 None,
@@ -5866,7 +5866,7 @@ fn attach_canonical_index_join(
         }
     }
     Ok(Some(Box::new(crate::RootTask::New(
-        Box::new(attached),
+        crate::preserve_index_join_variant(physical.as_any(), attached),
         None,
     ))))
 }
@@ -5896,11 +5896,7 @@ fn attach_canonical_projection_over_index_join(
     {
         return Ok(None);
     }
-    let Some(index_join) = child_tasks[0]
-        .plan()
-        .as_any()
-        .downcast_ref::<crate::PhysicalIndexJoin>()
-    else {
+    let Some(index_join) = crate::index_join_base_any(child_tasks[0].plan().as_any()) else {
         return Ok(None);
     };
     if index_join.EqualConditions.len() > index_join.BasePhysicalJoin.InnerJoinKeys.len() {
@@ -5925,7 +5921,7 @@ fn attach_canonical_projection_over_index_join(
         .BasePhysicalPlan
         .set_stats(index_join.stats_info().clone());
     Ok(Some(Box::new(crate::RootTask::New(
-        Box::new(index_join),
+        crate::preserve_index_join_variant(child_tasks[0].plan().as_any(), index_join),
         None,
     ))))
 }
@@ -5944,10 +5940,7 @@ fn fold_attached_root_projection_over_index_join(
     let [index_join_plan] = children.as_slice() else {
         return Ok(task);
     };
-    let Some(index_join) = index_join_plan
-        .as_any()
-        .downcast_ref::<crate::PhysicalIndexJoin>()
-    else {
+    let Some(index_join) = crate::index_join_base_any(index_join_plan.as_any()) else {
         return Ok(task);
     };
     if index_join.EqualConditions.len() > index_join.BasePhysicalJoin.InnerJoinKeys.len() {
@@ -5978,7 +5971,10 @@ fn fold_attached_root_projection_over_index_join(
         .PhysicalSchemaProducer
         .BasePhysicalPlan
         .set_stats(index_join.stats_info().clone());
-    Ok(Box::new(crate::RootTask::New(Box::new(index_join), None)))
+    Ok(Box::new(crate::RootTask::New(
+        crate::preserve_index_join_variant(index_join_plan.as_any(), index_join),
+        None,
+    )))
 }
 
 pub(crate) fn strip_reader_around_canonical_index_join(
@@ -7174,14 +7170,12 @@ fn attach_canonical_aggregation(
         let mut aggregate = physical.clone_physical(physical.s_ctx().clone())?;
         fn semi_index_joins(plan: &dyn PhysicalPlan) -> usize {
             usize::from(
-                plan.as_any()
-                    .downcast_ref::<crate::PhysicalIndexJoin>()
-                    .is_some_and(|join| {
-                        matches!(
-                            join.BasePhysicalJoin.JoinType,
-                            base::JoinType::SemiJoin | base::JoinType::AntiSemiJoin
-                        )
-                    }),
+                crate::index_join_base_any(plan.as_any()).is_some_and(|join| {
+                    matches!(
+                        join.BasePhysicalJoin.JoinType,
+                        base::JoinType::SemiJoin | base::JoinType::AntiSemiJoin
+                    )
+                }),
             ) + plan
                 .children()
                 .into_iter()

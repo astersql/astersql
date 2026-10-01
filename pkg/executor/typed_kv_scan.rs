@@ -48,6 +48,10 @@ pub struct TypedKVScan {
 }
 
 impl TypedKVScan {
+    pub(crate) fn RebindRetriever(&mut self, retriever: Arc<dyn kv::Retriever + Send + Sync>) {
+        self.retriever = retriever;
+    }
+
     pub fn new(
         retriever: Arc<dyn kv::Retriever + Send + Sync>,
         table_id: i64,

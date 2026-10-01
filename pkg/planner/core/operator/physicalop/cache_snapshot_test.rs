@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 
 use base::{PhysicalPlan as _, Plan as _};
 
-use crate::physical_index_hash_join::PhysicalIndexHashJoin;
+use crate::physical_index_hash_join::LegacyPhysicalIndexHashJoin;
 use crate::*;
 
 #[test]
@@ -822,6 +822,7 @@ fn join_cached_round_trip_preserves_hash_and_merge_fields() {
     let merge = PhysicalMergeJoin {
         BasePhysicalJoin: join_base(context(), "MergeJoin"),
         Desc: true,
+        CompareFuncs: vec![std::sync::Arc::new(|_, _, _, _| 1); 2],
     };
     let restored = round_trip(&merge);
     let restored = restored
@@ -829,6 +830,7 @@ fn join_cached_round_trip_preserves_hash_and_merge_fields() {
         .downcast_ref::<PhysicalMergeJoin>()
         .unwrap();
     assert!(restored.Desc);
+    assert_eq!(restored.CompareFuncs.len(), 2);
     assert_eq!(restored.BasePhysicalJoin.InnerChildIdx, 0);
     assert_eq!(restored.BasePhysicalJoin.DefaultValues[0].GetInt64(), 9);
     assert_eq!(restored.BasePhysicalJoin.LeftConditions.len(), 1);
@@ -894,7 +896,7 @@ fn join_cached_round_trip_preserves_index_hash_children_and_properties() {
         },
         required_properties: Vec::new(),
     };
-    let join = PhysicalIndexHashJoin {
+    let join = LegacyPhysicalIndexHashJoin {
         outer: node(1, 10.0),
         inner: node(2, 20.0),
         keep_outer_order: true,
@@ -1122,5 +1124,100 @@ fn cached_unary_agg_union_round_trip() {
             .unwrap()
             .RowCount,
         3
+    );
+}
+
+#[test]
+fn go_merge_187_join_aggregation_typed_index_cache() {
+    let mut index = PhysicalIndexJoin::New(join_base(context(), "IndexJoin"));
+    index.OuterHashKeys = vec![column(501), column(502)];
+    index.InnerHashKeys = vec![column(503), column(504)];
+    let mut filter = crate::ColWithCmpFuncManager::New(Some(column(501)), -1);
+    filter.OpType = vec!["gt".into()];
+    filter.OpArg = vec![Box::new(column(502))];
+    index.CompareFilters = Some(filter);
+    index.set_children(vec![
+        Box::new(PhysicalTableDual::New(context(), 2)),
+        Box::new(PhysicalTableDual::New(context(), 3)),
+    ]);
+    let mut hash = crate::PhysicalIndexHashJoin::New(index);
+    hash.KeepOuterOrder = true;
+    let restored = round_trip(&hash);
+    let restored = restored
+        .as_any()
+        .downcast_ref::<crate::PhysicalIndexHashJoin>()
+        .unwrap();
+    assert!(restored.KeepOuterOrder);
+    assert_eq!(restored.OuterHashKeys.len(), 2);
+    assert_eq!(restored.CompareFilters.as_ref().unwrap().OpType, ["gt"]);
+    assert_eq!(restored.children().len(), 2);
+    let cloned = hash.clone_physical(context()).unwrap();
+    assert!(cloned.as_any().is::<crate::PhysicalIndexHashJoin>());
+    let (cached, ok) = hash.clone_for_plan_cache(context());
+    assert!(
+        ok && cached
+            .unwrap()
+            .as_any()
+            .is::<crate::PhysicalIndexHashJoin>()
+    );
+    let mut merge = crate::PhysicalIndexMergeJoin::New(hash.PhysicalIndexJoin);
+    merge.CompareFuncs = vec![std::sync::Arc::new(|_, _, _, _| 1)];
+    merge.OuterCompareFuncs = vec![std::sync::Arc::new(|_, _, _, _| -1)];
+    merge.KeyOff2KeyOffOrderByIdx = vec![1, 0];
+    merge.NeedOuterSort = true;
+    merge.Desc = true;
+    let restored = round_trip(&merge);
+    let restored = restored
+        .as_any()
+        .downcast_ref::<crate::PhysicalIndexMergeJoin>()
+        .unwrap();
+    assert!(restored.NeedOuterSort && restored.Desc);
+    assert_eq!(restored.CompareFuncs.len(), 1);
+    assert_eq!(restored.OuterCompareFuncs.len(), 1);
+    assert_eq!(restored.KeyOff2KeyOffOrderByIdx, [1, 0]);
+    assert_eq!(restored.OuterHashKeys.len(), 2);
+    assert_eq!(restored.CompareFilters.as_ref().unwrap().OpType, ["gt"]);
+    assert!(
+        merge
+            .clone_physical(context())
+            .unwrap()
+            .as_any()
+            .is::<crate::PhysicalIndexMergeJoin>()
+    );
+}
+
+#[test]
+fn go_merge_187_join_aggregation_attach_keeps_concrete_variant() {
+    let mut merge = crate::PhysicalIndexMergeJoin::New(PhysicalIndexJoin::New(join_base(
+        context(),
+        "IndexJoin",
+    )));
+    merge.NeedOuterSort = true;
+    merge.CompareFuncs = vec![std::sync::Arc::new(|_, _, _, _| 1)];
+    merge.OuterCompareFuncs = vec![std::sync::Arc::new(|_, _, _, _| -1)];
+    let rewritten = merge.PhysicalIndexJoin.Clone(context()).unwrap();
+    let attached = crate::preserve_index_join_variant(merge.as_any(), rewritten);
+    let restored = attached
+        .as_any()
+        .downcast_ref::<crate::PhysicalIndexMergeJoin>()
+        .unwrap();
+    assert!(restored.NeedOuterSort);
+    assert_eq!(restored.CompareFuncs.len(), 1);
+    assert_eq!(restored.OuterCompareFuncs.len(), 1);
+    let mut hash = crate::PhysicalIndexHashJoin::New(PhysicalIndexJoin::New(join_base(
+        context(),
+        "IndexJoin",
+    )));
+    hash.KeepOuterOrder = true;
+    let attached = crate::preserve_index_join_variant(
+        hash.as_any(),
+        hash.PhysicalIndexJoin.Clone(context()).unwrap(),
+    );
+    assert!(
+        attached
+            .as_any()
+            .downcast_ref::<crate::PhysicalIndexHashJoin>()
+            .unwrap()
+            .KeepOuterOrder
     );
 }

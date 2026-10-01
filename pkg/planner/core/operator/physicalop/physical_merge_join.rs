@@ -29,6 +29,8 @@ pub struct PhysicalMergeJoin {
     pub BasePhysicalJoin: BasePhysicalJoin,
     /// 为 true 时按连接键降序归并。
     pub Desc: bool,
+    /// One comparator slot per materialized join key, retained through cloning.
+    pub CompareFuncs: Vec<crate::JoinCompareFunc>,
 }
 
 /// 从 LogicalJoin 抽取等值/单侧/其他条件，组装 MergeJoin（默认升序）。
@@ -66,6 +68,17 @@ pub fn GetMergeJoin(
         }
     }
     PhysicalMergeJoin {
+        CompareFuncs: base
+            .LeftJoinKeys
+            .iter()
+            .map(|key| {
+                key.RetType
+                    .as_ref()
+                    .and_then(ranger::chunk::GetCompareFunc)
+                    .map(std::sync::Arc::from)
+                    .expect("MergeJoin comparison key must have a supported type")
+            })
+            .collect(),
         BasePhysicalJoin: base,
         Desc: false,
     }
@@ -89,6 +102,17 @@ pub fn BuildMergeJoinPlan(
     base.LeftJoinKeys = left;
     base.RightJoinKeys = right;
     PhysicalMergeJoin {
+        CompareFuncs: base
+            .LeftJoinKeys
+            .iter()
+            .map(|key| {
+                key.RetType
+                    .as_ref()
+                    .and_then(ranger::chunk::GetCompareFunc)
+                    .map(std::sync::Arc::from)
+                    .expect("MergeJoin comparison key must have a supported type")
+            })
+            .collect(),
         BasePhysicalJoin: base,
         Desc: false,
     }
@@ -109,6 +133,7 @@ impl PhysicalMergeJoin {
         Ok(Self {
             BasePhysicalJoin: self.BasePhysicalJoin.CloneWithSelf(new_ctx)?,
             Desc: self.Desc,
+            CompareFuncs: self.CompareFuncs.clone(),
         })
     }
     /// 将算子挂到任务树（Task）上。
@@ -227,7 +252,10 @@ impl PhysicalMergeJoin {
     }
     /// 内存占用：基类 + Desc 布尔标志。
     pub fn MemoryUsage(&self) -> i64 {
-        self.BasePhysicalJoin.MemoryUsage() + 1
+        self.BasePhysicalJoin.MemoryUsage()
+            + std::mem::size_of::<Vec<crate::JoinCompareFunc>>() as i64
+            + (self.CompareFuncs.capacity() * std::mem::size_of::<crate::JoinCompareFunc>()) as i64
+            + 1
     }
     /// 按左右孩子 Schema 分别解析左右连接键列下标。
     pub fn ResolveIndices(&mut self) -> Result<(), expression::Error> {

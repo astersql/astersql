@@ -122,3 +122,33 @@ pub fn find_best_task_for_cte_table(
         required_properties: Vec::new(),
     }))
 }
+
+/// Go's concrete CTETable occurrence retained by the physical-plan RU bridge.
+pub struct PhysicalCTETable {
+    pub PhysicalSchemaProducer: crate::PhysicalSchemaProducer,
+    pub IDForStorage: i32,
+}
+impl PhysicalCTETable {
+    pub fn New(ctx: base::ContextRef, storage_id: i32) -> Self {
+        Self {
+            PhysicalSchemaProducer: crate::PhysicalSchemaProducer::New(
+                crate::BasePhysicalPlan::New(ctx, "CTETable", 0),
+            ),
+            IDForStorage: storage_id,
+        }
+    }
+    pub fn Clone(&self, ctx: base::ContextRef) -> Result<Self, expression::Error> {
+        let mut producer = crate::PhysicalSchemaProducer::New(
+            self.PhysicalSchemaProducer
+                .BasePhysicalPlan
+                .CloneWithNewCtx(ctx)?,
+        );
+        if let Some(schema) = self.PhysicalSchemaProducer.SchemaRef() {
+            producer.SetSchema(schema.Clone());
+        }
+        Ok(Self {
+            PhysicalSchemaProducer: producer,
+            IDForStorage: self.IDForStorage,
+        })
+    }
+}

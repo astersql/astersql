@@ -1330,11 +1330,33 @@ impl kv::Transaction for ClientTransaction {
         }
         let guard = self.runtime.read().map_err(adapter_error)?;
         let mut transaction = self.handle.lock().map_err(adapter_error)?;
+        let schema_error = Arc::new(Mutex::new(None));
+        let error_slot = schema_error.clone();
+        let checker = self
+            .options
+            .get(&kv::SchemaChecker)
+            .and_then(|value| value.downcast_ref::<kv::TransactionSchemaChecker>())
+            .cloned();
+        transaction.set_schema_lease_checker(checker.map(|checker| {
+            tikv_client::SchemaLeaseChecker::new(move |ts| {
+                (checker.0)(ts).map_err(|error| {
+                    let message = error.to_string();
+                    *error_slot.lock().unwrap() = Some(error);
+                    tikv_client::Error::StringError(message)
+                })
+            })
+        }));
         self.commit_ts = guard
             .runtime()
             .map_err(adapter_error)?
             .block_on(transaction.commit())
-            .map_err(map_client_error)?
+            .map_err(|error| {
+                schema_error
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .unwrap_or_else(|| map_client_error(error))
+            })?
             .map_or(0, |timestamp| timestamp.version());
         self.valid = false;
         Ok(())

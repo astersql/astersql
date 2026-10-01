@@ -189,7 +189,9 @@ pub use physical_exchange_receiver::*;
 pub use physical_exchange_sender::*;
 pub use physical_hash_agg::*;
 pub use physical_hash_join::*;
+pub use physical_index_hash_join::PhysicalIndexHashJoin;
 pub use physical_index_join::*;
+pub use physical_index_merge_join::PhysicalIndexMergeJoin;
 pub use physical_index_reader::*;
 pub use physical_index_scan::*;
 pub use physical_indexlookup_reader::*;
@@ -769,6 +771,8 @@ macro_rules! join_operator_core {
 }
 
 join_operator_core!(PhysicalIndexJoin, BasePhysicalJoin);
+join_operator_core!(PhysicalIndexHashJoin, BasePhysicalJoin);
+join_operator_core!(PhysicalIndexMergeJoin, BasePhysicalJoin);
 join_operator_core!(PhysicalMergeJoin, BasePhysicalJoin);
 
 // HashJoin 额外提取相关列并实现 ToPB，因此手写而非走 join_operator_core。
@@ -1890,3 +1894,152 @@ mod physical_semantic_aster_unit_test;
 #[cfg(test)]
 #[path = "physical_union_all_test.rs"]
 mod physical_union_all_test;
+
+/// Common index-join contract for all concrete execution variants.
+pub fn index_join_base(plan: &dyn base::Plan) -> Option<&PhysicalIndexJoin> {
+    index_join_base_any(plan.as_any())
+}
+
+pub fn index_join_base_any(origin: &dyn std::any::Any) -> Option<&PhysicalIndexJoin> {
+    origin
+        .downcast_ref::<PhysicalIndexJoin>()
+        .or_else(|| {
+            origin
+                .downcast_ref::<PhysicalIndexHashJoin>()
+                .map(|join| &join.PhysicalIndexJoin)
+        })
+        .or_else(|| {
+            origin
+                .downcast_ref::<PhysicalIndexMergeJoin>()
+                .map(|join| &join.PhysicalIndexJoin)
+        })
+}
+
+/// Shared comparator handles preserve Go function slots through plan cloning.
+pub type JoinCompareFunc = std::sync::Arc<
+    dyn Fn(ranger::chunk::Row, usize, ranger::chunk::Row, usize) -> i32 + Send + Sync,
+>;
+
+pub fn index_join_base_mut(plan: &mut dyn base::Plan) -> Option<&mut PhysicalIndexJoin> {
+    let origin = plan.as_any_mut();
+    if origin.is::<PhysicalIndexHashJoin>() {
+        return origin
+            .downcast_mut::<PhysicalIndexHashJoin>()
+            .map(|join| &mut join.PhysicalIndexJoin);
+    }
+    if origin.is::<PhysicalIndexMergeJoin>() {
+        return origin
+            .downcast_mut::<PhysicalIndexMergeJoin>()
+            .map(|join| &mut join.PhysicalIndexJoin);
+    }
+    origin.downcast_mut::<PhysicalIndexJoin>()
+}
+
+/// Retain the concrete join subtype after canonical attach rewrites its base.
+pub(crate) fn preserve_index_join_variant(
+    origin: &dyn std::any::Any,
+    join: PhysicalIndexJoin,
+) -> Box<dyn base::PhysicalPlan> {
+    if let Some(hash) = origin.downcast_ref::<PhysicalIndexHashJoin>() {
+        return Box::new(PhysicalIndexHashJoin {
+            PhysicalIndexJoin: join,
+            KeepOuterOrder: hash.KeepOuterOrder,
+        });
+    }
+    if let Some(merge) = origin.downcast_ref::<PhysicalIndexMergeJoin>() {
+        return Box::new(PhysicalIndexMergeJoin {
+            PhysicalIndexJoin: join,
+            KeyOff2KeyOffOrderByIdx: merge.KeyOff2KeyOffOrderByIdx.clone(),
+            CompareFuncs: merge.CompareFuncs.clone(),
+            OuterCompareFuncs: merge.OuterCompareFuncs.clone(),
+            NeedOuterSort: merge.NeedOuterSort,
+            Desc: merge.Desc,
+        });
+    }
+    Box::new(join)
+}
+
+pub use physical_cte_table::PhysicalCTETable;
+pub use physical_sequence::TypedPhysicalSequence as PhysicalSequence;
+
+impl ConcretePhysicalOperator for PhysicalCTETable {
+    fn producer(&self) -> &PhysicalSchemaProducer {
+        &self.PhysicalSchemaProducer
+    }
+    fn producer_mut(&mut self) -> &mut PhysicalSchemaProducer {
+        &mut self.PhysicalSchemaProducer
+    }
+    fn explain_operator(&self) -> String {
+        format!("Scan on CTE_{}", self.IDForStorage)
+    }
+    fn explain_normalized_operator(&self) -> String {
+        self.explain_operator()
+    }
+    fn resolve_operator(&mut self) -> Result<(), expression::Error> {
+        self.PhysicalSchemaProducer.ResolveIndices()
+    }
+    fn memory_operator(&self) -> i64 {
+        self.PhysicalSchemaProducer.MemoryUsage() + std::mem::size_of::<i64>() as i64
+    }
+    fn cost_v1(
+        &mut self,
+        task: TaskType,
+        option: &costusage::PlanCostOption,
+    ) -> Result<f64, expression::Error> {
+        self.PhysicalSchemaProducer
+            .BasePhysicalPlan
+            .GetPlanCostVer1(task, option)
+    }
+    fn cost_v2(
+        &mut self,
+        task: TaskType,
+        option: &costusage::PlanCostOption,
+        inl: &[bool],
+    ) -> Result<costusage::CostVer2, expression::Error> {
+        self.PhysicalSchemaProducer
+            .BasePhysicalPlan
+            .GetPlanCostVer2(task, option, inl)
+    }
+}
+impl_concrete_physical_plan!(PhysicalCTETable);
+
+impl ConcretePhysicalOperator for PhysicalSequence {
+    fn producer(&self) -> &PhysicalSchemaProducer {
+        &self.PhysicalSchemaProducer
+    }
+    fn producer_mut(&mut self) -> &mut PhysicalSchemaProducer {
+        &mut self.PhysicalSchemaProducer
+    }
+    fn explain_operator(&self) -> String {
+        "Sequence Node".to_owned()
+    }
+    fn explain_normalized_operator(&self) -> String {
+        self.explain_operator()
+    }
+    fn resolve_operator(&mut self) -> Result<(), expression::Error> {
+        self.PhysicalSchemaProducer.ResolveIndices()
+    }
+    fn memory_operator(&self) -> i64 {
+        self.PhysicalSchemaProducer.MemoryUsage()
+    }
+    fn cost_v1(
+        &mut self,
+        task: TaskType,
+        option: &costusage::PlanCostOption,
+    ) -> Result<f64, expression::Error> {
+        self.PhysicalSchemaProducer
+            .BasePhysicalPlan
+            .GetPlanCostVer1(task, option)
+    }
+    fn cost_v2(
+        &mut self,
+        task: TaskType,
+        option: &costusage::PlanCostOption,
+        inl: &[bool],
+    ) -> Result<costusage::CostVer2, expression::Error> {
+        self.PhysicalSchemaProducer
+            .BasePhysicalPlan
+            .GetPlanCostVer2(task, option, inl)
+    }
+}
+impl_concrete_physical_plan!(PhysicalSequence);

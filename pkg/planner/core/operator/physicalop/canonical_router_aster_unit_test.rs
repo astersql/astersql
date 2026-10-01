@@ -202,8 +202,8 @@ fn canonical_router_recognizes_all_index_join_families() {
     use std::any::{Any, TypeId};
 
     use crate::physical_common_plans::{PhysicalKind, PhysicalPlanNode};
-    use crate::physical_index_hash_join::PhysicalIndexHashJoin;
-    use crate::physical_index_merge_join::PhysicalIndexMergeJoin;
+    use crate::physical_index_hash_join::LegacyPhysicalIndexHashJoin;
+    use crate::physical_index_merge_join::LegacyPhysicalIndexMergeJoin;
 
     let node = |kind| PhysicalPlanNode {
         id: 1,
@@ -213,14 +213,14 @@ fn canonical_router_recognizes_all_index_join_families() {
         stats: Default::default(),
         required_properties: Vec::new(),
     };
-    let hash = PhysicalIndexHashJoin {
+    let hash = LegacyPhysicalIndexHashJoin {
         outer: node(PhysicalKind::IndexHashJoin),
         inner: node(PhysicalKind::LocalIndexLookup),
         keep_outer_order: false,
         concurrency: 1,
         cached_cost: None,
     };
-    let merge = PhysicalIndexMergeJoin {
+    let merge = LegacyPhysicalIndexMergeJoin {
         outer: node(PhysicalKind::IndexMergeJoin),
         inner: node(PhysicalKind::LocalIndexLookup),
         key_offset_order: Vec::new(),
@@ -236,6 +236,18 @@ fn canonical_router_recognizes_all_index_join_families() {
     >()));
     assert!(crate::is_canonical_index_join_type(hash.type_id()));
     assert!(crate::is_canonical_index_join_type(merge.type_id()));
+    let make_base = || {
+        PhysicalIndexJoin::New(BasePhysicalJoin::New(
+            PhysicalSchemaProducer::New(BasePhysicalPlan::New(context(), "IndexJoin", 0)),
+            base::JoinType::InnerJoin,
+        ))
+    };
+    let typed_hash = crate::PhysicalIndexHashJoin::New(make_base());
+    let typed_merge = crate::PhysicalIndexMergeJoin::New(make_base());
+    assert!(crate::is_canonical_index_join_type(typed_hash.type_id()));
+    assert!(crate::is_canonical_index_join_type(typed_merge.type_id()));
+    assert!(crate::index_join_base(&typed_hash).is_some());
+    assert!(crate::index_join_base(&typed_merge).is_some());
 }
 
 /// 路由测试用的最小 PlanContext：提供表达式与 Ranger 上下文，避免 DataSource 统计推导 panic。

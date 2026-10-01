@@ -440,6 +440,7 @@ impl Compiler {
                 typed_plan
             },
         );
+        crate::statement_ru_result::install_statement_ru_owner(&mut exec_stmt);
         Ok(exec_stmt)
     }
 }

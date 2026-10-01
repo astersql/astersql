@@ -1786,3 +1786,90 @@ fn finish_execute_stmt_resets_shared_parse_duration_and_statement_staleness() {
         assert_eq!(vars.DurationParseValue(), std::time::Duration::ZERO);
     });
 }
+
+#[test]
+fn go_merge_187_runtime_evidence_bridge_terminal_snapshot() {
+    use astersql_executor::adapter::PlanKind;
+    let session = canonical_dml_session();
+    session.WithSessionVars(|vars| {
+        vars.StmtCtx.SyncExecDetails.MergeExecDetails(Some(
+            astersql_util_execdetails::execdetails::util::CommitDetails {
+                WriteKeys: 2,
+                WriteSize: 58,
+                ..Default::default()
+            },
+        ));
+    });
+    session.domain.set_ru_version(3);
+    let owner = Arc::new(SessionBoundAdapterOwner::new(session));
+    let mut statement = dml_stmt(
+        Arc::clone(&owner),
+        "insert into t values (1,1)",
+        PlanKind::Insert,
+    );
+    statement.FinishExecuteStmt(0, None, false);
+    let frozen = owner.StatementContext().statement_ru_evidence.unwrap();
+    assert_eq!(frozen.writes.unwrap().bytes, 58);
+    assert!(frozen.point.is_none());
+    owner.session.WithSessionVars(|vars| {
+        vars.StmtCtx.SyncExecDetails.MergeExecDetails(Some(
+            astersql_util_execdetails::execdetails::util::CommitDetails {
+                WriteSize: 99,
+                ..Default::default()
+            },
+        ));
+    });
+    assert_eq!(frozen.writes.unwrap().bytes, 58);
+    statement.SnapshotStatementRUEvidence();
+    assert_eq!(
+        statement
+            .StatementCtx
+            .statement_ru_evidence
+            .unwrap()
+            .writes
+            .unwrap()
+            .bytes,
+        58
+    );
+}
+
+#[test]
+fn go_merge_197_setup_eligibility_live_session_boundary() {
+    use astersql_executor::adapter::{AdapterRuntime, PlanKind};
+    use astersql_executor::statement_ru_result::{
+        install_statement_ru_owner, is_statement_ru_ttl_job,
+    };
+    let (_domain, session) = crate::runtime::CreateAnalyzeSession().unwrap();
+    let owner = Arc::new(SessionBoundAdapterOwner::new(session));
+    let mut statement = dml_stmt(owner.clone(), "delete from t", PlanKind::Delete);
+    let mut vars = astersql_sessionctx_variable::session::SessionVars::new();
+    vars.StmtCtx.IsReadOnly = false;
+    vars.StmtCtx.InSelectStmt = true;
+    vars.InRestrictedSQL = true;
+    vars.RequestSourceType = astersql_kv::InternalTxnTTL.into();
+    vars.TTLJobID = "ttl-job-1".into();
+    vars.Status = astersql_parser_mysql::r#const::ServerStatusCursorExists;
+    vars.StmtCtx.SetFlatPlan(Some(Arc::new(1_i32)));
+    let state = super::scan_adapter_runtime::statement_ru_install_state_from_session_vars(&vars);
+    assert!(!state.is_read_only);
+    assert!(state.in_select_stmt);
+    assert!(state.restricted_sql);
+    assert!(is_statement_ru_ttl_job(&state));
+    assert!(state.cursor_exists);
+    assert!(state.flat_plan_cached);
+    install_statement_ru_owner(&mut statement);
+    assert!(
+        statement.StatementCtx.statement_ru_owner.is_none(),
+        "a missing typed plan must stay excluded"
+    );
+    vars.TTLJobID.clear();
+    assert!(!is_statement_ru_ttl_job(
+        &super::scan_adapter_runtime::statement_ru_install_state_from_session_vars(&vars)
+    ));
+    assert!(
+        !owner
+            .StatementRUInstallState(&statement.StmtNode)
+            .unwrap()
+            .in_select_stmt
+    );
+}

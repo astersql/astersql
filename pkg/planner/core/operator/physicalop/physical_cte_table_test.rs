@@ -50,3 +50,14 @@ fn ordered_property_is_rejected() {
         None
     );
 }
+
+#[test]
+fn ru_concrete_cte_table_clone_retains_storage_and_plan_id() {
+    use base::Plan as _;
+    let ctx = crate::physical_window_test::ru_orchestration_context();
+    let plan = crate::PhysicalCTETable::New(ctx.clone(), 17);
+    let clone = plan.Clone(ctx).unwrap();
+    assert_eq!(clone.id(), plan.id());
+    assert_eq!(clone.IDForStorage, 17);
+    assert_eq!(clone.explain_info(), "Scan on CTE_17");
+}

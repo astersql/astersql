@@ -1,7 +1,7 @@
 // Copyright 2026 AsterSQL.
 
 use crate::physical_common_plans::{PhysicalKind, PhysicalPlanNode};
-use crate::physical_index_merge_join::PhysicalIndexMergeJoin;
+use crate::physical_index_merge_join::LegacyPhysicalIndexMergeJoin;
 
 fn node(kind: PhysicalKind) -> PhysicalPlanNode {
     PhysicalPlanNode {
@@ -14,8 +14,8 @@ fn node(kind: PhysicalKind) -> PhysicalPlanNode {
     }
 }
 
-fn join() -> PhysicalIndexMergeJoin {
-    PhysicalIndexMergeJoin {
+fn join() -> LegacyPhysicalIndexMergeJoin {
+    LegacyPhysicalIndexMergeJoin {
         outer: node(PhysicalKind::Scan { table_id: 1 }),
         inner: node(PhysicalKind::Scan { table_id: 2 }),
         key_offset_order: Vec::new(),

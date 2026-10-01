@@ -200,6 +200,11 @@ pub struct StatementContext {
     pub plan_cache_unqualified: Option<String>,
     pub ru_metrics: Option<Arc<RUV2Metrics>>,
     pub commit_details: Option<Arc<tikvutil::CommitDetails>>,
+    pub statement_ru_evidence:
+        Option<Arc<crate::statement_ru_plan_walk::StatementRURuntimeEvidence>>,
+    pub statement_ru_owner: Option<Arc<crate::statement_ru_plan_walk::StatementRUOwner>>,
+    pub statement_ru_finalized:
+        Option<Arc<crate::statement_ru_result::StatementRUFinalizedSnapshot>>,
     pub total_ru: f64,
     pub network_sent_bytes: u64,
     pub network_received_bytes: u64,
@@ -225,6 +230,9 @@ impl Default for StatementContext {
             plan_cache_unqualified: None,
             ru_metrics: None,
             commit_details: None,
+            statement_ru_evidence: None,
+            statement_ru_owner: None,
+            statement_ru_finalized: None,
             total_ru: 0.0,
             network_sent_bytes: 0,
             network_received_bytes: 0,
@@ -514,6 +522,47 @@ pub trait AdapterRuntime {
         None
     }
     fn AttachFinishRuntimeStats(&self, _plan_id: i32) {}
+    fn StatementRURuntimeEvidence(
+        &self,
+        _plan_ids: &[i32],
+    ) -> crate::statement_ru_plan_walk::StatementRURuntimeEvidence {
+        Default::default()
+    }
+    fn StatementRUScalarSubqueries(&self) -> Vec<std::rc::Rc<dyn std::any::Any>> {
+        Vec::new()
+    }
+    fn StatementRUFrontendCompileBytes(&self, statement: &StatementNode) -> f64 {
+        crate::statement_ru_result::statement_ru_frontend_compile_bytes(statement, false, "", "")
+    }
+
+    /// None represents a missing session or statement context; never guess eligibility.
+    fn StatementRUInstallState(
+        &self,
+        _statement: &StatementNode,
+    ) -> Option<crate::statement_ru_result::StatementRUInstallState> {
+        None
+    }
+    /// Full-mode calibration boundary, dormant unless a consumer is installed.
+    fn StatementRUCalibration(
+        &self,
+        _state: crate::statement_ru_result::StatementRUCalibrationState,
+        _units: astersql_resourcegroup::ruv2::model::StmtUnits,
+    ) {
+    }
+    fn StatementRUIneligible(&self) {
+        let _ = std::panic::catch_unwind(|| {
+            let counter = {
+                let _guard = astersql_metrics::metrics::PACKAGE_INIT_LOCK
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                // The package lock serializes metric initialization and this read.
+                unsafe { (&*std::ptr::addr_of!(astersql_metrics::ru_v2::RUV2Statements)).clone() }
+            };
+            if let Some(counter) = counter {
+                counter.with_label_values(&["skipped", "ineligible"]).inc();
+            }
+        });
+    }
     fn CleanupAfterFinish(&self) {}
     fn RestrictedSQL(&self) -> bool;
     fn RedactLog(&self) -> bool;
@@ -584,6 +633,7 @@ impl recordSet {
             }
             let rows = request.NumRows();
             if rows == 0 {
+                self.stmt.recordStatementRURootEOF();
                 self.stmt
                     .Ctx
                     .SetLastFoundRows(self.stmt.StatementCtx.found_rows);
@@ -595,8 +645,14 @@ impl recordSet {
         }));
         match result {
             Ok(Ok(())) => Ok(()),
-            Ok(Err(error)) => Err(error),
-            Err(panic) => Err(panicError(panic.as_ref(), "recordSet.Next")),
+            Ok(Err(error)) => {
+                self.stmt.abortStatementRU();
+                Err(error)
+            }
+            Err(panic) => {
+                self.stmt.abortStatementRU();
+                Err(panicError(panic.as_ref(), "recordSet.Next"))
+            }
         }
     }
 
@@ -832,6 +888,172 @@ pub struct ExecStmt {
 }
 
 impl ExecStmt {
+    /// Session completion is independent from executor EOF; the first outcome wins.
+    pub fn RecordStatementRUFinalOutcome(&self, success: bool) {
+        if let Some(owner) = &self.StatementCtx.statement_ru_owner {
+            let (_, setup) = owner.record_final_outcome_with_setup(success);
+            if let Some(setup) = setup {
+                self.publishStatementRUAbort(setup.full_report);
+            }
+        }
+    }
+
+    pub fn abortStatementRU(&self) {
+        if let Some(owner) = &self.StatementCtx.statement_ru_owner {
+            if let Some(setup) = owner.take_terminal_setup() {
+                self.publishStatementRUAbort(setup.full_report);
+            }
+        }
+    }
+
+    fn publishStatementRUAbort(&self, full_report: bool) {
+        if full_report {
+            crate::statement_ru_result::publish_statement_ru_failure_safely(
+                &crate::statement_ru_result::StatementRUContextSink {
+                    context: self.Ctx.as_ref(),
+                    ttl_job: false,
+                },
+                crate::statement_ru_reporting::StatementRUFailureReason::StatementError,
+            );
+        }
+    }
+
+    pub fn recordStatementRURootEOF(&self) {
+        if let Some(owner) = &self.StatementCtx.statement_ru_owner {
+            owner.record_root_eof();
+        }
+    }
+
+    /// Consume before inspecting live state so errors, panic and reentry cannot retry.
+    /// The returned value is private to terminal bookkeeping; publication is separate.
+    pub fn finishStatementRU(
+        &mut self,
+        terminal_error: Option<&errors::SharedError>,
+    ) -> Option<crate::statement_ru_result::StatementRUFinalizedSnapshot> {
+        use crate::statement_ru_plan_walk::*;
+        use crate::statement_ru_result::{StatementRUCalculator, StatementRUPlanKind};
+        let owner = self.StatementCtx.statement_ru_owner.clone()?;
+        let setup = owner.take_terminal_setup()?;
+        use crate::statement_ru_reporting::StatementRUFailureReason;
+        let mut failure = StatementRUFailureReason::NotFinished;
+        let terminal = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if owner.final_outcome() != StatementRUFinalOutcome::Success || terminal_error.is_some()
+            {
+                if terminal_error.is_some() {
+                    failure = StatementRUFailureReason::StatementError;
+                }
+                return None;
+            }
+            failure = StatementRUFailureReason::Invalid;
+            let live = self.Ctx.StatementRUInstallState(&self.StmtNode)?;
+            if !live.statement_context_present
+                || owner.cursor_at_install
+                || live.cursor_exists
+                || ((owner.restricted_sql_at_install || live.restricted_sql)
+                    && !owner.ttl_job_at_install)
+            {
+                failure = StatementRUFailureReason::Ineligible;
+                return None;
+            }
+            if !owner.root_eof() {
+                failure = StatementRUFailureReason::NotFinished;
+                return None;
+            }
+            self.SnapshotStatementRUEvidence();
+            let plan = self.ClassifiedTypedPlan()?;
+            let evidence = self.StatementCtx.statement_ru_evidence.as_deref()?;
+            if plan.kind == StatementRUPlanKind::Commit {
+                let mut calculator = StatementRUCalculator::new(setup);
+                let writes = evidence.writes.unwrap_or_default();
+                calculator.units.write_keys = writes.keys as f64;
+                calculator.units.write_bytes = writes.bytes as f64;
+                let mut finalized = calculator.finalize()?;
+                finalized.sql_type = "commit".into();
+                return Some(finalized);
+            }
+            if plan.kind == StatementRUPlanKind::PointLookup && plan.plan.id() <= 0 {
+                return None;
+            }
+            let subqueries = self.Ctx.StatementRUScalarSubqueries();
+            let forest = astersql_planner_core::FlattenTypedPhysicalPlanForest(
+                self.TypedPlan.as_deref()?,
+                &subqueries,
+            )?;
+            if !forest
+                .Main
+                .first()
+                .is_some_and(|root| std::ptr::eq(root.Origin, plan.plan))
+            {
+                return None;
+            }
+            match calculate_statement_ru_forest(&forest, evidence, setup, owner.root_eof()) {
+                Ok(snapshot) => Some(snapshot),
+                Err(state) => {
+                    failure = statement_ru_failed(state);
+                    None
+                }
+            }
+        }));
+        if terminal.is_err() {
+            failure = StatementRUFailureReason::Panic;
+        }
+        let finalized = terminal.ok().flatten();
+        if finalized.is_none() && setup.full_report {
+            crate::statement_ru_result::publish_statement_ru_failure_safely(
+                &crate::statement_ru_result::StatementRUContextSink {
+                    context: self.Ctx.as_ref(),
+                    ttl_job: owner.ttl_job_at_install,
+                },
+                failure,
+            );
+        }
+        finalized
+    }
+
+    /// Freeze the live sources before cleanup can release statement statistics.
+    pub fn SnapshotStatementRUEvidence(&mut self) {
+        if self.StatementCtx.statement_ru_evidence.is_some() {
+            return;
+        }
+        let mut ids = Vec::new();
+        let scalar_subqueries = self.Ctx.StatementRUScalarSubqueries();
+        if let Some(plan) = self.TypedPlan.as_deref() {
+            if let Some(forest) =
+                astersql_planner_core::FlattenTypedPhysicalPlanForest(plan, &scalar_subqueries)
+            {
+                for tree in std::iter::once(&forest.Main)
+                    .chain(forest.CTEs.iter())
+                    .chain(forest.ScalarSubQueries.iter())
+                {
+                    for operator in tree {
+                        ids.push(operator.Origin.id());
+                    }
+                }
+            }
+        } else {
+            ids.push(self.Plan.id);
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        let mut evidence = self.Ctx.StatementRURuntimeEvidence(&ids);
+        if evidence.tikv_response_bytes.is_none() {
+            evidence.tikv_response_bytes = self
+                .StatementCtx
+                .ru_metrics
+                .as_deref()
+                .filter(|metrics| !metrics.Bypass())
+                .map(RUV2Metrics::TiKVCoprocessorResponseBytes);
+        }
+        if evidence.writes.is_none() {
+            evidence.writes = self.StatementCtx.commit_details.as_deref().map(|details| {
+                crate::statement_ru_plan_walk::snapshot_statement_ru_writes(Some(details))
+            });
+        }
+
+        evidence.frontend_compile_bytes = self.Ctx.StatementRUFrontendCompileBytes(&self.StmtNode);
+        self.StatementCtx.statement_ru_evidence = Some(Arc::new(evidence));
+    }
+
     /// Traverse the original physical operators, if the statement has a typed plan.
     /// A missing or nonphysical plan is never replaced with `PlanInfo` estimates.
     pub fn TypedFlatPlan(&self) -> Option<Vec<astersql_planner_core::TypedFlatOperator<'_>>> {
@@ -854,6 +1076,19 @@ impl ExecStmt {
 
     /// 走 PointGet 快速路径：高优先级构建并打开点查执行器。
     pub fn PointGet(&mut self) -> AdapterResult<recordSet> {
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.point_get_inner()));
+        let result = match result {
+            Ok(result) => result,
+            Err(panic) => Err(panicError(panic.as_ref(), "ExecStmt.PointGet")),
+        };
+        if result.is_err() {
+            self.RecordStatementRUFinalOutcome(false);
+        }
+        result
+    }
+
+    fn point_get_inner(&mut self) -> AdapterResult<recordSet> {
         let mut context =
             self.observeStmtBeginForTopProfiling(self.GoCtx.clone().unwrap_or_default());
         context.sql_killer = self.Ctx.SQLKillerHandle();
@@ -927,6 +1162,7 @@ impl ExecStmt {
         );
         self.Ctx.OnExecComplete(result.is_ok());
         if result.is_err() {
+            self.RecordStatementRUFinalOutcome(false);
             self.Ctx.CancelMaximumExecutionTime();
         }
         result
@@ -1297,6 +1533,7 @@ impl ExecStmt {
                 let mut chunk = executor.NewChunk();
                 self.nextWithContext(&context, executor, &mut chunk)?;
                 if chunk.NumRows() == 0 {
+                    self.recordStatementRURootEOF();
                     break Ok(());
                 }
                 let keys = executor.TakeLockKeys();
@@ -1340,6 +1577,16 @@ impl ExecStmt {
             }
             let mut output = executor.NewChunk();
             self.next(executor, &mut output)?;
+            if self.ClassifiedTypedPlan().is_some_and(|plan| {
+                matches!(
+                    plan.kind,
+                    crate::statement_ru_result::StatementRUPlanKind::Analyze
+                        | crate::statement_ru_result::StatementRUPlanKind::Write
+                        | crate::statement_ru_result::StatementRUPlanKind::Commit
+                )
+            }) {
+                self.recordStatementRURootEOF();
+            }
             self.handleStmtForeignKeyTrigger(executor)
         })();
         let scanned_rows = executor.ScannedRows();
@@ -1643,18 +1890,46 @@ impl ExecStmt {
         has_more_results: bool,
     ) {
         let success = error.is_none();
+        let ru_already_published = self.StatementCtx.statement_ru_finalized.is_some();
         self.Ctx
             .OnFinishStatement(self.retryCount, success, self.StatementCtx.affected_rows);
         self.logAudit();
         self.checkPlanReplayerCapture(transaction_ts);
         self.Ctx.AttachFinishRuntimeStats(self.Plan.id);
+        if self.Ctx.RUVersion() == 3 && self.StatementCtx.statement_ru_owner.is_none() {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.SnapshotStatementRUEvidence();
+            }));
+        }
         self.StatementCtx.plan = Some(self.Plan.clone());
         self.Ctx.SetStatementContext(&self.StatementCtx);
-        self.finalizeStatementRUV2Metrics();
+        if self.Ctx.RUVersion() != 3 {
+            self.finalizeStatementRUV2Metrics();
+        } else if self.StatementCtx.statement_ru_finalized.is_none() {
+            self.StatementCtx.total_ru = 0.0;
+        }
         self.updateNetworkTrafficStatsAndMetrics();
+        if let Some(finalized) = self.finishStatementRU(error.as_ref()) {
+            self.StatementCtx.total_ru = finalized.result.total_ru;
+            self.StatementCtx.statement_ru_finalized = Some(Arc::new(finalized.clone()));
+            crate::statement_ru_result::publish_statement_ru_finalized_snapshot(
+                &crate::statement_ru_result::StatementRUContextSink {
+                    context: self.Ctx.as_ref(),
+                    ttl_job: self
+                        .StatementCtx
+                        .statement_ru_owner
+                        .as_ref()
+                        .is_some_and(|owner| owner.ttl_job_at_install),
+                },
+                &finalized,
+            );
+        }
+        self.Ctx.SetStatementContext(&self.StatementCtx);
         self.LogSlowQuery(transaction_ts, success, has_more_results);
         self.SummaryStmt(success);
-        self.observeStmtFinishedForTopProfiling();
+        if !ru_already_published {
+            self.observeStmtFinishedForTopProfiling();
+        }
         self.UpdatePlanCacheRuntimeInfo();
         let supplementary = self.Ctx.SupplementaryFinishMetrics();
         let rfc_error_code = error.as_ref().and_then(FinishErrorRFCCode);

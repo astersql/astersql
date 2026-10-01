@@ -1129,3 +1129,39 @@ fn go_merge_17_ru_v1_only() {
     assert_eq!(stats.String(), copy.String());
     assert_eq!(exec::RURuntimeStats::default().String(), "");
 }
+
+#[test]
+fn go_merge_187_runtime_evidence_bridge_missing_scan() {
+    let mut collector = exec::RuntimeStatsColl::default();
+    collector.RecordCopStats(1, exec::kv::TiKV, None, Default::default(), None, None);
+    assert!(collector.GetCopScanDetail(1).is_some());
+    assert!(
+        collector.GetObservedCopScanDetail(1).is_none(),
+        "a response without scan detail must not become observed zero"
+    );
+    collector.RecordCopStats(
+        2,
+        exec::kv::TiKV,
+        Some(&exec::util::ScanDetail::default()),
+        Default::default(),
+        None,
+        None,
+    );
+    assert_eq!(collector.GetObservedCopScanDetail(2).unwrap().TotalKeys, 0);
+}
+
+#[test]
+fn go_merge_187_runtime_evidence_bridge_shared_root() {
+    let mut collector = exec::RuntimeStatsColl::default();
+    collector.RegisterStats(1, Box::new(exec::WriteRuntimeStats { CPUWork: 6.0 }));
+    collector.RegisterStatsShared(1, Box::new(exec::WriteRuntimeStats { CPUWork: 3.0 }));
+    assert_eq!(collector.GetRootWriteCPUWork(1), Some(9.0));
+    let hash = exec::HashStateRuntimeStats::default();
+    hash.AddRows(4);
+    collector.RegisterStatsShared(2, Box::new(hash));
+    assert_eq!(collector.GetRootHashStateRowsSnapshot(2).unwrap().Rows, 4);
+    assert_eq!(
+        collector.GetRootHashStateRowsSnapshot(3).map(|s| s.Rows),
+        None
+    );
+}

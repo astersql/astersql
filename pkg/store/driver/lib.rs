@@ -75,4 +75,4 @@ mod test_state_test;
 mod txn_test;
 
 mod read_request;
-pub use tikv_client::{ReadAttempt, ReadOptions, ReadStats};
+pub use tikv_client::{PointResponseStats, ReadAttempt, ReadOptions, ReadStats};
