@@ -206,6 +206,14 @@ pub fn build_placement_affects(old_ids: &[i64], new_ids: &[i64]) -> Vec<Affected
 /// A pooled SQL session and its actual KV transaction. Operations stay on the
 /// session's owning thread; SQL job writes and metadata writes share one commit.
 pub trait DurableJobSession {
+    /// GC registration uses an independent autocommit session, as in Go.
+    fn register_delete_ranges(
+        &mut self,
+        _: &mut astersql_meta_model::group_3::Job,
+    ) -> Result<(), String> {
+        Err("DDL delete-range session unavailable".into())
+    }
+
     fn query(&mut self, sql: &str, label: &str) -> Result<Vec<Vec<String>>, String>;
     fn begin(&mut self) -> Result<(), String>;
     fn commit(&mut self) -> Result<(), String>;

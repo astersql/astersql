@@ -32,7 +32,7 @@ pub const BATCH_INSERT_DELETE_RANGE_SIZE: usize = 256;
 /// 临时索引 ID 前缀标记（最高有效位之一置 1）。
 /// 添加索引（AddIndex）过程中会先写入带此前缀的"临时索引"，
 /// 回填（backfill）完成后再切换为正式索引；回滚或完成后需按该前缀清理临时数据。
-pub const TEMPORARY_INDEX_PREFIX: i64 = 1_i64 << 62;
+pub const TEMPORARY_INDEX_PREFIX: i64 = astersql_tablecodec::TempIndexPrefix;
 
 /// 会产生删除范围任务的 DDL 动作类型。
 /// 每种动作对应不同的数据清理策略（整表范围或索引范围）。
@@ -284,19 +284,13 @@ fn index_tasks(
         .collect()
 }
 
-/// 编码表数据的键前缀：`t` + 大端序表 ID。
-/// 大端序（big-endian）保证按字节序比较即按数值大小排序，便于范围扫描。
+/// 编码表数据的键前缀：`t` + Go 有符号整数排序编码。
 fn encode_table_prefix(table_id: i64) -> Key {
-    let mut key = b"t".to_vec();
-    key.extend_from_slice(&table_id.to_be_bytes());
-    key
+    astersql_tablecodec::EncodeTablePrefix(table_id).0
 }
-/// 编码索引数据的键前缀：表前缀 + `i` + 大端序索引 ID。
+/// 编码索引数据的键前缀：表前缀 + `_i` + Go 有符号整数排序编码。
 fn encode_table_index_prefix(table_id: i64, index_id: i64) -> Key {
-    let mut key = encode_table_prefix(table_id);
-    key.push(b'i');
-    key.extend_from_slice(&index_id.to_be_bytes());
-    key
+    astersql_tablecodec::EncodeTableIndexPrefix(table_id, index_id).0
 }
 
 /// 删除范围管理器：维护待执行与已完成的删除任务队列，
@@ -350,4 +344,350 @@ impl DeleteRangeManager {
     pub fn remove_from_gc_delete_range(&mut self, job_id: i64) {
         self.completed.retain(|task| task.job_id != job_id);
     }
+}
+
+/// Independent, autocommit system session used by Go's delRange manager.
+/// A successful batch survives rollback of the enclosing DDL worker.
+pub trait DeleteRangeExecutor {
+    fn current_version(&mut self) -> Result<u64, String>;
+    fn execute(&mut self, sql: &str) -> Result<(), String>;
+}
+
+/// Go JobNeedGC, including columnar-index and missing-field warning exclusions.
+pub fn persistent_job_need_gc(job: &mut astersql_meta_model::group_3::Job) -> bool {
+    use astersql_meta_model::group_3::*;
+    if job.state == JobState::Cancelled
+        || job
+            .warning
+            .as_ref()
+            .is_some_and(|w| w.starts_with("[ddl:1091]"))
+    {
+        return false;
+    }
+    match job.tp {
+        ACTION_DROP_SCHEMA
+        | ACTION_DROP_TABLE
+        | ACTION_DROP_MATERIALIZED_VIEW
+        | ACTION_DROP_MATERIALIZED_VIEW_LOG
+        | ACTION_DROP_MATERIALIZED_VIEW_SHADOW
+        | ACTION_TRUNCATE_TABLE
+        | ACTION_DROP_PRIMARY_KEY
+        | ACTION_DROP_TABLE_PARTITION
+        | ACTION_TRUNCATE_TABLE_PARTITION
+        | ACTION_DROP_COLUMN
+        | ACTION_MODIFY_COLUMN
+        | ACTION_ADD_INDEX
+        | ACTION_ADD_PRIMARY_KEY
+        | ACTION_REORGANIZE_PARTITION
+        | ACTION_REMOVE_PARTITIONING
+        | ACTION_ALTER_TABLE_PARTITIONING
+        | ACTION_MVIEW_REFRESH_OUT_OF_PLACE_CUTOVER => true,
+        ACTION_CREATE_MATERIALIZED_VIEW => job.state == JobState::RollbackDone && job.table_id != 0,
+        ACTION_DROP_INDEX => finished_index_args(job)
+            .ok()
+            .and_then(|a| a.IndexArgs.first().map(|i| !i.IsColumnar))
+            .unwrap_or(false),
+        ACTION_MULTI_SCHEMA_CHANGE => job.multi_schema_info.as_ref().is_some_and(|info| {
+            info.sub_jobs
+                .iter()
+                .enumerate()
+                .any(|(i, sub)| persistent_job_need_gc(&mut sub.to_proxy_job(job, i as i32)))
+        }),
+        _ => false,
+    }
+}
+
+/// Register full Go finished arguments, sharing one element allocator across
+/// sub-jobs. CurrentVersion is obtained once per proxy job, before decoding.
+pub fn add_persistent_delete_range_job(
+    executor: &mut dyn DeleteRangeExecutor,
+    job: &mut astersql_meta_model::group_3::Job,
+) -> Result<(), String> {
+    let mut allocator = ElementIdAllocator::default();
+    if let Some(info) = &job.multi_schema_info {
+        for (i, sub) in info.sub_jobs.iter().enumerate() {
+            let mut proxy = sub.to_proxy_job(job, i as i32);
+            if persistent_job_need_gc(&mut proxy) {
+                persist_job_ranges(executor, &mut proxy, &mut allocator)?;
+            }
+        }
+    } else {
+        persist_job_ranges(executor, job, &mut allocator)?;
+    }
+    Ok(())
+}
+fn persist_job_ranges(
+    executor: &mut dyn DeleteRangeExecutor,
+    job: &mut astersql_meta_model::group_3::Job,
+    allocator: &mut ElementIdAllocator,
+) -> Result<(), String> {
+    let ts = executor.current_version()?;
+    for batch in finished_range_batches(job, allocator)? {
+        if batch.is_empty() {
+            continue;
+        }
+        let values = batch
+            .iter()
+            .map(|task| {
+                let hex = |b: &[u8]| b.iter().map(|b| format!("{b:02x}")).collect::<String>();
+                format!(
+                    "({},{},'{}','{}',{})",
+                    task.job_id,
+                    task.element_id,
+                    hex(&task.start_key),
+                    hex(&task.end_key),
+                    ts
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        executor.execute(&format!("INSERT IGNORE INTO mysql.gc_delete_range (job_id,element_id,start_key,end_key,ts) VALUES {values}"))?;
+    }
+    Ok(())
+}
+
+fn finished_range_batches(
+    job: &mut astersql_meta_model::group_3::Job,
+    allocator: &mut ElementIdAllocator,
+) -> Result<Vec<Vec<DeleteRangeTask>>, String> {
+    use astersql_meta_model::{group_2::*, group_3::*};
+    let mut legacy;
+    let job = if job.version == JobVersion::V1 {
+        legacy = normalized_legacy_gc_job(job)?;
+        &mut legacy
+    } else {
+        job
+    };
+    // This identity-only value lets the existing range helpers allocate the same
+    // table/index element IDs as Go, without replacing the full persisted Job.
+    let identity = DeleteRangeJob {
+        id: job.id,
+        table_id: job.table_id,
+        action: DeleteRangeAction::Other,
+        rollback_done: false,
+        cancelled: false,
+        old_physical_table_ids: vec![],
+        partition_ids: vec![],
+        index_arguments: vec![],
+        index_ids: vec![],
+        old_global_indexes: vec![],
+        subjobs: vec![],
+    };
+    let mut batches = Vec::new();
+    match job.tp {
+        ACTION_DROP_SCHEMA => {
+            let args = GetFinishedDropSchemaArgs(job)?;
+            for ids in args
+                .AllDroppedTableIDs
+                .chunks(BATCH_INSERT_DELETE_RANGE_SIZE)
+            {
+                batches.push(table_tasks(&identity, ids, allocator));
+            }
+        }
+        ACTION_DROP_TABLE
+        | ACTION_DROP_MATERIALIZED_VIEW
+        | ACTION_DROP_MATERIALIZED_VIEW_LOG
+        | ACTION_DROP_MATERIALIZED_VIEW_SHADOW
+        | ACTION_TRUNCATE_TABLE => {
+            let ids = if job.version == JobVersion::V1 {
+                legacy_finished_table_ids(job)?
+            } else if job.tp == ACTION_TRUNCATE_TABLE {
+                GetFinishedTruncateTableArgs(job)?.OldPartitionIDs
+            } else {
+                GetFinishedDropTableArgs(job)?.OldPartitionIDs
+            };
+            if !ids.is_empty() {
+                batches.push(table_tasks(&identity, &ids, allocator));
+            }
+            batches.push(table_tasks(&identity, &[job.table_id], allocator));
+        }
+        ACTION_CREATE_MATERIALIZED_VIEW => {
+            if job.state == JobState::RollbackDone && job.table_id != 0 {
+                batches.push(table_tasks(&identity, &[job.table_id], allocator));
+            }
+        }
+        ACTION_MVIEW_REFRESH_OUT_OF_PLACE_CUTOVER => {
+            let args = GetRefreshMaterializedViewCompleteOutOfPlaceCutoverArgs(job)?;
+            batches.push(table_tasks(&identity, &[args.OldMViewID], allocator));
+        }
+        ACTION_DROP_TABLE_PARTITION
+        | ACTION_REORGANIZE_PARTITION
+        | ACTION_REMOVE_PARTITIONING
+        | ACTION_ALTER_TABLE_PARTITIONING => {
+            let args = GetFinishedTablePartitionArgs(job)?;
+            if job.tp != ACTION_DROP_TABLE_PARTITION {
+                for idx in args.OldGlobalIndexes {
+                    batches.push(index_tasks(
+                        &identity,
+                        idx.TableID,
+                        &[idx.IndexID],
+                        allocator,
+                    ));
+                }
+            }
+            batches.push(table_tasks(&identity, &args.OldPhysicalTblIDs, allocator));
+        }
+        ACTION_TRUNCATE_TABLE_PARTITION => {
+            let args = GetTruncateTableArgs(job)?;
+            batches.push(table_tasks(&identity, &args.OldPartitionIDs, allocator));
+        }
+        ACTION_ADD_INDEX | ACTION_ADD_PRIMARY_KEY => {
+            let args = finished_index_args(job)?;
+            let physical = if args.PartitionIDs.is_empty() {
+                vec![job.table_id]
+            } else {
+                args.PartitionIDs
+            };
+            for idx in args.IndexArgs {
+                let temp = TEMPORARY_INDEX_PREFIX | idx.IndexID;
+                let ids = if job.state == JobState::RollbackDone {
+                    vec![idx.IndexID, temp]
+                } else {
+                    vec![temp]
+                };
+                if idx.IsGlobal {
+                    batches.push(index_tasks(&identity, job.table_id, &ids, allocator));
+                } else {
+                    for pid in &physical {
+                        batches.push(index_tasks(&identity, *pid, &ids, allocator));
+                    }
+                }
+            }
+        }
+        ACTION_DROP_INDEX | ACTION_DROP_PRIMARY_KEY => {
+            let args = finished_index_args(job)?;
+            let idx = args
+                .IndexArgs
+                .first()
+                .ok_or("missing finished index argument")?;
+            let physical = if args.PartitionIDs.is_empty() {
+                vec![job.table_id]
+            } else {
+                args.PartitionIDs
+            };
+            for pid in physical {
+                batches.push(index_tasks(&identity, pid, &[idx.IndexID], allocator));
+            }
+        }
+        ACTION_DROP_COLUMN | ACTION_MODIFY_COLUMN => {
+            let (ids, partitions) = if job.tp == ACTION_DROP_COLUMN {
+                let args = GetTableColumnArgs(job)?;
+                (args.IndexIDs, args.PartitionIDs)
+            } else {
+                let args = GetFinishedModifyColumnArgs(job)?;
+                (args.IndexIDs, args.PartitionIDs)
+            };
+            if !ids.is_empty() {
+                let physical = if partitions.is_empty() {
+                    vec![job.table_id]
+                } else {
+                    partitions
+                };
+                for pid in physical {
+                    batches.push(index_tasks(&identity, pid, &ids, allocator));
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(batches)
+}
+
+// Go's deprecated StartKey is []byte (JSON base64), not a numeric JSON array.
+// Validate its wire type even though Go no longer uses it to form the range.
+// Keep the original raw arguments intact for history and retry.
+fn legacy_finished_table_ids(job: &astersql_meta_model::group_3::Job) -> Result<Vec<i64>, String> {
+    use astersql_meta_model::{group_2::JobArgsCompat, group_3::ACTION_TRUNCATE_TABLE};
+    let mut key = serde_json::Value::Null;
+    let mut ids: Option<Vec<i64>> = None;
+    let mut rules: Option<Vec<String>> = None;
+    if job.tp == ACTION_TRUNCATE_TABLE {
+        job.decodeArgs((&mut key, &mut ids))
+            .map_err(|e| e.to_string())?;
+    } else {
+        job.decodeArgs((&mut key, &mut ids, &mut rules))
+            .map_err(|e| e.to_string())?;
+    }
+    let valid = match key {
+        serde_json::Value::Null => true,
+        serde_json::Value::Array(bytes) => {
+            bytes.iter().all(|v| v.as_u64().is_some_and(|v| v <= 255))
+        }
+        serde_json::Value::String(encoded) => {
+            // Go base64.StdEncoding ignores CR/LF and permits noncanonical
+            // trailing bits, but rejects misplaced padding and other bytes.
+            let bytes: Vec<_> = encoded
+                .bytes()
+                .filter(|b| !matches!(b, b'\r' | b'\n'))
+                .collect();
+            let data = bytes.iter().position(|b| *b == b'=').unwrap_or(bytes.len());
+            let padding = bytes.len() - data;
+            bytes.len() % 4 == 0
+                && padding <= 2
+                && bytes[..data]
+                    .iter()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/'))
+                && bytes[data..].iter().all(|b| *b == b'=')
+                && (padding == 0
+                    || (padding == 1 && data % 4 == 3)
+                    || (padding == 2 && data % 4 == 2))
+        }
+        _ => false,
+    };
+    if !valid {
+        return Err("invalid Go finished StartKey byte encoding".into());
+    }
+    Ok(ids.unwrap_or_default())
+}
+
+fn finished_index_args(
+    job: &mut astersql_meta_model::group_3::Job,
+) -> Result<astersql_meta_model::group_2::ModifyIndexArgs, String> {
+    use astersql_meta_model::{group_2::GetFinishedModifyIndexArgs, group_3::JobVersion};
+    if job.version == JobVersion::V1 {
+        GetFinishedModifyIndexArgs(&mut normalized_legacy_gc_job(job)?)
+    } else {
+        GetFinishedModifyIndexArgs(job)
+    }
+}
+
+// encoding/json writes nil Go slices as null. Serde Vec expects an array;
+// normalize only slice positions on a temporary job, preserving stored args.
+fn normalized_legacy_gc_job(
+    job: &mut astersql_meta_model::group_3::Job,
+) -> Result<astersql_meta_model::group_3::Job, String> {
+    use astersql_meta_model::group_3::*;
+    let mut copy =
+        Job::decode(&job.encode(false).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&copy.raw_args).map_err(|e| e.to_string())?;
+    let positions: &[usize] = match job.tp {
+        ACTION_DROP_SCHEMA => &[0],
+        ACTION_DROP_TABLE
+        | ACTION_DROP_MATERIALIZED_VIEW
+        | ACTION_DROP_MATERIALIZED_VIEW_LOG
+        | ACTION_DROP_MATERIALIZED_VIEW_SHADOW => &[1, 2],
+        ACTION_TRUNCATE_TABLE => &[1],
+        ACTION_DROP_TABLE_PARTITION
+        | ACTION_REORGANIZE_PARTITION
+        | ACTION_REMOVE_PARTITIONING
+        | ACTION_ALTER_TABLE_PARTITIONING
+        | ACTION_TRUNCATE_TABLE_PARTITION => &[0, 1],
+        ACTION_ADD_INDEX | ACTION_ADD_PRIMARY_KEY => &[2],
+        ACTION_DROP_INDEX | ACTION_DROP_PRIMARY_KEY => &[3],
+        ACTION_DROP_COLUMN => &[2, 3],
+        ACTION_MODIFY_COLUMN => &[0, 1, 2],
+        _ => &[],
+    };
+    if let Some(args) = value.as_array_mut() {
+        for index in positions {
+            if let Some(v) = args.get_mut(*index)
+                && v.is_null()
+            {
+                *v = serde_json::json!([]);
+            }
+        }
+    }
+    copy.raw_args = serde_json::to_vec(&value).map_err(|e| e.to_string())?;
+    Ok(copy)
 }

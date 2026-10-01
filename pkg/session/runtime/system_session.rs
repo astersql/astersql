@@ -915,7 +915,29 @@ impl astersql_ddl::job_worker::JobExecutionContext for ConcreteJobExecutionConte
     }
 }
 
+impl astersql_ddl::delete_range::DeleteRangeExecutor for SystemSessionLease {
+    fn current_version(&mut self) -> Result<u64, String> {
+        jobsubmit::Session::current_version(self).map_err(|e| e.to_string())
+    }
+    fn execute(&mut self, sql: &str) -> Result<(), String> {
+        self.query_with_label(sql.to_owned(), "ddl_delete_range")
+            .map(|_| ())
+    }
+}
 impl astersql_ddl::job_worker::DurableJobSession for SystemSessionLease {
+    fn register_delete_ranges(
+        &mut self,
+        job: &mut astersql_meta_model::group_3::Job,
+    ) -> Result<(), String> {
+        let context = self.pool.get().map_err(|e| e.to_string())?;
+        let mut gc = SystemSessionLease {
+            metadata_error: None,
+            pool: self.pool.clone(),
+            context,
+        };
+        astersql_ddl::delete_range::add_persistent_delete_range_job(&mut gc, job)
+    }
+
     fn with_execution_context(
         &mut self,
         operation: astersql_ddl::job_worker::ExecutionOperation,

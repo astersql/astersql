@@ -2507,3 +2507,546 @@ fn normal_ddl_plan_notifier_v1_multi_boundary_keys_and_validation() {
         }
     }
 }
+
+fn delete_range_finished_job(f: &Fixture, id: i64, tp: u8, args: &str) {
+    f.insert(id, JobState::Done);
+    let mut job = f.queue(id).unwrap();
+    job.tp = tp;
+    job.version = astersql_meta_model::group_3::JobVersion::V2;
+    job.raw_args = args.as_bytes().to_vec();
+    f.pool
+        .acquire()
+        .unwrap()
+        .query(format!(
+            "UPDATE mysql.tidb_ddl_job SET type={tp},job_meta=X'{}' WHERE job_id={id}",
+            hex(&astersql_meta::encode_go_ddl_job(&mut job, false).unwrap())
+        ))
+        .unwrap();
+}
+fn delete_range_rows(f: &Fixture, id: i64) -> Vec<Vec<String>> {
+    f.pool.acquire().unwrap().query(format!("SELECT element_id,start_key,end_key,ts FROM mysql.gc_delete_range WHERE job_id={id} ORDER BY element_id")).unwrap()
+}
+#[test]
+fn normal_ddl_plan_delete_range_partition_table_and_index_finish() {
+    use astersql_meta_model::group_3::{ACTION_ADD_INDEX, ACTION_DROP_TABLE};
+    let f = Fixture::new();
+    f.pool
+        .acquire()
+        .unwrap()
+        .query("INSERT INTO test.normal_ddl_target VALUES (1,'retained-until-gc')")
+        .unwrap();
+    // Finished args retain the removed physical partitions, while the logical
+    // table range covers any global-index regions.
+    delete_range_finished_job(
+        &f,
+        86001,
+        ACTION_DROP_TABLE,
+        r#"{"old_partition_ids":[501,502]}"#,
+    );
+    let mut session = f.pool.acquire().unwrap();
+    let lease = Lease(AtomicBool::new(true));
+    assert_eq!(
+        scheduler()
+            .schedule_persisted(&mut session, &lease, &mut executor(), 0)
+            .unwrap(),
+        1
+    );
+    let rows = delete_range_rows(&f, 86001);
+    assert_eq!(rows.len(), 3, "normal finish must persist GC ranges");
+    for (i, tid) in [501, 502, f.table].into_iter().enumerate() {
+        assert_eq!(rows[i][0], (i + 1).to_string());
+        assert_eq!(
+            rows[i][1],
+            hex(astersql_tablecodec::EncodeTablePrefix(tid).as_ref())
+        );
+        assert_eq!(
+            rows[i][2],
+            hex(astersql_tablecodec::EncodeTablePrefix(tid + 1).as_ref())
+        );
+        assert!(rows[i][3].parse::<u64>().unwrap() > 0);
+    }
+    assert!(f.queue(86001).is_none());
+    assert!(f.reader().get_history_ddl_job(86001).unwrap().is_some());
+    delete_range_finished_job(
+        &f,
+        86002,
+        ACTION_ADD_INDEX,
+        r#"{"partition_ids":[501,502],"index_args":[{"index_id":11},{"index_id":12,"is_global":true}]}"#,
+    );
+    assert_eq!(
+        scheduler()
+            .schedule_persisted(&mut session, &lease, &mut executor(), 0)
+            .unwrap(),
+        1
+    );
+    let rows = delete_range_rows(&f, 86002);
+    assert_eq!(rows.len(), 3);
+    for (i, (tid, iid)) in [(501, 11), (502, 11), (f.table, 12)]
+        .into_iter()
+        .enumerate()
+    {
+        let temp = astersql_tablecodec::TempIndexPrefix | iid;
+        assert_eq!(
+            rows[i][1],
+            hex(astersql_tablecodec::EncodeTableIndexPrefix(tid, temp).as_ref())
+        );
+        assert_eq!(
+            rows[i][2],
+            hex(astersql_tablecodec::EncodeTableIndexPrefix(tid, temp + 1).as_ref())
+        );
+    }
+    assert_eq!(
+        f.pool
+            .acquire()
+            .unwrap()
+            .query("SELECT payload FROM test.normal_ddl_target WHERE id=1")
+            .unwrap()[0][0],
+        "retained-until-gc"
+    );
+}
+
+#[test]
+fn normal_ddl_plan_delete_range_worker_conflict_preserves_gc_and_retry() {
+    let f = Fixture::new();
+    f.pool
+        .acquire()
+        .unwrap()
+        .query("INSERT INTO test.normal_ddl_target VALUES (1,'worker-conflict')")
+        .unwrap();
+    delete_range_finished_job(
+        &f,
+        86010,
+        astersql_meta_model::group_3::ACTION_DROP_TABLE,
+        r#"{"old_partition_ids":[601,602]}"#,
+    );
+    let mut worker = f.pool.acquire().unwrap();
+    worker.begin().unwrap();
+    let worker_ts = worker
+        .with_transaction(Box::new(|t| Ok(t.StartTS().to_be_bytes().to_vec())))
+        .unwrap();
+    let mut job = f.queue(86010).unwrap();
+    assert!(executor().step(&mut worker, &mut job).unwrap().removed);
+    // GC is visible outside the still-open worker transaction.
+    let gc = delete_range_rows(&f, 86010);
+    assert_eq!(gc.len(), 3);
+    assert!(gc.iter().all(|r| r[3].parse::<u64>().unwrap()
+        > u64::from_be_bytes(worker_ts.as_slice().try_into().unwrap())));
+    assert!(f.queue(86010).is_some());
+    assert!(f.reader().get_history_ddl_job(86010).unwrap().is_none());
+    f.pool
+        .acquire()
+        .unwrap()
+        .query("UPDATE mysql.tidb_ddl_job SET processing=1 WHERE job_id=86010")
+        .unwrap();
+    let error = worker.commit().unwrap_err();
+    assert!(error.contains(astersql_kv::TxnRetryableMark), "{error}");
+    worker.rollback();
+    assert!(f.queue(86010).is_some());
+    assert!(f.reader().get_history_ddl_job(86010).unwrap().is_none());
+    assert_eq!(delete_range_rows(&f, 86010), gc);
+    // A fresh worker reloads the complete job. INSERT IGNORE preserves the
+    // original range and timestamp instead of allocating duplicate elements.
+    let lease = Lease(AtomicBool::new(true));
+    assert_eq!(
+        scheduler()
+            .schedule_persisted(&mut worker, &lease, &mut executor(), 0)
+            .unwrap(),
+        1
+    );
+    assert_eq!(delete_range_rows(&f, 86010), gc);
+    assert!(f.queue(86010).is_none());
+    assert!(f.reader().get_history_ddl_job(86010).unwrap().is_some());
+}
+
+#[test]
+fn normal_ddl_plan_delete_range_gc_sql_failure_retries_before_history() {
+    let f = Fixture::new();
+    delete_range_finished_job(
+        &f,
+        86011,
+        astersql_meta_model::group_3::ACTION_DROP_TABLE,
+        r#"{"old_partition_ids":[611,612]}"#,
+    );
+    // A real missing system table produces the same SQL storage error a broken
+    // bootstrap would return; no executor flags or fake successful rows.
+    f.pool
+        .acquire()
+        .unwrap()
+        .query("DROP TABLE mysql.gc_delete_range")
+        .unwrap();
+    let mut worker = f.pool.acquire().unwrap();
+    let lease = Lease(AtomicBool::new(true));
+    let error = scheduler()
+        .schedule_persisted(&mut worker, &lease, &mut executor(), 0)
+        .unwrap_err();
+    assert!(error.contains("gc_delete_range"), "{error}");
+    assert!(f.queue(86011).is_some());
+    assert!(f.reader().get_history_ddl_job(86011).unwrap().is_none());
+    f.pool
+        .acquire()
+        .unwrap()
+        .query(astersql_meta_metadef::CreateGCDeleteRangeTable)
+        .unwrap();
+    assert!(delete_range_rows(&f, 86011).is_empty());
+    assert_eq!(
+        scheduler()
+            .schedule_persisted(&mut worker, &lease, &mut executor(), 0)
+            .unwrap(),
+        1
+    );
+    assert_eq!(delete_range_rows(&f, 86011).len(), 3);
+    assert!(f.queue(86011).is_none());
+}
+
+#[test]
+fn normal_ddl_plan_delete_range_finished_action_matrix_and_v1() {
+    use astersql_meta_model::group_3::*;
+    let f = Fixture::new();
+    let mut worker = f.pool.acquire().unwrap();
+    let lease = Lease(AtomicBool::new(true));
+    // Each expected (physical table, optional index) uses the Go tablecodec
+    // identity. Cases cover every Go range-generating action, including MV GC.
+    let cases: Vec<(u8, &str, Vec<(i64, Option<i64>)>)> = vec![
+        (
+            ACTION_DROP_SCHEMA,
+            r#"{"all_dropped_table_ids":[701,702]}"#,
+            vec![(701, None), (702, None)],
+        ),
+        (
+            ACTION_TRUNCATE_TABLE,
+            r#"{"old_partition_ids":[701]}"#,
+            vec![(701, None), (f.table, None)],
+        ),
+        (
+            ACTION_DROP_MATERIALIZED_VIEW,
+            r#"{"old_partition_ids":[701]}"#,
+            vec![(701, None), (f.table, None)],
+        ),
+        (
+            ACTION_DROP_MATERIALIZED_VIEW_LOG,
+            r#"{}"#,
+            vec![(f.table, None)],
+        ),
+        (
+            ACTION_DROP_MATERIALIZED_VIEW_SHADOW,
+            r#"{}"#,
+            vec![(f.table, None)],
+        ),
+        (
+            ACTION_DROP_TABLE_PARTITION,
+            r#"{"old_physical_tbl_ids":[701,702]}"#,
+            vec![(701, None), (702, None)],
+        ),
+        (
+            ACTION_TRUNCATE_TABLE_PARTITION,
+            r#"{"old_partition_ids":[701,702]}"#,
+            vec![(701, None), (702, None)],
+        ),
+        (
+            ACTION_REORGANIZE_PARTITION,
+            r#"{"old_physical_tbl_ids":[701],"old_global_indexes":[{"table_id":700,"index_id":17}]}"#,
+            vec![(700, Some(17)), (701, None)],
+        ),
+        (
+            ACTION_REMOVE_PARTITIONING,
+            r#"{"old_physical_tbl_ids":[701],"old_global_indexes":[{"table_id":700,"index_id":17}]}"#,
+            vec![(700, Some(17)), (701, None)],
+        ),
+        (
+            ACTION_ALTER_TABLE_PARTITIONING,
+            r#"{"old_physical_tbl_ids":[701]}"#,
+            vec![(701, None)],
+        ),
+        (
+            ACTION_DROP_INDEX,
+            r#"{"partition_ids":[701,702],"index_args":[{"index_id":17}]}"#,
+            vec![(701, Some(17)), (702, Some(17))],
+        ),
+        (
+            ACTION_DROP_PRIMARY_KEY,
+            r#"{"index_args":[{"index_id":17}]}"#,
+            vec![(f.table, Some(17))],
+        ),
+        (
+            ACTION_DROP_COLUMN,
+            r#"{"index_ids":[17,18],"partition_ids":[701,702]}"#,
+            vec![
+                (701, Some(17)),
+                (701, Some(18)),
+                (702, Some(17)),
+                (702, Some(18)),
+            ],
+        ),
+        (
+            ACTION_MODIFY_COLUMN,
+            r#"{"index_ids":[17],"partition_ids":[701]}"#,
+            vec![(701, Some(17))],
+        ),
+        (
+            ACTION_ADD_PRIMARY_KEY,
+            r#"{"index_args":[{"index_id":17}]}"#,
+            vec![(f.table, Some(astersql_tablecodec::TempIndexPrefix | 17))],
+        ),
+        (
+            ACTION_MVIEW_REFRESH_OUT_OF_PLACE_CUTOVER,
+            r#"{"old_mview_id":701,"shadow_table_id":702}"#,
+            vec![(701, None)],
+        ),
+        (
+            ACTION_DROP_INDEX,
+            r#"{"index_args":[{"index_id":17,"is_vector":true}]}"#,
+            vec![],
+        ),
+        (ACTION_DROP_COLUMN, r#"{"index_ids":[]}"#, vec![]),
+    ];
+    for (i, (tp, args, expected)) in cases.into_iter().enumerate() {
+        let id = 86100 + i as i64;
+        delete_range_finished_job(&f, id, tp, args);
+        assert_eq!(
+            scheduler()
+                .schedule_persisted(&mut worker, &lease, &mut executor(), 0)
+                .unwrap(),
+            1,
+            "action {tp}"
+        );
+        let rows = delete_range_rows(&f, id);
+        assert_eq!(rows.len(), expected.len(), "action {tp}");
+        for (j, (tid, index)) in expected.into_iter().enumerate() {
+            let (start, end) = match index {
+                Some(iid) => (
+                    astersql_tablecodec::EncodeTableIndexPrefix(tid, iid),
+                    astersql_tablecodec::EncodeTableIndexPrefix(tid, iid + 1),
+                ),
+                None => (
+                    astersql_tablecodec::EncodeTablePrefix(tid),
+                    astersql_tablecodec::EncodeTablePrefix(tid + 1),
+                ),
+            };
+            assert_eq!(rows[j][0], (j + 1).to_string());
+            assert_eq!(rows[j][1], hex(start.as_ref()));
+            assert_eq!(rows[j][2], hex(end.as_ref()));
+        }
+        assert!(f.reader().get_history_ddl_job(id).unwrap().is_some());
+    }
+    // Legacy finished arguments use V1 arrays, not the V2 object layout.
+    for (i, (tp, args, count)) in [
+        (ACTION_DROP_TABLE, r#"["",[701,702],[]]"#, 3),
+        (
+            ACTION_DROP_INDEX,
+            r#"[{"O":"idx","L":"idx"},false,17,[701,702],false]"#,
+            2,
+        ),
+        (ACTION_ADD_INDEX, r#"[17,false,[701,702],false]"#, 2),
+        (ACTION_ADD_INDEX, r#"[17,false,null,false]"#, 1),
+        (
+            ACTION_DROP_INDEX,
+            r#"[{"O":"idx","L":"idx"},false,17,null,false]"#,
+            1,
+        ),
+        (ACTION_TRUNCATE_TABLE, r#"["dGVzdA==",null]"#, 1),
+        (ACTION_MODIFY_COLUMN, r#"[[17],[701],[]]"#, 1),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let id = 86200 + i as i64;
+        delete_range_finished_job(&f, id, tp, "{}");
+        let mut job = f.queue(id).unwrap();
+        job.version = JobVersion::V1;
+        job.raw_args = args.as_bytes().to_vec();
+        worker
+            .query(format!(
+                "UPDATE mysql.tidb_ddl_job SET job_meta=X'{}' WHERE job_id={id}",
+                hex(&astersql_meta::encode_go_ddl_job(&mut job, false).unwrap())
+            ))
+            .unwrap();
+        assert_eq!(
+            scheduler()
+                .schedule_persisted(&mut worker, &lease, &mut executor(), 0)
+                .unwrap(),
+            1
+        );
+        assert_eq!(delete_range_rows(&f, id).len(), count);
+    }
+}
+
+#[test]
+fn normal_ddl_plan_delete_range_subjobs_rollback_cancel_and_warning() {
+    use astersql_meta_model::group_3::*;
+    let f = Fixture::new();
+    let mut worker = f.pool.acquire().unwrap();
+    let lease = Lease(AtomicBool::new(true));
+    let cases = [
+        (
+            86301,
+            ACTION_ADD_INDEX,
+            JobState::RollbackDone,
+            None,
+            r#"{"partition_ids":[701],"index_args":[{"index_id":17}]}"#,
+            2,
+        ),
+        (
+            86302,
+            ACTION_CREATE_MATERIALIZED_VIEW,
+            JobState::RollbackDone,
+            None,
+            "{}",
+            1,
+        ),
+        (
+            86303,
+            ACTION_CREATE_MATERIALIZED_VIEW,
+            JobState::Done,
+            None,
+            "{}",
+            0,
+        ),
+        (
+            86304,
+            ACTION_DROP_TABLE,
+            JobState::Cancelled,
+            None,
+            r#"{"old_partition_ids":[701]}"#,
+            0,
+        ),
+        (
+            86305,
+            ACTION_DROP_INDEX,
+            JobState::Done,
+            Some("[ddl:1091]Can't DROP 'absent'; check that column/key exists"),
+            r#"{"index_args":[{"index_id":17}]}"#,
+            0,
+        ),
+    ];
+    for (id, tp, state, warning, args, count) in cases {
+        delete_range_finished_job(&f, id, tp, args);
+        let mut job = f.queue(id).unwrap();
+        job.state = state;
+        job.warning = warning.map(str::to_owned);
+        worker
+            .query(format!(
+                "UPDATE mysql.tidb_ddl_job SET job_meta=X'{}' WHERE job_id={id}",
+                hex(&astersql_meta::encode_go_ddl_job(&mut job, false).unwrap())
+            ))
+            .unwrap();
+        assert_eq!(
+            scheduler()
+                .schedule_persisted(&mut worker, &lease, &mut executor(), 0)
+                .unwrap(),
+            1
+        );
+        let rows = delete_range_rows(&f, id);
+        assert_eq!(rows.len(), count);
+        if id == 86301 {
+            assert_eq!(
+                rows[0][1],
+                hex(astersql_tablecodec::EncodeTableIndexPrefix(701, 17).as_ref())
+            );
+            assert_eq!(
+                rows[1][1],
+                hex(astersql_tablecodec::EncodeTableIndexPrefix(
+                    701,
+                    astersql_tablecodec::TempIndexPrefix | 17
+                )
+                .as_ref())
+            );
+        }
+    }
+    delete_range_finished_job(&f, 86310, ACTION_MULTI_SCHEMA_CHANGE, "{}");
+    let mut job = f.queue(86310).unwrap();
+    job.multi_schema_info = Some(MultiSchemaInfo {
+        sub_jobs: vec![
+            SubJob {
+                tp: ACTION_DROP_INDEX,
+                state: JobState::Done,
+                raw_args: br#"{"index_args":[{"index_id":17}]}"#.to_vec(),
+                ..Default::default()
+            },
+            // The same index keeps its element ID across proxy jobs.
+            SubJob {
+                tp: ACTION_DROP_COLUMN,
+                state: JobState::Done,
+                raw_args: br#"{"index_ids":[17,18]}"#.to_vec(),
+                ..Default::default()
+            },
+            SubJob {
+                tp: ACTION_DROP_COLUMN,
+                state: JobState::Cancelled,
+                raw_args: br#"{"index_ids":[19]}"#.to_vec(),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    });
+    worker
+        .query(format!(
+            "UPDATE mysql.tidb_ddl_job SET job_meta=X'{}' WHERE job_id=86310",
+            hex(&astersql_meta::encode_go_ddl_job(&mut job, false).unwrap())
+        ))
+        .unwrap();
+    assert_eq!(
+        scheduler()
+            .schedule_persisted(&mut worker, &lease, &mut executor(), 0)
+            .unwrap(),
+        1
+    );
+    let rows = delete_range_rows(&f, 86310);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0][0], "1");
+    assert_eq!(rows[1][0], "2");
+    assert_eq!(
+        rows[1][1],
+        hex(astersql_tablecodec::EncodeTableIndexPrefix(f.table, 18).as_ref())
+    );
+}
+
+#[test]
+fn normal_ddl_plan_delete_range_gc_commit_conflict_rolls_back_batch() {
+    let f = Fixture::new();
+    f.pool
+        .acquire()
+        .unwrap()
+        .query("INSERT INTO mysql.gc_delete_range VALUES (86400,1,'00','01',1)")
+        .unwrap();
+    delete_range_finished_job(
+        &f,
+        86401,
+        astersql_meta_model::group_3::ACTION_DROP_SCHEMA,
+        r#"{"all_dropped_table_ids":[801,802]}"#,
+    );
+    let mut job = f.queue(86401).unwrap();
+    let mut gc = f.pool.acquire().unwrap();
+    // Hold the GC commit boundary open solely to force a deterministic real
+    // MVCC conflict. The complete original range INSERT executes on the real
+    // independent SQL session; no range, row or storage error is mocked.
+    gc.begin().unwrap();
+    gc.query("UPDATE mysql.gc_delete_range SET ts=2 WHERE job_id=86400")
+        .unwrap();
+    astersql_ddl::delete_range::add_persistent_delete_range_job(&mut gc, &mut job).unwrap();
+    assert_eq!(
+        gc.query("SELECT job_id FROM mysql.gc_delete_range WHERE job_id=86401")
+            .unwrap()
+            .len(),
+        2
+    );
+    assert!(delete_range_rows(&f, 86401).is_empty());
+    f.pool
+        .acquire()
+        .unwrap()
+        .query("UPDATE mysql.gc_delete_range SET ts=3 WHERE job_id=86400")
+        .unwrap();
+    let error = gc.commit().unwrap_err();
+    assert!(error.contains(astersql_kv::TxnRetryableMark), "{error}");
+    gc.rollback();
+    assert!(delete_range_rows(&f, 86401).is_empty());
+    assert!(f.queue(86401).is_some());
+    assert!(f.reader().get_history_ddl_job(86401).unwrap().is_none());
+    let lease = Lease(AtomicBool::new(true));
+    assert_eq!(
+        scheduler()
+            .schedule_persisted(&mut gc, &lease, &mut executor(), 0)
+            .unwrap(),
+        1
+    );
+    assert_eq!(delete_range_rows(&f, 86401).len(), 2);
+}

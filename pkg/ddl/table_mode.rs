@@ -320,6 +320,9 @@ impl<B: DdlSchemaBarrier, P: DdlJobPolicy> NormalDdlExecutor<B, P> {
         if matches!(job.state, JobState::Cancelled | JobState::RollbackDone) {
             job.ru = 0.0
         }
+        if crate::delete_range::persistent_job_need_gc(job) {
+            session.register_delete_ranges(job)?;
+        }
         job.seq_num = (self
             .sequence
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel)

@@ -20,14 +20,14 @@ fn job(action: DeleteRangeAction) -> DeleteRangeJob {
 
 fn table_prefix(table_id: i64) -> Vec<u8> {
     let mut key = b"t".to_vec();
-    key.extend_from_slice(&table_id.to_be_bytes());
+    key.extend_from_slice(&((table_id as u64) ^ (1_u64 << 63)).to_be_bytes());
     key
 }
 
 fn index_prefix(table_id: i64, index_id: i64) -> Vec<u8> {
     let mut key = table_prefix(table_id);
-    key.push(b'i');
-    key.extend_from_slice(&index_id.to_be_bytes());
+    key.extend_from_slice(b"_i");
+    key.extend_from_slice(&((index_id as u64) ^ (1_u64 << 63)).to_be_bytes());
     key
 }
 
