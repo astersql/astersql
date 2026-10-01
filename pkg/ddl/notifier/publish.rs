@@ -1,5 +1,5 @@
-// Copyright 2024 PingCAP, Inc.
 // Copyright 2026 AsterSQL.
+// Copyright 2024 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -55,4 +55,24 @@ pub struct SchemaChange {
     pub event: SchemaChangeEvent,
     /// 订阅方处理完成位图：每位对应一个 handler，置位表示已处理。
     pub processedByFlag: u64,
+}
+
+/// Publish through an already active worker SQL session, retaining its transaction.
+pub fn PubSchemaChangeInTransaction(
+    ddl_job_id: i64,
+    sub_job_id: i64,
+    event: SchemaChangeEvent,
+    execute: impl FnOnce(&str, &[crate::SqlValue]) -> Result<(), Error>,
+) -> Result<(), Error> {
+    crate::InsertSchemaChangeSQL(
+        "mysql",
+        "tidb_ddl_notifier",
+        &SchemaChange {
+            ddlJobID: ddl_job_id,
+            subJobID: sub_job_id,
+            event,
+            processedByFlag: 0,
+        },
+        execute,
+    )
 }

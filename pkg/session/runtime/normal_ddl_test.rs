@@ -2146,3 +2146,364 @@ fn normal_ddl_plan_transaction_context_statement_cleanup_and_boundaries() {
             .is_empty()
     );
 }
+
+fn notifier_fixture() -> (Fixture, Job, serde_json::Value) {
+    let f = Fixture::new();
+    f.pool
+        .acquire()
+        .unwrap()
+        .query("INSERT INTO test.normal_ddl_target VALUES (1, 'existing row')")
+        .unwrap();
+    let mut table = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+    table.MaterializedView = Some(astersql_meta_model::MaterializedViewInfo {
+        BaseTableIDs: vec![1001, 1002],
+        SQLContent: "select id, payload from test.base".into(),
+        AlertWarningSec: 8,
+        AlertOverdueSec: 9,
+        ..Default::default()
+    });
+    let old = serde_json::to_value(&table).unwrap();
+    let mut txn = f
+        .domain
+        .storage_handle()
+        .with_storage(|s| s.Begin(&[]))
+        .unwrap();
+    txn.Set(
+        hash(
+            format!("DB:{}", f.db).as_bytes(),
+            format!("Table:{}", f.table).as_bytes(),
+        ),
+        astersql_meta_model::EncodeTableInfo(&table).unwrap(),
+    )
+    .unwrap();
+    txn.Commit(&astersql_kv::Context::default()).unwrap();
+    let mut job = Job::default();
+    job.id = 85001;
+    job.tp = astersql_meta_model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_ATTRIBUTES;
+    job.schema_id = f.db;
+    job.table_id = f.table;
+    job.schema_name = "test".into();
+    job.table_name = "normal_ddl_target".into();
+    job.state = JobState::Queueing;
+    job.version = astersql_meta_model::group_3::JobVersion::V2;
+    job.raw_args=serde_json::to_vec(&serde_json::json!({"alert_warning_sec":60,"alert_overdue_sec":120,"alert_refresh_failed":true})).unwrap();
+    f.insert_job(&mut job);
+    (f, job, old)
+}
+
+#[test]
+fn normal_ddl_plan_notifier_persistent_worker_publishes_full_event_once() {
+    let (f, _, old) = notifier_fixture();
+    let mut session = f.pool.acquire().unwrap();
+    let mut ex = executor();
+    let lease = Lease(AtomicBool::new(true));
+    let mut sched = scheduler();
+    // The event and Done job commit before the external schema barrier fails.
+    // Recreate the owner executor/scheduler and recover the persisted job.
+    ex.barrier.fail = true;
+    let barrier_error = sched
+        .schedule_persisted(&mut session, &lease, &mut ex, 0)
+        .unwrap_err();
+    assert!(
+        barrier_error.contains("schema unavailable"),
+        "{barrier_error}"
+    );
+    assert_eq!(f.queue(85001).unwrap().state, JobState::Done);
+    assert!(f.reader().get_history_ddl_job(85001).unwrap().is_none());
+    drop(session);
+    let mut session = f.pool.acquire().unwrap();
+    let mut sched = scheduler();
+    let mut ex = executor();
+    for _ in 0..3 {
+        sched
+            .schedule_persisted(&mut session, &lease, &mut ex, 0)
+            .unwrap();
+    }
+    let rows=f.pool.acquire().unwrap().query("SELECT ddl_job_id, sub_job_id, schema_change, processed_by_flag FROM mysql.tidb_ddl_notifier WHERE ddl_job_id=85001").unwrap();
+    assert_eq!(
+        rows.len(),
+        1,
+        "normal persistent worker must publish exactly one event"
+    );
+    assert_eq!(
+        (&rows[0][0], &rows[0][1], &rows[0][3]),
+        (&"85001".into(), &"-1".into(), &"0".into())
+    );
+    let event: serde_json::Value = serde_json::from_str(&rows[0][2]).unwrap();
+    assert_eq!(event["type"], 91);
+    assert_eq!(event["old_table_info"], old);
+    let after = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+    assert_eq!(event["table_info"], serde_json::to_value(&after).unwrap());
+    assert_eq!(after.MaterializedView.as_ref().unwrap().AlertWarningSec, 60);
+    assert_eq!(
+        after.MaterializedView.as_ref().unwrap().BaseTableIDs,
+        vec![1001, 1002]
+    );
+    assert_eq!(
+        f.reader()
+            .get_history_ddl_job(85001)
+            .unwrap()
+            .unwrap()
+            .state,
+        JobState::Synced
+    );
+    assert_eq!(
+        f.pool
+            .acquire()
+            .unwrap()
+            .query("SELECT payload FROM test.normal_ddl_target WHERE id=1")
+            .unwrap(),
+        vec![vec!["existing row".to_string()]]
+    );
+}
+
+#[test]
+fn normal_ddl_plan_notifier_metadata_conflict_rolls_back_then_owner_retries() {
+    let (f, mut job, old) = notifier_fixture();
+    let before = version(&f);
+    let original = f.queue(job.id).unwrap().encode(false).unwrap();
+    let mut session = f.pool.acquire().unwrap();
+    session.begin().unwrap();
+    executor().step(&mut session, &mut job).unwrap();
+    assert!(
+        f.pool
+            .acquire()
+            .unwrap()
+            .query("SELECT ddl_job_id FROM mysql.tidb_ddl_notifier WHERE ddl_job_id=85001")
+            .unwrap()
+            .is_empty()
+    );
+    let db = f.db;
+    let table = f.table;
+    let mut competing = f.pool.acquire().unwrap();
+    competing.begin().unwrap();
+    competing
+        .with_transaction(Box::new(move |txn| {
+            let mut m = astersql_meta::TransactionMutator::new(txn);
+            let mut info = m.get_table(db, table)?.unwrap();
+            info.Comment = "competing owner".into();
+            m.update_table(db, &mut info)?;
+            Ok(Vec::new())
+        }))
+        .unwrap();
+    competing.commit().unwrap();
+    let error = session.commit().unwrap_err();
+    assert!(
+        error.contains(astersql_kv::TxnRetryableMark)
+            || error.to_lowercase().contains("write conflict"),
+        "{error}"
+    );
+    session.rollback();
+    assert_eq!(version(&f), before);
+    assert_eq!(f.queue(85001).unwrap().encode(false).unwrap(), original);
+    assert!(f.reader().get_history_ddl_job(85001).unwrap().is_none());
+    assert!(
+        f.pool
+            .acquire()
+            .unwrap()
+            .query("SELECT ddl_job_id FROM mysql.tidb_ddl_notifier WHERE ddl_job_id=85001")
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        f.reader()
+            .get_table(db, table)
+            .unwrap()
+            .unwrap()
+            .MaterializedView
+            .as_ref()
+            .unwrap()
+            .AlertWarningSec,
+        8
+    );
+    let mut ex = executor();
+    let lease = Lease(AtomicBool::new(true));
+    let mut sched = scheduler();
+    for _ in 0..3 {
+        sched
+            .schedule_persisted(&mut session, &lease, &mut ex, 0)
+            .unwrap();
+    }
+    let rows = f
+        .pool
+        .acquire()
+        .unwrap()
+        .query("SELECT schema_change FROM mysql.tidb_ddl_notifier WHERE ddl_job_id=85001")
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    let event: serde_json::Value = serde_json::from_str(&rows[0][0]).unwrap();
+    assert_eq!(event["old_table_info"]["comment"], "competing owner");
+    assert_eq!(
+        event["old_table_info"]["materialized_view"],
+        old["materialized_view"]
+    );
+    assert_eq!(
+        f.reader()
+            .get_history_ddl_job(85001)
+            .unwrap()
+            .unwrap()
+            .state,
+        JobState::Synced
+    );
+}
+
+#[test]
+fn normal_ddl_plan_notifier_duplicate_commit_error_rolls_back_metadata() {
+    let (f, mut job, _) = notifier_fixture();
+    let mut session = f.pool.acquire().unwrap();
+    session.query("INSERT INTO mysql.tidb_ddl_notifier (ddl_job_id,sub_job_id,schema_change,processed_by_flag) VALUES (85001,-1,'{\"type\":91}',7)").unwrap();
+    let before = version(&f);
+    session.begin().unwrap();
+    executor().step(&mut session, &mut job).unwrap();
+    // Optimistic SQL defers the duplicate constraint to the shared commit.
+    let error = session.commit().unwrap_err();
+    assert!(
+        error.contains("1062") || error.contains("Duplicate entry"),
+        "{error}"
+    );
+    session.rollback();
+    assert_eq!(version(&f), before);
+    assert_eq!(
+        f.reader()
+            .get_table(f.db, f.table)
+            .unwrap()
+            .unwrap()
+            .MaterializedView
+            .as_ref()
+            .unwrap()
+            .AlertWarningSec,
+        8
+    );
+    let rows=session.query("SELECT schema_change,processed_by_flag FROM mysql.tidb_ddl_notifier WHERE ddl_job_id=85001").unwrap();
+    assert_eq!(
+        rows,
+        vec![vec!["{\"type\":91}".to_string(), "7".to_string()]]
+    );
+}
+
+#[test]
+fn normal_ddl_plan_notifier_v1_multi_boundary_keys_and_validation() {
+    for case in 0..9 {
+        let (f, mut job, _) = notifier_fixture();
+        job.version = astersql_meta_model::group_3::JobVersion::V1;
+        job.raw_args = b"[60,120]".to_vec(); // Go legacy two-field decoding keeps AlertRefreshFailed=false.
+        if case == 0 {
+            job.multi_schema_info = Some(astersql_meta_model::group_3::MultiSchemaInfo {
+                revertible: true,
+                seq: 4,
+                ..Default::default()
+            });
+        }
+        if case == 1 {
+            job.raw_args = b"[60,120,true]".to_vec();
+            job.multi_schema_info = Some(astersql_meta_model::group_3::MultiSchemaInfo {
+                revertible: false,
+                seq: 5,
+                skip_version: true,
+                ..Default::default()
+            });
+        }
+        if case == 7 {
+            job.schema_name = "mysql".into();
+        }
+        if case == 8 {
+            job.schema_id = 99999999;
+        }
+        if case == 2 {
+            job.raw_args = br#"["invalid"]"#.to_vec();
+        }
+        if case == 3 {
+            job.table_name = "stale_name".into();
+        }
+        if case == 4 {
+            job.table_id = 99999999;
+        }
+        if case == 5 || case == 6 {
+            let mut info = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+            if case == 5 {
+                info.MaterializedView = None;
+            } else {
+                info.State = astersql_meta_model::SchemaState::WriteOnly;
+            }
+            let mut txn = f
+                .domain
+                .storage_handle()
+                .with_storage(|s| s.Begin(&[]))
+                .unwrap();
+            txn.Set(
+                hash(
+                    format!("DB:{}", f.db).as_bytes(),
+                    format!("Table:{}", f.table).as_bytes(),
+                ),
+                astersql_meta_model::EncodeTableInfo(&info).unwrap(),
+            )
+            .unwrap();
+            txn.Commit(&astersql_kv::Context::default()).unwrap();
+        }
+        let before = version(&f);
+        let mut session = f.pool.acquire().unwrap();
+        session.begin().unwrap();
+        let mut ex = executor();
+        ex.step(&mut session, &mut job).unwrap();
+        if case == 0 {
+            assert!(!job.multi_schema_info.as_ref().unwrap().revertible);
+            assert_eq!(job.last_schema_version, 0);
+            assert!(
+                session
+                    .query("SELECT ddl_job_id FROM mysql.tidb_ddl_notifier WHERE ddl_job_id=85001")
+                    .unwrap()
+                    .is_empty()
+            );
+            ex.step(&mut session, &mut job).unwrap();
+            job.state = JobState::Running;
+            job.multi_schema_info.as_mut().unwrap().seq = 6;
+            job.raw_args = b"[61,121,true]".to_vec();
+            ex.step(&mut session, &mut job).unwrap();
+        }
+        session.commit().unwrap();
+        let rows=session.query("SELECT sub_job_id,schema_change FROM mysql.tidb_ddl_notifier WHERE ddl_job_id=85001 ORDER BY sub_job_id").unwrap();
+        if case < 2 {
+            assert_eq!(rows.len(), if case == 0 { 2 } else { 1 });
+            assert_eq!(rows[0][0], if case == 0 { "4" } else { "5" });
+            if case == 0 {
+                assert_eq!(rows[1][0], "6");
+                let first: serde_json::Value = serde_json::from_str(&rows[0][1]).unwrap();
+                let second: serde_json::Value = serde_json::from_str(&rows[1][1]).unwrap();
+                assert_eq!(
+                    first["table_info"]["materialized_view"]["alert_warning_sec"],
+                    60
+                );
+                assert_eq!(second["old_table_info"], first["table_info"]);
+                assert_eq!(
+                    second["table_info"]["materialized_view"]["alert_warning_sec"],
+                    61
+                );
+            } else {
+                assert_eq!(version(&f), before);
+            }
+            assert_eq!(job.state, JobState::Done);
+            let info = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+            assert_eq!(
+                info.MaterializedView.as_ref().unwrap().AlertRefreshFailed,
+                true
+            );
+        } else if case == 7 {
+            assert!(rows.is_empty());
+            assert_eq!(job.state, JobState::Done);
+            assert!(version(&f) > before);
+        } else {
+            assert_eq!(job.state, JobState::Cancelled);
+            let error = job.error.as_ref().unwrap();
+            let expected = match case {
+                3 | 4 => "1146",
+                5 => "[ddl:1347]",
+                6 => "8210",
+                8 => "1049",
+                _ => "",
+            };
+            assert!(error.contains(expected), "{error}");
+            assert!(rows.is_empty());
+            assert_eq!(version(&f), before);
+        }
+    }
+}

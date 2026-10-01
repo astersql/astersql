@@ -18,13 +18,17 @@ use astersql_meta_model::SchemaState;
 use astersql_meta_model::group_3::{Job, JobState};
 
 pub fn handler_available(action: u8) -> bool {
-    matches!(action, 1 | 10 | 17 | 26 | 39 | 55 | 75 | 76)
+    action == astersql_meta_model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_ATTRIBUTES
+        || matches!(action, 1 | 10 | 17 | 26 | 39 | 55 | 75 | 76)
 }
 
 pub fn step(
     context: &mut dyn crate::job_worker::JobExecutionContext,
     job: &mut Job,
 ) -> Result<i64, String> {
+    if job.tp == astersql_meta_model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_ATTRIBUTES {
+        return crate::persistent_alter_materialized_view_attributes::step(context, job);
+    }
     let mut version = 0;
     context.with_transaction(&mut |txn| {
         version = step_metadata(txn, job)?;
@@ -356,4 +360,49 @@ fn refresh_meta(txn: &mut dyn astersql_kv::Transaction, job: &mut Job) -> Result
     job.state = JobState::Done;
     job.schema_state = SchemaState::Public;
     Ok(version)
+}
+
+/// Go ddl.go asyncNotifyEvent: system schemas are skipped and implicit sub-job
+/// IDs resolve to MultiSchemaInfo.Seq. Duplicate keys remain SQL errors.
+pub fn async_notify_event(
+    context: &mut dyn crate::job_worker::JobExecutionContext,
+    job: &Job,
+    sub_job_id: i64,
+    event: astersql_ddl_notifier::SchemaChangeEvent,
+) -> Result<(), String> {
+    if astersql_meta_metadef::IsMemOrSysDB(&job.schema_name) {
+        return Ok(());
+    }
+    let sub_job_id = if sub_job_id == -1 {
+        job.multi_schema_info
+            .as_ref()
+            .map_or(-1, |m| i64::from(m.seq))
+    } else {
+        sub_job_id
+    };
+    astersql_ddl_notifier::PubSchemaChangeInTransaction(job.id, sub_job_id, event, |sql, args| {
+        // Only the notifier's integer keys and JSON bytes are bound here.
+        // Hex literals preserve JSON bytes without SQL string escaping.
+        let mut query = sql.to_owned();
+        for arg in args {
+            let value = match arg {
+                astersql_ddl_notifier::SqlValue::Integer(v) => v.to_string(),
+                astersql_ddl_notifier::SqlValue::Bytes(v) => format!(
+                    "X'{}'",
+                    v.iter().map(|b| format!("{b:02x}")).collect::<String>()
+                ),
+                _ => {
+                    return Err(astersql_ddl_notifier::Error::Message(
+                        "unsupported notifier insert argument".into(),
+                    ));
+                }
+            };
+            query = query.replacen("%?", &value, 1);
+        }
+        context
+            .query(&query, "publish-schema-change")
+            .map(|_| ())
+            .map_err(astersql_ddl_notifier::Error::Message)
+    })
+    .map_err(|e| e.to_string())
 }

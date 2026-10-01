@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+"astersql-ddl-notifier" = { package = "astersql-ddl-notifier", path = "notifier" }
 "astersql-ddl-serverstate" = { package = "astersql-ddl-serverstate", path = "serverstate" }
 "astersql-meta-metadef" = { package = "astersql-meta-metadef", path = "../meta/metadef" }
 astersql-meta = { path = "../meta" }
@@ -49,7 +50,6 @@ astersql-store-mockstore-mockstorage = { path = "../store/mockstore/mockstorage"
 "astersql-ddl-jobsubmit" = { package = "astersql-ddl-jobsubmit", path = "jobsubmit" }
 "astersql-ddl-label" = { package = "astersql-ddl-label", path = "label" }
 "astersql-ddl-logutil" = { package = "astersql-ddl-logutil", path = "logutil" }
-"astersql-ddl-notifier" = { package = "astersql-ddl-notifier", path = "notifier" }
 "astersql-ddl-placement" = { package = "astersql-ddl-placement", path = "placement" }
 "astersql-ddl-resourcegroup" = { package = "astersql-ddl-resourcegroup", path = "resourcegroup" }
 "astersql-ddl-schemaver" = { package = "astersql-ddl-schemaver", path = "schemaver" }

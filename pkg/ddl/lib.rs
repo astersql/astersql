@@ -284,3 +284,4 @@ mod ttl_test;
 
 pub mod normal_policy;
 pub mod persistent_actions;
+pub mod persistent_alter_materialized_view_attributes;

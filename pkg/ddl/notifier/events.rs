@@ -638,3 +638,15 @@ impl From<WireEvent> for JsonSchemaChangeEvent {
         }
     }
 }
+
+// Go events.go NewAlterMaterializedViewAttributesEvent retains both complete tables.
+event_constructor!(NewAlterMaterializedViewAttributesEvent, model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_ATTRIBUTES, TableInfo: table: Option<Box<model::TableInfo>>, OldTableInfo: old: Option<Box<model::TableInfo>>);
+
+impl SchemaChangeEvent {
+    /// Go GetAlterMaterializedViewAttributesInfo returns the new complete table.
+    pub fn GetAlterMaterializedViewAttributesInfo(&self) -> Option<Box<model::TableInfo>> {
+        self.expect(model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_ATTRIBUTES)
+            .TableInfo
+            .clone()
+    }
+}

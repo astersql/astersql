@@ -1,5 +1,5 @@
-// Copyright 2024 PingCAP, Inc.
 // Copyright 2026 AsterSQL.
+// Copyright 2024 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -506,22 +506,12 @@ impl Store for TableStore {
         // 在持久化边界先 MarshalJSON，与 Go 表存储在序列化失败时的行为对齐；
         // Marshal at the persistence boundary, matching the Go table store's
         // serialization failure behavior and persist the exact JSON representation.
-        let event = change.event.MarshalJSON()?;
         if session.sql.is_some() {
-            let query = format!(
-                "INSERT INTO {}.{} (ddl_job_id, sub_job_id, schema_change, processed_by_flag) VALUES (%?, %?, %?, 0)",
-                self.db, self.table
-            );
-            session.ExecuteSQL(
-                &query,
-                &[
-                    SqlValue::Integer(change.ddlJobID),
-                    SqlValue::Integer(change.subJobID),
-                    SqlValue::Bytes(event),
-                ],
-            )?;
-            return Ok(());
+            return InsertSchemaChangeSQL(&self.db, &self.table, change, |query, args| {
+                session.ExecuteSQL(query, args).map(|_| ())
+            });
         }
+        let event = change.event.MarshalJSON()?;
         session.stage(Box::new(InsertOperation {
             data: self.data.clone(),
             key: (change.ddlJobID, change.subJobID),
@@ -789,4 +779,26 @@ impl ListResult for TableListResult {
         }
         Ok(rows.len())
     }
+}
+
+/// Execute the same SQL insert on a borrowed worker transaction. The callback
+/// must use its active session; this function never begins or commits a transaction.
+pub fn InsertSchemaChangeSQL(
+    db: &str,
+    table: &str,
+    change: &SchemaChange,
+    execute: impl FnOnce(&str, &[SqlValue]) -> Result<(), Error>,
+) -> Result<(), Error> {
+    let event = change.event.MarshalJSON()?;
+    let query = format!(
+        "INSERT INTO {db}.{table} (ddl_job_id, sub_job_id, schema_change, processed_by_flag) VALUES (%?, %?, %?, 0)"
+    );
+    execute(
+        &query,
+        &[
+            SqlValue::Integer(change.ddlJobID),
+            SqlValue::Integer(change.subJobID),
+            SqlValue::Bytes(event),
+        ],
+    )
 }
