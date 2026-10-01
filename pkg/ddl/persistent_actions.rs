@@ -19,13 +19,25 @@ use astersql_meta_model::group_3::{Job, JobState};
 
 pub fn handler_available(action: u8) -> bool {
     action == astersql_meta_model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_ATTRIBUTES
-        || matches!(action, 1 | 10 | 17 | 26 | 39 | 55 | 75 | 76)
+        || matches!(action, 1 | 3 | 10 | 17 | 26 | 39 | 55 | 75 | 76 | 85 | 93)
 }
 
 pub fn step(
     context: &mut dyn crate::job_worker::JobExecutionContext,
     job: &mut Job,
 ) -> Result<i64, String> {
+    if job.tp == 86 {
+        return crate::persistent_create_materialized_view::step(context, job);
+    }
+    if job.tp == 85 {
+        return crate::persistent_create_materialized_view_log::step(context, job);
+    }
+    if job.tp == 93 {
+        return crate::persistent_create_materialized_view_shadow::step(context, job);
+    }
+    if job.tp == 3 {
+        return crate::persistent_create_table::step(context, job);
+    }
     if job.tp == astersql_meta_model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_ATTRIBUTES {
         return crate::persistent_alter_materialized_view_attributes::step(context, job);
     }

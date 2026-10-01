@@ -69,14 +69,14 @@ struct Dest {
 
 /// 内存版自增 ID 存储，实现 `IdStore` 与 `AutoIdStorage`，
 /// 用 `HashMap` + 互斥锁模拟真实 TiKV 后端的键值存取与事务语义。
-struct MemoryStore {
+pub(crate) struct MemoryStore {
     values: Mutex<HashMap<AutoIdKey, i64>>,
     keyspace_id: u32,
     uuid: String,
 }
 
 impl MemoryStore {
-    fn new(uuid: &str, keyspace_id: u32) -> Self {
+    pub(crate) fn new(uuid: &str, keyspace_id: u32) -> Self {
         Self {
             values: Mutex::new(HashMap::new()),
             keyspace_id,

@@ -639,6 +639,105 @@ impl<'a> TransactionMutator<'a> {
         )
         .map_err(|e| e.to_string())
     }
+    /// Go ListTables on the canonical DB hash, in this worker transaction.
+    pub fn list_tables(&self, db: i64) -> Result<Vec<astersql_meta_model::TableInfo>, String> {
+        let prefix = astersql_util_codec::EncodeUint(
+            astersql_util_codec::EncodeBytes(vec![b'm'], format!("DB:{db}").as_bytes()),
+            b'h' as u64,
+        );
+        let mut iter = self
+            .txn
+            .Iter(astersql_kv::Key(prefix.clone()), None)
+            .map_err(|e| e.to_string())?;
+        let mut tables = Vec::new();
+        while iter.Valid() && iter.Key().0.starts_with(&prefix) {
+            let (_, field) = astersql_util_codec::DecodeBytes(&iter.Key().0[prefix.len()..], None)
+                .map_err(|e| e.to_string())?;
+            if field.starts_with(b"Table:") {
+                tables.push(
+                    astersql_meta_model::DecodeTableInfo(&iter.Value())
+                        .map_err(|e| e.to_string())?,
+                );
+            }
+            iter.Next().map_err(|e| e.to_string())?;
+        }
+        iter.Close();
+        Ok(tables)
+    }
+    pub fn create_table(
+        &mut self,
+        db: i64,
+        table: &astersql_meta_model::TableInfo,
+    ) -> Result<(), String> {
+        if self.get_database(db)?.is_none() {
+            return Err("[meta:1049]database does not exist".into());
+        }
+        if self.get_table(db, table.ID)?.is_some() {
+            return Err("[meta:1050]table already exists".into());
+        }
+        self.txn
+            .Set(
+                transaction_meta_hash_key(
+                    format!("DB:{db}").as_bytes(),
+                    format!("Table:{}", table.ID).as_bytes(),
+                ),
+                astersql_meta_model::EncodeTableInfo(table).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())
+    }
+    pub fn set_create_table_schema_diff(
+        &mut self,
+        job: &astersql_meta_model::group_3::Job,
+        version: i64,
+        public_fk: bool,
+    ) -> Result<(), String> {
+        let old = if public_fk { job.table_id } else { 0 };
+        let diff = serde_json::json!({"version":version,"type":job.tp,"schema_id":job.schema_id,"table_id":job.table_id,"old_table_id":old,"old_schema_id":0,"regenerate_schema_map":false,"affected_options":null});
+        self.txn
+            .Set(
+                transaction_meta_string_key(format!("Diff:{version}").as_bytes()),
+                serde_json::to_vec(&diff).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())
+    }
+    /// Go rollbackCreateMaterializedViewLog drops the object and all allocator fields.
+    pub fn drop_table_and_auto_ids(&mut self, db: i64, table: i64) -> Result<(), String> {
+        for field in [
+            format!("Table:{table}"),
+            format!("TID:{table}"),
+            format!("IID:{table}"),
+            format!("TARID:{table}"),
+        ] {
+            self.txn
+                .Delete(transaction_meta_hash_key(
+                    format!("DB:{db}").as_bytes(),
+                    field.as_bytes(),
+                ))
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+    /// Go SetSchemaDiffForCreateTable + SetSchemaDiffForMultiInfos for MLog.
+    pub fn set_create_mlog_schema_diff(
+        &mut self,
+        job: &astersql_meta_model::group_3::Job,
+        version: i64,
+        affected: &[i64],
+        rollback: bool,
+    ) -> Result<(), String> {
+        let mut seen = std::collections::HashSet::new();
+        if !rollback {
+            seen.insert(job.table_id);
+        }
+        let options:Vec<_>=affected.iter().filter(|id|seen.insert(**id)).map(|id|serde_json::json!({"schema_id":job.schema_id,"old_schema_id":job.schema_id,"table_id":id,"old_table_id":id})).collect();
+        let diff = serde_json::json!({"version":version,"type":job.tp,"schema_id":job.schema_id,"table_id":if rollback {0}else{job.table_id},"old_table_id":if rollback {job.table_id}else{0},"old_schema_id":0,"regenerate_schema_map":false,"affected_options":if options.is_empty(){serde_json::Value::Null}else{serde_json::json!(options)}});
+        self.txn
+            .Set(
+                transaction_meta_string_key(format!("Diff:{version}").as_bytes()),
+                serde_json::to_vec(&diff).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())
+    }
     /// The Go default diff for a single metadata-only action.
     pub fn set_table_schema_diff(
         &mut self,

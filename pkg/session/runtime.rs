@@ -1739,3 +1739,15 @@ fn select_key(statement: &ast::SelectStmt) -> SessionResult<String> {
 }
 
 mod schema_validation;
+
+#[cfg(test)]
+#[path = "runtime/normal_ddl_create_table_test.rs"]
+mod normal_ddl_create_table_test;
+
+#[cfg(test)]
+#[path = "runtime/normal_ddl_create_materialized_view_shadow_test.rs"]
+mod normal_ddl_create_materialized_view_shadow_test;
+
+#[cfg(test)]
+#[path = "runtime/normal_ddl_create_materialized_view_test.rs"]
+mod normal_ddl_create_materialized_view_test;

@@ -285,3 +285,9 @@ mod ttl_test;
 pub mod normal_policy;
 pub mod persistent_actions;
 pub mod persistent_alter_materialized_view_attributes;
+
+pub mod persistent_create_materialized_view_log;
+pub mod persistent_create_materialized_view_shadow;
+pub mod persistent_create_table;
+
+pub mod persistent_create_materialized_view;

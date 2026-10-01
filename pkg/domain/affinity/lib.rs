@@ -28,3 +28,5 @@ mod manager_test;
 #[cfg(test)]
 #[path = "migration_aster_unit_test.rs"]
 mod migration_aster_unit_test;
+
+pub mod http_client;

@@ -1046,11 +1046,13 @@ dependencies = [
  "astersql-util-logutil",
  "etcd-client",
  "fail 0.5.1",
+ "futures",
  "grpcio",
  "kvproto",
  "log",
  "metrics",
  "thiserror 2.0.19",
+ "tokio",
  "tokio-util",
 ]
 
@@ -2640,7 +2642,10 @@ dependencies = [
 name = "astersql-domain-affinity"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "log",
+ "reqwest 0.12.28",
+ "serde_json",
  "url",
 ]
 
@@ -8400,6 +8405,7 @@ dependencies = [
  "astersql-ddl-util",
  "astersql-distsql-context",
  "astersql-domain",
+ "astersql-domain-affinity",
  "astersql-domain-crossks",
  "astersql-domain-infosync",
  "astersql-domain-serverinfo",
@@ -8438,6 +8444,7 @@ dependencies = [
  "astersql-lightning-backend-kv",
  "astersql-lightning-mydump",
  "astersql-meta",
+ "astersql-meta-autoid",
  "astersql-meta-metabuild",
  "astersql-meta-metadef",
  "astersql-meta-model",
@@ -8561,6 +8568,7 @@ dependencies = [
  "etcd-client",
  "protobuf 2.8.0 (git+https://github.com/pingcap/rust-protobuf?rev=de31a47f395c2f46dbfea2545517ea1b27ad0096)",
  "regex",
+ "reqwest 0.12.28",
  "rust_decimal",
  "rustls 0.23.42",
  "serde_json",

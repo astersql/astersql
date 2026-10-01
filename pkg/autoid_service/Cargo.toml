@@ -23,11 +23,16 @@ autoid_dependency = { package = "astersql-meta-autoid", path = "../meta/autoid" 
 owner_dependency = { package = "astersql-owner", path = "../owner" }
 "astersql-util-etcd" = { package = "astersql-util-etcd", path = "../util/etcd" }
 "astersql-util-logutil" = { package = "astersql-util-logutil", path = "../util/logutil" }
-etcd-client = "0.19"
+etcd-client = { version = "0.19", features = ["tls"] }
 fail = { version = "0.5", features = ["failpoints"] }
-grpcio = { version = "0.13", default-features = false, features = ["protobuf-codec"] }
+grpcio = { version = "0.13", default-features = false, features = ["openssl-vendored", "protobuf-codec"] }
 kvproto = { git = "https://github.com/astersql/kvproto.git", tag = "v0.0.2-aster.20260929", default-features = false, features = ["protobuf-codec"] }
 log = "0.4"
 metrics = "0.24"
 thiserror = "2"
 tokio-util = "0.7"
+
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+
+[dev-dependencies]
+futures = "0.3"

@@ -902,8 +902,105 @@ impl jobsubmit::ServerState for JobSubmitServerState {
     }
 }
 
-struct ConcreteJobExecutionContext<'a>(&'a mut ConcreteSession);
+#[path = "create_table_resources.rs"]
+mod create_table_resources;
+
+struct ConcreteJobExecutionContext<'a>(&'a mut ConcreteSession, Arc<ddl::Pool>);
 impl astersql_ddl::job_worker::JobExecutionContext for ConcreteJobExecutionContext<'_> {
+    fn prewrite_create_mview_refresh(&mut self, id: i64) -> Result<u64, String> {
+        let context = self.1.get().map_err(|e| e.to_string())?;
+        let mut independent = SystemSessionLease {
+            metadata_error: None,
+            pool: self.1.clone(),
+            context,
+        };
+        use astersql_ddl::job_worker::DurableJobSession;
+        independent.begin()?;
+        let result = (|| {
+            independent.query(format!(
+                "SELECT 1 FROM mysql.tidb_mview_refresh_info WHERE MVIEW_ID={id} LIMIT 1"
+            ))?;
+            let bytes = independent
+                .with_transaction(Box::new(|txn| Ok(txn.StartTS().to_le_bytes().to_vec())))?;
+            let start =
+                u64::from_le_bytes(bytes.try_into().map_err(|_| "invalid init refresh tso")?);
+            if start == 0 {
+                return Err("create materialized view: invalid init refresh tso".into());
+            }
+            independent.query(format!("INSERT INTO mysql.tidb_mview_refresh_info (MVIEW_ID,LAST_SUCCESS_READ_TSO,LAST_SUCCESS_REFRESH_END_UNIX_SECONDS) VALUES ({id},{start},NULL) ON DUPLICATE KEY UPDATE LAST_SUCCESS_READ_TSO=VALUES(LAST_SUCCESS_READ_TSO),LAST_SUCCESS_REFRESH_END_UNIX_SECONDS=VALUES(LAST_SUCCESS_REFRESH_END_UNIX_SECONDS)"))?;
+            independent.commit()?;
+            Ok(start)
+        })();
+        if result.is_err() {
+            independent.rollback();
+        }
+        result.map_err(|e: String| {
+            if (e.contains("1146") && e.contains("tidb_mview_refresh_info")) || e.contains("unknown DML table tidb_mview_refresh_info") {
+                astersql_util_dbterror::ErrInvalidDDLJob.GenWithStackByArgs(&["create materialized view: required system table mysql.tidb_mview_refresh_info does not exist".into()]).to_string()
+            } else { e }
+        })
+    }
+
+    fn derive_create_mlog_schedule(
+        &mut self,
+        schema: &str,
+        log: &astersql_meta_model::TableInfo,
+    ) -> Result<(Option<i64>, bool), String> {
+        let info = log
+            .MaterializedViewLog
+            .as_ref()
+            .ok_or("materialized view log metadata missing")?;
+        derive_create_mlog_schedule(schema, &log.Name.O, info)
+    }
+
+    fn configure_create_table_replica(
+        &mut self,
+        t: &astersql_meta_model::TableInfo,
+    ) -> Result<(), String> {
+        create_table_resources::configure_replica(&self.0.domain, t)
+    }
+    fn put_create_table_bundles(
+        &mut self,
+        b: &[astersql_ddl_placement::Bundle],
+    ) -> Result<(), String> {
+        create_table_resources::put_bundles(&self.0.domain, b)
+    }
+    fn check_create_table_columnar(
+        &mut self,
+        t: &astersql_meta_model::TableInfo,
+    ) -> Result<(), String> {
+        create_table_resources::check_columnar(&self.0.domain, t)
+    }
+    fn create_table_affinity(&mut self, t: &astersql_meta_model::TableInfo) -> Result<(), String> {
+        create_table_resources::create_affinity(&self.0.domain, t)
+    }
+    fn rebase_create_table_ids(
+        &mut self,
+        db: i64,
+        t: &astersql_meta_model::TableInfo,
+    ) -> Result<(), String> {
+        create_table_resources::rebase_ids(&self.0.domain, db, t)
+    }
+    fn register_create_table_ttl(
+        &mut self,
+        t: &astersql_meta_model::TableInfo,
+    ) -> Result<(), String> {
+        if !t.TTLInfo.as_ref().is_some_and(|v| v.Enable) {
+            return Ok(());
+        }
+        if let Some(m) = self.0.domain.external_workload_manager() {
+            m.lock()
+                .map_err(|e| e.to_string())?
+                .RegisterTTLTask(
+                    &astersql_extworkload::context::Background(),
+                    t.ID,
+                    astersql_sessionctx_vardef::EnableTTLJob.Load(),
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
     fn query(&mut self, sql: &str, _: &str) -> Result<Vec<Vec<String>>, String> {
         // A handler may read/write system rows, but transaction boundaries and
         // implicit-commit DDL belong exclusively to the enclosing JobWorker.
@@ -970,12 +1067,13 @@ impl astersql_ddl::job_worker::DurableJobSession for SystemSessionLease {
         &mut self,
         operation: astersql_ddl::job_worker::ExecutionOperation,
     ) -> Result<Vec<u8>, String> {
+        let pool = self.pool.clone();
         self.concrete()
             .call(move |session| {
                 if session.state.borrow().transaction.is_none() {
                     return Err(sys_error("active transaction required"));
                 }
-                operation(&mut ConcreteJobExecutionContext(session)).map_err(sys_error)
+                operation(&mut ConcreteJobExecutionContext(session, pool)).map_err(sys_error)
             })
             .map_err(|e| e.to_string())
     }
@@ -1373,3 +1471,110 @@ fn backfill_index_batch(
     }
     Ok(context)
 }
+
+/// Go deriveMaterializedScheduleNextUnixSecondsForDDL. A fresh context keeps
+/// the worker's timezone, SQL mode and statement error policy untouched.
+fn derive_create_mlog_schedule(
+    schema: &str,
+    table: &str,
+    info: &astersql_meta_model::MaterializedViewLogInfo,
+) -> Result<(Option<i64>, bool), String> {
+    use astersql_expression_exprstatic::{
+        NewEvalContext, NewExprContext, WithErrLevelMap, WithEvalCtx, WithLocation, WithSQLMode,
+        WithTypeFlags, errctx,
+    };
+    let start = info.PurgeStartWith.trim();
+    let next = info.PurgeNext.trim();
+    if start.is_empty() && next.is_empty() {
+        return Ok((None, true));
+    }
+    let mode = info.PurgeScheduleSQLMode;
+    let flags = astersql_types::scalar::StrictFlags
+        .WithTruncateAsWarning(!mode.HasStrictMode())
+        .WithIgnoreInvalidDateErr(mode.HasAllowInvalidDatesMode())
+        .WithIgnoreZeroInDate(!mode.HasStrictMode() || mode.HasAllowInvalidDatesMode())
+        .WithCastTimeToYearThroughConcat(true);
+    let mut levels = [errctx::Level::LevelError; errctx::errGroupCount];
+    for group in [
+        errctx::ErrGroup::ErrGroupTruncate,
+        errctx::ErrGroup::ErrGroupBadNull,
+        errctx::ErrGroup::ErrGroupNoDefault,
+    ] {
+        levels[group as usize] = errctx::ResolveErrLevel(false, !mode.HasStrictMode());
+    }
+    levels[errctx::ErrGroup::ErrGroupDividedByZero as usize] =
+        errctx::ResolveErrLevel(!mode.HasErrorForDivisionByZeroMode(), !mode.HasStrictMode());
+    let eval = std::sync::Arc::new(NewEvalContext(vec![
+        WithSQLMode(mode),
+        WithLocation(chrono_tz::UTC),
+        WithTypeFlags(flags),
+        WithErrLevelMap(levels),
+    ]));
+    let context = NewExprContext(vec![WithEvalCtx(eval.clone())]);
+    let evaluate = |sql: &str| -> Result<Option<chrono::NaiveDateTime>, String> {
+        let mut parser = astersql_parser::New();
+        parser.SetSQLMode(mode);
+        let stmt = parser
+            .ParseOneStmt(&format!("select ({sql})"), "utf8mb4", "utf8mb4_bin")
+            .map_err(|e| e.to_string())?;
+        let select = stmt
+            .as_any()
+            .downcast_ref::<super::ast::SelectStmt>()
+            .ok_or("schedule is not a scalar expression")?;
+        let expr = select
+            .Fields
+            .Fields
+            .first()
+            .and_then(|f| f.Expr.as_ref())
+            .ok_or("missing schedule expression")?;
+        let built = astersql_planner_core::PlannerBuildSimpleExpr(&context, expr, Vec::new())
+            .map_err(|e| e.to_string())?;
+        let value = built
+            .Eval(eval.as_ref(), astersql_expression::chunk::Row::default())
+            .map_err(|e| e.to_string())?;
+        if value.IsNull() {
+            return Ok(None);
+        }
+        if value.Kind() != astersql_types::datum::KindMysqlTime {
+            return Err("materialized schedule expression expected DATE/DATETIME/TIMESTAMP".into());
+        }
+        let time = value.GetMysqlTime();
+        if ![
+            astersql_parser_mysql::r#type::TypeDate,
+            astersql_parser_mysql::r#type::TypeDatetime,
+            astersql_parser_mysql::r#type::TypeTimestamp,
+        ]
+        .contains(&time.Type())
+        {
+            return Err("materialized schedule expression expected DATE/DATETIME/TIMESTAMP".into());
+        }
+        super::parse_runtime_datetime(&time.String())
+            .map(Some)
+            .ok_or_else(|| format!("invalid materialized schedule time {}", time.String()))
+    };
+    let now = evaluate("NOW(6)")?
+        .ok_or("create materialized view: failed to evaluate refresh schedule expression")?;
+    let (result, clause) = if !start.is_empty() {
+        match evaluate(start)? {
+            None => (None, "START WITH"),
+            Some(start_at)
+                if !next.is_empty() && start_at < now + chrono::Duration::seconds(10) =>
+            {
+                (evaluate(next)?, "NEXT")
+            }
+            Some(start_at) => (Some(start_at), "START WITH"),
+        }
+    } else {
+        (evaluate(next)?, "NEXT")
+    };
+    if result.is_none() {
+        super::BgLogger().log(if next.is_empty(){super::LogLevel::Warn}else{super::LogLevel::Error},
+            "create materialized view log: purge schedule expression evaluated to NULL, updating NEXT_PURGE_UNIX_SECONDS to NULL",
+            [super::LogField::String("schemaName".into(),schema.into()),super::LogField::String("tableName".into(),table.into()),super::LogField::String("nullExprClause".into(),clause.into()),super::LogField::String("purgeStartWith".into(),start.into()),super::LogField::String("purgeNext".into(),next.into())]);
+    }
+    Ok((result.map(|t| t.and_utc().timestamp()), true))
+}
+
+#[cfg(test)]
+#[path = "normal_ddl_create_materialized_view_log_test.rs"]
+mod normal_ddl_create_materialized_view_log_test;

@@ -43,6 +43,12 @@ pub struct ValidatedTableMetadata<'a> {
     /// Default expressions are parsed without column-name resolution, as in Go.
     pub default_expressions: BTreeMap<usize, generatedexpr::ast::ExprNode>,
     pub constraints: Vec<Box<table_dependency::constraint::Constraint>>,
+    #[cfg(feature = "expression-runtime")]
+    pub partition_expression: Option<crate::PartitionExpr>,
+    #[cfg(feature = "expression-runtime")]
+    pub reorganization_expression: Option<crate::PartitionExpr>,
+    #[cfg(feature = "expression-runtime")]
+    pub index_conditions: BTreeMap<i64, expression::ExprBox>,
 }
 
 impl ValidatedTableMetadata<'_> {
@@ -119,14 +125,53 @@ pub fn table_from_meta_for_validation(
     // BuildConstraintExprWithCtx at the later evaluation stage.
     let constraints = table_dependency::constraint::LoadCheckConstraint(meta)
         .map_err(|error| error.to_string())?;
+    #[cfg(feature = "expression-runtime")]
+    let mut partition_expression = None;
+    #[cfg(feature = "expression-runtime")]
+    let mut reorganization_expression = None;
+    #[cfg(feature = "expression-runtime")]
+    let mut index_conditions = BTreeMap::new();
     let partition = meta.GetPartitionInfo();
     if let Some(partition) = partition {
         if partition.Definitions.is_empty() {
             return Err("[table:1735]Unknown partition".into());
         }
-        // Go loads the partition expression before initializing indexes.
-        // Includes reorganization expressions and adding/dropping definitions.
-        return Err("[ddl:8200]partition expression loading is not supported".into());
+        #[cfg(feature = "expression-runtime")]
+        {
+            partition_expression = crate::canonical_partition_expr::build(
+                meta,
+                partition.Type,
+                &partition.Expr,
+                &partition.Columns,
+                &partition.Definitions,
+            )?;
+            if matches!(
+                partition.DDLAction as u8,
+                model_dependency::group_3::ACTION_REORGANIZE_PARTITION
+                    | model_dependency::group_3::ACTION_REMOVE_PARTITIONING
+                    | model_dependency::group_3::ACTION_ALTER_TABLE_PARTITIONING
+            ) {
+                let defs = if matches!(
+                    partition.DDLState,
+                    SchemaState::DeleteReorganization | SchemaState::Public
+                ) {
+                    &partition.DroppingDefinitions
+                } else {
+                    &partition.AddingDefinitions
+                };
+                if !defs.is_empty() {
+                    let (tp, text, cols) = if partition.NewTableID != 0 {
+                        (partition.DDLType, &partition.DDLExpr, &partition.DDLColumns)
+                    } else {
+                        (partition.Type, &partition.Expr, &partition.Columns)
+                    };
+                    reorganization_expression =
+                        crate::canonical_partition_expr::build(meta, tp, text, cols, defs)?;
+                }
+            }
+        }
+        #[cfg(not(feature = "expression-runtime"))]
+        return Err("partition expression runtime is required".into());
     }
     for index in &meta.Indices {
         if index.State == SchemaState::None {
@@ -136,13 +181,31 @@ pub fn table_from_meta_for_validation(
             ));
         }
         if !index.ConditionExprString.is_empty() {
-            return Err("[ddl:8200]partial index expression loading is not supported".into());
+            #[cfg(feature = "expression-runtime")]
+            {
+                let ctx = crate::canonical_partition_expr::context();
+                let expr = expression::ParseSimpleExprWithTableInfo(
+                    &ctx,
+                    &index.ConditionExprString,
+                    meta,
+                )
+                .map_err(|e| e.to_string())?;
+                index_conditions.insert(index.ID, expr);
+            }
+            #[cfg(not(feature = "expression-runtime"))]
+            return Err("index expression runtime is required".into());
         }
     }
     Ok(ValidatedTableMetadata {
         generated_expressions,
         default_expressions,
         constraints,
+        #[cfg(feature = "expression-runtime")]
+        partition_expression,
+        #[cfg(feature = "expression-runtime")]
+        reorganization_expression,
+        #[cfg(feature = "expression-runtime")]
+        index_conditions,
         meta,
         kind: if meta.TableCacheStatusType != model_dependency::TableCacheStatusDisable {
             MetadataTableKind::Cached

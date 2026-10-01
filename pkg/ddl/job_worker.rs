@@ -234,8 +234,60 @@ pub type TransactionOperation =
     Box<dyn FnOnce(&mut dyn astersql_kv::Transaction) -> Result<Vec<u8>, String> + Send + 'static>;
 
 /// SQL and metadata access to the same worker session. Transaction callbacks
-/// release their borrow before SQL execution; handlers cannot open another session.
+/// release their borrow before SQL execution. Explicit resource callbacks retain
+/// Go transaction boundaries for operations requiring an independent session.
 pub trait JobExecutionContext {
+    /// Go prewriteCreateMaterializedViewRefreshInfo commits on a separate pooled
+    /// session before the enclosing metadata/job transaction commits.
+    fn prewrite_create_mview_refresh(&mut self, _: i64) -> Result<u64, String> {
+        Err("materialized view independent refresh prewrite unavailable".into())
+    }
+
+    /// Evaluate persisted MLog schedules on an isolated UTC evaluation context.
+    fn derive_create_mlog_schedule(
+        &mut self,
+        _: &str,
+        _: &astersql_meta_model::TableInfo,
+    ) -> Result<(Option<i64>, bool), String> {
+        Err("materialized view log schedule evaluation unavailable".into())
+    }
+
+    fn configure_create_table_replica(
+        &mut self,
+        _: &astersql_meta_model::TableInfo,
+    ) -> Result<(), String> {
+        Err("create-table PD replica resource unavailable".into())
+    }
+    fn put_create_table_bundles(
+        &mut self,
+        _: &[astersql_ddl_placement::Bundle],
+    ) -> Result<(), String> {
+        Err("create-table PD placement resource unavailable".into())
+    }
+
+    fn check_create_table_columnar(
+        &mut self,
+        _: &astersql_meta_model::TableInfo,
+    ) -> Result<(), String> {
+        Err("create-table columnar resource unavailable".into())
+    }
+    fn create_table_affinity(&mut self, _: &astersql_meta_model::TableInfo) -> Result<(), String> {
+        Err("create-table affinity resource unavailable".into())
+    }
+    fn rebase_create_table_ids(
+        &mut self,
+        _: i64,
+        _: &astersql_meta_model::TableInfo,
+    ) -> Result<(), String> {
+        Err("create-table allocator resource unavailable".into())
+    }
+    fn register_create_table_ttl(
+        &mut self,
+        _: &astersql_meta_model::TableInfo,
+    ) -> Result<(), String> {
+        Err("create-table TTL resource unavailable".into())
+    }
+
     /// Recover durable reorg state on this worker's real SQL session.
     fn restore_reorg(
         &mut self,

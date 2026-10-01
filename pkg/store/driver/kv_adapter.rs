@@ -2336,6 +2336,59 @@ impl kv::Storage for TikvStore {
         TikvStore::GetClusterID(self)
     }
 
+    fn DDLPDEndpoints(&self) -> Result<Vec<String>, kv::errors::SharedError> {
+        self.GetPDAddrs().map_err(adapter_error)
+    }
+    fn DDLKeyspaceID(&self) -> Result<u32, kv::errors::SharedError> {
+        use astersql_store_copr::network_backend::{NetworkPdKeyspaceClient, NetworkSecurity};
+        let name = self.GetKeyspace();
+        if name.is_empty() {
+            return Ok(u32::MAX);
+        }
+        let security = self.TLSConfig().map(|v| NetworkSecurity {
+            ca_path: v.ca_path.clone(),
+            cert_path: v.cert_path.clone(),
+            key_path: v.key_path.clone(),
+        });
+        NetworkPdKeyspaceClient::connect(
+            &self.GetPDAddrs().map_err(adapter_error)?,
+            security.as_ref(),
+            std::time::Duration::from_secs(10),
+            "tidb-ddl",
+        )
+        .map_err(adapter_error)?
+        .load_keyspace(&name)
+        .map_err(adapter_error)
+    }
+    fn EncodeDDLRegionRange(
+        &self,
+        start: &[u8],
+        end: &[u8],
+    ) -> Result<(Vec<u8>, Vec<u8>), kv::errors::SharedError> {
+        use astersql_store_copr::network_backend::{
+            KeyCodec, NetworkPdKeyspaceClient, NetworkSecurity,
+        };
+        let name = self.GetKeyspace();
+        let codec = if name.is_empty() {
+            KeyCodec::v1()
+        } else {
+            let security = self.TLSConfig().map(|v| NetworkSecurity {
+                ca_path: v.ca_path.clone(),
+                cert_path: v.cert_path.clone(),
+                key_path: v.key_path.clone(),
+            });
+            let pd = NetworkPdKeyspaceClient::connect(
+                &self.GetPDAddrs().map_err(adapter_error)?,
+                security.as_ref(),
+                std::time::Duration::from_secs(10),
+                "tidb-ddl",
+            )
+            .map_err(adapter_error)?;
+            let id = pd.load_keyspace(&name).map_err(adapter_error)?;
+            KeyCodec::v2(name, id).map_err(adapter_error)?
+        };
+        Ok(codec.encode_region_range(start, end))
+    }
     fn GetKeyspace(&self) -> String {
         TikvStore::GetKeyspace(self)
     }

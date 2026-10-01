@@ -288,6 +288,19 @@ impl<B: DdlSchemaBarrier, P: DdlJobPolicy> crate::job_worker::DurableJobExecutor
         let version = job.last_schema_version;
         if version > 0 {
             if let Some(owner) = self.policy.mdl_owner() {
+                // Go registerMDLInfo uses the queue's complete dependency set,
+                // including the base table of a materialized view log.
+                let rows = session.query(
+                    &format!(
+                        "SELECT table_ids FROM mysql.tidb_ddl_job WHERE job_id={}",
+                        job.id
+                    ),
+                    "register-mdl-info",
+                )?;
+                let ids = rows
+                    .first()
+                    .and_then(|row| row.first())
+                    .ok_or_else(|| format!("can't find ddl job {}", job.id))?;
                 let (columns, values) = if is_system_related_schema(&job.schema_name) {
                     (String::new(), String::new())
                 } else {
@@ -296,7 +309,7 @@ impl<B: DdlSchemaBarrier, P: DdlJobPolicy> crate::job_worker::DurableJobExecutor
                         format!(", {}", sql_text(&owner)),
                     )
                 };
-                session.query(&format!("REPLACE INTO mysql.tidb_mdl_info (job_id, version, table_ids{columns}) VALUES ({}, {version}, '{}'{values})",job.id,job.table_id),"register-mdl-info")?;
+                session.query(&format!("REPLACE INTO mysql.tidb_mdl_info (job_id, version, table_ids{columns}) VALUES ({}, {version}, {}{values})",job.id,sql_text(ids)),"register-mdl-info")?;
             }
         }
         Ok(crate::job_worker::DurableJobStep {

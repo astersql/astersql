@@ -29,3 +29,5 @@ mod autoid_test;
 mod migration_aster_unit_test {
     include!("migration_aster_unit_test.rs");
 }
+
+pub mod client;

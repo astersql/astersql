@@ -1142,3 +1142,39 @@ fn normal_ddl_plan_expression_validation_go_loading_error_order() {
     // CHECK repair occurs before an index error, matching Go constructor order.
     assert!(meta.Constraints.is_empty());
 }
+
+#[cfg(feature = "expression-runtime")]
+#[test]
+fn normal_ddl_plan_table_validation_canonical_key_and_reorganization() {
+    use model_dependency as model;
+    let mut meta = validation_full_model();
+    meta.Partition = Some(model::PartitionInfo {
+        Enable: true,
+        Type: model::ast::model::PartitionTypeKey,
+        Columns: vec![model::ast::NewCIStr("c0")],
+        Definitions: vec![model::PartitionDefinition {
+            ID: 100,
+            Name: model::ast::NewCIStr("p0"),
+            ..Default::default()
+        }],
+        DDLAction: model::group_3::ACTION_REORGANIZE_PARTITION,
+        DDLState: model::SchemaState::WriteOnly,
+        AddingDefinitions: vec![model::PartitionDefinition {
+            ID: 101,
+            Name: model::ast::NewCIStr("p1"),
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    let loaded = crate::tables::table_from_meta_for_validation(&mut meta).unwrap();
+    let expr = loaded.partition_expression.unwrap();
+    assert_eq!(expr.ColumnOffset, vec![0]);
+    assert_eq!(expr.ForKeyPruning.unwrap().KeyPartCols.len(), 1);
+    assert!(
+        loaded
+            .reorganization_expression
+            .unwrap()
+            .ForKeyPruning
+            .is_some()
+    );
+}

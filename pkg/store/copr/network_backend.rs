@@ -1068,7 +1068,7 @@ impl KeyCodec {
         Ok(())
     }
 
-    pub(crate) fn encode_region_range(&self, start: &[u8], end: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    pub fn encode_region_range(&self, start: &[u8], end: &[u8]) -> (Vec<u8>, Vec<u8>) {
         let (start, end) = self.encode_range(start, end);
         (mem_encode(&start), mem_encode(&end))
     }

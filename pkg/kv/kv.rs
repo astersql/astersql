@@ -806,6 +806,30 @@ pub trait Storage {
     fn SetOption(&self, key: Box<dyn Any>, value: Box<dyn Any>);
     fn GetOption(&self, key: &dyn Any) -> Option<&dyn Any>;
     fn GetClusterID(&self) -> u64;
+    fn DDLPDEndpoints(&self) -> Result<Vec<String>, errors::SharedError> {
+        Err(errors::New("DDL PD endpoints unavailable"))
+    }
+    fn DDLKeyspaceID(&self) -> Result<u32, errors::SharedError> {
+        if self.GetKeyspace().is_empty() {
+            Ok(u32::MAX)
+        } else {
+            Err(errors::New("DDL keyspace ID unavailable"))
+        }
+    }
+    /// Encode PD region ranges with this store's actual API/keyspace codec.
+    fn EncodeDDLRegionRange(
+        &self,
+        start: &[u8],
+        end: &[u8],
+    ) -> Result<(Vec<u8>, Vec<u8>), errors::SharedError> {
+        if !self.GetKeyspace().is_empty() {
+            return Err(errors::New("DDL keyspace codec unavailable"));
+        }
+        Ok((
+            codec_dependency::EncodeBytes(Vec::new(), start),
+            codec_dependency::EncodeBytes(Vec::new(), end),
+        ))
+    }
     fn GetKeyspace(&self) -> String;
     /// Test-only observation of successful oracle timestamp requests.
     fn TSORequestCountForTest(&self) -> u64 {
