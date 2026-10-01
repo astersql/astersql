@@ -17,12 +17,10 @@
 //
 // 覆盖：
 // - `FormatSQL`：将多行/含制表符的 SQL 规范为空格分隔单行，便于日志与摘要展示；
-// - `calculateStatementTotalRUV2`：按 RU（Request Unit，资源计量单位）权重汇总
-//   读写字节、请求次数与 CPU 相关分量，得到语句总 RU。
 
 use crate::adapter::{
-    AdapterResult, FinishErrorRFCCode, FormatSQL, Key, RUDetails, RUV2Metrics, RUV2Weights,
-    calculateStatementTotalRUV2, moveWrittenSharedLockKeysToExclusive, pessimisticTxn,
+    AdapterResult, FinishErrorRFCCode, FormatSQL, Key, moveWrittenSharedLockKeysToExclusive,
+    pessimisticTxn,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -58,35 +56,12 @@ fn finish_tiflash_error_label_reads_formal_rfc_code_and_defaults_for_plain_error
     assert_eq!(FinishErrorRFCCode(&astersql_errors::New("plain")), None);
 }
 
-/// 验证 FormatSQL 折叠空白，以及真实 RU V2 指标和 TiKV RU 的汇总。
+/// Verify SQL formatting remains independent of RU accounting.
 #[test]
-fn adapter_formats_multiline_sql_and_calculates_all_ru_components() {
+fn adapter_formats_multiline_sql() {
     assert_eq!(
         FormatSQL("select\t1\r\nfrom t").to_string(),
         "select 1  from t"
-    );
-    let metrics = RUV2Metrics::default();
-    metrics.AddResultChunkCells(10);
-    let weights = RUV2Weights {
-        RUScale: 1.0,
-        ResultChunkCells: 0.5,
-        ..RUV2Weights::default()
-    };
-    let details = RUDetails::default();
-    details.AddTiKVRUV2(6.0);
-    assert_eq!(
-        calculateStatementTotalRUV2(Some(&metrics), weights, Some(&details)),
-        11.0
-    );
-    assert_eq!(
-        calculateStatementTotalRUV2(None, weights, Some(&details)),
-        6.0
-    );
-    assert_eq!(calculateStatementTotalRUV2(None, weights, None), 0.0);
-    metrics.SetBypass(true);
-    assert_eq!(
-        calculateStatementTotalRUV2(Some(&metrics), weights, Some(&details)),
-        0.0
     );
 }
 

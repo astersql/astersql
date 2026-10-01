@@ -372,7 +372,9 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
         if plan.kind != PlanKind::PointGet {
             return Err(errors::New("point get requires a PointGet plan"));
         }
-        self.point_read_stats_active.set(self.RUVersion() == 3);
+        // RU v3 is the statement model, not a new domain RUVersion value.
+        // Collect point RPC evidence for both Go-compatible versions (1 and 2).
+        self.point_read_stats_active.set(true);
         *self.point_read_stats.lock().unwrap() =
             Arc::new(astersql_store_driver::ReadStats::default());
         let physical = self.physical_scan.borrow();

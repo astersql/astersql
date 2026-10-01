@@ -2421,6 +2421,7 @@ use std::time::{Duration, SystemTime};
 struct RUTerminalRuntime {
     state: crate::statement_ru_result::StatementRUInstallState,
     panic_evidence: bool,
+    ru_version: Option<u8>,
     stream_mode: u8,
     reentrant_stmt: std::cell::RefCell<Option<crate::adapter::ExecStmt>>,
     published: std::cell::RefCell<Vec<(String, f64, f64, f64)>>,
@@ -2583,7 +2584,7 @@ impl crate::adapter::AdapterRuntime for RUTerminalRuntime {
         Default::default()
     }
     fn RUVersion(&self) -> u8 {
-        3
+        self.ru_version.unwrap_or(2)
     }
     fn RUV2ReporterAvailable(&self) -> bool {
         true
@@ -3079,4 +3080,138 @@ fn go_merge_195_197_publish_snapshot_real_terminal_once() {
         total.get() - before_total,
         snapshot.result.total_ru + ttl_result
     );
+}
+
+#[test]
+fn go_merge_20_187_195_197_production_ru_legacy_consumer_never_publishes() {
+    use crate::adapter::ExecutionContext;
+    use astersql_util_execdetails::ruv2_metrics::kvrpcpb;
+    for version in [1, 2] {
+        for finished in [false, true] {
+            let runtime = Arc::new(RUTerminalRuntime {
+                ru_version: Some(version),
+                ..Default::default()
+            });
+            let mut stmt = ru_terminal_stmt();
+            stmt.Ctx = runtime.clone();
+            let metrics = Arc::new(NewRUV2Metrics());
+            let details = Arc::new(tikvutil::RUDetails::default());
+            details.AddTiKVRUV2(999.0);
+            let mut response = kvrpcpb::Ruv2::new();
+            response.set_coprocessor_response_bytes(17);
+            details.AddRUV2(&response);
+            stmt.StatementCtx.ru_metrics = Some(metrics.clone());
+            stmt.GoCtx = Some(ExecutionContext {
+                ru_details: Some(details),
+                ..Default::default()
+            });
+            stmt.RecordStatementRUFinalOutcome(finished);
+            if finished {
+                stmt.recordStatementRURootEOF();
+            }
+            stmt.FinishExecuteStmt(0, None, false);
+            assert_eq!(metrics.TiKVCoprocessorResponseBytes(), 17);
+            let expected = usize::from(finished);
+            assert_eq!(
+                runtime.published.borrow().len(),
+                expected,
+                "RUVersion {version}: legacy RU must not be published alongside terminal RU"
+            );
+            if finished {
+                let snapshot = stmt.StatementCtx.statement_ru_finalized.clone().unwrap();
+                assert_eq!(runtime.published.borrow()[0].2, snapshot.engine_ru.tidb);
+                assert_eq!(runtime.published.borrow()[0].1, snapshot.engine_ru.tikv);
+                assert_eq!(stmt.StatementCtx.total_ru, snapshot.result.total_ru);
+            } else {
+                assert_eq!(stmt.StatementCtx.total_ru, 0.0);
+                assert!(stmt.StatementCtx.statement_ru_finalized.is_none());
+            }
+            stmt.FinishExecuteStmt(0, None, false);
+            assert_eq!(runtime.published.borrow().len(), expected);
+            assert_eq!(metrics.TiKVCoprocessorResponseBytes(), 17);
+        }
+    }
+}
+
+#[test]
+fn go_merge_20_187_195_197_production_ru_canonical_sql() {
+    use std::sync::Mutex;
+    #[derive(Default)]
+    struct Reporter(Mutex<Vec<(f64, f64, f64)>>);
+    impl astersql_domain::ruv2_reporter::RUV2ConsumptionReporter for Reporter {
+        fn report_ruv2_consumption(&self, _: &str, tikv: f64, tidb: f64, tiflash: f64) {
+            self.0.lock().unwrap().push((tikv, tidb, tiflash));
+        }
+    }
+    let (domain, session) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    domain.set_ru_version(2);
+    session
+        .execute("create table ru_production (id int primary key, v int)")
+        .unwrap();
+    session
+        .execute("insert into ru_production values (1, 10), (2, 20)")
+        .unwrap();
+    let reporter = Arc::new(Reporter::default());
+    domain.bind_ruv2_consumption_reporter(Some(reporter.clone()));
+    for sql in [
+        "select v from ru_production where id = 1",
+        "select v from ru_production where id >= 1 limit 1",
+    ] {
+        reporter.0.lock().unwrap().clear();
+        let prepared = session
+            .PreparePlannedKVSelect(sql, domain.info_schema())
+            .unwrap();
+        let result = session
+            .ExecutePreparedPlannedKVSelectThroughAdapter(prepared, &[])
+            .unwrap();
+        assert_eq!(result.Rows.len(), 1);
+        let published = reporter.0.lock().unwrap().clone();
+        assert_eq!(
+            published.len(),
+            1,
+            "{sql}: complete canonical execution publishes once"
+        );
+        assert!(published[0].1 > 0.0);
+        assert_eq!(published[0].2, 0.0);
+    }
+    domain.bind_ruv2_consumption_reporter(None);
+    domain.close();
+}
+
+#[test]
+fn go_merge_20_187_195_197_production_ru_unbridged_sql_has_no_estimated_publication() {
+    use astersql_session::testutil::TestRecordSet;
+    use std::sync::Mutex;
+    #[derive(Default)]
+    struct Reporter(Mutex<Vec<(f64, f64, f64)>>);
+    impl astersql_domain::ruv2_reporter::RUV2ConsumptionReporter for Reporter {
+        fn report_ruv2_consumption(&self, _: &str, tikv: f64, tidb: f64, tiflash: f64) {
+            self.0.lock().unwrap().push((tikv, tidb, tiflash));
+        }
+    }
+    let (domain, session) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    domain.set_ru_version(2);
+    session
+        .execute("create table ru_unbridged (id int primary key)")
+        .unwrap();
+    let reporter = Arc::new(Reporter::default());
+    domain.bind_ruv2_consumption_reporter(Some(reporter.clone()));
+    // These canonical dispatch branches currently bypass ExecStmt. Keep the gap
+    // observable: no legacy/estimated RU may hide the missing production bridge.
+    for sql in [
+        "select 1",
+        "insert into ru_unbridged values (1)",
+        "analyze table ru_unbridged",
+    ] {
+        for mut result in session.execute(sql).unwrap() {
+            while result.Next().unwrap().is_some() {}
+            result.Close().unwrap();
+        }
+        assert!(
+            reporter.0.lock().unwrap().is_empty(),
+            "{sql}: unbridged SQL must not publish a fabricated RU"
+        );
+    }
+    domain.bind_ruv2_consumption_reporter(None);
+    domain.close();
 }

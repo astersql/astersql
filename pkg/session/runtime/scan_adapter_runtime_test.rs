@@ -1873,3 +1873,80 @@ fn go_merge_197_setup_eligibility_live_session_boundary() {
             .in_select_stmt
     );
 }
+
+#[test]
+fn go_merge_20_187_195_197_production_ru_point_collects_evidence() {
+    use astersql_infoschema::infoschema::{CiString, InfoSchema};
+    for version in [1, 2] {
+        let (domain, session) = crate::runtime::CreateAnalyzeSession().unwrap();
+        domain.set_ru_version(version);
+        session
+            .execute("create table ru_point (id int primary key)")
+            .unwrap();
+        session.execute("insert into ru_point values (1)").unwrap();
+        let table = domain
+            .info_schema()
+            .ModelTableInfoByName(&CiString::new("test"), &CiString::new("ru_point"))
+            .unwrap();
+        let mut point = astersql_planner_core_operator_physicalop::PointGetPlan::New(
+            session.AdapterPlanContext(),
+        );
+        point.TblInfo = Some(table.as_ref().clone());
+        point.Handle = Some(1);
+        point.Columns = table.Columns.clone();
+        let point_id = astersql_planner_core_base::Plan::id(&point);
+        let owner = Arc::new(crate::runtime::SessionBoundAdapterOwner::new(session));
+        let version = domain
+            .storage()
+            .with_storage(|store| store.CurrentVersion("global"))
+            .unwrap();
+        owner
+            .BindTypedPhysicalPlan(Box::new(point), Vec::new(), version, 32, 1024)
+            .unwrap();
+        // The physical point executor uses the real catalog, encoded KV rows and RPC
+        // statistics. No fabricated payload or scan-byte evidence enters this test.
+        let mut stmt = owner
+            .BuildExecStmt(
+                astersql_executor::adapter::PlanInfo {
+                    kind: astersql_executor::adapter::PlanKind::PointGet,
+                    schema: table
+                        .Columns
+                        .iter()
+                        .map(|col| astersql_executor::adapter::SchemaColumn {
+                            field_type: col.FieldType.clone(),
+                        })
+                        .collect(),
+                    id: point_id,
+                    calculate_no_delay: false,
+                    projection_child: None,
+                    encoded: String::new(),
+                    binary: String::new(),
+                    hints: String::new(),
+                },
+                astersql_executor::adapter::StatementNode {
+                    kind: astersql_executor::adapter::StatementKind::Select,
+                    text: "select id from ru_point where id = 1".into(),
+                    original_text: "select id from ru_point where id = 1".into(),
+                    secure_text: "select id from ru_point where id = 1".into(),
+                    prepared_text: None,
+                },
+                Vec::new(),
+                false,
+            )
+            .unwrap();
+        let mut result = stmt.Exec().unwrap().unwrap();
+        let mut chunk = result.NewChunk();
+        result.Next(&mut chunk).unwrap();
+        assert_eq!(chunk.NumRows(), 1);
+        result.Next(&mut chunk).unwrap();
+        assert_eq!(chunk.NumRows(), 0);
+        let evidence = stmt.Ctx.StatementRURuntimeEvidence(&[]);
+        assert!(
+            evidence.point.is_some(),
+            "PointGet must retain its real RPC evidence, regardless of domain RUVersion"
+        );
+        stmt.RecordStatementRUFinalOutcome(true);
+        result.Close().unwrap();
+        domain.close();
+    }
+}

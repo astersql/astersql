@@ -33,9 +33,7 @@ use astersql_planner_core_base as base;
 use astersql_sessionctx_vardef::QueryLogMaxLen;
 use astersql_util_chunk as chunk;
 pub use astersql_util_execdetails::ruv2_metrics::{RUV2Metrics, RUV2Weights};
-use astersql_util_execdetails::ruv2_metrics::{
-    SyncRUV2MetricsFromRUDetails, UpdateRUV2MetricsFromCommitDetails, tikvutil,
-};
+use astersql_util_execdetails::ruv2_metrics::{SyncRUV2MetricsFromRUDetails, tikvutil};
 
 /// 适配层统一结果类型。
 pub type AdapterResult<T = ()> = Result<T, errors::SharedError>;
@@ -1896,16 +1894,15 @@ impl ExecStmt {
         self.logAudit();
         self.checkPlanReplayerCapture(transaction_ts);
         self.Ctx.AttachFinishRuntimeStats(self.Plan.id);
-        if self.Ctx.RUVersion() == 3 && self.StatementCtx.statement_ru_owner.is_none() {
+        if self.StatementCtx.statement_ru_owner.is_none() {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 self.SnapshotStatementRUEvidence();
             }));
         }
         self.StatementCtx.plan = Some(self.Plan.clone());
         self.Ctx.SetStatementContext(&self.StatementCtx);
-        if self.Ctx.RUVersion() != 3 {
-            self.finalizeStatementRUV2Metrics();
-        } else if self.StatementCtx.statement_ru_finalized.is_none() {
+        self.finalizeStatementRUV2Metrics();
+        if self.StatementCtx.statement_ru_finalized.is_none() {
             self.StatementCtx.total_ru = 0.0;
         }
         self.updateNetworkTrafficStatsAndMetrics();
@@ -1985,7 +1982,8 @@ impl ExecStmt {
         }
     }
 
-    /// 汇总并记录本语句总 RU。
+    /// Transfer pending coprocessor response bytes before statement RU calculation.
+    /// The terminal statement snapshot owns calculation and publication.
     pub fn finalizeStatementRUV2Metrics(&mut self) {
         let Some(metrics) = self.StatementCtx.ru_metrics.as_deref() else {
             return;
@@ -1993,31 +1991,11 @@ impl ExecStmt {
         if metrics.Bypass() {
             return;
         }
-        UpdateRUV2MetricsFromCommitDetails(
-            Some(metrics),
-            self.StatementCtx.commit_details.as_deref(),
-        );
-        let Some(ru_details) = self
+        let details = self
             .GoCtx
             .as_ref()
-            .and_then(|context| context.ru_details.as_deref())
-        else {
-            return;
-        };
-        SyncRUV2MetricsFromRUDetails(Some(metrics), Some(ru_details));
-        let weights = self.Ctx.RUV2Weights();
-        let tidb_ru = metrics.CalculateRUValues(weights);
-        let tikv_ru = ru_details.TiKVRUV2();
-        let tiflash_ru = ru_details.TiflashRU();
-        self.StatementCtx.total_ru = metrics.TotalRU(weights, tikv_ru, tiflash_ru);
-        let resource_group = self.Ctx.ResourceGroupName();
-        if self.Ctx.RUV2ReporterAvailable()
-            && !resource_group.is_empty()
-            && (tikv_ru > 0.0 || tidb_ru > 0.0 || tiflash_ru > 0.0)
-        {
-            self.Ctx
-                .ReportRUV2Consumption(&resource_group, tikv_ru, tidb_ru, tiflash_ru);
-        }
+            .and_then(|context| context.ru_details.as_deref());
+        SyncRUV2MetricsFromRUDetails(Some(metrics), details);
     }
 
     /// 记录上次查询信息（含错误）。
@@ -2289,19 +2267,6 @@ pub fn recordInsertRowsColMultiply2Metrics(
     rows_column_product: i64,
 ) {
     runtime.RecordDMLMetric(statement_type, rows_column_product);
-}
-
-/// 按权重汇总 RU V2 总消耗。
-pub fn calculateStatementTotalRUV2(
-    metrics: Option<&RUV2Metrics>,
-    weights: RUV2Weights,
-    details: Option<&RUDetails>,
-) -> f64 {
-    let tikv_ru = details.map_or(0.0, RUDetails::TiKVRUV2);
-    let tiflash_ru = details.map_or(0.0, RUDetails::TiflashRU);
-    metrics.map_or(tikv_ru + tiflash_ru, |metrics| {
-        metrics.TotalRU(weights, tikv_ru, tiflash_ru)
-    })
 }
 
 /// 重置 CTE（公用表表达式）存储映射。

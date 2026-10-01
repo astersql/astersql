@@ -106,3 +106,41 @@ fn handshake_response_rejects_attributes_over_the_one_mib_hard_limit() {
             if message == "connection refused: session connection attributes exceed the 1 MiB hard limit"
     ));
 }
+
+#[test]
+fn go_merge_139_cursor_consumer_only_synchronizes_response_bytes() {
+    use astersql_server_internal_resultset::{
+        AttachCursorRUV2Tracker, New, NewCursorRUV2Tracker, ReportCursorRUV2Delta,
+    };
+    use astersql_util_execdetails::ruv2_metrics::{RUV2Metrics, kvrpcpb, tikvutil};
+    use std::sync::Arc;
+    let metrics = Arc::new(RUV2Metrics::default());
+    let details = Arc::new(tikvutil::RUDetails::default());
+    assert!(NewCursorRUV2Tracker(None, Some(details.clone())).is_none());
+    assert!(NewCursorRUV2Tracker(Some(metrics.clone()), None).is_none());
+    let mut raw = kvrpcpb::Ruv2::new();
+    raw.set_coprocessor_response_bytes(3);
+    details.AddRUV2(&raw);
+    let tracker = NewCursorRUV2Tracker(Some(metrics.clone()), Some(details.clone())).unwrap();
+    assert_eq!(metrics.TiKVCoprocessorResponseBytes(), 3);
+    let source = astersql_util_sqlexec::SimpleRecordSet::new(Vec::new(), Vec::new(), 32);
+    let mut result = New(Box::new(source), None);
+    AttachCursorRUV2Tracker(result.as_mut(), Some(tracker));
+    for (delta, expected) in [(6, 9), (4, 13), (0, 13)] {
+        raw.set_coprocessor_response_bytes(delta);
+        details.AddRUV2(&raw);
+        ReportCursorRUV2Delta(result.as_mut());
+        ReportCursorRUV2Delta(result.as_mut());
+        assert_eq!(metrics.TiKVCoprocessorResponseBytes(), expected);
+    }
+    metrics.SetBypass(true);
+    assert!(NewCursorRUV2Tracker(Some(metrics.clone()), Some(details.clone())).is_none());
+    raw.set_coprocessor_response_bytes(7);
+    details.AddRUV2(&raw);
+    ReportCursorRUV2Delta(result.as_mut());
+    assert_eq!(metrics.TiKVCoprocessorResponseBytes(), 13);
+    metrics.SetBypass(false);
+    ReportCursorRUV2Delta(result.as_mut());
+    assert_eq!(metrics.TiKVCoprocessorResponseBytes(), 20);
+    result.Close();
+}
