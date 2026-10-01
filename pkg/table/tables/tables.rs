@@ -25,6 +25,113 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 
+/// The constructor branch selected by Go TableFromMetaWithCollate. This is a
+/// metadata validation view, not an in-memory substitute for a persistent table.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MetadataTableKind {
+    Common,
+    Cached,
+}
+
+/// Borrow the complete catalog model without converting it to the smaller row
+/// engine model (which has stricter offset checks and loses Go-wire fields).
+pub struct ValidatedTableMetadata<'a> {
+    pub meta: &'a model_dependency::TableInfo,
+    pub kind: MetadataTableKind,
+}
+
+impl ValidatedTableMetadata<'_> {
+    pub fn public_columns(&self) -> impl Iterator<Item = &model_dependency::ColumnInfo> {
+        self.meta
+            .Columns
+            .iter()
+            .filter(|column| column.State == model_dependency::SchemaState::Public)
+    }
+
+    pub fn writable_columns(&self) -> impl Iterator<Item = &model_dependency::ColumnInfo> {
+        self.meta.Columns.iter().filter(|column| {
+            !matches!(
+                column.State,
+                model_dependency::SchemaState::DeleteOnly
+                    | model_dependency::SchemaState::DeleteReorganization
+            )
+        })
+    }
+}
+
+/// Structural portion of Go TableFromMetaWithCollate over the full Go model.
+/// Expression loading is a separate stage: reject it explicitly until that
+/// stage can build and resolve the same expressions as Go. Do not call
+/// TableCommon::new here: Go logs column offset mismatches and accepts offsets
+/// in unconditional indexes, whereas that constructor rejects them.
+pub fn table_from_meta_for_validation(
+    meta: &model_dependency::TableInfo,
+) -> Result<ValidatedTableMetadata<'_>, String> {
+    use model_dependency::SchemaState;
+    if meta.State == SchemaState::None {
+        return Err(format!(
+            "[table:8042]table '{}' state can't be none",
+            meta.Name.O
+        ));
+    }
+    for (offset, column) in meta.Columns.iter().enumerate() {
+        if column.State == SchemaState::None {
+            return Err(format!(
+                "[table:8046]column '{}' state can't be none",
+                column.Name.O
+            ));
+        }
+        if column.Offset != offset as isize {
+            eprintln!(
+                "wrong table schema: table={}, column={}, index={offset}, offset={}, columnNumber={}",
+                meta.Name.O,
+                column.Name.O,
+                column.Offset,
+                meta.Columns.len()
+            );
+        }
+        if !column.GeneratedExprString.is_empty() {
+            return Err("[ddl:8200]generated expression loading is not supported".into());
+        }
+        if column.DefaultIsExpr {
+            return Err("[ddl:8200]default expression loading is not supported".into());
+        }
+    }
+    if !meta.Constraints.is_empty() {
+        // Go LoadCheckConstraint also removes references to missing public
+        // columns. Never silently omit that mutation or expression binding.
+        return Err("[ddl:8200]check constraint loading is not supported".into());
+    }
+    let partition = meta.GetPartitionInfo();
+    if let Some(partition) = partition {
+        if partition.Definitions.is_empty() {
+            return Err("[table:1735]Unknown partition".into());
+        }
+        // Go loads the partition expression before initializing indexes.
+        // Includes reorganization expressions and adding/dropping definitions.
+        return Err("[ddl:8200]partition expression loading is not supported".into());
+    }
+    for index in &meta.Indices {
+        if index.State == SchemaState::None {
+            return Err(format!(
+                "[table:8044]index '{}' state can't be none",
+                index.Name.O
+            ));
+        }
+        if !index.ConditionExprString.is_empty() {
+            return Err("[ddl:8200]partial index expression loading is not supported".into());
+        }
+    }
+    Ok(ValidatedTableMetadata {
+        meta,
+        kind: if meta.TableCacheStatusType != model_dependency::TableCacheStatusDisable {
+            MetadataTableKind::Cached
+        } else {
+            MetadataTableKind::Common
+        },
+    })
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// 可执行列描述：在 ColumnInfo 之上附加偏移、SchemaState、生成列与默认值。
 pub struct Column {

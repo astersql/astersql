@@ -3051,6 +3051,404 @@ fn normal_ddl_plan_delete_range_gc_commit_conflict_rolls_back_batch() {
     assert_eq!(delete_range_rows(&f, 86401).len(), 2);
 }
 
+fn table_validation_fixture() -> Fixture {
+    let f = Fixture::new();
+    f.pool
+        .acquire()
+        .unwrap()
+        .query("INSERT INTO test.normal_ddl_target VALUES (7, 'validation row')")
+        .unwrap();
+    f
+}
+
+fn table_validation_seed(f: &Fixture, table: &astersql_meta_model::TableInfo) {
+    let mut txn = f
+        .domain
+        .storage_handle()
+        .with_storage(|s| s.Begin(&[]))
+        .unwrap();
+    txn.Set(
+        hash(
+            format!("DB:{}", f.db).as_bytes(),
+            format!("Table:{}", f.table).as_bytes(),
+        ),
+        astersql_meta_model::EncodeTableInfo(table).unwrap(),
+    )
+    .unwrap();
+    txn.Commit(&astersql_kv::Context::default()).unwrap();
+}
+
+fn table_validation_index(
+    table: &astersql_meta_model::TableInfo,
+) -> astersql_meta_model::IndexInfo {
+    astersql_meta_model::IndexInfo {
+        ID: 123,
+        Name: astersql_meta_model::ast::NewCIStr("validation_key"),
+        Table: table.Name.clone(),
+        Columns: vec![astersql_meta_model::IndexColumn {
+            Name: table.Columns[0].Name.clone(),
+            Offset: 0,
+            Length: -1,
+            ..Default::default()
+        }],
+        State: astersql_meta_model::SchemaState::Public,
+        Unique: true,
+        ..Default::default()
+    }
+}
+
+fn table_validation_run(f: &Fixture, expected_error: Option<&str>) {
+    let before_table = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+    let before_wire = astersql_meta_model::EncodeTableInfo(&before_table).unwrap();
+    let before_version = version(f);
+    f.insert(88001, JobState::Queueing);
+    let mut s = scheduler();
+    let mut e = executor();
+    let lease = Lease(AtomicBool::new(true));
+    let mut session = f.pool.acquire().unwrap();
+    if let Some(expected) = expected_error {
+        // Exercise the production checked entry through the real worker SQL/KV
+        // context. Existing Go TableMode is unchecked, so do not alter its
+        // dispatcher semantics just to create a validation test consumer.
+        let mut current = f.queue(88001).unwrap();
+        let mut candidate = before_table.clone();
+        candidate.Mode = astersql_meta_model::TableMode::TableModeImport;
+        let expected = expected.to_string();
+        session.begin().unwrap();
+        let encoded = session
+            .with_execution_context(Box::new(move |context| {
+                context.with_transaction(&mut |txn| {
+                    let mut meta = astersql_meta::TransactionMutator::new(txn);
+                    let error =
+                        astersql_ddl::persistent_actions::update_version_and_table_with_check(
+                            &mut meta,
+                            &mut current,
+                            &mut candidate,
+                        )
+                        .unwrap_err();
+                    assert!(error.contains(&expected), "{error}");
+                    assert_eq!(current.state, JobState::Cancelled);
+                    current.error = Some(error);
+                    current.error_count += 1;
+                    current.encode(false).map_err(|e| e.to_string())
+                })
+            }))
+            .unwrap();
+        // The ordinary executor persists the returned error state separately
+        // from action metadata, then the real scheduler performs cancellation
+        // history/queue cleanup. Keep all SQL on this same worker transaction.
+        session
+            .query(format!(
+                "UPDATE mysql.tidb_ddl_job SET job_meta=X'{}' WHERE job_id=88001",
+                hex(&encoded)
+            ))
+            .unwrap();
+        session.commit().unwrap();
+    } else {
+        let mut current = f.queue(88001).unwrap();
+        let mut candidate = before_table.clone();
+        candidate.Mode = astersql_meta_model::TableMode::TableModeImport;
+        session.begin().unwrap();
+        session
+            .with_execution_context(Box::new(move |context| {
+                context.with_transaction(&mut |txn| {
+                    let mut meta = astersql_meta::TransactionMutator::new(txn);
+                    let v = astersql_ddl::persistent_actions::update_version_and_table_with_check(
+                        &mut meta,
+                        &mut current,
+                        &mut candidate,
+                    )?;
+                    assert_eq!(v, before_version + 1);
+                    assert_eq!(current.state, JobState::Queueing);
+                    Ok(Vec::new())
+                })
+            }))
+            .unwrap();
+        session.rollback();
+        assert_eq!(version(f), before_version);
+        assert_eq!(
+            astersql_meta_model::EncodeTableInfo(
+                &f.reader().get_table(f.db, f.table).unwrap().unwrap()
+            )
+            .unwrap(),
+            before_wire
+        );
+    }
+    assert_eq!(
+        s.schedule_persisted(&mut session, &lease, &mut e, 0)
+            .unwrap(),
+        1
+    );
+    let after_table = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+    if let Some(error) = expected_error {
+        assert!(
+            f.queue(88001).is_none(),
+            "invalid metadata must cancel immediately, not finish Done or retry"
+        );
+        let history = f.reader().get_history_ddl_job(88001).unwrap().unwrap();
+        assert_eq!(history.state, JobState::Cancelled);
+        assert_eq!(history.error_count, 1);
+        assert!(
+            history.error.as_deref().unwrap().contains(error),
+            "{:?}",
+            history.error
+        );
+        assert_eq!(history.last_schema_version, 0);
+        assert_eq!(version(f), before_version);
+        assert_eq!(
+            astersql_meta_model::EncodeTableInfo(&after_table).unwrap(),
+            before_wire
+        );
+        assert!(e.barrier.seen.is_empty());
+    } else {
+        assert_eq!(f.queue(88001).unwrap().state, JobState::Done);
+        assert_eq!(
+            after_table.Mode,
+            astersql_meta_model::TableMode::TableModeImport
+        );
+        assert_eq!(version(f), before_version + 1);
+        assert_eq!(e.barrier.seen, vec![before_version + 1]);
+        // Normal updates may change revision/update-ts, but no unrelated Go metadata.
+        let mut actual = after_table.clone();
+        actual.Mode = before_table.Mode;
+        actual.Revision = before_table.Revision;
+        actual.UpdateTS = before_table.UpdateTS;
+        assert_eq!(
+            astersql_meta_model::EncodeTableInfo(&actual).unwrap(),
+            before_wire
+        );
+        assert_eq!(
+            s.schedule_persisted(&mut session, &lease, &mut e, 0)
+                .unwrap(),
+            1
+        );
+        assert!(f.queue(88001).is_none());
+        let history = f.reader().get_history_ddl_job(88001).unwrap().unwrap();
+        assert_eq!(history.state, JobState::Synced);
+        assert_eq!(history.error_count, 0);
+        assert_eq!(
+            astersql_meta_model::EncodeTableInfo(
+                history
+                    .binlog_info
+                    .as_ref()
+                    .unwrap()
+                    .table_info
+                    .as_ref()
+                    .unwrap()
+            )
+            .unwrap(),
+            astersql_meta_model::EncodeTableInfo(&after_table).unwrap()
+        );
+    }
+    let sql_history = session
+        .query("SELECT job_meta FROM mysql.tidb_ddl_history WHERE job_id=88001")
+        .unwrap();
+    assert_eq!(sql_history.len(), 1);
+    let recorded = astersql_meta::decode_go_history_job(sql_history[0][0].as_bytes()).unwrap();
+    assert_eq!(
+        recorded.state,
+        if expected_error.is_some() {
+            JobState::Cancelled
+        } else {
+            JobState::Synced
+        }
+    );
+    assert_eq!(
+        recorded.error_count,
+        if expected_error.is_some() { 1 } else { 0 }
+    );
+    let rows = session
+        .query("SELECT id,payload FROM test.normal_ddl_target")
+        .unwrap();
+    assert_eq!(
+        rows,
+        vec![vec!["7".to_string(), "validation row".to_string()]]
+    );
+}
+
+#[test]
+fn normal_ddl_plan_table_validation_rejects_none_states_atomically() {
+    for index in [false, true] {
+        let f = table_validation_fixture();
+        let mut table = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+        let error = if index {
+            let mut key = table_validation_index(&table);
+            key.State = astersql_meta_model::SchemaState::None;
+            table.Indices.push(key);
+            "[table:8044]"
+        } else {
+            table.Columns[1].State = astersql_meta_model::SchemaState::None;
+            "[table:8046]"
+        };
+        table_validation_seed(&f, &table);
+        table_validation_run(&f, Some(error));
+    }
+}
+
+#[test]
+fn normal_ddl_plan_table_validation_invisible_explicit_and_implicit_primary() {
+    for explicit in [false, true] {
+        let f = table_validation_fixture();
+        let mut table = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+        table.PKIsHandle = false;
+        let mut key = table_validation_index(&table);
+        key.Primary = explicit;
+        key.Invisible = true;
+        table.Indices = vec![key];
+        table_validation_seed(&f, &table);
+        table_validation_run(&f, Some("[ddl:3522]"));
+    }
+}
+
+#[test]
+fn normal_ddl_plan_table_validation_go_offsets_cache_and_primary_exceptions() {
+    for case in 0..6 {
+        let f = table_validation_fixture();
+        let mut table = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+        table.Comment = "preserve complete metadata".into();
+        table.AutoIDCache = 17;
+        let mut key = table_validation_index(&table);
+        match case {
+            0 => {
+                table.Columns[1].Offset = -4;
+                key.Columns[0].Offset = 99;
+            }
+            1 => table.TableCacheStatusType = astersql_meta_model::TableCacheStatusEnable,
+            2 => table.TableCacheStatusType = astersql_meta_model::TableCacheStatusSwitching,
+            3 => {
+                key.Primary = true;
+                key.Invisible = true;
+                assert!(table.PKIsHandle);
+            }
+            4 => {
+                table.PKIsHandle = false;
+                table.Columns[0].Hidden = true;
+                key.Invisible = true;
+            }
+            _ => {
+                table.PKIsHandle = false;
+                table.Columns[0].State = astersql_meta_model::SchemaState::DeleteOnly;
+                key.Invisible = true;
+            }
+        }
+        table.Indices = vec![key];
+        table_validation_seed(&f, &table);
+        table_validation_run(&f, None);
+    }
+}
+
+#[test]
+fn normal_ddl_plan_table_validation_partition_structure_and_deferred_loading() {
+    for case in 0..3 {
+        let f = table_validation_fixture();
+        let mut table = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+        table.Partition = Some(astersql_meta_model::PartitionInfo {
+            Enable: case != 2,
+            Type: astersql_meta_model::ast::model::PartitionTypeHash,
+            Expr: "id".into(),
+            Definitions: if case == 1 {
+                vec![astersql_meta_model::PartitionDefinition {
+                    ID: 88100,
+                    Name: astersql_meta_model::ast::NewCIStr("p0"),
+                    ..Default::default()
+                }]
+            } else {
+                vec![]
+            },
+            ..Default::default()
+        });
+        table_validation_seed(&f, &table);
+        table_validation_run(
+            &f,
+            match case {
+                0 => Some("[table:1735]"),
+                1 => Some("partition expression loading is not supported"),
+                _ => None,
+            },
+        );
+    }
+}
+
+#[test]
+fn normal_ddl_plan_table_validation_expressions_are_explicitly_deferred() {
+    for case in 0..4 {
+        let f = table_validation_fixture();
+        let mut table = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+        match case {
+            0 => table.Columns[1].GeneratedExprString = "id + 1".into(),
+            1 => table.Columns[1].DefaultIsExpr = true,
+            2 => table.Constraints.push(astersql_meta_model::ConstraintInfo {
+                Name: astersql_meta_model::ast::NewCIStr("positive_id"),
+                ExprString: "id > 0".into(),
+                Enforced: true,
+                State: astersql_meta_model::SchemaState::Public,
+                ..Default::default()
+            }),
+            _ => {
+                let mut key = table_validation_index(&table);
+                key.ConditionExprString = "id > 0".into();
+                table.Indices.push(key);
+            }
+        }
+        table_validation_seed(&f, &table);
+        table_validation_run(&f, Some("loading is not supported"));
+    }
+}
+
+#[test]
+fn normal_ddl_plan_table_validation_checked_update_commit_rollback_and_skip_version() {
+    for case in 0..3 {
+        let f = table_validation_fixture();
+        f.insert(88001, JobState::Queueing);
+        let mut job = f.queue(88001).unwrap();
+        if case == 2 {
+            job.multi_schema_info = Some(astersql_meta_model::group_3::MultiSchemaInfo {
+                skip_version: true,
+                ..Default::default()
+            });
+        }
+        let before_table = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+        let before_wire = astersql_meta_model::EncodeTableInfo(&before_table).unwrap();
+        let before_version = version(&f);
+        let mut candidate = before_table.clone();
+        candidate.Comment = "checked worker context".into();
+        let mut session = f.pool.acquire().unwrap();
+        session.begin().unwrap();
+        let result = session
+            .with_execution_context(Box::new(move |context| {
+                context.with_transaction(&mut |txn| {
+                    let mut meta = astersql_meta::TransactionMutator::new(txn);
+                    let v = astersql_ddl::persistent_actions::update_version_and_table_with_check(
+                        &mut meta,
+                        &mut job,
+                        &mut candidate,
+                    )?;
+                    assert_eq!(v, if case == 2 { 0 } else { before_version + 1 });
+                    assert_eq!(job.state, JobState::Queueing);
+                    astersql_meta_model::EncodeTableInfo(&candidate).map_err(|e| e.to_string())
+                })
+            }))
+            .unwrap();
+        if case == 1 {
+            session.rollback();
+        } else {
+            session.commit().unwrap();
+        }
+        let after = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+        let after_wire = astersql_meta_model::EncodeTableInfo(&after).unwrap();
+        assert_eq!(after_wire, if case == 1 { before_wire } else { result });
+        assert_eq!(version(&f), before_version + if case == 0 { 1 } else { 0 });
+        assert_eq!(f.queue(88001).unwrap().state, JobState::Queueing);
+        assert!(f.reader().get_history_ddl_job(88001).unwrap().is_none());
+        assert_eq!(
+            session
+                .query("SELECT payload FROM test.normal_ddl_target WHERE id=7")
+                .unwrap(),
+            vec![vec!["validation row".to_string()]]
+        );
+    }
+}
+
 #[test]
 fn normal_ddl_plan_reorg_checkpoint_restart_and_conflict() {
     use astersql_ddl::reorg::{PersistentReorgHandler, ReorgElement, ReorgInfo};

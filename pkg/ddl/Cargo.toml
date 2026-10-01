@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+astersql-table-tables = { path = "../table/tables" }
 astersql-tablecodec = { path = "../tablecodec" }
 "astersql-ddl-notifier" = { package = "astersql-ddl-notifier", path = "notifier" }
 "astersql-ddl-serverstate" = { package = "astersql-ddl-serverstate", path = "serverstate" }

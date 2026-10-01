@@ -215,7 +215,22 @@ fn modify_table_metadata(
     Ok(version)
 }
 
-/// Go updateVersionAndTableInfo for a single public metadata-only table action.
+/// Go updateVersionAndTableInfoWithCheck. Call only from handlers whose Go
+/// counterparts use the checked helper; unchecked metadata-only handlers must
+/// retain their original behavior.
+pub fn update_version_and_table_with_check(
+    meta: &mut astersql_meta::TransactionMutator<'_>,
+    job: &mut Job,
+    table: &mut astersql_meta_model::TableInfo,
+) -> Result<i64, String> {
+    crate::create_table::check_table_info_valid(table).map_err(|error| {
+        job.state = JobState::Cancelled;
+        error
+    })?;
+    update_version_and_table(meta, job, table)
+}
+
+/// Go updateVersionAndTableInfo for a single metadata-only table action.
 pub(crate) fn update_version_and_table(
     meta: &mut astersql_meta::TransactionMutator<'_>,
     job: &Job,

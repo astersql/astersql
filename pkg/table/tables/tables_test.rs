@@ -925,3 +925,130 @@ fn reorganization_swap_exchanges_all_fields_and_checks_dynamic_type() {
     let mut not_a_table = 7_i64;
     assert!(!swap_reorg_part_fields(&mut source, &mut not_a_table));
 }
+
+fn validation_full_model() -> model_dependency::TableInfo {
+    use model_dependency as model;
+    model::TableInfo {
+        ID: 73,
+        Name: model::ast::NewCIStr("full_metadata"),
+        State: model::SchemaState::Public,
+        Comment: "full model remains borrowed".into(),
+        AutoIDCache: 17,
+        Columns: (0..2)
+            .map(|offset| model::ColumnInfo {
+                ID: offset as i64 + 1,
+                Name: model::ast::NewCIStr(format!("c{offset}")),
+                Offset: offset,
+                State: model::SchemaState::Public,
+                ..Default::default()
+            })
+            .collect(),
+        Indices: vec![model::IndexInfo {
+            ID: 9,
+            Name: model::ast::NewCIStr("key_c0"),
+            State: model::SchemaState::Public,
+            Columns: vec![model::IndexColumn {
+                Name: model::ast::NewCIStr("c0"),
+                Offset: 0,
+                Length: -1,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn normal_ddl_plan_table_validation_full_model_states_and_go_offsets() {
+    use crate::tables::{MetadataTableKind, table_from_meta_for_validation};
+    use model_dependency::SchemaState as State;
+    let mut meta = validation_full_model();
+    meta.Columns[0].Offset = -1;
+    meta.Columns[1].Offset = 91;
+    meta.Indices[0].Columns[0].Offset = -3;
+    for state in [
+        State::DeleteOnly,
+        State::WriteOnly,
+        State::WriteReorganization,
+        State::DeleteReorganization,
+        State::Public,
+    ] {
+        meta.State = state;
+        meta.Columns[0].State = state;
+        meta.Indices[0].State = state;
+        let table = table_from_meta_for_validation(&meta).unwrap();
+        assert!(std::ptr::eq(table.meta, &meta));
+        assert_eq!(table.kind, MetadataTableKind::Common);
+        assert_eq!(
+            table.public_columns().count(),
+            if state == State::Public { 2 } else { 1 }
+        );
+        assert_eq!(
+            table.writable_columns().count(),
+            if matches!(state, State::DeleteOnly | State::DeleteReorganization) {
+                1
+            } else {
+                2
+            }
+        );
+    }
+    meta.State = State::None;
+    assert!(
+        table_from_meta_for_validation(&meta)
+            .err()
+            .unwrap()
+            .starts_with("[table:8042]")
+    );
+    meta.State = State::Public;
+    meta.Columns[0].State = State::None;
+    assert!(
+        table_from_meta_for_validation(&meta)
+            .err()
+            .unwrap()
+            .starts_with("[table:8046]")
+    );
+    meta.Columns[0].State = State::Public;
+    meta.Indices[0].State = State::None;
+    assert!(
+        table_from_meta_for_validation(&meta)
+            .err()
+            .unwrap()
+            .starts_with("[table:8044]")
+    );
+}
+
+#[test]
+fn normal_ddl_plan_table_validation_full_model_cache_and_partition_order() {
+    use crate::tables::{MetadataTableKind, table_from_meta_for_validation};
+    let mut meta = validation_full_model();
+    for status in [
+        model_dependency::TableCacheStatusEnable,
+        model_dependency::TableCacheStatusSwitching,
+    ] {
+        meta.TableCacheStatusType = status;
+        let table = table_from_meta_for_validation(&meta).unwrap();
+        assert_eq!(table.kind, MetadataTableKind::Cached);
+        assert_eq!(table.meta.Comment, "full model remains borrowed");
+        assert_eq!(table.meta.AutoIDCache, 17);
+        assert_eq!(table.meta.Indices[0].ID, 9);
+    }
+    meta.Indices[0].State = model_dependency::SchemaState::None;
+    meta.Partition = Some(model_dependency::PartitionInfo {
+        Enable: true,
+        ..Default::default()
+    });
+    assert!(
+        table_from_meta_for_validation(&meta)
+            .err()
+            .unwrap()
+            .starts_with("[table:1735]")
+    );
+    meta.Partition.as_mut().unwrap().Enable = false;
+    assert!(
+        table_from_meta_for_validation(&meta)
+            .err()
+            .unwrap()
+            .starts_with("[table:8044]")
+    );
+}
