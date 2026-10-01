@@ -279,3 +279,68 @@ fn build_placement_affects_matches_go_contract() {
 fn build_placement_affects_rejects_mismatched_lengths_like_go() {
     let _ = build_placement_affects(&[11, 12], &[21]);
 }
+
+#[test]
+fn crossks_align_durable_scheduler_denies_non_owner_before_opening_a_transaction() {
+    use crate::job_worker::{
+        DurableJobExecutor, DurableJobSession, DurableJobStep, JobLease, JobWorker,
+        TransactionOperation, WorkerType,
+    };
+    use astersql_meta_model::group_3::Job as WireJob;
+    struct InaccessibleSession;
+    impl DurableJobSession for InaccessibleSession {
+        fn query(&mut self, _: &str, _: &str) -> Result<Vec<Vec<String>>, String> {
+            panic!("non-owner must not issue SQL")
+        }
+        fn begin(&mut self) -> Result<(), String> {
+            panic!("non-owner must not begin")
+        }
+        fn commit(&mut self) -> Result<(), String> {
+            panic!("non-owner must not commit")
+        }
+        fn rollback(&mut self) {
+            panic!("no transaction was opened")
+        }
+        fn with_transaction(&mut self, _: TransactionOperation) -> Result<Vec<u8>, String> {
+            panic!("non-owner must not access metadata")
+        }
+    }
+    struct InaccessibleExecutor;
+    impl DurableJobExecutor for InaccessibleExecutor {
+        fn runnable(&mut self, _: &mut dyn DurableJobSession, _: &WireJob) -> Result<bool, String> {
+            panic!("unexpected executor")
+        }
+        fn recover(&mut self, _: &WireJob, _: &dyn JobLease) -> Result<(), String> {
+            panic!("unexpected recovery")
+        }
+        fn step(
+            &mut self,
+            _: &mut dyn DurableJobSession,
+            _: &mut WireJob,
+        ) -> Result<DurableJobStep, String> {
+            panic!("unexpected step")
+        }
+        fn wait_synced(&mut self, _: &WireJob, _: i64, _: &dyn JobLease) -> Result<(), String> {
+            panic!("unexpected sync")
+        }
+    }
+    struct Lease(bool, bool);
+    impl JobLease for Lease {
+        fn is_owner(&self) -> bool {
+            self.0
+        }
+        fn is_cancelled(&self) -> bool {
+            self.1
+        }
+    }
+    for lease in [Lease(false, false), Lease(true, true)] {
+        let result = JobWorker::new(WorkerType::General).transit_persisted_job_step(
+            &mut InaccessibleSession,
+            &lease,
+            &mut InaccessibleExecutor,
+            &mut WireJob::default(),
+            &[],
+        );
+        assert!(result.is_err());
+    }
+}

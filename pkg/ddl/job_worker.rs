@@ -202,3 +202,135 @@ pub fn build_placement_affects(old_ids: &[i64], new_ids: &[i64]) -> Vec<Affected
         })
         .collect()
 }
+
+/// A pooled SQL session and its actual KV transaction. Operations stay on the
+/// session's owning thread; SQL job writes and metadata writes share one commit.
+pub trait DurableJobSession {
+    fn query(&mut self, sql: &str, label: &str) -> Result<Vec<Vec<String>>, String>;
+    fn begin(&mut self) -> Result<(), String>;
+    fn commit(&mut self) -> Result<(), String>;
+    fn rollback(&mut self);
+    fn with_transaction(&mut self, operation: TransactionOperation) -> Result<Vec<u8>, String>;
+}
+
+pub type TransactionOperation =
+    Box<dyn FnOnce(&mut dyn astersql_kv::Transaction) -> Result<Vec<u8>, String> + Send + 'static>;
+
+/// The owner manager and scheduler cancellation must both permit every commit.
+pub trait JobLease {
+    fn is_owner(&self) -> bool;
+    fn is_cancelled(&self) -> bool;
+}
+
+/// Action execution, upgrade policy and schema synchronization are supplied by
+/// the normal DDL executor. There is deliberately no default successful step.
+pub trait DurableJobExecutor {
+    fn runnable(
+        &mut self,
+        session: &mut dyn DurableJobSession,
+        job: &astersql_meta_model::group_3::Job,
+    ) -> Result<bool, String>;
+    /// Recover a previous owner's unsynchronized schema version before executing.
+    fn recover(
+        &mut self,
+        job: &astersql_meta_model::group_3::Job,
+        lease: &dyn JobLease,
+    ) -> Result<(), String>;
+    /// Action errors that Go persists on Job must be handled by the executor
+    /// and returned as a successful transaction result with the updated Job.
+    /// Err is reserved for an abandoned transaction (storage/lease/staging failure).
+    fn step(
+        &mut self,
+        session: &mut dyn DurableJobSession,
+        job: &mut astersql_meta_model::group_3::Job,
+    ) -> Result<DurableJobStep, String>;
+    fn wait_synced(
+        &mut self,
+        job: &astersql_meta_model::group_3::Job,
+        schema_version: i64,
+        lease: &dyn JobLease,
+    ) -> Result<(), String>;
+}
+
+pub struct DurableJobStep {
+    pub schema_version: i64,
+    pub update_raw_args: bool,
+    /// A terminal executor step has already deleted the queue row and written
+    /// history inside this transaction; do not recreate its queue entry.
+    pub removed: bool,
+}
+
+fn check_job_lease(lease: &dyn JobLease) -> Result<(), String> {
+    if !lease.is_owner() {
+        return Err("not DDL owner".into());
+    }
+    if lease.is_cancelled() {
+        return Err("DDL scheduler cancelled".into());
+    }
+    Ok(())
+}
+
+impl JobWorker {
+    /// Go transitOneJobStep's transaction boundary, using the full wire Job.
+    /// The queue bytes are rechecked inside the same transaction as metadata,
+    /// so administrative changes and overlapping owners cannot be overwritten.
+    pub fn transit_persisted_job_step(
+        &mut self,
+        session: &mut dyn DurableJobSession,
+        lease: &dyn JobLease,
+        executor: &mut dyn DurableJobExecutor,
+        job: &mut astersql_meta_model::group_3::Job,
+        expected_bytes: &[u8],
+    ) -> Result<i64, String> {
+        if self.closed {
+            return Err("DDL worker is closed".into());
+        }
+        check_job_lease(lease)?;
+        executor.recover(job, lease)?;
+        check_job_lease(lease)?;
+        if let Err(error) = session.begin() {
+            session.rollback();
+            return Err(error);
+        }
+        let outcome = (|| {
+            let rows = session.query(
+                &format!(
+                    "select job_meta from mysql.tidb_ddl_job where job_id = {}",
+                    job.id
+                ),
+                "get_job",
+            )?;
+            let current = rows
+                .first()
+                .and_then(|row| row.first())
+                .ok_or_else(|| "DDL job disappeared".to_owned())?;
+            if current.as_bytes() != expected_bytes {
+                return Err("job meta changed by others".into());
+            }
+            let result = executor.step(session, job)?;
+            check_job_lease(lease)?;
+            if !result.removed {
+                let bytes = job
+                    .encode(result.update_raw_args)
+                    .map_err(|e| e.to_string())?;
+                let hex = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+                session.query(
+                    &format!(
+                        "update mysql.tidb_ddl_job set job_meta = X'{hex}' where job_id = {}",
+                        job.id
+                    ),
+                    "update_job",
+                )?;
+            }
+            // A lease may be lost during SQL execution as well as during the
+            // metadata callback. Neither case is allowed to commit.
+            check_job_lease(lease)?;
+            session.commit()?;
+            Ok(result.schema_version)
+        })();
+        if outcome.is_err() {
+            session.rollback();
+        }
+        outcome
+    }
+}

@@ -225,7 +225,7 @@ impl ddl::SessionContext for ConcreteDdlContext {
                 if mode == ddl::TransactionMode::Pessimistic {
                     "BEGIN PESSIMISTIC"
                 } else {
-                    "BEGIN"
+                    "BEGIN OPTIMISTIC"
                 },
             )
             .map(|_| ())
@@ -867,5 +867,67 @@ pub struct JobSubmitServerState(pub Arc<dyn astersql_ddl_serverstate::Syncer>);
 impl jobsubmit::ServerState for JobSubmitServerState {
     fn is_upgrading(&self) -> bool {
         self.0.is_upgrading_state()
+    }
+}
+
+impl astersql_ddl::job_worker::DurableJobSession for SystemSessionLease {
+    fn query(&mut self, sql: &str, label: &str) -> Result<Vec<Vec<String>>, String> {
+        self.query_with_label(sql.to_owned(), label)
+    }
+    fn begin(&mut self) -> Result<(), String> {
+        ddl::Session::new(Arc::clone(&self.context))
+            .begin(&ddl::ExecutionContext::default())
+            .map_err(|e| e.to_string())?;
+        self.with_transaction(Box::new(|_| Ok(Vec::new())))
+            .map(|_| ())
+    }
+    fn commit(&mut self) -> Result<(), String> {
+        if let Some(error) = &self.metadata_error {
+            return Err(error.clone());
+        }
+        self.concrete()
+            .call(|session| session.commit_ddl_transaction().map_err(sys_error))
+            .map_err(|e| e.to_string())?;
+        self.concrete().variables.set_in_transaction(false);
+        Ok(())
+    }
+
+    fn rollback(&mut self) {
+        ddl::Session::new(Arc::clone(&self.context)).rollback();
+    }
+    fn with_transaction(
+        &mut self,
+        operation: astersql_ddl::job_worker::TransactionOperation,
+    ) -> Result<Vec<u8>, String> {
+        self.concrete()
+            .call(move |session| {
+                let mut state = session.state.borrow_mut();
+                let transaction = state
+                    .transaction
+                    .as_mut()
+                    .ok_or_else(|| sys_error("active transaction required"))?;
+                transaction.SetOption(kv::RequestSourceInternal, Some(Box::new(true)));
+                transaction.SetOption(
+                    kv::RequestSourceType,
+                    Some(Box::new(kv::InternalTxnDDL.to_owned())),
+                );
+                operation(transaction.as_mut()).map_err(sys_error)
+            })
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// The normal owner's live election state and scheduler lifetime. This adapter
+/// does not campaign or create a cross-keyspace owner; the normal DDL owns both.
+pub struct DdlOwnerLease {
+    pub owner: Arc<dyn astersql_owner::Manager>,
+    pub cancellation: Arc<sys::CancellationToken>,
+}
+impl astersql_ddl::job_worker::JobLease for DdlOwnerLease {
+    fn is_owner(&self) -> bool {
+        self.owner.IsOwner()
+    }
+    fn is_cancelled(&self) -> bool {
+        self.cancellation.is_cancelled()
     }
 }

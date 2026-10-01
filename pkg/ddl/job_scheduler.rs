@@ -242,3 +242,89 @@ impl JobScheduler {
         !self.queue.is_empty() && !self.running.running_ids().is_empty()
     }
 }
+
+impl JobScheduler {
+    /// Load the durable SQL queue on every scheduling round, including after an
+    /// owner restart. This entrypoint never routes wire Jobs through the legacy
+    /// in-memory Job conversion or its metadata-free state machine.
+    pub fn schedule_persisted(
+        &mut self,
+        session: &mut dyn crate::job_worker::DurableJobSession,
+        lease: &dyn crate::job_worker::JobLease,
+        executor: &mut dyn crate::job_worker::DurableJobExecutor,
+        min_job_id: i64,
+    ) -> Result<usize, String> {
+        if self.closed || !lease.is_owner() || lease.is_cancelled() {
+            return Ok(0);
+        }
+        let rows = session.query(
+            &format!("select reorg, job_meta from mysql.tidb_ddl_job where job_id >= {min_job_id} order by job_id"),
+            "load_ddl_jobs",
+        )?;
+        let result = (|| {
+            let mut delivered = 0;
+            for row in rows {
+                if !lease.is_owner() || lease.is_cancelled() {
+                    break;
+                }
+                if row.len() != 2 {
+                    return Err("invalid durable DDL queue row".into());
+                }
+                let reorg = row[0].parse::<i64>().map_err(|e| e.to_string())? == 1;
+                let bytes = row[1].as_bytes();
+                let mut job =
+                    astersql_meta::decode_go_history_job(bytes).map_err(|e| e.to_string())?;
+                let involving = job
+                    .get_involving_schema_info()
+                    .into_iter()
+                    .map(|info| InvolvingSchemaInfo {
+                        database: info.database,
+                        table: info.table,
+                        policy: info.policy,
+                        resource_group: info.resource_group,
+                        mode: match info.mode {
+                            astersql_meta_model::group_3::InvolvingSchemaInfoMode::Shared => {
+                                crate::ddl_running_jobs::InvolvingMode::Shared
+                            }
+                            astersql_meta_model::group_3::InvolvingSchemaInfoMode::Exclusive => {
+                                crate::ddl_running_jobs::InvolvingMode::Exclusive
+                            }
+                        },
+                    })
+                    .collect::<Vec<_>>();
+                // Upgrade pauses/resumes use the executor's administrative SQL;
+                // do not coerce Paused/Cancelling into Running while loading.
+                if !executor.runnable(session, &job)?
+                    || !self.running.check_runnable(job.id, &involving)
+                {
+                    self.running.add_pending(involving);
+                    continue;
+                }
+                self.running.add_running(job.id, involving.clone());
+                let worker = if reorg {
+                    &mut self.reorg_worker
+                } else {
+                    &mut self.general_worker
+                };
+                let step =
+                    worker.transit_persisted_job_step(session, lease, executor, &mut job, bytes);
+                let step = step.and_then(|version| executor.wait_synced(&job, version, lease));
+                // An unfinished or failed step retains its conflict dependency;
+                // a failed step may have committed before schema sync failed.
+                let finished = matches!(
+                    job.state,
+                    astersql_meta_model::group_3::JobState::Synced
+                        | astersql_meta_model::group_3::JobState::Cancelled
+                        | astersql_meta_model::group_3::JobState::RollbackDone
+                );
+                self.running
+                    .finish_or_pend_job(job.id, involving, !finished || step.is_err());
+                step?;
+                delivered += 1;
+            }
+            Ok(delivered)
+        })();
+        self.running.reset_all_pending();
+        result
+    }
+}

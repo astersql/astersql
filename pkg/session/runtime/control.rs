@@ -772,6 +772,21 @@ impl ConcreteSession {
     }
 
     pub(super) fn finish_transaction(&self, commit: bool) -> SessionResult<()> {
+        self.finish_transaction_with_retry(commit, true)
+    }
+
+    /// A DDL worker retries by reloading the Job and rechecking its owner. Raw
+    /// mutation replay could overwrite an administrative pause or commit after
+    /// lease loss, so its transaction must propagate conflicts to the scheduler.
+    pub(super) fn commit_ddl_transaction(&self) -> SessionResult<()> {
+        self.finish_transaction_with_retry(true, false)
+    }
+
+    fn finish_transaction_with_retry(
+        &self,
+        commit: bool,
+        allow_mutation_retry: bool,
+    ) -> SessionResult<()> {
         struct ReleaseMDL<'a>(&'a ConcreteSession);
         impl Drop for ReleaseMDL<'_> {
             fn drop(&mut self) {
@@ -1019,7 +1034,7 @@ impl ConcreteSession {
                                 &conflict_keys,
                             )?));
                 if conflict {
-                    if in_restricted_sql {
+                    if in_restricted_sql && allow_mutation_retry {
                         let mutations = transaction_write_keys
                             .iter()
                             .map(|key| {
