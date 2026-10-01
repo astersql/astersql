@@ -8443,6 +8443,7 @@ dependencies = [
  "astersql-lightning-backend-encode",
  "astersql-lightning-backend-kv",
  "astersql-lightning-mydump",
+ "astersql-lightning-verification",
  "astersql-meta",
  "astersql-meta-autoid",
  "astersql-meta-metabuild",

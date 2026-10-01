@@ -1713,6 +1713,9 @@ impl ConcreteSession {
             return Ok(None);
         }
         if let Some(import) = statement.as_any().downcast_ref::<ast::ImportIntoStmt>() {
+            if import.Select.is_some() {
+                return self.execute_import_query(import).map(Some);
+            }
             let path = prepare_import_path_for_kernel(
                 &import.Path,
                 astersql_config_kerneltype::IsNextGen(),

@@ -198,7 +198,13 @@ impl sys::SessionContext for ConcreteSystemContext {
     }
 }
 
+#[derive(Default)]
+struct MViewBuildContexts {
+    owner_epoch: u64,
+    completed: HashMap<i64, (u64, i64)>,
+}
 struct ConcreteDdlContext {
+    mview_builds: Arc<Mutex<MViewBuildContexts>>,
     closed: AtomicBool,
     id: u64,
     session: Arc<sys::Session>,
@@ -343,6 +349,7 @@ struct ResourceState {
     borrowed: HashMap<u64, Weak<ConcreteDdlContext>>,
 }
 struct SystemResources {
+    mview_builds: Arc<Mutex<MViewBuildContexts>>,
     callbacks: SystemSessionCallbacks,
     pool: sys::AdvancedSessionPool,
     state: Mutex<ResourceState>,
@@ -370,6 +377,7 @@ impl ddl::ResourcePool for SystemResources {
             })
             .map_err(ddl_error)?;
         let context = Arc::new(ConcreteDdlContext {
+            mview_builds: self.mview_builds.clone(),
             closed: AtomicBool::new(false),
             id,
             session,
@@ -453,6 +461,7 @@ impl SystemSessionPool {
         validator: Option<Arc<astersql_infoschema_isvalidator::Validator>>,
     ) -> Arc<Self> {
         let resources = Arc::new(SystemResources {
+            mview_builds: Arc::new(Mutex::new(MViewBuildContexts::default())),
             callbacks,
             pool: sys::NewAdvancedSessionPool(5, move || {
                 let domain = Arc::clone(&domain);
@@ -905,8 +914,102 @@ impl jobsubmit::ServerState for JobSubmitServerState {
 #[path = "create_table_resources.rs"]
 mod create_table_resources;
 
-struct ConcreteJobExecutionContext<'a>(&'a mut ConcreteSession, Arc<ddl::Pool>);
+struct ConcreteJobExecutionContext<'a>(
+    &'a mut ConcreteSession,
+    Arc<ddl::Pool>,
+    Arc<Mutex<MViewBuildContexts>>,
+);
 impl astersql_ddl::job_worker::JobExecutionContext for ConcreteJobExecutionContext<'_> {
+    fn build_create_mview_data(
+        &mut self,
+        job: &mut astersql_meta_model::group_3::Job,
+        table: &astersql_meta_model::TableInfo,
+    ) -> Result<(u64, i64), String> {
+        if let Some(result) = self
+            .2
+            .lock()
+            .map_err(|_| "materialized view reorg context poisoned")?
+            .completed
+            .get(&job.id)
+            .copied()
+        {
+            return Ok(result);
+        }
+        let job = astersql_meta_model::group_3::Job::decode(
+            &job.encode(false).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let table = table.clone();
+        let context = self.1.get().map_err(|e| e.to_string())?;
+        let independent = SystemSessionLease {
+            metadata_error: None,
+            pool: self.1.clone(),
+            context,
+        };
+        let result = independent.concrete().call(move |session| {
+            let info = table.MaterializedView.as_ref().ok_or_else(||sys_error("create materialized view: invalid metadata"))?;
+            let reorg = job.reorg_meta.as_ref().ok_or_else(||sys_error("create materialized view: missing reorg metadata"))?;
+            if info.SQLContent.is_empty() { return Err(sys_error("create materialized view: invalid select sql")); }
+            let schema = job.schema_name.replace('`',"``");
+            let name = table.Name.O.replace('`',"``");
+            if !query(session,&format!("SELECT 1 FROM `{schema}`.`{name}` LIMIT 1"))?.is_empty() { return Err(sys_error("create materialized view: detected residual build rows on retry")); }
+            let mode=astersql_parser_mysql::r#const::Str2SQLMode.iter().filter(|(_,flag)| flag.0 != 0 && (reorg.SQLMode & flag.0 as u64) == flag.0 as u64).map(|(name,_)|*name).collect::<Vec<_>>().join(",");
+            let old_db=session.state.borrow().current_database.clone();
+            let old_mode=session.state.borrow().sql_mode.clone();
+            let old_tz=session.time_zone.borrow().clone();
+            let mut restore=Vec::new();
+            let result = (|| {
+                session.state.borrow_mut().current_database=job.schema_name.clone();
+                session.state.borrow_mut().sql_mode=mode;
+                if let Some(location)=&reorg.Location {
+                    let zone=if location.name.is_empty() { format!("{}{:02}:{:02}",if location.offset<0{"-"}else{"+"},location.offset.abs()/3600,(location.offset.abs()%3600)/60) } else {location.name.clone()};
+                    *session.time_zone.borrow_mut()=super::session::RuntimeTimeZone::parse(&zone).ok_or_else(||sys_error("invalid build timezone"))?;
+                }
+                for (name,value) in &job.session_vars {
+                    let target=match name.as_str() {
+                        "tidb_mview_maintain_mem_quota" => "tidb_mem_quota_query",
+                        "tidb_mview_maintain_isolation_read_engines" => "tidb_isolation_read_engines",
+                        "tidb_mview_maintain_import_threads" | "tidb_mview_maintain_import_disk_quota" => continue,
+                        _ => name,
+                    };
+                    let old=session.session_vars.SetHintSystemVarWithOldState(target,value).map_err(sys_error)?;
+                    restore.push((target.to_owned(),old));
+                }
+                // One SQL statement observes a real transaction snapshot. Keeping
+                // that transaction explicit exposes the same query start TSO even
+                // for empty input; physical IMPORT remains independent of it.
+                query(session,"BEGIN")?;
+                let read_ts=session.state.borrow().transaction.as_ref().ok_or_else(||sys_error("build transaction missing"))?.StartTS();
+                let store_name=session.domain.storage().with_storage(|store|store.Name());
+                let sql=if store_name == "TiKV" {
+                    let threads=job.session_vars.get("tidb_mview_maintain_import_threads").map(String::as_str).unwrap_or("1");
+                    let quota=job.session_vars.get("tidb_mview_maintain_import_disk_quota").map(String::as_str).unwrap_or("50GiB").replace('\'',"''");
+                    format!("IMPORT INTO `{schema}`.`{name}` FROM ({}) WITH disable_precheck, thread={threads}, disk_quota='{quota}'",info.SQLContent)
+                } else { format!("REPLACE INTO `{schema}`.`{name}` {}",info.SQLContent) };
+                let _precision=super::relational_value::BuildDivisionPrecision::enter(info.DefinitionDivPrecisionIncrement).map_err(sys_error)?;
+                query(session, &sql)?;
+                query(session,"COMMIT")?;
+                if read_ts==0 { return Err(sys_error("create materialized view: invalid build read tso")); }
+                let count=query(session,&format!("SELECT COUNT(*) FROM `{schema}`.`{name}`"))?.first().and_then(|r|r.first()).ok_or_else(||sys_error("build row count missing"))?.parse::<i64>().map_err(sys_error)?;
+                Ok((read_ts,count))
+            })();
+            if result.is_err(){ let _=query(session,"ROLLBACK"); }
+            session.state.borrow_mut().current_database=old_db;
+            session.state.borrow_mut().sql_mode=old_mode;
+            *session.time_zone.borrow_mut()=old_tz;
+            for (name,value) in restore.into_iter().rev() { session.session_vars.SetHintSystemVarWithOldState(&name,&value).map_err(sys_error)?; }
+            result
+        }).map_err(|e|e.to_string());
+        if let Ok(result) = result {
+            self.2
+                .lock()
+                .map_err(|_| "materialized view reorg context poisoned")?
+                .completed
+                .insert(job.id, result);
+        }
+        result
+    }
+
     fn prewrite_create_mview_refresh(&mut self, id: i64) -> Result<u64, String> {
         let context = self.1.get().map_err(|e| e.to_string())?;
         let mut independent = SystemSessionLease {
@@ -1042,6 +1145,19 @@ impl astersql_ddl::delete_range::DeleteRangeExecutor for SystemSessionLease {
     }
 }
 impl astersql_ddl::job_worker::DurableJobSession for SystemSessionLease {
+    fn bind_owner_epoch(&mut self, epoch: u64) -> Result<(), String> {
+        let mut contexts = self
+            .concrete()
+            .mview_builds
+            .lock()
+            .map_err(|_| "materialized view reorg context poisoned")?;
+        if contexts.owner_epoch != epoch {
+            contexts.completed.clear();
+            contexts.owner_epoch = epoch;
+        }
+        Ok(())
+    }
+
     fn backfill_index_batch(
         &mut self,
         request: astersql_ddl::backfilling::IndexBackfillBatch,
@@ -1068,12 +1184,14 @@ impl astersql_ddl::job_worker::DurableJobSession for SystemSessionLease {
         operation: astersql_ddl::job_worker::ExecutionOperation,
     ) -> Result<Vec<u8>, String> {
         let pool = self.pool.clone();
+        let builds = self.concrete().mview_builds.clone();
         self.concrete()
             .call(move |session| {
                 if session.state.borrow().transaction.is_none() {
                     return Err(sys_error("active transaction required"));
                 }
-                operation(&mut ConcreteJobExecutionContext(session, pool)).map_err(sys_error)
+                operation(&mut ConcreteJobExecutionContext(session, pool, builds))
+                    .map_err(sys_error)
             })
             .map_err(|e| e.to_string())
     }

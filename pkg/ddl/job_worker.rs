@@ -206,6 +206,10 @@ pub fn build_placement_affects(old_ids: &[i64], new_ids: &[i64]) -> Vec<Affected
 /// A pooled SQL session and its actual KV transaction. Operations stay on the
 /// session's owning thread; SQL job writes and metadata writes share one commit.
 pub trait DurableJobSession {
+    /// Bind transient reorg contexts to one leadership tenure.
+    fn bind_owner_epoch(&mut self, _: u64) -> Result<(), String> {
+        Ok(())
+    }
     /// GC registration uses an independent autocommit session, as in Go.
     fn register_delete_ranges(
         &mut self,
@@ -237,6 +241,14 @@ pub type TransactionOperation =
 /// release their borrow before SQL execution. Explicit resource callbacks retain
 /// Go transaction boundaries for operations requiring an independent session.
 pub trait JobExecutionContext {
+    /// Real pooled build session: independently committed rows and actual read TSO.
+    fn build_create_mview_data(
+        &mut self,
+        _: &mut astersql_meta_model::group_3::Job,
+        _: &astersql_meta_model::TableInfo,
+    ) -> Result<(u64, i64), String> {
+        Err("materialized view independent build session unavailable".into())
+    }
     /// Go prewriteCreateMaterializedViewRefreshInfo commits on a separate pooled
     /// session before the enclosing metadata/job transaction commits.
     fn prewrite_create_mview_refresh(&mut self, _: i64) -> Result<u64, String> {
@@ -379,6 +391,7 @@ impl JobWorker {
             return Err("DDL worker is closed".into());
         }
         check_job_lease(lease)?;
+        session.bind_owner_epoch(lease.owner_epoch())?;
         executor.recover(job, lease)?;
         check_job_lease(lease)?;
         if let Err(error) = session.begin() {

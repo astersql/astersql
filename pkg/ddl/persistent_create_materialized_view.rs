@@ -68,6 +68,42 @@ pub fn step(context: &mut dyn JobExecutionContext, job: &mut Job) -> Result<i64,
             return Err(invalid(job, "duplicate base table id"));
         }
     }
+    if job.state == JobState::Cancelling {
+        job.state = JobState::Rollingback;
+        return Ok(0);
+    }
+    if matches!(job.state, JobState::Pausing | JobState::Paused) {
+        return Ok(0);
+    }
+    if job.state != JobState::Rollingback && job.schema_state == SchemaState::WriteReorganization {
+        let mut actual = None;
+        context.with_transaction(&mut |txn| {
+            actual = Some(get(&TransactionMutator::new(txn), job, job.table_id)?);
+            Ok(vec![])
+        })?;
+        let already_built = job.snapshot_ver != 0;
+        match context.build_create_mview_data(job, &actual.unwrap()) {
+            Ok((read_ts, count)) => {
+                if read_ts == 0 {
+                    job.state = JobState::Rollingback;
+                    return Err("create materialized view: invalid build read tso".into());
+                }
+                if already_built {
+                    return Err(
+                        "normal DDL create materialized view publication stage unavailable".into(),
+                    );
+                }
+                job.snapshot_ver = read_ts;
+                job.set_row_count(count);
+                // Task 18 owns refresh information and schema publication.
+                return Ok(0);
+            }
+            Err(error) => {
+                job.state = JobState::Rollingback;
+                return Err(error);
+            }
+        }
+    }
     if job.state == JobState::Rollingback || job.schema_state != SchemaState::None {
         return Err("normal DDL create materialized view build/rollback stage unavailable".into());
     }

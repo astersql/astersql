@@ -14,6 +14,28 @@
 // limitations under the License.
 
 use super::*;
+thread_local! {
+    static BUILD_DIVISION_PRECISION: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
+}
+/// Carry the definition's decimal context through the synchronous relational
+/// executor. Each pooled session runs on its own thread; Drop restores nested
+/// contexts even when SQL evaluation exits with an error.
+pub(super) struct BuildDivisionPrecision(Option<i32>);
+impl BuildDivisionPrecision {
+    pub(super) fn enter(precision: i32) -> SessionResult<Self> {
+        if !(0..=30).contains(&precision) {
+            return Err(SessionError::new("invalid definition division precision"));
+        }
+        Ok(Self(
+            BUILD_DIVISION_PRECISION.with(|slot| slot.replace(Some(precision))),
+        ))
+    }
+}
+impl Drop for BuildDivisionPrecision {
+    fn drop(&mut self) {
+        BUILD_DIVISION_PRECISION.with(|slot| slot.set(self.0));
+    }
+}
 
 #[cfg(test)]
 #[path = "relational_value_test.rs"]
@@ -993,6 +1015,47 @@ pub(super) fn relational_expression_value(
             Ok(Some(value.to_string()))
         }
         ast::ExprKind::Binary { Op, L, R } if Op == "/" || Op.eq_ignore_ascii_case("div") => {
+            if Op == "/"
+                && let Some(precision) = BUILD_DIVISION_PRECISION.with(|slot| slot.get())
+            {
+                use astersql_types::decimal::mydecimal::{
+                    DecimalDiv, DecimalError, ModeHalfUp, MyDecimal,
+                };
+                let Some((left, right)) =
+                    relational_expression_value(L, row)?.zip(relational_expression_value(R, row)?)
+                else {
+                    return Ok(None);
+                };
+                // DOUBLE/scientific input retains the real arithmetic path.
+                if !left.contains(['e', 'E']) && !right.contains(['e', 'E']) {
+                    let mut lhs = MyDecimal::default();
+                    let mut rhs = MyDecimal::default();
+                    lhs.FromString(left.as_bytes())
+                        .map_err(|e| session_error("parse build decimal dividend", e))?;
+                    rhs.FromString(right.as_bytes())
+                        .map_err(|e| session_error("parse build decimal divisor", e))?;
+                    let mut quotient = MyDecimal::default();
+                    match DecimalDiv(&lhs, &rhs, &mut quotient, precision as isize) {
+                        Ok(()) | Err(DecimalError::Truncated) => {}
+                        Err(DecimalError::DivByZero) => return Ok(None),
+                        Err(error) => {
+                            return Err(session_error("evaluate build decimal division", error));
+                        }
+                    }
+                    let mut rounded = MyDecimal::default();
+                    quotient
+                        .Round(
+                            &mut rounded,
+                            (lhs.GetDigitsFrac() as i32 + precision).min(30) as isize,
+                            ModeHalfUp,
+                        )
+                        .map_err(|e| session_error("round build decimal division", e))?;
+                    return Ok(Some(
+                        String::from_utf8(rounded.ToString())
+                            .map_err(|e| session_error("render build decimal division", e))?,
+                    ));
+                }
+            }
             let left = relational_expression_value(L, row)?
                 .map(|value| {
                     value.parse::<f64>().map_err(|error| {

@@ -198,6 +198,12 @@ pub(super) struct Backend {
     directory: std::path::PathBuf,
 }
 impl Backend {
+    pub fn disk_quota_pressure(
+        &self,
+        quota: i64,
+    ) -> astersql_ingestor_ingestctrl::disk_quota::DiskQuotaResult {
+        astersql_ingestor_ingestctrl::disk_quota::CheckDiskQuota(&self.local, quota)
+    }
     pub fn new(domain: Arc<Domain>, task_id: i64) -> SessionResult<Arc<Self>> {
         let directory = std::env::temp_dir().join(format!(
             "astersql-import-{}-{task_id}-{}",

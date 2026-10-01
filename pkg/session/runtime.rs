@@ -58,6 +58,7 @@ mod explain_read;
 mod explain_select;
 mod import_compression;
 mod import_file;
+mod import_query;
 mod import_sst;
 pub use import_sst::NewImportLocalBackend;
 mod load_data;

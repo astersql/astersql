@@ -1945,7 +1945,8 @@ fn is_supported_cloud_uri(value: &str) -> bool {
 }
 
 /// 解析带单位的字节大小字符串（KiB/MiB/GiB 等）。
-fn parseByteSize(value: &str) -> Result<i64, String> {
+/// Parse the canonical IMPORT INTO byte-size option for SQL host adapters.
+pub fn parseByteSize(value: &str) -> Result<i64, String> {
     let normalized = value.trim().to_ascii_lowercase();
     let units = [
         ("tib", 1_i64 << 40),

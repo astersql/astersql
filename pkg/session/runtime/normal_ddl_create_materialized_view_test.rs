@@ -42,7 +42,7 @@ impl DurableJobExecutor for Initial {
                 current.real_start_ts = txn.StartTS();
                 Ok(vec![])
             })?;
-            if current.state != JobState::Rollingback {
+            if matches!(current.state, JobState::Queueing | JobState::Running) {
                 current.state = JobState::Running;
             }
             match astersql_ddl::persistent_actions::step(ctx, &mut current) {
@@ -102,8 +102,44 @@ fn setup(v: JobVersion) -> (Fixture, TableInfo, Job) {
     let mut log = base.clone();
     log.ID += 6000;
     log.Name = astersql_meta_model::ast::NewCIStr("$mlog$normal_ddl_target");
+    log.PKIsHandle = false;
+    log.Indices.clear();
+    for column in &mut log.Columns {
+        column.FieldType.DelFlag(
+            astersql_parser_mysql::r#type::PriKeyFlag
+                | astersql_parser_mysql::r#type::AutoIncrementFlag,
+        );
+    }
+    for (name, tp) in [
+        (
+            astersql_meta_model::MaterializedViewLogDMLTypeColumnName,
+            astersql_parser_mysql::r#type::TypeVarchar,
+        ),
+        (
+            astersql_meta_model::MaterializedViewLogOldNewColumnName,
+            astersql_parser_mysql::r#type::TypeTiny,
+        ),
+    ] {
+        let mut column = base.Columns[0].clone();
+        column.ID = log.Columns.len() as i64 + 1;
+        column.Offset = log.Columns.len() as isize;
+        column.Name = astersql_meta_model::ast::NewCIStr(name);
+        column.FieldType = astersql_parser_types::NewFieldType(tp);
+        column
+            .FieldType
+            .SetFlag(astersql_parser_mysql::r#type::NotNullFlag);
+        column
+            .FieldType
+            .SetFlen(if tp == astersql_parser_mysql::r#type::TypeVarchar {
+                1
+            } else {
+                4
+            });
+        log.Columns.push(column);
+    }
     log.MaterializedViewLog = Some(astersql_meta_model::MaterializedViewLogInfo {
         BaseTableID: base.ID,
+        Columns: base.Columns.iter().map(|c| c.Name.clone()).collect(),
         DependentMViewIDs: vec![7001],
         ..Default::default()
     });
@@ -135,6 +171,7 @@ fn setup(v: JobVersion) -> (Fixture, TableInfo, Job) {
         table_name: view.Name.L.clone(),
         state: JobState::Queueing,
         version: v,
+        reorg_meta: Some(Default::default()),
         ..Default::default()
     };
     j.raw_args = serde_json::to_vec(&if v == JobVersion::V1 {
@@ -470,8 +507,10 @@ fn normal_ddl_plan_create_materialized_view_1_independent_commit_conflict_restar
     );
     // Resume at the durable phase; initial metadata is not duplicated or finalized.
     let version = j.last_schema_version;
+    f.domain.reload().unwrap();
     run(&f, &mut j).unwrap();
-    assert!(j.error.unwrap().contains("stage unavailable"));
+    assert!(j.error.is_none(), "{:?}", j.error);
+    assert!(j.snapshot_ver > 0);
     assert_eq!(
         f.queue(j.id).unwrap().schema_state,
         SchemaState::WriteReorganization
@@ -517,7 +556,16 @@ fn build_data(v: JobVersion) {
         vec![vec!["17".to_string(), "retained row".to_string()]]
     );
     assert!(f.reader().get_history_ddl_job(j.id).unwrap().is_none());
-    assert!(f.reader().get_table(f.db,t.ID).unwrap().unwrap().MaterializedView.unwrap().InitBuildState == astersql_meta_model::MViewInitBuildBuilding);
+    assert!(
+        f.reader()
+            .get_table(f.db, t.ID)
+            .unwrap()
+            .unwrap()
+            .MaterializedView
+            .unwrap()
+            .InitBuildState
+            == astersql_meta_model::MViewInitBuildBuilding
+    );
     assert!(!astersql_ddl::persistent_actions::handler_available(86));
 }
 #[test]
@@ -527,4 +575,260 @@ fn normal_ddl_plan_create_materialized_view_2_v1() {
 #[test]
 fn normal_ddl_plan_create_materialized_view_2_v2() {
     build_data(JobVersion::V2);
+}
+
+#[test]
+fn normal_ddl_plan_create_materialized_view_2_snapshot_and_restart() {
+    for version in [JobVersion::V1, JobVersion::V2] {
+        let (mut f, t, mut j) = setup(version);
+        f.pool
+            .acquire()
+            .unwrap()
+            .query("INSERT INTO test.normal_ddl_target VALUES (18,'before build')")
+            .unwrap();
+        run(&f, &mut j).unwrap();
+        f.domain.reload().unwrap();
+        run(&f, &mut j).unwrap();
+        assert!(j.error.is_none(), "{:?}", j.error);
+        let snapshot = j.snapshot_ver;
+        assert!(snapshot > j.real_start_ts);
+        assert_eq!(j.get_row_count(), 2);
+        assert_eq!(f.queue(j.id).unwrap().get_row_count(), 2);
+        run(&f, &mut j).unwrap();
+        assert_eq!(j.snapshot_ver, snapshot);
+        assert_eq!(
+            f.pool
+                .acquire()
+                .unwrap()
+                .query("SELECT COUNT(*) FROM test.normal_mview")
+                .unwrap()[0][0],
+            "2"
+        );
+        let maintenance=f.pool.acquire().unwrap().query(format!("SELECT LAST_SUCCESS_READ_TSO,LAST_SUCCESS_REFRESH_END_UNIX_SECONDS FROM mysql.tidb_mview_refresh_info WHERE MVIEW_ID={}",t.ID)).unwrap();
+        assert_ne!(maintenance[0][0], snapshot.to_string());
+        assert_eq!(maintenance[0][1], "<nil>");
+        // As Go does, a new owner without the completed reorg context rejects
+        // residual physical rows instead of silently rebuilding live data.
+        f.pool.close();
+        f.pool = super::system_session::SystemSessionPool::new(f.domain.clone());
+        j = f.queue(j.id).unwrap();
+        run(&f, &mut j).unwrap();
+        assert_eq!(j.state, JobState::Rollingback);
+        assert!(j.error.as_ref().unwrap().contains("residual build rows"));
+        assert!(f.reader().get_history_ddl_job(j.id).unwrap().is_none());
+    }
+}
+#[test]
+fn normal_ddl_plan_create_materialized_view_2_build_error_and_admin_state() {
+    for version in [JobVersion::V1, JobVersion::V2] {
+        for case in 0..4 {
+            let (f, mut t, mut j) = setup(version);
+            if case == 0 {
+                t.MaterializedView.as_mut().unwrap().SQLContent =
+                    "SELECT missing FROM test.normal_ddl_target".into();
+                rewrite_args(
+                    &mut j,
+                    &t,
+                    &[f.reader()
+                        .get_table(f.db, f.table)
+                        .unwrap()
+                        .unwrap()
+                        .MaterializedViewBase
+                        .unwrap()
+                        .MLogID],
+                );
+                replace(&f, &mut j);
+            }
+            if case == 1 {
+                j.reorg_meta = None;
+                replace(&f, &mut j);
+            }
+            run(&f, &mut j).unwrap();
+            f.domain.reload().unwrap();
+            if case == 2 {
+                j.state = JobState::Cancelling;
+                replace(&f, &mut j);
+            }
+            if case == 3 {
+                j.state = JobState::Paused;
+                replace(&f, &mut j);
+            }
+            run(&f, &mut j).unwrap();
+            assert_eq!(j.snapshot_ver, 0);
+            assert_eq!(
+                j.state,
+                if case == 3 {
+                    JobState::Paused
+                } else {
+                    JobState::Rollingback
+                },
+                "case {case} {:?}",
+                j.error
+            );
+            assert_eq!(
+                f.pool
+                    .acquire()
+                    .unwrap()
+                    .query("SELECT COUNT(*) FROM test.normal_mview")
+                    .unwrap()[0][0],
+                "0"
+            );
+            assert!(f.reader().get_history_ddl_job(j.id).unwrap().is_none());
+        }
+    }
+}
+#[test]
+fn normal_ddl_plan_create_materialized_view_2_commit_conflict() {
+    let (f, _, mut j) = setup(JobVersion::V2);
+    run(&f, &mut j).unwrap();
+    f.domain.reload().unwrap();
+    let original = f.queue(j.id).unwrap().encode(false).unwrap();
+    let mut first = f.pool.acquire().unwrap();
+    first.begin().unwrap();
+    Initial.step(&mut first, &mut j).unwrap();
+    assert!(j.snapshot_ver > 0);
+    // The data commit precedes the worker's job checkpoint commit.
+    assert_eq!(
+        f.pool
+            .acquire()
+            .unwrap()
+            .query("SELECT COUNT(*) FROM test.normal_mview")
+            .unwrap()[0][0],
+        "1"
+    );
+    let mut other = f.pool.acquire().unwrap();
+    other
+        .query(format!(
+            "UPDATE mysql.tidb_ddl_job SET processing=1 WHERE job_id={}",
+            j.id
+        ))
+        .unwrap();
+    first
+        .query(format!(
+            "UPDATE mysql.tidb_ddl_job SET job_meta=X'{}' WHERE job_id={}",
+            hex(&astersql_meta::encode_go_ddl_job(&mut j, false).unwrap()),
+            j.id
+        ))
+        .unwrap();
+    assert!(first.commit().is_err());
+    first.rollback();
+    assert_eq!(f.queue(j.id).unwrap().encode(false).unwrap(), original);
+    j = f.queue(j.id).unwrap();
+    run(&f, &mut j).unwrap();
+    assert!(j.error.is_none(), "{:?}", j.error);
+    assert!(j.snapshot_ver > 0);
+    assert_eq!(
+        f.pool
+            .acquire()
+            .unwrap()
+            .query("SELECT COUNT(*) FROM test.normal_mview")
+            .unwrap()[0][0],
+        "1"
+    );
+}
+#[test]
+fn normal_ddl_plan_create_materialized_view_2_import_errors() {
+    let f = Fixture::new();
+    let session = f.pool.acquire().unwrap();
+    session
+        .query("INSERT INTO test.normal_ddl_target VALUES (17,'source row')")
+        .unwrap();
+    session
+        .query("CREATE TABLE test.normal_mview_import (id BIGINT PRIMARY KEY,payload VARCHAR(255))")
+        .unwrap();
+    let duplicate=session.query("IMPORT INTO test.normal_mview_import FROM (SELECT id,payload FROM test.normal_ddl_target UNION ALL SELECT id,payload FROM test.normal_ddl_target) WITH disable_precheck").unwrap_err();
+    assert!(duplicate.contains("duplicate key"), "{duplicate}");
+    assert_eq!(
+        session
+            .query("SELECT COUNT(*) FROM test.normal_mview_import")
+            .unwrap()[0][0],
+        "0"
+    );
+    session.query("IMPORT INTO test.normal_mview_import FROM (SELECT id,payload FROM test.normal_ddl_target)").unwrap();
+    let nonempty=session.query("IMPORT INTO test.normal_mview_import FROM (SELECT id,payload FROM test.normal_ddl_target)").unwrap_err();
+    assert!(nonempty.contains("not empty"), "{nonempty}");
+}
+
+struct EpochLease(u64);
+impl JobLease for EpochLease {
+    fn owner_epoch(&self) -> u64 {
+        self.0
+    }
+    fn is_owner(&self) -> bool {
+        true
+    }
+    fn is_cancelled(&self) -> bool {
+        false
+    }
+}
+#[test]
+fn normal_ddl_plan_create_materialized_view_2_owner_epoch() {
+    let (f, _, mut j) = setup(JobVersion::V2);
+    for _ in 0..2 {
+        let bytes = astersql_meta::encode_go_ddl_job(&mut j, false).unwrap();
+        JobWorker::new(WorkerType::General)
+            .transit_persisted_job_step(
+                &mut f.pool.acquire().unwrap(),
+                &EpochLease(1),
+                &mut Initial,
+                &mut j,
+                &bytes,
+            )
+            .unwrap();
+        f.domain.reload().unwrap();
+    }
+    assert!(j.snapshot_ver > 0);
+    let bytes = astersql_meta::encode_go_ddl_job(&mut j, false).unwrap();
+    JobWorker::new(WorkerType::General)
+        .transit_persisted_job_step(
+            &mut f.pool.acquire().unwrap(),
+            &EpochLease(2),
+            &mut Initial,
+            &mut j,
+            &bytes,
+        )
+        .unwrap();
+    assert_eq!(j.state, JobState::Rollingback);
+    assert!(j.error.unwrap().contains("residual build rows"));
+    assert_eq!(
+        f.pool
+            .acquire()
+            .unwrap()
+            .query("SELECT COUNT(*) FROM test.normal_mview")
+            .unwrap()[0][0],
+        "1"
+    );
+}
+
+#[test]
+fn normal_ddl_plan_create_materialized_view_2_definition_precision() {
+    let (f, mut t, mut j) = setup(JobVersion::V2);
+    t.MaterializedView.as_mut().unwrap().SQLContent =
+        "SELECT id,id/3 AS payload FROM test.normal_ddl_target".into();
+    t.MaterializedView
+        .as_mut()
+        .unwrap()
+        .DefinitionDivPrecisionIncrement = 6;
+    let log = f
+        .reader()
+        .get_table(f.db, f.table)
+        .unwrap()
+        .unwrap()
+        .MaterializedViewBase
+        .unwrap()
+        .MLogID;
+    rewrite_args(&mut j, &t, &[log]);
+    replace(&f, &mut j);
+    run(&f, &mut j).unwrap();
+    f.domain.reload().unwrap();
+    run(&f, &mut j).unwrap();
+    assert!(j.error.is_none(), "{:?}", j.error);
+    assert_eq!(
+        f.pool
+            .acquire()
+            .unwrap()
+            .query("SELECT payload FROM test.normal_mview")
+            .unwrap()[0][0],
+        "5.666667"
+    );
 }

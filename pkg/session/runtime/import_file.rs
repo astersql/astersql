@@ -27,7 +27,7 @@ pub struct ImportFileTask {
 pub(super) struct ImportFiles {
     pub(super) storage: Option<Arc<dyn dump::Storage>>,
     region_size: i64,
-    sst_stats: kv::SSTImportStats,
+    pub(super) sst_stats: kv::SSTImportStats,
 }
 impl Default for ImportFiles {
     fn default() -> Self {
