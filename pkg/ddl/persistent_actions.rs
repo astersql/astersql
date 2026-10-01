@@ -21,7 +21,19 @@ pub fn handler_available(action: u8) -> bool {
     matches!(action, 1 | 10 | 17 | 26 | 39 | 55 | 75 | 76)
 }
 
-pub fn step(txn: &mut dyn astersql_kv::Transaction, job: &mut Job) -> Result<i64, String> {
+pub fn step(
+    context: &mut dyn crate::job_worker::JobExecutionContext,
+    job: &mut Job,
+) -> Result<i64, String> {
+    let mut version = 0;
+    context.with_transaction(&mut |txn| {
+        version = step_metadata(txn, job)?;
+        Ok(Vec::new())
+    })?;
+    Ok(version)
+}
+
+fn step_metadata(txn: &mut dyn astersql_kv::Transaction, job: &mut Job) -> Result<i64, String> {
     match job.tp {
         1 => create_schema(txn, job),
         10 => drop_foreign_key(txn, job),

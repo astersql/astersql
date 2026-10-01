@@ -238,22 +238,33 @@ impl<B: DdlSchemaBarrier, P: DdlJobPolicy> crate::job_worker::DurableJobExecutor
         let executed = std::sync::Arc::new(std::sync::Mutex::new(None));
         let completed = executed.clone();
         let limit = self.policy.error_limit();
-        let _encoded = session.with_transaction(Box::new(move |txn| {
-            let stage = txn.StageStatement().map_err(|e| e.to_string())?;
+        let _encoded = session.with_execution_context(Box::new(move |context| {
+            let mut stage = None;
+            context.with_transaction(&mut |txn| {
+                stage = Some(txn.StageStatement().map_err(|e| e.to_string())?);
+                if current.real_start_ts == 0 {
+                    current.real_start_ts = txn.StartTS();
+                }
+                Ok(Vec::new())
+            })?;
+            let stage = stage.ok_or("DDL transaction did not stage its action")?;
             if current.state != JobState::Rollingback {
                 current.state = JobState::Running;
             }
-            if current.real_start_ts == 0 {
-                current.real_start_ts = txn.StartTS()
-            }
-            let action = crate::persistent_actions::step(txn, &mut current);
+            let action = crate::persistent_actions::step(context, &mut current);
             match action {
                 Ok(version) => {
-                    txn.ReleaseStatement(stage).map_err(|e| e.to_string())?;
+                    context.with_transaction(&mut |txn| {
+                        txn.ReleaseStatement(stage).map_err(|e| e.to_string())?;
+                        Ok(Vec::new())
+                    })?;
                     current.last_schema_version = version;
                 }
                 Err(error) => {
-                    txn.CleanupStatement(stage).map_err(|e| e.to_string())?;
+                    context.with_transaction(&mut |txn| {
+                        txn.CleanupStatement(stage).map_err(|e| e.to_string())?;
+                        Ok(Vec::new())
+                    })?;
                     current.error = Some(error);
                     current.error_count += 1;
                     current.last_schema_version = 0;

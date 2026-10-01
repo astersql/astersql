@@ -80,6 +80,8 @@ pub(crate) use relational_value::{relational_compare, relational_window_value};
 mod durable_scheduler_test;
 #[cfg(test)]
 mod lifecycle_test;
+#[cfg(test)]
+mod normal_ddl_fixture;
 pub mod normal_ddl_service;
 #[cfg(test)]
 mod normal_ddl_test;

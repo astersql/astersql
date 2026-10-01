@@ -211,10 +211,25 @@ pub trait DurableJobSession {
     fn commit(&mut self) -> Result<(), String>;
     fn rollback(&mut self);
     fn with_transaction(&mut self, operation: TransactionOperation) -> Result<Vec<u8>, String>;
+    fn with_execution_context(&mut self, _: ExecutionOperation) -> Result<Vec<u8>, String> {
+        Err("DDL execution context unavailable".into())
+    }
 }
 
 pub type TransactionOperation =
     Box<dyn FnOnce(&mut dyn astersql_kv::Transaction) -> Result<Vec<u8>, String> + Send + 'static>;
+
+/// SQL and metadata access to the same worker session. Transaction callbacks
+/// release their borrow before SQL execution; handlers cannot open another session.
+pub trait JobExecutionContext {
+    fn query(&mut self, sql: &str, label: &str) -> Result<Vec<Vec<String>>, String>;
+    fn with_transaction(
+        &mut self,
+        operation: &mut dyn FnMut(&mut dyn astersql_kv::Transaction) -> Result<Vec<u8>, String>,
+    ) -> Result<Vec<u8>, String>;
+}
+pub type ExecutionOperation =
+    Box<dyn FnOnce(&mut dyn JobExecutionContext) -> Result<Vec<u8>, String> + Send + 'static>;
 
 /// The owner manager and scheduler cancellation must both permit every commit.
 pub trait JobLease {

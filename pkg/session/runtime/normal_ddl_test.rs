@@ -59,132 +59,7 @@ fn scheduler() -> JobScheduler {
         JobWorker::new(WorkerType::AddIndex),
     )
 }
-fn hex(b: &[u8]) -> String {
-    b.iter().map(|b| format!("{b:02x}")).collect()
-}
-fn hash(h: &[u8], f: &[u8]) -> astersql_kv::Key {
-    use astersql_util_codec::{EncodeBytes, EncodeUint};
-    astersql_kv::Key(EncodeBytes(
-        EncodeUint(EncodeBytes(vec![b'm'], h), b'h' as u64),
-        f,
-    ))
-}
-struct Fixture {
-    domain: Arc<astersql_domain::Domain>,
-    pool: Arc<SystemSessionPool>,
-    db: i64,
-    table: i64,
-}
-impl Fixture {
-    fn new() -> Self {
-        let (domain, _) = CreateAnalyzeSession().unwrap();
-        domain.set_global_system_variable("tidb_cdc_write_source", "9");
-        let pool = SystemSessionPool::new(domain.clone());
-        pool.acquire()
-            .unwrap()
-            .query("CREATE TABLE test.normal_ddl_target (id int primary key, payload varchar(40))")
-            .unwrap();
-        let db = domain
-            .info_schema()
-            .AllSchemas()
-            .into_iter()
-            .find(|s| s.name.lower == "test")
-            .unwrap()
-            .id;
-        let table = domain
-            .table_by_name("test", "normal_ddl_target")
-            .unwrap()
-            .ID;
-        // Seed non-empty, complete Go table metadata in the actual MVCC Store.
-        let mut txn = domain
-            .storage_handle()
-            .with_storage(|s| s.Begin(&[]))
-            .unwrap();
-        let info = domain.table_by_name("test", "normal_ddl_target").unwrap();
-        txn.Set(
-            hash(
-                format!("DB:{db}").as_bytes(),
-                format!("Table:{table}").as_bytes(),
-            ),
-            astersql_meta_model::EncodeTableInfo(&info).unwrap(),
-        )
-        .unwrap();
-        let dbinfo = astersql_meta_model::DBInfo {
-            ID: db,
-            Name: astersql_meta_model::ast::NewCIStr("test"),
-            State: astersql_meta_model::SchemaState::Public,
-            ..Default::default()
-        };
-        txn.Set(
-            hash(b"DBs", format!("DB:{db}").as_bytes()),
-            astersql_meta_model::EncodeDBInfo(&dbinfo).unwrap(),
-        )
-        .unwrap();
-        txn.Commit(&astersql_kv::Context::default()).unwrap();
-        Self {
-            domain,
-            pool,
-            db,
-            table,
-        }
-    }
-    fn insert(&self, id: i64, state: JobState) {
-        use astersql_ddl_jobsubmit::{
-            AlterTableModeTarget, SessionVariables, TableMode, build_alter_table_mode_job,
-            table_mode_args,
-        };
-        let (job, args, noop) = build_alter_table_mode_job(
-            SessionVariables {
-                cdc_write_source: 41,
-                sql_mode: 7,
-            },
-            AlterTableModeTarget {
-                current_mode: TableMode::Normal,
-                target_mode: TableMode::Import,
-                schema_id: self.db,
-                table_id: self.table,
-                schema_name: "test".into(),
-                table_name: "normal_ddl_target".into(),
-            },
-        )
-        .unwrap();
-        assert!(!noop);
-        let mut built = job.unwrap();
-        built.id = id;
-        let mut job = Job::decode(&built.encode(&table_mode_args(args.unwrap()))).unwrap();
-        job.state = state;
-        self.pool.acquire().unwrap().query(format!("INSERT INTO mysql.tidb_ddl_job (job_id, reorg, schema_ids, table_ids, job_meta, type, processing) VALUES ({id},0,'{}','{}',X'{}',75,0)",self.db,self.table,hex(&job.encode(false).unwrap()))).unwrap();
-    }
-    fn queue(&self, id: i64) -> Option<Job> {
-        let rows = self
-            .pool
-            .acquire()
-            .unwrap()
-            .query(format!(
-                "SELECT job_meta FROM mysql.tidb_ddl_job WHERE job_id={id}"
-            ))
-            .unwrap();
-        rows.first()
-            .map(|r| astersql_meta::decode_go_history_job(r[0].as_bytes()).unwrap())
-    }
-    fn reader(&self) -> astersql_meta::SnapshotReader {
-        let snapshot = self
-            .domain
-            .storage_handle()
-            .with_storage(|s| {
-                let v = s.CurrentVersion("global")?;
-                Ok::<_, astersql_kv::Error>(s.GetSnapshot(v))
-            })
-            .unwrap();
-        astersql_meta::SnapshotReader::new(snapshot)
-    }
-}
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        self.pool.close();
-        self.domain.close();
-    }
-}
+use super::normal_ddl_fixture::{Fixture, hash, hex};
 fn executor() -> NormalDdlExecutor<Barrier, Policy> {
     NormalDdlExecutor {
         barrier: Barrier {
@@ -383,6 +258,14 @@ struct RetiringSession<'a> {
     lease: &'a Lease,
 }
 impl DurableJobSession for RetiringSession<'_> {
+    fn with_execution_context(
+        &mut self,
+        operation: astersql_ddl::job_worker::ExecutionOperation,
+    ) -> Result<Vec<u8>, String> {
+        let output = self.inner.with_execution_context(operation)?;
+        self.lease.0.store(false, Ordering::Release);
+        Ok(output)
+    }
     fn query(&mut self, sql: &str, label: &str) -> Result<Vec<Vec<String>>, String> {
         self.inner.query(sql, label)
     }
@@ -2033,4 +1916,233 @@ fn normal_ddl_plan_user_mdl_real_internal_pool_preserves_go_restricted_bypass() 
     drop(lease);
     assert!(!internal.contains_internal_session(id));
     assert!(pool.acquire().is_err());
+}
+
+struct ContextExecutor {
+    pool: Arc<SystemSessionPool>,
+    conflict: bool,
+    fail: bool,
+    cancel: Option<Arc<AtomicBool>>,
+}
+impl DurableJobExecutor for ContextExecutor {
+    fn runnable(&mut self, _: &mut dyn DurableJobSession, _: &Job) -> Result<bool, String> {
+        Ok(true)
+    }
+    fn recover(&mut self, _: &Job, _: &dyn JobLease) -> Result<(), String> {
+        Ok(())
+    }
+    fn wait_synced(&mut self, _: &Job, _: i64, _: &dyn JobLease) -> Result<(), String> {
+        Ok(())
+    }
+    fn step(
+        &mut self,
+        session: &mut dyn DurableJobSession,
+        job: &mut Job,
+    ) -> Result<astersql_ddl::job_worker::DurableJobStep, String> {
+        let mut current = Job::decode(&job.encode(false).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        let pool = self.pool.clone();
+        let conflict = self.conflict;
+        let fail = self.fail;
+        let cancel = self.cancel.clone();
+        let bytes = session.with_execution_context(Box::new(move |context| {
+            current.state = JobState::Running;
+            let version = astersql_ddl::persistent_actions::step(context, &mut current)?;
+            context.query(&format!("INSERT INTO mysql.tidb_mdl_info (job_id, version, table_ids) VALUES ({}, {version}, '{}')", current.id, current.table_id), "context-dual-write")?;
+            // A different real SQL session cannot see either uncommitted write.
+            assert!(pool.acquire()?.query(format!("SELECT job_id FROM mysql.tidb_mdl_info WHERE job_id={}", current.id))?.is_empty());
+            if conflict {
+                let mut other = pool.acquire()?;
+                other.begin()?;
+                let db = current.schema_id;
+                let table = current.table_id;
+                other.with_transaction(Box::new(move |txn| {
+                    let mut meta = astersql_meta::TransactionMutator::new(txn);
+                    let mut info = meta.get_table(db, table)?.unwrap();
+                    info.Comment = "concurrent metadata".into();
+                    meta.update_table(db, &mut info)?;
+                    Ok(Vec::new())
+                }))?;
+                other.commit()?;
+            }
+            if let Some(owner) = cancel { owner.store(false, Ordering::Release); }
+            if fail { return Err("handler SQL failure".into()); }
+            current.encode(false).map_err(|e| e.to_string())
+        }))?;
+        *job = Job::decode(&bytes).map_err(|e| e.to_string())?;
+        Ok(astersql_ddl::job_worker::DurableJobStep {
+            schema_version: job.last_schema_version,
+            update_raw_args: false,
+            removed: false,
+        })
+    }
+}
+#[test]
+fn normal_ddl_plan_transaction_context_atomic_commit_rollback_and_retry() {
+    for failure in 0..4 {
+        let f = Fixture::new();
+        f.pool
+            .acquire()
+            .unwrap()
+            .query("INSERT INTO test.normal_ddl_target VALUES (1, 'existing row')")
+            .unwrap();
+        let id = 84001 + failure;
+        f.insert(id, JobState::Queueing);
+        let original = f.queue(id).unwrap().encode(false).unwrap();
+        let before = version(&f);
+        let owner = Arc::new(AtomicBool::new(true));
+        struct Owner(Arc<AtomicBool>);
+        impl JobLease for Owner {
+            fn is_owner(&self) -> bool {
+                self.0.load(Ordering::Acquire)
+            }
+            fn is_cancelled(&self) -> bool {
+                !self.is_owner()
+            }
+        }
+        let lease = Owner(owner.clone());
+        let mut executor = ContextExecutor {
+            pool: f.pool.clone(),
+            conflict: failure == 1,
+            fail: failure == 2,
+            cancel: (failure == 3).then_some(owner.clone()),
+        };
+        let mut session = f.pool.acquire().unwrap();
+        let result = scheduler().schedule_persisted(&mut session, &lease, &mut executor, 0);
+        if failure == 0 {
+            assert_eq!(result.unwrap(), 1);
+        } else {
+            let error = result.unwrap_err();
+            assert!(
+                if failure == 1 {
+                    error.contains("Write conflict")
+                        || error.contains("write conflict")
+                        || error.contains(astersql_kv::TxnRetryableMark)
+                } else if failure == 2 {
+                    error.contains("handler SQL failure")
+                } else {
+                    error.contains("owner") || error.contains("cancelled")
+                },
+                "{error}"
+            );
+            assert_eq!(mode(&f), astersql_meta_model::TableMode::TableModeNormal);
+            assert_eq!(version(&f), before);
+            assert_eq!(f.queue(id).unwrap().encode(false).unwrap(), original);
+            assert!(
+                f.pool
+                    .acquire()
+                    .unwrap()
+                    .query(format!(
+                        "SELECT job_id FROM mysql.tidb_mdl_info WHERE job_id={id}"
+                    ))
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(f.reader().get_history_ddl_job(id).unwrap().is_none());
+            // Retry re-reads the durable queue through the same worker session.
+            owner.store(true, Ordering::Release);
+            executor.conflict = false;
+            executor.fail = false;
+            executor.cancel = None;
+            assert_eq!(
+                scheduler()
+                    .schedule_persisted(&mut session, &lease, &mut executor, 0)
+                    .unwrap(),
+                1
+            );
+        }
+        assert_eq!(f.queue(id).unwrap().state, JobState::Done);
+        assert_eq!(mode(&f), astersql_meta_model::TableMode::TableModeImport);
+        assert_eq!(version(&f), before + 1);
+        assert_eq!(
+            f.pool
+                .acquire()
+                .unwrap()
+                .query(format!(
+                    "SELECT table_ids FROM mysql.tidb_mdl_info WHERE job_id={id}"
+                ))
+                .unwrap(),
+            vec![vec![f.table.to_string()]]
+        );
+        if failure == 1 {
+            assert_eq!(
+                f.reader()
+                    .get_table(f.db, f.table)
+                    .unwrap()
+                    .unwrap()
+                    .Comment,
+                "concurrent metadata"
+            );
+        }
+    }
+}
+
+#[test]
+fn normal_ddl_plan_transaction_context_statement_cleanup_and_boundaries() {
+    let f = Fixture::new();
+    f.insert(84010, JobState::Queueing);
+    let mut job = f.queue(84010).unwrap();
+    let before = version(&f);
+    let mut session = f.pool.acquire().unwrap();
+    assert!(
+        session
+            .with_execution_context(Box::new(|_| Ok(Vec::new())))
+            .unwrap_err()
+            .contains("active transaction required")
+    );
+    session.begin().unwrap();
+    session
+        .with_execution_context(Box::new(move |context| {
+            for sql in [
+                "COMMIT",
+                "ROLLBACK",
+                "BEGIN",
+                "SET autocommit=1",
+                "CREATE TABLE test.context_escape (id int)",
+                "SELECT 1; COMMIT",
+            ] {
+                assert!(
+                    context
+                        .query(sql, "invalid-boundary")
+                        .unwrap_err()
+                        .contains("transactional DML")
+                );
+            }
+            let mut stage = None;
+            context.with_transaction(&mut |txn| {
+                stage = Some(txn.StageStatement().map_err(|e| e.to_string())?);
+                Ok(Vec::new())
+            })?;
+            job.state = JobState::Running;
+            astersql_ddl::persistent_actions::step(context, &mut job)?;
+            let sql =
+                "INSERT INTO mysql.tidb_mdl_info (job_id, version, table_ids) VALUES (84010,1,'1')";
+            context.query(sql, "staged-write")?;
+            assert!(
+                context
+                    .query(sql, "duplicate-write")
+                    .unwrap_err()
+                    .contains("Duplicate")
+            );
+            context.with_transaction(&mut |txn| {
+                txn.CleanupStatement(stage.unwrap())
+                    .map_err(|e| e.to_string())?;
+                Ok(Vec::new())
+            })?;
+            Ok(Vec::new())
+        }))
+        .unwrap();
+    // Commit after discarding the failed action, as normal DDL persists job errors.
+    session.commit().unwrap();
+    assert_eq!(mode(&f), astersql_meta_model::TableMode::TableModeNormal);
+    assert_eq!(version(&f), before);
+    assert_eq!(f.queue(84010).unwrap().state, JobState::Queueing);
+    assert!(
+        f.pool
+            .acquire()
+            .unwrap()
+            .query("SELECT job_id FROM mysql.tidb_mdl_info WHERE job_id=84010")
+            .unwrap()
+            .is_empty()
+    );
 }

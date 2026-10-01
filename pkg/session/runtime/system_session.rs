@@ -882,7 +882,53 @@ impl jobsubmit::ServerState for JobSubmitServerState {
     }
 }
 
+struct ConcreteJobExecutionContext<'a>(&'a mut ConcreteSession);
+impl astersql_ddl::job_worker::JobExecutionContext for ConcreteJobExecutionContext<'_> {
+    fn query(&mut self, sql: &str, _: &str) -> Result<Vec<Vec<String>>, String> {
+        // A handler may read/write system rows, but transaction boundaries and
+        // implicit-commit DDL belong exclusively to the enclosing JobWorker.
+        let statements = super::parse(sql).map_err(|e| e.to_string())?;
+        if statements.len() != 1
+            || statements.iter().any(|statement| {
+                let node = statement.as_any();
+                !node.is::<super::ast::SelectStmt>()
+                    && !node.is::<super::ast::SetOprStmt>()
+                    && !node.is::<super::ast::InsertStmt>()
+                    && !node.is::<super::ast::UpdateStmt>()
+                    && !node.is::<super::ast::DeleteStmt>()
+            })
+        {
+            return Err("DDL execution context requires one transactional DML statement".into());
+        }
+        query(self.0, sql).map_err(|e| e.to_string())
+    }
+    fn with_transaction(
+        &mut self,
+        operation: &mut dyn FnMut(&mut dyn kv::Transaction) -> Result<Vec<u8>, String>,
+    ) -> Result<Vec<u8>, String> {
+        let mut state = self.0.state.borrow_mut();
+        let txn = state
+            .transaction
+            .as_mut()
+            .ok_or("active transaction required")?;
+        operation(txn.as_mut())
+    }
+}
+
 impl astersql_ddl::job_worker::DurableJobSession for SystemSessionLease {
+    fn with_execution_context(
+        &mut self,
+        operation: astersql_ddl::job_worker::ExecutionOperation,
+    ) -> Result<Vec<u8>, String> {
+        self.concrete()
+            .call(move |session| {
+                if session.state.borrow().transaction.is_none() {
+                    return Err(sys_error("active transaction required"));
+                }
+                operation(&mut ConcreteJobExecutionContext(session)).map_err(sys_error)
+            })
+            .map_err(|e| e.to_string())
+    }
     fn query(&mut self, sql: &str, label: &str) -> Result<Vec<Vec<String>>, String> {
         self.query_with_label(sql.to_owned(), label)
     }
