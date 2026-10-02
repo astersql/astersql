@@ -553,10 +553,16 @@ impl LocalMppCoordinator {
         self.stop_requested.store(false, Ordering::Release);
         let (sender, receiver) = mpsc::channel();
         self.response_receiver = Some(receiver);
-        self.active_workers = self.requests.len();
+        self.active_workers = 0;
 
         for (request_index, request) in self.requests.iter_mut().enumerate() {
+            // Execute and cancellation both require exclusive coordinator access.
+            // A task already cancelled must not be revived or dispatched.
+            if request.State != kv::MppTaskStates::MppTaskReady {
+                continue;
+            }
             request.State = kv::MppTaskStates::MppTaskRunning;
+            self.active_workers += 1;
             let request = request.clone();
             let context = context.clone();
             let transport = self.transport.clone();

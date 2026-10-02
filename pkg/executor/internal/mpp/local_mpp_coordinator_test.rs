@@ -212,3 +212,142 @@ fn test_zone_helper_try_quick_fill() {
             .is_none()
     );
 }
+
+#[derive(Default)]
+struct DispatchRaceTransport {
+    dispatched: std::sync::Mutex<Vec<i64>>,
+    cancelled_stores: std::sync::Mutex<Vec<HashMap<String, bool>>>,
+}
+
+impl crate::local_mpp_coordinator::CoordinatorTransport for DispatchRaceTransport {
+    fn Dispatch(
+        &self,
+        _: &astersql_kv::Context,
+        request: &astersql_kv::MPPDispatchRequest,
+    ) -> Result<
+        Option<Box<dyn crate::local_mpp_coordinator::CoordinatorResponseStream>>,
+        astersql_errors::SharedError,
+    > {
+        self.dispatched.lock().unwrap().push(request.ID);
+        Ok(None)
+    }
+
+    fn Cancel(
+        &self,
+        _: &astersql_kv::Context,
+        stores: HashMap<String, bool>,
+        _: &[astersql_kv::MPPDispatchRequest],
+    ) -> Result<(), astersql_errors::SharedError> {
+        self.cancelled_stores.lock().unwrap().push(stores);
+        Ok(())
+    }
+
+    fn CheckVisibility(&self, _: u64) -> Result<(), astersql_errors::SharedError> {
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct DispatchRaceMeta;
+
+impl astersql_kv::MPPTaskMeta for DispatchRaceMeta {
+    fn GetAddress(&self) -> String {
+        "tiflash:3930".to_owned()
+    }
+    fn CloneBox(&self) -> Box<dyn astersql_kv::MPPTaskMeta> {
+        Box::new(self.clone())
+    }
+}
+
+fn dispatch_race_coordinator(
+    transport: Arc<DispatchRaceTransport>,
+    state: astersql_kv::MppTaskStates,
+) -> crate::local_mpp_coordinator::LocalMppCoordinator {
+    let mut coordinator = crate::local_mpp_coordinator::new_local_mpp_coordinator(
+        transport,
+        Box::new(PhysicalExchangeSender::New(plan_context())),
+        None,
+        vec![10],
+        11,
+        astersql_kv::MPPQueryID::default(),
+        12,
+        "tidb:4000".to_owned(),
+        astersql_kv::MppVersionV2,
+        vec![astersql_kv::KeyRange::default()],
+        1,
+        Arc::new(crate::NoopMppReportSink),
+        std::time::Duration::from_millis(1),
+    );
+    coordinator.install_request(astersql_kv::MPPDispatchRequest {
+        ID: 1,
+        Meta: Some(Box::new(DispatchRaceMeta)),
+        State: state,
+        ..Default::default()
+    });
+    coordinator
+}
+
+#[test]
+fn test_dispatch_cancel_race_skips_non_ready_tasks() {
+    use astersql_kv::{MppCoordinator, MppTaskStates, Response};
+    for state in [
+        MppTaskStates::MppTaskCancelled,
+        MppTaskStates::MppTaskDone,
+        MppTaskStates::MppTaskRunning,
+    ] {
+        let transport = Arc::new(DispatchRaceTransport::default());
+        let mut coordinator = dispatch_race_coordinator(transport.clone(), state);
+        let context = astersql_kv::Context::todo();
+        coordinator.Execute(&context).unwrap();
+        assert!(coordinator.Next(&context).unwrap().is_none());
+        assert!(
+            transport.dispatched.lock().unwrap().is_empty(),
+            "state {state:?} was dispatched"
+        );
+        coordinator.Close().unwrap();
+    }
+}
+
+#[test]
+fn test_dispatch_cancel_race_dispatch_wins_includes_store() {
+    use astersql_kv::{MppCoordinator, MppTaskStates, Response};
+    let transport = Arc::new(DispatchRaceTransport::default());
+    let coordinator = std::sync::Mutex::new(dispatch_race_coordinator(
+        transport.clone(),
+        MppTaskStates::MppTaskReady,
+    ));
+    let mut guard = coordinator.lock().unwrap();
+    guard.Execute(&astersql_kv::Context::todo()).unwrap();
+    guard.Close().unwrap();
+    assert_eq!(*transport.dispatched.lock().unwrap(), vec![1]);
+    assert_eq!(
+        transport.cancelled_stores.lock().unwrap().as_slice(),
+        &[HashMap::from([("tiflash:3930".to_owned(), true)])]
+    );
+}
+
+#[test]
+fn test_dispatch_cancel_race_cancel_wins_under_coordinator_lock() {
+    use astersql_kv::{MppCoordinator, MppTaskStates, Response};
+    let transport = Arc::new(DispatchRaceTransport::default());
+    let coordinator = Arc::new(std::sync::Mutex::new(dispatch_race_coordinator(
+        transport.clone(),
+        MppTaskStates::MppTaskReady,
+    )));
+    let mut guard = coordinator.lock().unwrap();
+    let (started, waiting) = std::sync::mpsc::channel();
+    let dispatch_coordinator = coordinator.clone();
+    let dispatch = std::thread::spawn(move || {
+        started.send(()).unwrap();
+        dispatch_coordinator
+            .lock()
+            .unwrap()
+            .Execute(&astersql_kv::Context::todo())
+    });
+    waiting.recv().unwrap();
+    guard.Close().unwrap();
+    drop(guard);
+    assert!(dispatch.join().unwrap().is_err());
+    assert!(transport.dispatched.lock().unwrap().is_empty());
+    assert!(transport.cancelled_stores.lock().unwrap()[0].is_empty());
+}
