@@ -24,6 +24,45 @@ use std::time::{Duration, UNIX_EPOCH};
 use task_stmtsummary_v2::*;
 
 #[test]
+fn go_commit_59ca78807e_v2_unsigned_double_metrics() {
+    let context = ColumnContext::new("instance", chrono_tz::UTC);
+    let mut record = StmtRecord::default();
+    record.ExecCount = 2;
+    let large = 1_u64 << 63;
+    record.SumRocksdbDeleteSkippedCount = large;
+    record.SumRocksdbKeySkippedCount = large;
+    record.SumRocksdbBlockCacheHitCount = large;
+    record.SumRocksdbBlockReadCount = large;
+    record.SumRocksdbBlockReadByte = large;
+    record.SumAffectedRows = large;
+    for name in [
+        AvgRocksdbDeleteSkippedCountStr,
+        AvgRocksdbKeySkippedCountStr,
+        AvgRocksdbBlockCacheHitCountStr,
+        AvgRocksdbBlockReadCountStr,
+        AvgRocksdbBlockReadByteStr,
+        AvgAffectedRowsStr,
+    ] {
+        let datum = makeColumnFactories(&[column(name)])[0](&context, &record).into_datum();
+        assert_eq!(datum.GetFloat64(), large as f64 / 2.0, "{name}");
+    }
+    record.ExecCount = 1;
+    record.SumRocksdbBlockCacheHitCount = 60;
+    record.SumRocksdbBlockReadCount = 21103;
+    for (name, expected) in [
+        (AvgRocksdbBlockCacheHitCountStr, 60.0),
+        (AvgRocksdbBlockReadCountStr, 21103.0),
+    ] {
+        let datum = makeColumnFactories(&[column(name)])[0](&context, &record).into_datum();
+        assert_eq!(datum.GetFloat64(), expected, "{name}");
+    }
+    record.ExecCount = 0;
+    let datum =
+        makeColumnFactories(&[column(AvgAffectedRowsStr)])[0](&context, &record).into_datum();
+    assert_eq!(datum.GetFloat64(), 0.0);
+}
+
+#[test]
 fn go_merge_37_averages_all_unsigned_and_ia_columns() {
     let mut record = StmtRecord::default();
     record.ExecCount = 2;

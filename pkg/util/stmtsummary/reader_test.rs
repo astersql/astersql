@@ -3,6 +3,63 @@
 use crate::*;
 
 #[test]
+fn go_commit_59ca78807e_reader_double_metrics() {
+    let reader = NewStmtSummaryReader(None, true, Vec::new(), String::new(), chrono_tz::UTC);
+    let mut stats = stmtSummaryStats::default();
+    stats.execCount = 2;
+    stats.commitCount = 2;
+    let large = 1_u64 << 63;
+    stats.sumRocksdbDeleteSkippedCount = large;
+    stats.sumRocksdbKeySkippedCount = large;
+    stats.sumRocksdbBlockCacheHitCount = large;
+    stats.sumRocksdbBlockReadCount = large;
+    stats.sumRocksdbBlockReadByte = large;
+    stats.sumAffectedRows = large;
+    stats.sumWriteKeys = 246;
+    stats.sumWriteSize = 468;
+    stats.sumPrewriteRegionNum = 6;
+    stats.sumTxnRetry = 4;
+    let factories = columnValueFactoryMap();
+    for (name, expected) in [
+        (RocksdbDeleteSkippedCountStr, large as f64),
+        (AvgRocksdbDeleteSkippedCountStr, large as f64 / 2.0),
+        (RocksdbKeySkippedCountStr, large as f64),
+        (AvgRocksdbKeySkippedCountStr, large as f64 / 2.0),
+        (RocksdbBlockCacheHitCountStr, large as f64),
+        (AvgRocksdbBlockCacheHitCountStr, large as f64 / 2.0),
+        (RocksdbBlockReadCountStr, large as f64),
+        (AvgRocksdbBlockReadCountStr, large as f64 / 2.0),
+        (RocksdbBlockReadByteStr, large as f64),
+        (AvgRocksdbBlockReadByteStr, large as f64 / 2.0),
+        (WriteKeysStr, 246.0),
+        (AvgWriteKeysStr, 123.0),
+        (WriteSizeStr, 468.0),
+        (AvgWriteSizeStr, 234.0),
+        (PrewriteRegionsStr, 6.0),
+        (AvgPrewriteRegionsStr, 3.0),
+        (TxnRetryStr, 4.0),
+        (AvgTxnRetryStr, 2.0),
+        (AffectedRowsStr, large as f64),
+        (AvgAffectedRowsStr, large as f64 / 2.0),
+    ] {
+        assert_eq!(
+            factories[name](&reader, None, None, &stats)
+                .into_datum()
+                .GetFloat64(),
+            expected,
+            "{name}"
+        );
+    }
+    stats.execCount = 0;
+    assert_eq!(
+        factories[AvgRocksdbDeleteSkippedCountStr](&reader, None, None, &stats)
+            .into_datum()
+            .GetFloat64(),
+        0.0
+    );
+}
+
+#[test]
 fn go_merge_36_reader_columns_use_unsigned_float_and_execution_count() {
     let reader = NewStmtSummaryReader(None, true, Vec::new(), String::new(), chrono_tz::UTC);
     let mut stats = stmtSummaryStats::default();
