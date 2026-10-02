@@ -57,3 +57,18 @@ fn global_sort_uri_accepts_only_go_cloud_backends_with_a_bucket() {
         assert!(!is_supported_cloud_uri(uri), "expected rejected URI: {uri}");
     }
 }
+
+#[test]
+fn global_sort_missing_bucket_propagates_redacted_invalid_uri() {
+    let uri =
+        "s3:///path?access-key=secret-id&secret-access-key=secret-key&session-token=secret-token";
+    let error = super::precheck::validate_global_sort_uri(uri).unwrap_err();
+    let reason = "please specify the bucket for s3 in s3:///path?access-key=xxxxxx&secret-access-key=xxxxxx&session-token=xxxxxx";
+    let expected = astersql_util_dbterror_exeerrors::exeerrors::ErrLoadDataInvalidURI
+        .GenWithStackByArgs(&["cloud storage".into(), reason.into()])
+        .to_string();
+    assert_eq!(error, expected);
+    for secret in ["secret-id", "secret-key", "secret-token"] {
+        assert!(!error.contains(secret));
+    }
+}

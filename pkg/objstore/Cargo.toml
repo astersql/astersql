@@ -10,6 +10,7 @@ path = "lib.rs"
 doctest = false
 
 [dependencies]
+parser-ast = { package = "astersql-parser-ast", path = "../parser/ast" }
 anyhow = "1"
 base64 = "0.22"
 bytes = "1"

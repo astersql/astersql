@@ -147,11 +147,14 @@ impl ParsedURL {
         if self.scheme.is_empty() {
             return self.path.clone();
         }
-        let mut value = if self.host.is_empty() {
-            format!("{}:{}", self.scheme, self.path)
-        } else {
-            format!("{}://{}{}", self.scheme, self.host, self.path)
-        };
+        // Preserve an explicit empty authority, as Go url.URL.String does.
+        // Missing-bucket errors from ParseBackendFromURL must retain s3:///path.
+        let mut value =
+            if self.host.is_empty() && !self.original.starts_with(&format!("{}://", self.scheme)) {
+                format!("{}:{}", self.scheme, self.path)
+            } else {
+                format!("{}://{}{}", self.scheme, self.host, self.path)
+            };
         if !self.query.is_empty() {
             let query = url::form_urlencoded::Serializer::new(String::new())
                 .extend_pairs(
@@ -322,7 +325,8 @@ fn absolute_clean_path(path: &Path) -> Result<PathBuf> {
 fn require_bucket(url: &ParsedURL, raw_url: &str, provider: &str) -> Result<()> {
     if url.host.is_empty() {
         Err(anyhow!(
-            "please specify the bucket for {provider} in {raw_url}"
+            "please specify the bucket for {provider} in {}",
+            parser_ast::misc::redact_url(raw_url)
         ))
     } else {
         Ok(())

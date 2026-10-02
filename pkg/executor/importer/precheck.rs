@@ -152,14 +152,7 @@ impl LoadDataController {
         &self,
         service: &mut dyn ImportPrecheckService,
     ) -> Result<(), String> {
-        if !is_supported_cloud_uri(&self.Plan.CloudStorageURI) {
-            let scheme = self
-                .Plan
-                .CloudStorageURI
-                .split_once("://")
-                .map_or("", |(scheme, _)| scheme);
-            return Err(format!("unsupported cloud storage uri scheme: {scheme}"));
-        }
+        validate_global_sort_uri(&self.Plan.CloudStorageURI)?;
         service.CheckGlobalSortStorePrivileges(
             &self.Plan.CloudStorageURI,
             &[
@@ -169,6 +162,31 @@ impl LoadDataController {
             ],
         )
     }
+}
+
+/// Validate the URI before invoking the external permission boundary.
+pub(crate) fn validate_global_sort_uri(uri: &str) -> Result<(), String> {
+    let invalid_uri = |reason: String| {
+        astersql_util_dbterror_exeerrors::exeerrors::ErrLoadDataInvalidURI
+            .GenWithStackByArgs(&["cloud storage".into(), reason.into()])
+            .to_string()
+    };
+    let mut url = astersql_objstore::parse::ParseRawURL(uri)
+        .map_err(|error| invalid_uri(error.to_string()))?;
+    let backend = astersql_objstore::parse::ParseBackendFromURL(&mut url, None)
+        .map_err(|error| invalid_uri(error.to_string()))?;
+    if !matches!(
+        backend,
+        astersql_objstore::parse::StorageBackend::S3(_)
+            | astersql_objstore::parse::StorageBackend::Gcs(_)
+            | astersql_objstore::parse::StorageBackend::AzureBlobStorage(_)
+    ) {
+        return Err(format!(
+            "unsupported cloud storage uri scheme: {}",
+            url.scheme
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn check_import_size_limit(

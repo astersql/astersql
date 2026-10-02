@@ -644,3 +644,58 @@ fn test_s3_default_force_style_path() {
             .force_path_style
     );
 }
+
+#[test]
+fn missing_bucket_errors_redact_cloud_credentials() {
+    for (scheme, provider, query, redacted) in [
+        (
+            "s3",
+            "s3",
+            "access-key=secret-id&secret-access-key=secret-key&session-token=secret-token",
+            "access-key=xxxxxx&secret-access-key=xxxxxx&session-token=xxxxxx",
+        ),
+        (
+            "ks3",
+            "s3",
+            "access-key=secret-id&secret-access-key=secret-key&session-token=secret-token",
+            "access-key=xxxxxx&secret-access-key=xxxxxx&session-token=xxxxxx",
+        ),
+        (
+            "oss",
+            "s3",
+            "access-key=secret-id&secret-access-key=secret-key&session-token=secret-token",
+            "access-key=xxxxxx&secret-access-key=xxxxxx&session-token=xxxxxx",
+        ),
+        (
+            "azure",
+            "azblob",
+            "account-key=secret-key&encryption-key=secret-id&sas-token=secret-token",
+            "account-key=xxxxxx&encryption-key=xxxxxx&sas-token=xxxxxx",
+        ),
+        (
+            "azblob",
+            "azblob",
+            "account-key=secret-key&encryption-key=secret-id&sas-token=secret-token",
+            "account-key=xxxxxx&encryption-key=xxxxxx&sas-token=xxxxxx",
+        ),
+        ("gs", "gcs", "endpoint=public", "endpoint=public"),
+        ("gcs", "gcs", "endpoint=public", "endpoint=public"),
+    ] {
+        let raw = format!("{scheme}:///bucket/more/prefix/?{query}");
+        let expected = format!(
+            "please specify the bucket for {provider} in {scheme}:///bucket/more/prefix/?{redacted}"
+        );
+        let error = ParseBackend(&raw, Some(&BackendOptions::default()))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, expected);
+        let mut url = ParseRawURL(&raw).unwrap();
+        let error = crate::parse::ParseBackendFromURL(&mut url, None)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, expected);
+        for secret in ["secret-id", "secret-key", "secret-token"] {
+            assert!(!error.contains(secret));
+        }
+    }
+}

@@ -5869,6 +5869,7 @@ dependencies = [
  "anyhow",
  "astersql-objstore-objectio",
  "astersql-objstore-storeapi",
+ "astersql-parser-ast",
  "base64 0.22.1",
  "bytes",
  "chrono",
