@@ -73,3 +73,10 @@ mod retry_test;
 #[cfg(test)]
 #[path = "s3_flags_test.rs"]
 mod s3_flags_test;
+
+#[cfg(test)]
+#[path = "gcs_s3_test.rs"]
+mod gcs_s3_test;
+
+#[path = "gcs_s3_signer.rs"]
+mod gcs_s3_signer;

@@ -112,7 +112,8 @@ pub fn NewS3Storage(
     }
 
     // 官方 AWS S3 通过 API 探测真实 region；其他 provider 信任配置中的 Region。
-    let official_s3 = query.Provider.is_empty() || query.Provider == "aws";
+    let official_s3 =
+        (query.Provider.is_empty() || query.Provider == "aws") && !is_gcs_s3_compatible(&query);
     let mut detected_region = if official_s3 {
         // The region probe uses the same credentials and transport, but its
         // retry policy and classifiers are independent of S3Retryer.
@@ -204,6 +205,9 @@ fn build_api(
     // 与 Go 一致：endpoint 仅作用于 S3，避免影响 AssumeRole 的 STS 端点。
     if !options.Endpoint.is_empty() {
         builder = builder.endpoint_url(options.Endpoint.clone());
+    }
+    if is_gcs_s3_compatible(options) {
+        crate::gcs_s3_signer::configure_gcs_signer(&mut builder);
     }
     let client = aws_sdk_s3::Client::from_conf(builder.build());
     Arc::new(AwsS3Api::new(
@@ -370,4 +374,95 @@ pub fn createOssRAMCred() -> Result<Option<Credentials>> {
         None,
         "aliyun-ram-metadata",
     )))
+}
+
+/// Detect GCS by explicit provider or the XML API endpoint, independently of
+/// the AWS provider setting. An opaque/relative URL has no hostname in Go.
+pub fn is_gcs_s3_compatible(options: &backuppb::S3) -> bool {
+    // Go's EqualFold also accepts the Unicode long s (ſ), whose uppercase is S.
+    if options.Provider.to_uppercase() == "GCS" {
+        return true;
+    }
+    let endpoint = &options.Endpoint;
+    let (parse_endpoint, authority) = if let Some(rest) = endpoint.strip_prefix("//") {
+        (format!("http:{endpoint}"), rest)
+    } else if let Some((scheme, rest)) = endpoint.split_once(':') {
+        if !scheme
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphabetic)
+            || !scheme
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
+        {
+            return false;
+        }
+        let Some(authority) = rest.strip_prefix("//") else {
+            return false;
+        };
+        (endpoint.clone(), authority)
+    } else {
+        return false;
+    };
+    let authority = authority.split(['/', '?', '#']).next().unwrap_or_default();
+    // WHATWG URL parsing can manufacture a host from extra slashes or map
+    // fullwidth ASCII using IDNA. Go's url.Parse/Hostname does neither.
+    if authority.is_empty() || authority.contains('\\') {
+        return false;
+    }
+    let host_port = authority.rsplit('@').next().unwrap_or_default();
+    let (hostname, port) = host_port
+        .split_once(':')
+        .map_or((host_port, None), |(host, port)| (host, Some(port)));
+    if port.is_some_and(|value| !value.bytes().all(|b| b.is_ascii_digit())) {
+        return false;
+    }
+    // Go accepts any numeric port here; WHATWG parsing limits it to u16.
+    // Validate the URL with the port removed, retaining the original hostname.
+    let validation_endpoint = if port.is_some() {
+        let start = parse_endpoint.find("//").unwrap() + 2;
+        let end = start + authority.len();
+        format!(
+            "{}{}{}{}",
+            &parse_endpoint[..start],
+            &authority[..authority.len() - host_port.len()],
+            hostname,
+            &parse_endpoint[end..]
+        )
+    } else {
+        parse_endpoint
+    };
+    let path_and_authority = endpoint.split('?').next().unwrap_or_default();
+    let fragment = endpoint
+        .split_once('#')
+        .map_or("", |(_, fragment)| fragment);
+    if endpoint.bytes().any(|byte| byte < 0x20 || byte == 0x7f)
+        || !valid_url_escapes(path_and_authority)
+        || !valid_url_escapes(fragment)
+        || reqwest::Url::parse(&validation_endpoint).is_err()
+    {
+        return false;
+    }
+    let host = hostname.to_lowercase();
+    host == "storage.googleapis.com" || host.ends_with(".storage.googleapis.com")
+}
+
+fn valid_url_escapes(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len()
+                || !bytes[index + 1..index + 3]
+                    .iter()
+                    .all(u8::is_ascii_hexdigit)
+            {
+                return false;
+            }
+            index += 3;
+        } else {
+            index += 1;
+        }
+    }
+    true
 }
