@@ -173,6 +173,7 @@ impl ConflictSnapshot for FakeSnapshot {
 struct FakeTransaction {
     deleted: Arc<Mutex<Vec<Key>>>,
     pending: Vec<Key>,
+    commit_error: Option<String>,
 }
 
 impl ConflictTransaction for FakeTransaction {
@@ -181,6 +182,9 @@ impl ConflictTransaction for FakeTransaction {
         Ok(())
     }
     fn Commit(self: Box<Self>, _context: &ConflictContext) -> Result<(), String> {
+        if let Some(error) = self.commit_error {
+            return Err(error);
+        }
         self.deleted.lock().unwrap().extend(self.pending);
         Ok(())
     }
@@ -193,6 +197,7 @@ impl ConflictTransaction for FakeTransaction {
 struct FakeConflictStore {
     existing: HashMap<Vec<u8>, ValueEntry>,
     deleted: Arc<Mutex<Vec<Key>>>,
+    commit_error: Option<String>,
 }
 
 impl ConflictStore for FakeConflictStore {
@@ -211,6 +216,7 @@ impl ConflictStore for FakeConflictStore {
         Ok(Box::new(FakeTransaction {
             deleted: self.deleted.clone(),
             pending: Vec::new(),
+            commit_error: self.commit_error.clone(),
         }))
     }
     fn IsRetryableError(&self, _error: &str) -> bool {
@@ -254,6 +260,7 @@ fn do_test_deleter(kv_group: &str, conflicted_ids: &[i64], is_data_kv: bool) {
     let store: Arc<dyn ConflictStore> = Arc::new(FakeConflictStore {
         existing,
         deleted: deleted.clone(),
+        commit_error: None,
     });
     let traffic_recorder = Arc::new(FakeTrafficRecorder::default());
     let target_table = if is_data_kv {
@@ -329,4 +336,41 @@ fn test_deleter_data_kv_conflicts() {
 fn test_deleter_index_kv_conflicts() {
     let kv_group = astersql_ingestor_globalsort::kvgroup::IndexID2KVGroup(2);
     do_test_deleter(&kv_group, &[1, 2, 3, 4, 5], false);
+}
+
+#[test]
+fn go_commit_3268b6550f_propagates_commit_error_without_deleting_key() {
+    let key = row_key(1);
+    let deleted = Arc::new(Mutex::new(Vec::new()));
+    let store: Arc<dyn ConflictStore> = Arc::new(FakeConflictStore {
+        existing: HashMap::from([(
+            key.clone(),
+            ValueEntry {
+                Value: b"still-present".to_vec(),
+                CommitTs: 0,
+            },
+        )]),
+        deleted: deleted.clone(),
+        commit_error: Some("injected commit error".to_owned()),
+    });
+    let mut deleter = NewDeleter(
+        make_table(Vec::new()),
+        store,
+        DataKVGroup,
+        Box::new(FakeCodec),
+        None,
+        None,
+    );
+    let (sender, receiver) = mpsc::channel();
+    sender
+        .send(ConflictKVPair {
+            Key: Key(b"row:1".to_vec()),
+            Value: Vec::new(),
+        })
+        .unwrap();
+    drop(sender);
+
+    let error = deleter.Run(&conflict_context(), &receiver).unwrap_err();
+    assert_eq!(error, "injected commit error");
+    assert!(deleted.lock().unwrap().is_empty());
 }
