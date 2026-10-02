@@ -940,11 +940,11 @@ fn test_prepared_plan_cache_recovers_after_sync_timeout_fallback() {
     tk.MustExec("prepare st from 'select * from t where b > ?'", Vec::new());
     tk.MustExec("set @p = 2", Vec::new());
     tk.MustExec("execute st using @p", Vec::new());
-    tk.MustQuery("select @@last_plan_from_cache", Vec::new())
-        .Check(vec![vec!["0"]]);
+    tk.MustQuery("select @@warning_count, @@last_plan_from_cache", Vec::new())
+        .Check(vec![vec!["1", "0"]]);
     tk.MustExec("execute st using @p", Vec::new());
-    tk.MustQuery("select @@last_plan_from_cache", Vec::new())
-        .Check(vec![vec!["0"]]);
+    tk.MustQuery("select @@warning_count, @@last_plan_from_cache", Vec::new())
+        .Check(vec![vec!["1", "0"]]);
 
     domain
         .load_needed_histograms()

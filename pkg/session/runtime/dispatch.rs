@@ -3549,6 +3549,22 @@ impl ConcreteSession {
                 }
             }
         }
+        let planner_warnings = self
+            .session_vars
+            .StmtCtx
+            .GetWarnings()
+            .into_iter()
+            .map(|warning| {
+                warning
+                    .Err
+                    .map_or_else(|| warning.Level, |error| error.to_string())
+            })
+            .map(SessionWarning::warning)
+            .collect::<Vec<_>>();
+        self.state
+            .borrow_mut()
+            .current_warnings
+            .extend(planner_warnings);
         {
             let mut state = self.state.borrow_mut();
             state.skip_predicate_collection = false;
