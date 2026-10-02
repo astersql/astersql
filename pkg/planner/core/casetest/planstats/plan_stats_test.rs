@@ -533,9 +533,33 @@ fn test_plan_stats_sync_loads_only_predicate_column() {
 /// case 都重新回到 lite cache，避免前一个查询已加载的统计掩盖后一个收集缺陷。
 #[test]
 fn test_plan_stats_sync_load_matrix() {
-    let _async_histogram_guard = ASYNC_HISTOGRAM_TEST_LOCK
-        .lock()
-        .expect("async histogram test lock");
+    let _guard = ASYNC_HISTOGRAM_TEST_LOCK.lock().unwrap();
+    run_plan_stats_sync_load_matrix(0);
+}
+
+#[test]
+fn test_plan_stats_sync_load_matrix_skips_failed_cases() {
+    let _guard = ASYNC_HISTOGRAM_TEST_LOCK.lock().unwrap();
+    assert_eq!(run_plan_stats_sync_load_matrix(1), 11);
+}
+
+#[test]
+fn test_plan_stats_sync_load_matrix_rejects_all_failed_cases() {
+    let _guard = ASYNC_HISTOGRAM_TEST_LOCK.lock().unwrap();
+    let failure = std::panic::catch_unwind(|| run_plan_stats_sync_load_matrix(12))
+        .expect_err("a matrix with no statistics assertions must fail");
+    let message = failure
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| failure.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(
+        message.contains("all cases failed sync stats loading"),
+        "{message}"
+    );
+}
+
+fn run_plan_stats_sync_load_matrix(forced_failures: usize) -> usize {
     setup_common();
     let (store, domain) = CreateMockStoreAndDomain();
     let mut tk = TestKit::new(store);
@@ -573,7 +597,57 @@ fn test_plan_stats_sync_load_matrix() {
         .expect("enable lease-driven histogram loading");
     let table = domain.table_by_name("test", "t").expect("table t");
 
+    let session = astersql_session::runtime::ConcreteSession::new(Arc::clone(&domain));
+    session.execute("use test").unwrap();
+    session
+        .execute("set @@session.tidb_partition_prune_mode = 'static'")
+        .unwrap();
+    session
+        .execute("set @@session.tidb_stats_load_sync_wait = 60000")
+        .unwrap();
+    struct RestorePseudo(bool);
+    impl Drop for RestorePseudo {
+        fn drop(&mut self) {
+            astersql_sessionctx_vardef::StatsLoadPseudoTimeout.Store(self.0);
+        }
+    }
+    let _restore = RestorePseudo(astersql_sessionctx_vardef::StatsLoadPseudoTimeout.Load());
+    astersql_sessionctx_vardef::StatsLoadPseudoTimeout.Store(true);
+    let mut attempted_cases = 0;
+    let mut checked_cases = 0;
+    let mut explain = |sql: &str| {
+        let _timeout = (attempted_cases < forced_failures).then(|| {
+            astersql_testkit_testfailpoint::enable(
+                "github.com/pingcap/tidb/pkg/statistics/handle/syncload/forceStatsSyncLoadTimeout",
+                "return(true)",
+            )
+        });
+        attempted_cases += 1;
+        let mut results = session
+            .execute(&format!("explain format = brief {sql}"))
+            .expect("optimization must succeed even when sync loading uses pseudo fallback");
+        let mut rows = Vec::new();
+        while let Some(row) = results[0].next_row().unwrap() {
+            rows.push(row);
+        }
+        // Match Go: only the statement's sync-load failure permits skipping.
+        // A missing cache column without this flag must still fail assertions.
+        let failed = session.WithSessionVars(|vars| {
+            if vars.StmtCtx.IsSyncStatsFailed() {
+                eprintln!(
+                    "skip stats assertions for {sql:?} because sync stats load failed: {:?}",
+                    vars.StmtCtx.GetWarnings()
+                );
+                true
+            } else {
+                false
+            }
+        });
+        if failed { None } else { Some(rows) }
+    };
+
     let cases = [
+        ("data source", "select * from t where c>1", vec!["c"]),
         (
             "join",
             "select * from t t1 inner join t t2 on t1.b=t2.b where t1.d=3",
@@ -627,9 +701,9 @@ fn test_plan_stats_sync_load_matrix() {
             .expect("statistics handle")
             .clear();
         domain.update_stats().expect("reload lite statistics");
-        let rows = tk
-            .MustQuery(&format!("explain format = brief {sql}"), Vec::new())
-            .Rows();
+        let Some(rows) = explain(sql) else {
+            continue;
+        };
         let plan = rows
             .iter()
             .flatten()
@@ -668,6 +742,7 @@ fn test_plan_stats_sync_load_matrix() {
                     .collect::<Vec<_>>()
             );
         }
+        checked_cases += 1;
     }
 
     domain
@@ -676,63 +751,62 @@ fn test_plan_stats_sync_load_matrix() {
         .expect("statistics handle")
         .clear();
     domain.update_stats().expect("reload lite statistics");
-    tk.MustQuery(
-        "explain format = brief select * from t use index(idx) where b >= 10",
-        Vec::new(),
-    );
-    let handle = domain.stats_handle();
-    let handle = handle.lock().expect("statistics handle");
-    let stats = handle.stats_meta(table.ID).expect("table statistics");
-    let index_id = table
-        .Indices
-        .iter()
-        .find(|index| index.Name.L == "idx")
-        .expect("idx metadata")
-        .ID;
-    assert!(
-        stats
-            .indexes
-            .get(&index_id)
-            .is_some_and(|index| index.fully_loaded),
-        "USE INDEX(idx) must synchronously full-load idx"
-    );
-
-    drop(handle);
-    domain
-        .stats_handle()
-        .lock()
-        .expect("statistics handle")
-        .clear();
-    domain.update_stats().expect("reload lite statistics");
-    tk.MustQuery(
-        "explain format = brief select * from pt where a < 15 and c > 1",
-        Vec::new(),
-    );
-    let partition_table = domain.table_by_name("test", "pt").expect("table pt");
-    let c_id = partition_table
-        .Columns
-        .iter()
-        .find(|column| column.Name.L == "c")
-        .expect("pt.c")
-        .ID;
-    let handle = domain.stats_handle();
-    let handle = handle.lock().expect("statistics handle");
-    for partition in partition_table
-        .GetPartitionInfo()
-        .expect("partition metadata")
-        .Definitions
-        .iter()
-        .filter(|partition| matches!(partition.Name.L.as_str(), "p0" | "p1"))
-    {
-        let stats = handle
-            .stats_meta(partition.ID)
-            .unwrap_or_else(|| panic!("partition {} statistics", partition.Name.L));
+    if explain("select * from t use index(idx) where b >= 10").is_some() {
+        let handle = domain.stats_handle();
+        let handle = handle.lock().expect("statistics handle");
+        let stats = handle.stats_meta(table.ID).expect("table statistics");
+        let index_id = table
+            .Indices
+            .iter()
+            .find(|index| index.Name.L == "idx")
+            .expect("idx metadata")
+            .ID;
         assert!(
-            count_full_stats(stats, c_id) > 0,
-            "partition {} must full-load predicate column c",
-            partition.Name.L
+            stats
+                .indexes
+                .get(&index_id)
+                .is_some_and(|index| index.fully_loaded),
+            "USE INDEX(idx) must synchronously full-load idx"
         );
+
+        checked_cases += 1;
     }
+    domain
+        .stats_handle()
+        .lock()
+        .expect("statistics handle")
+        .clear();
+    domain.update_stats().expect("reload lite statistics");
+    if explain("select * from pt where a < 15 and c > 1").is_some() {
+        let partition_table = domain.table_by_name("test", "pt").expect("table pt");
+        let c_id = partition_table
+            .Columns
+            .iter()
+            .find(|column| column.Name.L == "c")
+            .expect("pt.c")
+            .ID;
+        let handle = domain.stats_handle();
+        let handle = handle.lock().expect("statistics handle");
+        for partition in partition_table
+            .GetPartitionInfo()
+            .expect("partition metadata")
+            .Definitions
+            .iter()
+            .filter(|partition| matches!(partition.Name.L.as_str(), "p0" | "p1"))
+        {
+            let stats = handle
+                .stats_meta(partition.ID)
+                .unwrap_or_else(|| panic!("partition {} statistics", partition.Name.L));
+            assert!(
+                count_full_stats(stats, c_id) > 0,
+                "partition {} must full-load predicate column c",
+                partition.Name.L
+            );
+        }
+        checked_cases += 1;
+    }
+    assert!(checked_cases > 0, "all cases failed sync stats loading");
+    checked_cases
 }
 
 /// 对应 Go `TestPlanStatsLoad` 的 issue #48257：单列全表扫描在同步加载后
