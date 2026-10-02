@@ -212,3 +212,250 @@ fn index_range_fallback_preserves_non_index_residuals() {
         "c must remain a table filter: {table_column_ids:?}"
     );
 }
+
+#[test]
+fn common_handle_group_ndv_uses_only_declared_index_columns() {
+    let mut source = DataSource::default();
+    source.TableStats.RowCount = 100.0;
+    source.AskedColumnGroup = vec![vec![planner_column(1, 101)]];
+    let mut histogram = statistics::PseudoHistColl(1, true);
+    let mut index = statistics::Index {
+        CMSketch: None,
+        TopN: None,
+        FMSketch: None,
+        Info: None,
+        Histogram: statistics::NewHistogram(
+            9,
+            7,
+            0,
+            0,
+            &expression::types::NewFieldType(mysql::r#type::TypeLonglong),
+            0,
+            0,
+        ),
+        StatsLoadedStatus: statistics::NewStatsFullLoadStatus(),
+        PhysicalID: 1,
+        StatsVer: 2,
+    };
+    index.Info = Some(statistics::IndexInfo {
+        ID: 9,
+        Columns: vec![statistics::IndexColumnInfo::default()],
+        ..Default::default()
+    });
+    index.Histogram.NDV = 7;
+    index.StatsLoadedStatus = statistics::NewStatsFullLoadStatus();
+    histogram.Indices.insert(9, Box::new(index));
+    for mapped in [vec![101, 102, 103], vec![101, 102], vec![101]] {
+        histogram.Idx2ColUniqueIDs.insert(9, mapped);
+        source.TableStats.HistColl = Some(Arc::new(histogram.clone()));
+        let (stats, _) = source.DeriveStats(true).unwrap();
+        assert_eq!(source.TableStats.GroupNDVs, stats.GroupNDVs);
+        assert_eq!(
+            stats.GroupNDVs,
+            vec![property::GroupNDV {
+                Cols: vec![101],
+                NDV: 7.0
+            }]
+        );
+    }
+    for mapped in [vec![], vec![999, 102, 103]] {
+        histogram.Idx2ColUniqueIDs.insert(9, mapped);
+        source.TableStats.HistColl = Some(Arc::new(histogram.clone()));
+        assert!(source.DeriveStats(true).unwrap().0.GroupNDVs.is_empty());
+    }
+    histogram.Idx2ColUniqueIDs.insert(9, vec![101, 102, 103]);
+    histogram.Indices.get_mut(&9).unwrap().StatsLoadedStatus =
+        statistics::NewStatsAllEvictedStatus();
+    source.TableStats.HistColl = Some(Arc::new(histogram));
+    assert!(source.DeriveStats(true).unwrap().0.GroupNDVs.is_empty());
+}
+
+#[test]
+fn common_handle_suffix_updates_histogram_column_mapping_once() {
+    let context: base::ContextRef = Arc::new(RangeTestContext {
+        next_id: AtomicI32::new(0),
+        vars: planctx::variable::SessionVars::default(),
+        expr: exprstatic::NewExprContext(Vec::new()),
+        ranger: base::RangerContext {
+            TypeCtx: expression::types::DefaultStmtNoWarningContext.clone(),
+            ErrCtx: expression::errctx::StrictNoWarningContext.clone(),
+            ExprCtx: Arc::new(exprstatic::NewExprContext(Vec::new())),
+            RangeFallbackHandler: None,
+            PlanCacheTracker: None,
+            OptimizerFixControl: Default::default(),
+            UseCache: false,
+            RegardNULLAsPoint: true,
+            OptPrefixIndexSingleScan: false,
+        },
+        usage: base::BuiltinFunctionUsageCounter::default(),
+    });
+    let columns = vec![
+        planner_column(1, 101),
+        planner_column(2, 102),
+        planner_column(3, 103),
+    ];
+    let mut source = DataSource::default().Init(context, 0);
+    source.TableInfo.IsCommonHandle = true;
+    source.TableInfo.CommonHandleVersion = 1;
+    source.TableInfo.Columns = (1..=3)
+        .map(|id| model::ColumnInfo::New(id, parser_ast::NewCIStr(format!("c{id}"))))
+        .collect();
+    source
+        .LogicalSchemaProducer
+        .SetSchema(expression::NewSchema(columns.clone()));
+    source.TblCols = columns.clone();
+    source.CommonHandleCols = columns[1..].to_vec();
+    source.CommonHandleLens = vec![-1, -1];
+    source.PossibleAccessPaths = vec![planner_util::AccessPath {
+        Index: Some(model::IndexInfo {
+            ID: 9,
+            Columns: vec![model::IndexColumn {
+                Offset: 0,
+                Length: -1,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    }];
+    source.TableStats.RowCount = 5.0;
+    for (mapped, expected) in [
+        (vec![101], vec![101, 102, 103]),
+        (vec![101, 102, 103], vec![101, 102, 103]),
+        (vec![], vec![]),
+    ] {
+        let mut histogram = statistics::PseudoHistColl(1, true);
+        histogram.Idx2ColUniqueIDs.insert(9, mapped);
+        source.TableStats.HistColl = Some(Arc::new(histogram));
+        source.deriveAccessPathsFromPredicates().unwrap();
+        assert_eq!(source.PossibleAccessPaths[0].IdxCols.len(), 3);
+        assert_eq!(
+            source.PossibleAccessPaths[0].FullIdxColLens,
+            vec![-1, -1, -1]
+        );
+        let histogram = source
+            .TableStats
+            .HistColl
+            .as_ref()
+            .unwrap()
+            .downcast_ref::<statistics::HistColl>()
+            .unwrap();
+        assert_eq!(histogram.Idx2ColUniqueIDs[&9], expected);
+    }
+}
+
+#[test]
+fn common_handle_suffix_respects_physical_key_layout_guards() {
+    let context: base::ContextRef = Arc::new(RangeTestContext {
+        next_id: AtomicI32::new(0),
+        vars: planctx::variable::SessionVars::default(),
+        expr: exprstatic::NewExprContext(Vec::new()),
+        ranger: base::RangerContext {
+            TypeCtx: expression::types::DefaultStmtNoWarningContext.clone(),
+            ErrCtx: expression::errctx::StrictNoWarningContext.clone(),
+            ExprCtx: Arc::new(exprstatic::NewExprContext(Vec::new())),
+            RangeFallbackHandler: None,
+            PlanCacheTracker: None,
+            OptimizerFixControl: Default::default(),
+            UseCache: false,
+            RegardNULLAsPoint: true,
+            OptPrefixIndexSingleScan: false,
+        },
+        usage: base::BuiltinFunctionUsageCounter::default(),
+    });
+    for guard in [
+        "plain",
+        "non_clustered",
+        "empty",
+        "lens",
+        "unique",
+        "primary",
+        "global",
+        "mv",
+        "columnar",
+        "overlap",
+        "unresolved",
+        "v0_string",
+        "v0_binary",
+    ] {
+        let columns = vec![
+            planner_column(1, 101),
+            planner_column(2, 102),
+            planner_column(3, 103),
+        ];
+        let mut source = DataSource::default().Init(context.clone(), 0);
+        source.TableInfo.IsCommonHandle = guard != "non_clustered";
+        source.TableInfo.CommonHandleVersion = if guard.starts_with("v0") { 0 } else { 1 };
+        source.TableInfo.Columns = (1..=3)
+            .map(|id| model::ColumnInfo::New(id, parser_ast::NewCIStr(format!("c{id}"))))
+            .collect();
+        source
+            .LogicalSchemaProducer
+            .SetSchema(expression::NewSchema(columns.clone()));
+        source.TblCols = columns.clone();
+        source.CommonHandleCols = if guard == "empty" {
+            vec![]
+        } else {
+            columns[1..].to_vec()
+        };
+        source.CommonHandleLens = if guard == "lens" {
+            vec![-1]
+        } else {
+            vec![-1, -1]
+        };
+        if guard.starts_with("v0") {
+            let mut field = expression::types::NewFieldType(mysql::r#type::TypeVarchar);
+            if guard == "v0_binary" {
+                field.AddFlag(mysql::r#type::BinaryFlag);
+            }
+            source.CommonHandleCols[0].RetType = Some(*field);
+        }
+        let mut index = model::IndexInfo {
+            ID: 9,
+            Columns: vec![model::IndexColumn {
+                Offset: 0,
+                Length: -1,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        index.Unique = guard == "unique";
+        index.Primary = guard == "primary";
+        index.Global = guard == "global";
+        index.MVIndex = guard == "mv";
+        if guard == "columnar" {
+            index.InvertedInfo = Some(model::InvertedIndexInfo::default());
+        }
+        if guard == "overlap" {
+            index.Columns.push(model::IndexColumn {
+                Offset: 1,
+                Length: -1,
+                ..Default::default()
+            });
+        }
+        if guard == "unresolved" {
+            index.Columns.push(model::IndexColumn {
+                Offset: 99,
+                Length: -1,
+                ..Default::default()
+            });
+        }
+        source.PossibleAccessPaths = vec![planner_util::AccessPath {
+            Index: Some(index),
+            ..Default::default()
+        }];
+        source.TableStats.RowCount = 5.0;
+        source.deriveAccessPathsFromPredicates().unwrap();
+        let expected = match guard {
+            "plain" | "v0_binary" => 3,
+            "v0_string" if !expression::collate::NewCollationEnabled() => 3,
+            "overlap" => 2,
+            _ => 1,
+        };
+        assert_eq!(
+            source.PossibleAccessPaths[0].IdxCols.len(),
+            expected,
+            "{guard}"
+        );
+    }
+}

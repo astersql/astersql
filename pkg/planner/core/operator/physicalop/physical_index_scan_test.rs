@@ -256,3 +256,43 @@ fn init_schema_preserves_prebuilt_index_columns_like_go() {
     assert_eq!(schema.Columns[0].UniqueID, 10);
     assert_eq!(schema.Columns[1].UniqueID, 20);
 }
+
+#[test]
+fn common_handle_schema_keeps_exact_physical_suffix() {
+    let column = |id| expression::Column::new(expression::types::FieldType::default(), id, id, 0);
+    for (declared, prebuilt, expected) in [
+        (vec![1], vec![1, 2, 3], vec![1, 2, 3]),
+        (vec![1], vec![1], vec![1, 2, 3]),
+        (vec![1, 2], vec![1, 2], vec![1, 2, 2, 3]),
+    ] {
+        let mut scan = PhysicalIndexScan::New(context());
+        scan.Table = Some(model::TableInfo {
+            IsCommonHandle: true,
+            ..Default::default()
+        });
+        scan.Index = Some(model::IndexInfo {
+            Columns: declared
+                .iter()
+                .map(|_| model::IndexColumn::default())
+                .collect(),
+            ..Default::default()
+        });
+        scan.IdxCols = prebuilt.into_iter().map(column).collect();
+        let supplied = declared
+            .into_iter()
+            .chain([2, 3])
+            .map(|id| Some(column(id)))
+            .collect::<Vec<_>>();
+        scan.InitSchema(&supplied, false);
+        assert_eq!(
+            scan.PhysicalSchemaProducer
+                .SchemaRef()
+                .unwrap()
+                .Columns
+                .iter()
+                .map(|column| column.ID)
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
+}

@@ -586,6 +586,7 @@ impl DataSource {
             .map(|handle| handle.IterColumns().cloned().collect::<Vec<_>>())
             .unwrap_or_default();
 
+        let mut appended_common_handles = Vec::new();
         for path in &mut self.PossibleAccessPaths {
             if path.IsTablePath() {
                 let Some(handle) = handle_column.as_ref() else {
@@ -756,6 +757,14 @@ impl DataSource {
                             .any(|column| column.UniqueID == handle.UniqueID)
                     });
                 if append_common_handle {
+                    appended_common_handles.push((
+                        index.ID,
+                        index.Columns.len(),
+                        self.CommonHandleCols
+                            .iter()
+                            .map(|column| column.UniqueID)
+                            .collect::<Vec<_>>(),
+                    ));
                     index_columns.extend(self.CommonHandleCols.iter().map(Column::Clone));
                     index_lengths.extend(self.CommonHandleLens.iter().map(|length| *length as i32));
                 } else if self.TableInfo.PKIsHandle
@@ -1125,6 +1134,33 @@ impl DataSource {
             }
             self.PossibleAccessPaths.extend(index_merge_paths);
         }
+        if !appended_common_handles.is_empty()
+            && let Some(histogram) = self
+                .TableStats
+                .HistColl
+                .as_deref()
+                .and_then(|histogram| histogram.downcast_ref::<statistics::HistColl>())
+        {
+            appended_common_handles.retain(|(id, count, _)| {
+                histogram
+                    .Idx2ColUniqueIDs
+                    .get(id)
+                    .is_some_and(|mapped| mapped.len() == *count)
+            });
+            if !appended_common_handles.is_empty() {
+                // The histogram is shared as an opaque Arc; publish a new
+                // snapshot rather than mutate another plan's statistics.
+                let mut updated = histogram.Copy();
+                for (index_id, _, handle_ids) in appended_common_handles {
+                    updated
+                        .Idx2ColUniqueIDs
+                        .get_mut(&index_id)
+                        .unwrap()
+                        .extend(handle_ids);
+                }
+                self.TableStats.HistColl = Some(std::sync::Arc::new(updated));
+            }
+        }
         self.AllPossibleAccessPaths = self.PossibleAccessPaths.clone();
         Ok(())
     }
@@ -1324,6 +1360,58 @@ impl DataSource {
         self.PushedDownConds = self.AllConds.clone();
     }
 
+    // Index histograms describe the declared key, even when range construction
+    // has appended several common-handle columns to its column-ID mapping.
+    fn getGroupNDVs(&self) -> Vec<property::GroupNDV> {
+        let mut ndvs = Vec::new();
+        if self.AskedColumnGroup.is_empty() {
+            return ndvs;
+        }
+        let Some(histogram) = self
+            .TableStats
+            .HistColl
+            .as_deref()
+            .and_then(|histogram| histogram.downcast_ref::<statistics::HistColl>())
+        else {
+            return ndvs;
+        };
+        histogram.ForEachIndexImmutable(|id, index| {
+            let Some(info) = index.Info.as_ref() else {
+                return false;
+            };
+            let mapped = histogram
+                .Idx2ColUniqueIDs
+                .get(&id)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let count = info.Columns.len();
+            if mapped.len() < count {
+                return false;
+            }
+            let mut columns = mapped[..count].to_vec();
+            columns.sort_unstable();
+            for group in &self.AskedColumnGroup {
+                if group.len() != count {
+                    return false;
+                }
+                if group
+                    .iter()
+                    .map(|column| column.UniqueID)
+                    .eq(columns.iter().copied())
+                    && index.IsEssentialStatsLoaded()
+                {
+                    ndvs.push(property::GroupNDV {
+                        Cols: columns,
+                        NDV: index.NDV as f64,
+                    });
+                    return true;
+                }
+            }
+            false
+        });
+        ndvs
+    }
+
     /// 推导统计：以 Cardinality 的直方图/伪统计选择率缩放行数与 NDV。
     pub fn DeriveStats(&mut self, reload: bool) -> Result<(StatsInfo, bool)> {
         self.deriveAccessPathsFromPredicates()?;
@@ -1337,6 +1425,7 @@ impl DataSource {
         {
             return Ok((stats.clone(), false));
         }
+        self.TableStats.GroupNDVs = self.getGroupNDVs();
         let mut stats = self.TableStats.clone();
         if !self.AllConds.is_empty() && stats.RowCount > 0.0 {
             let context = self

@@ -190,7 +190,7 @@ impl PhysicalIndexScan {
             }
             self.NeedCommonHandle = table.IsCommonHandle;
 
-            if self.NeedCommonHandle {
+            if self.NeedCommonHandle && self.IdxCols.len() <= index.Columns.len() {
                 columns.extend(
                     index_columns
                         .iter()

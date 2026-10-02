@@ -4331,3 +4331,252 @@ pub fn test_issue66619() {
         )));
     }
 }
+
+#[test]
+fn common_handle_secondary_index_range_planning() {
+    use expression::model;
+    let index_column = |name: &str, offset, length| model::IndexColumn {
+        Name: crate::ast::NewCIStr(name),
+        Offset: offset,
+        Length: length,
+        ..Default::default()
+    };
+    for kind in ["integer", "string", "ci", "prefix", "decimal"] {
+        let composite = matches!(kind, "integer" | "ci" | "prefix");
+        let pk_type = match kind {
+            "string" | "ci" | "prefix" => expression::mysql::TypeVarchar,
+            "decimal" => expression::mysql::TypeNewDecimal,
+            _ => expression::mysql::TypeLonglong,
+        };
+        let mut columns = ["tenant", "seq", "a", "b", "c"]
+            .iter()
+            .enumerate()
+            .map(|(offset, name)| {
+                let mut field = expression::types::NewFieldType(if offset == 0 {
+                    pk_type
+                } else {
+                    expression::mysql::TypeLonglong
+                });
+                field.SetFlen(64);
+                if kind == "decimal" && offset == 0 {
+                    field.SetDecimal(2);
+                }
+                if kind == "ci" && offset == 0 {
+                    field.SetCharset("utf8mb4".to_owned());
+                    field.SetCollate("utf8mb4_general_ci".to_owned());
+                }
+                model::ColumnInfo {
+                    ID: offset as i64 + 1,
+                    Name: crate::ast::NewCIStr(name),
+                    Offset: offset as isize,
+                    State: model::StatePublic,
+                    FieldType: *field,
+                    ..Default::default()
+                }
+            })
+            .collect::<Vec<_>>();
+        for column in columns.iter_mut().take(if composite { 2 } else { 1 }) {
+            column
+                .FieldType
+                .AddFlag(expression::mysql::PriKeyFlag | expression::mysql::NotNullFlag);
+        }
+        let mut primary = vec![index_column(
+            "tenant",
+            0,
+            if kind == "prefix" { 2 } else { -1 },
+        )];
+        if composite {
+            primary.push(index_column("seq", 1, -1));
+        }
+        let table = Arc::new(model::TableInfo {
+            ID: 7001,
+            Name: crate::ast::NewCIStr("t_chr"),
+            Columns: columns,
+            IsCommonHandle: true,
+            CommonHandleVersion: 1,
+            Indices: vec![
+                model::IndexInfo {
+                    ID: 1,
+                    Name: crate::ast::NewCIStr("PRIMARY"),
+                    Columns: primary,
+                    Primary: true,
+                    Unique: true,
+                    State: model::StatePublic,
+                    ..Default::default()
+                },
+                model::IndexInfo {
+                    ID: 2,
+                    Name: crate::ast::NewCIStr("ia"),
+                    Columns: vec![index_column("a", 2, -1)],
+                    State: model::StatePublic,
+                    ..Default::default()
+                },
+                model::IndexInfo {
+                    ID: 3,
+                    Name: crate::ast::NewCIStr("ia_overlap"),
+                    Columns: vec![index_column("a", 2, -1), index_column("tenant", 0, -1)],
+                    State: model::StatePublic,
+                    ..Default::default()
+                },
+                model::IndexInfo {
+                    ID: 4,
+                    Name: crate::ast::NewCIStr("ub"),
+                    Columns: vec![index_column("b", 3, -1)],
+                    Unique: true,
+                    State: model::StatePublic,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        });
+        let schema = infoschema_dependency::infoschema::MockInfoSchema(vec![
+            infoschema_dependency::infoschema::TableInfo {
+                id: table.ID,
+                name: infoschema_dependency::infoschema::CiString::new("t_chr"),
+                columns: table
+                    .Columns
+                    .iter()
+                    .map(|column| infoschema_dependency::infoschema::ColumnInfo {
+                        id: column.ID,
+                        name: infoschema_dependency::infoschema::CiString::new(&column.Name.O),
+                        ..Default::default()
+                    })
+                    .collect(),
+                model_meta: Some(table),
+                ..Default::default()
+            },
+        ]);
+        let context =
+            integration_plan_context(&[kv_dependency::StoreType::TiKV], "tikv", false, false);
+        let cases: Vec<(&str, &str, &str)> = match kind {
+            "integer" => vec![
+                (
+                    "*",
+                    "use index(ia) where a=10 and tenant=2",
+                    "range:[10 2,10 2]",
+                ),
+                (
+                    "*",
+                    "use index(ia) where a=10 and tenant=1 and seq>100",
+                    "range:(10 1 100,10 1 +inf]",
+                ),
+                (
+                    "*",
+                    "use index(ia) where a=10 and tenant>1",
+                    "range:(10 1,10 +inf]",
+                ),
+                (
+                    "*",
+                    "use index(ia) where a in (10,20) and tenant=2",
+                    "range:[10 2,10 2], [20 2,20 2]",
+                ),
+                ("*", "use index(ia) where a=10 and seq=100", "range:[10,10]"),
+                (
+                    "*",
+                    "use index(ia_overlap) where a=10 and tenant=1 and seq>100",
+                    "range:[10 1,10 1]",
+                ),
+                (
+                    "tenant,seq,a",
+                    "use index(ia) where a=10 and tenant=2",
+                    "range:[10 2,10 2]",
+                ),
+            ],
+            "string" => vec![
+                (
+                    "*",
+                    "use index(ia) where a=10 and tenant='u2'",
+                    r#"range:[10 "u2",10 "u2"]"#,
+                ),
+                (
+                    "*",
+                    "use index(ia) where a=10 and tenant>'u1'",
+                    r#"range:(10 "u1",10 +inf]"#,
+                ),
+                (
+                    "tenant,a",
+                    "use index(ia) where a=10 and tenant='u2'",
+                    r#"range:[10 "u2",10 "u2"]"#,
+                ),
+            ],
+            "decimal" => vec![("*", "use index(ia) where a=10 and tenant=2.50", "")],
+            "ci" => vec![
+                ("*", "use index(ia) where a=10 and tenant='AbC'", ""),
+                (
+                    "*",
+                    "use index(ia) where a=10 and tenant='abc' and seq>=2",
+                    "",
+                ),
+            ],
+            _ => vec![
+                ("*", "use index(ia) where a=0 and tenant='abc'", ""),
+                (
+                    "*",
+                    "use index(ia) where a=0 and tenant='abz' and seq=1",
+                    "",
+                ),
+            ],
+        };
+        for (projection, clause, expected) in cases {
+            let sql = format!("select {projection} from t_chr {clause}");
+            let mut plan = optimize_integration_query_with_schema(&sql, &context, schema.clone());
+            plan.resolve_indices()
+                .expect("resolve common handle physical columns");
+            let scan = find_physical_index_scan(plan.as_ref())
+                .unwrap_or_else(|| panic!("{kind}: {sql}: root {}", plan.tp(&[])));
+            let info = scan.OperatorInfo(false);
+            assert!(info.contains(expected), "{kind}: {sql}: {info}");
+            if projection != "*" {
+                assert!(
+                    physical_plan_contains::<physicalop_dependency::PhysicalIndexReader>(
+                        plan.as_ref()
+                    ),
+                    "{sql}"
+                );
+            }
+            if kind == "decimal" {
+                let range = &scan.Ranges.0[0];
+                assert_eq!(scan.Ranges.0.len(), 1);
+                assert_eq!(range.LowVal.len(), 2);
+                assert_eq!(range.HighVal.len(), 2);
+                assert_eq!(range.LowVal[0].GetInt64(), 10);
+                assert_eq!(range.HighVal[0].GetInt64(), 10);
+                assert_eq!(range.LowVal[1].GetMysqlDecimal().String(), "2.50");
+                assert_eq!(range.HighVal[1].GetMysqlDecimal().String(), "2.50");
+                assert!(!range.LowExclude && !range.HighExclude);
+            }
+            if kind == "ci" {
+                // Index ranges already contain collation sort-key bytes;
+                // their range collator is intentionally binary.
+                let key = expression::collate::GetCollator("utf8mb4_general_ci").Key("abc");
+                assert_eq!(scan.Ranges.0[0].LowVal[1].GetBytes(), key);
+                assert_eq!(scan.Ranges.0[0].HighVal[1].GetBytes(), key);
+            }
+            if kind == "prefix" {
+                assert_eq!(scan.Ranges.0[0].LowVal[1].GetString(), "ab");
+            }
+            if kind == "ci" || kind == "prefix" {
+                assert_eq!(
+                    scan.Ranges.0[0].LowVal.len(),
+                    if clause.contains("seq=") || clause.contains("seq>=") {
+                        3
+                    } else {
+                        2
+                    }
+                );
+                if kind == "prefix" {
+                    assert!(
+                        !scan.FilterCondition.is_empty()
+                            || physical_plan_contains::<physicalop_dependency::PhysicalSelection>(
+                                plan.as_ref()
+                            )
+                    );
+                }
+            }
+            assert_eq!(
+                scan.schema().Columns.len(),
+                scan.Index.as_ref().unwrap().Columns.len() + if composite { 2 } else { 1 }
+            );
+        }
+    }
+}

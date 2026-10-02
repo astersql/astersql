@@ -24,6 +24,10 @@ mod rule_cdc_join_reorder_test;
 #[cfg(test)]
 #[path = "rule_common_handle_ordering_test.rs"]
 mod rule_common_handle_ordering_test;
+/// CommonHandle 二级索引范围与查询结果用例。
+#[cfg(test)]
+#[path = "rule_common_handle_range_test.rs"]
+mod rule_common_handle_range_test;
 /// CorrelateSolver / Apply 相关用例。
 #[cfg(test)]
 #[path = "rule_correlate_test.rs"]
