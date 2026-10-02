@@ -41,3 +41,7 @@ legacy-tasks = ["task-817", "task-1558"]
 "astersql-testkit-testenv" = { package = "astersql-testkit-testenv", path = "../../../testkit/testenv" }
 "astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../testkit/testfailpoint" }
 "astersql-util-sem" = { package = "astersql-util-sem", path = "../../../util/sem" }
+
+[dev-dependencies]
+astersql-dxf-framework-scheduler = { path = "../scheduler" }
+astersql-session = { path = "../../../session" }

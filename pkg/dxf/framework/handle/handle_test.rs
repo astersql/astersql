@@ -29,8 +29,9 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Default)]
-/// 可配置的内存 Runtime，记录任务、历史键和计量写入，供 Handle API 做确定性验证。
+/// Handle 测试 Runtime：生命周期用例委托真实 SQL 存储，其余边界用例记录内存调用。
 struct MockRuntime {
+    storage: Option<storage::TaskManager>,
     tasks: Mutex<Vec<proto::Task>>,
     history_keys: Mutex<HashSet<String>>,
     next_id: AtomicI64,
@@ -45,6 +46,51 @@ struct MockRuntime {
 }
 
 impl MockRuntime {
+    // Storage currently owns a separate protocol representation. Copy every field
+    // at the Runtime boundary so the test observes the persisted SQL result.
+    fn stored_task(value: storage::proto::Task) -> proto::Task {
+        let base = value.TaskBase;
+        proto::Task {
+            TaskBase: proto::TaskBase {
+                ID: base.ID,
+                Key: base.Key,
+                Type: base.Type,
+                State: base.State,
+                Step: base.Step,
+                Priority: base.Priority,
+                RequiredSlots: base.RequiredSlots,
+                TargetScope: base.TargetScope,
+                CreateTime: base.CreateTime,
+                MaxNodeCount: base.MaxNodeCount,
+                Keyspace: base.Keyspace,
+                ExtraParams: proto::ExtraParams {
+                    ManualRecovery: base.ExtraParams.ManualRecovery,
+                    PauseOnKVDiskFull: base.ExtraParams.PauseOnKVDiskFull,
+                    MaxRuntimeSlots: base.ExtraParams.MaxRuntimeSlots,
+                    TargetSteps: base.ExtraParams.TargetSteps,
+                    PrepareMode: base.ExtraParams.PrepareMode,
+                },
+            },
+            SchedulerID: value.SchedulerID,
+            StartTime: value.StartTime,
+            StateUpdateTime: value.StateUpdateTime,
+            Meta: value.Meta,
+            Error: value.Error,
+            ModifyParam: proto::ModifyParam {
+                PrevState: value.ModifyParam.PrevState,
+                Modifications: value
+                    .ModifyParam
+                    .Modifications
+                    .into_iter()
+                    .map(|item| proto::Modification {
+                        Type: item.Type,
+                        To: item.To,
+                    })
+                    .collect(),
+            },
+        }
+    }
+
     /// 深拷贝任务，确保调用方拿到的结果不会共享夹具内部的可变数据。
     fn clone_task(task: &proto::Task) -> proto::Task {
         proto::Task {
@@ -192,6 +238,12 @@ impl Runtime for MockRuntime {
         _ctx: &Context,
         key: &str,
     ) -> Result<Option<proto::Task>> {
+        if let Some(manager) = &self.storage {
+            return manager
+                .GetTaskByKeyWithHistory((), key.to_owned())
+                .map(Self::stored_task)
+                .map(Some);
+        }
         if self.history_lookup_not_found {
             return Err(storage::ErrTaskNotFound.into());
         }
@@ -219,6 +271,25 @@ impl Runtime for MockRuntime {
         extra_params: proto::ExtraParams,
         meta: Vec<u8>,
     ) -> Result<i64> {
+        if let Some(manager) = &self.storage {
+            return manager.CreateTask(
+                (),
+                key.to_owned(),
+                task_type,
+                keyspace.to_owned(),
+                required_slots,
+                target_scope.to_owned(),
+                max_node_count,
+                storage::proto::ExtraParams {
+                    ManualRecovery: extra_params.ManualRecovery,
+                    PauseOnKVDiskFull: extra_params.PauseOnKVDiskFull,
+                    MaxRuntimeSlots: extra_params.MaxRuntimeSlots,
+                    TargetSteps: extra_params.TargetSteps,
+                    PrepareMode: extra_params.PrepareMode,
+                },
+                meta,
+            );
+        }
         let mut task = self.task(key, proto::TaskStateFailed, Some("unknown task type"));
         task.Type = task_type;
         task.Keyspace = keyspace.to_owned();
@@ -233,6 +304,9 @@ impl Runtime for MockRuntime {
     }
 
     fn get_task_by_id(&self, _ctx: &Context, id: i64) -> Result<proto::Task> {
+        if let Some(manager) = &self.storage {
+            return manager.GetTaskByID((), id).map(Self::stored_task);
+        }
         self.tasks
             .lock()
             .unwrap()
@@ -243,6 +317,11 @@ impl Runtime for MockRuntime {
     }
 
     fn get_task_by_id_with_history(&self, ctx: &Context, id: i64) -> Result<proto::Task> {
+        if let Some(manager) = &self.storage {
+            return manager
+                .GetTaskByIDWithHistory((), id)
+                .map(Self::stored_task);
+        }
         self.get_task_by_id(ctx, id)
     }
 
@@ -251,6 +330,12 @@ impl Runtime for MockRuntime {
     }
 
     fn get_task_by_key(&self, _ctx: &Context, key: &str) -> Result<Option<proto::Task>> {
+        if let Some(manager) = &self.storage {
+            return manager
+                .GetTaskByKey((), key.to_owned())
+                .map(Self::stored_task)
+                .map(Some);
+        }
         if self.active_lookup_not_found {
             return Err(storage::ErrTaskNotFound.into());
         }
@@ -264,6 +349,9 @@ impl Runtime for MockRuntime {
     }
 
     fn cancel_task(&self, _ctx: &Context, id: i64) -> Result<()> {
+        if let Some(manager) = &self.storage {
+            return manager.CancelTask((), id);
+        }
         if let Some(task) = self
             .tasks
             .lock()
@@ -277,10 +365,16 @@ impl Runtime for MockRuntime {
     }
 
     fn pause_task(&self, _ctx: &Context, _key: &str) -> Result<bool> {
+        if let Some(manager) = &self.storage {
+            return manager.PauseTask((), _key.to_owned());
+        }
         Ok(true)
     }
 
     fn resume_task(&self, _ctx: &Context, _key: &str) -> Result<bool> {
+        if let Some(manager) = &self.storage {
+            return manager.ResumeTask((), _key.to_owned());
+        }
         Ok(true)
     }
 
@@ -391,14 +485,42 @@ impl Runtime for MockRuntime {
 #[test]
 fn test_handle() {
     let _lock = runtime_test_lock();
+    let (domain, session) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let manager = session.ImportTaskManager().unwrap();
+    storage::init();
+    manager
+        .InitMeta((), ":4000".into(), "test-scope".into())
+        .unwrap();
     let runtime = Arc::new(MockRuntime {
+        storage: Some(manager.clone()),
         service_scope: "test-scope".to_owned(),
         cluster_id: Some(1),
         ..Default::default()
     });
     let _guard = runtime.clone().install();
-    let ctx = Context::background();
+    let cancellation = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let ctx = Context::from_cancellation_flag(cancellation.clone());
+    let (done, timeout) = std::sync::mpsc::channel();
+    let watchdog = thread::spawn(move || {
+        if timeout.recv_timeout(Duration::from_secs(10)).is_err() {
+            cancellation.store(true, Ordering::Release);
+        }
+    });
 
+    // Drive the real schedule-loop body explicitly: the Domain owns no implicit
+    // scheduler, and stopping this guard must precede the remaining Handle checks.
+    struct SchedulerGuard(astersql_dxf_framework_scheduler::Manager);
+    impl Drop for SchedulerGuard {
+        fn drop(&mut self) {
+            self.0.stop();
+        }
+    }
+    let scheduler = SchedulerGuard(astersql_dxf_framework_scheduler::Manager::new(
+        Arc::new(astersql_dxf_framework_scheduler::StorageTaskManagerAdapter::new(manager.clone())),
+        ":4000",
+        None,
+    ));
+    scheduler.0.start().unwrap();
     // 未注册调度器时任务会进入失败终态，但提交参数仍应完整写入存储。
     let task = SubmitTask(
         &ctx,
@@ -411,14 +533,36 @@ fn test_handle() {
         proto::EmptyMeta.to_vec(),
     )
     .unwrap();
+    assert_eq!(
+        manager.GetTaskByID((), task.ID).unwrap().State,
+        proto::TaskStatePending
+    );
+    scheduler.0.tick().unwrap();
     let waited = WaitTask(&ctx, task.ID, proto::TaskBase::IsDone).unwrap();
     assert_eq!(waited.State, proto::TaskStateFailed);
+    let history_lookup = runtime.get_task_by_id_with_history(&ctx, task.ID).unwrap();
+    assert!(
+        history_lookup
+            .Error
+            .as_deref()
+            .unwrap()
+            .contains("unknown task type")
+    );
     let loaded = runtime.get_task_by_id(&ctx, task.ID).unwrap();
     assert_eq!(loaded.Key, "1");
     assert_eq!(loaded.Type, proto::TaskTypeExample);
     assert_eq!(loaded.Step, proto::StepInit);
     assert_eq!(loaded.RequiredSlots, 2);
     assert_eq!(loaded.Meta, proto::EmptyMeta);
+    assert_eq!(loaded.State, proto::TaskStateFailed);
+    assert!(
+        loaded
+            .Error
+            .as_deref()
+            .unwrap()
+            .contains("unknown task type")
+    );
+    drop(scheduler);
     CancelTask(&ctx, "1").unwrap();
 
     // 活跃任务键必须唯一，重复提交不能绕过暂停、恢复等生命周期操作。
@@ -434,6 +578,10 @@ fn test_handle() {
     )
     .unwrap();
     assert_eq!(task.Key, "2");
+    assert_eq!(
+        manager.GetTaskByID((), task.ID).unwrap().State,
+        proto::TaskStatePending
+    );
     let duplicate = SubmitTask(
         &ctx,
         "2",
@@ -447,7 +595,16 @@ fn test_handle() {
     assert!(duplicate.is_err());
     assert!(matches!(duplicate, Err(error) if error == storage::ErrTaskAlreadyExists));
     PauseTask(&ctx, "2").unwrap();
+    assert_eq!(
+        manager.GetTaskByID((), task.ID).unwrap().State,
+        proto::TaskStatePausing
+    );
     ResumeTask(&ctx, "2").unwrap();
+    // Without a scheduler the pause remains in progress; ResumeTask is a no-op.
+    assert_eq!(
+        manager.GetTaskByID((), task.ID).unwrap().State,
+        proto::TaskStatePausing
+    );
 
     // 历史任务同样占用任务键，防止重放已经归档的任务。
     let history_task = SubmitTask(
@@ -461,7 +618,9 @@ fn test_handle() {
         proto::EmptyMeta.to_vec(),
     )
     .unwrap();
-    runtime.move_to_history(&history_task.Key);
+    manager
+        .TransferTasks2History((), vec![manager.GetTaskByID((), history_task.ID).unwrap()])
+        .unwrap();
     let duplicate = SubmitTask(
         &ctx,
         "3",
@@ -473,6 +632,9 @@ fn test_handle() {
         proto::EmptyMeta.to_vec(),
     );
     assert!(matches!(duplicate, Err(error) if error == storage::ErrTaskAlreadyExists));
+    done.send(()).unwrap();
+    watchdog.join().unwrap();
+    domain.close();
 }
 
 #[test]
