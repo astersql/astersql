@@ -9,7 +9,7 @@ path = "lib.rs"
 
 [dependencies]
 bytes = "1"
-parquet = "59.1.0"
+parquet = { git = "https://github.com/astersql/arrow-rs.git", tag = "astersql-parquet-v59.1.0-streaming-pages.1" }
 
 [package.metadata.porting]
 go-package = "pkg/dumpformat/parquetfile"
@@ -35,3 +35,10 @@ legacy-tasks = ["task-955", "task-956", "task-957", "task-961", "task-963", "tas
 "astersql-objstore-objectio" = { package = "astersql-objstore-objectio", path = "../../objstore/objectio" }
 "astersql-table" = { package = "astersql-table", path = "../../table" }
 "astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../testkit/testfailpoint" }
+
+[dev-dependencies]
+tempfile = "3"
+
+[[test]]
+name = "page_streaming_peak"
+path = "tests/page_streaming_peak.rs"

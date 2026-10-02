@@ -803,3 +803,85 @@ fn test_target_getter_fetches_models_and_pd_information() {
     assert_eq!(regions.Count, 1);
     assert_eq!(regions.Regions[0].StoreId, 1);
 }
+
+/// Exercise the actual preview path with streaming-sized pages, nullable values,
+/// multiple row groups and the caller's row limit.
+#[test]
+fn test_get_pre_info_reads_large_parquet_pages() {
+    use crate::types::Datum;
+    use parquet::basic::Compression;
+    use parquet::data_type::{ByteArray, ByteArrayType, Int32Type};
+    use parquet::file::properties::WriterProperties;
+    use parquet::file::writer::SerializedFileWriter;
+    use parquet::schema::parser::parse_message_type;
+
+    let schema = Arc::new(
+        parse_message_type(
+            "message schema { REQUIRED INT32 id; OPTIONAL BYTE_ARRAY data (UTF8); }",
+        )
+        .unwrap(),
+    );
+    let props = Arc::new(
+        WriterProperties::builder()
+            .set_dictionary_enabled(false)
+            .set_compression(Compression::UNCOMPRESSED)
+            .set_data_page_size_limit(64 << 20)
+            .build(),
+    );
+    let mut raw = Vec::new();
+    let mut writer = SerializedFileWriter::new(&mut raw, schema, props).unwrap();
+    for base in [0, 8] {
+        let mut group = writer.next_row_group().unwrap();
+        let mut column = group.next_column().unwrap().unwrap();
+        column
+            .typed::<Int32Type>()
+            .write_batch(&(base..base + 8).collect::<Vec<_>>(), None, None)
+            .unwrap();
+        column.close().unwrap();
+        let mut column = group.next_column().unwrap().unwrap();
+        let values: Vec<ByteArray> = (base..base + 8)
+            .filter(|row| row % 4 != 1)
+            .map(|row| ByteArray::from(vec![b'a' + row as u8; 512 * 1024]))
+            .collect();
+        column
+            .typed::<ByteArrayType>()
+            .write_batch(&values, Some(&[1, 0, 1, 1, 1, 0, 1, 1]), None)
+            .unwrap();
+        column.close().unwrap();
+        group.close().unwrap();
+    }
+    writer.close().unwrap();
+
+    let storage = storeapi::Storage::new("file:///data");
+    storage.Put("/large.parquet", raw);
+    let getter = make_pre_import_getter_with_storage(vec![], storage);
+    let meta = mydump::SourceFileMeta {
+        Path: "/large.parquet".into(),
+        Type: mydump::SourceTypeParquet,
+        ..Default::default()
+    };
+    for requested in [0, 3, 12, 20] {
+        let (columns, rows) = getter
+            .ReadFirstNRowsByFileMeta(context::Background(), meta.clone(), requested)
+            .unwrap();
+        if requested == 0 {
+            assert!(columns.is_empty());
+            assert!(rows.is_empty());
+            continue;
+        }
+        assert_eq!(columns, ["id", "data"]);
+        assert_eq!(rows.len(), (requested as usize).min(16));
+        for (index, row) in rows.iter().enumerate() {
+            assert!(matches!(&row[0], Datum::Int(value) if *value == index as i64));
+            if index % 4 == 1 {
+                assert!(matches!(&row[1], Datum::Bytes(value) if value == b"\\N"));
+            } else {
+                let Datum::String(value) = &row[1] else {
+                    panic!("UTF8 value");
+                };
+                assert_eq!(value.len(), 512 * 1024);
+                assert!(value.bytes().all(|byte| byte == b'a' + index as u8));
+            }
+        }
+    }
+}

@@ -35,7 +35,7 @@ use crate::types::{self, Datum};
 use crate::worker;
 use astersql_lightning_mydump as parser_impl;
 use astersql_lightning_pkg_importer_opts as ropts;
-use parquet::file::reader::{FileReader, SerializedFileReader};
+use parquet::file::reader::FileReader;
 use parquet::record::Field;
 use std::collections::HashMap;
 use std::io::Read;
@@ -719,8 +719,8 @@ impl PreImportInfoGetter for PreImportInfoGetterImpl {
 }
 
 fn read_parquet_rows(raw: Vec<u8>, n: i32) -> Result<(Vec<String>, Vec<Vec<Datum>>)> {
-    let reader = SerializedFileReader::new(bytes::Bytes::from(raw))
-        .map_err(|error| errors::Errorf(format!("open parquet source: {error}")))?;
+    let reader = astersql_dumpformat_parquetfile::parser::open_file_reader(bytes::Bytes::from(raw))
+        .map_err(|error| errors::Errorf(error.to_string()))?;
     let columns = reader
         .metadata()
         .file_metadata()
@@ -733,6 +733,7 @@ fn read_parquet_rows(raw: Vec<u8>, n: i32) -> Result<(Vec<String>, Vec<Vec<Datum
     let rows = reader
         .get_row_iter(None)
         .map_err(|error| errors::Errorf(format!("read parquet source: {error}")))?
+        .with_batch_size(astersql_dumpformat_parquetfile::parser::READ_BATCH_SIZE)
         .take(n as usize)
         .map(|row| {
             row.map_err(|error| errors::Errorf(format!("read parquet row: {error}")))

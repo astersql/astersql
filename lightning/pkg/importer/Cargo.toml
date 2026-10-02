@@ -17,6 +17,7 @@ lane = 1
 # Prefer already-ported checkpoints/precheck/progress/errormanager/importer-opts;
 # local stubs cover backend/PD/TiKV/SQL/encode/mydump/IO boundaries.
 [dependencies]
+"astersql-dumpformat-parquetfile" = { path = "../../../pkg/dumpformat/parquetfile" }
 "astersql-lightning-pkg-checkpoints" = { package = "astersql-lightning-pkg-checkpoints", path = "../checkpoints" }
 "astersql-lightning-pkg-errormanager" = { package = "astersql-lightning-pkg-errormanager", path = "../errormanager" }
 "astersql-lightning-pkg-importer-opts" = { package = "astersql-lightning-pkg-importer-opts", path = "opts" }
@@ -27,6 +28,6 @@ regexpr-router = { package = "astersql-util-regexpr-router", path = "../../../pk
 table-router = { package = "astersql-util-table-router", path = "../../../pkg/util/table-router" }
 bytes = "1"
 flate2 = "1"
-parquet = "59.1.0"
+parquet = { git = "https://github.com/astersql/arrow-rs.git", tag = "astersql-parquet-v59.1.0-streaming-pages.1" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

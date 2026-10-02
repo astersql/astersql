@@ -1204,3 +1204,19 @@ pub fn EstimateParquetReaderMemory(file: &ParquetFile) -> Result<i64> {
         .sum::<i64>();
     Ok(preload + values + (file.columns.len() * READ_BATCH_SIZE * 4) as i64)
 }
+
+/// 打开真实 Parquet 文件；对象存储适配器、File 与 Bytes 共用同一读取配置。
+/// 该入口按页解码，不预先把文件的所有行物化为 ParquetFile。
+pub fn open_file_reader<R: parquet::file::reader::ChunkReader + 'static>(
+    source: R,
+) -> Result<parquet::file::serialized_reader::SerializedFileReader<R>> {
+    let options = parquet::file::serialized_reader::ReadOptionsBuilder::new()
+        .with_reader_properties(
+            parquet::file::properties::ReaderProperties::builder()
+                .set_page_streaming_enabled(true)
+                .build(),
+        )
+        .build();
+    parquet::file::serialized_reader::SerializedFileReader::new_with_options(source, options)
+        .map_err(|error| Error(format!("open parquet source: {error}")))
+}

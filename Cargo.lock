@@ -244,8 +244,7 @@ checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 [[package]]
 name = "arrow-array"
 version = "59.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9486151b2f0785bafc6fa04fc5c99fcb4495455662e58787ea32eaaed33c4192"
+source = "git+https://github.com/astersql/arrow-rs.git?tag=astersql-parquet-v59.1.0-streaming-pages.1#bfea98b4051b9bc8157606eab7e7db4635ed4ab0"
 dependencies = [
  "ahash 0.8.12",
  "arrow-buffer",
@@ -262,8 +261,7 @@ dependencies = [
 [[package]]
 name = "arrow-buffer"
 version = "59.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4776577a87794bfdf0b4e90e2ea12454fa7738ea2823c4be5b9d1851da7b434"
+source = "git+https://github.com/astersql/arrow-rs.git?tag=astersql-parquet-v59.1.0-streaming-pages.1#bfea98b4051b9bc8157606eab7e7db4635ed4ab0"
 dependencies = [
  "bytes",
  "half",
@@ -274,8 +272,7 @@ dependencies = [
 [[package]]
 name = "arrow-data"
 version = "59.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b38fe43e2e8704360f1464e6e8cc4fc381ef02cc4fb0192afa8df1aaa0115c66"
+source = "git+https://github.com/astersql/arrow-rs.git?tag=astersql-parquet-v59.1.0-streaming-pages.1#bfea98b4051b9bc8157606eab7e7db4635ed4ab0"
 dependencies = [
  "arrow-buffer",
  "arrow-schema",
@@ -287,8 +284,7 @@ dependencies = [
 [[package]]
 name = "arrow-ipc"
 version = "59.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29dac499fcbc6ba74ee0324057821d381929a48526a3966bd9dffb44aa06d98c"
+source = "git+https://github.com/astersql/arrow-rs.git?tag=astersql-parquet-v59.1.0-streaming-pages.1#bfea98b4051b9bc8157606eab7e7db4635ed4ab0"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -301,14 +297,12 @@ dependencies = [
 [[package]]
 name = "arrow-schema"
 version = "59.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9e4969dc350d571766247143ab36a5187d095d3d3690970408bc630d47c69e5"
+source = "git+https://github.com/astersql/arrow-rs.git?tag=astersql-parquet-v59.1.0-streaming-pages.1#bfea98b4051b9bc8157606eab7e7db4635ed4ab0"
 
 [[package]]
 name = "arrow-select"
 version = "59.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "402770dba90865359d98d1ef92ef16e23d75c0cca9c2c880c8a05468b7743bf9"
+source = "git+https://github.com/astersql/arrow-rs.git?tag=astersql-parquet-v59.1.0-streaming-pages.1#bfea98b4051b9bc8157606eab7e7db4635ed4ab0"
 dependencies = [
  "ahash 0.8.12",
  "arrow-array",
@@ -2748,6 +2742,7 @@ dependencies = [
  "astersql-util-zeropool",
  "bytes",
  "parquet",
+ "tempfile",
 ]
 
 [[package]]
@@ -5594,6 +5589,7 @@ version = "0.1.0"
 name = "astersql-lightning-pkg-importer"
 version = "0.1.0"
 dependencies = [
+ "astersql-dumpformat-parquetfile",
  "astersql-lightning-mydump",
  "astersql-lightning-pkg-checkpoints",
  "astersql-lightning-pkg-errormanager",
@@ -17522,8 +17518,7 @@ dependencies = [
 [[package]]
 name = "parquet"
 version = "59.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5302d4da74d6596a1f11f9928767995b53bca657cbeea1e4e8c5074f8a1157dd"
+source = "git+https://github.com/astersql/arrow-rs.git?tag=astersql-parquet-v59.1.0-streaming-pages.1#bfea98b4051b9bc8157606eab7e7db4635ed4ab0"
 dependencies = [
  "ahash 0.8.12",
  "arrow-array",
