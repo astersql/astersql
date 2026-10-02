@@ -75,3 +75,68 @@ fn test_execute_error_to_label() {
         ExecuteErrorToLabel(Some(ErrResultUndetermined.RFCCode().as_str()))
     );
 }
+
+#[test]
+fn ia_scan_collectors_register_sql_and_database_labels() {
+    if crate::main_test::run_in_isolated_process(
+        "metrics_test::ia_scan_collectors_register_sql_and_database_labels",
+    ) {
+        return;
+    }
+    ensure_test_env();
+    unsafe {
+        metrics::InitMetrics().unwrap();
+        crate::server::IARemoteReadSegmentCount
+            .as_ref()
+            .unwrap()
+            .with_label_values(&["Select", "db1"])
+            .inc_by(3.0);
+        crate::server::IARemoteReadSegmentSize
+            .as_ref()
+            .unwrap()
+            .with_label_values(&["Select", "db1"])
+            .inc_by(4096.0);
+        crate::server::IARemoteReadSegmentWaitDuration
+            .as_ref()
+            .unwrap()
+            .with_label_values(&["Select", "db1"])
+            .observe(0.005);
+        metrics::RegisterMetrics().unwrap();
+    }
+    let families = prometheus::gather();
+    for (name, expected) in [
+        ("tidb_server_ia_remote_read_segment_count", 3.0),
+        ("tidb_server_ia_remote_read_segment_size_bytes", 4096.0),
+    ] {
+        let metric = &families
+            .iter()
+            .find(|family| family.name() == name)
+            .unwrap()
+            .get_metric()[0];
+        assert_eq!(metric.get_counter().value(), expected);
+        assert!(
+            metric
+                .get_label()
+                .iter()
+                .any(|label| label.name() == "sql_type" && label.value() == "Select")
+        );
+        assert!(
+            metric
+                .get_label()
+                .iter()
+                .any(|label| label.name() == "db" && label.value() == "db1")
+        );
+    }
+    let histogram = families
+        .iter()
+        .find(|family| family.name() == "tidb_server_ia_remote_read_segment_wait_duration_seconds")
+        .unwrap()
+        .get_metric()[0]
+        .get_histogram();
+    assert_eq!(histogram.sample_count(), 1);
+    assert_eq!(histogram.sample_sum(), 0.005);
+    assert_eq!(histogram.get_bucket().len(), 20);
+    for (index, bucket) in histogram.get_bucket().iter().enumerate() {
+        assert_eq!(bucket.upper_bound(), 0.00005 * 2f64.powi(index as i32));
+    }
+}

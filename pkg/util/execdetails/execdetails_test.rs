@@ -266,7 +266,14 @@ fn go_merge_11_read_pool_merge_and_scan_stats() {
         (stats.Count, stats.Bytes, stats.WaitTime),
         (3, 4096, Duration::from_millis(5))
     );
-    assert_eq!(exec::GetIARemoteReadSegmentStats(None).Count, 0);
+    assert_eq!(
+        exec::GetIARemoteReadSegmentStats(None),
+        exec::IARemoteReadSegmentStats::default()
+    );
+    assert_eq!(
+        exec::GetIARemoteReadSegmentStats(Some(&exec::util::ScanDetail::default())),
+        exec::IARemoteReadSegmentStats::default()
+    );
     summary.MergeScanDetail(Some(&scan));
     let merged = summary.GetExecDetails();
     assert_eq!(

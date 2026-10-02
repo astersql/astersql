@@ -12673,6 +12673,7 @@ dependencies = [
  "astersql-sessionctx-stmtctx",
  "astersql-testkit-testsetup",
  "astersql-types",
+ "astersql-util-chunk",
  "astersql-util-execdetails",
  "astersql-util-plancodec",
  "astersql-util-ppcpuusage",
@@ -12692,6 +12693,7 @@ version = "0.1.0"
 dependencies = [
  "astersql-sessionctx-stmtctx",
  "astersql-testkit-testsetup",
+ "astersql-util-chunk",
  "astersql-util-execdetails",
  "astersql-util-plancodec",
  "astersql-util-stmtsummary",

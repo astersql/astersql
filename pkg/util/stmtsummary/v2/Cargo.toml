@@ -29,6 +29,7 @@ task-stmtsummary = { package = "astersql-util-stmtsummary", path = ".." }
 plancodec-dependency = { package = "astersql-util-plancodec", path = "../../plancodec" }
 
 [dev-dependencies]
+chunk-dependency = { package = "astersql-util-chunk", path = "../../chunk" }
 tempfile = "3"
 testsetup-dependency = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }
 

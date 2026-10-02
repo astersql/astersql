@@ -73,3 +73,48 @@ fn wait_ts_rule_reads_shared_wait_duration_in_seconds() {
         &Threshold::Float(0.001)
     ));
 }
+
+#[test]
+fn ia_scan_details_are_logged_independently_in_seconds() {
+    use execdetails::execdetails::{ExecDetails, util::ScanDetail};
+    let vars = crate::session::SessionVars::new();
+    let mut items = slow_log::SlowQueryLogItems::default();
+    items.SQL = "select * from t".into();
+    assert!(
+        !vars
+            .SlowLogFormat(&items)
+            .contains("IA_remote_read_segment")
+    );
+    let mut details = ExecDetails::default();
+    details.CopExecDetails.ScanDetail = Some(ScanDetail {
+        IaRemoteReadSegmentCount: 3,
+        IaRemoteReadSegmentBytes: 4096,
+        IaRemoteReadSegmentDuration: std::time::Duration::from_millis(5),
+        ..Default::default()
+    });
+    items.ExecDetail = Some(Box::new(details));
+    let log = vars.SlowLogFormat(&items);
+    assert!(log.contains("# IA_remote_read_segment_count: 3\n"), "{log}");
+    assert!(
+        log.contains("# IA_remote_read_segment_size: 4096\n"),
+        "{log}"
+    );
+    assert!(
+        log.contains("# IA_remote_read_segment_wait_time: 0.005\n"),
+        "{log}"
+    );
+    let scan = items
+        .ExecDetail
+        .as_mut()
+        .unwrap()
+        .CopExecDetails
+        .ScanDetail
+        .as_mut()
+        .unwrap();
+    scan.IaRemoteReadSegmentCount = 0;
+    scan.IaRemoteReadSegmentBytes = 0;
+    let log = vars.SlowLogFormat(&items);
+    assert!(!log.contains("IA_remote_read_segment_count"));
+    assert!(!log.contains("IA_remote_read_segment_size"));
+    assert!(log.contains("IA_remote_read_segment_wait_time: 0.005"));
+}

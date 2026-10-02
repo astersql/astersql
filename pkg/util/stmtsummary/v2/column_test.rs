@@ -238,3 +238,60 @@ fn timestamp_before_unix_epoch_matches_go_flooring() {
         (1969, 12, 31, 23, 59, 59)
     );
 }
+
+#[test]
+fn ia_columns_round_trip_through_chunk_with_unsigned_maxima() {
+    let context = ColumnContext::new("", chrono_tz::UTC);
+    let mut record = StmtRecord::default();
+    record.ExecCount = 2;
+    record.SumIARemoteReadSegmentCount = 8;
+    record.MaxIARemoteReadSegmentCount = u64::MAX;
+    record.SumIARemoteReadSegmentSize = 12288;
+    record.MaxIARemoteReadSegmentSize = u64::MAX;
+    record.SumIARemoteReadSegmentWaitTime = Duration::from_millis(14);
+    record.MaxIARemoteReadSegmentWaitTime = Duration::from_millis(9);
+    let names = [
+        AvgIARemoteReadSegmentCountStr,
+        MaxIARemoteReadSegmentCountStr,
+        AvgIARemoteReadSegmentSizeStr,
+        MaxIARemoteReadSegmentSizeStr,
+        AvgIARemoteReadSegmentWaitTimeStr,
+        MaxIARemoteReadSegmentWaitTimeStr,
+    ];
+    let factories = makeColumnFactories(&names.iter().map(|name| column(name)).collect::<Vec<_>>());
+    use chunk_dependency::{NewChunkWithCapacity, mysql as chunk_mysql, types as chunk_types};
+    let fields = (0..6)
+        .map(|index| {
+            let mut field = chunk_types::NewFieldType(if index == 0 || index == 2 {
+                chunk_mysql::TypeDouble
+            } else {
+                chunk_mysql::TypeLonglong
+            });
+            if index == 1 || index == 3 {
+                field.AddFlag(chunk_mysql::UnsignedFlag);
+            }
+            *field
+        })
+        .collect::<Vec<_>>();
+    let mut chunk = NewChunkWithCapacity(fields.clone(), 1);
+    for (index, factory) in factories.iter().enumerate() {
+        chunk.AppendDatum(index, &factory(&context, &record).into_datum());
+    }
+    let row = chunk.GetRow(0).GetDatumRow(&fields);
+    assert_eq!(row[0].GetFloat64(), 4.0);
+    assert_eq!(row[1].GetUint64(), u64::MAX);
+    assert_eq!(row[2].GetFloat64(), 6144.0);
+    assert_eq!(row[3].GetUint64(), u64::MAX);
+    assert_eq!(row[4].GetInt64(), 7_000_000);
+    assert_eq!(row[5].GetInt64(), 9_000_000);
+    record.ExecCount = 0;
+    for index in [0, 2] {
+        assert_eq!(
+            factories[index](&context, &record)
+                .into_datum()
+                .GetFloat64(),
+            0.0
+        );
+    }
+    assert_eq!(factories[4](&context, &record).into_datum().GetInt64(), 0);
+}

@@ -232,6 +232,25 @@ impl SessionVars {
             SlowLogQueryTimeStr,
             duration_seconds(items.TimeTotal),
         );
+        let ia_stats = ed::GetIARemoteReadSegmentStats(
+            items
+                .ExecDetail
+                .as_deref()
+                .and_then(|details| details.CopExecDetails.ScanDetail.as_ref()),
+        );
+        if ia_stats.Count > 0 {
+            writeSlowLogItem(&mut buffer, ed::IARemoteReadSegmentCountStr, ia_stats.Count);
+        }
+        if ia_stats.Bytes > 0 {
+            writeSlowLogItem(&mut buffer, ed::IARemoteReadSegmentSizeStr, ia_stats.Bytes);
+        }
+        if ia_stats.WaitTime > Duration::ZERO {
+            writeSlowLogItem(
+                &mut buffer,
+                ed::IARemoteReadSegmentWaitTimeStr,
+                duration_seconds(ia_stats.WaitTime),
+            );
+        }
         if !self.CurrentDB().is_empty() {
             writeSlowLogItem(
                 &mut buffer,

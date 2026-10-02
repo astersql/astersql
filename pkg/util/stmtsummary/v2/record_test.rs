@@ -213,3 +213,50 @@ fn go_merge_38_ru_version_selects_summary_values() {
     let pending = SelectRUDetailsForStatementSummary(Some(raw.clone()), 2, None, true).unwrap();
     assert_eq!((pending.RRU(), pending.WRU()), (raw.RRU(), raw.WRU()));
 }
+
+#[test]
+fn ia_add_and_merge_preserve_independent_maxima_and_nil_scan() {
+    let mut first_info = GenerateStmtExecInfo4Test("ia");
+    let scan = first_info
+        .ExecDetail
+        .CopExecDetails
+        .ScanDetail
+        .as_mut()
+        .unwrap();
+    scan.IaRemoteReadSegmentCount = 3;
+    scan.IaRemoteReadSegmentBytes = 8192;
+    scan.IaRemoteReadSegmentDuration = Duration::from_millis(5);
+    let mut second_info = GenerateStmtExecInfo4Test("ia");
+    let scan = second_info
+        .ExecDetail
+        .CopExecDetails
+        .ScanDetail
+        .as_mut()
+        .unwrap();
+    scan.IaRemoteReadSegmentCount = 5;
+    scan.IaRemoteReadSegmentBytes = 4096;
+    scan.IaRemoteReadSegmentDuration = Duration::from_millis(9);
+    let mut record = NewStmtRecord(&first_info);
+    record.Add(&first_info);
+    record.Add(&second_info);
+    let mut nil_info = GenerateStmtExecInfo4Test("ia");
+    nil_info.ExecDetail.CopExecDetails.ScanDetail = None;
+    record.Add(&nil_info);
+    let mut merged = NewStmtRecord(&first_info);
+    merged.Merge(&record);
+    for stats in [&record, &merged] {
+        assert_eq!(stats.ExecCount, 3);
+        assert_eq!(stats.SumIARemoteReadSegmentCount, 8);
+        assert_eq!(stats.MaxIARemoteReadSegmentCount, 5);
+        assert_eq!(stats.SumIARemoteReadSegmentSize, 12288);
+        assert_eq!(stats.MaxIARemoteReadSegmentSize, 8192);
+        assert_eq!(
+            stats.SumIARemoteReadSegmentWaitTime,
+            Duration::from_millis(14)
+        );
+        assert_eq!(
+            stats.MaxIARemoteReadSegmentWaitTime,
+            Duration::from_millis(9)
+        );
+    }
+}

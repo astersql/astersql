@@ -26,6 +26,7 @@ task-stmtctx = { package = "astersql-sessionctx-stmtctx", path = "../../sessionc
 types-dependency = { package = "astersql-types", path = "../../types" }
 
 [dev-dependencies]
+chunk-dependency = { package = "astersql-util-chunk", path = "../chunk" }
 astersql-testkit-testsetup = { path = "../../testkit/testsetup" }
 
 [package.metadata.porting]

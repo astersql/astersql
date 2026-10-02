@@ -798,3 +798,109 @@ fn test_stmt_digest_key_boundary() {
         &5_u32.to_be_bytes()
     );
 }
+
+#[test]
+fn ia_statistics_accumulate_and_round_trip_through_chunk() {
+    let mut map = newStmtSummaryByDigestMap();
+    map.set_now_for_test(Some(100));
+    for (count, bytes, millis) in [(3, 4096, 5), (5, 8192, 9)] {
+        let mut info = generate_any_exec_info();
+        info.ExecDetail.CopExecDetails.ScanDetail = if count == 0 {
+            None
+        } else {
+            Some(exec_util::ScanDetail {
+                IaRemoteReadSegmentCount: count,
+                IaRemoteReadSegmentBytes: bytes,
+                IaRemoteReadSegmentDuration: Duration::from_millis(millis),
+                ..Default::default()
+            })
+        };
+        map.AddStatement(&info);
+    }
+    let reader = reader_for(
+        map,
+        &[
+            AvgIARemoteReadSegmentCountStr,
+            MaxIARemoteReadSegmentCountStr,
+            AvgIARemoteReadSegmentSizeStr,
+            MaxIARemoteReadSegmentSizeStr,
+            AvgIARemoteReadSegmentWaitTimeStr,
+            MaxIARemoteReadSegmentWaitTimeStr,
+        ],
+    );
+    let rows = reader.GetStmtSummaryCurrentRows();
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert_eq!(row[0].GetFloat64(), 4.0);
+    assert_eq!(row[1].GetUint64(), 5);
+    assert_eq!(row[2].GetFloat64(), 6144.0);
+    assert_eq!(row[3].GetUint64(), 8192);
+    assert_eq!(row[4].GetInt64(), 7_000_000);
+    assert_eq!(row[5].GetInt64(), 9_000_000);
+    use chunk_dependency::{NewChunkWithCapacity, mysql as chunk_mysql, types as chunk_types};
+    let fields = (0..6)
+        .map(|index| {
+            let mut field = chunk_types::NewFieldType(if index == 0 || index == 2 {
+                chunk_mysql::TypeDouble
+            } else {
+                chunk_mysql::TypeLonglong
+            });
+            if index == 1 || index == 3 {
+                field.AddFlag(chunk_mysql::UnsignedFlag);
+            }
+            *field
+        })
+        .collect::<Vec<_>>();
+    let mut chunk = NewChunkWithCapacity(fields.clone(), 1);
+    for (index, value) in row.iter().enumerate() {
+        chunk.AppendDatum(index, value);
+    }
+    let decoded = chunk.GetRow(0).GetDatumRow(&fields);
+    assert_eq!(decoded[0].GetFloat64(), row[0].GetFloat64());
+    assert_eq!(decoded[1].GetUint64(), 5);
+    assert_eq!(decoded[2].GetFloat64(), 6144.0);
+    assert_eq!(decoded[3].GetUint64(), 8192);
+    assert_eq!(decoded[4].GetInt64(), 7_000_000);
+    assert_eq!(decoded[5].GetInt64(), 9_000_000);
+    let mut nil_info = generate_any_exec_info();
+    nil_info.ExecDetail.CopExecDetails.ScanDetail = None;
+    reader.ssMap.lock().unwrap().AddStatement(&nil_info);
+    let rows = reader.GetStmtSummaryCurrentRows();
+    assert_eq!(rows[0][0].GetFloat64(), 8.0 / 3.0);
+    assert_eq!(rows[0][2].GetFloat64(), 4096.0);
+    assert_eq!(rows[0][4].GetInt64(), 14_000_000 / 3);
+    assert_eq!(rows[0][1].GetUint64(), 5);
+}
+
+#[test]
+fn ia_unsigned_averages_keep_float_range_and_zero_execution_semantics() {
+    let reader = reader_for(newStmtSummaryByDigestMap(), &[]);
+    let factories = columnValueFactoryMap();
+    let mut stats = stmtSummaryStats::default();
+    stats.execCount = 2;
+    stats.sumIARemoteReadSegmentCount = 1_u64 << 63;
+    stats.sumIARemoteReadSegmentSize = 1_u64 << 63;
+    for name in [
+        AvgIARemoteReadSegmentCountStr,
+        AvgIARemoteReadSegmentSizeStr,
+    ] {
+        assert_eq!(
+            factories[name](&reader, None, None, &stats)
+                .into_datum()
+                .GetFloat64(),
+            (1_u64 << 63) as f64 / 2.0
+        );
+    }
+    stats.execCount = 0;
+    for name in [
+        AvgIARemoteReadSegmentCountStr,
+        AvgIARemoteReadSegmentSizeStr,
+    ] {
+        assert_eq!(
+            factories[name](&reader, None, None, &stats)
+                .into_datum()
+                .GetFloat64(),
+            0.0
+        );
+    }
+}
