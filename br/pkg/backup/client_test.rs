@@ -28,7 +28,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Once};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -323,6 +323,7 @@ fn mock_get_backup_client_callback(
 // 因此 sender 的行为越清晰，后面的调度断言就越容易理解。
 struct MockBackupBackupSender {
     backup_responses: Arc<Mutex<HashMap<u64, Vec<ResponseAndStore>>>>,
+    after_load: Option<Arc<dyn Fn(u64) + Send + Sync>>,
 }
 
 impl BackupSender for MockBackupBackupSender {
@@ -345,6 +346,7 @@ impl BackupSender for MockBackupBackupSender {
         _state_notifier: std::sync::mpsc::Sender<BackupRetryPolicy>,
     ) {
         let responses = Arc::clone(&self.backup_responses);
+        let after_load = self.after_load.clone();
         thread::spawn(move || {
             let mut waited = 0;
             loop {
@@ -358,6 +360,9 @@ impl BackupSender for MockBackupBackupSender {
                         .unwrap_or_default()
                 };
                 if !resps.is_empty() {
+                    if let Some(after_load) = &after_load {
+                        after_load(store_id);
+                    }
                     for r in resps {
                         if ctx.Done() {
                             let _ = resp_ch.send(None);
@@ -381,6 +386,64 @@ impl BackupSender for MockBackupBackupSender {
             }
         });
     }
+}
+
+#[test]
+fn test_backup_sender_after_load_preserves_partial_snapshot() {
+    let responses = Arc::new(Mutex::new(HashMap::from([(
+        1,
+        vec![ResponseAndStore {
+            StoreID: 1,
+            Resp: BackupResponse {
+                StartKey: b"aaa".to_vec(),
+                EndKey: b"mmm".to_vec(),
+                ..Default::default()
+            },
+        }],
+    )])));
+    let loaded = Arc::new(AtomicUsize::new(0));
+    let sender = MockBackupBackupSender {
+        backup_responses: responses.clone(),
+        after_load: Some(Arc::new({
+            let responses = responses.clone();
+            let loaded = loaded.clone();
+            move |store_id| {
+                assert_eq!(store_id, 1);
+                loaded.fetch_add(1, Ordering::SeqCst);
+                responses
+                    .lock()
+                    .unwrap()
+                    .get_mut(&1)
+                    .unwrap()
+                    .push(ResponseAndStore {
+                        StoreID: 1,
+                        Resp: BackupResponse {
+                            StartKey: b"mmm".to_vec(),
+                            EndKey: b"zzz".to_vec(),
+                            ..Default::default()
+                        },
+                    });
+            }
+        })),
+    };
+    let (tx, rx) = mpsc::channel();
+    let (state_tx, _) = mpsc::channel();
+    sender.SendAsync(
+        Context::Background(),
+        0,
+        1,
+        Arc::new(NewResourceMemoryLimiter(100)),
+        BackupRequest::default(),
+        1,
+        Arc::new(EmptyBackupClient),
+        tx,
+        state_tx,
+    );
+    let first = rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+    assert_eq!(first.Resp.EndKey, b"mmm");
+    assert!(rx.recv_timeout(Duration::from_secs(2)).unwrap().is_none());
+    assert_eq!(loaded.load(Ordering::SeqCst), 1);
+    assert_eq!(responses.lock().unwrap()[&1].len(), 2);
 }
 
 struct RetryOnceSender {
@@ -1118,6 +1181,7 @@ fn test_main_backup_loop() {
     let mut main_loop = crate::client::MainBackupLoop {
         BackupSender: Box::new(MockBackupBackupSender {
             backup_responses: Arc::clone(&mock_responses),
+            after_load: None,
         }),
         BackupReq: BackupRequest::default(),
         Concurrency: 1,
@@ -1169,6 +1233,7 @@ fn test_main_backup_loop() {
     let mut main_loop = crate::client::MainBackupLoop {
         BackupSender: Box::new(MockBackupBackupSender {
             backup_responses: Arc::clone(&mock_responses),
+            after_load: None,
         }),
         BackupReq: BackupRequest::default(),
         Concurrency: 1,
@@ -1224,10 +1289,17 @@ fn test_main_backup_loop() {
         s.pd.mark_tombstone(drop_store_id);
         drop_backup_responses = map.remove(&drop_store_id).unwrap_or_default();
     }
-    // 延迟把掉线节点原本负责的响应塞给存活节点，模拟调度迁移后的补偿结果。
+    // Wait until store 1 has captured its partial response set before migrating ranges.
+    let (first_load_tx, first_load_rx) = mpsc::channel();
+    let first_load_once = Once::new();
+    let after_load = Arc::new(move |store_id| {
+        if store_id == remain_store_id {
+            first_load_once.call_once(|| first_load_tx.send(()).unwrap());
+        }
+    });
     let mock_responses2 = Arc::clone(&mock_responses);
-    thread::spawn(move || {
-        thread::sleep(Duration::from_millis(500));
+    let migration = thread::spawn(move || {
+        first_load_rx.recv().unwrap();
         let _g = LOCK.lock().unwrap();
         mock_responses2
             .lock()
@@ -1241,6 +1313,7 @@ fn test_main_backup_loop() {
     let mut main_loop = crate::client::MainBackupLoop {
         BackupSender: Box::new(MockBackupBackupSender {
             backup_responses: Arc::clone(&mock_responses),
+            after_load: Some(after_load),
         }),
         BackupReq: BackupRequest::default(),
         Concurrency: 1,
@@ -1256,6 +1329,7 @@ fn test_main_backup_loop() {
     s.backup_client
         .RunLoop(&background_ctx, &mut main_loop)
         .unwrap();
+    migration.join().unwrap();
     let connected = CONNECTED_STORE.lock().unwrap().clone().unwrap_or_default();
     assert!(
         connected.get(&remain_store_id).copied().unwrap_or(0) > 1,
@@ -1305,6 +1379,7 @@ fn test_main_backup_loop() {
     let mut main_loop = crate::client::MainBackupLoop {
         BackupSender: Box::new(MockBackupBackupSender {
             backup_responses: Arc::clone(&mock_responses),
+            after_load: None,
         }),
         BackupReq: BackupRequest::default(),
         Concurrency: 1,
@@ -1370,6 +1445,7 @@ fn test_main_backup_loop() {
     let mut main_loop = crate::client::MainBackupLoop {
         BackupSender: Box::new(MockBackupBackupSender {
             backup_responses: Arc::clone(&mock_responses),
+            after_load: None,
         }),
         BackupReq: BackupRequest::default(),
         Concurrency: 1,
