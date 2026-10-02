@@ -1950,3 +1950,276 @@ fn go_merge_20_187_195_197_production_ru_point_collects_evidence() {
         domain.close();
     }
 }
+
+fn canonical_rc_wait_session() -> (
+    crate::runtime::ConcreteSession,
+    astersql_store_mockstore_mockstorage::OracleHandle,
+) {
+    let column = |id, name: &str, offset| {
+        let mut field_type =
+            astersql_parser_types::NewFieldType(astersql_parser_mysql::r#type::TypeLonglong);
+        if id == 1 {
+            field_type.AddFlag(astersql_parser_mysql::r#type::PriKeyFlag);
+        }
+        astersql_meta_model::ColumnInfo {
+            ID: id,
+            Name: astersql_parser_ast::NewCIStr(name),
+            Offset: offset,
+            State: astersql_meta_model::StatePublic,
+            FieldType: field_type,
+            ..Default::default()
+        }
+    };
+    let columns = vec![
+        column(1, "id1", 0),
+        column(2, "id2", 1),
+        column(3, "id3", 2),
+    ];
+    let model = Arc::new(astersql_meta_model::TableInfo {
+        ID: 123,
+        Name: astersql_parser_ast::NewCIStr("t1"),
+        Columns: columns.clone(),
+        PKIsHandle: true,
+        Indices: vec![astersql_meta_model::IndexInfo {
+            ID: 2,
+            Name: astersql_parser_ast::NewCIStr("udx_id2"),
+            Table: astersql_parser_ast::NewCIStr("t1"),
+            Unique: true,
+            State: astersql_meta_model::StatePublic,
+            Columns: vec![astersql_meta_model::IndexColumn {
+                Name: astersql_parser_ast::NewCIStr("id2"),
+                Offset: 1,
+                Length: -1,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    let schema = infoschema::infoschema::MockInfoSchema(vec![infoschema::infoschema::TableInfo {
+        id: model.ID,
+        name: infoschema::infoschema::CiString::new("t1"),
+        columns: columns
+            .iter()
+            .map(|column| infoschema::infoschema::ColumnInfo {
+                id: column.ID,
+                name: infoschema::infoschema::CiString::new(&column.Name.O),
+                ..Default::default()
+            })
+            .collect(),
+        model_meta: Some(model),
+        ..Default::default()
+    }]);
+    let store = Arc::try_unwrap(NewMockStorage(KVStore::NewMemory(), None).unwrap())
+        .unwrap_or_else(|_| panic!("unexpected storage owner"));
+    let oracle = store.canonical_oracle.clone();
+    let domain = Arc::new(Domain::new_mock(
+        store,
+        Arc::new(DMLBridgeSchemaLoader(schema)),
+    ));
+    domain.init().unwrap();
+    (crate::runtime::ConcreteSession::new(domain), oracle)
+}
+
+struct DelayedTimestampOracle {
+    original: Arc<dyn kv::oracle::Oracle>,
+    delay: Arc<std::sync::Mutex<std::time::Duration>>,
+}
+struct DelayedTimestampFuture {
+    original: Box<dyn kv::oracle::Future>,
+    delay: std::time::Duration,
+}
+impl kv::oracle::Future for DelayedTimestampFuture {
+    fn Wait(&mut self) -> Result<u64, kv::errors::SharedError> {
+        std::thread::sleep(self.delay);
+        self.original.Wait()
+    }
+}
+impl kv::oracle::Oracle for DelayedTimestampOracle {
+    fn GetTimestampAsync(&self, scope: &str) -> Option<Box<dyn kv::oracle::Future>> {
+        Some(Box::new(DelayedTimestampFuture {
+            original: self.original.GetTimestampAsync(scope)?,
+            delay: *self.delay.lock().unwrap(),
+        }))
+    }
+    fn GetLowResolutionTimestampAsync(&self, scope: &str) -> Option<Box<dyn kv::oracle::Future>> {
+        Some(Box::new(DelayedTimestampFuture {
+            original: self.original.GetLowResolutionTimestampAsync(scope)?,
+            delay: *self.delay.lock().unwrap(),
+        }))
+    }
+}
+struct RestoreTimestampOracle {
+    handle: astersql_store_mockstore_mockstorage::OracleHandle,
+    original: Arc<dyn kv::oracle::Oracle>,
+}
+impl Drop for RestoreTimestampOracle {
+    fn drop(&mut self) {
+        self.handle.SetOracle(self.original.clone());
+    }
+}
+
+#[test]
+fn rc_point_and_empty_range_updates_account_delayed_timestamp_waits() {
+    assert_rc_update_timestamp_waits(false);
+}
+
+#[test]
+fn rc_low_resolution_updates_account_delayed_timestamp_waits() {
+    assert_rc_update_timestamp_waits(true);
+}
+
+fn assert_rc_update_timestamp_waits(low_resolution: bool) {
+    use crate::testutil::TestSession;
+    use std::time::Duration;
+    let (session, handle) = canonical_rc_wait_session();
+    use astersql_statistics_handle::AnalyzeStatsStorage;
+    session
+        .domain
+        .stats_handle()
+        .lock()
+        .unwrap()
+        .register_table_stats(123)
+        .unwrap();
+    session.state.borrow_mut().low_resolution_tso = low_resolution;
+    let original = handle.GetOracle();
+    let restore = RestoreTimestampOracle {
+        handle: handle.clone(),
+        original: original.clone(),
+    };
+    let restored_original = original.clone();
+    let delay = Arc::new(std::sync::Mutex::new(Duration::from_millis(1)));
+    handle.SetOracle(Arc::new(DelayedTimestampOracle {
+        original,
+        delay: delay.clone(),
+    }));
+    session
+        .Execute("set session transaction_isolation = 'READ-COMMITTED'")
+        .unwrap();
+    session
+        .Execute("insert into t1 values (1,1,1), (2,2,2), (3,3,3)")
+        .unwrap();
+    assert_eq!(
+        session.state.borrow().transaction_isolation,
+        "READ-COMMITTED"
+    );
+    session.Execute("begin pessimistic").unwrap();
+    *session.session_vars.DurationWaitTS.lock().unwrap() = Duration::ZERO;
+    session
+        .Execute("update t1 set id3 = id3 + 10 where id1 = 1")
+        .unwrap();
+    let point_wait = *session.session_vars.DurationWaitTS.lock().unwrap();
+    let second_delay = point_wait + Duration::from_millis(1);
+    *delay.lock().unwrap() = second_delay;
+    session
+        .Execute("update t1 set id3 = id3 + 10 where id1 > 3 and id1 < 6")
+        .unwrap();
+    let range_wait = *session.session_vars.DurationWaitTS.lock().unwrap();
+    session.Execute("commit").unwrap();
+    assert!(
+        point_wait > Duration::from_millis(1),
+        "point wait: {point_wait:?}"
+    );
+    assert!(
+        range_wait >= second_delay,
+        "range wait: {range_wait:?}, delay: {second_delay:?}"
+    );
+    let mut results = session.Execute("select * from t1 order by id1").unwrap();
+    let mut rows = Vec::new();
+    while let Some(row) = results[0].Next().unwrap() {
+        rows.push(row);
+    }
+    results[0].Close().unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            vec!["1", "1", "11"],
+            vec!["2", "2", "2"],
+            vec!["3", "3", "3"]
+        ]
+    );
+    drop(restore);
+    assert!(Arc::ptr_eq(&handle.GetOracle(), &restored_original));
+}
+
+#[test]
+fn delayed_timestamp_future_preserves_values_errors_and_both_oracle_methods() {
+    use kv::oracle::Oracle;
+    use std::time::{Duration, Instant};
+    struct FixedOracle;
+    impl Oracle for FixedOracle {
+        fn GetTimestampAsync(&self, _: &str) -> Option<Box<dyn kv::oracle::Future>> {
+            Some(Box::new(kv::oracle::ReadyFuture(Ok(42))))
+        }
+        fn GetLowResolutionTimestampAsync(&self, _: &str) -> Option<Box<dyn kv::oracle::Future>> {
+            Some(Box::new(kv::oracle::ReadyFuture(Err(kv::errors::New(
+                "oracle failure",
+            )))))
+        }
+    }
+    let delay = Duration::from_millis(1);
+    let oracle = DelayedTimestampOracle {
+        original: Arc::new(FixedOracle),
+        delay: Arc::new(std::sync::Mutex::new(delay)),
+    };
+    let mut normal = oracle.GetTimestampAsync("global").unwrap();
+    let start = Instant::now();
+    assert_eq!(normal.Wait().unwrap(), 42);
+    assert!(start.elapsed() >= delay);
+    let mut low_resolution = oracle.GetLowResolutionTimestampAsync("global").unwrap();
+    let start = Instant::now();
+    assert_eq!(
+        low_resolution.Wait().unwrap_err().to_string(),
+        "oracle failure"
+    );
+    assert!(start.elapsed() >= delay);
+}
+
+#[test]
+fn rc_failed_timestamp_wait_does_not_account_time_or_mutate_rows() {
+    use crate::testutil::TestSession;
+    use astersql_statistics_handle::AnalyzeStatsStorage;
+    struct FailedOracle;
+    impl kv::oracle::Oracle for FailedOracle {
+        fn GetTimestampAsync(&self, _: &str) -> Option<Box<dyn kv::oracle::Future>> {
+            Some(Box::new(kv::oracle::ReadyFuture(Err(kv::errors::New(
+                "oracle unavailable",
+            )))))
+        }
+    }
+    let (session, handle) = canonical_rc_wait_session();
+    session
+        .domain
+        .stats_handle()
+        .lock()
+        .unwrap()
+        .register_table_stats(123)
+        .unwrap();
+    session
+        .Execute("insert into t1 values (1,1,1), (2,2,2), (3,3,3)")
+        .unwrap();
+    session
+        .Execute("set session transaction_isolation = 'READ-COMMITTED'")
+        .unwrap();
+    session.Execute("begin pessimistic").unwrap();
+    let restore = RestoreTimestampOracle {
+        handle: handle.clone(),
+        original: handle.GetOracle(),
+    };
+    handle.SetOracle(Arc::new(FailedOracle));
+    *session.session_vars.DurationWaitTS.lock().unwrap() = std::time::Duration::ZERO;
+    let error = match session.Execute("update t1 set id3 = id3 + 10 where id1 = 1") {
+        Err(error) => error,
+        Ok(_) => panic!("failed timestamp must abort the update"),
+    };
+    assert!(error.to_string().contains("oracle unavailable"));
+    assert_eq!(
+        *session.session_vars.DurationWaitTS.lock().unwrap(),
+        std::time::Duration::ZERO
+    );
+    drop(restore);
+    session.Execute("rollback").unwrap();
+    let mut result = session.Execute("select id3 from t1 where id1 = 1").unwrap();
+    assert_eq!(result[0].Next().unwrap(), Some(vec!["1".to_owned()]));
+    result[0].Close().unwrap();
+}

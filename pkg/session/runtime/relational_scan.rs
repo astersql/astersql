@@ -2575,6 +2575,34 @@ impl ConcreteSession {
         }
     }
 
+    /// Account only successful waits, as RC getStmtTS does in Go. A failed
+    /// oracle request must not become a snapshot or contribute wait duration.
+    fn latest_relational_version(&self, store: &dyn kv::Storage) -> SessionResult<kv::Version> {
+        let state = self.state.borrow();
+        if state.transaction.is_none()
+            || !state
+                .transaction_isolation
+                .eq_ignore_ascii_case("READ-COMMITTED")
+        {
+            return store
+                .CurrentVersion("global")
+                .map_err(|error| session_error("get latest relational version", error));
+        }
+        let low_resolution = state.low_resolution_tso;
+        drop(state);
+        let mut future = store.TimestampFuture("global", low_resolution);
+        let start = Instant::now();
+        let timestamp = future
+            .Wait()
+            .map_err(|error| session_error("get latest relational version", error))?;
+        *self
+            .session_vars
+            .DurationWaitTS
+            .lock()
+            .expect("wait TS lock poisoned") += start.elapsed();
+        Ok(kv::NewVersion(timestamp))
+    }
+
     /// Locking reads combine the newest committed rows with this transaction's
     /// local changes. This preserves read-your-writes without hiding commits
     /// made after the transaction snapshot (the RC/FOR UPDATE behavior).
@@ -2592,9 +2620,7 @@ impl ConcreteSession {
                 .collect::<SessionResult<BTreeMap<_, _>>>()
         };
         let mut latest = self.domain.storage().with_storage(|store| {
-            let version = store
-                .CurrentVersion("global")
-                .map_err(|error| session_error("get latest relational version", error))?;
+            let version = self.latest_relational_version(store)?;
             let snapshot = store.GetSnapshot(version);
             row_map(scan_relational_rows(snapshot.as_ref(), table)?)
         })?;
@@ -2633,9 +2659,7 @@ impl ConcreteSession {
                 .collect::<SessionResult<BTreeMap<_, _>>>()
         };
         let mut latest = self.domain.storage().with_storage(|store| {
-            let version = store
-                .CurrentVersion("global")
-                .map_err(|error| session_error("get latest relational version", error))?;
+            let version = self.latest_relational_version(store)?;
             let snapshot = store.GetSnapshot(version);
             row_map(scan_relational_row_ranges(
                 snapshot.as_ref(),

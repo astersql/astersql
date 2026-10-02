@@ -791,6 +791,17 @@ pub trait Storage {
     fn UUID(&self) -> String;
     fn CurrentVersion(&self, txn_scope: &str) -> Result<Version, errors::SharedError>;
     fn GetOracle(&self) -> &dyn oracle::Oracle;
+    /// Request a timestamp through the oracle, retaining synchronous store compatibility.
+    fn TimestampFuture(&self, scope: &str, low_resolution: bool) -> Box<dyn oracle::Future> {
+        let future = if low_resolution {
+            self.GetOracle().GetLowResolutionTimestampAsync(scope)
+        } else {
+            self.GetOracle().GetTimestampAsync(scope)
+        };
+        future.unwrap_or_else(|| {
+            Box::new(oracle::ReadyFuture(self.CurrentVersion(scope).map(|v| v.Ver)))
+        })
+    }
     fn SupportDeleteRange(&self) -> bool;
     fn Name(&self) -> String;
     fn Describe(&self) -> String;

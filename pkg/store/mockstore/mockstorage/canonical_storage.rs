@@ -936,14 +936,43 @@ impl kv::MPPClient for CanonicalMppClient {
     }
 }
 
-/// 占位时间戳 Oracle。
-struct CanonicalOracle;
-/// 空 Oracle 实现。
-impl kv::oracle::Oracle for CanonicalOracle {}
+/// Timestamp requests use this store's existing monotonic TSO clock.
+struct CanonicalOracle(crate::storage::KVStore);
+impl kv::oracle::Oracle for CanonicalOracle {
+    fn GetTimestampAsync(&self, scope: &str) -> Option<Box<dyn kv::oracle::Future>> {
+        Some(Box::new(kv::oracle::ReadyFuture(
+            self.0.CurrentTimestamp(scope).map_err(storage_error),
+        )))
+    }
+}
+
+/// Per-store delegation permits test wrappers without changing other stores.
+#[derive(Clone)]
+pub struct OracleHandle(std::sync::Arc<std::sync::RwLock<std::sync::Arc<dyn kv::oracle::Oracle>>>);
+impl OracleHandle {
+    pub(crate) fn new(store: crate::storage::KVStore) -> Self {
+        Self(std::sync::Arc::new(std::sync::RwLock::new(
+            std::sync::Arc::new(CanonicalOracle(store)),
+        )))
+    }
+    pub fn GetOracle(&self) -> std::sync::Arc<dyn kv::oracle::Oracle> {
+        self.0.read().expect("oracle lock poisoned").clone()
+    }
+    pub fn SetOracle(&self, oracle: std::sync::Arc<dyn kv::oracle::Oracle>) {
+        *self.0.write().expect("oracle lock poisoned") = oracle;
+    }
+}
+impl kv::oracle::Oracle for OracleHandle {
+    fn GetTimestampAsync(&self, scope: &str) -> Option<Box<dyn kv::oracle::Future>> {
+        self.GetOracle().GetTimestampAsync(scope)
+    }
+    fn GetLowResolutionTimestampAsync(&self, scope: &str) -> Option<Box<dyn kv::oracle::Future>> {
+        self.GetOracle().GetLowResolutionTimestampAsync(scope)
+    }
+}
 
 static CANONICAL_CLIENT: CanonicalClient = CanonicalClient;
 static CANONICAL_MPP_CLIENT: CanonicalMppClient = CanonicalMppClient;
-static CANONICAL_ORACLE: CanonicalOracle = CanonicalOracle;
 
 /// 将动态类型键下转为 OptionKey。
 fn option_key(key: &dyn Any) -> Option<OptionKey> {
@@ -1069,7 +1098,7 @@ impl kv::Storage for mockStorage {
     }
 
     fn GetOracle(&self) -> &dyn kv::oracle::Oracle {
-        &CANONICAL_ORACLE
+        &self.canonical_oracle
     }
 
     fn SupportDeleteRange(&self) -> bool {

@@ -49,3 +49,27 @@ fn digest_setter_materializes_the_statement_digest_like_go() {
     assert!(!items.Digest.is_empty());
     assert_eq!(items.Digest, vars.StmtCtx.SQLDigest().1.String());
 }
+
+#[test]
+fn wait_ts_rule_reads_shared_wait_duration_in_seconds() {
+    let vars = crate::session::SessionVars::new();
+    let accessor = slow_log::SlowLogRuleFieldAccessors.get("wait_ts").unwrap();
+    let items = slow_log::SlowQueryLogItems::default();
+    *vars.DurationWaitTS.lock().unwrap() = std::time::Duration::from_millis(2);
+    assert!((accessor.Match)(
+        Some(&vars),
+        &items,
+        &Threshold::Float(0.002)
+    ));
+    assert!(!(accessor.Match)(
+        Some(&vars),
+        &items,
+        &Threshold::Float(0.003)
+    ));
+    *vars.DurationWaitTS.lock().unwrap() = std::time::Duration::ZERO;
+    assert!(!(accessor.Match)(
+        Some(&vars),
+        &items,
+        &Threshold::Float(0.001)
+    ));
+}

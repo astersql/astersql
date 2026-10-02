@@ -582,7 +582,15 @@ fn build_slow_log_rule_field_accessors() -> BTreeMap<String, SlowLogFieldAccesso
             Parse: parseFloat64,
             Setter: None,
             Match: Arc::new(|se_vars, _items, threshold| {
-                se_vars.is_some_and(|v| matchGE(threshold, v.DurationWaitTS.as_secs_f64()))
+                se_vars.is_some_and(|v| {
+                    matchGE(
+                        threshold,
+                        v.DurationWaitTS
+                            .lock()
+                            .expect("wait TS lock poisoned")
+                            .as_secs_f64(),
+                    )
+                })
             }),
         },
     );

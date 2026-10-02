@@ -963,6 +963,7 @@ impl MemManager {
 /// mock Storage 门面：组合 KVStore、CoprStore、选项与内存缓存。
 pub struct mockStorage {
     pub KVStore: KVStore,
+    pub canonical_oracle: crate::canonical_storage::OracleHandle,
     pub Store: Arc<CoprStore>,
     opts: RwLock<HashMap<OptionKey, AnyValue>>,
     memCache: Arc<MemManager>,
@@ -982,6 +983,7 @@ pub fn NewMockStorage(
     let coprConfig = DefaultCoprCacheConfig();
     let coprStore = CoprStore::NewStore(&tikvStore, &coprConfig)?;
     Ok(Arc::new(mockStorage {
+        canonical_oracle: crate::canonical_storage::OracleHandle::new(tikvStore.clone()),
         KVStore: tikvStore,
         Store: Arc::new(coprStore),
         opts: RwLock::new(HashMap::new()),

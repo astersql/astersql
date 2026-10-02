@@ -363,7 +363,25 @@ pub mod util {
 /// 时间戳预言机（Oracle）相关桩。
 pub mod oracle {
     pub const GlobalTxnScope: &str = "global";
-    pub trait Oracle {}
+    /// A timestamp request whose wait preserves the original result and error.
+    pub trait Future: Send {
+        fn Wait(&mut self) -> Result<u64, crate::errors::SharedError>;
+    }
+    pub struct ReadyFuture(pub Result<u64, crate::errors::SharedError>);
+    impl Future for ReadyFuture {
+        fn Wait(&mut self) -> Result<u64, crate::errors::SharedError> {
+            self.0.clone()
+        }
+    }
+    pub trait Oracle: Send + Sync {
+        /// None lets stores without an asynchronous oracle use CurrentVersion.
+        fn GetTimestampAsync(&self, _scope: &str) -> Option<Box<dyn Future>> {
+            None
+        }
+        fn GetLowResolutionTimestampAsync(&self, scope: &str) -> Option<Box<dyn Future>> {
+            self.GetTimestampAsync(scope)
+        }
+    }
 }
 /// PD 客户端桩。
 pub mod pd {

@@ -678,7 +678,7 @@ pub struct SessionVars {
     pub DurationParse: Mutex<Duration>,
     pub DurationCompile: Duration,
     pub DurationOptimizer: DurationOptimizer,
-    pub DurationWaitTS: Duration,
+    pub DurationWaitTS: Mutex<Duration>,
     pub StartTime: Mutex<Instant>,
     /// 会话时区，供表达式求值可选属性使用；未显式设置时 Go 侧默认为 UTC。
     /// Session time zone used by expression evaluation optional properties.
@@ -905,7 +905,7 @@ impl SessionVars {
             DurationParse: Mutex::new(Duration::default()),
             DurationCompile: Duration::default(),
             DurationOptimizer: DurationOptimizer::default(),
-            DurationWaitTS: Duration::default(),
+            DurationWaitTS: Mutex::new(Duration::default()),
             StartTime: Mutex::new(Instant::now()),
             location: FixedOffset::east_opt(0).expect("UTC offset is valid"),
             EnablePlanReplayerCapture: false,
