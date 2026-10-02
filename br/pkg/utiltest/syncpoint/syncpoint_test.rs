@@ -86,6 +86,13 @@ fn test_sequence() {
     assert_eq!(events_rx.recv_timeout(Duration::from_secs(5)).unwrap(), "b");
     assert_eq!(events_rx.recv_timeout(Duration::from_secs(5)).unwrap(), "c");
 
+    // Registered hits after the declared sequence should be ignored.
+    trigger_sync_script_point("sync-script-a");
+    assert!(matches!(
+        events_rx.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
+
     script.EndSeq();
     // 收尾 join，确保 inject 线程已退出且无 panic。
     for worker in workers {

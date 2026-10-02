@@ -244,7 +244,7 @@ impl Script {
 }
 
 /// failpoint 命中入口：非期望步则 Condvar 等待；匹配则推进 next 并返回回调。
-/// 无活跃序列返回 None（静默忽略）；已取消或越界则记错并不执行回调。
+/// 无活跃序列或序列已完成时静默忽略；已取消时不执行回调。
 fn advance(state: &State, name: &str) -> Option<StepFn> {
     let mut inner = state.mu.lock().unwrap();
 
@@ -257,8 +257,6 @@ fn advance(state: &State, name: &str) -> Option<StepFn> {
             return None;
         }
         if inner.next >= inner.seq.len() {
-            inner.err = Some(format!("unexpected step {name} after sequence completed"));
-            state.cond.notify_all();
             return None;
         }
         if inner.seq[inner.next].name == name {
