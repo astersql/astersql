@@ -4384,6 +4384,8 @@ dependencies = [
  "astersql-sessionctx",
  "astersql-sessionctx-vardef",
  "astersql-store-mockstore",
+ "astersql-store-mockstore-mockstorage",
+ "astersql-store-mockstore-unistore",
  "astersql-testkit",
  "astersql-util-dbterror",
  "astersql-util-dbterror-exeerrors",
@@ -10065,6 +10067,7 @@ dependencies = [
  "astersql-store-copr",
  "astersql-store-driver-txn",
  "astersql-store-helper",
+ "astersql-store-mockstore-unistore",
 ]
 
 [[package]]

@@ -26,11 +26,13 @@ use crate::tikv::mvcc::{
     PessimisticLockResult, PrewriteRequest, PrewriteResult, SecondaryLocksStatus, TxnStatus,
 };
 use crate::tikv::server::{RpcContext, RpcResponse, Server};
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 /// RPC 命令类型枚举，与 Request 变体一一对应。
@@ -260,6 +262,32 @@ pub enum Request {
 }
 
 impl Request {
+    /// Transaction request context inspected before forwarding to the server.
+    pub fn context(&self) -> Option<&RpcContext> {
+        match self {
+            Self::Get { context, .. } => Some(context),
+            Self::Scan { context, .. } => Some(context),
+            Self::Prewrite { context, .. } => Some(context),
+            Self::PessimisticLock { context, .. } => Some(context),
+            Self::PessimisticRollback { context, .. } => Some(context),
+            Self::Commit { context, .. } => Some(context),
+            Self::Cleanup { context, .. } => Some(context),
+            Self::CheckTxnStatus { context, .. } => Some(context),
+            Self::CheckSecondaryLocks { context, .. } => Some(context),
+            Self::TxnHeartBeat { context, .. } => Some(context),
+            Self::BatchGet { context, .. } => Some(context),
+            Self::BatchRollback { context, .. } => Some(context),
+            Self::ScanLock { context, .. } => Some(context),
+            Self::ResolveLock { context, .. } => Some(context),
+            Self::Gc { context, .. } => Some(context),
+            Self::DeleteRange { context, .. } => Some(context),
+            Self::Cop { context, .. } => Some(context),
+            Self::CopStream { context, .. } => Some(context),
+            Self::BatchCop { context, .. } => Some(context),
+            _ => None,
+        }
+    }
+
     /// 返回本请求对应的 CommandType。
     pub fn command_type(&self) -> CommandType {
         match self {
@@ -353,6 +381,12 @@ impl std::fmt::Display for RpcError {
 impl std::error::Error for RpcError {}
 pub type Result<T> = std::result::Result<T, RpcError>;
 
+/// A fallible interceptor runs on the actual request before server dispatch.
+pub type RequestInterceptor = Arc<dyn Fn(&Request) -> Result<()> + Send + Sync>;
+thread_local! {
+    static REQUEST_MARKERS: RefCell<HashMap<usize, u64>> = RefCell::new(HashMap::new());
+}
+
 /// 进程内 RPC 客户端：持有 Server、Cluster、路径与独立 RawHandler。
 pub struct RPCClient {
     server: Arc<Server>,
@@ -361,6 +395,7 @@ pub struct RPCClient {
     raw_handler: RawHandler,
     persistent: bool,
     closed: AtomicBool,
+    interceptor: RwLock<Option<RequestInterceptor>>,
 }
 
 impl RPCClient {
@@ -378,7 +413,46 @@ impl RPCClient {
             raw_handler: RawHandler::new(),
             persistent,
             closed: AtomicBool::new(false),
+            interceptor: RwLock::new(None),
         }
+    }
+
+    /// Install a checker on this shared client without replacing its server.
+    pub fn set_request_interceptor(&self, interceptor: Option<RequestInterceptor>) {
+        *self.interceptor.write().expect("interceptor lock poisoned") = interceptor;
+    }
+
+    pub fn request_marker(&self) -> Option<u64> {
+        REQUEST_MARKERS.with(|markers| {
+            markers
+                .borrow()
+                .get(&(self as *const Self as usize))
+                .copied()
+        })
+    }
+
+    /// Scope a marker to this client and execution thread, restoring it on panic too.
+    pub fn with_request_marker<T>(&self, marker: u64, run: impl FnOnce() -> T) -> T {
+        struct Restore(usize, Option<u64>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                REQUEST_MARKERS.with(|markers| {
+                    let mut markers = markers.borrow_mut();
+                    match self.1 {
+                        Some(value) => {
+                            markers.insert(self.0, value);
+                        }
+                        None => {
+                            markers.remove(&self.0);
+                        }
+                    }
+                });
+            }
+        }
+        let id = self as *const Self as usize;
+        let previous = REQUEST_MARKERS.with(|markers| markers.borrow_mut().insert(id, marker));
+        let _restore = Restore(id, previous);
+        run()
     }
 
     /// 同步发送：校验地址、可选 failpoint 超时，再 dispatch。
@@ -400,6 +474,14 @@ impl RPCClient {
             .unwrap_or(false)
         {
             return Err(RpcError::Server("Deadline is exceeded".to_owned()));
+        }
+        let interceptor = self
+            .interceptor
+            .read()
+            .expect("interceptor lock poisoned")
+            .clone();
+        if let Some(interceptor) = interceptor {
+            interceptor(&request)?;
         }
         self.server
             .get_store_id_by_address(address)

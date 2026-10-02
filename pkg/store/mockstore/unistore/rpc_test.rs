@@ -59,3 +59,27 @@ fn debug_region_properties_reports_mvcc_row_count_like_go() {
 
     client.close().expect("close unistore");
 }
+
+#[test]
+fn request_marker_is_client_local_nested_and_restored_after_panics() {
+    let (client, _, _) = New("", Vec::new(), NULL_KEYSPACE_ID, Vec::new()).unwrap();
+    let (other, _, _) = New("", Vec::new(), NULL_KEYSPACE_ID, Vec::new()).unwrap();
+    client.with_request_marker(42, || {
+        assert_eq!(client.request_marker(), Some(42));
+        assert_eq!(other.request_marker(), None);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.with_request_marker(7, || {
+                assert_eq!(client.request_marker(), Some(7));
+                panic!("restore marker");
+            });
+        }));
+        assert!(result.is_err());
+        assert_eq!(client.request_marker(), Some(42));
+        std::thread::scope(|scope| {
+            scope.spawn(|| assert_eq!(client.request_marker(), None));
+        });
+    });
+    assert_eq!(client.request_marker(), None);
+    client.close().unwrap();
+    other.close().unwrap();
+}

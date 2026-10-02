@@ -186,11 +186,66 @@ impl kv::Getter for KVTxn {
                 .map(|value| value_entry(value, 0))
                 .ok_or_else(not_found);
         }
+        if let Some(rpc) = self.store.EmbeddedRpc() {
+            return rpc
+                .get(
+                    key.as_ref(),
+                    self.start_ts,
+                    self.request_priority,
+                    self.request_marker,
+                )?
+                .map(|value| value_entry(value, 0))
+                .ok_or_else(not_found);
+        }
         self.store
             .read_entry_at(key.as_ref(), self.start_ts)
             // Go mockstore's transaction Getter does not expose MVCC commit_ts.
             .map(|(value, _commit_ts)| value_entry(value, 0))
             .ok_or_else(not_found)
+    }
+}
+
+impl KVTxn {
+    fn canonical_scan(
+        &self,
+        lower: Option<&[u8]>,
+        upper: Option<&[u8]>,
+        reverse: bool,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, kv::errors::SharedError> {
+        let Some(rpc) = self.store.EmbeddedRpc() else {
+            return Ok(self.scan(lower, upper, reverse));
+        };
+        let mut rows = rpc
+            .scan(
+                self.start_ts,
+                lower,
+                upper,
+                false,
+                self.request_priority,
+                self.request_marker,
+            )?
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        for (key, value) in &self.writes {
+            if lower.is_some_and(|lower| key.as_slice() < lower)
+                || upper.is_some_and(|upper| key.as_slice() >= upper)
+            {
+                continue;
+            }
+            match value {
+                Some(value) => {
+                    rows.insert(key.clone(), value.clone());
+                }
+                None => {
+                    rows.remove(key);
+                }
+            }
+        }
+        let mut rows = rows.into_iter().collect::<Vec<_>>();
+        if reverse {
+            rows.reverse();
+        }
+        Ok(rows)
     }
 }
 
@@ -201,11 +256,11 @@ impl kv::Retriever for KVTxn {
         key: kv::Key,
         upper_bound: Option<kv::Key>,
     ) -> Result<Box<dyn kv::Iterator>, kv::errors::SharedError> {
-        Ok(Box::new(CanonicalIterator::new(self.scan(
+        Ok(Box::new(CanonicalIterator::new(self.canonical_scan(
             Some(key.as_ref()),
             upper_bound.as_ref().map(AsRef::as_ref),
             false,
-        ))))
+        )?)))
     }
 
     fn IterReverse(
@@ -213,11 +268,11 @@ impl kv::Retriever for KVTxn {
         key: Option<kv::Key>,
         lower_bound: Option<kv::Key>,
     ) -> Result<Box<dyn kv::Iterator>, kv::errors::SharedError> {
-        Ok(Box::new(CanonicalIterator::new(self.scan(
+        Ok(Box::new(CanonicalIterator::new(self.canonical_scan(
             lower_bound.as_ref().map(AsRef::as_ref),
             key.as_ref().map(AsRef::as_ref),
             true,
-        ))))
+        )?)))
     }
 }
 
@@ -568,6 +623,37 @@ impl kv::Transaction for Transaction {
 
     /// 提交事务写集。
     fn Commit(&mut self, _ctx: &kv::context::Context) -> Result<(), kv::errors::SharedError> {
+        if let Some(rpc) = self.inner.store.EmbeddedRpc() {
+            if !self.inner.valid {
+                return Err(storage_error("transaction is closed"));
+            }
+            let commit_ts = self
+                .inner
+                .store
+                .CurrentTimestamp("global")
+                .map_err(storage_error)?;
+            if !self.inner.writes.is_empty() {
+                if let Some(checker) = self
+                    .options
+                    .get(&kv::SchemaChecker)
+                    .and_then(|value| value.downcast_ref::<kv::TransactionSchemaChecker>())
+                {
+                    (checker.0)(commit_ts)?;
+                }
+            }
+            rpc.commit(
+                self.inner.start_ts,
+                commit_ts,
+                &self.inner.writes,
+                self.inner.request_priority,
+                self.inner.request_marker,
+            )?;
+            self.inner.writes.clear();
+            self.inner.buffered_write_size = 0;
+            self.inner.valid = false;
+            self.commit_ts = commit_ts;
+            return Ok(());
+        }
         let async_commit = self
             .options
             .get(&kv::EnableAsyncCommit)
@@ -599,6 +685,16 @@ impl kv::Transaction for Transaction {
 
     /// 回滚事务。
     fn Rollback(&mut self) -> Result<(), kv::errors::SharedError> {
+        if self.inner.valid {
+            if let Some(rpc) = self.inner.store.EmbeddedRpc() {
+                rpc.rollback(
+                    self.inner.start_ts,
+                    self.inner.writes.keys().cloned().collect(),
+                    self.inner.request_priority,
+                    self.inner.request_marker,
+                )?;
+            }
+        }
         self.inner.Rollback().map_err(storage_error)
     }
 
@@ -639,6 +735,26 @@ impl kv::Transaction for Transaction {
     }
 
     fn SetOption(&mut self, option: i32, value: Option<Box<dyn Any>>) {
+        if option == kv::Priority {
+            // Capture the caller's scoped context when configuring this
+            // statement transaction. Separate metadata transactions stay unmarked.
+            self.inner.request_marker = self
+                .inner
+                .store
+                .EmbeddedRpc()
+                .and_then(|rpc| rpc.client().request_marker());
+            self.snapshot.request_marker = self.inner.request_marker;
+            self.inner.request_priority = value
+                .as_ref()
+                .and_then(|value| value.downcast_ref::<i32>())
+                .copied()
+                .unwrap_or(kv::PriorityNormal);
+            kv::Snapshot::SetOption(
+                &mut self.snapshot,
+                option,
+                Some(Box::new(self.inner.request_priority)),
+            );
+        }
         if option == kv::Pessimistic {
             self.inner.SetPessimistic(
                 value
@@ -699,8 +815,12 @@ impl kv::Transaction for Transaction {
     ) -> Result<HashMap<String, kv::ValueEntry>, kv::errors::SharedError> {
         let mut result = HashMap::new();
         for key in keys {
-            if let Ok(value) = kv::Getter::Get(self, ctx, key.clone(), &[]) {
-                result.insert(key_name(key), value);
+            match kv::Getter::Get(self, ctx, key.clone(), &[]) {
+                Ok(value) => {
+                    result.insert(key_name(key), value);
+                }
+                Err(err) if kv::IsErrNotFound(&err) => {}
+                Err(err) => return Err(err),
             }
         }
         Ok(result)
@@ -755,14 +875,52 @@ impl kv::Getter for Snapshot {
         if let Some(cached) = self.cache.borrow().get(key.as_ref()).cloned() {
             return cached.ok_or_else(not_found);
         }
-        let value = self
-            .store
-            .read_entry_at(key.as_ref(), self.version)
-            .map(|(value, commit_ts)| value_entry(value, commit_ts));
+        let value = if let Some(rpc) = self.store.EmbeddedRpc() {
+            rpc.get(
+                key.as_ref(),
+                self.version,
+                self.rpc_priority(),
+                self.request_marker,
+            )?
+            .map(|value| value_entry(value, 0))
+        } else {
+            self.store
+                .read_entry_at(key.as_ref(), self.version)
+                .map(|(value, commit_ts)| value_entry(value, commit_ts))
+        };
         self.cache
             .borrow_mut()
             .insert(key.as_ref().to_vec(), value.clone());
         value.ok_or_else(not_found)
+    }
+}
+
+impl Snapshot {
+    fn rpc_priority(&self) -> i32 {
+        self.options
+            .get(&kv::Priority)
+            .and_then(|value| value.downcast_ref::<i32>())
+            .copied()
+            .unwrap_or(kv::PriorityNormal)
+    }
+    fn canonical_scan(
+        &self,
+        lower: Option<&[u8]>,
+        upper: Option<&[u8]>,
+        reverse: bool,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, kv::errors::SharedError> {
+        if let Some(rpc) = self.store.EmbeddedRpc() {
+            rpc.scan(
+                self.version,
+                lower,
+                upper,
+                reverse,
+                self.rpc_priority(),
+                self.request_marker,
+            )
+        } else {
+            Ok(self.store.scan_at(self.version, lower, upper, reverse))
+        }
     }
 }
 
@@ -773,12 +931,11 @@ impl kv::Retriever for Snapshot {
         key: kv::Key,
         upper_bound: Option<kv::Key>,
     ) -> Result<Box<dyn kv::Iterator>, kv::errors::SharedError> {
-        Ok(Box::new(CanonicalIterator::new(self.store.scan_at(
-            self.version,
+        Ok(Box::new(CanonicalIterator::new(self.canonical_scan(
             Some(key.as_ref()),
             upper_bound.as_ref().map(AsRef::as_ref),
             false,
-        ))))
+        )?)))
     }
 
     fn IterReverse(
@@ -786,12 +943,11 @@ impl kv::Retriever for Snapshot {
         key: Option<kv::Key>,
         lower_bound: Option<kv::Key>,
     ) -> Result<Box<dyn kv::Iterator>, kv::errors::SharedError> {
-        Ok(Box::new(CanonicalIterator::new(self.store.scan_at(
-            self.version,
+        Ok(Box::new(CanonicalIterator::new(self.canonical_scan(
             lower_bound.as_ref().map(AsRef::as_ref),
             key.as_ref().map(AsRef::as_ref),
             true,
-        ))))
+        )?)))
     }
 }
 
@@ -805,8 +961,12 @@ impl kv::Snapshot for Snapshot {
     ) -> Result<HashMap<String, kv::ValueEntry>, kv::errors::SharedError> {
         let mut result = HashMap::new();
         for key in keys {
-            if let Ok(value) = kv::Getter::Get(self, ctx, key.clone(), &[]) {
-                result.insert(key_name(key), value);
+            match kv::Getter::Get(self, ctx, key.clone(), &[]) {
+                Ok(value) => {
+                    result.insert(key_name(key), value);
+                }
+                Err(err) if kv::IsErrNotFound(&err) => {}
+                Err(err) => return Err(err),
             }
         }
         Ok(result)

@@ -295,3 +295,66 @@ fn test_canonical_optimistic_lock_retains_mvcc_conflict_dependency() {
         )
     );
 }
+
+#[test]
+fn embedded_rpc_transactions_preserve_snapshot_buffer_and_conflict_errors() {
+    use astersql_kv as kv;
+    let store = crate::KVStore::NewEmbeddedRpc().unwrap();
+    let rpc = store.EmbeddedRpc().unwrap();
+    let client = rpc.client();
+    let storage = crate::NewMockStorage(store.clone(), None).unwrap();
+    let mut first = kv::Storage::Begin(storage.as_ref(), &[]).unwrap();
+    first.Set(kv::Key(b"a".to_vec()), b"old".to_vec()).unwrap();
+    first.Commit(&kv::Context::default()).unwrap();
+    let snapshot = kv::Storage::GetSnapshot(storage.as_ref(), kv::NewVersion(first.CommitTS()));
+    let mut stale = kv::Storage::Begin(storage.as_ref(), &[]).unwrap();
+    let mut second = kv::Storage::Begin(storage.as_ref(), &[]).unwrap();
+    second.Set(kv::Key(b"a".to_vec()), b"new".to_vec()).unwrap();
+    second.Set(kv::Key(b"b".to_vec()), b"row".to_vec()).unwrap();
+    // Union scan must include buffered writes and mask buffered deletes.
+    second.Delete(kv::Key(b"a".to_vec())).unwrap();
+    let mut iter = second
+        .Iter(kv::Key(b"a".to_vec()), Some(kv::Key(b"c".to_vec())))
+        .unwrap();
+    assert!(iter.Valid());
+    assert_eq!(iter.Key().0, b"b");
+    iter.Next().unwrap();
+    assert!(!iter.Valid());
+    second.Set(kv::Key(b"a".to_vec()), b"new".to_vec()).unwrap();
+    second.Commit(&kv::Context::default()).unwrap();
+    assert_eq!(
+        snapshot
+            .Get(&kv::Context::default(), kv::Key(b"a".to_vec()), &[])
+            .unwrap()
+            .Value,
+        b"old"
+    );
+    stale
+        .Set(kv::Key(b"a".to_vec()), b"stale".to_vec())
+        .unwrap();
+    let error = stale.Commit(&kv::Context::default()).unwrap_err();
+    assert!(kv::ErrTxnRetryable.Equal(Some(&error)), "{error}");
+    let fresh = kv::Storage::GetSnapshot(storage.as_ref(), kv::NewVersion(u64::MAX));
+    assert_eq!(
+        fresh
+            .Get(&kv::Context::default(), kv::Key(b"a".to_vec()), &[])
+            .unwrap()
+            .Value,
+        b"new"
+    );
+    client.set_request_interceptor(Some(std::sync::Arc::new(|_| {
+        Err(astersql_store_mockstore_unistore::RpcError::Server(
+            "read rejected".into(),
+        ))
+    })));
+    // An interceptor error must not be mistaken for a missing key by BatchGet.
+    assert!(
+        fresh
+            .BatchGet(&kv::Context::default(), &[kv::Key(b"b".to_vec())], &[])
+            .unwrap_err()
+            .to_string()
+            .contains("read rejected")
+    );
+    client.set_request_interceptor(None);
+    store.Close().unwrap();
+}

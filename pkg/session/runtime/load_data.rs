@@ -26,6 +26,11 @@ use astersql_objstore::storeapi::Storage as _;
 use astersql_objstore::storeapi::WalkOption;
 use astersql_objstore_compressedio::{CompressType, DecompressConfig, new_reader};
 
+type LocalLoadDataReader = Box<dyn std::io::Read + Send>;
+thread_local! {
+    static LOCAL_LOAD_DATA_READERS: std::cell::RefCell<HashMap<usize, LocalLoadDataReader>> = std::cell::RefCell::new(HashMap::new());
+}
+
 #[derive(Clone)]
 enum LoadFieldTarget {
     Column(ast::ColumnName),
@@ -203,6 +208,33 @@ fn load_data_table_refs(table: &ast::TableName) -> ast::TableRefsClause {
 }
 
 impl ConcreteSession {
+    /// Execute client-local LOAD DATA with a request-owned reader. Dropping the
+    /// reader closes its resources on both success and error; it cannot leak
+    /// into the next statement or another session.
+    pub fn execute_with_load_data_reader<R: std::io::Read + Send + 'static>(
+        &self,
+        sql: &str,
+        reader: R,
+    ) -> SessionResult<Vec<ConcreteRecordSet>> {
+        struct Restore(usize, Option<LocalLoadDataReader>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                LOCAL_LOAD_DATA_READERS.with(|readers| {
+                    let mut readers = readers.borrow_mut();
+                    readers.remove(&self.0);
+                    if let Some(previous) = self.1.take() {
+                        readers.insert(self.0, previous);
+                    }
+                });
+            }
+        }
+        let id = self as *const Self as usize;
+        let previous = LOCAL_LOAD_DATA_READERS
+            .with(|readers| readers.borrow_mut().insert(id, Box::new(reader)));
+        let _restore = Restore(id, previous);
+        self.execute(sql)
+    }
+
     /// Return the latest MySQL OK-packet message.
     pub fn LastMessage(&self) -> String {
         self.state.borrow().last_message.clone()
@@ -318,16 +350,30 @@ impl ConcreteSession {
             }
         }
 
+        // Keep a supplied reader alive through the transaction, including errors.
+        let mut supplied_reader = LOCAL_LOAD_DATA_READERS
+            .with(|readers| readers.borrow_mut().remove(&(self as *const Self as usize)));
         let source_files = if matches!(statement.FileLocRef, ast::FileLocRef::Client) {
-            vec![(
-                statement.Path.clone(),
-                std::fs::read(&statement.Path).map_err(|error| {
+            if let Some(reader) = supplied_reader.as_mut() {
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(reader, &mut bytes).map_err(|error| {
                     SessionError::new(format!(
                         "failed to read local infile {:?}: {error}",
                         statement.Path
                     ))
-                })?,
-            )]
+                })?;
+                vec![(statement.Path.clone(), bytes)]
+            } else {
+                vec![(
+                    statement.Path.clone(),
+                    std::fs::read(&statement.Path).map_err(|error| {
+                        SessionError::new(format!(
+                            "failed to read local infile {:?}: {error}",
+                            statement.Path
+                        ))
+                    })?,
+                )]
+            }
         } else {
             let backend = ParseBackend(&statement.Path, None).map_err(|error| {
                 load_data_error(
@@ -655,6 +701,11 @@ impl ConcreteSession {
 
         let warning_start = self.state.borrow().current_warnings.len();
         let insert = ast::InsertStmt {
+            Priority: if statement.LowPriority {
+                astersql_parser_mysql::r#const::LowPriority.0
+            } else {
+                astersql_parser_mysql::r#const::NoPriority.0
+            },
             IsReplace: statement.OnDuplicate == ast::OnDuplicateKeyHandlingType::Replace,
             // MySQL treats LOCAL input like IGNORE for duplicate-key handling
             // because the server cannot stop a client that is already sending

@@ -12,6 +12,7 @@ go-package = "pkg/store/mockstore/mockstorage"
 legacy-tasks = ["task-819"]
 
 [dependencies]
+astersql-store-mockstore-unistore = { path = "../unistore" }
 "astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
 
 [target.'cfg(any())'.dependencies]

@@ -1991,6 +1991,16 @@ impl ConcreteSession {
             } else {
                 None
             };
+        if let Some(transaction) = statement_transaction.as_mut() {
+            let priority = if statement.Priority == astersql_parser_mysql::r#const::LowPriority.0 {
+                kv::PriorityLow
+            } else if statement.Priority == astersql_parser_mysql::r#const::HighPriority.0 {
+                kv::PriorityHigh
+            } else {
+                kv::PriorityNormal
+            };
+            transaction.SetOption(kv::Priority, Some(Box::new(priority)));
+        }
         let check_insert_started = std::time::Instant::now();
         let prefetch_started = std::time::Instant::now();
         let mut working_rows = if requires_existing_rows {

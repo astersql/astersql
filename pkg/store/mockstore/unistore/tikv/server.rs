@@ -43,6 +43,10 @@ pub enum IsolationLevel {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 /// RPC 请求上下文：Region 定位、隔离级别与已解析/已提交锁列表。
 pub struct RpcContext {
+    /// Request policy delivered by the transaction client.
+    pub priority: i32,
+    /// Request-local marker; unrelated background requests remain unmarked.
+    pub request_marker: Option<u64>,
     pub region: RequestContext,
     pub isolation: IsolationLevel,
     pub resolved_locks: Vec<u64>,

@@ -39,11 +39,34 @@ fn test_main_applies_go_test_environment_overrides_and_cleanup() {
     assert!(runtime.view_stopped);
 }
 
-#[test]
-fn shared_load_data_store_bootstraps_once_and_cleans_up_after_all_consumers() {
-    use astersql_session::runtime::{ConcreteSession, CreateAnalyzeSession};
-    let (domain, bootstrap_session) =
-        CreateAnalyzeSession().expect("bootstrap shared LOAD DATA store");
+pub(crate) fn with_shared_load_data_store(
+    run: impl FnOnce(
+        &std::sync::Arc<astersql_domain::Domain>,
+        &std::sync::Arc<astersql_store_mockstore_unistore::RPCClient>,
+        &crate::load_data_test::PriorityChecker,
+    ),
+) {
+    use astersql_domain::{Domain, DomainConfig, KvInfoSchemaLoader};
+    use astersql_session::runtime::{BootstrapCanonicalDomain, ConcreteSession};
+    use astersql_store_mockstore_mockstorage::{KVStore, NewMockStorage};
+    use std::sync::Arc;
+    let store = KVStore::NewEmbeddedRpc().expect("create embedded RPC storage");
+    let client = store.EmbeddedRpc().unwrap().client();
+    // Install the shared checking client before bootstrapping, just like TestMain.
+    let checker = crate::load_data_test::PriorityChecker::default();
+    client.set_request_interceptor(Some(checker.interceptor()));
+    let storage = Arc::try_unwrap(NewMockStorage(store, None).unwrap())
+        .ok()
+        .unwrap();
+    let mut config = DomainConfig::default();
+    config.schema_lease = std::time::Duration::ZERO;
+    config.stats_lease = std::time::Duration::ZERO;
+    let domain = Arc::new(Domain::new(
+        storage,
+        Arc::new(KvInfoSchemaLoader::new()),
+        config,
+    ));
+    domain.init().unwrap();
     struct Cleanup(ConcreteSession);
     impl Drop for Cleanup {
         fn drop(&mut self) {
@@ -55,13 +78,32 @@ fn shared_load_data_store_bootstraps_once_and_cleans_up_after_all_consumers() {
                 .expect("close shared LOAD DATA store");
         }
     }
-    let cleanup = Cleanup(bootstrap_session);
-    let new_session = || ConcreteSession::new(domain.clone());
-    crate::load_data_test::replace_uses_shared_store(&new_session());
-    crate::load_data_test::server_file_uses_shared_store(&new_session());
-    // Repeat against the same store: stale table metadata must be removed first.
-    crate::load_data_test::server_file_uses_shared_store(&new_session());
-    crate::load_data_test::repeated_nonclustered_keys_use_shared_store(&new_session());
+    let cleanup = Cleanup(
+        BootstrapCanonicalDomain(domain.clone()).expect("bootstrap shared LOAD DATA store"),
+    );
+    run(&domain, &client, &checker);
     drop(cleanup);
     assert!(domain.is_closed());
+    assert!(
+        client
+            .send_request(
+                "",
+                astersql_store_mockstore_unistore::Request::Empty,
+                std::time::Duration::from_secs(2)
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn shared_load_data_store_bootstraps_once_and_cleans_up_after_all_consumers() {
+    use astersql_session::runtime::ConcreteSession;
+    with_shared_load_data_store(|domain, client, checker| {
+        let new_session = || ConcreteSession::new(domain.clone());
+        crate::load_data_test::replace_uses_shared_store(&new_session());
+        crate::load_data_test::server_file_uses_shared_store(&new_session());
+        crate::load_data_test::server_file_uses_shared_store(&new_session());
+        crate::load_data_test::repeated_nonclustered_keys_use_shared_store(&new_session());
+        crate::load_data_test::low_priority_uses_shared_store(&new_session(), client, checker);
+    });
 }

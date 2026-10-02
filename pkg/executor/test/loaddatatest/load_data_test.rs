@@ -396,21 +396,295 @@ fn test_load_data_auto_random_error() {
     );
 }
 
+#[derive(Clone, Default)]
+pub(crate) struct PriorityChecker {
+    enabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    seen: std::sync::Arc<std::sync::Mutex<Vec<astersql_store_mockstore_unistore::CommandType>>>,
+}
+
+impl PriorityChecker {
+    pub(crate) fn interceptor(&self) -> astersql_store_mockstore_unistore::rpc::RequestInterceptor {
+        let checker = self.clone();
+        std::sync::Arc::new(move |request| {
+            use astersql_store_mockstore_unistore::{CommandType, RpcError};
+            let Some(context) = request.context() else {
+                return Ok(());
+            };
+            if context.request_marker != Some(42)
+                || !checker.enabled.load(std::sync::atomic::Ordering::Acquire)
+            {
+                return Ok(());
+            }
+            let kind = request.command_type();
+            if matches!(
+                kind,
+                CommandType::BatchGet
+                    | CommandType::Get
+                    | CommandType::Scan
+                    | CommandType::Prewrite
+                    | CommandType::Commit
+                    | CommandType::Cleanup
+                    | CommandType::BatchRollback
+            ) {
+                if context.priority != astersql_kv::PriorityLow {
+                    return Err(RpcError::Server("unexpected kv request priority".into()));
+                }
+                checker.seen.lock().unwrap().push(kind);
+            }
+            Ok(())
+        })
+    }
+}
+
+pub(crate) fn low_priority_uses_shared_store(
+    session: &astersql_session::runtime::ConcreteSession,
+    client: &std::sync::Arc<astersql_store_mockstore_unistore::RPCClient>,
+    checker: &PriorityChecker,
+) {
+    use astersql_store_mockstore_unistore::CommandType;
+    session
+        .execute("use test; drop table if exists load_data_low_prio")
+        .unwrap();
+    session
+        .execute("create table load_data_low_prio (a int primary key, b int unique)")
+        .unwrap();
+    checker.seen.lock().unwrap().clear();
+    struct Reader {
+        input: std::io::Cursor<Vec<u8>>,
+        closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl std::io::Read for Reader {
+        fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+            std::io::Read::read(&mut self.input, bytes)
+        }
+    }
+    impl Drop for Reader {
+        fn drop(&mut self) {
+            self.closed
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+    let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reader = Reader {
+        input: std::io::Cursor::new(b"1\t10\n".to_vec()),
+        closed: closed.clone(),
+    };
+    checker
+        .enabled
+        .store(true, std::sync::atomic::Ordering::Release);
+    let result = client.with_request_marker(42, || session.execute_with_load_data_reader("load data low_priority local infile '/tmp/nonexistence.csv' into table load_data_low_prio", reader));
+    checker
+        .enabled
+        .store(false, std::sync::atomic::Ordering::Release);
+    assert!(
+        closed.load(std::sync::atomic::Ordering::Acquire),
+        "reader must close on success or error"
+    );
+    result.unwrap();
+    let seen = checker.seen.lock().unwrap().clone();
+    assert!(
+        seen.iter().any(|kind| matches!(
+            kind,
+            CommandType::Get | CommandType::BatchGet | CommandType::Scan
+        )),
+        "must observe actual conflict reads: {seen:?}"
+    );
+    assert!(
+        seen.contains(&CommandType::Prewrite),
+        "must observe actual prewrite: {seen:?}"
+    );
+    assert!(
+        seen.contains(&CommandType::Commit),
+        "must observe actual commit: {seen:?}"
+    );
+    assert_eq!(
+        query_rows(session, "select * from load_data_low_prio"),
+        ["1|10"]
+    );
+    assert_eq!(client.request_marker(), None);
+    let checked_count = checker.seen.lock().unwrap().len();
+    checker
+        .enabled
+        .store(true, std::sync::atomic::Ordering::Release);
+    // Unmarked and differently marked normal-priority SQL must be forwarded.
+    session
+        .execute("insert into load_data_low_prio values (2,20)")
+        .unwrap();
+    client
+        .with_request_marker(7, || {
+            session.execute("insert into load_data_low_prio values (3,30)")
+        })
+        .unwrap();
+    assert_eq!(checker.seen.lock().unwrap().len(), checked_count);
+    let rejected_closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reader = Reader {
+        input: std::io::Cursor::new(b"4\t40\n".to_vec()),
+        closed: rejected_closed.clone(),
+    };
+    let rejected = client.with_request_marker(42, || {
+        session.execute_with_load_data_reader(
+            "load data local infile '/tmp/nonexistence.csv' into table load_data_low_prio",
+            reader,
+        )
+    });
+    checker
+        .enabled
+        .store(false, std::sync::atomic::Ordering::Release);
+    assert!(
+        rejected
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("unexpected kv request priority")
+    );
+    assert!(rejected_closed.load(std::sync::atomic::Ordering::Acquire));
+    client
+        .with_request_marker(42, || {
+            session.execute("insert into load_data_low_prio values (5,50)")
+        })
+        .unwrap();
+    assert_eq!(
+        query_rows(session, "select * from load_data_low_prio order by a"),
+        ["1|10", "2|20", "3|30", "5|50"]
+    );
+    assert_eq!(client.request_marker(), None);
+}
+
 #[test]
 fn test_load_data_low_priority_sets_kv_low_priority() {
-    // LOW_PRIORITY 同时下推到 KV 读写，但不改变打开、事务提交和 reader 清理顺序。
-    let mut lifecycle = LoadDataLifecycle::default();
-    lifecycle.run(true);
-    assert_eq!(
-        lifecycle.events,
-        vec![
-            LoadDataEvent::OpenFile,
-            LoadDataEvent::Begin,
-            LoadDataEvent::KvReadLow,
-            LoadDataEvent::KvWriteLow,
-            LoadDataEvent::Commit,
-            LoadDataEvent::CloseReader,
-        ]
+    crate::main_test::with_shared_load_data_store(|domain, client, checker| {
+        low_priority_uses_shared_store(
+            &astersql_session::runtime::ConcreteSession::new(domain.clone()),
+            client,
+            checker,
+        );
+    });
+}
+
+#[test]
+fn shared_priority_checker_filters_markers_enabled_state_and_command_types() {
+    use astersql_store_mockstore_unistore::tikv::{
+        mvcc::PrewriteRequest, region::RequestContext, server::RpcContext,
+    };
+    use astersql_store_mockstore_unistore::{New, Request, RpcError};
+    let (client, _, cluster) = New(
+        "",
+        Vec::new(),
+        astersql_store_mockstore_unistore::NULL_KEYSPACE_ID,
+        Vec::new(),
+    )
+    .unwrap();
+    let region = cluster.region_manager().scan_regions(b"", b"", 1).remove(0);
+    let address = cluster.region_manager().all_stores()[0].address.clone();
+    let context = RpcContext {
+        region: RequestContext {
+            region_id: region.meta.id,
+            ..Default::default()
+        },
+        priority: astersql_kv::PriorityNormal,
+        request_marker: Some(42),
+        ..Default::default()
+    };
+    let checker = PriorityChecker::default();
+    client.set_request_interceptor(Some(checker.interceptor()));
+    checker
+        .enabled
+        .store(true, std::sync::atomic::Ordering::Release);
+    let keys = vec![b"load-data-key".to_vec()];
+    let requests = vec![
+        Request::BatchGet {
+            context: context.clone(),
+            keys: keys.clone(),
+            version: 10,
+        },
+        Request::Get {
+            context: context.clone(),
+            key: keys[0].clone(),
+            version: 10,
+        },
+        Request::Scan {
+            context: context.clone(),
+            start: keys[0].clone(),
+            end: b"load-data-z".to_vec(),
+            version: 10,
+            limit: 10,
+            reverse: false,
+            key_only: false,
+        },
+        Request::Prewrite {
+            context: context.clone(),
+            request: PrewriteRequest {
+                start_ts: 10,
+                primary_lock: keys[0].clone(),
+                ..Default::default()
+            },
+        },
+        Request::Commit {
+            context: context.clone(),
+            keys: keys.clone(),
+            start_ts: 10,
+            commit_ts: 11,
+        },
+        Request::Cleanup {
+            context: context.clone(),
+            key: keys[0].clone(),
+            start_ts: 10,
+            current_ts: 11,
+        },
+        Request::BatchRollback {
+            context: context.clone(),
+            keys: keys.clone(),
+            start_ts: 10,
+        },
+    ];
+    for request in requests {
+        let result = client.send_request(&address, request, std::time::Duration::from_secs(2));
+        assert!(
+            matches!(result, Err(RpcError::Server(ref message)) if message == "unexpected kv request priority")
+        );
+    }
+    // Non-KV commands still reach the server even while enabled.
+    assert!(
+        client
+            .send_request(
+                &address,
+                Request::DebugGetRegionProperties {
+                    region_id: region.meta.id
+                },
+                std::time::Duration::from_secs(2)
+            )
+            .is_ok()
     );
-    assert!(lifecycle.begin_before_commit());
+    for marker in [None, Some(7)] {
+        let request = Request::Get {
+            context: RpcContext {
+                request_marker: marker,
+                ..context.clone()
+            },
+            key: keys[0].clone(),
+            version: 10,
+        };
+        assert!(
+            client
+                .send_request(&address, request, std::time::Duration::from_secs(2))
+                .is_ok()
+        );
+    }
+    checker
+        .enabled
+        .store(false, std::sync::atomic::Ordering::Release);
+    assert!(
+        client
+            .send_request(
+                &address,
+                Request::Get {
+                    context,
+                    key: keys[0].clone(),
+                    version: 10
+                },
+                std::time::Duration::from_secs(2)
+            )
+            .is_ok()
+    );
+    client.close().unwrap();
 }

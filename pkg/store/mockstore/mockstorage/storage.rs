@@ -40,6 +40,7 @@ pub enum MockStorageError {
     Begin(String),
     Coprocessor(String),
     Pd(String),
+    Rpc(String),
 }
 
 impl fmt::Display for MockStorageError {
@@ -50,6 +51,7 @@ impl fmt::Display for MockStorageError {
             Self::WriteConflict => formatter.write_str("mock storage write conflict"),
             Self::Begin(message) => write!(formatter, "begin transaction: {message}"),
             Self::Coprocessor(message) => write!(formatter, "create coprocessor store: {message}"),
+            Self::Rpc(message) => write!(formatter, "embedded RPC: {message}"),
             Self::Pd(message) => write!(formatter, "pd client: {message}"),
         }
     }
@@ -258,6 +260,7 @@ struct KVStoreInner {
     begin_failure: Mutex<Option<String>>,
     copr_failure: Mutex<Option<String>>,
     uuid: String,
+    embedded_rpc: Option<Arc<crate::EmbeddedRpcStore>>,
 }
 
 #[derive(Clone)]
@@ -282,6 +285,7 @@ impl KVStore {
                 begin_failure: Mutex::new(None),
                 copr_failure: Mutex::new(None),
                 uuid: format!("mock-kv-{id}"),
+                embedded_rpc: None,
             }),
         }
     }
@@ -300,6 +304,20 @@ impl KVStore {
     /// physical time while remaining strictly monotonic.
     pub fn NewMemoryWithWallClockTSO() -> Self {
         Self::new_with_clock(Arc::new(MemoryPdClient::default()), true)
+    }
+
+    /// Use embedded TiKV RPCs as the authoritative MVCC backend. The local
+    /// transaction buffer remains the same canonical MemBuffer implementation.
+    pub fn NewEmbeddedRpc() -> Result<Self> {
+        let mut store = Self::NewMemoryWithWallClockTSO();
+        Arc::get_mut(&mut store.inner)
+            .expect("new store has one owner")
+            .embedded_rpc = Some(Arc::new(crate::EmbeddedRpcStore::new()?));
+        Ok(store)
+    }
+
+    pub fn EmbeddedRpc(&self) -> Option<Arc<crate::EmbeddedRpcStore>> {
+        self.inner.embedded_rpc.clone()
     }
 
     /// 开启事务：分配 start_ts（事务开始时间戳）。
@@ -334,6 +352,8 @@ impl KVStore {
             stages: Vec::new(),
             next_stage: 1,
             pessimistic: false,
+            request_priority: astersql_kv::PriorityNormal,
+            request_marker: None,
         })
     }
 
@@ -349,6 +369,7 @@ impl KVStore {
             },
             options: HashMap::new(),
             cache: RefCell::new(HashMap::new()),
+            request_marker: None,
         }
     }
 
@@ -404,6 +425,9 @@ impl KVStore {
     pub fn Close(&self) -> Result<()> {
         if !self.inner.closed.swap(true, Ordering::AcqRel) {
             self.inner.close_count.fetch_add(1, Ordering::Relaxed);
+            if let Some(rpc) = self.EmbeddedRpc() {
+                rpc.close()?;
+            }
         }
         Ok(())
     }
@@ -585,6 +609,8 @@ pub struct KVTxn {
     )>,
     pub(crate) next_stage: i32,
     pub(crate) pessimistic: bool,
+    pub(crate) request_priority: i32,
+    pub(crate) request_marker: Option<u64>,
 }
 
 impl KVTxn {
@@ -816,6 +842,7 @@ pub fn newTiKVTxn(transaction: Result<KVTxn>) -> Result<Transaction> {
 
 /// 只读快照：固定 version 下的可见性视图。
 pub struct Snapshot {
+    pub(crate) request_marker: Option<u64>,
     pub(crate) store: KVStore,
     pub(crate) version: u64,
     pub(crate) options: HashMap<i32, Box<dyn Any>>,

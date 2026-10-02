@@ -8,7 +8,9 @@
 #![allow(dead_code, non_camel_case_types, non_snake_case, unused_variables)]
 
 mod canonical_storage;
+mod embedded_rpc;
 mod storage;
+pub use embedded_rpc::EmbeddedRpcStore;
 
 pub use canonical_storage::*;
 pub use storage::*;

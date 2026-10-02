@@ -12,6 +12,10 @@ go-package = "pkg/executor/test/loaddatatest"
 legacy-tasks = ["task-1346"]
 
 [dev-dependencies]
+astersql-domain = { path = "../../../domain" }
+astersql-kv = { path = "../../../kv" }
+astersql-store-mockstore-mockstorage = { path = "../../../store/mockstore/mockstorage" }
+astersql-store-mockstore-unistore = { path = "../../../store/mockstore/unistore" }
 astersql-session = { path = "../../../session" }
 
 [target.'cfg(any())'.dev-dependencies]
