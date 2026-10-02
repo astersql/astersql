@@ -268,24 +268,24 @@
 
 候选失败和通过命令相同，以下manifest均在制定计划时存在；先确认真正拥有模块，只运行受影响者。若实现已移动，在本文件记录新的真实manifest及原因后再运行，不同时遍历所有crate：
 
-    cargo test --manifest-path br/pkg/stream/Cargo.toml go_commit_94a9cbedab -- --nocapture
-    cargo test --manifest-path pkg/ddl/Cargo.toml go_commit_94a9cbedab -- --nocapture
-    cargo test --manifest-path pkg/ddl/jobsubmit/Cargo.toml go_commit_94a9cbedab -- --nocapture
-    cargo test --manifest-path pkg/ddl/schematracker/Cargo.toml go_commit_94a9cbedab -- --nocapture
-    cargo test --manifest-path pkg/executor/Cargo.toml go_commit_94a9cbedab -- --nocapture
-    cargo test --manifest-path pkg/executor/test/ddl/Cargo.toml go_commit_94a9cbedab -- --nocapture
-    cargo test --manifest-path pkg/expression/Cargo.toml go_commit_94a9cbedab -- --nocapture
-    cargo test --manifest-path pkg/infoschema/Cargo.toml go_commit_94a9cbedab -- --nocapture
-    cargo test --manifest-path pkg/kv/Cargo.toml go_commit_94a9cbedab -- --nocapture
-    cargo test --manifest-path pkg/meta/model/Cargo.toml go_commit_94a9cbedab -- --nocapture
-    cargo test --manifest-path pkg/planner/Cargo.toml go_commit_94a9cbedab -- --nocapture
-    cargo test --manifest-path pkg/planner/core/Cargo.toml go_commit_94a9cbedab -- --nocapture
-    cargo test --manifest-path pkg/session/Cargo.toml go_commit_94a9cbedab -- --nocapture
-    cargo test --manifest-path pkg/sessionctx/vardef/Cargo.toml go_commit_94a9cbedab -- --nocapture
-    cargo test --manifest-path pkg/sessionctx/variable/Cargo.toml go_commit_94a9cbedab -- --nocapture
-    cargo test --manifest-path pkg/store/gcworker/Cargo.toml go_commit_94a9cbedab -- --nocapture
-    cargo test --manifest-path pkg/util/mviewutil/Cargo.toml go_commit_94a9cbedab -- --nocapture
-    cargo test --manifest-path pkg/util/sqlexec/Cargo.toml go_commit_94a9cbedab -- --nocapture
+    cargo test --manifest-path br/pkg/stream/Cargo.toml -- --nocapture
+    cargo test --manifest-path pkg/ddl/Cargo.toml -- --nocapture
+    cargo test --manifest-path pkg/ddl/jobsubmit/Cargo.toml -- --nocapture
+    cargo test --manifest-path pkg/ddl/schematracker/Cargo.toml -- --nocapture
+    cargo test --manifest-path pkg/executor/Cargo.toml -- --nocapture
+    cargo test --manifest-path pkg/executor/test/ddl/Cargo.toml -- --nocapture
+    cargo test --manifest-path pkg/expression/Cargo.toml -- --nocapture
+    cargo test --manifest-path pkg/infoschema/Cargo.toml -- --nocapture
+    cargo test --manifest-path pkg/kv/Cargo.toml -- --nocapture
+    cargo test --manifest-path pkg/meta/model/Cargo.toml -- --nocapture
+    cargo test --manifest-path pkg/planner/Cargo.toml -- --nocapture
+    cargo test --manifest-path pkg/planner/core/Cargo.toml -- --nocapture
+    cargo test --manifest-path pkg/session/Cargo.toml -- --nocapture
+    cargo test --manifest-path pkg/sessionctx/vardef/Cargo.toml -- --nocapture
+    cargo test --manifest-path pkg/sessionctx/variable/Cargo.toml -- --nocapture
+    cargo test --manifest-path pkg/store/gcworker/Cargo.toml -- --nocapture
+    cargo test --manifest-path pkg/util/mviewutil/Cargo.toml -- --nocapture
+    cargo test --manifest-path pkg/util/sqlexec/Cargo.toml -- --nocapture
 
 预期失败：缺失或偏离的Go行为在真实路径出现错误结果、遗漏副作用或状态/错误不符；每个测试具体预期值来自本提交Go逻辑。编译错误、缺资源和零测试不是有效行为红灯。已完整移植的项不人为回退制造失败，注明不适用并取得当前通过证据；新增测试应验证现有实现而非强迫重写。
 
