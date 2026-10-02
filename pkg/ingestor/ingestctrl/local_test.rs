@@ -2274,6 +2274,76 @@ pub fn test_do_import() {
     // 断言: require.ErrorContains(t, err, "fatal error")
 }
 
+struct GoCommit955fd6550bStoreHelper;
+
+impl crate::engine_mgr::StoreHelper for GoCommit955fd6550bStoreHelper {
+    fn GetTS(&self, token: &crate::CancellationToken) -> crate::Result<(i64, i64)> {
+        token.check()?;
+        Ok((1, 1))
+    }
+
+    fn GetTiKVCodec(&self) -> String {
+        "api-v2".to_owned()
+    }
+}
+
+struct GoCommit955fd6550bCancellingClient;
+
+impl crate::local::ImportClient for GoCommit955fd6550bCancellingClient {
+    fn WriteAndIngest(
+        &self,
+        token: &crate::CancellationToken,
+        _engine: &crate::engine::Engine,
+        _ranges: &[crate::KeyRange],
+    ) -> crate::Result<(i64, i64)> {
+        token.cancel();
+        Ok((0, 0))
+    }
+
+    fn Close(&self) {}
+}
+
+struct GoCommit955fd6550bCancellingFactory;
+
+impl crate::local::ImportClientFactory for GoCommit955fd6550bCancellingFactory {
+    fn Create(
+        &self,
+        token: &crate::CancellationToken,
+        _store_id: u64,
+    ) -> crate::Result<std::sync::Arc<dyn crate::local::ImportClient>> {
+        token.check()?;
+        Ok(std::sync::Arc::new(GoCommit955fd6550bCancellingClient))
+    }
+
+    fn Close(&self) {}
+}
+
+#[test]
+fn go_commit_955fd6550b_import_propagates_cancellation_from_active_client() {
+    let mut config = crate::local::BackendConfig::default();
+    config.local_store_dir = std::env::temp_dir()
+        .join(format!("go-commit-955fd6550b-{}", crate::EngineId::new()))
+        .to_string_lossy()
+        .into_owned();
+    let backend = crate::local::NewBackend(
+        config,
+        std::sync::Arc::new(GoCommit955fd6550bStoreHelper),
+        Some(std::sync::Arc::new(GoCommit955fd6550bCancellingFactory)),
+        None,
+    )
+    .unwrap();
+    let token = crate::CancellationToken::default();
+    let engine_id = crate::EngineId::new();
+    backend.OpenEngine(&token, engine_id).unwrap();
+
+    assert_eq!(
+        backend.ImportEngine(&token, engine_id, 1),
+        Err(crate::Error::Cancelled)
+    );
+    assert_eq!(backend.GetImportedKVCount(engine_id), 0);
+    backend.Close();
+}
+
 #[test]
 // TestRegionJobResetRetryCounter 对应 Go 函数/方法声明。
 // Go: func TestRegionJobResetRetryCounter(t *testing.T)

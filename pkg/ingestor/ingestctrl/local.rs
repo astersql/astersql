@@ -493,6 +493,10 @@ impl Backend {
             } else {
                 engine.KVStatistics()
             };
+            // A client may finish its current operation while the parent import is
+            // being cancelled. Preserve Go doImport's contract by reporting that
+            // cancellation before committing successful import state.
+            token.check()?;
             engine.FinishImport(bytes, count);
             verifyImportedStatistics(&engine, count)?;
             self.imported_counts
