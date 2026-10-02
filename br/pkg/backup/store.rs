@@ -141,9 +141,9 @@ pub static TimeoutOneResponse: Duration = Duration::from_secs(3600);
 /// 仅测试注入短超时；生产路径保持 `None`，读取时回落默认值。
 static TIMEOUT_OVERRIDE: Mutex<Option<Duration>> = Mutex::new(None);
 
-/// 测试钩子：覆盖单响应超时；传 `None` 恢复默认。勿在生产代码调用。
-pub fn set_timeout_one_response_for_test(d: Option<Duration>) {
-    *TIMEOUT_OVERRIDE.lock().unwrap() = d;
+/// 测试钩子：覆盖单响应超时并返回旧值，供测试清理时精确恢复。
+pub fn set_timeout_one_response_for_test(d: Option<Duration>) -> Option<Duration> {
+    std::mem::replace(&mut *TIMEOUT_OVERRIDE.lock().unwrap(), d)
 }
 
 /// 解析当前生效超时：优先测试覆盖，否则 `TimeoutOneResponse`。

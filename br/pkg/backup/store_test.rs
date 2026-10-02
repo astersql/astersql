@@ -71,6 +71,57 @@ impl BackupStream for MockBackupStream {
     }
 }
 
+// Serialize tests that change the process-wide timeout override.
+static TIMEOUT_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+struct TimeoutOverrideGuard(Option<Duration>);
+
+impl TimeoutOverrideGuard {
+    fn new(timeout: Option<Duration>) -> Self {
+        Self(set_timeout_one_response_for_test(timeout))
+    }
+}
+
+#[test]
+fn test_timeout_override_restores_after_unwind() {
+    let _lock = TIMEOUT_TEST_LOCK.lock().unwrap();
+    let original = set_timeout_one_response_for_test(Some(Duration::from_secs(7)));
+    let result = std::panic::catch_unwind(|| {
+        let _cleanup = TimeoutOverrideGuard::new(Some(Duration::from_millis(800)));
+        panic!("simulate an assertion failure before timeout cleanup");
+    });
+    let restored = set_timeout_one_response_for_test(original);
+    assert!(result.is_err());
+    assert_eq!(restored, Some(Duration::from_secs(7)));
+}
+
+impl Drop for TimeoutOverrideGuard {
+    fn drop(&mut self) {
+        set_timeout_one_response_for_test(self.0);
+    }
+}
+
+fn record_timeout_err(ctx: &Context, timeout_observed: &mpsc::SyncSender<bool>) -> Error {
+    let err = ctx.Err();
+    let _ = timeout_observed.send(err.is_some());
+    err.unwrap_or_else(|| Error::new("context canceled"))
+}
+
+#[test]
+fn test_timeout_observation_reports_cancellation() {
+    let ctx = Context::Background();
+    let (tx, rx) = mpsc::sync_channel(1);
+    let err = record_timeout_err(&ctx, &tx);
+    assert!(!rx.recv().unwrap());
+    assert_eq!(err.msg, "context canceled");
+    assert!(ctx.Err().is_none());
+
+    ctx.cancel(Error::new("receive a backup response timeout"));
+    let err = record_timeout_err(&ctx, &tx);
+    assert!(rx.recv().unwrap());
+    assert_eq!(err.msg, ctx.Err().unwrap().msg);
+}
+
 /// TestTimeoutRecv: first Recv blocks past timeout; then non-first-packet timeout.
 ///
 /// 对齐 Go `TestTimeoutRecv`：先验证首包超过 800ms 未 Refresh 即失败；
@@ -78,22 +129,22 @@ impl BackupStream for MockBackupStream {
 #[test]
 fn test_timeout_recv() {
     // 生产默认 1h，测试必须覆盖为亚秒级，否则用例无法在合理时间完成。
-    set_timeout_one_response_for_test(Some(Duration::from_millis(800)));
+    let _lock = TIMEOUT_TEST_LOCK.lock().unwrap();
+    let _cleanup = TimeoutOverrideGuard::new(Some(Duration::from_millis(800)));
     let ctx = Context::Background();
 
     // Just Timeout Once — 首包 sleep 1s > 800ms，期望 startBackup 返回 Err。
     {
+        let (timeout_observed, observation) = mpsc::sync_channel(1);
         let err = startBackup(
             &ctx,
             0,
             Arc::new(NewResourceMemoryLimiter(100)),
             BackupRequest::default(),
             Arc::new(MockBackupClient {
-                recv_func: Arc::new(|ctx| {
+                recv_func: Arc::new(move |ctx| {
                     thread::sleep(Duration::from_secs(1));
-                    // 看门狗应已 cancel 子 ctx；此处把 cancel cause 向上返回。
-                    assert!(ctx.Err().is_some(), "timeout should cancel child ctx");
-                    Err(ctx.Err().unwrap())
+                    Err(record_timeout_err(ctx, &timeout_observed))
                 }),
             }),
             1,
@@ -103,16 +154,24 @@ fn test_timeout_recv() {
             },
         );
         assert!(err.is_err(), "first-packet timeout must error");
+        assert!(observation.recv().unwrap());
     }
 
     // Timeout Not At First — 前 15 次及时 Refresh，第 16 次卡死触发超时。
     {
+        let (timeout_observed, observation) = mpsc::sync_channel(1);
         let count = Arc::new(AtomicUsize::new(0));
         let count2 = Arc::clone(&count);
         let (tx, rx) = mpsc::channel();
         // Drain responses (Go: make(chan, 15)).
         // 后台排空通道，避免 send 阻塞影响超时计时。
-        thread::spawn(move || while rx.recv().is_ok() {});
+        let drain = thread::spawn(move || {
+            let mut received = 0;
+            while rx.recv().is_ok() {
+                received += 1;
+            }
+            received
+        });
         let err = startBackup(
             &ctx,
             0,
@@ -120,13 +179,14 @@ fn test_timeout_recv() {
             BackupRequest::default(),
             Arc::new(MockBackupClient {
                 recv_func: Arc::new(move |ctx| {
-                    // 进入第 16 次前 ctx 仍应健康。
-                    assert!(ctx.Err().is_none());
+                    if let Some(err) = ctx.Err() {
+                        let _ = timeout_observed.send(true);
+                        return Err(err);
+                    }
                     let c = count2.load(Ordering::SeqCst);
                     if c == 15 {
                         thread::sleep(Duration::from_secs(1));
-                        assert!(ctx.Err().is_some());
-                        return Err(ctx.Err().unwrap());
+                        return Err(record_timeout_err(ctx, &timeout_observed));
                     }
                     count2.fetch_add(1, Ordering::SeqCst);
                     // 80ms << 800ms，保证 Refresh 能重置看门狗。
@@ -140,10 +200,11 @@ fn test_timeout_recv() {
         assert!(err.is_err());
         // 恰好成功投递 15 包后超时，与 Go 断言一致。
         assert_eq!(count.load(Ordering::SeqCst), 15);
+        assert!(observation.recv().unwrap());
+        assert_eq!(drain.join().unwrap(), 15);
     }
 
-    // 恢复默认，避免污染同进程其他用例。
-    set_timeout_one_response_for_test(None);
+    // _cleanup restores the prior override even if a main-thread assertion panics.
 }
 
 /// TestTimeoutRecvCancel: cancel parent; timeoutRecv worker exits.
@@ -179,11 +240,4 @@ fn test_timeout_recv_canceled() {
         "got {}",
         err.msg
     );
-}
-
-// silence unused import of Mutex in case of future fixtures
-// 占位以消除部分构建下 Mutex 未使用警告。
-#[allow(dead_code)]
-fn _lock_type() -> Mutex<()> {
-    Mutex::new(())
 }
