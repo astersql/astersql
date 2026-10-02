@@ -22,10 +22,10 @@
 //! 本轮工作保持许可证、英文注释、现有断言和所有代码路径原样不动。
 //! 计划要求本文件至少达到 7 行中文注释，下面用索引式说明补足阅读背景。
 //! 当 Rust 与 Go 同名文件并存时，建议优先将同名场景视为语义参照。
-//! 符号 `test_cross_ks_runtime_gc_loop_started_by_system_domain` 是当前文件里的测试用例。
-//! `test_cross_ks_runtime_gc_loop_started_by_system_domain` 所处的位置主要服务 `会话生命周期与信息模式` 主题下的一个阅读切面。
-//! 阅读 `test_cross_ks_runtime_gc_loop_started_by_system_domain` 时可先判断它关联的是哪一段前置准备、主路径执行、结果断言或资源收尾。
-//! 如果 Go 同名文件里也出现 `test_cross_ks_runtime_gc_loop_started_by_system_domain`，阅读时应优先核对场景目标、断言顺序和清理时机。
+//! 符号 `go_commit_8380b57b58_cross_ks_runtime_gc_loop_started_by_system_domain` 是当前文件里的测试用例。
+//! `go_commit_8380b57b58_cross_ks_runtime_gc_loop_started_by_system_domain` 所处的位置主要服务 `会话生命周期与信息模式` 主题下的一个阅读切面。
+//! 阅读 `go_commit_8380b57b58_cross_ks_runtime_gc_loop_started_by_system_domain` 时可先判断它关联的是哪一段前置准备、主路径执行、结果断言或资源收尾。
+//! 如果 Go 同名文件里也出现 `go_commit_8380b57b58_cross_ks_runtime_gc_loop_started_by_system_domain`，阅读时应优先核对场景目标、断言顺序和清理时机。
 //! 中文说明结束（自动生成）
 
 //! Go-equivalent lifecycle coverage for the cross-keyspace runtime released by
@@ -42,20 +42,27 @@ use astersql_tests_realtikvtest_sessiontest::serial_guard;
 /// `CrossKeyspaceCoordinator`.  SYSTEM acquires a production RAII lease, and
 /// dropping the final lease lets the idle GC remove the target runtime.
 #[test]
-fn test_cross_ks_runtime_gc_loop_started_by_system_domain() {
+fn go_commit_8380b57b58_cross_ks_runtime_gc_loop_started_by_system_domain() {
     let _serial = serial_guard();
-    let cluster = CreateCrossKeyspaceTestCluster(&[("keyspace1", false)]);
+    const TARGET_KEYSPACE: &str = "keyspace2";
+
+    // Creating the target store bootstraps its keyspace before SYSTEM opens a
+    // separate cross-keyspace runtime, matching the stabilized Go setup.
+    let cluster = CreateCrossKeyspaceTestCluster(&[(TARGET_KEYSPACE, false)]);
     assert_eq!(
         cluster.keyspaces(),
-        vec!["SYSTEM".to_owned(), "keyspace1".to_owned()]
+        vec!["SYSTEM".to_owned(), TARGET_KEYSPACE.to_owned()]
     );
 
     let system_domain = cluster.store("SYSTEM").domain();
     assert!(system_domain.cross_keyspaces_for_test().is_empty());
     let handle = system_domain
-        .acquire_cross_keyspace_runtime("keyspace1", Duration::from_millis(100))
+        .acquire_cross_keyspace_runtime(TARGET_KEYSPACE, Duration::from_millis(100))
         .expect("SYSTEM acquires the target keyspace runtime");
-    assert_eq!(system_domain.cross_keyspaces_for_test(), vec!["keyspace1"]);
+    assert_eq!(
+        system_domain.cross_keyspaces_for_test(),
+        vec![TARGET_KEYSPACE]
+    );
     drop(handle);
 
     // Go's failpoint sets idle_timeout=100ms and polls every 20ms for at most
@@ -64,7 +71,7 @@ fn test_cross_ks_runtime_gc_loop_started_by_system_domain() {
     while system_domain
         .cross_keyspaces_for_test()
         .iter()
-        .any(|keyspace| keyspace == "keyspace1")
+        .any(|keyspace| keyspace == TARGET_KEYSPACE)
         && Instant::now() < deadline
     {
         std::thread::sleep(Duration::from_millis(20));
@@ -73,7 +80,7 @@ fn test_cross_ks_runtime_gc_loop_started_by_system_domain() {
         !system_domain
             .cross_keyspaces_for_test()
             .iter()
-            .any(|keyspace| keyspace == "keyspace1"),
+            .any(|keyspace| keyspace == TARGET_KEYSPACE),
         "released target runtime must be removed before the GC deadline"
     );
 }
