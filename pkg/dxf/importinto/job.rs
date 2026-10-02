@@ -101,6 +101,7 @@ pub struct StorageTaskSubmissionService {
     dxf_manager: Option<storage::TaskManager>,
     target_scope_override: Option<String>,
     classic_kernel_override: Option<bool>,
+    after_user_job_created: Option<Arc<dyn Fn(i64) + Send + Sync>>,
 }
 
 impl StorageTaskSubmissionService {
@@ -127,6 +128,7 @@ impl StorageTaskSubmissionService {
             dxf_manager: None,
             target_scope_override: None,
             classic_kernel_override: None,
+            after_user_job_created: None,
         })
     }
 
@@ -145,7 +147,14 @@ impl StorageTaskSubmissionService {
             dxf_manager: Some(dxf_manager),
             target_scope_override: Some(target_scope),
             classic_kernel_override: Some(classic_kernel),
+            after_user_job_created: None,
         }
+    }
+
+    /// Scoped equivalent of Go's afterUserImportJobCreatedBeforeDXFTask hook.
+    pub fn WithAfterUserJobCreated(mut self, hook: Arc<dyn Fn(i64) + Send + Sync>) -> Self {
+        self.after_user_job_created = Some(hook);
+        self
     }
 
     fn submit_dxf_task(
@@ -307,6 +316,9 @@ impl TaskSubmissionService for StorageTaskSubmissionService {
             })
             .map_err(|error| errors::New(error.to_string()))?;
         let dxf_manager = if self.running_on_user_keyspace {
+            if let Some(hook) = &self.after_user_job_created {
+                hook(job_id);
+            }
             let manager = self
                 .dxf_manager
                 .clone()

@@ -141,9 +141,12 @@ fn job_state_predicates_match_go_boundaries() {
         ("finished", false),
         ("failed", false),
         ("cancelled", false),
+        ("canceled", false),
     ] {
         job.Status = status.into();
         assert_eq!(expected, job.CanCancel(), "{status}");
+        assert_eq!(status == "cancelled", job.IsCancelled(), "{status}");
+        assert_eq!(status == "finished", job.IsSuccess(), "{status}");
     }
     job.Status = JobStatusFinished.into();
     assert!(job.IsSuccess());
@@ -348,5 +351,27 @@ fn import_parameters_display_matches_go_json() {
     assert_eq!(
         r#"{"file-location":"s3://bucket/file.csv","format":"csv","options":{"a":"1","z":"line\n\"quoted\""}}"#,
         p.to_string()
+    );
+}
+
+#[test]
+fn pending_cancellation_uses_only_pending_predicate_and_propagates_sql_errors() {
+    let mut executor = Executor::default();
+    CancelPendingJob(&mut executor, 41).unwrap();
+    assert!(executor.executions[0].0.contains("status IN (%?)"));
+    assert_eq!(
+        executor.executions[0].1,
+        vec![
+            jogStatusCancelled.into(),
+            41_i64.into(),
+            jobStatusPending.into()
+        ]
+    );
+    assert!(!executor.executions[0].0.contains("end_time"));
+    assert!(!executor.executions[0].0.contains("start_time"));
+    executor.execute_error = Some("SQL unavailable".into());
+    assert_eq!(
+        CancelPendingJob(&mut executor, 42).unwrap_err(),
+        "SQL unavailable"
     );
 }

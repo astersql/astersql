@@ -661,17 +661,21 @@ fn scheduler_local_sort_runs_go_import_validate_done_and_revert_phases() {
             Ok(())
         }
     }
-    struct Backend(Arc<Mutex<Vec<(String, Vec<storage::Value>)>>>);
+    struct Backend(
+        Arc<Mutex<Vec<(String, Vec<storage::Value>)>>>,
+        storage::sessionctx::Context,
+    );
     impl storage::SQLBackend for Backend {
         fn execute(
             &self,
             sql: &str,
             args: Vec<storage::Value>,
         ) -> Result<storage::SQLResult, storage::Error> {
-            self.0.lock().unwrap().push((sql.to_owned(), args));
+            self.0.lock().unwrap().push((sql.to_owned(), args.clone()));
+            let rows = self.1.GetSQLExecutor().execute(sql.into(), args)?;
             Ok(storage::SQLResult {
-                rows: vec![],
-                affected_rows: 1,
+                rows,
+                affected_rows: self.1.GetSessionVars().StmtCtx.AffectedRows(),
             })
         }
     }
@@ -698,12 +702,23 @@ fn scheduler_local_sort_runs_go_import_validate_done_and_revert_phases() {
             Ok(vec![])
         }
     }
+    let (_domain, session) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let real_manager = session.ImportTaskManager().unwrap();
+    real_manager.ExecuteSQLWithNewSession((),
+        "INSERT INTO mysql.tidb_import_jobs(id,table_schema,table_name,table_id,created_by,parameters,source_file_size,status,step) VALUES(%?,%?,%?,%?,%?,%?,%?,%?,%?)",
+        vec![41_i64.into(), "test".into(), "t".into(), 8_i64.into(), "root@%".into(), r#"{"format":"csv","file-location":"gs://test-load/1.csv"}"#.into(), 2_i64.into(), "pending".into(), "".into()],
+    ).unwrap();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let manager = storage::NewTaskManager(storage::util::SessionPool::with_factory({
         let calls = calls.clone();
         move || {
+            let mut real_session = None;
+            real_manager.WithNewSession(|session| {
+                real_session = Some(session);
+                Ok(())
+            })?;
             Ok(storage::sessionctx::Context::with_backend(Arc::new(
-                Backend(calls.clone()),
+                Backend(calls.clone(), real_session.unwrap()),
             )))
         }
     }));
@@ -855,6 +870,14 @@ fn scheduler_local_sort_runs_go_import_validate_done_and_revert_phases() {
 
     // Go prepare-mode job has already started in OnPrepare. The first
     // business phase updates only its step, preserving the original start_time.
+    manager.ExecuteSQLWithNewSession((),
+        "INSERT INTO mysql.tidb_import_jobs(id,table_schema,table_name,table_id,created_by,parameters,source_file_size,status,step) VALUES(%?,%?,%?,%?,%?,%?,%?,%?,%?)",
+        vec![42_i64.into(), "test".into(), "t".into(), 8_i64.into(), "root@%".into(), r#"{"format":"csv","file-location":"gs://test-load/2.csv"}"#.into(), 2_i64.into(), "pending".into(), "".into()],
+    ).unwrap();
+    crate::scheduler::withImportJobSession(&manager, |executor| {
+        importer::StartJob(executor, 42, importer::JobStepPreparing)
+    })
+    .unwrap();
     let mut prepared_meta = meta;
     prepared_meta.JobID = 42;
     prepared_meta.Plan.CloudStorageURI = "memstore://scheduler-prepared-testkit".into();
@@ -1037,4 +1060,352 @@ fn scheduler_global_sort_runs_go_seven_stage_subtask_matrix() {
 #[test]
 fn scheduler_prepare_mode_runs_real_file_discovery_and_persists_chunks() {
     crate::scheduler_test::prepare_import_task_persists_real_file_controller_result();
+}
+
+#[cfg(feature = "nextgen")]
+#[test]
+fn cancelled_job_stops_prepare_before_starting_work() {
+    use crate::scheduler::{ImportSchedulerServices, frameworkTaskToImportTask, prepareImportTask};
+    use astersql_dxf_framework_storage as storage;
+    use std::sync::{Arc, Mutex};
+    struct Backend(storage::TaskManager, Arc<Mutex<Vec<String>>>);
+    impl storage::SQLBackend for Backend {
+        fn execute(
+            &self,
+            sql: &str,
+            args: Vec<storage::Value>,
+        ) -> Result<storage::SQLResult, storage::Error> {
+            self.1.lock().unwrap().push(sql.into());
+            let mut result = storage::SQLResult {
+                rows: vec![],
+                affected_rows: 0,
+            };
+            self.0.WithNewSession(|session| {
+                result.rows = session.GetSQLExecutor().execute(sql.into(), args)?;
+                result.affected_rows = session.GetSessionVars().StmtCtx.AffectedRows();
+                Ok(())
+            })?;
+            Ok(result)
+        }
+    }
+    let (_domain, session) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let real = session.ImportTaskManager().unwrap();
+    real.ExecuteSQLWithNewSession((),
+        "INSERT INTO mysql.tidb_import_jobs(id,table_schema,table_name,table_id,created_by,parameters,source_file_size,status,step,error_message) VALUES(%?,%?,%?,%?,%?,%?,%?,%?,%?,%?)",
+        vec![41_i64.into(), "test".into(), "t".into(), 8_i64.into(), "root@%".into(), r#"{"format":"csv","file-location":"s3://bucket/file.csv"}"#.into(), 123_i64.into(), "cancelled".into(), "".into(), "cancelled by user".into()],
+    ).unwrap();
+    let statements = Arc::new(Mutex::new(Vec::new()));
+    let manager = storage::NewTaskManager(storage::util::SessionPool::with_factory({
+        let statements = statements.clone();
+        move || {
+            Ok(storage::sessionctx::Context::with_backend(Arc::new(
+                Backend(real.clone(), statements.clone()),
+            )))
+        }
+    }));
+    let services = ImportSchedulerServices {
+        ControllerServices: Arc::new(|| panic!("cancelled job reached file controller")),
+        ResourceCalculatorWithContext: None,
+        ImporterService: Arc::new(|| panic!("cancelled job reached importer")),
+        KVCodec: vec![],
+        Table: None,
+        SortStore: None,
+        CheckImportTableEmpty: None,
+        PlanContext: Arc::new(|_, _| panic!("cancelled job reached planner")),
+        FlushStatsBestEffort: None,
+    };
+    let mut task = astersql_dxf_framework_scheduler::Task::default();
+    task.base.task_type = astersql_dxf_framework_proto::ImportInto.to_string();
+    task.meta = TaskMeta {
+        JobID: 41,
+        Plan: astersql_executor_importer::Plan {
+            TableInfo: Some(Arc::new(astersql_meta_model::TableInfo {
+                ID: 8,
+                Name: astersql_parser_ast::NewCIStr("t"),
+                ..Default::default()
+            })),
+            ..Default::default()
+        },
+        Stmt: "IMPORT INTO test.t FROM 's3://bucket/file.csv'".into(),
+        ..Default::default()
+    }
+    .Marshal()
+    .unwrap();
+    let mut task = frameworkTaskToImportTask(&task).unwrap();
+    let error = prepareImportTask(&Default::default(), &manager, &mut task, &services).unwrap_err();
+    assert_eq!(error.to_string(), "import job 41 cancelled by user");
+    let statements = statements.lock().unwrap();
+    assert_eq!(statements.len(), 1);
+    assert!(statements[0].contains("FROM mysql.tidb_import_jobs"));
+}
+
+#[cfg(feature = "nextgen")]
+#[test]
+fn cancelled_and_missing_jobs_stop_scheduler_on_real_sql() {
+    use crate::scheduler::{ImportJobJsonCodec, checkImportJobNotCancelled, withImportJobSession};
+    use astersql_executor_importer as importer;
+    let (_domain, session) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let manager = session.ImportTaskManager().unwrap();
+    let mut id = 0;
+    withImportJobSession(&manager, |executor| {
+        id = importer::CreateJob(
+            executor,
+            &ImportJobJsonCodec,
+            "test",
+            "t",
+            8,
+            "root@%",
+            "",
+            &importer::ImportParameters {
+                Format: "csv".into(),
+                ..Default::default()
+            },
+            123,
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    checkImportJobNotCancelled(&Default::default(), &manager, id).unwrap();
+    withImportJobSession(&manager, |executor| {
+        importer::StartJob(executor, id, importer::JobStepPreparing)
+    })
+    .unwrap();
+    checkImportJobNotCancelled(&Default::default(), &manager, id).unwrap();
+    withImportJobSession(&manager, |executor| importer::CancelJob(executor, id)).unwrap();
+    let start = std::time::Instant::now();
+    assert_eq!(
+        checkImportJobNotCancelled(&Default::default(), &manager, id)
+            .unwrap_err()
+            .to_string(),
+        format!("import job {id} cancelled by user")
+    );
+    assert_eq!(
+        checkImportJobNotCancelled(&Default::default(), &manager, id + 1)
+            .unwrap_err()
+            .to_string(),
+        format!("import job {} not found", id + 1)
+    );
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(3),
+        "terminal errors must not back off"
+    );
+    withImportJobSession(&manager, |executor| {
+        let job = importer::GetJob(executor, &ImportJobJsonCodec, id, "", true)?;
+        assert_eq!(job.Step, importer::JobStepPreparing);
+        assert!(job.IsCancelled());
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[cfg(feature = "nextgen")]
+#[test]
+fn cancelled_jobs_stop_both_admission_hooks_before_any_side_effects() {
+    use crate::scheduler::{
+        ImportJobJsonCodec, ImportSchedulerRuntime, ImportSchedulerServices, TaskRegistration,
+        frameworkTaskToImportTask, importScheduler, nextImportSubtasksBatch, prepareImportTask,
+        withImportJobSession,
+    };
+    use astersql_dxf_framework_scheduler as framework;
+    use astersql_executor_importer as importer;
+    use std::sync::Arc;
+    struct Runtime;
+    impl ImportSchedulerRuntime for Runtime {
+        fn new_task_registration(
+            &self,
+            _: i64,
+            _: std::time::Duration,
+        ) -> Result<Box<dyn TaskRegistration>, astersql_errors::SharedError> {
+            panic!("cancelled job registered")
+        }
+        fn switch_to_import_mode(&self) -> Result<(), astersql_errors::SharedError> {
+            panic!("cancelled job switched mode")
+        }
+        fn switch_to_normal_mode(&self) -> Result<(), astersql_errors::SharedError> {
+            Ok(())
+        }
+    }
+    struct Handle;
+    impl framework::TaskHandle for Handle {
+        fn previous_subtask_metas(
+            &self,
+            _: i64,
+            _: framework::Step,
+        ) -> framework::Result<Vec<Vec<u8>>> {
+            panic!("cancelled job read subtasks")
+        }
+        fn previous_subtask_summaries(
+            &self,
+            _: i64,
+            _: framework::Step,
+        ) -> framework::Result<Vec<framework::SubtaskSummary>> {
+            panic!("cancelled job read summaries")
+        }
+    }
+    let (_domain, session) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let manager = session.ImportTaskManager().unwrap();
+    let services = ImportSchedulerServices {
+        ControllerServices: Arc::new(|| panic!("cancelled job reached file controller")),
+        ResourceCalculatorWithContext: None,
+        ImporterService: Arc::new(|| panic!("cancelled job reached importer")),
+        KVCodec: vec![],
+        Table: None,
+        SortStore: None,
+        CheckImportTableEmpty: None,
+        PlanContext: Arc::new(|_, _| panic!("cancelled job reached planner")),
+        FlushStatsBestEffort: None,
+    };
+    for preparing in [false, true] {
+        let mut id = 0;
+        withImportJobSession(&manager, |executor| {
+            id = importer::CreateJob(
+                executor,
+                &ImportJobJsonCodec,
+                "test",
+                "t",
+                8,
+                "root@%",
+                "",
+                &importer::ImportParameters {
+                    Format: "csv".into(),
+                    ..Default::default()
+                },
+                123,
+            )?;
+            if preparing {
+                importer::StartJob(executor, id, importer::JobStepPreparing)?;
+            }
+            importer::CancelJob(executor, id)
+        })
+        .unwrap();
+        let mut task = framework::Task::default();
+        task.base.task_type = astersql_dxf_framework_proto::ImportInto.into();
+        task.meta = TaskMeta {
+            JobID: id,
+            ..Default::default()
+        }
+        .Marshal()
+        .unwrap();
+        let mut task = frameworkTaskToImportTask(&task).unwrap();
+        let before = task.Meta.clone();
+        let scheduler = importScheduler::new(Arc::new(Runtime), &task).unwrap();
+        assert!(
+            prepareImportTask(&Default::default(), &manager, &mut task, &services)
+                .unwrap_err()
+                .to_string()
+                .contains("cancelled by user")
+        );
+        assert!(
+            nextImportSubtasksBatch(
+                &Default::default(),
+                &scheduler,
+                &manager,
+                &Handle,
+                &mut task,
+                &[":4000".into()],
+                astersql_dxf_framework_proto::ImportStepEncodeAndSort,
+                &services
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("cancelled by user")
+        );
+        assert_eq!(task.Meta, before);
+        withImportJobSession(&manager, |executor| {
+            let job = importer::GetJob(executor, &ImportJobJsonCodec, id, "", true)?;
+            assert!(job.IsCancelled());
+            assert_eq!(
+                job.Step,
+                if preparing {
+                    importer::JobStepPreparing
+                } else {
+                    ""
+                }
+            );
+            Ok(())
+        })
+        .unwrap();
+    }
+}
+
+#[cfg(feature = "nextgen")]
+#[test]
+fn admission_retries_transient_sql_errors_using_real_job_metadata() {
+    use crate::scheduler::{ImportJobJsonCodec, checkImportJobNotCancelled, withImportJobSession};
+    use astersql_dxf_framework_storage as storage;
+    use astersql_executor_importer as importer;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let (_domain, session) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let real = session.ImportTaskManager().unwrap();
+    let mut id = 0;
+    withImportJobSession(&real, |executor| {
+        id = importer::CreateJob(
+            executor,
+            &ImportJobJsonCodec,
+            "test",
+            "t",
+            8,
+            "root@%",
+            "",
+            &importer::ImportParameters {
+                Format: "csv".into(),
+                ..Default::default()
+            },
+            123,
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    struct Backend {
+        real: storage::TaskManager,
+        calls: Arc<AtomicUsize>,
+    }
+    impl storage::SQLBackend for Backend {
+        fn execute(
+            &self,
+            sql: &str,
+            args: Vec<storage::Value>,
+        ) -> Result<storage::SQLResult, storage::Error> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Err(storage::Error::new("transient SQL failure"));
+            }
+            let mut result = storage::SQLResult {
+                rows: vec![],
+                affected_rows: 0,
+            };
+            self.real.WithNewSession(|session| {
+                result.rows = session.GetSQLExecutor().execute(sql.into(), args)?;
+                result.affected_rows = session.GetSessionVars().StmtCtx.AffectedRows();
+                Ok(())
+            })?;
+            Ok(result)
+        }
+    }
+    let calls = Arc::new(AtomicUsize::new(0));
+    let manager = storage::NewTaskManager(storage::util::SessionPool::with_factory({
+        let calls = calls.clone();
+        move || {
+            Ok(storage::sessionctx::Context::with_backend(Arc::new(
+                Backend {
+                    real: real.clone(),
+                    calls: calls.clone(),
+                },
+            )))
+        }
+    }));
+    checkImportJobNotCancelled(&Default::default(), &manager, id).unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+#[cfg(not(feature = "nextgen"))]
+#[test]
+fn classic_admission_does_not_open_an_import_job_session() {
+    use astersql_dxf_framework_storage as storage;
+    let manager = storage::NewTaskManager(storage::util::SessionPool::with_factory(|| {
+        panic!("Classic must leave cancellation to the DXF framework")
+    }));
+    crate::scheduler::checkImportJobNotCancelled(&Default::default(), &manager, 41).unwrap();
 }

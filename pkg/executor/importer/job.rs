@@ -181,6 +181,11 @@ impl JobInfo {
         self.Status == jobStatusPending || self.Status == JobStatusRunning
     }
 
+    /// 是否已被取消；历史拼写 cancelled 与 Go 保持一致。
+    pub fn IsCancelled(&self) -> bool {
+        self.Status == jogStatusCancelled
+    }
+
     /// 是否已成功结束。
     pub fn IsSuccess(&self) -> bool {
         self.Status == JobStatusFinished
@@ -526,17 +531,28 @@ pub fn GetAllViewableJobs(
 
 /// 取消 pending/running 任务，写入 cancelled 状态与固定错误文案。
 pub fn CancelJob(executor: &mut dyn ImportJobExecutor, job_id: i64) -> Result<(), String> {
-    executor.ExecuteInternal(
+    cancelJobInState(executor, job_id, &[jobStatusPending, JobStatusRunning])
+}
+
+/// Cancel a dangling job only while it is pending; a started job belongs to DXF.
+pub fn CancelPendingJob(executor: &mut dyn ImportJobExecutor, job_id: i64) -> Result<(), String> {
+    cancelJobInState(executor, job_id, &[jobStatusPending])
+}
+
+fn cancelJobInState(
+    executor: &mut dyn ImportJobExecutor,
+    job_id: i64,
+    states: &[&str],
+) -> Result<(), String> {
+    let markers = vec!["%?"; states.len()].join(",");
+    let sql = format!(
         r#"UPDATE mysql.tidb_import_jobs
         SET update_time = CURRENT_TIMESTAMP(6), status = %?, error_message = 'cancelled by user'
-        WHERE id = %? AND status IN (%?, %?);"#,
-        vec![
-            jogStatusCancelled.into(),
-            job_id.into(),
-            jobStatusPending.into(),
-            JobStatusRunning.into(),
-        ],
-    )
+        WHERE id = %? AND status IN ({markers});"#
+    );
+    let mut arguments = vec![jogStatusCancelled.into(), job_id.into()];
+    arguments.extend(states.iter().map(|state| JobValue::from(*state)));
+    executor.ExecuteInternal(&sql, arguments)
 }
 
 fn write_json_string(formatter: &mut fmt::Formatter<'_>, value: &str) -> fmt::Result {

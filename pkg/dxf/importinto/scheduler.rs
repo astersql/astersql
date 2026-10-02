@@ -317,6 +317,47 @@ fn retryImportSQL(
     Err(errors::New(last_error.unwrap_or_default()))
 }
 
+/// NextGen may admit a task after its independently committed job was cancelled.
+pub fn checkImportJobNotCancelled(
+    context: &framework_scheduler::Context,
+    manager: &framework_storage::TaskManager,
+    job_id: i64,
+) -> Result<(), errors::SharedError> {
+    if astersql_config_kerneltype::IsClassic() {
+        return Ok(());
+    }
+    let mut last_error = String::new();
+    for retry in 0..framework_scheduler::RETRY_SQL_TIMES {
+        let mut retryable = true;
+        let result = withImportJobSession(manager, |executor| {
+            let job = importer::GetJob(executor, &ImportJobJsonCodec, job_id, "", true).map_err(
+                |error| {
+                    if error == format!("import job {job_id} not found") {
+                        retryable = false;
+                    }
+                    error
+                },
+            )?;
+            if job.IsCancelled() {
+                retryable = false;
+                return Err(format!("import job {} cancelled by user", job.ID));
+            }
+            Ok(())
+        });
+        match result {
+            Ok(()) => return Ok(()),
+            Err(error) if !retryable => return Err(error),
+            Err(error) => {
+                last_error = error.to_string();
+                context
+                    .wait(Duration::from_secs((3_u64 << retry.min(4)).min(30)))
+                    .map_err(|error| errors::New(error.to_string()))?;
+            }
+        }
+    }
+    Err(errors::New(last_error))
+}
+
 struct ImportStatsStore {
     executor: framework_storage::SQLExecutor,
     start_ts: u64,
@@ -654,6 +695,7 @@ pub fn prepareImportTask(
     services: &ImportSchedulerServices,
 ) -> Result<(), errors::SharedError> {
     let mut task_meta = TaskMeta::Unmarshal(&task.Meta)?;
+    checkImportJobNotCancelled(context, manager, task_meta.JobID)?;
     withImportJobSessionRetry(context, manager, |executor| {
         importer::StartJob(executor, task_meta.JobID, importer::JobStepPreparing)
     })?;
@@ -766,6 +808,7 @@ pub fn nextImportSubtasksBatch(
     services: &ImportSchedulerServices,
 ) -> Result<Vec<Vec<u8>>, errors::SharedError> {
     let mut task_meta = TaskMeta::Unmarshal(&task.Meta)?;
+    checkImportJobNotCancelled(context, manager, task_meta.JobID)?;
     if astersql_config_kerneltype::IsClassic() && task.Step == framework_proto::StepInit {
         if let Some(check) = &services.CheckImportTableEmpty {
             check(&task_meta)?;

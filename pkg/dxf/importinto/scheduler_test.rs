@@ -947,9 +947,7 @@ fn registered_import_scheduler_reuses_encode_runtime_services() {
         vec![],
         Arc::new(|_, _| crate::planner::PlanCtx::default()),
     ));
-    let manager = storage::NewTaskManager(storage::util::SessionPool::new(
-        storage::sessionctx::Context::default(),
-    ));
+    let (_domain, manager) = real_pending_import_job_manager(41);
     RegisterImportSchedulerFactoryWithServices(Arc::new(Runtime), manager, services);
     let factory =
         framework::get_scheduler_factory(astersql_dxf_framework_proto::ImportInto).unwrap();
@@ -1214,6 +1212,7 @@ fn import_extension_dispatches_done_and_prepared_local_import_batches() {
     task.base.id = 1_000_000_041;
     task.base.task_type = "ImportInto".into();
     task.meta = TaskMeta {
+        JobID: 41,
         Plan: importer::Plan {
             TotalFileSize: 10,
             ..Default::default()
@@ -1249,11 +1248,10 @@ fn import_extension_dispatches_done_and_prepared_local_import_batches() {
         PlanContext: Arc::new(|_, _| crate::planner::PlanCtx::default()),
         FlushStatsBestEffort: Some(Arc::new(|_, _| unreachable!())),
     });
+    let (_domain, manager) = real_pending_import_job_manager(41);
     let extension = ImportSchedulerExtension {
         scheduler: scheduler.clone(),
-        manager: storage::NewTaskManager(storage::util::SessionPool::new(
-            storage::sessionctx::Context::default(),
-        )),
+        manager,
         services,
     };
     let metas = framework::Extension::on_next_subtasks_batch(
@@ -1625,9 +1623,12 @@ pub(crate) fn prepare_import_task_persists_real_file_controller_result() {
         PlanContext: Arc::new(|_, _| crate::planner::PlanCtx::default()),
         FlushStatsBestEffort: Some(Arc::new(|_, _| Ok(()))),
     });
-    let manager = storage::NewTaskManager(storage::util::SessionPool::new(
-        storage::sessionctx::Context::default(),
-    ));
+    let (_domain, session) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let manager = session.ImportTaskManager().unwrap();
+    manager.ExecuteSQLWithNewSession((),
+        "INSERT INTO mysql.tidb_import_jobs(id,table_schema,table_name,table_id,created_by,parameters,source_file_size,status,step) VALUES(%?,%?,%?,%?,%?,%?,%?,%?,%?)",
+        vec![41_i64.into(), "db".into(), "t".into(), 8_i64.into(), "root@%".into(), r#"{"format":"auto","file-location":"file.csv"}"#.into(), 0_i64.into(), "pending".into(), "".into()],
+    ).unwrap();
     let meta = TaskMeta {
         JobID: 41,
         Plan: importer::Plan {
@@ -1820,4 +1821,20 @@ fn scheduler_retryability_preserves_go_normalized_region_error_code() {
 fn scheduler_selects_encode_step_from_sort_mode() {
     assert_eq!(getStepOfEncode(true), ImportStepEncodeAndSort);
     assert_eq!(getStepOfEncode(false), ImportStepImport);
+}
+
+/// Keep admission fixtures backed by the same canonical SQL/KV path as jobs.
+pub(crate) fn real_pending_import_job_manager(
+    job_id: i64,
+) -> (
+    std::sync::Arc<astersql_domain::Domain>,
+    astersql_dxf_framework_storage::TaskManager,
+) {
+    let (domain, session) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let manager = session.ImportTaskManager().unwrap();
+    manager.ExecuteSQLWithNewSession((),
+        "INSERT INTO mysql.tidb_import_jobs(id,table_schema,table_name,table_id,created_by,parameters,source_file_size,status,step) VALUES(%?,%?,%?,%?,%?,%?,%?,%?,%?)",
+        vec![job_id.into(), "test".into(), "t".into(), 8_i64.into(), "root@%".into(), r#"{"format":"auto","file-location":"file.csv"}"#.into(), 0_i64.into(), "pending".into(), "".into()],
+    ).unwrap();
+    (domain, manager)
 }

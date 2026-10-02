@@ -437,3 +437,60 @@ pub fn cancelAndWaitImportJob<R: ImportIntoRuntime>(
 ) -> Result<(), R::Error> {
     runtime.cancel_and_wait_import_job(context, job_id)
 }
+
+/// Cancel using the DXF manager and the job's keyspace manager. The initial
+/// probe follows the later Go race fix; a missed task is never waited for.
+pub fn cancelAndWaitImportJobInStorage(
+    context: &astersql_dxf_framework_handle::Context,
+    job_id: i64,
+    task_manager: &astersql_dxf_framework_storage::TaskManager,
+    job_manager: &astersql_dxf_framework_storage::TaskManager,
+) -> Result<(), astersql_dxf_framework_storage::Error> {
+    cancelImportJobWithFallbackHook(context, job_id, task_manager, job_manager, || {})
+}
+
+pub(crate) fn cancelImportJobWithFallbackHook(
+    context: &astersql_dxf_framework_handle::Context,
+    job_id: i64,
+    task_manager: &astersql_dxf_framework_storage::TaskManager,
+    job_manager: &astersql_dxf_framework_storage::TaskManager,
+    before_fallback: impl FnOnce(),
+) -> Result<(), astersql_dxf_framework_storage::Error> {
+    use astersql_dxf_framework_storage as storage;
+    let key = astersql_dxf_importinto::TaskKey(job_id);
+    match task_manager.GetTaskBaseByKeyWithHistory((), key.clone()) {
+        Ok(_) => {
+            task_manager.WithNewTxn((), |session| {
+                task_manager.CancelTaskByKeySession((), session, key.clone())
+            })?;
+            astersql_dxf_framework_handle::WaitTaskDoneByKey(context, &key)
+                .map_err(|error| storage::Error::new(error.to_string()))
+        }
+        Err(error) if error == storage::ErrTaskNotFound => {
+            before_fallback();
+            cancelDanglingImportJob(job_manager, job_id)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Atomically cancel only a pending import job in its own keyspace.
+pub fn cancelDanglingImportJob(
+    manager: &astersql_dxf_framework_storage::TaskManager,
+    job_id: i64,
+) -> Result<(), astersql_dxf_framework_storage::Error> {
+    use astersql_dxf_framework_storage as storage;
+    manager.WithNewSession(|session| {
+        let mut executor = astersql_dxf_importinto::scheduler::ImportJobStorageSession {
+            executor: session.GetSQLExecutor(),
+        };
+        astersql_executor_importer::CancelPendingJob(&mut executor, job_id)
+            .map_err(storage::Error::new)?;
+        if session.GetSessionVars().StmtCtx.AffectedRows() == 0 {
+            return Err(storage::Error::new(
+                "job state changed during cancel, please try again later",
+            ));
+        }
+        Ok(())
+    })
+}

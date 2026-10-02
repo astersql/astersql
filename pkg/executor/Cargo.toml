@@ -7,6 +7,9 @@ publish.workspace = true
 [lib]
 path = "lib.rs"
 
+[features]
+nextgen = ["astersql-dxf-importinto/nextgen"]
+
 [package.metadata.porting]
 go-package = "pkg/executor"
 legacy-tasks = ["task-1219", "task-1220", "task-1221", "task-1222", "task-1223", "task-1224", "task-1225", "task-1226", "task-1227", "task-1228", "task-1229", "task-1230", "task-1231", "task-1232", "task-1233", "task-1234", "task-1235", "task-1236", "task-1237", "task-1238", "task-1239", "task-1240", "task-1241", "task-1242", "task-1243", "task-1244", "task-1245", "task-1246", "task-1247", "task-1248", "task-1249", "task-1250", "task-1251", "task-1252", "task-1254", "task-1569", "task-1570", "task-1571", "task-1572", "task-1573", "task-1574", "task-1575", "task-1576", "task-1577", "task-1578", "task-1579", "task-1580", "task-1581", "task-1582", "task-1583", "task-1584", "task-1585", "task-1586", "task-1587", "task-1588", "task-1589", "task-1590", "task-1591", "task-1592", "task-1593"]
