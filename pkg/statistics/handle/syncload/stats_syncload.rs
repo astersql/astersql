@@ -303,6 +303,8 @@ pub trait StatsHandle: Send + Sync {
 pub struct StatsLoadResult {
     pub Item: TableItemID,
     pub Error: Option<String>,
+    /// True for singleflight delivery failures; worker errors still deliver an item.
+    pub RequestFailed: bool,
 }
 
 impl StatsLoadResult {
@@ -456,6 +458,7 @@ impl statsSyncLoad {
                                 let result = if remaining.is_zero() {
                                     StatsLoadResult {
                                         Item: item_id,
+                                        RequestFailed: true,
                                         Error: Some("sync load took too long to return".into()),
                                     }
                                 } else {
@@ -463,11 +466,13 @@ impl statsSyncLoad {
                                         Ok(result) => result,
                                         Err(mpsc::RecvTimeoutError::Timeout) => StatsLoadResult {
                                             Item: item_id,
+                                            RequestFailed: true,
                                             Error: Some("sync load took too long to return".into()),
                                         },
                                         Err(mpsc::RecvTimeoutError::Disconnected) => {
                                             StatsLoadResult {
                                                 Item: item_id,
+                                                RequestFailed: true,
                                                 Error: Some(
                                                     "sync load stats channel closed unexpectedly"
                                                         .into(),
@@ -487,6 +492,7 @@ impl statsSyncLoad {
                                         &leader_key,
                                         StatsLoadResult {
                                             Item: item_id,
+                                        RequestFailed: true,
                                             Error: Some("sync load stats channel is full and timeout sending task to channel".into()),
                                         },
                                     );
@@ -500,6 +506,7 @@ impl statsSyncLoad {
                                     &leader_key,
                                     StatsLoadResult {
                                         Item: item_id,
+                                        RequestFailed: true,
                                         Error: Some(
                                             "sync load stats channel closed unexpectedly".into(),
                                         ),
@@ -546,7 +553,9 @@ impl statsSyncLoad {
                     if let Some(error) = result.Error {
                         statement_context.StatsLoad.ErrorMessages.push(error);
                     }
-                    unchecked.remove(&result.Item);
+                    if !result.RequestFailed {
+                        unchecked.remove(&result.Item);
+                    }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     self.sync_load_timeout_count.fetch_add(1, Ordering::Relaxed);
@@ -560,8 +569,13 @@ impl statsSyncLoad {
             }
         }
         statement_context.StatsLoad.NeededItems.clear();
-        let _all_results_returned = unchecked.is_empty();
-        Ok(())
+        if unchecked.is_empty() {
+            return Ok(());
+        }
+        self.sync_load_timeout_count.fetch_add(1, Ordering::Relaxed);
+        Err(Error::Load(
+            "sync load stats failed: some requested items are not loaded in time".into(),
+        ))
     }
 
     /// 过滤掉缓存中已不需要再加载的项。
@@ -660,6 +674,7 @@ impl statsSyncLoad {
     fn finish_task(&self, task: &NeededItemTask, error: Option<String>) {
         let _ = task.ResultCh.send(StatsLoadResult {
             Item: task.Item.TableItemID,
+            RequestFailed: false,
             Error: error,
         });
     }

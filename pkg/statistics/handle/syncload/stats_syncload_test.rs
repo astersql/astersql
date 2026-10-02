@@ -494,3 +494,84 @@ fn isVaildForRetry_respects_retry_count() {
     assert_eq!(task.Retry, 1);
     assert!(!isVaildForRetry(&mut task));
 }
+
+#[test]
+fn failed_request_before_wait_timer_reports_incomplete_load() {
+    for capacity in [0, 1] {
+        let handle = MockHandle::new(107, &[1, 2]);
+        let sync = NewStatsSyncLoad(handle, capacity);
+        let items = needed_columns(107, &[2]);
+        let mut stmt = StatementContext::default();
+        let mut observer = StatementContext::default();
+        sync.SendLoadRequests(&mut stmt, &items, Duration::from_millis(50))
+            .unwrap();
+        sync.SendLoadRequests(&mut observer, &items, Duration::from_millis(50))
+            .unwrap();
+        let result = observer.StatsLoad.ResultCh()[0]
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        assert!(result.HasError());
+        let error = sync
+            .SyncWaitStatsLoad(&mut stmt)
+            .expect_err("undelivered request must fail even before the wait timer");
+        assert_eq!(
+            error.to_string(),
+            "sync load stats failed: some requested items are not loaded in time"
+        );
+        assert_eq!(stmt.StatsLoad.ErrorMessages, vec![result.Error.unwrap()]);
+        assert!(stmt.StatsLoad.NeededItems.is_empty());
+        assert_eq!(sync.metrics().0, 1);
+        assert_eq!(sync.metrics().1, 1);
+    }
+}
+
+#[test]
+fn delivered_worker_error_is_recorded_without_request_timeout() {
+    let handle = MockHandle::new(108, &[1, 2]);
+    handle.storage.fail_next.store(100, Ordering::SeqCst);
+    let sync = NewStatsSyncLoad(handle, 1);
+    let mut stmt = StatementContext::default();
+    sync.SendLoadRequests(
+        &mut stmt,
+        &needed_columns(108, &[2]),
+        Duration::from_secs(5),
+    )
+    .unwrap();
+    let exit = AtomicBool::new(false);
+    let task = sync.HandleOneTask(None, &exit).unwrap();
+    assert!(task.is_some());
+    assert!(sync.HandleOneTask(task, &exit).unwrap().is_none());
+    sync.SyncWaitStatsLoad(&mut stmt).unwrap();
+    assert_eq!(stmt.StatsLoad.ErrorMessages.len(), 1);
+    assert!(stmt.StatsLoad.NeededItems.is_empty());
+    assert_eq!(sync.metrics().1, 0);
+}
+
+#[test]
+fn mixed_delivery_results_preserve_missing_items_and_worker_errors() {
+    let sync = NewStatsSyncLoad(MockHandle::new(109, &[1, 2]), 1);
+    let items = needed_columns(109, &[1, 2]);
+    let mut stmt = StatementContext::default();
+    stmt.StatsLoad.Timeout = Duration::from_secs(1);
+    stmt.StatsLoad.NeededItems = items.clone();
+    for (item, failed) in items.iter().zip([false, true]) {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        // Identical text must not conflate worker and singleflight errors.
+        sender
+            .send(StatsLoadResult {
+                Item: item.TableItemID,
+                Error: Some("sync load took too long to return".into()),
+                RequestFailed: failed,
+            })
+            .unwrap();
+        stmt.StatsLoad.ResultCh().push(receiver);
+    }
+    assert_eq!(
+        sync.SyncWaitStatsLoad(&mut stmt).unwrap_err().to_string(),
+        "sync load stats failed: some requested items are not loaded in time"
+    );
+    assert_eq!(stmt.StatsLoad.ErrorMessages.len(), 2);
+    assert!(stmt.StatsLoad.NeededItems.is_empty());
+    assert_eq!(sync.metrics().0, 2);
+    assert_eq!(sync.metrics().1, 1);
+}
