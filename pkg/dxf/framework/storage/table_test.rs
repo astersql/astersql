@@ -245,3 +245,135 @@ fn TestTaskManagerEntrySize() {
         })
         .unwrap();
 }
+
+#[test]
+fn go_commit_4894ac09c7_history_selects_error_before_times() {
+    let manager = TaskManager::new();
+    let mut cells = vec![
+        Cell::Int(5),
+        Cell::String("history-task-5".into()),
+        Cell::String("ImportInto".into()),
+        Cell::String("failed".into()),
+        Cell::Int(1),
+        Cell::Int(512),
+        Cell::Int(8),
+        Cell::Time(UNIX_EPOCH),
+        Cell::String("".into()),
+        Cell::Int(0),
+        Cell::Json("{}".into()),
+        Cell::String("ks1".into()),
+    ];
+    cells.extend([
+        Cell::Bytes(br#"{"message":"history task failed"}"#.to_vec()),
+        Cell::Time(UNIX_EPOCH + std::time::Duration::from_secs(10)),
+        Cell::Time(UNIX_EPOCH + std::time::Duration::from_secs(20)),
+        Cell::Time(UNIX_EPOCH + std::time::Duration::from_secs(30)),
+    ]);
+    manager.push_result(vec![chunk::Row::new(cells)]);
+    manager.push_result(vec![chunk::Row::new(vec![Cell::Int(5)])]);
+    let page = manager.ListHistoryTasks((), 2, 0, "".into()).unwrap();
+    assert!(
+        manager.calls()[0]
+            .sql
+            .contains("t.error, t.start_time, t.state_update_time, t.end_time")
+    );
+    assert_eq!(
+        page.Items[0].StartTime,
+        UNIX_EPOCH + std::time::Duration::from_secs(10)
+    );
+    assert_eq!(
+        page.Items[0].StateUpdateTime,
+        UNIX_EPOCH + std::time::Duration::from_secs(20)
+    );
+    assert_eq!(
+        page.Items[0].EndTime,
+        UNIX_EPOCH + std::time::Duration::from_secs(30)
+    );
+}
+
+#[test]
+fn go_commit_4894ac09c7_history_error_metadata_handles_null_and_malformed() {
+    for (error, category, code) in [
+        (Cell::Null, "", ""),
+        (Cell::Bytes(b"not-json: secret".to_vec()), "failed", ""),
+        (
+            Cell::Bytes(br#"{"message":"secret","rfccode":"kv:1062","code":1062}"#.to_vec()),
+            "failed",
+            "kv:1062",
+        ),
+    ] {
+        let mut row = vec![
+            Cell::Int(5),
+            Cell::String("history-task-5".into()),
+            Cell::String("ImportInto".into()),
+            Cell::String("failed".into()),
+            Cell::Int(1),
+            Cell::Int(512),
+            Cell::Int(8),
+            Cell::Time(UNIX_EPOCH),
+            Cell::String("".into()),
+            Cell::Int(0),
+            Cell::Json("{}".into()),
+            Cell::String("ks1".into()),
+        ];
+        row.extend([error, Cell::Null, Cell::Null, Cell::Null]);
+        let manager = TaskManager::new();
+        manager.push_result(vec![chunk::Row::new(row)]);
+        manager.push_result(vec![chunk::Row::new(vec![Cell::Int(1)])]);
+        let page = manager.ListHistoryTasks((), 2, 0, "".into()).unwrap();
+        assert_eq!(page.Items[0].ErrorCategory, category);
+        assert_eq!(page.Items[0].ErrorCode, code);
+        assert_eq!(page.Items[0].StartTime, UNIX_EPOCH);
+        assert_eq!(page.Items[0].EndTime, UNIX_EPOCH);
+    }
+}
+
+#[test]
+fn go_commit_4894ac09c7_history_error_classification_follows_replacement() {
+    assert_eq!(ClassifyTaskError("failed", None), "");
+    for (state, message, expected) in [
+        ("failed", "cancelled by user", "failed"),
+        ("reverted", "wrapped: cancelled by user", "cancelled"),
+        (
+            "reverted",
+            "ErrEncodeKV Value conversion failed for column x",
+            "data-error",
+        ),
+        (
+            "reverted",
+            "ErrEncodeKV Check constraint 'c' is violated",
+            "data-error",
+        ),
+        (
+            "reverted",
+            "ErrEncodeKV Table has no partition for value 1",
+            "data-error",
+        ),
+        (
+            "reverted",
+            "[executor:8167]Duplicate key conflict found",
+            "data-error",
+        ),
+        (
+            "reverted",
+            "ErrFoundDataConflictRecords found data conflict records",
+            "data-error",
+        ),
+        (
+            "reverted",
+            "ErrFoundIndexConflictRecords found index conflict records",
+            "data-error",
+        ),
+        ("reverted", "[kv:1062]Duplicate entry '1'", "data-error"),
+        ("reverted", "ErrEncodeKV unrelated", "failed"),
+        ("reverted", "Duplicate entry without code", "failed"),
+        ("reverted", "arbitrary secret", "failed"),
+        ("succeed", "arbitrary secret", ""),
+    ] {
+        assert_eq!(
+            ClassifyTaskError(state, Some(&Error::new(message))),
+            expected,
+            "{message}"
+        );
+    }
+}

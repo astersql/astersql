@@ -434,6 +434,50 @@ impl CanonicalServerDomain {
 }
 
 impl ServerDomain for CanonicalServerDomain {
+    fn dxf_history_available(&self) -> bool {
+        self.domain.storage().with_storage(astersql_kv::IsSystemKS)
+    }
+
+    fn list_dxf_history(
+        &self,
+        page_size: i32,
+        page_token: i64,
+        keyspace: &str,
+    ) -> Option<Result<serde_json::Value, String>> {
+        Some((|| {
+            let session = ConcreteSession::new(self.domain.clone());
+            let manager = session
+                .ImportTaskManager()
+                .map_err(|error| error.to_string())?;
+            let page = manager
+                .ListHistoryTasks((), page_size, page_token, keyspace.to_owned())
+                .map_err(|error| error.to_string())?;
+            let timestamp = |value: SystemTime| {
+                if value == std::time::UNIX_EPOCH {
+                    "0001-01-01T00:00:00Z".to_owned()
+                } else {
+                    chrono::DateTime::<chrono::Local>::from(value)
+                        .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
+                }
+            };
+            let items: Vec<_> = page.Items.into_iter().map(|item| {
+                let base = item.TaskBase;
+                serde_json::json!({
+                    "ID": base.ID, "Key": base.Key, "Type": base.Type,
+                    "State": base.State, "Step": base.Step, "Priority": base.Priority,
+                    "RequiredSlots": base.RequiredSlots, "CreateTime": timestamp(base.CreateTime),
+                    "TargetScope": base.TargetScope, "MaxNodeCount": base.MaxNodeCount,
+                    "ExtraParams": base.ExtraParams, "Keyspace": base.Keyspace,
+                    "ErrorCode": item.ErrorCode, "ErrorCategory": item.ErrorCategory,
+                    "StartTime": timestamp(item.StartTime), "StateUpdateTime": timestamp(item.StateUpdateTime),
+                    "EndTime": timestamp(item.EndTime),
+                })
+            }).collect();
+            Ok(serde_json::json!({"Items": items, "HasMore": page.HasMore,
+                "NextPageToken": page.NextPageToken, "ApproxTotalCount": page.ApproxTotalCount}))
+        })())
+    }
+
     fn extract_runtime(
         &self,
     ) -> Option<Arc<dyn astersql_server_handler_extractorhandler::extractor::ExtractRuntime>> {

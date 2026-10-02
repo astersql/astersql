@@ -63,3 +63,6 @@ legacy-tasks = ["task-1623", "task-1624"]
 "astersql-util-rowcodec" = { package = "astersql-util-rowcodec", path = "../../../util/rowcodec" }
 "astersql-util-topsql-state" = { package = "astersql-util-topsql-state", path = "../../../util/topsql/state" }
 "astersql-util-versioninfo" = { package = "astersql-util-versioninfo", path = "../../../util/versioninfo" }
+
+"astersql-store-mockstore-mockstorage" = { package = "astersql-store-mockstore-mockstorage", path = "../../../store/mockstore/mockstorage" }
+serde_json = "1"

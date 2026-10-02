@@ -8076,6 +8076,7 @@ dependencies = [
  "astersql-statistics-handle-ddl-testutil",
  "astersql-store-helper",
  "astersql-store-mockstore",
+ "astersql-store-mockstore-mockstorage",
  "astersql-store-mockstore-teststore",
  "astersql-store-mockstore-unistore",
  "astersql-table",
@@ -8091,6 +8092,7 @@ dependencies = [
  "astersql-util-rowcodec",
  "astersql-util-topsql-state",
  "astersql-util-versioninfo",
+ "serde_json",
 ]
 
 [[package]]

@@ -1082,6 +1082,8 @@ Example response:
 
 `ErrorCode` contains the effective RFC error code when the stored task error provides one, and is empty for a plain error. `ErrorCategory` is `failed`, `cancelled`, or `data-error` for a task with an error, and is empty when the task has no error. The response does not include the task error message.
 
+The Rust status server reads these fields from the canonical Domain's persisted DXF history tables. A configured DXF runtime may also provide this endpoint. The default page size is `20`; HTTP query validation runs before the history query.
+
 ### Get IMPORT INTO history job details
 
 This API returns detailed history for one completed IMPORT INTO job in a target keyspace. It reads DXF history tables and returns task status, resource settings, file and KV sizes, speeds, row counts, and per-step durations. It returns `404 Not Found` if the matching history task is not found.

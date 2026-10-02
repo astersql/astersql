@@ -625,6 +625,21 @@ pub trait Domain: Send + Sync {
         Err("TiFlash replica reports are not configured".into())
     }
 
+    /// Whether the production history endpoint is enabled for this keyspace.
+    fn dxf_history_available(&self) -> bool {
+        true
+    }
+
+    /// Query persisted DXF history when the canonical SQL runtime is available.
+    fn list_dxf_history(
+        &self,
+        _page_size: i32,
+        _page_token: i64,
+        _keyspace: &str,
+    ) -> Option<Result<serde_json::Value, String>> {
+        None
+    }
+
     /// DXF status HTTP handler 所需的运行时。
     fn dxf_runtime(&self) -> Option<Arc<dyn DxfRuntime>> {
         None

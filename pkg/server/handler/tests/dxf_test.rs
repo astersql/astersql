@@ -1591,3 +1591,189 @@ fn dxf_default_tune_factor_uses_scheduler_bounds() {
     assert_eq!(factors.AmplifyFactor, MinAmplifyFactor);
     assert!(factors.AmplifyFactor <= MaxAmplifyFactor);
 }
+
+#[test]
+fn go_commit_4894ac09c7_canonical_history_http_preserves_failed_tasks() {
+    use astersql_dxf_framework_storage::{self as storage, proto};
+    use astersql_server::server::{Server, ServerConfig, ServerDriver, StatusConfig};
+    use std::sync::Arc;
+    struct Driver;
+    impl ServerDriver for Driver {
+        fn name(&self) -> &str {
+            "history"
+        }
+    }
+    use astersql_store_mockstore_mockstorage::{KVStore, KeyspaceMeta, NewMockStorage};
+    let store = Arc::try_unwrap(
+        NewMockStorage(
+            KVStore::NewMemoryWithWallClockTSO(),
+            Some(KeyspaceMeta {
+                Name: "SYSTEM".into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap(),
+    )
+    .ok()
+    .unwrap();
+    let domain = Arc::new(astersql_domain::Domain::new(
+        store,
+        Arc::new(astersql_domain::canonical_domain::KvInfoSchemaLoader::new()),
+        astersql_domain::DomainConfig {
+            schema_lease: std::time::Duration::ZERO,
+            stats_lease: std::time::Duration::ZERO,
+            ..Default::default()
+        },
+    ));
+    domain.init().unwrap();
+    let session = astersql_session::runtime::BootstrapCanonicalDomain(domain.clone()).unwrap();
+
+    let manager = session.ImportTaskManager().unwrap();
+    manager
+        .InitMeta((), "127.0.0.1:4000".into(), "background".into())
+        .unwrap();
+    let mut ids = Vec::new();
+    let mut tasks = Vec::new();
+    for (index, keyspace) in ["ks1", "ks2", "ks1", "ks3", "ks1"].iter().enumerate() {
+        let id = manager
+            .CreateTask(
+                (),
+                format!("history-key-{}", index + 1),
+                proto::ImportInto,
+                (*keyspace).into(),
+                8,
+                "".into(),
+                0,
+                proto::ExtraParams::default(),
+                b"test".to_vec(),
+            )
+            .unwrap();
+        let task = manager.GetTaskByID((), id).unwrap();
+        manager
+            .SwitchTaskStep((), task, proto::TaskStateRunning, proto::StepOne, vec![])
+            .unwrap();
+        if index == 4 {
+            manager
+                .FailTask(
+                    (),
+                    id,
+                    proto::TaskStateRunning,
+                    storage::Error::new("history task failed: secret"),
+                )
+                .unwrap();
+        } else {
+            manager.SucceedTask((), id).unwrap();
+        }
+        tasks.push(manager.GetTaskByID((), id).unwrap());
+        ids.push(id);
+    }
+    manager.TransferTasks2History((), tasks).unwrap();
+    drop(manager);
+    drop(session);
+    let server = Server::new(
+        ServerConfig {
+            host: "127.0.0.1".into(),
+            port: 0,
+            status: StatusConfig {
+                report_status: true,
+                host: "127.0.0.1".into(),
+                port: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        Arc::new(Driver),
+    )
+    .unwrap();
+    server
+        .run(Arc::new(
+            astersql_server::runtime::CanonicalServerDomain::new(domain),
+        ))
+        .unwrap();
+    struct Close(Arc<Server>);
+    impl Drop for Close {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _close = Close(server.clone());
+    let address = server.status_listener_addr().unwrap();
+    let request = |method: &str, query: &str| {
+        use std::io::{Read, Write};
+        let mut stream = std::net::TcpStream::connect(address).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .unwrap();
+        write!(
+            stream,
+            "{method} /dxf/task/history{query} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response
+    };
+    if !astersql_config_kerneltype::IsNextGen() {
+        assert!(request("GET", "?page_size=2").starts_with("HTTP/1.1 404"));
+        return;
+    }
+    for (method, query, message) in [
+        ("POST", "", "only support GET method"),
+        ("GET", "?page_size=0", "invalid page_size 0"),
+        ("GET", "?page_size=201", "invalid page_size 201"),
+        ("GET", "?page_size=aa", "invalid page_size aa"),
+        ("GET", "?page_token=0", "invalid page_token 0"),
+        ("GET", "?page_token=aa", "invalid page_token aa"),
+        ("GET", "?keyspace=ks.1", "invalid keyspace ks.1"),
+    ] {
+        let response = request(method, query);
+        assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+        assert!(response.contains(message), "{response}");
+    }
+    let fetch = |query: &str| {
+        let response = request("GET", query);
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(!response.contains("secret"));
+        serde_json::from_str::<serde_json::Value>(response.split_once("\r\n\r\n").unwrap().1)
+            .unwrap()
+    };
+    let first = fetch("?page_size=2");
+    assert_eq!(first["ApproxTotalCount"], 5);
+    assert_eq!(first["HasMore"], true);
+    assert_eq!(first["NextPageToken"], ids[3]);
+    assert_eq!(first["Items"][0]["ID"], ids[4]);
+    assert_eq!(first["Items"][0]["State"], "failed");
+    assert_eq!(first["Items"][0]["ErrorCategory"], "failed");
+    assert_eq!(first["Items"][0]["ErrorCode"], "");
+    assert_eq!(first["Items"][1]["ErrorCategory"], "");
+    assert!(first["Items"][0].get("Error").is_none());
+    for field in ["StartTime", "StateUpdateTime", "EndTime"] {
+        assert_ne!(first["Items"][0][field], "0001-01-01T00:00:00Z");
+    }
+    let second = fetch(&format!("?page_size=2&page_token={}", ids[3]));
+    assert_eq!(second["Items"][0]["ID"], ids[2]);
+    assert_eq!(second["Items"][1]["ID"], ids[1]);
+    assert_eq!(second["HasMore"], true);
+    assert_eq!(second["NextPageToken"], ids[1]);
+    assert_eq!(second["ApproxTotalCount"], 5);
+    let last = fetch(&format!("?page_size=2&page_token={}", ids[1]));
+    assert_eq!(last["Items"].as_array().unwrap().len(), 1);
+    assert_eq!(last["NextPageToken"], 0);
+    assert_eq!(last["HasMore"], false);
+    let filtered = fetch("?page_size=2&keyspace=ks1");
+    assert_eq!(filtered["ApproxTotalCount"], 3);
+    assert_eq!(filtered["Items"][1]["ID"], ids[2]);
+    assert_eq!(filtered["HasMore"], true);
+    for item in filtered["Items"].as_array().unwrap() {
+        assert_eq!(item["Keyspace"], "ks1");
+    }
+    let filtered_last = fetch(&format!("?page_size=2&keyspace=ks1&page_token={}", ids[2]));
+    assert_eq!(filtered_last["Items"].as_array().unwrap().len(), 1);
+    assert_eq!(filtered_last["Items"][0]["ID"], ids[0]);
+    assert_eq!(filtered_last["Items"][0]["Keyspace"], "ks1");
+    assert_eq!(filtered_last["ApproxTotalCount"], 3);
+    assert_eq!(filtered_last["HasMore"], false);
+    assert_eq!(filtered_last["NextPageToken"], 0);
+    let defaults = fetch("");
+    assert_eq!(defaults["Items"].as_array().unwrap().len(), 5);
+}

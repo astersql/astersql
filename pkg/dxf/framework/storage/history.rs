@@ -32,7 +32,7 @@ pub const MinHistoryTaskPageSize: i32 = 1;
 pub const MaxHistoryTaskPageSize: i32 = 200;
 // historyTaskSummaryColumns 对应 Go 中拼接 basicTaskColumns 的历史任务摘要列。
 /// 历史任务摘要 SELECT 列清单（含 end_time）。
-pub const historyTaskSummaryColumns: &str = "t.id, t.task_key, t.type, t.state, t.step, t.priority, t.concurrency, t.create_time, t.target_scope, t.max_node_count, t.extra_params, t.keyspace, t.start_time, t.state_update_time, t.end_time";
+pub const historyTaskSummaryColumns: &str = "t.id, t.task_key, t.type, t.state, t.step, t.priority, t.concurrency, t.create_time, t.target_scope, t.max_node_count, t.extra_params, t.keyspace, t.error, t.start_time, t.state_update_time, t.end_time";
 
 impl TaskManager {
     // TransferSubtasks2HistoryWithSession transfer the selected subtasks into tidb_background_subtask_history table by taskID.
@@ -208,10 +208,14 @@ impl TaskManager {
 }
 
 // HistoryTaskSummary contains summary fields for one history task.
-/// 单条历史任务摘要：TaskBase + start/update/end 时间。
+/// History task fields with safe error metadata and start/update/end times.
 pub struct HistoryTaskSummary {
     /// 任务基础字段（来自 history 表前 12 列）。
     pub TaskBase: proto::TaskBase,
+    /// Effective RFC error code; empty for a plain error.
+    pub ErrorCode: String,
+    /// Coarse category; never contains the raw error message.
+    pub ErrorCategory: String,
     /// 任务开始时间。
     pub StartTime: time::Time,
     /// 状态最近更新时间。
@@ -246,23 +250,70 @@ pub fn ValidateHistoryTaskPageSize(pageSize: i32) -> Result<(), Error> {
 }
 
 // row2HistoryTaskSummary 对应 Go 的 chunk.Row 到历史任务摘要转换。
-/// 将 history 表行转为 HistoryTaskSummary（列 12/13/14 为时间字段）。
+/// 将 history 表行转为 HistoryTaskSummary（列 12 为错误，13/14/15 为时间字段）。
 fn row2HistoryTaskSummary(r: chunk::Row) -> HistoryTaskSummary {
     let mut item = HistoryTaskSummary {
         TaskBase: row2TaskBasic(r.clone()),
+        ErrorCode: String::new(),
+        ErrorCategory: String::new(),
         StartTime: std::time::UNIX_EPOCH,
         StateUpdateTime: std::time::UNIX_EPOCH,
         EndTime: std::time::UNIX_EPOCH,
     };
-    // Go 下标 12/13/14 分别是 start/state_update/end；空值保持零值时间。
-    if !r.IsNull(12) {
-        item.StartTime = r.GetTime(12).GoTime(time::Local).0;
+    if let Some(error) = row2TaskError(&r, 12) {
+        item.ErrorCode = taskErrorCode(&error);
+        item.ErrorCategory = ClassifyTaskError(item.TaskBase.State, Some(&error));
     }
     if !r.IsNull(13) {
-        item.StateUpdateTime = r.GetTime(13).GoTime(time::Local).0;
+        item.StartTime = r.GetTime(13).GoTime(time::Local).0;
     }
     if !r.IsNull(14) {
-        item.EndTime = r.GetTime(14).GoTime(time::Local).0;
+        item.StateUpdateTime = r.GetTime(14).GoTime(time::Local).0;
+    }
+    if !r.IsNull(15) {
+        item.EndTime = r.GetTime(15).GoTime(time::Local).0;
     }
     item
+}
+
+/// Safe terminal error categories from Go commit 57b5f2268096ba75eee34c930d6464339460ced7.
+pub fn ClassifyTaskError(state: proto::TaskState, error: Option<&Error>) -> String {
+    let Some(error) = error else {
+        return String::new();
+    };
+    match state {
+        proto::TaskStateFailed => "failed",
+        proto::TaskStateReverted if error.to_string().contains("cancelled by user") => "cancelled",
+        proto::TaskStateReverted if isDataError(error) => "data-error",
+        proto::TaskStateReverted => "failed",
+        _ => "",
+    }
+    .to_owned()
+}
+
+fn isDataError(error: &Error) -> bool {
+    let message = format!("[{}]{}", taskErrorCode(error), error);
+    let import_data = message.contains("ErrEncodeKV")
+        && (message.contains("Value conversion failed for column")
+            || (message.contains("Check constraint '") && message.contains("' is violated"))
+            || message.contains("Table has no partition for value"));
+    let import_conflict = (message.contains("[executor:8167]")
+        && message.contains("Duplicate key conflict found"))
+        || (message.contains("ErrFoundDataConflictRecords")
+            && message.contains("found data conflict records"))
+        || (message.contains("ErrFoundIndexConflictRecords")
+            && message.contains("found index conflict records"));
+    import_data
+        || import_conflict
+        || (message.contains("[kv:1062]") && message.contains("Duplicate entry"))
+}
+
+fn taskErrorCode(error: &Error) -> String {
+    if !error.RFCCode().is_empty() && error.RFCCode() != "0" {
+        error.RFCCode().to_owned()
+    } else if error.RFCCode().is_empty() && error.Code() != 0 {
+        error.Code().to_string()
+    } else {
+        String::new()
+    }
 }

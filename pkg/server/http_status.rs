@@ -697,15 +697,35 @@ fn dxf_active_tasks_response(server: &Server, request: &Request) -> Response {
 }
 
 fn dxf_history_response(server: &Server, request: &Request) -> Response {
-    use astersql_server_handler_tikvhandler::NewDXFTaskHistoryHandler;
+    use astersql_server_handler_tikvhandler::{
+        NewDXFTaskHistoryHandler, parseStoredTaskHistoryQuery,
+    };
 
-    let Some(runtime) = server.domain().and_then(|domain| domain.dxf_runtime()) else {
+    let Some(domain) = server.domain() else {
         return unavailable(HandlerKind::Dxf)(request);
     };
-    let handler = NewDXFTaskHistoryHandler(runtime);
-    let mut writer = DxfHttpResponseWriter::default();
-    handler.ServeHTTP(&mut writer, &dxf_request(request, HashMap::new()));
-    dxf_response(writer)
+    if let Some(runtime) = domain.dxf_runtime() {
+        let handler = NewDXFTaskHistoryHandler(runtime);
+        let mut writer = DxfHttpResponseWriter::default();
+        handler.ServeHTTP(&mut writer, &dxf_request(request, HashMap::new()));
+        return dxf_response(writer);
+    }
+    if !domain.dxf_history_available() {
+        return Response::text(404, "not found");
+    }
+    if request.method != Method::Get {
+        return Response::text(400, "This api only support GET method");
+    }
+    let (size, token, keyspace) =
+        match parseStoredTaskHistoryQuery(&dxf_request(request, HashMap::new())) {
+            Ok(query) => query,
+            Err(error) => return Response::text(400, error.to_string()),
+        };
+    match domain.list_dxf_history(size, token, &keyspace) {
+        Some(Ok(page)) => Response::json(200, page.to_string()),
+        Some(Err(error)) => Response::text(500, error),
+        None => unavailable(HandlerKind::Dxf)(request),
+    }
 }
 
 fn dxf_schedule_response(server: &Server, request: &Request) -> Response {

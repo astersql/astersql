@@ -29,8 +29,38 @@ fn task_row(error: Cell) -> chunk::Row {
 #[test]
 fn task_error_uses_normalized_error_json_semantics() {
     let task = Row2Task(task_row(Cell::Bytes(br#"{"code":7}"#.to_vec())));
-    assert_eq!(task.Error.as_deref(), Some(""));
+    assert_eq!(task.Error.as_deref(), Some("[7]"));
 
     let task = Row2Task(task_row(Cell::Bytes(b"not-json".to_vec())));
     assert_eq!(task.Error.as_deref(), Some("not-json"));
+}
+
+#[test]
+fn go_commit_4894ac09c7_task_error_null_normalized_and_fallback() {
+    for (cell, expected) in [
+        (Cell::Null, None),
+        (
+            Cell::Bytes(br#"{"message":7}"#.to_vec()),
+            Some(r#"{"message":7}"#),
+        ),
+        (Cell::Bytes(b"[]".to_vec()), Some("[]")),
+        (
+            Cell::Bytes(br#"{"message":"history task failed"}"#.to_vec()),
+            Some("[0]history task failed"),
+        ),
+        (Cell::Bytes(b"not-json".to_vec()), Some("not-json")),
+        (
+            Cell::Bytes(br#"{"class":8,"code":1062,"message":"Duplicate entry"}"#.to_vec()),
+            Some("[kv:1062]Duplicate entry"),
+        ),
+        (
+            Cell::Bytes(
+                br#"{"code":1062,"rfccode":"kv:1062","message":"Duplicate entry"}"#.to_vec(),
+            ),
+            Some("[kv:1062]Duplicate entry"),
+        ),
+        (Cell::Bytes(br#"{"code":7}"#.to_vec()), Some("[7]")),
+    ] {
+        assert_eq!(Row2Task(task_row(cell)).Error.as_deref(), expected);
+    }
 }

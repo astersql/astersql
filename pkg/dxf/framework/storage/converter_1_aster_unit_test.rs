@@ -107,6 +107,7 @@ fn history_row(id: i64) -> chunk::Row {
         Cell::Int(2),
         Cell::Json("{}".into()),
         Cell::String("ks1".into()),
+        Cell::Null,
         Cell::Time(UNIX_EPOCH + Duration::from_secs(20)),
         Cell::Time(UNIX_EPOCH + Duration::from_secs(30)),
         Cell::Time(UNIX_EPOCH + Duration::from_secs(40)),

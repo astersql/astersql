@@ -385,22 +385,45 @@ impl DXFTaskHistoryHandler {
     }
 }
 
-/// 解析历史任务查询：page_size（默认 1024）、page_token、keyspace。
+/// Parse history page size (default 20), token and keyspace.
 pub fn parseTaskHistoryQuery(
     request: &Request,
     runtime: &dyn DxfRuntime,
 ) -> DxfResult<(i32, i64, String)> {
+    parse_task_history_query(
+        request,
+        |size| runtime.validate_history_page_size(size),
+        |name| runtime.validate_keyspace_name(name),
+    )
+}
+
+/// Validate a history request against the production storage and naming contracts.
+pub fn parseStoredTaskHistoryQuery(request: &Request) -> DxfResult<(i32, i64, String)> {
+    parse_task_history_query(
+        request,
+        |size| {
+            astersql_dxf_framework_storage::ValidateHistoryTaskPageSize(size)
+                .map_err(|error| DxfError::new(error.to_string()))
+        },
+        |name| astersql_util_naming::CheckKeyspaceName(name).map_err(DxfError::new),
+    )
+}
+
+fn parse_task_history_query(
+    request: &Request,
+    validate_size: impl FnOnce(i32) -> DxfResult<()>,
+    validate_keyspace: impl FnOnce(&str) -> DxfResult<()>,
+) -> DxfResult<(i32, i64, String)> {
     let page_size_text = request.query_value("page_size");
-    // 未指定 page_size 时默认 1024，与 Go 一致。
+    // Share the default with the storage query.
     let page_size = if page_size_text.is_empty() {
-        1024
+        astersql_dxf_framework_storage::DefaultHistoryTaskPageSize
     } else {
         page_size_text
             .parse::<i32>()
             .map_err(|_| DxfError::new(format!("invalid page_size {page_size_text}")))?
     };
-    runtime
-        .validate_history_page_size(page_size)
+    validate_size(page_size)
         .map_err(|_| DxfError::new(format!("invalid page_size {page_size}")))?;
 
     let token_text = request.query_value("page_token");
@@ -414,7 +437,7 @@ pub fn parseTaskHistoryQuery(
             .ok_or_else(|| DxfError::new(format!("invalid page_token {token_text}")))?
     };
     let keyspace = request.query_value("keyspace").to_owned();
-    if !keyspace.is_empty() && runtime.validate_keyspace_name(&keyspace).is_err() {
+    if !keyspace.is_empty() && validate_keyspace(&keyspace).is_err() {
         return Err(DxfError::new(format!("invalid keyspace {keyspace}")));
     }
     Ok((page_size, page_token, keyspace))

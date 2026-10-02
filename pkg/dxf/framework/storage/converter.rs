@@ -120,11 +120,94 @@ fn parse_modify_param(bytes: &[u8]) -> Result<proto::ModifyParam, serde_json::Er
     })
 }
 
-/// 按 Go 的 `errors.Normalize("").UnmarshalJSON` 语义解析任务 error 列。
-fn parse_task_error(bytes: &[u8]) -> Option<String> {
-    let mut normalized = Error::static_new("");
-    normalized.UnmarshalJSON(bytes.to_vec()).ok()?;
-    Some(normalized.to_string())
+/// Decode either task error column using Go's normalized-error fallback.
+fn row2TaskError(r: &chunk::Row, index: usize) -> Option<Error> {
+    if r.IsNull(index) {
+        return None;
+    }
+    let bytes = r.GetBytes(index);
+    #[derive(Default, Deserialize)]
+    struct Fields {
+        #[serde(default, alias = "Class")]
+        class: Option<i32>,
+        #[serde(default, alias = "Code")]
+        code: Option<i32>,
+        #[serde(default, alias = "Message")]
+        message: Option<String>,
+        #[serde(default, alias = "RFCCode")]
+        rfccode: Option<String>,
+    }
+    let decoded = serde_json::from_slice::<serde_json::Value>(&bytes).and_then(|value| {
+        if !value.is_object() && !value.is_null() {
+            return Err(<serde_json::Error as serde::de::Error>::custom(
+                "task error must be an object",
+            ));
+        }
+        serde_json::from_value::<Option<Fields>>(value)
+    });
+    let error = match decoded {
+        Ok(fields) => {
+            let fields = fields.unwrap_or_default();
+            let mut error = Error::static_new("");
+            error.class = fields.class.unwrap_or_default();
+            error.code = fields.code.unwrap_or_default();
+            let mut rfc = fields.rfccode.unwrap_or_default();
+            if rfc.is_empty() && error.class > 0 {
+                // Legacy TiDB terror classes used by pingcap/errors.UnmarshalJSON.
+                const CLASSES: [&str; 28] = [
+                    "",
+                    "autoid",
+                    "ddl",
+                    "domain",
+                    "evaluator",
+                    "executor",
+                    "expression",
+                    "admin",
+                    "kv",
+                    "meta",
+                    "planner",
+                    "parser",
+                    "perfschema",
+                    "privilege",
+                    "schema",
+                    "server",
+                    "struct",
+                    "variable",
+                    "xeval",
+                    "table",
+                    "types",
+                    "global",
+                    "mocktikv",
+                    "json",
+                    "tikv",
+                    "session",
+                    "plugin",
+                    "util",
+                ];
+                let class = CLASSES
+                    .get(error.class as usize)
+                    .copied()
+                    .unwrap_or_default();
+                rfc = format!("{class}:{}", error.code);
+            }
+            let display_code = if rfc.is_empty() {
+                error.code.to_string()
+            } else {
+                rfc.clone()
+            };
+            error.message = intern(format!(
+                "[{display_code}]{}",
+                fields.message.unwrap_or_default()
+            ));
+            error.rfccode = intern(rfc);
+            error
+        }
+        Err(cause) => {
+            eprintln!("unmarshal task error: {cause}");
+            Error::new(String::from_utf8_lossy(&bytes))
+        }
+    };
+    Some(error)
 }
 
 // row2TaskBasic 对应 Go 的内部转换函数，把 task 表基础列转换成 proto.TaskBase。
@@ -188,16 +271,7 @@ pub fn Row2Task(r: chunk::Row) -> proto::Task {
     task.StateUpdateTime = updateTime;
     task.Meta = r.GetBytes(14);
     task.SchedulerID = r.GetString(15);
-    if !r.IsNull(16) {
-        let errBytes = r.GetBytes(16);
-        if let Some(stdErr) = parse_task_error(&errBytes) {
-            task.Error = Some(stdErr);
-        } else {
-            // Go 在错误 JSON 无法反序列化时记录日志，并退化为普通 errors.New(string(errBytes))。
-            eprintln!("unmarshal task error: invalid JSON");
-            task.Error = Some(String::from_utf8_lossy(&errBytes).to_string());
-        }
-    }
+    task.Error = row2TaskError(&r, 16).map(|error| error.to_string());
     if !r.IsNull(17) {
         let str_value = r.GetJSON(17).String();
         // modify param 解析失败同样只记日志，不影响 Task 返回。
