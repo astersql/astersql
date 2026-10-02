@@ -204,7 +204,7 @@ fn literal_text(expr: &ast::ExprNode) -> BuildResult<String> {
 /// 将表达式 AST 还原为规范化的 SQL 文本，用于保存生成列表达式、
 /// CHECK 约束表达式、分区表达式等元数据字段。
 /// 只支持元数据中允许出现的表达式形态，其余形态报错。
-fn expression_text(expr: &ast::ExprNode) -> BuildResult<String> {
+pub fn expression_text(expr: &ast::ExprNode) -> BuildResult<String> {
     expression_text_with_column_qualifiers(expr, true)
 }
 
@@ -1621,6 +1621,9 @@ pub fn BuildTableInfoWithStmt<C: ?Sized + 'static, E: 'static>(
 
     // 应用表级选项：字符集、注释、自增起始值、行 ID 分片位数、
     // 预切分 Region 数（PRE_SPLIT_REGIONS，建表时预先切分数据分片以分散写入）等。
+    let effective_attribute =
+        crate::storage_class::GetEngineAttributeFromStorageClassTableOptions(&statement.Options)
+            .map_err(build_error)?;
     for option in &statement.Options {
         match option.Tp {
             ast::TableOptionType::Charset => table.Charset = option.StrValue.to_lowercase(),
@@ -1655,11 +1658,12 @@ pub fn BuildTableInfoWithStmt<C: ?Sized + 'static, E: 'static>(
                 table.Affinity = model::NewTableAffinityInfoWithLevel(&option.StrValue)
                     .map_err(|error| build_error(error.to_string()))?;
             }
-            ast::TableOptionType::EngineAttribute => {
-                return Err(build_error("ENGINE_ATTRIBUTE is not supported"));
-            }
+            ast::TableOptionType::EngineAttribute | ast::TableOptionType::StorageClass => {}
             _ => {}
         }
+    }
+    if let Some(attribute) = effective_attribute {
+        crate::storage_class::handle_create(&attribute, &mut table).map_err(build_error)?;
     }
     // 临时表不支持放置策略、亲和性与分区；普通表继承库级放置策略。
     if table.TempTableType != model::TempTableNone {
@@ -1681,6 +1685,9 @@ pub fn BuildTableInfoWithStmt<C: ?Sized + 'static, E: 'static>(
         let partition = build_partition_info(partition)?;
         validate_extract_partition_expression(&table, &partition)?;
         table.Partition = Some(partition);
+        crate::storage_class::normalize_partition_definitions(context.GetExprCtx(), &mut table)
+            .map_err(build_error)?;
+        crate::storage_class::rebuild_partitions(&mut table).map_err(build_error)?;
     }
     // 亲和性（affinity）级别必须与是否分区匹配：
     // 表级亲和性仅用于非分区表，分区级亲和性仅用于分区表。

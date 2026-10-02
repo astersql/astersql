@@ -8,6 +8,8 @@ publish.workspace = true
 path = "lib.rs"
 
 [dependencies]
+astersql-ddl = { path = ".." }
+astersql-expression-exprstatic = { path = "../../expression/exprstatic" }
 meta-model = { package = "astersql-meta-model", path = "../../meta/model" }
 parser-ast = { package = "astersql-parser-ast", path = "../../parser/ast" }
 thiserror = "2"
@@ -15,3 +17,6 @@ thiserror = "2"
 [package.metadata.porting]
 go-package = "pkg/ddl/schematracker"
 legacy-tasks = ["task-1039", "task-1040", "task-1043", "task-1255"]
+
+[dev-dependencies]
+astersql-planner-core = { path = "../../planner/core" }

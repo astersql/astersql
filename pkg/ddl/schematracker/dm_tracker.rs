@@ -106,6 +106,10 @@ pub enum AlterOperation {
     CreatePrimaryKey(Vec<ast::CIStr>),
     /// 设置表注释。
     SetComment(String),
+    /// ENGINE_ATTRIBUTE 原始 JSON；和 STORAGE_CLASS 不能混用。
+    SetEngineAttribute(String),
+    /// STORAGE_CLASS 语法糖。
+    SetStorageClass(String),
     /// 设置表及各列的字符集与排序规则。
     SetCharset { charset: String, collate: String },
     /// 添加分区定义。
@@ -334,6 +338,19 @@ impl SchemaTracker {
         let mut table = self
             .InfoStore
             .TableClonedByName(&spec.schema, &spec.table)?;
+        let has_engine = spec
+            .operations
+            .iter()
+            .any(|op| matches!(op, AlterOperation::SetEngineAttribute(_)));
+        let has_sugar = spec
+            .operations
+            .iter()
+            .any(|op| matches!(op, AlterOperation::SetStorageClass(_)));
+        if has_engine && has_sugar {
+            return Err(Error::Mismatch(
+                "can not specify 'ENGINE_ATTRIBUTE' and 'STORAGE_CLASS' together".into(),
+            ));
+        }
         // 任一步失败则整次 ALTER 失败（调用方看到错误时表可能已部分改动，
         // 测试侧另有原子性场景覆盖）。
         for operation in spec.operations {
@@ -617,6 +634,27 @@ fn apply_operation(table: &mut model::TableInfo, operation: AlterOperation) -> R
             },
             false,
         ),
+        AlterOperation::SetStorageClass(tier) => {
+            let option = parser_ast::TableOption {
+                Tp: parser_ast::TableOptionType::StorageClass,
+                StrValue: tier,
+                ..Default::default()
+            };
+            let attribute =
+                astersql_ddl::storage_class::GetEngineAttributeFromStorageClassTableOptions(&[
+                    option,
+                ])
+                .map_err(Error::Mismatch)?
+                .unwrap();
+            astersql_ddl::storage_class::handle_create(&attribute, table)
+                .map_err(Error::Mismatch)?;
+            astersql_ddl::storage_class::rebuild_partitions(table).map_err(Error::Mismatch)
+        }
+        AlterOperation::SetEngineAttribute(attribute) => {
+            astersql_ddl::storage_class::handle_create(&attribute, table)
+                .map_err(Error::Mismatch)?;
+            astersql_ddl::storage_class::rebuild_partitions(table).map_err(Error::Mismatch)
+        }
         // 仅更新表注释字段。
         AlterOperation::SetComment(comment) => {
             table.Comment = comment;
@@ -916,18 +954,36 @@ fn add_partitions(
 ) -> Result<(), Error> {
     let partition = table
         .Partition
-        .as_mut()
+        .as_ref()
         .ok_or(Error::PartitionManagementOnNonpartitionedTable)?;
-    for definition in definitions {
+    for definition in &definitions {
         if partition
             .Definitions
             .iter()
             .any(|old| old.Name.L == definition.Name.L)
         {
-            return Err(Error::TableExists(table.Name.O.clone(), definition.Name.O));
+            return Err(Error::TableExists(
+                table.Name.O.clone(),
+                definition.Name.O.clone(),
+            ));
         }
-        partition.Definitions.push(definition);
     }
+    let offset = partition.Definitions.len();
+    let mut added = partition.clone();
+    added.Definitions = definitions;
+    astersql_ddl::storage_class::CheckAndUpdateAddedPartitionDefinitions(
+        &astersql_expression_exprstatic::NewExprContext(Vec::new()),
+        table,
+        &mut added,
+        offset,
+    )
+    .map_err(Error::Mismatch)?;
+    table
+        .Partition
+        .as_mut()
+        .unwrap()
+        .Definitions
+        .extend(added.Definitions);
     Ok(())
 }
 /// 按名删除分区；表非分区或名称不存在时报错。

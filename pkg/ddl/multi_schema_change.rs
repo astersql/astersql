@@ -100,6 +100,8 @@ pub enum MultiAction {
     ModifyComment,
     /// 修改表字符集/排序规则。
     ModifyCharset,
+    /// 修改 ENGINE_ATTRIBUTE，遵循元数据-only non-revertible 边界。
+    ModifyEngineAttribute,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -338,7 +340,8 @@ pub fn fill_multi_schema_info(
         MultiAction::DropForeignKey(_)
         | MultiAction::RebaseAutoId
         | MultiAction::ModifyComment
-        | MultiAction::ModifyCharset => {}
+        | MultiAction::ModifyCharset
+        | MultiAction::ModifyEngineAttribute => {}
     }
     Ok(())
 }

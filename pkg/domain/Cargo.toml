@@ -12,6 +12,7 @@ go-package = "pkg/domain"
 legacy-tasks = ["task-1046", "task-1047", "task-1048", "task-1049", "task-1051", "task-1309"]
 
 [dependencies]
+"astersql-ddl" = { package = "astersql-ddl", path = "../ddl" }
 "astersql-session-sessmgr" = { package = "astersql-session-sessmgr", path = "../session/sessmgr" }
 "astersql-infoschema-issyncer" = { path = "../infoschema/issyncer" }
 "astersql-config" = { package = "astersql-config", path = "../config" }
@@ -51,7 +52,6 @@ zip = { version = "0.6.6", default-features = false }
 "astersql-bindinfo" = { package = "astersql-bindinfo", path = "../bindinfo" }
 "astersql-config" = { package = "astersql-config", path = "../config" }
 "astersql-config-deploymode" = { package = "astersql-config-deploymode", path = "../config/deploymode" }
-"astersql-ddl" = { package = "astersql-ddl", path = "../ddl" }
 "astersql-ddl-notifier" = { package = "astersql-ddl-notifier", path = "../ddl/notifier" }
 "astersql-ddl-placement" = { package = "astersql-ddl-placement", path = "../ddl/placement" }
 "astersql-ddl-schematracker" = { package = "astersql-ddl-schematracker", path = "../ddl/schematracker" }

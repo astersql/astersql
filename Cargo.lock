@@ -1910,6 +1910,7 @@ dependencies = [
  "astersql-parser-opcode",
  "astersql-parser-terror",
  "astersql-parser-types",
+ "astersql-planner-core",
  "astersql-privilege",
  "astersql-resourcegroup",
  "astersql-resourcemanager-pool-workerpool",
@@ -2174,8 +2175,11 @@ dependencies = [
 name = "astersql-ddl-schematracker"
 version = "0.1.0"
 dependencies = [
+ "astersql-ddl",
+ "astersql-expression-exprstatic",
  "astersql-meta-model",
  "astersql-parser-ast",
+ "astersql-planner-core",
  "thiserror 2.0.19",
 ]
 

@@ -943,3 +943,77 @@ fn test_drop_list_partition() {
         vec!["pNorth", "pWest", "pCentral"]
     );
 }
+
+#[test]
+fn add_partitions_rebuilds_storage_class_from_checked_definitions() {
+    astersql_planner_core::InstallPlannerExpressionFactory().unwrap();
+    let mut tracker = tracker();
+    let mut info = table("storage_class", vec![column("id")]);
+    info.EngineAttribute = r#"{"storage_class":{"tier":"IA","less_than":"300"}}"#.into();
+    info.Partition = Some(model::PartitionInfo {
+        Type: model::ast::model::PartitionTypeRange,
+        Expr: "id".into(),
+        Definitions: vec![model::PartitionDefinition {
+            Name: name("p0"),
+            LessThan: vec!["100".into()],
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    create(&mut tracker, info);
+    tracker
+        .AlterTable(AlterTableSpec {
+            schema: name("test"),
+            table: name("storage_class"),
+            operations: vec![AlterOperation::AddPartitions(vec![
+                model::PartitionDefinition {
+                    Name: name("p1"),
+                    LessThan: vec!["100+200".into()],
+                    ..Default::default()
+                },
+            ])],
+        })
+        .unwrap();
+    let info = get(&tracker, "storage_class");
+    let defs = &info.Partition.as_ref().unwrap().Definitions;
+    assert_eq!(defs[1].LessThan, vec!["300"]);
+    assert_eq!(defs[1].StorageClassTier, "IA");
+}
+
+#[test]
+fn storage_class_alter_options_rebuild_and_reject_conflicts() {
+    let mut tracker = tracker();
+    create(&mut tracker, table("storage_options", vec![column("id")]));
+    for operation in [
+        AlterOperation::SetStorageClass("ia".into()),
+        AlterOperation::SetEngineAttribute(r#"{"storage_class":"STANDARD"}"#.into()),
+    ] {
+        tracker
+            .AlterTable(AlterTableSpec {
+                schema: name("test"),
+                table: name("storage_options"),
+                operations: vec![operation],
+            })
+            .unwrap();
+    }
+    assert_eq!(
+        get(&tracker, "storage_options").StorageClassTier,
+        "STANDARD"
+    );
+    assert!(
+        tracker
+            .AlterTable(AlterTableSpec {
+                schema: name("test"),
+                table: name("storage_options"),
+                operations: vec![
+                    AlterOperation::SetStorageClass("IA".into()),
+                    AlterOperation::SetEngineAttribute(r#"{"storage_class":"IA"}"#.into())
+                ],
+            })
+            .is_err()
+    );
+    assert_eq!(
+        get(&tracker, "storage_options").StorageClassTier,
+        "STANDARD"
+    );
+}

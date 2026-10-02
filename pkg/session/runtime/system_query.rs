@@ -2044,6 +2044,10 @@ impl ConcreteSession {
                                 "VIEW".to_owned()
                             }),
                         ),
+                        (
+                            "tidb_storage_class".to_owned(),
+                            base_table.then(|| table.StorageClassString()),
+                        ),
                         ("tidb_table_id".to_owned(), Some(table.ID.to_string())),
                         ("tidb_row_id_sharding_info".to_owned(), None),
                         ("tidb_pk_type".to_owned(), Some("NONCLUSTERED".to_owned())),
@@ -2083,6 +2087,7 @@ impl ConcreteSession {
                     "TIDB_PLACEMENT_POLICY_NAME",
                     "TIDB_TABLE_MODE",
                     "TIDB_AFFINITY",
+                    "TIDB_STORAGE_CLASS",
                 ],
                 rows,
             )?));
@@ -2237,6 +2242,10 @@ impl ConcreteSession {
                                     ),
                                     ("check_time".to_owned(), None),
                                     ("checksum".to_owned(), None),
+                                    (
+                                        "tidb_storage_class".to_owned(),
+                                        Some(definition.StorageClassString()),
+                                    ),
                                     ("partition_comment".to_owned(), Some(definition.Comment)),
                                     ("nodegroup".to_owned(), Some("".to_owned())),
                                     ("tablespace_name".to_owned(), None),
@@ -2254,6 +2263,7 @@ impl ConcreteSession {
                             ("table_catalog".to_owned(), Some("def".to_owned())),
                             ("table_schema".to_owned(), Some(database)),
                             ("table_name".to_owned(), Some(table.Name.O.clone())),
+                            ("tidb_storage_class".to_owned(), None),
                             ("partition_name".to_owned(), None),
                             ("subpartition_name".to_owned(), None),
                             ("partition_ordinal_position".to_owned(), None),
@@ -2318,6 +2328,7 @@ impl ConcreteSession {
                     "NODEGROUP",
                     "TABLESPACE_NAME",
                     "TIDB_PARTITION_ID",
+                    "TIDB_STORAGE_CLASS",
                     "TIDB_PLACEMENT_POLICY_NAME",
                     "TIDB_AFFINITY",
                 ],

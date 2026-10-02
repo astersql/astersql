@@ -16,13 +16,9 @@
 use serde::{Deserialize, Serialize};
 
 /// ENGINE_ATTRIBUTE 的 JSON 形式。
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct EngineAttribute {
-    #[serde(
-        rename = "storage_class",
-        default,
-        deserialize_with = "deserialize_raw_message"
-    )]
+    #[serde(rename = "storage_class")]
     pub StorageClass: Option<Box<serde_json::value::RawValue>>,
 }
 
@@ -33,13 +29,34 @@ impl PartialEq for EngineAttribute {
     }
 }
 
-fn deserialize_raw_message<'de, D>(
-    deserializer: D,
-) -> Result<Option<Box<serde_json::value::RawValue>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Box::<serde_json::value::RawValue>::deserialize(deserializer).map(Some)
+impl<'de> Deserialize<'de> for EngineAttribute {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = EngineAttribute;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("engine attribute object")
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(EngineAttribute::default())
+            }
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                mut map: M,
+            ) -> Result<Self::Value, M::Error> {
+                let mut attribute = EngineAttribute::default();
+                while let Some(key) = map.next_key::<String>()? {
+                    if key.eq_ignore_ascii_case("storage_class") {
+                        attribute.StorageClass = Some(map.next_value()?);
+                    } else {
+                        let _: serde::de::IgnoredAny = map.next_value()?;
+                    }
+                }
+                Ok(attribute)
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
 }
 
 /// 空输入代表零值属性；非空输入必须是合法对象 JSON。
@@ -87,7 +104,7 @@ pub struct StorageClassTransitRule {
     pub Tier: String,
     #[serde(rename = "after_days", default)]
     pub AfterDays: u64,
-    #[serde(rename = "after_seconds", default)]
+    #[serde(rename = "after_seconds", default, skip_serializing_if = "is_zero")]
     pub AfterSeconds: u64,
 }
 impl StorageClassTransitRule {
@@ -108,4 +125,8 @@ pub fn buildStorageClassString(tier: &str, transitions: &[StorageClassTransitRul
         transitions: &'a [StorageClassTransitRule],
     }
     serde_json::to_string(&StorageClassInfo { tier, transitions }).unwrap_or_default()
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }

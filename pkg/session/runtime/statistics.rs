@@ -2577,10 +2577,29 @@ impl ConcreteSession {
         } else {
             "CREATE TABLE"
         };
+        let storage_option = if table.EngineAttribute.is_empty() {
+            String::new()
+        } else {
+            match astersql_ddl::storage_class::GetSimpleTableStorageClassForShowCreate(&table)
+                .map_err(SessionError::new)?
+            {
+                Some(tier) => format!(" STORAGE_CLASS='{tier}'"),
+                None => format!(
+                    " ENGINE_ATTRIBUTE='{}'",
+                    table
+                        .EngineAttribute
+                        .replace('\0', "\\0")
+                        .replace('\'', "''")
+                        .replace('\n', "\\n")
+                        .replace('\r', "\\r")
+                ),
+            }
+        };
         let mut create = format!(
-            "{create_kind} {} (\n{}\n) ENGINE=InnoDB DEFAULT CHARSET={} COLLATE={}",
+            "{create_kind} {} (\n{}\n) ENGINE=InnoDB{} DEFAULT CHARSET={} COLLATE={}",
             quote_show_identifier(&table.Name.O, ansi_quotes),
             definitions.join(",\n"),
+            storage_option,
             charset,
             collate
         );

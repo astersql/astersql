@@ -287,6 +287,8 @@ impl ConcreteSession {
         shard_row_id_bits: Option<u64>,
         pre_split_regions: Option<u64>,
     ) -> SessionResult<()> {
+        astersql_planner_core::InstallPlannerExpressionFactory()
+            .map_err(|error| SessionError::new(error.to_string()))?;
         Self::validate_create_table_collations(statement)?;
         let strict_integer_display_width =
             unsafe { astersql_parser_types::TiDBStrictIntegerDisplayWidth };
@@ -1591,6 +1593,8 @@ impl ConcreteSession {
 
     /// 执行 ALTER TABLE（含统计相关变更）。
     pub(super) fn execute_alter_table(&self, statement: &ast::AlterTableStmt) -> SessionResult<()> {
+        astersql_planner_core::InstallPlannerExpressionFactory()
+            .map_err(|error| SessionError::new(error.to_string()))?;
         for spec in &statement.Specs {
             for option in &spec.Options {
                 if option.Tp == ast::TableOptionType::Collate {
@@ -1777,6 +1781,19 @@ impl ConcreteSession {
                             .contains(&quoted)
                 })
             };
+        astersql_ddl::storage_class::CheckStorageClassConflictInAlterTableSpecs(&statement.Specs)
+            .map_err(SessionError::new)?;
+        // Validate every occurrence before submitting any metadata action.
+        for spec in statement
+            .Specs
+            .iter()
+            .filter(|spec| spec.Tp == ast::AlterTableType::Option)
+        {
+            astersql_ddl::storage_class::GetEngineAttributeFromStorageClassTableOptions(
+                &spec.Options,
+            )
+            .map_err(SessionError::new)?;
+        }
         let contains_add_index = statement.Specs.iter().any(|spec| {
             spec.Tp == ast::AlterTableType::AddConstraint
                 && spec.Constraint.as_ref().is_some_and(|constraint| {
@@ -1854,7 +1871,10 @@ impl ConcreteSession {
                         ast::PartitionDefinitionClause::LessThan(expressions) => (
                             expressions
                                 .iter()
-                                .map(literal)
+                                .map(|expression| {
+                                    astersql_ddl::expression_text(expression)
+                                        .map_err(|e| SessionError::new(e.to_string()))
+                                })
                                 .collect::<SessionResult<Vec<_>>>()?,
                             Vec::new(),
                         ),
@@ -1863,7 +1883,13 @@ impl ConcreteSession {
                             groups
                                 .iter()
                                 .map(|group| {
-                                    group.iter().map(literal).collect::<SessionResult<Vec<_>>>()
+                                    group
+                                        .iter()
+                                        .map(|expression| {
+                                            astersql_ddl::expression_text(expression)
+                                                .map_err(|e| SessionError::new(e.to_string()))
+                                        })
+                                        .collect::<SessionResult<Vec<_>>>()
                                 })
                                 .collect::<SessionResult<Vec<_>>>()?,
                         ),
@@ -3412,6 +3438,7 @@ impl ConcreteSession {
                     indexes.insert(name);
                 }
                 ast::AlterTableType::Option => {
+                    let attribute = astersql_ddl::storage_class::GetEngineAttributeFromStorageClassTableOptions(&spec.Options).map_err(SessionError::new)?;
                     let (_, table) = self
                         .domain
                         .stats_table(database, &statement.Table.Name.L)
@@ -3422,6 +3449,13 @@ impl ConcreteSession {
                             ))
                         })?;
                     for option in &spec.Options {
+                        if matches!(
+                            option.Tp,
+                            ast::TableOptionType::EngineAttribute
+                                | ast::TableOptionType::StorageClass
+                        ) {
+                            continue;
+                        }
                         if option.Tp == ast::TableOptionType::Policy {
                             let placement = if option.StrValue.is_empty() {
                                 None
@@ -3500,6 +3534,15 @@ impl ConcreteSession {
                                 allocator_kind,
                             )
                             .map_err(|error| session_error("ALTER TABLE auto ID rebase", error))?;
+                    }
+                    if let Some(attribute) = attribute {
+                        self.submit_normal_action(
+                            database,
+                            &statement.Table.Name.L,
+                            74,
+                            serde_json::json!({"engine_attribute": attribute}),
+                        )?;
+                        continue;
                     }
                     return Ok(());
                 }

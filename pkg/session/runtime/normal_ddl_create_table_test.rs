@@ -1119,3 +1119,229 @@ fn normal_ddl_create_table_columnar_gate() {
         assert_eq!(f.reader().get_table(f.db, t.ID).unwrap().is_some(), done);
     }
 }
+
+#[test]
+fn normal_ddl_storage_class_worker_persists_original_attribute_v1_and_v2() {
+    for version in [JobVersion::V1, JobVersion::V2] {
+        let f = Fixture::new();
+        f.pool
+            .acquire()
+            .unwrap()
+            .query("INSERT INTO test.normal_ddl_target VALUES(9,'storage class row')")
+            .unwrap();
+        let original = r#"{ "storage_class" : "IA" }"#;
+        let args = if version == JobVersion::V1 {
+            serde_json::json!([original])
+        } else {
+            serde_json::json!({"engine_attribute":original})
+        };
+        let mut job = Job {
+            id: 990001,
+            tp: 74,
+            version,
+            schema_id: f.db,
+            table_id: f.table,
+            schema_name: "test".into(),
+            table_name: "normal_ddl_target".into(),
+            raw_args: serde_json::to_vec(&args).unwrap(),
+            ..Default::default()
+        };
+        let wire = astersql_meta::encode_go_ddl_job(&mut job, false).unwrap();
+        f.pool.acquire().unwrap().query(format!("INSERT INTO mysql.tidb_ddl_job (job_id,reorg,schema_ids,table_ids,job_meta,type,processing) VALUES ({},0,'{}','{}',X'{}',74,0)",job.id,f.db,f.table,hex(&wire))).unwrap();
+        run(&f);
+        let done = durable(&f, job.id);
+        assert_eq!(done.state, JobState::Done);
+        let table = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+        assert_eq!(table.EngineAttribute, original);
+        assert_eq!(table.StorageClassTier, "IA");
+        assert!(done.binlog_info.as_ref().unwrap().schema_version > 0);
+        let rows = f
+            .pool
+            .acquire()
+            .unwrap()
+            .query("SELECT payload FROM test.normal_ddl_target WHERE id=9")
+            .unwrap();
+        assert!(!rows.is_empty());
+    }
+}
+#[test]
+fn normal_ddl_storage_class_worker_cancels_invalid_settings_without_metadata_change() {
+    let f = Fixture::new();
+    let mut job = Job {
+        id: 990002,
+        tp: 74,
+        version: JobVersion::V2,
+        schema_id: f.db,
+        table_id: f.table,
+        schema_name: "test".into(),
+        table_name: "normal_ddl_target".into(),
+        raw_args: serde_json::to_vec(
+            &serde_json::json!({"engine_attribute":r#"{"storage_class":"COLD"}"#}),
+        )
+        .unwrap(),
+        ..Default::default()
+    };
+    let wire = astersql_meta::encode_go_ddl_job(&mut job, false).unwrap();
+    f.pool.acquire().unwrap().query(format!("INSERT INTO mysql.tidb_ddl_job (job_id,reorg,schema_ids,table_ids,job_meta,type,processing) VALUES ({},0,'{}','{}',X'{}',74,0)",job.id,f.db,f.table,hex(&wire))).unwrap();
+    run(&f);
+    assert_eq!(durable(&f, job.id).state, JobState::Cancelled);
+    assert_eq!(
+        f.reader()
+            .get_table(f.db, f.table)
+            .unwrap()
+            .unwrap()
+            .EngineAttribute,
+        ""
+    );
+}
+
+#[test]
+fn normal_ddl_storage_class_sql_show_information_schema_and_partition_updates() {
+    let f = Fixture::new();
+    let mut session = f.pool.acquire().unwrap();
+    session
+        .query("CREATE TABLE test.storage_class_sql(id int) STORAGE_CLASS='ia'")
+        .unwrap();
+    let show = session
+        .query("SHOW CREATE TABLE test.storage_class_sql")
+        .unwrap();
+    assert!(show[0][1].contains("ENGINE=InnoDB STORAGE_CLASS='IA' DEFAULT CHARSET="));
+    let rows=session.query("SELECT TIDB_STORAGE_CLASS FROM information_schema.tables WHERE table_schema='test' AND table_name='storage_class_sql'").unwrap();
+    assert_eq!(rows, vec![vec!["IA"]]);
+    use astersql_domain::domain::{DdlService, StartMode};
+    let cancellation = astersql_owner::manager::Context::new();
+    let owner = astersql_owner::mock::NewMockManager(
+        cancellation.clone(),
+        "storage-class-worker",
+        None,
+        format!("/storage-class-worker/{}", f.db),
+    );
+    let service = Arc::new(super::normal_ddl_service::NormalDdlService::new(
+        owner,
+        Arc::new(tokio::runtime::Runtime::new().unwrap()),
+        cancellation,
+        f.pool.clone(),
+        Arc::new(super::normal_ddl_service::DomainSchemaLoader(
+            Arc::downgrade(&f.domain),
+        )),
+        Arc::new(|| Ok(Box::new(executor()))),
+        Arc::new(|_| Err("unused table mode".into())),
+        Arc::new(|| {}),
+        true,
+    ));
+    struct StopService(Arc<super::normal_ddl_service::NormalDdlService>);
+    impl Drop for StopService {
+        fn drop(&mut self) {
+            let _ = self.0.stop();
+        }
+    }
+    f.domain.set_ddl(service.clone());
+    service.start(StartMode::Normal).unwrap();
+    let _stop = StopService(service);
+    session
+        .query("ALTER TABLE test.storage_class_sql STORAGE_CLASS='STANDARD'")
+        .unwrap();
+    assert!(
+        session
+            .query("SHOW CREATE TABLE test.storage_class_sql")
+            .unwrap()[0][1]
+            .contains("STORAGE_CLASS='STANDARD'")
+    );
+    assert!(session.query(r#"ALTER TABLE test.storage_class_sql ENGINE_ATTRIBUTE='{"storage_class":"IA"}', STORAGE_CLASS='STANDARD'"#).is_err());
+    session
+        .query("ALTER TABLE test.storage_class_sql STORAGE_CLASS='IA', STORAGE_CLASS='STANDARD'")
+        .unwrap();
+    assert!(
+        session
+            .query("SHOW CREATE TABLE test.storage_class_sql")
+            .unwrap()[0][1]
+            .contains("STORAGE_CLASS='STANDARD'")
+    );
+    assert!(
+        session
+            .query("ALTER TABLE test.storage_class_sql STORAGE_CLASS='IA', STORAGE_CLASS='COLD'")
+            .is_err()
+    );
+    assert!(
+        session
+            .query("SHOW CREATE TABLE test.storage_class_sql")
+            .unwrap()[0][1]
+            .contains("STORAGE_CLASS='STANDARD'")
+    );
+    session.query(r#"CREATE TABLE test.storage_class_parts(id int) ENGINE_ATTRIBUTE='{"storage_class":{"tier":"IA","less_than":"300"}}' PARTITION BY RANGE(id) (PARTITION p0 VALUES LESS THAN(100),PARTITION p1 VALUES LESS THAN(200))"#).unwrap();
+    session.query("ALTER TABLE test.storage_class_parts ADD PARTITION(PARTITION p2 VALUES LESS THAN(100+200))").unwrap();
+    let rows=session.query("SELECT partition_name,TIDB_STORAGE_CLASS,partition_description FROM information_schema.partitions WHERE table_schema='test' AND table_name='storage_class_parts' ORDER BY partition_name").unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            vec!["p0", "IA", "100"],
+            vec!["p1", "IA", "200"],
+            vec!["p2", "IA", "300"]
+        ]
+    );
+    session.query("ALTER TABLE test.storage_class_parts REORGANIZE PARTITION p2 INTO(PARTITION p2 VALUES LESS THAN(200+50),PARTITION p3 VALUES LESS THAN(300))").unwrap();
+    let rows=session.query("SELECT partition_name,TIDB_STORAGE_CLASS,partition_description FROM information_schema.partitions WHERE table_schema='test' AND table_name='storage_class_parts' ORDER BY partition_name").unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            vec!["p0", "IA", "100"],
+            vec!["p1", "IA", "200"],
+            vec!["p2", "IA", "250"],
+            vec!["p3", "IA", "300"]
+        ]
+    );
+    session
+        .query("ALTER TABLE test.storage_class_parts REMOVE PARTITIONING")
+        .unwrap();
+}
+
+#[test]
+fn normal_ddl_storage_class_worker_keeps_multi_schema_non_revertible_boundary() {
+    let f = Fixture::new();
+    let mut job = Job {
+        id: 990003,
+        tp: 74,
+        version: JobVersion::V2,
+        schema_id: f.db,
+        table_id: f.table,
+        schema_name: "test".into(),
+        table_name: "normal_ddl_target".into(),
+        raw_args: serde_json::to_vec(
+            &serde_json::json!({"engine_attribute":r#"{"storage_class":"IA"}"#}),
+        )
+        .unwrap(),
+        multi_schema_info: Some(astersql_meta_model::group_3::MultiSchemaInfo {
+            revertible: true,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let wire = astersql_meta::encode_go_ddl_job(&mut job, false).unwrap();
+    f.pool.acquire().unwrap().query(format!("INSERT INTO mysql.tidb_ddl_job (job_id,reorg,schema_ids,table_ids,job_meta,type,processing) VALUES ({},0,'{}','{}',X'{}',74,0)",job.id,f.db,f.table,hex(&wire))).unwrap();
+    run(&f);
+    assert!(
+        !durable(&f, job.id)
+            .multi_schema_info
+            .as_ref()
+            .unwrap()
+            .revertible
+    );
+    assert_eq!(
+        f.reader()
+            .get_table(f.db, f.table)
+            .unwrap()
+            .unwrap()
+            .EngineAttribute,
+        ""
+    );
+    run(&f);
+    assert_eq!(durable(&f, job.id).state, JobState::Done);
+    assert_eq!(
+        f.reader()
+            .get_table(f.db, f.table)
+            .unwrap()
+            .unwrap()
+            .StorageClassTier,
+        "IA"
+    );
+}

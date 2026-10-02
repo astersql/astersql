@@ -24,7 +24,7 @@ mod create_table;
 
 pub use create_table::{
     BuildColumnInfoFromAST, BuildPartialIndexCondition, BuildPartitionInfo, BuildTableInfoFromAST,
-    BuildTableInfoWithStmt, MaterializeExpressionIndexColumns,
+    BuildTableInfoWithStmt, MaterializeExpressionIndexColumns, expression_text,
 };
 
 pub mod add_column;
@@ -295,3 +295,7 @@ pub mod persistent_create_materialized_view;
 pub mod persistent_drop_column;
 pub mod persistent_masking_actions;
 pub mod persistent_modify_column;
+
+pub mod storage_class;
+#[cfg(test)]
+mod storage_class_test;

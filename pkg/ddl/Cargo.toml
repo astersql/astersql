@@ -5,6 +5,10 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../util/logutil" }
+astersql-expression = { path = "../expression" }
+astersql-expression-exprstatic = { path = "../expression/exprstatic" }
+astersql-util-chunk = { path = "../util/chunk" }
 astersql-util-collate = { path = "../util/collate" }
 chrono = "0.4"
 astersql-table = { path = "../table" }
@@ -42,6 +46,7 @@ go-package = "pkg/ddl"
 legacy-tasks = ["task-1005", "task-1006", "task-1007", "task-1008", "task-1009", "task-1010", "task-1011", "task-1012", "task-1013", "task-1014", "task-1015", "task-1016", "task-1017", "task-1018", "task-1019", "task-1020", "task-1021", "task-1022", "task-1023", "task-1024", "task-1025", "task-1026", "task-1027", "task-1028", "task-1029", "task-1030", "task-1032", "task-1526", "task-1527", "task-1528", "task-1529", "task-1530", "task-1531", "task-1532", "task-1533", "task-1534", "task-1535", "task-1536", "task-1537", "task-1538", "task-1539", "task-1540", "task-1541", "task-1542", "task-1543"]
 
 [dev-dependencies]
+astersql-planner-core = { path = "../planner/core" }
 astersql-store-mockstore-mockstorage = { path = "../store/mockstore/mockstorage" }
 "astersql-ddl-mock" = { package = "astersql-ddl-mock", path = "mock" }
 "astersql-ddl-util" = { package = "astersql-ddl-util", path = "util" }
@@ -153,7 +158,6 @@ astersql-store-mockstore-mockstorage = { path = "../store/mockstore/mockstorage"
 "astersql-util-generic" = { package = "astersql-util-generic", path = "../util/generic" }
 "astersql-util-hack" = { package = "astersql-util-hack", path = "../util/hack" }
 "astersql-util-intest" = { package = "astersql-util-intest", path = "../util/intest" }
-"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../util/logutil" }
 "astersql-util-mathutil" = { package = "astersql-util-mathutil", path = "../util/mathutil" }
 "astersql-util-memory" = { package = "astersql-util-memory", path = "../util/memory" }
 "astersql-util-ppcpuusage" = { package = "astersql-util-ppcpuusage", path = "../util/ppcpuusage" }

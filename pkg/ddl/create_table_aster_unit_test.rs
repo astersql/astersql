@@ -24,6 +24,7 @@ use crate::{BuildTableInfoFromAST, BuildTableInfoWithStmt};
 /// 避免测试代码持有解析器内部的借用；其中 `Select` 字段被显式置空，
 /// 因为这些测试不涉及 `CREATE TABLE ... SELECT` 形式。
 fn parse_create(sql: &str) -> Box<ast::CreateTableStmt> {
+    astersql_planner_core::InstallPlannerExpressionFactory().expect("planner expression factory");
     let mut parser = astersql_parser::New();
     let statement = parser
         .ParseOneStmt(sql, "", "")
@@ -326,4 +327,27 @@ fn formal_builder_rejects_invalid_auto_random_and_temporary_modes() {
         "create global temporary table bad_temporary (id bigint) on commit preserve rows",
     );
     assert!(BuildTableInfoFromAST(&context, &preserve_rows).is_err());
+}
+
+// The storage-class ADD/REORGANIZE tests consume checked, normalized boundaries.
+// Isolate that prerequisite before adding storage-class matching to this path.
+#[test]
+fn formal_builder_normalizes_range_boundary_for_storage_class_matching() {
+    let statement = parse_create(
+        "create table t (id int) partition by range (id) \
+         (partition p0 values less than (100), partition p1 values less than (100 + 200))",
+    );
+    let context = metabuild::NewContext::<(), std::convert::Infallible>(Vec::new());
+    let table = BuildTableInfoFromAST(&context, &statement).expect("build checked metadata");
+    let partition = table.Partition.as_ref().expect("range partition metadata");
+    assert_eq!(partition.Definitions[1].LessThan, vec!["300"]);
+}
+
+#[test]
+fn formal_builder_applies_storage_class_engine_attribute() {
+    let statement =
+        parse_create("create table t (id int) engine_attribute='{\"storage_class\":\"IA\"}'");
+    let context = metabuild::NewContext::<(), std::convert::Infallible>(Vec::new());
+    let table = BuildTableInfoFromAST(&context, &statement).expect("storage class metadata");
+    assert_eq!(table.StorageClassTier, "IA");
 }

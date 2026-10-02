@@ -35,6 +35,7 @@ pub fn handler_available(action: u8) -> bool {
                 | 32
                 | 39
                 | 55
+                | 74
                 | 75
                 | 76
                 | 85
@@ -95,6 +96,7 @@ fn step_metadata(txn: &mut dyn astersql_kv::Transaction, job: &mut Job) -> Resul
         17 | 39 => modify_table_metadata(txn, job),
         26 => modify_schema_charset(txn, job),
         55 => modify_schema_placement(txn, job),
+        74 => modify_engine_attribute(txn, job),
         75 => crate::table_mode::on_persistent_alter_table_mode(txn, job),
         76 => refresh_meta(txn, job),
         action => Err(format!(
@@ -568,4 +570,56 @@ fn initialize_prepared_index_action(
     // Initialization does not itself publish a schema state; the next invocation
     // must report the unimplemented following stage without repeating telemetry.
     Ok(0)
+}
+
+/// engine_attribute.go onModifyTableEngineAttribute: retain original JSON and
+/// atomically rebuild canonical metadata with the schema version and job result.
+fn modify_engine_attribute(
+    txn: &mut dyn astersql_kv::Transaction,
+    job: &mut Job,
+) -> Result<i64, String> {
+    let args =
+        astersql_meta_model::group_2::GetModifyTableEngineAttributeArgs(job).map_err(|error| {
+            job.state = JobState::Cancelled;
+            error.to_string()
+        })?;
+    astersql_meta_model::ParseEngineAttributeFromString(&args.EngineAttribute).map_err(
+        |error| {
+            job.state = JobState::Cancelled;
+            error.to_string()
+        },
+    )?;
+    let mut meta = astersql_meta::TransactionMutator::new(txn);
+    let mut table = public_table(&meta, job)?;
+    if job
+        .multi_schema_info
+        .as_ref()
+        .is_some_and(|info| info.revertible)
+    {
+        job.mark_non_revertible();
+        return Ok(0);
+    }
+    table.EngineAttribute = args.EngineAttribute;
+    let settings = crate::storage_class::get_settings(&table).map_err(|error| {
+        job.state = JobState::Cancelled;
+        error
+    })?;
+    crate::storage_class::BuildStorageClassForTable(&mut table, settings.as_ref()).map_err(
+        |error| {
+            job.state = JobState::Cancelled;
+            error
+        },
+    )?;
+    crate::storage_class::rebuild_partitions(&mut table).map_err(|error| {
+        job.state = JobState::Cancelled;
+        error
+    })?;
+    let version = update_version_and_table(&mut meta, job, &mut table)?;
+    job.finish_table_job(
+        JobState::Done,
+        SchemaState::Public,
+        version,
+        std::sync::Arc::new(table),
+    );
+    Ok(version)
 }

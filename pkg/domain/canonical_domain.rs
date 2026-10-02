@@ -739,13 +739,34 @@ impl DdlMetadataService {
             let partition = new.Partition.as_mut().ok_or_else(|| {
                 kv::errors::New(format!("table {}.{} is not partitioned", key.0, key.1))
             })?;
+            let offset = partition
+                .Definitions
+                .iter()
+                .position(|definition| removed_names.contains(&definition.Name.L))
+                .unwrap_or(partition.Definitions.len());
             partition
                 .Definitions
                 .retain(|definition| !removed_names.contains(&definition.Name.L));
             for definition in &mut added {
                 definition.ID = allocate_id(catalog);
             }
-            partition.Definitions.extend(added);
+            partition.Definitions.splice(offset..offset, added);
+            astersql_ddl::storage_class::normalize_checked_partitions(&mut new)
+                .map_err(kv::errors::New)?;
+            astersql_ddl::storage_class::check_final_definitions(&new).map_err(kv::errors::New)?;
+            astersql_ddl::storage_class::rebuild_partitions(&mut new).map_err(kv::errors::New)?;
+            // Go copies only the checked new definitions into the job. Existing
+            // physical partitions retain their metadata, including current tiers.
+            if let Some(original) = &old.Partition {
+                for definition in &mut new.Partition.as_mut().unwrap().Definitions {
+                    if let Some(existing) =
+                        original.Definitions.iter().find(|d| d.ID == definition.ID)
+                    {
+                        *definition = existing.clone();
+                    }
+                }
+            }
+            let partition = new.Partition.as_mut().unwrap();
             partition.Num = partition.Definitions.len() as u64;
             catalog.tables.insert(key, new.clone());
             Ok(DdlMetadataChange {
@@ -782,6 +803,9 @@ impl DdlMetadataService {
             }
             let mut new = old.clone();
             new.Partition = partition;
+            astersql_ddl::storage_class::normalize_checked_partitions(&mut new)
+                .map_err(kv::errors::New)?;
+            astersql_ddl::storage_class::rebuild_partitions(&mut new).map_err(kv::errors::New)?;
             catalog.tables.insert(key, new.clone());
             Ok(DdlMetadataChange {
                 old_tables: vec![(database.clone(), old)],
