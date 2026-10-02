@@ -286,3 +286,186 @@ fn histogram_equal_matches_go_string_contract() {
 
     assert!(HistogramEqual(&left, &right, false));
 }
+
+#[test]
+fn out_of_range_skew_preserves_base_minimum() {
+    let tp = types::NewFieldType(types::mysql::TypeLonglong);
+    let mut h = NewHistogram(1, 100, 0, 0, &tp, 1, 0);
+    h.AppendBucket(&types::NewIntDatum(10), &types::NewIntDatum(20), 1000, 1);
+    assert_eq!(
+        h.OutOfRangeRowCount(
+            &types::NewIntDatum(20),
+            &types::NewIntDatum(30),
+            1100,
+            100,
+            100,
+            true,
+            0.5
+        ),
+        RowEstimate {
+            Est: 62.5,
+            MinEst: 25.0,
+            MaxEst: 100.0
+        }
+    );
+}
+
+fn out_of_range_histogram(ndv: i64) -> Histogram {
+    let tp = types::NewFieldType(types::mysql::TypeLonglong);
+    let mut h = NewHistogram(1, ndv, 0, 0, &tp, 1, 0);
+    h.AppendBucket(&types::NewIntDatum(10), &types::NewIntDatum(20), 1000, 1);
+    h
+}
+
+#[test]
+fn out_of_range_shape_geometry_and_cached_scaling() {
+    let h = out_of_range_histogram(100);
+    for (l, r, percent, maximum) in [
+        (0, 10, 0.5, 1.0),
+        (20, 30, 0.5, 1.0),
+        (0, 30, 1.0, 1.0),
+        (10, 20, 0.0, 0.0),
+        (20, 25, 0.375, 0.75),
+        (40, 50, 0.0, 0.0),
+        (25, 25, 0.0, 0.0),
+    ] {
+        let lower = types::NewIntDatum(l);
+        let upper = types::NewIntDatum(r);
+        let shape = h.OutOfRangeShape(&lower, &upper, 100);
+        assert_eq!(shape.TotalPercent, percent);
+        assert_eq!(shape.MaxTotalPercent, maximum);
+        assert_eq!(shape.OneValue, 10.0);
+        for realtime in [0, 900, 1000, 1100, 2000] {
+            for modify in [0, 100] {
+                for skew in [0.0, 0.5, 1.0] {
+                    assert_eq!(
+                        h.ScaleOutOfRangeShape(shape, realtime, modify, true, skew),
+                        h.OutOfRangeRowCount(&lower, &upper, realtime, modify, 100, true, skew)
+                    );
+                }
+            }
+        }
+    }
+    let shape = h.OutOfRangeShape(&types::NewIntDatum(20), &types::NewIntDatum(30), 100);
+    assert_eq!(
+        h.ScaleOutOfRangeShape(shape, 1100, 100, true, 0.0),
+        RowEstimate {
+            Est: 25.0,
+            MinEst: 10.0,
+            MaxEst: 100.0
+        }
+    );
+    assert_eq!(
+        h.ScaleOutOfRangeShape(shape, 900, 100, true, 0.0),
+        RowEstimate {
+            Est: 25.0,
+            MinEst: 10.0,
+            MaxEst: 100.0
+        }
+    );
+    assert_eq!(
+        h.ScaleOutOfRangeShape(shape, 1000, 0, true, 0.0),
+        RowEstimate {
+            Est: 10.0,
+            MinEst: 0.0,
+            MaxEst: 10.0
+        }
+    );
+    assert_eq!(
+        h.ScaleOutOfRangeShape(shape, 0, 0, true, 0.0),
+        RowEstimate {
+            Est: 250.0,
+            MinEst: 10.0,
+            MaxEst: 1000.0
+        }
+    );
+    // Scaling only needs the cached geometry and histogram counts.
+    let mut without_bounds = h.clone();
+    without_bounds.Bounds.clear();
+    assert_eq!(
+        without_bounds
+            .ScaleOutOfRangeShape(shape, 1100, 100, true, 0.0)
+            .Est,
+        25.0
+    );
+}
+
+#[test]
+fn out_of_range_shape_empty_impossible_and_determinate_order() {
+    let mut h = out_of_range_histogram(1);
+    h.Tp.SetFlag(types::mysql::UnsignedFlag);
+    for (l, r) in [(-10, -1), (-10, 0), (20, 10)] {
+        let shape = h.OutOfRangeShape(&types::NewIntDatum(l), &types::NewIntDatum(r), 0);
+        assert!(shape.Impossible);
+        assert_eq!(shape.HistNDV, 1);
+        assert_eq!(
+            h.ScaleOutOfRangeShape(shape, 100, 100, true, 0.0),
+            DefaultRowEst(0.0)
+        );
+        assert_eq!(
+            h.ScaleOutOfRangeShape(shape, 100, 100, false, 0.5),
+            DefaultRowEst(1000.0)
+        );
+    }
+    assert!(
+        !h.OutOfRangeShape(&types::NewIntDatum(0), &types::NewIntDatum(0), 1)
+            .Impossible
+    );
+    let tp = types::NewFieldType(types::mysql::TypeLonglong);
+    let empty = NewHistogram(1, 0, 0, 0, &tp, 0, 0);
+    let shape = empty.OutOfRangeShape(&types::NewIntDatum(0), &types::NewIntDatum(1), 0);
+    assert!(shape.Empty);
+    assert_eq!(
+        empty.ScaleOutOfRangeShape(shape, 100, 100, false, 0.5),
+        DefaultRowEst(0.0)
+    );
+}
+
+#[test]
+fn out_of_range_shape_low_ndv_and_degenerate_width() {
+    let mut h = out_of_range_histogram(1);
+    let point = h.OutOfRangeShape(&types::NewIntDatum(30), &types::NewIntDatum(30), -1);
+    assert_eq!(
+        h.ScaleOutOfRangeShape(point, 100, 0, true, 0.0),
+        RowEstimate {
+            Est: 1.0,
+            MinEst: 1.0,
+            MaxEst: 900.0
+        }
+    );
+    assert_eq!(
+        h.ScaleOutOfRangeShape(point, 100, 0, false, 0.0),
+        DefaultRowEst(1000.0)
+    );
+    h.Bounds = vec![
+        types::NewFloat64Datum(-f64::MAX),
+        types::NewFloat64Datum(f64::MAX),
+    ];
+    let shape = h.OutOfRangeShape(
+        &types::NewFloat64Datum(-1.0),
+        &types::NewFloat64Datum(1.0),
+        1,
+    );
+    assert_eq!(shape.TotalPercent, 0.0);
+    h.Bounds = vec![types::NewIntDatum(20), types::NewIntDatum(10)];
+    assert_eq!(
+        h.OutOfRangeShape(&types::NewIntDatum(0), &types::NewIntDatum(30), 1)
+            .TotalPercent,
+        0.0
+    );
+}
+
+#[test]
+fn out_of_range_shape_removes_common_byte_prefix() {
+    let tp = types::NewFieldType(types::mysql::TypeBlob);
+    let mut h = NewHistogram(1, 100, 0, 0, &tp, 1, 0);
+    let datum = |n| types::NewBytesDatum([b"long-common-prefix".as_slice(), &[n]].concat());
+    h.AppendBucket(&datum(10), &datum(20), 1000, 1);
+    let shape = h.OutOfRangeShape(&datum(20), &datum(30), 100);
+    assert_eq!(shape.TotalPercent, 0.5);
+    assert_eq!(shape.MaxTotalPercent, 1.0);
+    assert_eq!(
+        h.ScaleOutOfRangeShape(shape, 1100, 100, true, 0.0).Est,
+        25.0
+    );
+}

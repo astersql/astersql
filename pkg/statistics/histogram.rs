@@ -49,6 +49,23 @@ pub const AllLoaded: i32 = 0;
 /// 加载状态：详细统计已全部驱逐。
 pub const AllEvicted: i32 = 1;
 
+/// Count-independent out-of-range geometry, reusable while row counts change.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct OutOfRangeShape {
+    /// No histogram buckets: scaling always returns zero.
+    pub Empty: bool,
+    /// Invalid or unsigned-negative range; determinate mode still uses OneValue.
+    pub Impossible: bool,
+    /// Average non-null count per histogram distinct value, excluding TopN.
+    pub OneValue: f64,
+    /// Histogram NDV floored at one.
+    pub HistNDV: i64,
+    /// Half-weighted triangular overlap, capped at one.
+    pub TotalPercent: f64,
+    /// Full triangular overlap for the worst-case count, capped at one.
+    pub MaxTotalPercent: f64,
+}
+
 #[derive(Clone)]
 /// 等频直方图：Bounds 交错存上下界 Datum，Buckets 存累计计数与 NDV。
 ///
@@ -618,30 +635,45 @@ impl Histogram {
                 || compareDatum(self.GetUpper(self.Len() - 1), value) < 0)
     }
 
-    /// 估计越界区间可能贡献的行数。
-    /// 估计值域外区间可能新增的行数（结合修改量与偏斜比）。
+    /// Compose cached range geometry with the current row counts.
     pub fn OutOfRangeRowCount(
         &self,
         lower: &types::Datum,
         upper: &types::Datum,
-        mut realtime_row_count: i64,
+        realtime_row_count: i64,
         modify_count: i64,
         histogram_ndv: i64,
         allow_modify_count: bool,
         skew_ratio: f64,
     ) -> RowEstimate {
+        self.ScaleOutOfRangeShape(
+            self.OutOfRangeShape(lower, upper, histogram_ndv),
+            realtime_row_count,
+            modify_count,
+            allow_modify_count,
+            skew_ratio,
+        )
+    }
+
+    /// Compute geometry independently of realtime and modification counts.
+    pub fn OutOfRangeShape(
+        &self,
+        lower: &types::Datum,
+        upper: &types::Datum,
+        histogram_ndv: i64,
+    ) -> OutOfRangeShape {
         if self.Len() == 0 {
-            return DefaultRowEst(0.0);
+            return OutOfRangeShape {
+                Empty: true,
+                ..OutOfRangeShape::default()
+            };
         }
-        let mut one_value = self.NotNullCount() / histogram_ndv.max(1) as f64;
-        if !allow_modify_count {
-            return DefaultRowEst(one_value);
-        }
-        if (histogram_ndv as f64) < outOfRangeBetweenRate {
-            one_value = one_value
-                .min(realtime_row_count as f64 / outOfRangeBetweenRate)
-                .max(1.0);
-        }
+        let histogram_ndv = histogram_ndv.max(1);
+        let mut shape = OutOfRangeShape {
+            OneValue: self.NotNullCount() / histogram_ndv as f64,
+            HistNDV: histogram_ndv,
+            ..OutOfRangeShape::default()
+        };
         let common_prefix = if matches!(
             self.GetLower(0).Kind(),
             types::KindBytes | types::KindString
@@ -663,21 +695,26 @@ impl Histogram {
             lower_value = lower_value.max(0.0);
             upper_value = upper_value.max(0.0);
             if lower_value == 0.0 && upper_value == 0.0 && (left_clamped || right_clamped) {
-                return DefaultRowEst(0.0);
+                shape.Impossible = true;
+                return shape;
             }
-        }
-        if upper_value < lower_value {
-            return DefaultRowEst(0.0);
         }
         let histogram_lower = crate::convertDatumToScalar(self.GetLower(0), common_prefix);
         let histogram_upper =
             crate::convertDatumToScalar(self.GetUpper(self.Len() - 1), common_prefix);
         let mut histogram_width = histogram_upper - histogram_lower;
-        if histogram_width < 0.0 || !histogram_width.is_finite() || upper_value == lower_value {
+        if histogram_width < 0.0 || histogram_width == f64::INFINITY {
             histogram_width = 0.0;
         }
         let bound_lower = histogram_lower - histogram_width;
         let bound_upper = histogram_upper + histogram_width;
+        if upper_value < lower_value {
+            shape.Impossible = true;
+            return shape;
+        }
+        if upper_value == lower_value {
+            histogram_width = 0.0;
+        }
         let left_percent = calculateLeftOverlapPercent(
             lower_value,
             upper_value,
@@ -692,12 +729,39 @@ impl Histogram {
             bound_upper,
             histogram_width,
         );
-        let total_percent = (left_percent * 0.5 + right_percent * 0.5).min(1.0);
-        let maximum_percent = (left_percent + right_percent).min(1.0);
+        shape.TotalPercent = (left_percent * 0.5 + right_percent * 0.5).min(1.0);
+        shape.MaxTotalPercent = (left_percent + right_percent).min(1.0);
+        shape
+    }
+
+    /// Scale a cached shape without probing histogram bounds.
+    pub fn ScaleOutOfRangeShape(
+        &self,
+        shape: OutOfRangeShape,
+        mut realtime_row_count: i64,
+        modify_count: i64,
+        allow_modify_count: bool,
+        skew_ratio: f64,
+    ) -> RowEstimate {
+        if shape.Empty {
+            return DefaultRowEst(0.0);
+        }
+        let mut one_value = shape.OneValue;
+        if !allow_modify_count {
+            return DefaultRowEst(one_value);
+        }
+        if (shape.HistNDV as f64) < outOfRangeBetweenRate {
+            one_value = one_value
+                .min(realtime_row_count as f64 / outOfRangeBetweenRate)
+                .max(1.0);
+        }
+        if shape.Impossible {
+            return DefaultRowEst(0.0);
+        }
         let added_rows = self.AbsRowCountDifference(realtime_row_count);
         let multiplier = if skew_ratio > 0.0 { skew_ratio } else { 0.5 };
-        let estimated = if total_percent > 0.0 {
-            added_rows * multiplier * total_percent
+        let estimated = if shape.TotalPercent > 0.0 {
+            added_rows * multiplier * shape.TotalPercent
         } else {
             one_value
         };
@@ -708,8 +772,8 @@ impl Histogram {
             }
             maximum_added = maximum_added.max(realtime_row_count as f64 / outOfRangeBetweenRate);
         }
-        if maximum_percent > 0.0 {
-            maximum_added *= maximum_percent;
+        if shape.MaxTotalPercent > 0.0 {
+            maximum_added *= shape.MaxTotalPercent;
         }
         let mut result = if skew_ratio > 0.0 {
             CalculateSkewRatioCounts(estimated, maximum_added, skew_ratio)
@@ -721,7 +785,6 @@ impl Histogram {
             }
         };
         result.Est = result.Est.max(one_value);
-        result.MinEst = result.MinEst.min(one_value);
         result.MaxEst = result.MaxEst.max(result.Est).max(maximum_added);
         result
     }
