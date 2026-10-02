@@ -44,10 +44,11 @@ fn task_row(status: &str, state: Option<&str>) -> Vec<Datum> {
     ]
 }
 
-// 对应 Go TestInsertIntoTTLTask + TestRowToTTLTask：本包不接入真实 SQL 执行器，
-// 因此改为直接构造 InsertIntoTTLTask 产出的参数并解码回 TTLTask，验证编码/解码是可逆的。
+// 对应 Go TestInsertIntoTTLTask + TestRowToTTLTask：本包不启动 Domain 或 TTL job
+// manager，因此没有后台 task GC 与测试行竞争。直接构造 InsertIntoTTLTask
+// 产出的参数并解码回 TTLTask，验证编码/解码是可逆的。
 #[test]
-fn test_insert_into_ttl_task_round_trip() {
+fn go_commit_dfcce0b597_insert_into_ttl_task_round_trip_without_background_gc() {
     let start = vec![Datum::Int(1)];
     let end = vec![Datum::Int(2)];
     let (sql, args) = InsertIntoTTLTask("test-job", 1, 1, &start, &end, 100, 100).unwrap();
