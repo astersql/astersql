@@ -290,3 +290,37 @@ fn select_into_outfile_uses_load_data_compatible_defaults() {
         ]
     );
 }
+
+#[test]
+fn local_infile_retryable_deadlock_preserves_one_shot_reader_and_connection() {
+    let session = session();
+    execute(&session, "use test");
+    execute(
+        &session,
+        "create table local_retry (id int primary key, v varchar(16))",
+    );
+    execute(
+        &session,
+        "set session transaction isolation level read committed",
+    );
+    execute(&session, "begin pessimistic");
+    let _fault = astersql_testkit_testfailpoint::enable(
+        "pessimisticLockReturnDeadlock",
+        "1*return(true)->return(false)",
+    );
+    let result = session.execute_with_load_data_reader(
+        "load data local infile '/client/one-shot.csv' replace into table local_retry fields terminated by ','",
+        std::io::Cursor::new(b"1,one\n".to_vec()),
+    );
+    let error = match result {
+        Ok(_) => panic!("retryable deadlock must be returned"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("1213"), "{error}");
+    assert_eq!(
+        rows(&session, "select count(*) from local_retry"),
+        vec![vec!["0".to_owned()]]
+    );
+    assert_eq!(rows(&session, "select 1"), vec![vec!["1".to_owned()]]);
+    execute(&session, "rollback");
+}

@@ -15,6 +15,7 @@ go-package = "pkg/session"
 legacy-tasks = ["task-1257", "task-1258", "task-1261", "task-1267", "task-1268"]
 
 [dependencies]
+"astersql-store-mockstore-unistore-tikv" = { path = "../store/mockstore/unistore/tikv" }
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 "astersql-autoid_service" = { package = "astersql-autoid_service", path = "../autoid_service" }

@@ -1116,17 +1116,24 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
                     .MergeLockKeysExecDetails(Some(details));
             }
         });
-        result.map_err(|error| errors::New(error.to_string()))
+        result.map_err(crate::SessionError::into_shared)
     }
     fn OnPessimisticLockError(
         &self,
         error: &errors::SharedError,
     ) -> AdapterResult<PessimisticErrorAction> {
-        Ok(if astersql_kv::ErrWriteConflict.Equal(Some(error)) {
-            PessimisticErrorAction::RetryReady
-        } else {
-            PessimisticErrorAction::ReturnError
-        })
+        Ok(
+            if astersql_kv::ErrWriteConflict.Equal(Some(error))
+                || matches!(
+                    error.downcast_ref::<astersql_store_mockstore_unistore_tikv::mvcc::MvccError>(),
+                    Some(astersql_store_mockstore_unistore_tikv::mvcc::MvccError::Deadlock { .. })
+                )
+            {
+                PessimisticErrorAction::RetryReady
+            } else {
+                PessimisticErrorAction::ReturnError
+            },
+        )
     }
     fn OnPessimisticStmtRetry(&self) -> AdapterResult {
         if let Some(transaction) = self.session.state.borrow_mut().transaction.as_mut()

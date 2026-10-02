@@ -381,6 +381,27 @@ impl ConcreteSession {
         wait_timeout: Option<Duration>,
         enforce_max_execution_time: bool,
     ) -> SessionResult<()> {
+        if self.state.borrow().transaction_pessimistic
+            && self.domain.storage().with_storage(|store| store.Name()) != "TiKV"
+        {
+            let start_ts = self
+                .state
+                .borrow()
+                .transaction
+                .as_ref()
+                .map_or(0, |txn| txn.StartTS());
+            if let Some(error) =
+                astersql_store_mockstore_unistore_tikv::server::injected_pessimistic_deadlock(
+                    Some(&key.key),
+                    start_ts,
+                )
+            {
+                return Err(SessionError::with_source(
+                    "[tikv:1213]Deadlock found when trying to get lock; try restarting transaction",
+                    astersql_errors::SharedError::new(error),
+                ));
+            }
+        }
         let inject_before_lock = {
             let mut session = self.state.borrow_mut();
             let inject = !session.pessimistic_pause_observed_statement;

@@ -93,6 +93,11 @@ pub struct KeyState {
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// MVCC 操作错误（锁冲突、写冲突、已提交、GC 过早等）。
 pub enum MvccError {
+    Deadlock {
+        lock_key: Vec<u8>,
+        lock_ts: u64,
+        deadlock_key_hash: u64,
+    },
     KeyLocked {
         key: Vec<u8>,
         lock: Lock,

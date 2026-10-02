@@ -73,6 +73,7 @@ pub enum StatementKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// 物理执行计划节点种类。
 pub enum PlanKind {
+    LoadData(astersql_parser_ast::FileLocRef),
     PointGet,
     TableDual,
     Set,
@@ -1690,6 +1691,11 @@ impl ExecStmt {
         match self.Ctx.OnPessimisticLockError(&lock_error)? {
             PessimisticErrorAction::ReturnError => Err(lock_error),
             PessimisticErrorAction::RetryReady => {
+                if let PlanKind::LoadData(location) = self.Plan.kind {
+                    if !canRetryPessimisticLoadData(location) {
+                        return Err(lock_error);
+                    }
+                }
                 if self.retryCount >= self.Ctx.MaximumPessimisticRetries() {
                     return Err(errors::New("pessimistic lock retry limit reached"));
                 }
@@ -2439,4 +2445,10 @@ fn panicError(panic: &(dyn std::any::Any + Send), operation: &str) -> errors::Sh
         .or_else(|| panic.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "unknown panic".to_owned());
     errors::New(format!("{operation}: {message}"))
+}
+
+/// Client input is a one-shot stream: a retry must never reopen its executor.
+/// The file location is carried by the LOAD DATA plan, rather than inferred from SQL text.
+pub fn canRetryPessimisticLoadData(location: astersql_parser_ast::FileLocRef) -> bool {
+    location != astersql_parser_ast::FileLocRef::Client
 }

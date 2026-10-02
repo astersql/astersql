@@ -32,3 +32,6 @@ legacy-tasks = ["task-820", "task-821", "task-822", "task-823", "task-824", "tas
 
 [target.'cfg(target_os = "windows")'.dev-dependencies]
 "astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../../testkit/testsetup" }
+
+[dependencies]
+fail = { version = "0.5", features = ["failpoints"] }

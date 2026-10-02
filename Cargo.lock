@@ -7922,6 +7922,7 @@ dependencies = [
  "astersql-tablecodec",
  "astersql-testkit",
  "astersql-testkit-external",
+ "astersql-testkit-testfailpoint",
  "astersql-testkit-testmain",
  "astersql-testkit-testsetup",
  "astersql-types",
@@ -8550,6 +8551,7 @@ dependencies = [
  "astersql-store-mockstore",
  "astersql-store-mockstore-mockstorage",
  "astersql-store-mockstore-teststore",
+ "astersql-store-mockstore-unistore-tikv",
  "astersql-table",
  "astersql-table-tables",
  "astersql-table-tblctx",
@@ -10232,6 +10234,7 @@ dependencies = [
  "astersql-util-codec",
  "astersql-util-logutil",
  "astersql-util-rowcodec",
+ "fail 0.5.1",
 ]
 
 [[package]]

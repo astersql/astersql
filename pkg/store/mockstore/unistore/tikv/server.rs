@@ -57,6 +57,7 @@ pub struct RpcContext {
 /// 键级错误：锁冲突、写冲突等，可标记可重试或中止。
 pub struct KeyError {
     pub message: String,
+    pub deadlock: Option<MvccError>,
     pub locked: Option<Lock>,
     pub conflict: Option<MvccError>,
     pub retryable: bool,
@@ -248,6 +249,15 @@ impl Server {
         context: &RpcContext,
         request: &PessimisticLockRequest,
     ) -> RpcResponse<PessimisticLockResult> {
+        if let Some(error) = injected_pessimistic_deadlock(
+            request
+                .mutations
+                .first()
+                .map(|mutation| mutation.key.as_slice()),
+            request.start_ts,
+        ) {
+            return RpcResponse::from_mvcc(error);
+        }
         let keys = request
             .mutations
             .iter()
@@ -703,9 +713,15 @@ impl Server {
 /// 将 MVCC 错误映射为带重试/中止语义的 KeyError。
 pub fn convert_to_key_error(error: MvccError) -> KeyError {
     match error.clone() {
+        MvccError::Deadlock { .. } => KeyError {
+            message: "deadlock".into(),
+            deadlock: Some(error),
+            ..KeyError::default()
+        },
         // 遇锁：可重试，附带锁信息。
         MvccError::KeyLocked { lock, .. } => KeyError {
             message: error.to_string(),
+            deadlock: None,
             locked: Some(lock),
             conflict: None,
             retryable: true,
@@ -743,4 +759,22 @@ fn hash(value: &[u8]) -> u64 {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash
+}
+
+/// The same mock RPC fault boundary is used by native in-process sessions.
+/// Evaluate before region validation, including requests with no mutations.
+pub fn injected_pessimistic_deadlock(first_key: Option<&[u8]>, start_ts: u64) -> Option<MvccError> {
+    let enabled = fail::eval("pessimisticLockReturnDeadlock", |value| {
+        value.as_deref() == Some("true")
+    })
+    .unwrap_or(false);
+    if !enabled {
+        return None;
+    }
+    let key = first_key?;
+    Some(MvccError::Deadlock {
+        lock_key: key.to_vec(),
+        lock_ts: start_ts.wrapping_add(1),
+        deadlock_key_hash: keys_to_hash_values(&[key.to_vec()])[0],
+    })
 }

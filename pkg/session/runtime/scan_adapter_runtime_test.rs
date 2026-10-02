@@ -2223,3 +2223,88 @@ fn rc_failed_timestamp_wait_does_not_account_time_or_mutate_rows() {
     assert_eq!(result[0].Next().unwrap(), Some(vec!["1".to_owned()]));
     result[0].Close().unwrap();
 }
+
+#[test]
+fn client_load_data_deadlock_stops_before_retry_count_and_executor_rebuild() {
+    use crate::testutil::TestSession;
+    use astersql_executor::adapter::{PessimisticErrorAction, PlanKind};
+    let session = canonical_dml_session();
+    session.Execute("begin pessimistic").unwrap();
+    let owner = Arc::new(SessionBoundAdapterOwner::new(session));
+    let sql = "insert into t values (1,10)";
+    owner.BindDMLStatement(sql).unwrap();
+    let _fault = astersql_testkit_testfailpoint::enable(
+        "pessimisticLockReturnDeadlock",
+        "1*return(true)->return(false)",
+    );
+    let start_ts = owner
+        .session
+        .state
+        .borrow()
+        .transaction
+        .as_ref()
+        .unwrap()
+        .StartTS();
+    let original = owner.LockKeys(&[b"record".to_vec()], false).unwrap_err();
+    assert_eq!(
+        original.downcast_ref::<astersql_store_mockstore_unistore_tikv::mvcc::MvccError>(),
+        Some(
+            &astersql_store_mockstore_unistore_tikv::mvcc::MvccError::Deadlock {
+                lock_key: b"record".to_vec(),
+                lock_ts: start_ts + 1,
+                deadlock_key_hash:
+                    astersql_store_mockstore_unistore_tikv::util::keys_to_hash_values(&[
+                        b"record".to_vec()
+                    ])[0],
+            }
+        )
+    );
+    assert!(matches!(
+        original.downcast_ref::<astersql_store_mockstore_unistore_tikv::mvcc::MvccError>(),
+        Some(astersql_store_mockstore_unistore_tikv::mvcc::MvccError::Deadlock { .. })
+    ));
+    assert_eq!(
+        owner.OnPessimisticLockError(&original).unwrap(),
+        PessimisticErrorAction::RetryReady
+    );
+    let mut statement = dml_stmt(owner.clone(), sql, PlanKind::Insert);
+    statement.Plan.kind = PlanKind::LoadData(astersql_parser_ast::FileLocRef::Client);
+    let returned = match statement.handlePessimisticLockError(original.clone()) {
+        Ok(_) => panic!("client-local input must not be retried"),
+        Err(error) => error,
+    };
+    assert!(returned.ptr_eq(&original));
+    assert_eq!(statement.retryCount, 0);
+    assert!(statement.retryStartTime.is_none());
+    assert!(
+        !owner
+            .Effects()
+            .events
+            .iter()
+            .any(|event| event.starts_with("pessimistic_retry_read_ts"))
+    );
+    statement.retryCount = owner.MaximumPessimisticRetries();
+    let returned = match statement.handlePessimisticLockError(original.clone()) {
+        Ok(_) => panic!("client input must return the deadlock even at the retry limit"),
+        Err(error) => error,
+    };
+    assert!(returned.ptr_eq(&original));
+    statement.Plan.kind = PlanKind::LoadData(astersql_parser_ast::FileLocRef::ServerOrRemote);
+    let returned = match statement.handlePessimisticLockError(original.clone()) {
+        Ok(_) => panic!("server input must retain the retry limit check"),
+        Err(error) => error,
+    };
+    assert_eq!(returned.to_string(), "pessimistic lock retry limit reached");
+    statement.retryCount = 0;
+    // Ordinary DML keeps its existing retry and executor reopening behavior.
+    statement.Plan.kind = PlanKind::Insert;
+    assert!(
+        statement
+            .handlePessimisticLockError(original)
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(statement.retryCount, 1);
+    assert!(statement.retryStartTime.is_some());
+    owner.session.Execute("rollback").unwrap();
+}

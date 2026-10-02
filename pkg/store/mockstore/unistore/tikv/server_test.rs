@@ -52,3 +52,57 @@ fn raw_get_key_ttl_hides_expired_keys() {
 
     assert_eq!(None, server.raw_get_key_ttl(b"expired", 105));
 }
+
+#[test]
+fn injected_pessimistic_deadlock_uses_first_mutation_before_region_validation() {
+    let _scenario = fail::FailScenario::setup();
+    fail::cfg(
+        "pessimisticLockReturnDeadlock",
+        "1*return(true)->return(false)",
+    )
+    .unwrap();
+    let server = test_server();
+    let request = crate::mvcc::PessimisticLockRequest {
+        mutations: vec![crate::mvcc::Mutation {
+            key: b"first".to_vec(),
+            op: crate::mvcc::MutationOp::PessimisticLock,
+            value: Vec::new(),
+            is_pessimistic_lock: true,
+        }],
+        start_ts: 41,
+        for_update_ts: 43,
+        ..Default::default()
+    };
+    let response = server.kv_pessimistic_lock(&Default::default(), &request);
+    assert!(
+        response.key_error.is_some(),
+        "first request must return the injected deadlock"
+    );
+    let error = response.key_error.unwrap();
+    assert_eq!(
+        error.deadlock,
+        Some(crate::mvcc::MvccError::Deadlock {
+            lock_key: b"first".to_vec(),
+            lock_ts: 42,
+            deadlock_key_hash: crate::util::keys_to_hash_values(&[b"first".to_vec()])[0],
+        })
+    );
+    assert!(!error.retryable && !error.abort);
+    assert!(response.region_error.is_none());
+    // The second evaluation is false and proceeds to normal region validation.
+    assert!(
+        server
+            .kv_pessimistic_lock(&Default::default(), &request)
+            .region_error
+            .is_some()
+    );
+    fail::cfg("pessimisticLockReturnDeadlock", "return(true)").unwrap();
+    let empty = crate::mvcc::PessimisticLockRequest::default();
+    assert!(
+        server
+            .kv_pessimistic_lock(&Default::default(), &empty)
+            .key_error
+            .is_none()
+    );
+    fail::remove("pessimisticLockReturnDeadlock");
+}

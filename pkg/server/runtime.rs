@@ -776,6 +776,11 @@ pub(crate) enum SessionRequest {
     ResultEvents {
         response: mpsc::SyncSender<Vec<String>>,
     },
+    ExecuteLocalInfile {
+        sql: String,
+        data: Vec<u8>,
+        response: mpsc::SyncSender<ConnResult<Vec<QueryResult>>>,
+    },
     ExecuteStreaming {
         statements: Vec<String>,
         response: mpsc::SyncSender<ConnResult<Vec<QueryResult>>>,
@@ -859,6 +864,24 @@ fn run_session_worker(
             #[cfg(test)]
             SessionRequest::ResultEvents { response } => {
                 let _ = response.send(results.events());
+            }
+            SessionRequest::ExecuteLocalInfile {
+                sql,
+                data,
+                response,
+            } => {
+                session.BeginProtocolResponse();
+                let execution = session
+                    .execute_with_load_data_reader(&sql, std::io::Cursor::new(data))
+                    .map(|_| {
+                        vec![QueryResult {
+                            state: map_protocol_state(session.protocol_state()),
+                            ..Default::default()
+                        }]
+                    })
+                    .map_err(|error| ConnError::Session(error.to_string()));
+                cancellation.Reset();
+                let _ = response.send(execution);
             }
             SessionRequest::ExecuteStreaming {
                 statements,
@@ -1582,6 +1605,50 @@ impl TiDBContext for ConcreteTiDBContext {
         Ok(results)
     }
 
+    fn local_infile_path(&self, sql: &str) -> ConnResult<Option<String>> {
+        // Avoid a second parse for ordinary queries. This is only a fast rejection;
+        // the parser below determines the statement and file location, including comments.
+        if !sql
+            .as_bytes()
+            .windows(4)
+            .any(|word| word.eq_ignore_ascii_case(b"load"))
+        {
+            return Ok(None);
+        }
+        let Ok(statement) = astersql_parser::Parser::default().ParseOneStmt(sql, "", "") else {
+            return Ok(None);
+        };
+        Ok(statement
+            .as_any()
+            .downcast_ref::<astersql_parser_ast::LoadDataStmt>()
+            .filter(|load| load.FileLocRef == astersql_parser_ast::FileLocRef::Client)
+            .map(|load| load.Path.clone()))
+    }
+    fn execute_local_infile(
+        &self,
+        sql: &str,
+        data: Vec<u8>,
+        cancel: &CancellationToken,
+    ) -> ConnResult<Vec<QueryResult>> {
+        self.ensure_not_cancelled(cancel)?;
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::ExecuteLocalInfile {
+            sql: sql.into(),
+            data,
+            response: tx,
+        })?;
+        let mut results = rx.recv().map_err(packet_error)??;
+        for result in &mut results {
+            result.response_lifecycle = Some(self.response_lifecycle()?);
+        }
+        if let Some(result) = results.last() {
+            *self
+                .state
+                .lock()
+                .map_err(|_| ConnError::Poisoned("session state"))? = result.state.clone();
+        }
+        Ok(results)
+    }
     fn execute_query_streaming(
         &self,
         sql: &str,

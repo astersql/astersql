@@ -873,3 +873,111 @@ fn normal_ddl_plan_user_mdl_real_driver_and_domain_lifecycle() {
     assert!(domain.schema_coordinator().is_none());
     domain.close();
 }
+
+#[test]
+fn local_infile_deadlock_returns_original_error_and_keeps_tcp_sequence() {
+    use crate::server::{Server, ServerConfig};
+    fn read_packet(peer: &mut TcpStream) -> (u8, Vec<u8>) {
+        let mut header = [0; 4];
+        peer.read_exact(&mut header).unwrap();
+        let len =
+            usize::from(header[0]) | (usize::from(header[1]) << 8) | (usize::from(header[2]) << 16);
+        let mut data = vec![0; len];
+        peer.read_exact(&mut data).unwrap();
+        (header[3], data)
+    }
+    fn send_packet(peer: &mut TcpStream, sequence: u8, data: &[u8]) {
+        let len = data.len();
+        peer.write_all(&[len as u8, (len >> 8) as u8, (len >> 16) as u8, sequence])
+            .unwrap();
+        peer.write_all(data).unwrap();
+    }
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let server = Server::new_test(
+        ServerConfig::default(),
+        Arc::new(crate::runtime::CanonicalServerDriver),
+    );
+    server
+        .set_connection_runtime(driver, Arc::new(CanonicalConnectionDomain::new(domain)))
+        .unwrap();
+    let (mut peer, socket) = tcp_pair();
+    peer.set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let connection = crate::conn::newClientConn(
+        server,
+        Box::new(TcpPacketIo::new(socket, 32 * 1024 * 1024).unwrap()),
+        vec![7; 20],
+        false,
+    );
+    let handshake = thread::spawn(move || {
+        assert_eq!(read_packet(&mut peer).1[0], 10);
+        let capability = (1_u32 << 7) | (1 << 9) | (1 << 15) | (1 << 19);
+        let mut response = capability.to_le_bytes().to_vec();
+        response.extend_from_slice(&(64_u32 << 20).to_le_bytes());
+        response.push(45);
+        response.extend_from_slice(&[0; 23]);
+        response.extend_from_slice(b"root\0\0mysql_native_password\0");
+        send_packet(&mut peer, 1, &response);
+        assert_eq!(read_packet(&mut peer).1[0], 0);
+        peer
+    });
+    connection.handshake().unwrap();
+    let mut peer = handshake.join().unwrap();
+    let context = connection.getCtx().unwrap().unwrap();
+    for sql in [
+        "use test",
+        "create table wire_local_retry (id int primary key, v varchar(16))",
+        "set session transaction isolation level read committed",
+        "begin pessimistic",
+    ] {
+        context
+            .execute_query(sql, false, &CancellationToken::new())
+            .unwrap();
+    }
+    let _fault = astersql_testkit_testfailpoint::enable(
+        "pessimisticLockReturnDeadlock",
+        "1*return(true)->return(false)",
+    );
+    let client = thread::spawn(move || {
+        let mut query = vec![3];
+        query.extend_from_slice(b"load data local infile '/client/one-shot.csv' replace into table wire_local_retry fields terminated by ','");
+        send_packet(&mut peer, 0, &query);
+        let (sequence, request) = read_packet(&mut peer);
+        assert_eq!(sequence, 1);
+        assert_eq!(request, b"\xfb/client/one-shot.csv");
+        send_packet(&mut peer, 2, b"1,one\n");
+        send_packet(&mut peer, 3, b"");
+        let (sequence, error) = read_packet(&mut peer);
+        assert_eq!(sequence, 4);
+        assert_eq!(error[0], 0xff, "must not send another LOCAL_INFILE_REQUEST");
+        assert_eq!(u16::from_le_bytes([error[1], error[2]]), 1213);
+        assert_eq!(&error[4..9], b"40001");
+        for (sql, expected) in [
+            ("select count(*) from wire_local_retry", b"\x010".as_slice()),
+            ("select 1", b"\x011".as_slice()),
+        ] {
+            let mut query = vec![3];
+            query.extend_from_slice(sql.as_bytes());
+            send_packet(&mut peer, 0, &query);
+            assert_eq!(read_packet(&mut peer), (1, vec![1]));
+            assert_eq!(read_packet(&mut peer).0, 2); // column metadata
+            assert_eq!(read_packet(&mut peer).0, 3); // metadata EOF
+            let (sequence, row) = read_packet(&mut peer);
+            assert_eq!(sequence, 4);
+            assert_eq!(row, expected);
+            assert_eq!(read_packet(&mut peer).0, 5); // result EOF
+        }
+        send_packet(&mut peer, 0, &[1]);
+    });
+    let result = connection.Run();
+    assert!(
+        matches!(result, Err(ConnError::ClientQuit)) | result.is_ok(),
+        "{result:?}"
+    );
+    client.join().unwrap();
+    context.close().unwrap();
+}

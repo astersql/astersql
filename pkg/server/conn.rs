@@ -153,7 +153,9 @@ fn mysql_error_code_and_state(error: &ConnError) -> (u16, &'static [u8; 5]) {
         ConnError::MalformedPacket(_) => (1835, b"HY000"),
         ConnError::Session(message) => {
             let lower = message.to_ascii_lowercase();
-            if lower.contains("[kv:1062]") || lower.contains("duplicate entry") {
+            if lower.contains("[tikv:1213]") {
+                (1213, b"40001")
+            } else if lower.contains("[kv:1062]") || lower.contains("duplicate entry") {
                 (1062, b"23000")
             } else if lower.contains("[kv:1451]")
                 || lower.contains("cannot delete or update a parent row")
@@ -769,6 +771,19 @@ pub trait TiDBContext: Send + Sync {
         allow_multi_statements: bool,
         cancel: &CancellationToken,
     ) -> ConnResult<Vec<QueryResult>>;
+    fn local_infile_path(&self, _sql: &str) -> ConnResult<Option<String>> {
+        Ok(None)
+    }
+    fn execute_local_infile(
+        &self,
+        _sql: &str,
+        _data: Vec<u8>,
+        _cancel: &CancellationToken,
+    ) -> ConnResult<Vec<QueryResult>> {
+        Err(ConnError::Session(
+            "LOCAL INFILE is not supported by this session".into(),
+        ))
+    }
     fn execute_query_streaming(
         &self,
         sql: &str,
@@ -1483,11 +1498,21 @@ impl ClientConn {
     /// 执行文本协议查询并写回一个或多个结果集。
     pub fn handleQuery(&self, sql: &str, cancel: &CancellationToken) -> ConnResult<()> {
         let context = self.openSession()?;
-        let results = context.execute_query_streaming(
-            sql,
-            self.capability.load(Ordering::Acquire) & CLIENT_MULTI_STATEMENTS != 0,
-            cancel,
-        )?;
+        let results = if let Some(path) = context.local_infile_path(sql)? {
+            if self.capability.load(Ordering::Acquire) & (1 << 7) == 0 {
+                return Err(ConnError::Session(
+                    "client does not support LOCAL INFILE".into(),
+                ));
+            }
+            let data = self.getDataFromPath(&path)?;
+            context.execute_local_infile(sql, data, cancel)?
+        } else {
+            context.execute_query_streaming(
+                sql,
+                self.capability.load(Ordering::Acquire) & CLIENT_MULTI_STATEMENTS != 0,
+                cancel,
+            )?
+        };
         if results.is_empty() {
             return self.writeOK();
         }
