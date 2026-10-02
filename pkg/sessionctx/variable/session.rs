@@ -1186,6 +1186,26 @@ impl SessionVars {
             .GetSessionOrGlobalSystemVar(&crate::Context, name)
     }
 
+    /// Apply a GLOBAL hook through the session's existing canonical registry
+    /// context. SQL callers persist the returned normalized value themselves.
+    pub fn ValidateAndSetGlobalSystemVar(
+        &self,
+        name: &str,
+        value: &str,
+        scope: vardef::ScopeFlag,
+    ) -> Result<(String, Vec<crate::VariableError>), crate::VariableError> {
+        crate::register_builtin_sysvars();
+        let variable = crate::GetSysVar(name).ok_or_else(|| crate::VariableError::unknown(name))?;
+        let mut vars = self
+            .hint_system_vars
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let before = vars.StmtCtx.warnings().len();
+        let normalized = variable.Validate(&mut vars, value, scope)?;
+        variable.SetGlobalFromHook(&crate::Context, &mut vars, &normalized, false)?;
+        Ok((normalized, vars.StmtCtx.warnings()[before..].to_vec()))
+    }
+
     /// 校验并应用一次 SET_VAR，返回语句前原值以便结束时还原。
     /// Validates and applies one SET_VAR value, returning the raw pre-statement
     /// value so `timestamp=default` remains dynamic after restoration.

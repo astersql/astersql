@@ -2108,3 +2108,33 @@ fn go_merge_46_full_outer_join_sysvar_defaults_off_and_tracks_session_value() {
         .unwrap();
     assert!(vars.EnableFullOuterJoin);
 }
+
+#[test]
+fn go_commit_52f7a7a3e6_global_hooks_unsigned_validation() {
+    go_merge_47_analyze_defaults_follow_global_sysvars();
+    let (mut vars, _) = session();
+    let ctx = Context;
+    for (name, state) in [
+        (
+            vardef::TiDBAnalyzeDefaultNumBuckets,
+            &vardef::AnalyzeDefaultNumBuckets,
+        ),
+        (
+            vardef::TiDBAnalyzeDefaultNumTopN,
+            &vardef::AnalyzeDefaultNumTopN,
+        ),
+    ] {
+        let variable = sysvar(name);
+        let before = state.Load();
+        assert!(variable.SetGlobal.as_ref().unwrap()(&ctx, &mut vars, "bad").is_err());
+        assert_eq!(state.Load(), before);
+        assert!(
+            variable
+                .Validate(&mut vars, "100", vardef::ScopeSession)
+                .is_err()
+        );
+        variable
+            .SetGlobalFromHook(&ctx, &mut vars, &before.to_string(), false)
+            .unwrap();
+    }
+}

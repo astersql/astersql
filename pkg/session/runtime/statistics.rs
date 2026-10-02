@@ -306,6 +306,8 @@ struct SessionAnalyzeRuntime {
     inputs: Vec<SessionAnalyzeInput>,
     topn: usize,
     buckets: usize,
+    options_by_physical_id:
+        HashMap<i64, HashMap<astersql_planner_core::planbuilder::AnalyzeOptionType, u64>>,
     dynamic_partition_prune: bool,
     stats_time_zone: String,
     start_time: String,
@@ -365,6 +367,15 @@ fn merge_previous_analyze_stats(
 }
 
 impl SessionAnalyzeRuntime {
+    fn option_counts(&self, physical_id: i64) -> (usize, usize) {
+        use astersql_planner_core::planbuilder::AnalyzeOptionType as O;
+        self.options_by_physical_id
+            .get(&physical_id)
+            .map_or((self.topn, self.buckets), |opts| {
+                (opts[&O::TopN] as usize, opts[&O::Buckets] as usize)
+            })
+    }
+
     fn preflush_physical_ids(&self) -> Vec<i64> {
         self.inputs
             .iter()
@@ -420,9 +431,9 @@ impl SessionAnalyzeRuntime {
                 text.push_str(" all columns");
             }
         }
+        let (topn, buckets) = self.option_counts(input.key.table_id);
         text.push_str(&format!(
-            " with {} buckets, {} topn, 1 samplerate",
-            self.buckets, self.topn
+            " with {buckets} buckets, {topn} topn, 1 samplerate"
         ));
         text
     }
@@ -710,8 +721,8 @@ impl astersql_executor::analyze::CanonicalAnalyzeRuntime for SessionAnalyzeRunti
                                 info,
                                 rows,
                                 version,
-                                self.topn,
-                                self.buckets,
+                                self.option_counts(*physical_id).0,
+                                self.option_counts(*physical_id).1,
                                 analyzed_indexes.as_ref(),
                                 selected_columns.as_ref(),
                             )
@@ -768,8 +779,8 @@ impl astersql_executor::analyze::CanonicalAnalyzeRuntime for SessionAnalyzeRunti
                                         info,
                                         rows,
                                         version,
-                                        self.topn,
-                                        self.buckets,
+                                        self.option_counts(*physical_id).0,
+                                        self.option_counts(*physical_id).1,
                                         analyzed_indexes.as_ref(),
                                         selected_columns.as_ref(),
                                     )
@@ -852,7 +863,7 @@ impl astersql_executor::analyze::CanonicalAnalyzeRuntime for SessionAnalyzeRunti
                     &input.info,
                     global,
                     &partition_profiles,
-                    self.buckets,
+                    self.option_counts(input.key.table_id).1,
                 )
                 .map_err(astersql_executor::analyze::AnalyzeError)?;
             }
@@ -1530,6 +1541,36 @@ impl ConcreteSession {
         result
     }
 
+    fn saved_analyze_options(
+        &self,
+        id: i64,
+    ) -> SessionResult<HashMap<astersql_planner_core::planbuilder::AnalyzeOptionType, u64>> {
+        use astersql_planner_core::planbuilder::AnalyzeOptionType as O;
+        let mut sets=self.execute(&format!("SELECT sample_num,sample_rate,buckets,topn FROM mysql.analyze_options WHERE table_id={id}"))?;
+        let mut result = HashMap::new();
+        let Some(rs) = sets.first_mut() else {
+            return Ok(result);
+        };
+        let Some(row) = rs.next_row()? else {
+            return Ok(result);
+        };
+        for (index, key, min) in [(0, O::NumSamples, 1), (2, O::Buckets, 1), (3, O::TopN, 0)] {
+            let value = row[index]
+                .parse::<i64>()
+                .map_err(|e| session_error("read saved ANALYZE option", e))?;
+            if value >= min {
+                result.insert(key, value as u64);
+            }
+        }
+        let rate = row[1]
+            .parse::<f64>()
+            .map_err(|e| session_error("read saved ANALYZE sample rate", e))?;
+        if rate > 0.0 {
+            result.insert(O::SampleRate, rate.to_bits());
+        }
+        Ok(result)
+    }
+
     /// 带上下文执行 ANALYZE（含暂停/取消）。
     pub(super) fn execute_analyze_with_context(
         &self,
@@ -1537,44 +1578,50 @@ impl ConcreteSession {
         context: astersql_executor::analyze::analyzeContext,
     ) -> SessionResult<()> {
         let current_database = self.current_database();
-        let topn = statement
-            .AnalyzeOpts
-            .iter()
-            .find(|option| option.Type == ast::AnalyzeOptionType::NumTopN)
-            .and_then(|option| option.Value.as_ref())
-            .map(literal)
-            .transpose()?
-            .map(|value| {
-                value
-                    .parse::<usize>()
-                    .map_err(|error| session_error("parse ANALYZE TOPN", error))
-            })
-            .transpose()?
-            .unwrap_or(100);
-        let buckets = statement
-            .AnalyzeOpts
-            .iter()
-            .find(|option| option.Type == ast::AnalyzeOptionType::NumBuckets)
-            .and_then(|option| option.Value.as_ref())
-            .map(literal)
-            .transpose()?
-            .map(|value| {
-                value
-                    .parse::<usize>()
-                    .map_err(|error| session_error("parse ANALYZE BUCKETS", error))
-            })
-            .transpose()?
-            .unwrap_or(astersql_statistics::DefaultHistogramBuckets);
-        if topn > 100_000 {
-            return Err(SessionError::new(format!(
-                "ANALYZE TOPN must not exceed 100000 (got {topn})"
-            )));
+        // Saved options are foreground metadata work on an internal session,
+        // independent of the caller's transaction, warnings, and SQL counters.
+        let metadata = ConcreteSession::new(Arc::clone(&self.domain));
+        metadata.SetInRestrictedSQL(true);
+        use astersql_planner_core::planbuilder::{
+            AnalyzeOptionType as OptionType, fillAnalyzeOptions, handleAnalyzeOptions,
+        };
+        let mut explicit: Vec<(OptionType, u64)> = Vec::new();
+        let mut resets = std::collections::HashSet::new();
+        for option in &statement.AnalyzeOpts {
+            let key = match option.Type {
+                ast::AnalyzeOptionType::NumBuckets => OptionType::Buckets,
+                ast::AnalyzeOptionType::NumTopN => OptionType::TopN,
+                ast::AnalyzeOptionType::CMSketchDepth => OptionType::CmsketchDepth,
+                ast::AnalyzeOptionType::CMSketchWidth => OptionType::CmsketchWidth,
+                ast::AnalyzeOptionType::NumSamples => OptionType::NumSamples,
+                ast::AnalyzeOptionType::SampleRate => OptionType::SampleRate,
+                _ => continue,
+            };
+            // The existing parser represents DEFAULT as None (#69956). Keep
+            // that fallback when adding saved-option reads for this task.
+            let Some(value) = option.Value.as_ref() else {
+                resets.insert(key);
+                explicit.retain(|(previous, _)| *previous != key);
+                continue;
+            };
+            resets.remove(&key);
+            let text = literal(value)?;
+            let value = if key == OptionType::SampleRate {
+                text.parse::<f64>()
+                    .map_err(|error| session_error("parse ANALYZE SAMPLERATE", error))?
+                    .to_bits()
+            } else {
+                text.parse::<u64>()
+                    .map_err(|error| session_error("parse ANALYZE option", error))?
+            };
+            handleAnalyzeOptions(&[(key, value)]).map_err(|error| SessionError::new(error.0))?;
+            explicit.push((key, value));
         }
-        if buckets > 100_000 {
-            return Err(SessionError::new(format!(
-                "ANALYZE BUCKETS must not exceed 100000 (got {buckets})"
-            )));
-        }
+        let raw_options =
+            handleAnalyzeOptions(&explicit).map_err(|error| SessionError::new(error.0))?;
+        let defaults = fillAnalyzeOptions(raw_options.clone());
+        let topn = defaults[&OptionType::TopN] as usize;
+        let buckets = defaults[&OptionType::Buckets] as usize;
         let dynamic_partition_prune = self.state.borrow().dynamic_partition_prune;
         let injected_snapshot = astersql_testkit_testfailpoint::eval_string(
             "github.com/pingcap/tidb/pkg/executor/injectAnalyzeSnapshot",
@@ -1593,6 +1640,10 @@ impl ConcreteSession {
             .GetSystemVar(astersql_sessionctx_vardef::TiDBEnableAnalyzeSnapshot)
             .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "on" | "true"))
             .unwrap_or_else(|| self.domain.stats_session_vars().analyze_snapshot);
+        let persist_options = astersql_sessionctx_vardef::PersistAnalyzeOptions.Load()
+            && self.state.borrow().analyze_version == 2;
+        let mut options_by_physical_id = HashMap::new();
+        let mut options_to_save = HashMap::new();
         let mut inputs = Vec::new();
         let locked = self.domain.stats_context().locked_table_ids();
         let mut skipped = Vec::new();
@@ -1698,6 +1749,70 @@ impl ConcreteSession {
                     partition_names = unlocked_names;
                 }
             }
+            use astersql_planner_core::planbuilder::mergeAnalyzeOptions;
+            let table_saved = if persist_options {
+                metadata.saved_analyze_options(info.ID)?
+            } else {
+                HashMap::new()
+            };
+            let is_analyze_table = requested_partitions.is_empty();
+            let stmt_options = if persist_options && dynamic_partition_prune && !is_analyze_table {
+                HashMap::new()
+            } else {
+                raw_options.clone()
+            };
+            let mut table_raw = if is_analyze_table {
+                mergeAnalyzeOptions(stmt_options.clone(), &table_saved)
+            } else {
+                table_saved.clone()
+            };
+            if is_analyze_table {
+                for key in &resets {
+                    table_raw.remove(key);
+                }
+            }
+            options_by_physical_id.insert(
+                info.ID,
+                fillAnalyzeOptions(if persist_options {
+                    table_raw.clone()
+                } else {
+                    raw_options.clone()
+                }),
+            );
+            if persist_options {
+                options_to_save.insert(info.ID, table_raw.clone());
+            }
+            if let Some(partition) = info.GetPartitionInfo() {
+                for definition in &partition.Definitions {
+                    if !partition_names.is_empty() && !partition_names.contains(&definition.Name.L)
+                    {
+                        continue;
+                    }
+                    let raw = if !persist_options {
+                        raw_options.clone()
+                    } else if dynamic_partition_prune {
+                        table_raw.clone()
+                    } else {
+                        let mut partition_saved = metadata.saved_analyze_options(definition.ID)?;
+                        if !is_analyze_table {
+                            for key in &resets {
+                                partition_saved.remove(key);
+                            }
+                        }
+                        let mut saved = mergeAnalyzeOptions(partition_saved, &table_saved);
+                        if is_analyze_table {
+                            for key in &resets {
+                                saved.remove(key);
+                            }
+                        }
+                        mergeAnalyzeOptions(stmt_options.clone(), &saved)
+                    };
+                    options_by_physical_id.insert(definition.ID, fillAnalyzeOptions(raw.clone()));
+                    if persist_options && !dynamic_partition_prune {
+                        options_to_save.insert(definition.ID, raw);
+                    }
+                }
+            }
             let (analyzed_columns, missing_columns, invalid_columns) =
                 self.analyze_columns_info(statement, &key, &info);
             if !invalid_columns.is_empty() {
@@ -1795,6 +1910,12 @@ impl ConcreteSession {
         if inputs.is_empty() {
             return Ok(());
         }
+        if dynamic_partition_prune && statement.IndexFlag && !statement.PartitionNames.is_empty() {
+            // Preserve the existing merged index-partition histogram shape.
+            for opts in options_by_physical_id.values_mut() {
+                opts.insert(OptionType::Buckets, 1);
+            }
+        }
         let runtime = SessionAnalyzeRuntime {
             domain: Arc::clone(&self.domain),
             killer: Arc::clone(&self.sql_killer),
@@ -1811,6 +1932,7 @@ impl ConcreteSession {
             } else {
                 buckets
             },
+            options_by_physical_id,
             dynamic_partition_prune,
             stats_time_zone: self.session_vars.StmtCtx.TimeZone().name().to_owned(),
             start_time: format_system_time(SystemTime::now()),
@@ -1824,7 +1946,22 @@ impl ConcreteSession {
             analyze_snapshot,
         };
         astersql_executor::analyze::AnalyzeExec::RunCanonicalWithContext(context, &runtime)
-            .map_err(|error| session_error("execute ANALYZE pipeline", error))
+            .map_err(|error| session_error("execute ANALYZE pipeline", error))?;
+        // Persist raw values only after successful analysis. Absent keys retain
+        // SQL sentinels, so changing a global default affects future plans.
+        for (id, opts) in options_to_save {
+            use astersql_planner_core::planbuilder::AnalyzeOptionType as O;
+            let buckets = opts.get(&O::Buckets).copied().unwrap_or(0);
+            let topn = opts.get(&O::TopN).map_or(-1, |value| *value as i64);
+            let samples = opts.get(&O::NumSamples).copied().unwrap_or(0);
+            let rate = opts
+                .get(&O::SampleRate)
+                .copied()
+                .map(f64::from_bits)
+                .unwrap_or(-1.0);
+            metadata.execute(&format!("INSERT INTO mysql.analyze_options (table_id,sample_num,sample_rate,buckets,topn) VALUES ({id},{samples},{rate},{buckets},{topn}) ON DUPLICATE KEY UPDATE sample_num={samples},sample_rate={rate},buckets={buckets},topn={topn}"))?;
+        }
+        Ok(())
     }
 
     /// SHOW STATS_META 结果。

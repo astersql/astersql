@@ -22,7 +22,7 @@
 use std::sync::{LazyLock, OnceLock};
 
 // Bootstrap 版本号常量：集群元数据中的 tidb_server_version 步进值。
-// 缺号表示该版本无独立迁移或已合并；当前最新为 version262。
+// 缺号表示该版本无独立迁移或已合并；本提交迁移按后续 Go 改号为 version283。
 pub const version2: i64 = 2;
 pub const version3: i64 = 3;
 pub const version4: i64 = 4;
@@ -198,6 +198,8 @@ pub const version259: i64 = 259;
 pub const version260: i64 = 260;
 pub const version261: i64 = 261;
 pub const version262: i64 = 262;
+/// Analyze defaults migration, renumbered from v263 by Go #69886.
+pub const version283: i64 = 283;
 
 /// 版本号与升级函数指针的配对（对应 Go upgradeToVerFunctions 表项）。
 pub struct VersionedUpgradeFunction {
@@ -252,7 +254,7 @@ pub struct bindingDigestPair {
     pub planDigest: String,
 }
 /// 当前代码支持的最新 bootstrap 版本。
-pub static mut currentBootstrapVersion: i64 = version262;
+pub static mut currentBootstrapVersion: i64 = version283;
 /// 有序升级函数表，对应 Go `upgradeToVerFunctions`。
 pub static upgradeToVerFunctions: LazyLock<Vec<VersionedUpgradeFunction>> = LazyLock::new(|| {
     macro_rules! upgrade_function {
@@ -772,6 +774,9 @@ pub static upgradeToVerFunctions: LazyLock<Vec<VersionedUpgradeFunction>> = Lazy
         (262) => {
             upgradeToVer262
         };
+        (283) => {
+            upgradeToVer283
+        };
     }
     macro_rules! upgrades {
         ($($version:tt),+ $(,)?) => {
@@ -793,7 +798,7 @@ pub static upgradeToVerFunctions: LazyLock<Vec<VersionedUpgradeFunction>> = Lazy
         141, 142, 143, 144, 146, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179,
         190, 191, 192, 193, 194, 195, 196, 197, 198, 209, 210, 211, 212, 213, 214, 215, 216, 217,
         218, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255,
-        256, 257, 258, 259, 260, 261, 262,
+        256, 257, 258, 259, 260, 261, 262, 283,
     ]
 });
 
@@ -1578,4 +1583,9 @@ fn upgrade_action(name: &str) {
 /// 占位 Session 类型，避免本定义文件依赖完整 session API。
 mod sessionapi {
     pub struct Session;
+}
+
+/// Dispatch the analyze-default migration using its current Go version.
+pub fn upgradeToVer283(_s: &sessionapi::Session, _version: i64) {
+    upgrade_action("upgradeToVer283");
 }

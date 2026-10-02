@@ -1401,6 +1401,7 @@ dependencies = [
 name = "astersql-br-pkg-restore-snap-client"
 version = "0.1.0"
 dependencies = [
+ "astersql-session",
  "serde",
  "serde_json",
  "sha2 0.10.9",

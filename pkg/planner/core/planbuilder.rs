@@ -1,3 +1,4 @@
+// Copyright 2026 AsterSQL.
 // Copyright 2015 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -11,7 +12,6 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-// Copyright 2026 AsterSQL.
 
 // 计划构建器（PlanBuilder）核心：语句 → 执行计划。
 //
@@ -910,7 +910,7 @@ impl PlanBuilder {
 
     /// 构建Analyze（对应同名 Go 逻辑）。
     pub fn buildAnalyze(&mut self, analyze: &AnalyzeStatement) -> Result<BuiltPlan> {
-        let opts = handleAnalyzeOptions(&analyze.options)?;
+        let opts = fillAnalyzeOptions(handleAnalyzeOptions(&analyze.options)?);
         if analyze.index_names.is_empty() {
             self.buildAnalyzeTable(analyze, opts)
         } else {
@@ -1609,7 +1609,10 @@ impl PlanBuilder {
         statement: &[(AnalyzeOptionType, u64)],
         saved: &HashMap<AnalyzeOptionType, u64>,
     ) -> Result<HashMap<AnalyzeOptionType, u64>> {
-        Ok(mergeAnalyzeOptions(handleAnalyzeOptions(statement)?, saved))
+        Ok(fillAnalyzeOptions(mergeAnalyzeOptions(
+            handleAnalyzeOptions(statement)?,
+            saved,
+        )))
     }
     /// 获取SavedAnalyzeOpts（对应同名 Go 逻辑）。
     pub fn getSavedAnalyzeOpts(
@@ -2227,49 +2230,104 @@ pub fn pickColumnList(
 }
 /// CMSketchSizeLimit：计划构建相关符号（对齐 Go 同名定义）。
 pub const CMSketchSizeLimit: u64 = (6 << 20) / 5;
-/// 获取AnalyzeOptionDefaultV2ForTest（对应同名 Go 逻辑）。
-pub fn GetAnalyzeOptionDefaultV2ForTest() -> HashMap<AnalyzeOptionType, u64> {
+/// Read the active global defaults each time; callers own an independent map.
+pub fn AnalyzeOptionDefault() -> HashMap<AnalyzeOptionType, u64> {
+    use vardef_dependency as vardef;
     [
-        (AnalyzeOptionType::Buckets, 256),
-        (AnalyzeOptionType::TopN, 100),
-        (AnalyzeOptionType::SampleRate, 1),
-        (AnalyzeOptionType::CmsketchDepth, 5),
+        (
+            AnalyzeOptionType::Buckets,
+            vardef::AnalyzeDefaultNumBuckets.Load(),
+        ),
+        (
+            AnalyzeOptionType::TopN,
+            vardef::AnalyzeDefaultNumTopN.Load(),
+        ),
         (AnalyzeOptionType::CmsketchWidth, 2048),
+        (AnalyzeOptionType::CmsketchDepth, 5),
+        (AnalyzeOptionType::NumSamples, 0),
+        (AnalyzeOptionType::SampleRate, (-1.0_f64).to_bits()),
     ]
     .into_iter()
     .collect()
 }
-/// 处理AnalyzeOptions（对应同名 Go 逻辑）。
+/// Compatibility entry point for existing Rust callers.
+pub fn GetAnalyzeOptionDefaultV2ForTest() -> HashMap<AnalyzeOptionType, u64> {
+    AnalyzeOptionDefault()
+}
+/// Validate only explicit options. Sample rates are represented by float bits,
+/// matching the map consumed by the Go planner and executor.
 pub fn handleAnalyzeOptions(
     options: &[(AnalyzeOptionType, u64)],
 ) -> Result<HashMap<AnalyzeOptionType, u64>> {
-    let limits: HashMap<_, _> = [
-        (AnalyzeOptionType::Buckets, 1024),
-        (AnalyzeOptionType::TopN, 10_000),
-        (AnalyzeOptionType::CmsketchDepth, 20),
-        (AnalyzeOptionType::CmsketchWidth, CMSketchSizeLimit),
-    ]
-    .into_iter()
-    .collect();
+    use vardef_dependency as vardef;
     let mut result = HashMap::new();
-    for (key, value) in options {
-        if *value == 0 || limits.get(key).is_some_and(|limit| value > limit) {
-            return Err(BuilderError(format!(
-                "invalid analyze option {key:?}={value}"
-            )));
+    let (mut sample_num, mut sample_rate) = (0, 0.0);
+    for &(key, value) in options {
+        let (name, limit) = match key {
+            AnalyzeOptionType::Buckets => ("BUCKETS", vardef::MaxTiDBAnalyzeDefaultNumBuckets),
+            AnalyzeOptionType::TopN => ("TOPN", vardef::MaxTiDBAnalyzeDefaultNumTopN),
+            AnalyzeOptionType::CmsketchWidth => ("CMSKETCH WIDTH", CMSketchSizeLimit),
+            AnalyzeOptionType::CmsketchDepth => ("CMSKETCH DEPTH", CMSketchSizeLimit),
+            AnalyzeOptionType::NumSamples | AnalyzeOptionType::SampleNum => ("SAMPLES", 5_000_000),
+            AnalyzeOptionType::SampleRate => ("SAMPLERATE", 1.0_f64.to_bits()),
+        };
+        match key {
+            AnalyzeOptionType::TopN => {
+                if value > limit {
+                    return Err(BuilderError(format!(
+                        "Value of analyze option {name} should not be larger than {limit}"
+                    )));
+                }
+            }
+            AnalyzeOptionType::SampleRate => {
+                let rate = f64::from_bits(value);
+                if rate <= 0.0 || rate > 1.0 {
+                    return Err(BuilderError(format!(
+                        "Value of analyze option {name} should not larger than 1.000000, and should be greater than 0"
+                    )));
+                }
+                sample_rate = rate;
+            }
+            _ => {
+                if matches!(
+                    key,
+                    AnalyzeOptionType::NumSamples | AnalyzeOptionType::SampleNum
+                ) {
+                    sample_num = value;
+                }
+                if value == 0 || value > limit {
+                    return Err(BuilderError(format!(
+                        "Value of analyze option {name} should be positive and not larger than {limit}"
+                    )));
+                }
+            }
         }
-        result.insert(*key, *value);
+        let key = if key == AnalyzeOptionType::SampleNum {
+            AnalyzeOptionType::NumSamples
+        } else {
+            key
+        };
+        result.insert(key, value);
     }
-    Ok(fillAnalyzeOptionsV2(result))
+    if sample_num > 0 && sample_rate > 0.0 {
+        return Err(BuilderError("You can only either set the value of the sample num or set the value of the sample rate. Don't set both of them".into()));
+    }
+    Ok(result)
 }
-/// 填充AnalyzeOptionsV2（对应同名 Go 逻辑）。
-pub fn fillAnalyzeOptionsV2(
-    mut options: HashMap<AnalyzeOptionType, u64>,
+/// Fill after merging explicit and saved options so defaults never mask saved values.
+pub fn fillAnalyzeOptions(
+    options: HashMap<AnalyzeOptionType, u64>,
 ) -> HashMap<AnalyzeOptionType, u64> {
-    for (key, value) in GetAnalyzeOptionDefaultV2ForTest() {
-        options.entry(key).or_insert(value);
-    }
-    options
+    AnalyzeOptionDefault()
+        .into_iter()
+        .map(|(key, default)| (key, options.get(&key).copied().unwrap_or(default)))
+        .collect()
+}
+/// Compatibility entry point for existing Rust callers.
+pub fn fillAnalyzeOptionsV2(
+    options: HashMap<AnalyzeOptionType, u64>,
+) -> HashMap<AnalyzeOptionType, u64> {
+    fillAnalyzeOptions(options)
 }
 /// 生成IndexTasks（对应同名 Go 逻辑）。
 pub fn generateIndexTasks(

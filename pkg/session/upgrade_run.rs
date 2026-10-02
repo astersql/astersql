@@ -85,7 +85,7 @@ pub fn upgrade_bootstrap_variables<R: BootstrapVariableUpgradeRuntime>(
 ) -> Result<(), R::Error> {
     use crate::upgrade_def::{
         version54, version59, version68, version80, version81, version97, version105, version135,
-        version215, version255, version259, version261,
+        version215, version255, version259, version261, version283,
     };
 
     if from < version54 && from <= crate::upgrade_def::version38 {
@@ -133,6 +133,17 @@ pub fn upgrade_bootstrap_variables<R: BootstrapVariableUpgradeRuntime>(
         // Clusters upgraded from the old implementation retain its historical
         // 0.8 behaviour even though the current built-in default has changed.
         runtime.insert_global_if_missing("tidb_default_string_match_selectivity", "0.8")?;
+    }
+    if from < version283 {
+        use astersql_sessionctx_vardef as vardef;
+        runtime.insert_global_if_missing(
+            vardef::TiDBAnalyzeDefaultNumBuckets,
+            &vardef::DefTiDBAnalyzeDefaultNumBuckets.to_string(),
+        )?;
+        runtime.insert_global_if_missing(
+            vardef::TiDBAnalyzeDefaultNumTopN,
+            &vardef::DefTiDBAnalyzeDefaultNumTopN.to_string(),
+        )?;
     }
     Ok(())
 }

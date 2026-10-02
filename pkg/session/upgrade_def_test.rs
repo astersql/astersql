@@ -15,7 +15,7 @@
 #[test]
 fn upgrade_functions_match_go_order_and_current_version() {
     let functions = &*crate::upgrade_def::upgradeToVerFunctions;
-    assert_eq!(functions.len(), 172);
+    assert_eq!(functions.len(), 173);
 
     let mut previous = 0;
     for entry in functions {

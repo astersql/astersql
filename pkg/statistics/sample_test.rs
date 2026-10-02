@@ -212,3 +212,39 @@ fn destroy_and_proto_restore_reset_transient_collector_state() {
     assert_eq!(decoded.MaxSampleSize, 0);
     assert!(decoded.Samples.iter().all(|sample| sample.Ordinal == 0));
 }
+
+#[test]
+fn go_commit_52f7a7a3e6_histogram_uses_active_defaults() {
+    struct Restore(u64, u64);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            vardef::AnalyzeDefaultNumBuckets.Store(self.0);
+            vardef::AnalyzeDefaultNumTopN.Store(self.1);
+        }
+    }
+    let _restore = Restore(
+        vardef::AnalyzeDefaultNumBuckets.Load(),
+        vardef::AnalyzeDefaultNumTopN.Load(),
+    );
+    vardef::AnalyzeDefaultNumBuckets.Store(4);
+    vardef::AnalyzeDefaultNumTopN.Store(4);
+    let ctx = stmtctx::NewStmtCtx();
+    let mut collector = crate::SampleCollector::New(1000, 35);
+    for (value, count) in [(1, 20), (2, 3), (3, 3), (4, 3), (5, 3), (6, 3)] {
+        for _ in 0..count {
+            collector.Collect(&ctx, types::NewIntDatum(value)).unwrap();
+        }
+    }
+    let tp = types::NewFieldType(types::mysql::TypeLonglong);
+    let (hist, top) =
+        crate::BuildHistAndTopN(&ctx, 4, 4, 1, &mut collector.clone(), &tp, true).unwrap();
+    assert_eq!(top.Num(), 1);
+    assert_eq!(hist.Len(), 2);
+    let (_, explicit) =
+        crate::BuildHistAndTopN(&ctx, 4, 5, 1, &mut collector.clone(), &tp, true).unwrap();
+    assert_eq!(explicit.Num(), 5);
+    let (explicit, top) =
+        crate::BuildHistAndTopN(&ctx, 5, 4, 1, &mut collector, &tp, true).unwrap();
+    assert_eq!(top.Num(), 1);
+    assert!(explicit.Len() > hist.Len());
+}

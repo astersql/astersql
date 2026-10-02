@@ -194,3 +194,35 @@ fn canonical_mock_upgrade_retargets_only_supported_versions() {
     assert_eq!(current, 300);
     RegisterMockUpgradeFlag(&mut flags, false);
 }
+
+#[test]
+fn go_commit_52f7a7a3e6_upgrade_backfills_and_preserves_values() {
+    let mut store = VariableStore::default();
+    upgrade_bootstrap_variables(&mut store, 262).unwrap();
+    assert_eq!(
+        store
+            .0
+            .get("tidb_analyze_default_num_buckets")
+            .map(String::as_str),
+        Some("256")
+    );
+    assert_eq!(
+        store
+            .0
+            .get("tidb_analyze_default_num_topn")
+            .map(String::as_str),
+        Some("100")
+    );
+    store
+        .0
+        .insert("tidb_analyze_default_num_buckets".into(), "512".into());
+    store
+        .0
+        .insert("tidb_analyze_default_num_topn".into(), "150".into());
+    upgrade_bootstrap_variables(&mut store, 262).unwrap();
+    assert_eq!(store.0["tidb_analyze_default_num_buckets"], "512");
+    assert_eq!(store.0["tidb_analyze_default_num_topn"], "150");
+    let mut current = VariableStore::default();
+    upgrade_bootstrap_variables(&mut current, 283).unwrap();
+    assert!(current.0.is_empty());
+}

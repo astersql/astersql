@@ -4837,6 +4837,34 @@ impl ConcreteSession {
                 astersql_sessionctx_vardef::SetEnableMDL(enabled);
                 continue;
             }
+            if matches!(
+                name.as_str(),
+                astersql_sessionctx_vardef::TiDBAnalyzeDefaultNumBuckets
+                    | astersql_sessionctx_vardef::TiDBAnalyzeDefaultNumTopN
+                    | astersql_sessionctx_vardef::TiDBPersistAnalyzeOptions
+            ) {
+                let metadata = ConcreteSession::new(Arc::clone(&self.domain));
+                metadata.SetInRestrictedSQL(true);
+                use astersql_sessionctx_vardef as vardef;
+                let (normalized, warnings) = self
+                    .session_vars
+                    .ValidateAndSetGlobalSystemVar(
+                        &name,
+                        value.trim_matches(['\'', '"']),
+                        if is_global {
+                            vardef::ScopeGlobal
+                        } else {
+                            vardef::ScopeSession
+                        },
+                    )
+                    .map_err(|error| SessionError::new(error.to_string()))?;
+                for warning in warnings {
+                    self.set_warning(warning.to_string());
+                }
+                self.domain.set_global_system_variable(&name, &normalized);
+                metadata.execute(&format!("INSERT INTO mysql.global_variables (variable_name,variable_value) VALUES ('{name}','{normalized}') ON DUPLICATE KEY UPDATE variable_value='{normalized}'"))?;
+                continue;
+            }
             if self.execute_mem_arbitrator_set(is_global, &name, &value)? {
                 continue;
             }

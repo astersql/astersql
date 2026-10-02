@@ -1863,3 +1863,230 @@ fn bit_arithmetic_uses_column_metadata_without_reinterpreting_strings() {
     let expr = crate::dml_runtime::ParseGeneratedExpr("text_value+1").unwrap();
     assert!(crate::dml_runtime::EvalExprWithBitColumns(&expr, &row, None, &bit_columns).is_err());
 }
+
+#[test]
+fn go_commit_52f7a7a3e6_sql_defaults_and_bootstrap_upgrade() {
+    struct Restore(u64, u64);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            astersql_sessionctx_vardef::AnalyzeDefaultNumBuckets.Store(self.0);
+            astersql_sessionctx_vardef::AnalyzeDefaultNumTopN.Store(self.1);
+        }
+    }
+    let _restore = Restore(
+        astersql_sessionctx_vardef::AnalyzeDefaultNumBuckets.Load(),
+        astersql_sessionctx_vardef::AnalyzeDefaultNumTopN.Load(),
+    );
+    let se = canonical_mlog_session();
+    se.execute("DELETE FROM mysql.global_variables WHERE variable_name='tidb_analyze_default_num_buckets' OR variable_name='tidb_analyze_default_num_topn'").unwrap();
+    se.execute(
+        "UPDATE mysql.tidb SET variable_value='262' WHERE variable_name='tidb_server_version'",
+    )
+    .unwrap();
+    let se = crate::runtime::BootstrapCanonicalDomain(Arc::clone(se.domain())).unwrap();
+    let mut rs = se
+        .execute("SELECT variable_value FROM mysql.tidb WHERE variable_name='tidb_server_version'")
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(rs.Next().unwrap(), Some(vec!["283".into()]));
+    for (name, value) in [
+        ("tidb_analyze_default_num_buckets", "256"),
+        ("tidb_analyze_default_num_topn", "100"),
+    ] {
+        let mut rs = se
+            .execute(&format!(
+                "SELECT variable_value FROM mysql.global_variables WHERE variable_name='{name}'"
+            ))
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(rs.Next().unwrap(), Some(vec![value.into()]));
+        let mut global = se
+            .execute(&format!("SELECT @@global.{name}"))
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(global.Next().unwrap(), Some(vec![value.into()]));
+        assert_eq!(rs.Next().unwrap(), None);
+    }
+    se.execute("SET GLOBAL tidb_analyze_default_num_topn=0")
+        .unwrap();
+    se.execute("SET GLOBAL tidb_analyze_default_num_buckets=4")
+        .unwrap();
+    se.execute("CREATE TABLE task5_stats (a BIGINT)").unwrap();
+    se.execute("INSERT INTO task5_stats VALUES (1),(1),(1),(1),(2),(3),(4),(5),(6)")
+        .unwrap();
+    se.execute("ANALYZE TABLE task5_stats").unwrap();
+    let mut rs = se
+        .execute("SHOW STATS_TOPN WHERE table_name='task5_stats'")
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(rs.Next().unwrap(), None);
+    se.execute("ANALYZE TABLE task5_stats WITH 5 TOPN").unwrap();
+    let mut rs = se
+        .execute("SHOW STATS_TOPN WHERE table_name='task5_stats'")
+        .unwrap()
+        .pop()
+        .unwrap();
+    let mut rows = Vec::new();
+    while let Some(row) = rs.Next().unwrap() {
+        rows.push(row);
+    }
+    assert_eq!(rows.len(), 5);
+    se.execute("UPDATE mysql.global_variables SET variable_value='512' WHERE variable_name='tidb_analyze_default_num_buckets'").unwrap();
+    se.execute("UPDATE mysql.global_variables SET variable_value='150' WHERE variable_name='tidb_analyze_default_num_topn'").unwrap();
+    se.execute(
+        "UPDATE mysql.tidb SET variable_value='262' WHERE variable_name='tidb_server_version'",
+    )
+    .unwrap();
+    let se = crate::runtime::BootstrapCanonicalDomain(Arc::clone(se.domain())).unwrap();
+    for (name, value) in [
+        ("tidb_analyze_default_num_buckets", "512"),
+        ("tidb_analyze_default_num_topn", "150"),
+    ] {
+        let mut rs = se
+            .execute(&format!(
+                "SELECT variable_value FROM mysql.global_variables WHERE variable_name='{name}'"
+            ))
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(rs.Next().unwrap(), Some(vec![value.into()]));
+        let mut global = se
+            .execute(&format!("SELECT @@global.{name}"))
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(global.Next().unwrap(), Some(vec![value.into()]));
+    }
+}
+
+#[test]
+fn go_commit_52f7a7a3e6_saved_options_precede_changed_globals() {
+    struct Restore(u64, u64, bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            use astersql_sessionctx_vardef as v;
+            v::AnalyzeDefaultNumBuckets.Store(self.0);
+            v::AnalyzeDefaultNumTopN.Store(self.1);
+            v::PersistAnalyzeOptions.Store(self.2);
+        }
+    }
+    use astersql_sessionctx_vardef as v;
+    let _restore = Restore(
+        v::AnalyzeDefaultNumBuckets.Load(),
+        v::AnalyzeDefaultNumTopN.Load(),
+        v::PersistAnalyzeOptions.Load(),
+    );
+    let se = canonical_mlog_session();
+    se.execute("SET GLOBAL tidb_persist_analyze_options=ON")
+        .unwrap();
+    se.execute("SET GLOBAL tidb_analyze_default_num_topn=0")
+        .unwrap();
+    se.execute("CREATE TABLE task5_saved (a BIGINT)").unwrap();
+    se.execute("INSERT INTO task5_saved VALUES (1),(1),(1),(1),(2),(3),(4),(5),(6)")
+        .unwrap();
+    se.execute("ANALYZE TABLE task5_saved WITH 5 TOPN, 4 BUCKETS")
+        .unwrap();
+    let mut rs = se
+        .execute("SELECT buckets,topn FROM mysql.analyze_options")
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(rs.Next().unwrap(), Some(vec!["4".into(), "5".into()]));
+    se.execute("ANALYZE TABLE task5_saved").unwrap();
+    let mut rs = se
+        .execute("SHOW STATS_TOPN WHERE table_name='task5_saved'")
+        .unwrap()
+        .pop()
+        .unwrap();
+    let mut n = 0;
+    while rs.Next().unwrap().is_some() {
+        n += 1;
+    }
+    assert_eq!(n, 5);
+    // The already-supported parser's DEFAULT must keep selecting the live
+    // default when persistence is wired in; do not revive a saved literal.
+    se.execute("ANALYZE TABLE task5_saved WITH DEFAULT TOPN")
+        .unwrap();
+    let mut defaults = se
+        .execute("SHOW STATS_TOPN WHERE table_name='task5_saved'")
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(defaults.Next().unwrap(), None);
+    se.execute("SET GLOBAL tidb_persist_analyze_options=OFF")
+        .unwrap();
+    se.execute("ANALYZE TABLE task5_saved").unwrap();
+    let mut rs = se
+        .execute("SHOW STATS_TOPN WHERE table_name='task5_saved'")
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(rs.Next().unwrap(), None);
+    se.execute("SET GLOBAL tidb_persist_analyze_options=ON")
+        .unwrap();
+    se.execute("SET tidb_partition_prune_mode='static'")
+        .unwrap();
+    se.execute("CREATE TABLE task5_partition (a BIGINT) PARTITION BY HASH(a) PARTITIONS 2")
+        .unwrap();
+    se.execute("INSERT INTO task5_partition VALUES (1),(1),(2),(2),(3),(4),(5),(6)")
+        .unwrap();
+    se.execute("ANALYZE TABLE task5_partition WITH 5 TOPN, 4 BUCKETS")
+        .unwrap();
+    se.execute("ANALYZE TABLE task5_partition PARTITION p0 WITH 0 TOPN")
+        .unwrap();
+    se.execute("ANALYZE TABLE task5_partition").unwrap();
+    let mut rs = se
+        .execute("SHOW STATS_TOPN WHERE table_name='task5_partition' AND partition_name='p0'")
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(rs.Next().unwrap(), None);
+    let mut rs = se
+        .execute("SHOW STATS_TOPN WHERE table_name='task5_partition' AND partition_name='p1'")
+        .unwrap()
+        .pop()
+        .unwrap();
+    let mut n = 0;
+    while rs.Next().unwrap().is_some() {
+        n += 1;
+    }
+    assert_eq!(n, 3);
+    se.execute("SET tidb_partition_prune_mode='dynamic'")
+        .unwrap();
+    se.execute("ANALYZE TABLE task5_partition PARTITION p0 WITH 0 TOPN")
+        .unwrap();
+    let mut warnings = se.execute("SHOW WARNINGS").unwrap().pop().unwrap();
+    let mut messages = Vec::new();
+    while let Some(row) = warnings.Next().unwrap() {
+        messages.push(row);
+    }
+    assert!(
+        messages
+            .iter()
+            .any(|row| row.last().is_some_and(|message| message
+                == "Ignore columns and options when analyze partition in dynamic mode")),
+        "{messages:?}"
+    );
+
+    let mut rs = se
+        .execute("SHOW STATS_TOPN WHERE table_name='task5_partition' AND partition_name='p0'")
+        .unwrap()
+        .pop()
+        .unwrap();
+    let mut n = 0;
+    while rs.Next().unwrap().is_some() {
+        n += 1;
+    }
+    assert_eq!(n, 3);
+    let mut saved = se
+        .execute("SELECT topn FROM mysql.analyze_options WHERE topn=0")
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(saved.Next().unwrap(), Some(vec!["0".into()]));
+    assert_eq!(saved.Next().unwrap(), None);
+}

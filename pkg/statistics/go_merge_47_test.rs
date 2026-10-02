@@ -21,6 +21,10 @@ impl Drop for AnalyzeBucketDefaultRestore {
 #[test]
 fn go_merge_47_bucket_pruning_uses_active_analyze_default() {
     let _restore = AnalyzeBucketDefaultRestore(vardef::AnalyzeDefaultNumBuckets.Load());
+    let _restore_top_n = AnalyzeTopNDefaultRestore(vardef::AnalyzeDefaultNumTopN.Load());
+    // Go reduces buckets only after TopN pruning. Keep the requested TopN at
+    // its active default so this fixture actually enters that prerequisite.
+    vardef::AnalyzeDefaultNumTopN.Store(2);
     let context = stmtctx::NewStmtCtx();
     let mut collector = crate::SampleCollector::New(20, 32);
     for value in 1_i64..=20 {

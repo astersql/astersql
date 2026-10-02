@@ -39,3 +39,6 @@ legacy-tasks = ["task-951", "task-1486"]
 "astersql-testkit-testsetup" = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }
 "astersql-util-chunk" = { package = "astersql-util-chunk", path = "../../../util/chunk" }
 "astersql-util-codec" = { package = "astersql-util-codec", path = "../../../util/codec" }
+
+[dev-dependencies]
+astersql-planner-core = { path = "../../../planner/core" }

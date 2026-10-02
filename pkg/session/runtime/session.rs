@@ -1984,9 +1984,15 @@ pub fn BootstrapCanonicalDomain(domain: Arc<Domain>) -> SessionResult<ConcreteSe
             ))?;
         }
     }
+    // SAFETY: bootstrap only reads the shared compatibility version.
+    let bootstrap_version = unsafe { crate::upgrade_def::currentBootstrapVersion }.to_string();
     for (name, value, comment) in [
         ("bootstrapped", "True", "Bootstrap flag"),
-        ("tidb_server_version", "262", "TiDB bootstrap version"),
+        (
+            "tidb_server_version",
+            bootstrap_version.as_str(),
+            "TiDB bootstrap version",
+        ),
         ("ddl_table_version", "4", "DDL table version"),
         ("new_collation_enabled", "False", "New collation flag"),
         ("system_tz", "CST", "System timezone"),
@@ -2008,6 +2014,28 @@ pub fn BootstrapCanonicalDomain(domain: Arc<Domain>) -> SessionResult<ConcreteSe
         domain
             .ddl_create_table("sys", table, true)
             .map_err(|error| session_error("persist sys.schema_unused_indexes view", error))?;
+    }
+    // Bootstrap may have inserted missing rows after constructing the session.
+    // Refresh the authoritative catalog and its hooks before exposing it to the
+    // server factory; a previous Domain override must not mask a backfill.
+    for name in [
+        astersql_sessionctx_vardef::TiDBAnalyzeDefaultNumBuckets,
+        astersql_sessionctx_vardef::TiDBAnalyzeDefaultNumTopN,
+        astersql_sessionctx_vardef::TiDBPersistAnalyzeOptions,
+    ] {
+        let mut sets = session.execute(&format!(
+            "SELECT variable_value FROM mysql.global_variables WHERE variable_name='{name}'"
+        ))?;
+        if let Some(set) = sets.first_mut()
+            && let Some(row) = set.next_row()?
+        {
+            let value = &row[0];
+            session
+                .session_vars
+                .ValidateAndSetGlobalSystemVar(name, value, astersql_sessionctx_vardef::ScopeGlobal)
+                .map_err(|error| session_error("load bootstrap ANALYZE variable", error))?;
+            domain.set_global_system_variable(name, value);
+        }
     }
     Ok(session)
 }

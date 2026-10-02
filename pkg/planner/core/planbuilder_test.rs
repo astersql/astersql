@@ -165,9 +165,12 @@ fn analyze_options_fill_defaults_and_reject_invalid_limits() {
     .expect("valid analyze options");
     assert_eq!(options[&AnalyzeOptionType::Buckets], 512);
     assert_eq!(options[&AnalyzeOptionType::TopN], 20);
-    assert_eq!(options[&AnalyzeOptionType::CmsketchDepth], 5);
+    assert_eq!(
+        crate::planbuilder::fillAnalyzeOptions(options)[&AnalyzeOptionType::CmsketchDepth],
+        5
+    );
     assert!(handleAnalyzeOptions(&[(AnalyzeOptionType::Buckets, 0)]).is_err());
-    assert!(handleAnalyzeOptions(&[(AnalyzeOptionType::Buckets, 1025)]).is_err());
+    assert!(handleAnalyzeOptions(&[(AnalyzeOptionType::Buckets, 100001)]).is_err());
 }
 
 #[test]
@@ -319,4 +322,145 @@ fn parser_backed_builder_handles_core_statement_shapes() {
         Value::Int(1),
         Value::String("real builder value".to_owned()),
     ];
+}
+
+#[test]
+fn go_commit_52f7a7a3e6_dynamic_defaults_and_raw_options() {
+    use crate::planbuilder::*;
+    use vardef_dependency as vardef;
+    let old = (
+        vardef::AnalyzeDefaultNumBuckets.Load(),
+        vardef::AnalyzeDefaultNumTopN.Load(),
+    );
+    struct Restore(u64, u64);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            vardef::AnalyzeDefaultNumBuckets.Store(self.0);
+            vardef::AnalyzeDefaultNumTopN.Store(self.1);
+        }
+    }
+    let _restore = Restore(old.0, old.1);
+    vardef::AnalyzeDefaultNumBuckets.Store(512);
+    vardef::AnalyzeDefaultNumTopN.Store(150);
+    let raw = handleAnalyzeOptions(&[]).unwrap();
+    assert!(
+        raw.is_empty(),
+        "validation must retain only explicitly specified options"
+    );
+    let defaults = fillAnalyzeOptionsV2(raw);
+    assert_eq!(defaults[&AnalyzeOptionType::Buckets], 512);
+    assert_eq!(defaults[&AnalyzeOptionType::TopN], 150);
+    assert_eq!(
+        defaults[&AnalyzeOptionType::SampleRate],
+        (-1.0_f64).to_bits()
+    );
+    assert_eq!(defaults[&AnalyzeOptionType::NumSamples], 0);
+    let explicit = handleAnalyzeOptions(&[(AnalyzeOptionType::Buckets, 1024)]).unwrap();
+    let filled = fillAnalyzeOptionsV2(explicit);
+    assert_eq!(filled[&AnalyzeOptionType::Buckets], 1024);
+    assert_eq!(filled[&AnalyzeOptionType::TopN], 150);
+    let builder = NewPlanBuilder(&[]);
+    let saved = [(AnalyzeOptionType::Buckets, 128)].into_iter().collect();
+    let merged = builder.genV2AnalyzeOptions(&[], &saved).unwrap();
+    assert_eq!(merged[&AnalyzeOptionType::Buckets], 128);
+    assert_eq!(merged[&AnalyzeOptionType::TopN], 150);
+}
+
+#[test]
+fn go_commit_52f7a7a3e6_explicit_option_boundaries() {
+    use crate::planbuilder::*;
+    for (key, value) in [
+        (AnalyzeOptionType::TopN, 0),
+        (AnalyzeOptionType::TopN, 100000),
+        (AnalyzeOptionType::Buckets, 100000),
+        (AnalyzeOptionType::CmsketchDepth, CMSketchSizeLimit),
+        (AnalyzeOptionType::NumSamples, 5000000),
+        (AnalyzeOptionType::SampleRate, 1.0_f64.to_bits()),
+    ] {
+        assert_eq!(
+            handleAnalyzeOptions(&[(key, value)]).unwrap().get(&key),
+            Some(&value)
+        );
+    }
+    for (key, value) in [
+        (AnalyzeOptionType::Buckets, 0),
+        (AnalyzeOptionType::Buckets, 100001),
+        (AnalyzeOptionType::TopN, 100001),
+        (AnalyzeOptionType::CmsketchDepth, CMSketchSizeLimit + 1),
+        (AnalyzeOptionType::NumSamples, 5000001),
+        (AnalyzeOptionType::SampleRate, 0.0_f64.to_bits()),
+        (AnalyzeOptionType::SampleRate, 1.1_f64.to_bits()),
+    ] {
+        assert!(handleAnalyzeOptions(&[(key, value)]).is_err());
+    }
+    assert!(
+        handleAnalyzeOptions(&[
+            (AnalyzeOptionType::NumSamples, 1),
+            (AnalyzeOptionType::SampleRate, 0.5_f64.to_bits())
+        ])
+        .unwrap_err()
+        .0
+        .contains("Don't set both")
+    );
+}
+
+#[test]
+fn go_commit_52f7a7a3e6_go_error_messages_and_table_plan() {
+    use crate::planbuilder::*;
+    for (key, value, message) in [
+        (
+            AnalyzeOptionType::TopN,
+            100001,
+            "Value of analyze option TOPN should not be larger than 100000",
+        ),
+        (
+            AnalyzeOptionType::Buckets,
+            100001,
+            "Value of analyze option BUCKETS should be positive and not larger than 100000",
+        ),
+        (
+            AnalyzeOptionType::SampleRate,
+            2.0_f64.to_bits(),
+            "Value of analyze option SAMPLERATE should not larger than 1.000000, and should be greater than 0",
+        ),
+    ] {
+        assert_eq!(
+            handleAnalyzeOptions(&[(key, value)]).unwrap_err().0,
+            message
+        );
+    }
+    let mut builder = NewPlanBuilder(&[]);
+    let stmt = AnalyzeStatement {
+        table: table(),
+        partition_names: vec!["p1".into()],
+        index_names: vec![],
+        columns: vec![],
+        column_choice: ColumnChoice::All,
+        options: vec![(AnalyzeOptionType::Buckets, 1024)],
+        version: 2,
+        incremental: false,
+    };
+    let BuiltPlan::Analyze { column_tasks, .. } = builder.Build(&Statement::Analyze(stmt)).unwrap()
+    else {
+        panic!("expected analyze");
+    };
+    assert_eq!(column_tasks.len(), 1);
+    assert_eq!(column_tasks[0].options[&AnalyzeOptionType::Buckets], 1024);
+    assert_eq!(
+        column_tasks[0].options[&AnalyzeOptionType::TopN],
+        vardef_dependency::AnalyzeDefaultNumTopN.Load()
+    );
+    let table_saved = [
+        (AnalyzeOptionType::Buckets, 256),
+        (AnalyzeOptionType::TopN, 100),
+    ]
+    .into_iter()
+    .collect();
+    let partition_saved = [(AnalyzeOptionType::Buckets, 512)].into_iter().collect();
+    let saved = mergeAnalyzeOptions(partition_saved, &table_saved);
+    let opts = builder
+        .genV2AnalyzeOptions(&[(AnalyzeOptionType::TopN, 0)], &saved)
+        .unwrap();
+    assert_eq!(opts[&AnalyzeOptionType::Buckets], 512);
+    assert_eq!(opts[&AnalyzeOptionType::TopN], 0);
 }

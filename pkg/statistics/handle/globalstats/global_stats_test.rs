@@ -390,3 +390,38 @@ fn skip_missing_reports_unanalyzed_and_empty_item_like_go() {
         ]
     );
 }
+
+#[test]
+fn go_commit_52f7a7a3e6_empty_histograms_consume_current_default_map() {
+    use astersql_planner_core::planbuilder::{AnalyzeOptionDefault, AnalyzeOptionType as O};
+    // The Go caller switched to the public dynamic default map for both
+    // synchronous and asynchronous missing-histogram merges.
+    let defaults = AnalyzeOptionDefault();
+    let opts = MergeOptions {
+        top_n_size: defaults[&O::TopN] as usize,
+        bucket_count: defaults[&O::Buckets] as usize,
+        skip_missing: true,
+        ..options(1)
+    };
+    let provider = TestProvider(
+        (0..12)
+            .map(|id| PartitionStats {
+                name: format!("p{id}"),
+                count: 0,
+                items: vec![None],
+                ..PartitionStats::default()
+            })
+            .collect(),
+    );
+    let cancelled = AtomicBool::new(false);
+    let sync = merge_partition_stats_to_global(&provider, 42, 1, opts.clone(), &cancelled).unwrap();
+    let mut asynchronous = crate::AsyncMergePartitionStats::new(&provider, 42, 1);
+    asynchronous.merge(opts, &cancelled).unwrap();
+    assert!(sync.histograms[0].is_none());
+    assert_eq!(sync.missing_partition_stats.len(), 12);
+    assert!(asynchronous.result().unwrap().histograms[0].is_none());
+    assert_eq!(
+        sync.missing_partition_stats,
+        asynchronous.missing_partitions()
+    );
+}

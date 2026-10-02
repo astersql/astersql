@@ -196,7 +196,7 @@ fn test_check_privilege_table_rows_collate_compatibility() {
     ));
 }
 
-/// TestMonitorTheSystemTableIncremental — Go body is empty; cover SchemaVersionPair helpers.
+/// Monitor the authoritative bootstrap migration introduced by Go #69724.
 #[test]
 /// 测试 `test_monitor_the_system_table_incremental`：锁定与 Go 对应场景一致的可观察行为。
 /// 关注前置 fixture、断言边界与失败时不应产生的副作用。
@@ -350,4 +350,24 @@ fn test_notify_update_all_users_privilege() {
     )
     .unwrap_err();
     assert!(err.msg.contains("flush privileges") || err.msg.contains("flush failed"));
+}
+
+#[test]
+fn go_commit_52f7a7a3e6_monitor_analyze_defaults_bootstrap_version() {
+    // #69886 renumbered this migration from 263 to 283. Later migrations
+    // belong to their own source tasks; the supported table must include it.
+    let last = astersql_session::upgrade_def::upgradeToVerFunctions
+        .last()
+        .unwrap()
+        .version;
+    assert!(last >= astersql_session::upgrade_def::version283);
+    assert!(
+        astersql_session::upgrade_def::upgradeToVerFunctions
+            .iter()
+            .any(|entry| entry.version == 283)
+    );
+    // SAFETY: this test only reads the compatibility version variable.
+    assert_eq!(last, unsafe {
+        astersql_session::upgrade_def::currentBootstrapVersion
+    });
 }
