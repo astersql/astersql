@@ -145,3 +145,18 @@ fn vectorized_compression_and_password_strength_cover_warning_and_policy_paths()
         vec![Some(100)]
     );
 }
+
+#[test]
+fn go_commit_c6e3cf8399_vectorized_uncompress_rejects_output_beyond_declared_length() {
+    let mut payload = 32_u32.to_le_bytes().to_vec();
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    std::io::Write::write_all(&mut encoder, &vec![0; 1 << 20]).unwrap();
+    payload.extend_from_slice(&encoder.finish().unwrap());
+
+    let mut context = EvalContext::default();
+    assert_eq!(
+        uncompress_vec(&mut context, &vec![Some(payload)]),
+        vec![None]
+    );
+    assert_eq!(context.warnings(), &[Warning::ZlibBuffer]);
+}

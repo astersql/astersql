@@ -701,10 +701,16 @@ fn deflate(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
     Ok(output)
 }
 
-/// zlib 解压。
-fn inflate(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InflateError {
+    Data,
+    Buffer,
+}
+
+/// 在声明长度的硬上限内解压，避免畸形长度头导致无界输出分配。
+fn inflate(data: &[u8], declared: usize) -> Result<Vec<u8>, InflateError> {
     let mut decompressor = Decompress::new(true);
-    let mut output = Vec::new();
+    let mut output = Vec::with_capacity(declared.min(8 * 1024));
     let mut input_offset = 0;
     loop {
         let input_before = decompressor.total_in();
@@ -712,8 +718,11 @@ fn inflate(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
         let mut buffer = [0_u8; 8 * 1024];
         let status = decompressor
             .decompress(&data[input_offset..], &mut buffer, FlushDecompress::Finish)
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+            .map_err(|_| InflateError::Data)?;
         let produced = (decompressor.total_out() - output_before) as usize;
+        if produced > declared.saturating_sub(output.len()) {
+            return Err(InflateError::Buffer);
+        }
         output.extend_from_slice(&buffer[..produced]);
         input_offset = decompressor.total_in() as usize;
 
@@ -721,10 +730,7 @@ fn inflate(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
             return Ok(output);
         }
         if decompressor.total_in() == input_before && decompressor.total_out() == output_before {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "incomplete zlib stream",
-            ));
+            return Err(InflateError::Data);
         }
     }
 }
@@ -763,12 +769,12 @@ pub fn uncompress_vec(ctx: &mut EvalContext, input: &ByteColumn) -> ByteColumn {
             }
             Some(value) => {
                 let declared = u32::from_le_bytes(value[..4].try_into().unwrap()) as usize;
-                match inflate(&value[4..]) {
-                    Err(_) => {
+                match inflate(&value[4..], declared) {
+                    Err(InflateError::Data) => {
                         ctx.warn(Warning::ZlibData);
                         None
                     }
-                    Ok(output) if declared < output.len() => {
+                    Err(InflateError::Buffer) => {
                         ctx.warn(Warning::ZlibBuffer);
                         None
                     }

@@ -569,6 +569,29 @@ pub fn compress(input: &[u8]) -> Result<Eval<Vec<u8>>, EncryptionError> {
     Ok(Eval::some(output))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InflateError {
+    Data,
+    Buffer,
+}
+
+/// 在声明长度的硬上限内解压，避免畸形长度头导致无界输出分配。
+fn inflate_bounded(data: &[u8], declared: usize) -> Result<Vec<u8>, InflateError> {
+    let mut decoder = ZlibDecoder::new(data);
+    let mut output = Vec::with_capacity(declared.min(8 * 1024));
+    let mut buffer = [0_u8; 8 * 1024];
+    loop {
+        let count = decoder.read(&mut buffer).map_err(|_| InflateError::Data)?;
+        if count == 0 {
+            return Ok(output);
+        }
+        if count > declared.saturating_sub(output.len()) {
+            return Err(InflateError::Buffer);
+        }
+        output.extend_from_slice(&buffer[..count]);
+    }
+}
+
 /// UNCOMPRESS：校验长度头与 zlib；损坏数据返回带 ZlibData/ZlibBuffer 警告的 NULL。
 pub fn uncompress(payload: &[u8]) -> Eval<Vec<u8>> {
     if payload.is_empty() {
@@ -578,15 +601,11 @@ pub fn uncompress(payload: &[u8]) -> Eval<Vec<u8>> {
         return Eval::null_with(EncryptionWarning::ZlibData);
     }
     let declared = u32::from_le_bytes(payload[..4].try_into().unwrap()) as usize;
-    let mut decoder = ZlibDecoder::new(&payload[4..]);
-    let mut output = Vec::new();
-    if decoder.read_to_end(&mut output).is_err() {
-        return Eval::null_with(EncryptionWarning::ZlibData);
+    match inflate_bounded(&payload[4..], declared) {
+        Ok(output) => Eval::some(output),
+        Err(InflateError::Data) => Eval::null_with(EncryptionWarning::ZlibData),
+        Err(InflateError::Buffer) => Eval::null_with(EncryptionWarning::ZlibBuffer),
     }
-    if declared < output.len() {
-        return Eval::null_with(EncryptionWarning::ZlibBuffer);
-    }
-    Eval::some(output)
 }
 
 /// UNCOMPRESSED_LENGTH：只读长度头；过短载荷返回 0 并告警。

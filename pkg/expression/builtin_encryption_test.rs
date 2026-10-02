@@ -158,6 +158,23 @@ fn compression_round_trip_empty_and_corrupt_inputs_preserve_warnings() {
 }
 
 #[test]
+fn go_commit_c6e3cf8399_scalar_uncompress_rejects_output_beyond_declared_length() {
+    let mut payload = 32_u32.to_le_bytes().to_vec();
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    std::io::Write::write_all(&mut encoder, &vec![0; 1 << 20]).unwrap();
+    payload.extend_from_slice(&encoder.finish().unwrap());
+
+    let result = uncompress(&payload);
+    assert_eq!(result.value, None);
+    assert_eq!(result.warnings, vec![EncryptionWarning::ZlibBuffer]);
+
+    let handcrafted = hex::decode("20000000789c73741c05a360148c540000a4780410").unwrap();
+    let result = uncompress(&handcrafted);
+    assert_eq!(result.value, None);
+    assert_eq!(result.warnings, vec![EncryptionWarning::ZlibBuffer]);
+}
+
+#[test]
 /// 密码强度：策略关闭、NULL、用户名命中、字典词与满分路径。
 fn password_strength_covers_null_disabled_username_dictionary_and_full_score() {
     // 策略未启用时任何密码强度均为 0。
