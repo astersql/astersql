@@ -163,6 +163,10 @@ pub struct SQLKiller {
 #[path = "go_merge_34_test.rs"]
 mod go_merge_34_test;
 
+#[cfg(test)]
+#[path = "sqlkiller_test.rs"]
+mod sqlkiller_test;
+
 impl Default for SQLKiller {
     fn default() -> Self {
         Self {
