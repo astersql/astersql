@@ -227,44 +227,6 @@ fn test_load_data_replace() {
 }
 
 #[test]
-fn reuses_shared_store_for_load_data_replace_cases() {
-    // The Go regression moved this test onto the package-level store. Keep both
-    // LOAD DATA invocations on the same table state so the second case observes
-    // the rows committed by the first instead of starting from a fresh store.
-    let mut rows = vec![
-        vec![Some("1".into()), Some("val 1".into())],
-        vec![Some("2".into()), Some("val 2".into())],
-    ];
-
-    rows.extend([
-        vec![Some("1".into()), Some("line1".into())],
-        vec![Some("2".into()), Some("line2".into())],
-    ]);
-    assert_eq!(apply_replace(&mut rows, 0, true), 2);
-    assert_eq!(
-        rows,
-        vec![
-            vec![Some("1".into()), Some("line1".into())],
-            vec![Some("2".into()), Some("line2".into())],
-        ]
-    );
-
-    rows.extend([
-        vec![Some("2".into()), Some("new line2".into())],
-        vec![Some("3".into()), Some("new line3".into())],
-    ]);
-    assert_eq!(apply_replace(&mut rows, 0, true), 1);
-    assert_eq!(
-        rows,
-        vec![
-            vec![Some("1".into()), Some("line1".into())],
-            vec![Some("2".into()), Some("new line2".into())],
-            vec![Some("3".into()), Some("new line3".into())],
-        ]
-    );
-}
-
-#[test]
 fn test_load_data_overflow_bigint_unsigned() {
     // 无符号 BIGINT 转换对负数钳制为 0，对正向溢出钳制为 u64 上界，并产生警告标记。
     let values = ["-1", "-18446744073709551615", "-18446744073709551616"];
@@ -304,30 +266,124 @@ fn test_load_data_into_partitioned_table() {
     assert_eq!(partitions, vec![0, 0, 1, 2, 2]);
 }
 
-#[test]
-fn test_load_data_from_server_file() {
-    assert_eq!(
-        validate_load_data_options("remote.csv", false, None, &LoadDataConfig::default()),
-        Err(LoadDataError::ServerFile)
+pub(crate) fn server_file_uses_shared_store(session: &astersql_session::runtime::ConcreteSession) {
+    session
+        .execute("use test; drop table if exists load_data_test")
+        .unwrap();
+    session
+        .execute("create table load_data_test (a int)")
+        .unwrap();
+    let error = match session.execute("load data infile 'remote.csv' into table load_data_test") {
+        Ok(_) => panic!("server disk must be rejected"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("ERROR 8154 (HY000)"), "{error}");
+    assert!(
+        error
+            .to_string()
+            .contains("Don't support load data from tidb-server's disk.")
     );
 }
 
-#[test]
-fn test_fix56408() {
-    // 回归 #56408：单批数据含连续重复键时仍应完整去重，且每个被替换行都计入删除数。
-    let data = b"1|aa|beijing\n1|aa|beijing\n1|aa|beijing\n1|aa|beijing\n2|bb|shanghai\n2|bb|shanghai\n2|bb|shanghai\n3|cc|guangzhou\n";
-    let config = LoadDataConfig::default().terminated_by("|");
-    let mut rows = parse_load_data(data, &config).unwrap();
-    assert_eq!(apply_replace(&mut rows, 0, true), 5);
-    assert_eq!(rows.len(), 3);
+fn query_rows(session: &astersql_session::runtime::ConcreteSession, sql: &str) -> Vec<String> {
+    let mut sets = session.execute(sql).unwrap();
+    let mut set = sets.pop().expect("query result");
+    let mut result = Vec::new();
+    while let Some(row) = set.next_row().unwrap() {
+        result.push(row.join("|"));
+    }
+    set.close().unwrap();
+    result
+}
+
+fn load_fixture(
+    session: &astersql_session::runtime::ConcreteSession,
+    table: &str,
+    bytes: &[u8],
+    fields: &str,
+) {
+    let path = std::env::temp_dir().join(format!(
+        "astersql_shared_load_data_{}_{}.csv",
+        std::process::id(),
+        table
+    ));
+    std::fs::write(&path, bytes).unwrap();
+    let result = session.execute(&format!(
+        "load data local infile '{}' replace into table {table} {fields}",
+        path.display()
+    ));
+    std::fs::remove_file(path).unwrap();
+    result.unwrap();
+}
+
+pub(crate) fn replace_uses_shared_store(session: &astersql_session::runtime::ConcreteSession) {
+    session
+        .execute("use test; drop table if exists load_data_replace")
+        .unwrap();
+    session
+        .execute(
+            "create table load_data_replace (id int not null primary key, value text not null)",
+        )
+        .unwrap();
+    session
+        .execute("insert into load_data_replace values (1, 'val 1'), (2, 'val 2')")
+        .unwrap();
+    load_fixture(session, "load_data_replace", b"1\tline1\n2\tline2\n", "");
     assert_eq!(
-        rows[2],
-        vec![
-            Some("3".into()),
-            Some("cc".into()),
-            Some("guangzhou".into())
-        ]
+        session.LastMessage(),
+        "Records: 2  Deleted: 2  Skipped: 0  Warnings: 0"
     );
+    assert_eq!(
+        query_rows(session, "select * from load_data_replace order by id"),
+        ["1|line1", "2|line2"]
+    );
+    load_fixture(
+        session,
+        "load_data_replace",
+        b"2\tnew line2\n3\tnew line3\n",
+        "",
+    );
+    assert_eq!(
+        session.LastMessage(),
+        "Records: 2  Deleted: 1  Skipped: 0  Warnings: 0"
+    );
+    assert_eq!(
+        query_rows(session, "select * from load_data_replace order by id"),
+        ["1|line1", "2|new line2", "3|new line3"]
+    );
+    // Clustered handles also keep identical rows and count them as skipped.
+    load_fixture(
+        session,
+        "load_data_replace",
+        b"2\tnew line2\n3\tnew line3\n",
+        "",
+    );
+    assert_eq!(
+        session.LastMessage(),
+        "Records: 2  Deleted: 0  Skipped: 2  Warnings: 0"
+    );
+    assert_eq!(session.protocol_state().affected_rows, 2);
+    assert_eq!(
+        query_rows(session, "select * from load_data_replace order by id"),
+        ["1|line1", "2|new line2", "3|new line3"]
+    );
+}
+
+pub(crate) fn repeated_nonclustered_keys_use_shared_store(
+    session: &astersql_session::runtime::ConcreteSession,
+) {
+    session.execute("use test; drop table if exists a").unwrap();
+    session.execute("create table a(id int,name varchar(20),addr varchar(100),primary key (id) nonclustered)").unwrap();
+    load_fixture(session, "a", b"1|aa|beijing\n1|aa|beijing\n1|aa|beijing\n1|aa|beijing\n2|bb|shanghai\n2|bb|shanghai\n2|bb|shanghai\n3|cc|guangzhou\n", "fields terminated by '|'");
+    assert_eq!(
+        session.LastMessage(),
+        "Records: 8  Deleted: 0  Skipped: 5  Warnings: 0"
+    );
+    assert_eq!(
+        query_rows(session, "select * from a order by id"),
+        ["1|aa|beijing", "2|bb|shanghai", "3|cc|guangzhou"]
+    );
+    session.execute("admin check table a").unwrap();
 }
 
 #[test]

@@ -1838,6 +1838,23 @@ impl ConcreteSession {
         from_select: bool,
         select_columns: Option<&[String]>,
     ) -> SessionResult<()> {
+        self.execute_relational_insert_with_load_counts(
+            statement,
+            plan,
+            from_select,
+            select_columns,
+        )
+        .map(|_| ())
+    }
+
+    /// Return rows actually copied/deleted, excluding unchanged REPLACE rows.
+    pub(super) fn execute_relational_insert_with_load_counts(
+        &self,
+        statement: &ast::InsertStmt,
+        plan: crate::dml_runtime::InsertPlan,
+        from_select: bool,
+        select_columns: Option<&[String]>,
+    ) -> SessionResult<(u64, u64)> {
         let insert_started = std::time::Instant::now();
         // Go's ResetContextOfStmt turns truncation into warnings for INSERT
         // IGNORE even under a strict sql_mode, preserving a valid numeric
@@ -1922,6 +1939,8 @@ impl ConcreteSession {
         let mut mutations = Vec::new();
         let records = statement.Lists.len() as u64;
         let mut affected_rows = 0;
+        let mut copied_rows = 0;
+        let mut deleted_rows = 0;
         let mut touched_rows = 0;
         let mut updated_record_rows = 0;
         let mut has_deferred_optimistic_constraint = false;
@@ -1929,6 +1948,7 @@ impl ConcreteSession {
         let mut alloc_count = 0;
         let mut rebase_count = 0;
         let mut lock_rows = Vec::new();
+        let mut unchanged_lock_rows = Vec::new();
         let has_secondary_unique_index = table.Indices.iter().any(|index| {
             index.Unique
                 // A nonclustered PRIMARY KEY is a separate unique index; its
@@ -2402,6 +2422,23 @@ impl ConcreteSession {
                 }
                 return Err(SessionError::new(message));
             }
+            let (key, value) = self.encode_relational_row_for_write(&table, &row, flags)?;
+            // Go InsertValues.removeRow compares table columns as binary datums;
+            // the hidden handle of a nonclustered primary key is not a column.
+            let unchanged = |existing: &HashMap<String, Option<String>>| {
+                table
+                    .Columns
+                    .iter()
+                    .all(|column| existing.get(&column.Name.L) == row.get(&column.Name.L))
+            };
+            let mut unchanged_row = if plan.Replace {
+                working_rows
+                    .get(&key.0)
+                    .filter(|existing| unchanged(existing))
+                    .cloned()
+            } else {
+                None
+            };
             let mut replaced_unique_keys = BTreeSet::new();
             let mut replaced_rows = Vec::new();
             if plan.Replace {
@@ -2468,9 +2505,17 @@ impl ConcreteSession {
                             .map(|column| existing_row.get(&column.Name.L).cloned().flatten())
                             .collect::<Option<Vec<_>>>();
                         if existing.as_ref() == Some(&incoming) {
+                            if unchanged(existing_row) {
+                                unchanged_row = Some(existing_row.clone());
+                            }
                             replaced_unique_keys.insert(existing_key.clone());
                         }
                     }
+                }
+                if let Some(existing_row) = unchanged_row {
+                    affected_rows += 1;
+                    unchanged_lock_rows.push(existing_row);
+                    continue;
                 }
                 for existing_key in &replaced_unique_keys {
                     if let Some(existing_row) = working_rows.remove(existing_key) {
@@ -2502,7 +2547,7 @@ impl ConcreteSession {
                     )?;
                 }
             }
-            let (key, value) = self.encode_relational_row_for_write(&table, &row, flags)?;
+
             if pessimistic_transaction {
                 self.acquire_row_lock(
                     RuntimeRowLockKey {
@@ -2772,6 +2817,14 @@ impl ConcreteSession {
                 self.set_warning(error.to_string());
                 continue;
             }
+            copied_rows += 1;
+            if plan.Replace {
+                deleted_rows += if !replaced_unique_keys.is_empty() {
+                    replaced_unique_keys.len() as u64
+                } else {
+                    u64::from(existing)
+                };
+            }
             affected_rows += if !replaced_unique_keys.is_empty() {
                 replaced_unique_keys.len() as u64 + 1
             } else if existing {
@@ -2826,9 +2879,12 @@ impl ConcreteSession {
             &plan.Table,
             if plan.Replace { "Replace" } else { "Insert" },
             mutations,
-            unique_lock_keys_for_rows(&table, lock_rows.iter())
+            unique_lock_keys_for_rows(&table, lock_rows.iter().chain(unchanged_lock_rows.iter()))
                 .into_iter()
-                .chain(primary_lock_keys_for_rows(&table, lock_rows.iter()))
+                .chain(primary_lock_keys_for_rows(
+                    &table,
+                    lock_rows.iter().chain(unchanged_lock_rows.iter()),
+                ))
                 .collect(),
             affected_rows,
             last_insert_id,
@@ -2876,7 +2932,7 @@ impl ConcreteSession {
                 );
             }
         }
-        Ok(())
+        Ok((copied_rows, deleted_rows))
     }
 
     /// 执行关系型 UPDATE 计划。

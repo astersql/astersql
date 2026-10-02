@@ -38,3 +38,30 @@ fn test_main_applies_go_test_environment_overrides_and_cleanup() {
     assert!(runtime.fix56408_store_cleanup_runs);
     assert!(runtime.view_stopped);
 }
+
+#[test]
+fn shared_load_data_store_bootstraps_once_and_cleans_up_after_all_consumers() {
+    use astersql_session::runtime::{ConcreteSession, CreateAnalyzeSession};
+    let (domain, bootstrap_session) =
+        CreateAnalyzeSession().expect("bootstrap shared LOAD DATA store");
+    struct Cleanup(ConcreteSession);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.domain().close();
+            self.0
+                .domain()
+                .storage_handle()
+                .close()
+                .expect("close shared LOAD DATA store");
+        }
+    }
+    let cleanup = Cleanup(bootstrap_session);
+    let new_session = || ConcreteSession::new(domain.clone());
+    crate::load_data_test::replace_uses_shared_store(&new_session());
+    crate::load_data_test::server_file_uses_shared_store(&new_session());
+    // Repeat against the same store: stale table metadata must be removed first.
+    crate::load_data_test::server_file_uses_shared_store(&new_session());
+    crate::load_data_test::repeated_nonclustered_keys_use_shared_store(&new_session());
+    drop(cleanup);
+    assert!(domain.is_closed());
+}

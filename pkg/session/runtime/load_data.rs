@@ -415,8 +415,8 @@ impl ConcreteSession {
                 }
                 StorageBackend::Local(_) => {
                     return Err(load_data_error(
-                        1148,
-                        "42000",
+                        8154,
+                        "HY000",
                         "Don't support load data from tidb-server's disk.",
                     ));
                 }
@@ -658,9 +658,10 @@ impl ConcreteSession {
             IsReplace: statement.OnDuplicate == ast::OnDuplicateKeyHandlingType::Replace,
             // MySQL treats LOCAL input like IGNORE for duplicate-key handling
             // because the server cannot stop a client that is already sending
-            // the file. Go's LOAD DATA path preserves that behavior.
+            // the file. Explicit REPLACE must still replace conflicting rows.
             IgnoreErr: statement.OnDuplicate == ast::OnDuplicateKeyHandlingType::Ignore
-                || matches!(statement.FileLocRef, ast::FileLocRef::Client),
+                || (matches!(statement.FileLocRef, ast::FileLocRef::Client)
+                    && statement.OnDuplicate != ast::OnDuplicateKeyHandlingType::Replace),
             Table: Some(load_data_table_refs(&statement.Table)),
             Columns: insert_columns,
             Lists: rows,
@@ -669,13 +670,18 @@ impl ConcreteSession {
         if astersql_testkit_testfailpoint::eval_bool("executor/commitOneTaskErr") {
             return Err(SessionError::new("mock commit one task error"));
         }
-        if let Err(error) = self.execute_insert(&insert) {
-            let message = error.to_string();
-            if let Some(message) = message.strip_prefix("[kv:1062]") {
-                return Err(load_data_error(1062, "23000", message));
-            }
-            return Err(error);
-        }
+        let plan = crate::dml_runtime::PlanInsert(&insert)?;
+        let (copied_rows, deleted) =
+            match self.execute_relational_insert_with_load_counts(&insert, plan, false, None) {
+                Ok(counts) => counts,
+                Err(error) => {
+                    let message = error.to_string();
+                    if let Some(message) = message.strip_prefix("[kv:1062]") {
+                        return Err(load_data_error(1062, "23000", message));
+                    }
+                    return Err(error);
+                }
+            };
         for warning in self
             .state
             .borrow_mut()
@@ -689,21 +695,8 @@ impl ConcreteSession {
             }
         }
         let mut state = self.state.borrow_mut();
-        let affected_rows = state
-            .last_dml_report
-            .as_ref()
-            .map_or(0, |report| report.AffectedRows);
         let records = row_number;
-        let deleted = if statement.OnDuplicate == ast::OnDuplicateKeyHandlingType::Replace {
-            affected_rows.saturating_sub(records)
-        } else {
-            0
-        };
-        let skipped = if statement.OnDuplicate == ast::OnDuplicateKeyHandlingType::Ignore {
-            records.saturating_sub(affected_rows)
-        } else {
-            0
-        };
+        let skipped = records.saturating_sub(copied_rows);
         state.last_message = format!(
             "Records: {records}  Deleted: {deleted}  Skipped: {skipped}  Warnings: {}",
             state.current_warnings.len()

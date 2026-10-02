@@ -11,6 +11,9 @@ path = "lib.rs"
 go-package = "pkg/executor/test/loaddatatest"
 legacy-tasks = ["task-1346"]
 
+[dev-dependencies]
+astersql-session = { path = "../../../session" }
+
 [target.'cfg(any())'.dev-dependencies]
 "astersql-config" = { package = "astersql-config", path = "../../../config" }
 "astersql-domain" = { package = "astersql-domain", path = "../../../domain" }
@@ -19,7 +22,6 @@ legacy-tasks = ["task-1346"]
 "astersql-lightning-mydump" = { package = "astersql-lightning-mydump", path = "../../../lightning/mydump" }
 "astersql-meta-autoid" = { package = "astersql-meta-autoid", path = "../../../meta/autoid" }
 "astersql-resourcemanager" = { package = "astersql-resourcemanager", path = "../../../resourcemanager" }
-"astersql-session" = { package = "astersql-session", path = "../../../session" }
 "astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../../sessionctx" }
 "astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../../sessionctx/vardef" }
 "astersql-store-mockstore" = { package = "astersql-store-mockstore", path = "../../../store/mockstore" }
