@@ -1062,3 +1062,388 @@ fn spill_scalar_and_json_partial_results_round_trip_through_columns() {
         Some(b"a,b".as_slice())
     );
 }
+
+fn round_trip_state<T: crate::SpillState>(state: &T, template: T) -> (T, i64) {
+    use crate::Serializer;
+    let function = crate::StateSerializer {
+        ordinal: 1,
+        template,
+    };
+    let mut source =
+        chunk::NewChunkWithCapacity(vec![types::NewFieldType(16), types::NewFieldType(16)], 2);
+    source.AppendBytes(0, b"unrelated-column");
+    let partial = Box::new(state.copy_partial()) as crate::PartialResult;
+    function.serialize_partial_result(&partial, &mut source, &mut crate::SerializeHelper::new());
+    let (mut decoded, memory) = function.deserialize_partial_result(&source);
+    assert_eq!(decoded.len(), 1);
+    let restored = *decoded.remove(0).downcast::<T>().ok().unwrap();
+    source.Reset(); // restored strings/vectors/decimals must own their bytes
+    (restored, memory)
+}
+
+#[test]
+fn spill_distinct_count_preserves_int_real_decimal_duration_string_and_multi_keys() {
+    use crate::func_count_distinct::*;
+    let mut integer = CountDistinctInt::default();
+    integer.update([Some(1), Some(-2), Some(-2), None]);
+    let (restored, memory) = round_trip_state(&integer, CountDistinctInt::default());
+    assert_eq!(restored.values, integer.values);
+    assert!(memory > 0);
+    let mut real = CountDistinctReal::default();
+    update_distinct_real(
+        &mut real,
+        [
+            Some(1.25),
+            Some(-2.5),
+            Some(-0.0),
+            Some(0.0),
+            Some(f64::NAN),
+            Some(f64::NAN),
+        ],
+    );
+    let (restored, _) = round_trip_state(&real, CountDistinctReal::default());
+    assert_eq!(restored.values, real.values);
+    let mut decimal = CountDistinctDecimal::default();
+    decimal.update([Some(b"decimal-key".to_vec()), Some(vec![0, 1, 2, b'x'])]);
+    let (restored, memory) = round_trip_state(&decimal, CountDistinctDecimal::default());
+    assert_eq!(restored.values, decimal.values);
+    assert!(memory >= 15);
+    let mut duration = CountDistinctDuration::default();
+    duration.update([Some(123), Some(-456)]);
+    assert_eq!(
+        round_trip_state(&duration, CountDistinctDuration::default())
+            .0
+            .values,
+        duration.values
+    );
+    let mut string = CountDistinctString::default();
+    string.update([Some(Vec::new()), Some(b"x".repeat(100_000))]);
+    assert_eq!(
+        round_trip_state(&string, CountDistinctString::default())
+            .0
+            .values,
+        string.values
+    );
+    let mut multi = CountDistinctMulti::default();
+    multi.encoded_rows.insert(b"arg1\0arg2".to_vec());
+    multi.encoded_rows.insert(b"y".repeat(100_000));
+    assert_eq!(
+        round_trip_state(&multi, CountDistinctMulti::default())
+            .0
+            .encoded_rows,
+        multi.encoded_rows
+    );
+}
+
+#[test]
+fn spill_distinct_avg_sum_and_integer_bit_patterns_remain_mergeable() {
+    use crate::func_avg::*;
+    use crate::func_sum::*;
+    use crate::func_sum_int::*;
+    let mut float_sum = DistinctFloatSum::default();
+    float_sum.update([Some(10.5), Some(-20.75)]);
+    let (mut restored, _) = round_trip_state(&float_sum, DistinctFloatSum::default());
+    restored.merge(&float_sum);
+    assert_eq!(restored.value(), float_sum.value());
+    let mut float_avg = DistinctFloatAvg::default();
+    float_avg.update([Some(10.5), Some(-20.75)]);
+    let (mut restored, _) = round_trip_state(&float_avg, DistinctFloatAvg::default());
+    restored.merge(&float_avg);
+    assert_eq!(restored.result(), float_avg.result());
+    let mut decimal_sum = DistinctDecimalSum::default();
+    decimal_sum.insert_keyed(b"s1".to_vec(), Decimal::new(100, 0));
+    decimal_sum.insert_keyed(b"s2".to_vec(), Decimal::new(-200, 0));
+    let (mut restored, _) = round_trip_state(&decimal_sum, DistinctDecimalSum::default());
+    assert_eq!(restored.keys, decimal_sum.keys);
+    assert_eq!(restored.value().unwrap(), decimal_sum.value().unwrap());
+    restored.merge(&decimal_sum);
+    assert_eq!(restored.len(), 2);
+    let mut decimal_avg = DistinctDecimalAvg::default();
+    decimal_avg
+        .sum
+        .insert_keyed(b"d1".to_vec(), Decimal::new(10, 0));
+    decimal_avg
+        .sum
+        .insert_keyed(b"d2".to_vec(), Decimal::new(-20, 0));
+    let (restored, _) = round_trip_state(&decimal_avg, DistinctDecimalAvg::default());
+    assert_eq!(restored.sum.keys, decimal_avg.sum.keys);
+    assert_eq!(restored.result(2).unwrap(), decimal_avg.result(2).unwrap());
+    let mut signed = SumDistinctInt64::default();
+    signed.update([Some(100), Some(-200)]);
+    let (mut restored, _) = round_trip_state(&signed, SumDistinctInt64::default());
+    restored.merge(&signed);
+    assert_eq!(restored.value().unwrap(), signed.value().unwrap());
+    let mut unsigned = SumDistinctUint64::default();
+    unsigned.update([Some(u64::MAX)]);
+    let (restored, _) = round_trip_state(&unsigned, SumDistinctUint64::default());
+    assert!(restored.bit_patterns.contains(&-1));
+    assert_eq!(restored.value().unwrap(), Some(u64::MAX));
+}
+
+#[test]
+fn spill_approximate_count_and_variance_preserve_full_partial_state() {
+    use crate::func_count_distinct::ApproxCountDistinct;
+    use crate::func_varpop::*;
+    let mut approx = ApproxCountDistinct::default();
+    for value in [0, 1, 2, 1, 1024, u32::MAX as u64] {
+        approx.insert_hash64(value);
+    }
+    let (restored, _) = round_trip_state(&approx, ApproxCountDistinct::default());
+    assert_eq!(restored.serialize(), approx.serialize());
+    assert_eq!(restored.estimate(), approx.estimate());
+    let mut variance = VarianceState::default();
+    variance.update([Some(1.0), Some(2.5), Some(4.0)]);
+    let (restored, _) = round_trip_state(&variance, VarianceState::default());
+    assert_eq!(
+        (restored.count, restored.sum, restored.variance),
+        (variance.count, variance.sum, variance.variance)
+    );
+    assert_eq!(
+        restored.population_variance(),
+        variance.population_variance()
+    );
+    assert_eq!(restored.sample_variance(), variance.sample_variance());
+    let mut distinct = DistinctVariance::default();
+    distinct.update([Some(1.5), Some(3.5), Some(1.5)]);
+    let (mut restored, _) = round_trip_state(&distinct, DistinctVariance::default());
+    restored.merge(&distinct);
+    assert_eq!(restored.values.len(), 2);
+    assert_eq!(restored.population_variance(), Some(1.0));
+}
+
+#[test]
+fn spill_percentile_preserves_all_five_typed_samples_and_memory_charges() {
+    use crate::func_max_min::{DurationValue, TimeValue};
+    use crate::func_percentile::Percentile;
+    use crate::func_sum::Decimal;
+    let mut integer = Percentile::new(50);
+    integer.update([Some(-3_i64), Some(0), Some(10)]);
+    let (mut restored, memory) = round_trip_state(&integer, Percentile::new(50));
+    assert_eq!(restored.values(), integer.values());
+    assert_eq!(restored.result(), Some(&0));
+    assert_eq!(memory, 24 + 3 * 8);
+    let mut real = Percentile::new(50);
+    real.update([Some(-1.5_f64), Some(2.25)]);
+    assert_eq!(
+        round_trip_state(&real, Percentile::new(50)).0.values(),
+        real.values()
+    );
+    let mut decimal = Percentile::new(50);
+    decimal.update([Some(Decimal::new(-2, 0)), Some(Decimal::new(11, 0))]);
+    let (restored, memory) = round_trip_state(&decimal, Percentile::new(50));
+    assert_eq!(restored.values(), decimal.values());
+    assert_eq!(memory, 24 + 2 * 40);
+    let mut time = Percentile::new(50);
+    time.update([
+        Some(TimeValue {
+            packed: 1,
+            kind: 12,
+            fsp: 3,
+        }),
+        Some(TimeValue {
+            packed: 365,
+            kind: 7,
+            fsp: 6,
+        }),
+    ]);
+    let (restored, memory) = round_trip_state(&time, Percentile::new(50));
+    assert_eq!(restored.values(), time.values());
+    assert_eq!(restored.values()[1].fsp, 6);
+    assert_eq!(restored.values()[0].kind, 12);
+    assert_eq!(memory, 24 + 2 * 8);
+    let mut duration = Percentile::new(50);
+    duration.update([
+        Some(DurationValue {
+            nanos: -123,
+            fsp: 2,
+        }),
+        Some(DurationValue { nanos: 456, fsp: 4 }),
+    ]);
+    let (restored, memory) = round_trip_state(&duration, Percentile::new(50));
+    assert_eq!(restored.values(), duration.values());
+    assert_eq!(restored.values()[1].fsp, 4);
+    assert_eq!(memory, 24 + 2 * 8);
+}
+
+#[test]
+fn spill_first_vector_preserves_unseen_null_empty_and_nonempty_flags() {
+    use crate::func_first_row::FirstRow;
+    use crate::func_max_min::VectorFloat32;
+    for state in [
+        None,
+        Some(None),
+        Some(Some(VectorFloat32(Vec::new()))),
+        Some(Some(VectorFloat32(vec![-1.5, 0.0, 2.25]))),
+    ] {
+        let original = FirstRow { state };
+        let (restored, _) = round_trip_state(&original, FirstRow::<VectorFloat32>::default());
+        assert_eq!(restored, original);
+    }
+}
+
+#[test]
+fn spill_group_concat_keeps_binary_collation_keys_and_allocates_result_buffer() {
+    use crate::func_group_concat::GroupConcat;
+    let mut original = GroupConcat::new(b",".to_vec(), 1_000_000, true);
+    original.update_keyed(b"k1".to_vec(), b"v1".to_vec());
+    original.update_keyed(vec![0, 1, 255], b"long".repeat(10_000));
+    let (mut restored, memory) =
+        round_trip_state(&original, GroupConcat::new(b",".to_vec(), 1_000_000, true));
+    assert_eq!(restored.distinct, original.distinct);
+    assert!(restored.result().is_some());
+    assert!(memory > 40_000);
+    restored.merge(&original);
+    assert_eq!(restored.distinct.as_ref().unwrap().len(), 2);
+}
+
+#[test]
+fn spill_native_sql_values_keep_full_decimal_precision_time_bits_and_vectors() {
+    let mut decimal = types::MyDecimal::default();
+    decimal
+        .FromString(b"12345678901234567890123456789012345678901234567890.12345")
+        .unwrap();
+    let values = vec![decimal];
+    let (restored, memory) = round_trip_state(&values, Vec::<types::MyDecimal>::new());
+    assert_eq!(restored[0].String(), values[0].String());
+    assert_eq!(memory, 24 + 40);
+    let times = vec![types::Time {
+        coreTime: types::CoreTime(0x123456789abcde0d),
+    }];
+    let (restored, memory) = round_trip_state(&times, Vec::<types::Time>::new());
+    assert_eq!(restored, times);
+    assert_eq!(memory, 24 + 8);
+    let durations = vec![
+        types::Duration {
+            Duration: -123,
+            Fsp: 2,
+        },
+        types::Duration {
+            Duration: 456,
+            Fsp: 4,
+        },
+    ];
+    let (restored, memory) = round_trip_state(&durations, Vec::<types::Duration>::new());
+    assert_eq!(restored, durations);
+    assert_eq!(memory, 24 + 16);
+    let vector = types::ParseVectorFloat32("[-1.5,0,2.25]").unwrap();
+    let first = crate::FirstRowPartialResult {
+        state: crate::FirstRowState {
+            is_null: false,
+            got_first_row: true,
+        },
+        value: types::ZeroCopyDeserializeVectorFloat32(vector.ZeroCopySerialize())
+            .unwrap()
+            .0,
+    };
+    let (restored, _) = round_trip_state(
+        &first,
+        crate::FirstRowPartialResult::<types::VectorFloat32>::default(),
+    );
+    assert_eq!(restored.state, first.state);
+    assert_eq!(
+        restored.value.ZeroCopySerialize(),
+        vector.ZeroCopySerialize()
+    );
+    let extreme = crate::MaxMinPartialResult {
+        is_null: false,
+        value: types::ZeroCopyDeserializeVectorFloat32(vector.ZeroCopySerialize())
+            .unwrap()
+            .0,
+    };
+    let (restored, _) = round_trip_state(
+        &extreme,
+        crate::MaxMinPartialResult::<types::VectorFloat32>::default(),
+    );
+    assert!(!restored.is_null);
+    assert_eq!(
+        restored.value.ZeroCopySerialize(),
+        vector.ZeroCopySerialize()
+    );
+}
+
+#[test]
+fn spill_factory_registers_all_added_variants_and_null_percentile_rows() {
+    use crate::Serializer;
+    use crate::builder::{AggImplementation as A, BuiltAggFunc, ValueKind as K};
+    let variants = vec![
+        A::CountOriginalDistinct(K::Int),
+        A::CountPartialDistinct(K::Float64),
+        A::CountOriginalDistinct(K::Decimal),
+        A::CountOriginalDistinct(K::Duration),
+        A::CountOriginalDistinct(K::String),
+        A::CountOriginalDistinctMulti,
+        A::ApproxCountDistinctOriginal,
+        A::ApproxCountDistinctPartial1,
+        A::ApproxCountDistinctPartial2,
+        A::ApproxCountDistinctFinal,
+        A::AvgOriginalDistinctDecimal,
+        A::AvgPartialDistinctDecimal,
+        A::AvgOriginalDistinctFloat64,
+        A::AvgPartialDistinctFloat64,
+        A::SumOriginalDistinctDecimal,
+        A::SumPartialDistinctDecimal,
+        A::SumOriginalDistinctFloat64,
+        A::SumPartialDistinctFloat64,
+        A::SumDistinctInt,
+        A::SumDistinctUint,
+        A::VarPop,
+        A::VarSamp,
+        A::StddevPop,
+        A::StddevSamp,
+        A::VarPopOriginalDistinct,
+        A::VarPopPartialDistinct,
+        A::VarSampOriginalDistinct,
+        A::VarSampPartialDistinct,
+        A::StddevPopOriginalDistinct,
+        A::StddevPopPartialDistinct,
+        A::StddevSampOriginalDistinct,
+        A::StddevSampPartialDistinct,
+        A::GroupConcatDistinctOriginal,
+        A::GroupConcatDistinctPartial,
+        A::FirstRow(K::VectorFloat32),
+        A::Percentile {
+            kind: K::Int,
+            percent: 50,
+        },
+        A::Percentile {
+            kind: K::Float64,
+            percent: 50,
+        },
+        A::Percentile {
+            kind: K::Decimal,
+            percent: 50,
+        },
+        A::Percentile {
+            kind: K::Time,
+            percent: 50,
+        },
+        A::Percentile {
+            kind: K::Duration,
+            percent: 50,
+        },
+        A::PercentileNull { percent: 50 },
+    ];
+    for implementation in variants {
+        let built = BuiltAggFunc {
+            implementation,
+            ordinal: 0,
+            argument_count: 1,
+            order_by: Vec::new(),
+            separator: Some(",".into()),
+            max_len: Some(1024),
+            default_value: None,
+        };
+        let (function, partial) = built.spill_function().unwrap();
+        let mut source = chunk::NewChunkWithCapacity(vec![types::NewFieldType(16)], 2);
+        let mut helper = crate::SerializeHelper::new();
+        function.serialize_partial_result(&partial, &mut source, &mut helper);
+        function.serialize_partial_result(&partial, &mut source, &mut helper);
+        assert_eq!(source.NumRows(), 2);
+        let (restored, memory) = function.deserialize_partial_result(&source);
+        assert_eq!(restored.len(), 2);
+        if matches!(built.implementation, A::PercentileNull { .. }) {
+            assert!(source.Column(0).IsNull(0));
+            assert_eq!(memory, 0);
+        }
+    }
+}

@@ -552,3 +552,12 @@ impl DeserializeHelper<'_> {
         })
     }
 }
+
+impl DeserializeHelper<'_> {
+    pub fn deserialize_state<T: SpillState>(&mut self, destination: &mut T) -> (bool, i64) {
+        match self.next(|p| destination.read_spill(p)) {
+            Some(memory) => (true, memory),
+            None => (false, 0),
+        }
+    }
+}

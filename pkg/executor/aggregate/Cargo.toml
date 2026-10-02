@@ -11,6 +11,11 @@ path = "lib.rs"
 go-package = "pkg/executor/aggregate"
 legacy-tasks = ["task-1069", "task-1070", "task-1074", "task-1090"]
 
+[dependencies]
+"astersql-executor-aggfuncs" = { package = "astersql-executor-aggfuncs", path = "../aggfuncs" }
+"astersql-util-chunk" = { package = "astersql-util-chunk", path = "../../util/chunk" }
+"astersql-util-serialization" = { package = "astersql-util-serialization", path = "../../util/serialization" }
+
 [target.'cfg(windows)'.dependencies]
 "astersql-executor-aggfuncs" = { package = "astersql-executor-aggfuncs", path = "../aggfuncs" }
 "astersql-executor-internal-exec" = { package = "astersql-executor-internal-exec", path = "../internal/exec" }

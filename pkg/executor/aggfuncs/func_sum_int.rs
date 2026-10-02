@@ -190,7 +190,7 @@ impl SumUint {
 /// DISTINCT 有符号整数 SUM：HashSet 去重后再求和。
 #[derive(Clone, Debug, Default)]
 pub struct SumDistinctInt64 {
-    values: HashSet<i64>,
+    pub(crate) values: HashSet<i64>,
 }
 
 impl SumDistinctInt64 {
@@ -227,7 +227,7 @@ impl SumDistinctInt64 {
 /// DISTINCT 无符号整数 SUM：以 i64 bit pattern 存入 HashSet 去重。
 #[derive(Clone, Debug, Default)]
 pub struct SumDistinctUint64 {
-    bit_patterns: HashSet<i64>,
+    pub(crate) bit_patterns: HashSet<i64>,
 }
 
 /// 原始阶段有符号 SUM 类型别名。

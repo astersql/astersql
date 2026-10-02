@@ -28,7 +28,7 @@ use std::mem::size_of;
 /// 单列精确 COUNT(DISTINCT) 状态：用哈希集合去重。
 #[derive(Clone, Debug)]
 pub struct CountDistinct<T> {
-    values: HashSet<T>,
+    pub(crate) values: HashSet<T>,
 }
 
 impl<T> Default for CountDistinct<T> {
@@ -68,7 +68,7 @@ pub type CountDistinctInt = CountDistinct<i64>;
 /// 浮点列 DISTINCT COUNT（内部存 `f64::to_bits` 的 u64）。
 pub type CountDistinctReal = CountDistinct<u64>;
 /// Decimal 列 DISTINCT COUNT。
-pub type CountDistinctDecimal = CountDistinct<Decimal>;
+pub type CountDistinctDecimal = CountDistinct<Vec<u8>>;
 /// Duration 列 DISTINCT COUNT（纳秒等整数表示）。
 pub type CountDistinctDuration = CountDistinct<i64>;
 /// 字符串列 DISTINCT COUNT（已按校对规则编码的字节）。
@@ -211,7 +211,7 @@ pub fn encode_distinct_value(
 /// 多列 COUNT(DISTINCT col1, col2, ...)：整行编码后去重。
 #[derive(Clone, Debug, Default)]
 pub struct CountDistinctMulti {
-    encoded_rows: HashSet<Vec<u8>>,
+    pub(crate) encoded_rows: HashSet<Vec<u8>>,
 }
 
 impl CountDistinctMulti {

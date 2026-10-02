@@ -8,7 +8,7 @@
 // 控制结果上限，超长时截断并置 truncated 标志。并行 merge 时，DISTINCT 模式
 // 按去重集合并入，非 DISTINCT 则直接拼接对侧已拼好的缓冲。
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 /// GROUP_CONCAT 的 partial 状态：分隔符、长度上限、结果缓冲、可选去重集与截断标志。
 #[derive(Clone, Debug, PartialEq)]
@@ -18,16 +18,16 @@ pub struct GroupConcat {
     /// 结果最大字节长度（对齐系统变量 group_concat_max_len）。
     maximum_len: usize,
     /// 当前已拼接的结果缓冲。
-    value: Vec<u8>,
+    pub(crate) value: Vec<u8>,
     /// 启用 DISTINCT 时用于去重的集合；None 表示不去重。
-    distinct: Option<HashSet<Vec<u8>>>,
+    pub(crate) distinct: Option<HashMap<Vec<u8>, Vec<u8>>>,
     /// 是否因超过 maximum_len 发生过截断。
     truncated: bool,
     /// 是否已经接收过至少一个非 NULL 值。
     ///
     /// Go uses `buffer == nil` for this distinction, so an empty string is
     /// still a present (non-NULL) GROUP_CONCAT result.
-    has_value: bool,
+    pub(crate) has_value: bool,
 }
 
 impl GroupConcat {
@@ -37,7 +37,7 @@ impl GroupConcat {
             separator,
             maximum_len,
             value: Vec::new(),
-            distinct: distinct.then(HashSet::new),
+            distinct: distinct.then(HashMap::new),
             truncated: false,
             has_value: false,
         }
@@ -51,7 +51,7 @@ impl GroupConcat {
         // capacity; clear the DISTINCT set the same way for memory parity.
         self.value = Vec::new();
         if let Some(s) = &mut self.distinct {
-            *s = HashSet::new()
+            *s = HashMap::new()
         }
         self.has_value = false
     }
@@ -64,7 +64,7 @@ impl GroupConcat {
             if self
                 .distinct
                 .as_mut()
-                .is_some_and(|s| !s.insert(row.clone()))
+                .is_some_and(|s| s.insert(row.clone(), row.clone()).is_some())
             {
                 continue;
             }
@@ -80,16 +80,28 @@ impl GroupConcat {
             }
         }
     }
+    /// Restore/evaluate a DISTINCT entry with its collation key retained.
+    pub fn update_keyed(&mut self, key: Vec<u8>, value: Vec<u8>) {
+        if self.distinct.as_ref().is_some_and(|s| s.contains_key(&key)) {
+            return;
+        }
+        // Reuse ordinary concatenation, then replace the raw-value key with
+        // the caller's evaluated collation key.
+        let mut entries = self.distinct.take();
+        self.update([Some(value.clone())]);
+        if let Some(entries) = &mut entries {
+            entries.insert(key, value);
+        }
+        self.distinct = entries;
+    }
     /// 合并对侧 partial：DISTINCT 重放对侧集合；否则拼接对侧整段缓冲。
     pub fn merge(&mut self, source: &Self) {
         if self.distinct.is_some() {
-            self.update(
-                source
-                    .distinct
-                    .as_ref()
-                    .into_iter()
-                    .flat_map(|s| s.iter().cloned().map(Some)),
-            )
+            if let Some(entries) = &source.distinct {
+                for (key, value) in entries {
+                    self.update_keyed(key.clone(), value.clone());
+                }
+            }
         } else if source.has_value {
             self.update([Some(source.value.clone())])
         }

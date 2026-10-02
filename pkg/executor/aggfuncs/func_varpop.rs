@@ -17,9 +17,9 @@ use std::collections::HashMap;
 /// 分别再除以 `count` 或 `count-1`。
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct VarianceState {
-    count: i64,
-    sum: f64,
-    variance: f64,
+    pub(crate) count: i64,
+    pub(crate) sum: f64,
+    pub(crate) variance: f64,
 }
 
 impl VarianceState {
@@ -100,8 +100,8 @@ pub fn calculate_merge(
 /// `DISTINCT` 方差的部分结果：按 Go `map[float64]` 的键语义去重。
 #[derive(Clone, Debug)]
 pub struct DistinctVariance {
-    values: HashMap<u64, f64>,
-    next_nan_payload: u64,
+    pub(crate) values: HashMap<u64, f64>,
+    pub(crate) next_nan_payload: u64,
 }
 impl Default for DistinctVariance {
     fn default() -> Self {

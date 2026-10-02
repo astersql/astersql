@@ -165,13 +165,20 @@ impl HashAggPartialWorker {
                     self.aggregations.iter().map(|_| AggState::new()).collect(),
                 )
             });
+            let previous_memory: usize = if is_new {
+                0
+            } else {
+                states.iter().map(AggState::memory_usage).sum()
+            };
             for (state, aggregation) in states.iter_mut().zip(self.aggregations.iter()) {
                 state.update(aggregation, row)?;
             }
+            let current_memory: usize = states.iter().map(AggState::memory_usage).sum();
+            self.memory_usage = self
+                .memory_usage
+                .saturating_add(current_memory.saturating_sub(previous_memory));
             if is_new {
-                self.memory_usage = self
-                    .memory_usage
-                    .saturating_add(key.len() + states.len() * std::mem::size_of::<AggState>());
+                self.memory_usage = self.memory_usage.saturating_add(key.len());
             }
         }
         if let Some(spill) = &self.spill {
@@ -212,5 +219,217 @@ impl HashAggPartialWorker {
             }
             None => Err("spill helper is not configured".to_string()),
         }
+    }
+}
+
+/// A serialized row can contain a large DISTINCT set even when the chunk has
+/// few rows. Check used bytes, excluding reusable capacity, after appending it.
+pub const SPILL_CHUNK_SIZE_THRESHOLD: i64 = 1024 * 1024;
+pub fn check_chunk_spill(chunk: &astersql_util_chunk::Chunk) -> bool {
+    chunk.NumRows() > 0 && (chunk.UsedMemoryUsage() >= SPILL_CHUNK_SIZE_THRESHOLD || chunk.IsFull())
+}
+
+pub type TypedPartialResultMap =
+    std::collections::BTreeMap<Vec<u8>, Vec<astersql_executor_aggfuncs::PartialResult>>;
+
+/// The partial worker's disk storage. A single temporary chunk is reused across
+/// partitions, and each partition is flushed before that chunk changes owners.
+pub struct PartialResultSpill {
+    pub(crate) files: Vec<Box<astersql_util_chunk::DataInDiskByChunks>>,
+    partitioned_keys: Vec<Vec<Vec<u8>>>,
+    temporary: Box<astersql_util_chunk::Chunk>,
+    serializer: astersql_executor_aggfuncs::SerializeHelper,
+    written_bytes: i64,
+}
+impl PartialResultSpill {
+    pub fn new(partitions: usize, function_count: usize, chunk_rows: usize) -> Self {
+        let types = (0..function_count + 1)
+            .map(|_| astersql_util_serialization::types::NewFieldType(16))
+            .collect::<Vec<_>>();
+        Self {
+            files: (0..partitions.max(1))
+                .map(|_| {
+                    astersql_util_chunk::NewDataInDiskByChunks(
+                        types.iter().map(|t| (**t).clone()).collect(),
+                        "distinct-aggregate".into(),
+                    )
+                })
+                .collect(),
+            partitioned_keys: (0..partitions.max(1)).map(|_| Vec::new()).collect(),
+            temporary: astersql_util_chunk::NewChunkWithCapacity(types, chunk_rows.max(1)),
+            serializer: astersql_executor_aggfuncs::SerializeHelper::new(),
+            written_bytes: 0,
+        }
+    }
+    /// Consume the real typed partial states. Maps and key references are cleared
+    /// on success, IO error, or serializer panic, matching the Go defer cleanup.
+    pub fn spill_maps(
+        &mut self,
+        mut maps: Vec<TypedPartialResultMap>,
+        functions: &[&dyn astersql_executor_aggfuncs::Serializer],
+    ) -> Result<(), String> {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            for map in &mut maps {
+                for key in map.keys() {
+                    let partition = murmur3_sum32(key) as usize % self.files.len();
+                    self.partitioned_keys[partition].push(key.clone());
+                }
+                for partition in 0..self.files.len() {
+                    // Take the keys so even a failed serializer cannot retain them.
+                    let keys = std::mem::take(&mut self.partitioned_keys[partition]);
+                    for key in &keys {
+                        let results = map.get(key).expect("partition key belongs to its map");
+                        if results.len() != functions.len() {
+                            return Err("partial result width mismatch".into());
+                        }
+                        for (function, result) in functions.iter().zip(results) {
+                            function.serialize_partial_result(
+                                result,
+                                &mut self.temporary,
+                                &mut self.serializer,
+                            );
+                        }
+                        self.temporary.AppendBytes(functions.len(), key);
+                        if check_chunk_spill(&self.temporary) {
+                            self.flush(partition)?;
+                        }
+                    }
+                    self.flush(partition)?;
+                    self.partitioned_keys[partition] = keys;
+                    self.partitioned_keys[partition].clear();
+                }
+                map.clear();
+            }
+            Ok(())
+        }));
+        for keys in &mut self.partitioned_keys {
+            keys.clear();
+        }
+        self.temporary.Reset();
+        match outcome {
+            Ok(result) => result,
+            Err(panic) => {
+                let message = panic
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| panic.downcast_ref::<&str>().map(|v| v.to_string()))
+                    .unwrap_or_else(|| "partial aggregate serializer panicked".into());
+                Err(message)
+            }
+        }
+    }
+    fn flush(&mut self, partition: usize) -> Result<(), String> {
+        if self.temporary.NumRows() == 0 {
+            return Ok(());
+        }
+        let before = self.files[partition].GetTotalBytesInDisk();
+        self.files[partition]
+            .Add(&self.temporary)
+            .map_err(|e| e.to_string())?;
+        self.written_bytes += self.files[partition].GetTotalBytesInDisk() - before;
+        self.temporary.Reset();
+        Ok(())
+    }
+    pub fn restore_partition(
+        &mut self,
+        partition: usize,
+        functions: &[&dyn astersql_executor_aggfuncs::Serializer],
+    ) -> Result<(Vec<TypedPartialResultMap>, i64), String> {
+        let file = self
+            .files
+            .get_mut(partition)
+            .ok_or_else(|| format!("partition {partition} out of range"))?;
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut maps = Vec::new();
+            let mut memory = 0;
+            for index in 0..file.offsetOfEachChunk.len() {
+                let chunk = file.GetChunk(index).map_err(|e| e.to_string())?;
+                let mut columns = Vec::new();
+                for function in functions {
+                    let (values, heap) = function.deserialize_partial_result(&chunk);
+                    if values.len() != chunk.NumRows() {
+                        return Err("restored partial result row count mismatch".into());
+                    }
+                    memory += heap;
+                    columns.push(values.into_iter());
+                }
+                let mut map = TypedPartialResultMap::new();
+                for row in 0..chunk.NumRows() {
+                    let key = chunk.Column(functions.len()).GetBytes(row).to_vec();
+                    let values = columns
+                        .iter_mut()
+                        .map(|c| c.next().expect("checked restored row count"))
+                        .collect();
+                    map.insert(key, values);
+                }
+                maps.push(map);
+            }
+            Ok((maps, memory))
+        }));
+        // Files are single-consumer, like the Go partition claim cursor.
+        file.Close();
+        file.offsetOfEachChunk.clear();
+        file.totalRowNum = 0;
+        file.totalDataSize = 0;
+        file.buf.clear();
+        match outcome {
+            Ok(result) => result,
+            Err(panic) => Err(panic
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_else(|| "partial aggregate deserializer panicked".into())),
+        }
+    }
+    pub fn disk_bytes(&self) -> i64 {
+        self.written_bytes
+    }
+    pub fn is_empty(&self) -> bool {
+        self.files.iter().all(|f| f.totalRowNum == 0)
+    }
+    pub fn chunk_counts(&self) -> Vec<usize> {
+        self.files
+            .iter()
+            .map(|f| f.offsetOfEachChunk.len())
+            .collect()
+    }
+}
+impl Drop for PartialResultSpill {
+    fn drop(&mut self) {
+        for file in &mut self.files {
+            file.Close();
+        }
+    }
+}
+
+impl PartialResultSpill {
+    /// Restore and merge repeated group keys across all chunks in one partition.
+    /// The source states are consumed, so percentile source buffers are released.
+    pub fn restore_merged_partition(
+        &mut self,
+        partition: usize,
+        functions: &[&dyn astersql_executor_aggfuncs::Serializer],
+    ) -> Result<(TypedPartialResultMap, i64), String> {
+        let (maps, mut memory) = self.restore_partition(partition, functions)?;
+        let mut merged = TypedPartialResultMap::new();
+        for map in maps {
+            for (key, source) in map {
+                if let Some(destination) = merged.get_mut(&key) {
+                    if destination.len() != source.len() {
+                        return Err("partial result width mismatch".into());
+                    }
+                    for (source, destination) in source.iter().zip(destination.iter_mut()) {
+                        memory += astersql_executor_aggfuncs::merge_spilled_partial_result(
+                            source,
+                            destination,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    }
+                } else {
+                    merged.insert(key, source);
+                }
+            }
+        }
+        Ok((merged, memory))
     }
 }

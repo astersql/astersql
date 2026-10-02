@@ -392,3 +392,346 @@ pub type PartialResult4FirstRowJson = FirstRowPartialResult<types::BinaryJSON>;
 pub type PartialResult4FirstRowEnum = FirstRowPartialResult<types::Enum>;
 /// FIRST_ROW(SET) 部分结果。
 pub type PartialResult4FirstRowSet = FirstRowPartialResult<types::Set>;
+
+/// A partial state's spill protocol. Function configuration stays in the template;
+/// only the partial data is written, matching the Go serializer contract.
+pub trait SpillState: Sized + Send + 'static {
+    fn copy_partial(&self) -> Self;
+    fn write_spill(&self, buffer: Vec<u8>) -> Vec<u8>;
+    /// Replace partial data and return its restored heap-memory charge.
+    fn read_spill(&mut self, input: &mut astersql_util_serialization::PosAndBuf) -> i64;
+    fn has_spill_state(&self) -> bool {
+        true
+    }
+    fn fixed_spill_memory(&self) -> i64 {
+        std::mem::size_of::<Self>() as i64
+    }
+}
+
+/// Bind an existing accumulator's spill protocol to a column ordinal.
+/// This is also usable by parallel workers through the existing Serializer trait.
+pub struct StateSerializer<T> {
+    pub ordinal: usize,
+    pub template: T,
+}
+impl<T: SpillState> Serializer for StateSerializer<T> {
+    fn serialize_partial_result(
+        &self,
+        partial_result: &PartialResult,
+        chunk: &mut Chunk,
+        helper: &mut SerializeHelper,
+    ) {
+        let state = partial_result
+            .downcast_ref::<T>()
+            .expect("spill partial-result type matches its function");
+        if state.has_spill_state() {
+            chunk.AppendBytes(self.ordinal, helper.serialize_state(state));
+        } else {
+            chunk.AppendNull(self.ordinal);
+        }
+    }
+    fn deserialize_partial_result(&self, source: &Chunk) -> (Vec<PartialResult>, i64) {
+        if !self.template.has_spill_state() {
+            return (
+                (0..source.NumRows())
+                    .map(|_| Box::new(self.template.copy_partial()) as PartialResult)
+                    .collect(),
+                0,
+            );
+        }
+        deserialize_partial_result_common(source, self.ordinal, |helper| {
+            let mut state = self.template.copy_partial();
+            let (success, heap) = helper.deserialize_state(&mut state);
+            if success {
+                (
+                    Some(Box::new(state)),
+                    self.template.fixed_spill_memory() + heap,
+                )
+            } else {
+                (None, 0)
+            }
+        })
+    }
+}
+
+impl crate::builder::BuiltAggFunc {
+    /// Register the spill implementation chosen by the existing aggregate factory.
+    /// Variance-derived functions deliberately share their original state codec.
+    pub fn spill_function(&self) -> Option<(Box<dyn Serializer>, PartialResult)> {
+        use crate::builder::{AggImplementation as A, ValueKind as K};
+        fn bind<T: SpillState>(
+            ordinal: usize,
+            template: T,
+        ) -> (Box<dyn Serializer>, PartialResult) {
+            (
+                Box::new(StateSerializer {
+                    ordinal,
+                    template: template.copy_partial(),
+                }),
+                Box::new(template),
+            )
+        }
+        let ordinal = self.ordinal;
+        Some(match &self.implementation {
+            A::CountOriginalDistinct(kind) | A::CountPartialDistinct(kind) => match kind {
+                K::Int | K::Uint | K::Duration => bind(
+                    ordinal,
+                    crate::func_count_distinct::CountDistinct::<i64>::default(),
+                ),
+                K::Float32 | K::Float64 => bind(
+                    ordinal,
+                    crate::func_count_distinct::CountDistinctReal::default(),
+                ),
+                K::Decimal | K::String | K::Enum | K::Set => bind(
+                    ordinal,
+                    crate::func_count_distinct::CountDistinct::<Vec<u8>>::default(),
+                ),
+                _ => bind(
+                    ordinal,
+                    crate::func_count_distinct::CountDistinctMulti::default(),
+                ),
+            },
+            A::CountOriginalDistinctMulti | A::CountPartialDistinctMulti => bind(
+                ordinal,
+                crate::func_count_distinct::CountDistinctMulti::default(),
+            ),
+            A::ApproxCountDistinctOriginal
+            | A::ApproxCountDistinctPartial1
+            | A::ApproxCountDistinctPartial2
+            | A::ApproxCountDistinctFinal => bind(
+                ordinal,
+                crate::func_count_distinct::ApproxCountDistinct::default(),
+            ),
+            A::AvgOriginalDistinctDecimal | A::AvgPartialDistinctDecimal => {
+                bind(ordinal, crate::func_avg::DistinctDecimalAvg::default())
+            }
+            A::AvgOriginalDistinctFloat64 | A::AvgPartialDistinctFloat64 => {
+                bind(ordinal, crate::func_avg::DistinctFloatAvg::default())
+            }
+            A::SumOriginalDistinctDecimal | A::SumPartialDistinctDecimal => {
+                bind(ordinal, crate::func_sum::DistinctDecimalSum::default())
+            }
+            A::SumOriginalDistinctFloat64 | A::SumPartialDistinctFloat64 => {
+                bind(ordinal, crate::func_sum::DistinctFloatSum::default())
+            }
+            A::SumDistinctInt => bind(ordinal, crate::func_sum_int::SumDistinctInt64::default()),
+            A::SumDistinctUint => bind(ordinal, crate::func_sum_int::SumDistinctUint64::default()),
+            A::VarPop | A::VarSamp | A::StddevPop | A::StddevSamp => {
+                bind(ordinal, crate::func_varpop::VarianceState::default())
+            }
+            A::VarPopOriginalDistinct
+            | A::VarPopPartialDistinct
+            | A::VarSampOriginalDistinct
+            | A::VarSampPartialDistinct
+            | A::StddevPopOriginalDistinct
+            | A::StddevPopPartialDistinct
+            | A::StddevSampOriginalDistinct
+            | A::StddevSampPartialDistinct => {
+                bind(ordinal, crate::func_varpop::DistinctVariance::default())
+            }
+            A::GroupConcatDistinctOriginal | A::GroupConcatDistinctPartial => bind(
+                ordinal,
+                crate::func_group_concat::GroupConcat::new(
+                    self.separator.clone().unwrap_or_default().into_bytes(),
+                    self.max_len.unwrap_or(0) as usize,
+                    true,
+                ),
+            ),
+            A::FirstRow(kind) => match kind {
+                K::VectorFloat32 => bind(
+                    ordinal,
+                    crate::func_first_row::FirstRow::<crate::func_max_min::VectorFloat32>::default(
+                    ),
+                ),
+                K::String => bind(
+                    ordinal,
+                    crate::func_first_row::FirstRow::<String>::default(),
+                ),
+                K::Int => bind(ordinal, crate::func_first_row::FirstRow::<i64>::default()),
+                K::Float64 => bind(ordinal, crate::func_first_row::FirstRow::<f64>::default()),
+                K::Decimal => bind(
+                    ordinal,
+                    crate::func_first_row::FirstRow::<crate::func_sum::Decimal>::default(),
+                ),
+                K::Time => bind(
+                    ordinal,
+                    crate::func_first_row::FirstRow::<crate::func_max_min::TimeValue>::default(),
+                ),
+                K::Duration => bind(
+                    ordinal,
+                    crate::func_first_row::FirstRow::<crate::func_max_min::DurationValue>::default(
+                    ),
+                ),
+                _ => return None,
+            },
+            A::Percentile { kind, percent } => match kind {
+                K::Int => bind(
+                    ordinal,
+                    crate::func_percentile::Percentile::<i64>::new(*percent),
+                ),
+                K::Float64 => bind(
+                    ordinal,
+                    crate::func_percentile::Percentile::<f64>::new(*percent),
+                ),
+                K::Decimal => bind(
+                    ordinal,
+                    crate::func_percentile::Percentile::<crate::func_sum::Decimal>::new(*percent),
+                ),
+                K::Time => bind(
+                    ordinal,
+                    crate::func_percentile::Percentile::<crate::func_max_min::TimeValue>::new(
+                        *percent,
+                    ),
+                ),
+                K::Duration => bind(
+                    ordinal,
+                    crate::func_percentile::Percentile::<crate::func_max_min::DurationValue>::new(
+                        *percent,
+                    ),
+                ),
+                _ => return None,
+            },
+            A::PercentileNull { .. } => {
+                bind(ordinal, crate::spill_serialize_helper::NullPercentile)
+            }
+            _ => return None,
+        })
+    }
+}
+
+/// Merge restored partial data through the existing accumulator implementations.
+/// This is the local typed counterpart of restoreFromOneSpillFile's AggFunc merge.
+pub fn merge_spilled_partial_result(
+    source: &PartialResult,
+    destination: &mut PartialResult,
+) -> Result<i64, AggError> {
+    macro_rules! merge {
+        ($ty:ty, $body:expr) => {
+            if let Some(source) = source.downcast_ref::<$ty>() {
+                let destination = destination
+                    .downcast_mut::<$ty>()
+                    .ok_or_else(|| AggError("restored partial result type mismatch".into()))?;
+                return ($body)(destination, source);
+            }
+        };
+    }
+    use crate::func_count_distinct::{ApproxCountDistinct, CountDistinct, CountDistinctMulti};
+    merge!(CountDistinct<i64>, |d: &mut CountDistinct<i64>, s| Ok(
+        d.merge(s)
+    ));
+    merge!(
+        CountDistinct<u64>,
+        |d: &mut CountDistinct<u64>, s: &CountDistinct<u64>| Ok(
+            crate::func_count_distinct::update_distinct_real(
+                d,
+                s.values
+                    .iter()
+                    .copied()
+                    .map(|bits| Some(f64::from_bits(bits)))
+            )
+        )
+    );
+    merge!(
+        CountDistinct<Vec<u8>>,
+        |d: &mut CountDistinct<Vec<u8>>, s| Ok(d.merge(s))
+    );
+    merge!(CountDistinctMulti, |d: &mut CountDistinctMulti, s| Ok(
+        d.merge(s)
+    ));
+    merge!(ApproxCountDistinct, |d: &mut ApproxCountDistinct, s| {
+        let before = d.memory_usage();
+        d.merge(s);
+        Ok(d.memory_usage() - before)
+    });
+    merge!(
+        crate::func_sum::DistinctFloatSum,
+        |d: &mut crate::func_sum::DistinctFloatSum, s| Ok(d.merge(s))
+    );
+    merge!(
+        crate::func_sum::DistinctDecimalSum,
+        |d: &mut crate::func_sum::DistinctDecimalSum, s| Ok(d.merge(s))
+    );
+    merge!(
+        crate::func_avg::DistinctFloatAvg,
+        |d: &mut crate::func_avg::DistinctFloatAvg, s| Ok(d.merge(s))
+    );
+    merge!(
+        crate::func_avg::DistinctDecimalAvg,
+        |d: &mut crate::func_avg::DistinctDecimalAvg, s| Ok(d.merge(s))
+    );
+    merge!(
+        crate::func_sum_int::SumDistinctInt64,
+        |d: &mut crate::func_sum_int::SumDistinctInt64, s| Ok(d.merge(s))
+    );
+    merge!(
+        crate::func_sum_int::SumDistinctUint64,
+        |d: &mut crate::func_sum_int::SumDistinctUint64, s| Ok(d.merge(s))
+    );
+    merge!(
+        crate::func_varpop::VarianceState,
+        |d: &mut crate::func_varpop::VarianceState, s| {
+            d.merge(s);
+            Ok(0)
+        }
+    );
+    merge!(
+        crate::func_varpop::DistinctVariance,
+        |d: &mut crate::func_varpop::DistinctVariance, s| {
+            let before = d.values.capacity();
+            d.merge(s);
+            Ok(((d.values.capacity() - before) * std::mem::size_of::<(u64, f64)>()) as i64)
+        }
+    );
+    merge!(
+        crate::func_group_concat::GroupConcat,
+        |d: &mut crate::func_group_concat::GroupConcat, s| {
+            let before = d.distinct.as_ref().map_or(0, |v| v.len());
+            d.merge(s);
+            Ok(d.distinct
+                .as_ref()
+                .map_or(0, |v| v.len())
+                .saturating_sub(before) as i64)
+        }
+    );
+    macro_rules! first {
+        ($ty:ty) => {
+            merge!(
+                crate::func_first_row::FirstRow<$ty>,
+                |d: &mut crate::func_first_row::FirstRow<$ty>, s| {
+                    d.merge(s);
+                    Ok(0)
+                }
+            );
+        };
+    }
+    first!(i64);
+    first!(f64);
+    first!(String);
+    first!(crate::func_sum::Decimal);
+    first!(crate::func_max_min::TimeValue);
+    first!(crate::func_max_min::DurationValue);
+    first!(crate::func_max_min::VectorFloat32);
+    macro_rules! percentile {
+        ($ty:ty) => {
+            merge!(
+                crate::func_percentile::Percentile<$ty>,
+                |d: &mut crate::func_percentile::Percentile<$ty>,
+                 s: &crate::func_percentile::Percentile<$ty>| {
+                    let mut source = s.clone();
+                    d.merge_from(&mut source);
+                    Ok(0)
+                }
+            );
+        };
+    }
+    percentile!(i64);
+    percentile!(f64);
+    percentile!(crate::func_sum::Decimal);
+    percentile!(crate::func_max_min::TimeValue);
+    percentile!(crate::func_max_min::DurationValue);
+    merge!(
+        crate::spill_serialize_helper::NullPercentile,
+        |_: &mut crate::spill_serialize_helper::NullPercentile, _| Ok(0)
+    );
+    Err(AggError("unsupported restored partial result type".into()))
+}

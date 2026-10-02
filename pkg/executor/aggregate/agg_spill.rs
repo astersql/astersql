@@ -465,7 +465,7 @@ pub enum SpillStatus {
 
 /// 并行 spill 辅助器：分区锁列表、下一分区游标、状态、错误标志与内存上限。
 pub struct ParallelHashAggSpillHelper {
-    partitions: Vec<Mutex<Vec<AggMap>>>,
+    storage: Mutex<crate::agg_hash_partial_worker::PartialResultSpill>,
     next_partition: AtomicUsize,
     status: AtomicU8,
     error: AtomicBool,
@@ -476,9 +476,11 @@ impl ParallelHashAggSpillHelper {
     /// 创建至少 1 个分区的 spill 辅助器。
     pub fn new(partition_count: usize, memory_limit: usize) -> Self {
         Self {
-            partitions: (0..partition_count.max(1))
-                .map(|_| Mutex::new(Vec::new()))
-                .collect(),
+            storage: Mutex::new(crate::agg_hash_partial_worker::PartialResultSpill::new(
+                partition_count,
+                1,
+                1024,
+            )),
             // Go starts at `spilledPartitionNum - 1` and decrements after each claim.
             // Store the exclusive upper bound so concurrent callers can claim the same
             // descending sequence without an integer underflow sentinel.
@@ -522,30 +524,43 @@ impl ParallelHashAggSpillHelper {
         }
     }
     /// 将 AggMap 按 key 哈希拆入各分区并标记 Triggered；返回写入条目数。
+
     pub fn spill(&self, data: AggMap) -> Result<usize, String> {
+        use astersql_executor_aggfuncs::StateSerializer;
+        let count = data.len();
         self.status
             .store(SpillStatus::Spilling as u8, Ordering::Release);
-        let mut split = (0..self.partitions.len())
-            .map(|_| AggMap::new())
-            .collect::<Vec<_>>();
-        for (key, value) in data {
-            // 与 PartialWorker shuffle 使用同一 Murmur3，保证分区与 final 分片对齐。
-            let partition = murmur3_sum32(&key) as usize % split.len();
-            split[partition].insert(key, value);
-        }
-        let mut count = 0;
-        for (partition, data) in split.into_iter().enumerate() {
-            if !data.is_empty() {
-                count += data.len();
-                self.partitions[partition]
-                    .lock()
-                    .map_err(|_| "spill partition poisoned".to_string())?
-                    .push(data);
-            }
+        let map = data
+            .into_iter()
+            .map(|(key, (group, states))| {
+                (
+                    key,
+                    vec![Box::new(SpillEntry { group, states })
+                        as astersql_executor_aggfuncs::PartialResult],
+                )
+            })
+            .collect();
+        let function = StateSerializer {
+            ordinal: 0,
+            template: SpillEntry::default(),
+        };
+        let result = self
+            .storage
+            .lock()
+            .map_err(|_| "spill storage poisoned".to_string())
+            .and_then(|mut storage| storage.spill_maps(vec![map], &[&function]));
+        if result.is_err() {
+            self.set_error();
         }
         self.status
             .store(SpillStatus::Triggered as u8, Ordering::Release);
-        Ok(count)
+        result.map(|_| count)
+    }
+    pub fn disk_bytes(&self) -> i64 {
+        self.storage.lock().unwrap().disk_bytes()
+    }
+    pub fn buffered_groups(&self) -> usize {
+        0
     }
     /// 原子递减分区游标，按 Go 的最高分区到 0 的顺序供 restore 消费。
     pub fn next_partition(&self) -> Option<usize> {
@@ -558,25 +573,40 @@ impl ParallelHashAggSpillHelper {
         Some(previous - 1)
     }
     /// 取出指定分区上已落盘的全部 AggMap（take 语义，取后分区清空）。
+
     pub fn restore_partition(&self, partition: usize) -> Result<Vec<AggMap>, String> {
-        let storage = self
-            .partitions
-            .get(partition)
-            .ok_or_else(|| format!("partition {partition} out of range"))?;
-        Ok(std::mem::take(
-            &mut *storage
-                .lock()
-                .map_err(|_| "spill partition poisoned".to_string())?,
-        ))
+        let function = astersql_executor_aggfuncs::StateSerializer {
+            ordinal: 0,
+            template: SpillEntry::default(),
+        };
+        let result = self
+            .storage
+            .lock()
+            .map_err(|_| "spill storage poisoned".to_string())
+            .and_then(|mut storage| storage.restore_partition(partition, &[&function]));
+        match result {
+            Ok((maps, _)) => Ok(maps
+                .into_iter()
+                .map(|map| {
+                    map.into_iter()
+                        .map(|(key, mut values)| {
+                            let entry = values
+                                .remove(0)
+                                .downcast::<SpillEntry>()
+                                .expect("restored aggregate state type");
+                            (key, (entry.group, entry.states))
+                        })
+                        .collect()
+                })
+                .collect()),
+            Err(error) => {
+                self.set_error();
+                Err(error)
+            }
+        }
     }
-    /// 所有分区均无待恢复数据时返回 true。
     pub fn is_empty(&self) -> bool {
-        self.partitions.iter().all(|partition| {
-            partition
-                .lock()
-                .expect("spill partition poisoned")
-                .is_empty()
-        })
+        self.storage.lock().unwrap().is_empty()
     }
     /// 标记 spill 路径发生错误，供其他 worker 快速失败。
     pub fn set_error(&self) {
@@ -611,3 +641,129 @@ impl ParallelAggSpillDiskAction {
 }
 }
 */
+
+// Local wiring: preserve every field of the existing worker state on disk.
+// Typed aggregate functions use their own StateSerializer codecs above this
+// adapter, without conversion to the legacy worker's Value representation.
+#[derive(Clone, Default)]
+struct SpillEntry {
+    group: crate::agg_util::Row,
+    states: Vec<crate::agg_util::AggState>,
+}
+impl astersql_executor_aggfuncs::SpillState for SpillEntry {
+    fn copy_partial(&self) -> Self {
+        self.clone()
+    }
+    fn write_spill(&self, buffer: Vec<u8>) -> Vec<u8> {
+        use astersql_util_serialization as s;
+        let mut buffer = write_row(&self.group, buffer);
+        buffer = s::SerializeInt(self.states.len() as isize, buffer);
+        for state in &self.states {
+            buffer = s::SerializeUint64(state.count, buffer);
+            buffer = s::SerializeBool(state.number.is_some(), buffer);
+            if let Some(value) = state.number {
+                buffer = s::SerializeFloat64(value, buffer);
+            }
+            buffer = s::SerializeBool(state.value.is_some(), buffer);
+            if let Some(value) = &state.value {
+                buffer = write_value(value, buffer);
+            }
+            buffer = s::SerializeInt(state.distinct_values.len() as isize, buffer);
+            for (key, value) in &state.distinct_values {
+                buffer = write_bytes(key, buffer);
+                buffer = write_value(value, buffer);
+            }
+        }
+        buffer
+    }
+    fn read_spill(&mut self, input: &mut astersql_util_serialization::PosAndBuf) -> i64 {
+        use astersql_util_serialization as s;
+        self.group = read_row(input);
+        self.states.clear();
+        let mut memory = 0;
+        for _ in 0..s::DeserializeInt(input) {
+            let mut state = crate::agg_util::AggState::new();
+            state.count = s::DeserializeUint64(input);
+            if s::DeserializeBool(input) {
+                state.number = Some(s::DeserializeFloat64(input));
+            }
+            if s::DeserializeBool(input) {
+                state.value = Some(read_value(input));
+            }
+            for _ in 0..s::DeserializeInt(input) {
+                let key = read_bytes(input);
+                let value = read_value(input);
+                memory += key.len() as i64;
+                state.distinct_values.insert(key, value);
+            }
+            self.states.push(state);
+        }
+        memory
+    }
+}
+fn write_bytes(value: &[u8], buffer: Vec<u8>) -> Vec<u8> {
+    let mut buffer = astersql_util_serialization::SerializeInt(value.len() as isize, buffer);
+    buffer.extend(value);
+    buffer
+}
+fn read_bytes(input: &mut astersql_util_serialization::PosAndBuf) -> Vec<u8> {
+    let size = astersql_util_serialization::DeserializeInt(input) as usize;
+    let start = input.Pos as usize;
+    input.Pos += size as i64;
+    input.Buf[start..start + size].to_vec()
+}
+fn write_row(row: &crate::agg_util::Row, buffer: Vec<u8>) -> Vec<u8> {
+    let mut buffer = astersql_util_serialization::SerializeInt(row.len() as isize, buffer);
+    for value in row {
+        buffer = write_value(value, buffer);
+    }
+    buffer
+}
+fn read_row(input: &mut astersql_util_serialization::PosAndBuf) -> crate::agg_util::Row {
+    (0..astersql_util_serialization::DeserializeInt(input))
+        .map(|_| read_value(input))
+        .collect()
+}
+fn write_value(value: &crate::agg_util::Value, mut buffer: Vec<u8>) -> Vec<u8> {
+    use crate::agg_util::Value;
+    use astersql_util_serialization as s;
+    match value {
+        Value::Null => {
+            buffer.push(0);
+            buffer
+        }
+        Value::Integer(value) => {
+            buffer.push(1);
+            s::SerializeInt64(*value, buffer)
+        }
+        Value::Float(value) => {
+            buffer.push(2);
+            s::SerializeFloat64(*value, buffer)
+        }
+        Value::Text(value) => {
+            buffer.push(3);
+            write_bytes(value.as_bytes(), buffer)
+        }
+        Value::Bytes(value) => {
+            buffer.push(4);
+            write_bytes(value, buffer)
+        }
+        Value::Bool(value) => {
+            buffer.push(5);
+            s::SerializeBool(*value, buffer)
+        }
+    }
+}
+fn read_value(input: &mut astersql_util_serialization::PosAndBuf) -> crate::agg_util::Value {
+    use crate::agg_util::Value;
+    use astersql_util_serialization as s;
+    match s::DeserializeUint8(input) {
+        0 => Value::Null,
+        1 => Value::Integer(s::DeserializeInt64(input)),
+        2 => Value::Float(s::DeserializeFloat64(input)),
+        3 => Value::Text(String::from_utf8(read_bytes(input)).expect("stored UTF-8 text")),
+        4 => Value::Bytes(read_bytes(input)),
+        5 => Value::Bool(s::DeserializeBool(input)),
+        _ => panic!("invalid aggregate value tag"),
+    }
+}

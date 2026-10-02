@@ -364,3 +364,572 @@ impl SerializeHelper {
         &self.buffer
     }
 }
+
+impl SerializeHelper {
+    pub fn serialize_state<T: SpillState>(&mut self, value: &T) -> &[u8] {
+        self.reset();
+        self.buffer = value.write_spill(std::mem::take(&mut self.buffer));
+        &self.buffer
+    }
+}
+
+/// Element codecs share the existing Go binary primitives; collection encoders
+/// write a count first, except APPROX_COUNT_DISTINCT's own self-contained format.
+pub trait SpillElement: Clone + Send + 'static {
+    fn write_element(&self, buffer: Vec<u8>) -> Vec<u8>;
+    fn read_element(input: &mut serialization::PosAndBuf) -> Self;
+    fn heap_bytes(&self) -> i64 {
+        0
+    }
+}
+macro_rules! scalar_element {
+    ($ty:ty, $write:ident, $read:ident) => {
+        impl SpillElement for $ty {
+            fn write_element(&self, buffer: Vec<u8>) -> Vec<u8> {
+                serialization::$write(*self, buffer)
+            }
+            fn read_element(input: &mut serialization::PosAndBuf) -> Self {
+                serialization::$read(input)
+            }
+        }
+    };
+}
+scalar_element!(i64, SerializeInt64, DeserializeInt64);
+scalar_element!(f64, SerializeFloat64, DeserializeFloat64);
+impl SpillElement for u64 {
+    // COUNT DISTINCT REAL stores float keys as hashable bit patterns.
+    fn write_element(&self, buffer: Vec<u8>) -> Vec<u8> {
+        serialization::SerializeFloat64(f64::from_bits(*self), buffer)
+    }
+    fn read_element(input: &mut serialization::PosAndBuf) -> Self {
+        serialization::DeserializeFloat64(input).to_bits()
+    }
+}
+impl SpillElement for Vec<u8> {
+    fn write_element(&self, buffer: Vec<u8>) -> Vec<u8> {
+        let mut buffer = serialization::SerializeInt(self.len() as isize, buffer);
+        buffer.extend(self);
+        buffer
+    }
+    fn read_element(input: &mut serialization::PosAndBuf) -> Self {
+        let length = serialization::DeserializeInt(input) as usize;
+        let start = input.Pos as usize;
+        let value = input.Buf[start..start + length].to_vec();
+        input.Pos += length as i64;
+        value
+    }
+    fn heap_bytes(&self) -> i64 {
+        self.len() as i64
+    }
+}
+impl SpillElement for crate::func_sum::Decimal {
+    fn write_element(&self, buffer: Vec<u8>) -> Vec<u8> {
+        let negative = self.coefficient() < 0;
+        let mut digits = self.coefficient().unsigned_abs().to_string();
+        let scale = self.scale() as usize;
+        if scale > 0 {
+            if digits.len() <= scale {
+                digits = format!("{}{}", "0".repeat(scale + 1 - digits.len()), digits);
+            }
+            digits.insert(digits.len() - scale, '.');
+        }
+        if negative {
+            digits.insert(0, '-');
+        }
+        let mut decimal = serialization::types::MyDecimal::default();
+        decimal
+            .FromString(digits.as_bytes())
+            .expect("valid accumulator decimal");
+        serialization::SerializeMyDecimal(&decimal, buffer)
+    }
+    fn read_element(input: &mut serialization::PosAndBuf) -> Self {
+        let text = serialization::DeserializeMyDecimal(input).String();
+        let scale = text
+            .split_once('.')
+            .map_or(0, |(_, fraction)| fraction.len() as u32);
+        Self::new(
+            text.replace('.', "")
+                .parse()
+                .expect("decimal coefficient fits accumulator"),
+            scale,
+        )
+    }
+}
+impl SpillElement for crate::func_max_min::TimeValue {
+    fn write_element(&self, buffer: Vec<u8>) -> Vec<u8> {
+        let buffer = serialization::SerializeUint64(self.packed, buffer);
+        let buffer = serialization::SerializeUint8(self.kind, buffer);
+        serialization::SerializeInt32(self.fsp, buffer)
+    }
+    fn read_element(input: &mut serialization::PosAndBuf) -> Self {
+        let packed = serialization::DeserializeUint64(input);
+        Self {
+            packed,
+            kind: serialization::DeserializeUint8(input),
+            fsp: serialization::DeserializeInt32(input),
+        }
+    }
+}
+impl SpillElement for crate::func_max_min::DurationValue {
+    fn write_element(&self, buffer: Vec<u8>) -> Vec<u8> {
+        let buffer = serialization::SerializeInt64(self.nanos, buffer);
+        serialization::SerializeInt(self.fsp as isize, buffer)
+    }
+    fn read_element(input: &mut serialization::PosAndBuf) -> Self {
+        Self {
+            nanos: serialization::DeserializeInt64(input),
+            fsp: serialization::DeserializeInt(input) as i32,
+        }
+    }
+}
+impl SpillElement for crate::func_max_min::VectorFloat32 {
+    fn write_element(&self, mut buffer: Vec<u8>) -> Vec<u8> {
+        // FIRST_ROW uses Vector.SerializeTo directly, with no outer byte length.
+        buffer.extend((self.0.len() as u32).to_le_bytes());
+        for value in &self.0 {
+            buffer.extend(value.to_le_bytes());
+        }
+        buffer
+    }
+    fn read_element(input: &mut serialization::PosAndBuf) -> Self {
+        let start = input.Pos as usize;
+        let count = u32::from_le_bytes(input.Buf[start..start + 4].try_into().unwrap()) as usize;
+        input.Pos += 4;
+        let mut values = Vec::with_capacity(count);
+        for _ in 0..count {
+            let start = input.Pos as usize;
+            values.push(f32::from_le_bytes(
+                input.Buf[start..start + 4].try_into().unwrap(),
+            ));
+            input.Pos += 4;
+        }
+        Self(values)
+    }
+    fn heap_bytes(&self) -> i64 {
+        (self.0.len() * 4 + 4) as i64
+    }
+}
+fn write_elements<'a, T: SpillElement + 'a>(
+    values: impl ExactSizeIterator<Item = &'a T>,
+    buffer: Vec<u8>,
+) -> Vec<u8> {
+    let mut buffer = serialization::SerializeInt(values.len() as isize, buffer);
+    for value in values {
+        buffer = value.write_element(buffer);
+    }
+    buffer
+}
+fn read_elements<T: SpillElement>(input: &mut serialization::PosAndBuf) -> Vec<T> {
+    let count = serialization::DeserializeInt(input);
+    assert!(count >= 0, "negative spill collection size");
+    (0..count).map(|_| T::read_element(input)).collect()
+}
+impl<T: SpillElement + Eq + std::hash::Hash> SpillState
+    for crate::func_count_distinct::CountDistinct<T>
+{
+    fn copy_partial(&self) -> Self {
+        self.clone()
+    }
+    fn write_spill(&self, buffer: Vec<u8>) -> Vec<u8> {
+        write_elements(self.values.iter(), buffer)
+    }
+    fn read_spill(&mut self, input: &mut serialization::PosAndBuf) -> i64 {
+        self.values = std::collections::HashSet::new();
+        let values = read_elements::<T>(input);
+        let heap: i64 = values.iter().map(SpillElement::heap_bytes).sum();
+        self.update(values.into_iter().map(Some)) + heap
+    }
+}
+impl SpillState for crate::func_count_distinct::CountDistinctMulti {
+    fn copy_partial(&self) -> Self {
+        self.clone()
+    }
+    fn write_spill(&self, buffer: Vec<u8>) -> Vec<u8> {
+        write_elements(self.encoded_rows.iter(), buffer)
+    }
+    fn read_spill(&mut self, input: &mut serialization::PosAndBuf) -> i64 {
+        self.encoded_rows = read_elements::<Vec<u8>>(input).into_iter().collect();
+        (self.encoded_rows.capacity() * std::mem::size_of::<Vec<u8>>()) as i64
+            + self
+                .encoded_rows
+                .iter()
+                .map(|v| v.len() as i64)
+                .sum::<i64>()
+    }
+}
+impl SpillState for crate::func_count_distinct::ApproxCountDistinct {
+    fn copy_partial(&self) -> Self {
+        self.clone()
+    }
+    fn write_spill(&self, _: Vec<u8>) -> Vec<u8> {
+        self.serialize()
+    }
+    fn read_spill(&mut self, input: &mut serialization::PosAndBuf) -> i64 {
+        self.reset();
+        let old = self.memory_usage();
+        self.read_and_merge(&input.Buf)
+            .unwrap_or_else(|e| panic!("{e}"));
+        input.Pos = input.Buf.len() as i64;
+        self.memory_usage() - old
+    }
+}
+impl SpillState for crate::func_sum::DistinctFloatSum {
+    fn copy_partial(&self) -> Self {
+        self.clone()
+    }
+    fn write_spill(&self, buffer: Vec<u8>) -> Vec<u8> {
+        write_elements(self.values.iter(), buffer)
+    }
+    fn read_spill(&mut self, input: &mut serialization::PosAndBuf) -> i64 {
+        self.values = Vec::new();
+        self.update(read_elements::<f64>(input).into_iter().map(Some))
+    }
+}
+impl SpillState for crate::func_sum::DistinctDecimalSum {
+    fn copy_partial(&self) -> Self {
+        self.clone()
+    }
+    fn write_spill(&self, buffer: Vec<u8>) -> Vec<u8> {
+        let mut buffer = serialization::SerializeInt(self.values.len() as isize, buffer);
+        for (key, value) in self.keys.iter().zip(&self.values) {
+            buffer = key.write_element(buffer);
+            buffer = value.write_element(buffer);
+        }
+        buffer
+    }
+    fn read_spill(&mut self, input: &mut serialization::PosAndBuf) -> i64 {
+        self.values = Vec::new();
+        self.keys = Vec::new();
+        let count = serialization::DeserializeInt(input);
+        let mut heap = 0;
+        for _ in 0..count {
+            let key = Vec::<u8>::read_element(input);
+            let value = crate::func_sum::Decimal::read_element(input);
+            heap += std::mem::size_of::<serialization::types::MyDecimal>() as i64;
+            heap += self.insert_keyed(key, value);
+        }
+        heap
+    }
+}
+macro_rules! delegate_sum_spill {
+    ($ty:ty) => {
+        impl SpillState for $ty {
+            fn copy_partial(&self) -> Self {
+                self.clone()
+            }
+            fn write_spill(&self, buffer: Vec<u8>) -> Vec<u8> {
+                self.sum.write_spill(buffer)
+            }
+            fn read_spill(&mut self, input: &mut serialization::PosAndBuf) -> i64 {
+                self.sum.read_spill(input)
+            }
+        }
+    };
+}
+delegate_sum_spill!(crate::func_avg::DistinctFloatAvg);
+delegate_sum_spill!(crate::func_avg::DistinctDecimalAvg);
+impl SpillState for crate::func_sum_int::SumDistinctInt64 {
+    fn copy_partial(&self) -> Self {
+        self.clone()
+    }
+    fn write_spill(&self, buffer: Vec<u8>) -> Vec<u8> {
+        write_elements(self.values.iter(), buffer)
+    }
+    fn read_spill(&mut self, input: &mut serialization::PosAndBuf) -> i64 {
+        self.reset();
+        self.update(read_elements::<i64>(input).into_iter().map(Some))
+    }
+}
+impl SpillState for crate::func_sum_int::SumDistinctUint64 {
+    fn copy_partial(&self) -> Self {
+        self.clone()
+    }
+    fn write_spill(&self, buffer: Vec<u8>) -> Vec<u8> {
+        write_elements(self.bit_patterns.iter(), buffer)
+    }
+    fn read_spill(&mut self, input: &mut serialization::PosAndBuf) -> i64 {
+        self.reset();
+        self.update(
+            read_elements::<i64>(input)
+                .into_iter()
+                .map(|v| Some(v as u64)),
+        )
+    }
+}
+impl SpillState for crate::func_varpop::VarianceState {
+    fn copy_partial(&self) -> Self {
+        self.clone()
+    }
+    fn write_spill(&self, buffer: Vec<u8>) -> Vec<u8> {
+        let buffer = serialization::SerializeInt64(self.count, buffer);
+        let buffer = serialization::SerializeFloat64(self.sum, buffer);
+        serialization::SerializeFloat64(self.variance, buffer)
+    }
+    fn read_spill(&mut self, input: &mut serialization::PosAndBuf) -> i64 {
+        self.count = serialization::DeserializeInt64(input);
+        self.sum = serialization::DeserializeFloat64(input);
+        self.variance = serialization::DeserializeFloat64(input);
+        0
+    }
+}
+impl SpillState for crate::func_varpop::DistinctVariance {
+    fn copy_partial(&self) -> Self {
+        self.clone()
+    }
+    fn write_spill(&self, buffer: Vec<u8>) -> Vec<u8> {
+        write_elements(self.values.values(), buffer)
+    }
+    fn read_spill(&mut self, input: &mut serialization::PosAndBuf) -> i64 {
+        self.values = std::collections::HashMap::new();
+        self.next_nan_payload = 1;
+        self.update(read_elements::<f64>(input).into_iter().map(Some));
+        (self.values.capacity() * std::mem::size_of::<(u64, f64)>()) as i64
+    }
+}
+impl<T: SpillElement> SpillState for crate::func_percentile::Percentile<T> {
+    fn copy_partial(&self) -> Self {
+        self.clone()
+    }
+    fn fixed_spill_memory(&self) -> i64 {
+        std::mem::size_of::<Vec<T>>() as i64
+    }
+    fn write_spill(&self, buffer: Vec<u8>) -> Vec<u8> {
+        write_elements(self.data.iter(), buffer)
+    }
+    fn read_spill(&mut self, input: &mut serialization::PosAndBuf) -> i64 {
+        self.data = read_elements(input);
+        // Go intentionally charges eight bytes for Time and Duration samples.
+        let element_size = if std::any::TypeId::of::<T>()
+            == std::any::TypeId::of::<crate::func_max_min::TimeValue>()
+            || std::any::TypeId::of::<T>()
+                == std::any::TypeId::of::<crate::func_max_min::DurationValue>()
+        {
+            8
+        } else if std::any::TypeId::of::<T>() == std::any::TypeId::of::<crate::func_sum::Decimal>()
+        {
+            std::mem::size_of::<serialization::types::MyDecimal>()
+        } else {
+            std::mem::size_of::<T>()
+        };
+        (self.data.len() * element_size) as i64
+    }
+}
+impl<T: SpillElement + Default> SpillState for crate::func_first_row::FirstRow<T> {
+    fn copy_partial(&self) -> Self {
+        self.clone()
+    }
+    fn write_spill(&self, buffer: Vec<u8>) -> Vec<u8> {
+        let buffer = serialization::SerializeBool(self.is_null(), buffer);
+        let buffer = serialization::SerializeBool(self.got_first_row(), buffer);
+        let vector = std::any::TypeId::of::<T>()
+            == std::any::TypeId::of::<crate::func_max_min::VectorFloat32>();
+        match self.value() {
+            Some(value) => value.write_element(buffer),
+            None if vector => buffer,
+            None => T::default().write_element(buffer),
+        }
+    }
+    fn read_spill(&mut self, input: &mut serialization::PosAndBuf) -> i64 {
+        let is_null = serialization::DeserializeBool(input);
+        let got_first_row = serialization::DeserializeBool(input);
+        let vector = std::any::TypeId::of::<T>()
+            == std::any::TypeId::of::<crate::func_max_min::VectorFloat32>();
+        let value = if vector && (!got_first_row || is_null) {
+            None
+        } else {
+            Some(T::read_element(input))
+        };
+        let memory = value.as_ref().map_or(0, SpillElement::heap_bytes);
+        self.state = if !got_first_row {
+            None
+        } else if is_null {
+            Some(None)
+        } else {
+            Some(value)
+        };
+        memory
+    }
+}
+impl SpillState for crate::func_group_concat::GroupConcat {
+    fn copy_partial(&self) -> Self {
+        self.clone()
+    }
+    fn write_spill(&self, buffer: Vec<u8>) -> Vec<u8> {
+        if let Some(values) = &self.distinct {
+            let mut buffer = serialization::SerializeInt(values.len() as isize, buffer);
+            for (key, value) in values {
+                buffer = key.write_element(buffer);
+                buffer = value.write_element(buffer);
+            }
+            buffer
+        } else {
+            let buffer = serialization::SerializeBool(self.has_value, buffer);
+            if self.has_value {
+                self.value.write_element(buffer)
+            } else {
+                buffer
+            }
+        }
+    }
+    fn read_spill(&mut self, input: &mut serialization::PosAndBuf) -> i64 {
+        self.reset();
+        if self.distinct.is_some() {
+            let count = serialization::DeserializeInt(input);
+            let mut memory = 0;
+            for _ in 0..count {
+                let key = Vec::<u8>::read_element(input);
+                let value = Vec::<u8>::read_element(input);
+                memory += (key.len() + value.len()) as i64;
+                self.update_keyed(key, value);
+            }
+            memory
+                + (self.distinct.as_ref().unwrap().capacity() * std::mem::size_of::<Vec<u8>>())
+                    as i64
+        } else if serialization::DeserializeBool(input) {
+            let value = Vec::<u8>::read_element(input);
+            let memory = value.len() as i64;
+            self.update([Some(value)]);
+            memory
+        } else {
+            0
+        }
+    }
+}
+/// Unsupported PERCENTILE inputs have no partial data but still occupy a row.
+#[derive(Clone, Default)]
+pub struct NullPercentile;
+impl SpillState for NullPercentile {
+    fn copy_partial(&self) -> Self {
+        self.clone()
+    }
+    fn has_spill_state(&self) -> bool {
+        false
+    }
+    fn write_spill(&self, buffer: Vec<u8>) -> Vec<u8> {
+        buffer
+    }
+    fn read_spill(&mut self, _: &mut serialization::PosAndBuf) -> i64 {
+        0
+    }
+}
+
+// Native SQL value codecs keep full MyDecimal precision and Time's packed
+// type/FSP bits; callers need not convert through the older wrapper types.
+impl SpillElement for serialization::types::MyDecimal {
+    fn write_element(&self, buffer: Vec<u8>) -> Vec<u8> {
+        serialization::SerializeMyDecimal(self, buffer)
+    }
+    fn read_element(input: &mut serialization::PosAndBuf) -> Self {
+        serialization::DeserializeMyDecimal(input)
+    }
+}
+impl SpillElement for serialization::types::Time {
+    fn write_element(&self, buffer: Vec<u8>) -> Vec<u8> {
+        serialization::SerializeTime(*self, buffer)
+    }
+    fn read_element(input: &mut serialization::PosAndBuf) -> Self {
+        serialization::DeserializeTime(input)
+    }
+}
+impl SpillElement for serialization::types::Duration {
+    fn write_element(&self, buffer: Vec<u8>) -> Vec<u8> {
+        serialization::SerializeTypesDuration(*self, buffer)
+    }
+    fn read_element(input: &mut serialization::PosAndBuf) -> Self {
+        serialization::DeserializeTypesDuration(input)
+    }
+}
+impl<T: SpillElement> SpillState for Vec<T> {
+    fn copy_partial(&self) -> Self {
+        self.clone()
+    }
+    fn write_spill(&self, buffer: Vec<u8>) -> Vec<u8> {
+        write_elements(self.iter(), buffer)
+    }
+    fn read_spill(&mut self, input: &mut serialization::PosAndBuf) -> i64 {
+        *self = read_elements(input);
+        let size = if std::any::TypeId::of::<T>()
+            == std::any::TypeId::of::<serialization::types::Time>()
+            || std::any::TypeId::of::<T>()
+                == std::any::TypeId::of::<serialization::types::Duration>()
+        {
+            8
+        } else {
+            std::mem::size_of::<T>()
+        };
+        (self.len() * size) as i64
+    }
+}
+impl SpillState for FirstRowPartialResult<serialization::types::VectorFloat32> {
+    fn copy_partial(&self) -> Self {
+        Self {
+            state: self.state.clone(),
+            value: clone_native_vector(&self.value),
+        }
+    }
+    fn write_spill(&self, buffer: Vec<u8>) -> Vec<u8> {
+        let buffer = serialization::SerializeBool(self.state.is_null, buffer);
+        let buffer = serialization::SerializeBool(self.state.got_first_row, buffer);
+        if self.state.got_first_row && !self.state.is_null {
+            self.value.SerializeTo(buffer)
+        } else {
+            buffer
+        }
+    }
+    fn read_spill(&mut self, input: &mut serialization::PosAndBuf) -> i64 {
+        self.state.is_null = serialization::DeserializeBool(input);
+        self.state.got_first_row = serialization::DeserializeBool(input);
+        self.value = serialization::types::VectorFloat32::default();
+        if self.state.got_first_row && !self.state.is_null {
+            let (value, remainder) = serialization::types::ZeroCopyDeserializeVectorFloat32(
+                &input.Buf[input.Pos as usize..],
+            )
+            .unwrap_or_else(|e| panic!("{e}"));
+            input.Pos = (input.Buf.len() - remainder.len()) as i64;
+            self.value = value;
+            self.value.SerializedSize() as i64
+        } else {
+            0
+        }
+    }
+}
+impl SpillState for MaxMinPartialResult<serialization::types::VectorFloat32> {
+    fn copy_partial(&self) -> Self {
+        Self {
+            is_null: self.is_null,
+            value: clone_native_vector(&self.value),
+        }
+    }
+    fn write_spill(&self, buffer: Vec<u8>) -> Vec<u8> {
+        let buffer = serialization::SerializeBool(self.is_null, buffer);
+        serialization::SerializeVectorFloat32(&self.value, buffer)
+    }
+    fn read_spill(&mut self, input: &mut serialization::PosAndBuf) -> i64 {
+        self.is_null = serialization::DeserializeBool(input);
+        self.value = serialization::DeserializeVectorFloat32(input);
+        self.value.SerializedSize() as i64
+    }
+}
+
+impl SpillElement for String {
+    fn write_element(&self, buffer: Vec<u8>) -> Vec<u8> {
+        serialization::SerializeString(self, buffer)
+    }
+    fn read_element(input: &mut serialization::PosAndBuf) -> Self {
+        serialization::DeserializeString(input)
+    }
+    fn heap_bytes(&self) -> i64 {
+        self.len() as i64
+    }
+}
+
+fn clone_native_vector(
+    value: &serialization::types::VectorFloat32,
+) -> serialization::types::VectorFloat32 {
+    if value.SerializedSize() == 0 {
+        return serialization::types::VectorFloat32::default();
+    }
+    serialization::types::ZeroCopyDeserializeVectorFloat32(value.ZeroCopySerialize())
+        .expect("valid stored vector")
+        .0
+}

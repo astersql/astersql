@@ -166,7 +166,7 @@ impl DecimalAvg {
 /// DISTINCT 浮点 AVG：先对值去重再求平均。
 #[derive(Clone, Debug, Default)]
 pub struct DistinctFloatAvg {
-    sum: DistinctFloatSum,
+    pub(crate) sum: DistinctFloatSum,
 }
 
 impl DistinctFloatAvg {
@@ -191,7 +191,7 @@ impl DistinctFloatAvg {
 /// DISTINCT Decimal AVG 累加器。
 #[derive(Clone, Debug, Default)]
 pub struct DistinctDecimalAvg {
-    sum: DistinctDecimalSum,
+    pub(crate) sum: DistinctDecimalSum,
 }
 
 /// 原始阶段 Decimal AVG（对应 Go Original 求值器）。

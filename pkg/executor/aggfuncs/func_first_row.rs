@@ -30,7 +30,7 @@ use crate::func_sum::Decimal;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FirstRow<T> {
     /// 嵌套 Option：外层是否已见首行，内层是否为 NULL。
-    state: Option<Option<T>>,
+    pub(crate) state: Option<Option<T>>,
 }
 
 impl<T> FirstRow<T> {

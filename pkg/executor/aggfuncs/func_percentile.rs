@@ -37,7 +37,7 @@ pub fn ordinal_rank(row_count: usize, percent: i32) -> usize {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Percentile<T> {
     percent: i32,
-    data: Vec<T>,
+    pub(crate) data: Vec<T>,
 }
 
 impl<T> Percentile<T> {

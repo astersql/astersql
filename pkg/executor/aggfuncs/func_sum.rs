@@ -245,7 +245,7 @@ impl DecimalSum {
 /// DISTINCT 浮点 SUM：按 Go `map[float64]` 的相等语义去重后求和。
 #[derive(Clone, Debug, Default)]
 pub struct DistinctFloatSum {
-    values: Vec<f64>,
+    pub(crate) values: Vec<f64>,
 }
 
 impl DistinctFloatSum {
@@ -285,7 +285,8 @@ impl DistinctFloatSum {
 /// DISTINCT Decimal SUM：按 Go Decimal 规范化哈希语义去重后再精确求和。
 #[derive(Clone, Debug, Default)]
 pub struct DistinctDecimalSum {
-    values: Vec<Decimal>,
+    pub(crate) values: Vec<Decimal>,
+    pub(crate) keys: Vec<Vec<u8>>,
 }
 
 /// Float64 SUM 类型别名。
@@ -304,9 +305,22 @@ pub type Sum4PartialDistinctDecimal = DistinctDecimalSum;
 pub type Sum4OriginalDistinctDecimal = DistinctDecimalSum;
 
 impl DistinctDecimalSum {
+    /// Insert a decimal with its already evaluated hash key; spill preserves
+    /// the key independently of the value, as in Go's MemAwareMap.
+    pub fn insert_keyed(&mut self, key: Vec<u8>, value: Decimal) -> i64 {
+        if self.keys.contains(&key) {
+            return 0;
+        }
+        let old = self.values.capacity();
+        let bytes = key.len();
+        self.keys.push(key);
+        self.values.push(value);
+        bytes as i64 + ((self.values.capacity() - old) * size_of::<Decimal>()) as i64
+    }
     /// 清空去重集合。
     pub fn reset(&mut self) {
         self.values.clear();
+        self.keys.clear();
     }
     /// 插入去重 Decimal；返回 capacity 增长带来的内存增量。
     pub fn update(&mut self, values: impl IntoIterator<Item = Option<Decimal>>) -> i64 {
@@ -318,6 +332,8 @@ impl DistinctDecimalSum {
                 .iter()
                 .any(|existing| existing.normalized_key() == key)
             {
+                self.keys
+                    .push(format!("{:?}", value.normalized_key()).into_bytes());
                 self.values.push(value);
             }
         }
@@ -325,7 +341,13 @@ impl DistinctDecimalSum {
     }
     /// 合并另一段 DISTINCT Decimal 集合。
     pub fn merge(&mut self, source: &Self) -> i64 {
-        self.update(source.values.iter().copied().map(Some))
+        source
+            .keys
+            .iter()
+            .cloned()
+            .zip(source.values.iter().copied())
+            .map(|(key, value)| self.insert_keyed(key, value))
+            .sum()
     }
     /// 对去重后的 Decimal 做 `checked_add` 求和；空集返回 Ok(None)。
     pub fn value(&self) -> Result<Option<Decimal>, AggError> {

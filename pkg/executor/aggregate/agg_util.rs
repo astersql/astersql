@@ -397,7 +397,7 @@ pub struct AggState {
     pub count: u64,
     pub number: Option<f64>,
     pub value: Option<Value>,
-    distinct_values: std::collections::BTreeMap<Vec<u8>, Value>,
+    pub(crate) distinct_values: std::collections::BTreeMap<Vec<u8>, Value>,
 }
 
 impl AggState {
@@ -409,6 +409,26 @@ impl AggState {
             value: None,
             distinct_values: std::collections::BTreeMap::new(),
         }
+    }
+    /// Include owned DISTINCT keys and values so growth of one group can
+    /// trigger spill; counting only new groups misses the dominant allocation.
+    pub(crate) fn memory_usage(&self) -> usize {
+        fn heap(value: &Value) -> usize {
+            match value {
+                Value::Text(v) => v.len(),
+                Value::Bytes(v) => v.len(),
+                _ => 0,
+            }
+        }
+        std::mem::size_of::<Self>()
+            + self.value.as_ref().map_or(0, heap)
+            + self
+                .distinct_values
+                .iter()
+                .map(|(key, value)| {
+                    key.len() + heap(value) + std::mem::size_of::<(Vec<u8>, Value)>()
+                })
+                .sum::<usize>()
     }
     /// 用一行输入更新本聚合态；DISTINCT 时重复值直接跳过。
     pub fn update(&mut self, aggregation: &Aggregation, row: &Row) -> Result<(), String> {
