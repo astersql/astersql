@@ -481,6 +481,8 @@ impl RuntimeFactory for KeyspaceSessionFactory {
             Arc::new(crossks::DdlClient::new(Arc::new(backend))),
             vec![lifetime],
         ));
+        let runtime_store: Arc<dyn crossks::Store> = target.store.clone();
+        super::modify_column_dist_backfill::register_target_runtime(&runtime_store, &target.domain);
         target.transferred = true;
         Ok(runtime)
     }
@@ -507,6 +509,22 @@ pub fn prepare_normal_schema_runtime(
         .as_millis()
         .try_into()
         .map_err(|_| "normal schema lease overflow")?;
+    version::SetMDLEnabled(astersql_sessionctx_vardef::IsMDLEnabled());
+    version::SetNextGen(astersql_config_kerneltype::IsNextGen());
+    if let Some(live) = domain.server_info_syncer() {
+        let live = live.lock().map_err(|e| e.to_string())?;
+        // Schema coordination borrows the live discovery transport/cache. Lease
+        // ownership remains with Domain, so this view owns no registration.
+        protocol.SetServerInfoSyncer(Some(Arc::new(serverinfo::Syncer {
+            etcdCli: live.etcdCli.clone(),
+            reporter: live.reporter.clone(),
+            info: live.info.clone(),
+            serverInfoPath: live.serverInfoPath.clone(),
+            session: None,
+            topologySession: None,
+            statusEndpointClaimKey: None,
+        })));
+    }
     let internal = Arc::new(crossks::new_schema_coordinator());
     let borrowed = internal.clone();
     let returned = internal.clone();
@@ -577,4 +595,104 @@ pub fn prepare_normal_schema_runtime(
         .ReloadWithContext(runtime.context.clone())
         .map_err(|e| e.to_string())?;
     Ok(runtime)
+}
+
+/// Assemble the serving Domain's elected DDL worker and public schema protocol.
+/// Target-keyspace factories remain submit-only and share this serving owner.
+pub(crate) fn install_serving_ddl_runtime(
+    domain: &Arc<Domain>,
+    owner: Arc<dyn astersql_owner::Manager>,
+    owner_runtime: Arc<tokio::runtime::Runtime>,
+    cancellation: astersql_owner::Context,
+    schema_client: Arc<dyn version::EtcdClient>,
+    id: &str,
+    lease: Duration,
+) -> Result<(), String> {
+    use astersql_domain::domain::{DdlService, StartMode};
+    let schema = prepare_normal_schema_runtime(
+        domain,
+        version::NewEtcdSyncer(schema_client.clone(), id),
+        lease,
+    )?;
+    let state: Arc<dyn astersql_ddl_serverstate::Syncer> =
+        Arc::new(astersql_ddl_serverstate::EtcdSyncer::with_client(
+            schema_client.clone(),
+            astersql_ddl_util::ServerGlobalState,
+        ));
+    let state_context = astersql_ddl_serverstate::SyncContext::new();
+    state.init(&state_context).map_err(|e| e.to_string())?;
+    let sequence = Arc::new(std::sync::atomic::AtomicI64::new(0));
+    let make_schema = schema.clone();
+    let make_domain = Arc::downgrade(domain);
+    let make_owner = owner.clone();
+    let make_cancel = cancellation.clone();
+    let make_client = schema_client.clone();
+    let owner_id = owner.ID();
+    let barrier = move || {
+        Ok(make_schema.schema_barrier(
+            &make_domain.upgrade().ok_or("serving Domain is closed")?,
+            make_owner.clone(),
+            make_cancel.clone(),
+            owner_id.clone(),
+            Some(make_client.clone()),
+        ))
+    };
+    // The initial factory is valid independently of the upgrade-policy wrapper.
+    let initial_schema = schema.clone();
+    let initial_domain = Arc::downgrade(domain);
+    let initial_owner = owner.clone();
+    let initial_cancel = cancellation.clone();
+    let initial_state = state.clone();
+    let initial_context = state_context.clone();
+    let initial_sequence = sequence.clone();
+    let initial_client = schema_client;
+    let submit_domain = Arc::downgrade(domain);
+    let cancel_schema = schema.clone();
+    let service = Arc::new(
+        super::normal_ddl_service::NormalDdlService::new(
+            owner,
+            owner_runtime,
+            cancellation,
+            schema.pool.clone(),
+            schema.clone(),
+            Arc::new(move || {
+                Ok(Box::new(astersql_ddl::table_mode::NormalDdlExecutor {
+                    barrier: initial_schema.schema_barrier(
+                        &initial_domain.upgrade().ok_or("serving Domain is closed")?,
+                        initial_owner.clone(),
+                        initial_cancel.clone(),
+                        initial_owner.ID(),
+                        Some(initial_client.clone()),
+                    ),
+                    policy: astersql_ddl::normal_policy::NormalDdlJobPolicy {
+                        state: initial_state.clone(),
+                        context: initial_context.clone(),
+                        owner_id: initial_owner.ID(),
+                        round_upgrading: None,
+                    },
+                    sequence: initial_sequence.clone(),
+                }))
+            }),
+            Arc::new(move |sql| {
+                let domain = submit_domain.upgrade().ok_or("serving Domain is closed")?;
+                super::ConcreteSession::new(domain)
+                    .execute(sql)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            }),
+            Arc::new(move || cancel_schema.context.Cancel()),
+            astersql_config::get_global_config()
+                .instance
+                .tidb_enable_ddl
+                .load(),
+        )
+        .with_schema_runtime(schema)
+        .with_upgrade_policy(state, state_context, barrier, sequence),
+    );
+    domain.set_ddl(service.clone());
+    if let Err(error) = service.start(StartMode::Normal) {
+        let _ = service.stop();
+        return Err(error);
+    }
+    Ok(())
 }

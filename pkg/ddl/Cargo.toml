@@ -5,6 +5,10 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+astersql-util-collate = { path = "../util/collate" }
+chrono = "0.4"
+astersql-table = { path = "../table" }
+astersql-types = { path = "../types" }
 astersql-metrics = { path = "../metrics" }
 astersql-ddl-ingest = { path = "ingest" }
 astersql-dxf-framework-handle = { path = "../dxf/framework/handle" }

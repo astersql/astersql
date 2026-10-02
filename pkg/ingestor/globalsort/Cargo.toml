@@ -11,21 +11,23 @@ path = "lib.rs"
 go-package = "pkg/ingestor/globalsort"
 legacy-tasks = ["task-958", "task-959", "task-962", "task-966", "task-967"]
 
+[dependencies]
+"astersql-resourcemanager-pool-workerpool" = { package = "astersql-resourcemanager-pool-workerpool", path = "../../resourcemanager/pool/workerpool" }
+"astersql-ingestor-engineapi" = { package = "astersql-ingestor-engineapi", path = "../engineapi" }
+"astersql-lightning-membuf" = { package = "astersql-lightning-membuf", path = "../../lightning/membuf" }
+"astersql-ingestor-simplesst" = { package = "astersql-ingestor-simplesst", path = "../simplesst" }
+
 [target.'cfg(windows)'.dependencies]
 "astersql-dxf-framework-taskexecutor-execute" = { package = "astersql-dxf-framework-taskexecutor-execute", path = "../../dxf/framework/taskexecutor/execute" }
 "astersql-dxf-operator" = { package = "astersql-dxf-operator", path = "../../dxf/operator" }
-"astersql-ingestor-engineapi" = { package = "astersql-ingestor-engineapi", path = "../engineapi" }
-"astersql-ingestor-simplesst" = { package = "astersql-ingestor-simplesst", path = "../simplesst" }
 "astersql-kv" = { package = "astersql-kv", path = "../../kv" }
 "astersql-lightning-common" = { package = "astersql-lightning-common", path = "../../lightning/common" }
 "astersql-lightning-log" = { package = "astersql-lightning-log", path = "../../lightning/log" }
-"astersql-lightning-membuf" = { package = "astersql-lightning-membuf", path = "../../lightning/membuf" }
 "astersql-lightning-metric" = { package = "astersql-lightning-metric", path = "../../lightning/metric" }
 "astersql-metrics" = { package = "astersql-metrics", path = "../../metrics" }
 "astersql-objstore" = { package = "astersql-objstore", path = "../../objstore" }
 "astersql-objstore-objectio" = { package = "astersql-objstore-objectio", path = "../../objstore/objectio" }
 "astersql-objstore-storeapi" = { package = "astersql-objstore-storeapi", path = "../../objstore/storeapi" }
-"astersql-resourcemanager-pool-workerpool" = { package = "astersql-resourcemanager-pool-workerpool", path = "../../resourcemanager/pool/workerpool" }
 "astersql-resourcemanager-util" = { package = "astersql-resourcemanager-util", path = "../../resourcemanager/util" }
 "astersql-util" = { package = "astersql-util", path = "../../util" }
 "astersql-util-intest" = { package = "astersql-util-intest", path = "../../util/intest" }

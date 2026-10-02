@@ -12,9 +12,11 @@ doctest = false
 [dependencies]
 chrono = "0.4"
 config = { package = "astersql-config", path = "../../config" }
+astersql-config-configtypes = { path = "../../config/configtypes" }
 crc = "3"
 execdetails = { package = "astersql-util-execdetails", path = "../../util/execdetails" }
 kerneltype = { package = "astersql-config-kerneltype", path = "../../config/kerneltype" }
+naming = { package = "astersql-util-naming", path = "../../util/naming" }
 kv = { package = "astersql-kv", path = "../../kv" }
 serde_json = "1"
 traceevent = { package = "astersql-util-traceevent", path = "../../util/traceevent" }

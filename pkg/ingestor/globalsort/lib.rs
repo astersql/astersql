@@ -25,9 +25,6 @@ pub use util::*;
 #[path = "bench_test.rs"]
 mod bench_test;
 #[cfg(test)]
-#[path = "engine_test.rs"]
-mod engine_test;
-#[cfg(test)]
 #[path = "merge_test.rs"]
 mod merge_test;
 #[cfg(test)]
@@ -188,8 +185,78 @@ pub struct WriterSummary {
     pub conflict_info: ConflictInfo,
 }
 
+/// An object upload remains unpublished until finish succeeds. Production
+/// stores implement this with their streaming/multipart writer.
+pub trait ObjectWriter: std::io::Write {
+    fn finish(self: Box<Self>) -> Result<()>;
+}
+
+struct BufferedObjectWriter<'a, S: Storage + ?Sized> {
+    store: &'a S,
+    path: String,
+    bytes: Vec<u8>,
+}
+impl<S: Storage + ?Sized> std::io::Write for BufferedObjectWriter<'_, S> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+impl<S: Storage + ?Sized> ObjectWriter for BufferedObjectWriter<'_, S> {
+    fn finish(self: Box<Self>) -> Result<()> {
+        self.store.write(&self.path, self.bytes)
+    }
+}
+
 /// 对象/内存存储抽象：读写、按前缀列举与批量删除。
+/// Production simplesst files use the Go u64 big-endian length headers. The
+/// old memory-fixture codec remains explicit for backwards compatibility.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RecordFormat {
+    #[default]
+    LegacyLittleEndian32,
+    GoBigEndian64,
+}
+
 pub trait Storage: Send + Sync {
+    /// Production stores obtain this from object metadata, without fetching
+    /// the complete body. The fallback preserves existing memory fixtures.
+    fn file_size(&self, path: &str) -> Result<u64> {
+        Ok(self.read(path)?.len() as u64)
+    }
+
+    fn record_format(&self) -> RecordFormat {
+        RecordFormat::LegacyLittleEndian32
+    }
+    /// Compatibility fallback for memory fixtures. Real object stores must
+    /// override this so readers hold bounded range buffers rather than objects.
+    fn open(&self, path: &str) -> Result<Box<dyn std::io::Read>> {
+        Ok(Box::new(std::io::Cursor::new(self.read(path)?)))
+    }
+    /// Open a data object at a record boundary. Production transports use an
+    /// object byte range; the compatibility fallback skips through a fixed buffer.
+    fn open_at(&self, path: &str, offset: u64) -> Result<Box<dyn std::io::Read>> {
+        use std::io::Read;
+        let mut stream = self.open(path)?;
+        let skipped = std::io::copy(&mut stream.by_ref().take(offset), &mut std::io::sink())
+            .map_err(|error| Error::InvalidData(error.to_string()))?;
+        if skipped != offset {
+            return Err(Error::InvalidData("start offset exceeds file size".into()));
+        }
+        Ok(stream)
+    }
+    /// Compatibility fallback for existing in-memory implementations.
+    fn create(&self, path: &str) -> Result<Box<dyn ObjectWriter + '_>> {
+        Ok(Box::new(BufferedObjectWriter {
+            store: self,
+            path: path.to_owned(),
+            bytes: Vec::new(),
+        }))
+    }
+
     fn read(&self, path: &str) -> Result<Vec<u8>>;
     fn write(&self, path: &str, value: Vec<u8>) -> Result<()>;
     fn delete_files(&self, paths: &[String]) -> Result<()>;

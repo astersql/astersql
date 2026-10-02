@@ -571,11 +571,9 @@ fn finished_range_batches(
         }
         ACTION_DROP_COLUMN | ACTION_MODIFY_COLUMN => {
             let (ids, partitions) = if job.tp == ACTION_DROP_COLUMN {
-                let args = GetTableColumnArgs(job)?;
-                (args.IndexIDs, args.PartitionIDs)
+                crate::persistent_drop_column::finished_range_ids(job)?
             } else {
-                let args = GetFinishedModifyColumnArgs(job)?;
-                (args.IndexIDs, args.PartitionIDs)
+                crate::persistent_modify_column::finished_range_ids(job)?
             };
             if !ids.is_empty() {
                 let physical = if partitions.is_empty() {

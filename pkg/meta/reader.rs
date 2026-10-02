@@ -700,6 +700,15 @@ impl<'a> TransactionMutator<'a> {
             )
             .map_err(|e| e.to_string())
     }
+    /// Go DropTableOrView preserves allocator fields during schema rename.
+    pub fn drop_table_only(&mut self, db: i64, table: i64) -> Result<(), String> {
+        self.txn
+            .Delete(transaction_meta_hash_key(
+                format!("DB:{db}").as_bytes(),
+                format!("Table:{table}").as_bytes(),
+            ))
+            .map_err(|e| e.to_string())
+    }
     /// Go rollbackCreateMaterializedViewLog drops the object and all allocator fields.
     pub fn drop_table_and_auto_ids(&mut self, db: i64, table: i64) -> Result<(), String> {
         for field in [

@@ -740,7 +740,27 @@ pub struct SSTImportStats {
     pub ingest_rpcs: usize,
 }
 
+/// Shared per-store limiter used at actual SST WriteBatch transport boundaries.
+/// Implementations must stop waiting when the import context is cancelled.
+pub trait SSTWriteLimiter: Send + Sync {
+    fn WaitN(&self, context: &context::Context, store_id: u64, bytes: usize) -> Result<(), errors::SharedError>;
+}
+#[derive(Clone, Default)]
+pub struct SSTImportOptions {
+    pub context: context::Context,
+    pub write_limiter: Option<Arc<dyn SSTWriteLimiter>>,
+}
+
 pub trait Storage {
+    /// Read the first available TiKV coprocessor split configuration through PD
+    /// store metadata. Non-PD stores return None; query failures remain errors so
+    /// the range planner can apply its documented defaults.
+    fn DDLRegionSplitConfig(
+        &self,
+        _context: &context::Context,
+    ) -> Result<Option<(i64, i64)>, errors::SharedError> {
+        Ok(None)
+    }
     /// Number of live TiKV stores for TTL scan splitting. Non-TiKV stores
     /// return `None` and retain the default split count.
     fn TTLStoreCount(&self) -> Result<Option<usize>, errors::SharedError> {
@@ -749,6 +769,15 @@ pub trait Storage {
     /// Return TiKV Region boundaries for TTL record keys. Non-Region stores
     /// return `None`, which schedules one full-table scan range.
     fn TTLRegionRanges(
+        &self,
+        _start: &[u8],
+        _end: &[u8],
+    ) -> Result<Option<Vec<(Vec<u8>, Vec<u8>)>>, errors::SharedError> {
+        Ok(None)
+    }
+    /// Return actual Region boundaries for a DDL backfill key interval.
+    /// Stores without Regions return None; the planner then uses one interval.
+    fn DDLRegionRanges(
         &self,
         _start: &[u8],
         _end: &[u8],
@@ -782,6 +811,16 @@ pub trait Storage {
         _pairs: Vec<(Vec<u8>, Vec<u8>)>,
     ) -> Result<SSTImportStats, errors::SharedError> {
         Err(errors::New("storage does not support physical SST import"))
+    }
+    /// Preserve older store implementations while letting TiKV observe the
+    /// same shared limiter and cancellation throughout an import.
+    fn ImportSSTWithOptions(&self, commit_ts: u64, pairs: Vec<(Vec<u8>, Vec<u8>)>, options: SSTImportOptions) -> Result<SSTImportStats, errors::SharedError> {
+        if options.context.is_cancelled() { return Err(errors::New("SST import cancelled")); }
+        if let Some(limiter) = options.write_limiter {
+            let bytes = pairs.iter().map(|(key, value)| key.len() + value.len()).sum();
+            limiter.WaitN(&options.context, 0, bytes)?;
+        }
+        self.ImportSST(commit_ts, pairs)
     }
     fn Begin(&self, opts: &[tikv::TxnOption]) -> Result<Box<dyn Transaction>, errors::SharedError>;
     fn GetSnapshot(&self, ver: Version) -> Box<dyn Snapshot>;

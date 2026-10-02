@@ -103,8 +103,7 @@ pub struct RangeSplitter {
     range_job_key_count: i64,
     region_split_size: i64,
     region_split_key_count: i64,
-    entries: Vec<PropertyEntry>,
-    cursor: usize,
+    entries: Option<Box<dyn Iterator<Item = Result<PropertyEntry>>>>,
     multi_file_stat: Vec<MultipleFilesStat>,
     active_data_files: HashMap<String, (usize, usize)>,
     active_stat_files: HashMap<String, (usize, usize)>,
@@ -139,29 +138,37 @@ pub fn NewRangeSplitter(
     region_split_key_count: i64,
 ) -> Result<RangeSplitter> {
     let mut normalized = multi_file_stat.to_vec();
-    let mut entries = Vec::new();
-    for (group_index, group) in normalized.iter_mut().enumerate() {
-        for (file_index, pair) in group.filenames.iter_mut().enumerate() {
-            populate_properties(pair, external_storage)?;
-            let count = pair.properties.len();
-            for (property_index, property) in pair.properties.iter().cloned().enumerate() {
-                entries.push(PropertyEntry {
-                    property,
-                    group_index,
-                    file_index,
-                    last_for_file: property_index + 1 == count,
-                });
+    let entries: Box<dyn Iterator<Item = Result<PropertyEntry>>> =
+        if external_storage.record_format() == crate::RecordFormat::GoBigEndian64 {
+            Box::new(PropertyMerge::new(&normalized, external_storage)?)
+        } else {
+            // Legacy fixtures carry inline properties or synthetic data/stat files.
+            // Production uses the Go stat readers above, never decodes table KVs
+            // merely to discover splitting boundaries.
+            let mut entries = Vec::new();
+            for (group_index, group) in normalized.iter_mut().enumerate() {
+                for (file_index, pair) in group.filenames.iter_mut().enumerate() {
+                    populate_properties(pair, external_storage)?;
+                    let count = pair.properties.len();
+                    for (property_index, property) in pair.properties.iter().cloned().enumerate() {
+                        entries.push(PropertyEntry {
+                            property,
+                            group_index,
+                            file_index,
+                            last_for_file: property_index + 1 == count,
+                        });
+                    }
+                }
             }
-        }
-    }
-    // 全局按 first_key，再按组/文件下标稳定排序，保证切分确定。
-    entries.sort_by(|left, right| {
-        left.property
-            .first_key
-            .cmp(&right.property.first_key)
-            .then_with(|| left.group_index.cmp(&right.group_index))
-            .then_with(|| left.file_index.cmp(&right.file_index))
-    });
+            entries.sort_by(|left, right| {
+                left.property
+                    .first_key
+                    .cmp(&right.property.first_key)
+                    .then_with(|| left.group_index.cmp(&right.group_index))
+                    .then_with(|| left.file_index.cmp(&right.file_index))
+            });
+            Box::new(entries.into_iter().map(Ok))
+        };
     Ok(RangeSplitter {
         ranges_group_size,
         ranges_group_keys: ranges_group_key_count,
@@ -169,8 +176,7 @@ pub fn NewRangeSplitter(
         range_job_key_count,
         region_split_size,
         region_split_key_count,
-        entries,
-        cursor: 0,
+        entries: Some(entries),
         multi_file_stat: normalized,
         active_data_files: HashMap::new(),
         active_stat_files: HashMap::new(),
@@ -223,6 +229,7 @@ impl RangeSplitter {
     /// 关闭切分器；之后再调用 `SplitOneRangesGroup` 返回 `Closed`。
     pub fn Close(&mut self) -> Result<()> {
         self.closed = true;
+        self.entries.take();
         Ok(())
     }
 
@@ -237,8 +244,8 @@ impl RangeSplitter {
         let mut return_after_next_property = false;
 
         // 主循环：累计 size/keys，维护 active 文件与将耗尽堆，触发各级切分标志。
-        while let Some(entry) = self.entries.get(self.cursor).cloned() {
-            self.cursor += 1;
+        while let Some(entry) = self.entries.as_mut().and_then(|entries| entries.next()) {
+            let entry = entry?;
             let property = entry.property;
             self.current_group_size += property.size as i64;
             self.current_range_job_size += property.size as i64;
@@ -370,5 +377,102 @@ impl RangeSplitter {
     /// 取出并清空已记录的 Region 分裂键。
     fn take_region_split_keys(&mut self) -> Vec<Vec<u8>> {
         std::mem::take(&mut self.region_split_keys)
+    }
+}
+
+struct PropertyHead {
+    entry: PropertyEntry,
+    source: usize,
+}
+impl PartialEq for PropertyHead {
+    fn eq(&self, other: &Self) -> bool {
+        self.entry.property.first_key == other.entry.property.first_key
+            && self.entry.group_index == other.entry.group_index
+            && self.entry.file_index == other.entry.file_index
+    }
+}
+impl Eq for PropertyHead {}
+impl Ord for PropertyHead {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .entry
+            .property
+            .first_key
+            .cmp(&self.entry.property.first_key)
+            .then_with(|| other.entry.group_index.cmp(&self.entry.group_index))
+            .then_with(|| other.entry.file_index.cmp(&self.entry.file_index))
+    }
+}
+impl PartialOrd for PropertyHead {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+struct PropertyMerge {
+    readers: Vec<crate::reader::StreamStatsReader>,
+    heap: BinaryHeap<PropertyHead>,
+    failed: bool,
+}
+impl PropertyMerge {
+    fn new(groups: &[MultipleFilesStat], store: &dyn Storage) -> Result<Self> {
+        let mut this = Self {
+            readers: vec![],
+            heap: BinaryHeap::new(),
+            failed: false,
+        };
+        for (group_index, group) in groups.iter().enumerate() {
+            for (file_index, file) in group.filenames.iter().enumerate() {
+                let mut reader = crate::reader::StreamStatsReader::open(store, &file.stat_file)?;
+                let first = reader.next()?;
+                let source = this.readers.len();
+                this.readers.push(reader);
+                if let Some(property) = first {
+                    this.heap.push(PropertyHead {
+                        entry: PropertyEntry {
+                            property: property.range,
+                            group_index,
+                            file_index,
+                            last_for_file: false,
+                        },
+                        source,
+                    });
+                }
+            }
+        }
+        Ok(this)
+    }
+}
+impl Iterator for PropertyMerge {
+    type Item = Result<PropertyEntry>;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.failed {
+            return None;
+        }
+        let mut head = self.heap.pop()?;
+        match self.readers[head.source].next() {
+            Ok(Some(next)) => {
+                if next.range.first_key < head.entry.property.first_key {
+                    self.failed = true;
+                    return Some(Err(crate::Error::InvalidData(
+                        "stat properties are not sorted".into(),
+                    )));
+                }
+                self.heap.push(PropertyHead {
+                    entry: PropertyEntry {
+                        property: next.range,
+                        group_index: head.entry.group_index,
+                        file_index: head.entry.file_index,
+                        last_for_file: false,
+                    },
+                    source: head.source,
+                });
+            }
+            Ok(None) => head.entry.last_for_file = true,
+            Err(error) => {
+                self.failed = true;
+                return Some(Err(error));
+            }
+        }
+        Some(Ok(head.entry))
     }
 }

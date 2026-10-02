@@ -248,6 +248,9 @@ pub struct Job {
     pub query: String,
     pub cdc_write_source: u64,
     pub sql_mode: u64,
+    /// Complete reorganization configuration captured from the submitting session.
+    pub reorg_meta: Option<Arc<model::DDLReorgMeta>>,
+    pub session_vars: std::collections::HashMap<String, String>,
     /// 任务开始时间戳（start_ts，事务开始 TS）。
     pub start_ts: u64,
     /// BDR（双向复制）角色名。
@@ -278,6 +281,8 @@ impl Default for Job {
             query: String::new(),
             cdc_write_source: 0,
             sql_mode: 0,
+            reorg_meta: None,
+            session_vars: Default::default(),
             start_ts: 0,
             bdr_role: String::new(),
             state: JobState::None,
@@ -417,6 +422,13 @@ impl Job {
             bdr_role: self.bdr_role.clone(),
             cdc_write_source: self.cdc_write_source,
             sql_mode: self.sql_mode,
+            reorg_meta: self.reorg_meta.as_ref().map(|meta| {
+                serde_json::from_value(
+                    serde_json::to_value(meta.as_ref()).expect("reorg metadata serialization"),
+                )
+                .expect("reorg metadata snapshot")
+            }),
+            session_vars: self.session_vars.clone(),
             need_reorg: self.need_reorg,
             ..model::Job::default()
         };

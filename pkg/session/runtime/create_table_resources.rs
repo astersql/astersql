@@ -502,3 +502,112 @@ pub(super) fn configure_replica(domain: &Domain, t: &TableInfo) -> Result<(), St
     }
     Ok(())
 }
+
+pub(super) fn delete_affinity(domain: &Domain, table: &TableInfo) -> Result<(), String> {
+    let Some(affinity) = &table.Affinity else {
+        return Ok(());
+    };
+    let ids = match affinity.Level.as_str() {
+        "table" => vec![format!("_tidb_t_{}", table.ID)],
+        "partition" => table
+            .GetPartitionInfo()
+            .map(|p| {
+                p.Definitions
+                    .iter()
+                    .map(|d| format!("_tidb_pt_{}_p{}", table.ID, d.ID))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        other => return Err(format!("invalid affinity level: {other}")),
+    };
+    if domain.storage_handle().with_storage(|s| s.Name()) == "mock-storage" {
+        astersql_domain_affinity::delete_groups_with_retry(
+            &astersql_domain_affinity::BackgroundContext,
+            &ids,
+        )
+        .map_err(|e| e.to_string())
+    } else {
+        astersql_domain_affinity::new_pd_manager(Arc::new(pd_client(domain)?))
+            .delete_affinity_groups(&astersql_domain_affinity::BackgroundContext, &ids)
+            .map_err(|e| e.to_string())
+    }
+}
+
+pub(super) fn update_labels(
+    domain: &Domain,
+    old_schema: &str,
+    old_name: &str,
+    new_schema: &str,
+    table: &TableInfo,
+    delete_old: bool,
+) -> Result<(), String> {
+    use astersql_domain_infosync::{self as infosync, label};
+    let keyspace = domain
+        .storage_handle()
+        .with_storage(|s| s.DDLKeyspaceID())
+        .map_err(|e| e.to_string())?;
+    let codec = if keyspace == u32::MAX {
+        label::tikv::NewCodecV1()
+    } else {
+        label::tikv::NewCodecV2(keyspace).map_err(|e| e.to_string())?
+    };
+    let table_rule = label::NewRuleID(
+        codec.clone(),
+        old_schema.into(),
+        old_name.into(),
+        String::new(),
+    );
+    let mut old_ids = vec![table_rule.clone()];
+    let part_rules: Vec<String> = table
+        .GetPartitionInfo()
+        .map(|p| {
+            p.Definitions
+                .iter()
+                .map(|d| {
+                    label::NewRuleID(
+                        codec.clone(),
+                        old_schema.into(),
+                        old_name.into(),
+                        d.Name.L.clone(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    old_ids.extend(part_rules.iter().cloned());
+    let old_rules = infosync::GetLabelRules(&old_ids).map_err(|e| e.to_string())?;
+    let mut rules = Vec::new();
+    let mut physical = vec![table.ID];
+    if let Some(partition) = table.GetPartitionInfo() {
+        for (index, def) in partition.Definitions.iter().enumerate() {
+            physical.push(def.ID);
+            if let Some(rule) = old_rules.get(&part_rules[index]) {
+                let mut rule = rule.clone();
+                rule.Reset(
+                    codec.clone(),
+                    new_schema.into(),
+                    table.Name.L.clone(),
+                    def.Name.L.clone(),
+                    vec![def.ID],
+                );
+                rules.push(rule);
+            }
+        }
+    }
+    if let Some(rule) = old_rules.get(&table_rule) {
+        let mut rule = rule.clone();
+        rule.Reset(
+            codec,
+            new_schema.into(),
+            table.Name.L.clone(),
+            String::new(),
+            physical,
+        );
+        rules.push(rule);
+    }
+    infosync::UpdateLabelRules(Some(&infosync::LabelRulePatch {
+        DeleteRules: if delete_old { old_ids } else { Vec::new() },
+        SetRules: rules,
+    }))
+    .map_err(|e| e.to_string())
+}

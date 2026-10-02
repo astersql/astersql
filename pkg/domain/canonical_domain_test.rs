@@ -1524,3 +1524,66 @@ fn crossks_align_meta_loader_nonempty_go_snapshot() {
             .contains("decode schema diff 5")
     );
 }
+
+#[test]
+fn masking_policy_loader_honors_same_version_go_metadata_deletion() {
+    let storage = astersql_store_mockstore_mockstorage::NewMockStorage(
+        astersql_store_mockstore_mockstorage::KVStore::NewMemoryWithWallClockTSO(),
+        None,
+    )
+    .unwrap();
+    let service = super::canonical_domain::DdlMetadataService::new();
+    service
+        .create_database(storage.as_ref(), "mysql", false)
+        .unwrap();
+    let change = service
+        .create_table(
+            storage.as_ref(),
+            "mysql",
+            astersql_meta_model::TableInfo {
+                Name: astersql_parser_ast::NewCIStr("tidb_masking_policy"),
+                ..Default::default()
+            },
+            false,
+        )
+        .unwrap();
+    let table = &change.new_tables[0].1;
+    assert_ne!(table.DBID, 0);
+    let loader = super::canonical_domain::KvInfoSchemaLoader::new();
+    let loaded = loader.load_info_schema(storage.as_ref(), "target").unwrap();
+    let loaded_table = loaded
+        .schema
+        .TableByName(
+            &infoschema::CiString::new("mysql"),
+            &infoschema::CiString::new("tidb_masking_policy"),
+        )
+        .unwrap();
+    assert_eq!(loaded_table.Meta().db_id, table.DBID);
+    assert_eq!(
+        loaded_table.Meta().model_meta.as_ref().unwrap().DBID,
+        table.DBID
+    );
+    let mut tx = storage.Begin(&[]).unwrap();
+    tx.Delete(
+        super::canonical_domain::tidb_hash_key(
+            format!("DB:{}", table.DBID).as_bytes(),
+            format!("Table:{}", table.ID).as_bytes(),
+        )
+        .0,
+    );
+    tx.Commit().unwrap();
+    let reloaded = loader.load_info_schema(storage.as_ref(), "target").unwrap();
+    assert_eq!(
+        loaded.schema.SchemaMetaVersion(),
+        reloaded.schema.SchemaMetaVersion()
+    );
+    assert!(
+        reloaded
+            .schema
+            .TableByName(
+                &infoschema::CiString::new("mysql"),
+                &infoschema::CiString::new("tidb_masking_policy")
+            )
+            .is_err()
+    );
+}

@@ -107,3 +107,49 @@ fn TestRunWithRestoredSystemVar() {
 fn ids(subtasks: &[proto::Subtask]) -> Vec<i64> {
     subtasks.iter().map(|subtask| subtask.ID).collect()
 }
+
+#[test]
+fn task_service_manager_routes_actual_kernel_and_keyspace() {
+    let _guard = LIMIT_LOCK.lock().unwrap();
+    struct Restore(astersql_config::Config);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            astersql_config::store_global_config(self.0.clone());
+        }
+    }
+    let _restore = Restore((*astersql_config::get_global_config()).clone());
+    let mut actual = _restore.0.clone();
+    actual.keyspace_name = "user-keyspace".into();
+    astersql_config::store_global_config(actual.clone());
+    assert_eq!(
+        kerneltype::IsNextGen(),
+        astersql_config_kerneltype::IsNextGen()
+    );
+    assert_eq!(config::GetGlobalKeyspaceName(), "user-keyspace");
+    let local = TaskManager::new();
+    let service = TaskManager::new();
+    SetTaskManager(local.clone());
+    SetDXFSvcTaskMgr(service.clone());
+    GetDXFSvcTaskMgr()
+        .unwrap()
+        .ExecuteSQLWithNewSession((), "select 1", vec![])
+        .unwrap();
+    assert_eq!(
+        local.calls().len(),
+        usize::from(!astersql_config_kerneltype::IsNextGen())
+    );
+    assert_eq!(
+        service.calls().len(),
+        usize::from(astersql_config_kerneltype::IsNextGen())
+    );
+    actual.keyspace_name = keyspace::System.into();
+    astersql_config::store_global_config(actual);
+    GetDXFSvcTaskMgr()
+        .unwrap()
+        .ExecuteSQLWithNewSession((), "select 2", vec![])
+        .unwrap();
+    assert_eq!(
+        local.calls().len(),
+        1 + usize::from(!astersql_config_kerneltype::IsNextGen())
+    );
+}

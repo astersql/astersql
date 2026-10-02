@@ -306,6 +306,85 @@ pub trait JobExecutionContext {
         Err("create-table TTL resource unavailable".into())
     }
 
+    fn masking_policy_timestamp(&mut self) -> Result<String, String> {
+        Err("DDL masking policy clock unavailable".into())
+    }
+    fn update_table_labels(
+        &mut self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: &astersql_meta_model::TableInfo,
+        _: bool,
+    ) -> Result<(), String> {
+        Err("DDL table label resources unavailable".into())
+    }
+    fn delete_drop_table_ttl(&mut self, _: i64) -> Result<(), String> {
+        Err("drop-table TTL resource unavailable".into())
+    }
+    fn cleanup_drop_table_resources(
+        &mut self,
+        _: &astersql_meta_model::TableInfo,
+    ) -> Result<(), String> {
+        Err("drop-table replica resource unavailable".into())
+    }
+    fn delete_drop_table_affinity(
+        &mut self,
+        _: &astersql_meta_model::TableInfo,
+    ) -> Result<(), String> {
+        Err("drop-table affinity resource unavailable".into())
+    }
+    fn drop_table_rule_ids(
+        &mut self,
+        _: &str,
+        _: &astersql_meta_model::TableInfo,
+    ) -> Result<Vec<String>, String> {
+        Err("drop-table label codec unavailable".into())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn backfill_modified_column(
+        &mut self,
+        _: &astersql_meta_model::TableInfo,
+        _: &astersql_meta_model::ColumnInfo,
+        _: &astersql_meta_model::ColumnInfo,
+        _: i64,
+        _: &[u8],
+        _: &[u8],
+        _: usize,
+        _: u64,
+        _: Option<&astersql_meta_model::TimeZoneLocation>,
+    ) -> Result<(Vec<u8>, i64), String> {
+        Err("transactional modify-column backfill unavailable".into())
+    }
+    fn backfill_prepared_indexes(
+        &mut self,
+        _: crate::backfilling::IndexBackfillBatch,
+    ) -> Result<crate::backfilling::BackfillTaskContext, String> {
+        Err("transactional modify-column index backfill unavailable".into())
+    }
+
+    fn ingest_modified_indexes(
+        &mut self,
+        _: crate::backfilling::IndexBackfillBatch,
+        _: &mut astersql_meta_model::group_3::Job,
+    ) -> Result<crate::backfilling::BackfillTaskContext, String> {
+        Err("modify-column SST ingest unavailable".into())
+    }
+    fn analyze_modified_table(
+        &mut self,
+        _: &mut astersql_meta_model::group_3::Job,
+        _: &astersql_meta_model::TableInfo,
+    ) -> Result<i8, String> {
+        Err("modify-column analyze executor unavailable".into())
+    }
+    fn merge_modified_indexes(
+        &mut self,
+        _: crate::backfilling::IndexBackfillBatch,
+        _: &mut astersql_meta_model::group_3::Job,
+    ) -> Result<crate::backfilling::BackfillTaskContext, String> {
+        Err("modify-column temporary index merge unavailable".into())
+    }
     /// Recover durable reorg state on this worker's real SQL session.
     fn restore_reorg(
         &mut self,

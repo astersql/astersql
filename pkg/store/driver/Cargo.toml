@@ -8,6 +8,7 @@ publish.workspace = true
 path = "lib.rs"
 
 [dependencies]
+astersql-config-configtypes = { path = "../../config/configtypes" }
 astersql-testkit-testfailpoint = { path = "../../testkit/testfailpoint" }
 astersql-kv = { package = "astersql-kv", path = "../../kv" }
 astersql-store-copr = { package = "astersql-store-copr", path = "../copr" }

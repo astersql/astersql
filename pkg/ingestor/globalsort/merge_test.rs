@@ -310,6 +310,9 @@ fn test_merge_overlapping_files_internal_ignore_and_collector() {
         let val = key.clone();
         kvs.push(KvPair { key, value: val });
     }
+    // Go writes this fixture through a sorting SST writer. Directly encoded
+    // input must obey the same individually sorted file contract.
+    kvs.sort_by(|left, right| left.key.cmp(&right.key));
     store.write("/in/0.data", encode_kvs(&kvs)).unwrap();
 
     let summary = Arc::new(SubtaskSummary::default());
@@ -536,4 +539,400 @@ fn test_merge_sorted_unique_data_round_trip() {
     let merged = crate::decode_kvs(&store.read(&output).unwrap(), 0).unwrap();
     kvs.sort_by(|left, right| left.key.cmp(&right.key));
     assert_eq!(kvs, merged);
+}
+
+// Real object stores supply stream readers and deliberately reject the legacy
+// whole-object path; merging must consume the production streaming interface.
+#[test]
+fn merge_uses_object_streams_without_whole_file_reads() {
+    struct StreamingStore(MemoryStorage);
+    impl Storage for StreamingStore {
+        fn file_size(&self, path: &str) -> crate::Result<u64> {
+            Ok(self.0.read(path)?.len() as u64)
+        }
+        fn read(&self, _: &str) -> crate::Result<Vec<u8>> {
+            Err(Error::InvalidArgument("whole-object read forbidden".into()))
+        }
+        fn open(&self, path: &str) -> crate::Result<Box<dyn std::io::Read>> {
+            Ok(Box::new(std::io::Cursor::new(self.0.read(path)?)))
+        }
+        fn write(&self, path: &str, bytes: Vec<u8>) -> crate::Result<()> {
+            self.0.write(path, bytes)
+        }
+        fn delete_files(&self, paths: &[String]) -> crate::Result<()> {
+            self.0.delete_files(paths)
+        }
+        fn list_prefix(&self, prefix: &str) -> crate::Result<Vec<String>> {
+            self.0.list_prefix(prefix)
+        }
+    }
+    let store = StreamingStore(MemoryStorage::default());
+    for (file, keys) in [("a", vec![1_u8, 3, 5]), ("b", vec![2_u8, 4, 6])] {
+        store
+            .write(
+                file,
+                encode_kvs(
+                    &keys
+                        .into_iter()
+                        .map(|key| KvPair {
+                            key: vec![key],
+                            value: vec![key; 8],
+                        })
+                        .collect::<Vec<_>>(),
+                ),
+            )
+            .unwrap();
+    }
+    let out = crate::merge::merge_overlapping_files_internal(
+        &CancellationToken::default(),
+        &["a".into(), "b".into()],
+        &store,
+        0,
+        "out",
+        "stream",
+        0,
+        None,
+        None,
+        false,
+        OnDuplicateKey::Error,
+        1,
+        &Mutex::new(Default::default()),
+    )
+    .unwrap();
+    let mut bounded = crate::reader::MemKvsAndBuffers::default();
+    crate::reader::read_all_data(
+        &CancellationToken::default(),
+        &store,
+        &["a".into()],
+        &["a.stat".into()],
+        &[2],
+        &[5],
+        &[0],
+        &[0],
+        9,
+        &mut bounded,
+    )
+    .unwrap();
+    bounded.build();
+    assert_eq!(bounded.kvs.len(), 1);
+    assert_eq!(bounded.kvs[0].key, vec![3]);
+    let files = vec![crate::MultipleFilesStat {
+        filenames: vec![crate::FilePair {
+            data_file: "a".into(),
+            stat_file: "a.stat".into(),
+            properties: vec![crate::RangeProperty {
+                first_key: vec![1],
+                last_key: vec![5],
+                size: 27,
+                keys: 3,
+            }],
+        }],
+    }];
+    let v2 = crate::merge_v2::MergeOverlappingFilesV2(
+        &Default::default(),
+        &files,
+        &store,
+        &[0],
+        &[6],
+        0,
+        "v2",
+        "stream",
+        0,
+        0,
+        0,
+        0,
+        None,
+        1,
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        crate::decode_kvs(&store.0.read(&v2).unwrap(), 0)
+            .unwrap()
+            .iter()
+            .map(|kv| kv.key[0])
+            .collect::<Vec<_>>(),
+        vec![1, 3, 5]
+    );
+    let pairs = crate::decode_kvs(&store.0.read(&out).unwrap(), 0).unwrap();
+    assert_eq!(
+        pairs.iter().map(|kv| kv.key[0]).collect::<Vec<_>>(),
+        vec![1, 2, 3, 4, 5, 6]
+    );
+}
+
+#[test]
+fn merge_reads_and_writes_go_simplesst_wire_format() {
+    struct GoStore(MemoryStorage);
+    impl Storage for GoStore {
+        fn record_format(&self) -> crate::RecordFormat {
+            crate::RecordFormat::GoBigEndian64
+        }
+        fn read(&self, path: &str) -> crate::Result<Vec<u8>> {
+            self.0.read(path)
+        }
+        fn write(&self, path: &str, bytes: Vec<u8>) -> crate::Result<()> {
+            self.0.write(path, bytes)
+        }
+        fn delete_files(&self, paths: &[String]) -> crate::Result<()> {
+            self.0.delete_files(paths)
+        }
+        fn list_prefix(&self, prefix: &str) -> crate::Result<Vec<String>> {
+            self.0.list_prefix(prefix)
+        }
+    }
+    let store = GoStore(MemoryStorage::default());
+    let encode = |keys: &[u8]| {
+        let mut bytes = Vec::new();
+        for key in keys {
+            bytes.extend_from_slice(&1_u64.to_be_bytes());
+            bytes.extend_from_slice(&1_u64.to_be_bytes());
+            bytes.push(*key);
+            bytes.push(*key);
+        }
+        bytes
+    };
+    store.write("a", encode(&[1, 3])).unwrap();
+    store.write("b", encode(&[2, 4])).unwrap();
+    let out = crate::merge::merge_overlapping_files_internal(
+        &CancellationToken::default(),
+        &["a".into(), "b".into()],
+        &store,
+        0,
+        "out",
+        "go",
+        0,
+        None,
+        None,
+        false,
+        OnDuplicateKey::Error,
+        1,
+        &Mutex::new(Default::default()),
+    )
+    .unwrap();
+    assert_eq!(store.read(&out).unwrap(), encode(&[1, 2, 3, 4]));
+}
+
+#[test]
+fn range_reader_uses_transport_offset_without_fetching_prefix() {
+    struct RangeStore(crate::MemoryStorage);
+    impl crate::Storage for RangeStore {
+        fn open(&self, _: &str) -> crate::Result<Box<dyn std::io::Read>> {
+            Err(crate::Error::InvalidData(
+                "range reader fetched the object prefix".into(),
+            ))
+        }
+        fn open_at(&self, path: &str, offset: u64) -> crate::Result<Box<dyn std::io::Read>> {
+            let bytes = self.0.read(path)?;
+            assert_eq!(offset, 10);
+            Ok(Box::new(std::io::Cursor::new(
+                bytes[offset as usize..].to_vec(),
+            )))
+        }
+        fn read(&self, path: &str) -> crate::Result<Vec<u8>> {
+            self.0.read(path)
+        }
+        fn write(&self, path: &str, value: Vec<u8>) -> crate::Result<()> {
+            self.0.write(path, value)
+        }
+        fn delete_files(&self, paths: &[String]) -> crate::Result<()> {
+            self.0.delete_files(paths)
+        }
+        fn list_prefix(&self, prefix: &str) -> crate::Result<Vec<String>> {
+            self.0.list_prefix(prefix)
+        }
+    }
+    let store = RangeStore(Default::default());
+    let pairs = vec![
+        crate::KvPair {
+            key: b"a".to_vec(),
+            value: b"1".to_vec(),
+        },
+        crate::KvPair {
+            key: b"b".to_vec(),
+            value: b"2".to_vec(),
+        },
+    ];
+    store.write("range", crate::encode_kvs(&pairs)).unwrap();
+    let mut loaded = crate::reader::MemKvsAndBuffers::default();
+    crate::reader::read_one_file(
+        &Default::default(),
+        &store,
+        "range",
+        b"b",
+        b"c",
+        10,
+        1,
+        100,
+        &mut loaded,
+    )
+    .unwrap();
+    loaded.build();
+    assert_eq!(loaded.kvs, pairs[1..]);
+}
+
+#[test]
+fn merge_v2_seeks_go_stat_offsets_for_later_key_window() {
+    struct GoRangeStore {
+        memory: MemoryStorage,
+        offsets: Mutex<Vec<u64>>,
+    }
+    impl Storage for GoRangeStore {
+        fn record_format(&self) -> crate::RecordFormat {
+            crate::RecordFormat::GoBigEndian64
+        }
+        fn open_at(&self, path: &str, offset: u64) -> crate::Result<Box<dyn std::io::Read>> {
+            self.offsets.lock().unwrap().push(offset);
+            let bytes = self.memory.read(path)?;
+            Ok(Box::new(std::io::Cursor::new(
+                bytes[offset as usize..].to_vec(),
+            )))
+        }
+        fn read(&self, path: &str) -> crate::Result<Vec<u8>> {
+            self.memory.read(path)
+        }
+        fn write(&self, path: &str, value: Vec<u8>) -> crate::Result<()> {
+            self.memory.write(path, value)
+        }
+        fn delete_files(&self, paths: &[String]) -> crate::Result<()> {
+            self.memory.delete_files(paths)
+        }
+        fn list_prefix(&self, prefix: &str) -> crate::Result<Vec<String>> {
+            self.memory.list_prefix(prefix)
+        }
+    }
+    let store = GoRangeStore {
+        memory: Default::default(),
+        offsets: Default::default(),
+    };
+    let mut data = Vec::new();
+    let mut stats = Vec::new();
+    for (index, key) in [1u8, 2, 3, 4].into_iter().enumerate() {
+        data.extend_from_slice(&1u64.to_be_bytes());
+        data.extend_from_slice(&1u64.to_be_bytes());
+        data.extend_from_slice(&[key, key]);
+        // Independent Go simplesst RangeProperty wire fixture.
+        stats.extend_from_slice(&34u32.to_be_bytes());
+        stats.extend_from_slice(&1u32.to_be_bytes());
+        stats.push(key);
+        stats.extend_from_slice(&1u32.to_be_bytes());
+        stats.push(key);
+        stats.extend_from_slice(&18u64.to_be_bytes());
+        stats.extend_from_slice(&1u64.to_be_bytes());
+        stats.extend_from_slice(&(18 * index as u64).to_be_bytes());
+    }
+    store.write("data", data.clone()).unwrap();
+    store.write("stat", stats).unwrap();
+    let files = vec![crate::MultipleFilesStat {
+        filenames: vec![crate::FilePair {
+            data_file: "data".into(),
+            stat_file: "stat".into(),
+            properties: vec![],
+        }],
+    }];
+    let output = crate::merge_v2::MergeOverlappingFilesV2(
+        &Default::default(),
+        &files,
+        &store,
+        &[3],
+        &[5],
+        0,
+        "range",
+        "go",
+        0,
+        0,
+        0,
+        0,
+        None,
+        1,
+        false,
+    )
+    .unwrap();
+    assert_eq!(store.read(&output).unwrap(), data[36..]);
+    assert_eq!(
+        *store.offsets.lock().unwrap(),
+        vec![36],
+        "data reader must start at the largest property offset preceding the window"
+    );
+}
+
+#[test]
+fn merge_operator_runs_file_groups_on_actual_parallel_workers() {
+    struct ParallelStore {
+        inner: crate::MemoryStorage,
+        threads: Mutex<std::collections::HashSet<std::thread::ThreadId>>,
+        changed: std::sync::Condvar,
+    }
+    impl crate::Storage for ParallelStore {
+        fn read(&self, path: &str) -> crate::Result<Vec<u8>> {
+            self.inner.read(path)
+        }
+        fn write(&self, path: &str, bytes: Vec<u8>) -> crate::Result<()> {
+            self.inner.write(path, bytes)
+        }
+        fn delete_files(&self, paths: &[String]) -> crate::Result<()> {
+            self.inner.delete_files(paths)
+        }
+        fn list_prefix(&self, prefix: &str) -> crate::Result<Vec<String>> {
+            self.inner.list_prefix(prefix)
+        }
+        fn open(&self, path: &str) -> crate::Result<Box<dyn std::io::Read>> {
+            if path.starts_with("parallel-in/") {
+                let mut threads = self.threads.lock().unwrap();
+                threads.insert(std::thread::current().id());
+                self.changed.notify_all();
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                while threads.len() < 2 {
+                    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                    if remaining.is_zero() {
+                        return Err(crate::Error::InvalidData(
+                            "merge has no parallel file-group worker".into(),
+                        ));
+                    }
+                    threads = self.changed.wait_timeout(threads, remaining).unwrap().0;
+                }
+            }
+            self.inner.open(path)
+        }
+    }
+    let store = Arc::new(ParallelStore {
+        inner: Default::default(),
+        threads: Default::default(),
+        changed: Default::default(),
+    });
+    let mut inputs = Vec::new();
+    let mut expected = Vec::new();
+    for key in 1u8..=8 {
+        let file = format!("parallel-in/{key}");
+        let pair = crate::KvPair {
+            key: vec![key],
+            value: vec![key + 10],
+        };
+        store
+            .write(&file, crate::encode_kvs(&[pair.clone()]))
+            .unwrap();
+        inputs.push(file);
+        expected.push(pair);
+    }
+    let op = NewMergeOperator(
+        Default::default(),
+        store.clone(),
+        0,
+        "parallel-out",
+        1024,
+        None,
+        None,
+        4,
+        false,
+        crate::OnDuplicateKey::Error,
+    )
+    .unwrap();
+    let outputs = crate::merge::MergeOverlappingFiles(&inputs, &op).unwrap();
+    let mut actual = Vec::new();
+    for file in outputs {
+        actual.extend(crate::decode_kvs(&store.read(&file).unwrap(), 0).unwrap());
+    }
+    actual.sort_by(|left, right| left.key.cmp(&right.key));
+    assert_eq!(actual, expected);
+    assert!(store.threads.lock().unwrap().len() >= 2);
 }

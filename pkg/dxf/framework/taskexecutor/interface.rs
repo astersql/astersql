@@ -272,6 +272,16 @@ pub struct SubtaskSummary {
 
 /// 任务/子任务持久化表抽象（对应系统表访问）。
 pub trait TaskTable: Send + Sync {
+    /// Acquire the target runtime before constructing an executor. Temporary
+    /// acquisition errors leave durable subtasks available for the next poll.
+    fn AcquireTaskRuntime(
+        &self,
+        _: &Context,
+        _: &Task,
+    ) -> Result<Option<Arc<dyn crate::TaskRuntime>>> {
+        Ok(None)
+    }
+
     /// 按执行节点 ID 列出待处理任务摘要。
     fn GetTaskExecInfoByExecID(&self, _: &Context, _: &str) -> Result<Vec<TaskExecInfo>> {
         Ok(vec![])

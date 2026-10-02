@@ -31,6 +31,32 @@
 pub fn TestMySQLDBTables() {
     use crate::bootstrap::{systemDatabases, versionedBootstrapSchemas};
 
+    assert_eq!(
+        systemDatabases[0].id,
+        astersql_meta_metadef::SystemDatabaseID
+    );
+    assert_eq!(systemDatabases[1].id, astersql_meta_metadef::SysDatabaseID);
+    let tables = versionedBootstrapSchemas
+        .iter()
+        .flat_map(|schema| schema.databases)
+        .flat_map(|database| database.tables)
+        .collect::<Vec<_>>();
+    for (name, id) in [
+        (
+            "tidb_global_task",
+            astersql_meta_metadef::TiDBGlobalTaskTableID,
+        ),
+        ("stats_meta", astersql_meta_metadef::StatsMetaTableID),
+        (
+            "tidb_masking_policy",
+            astersql_meta_metadef::TiDBMaskingPolicyTableID,
+        ),
+    ] {
+        assert_eq!(
+            tables.iter().find(|table| table.name == name).unwrap().id,
+            id
+        );
+    }
     assert_eq!(versionedBootstrapSchemas[0].databases[0].tables.len(), 52);
     let mut ids = systemDatabases
         .iter()
@@ -1082,4 +1108,81 @@ fn secure_bootstrap_root_insert_uses_auth_socket_and_current_user() {
         args,
         &[crate::bootstrap::SqlValue::String("alice".to_owned())]
     );
+}
+
+#[cfg(feature = "nextgen")]
+#[test]
+fn nextgen_production_bootstrap_preserves_reserved_schema_ids_and_version() {
+    let store = std::sync::Arc::try_unwrap(
+        astersql_store_mockstore_mockstorage::NewMockStorage(
+            astersql_store_mockstore_mockstorage::KVStore::NewMemoryWithWallClockTSO(),
+            Some(astersql_store_mockstore_mockstorage::KeyspaceMeta {
+                Name: "bootstrap-user".into(),
+                Id: 96062,
+            }),
+        )
+        .unwrap(),
+    )
+    .ok()
+    .unwrap();
+    let mut config = astersql_domain::DomainConfig::default();
+    config.keyspace = "bootstrap-user".into();
+    let domain = std::sync::Arc::new(astersql_domain::Domain::new(
+        store,
+        std::sync::Arc::new(astersql_domain::KvInfoSchemaLoader::new()),
+        config,
+    ));
+    domain.init().unwrap();
+    crate::runtime::BootstrapCanonicalDomain(domain.clone()).unwrap();
+    let database = domain
+        .info_schema()
+        .AllSchemas()
+        .into_iter()
+        .find(|database| database.name.lower == "mysql")
+        .unwrap();
+    assert_eq!(database.id, astersql_meta_metadef::SystemDatabaseID);
+    assert_eq!(
+        domain
+            .table_by_name("mysql", "tidb_global_task")
+            .unwrap()
+            .ID,
+        astersql_meta_metadef::TiDBGlobalTaskTableID
+    );
+    assert_eq!(
+        domain
+            .table_by_name("mysql", "tidb_masking_policy")
+            .unwrap()
+            .ID,
+        astersql_meta_metadef::TiDBMaskingPolicyTableID
+    );
+    assert_eq!(
+        domain
+            .table_by_name("mysql", "tidb_background_subtask")
+            .unwrap()
+            .ID,
+        astersql_meta_metadef::TiDBBackgroundSubtaskTableID
+    );
+    assert_eq!(
+        domain.table_by_name("mysql", "tidb_ddl_job").unwrap().ID,
+        astersql_meta_metadef::TiDBDDLJobTableID
+    );
+    let key = astersql_meta::transaction_meta_string_key(b"BootTableVersion");
+    let version = domain
+        .storage_handle()
+        .with_storage(|store| {
+            store
+                .GetSnapshot(store.CurrentVersion("global").unwrap())
+                .Get(&astersql_kv::Context::default(), key, &[])
+        })
+        .unwrap();
+    assert_eq!(version.Value, b"4");
+    crate::runtime::BootstrapCanonicalDomain(domain.clone()).unwrap();
+    assert_eq!(
+        domain
+            .table_by_name("mysql", "tidb_global_task")
+            .unwrap()
+            .ID,
+        astersql_meta_metadef::TiDBGlobalTaskTableID
+    );
+    domain.close();
 }

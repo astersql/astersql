@@ -816,6 +816,7 @@ impl CanonicalSessionFactory {
             }
         }
         let mut ttl_watch_transport = None;
+        let mut serving_ddl_runtime = None;
         if !etcd_addrs.is_empty() {
             let tls_files = tls.as_ref().map(|tls| {
                 (
@@ -841,13 +842,31 @@ impl CanonicalSessionFactory {
                     .unwrap_or_default()
                     .as_nanos()
             );
+            let client = Arc::new(client);
             factory
                 .domain
-                .install_server_info_syncer(id, Arc::new(client), options)
+                .install_server_info_syncer(id.clone(), client.clone(), options)
                 .map_err(|error| {
                     factory.domain.close();
                     session_error("register Domain server info", error)
                 })?;
+            let cancellation = astersql_owner::Context::new();
+            let owner = astersql_owner::NewOwnerManager(
+                cancellation.clone(),
+                client.raw_client(),
+                "ddl",
+                id.clone(),
+                format!("{}{}", client.namespace(), astersql_ddl_util::DDLOwnerKey),
+            );
+            let schema_client = Arc::new(
+                astersql_ddl_schemaver::RealEtcdClient::new(client)
+                    .map_err(|e| session_error("prepare serving DDL etcd transport", e))?,
+            );
+            let owner_runtime = Arc::new(
+                tokio::runtime::Runtime::new()
+                    .map_err(|e| session_error("prepare serving DDL owner runtime", e))?,
+            );
+            serving_ddl_runtime = Some((owner, owner_runtime, cancellation, schema_client, id));
         }
         if !pd_addrs.is_empty() && !etcd_addrs.is_empty() {
             let tls_files = tls.as_ref().map(|tls| {
@@ -871,6 +890,20 @@ impl CanonicalSessionFactory {
         if let Err(error) = BootstrapCanonicalDomain(Arc::clone(&factory.domain)) {
             factory.domain.close();
             return Err(error);
+        }
+        if let Some((owner, owner_runtime, cancellation, schema_client, id)) = serving_ddl_runtime {
+            if let Err(error) = super::session_factory::install_serving_ddl_runtime(
+                &factory.domain,
+                owner,
+                owner_runtime,
+                cancellation,
+                schema_client,
+                &id,
+                astersql_sessionctx_vardef::GetSchemaLease(),
+            ) {
+                factory.domain.close();
+                return Err(session_error("start serving durable DDL", error));
+            }
         }
         if let Err(error) = factory.domain.start(StartMode::Normal) {
             factory.domain.close();
@@ -922,7 +955,29 @@ impl CanonicalSessionFactory {
         let mut config = DomainConfig::default();
         config.schema_lease = Duration::ZERO;
         config.stats_lease = Duration::ZERO;
-        Self::from_storage(store, config)
+        let factory = Self::from_storage(store, config)?;
+        BootstrapCanonicalDomain(factory.domain.clone())?;
+        let cancellation = astersql_owner::Context::new();
+        let id = format!("factory-{:p}", Arc::as_ptr(&factory.domain));
+        let owner = astersql_owner::NewMockManager(
+            cancellation.clone(),
+            id.clone(),
+            None,
+            format!("/serving-factory/{id}"),
+        );
+        super::session_factory::install_serving_ddl_runtime(
+            &factory.domain,
+            owner,
+            Arc::new(
+                tokio::runtime::Runtime::new().map_err(|e| session_error("owner runtime", e))?,
+            ),
+            cancellation,
+            Arc::new(astersql_ddl_schemaver::MemoryEtcdClient::default()),
+            &id,
+            Duration::from_millis(50),
+        )
+        .map_err(|e| session_error("serving DDL runtime", e))?;
+        Ok(factory)
     }
 
     /// Return the single Domain shared by every session from this factory.
@@ -1917,12 +1972,144 @@ fn refresh_canonical_binding_digests(session: &ConcreteSession) -> SessionResult
     Ok(())
 }
 
+struct CanonicalBootstrapSchemaRuntime<'a> {
+    txn: &'a mut dyn kv::Transaction,
+    changed: bool,
+}
+impl crate::bootstrap::BootstrapSchemaRuntime for CanonicalBootstrapSchemaRuntime<'_> {
+    type Error = String;
+    fn nextgen_schema_version(&mut self) -> Result<i32, String> {
+        match self.txn.Get(
+            &kv::Context::default(),
+            astersql_meta::transaction_meta_string_key(b"BootTableVersion"),
+            &[],
+        ) {
+            Ok(value) if !value.Value.is_empty() => std::str::from_utf8(&value.Value)
+                .map_err(|e| e.to_string())?
+                .parse()
+                .map_err(|e: std::num::ParseIntError| e.to_string()),
+            Ok(_) => Ok(0),
+            Err(e) if kv::IsErrNotFound(&e) => Ok(0),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+    fn create_system_database(
+        &mut self,
+        database: crate::bootstrap::DatabaseBasicInfo,
+    ) -> Result<(), String> {
+        let mut meta = astersql_meta::TransactionMutator::new(self.txn);
+        if let Some(existing) = meta.get_database(database.id)? {
+            if existing.Name.L != database.name {
+                return Err(format!(
+                    "reserved database ID {} belongs to {}",
+                    database.id, existing.Name.O
+                ));
+            }
+            return Ok(());
+        }
+        if meta
+            .list_databases()?
+            .iter()
+            .any(|existing| existing.Name.L == database.name)
+        {
+            return Err(format!(
+                "system database {} has a different reserved ID",
+                database.name
+            ));
+        }
+        meta.create_database(&astersql_meta_model::DBInfo {
+            ID: database.id,
+            Name: astersql_meta_model::ast::NewCIStr(database.name),
+            Charset: "utf8mb4".into(),
+            Collate: "utf8mb4_bin".into(),
+            State: astersql_meta_model::SchemaState::Public,
+            ..Default::default()
+        })?;
+        self.changed = true;
+        Ok(())
+    }
+    fn create_and_split_system_table(
+        &mut self,
+        database_id: i64,
+        definition: crate::bootstrap::TableBasicInfo,
+    ) -> Result<(), String> {
+        let mut parser = astersql_parser::New();
+        parser.SetSQLMode(astersql_parser_mysql::r#const::ModeNone);
+        let statement = parser
+            .ParseOneStmt(definition.create_sql, "", "")
+            .map_err(|e| e.to_string())?;
+        let statement = statement
+            .as_any()
+            .downcast_ref::<astersql_parser_ast::CreateTableStmt>()
+            .ok_or("system table definition is not CREATE TABLE")?;
+        let context = astersql_meta_metabuild::NewContext::<(), std::convert::Infallible>(vec![]);
+        let mut table =
+            astersql_ddl::BuildTableInfoFromAST(&context, statement).map_err(|e| e.to_string())?;
+        crate::bootstrap::checkSystemTableConstraint::<String>(
+            &crate::bootstrap::SystemTableInfo {
+                partitioned: table.Partition.is_some(),
+                separate_auto_increment: table.AutoIDCache == 1,
+            },
+        )
+        .map_err(|e| format!("invalid bootstrap table {}: {e:?}", definition.name))?;
+        table.ID = definition.id;
+        table.DBID = database_id;
+        table.State = astersql_meta_model::SchemaState::Public;
+        table.UpdateTS = self.txn.StartTS();
+        astersql_meta::TransactionMutator::new(self.txn).create_table(database_id, &table)?;
+        self.changed = true;
+        Ok(())
+    }
+    fn set_nextgen_schema_version(&mut self, version: i32) -> Result<(), String> {
+        self.txn
+            .Set(
+                astersql_meta::transaction_meta_string_key(b"BootTableVersion"),
+                version.to_string().into_bytes(),
+            )
+            .map_err(|e| e.to_string())
+    }
+}
+fn bootstrap_canonical_nextgen_schemas(domain: &Arc<Domain>) -> SessionResult<()> {
+    domain.storage_handle().with_storage(|store| {
+        kv::RunInNewTxn(&kv::Context::default(), store, true, |_, txn| {
+            let mut runtime = CanonicalBootstrapSchemaRuntime {txn, changed:false};
+            crate::bootstrap::bootstrapSchemas(&mut runtime).map_err(|e|kv::errors::New(format!("bootstrap reserved schemas: {e:?}")))?;
+            if runtime.changed {
+                let version = astersql_meta::TransactionMutator::new(runtime.txn).gen_schema_version().map_err(kv::errors::New)?;
+                runtime.txn.Set(astersql_meta::transaction_meta_string_key(format!("Diff:{version}").as_bytes()), serde_json::to_vec(&serde_json::json!({"version":version,"type":0,"schema_id":0,"table_id":0,"regenerate_schema_map":true})).map_err(|e|kv::errors::New(e.to_string()))?)?;
+            }
+            Ok(())
+        })
+    }).map_err(|e|session_error("bootstrap NextGen system metadata",e))?;
+    domain
+        .reload()
+        .map_err(|e| session_error("load bootstrapped reserved schemas", e))?;
+    // The canonical SQL/statistics bridge also receives tables created directly
+    // through Go metadata, with their reserved identities unchanged.
+    let registered = domain.stats_context().catalog();
+    for database in domain.info_schema().AllSchemas() {
+        for table in &database.tables {
+            if let Some(table) = &table.model_meta {
+                if !registered.contains_key(&(database.name.lower.clone(), table.Name.L.clone())) {
+                    domain
+                        .register_stats_table(&database.name.lower, table.as_ref().clone())
+                        .map_err(|e| session_error("publish bootstrapped system table", e))?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Persist mysql/sys bootstrap metadata into an initialized canonical Domain.
 ///
 /// Virtual INFORMATION_SCHEMA, PERFORMANCE_SCHEMA and METRICS_SCHEMA tables are
 /// intentionally absent here: `metadata_catalog` overlays those registries
 /// without writing them to TiKV.
 pub fn BootstrapCanonicalDomain(domain: Arc<Domain>) -> SessionResult<ConcreteSession> {
+    if astersql_config_kerneltype::IsNextGen() {
+        bootstrap_canonical_nextgen_schemas(&domain)?;
+    }
     let session = ConcreteSession::new(Arc::clone(&domain));
     let previous_bootstrap_version = canonical_bootstrap_version(&session, &domain)?;
     for database in ["mysql", "sys", "test"] {

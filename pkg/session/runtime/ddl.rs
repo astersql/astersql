@@ -804,6 +804,16 @@ impl ConcreteSession {
         if shared_tables.is_empty() {
             return Ok(());
         }
+        if self.persistent_actions_enabled() {
+            let identifiers:Vec<_>=shared_tables.iter().map(|(db,name)|serde_json::json!({"Schema":ast::NewCIStr(db),"Name":ast::NewCIStr(name)})).collect();
+            for (database, table) in shared_tables {
+                if statement.IfExists && self.domain.table_by_name(&database, &table).is_err() {
+                    continue;
+                }
+                self.submit_normal_action(&database,&table,4,serde_json::json!({"fk_check":self.state.borrow().foreign_key_checks,"identifiers":identifiers}))?;
+            }
+            return Ok(());
+        }
         let job_table = shared_tables
             .first()
             .map(|(_, table)| table.as_str())
@@ -875,6 +885,48 @@ impl ConcreteSession {
                 new_database,
                 pair.NewTable.Name.O.clone(),
             ));
+        }
+        if self.persistent_actions_enabled() {
+            let schemas = self.domain.info_schema().AllSchemas();
+            let mut names = std::collections::HashMap::new();
+            let mut infos = Vec::new();
+            let mut first = None;
+            for (old_db, old_name, new_db, new_name) in &renames {
+                let old_id = schemas
+                    .iter()
+                    .find(|db| db.name.lower == *old_db)
+                    .ok_or_else(|| SessionError::new(format!("unknown database {old_db}")))?
+                    .id;
+                let new_id = schemas
+                    .iter()
+                    .find(|db| db.name.lower == *new_db)
+                    .ok_or_else(|| SessionError::new(format!("unknown database {new_db}")))?
+                    .id;
+                let key = (old_db.clone(), old_name.clone());
+                let info = match names.remove(&key) {
+                    Some(info) => info,
+                    None => self
+                        .domain
+                        .table_by_name(old_db, old_name)
+                        .map_err(|e| SessionError::new(e.to_string()))?,
+                };
+                if first.is_none() {
+                    first = Some((old_db.clone(), old_name.clone()));
+                }
+                infos.push(serde_json::json!({"old_schema_id":old_id,"new_schema_id":new_id,"old_schema_name":ast::NewCIStr(old_db),"old_table_name":ast::NewCIStr(old_name),"new_table_name":ast::NewCIStr(new_name),"table_id":info.ID}));
+                names.insert((new_db.clone(), new_name.to_ascii_lowercase()), info);
+            }
+            let (db, table) = first.ok_or_else(|| SessionError::new("empty rename list"))?;
+            if infos.len() == 1 {
+                return self.submit_normal_action(&db, &table, 14, infos.remove(0));
+            }
+            // Multi-rename carries the whole ordered chain in one owner transaction.
+            return self.submit_normal_action(
+                &db,
+                &table,
+                47,
+                serde_json::json!({"rename_table_infos":infos}),
+            );
         }
         self.domain
             .ddl_rename_tables(renames)
@@ -2261,6 +2313,11 @@ impl ConcreteSession {
                                 .map_err(|error| SessionError::new(error.to_string()))?;
                         }
                     }
+                    if self.persistent_actions_enabled() {
+                        self.submit_normal_action(database,&statement.Table.Name.L,12,serde_json::json!({"column":column,"old_column_name":definition.Name.Name,"modify_column_type":0,"position":{"Tp":match spec.Position.Tp {ast::ColumnPositionType::None=>0,ast::ColumnPositionType::First=>1,ast::ColumnPositionType::After=>2},"RelativeColumn":spec.Position.RelativeColumn.as_ref().map(|column|serde_json::json!({"Name":column.Name}))}}))?;
+                        handled_additive_spec = true;
+                        continue;
+                    }
                     self.domain
                         .ddl_modify_column(
                             database,
@@ -2334,6 +2391,11 @@ impl ConcreteSession {
                     .map_err(|error| {
                         session_error("build ALTER TABLE CHANGE COLUMN metadata", error)
                     })?;
+                    if self.persistent_actions_enabled() {
+                        self.submit_normal_action(database,&statement.Table.Name.L,12,serde_json::json!({"column":column,"old_column_name":old_name.Name,"modify_column_type":0,"position":{"Tp":match spec.Position.Tp {ast::ColumnPositionType::None=>0,ast::ColumnPositionType::First=>1,ast::ColumnPositionType::After=>2},"RelativeColumn":spec.Position.RelativeColumn.as_ref().map(|column|serde_json::json!({"Name":column.Name}))}}))?;
+                        handled_additive_spec = true;
+                        continue;
+                    }
                     let existing_rows = self.scan_registered_table(&info)?;
                     self.domain
                         .ddl_change_column(
@@ -2411,6 +2473,11 @@ impl ConcreteSession {
                             SessionError::new(format!("unknown column {}", old_name.Name.O))
                         })?;
                     column.Name = new_name.Name.clone();
+                    if self.persistent_actions_enabled() {
+                        self.submit_normal_action(database,&statement.Table.Name.L,12,serde_json::json!({"column":column,"old_column_name":old_name.Name,"modify_column_type":1}))?;
+                        handled_additive_spec = true;
+                        continue;
+                    }
                     self.domain
                         .ddl_change_column(
                             database,
@@ -3308,7 +3375,12 @@ impl ConcreteSession {
                             )
                         }));
                     }
-                    columns.insert(name);
+                    if self.persistent_actions_enabled() {
+                        let column = info.Columns.iter().find(|c| c.Name.L == name).unwrap();
+                        self.submit_normal_action(database,&statement.Table.Name.L,6,serde_json::json!({"column_info":column,"ignore_existence_err":spec.IfExists}))?;
+                    } else {
+                        columns.insert(name);
+                    }
                 }
                 ast::AlterTableType::DropPrimaryKey => {
                     if self.state.borrow().sql_require_primary_key {
@@ -3462,6 +3534,18 @@ impl ConcreteSession {
         } else {
             statement.Table.Schema.L.as_str()
         };
+        if self.persistent_actions_enabled() {
+            let info = self
+                .domain
+                .table_by_name(database, &statement.Table.Name.L)
+                .map_err(|e| SessionError::new(e.to_string()))?;
+            let partitions: Vec<i64> = info
+                .GetPartitionInfo()
+                .map(|p| p.Definitions.iter().map(|d| d.ID).collect())
+                .unwrap_or_default();
+            self.submit_normal_action(database,&statement.Table.Name.L,11,serde_json::json!({"fk_check":self.state.borrow().foreign_key_checks,"old_partition_ids":partitions}))?;
+            return self.pre_split_and_scatter(database, &statement.Table.Name.L);
+        }
         let job_id = begin_runtime_ddl_job(
             &self.domain,
             database,

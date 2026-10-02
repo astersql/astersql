@@ -206,6 +206,7 @@ impl DdlService for NormalDdlService {
         if matches!(mode, StartMode::Upgrade) && !self.campaign_enabled {
             return Err("DDL must be enabled when upgrading".into());
         }
+        self.pool.start_dxf_worker()?;
         if self.campaign_enabled {
             if matches!(mode, StartMode::Upgrade) {
                 self.owner_runtime
@@ -345,6 +346,7 @@ impl DdlService for NormalDdlService {
             state.worker.take()
         };
         self.cancellation.cancel();
+        self.pool.stop_dxf_worker();
         if let Some(state) = &self.upgrade_state {
             state.context.cancel();
         }
@@ -374,6 +376,23 @@ impl DdlService for NormalDdlService {
         self.owner_runtime
             .block_on(self.owner.GetOwnerID(&self.cancellation))
             .ok()
+    }
+    fn supports_persistent_actions(&self) -> bool {
+        true
+    }
+    fn submit_persistent_job(
+        &self,
+        job: &mut astersql_meta_model::group_3::Job,
+    ) -> Result<(), String> {
+        if self.lifecycle.lock().unwrap().closed {
+            return Err("normal DDL service is closed".into());
+        }
+        let state = self.upgrade_state.as_ref().map(|state| {
+            Arc::new(super::system_session::JobSubmitServerState(
+                state.syncer.clone(),
+            )) as Arc<dyn astersql_ddl_jobsubmit::ServerState>
+        });
+        super::normal_ddl_submit::submit_and_wait(&self.pool, &self.cancellation, state, job)
     }
     fn alter_table_mode(&self, target: &str) -> Result<(), String> {
         if self.lifecycle.lock().unwrap().closed {

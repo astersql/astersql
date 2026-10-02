@@ -41,6 +41,9 @@ use crate::{
 #[derive(Default)]
 /// 内存假任务表：队列化 exec_info / 结果，记录 Pause/Cancel/Fail 调用。
 struct FakeTaskTable {
+    runtime_error: Mutex<Option<ExecutorError>>,
+    runtime: Mutex<Option<Arc<dyn crate::TaskRuntime>>>,
+    runtime_acquires: AtomicUsize,
     /// `GetTaskExecInfoByExecID` 返回队列。
     exec_info: Mutex<Vec<Result<Vec<TaskExecInfo>>>>,
     /// 按 ID 存放的任务。
@@ -75,6 +78,18 @@ impl FakeTaskTable {
     }
 }
 impl TaskTable for FakeTaskTable {
+    fn AcquireTaskRuntime(
+        &self,
+        _: &Context,
+        _: &Task,
+    ) -> Result<Option<Arc<dyn crate::TaskRuntime>>> {
+        self.runtime_acquires.fetch_add(1, Ordering::SeqCst);
+        match self.runtime_error.lock().unwrap().clone() {
+            Some(error) => Err(error),
+            None => Ok(self.runtime.lock().unwrap().clone()),
+        }
+    }
+
     fn GetTaskByID(&self, _: &Context, id: i64) -> Result<Task> {
         self.tasks
             .lock()
@@ -682,4 +697,108 @@ fn test_manager_stop_interrupts_background_interval_waits() {
     stopped_rx
         .recv_timeout(Duration::from_millis(500))
         .expect("Stop must wake both manager loops immediately after cancellation");
+}
+
+#[test]
+fn test_runtime_acquisition_error_retries_without_failing_subtask() {
+    let _guard = RegistryLockForTest();
+    ClearTaskExecutors();
+    let table = Arc::new(FakeTaskTable::default());
+    let task = base(9006, TaskState::Running, 2);
+    table.set_task(task.clone());
+    *table.runtime_error.lock().unwrap() =
+        Some(ExecutorError("runtime temporarily unavailable".into()));
+    let factory_calls = Arc::new(AtomicUsize::new(0));
+    let calls = factory_calls.clone();
+    RegisterTaskType(
+        "type".into(),
+        Arc::new(move |_, task, _| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            ChannelExecutor::new(task.TaskBase, mpsc::channel().1)
+        }),
+    );
+    let manager = NewManager(
+        Context::Background(),
+        "node",
+        table.clone(),
+        NodeResource {
+            TotalCPU: 2,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(!manager.startTaskExecutor(&task));
+    assert_eq!(factory_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(table.runtime_acquires.load(Ordering::SeqCst), 1);
+    assert!(table.fail_subtask_calls.lock().unwrap().is_empty());
+    *table.runtime_error.lock().unwrap() = None;
+    assert!(
+        manager.startTaskExecutor(&task),
+        "failed acquisition must free slots for retry"
+    );
+    manager.Stop();
+    assert_eq!(factory_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(table.runtime_acquires.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn test_runtime_holder_released_after_failed_start_and_executor_close() {
+    let _guard = RegistryLockForTest();
+    struct Runtime(AtomicUsize);
+    impl crate::TaskRuntime for Runtime {
+        fn CheckTaskKeyspace(&self, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn Release(&self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    for path in ["missing-factory", "init-error", "success"] {
+        ClearTaskExecutors();
+        let table = Arc::new(FakeTaskTable::default());
+        let runtime = Arc::new(Runtime(AtomicUsize::new(0)));
+        *table.runtime.lock().unwrap() = Some(runtime.clone());
+        let task = base(9007, TaskState::Running, 2);
+        table.set_task(task.clone());
+        let retained = Arc::new(Mutex::new(Vec::new()));
+        if path != "missing-factory" {
+            let retained = retained.clone();
+            RegisterTaskType(
+                "type".into(),
+                Arc::new(move |_, task, param| {
+                    retained.lock().unwrap().push(param.TaskRuntime.unwrap());
+                    if path == "init-error" {
+                        ChannelExecutor::with_init_error(
+                            task.TaskBase,
+                            ExecutorError("init failed".into()),
+                            false,
+                        )
+                    } else {
+                        ChannelExecutor::new(task.TaskBase, mpsc::channel().1)
+                    }
+                }),
+            );
+        }
+        let manager = NewManager(
+            Context::Background(),
+            "node",
+            table.clone(),
+            NodeResource {
+                TotalCPU: 2,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(manager.startTaskExecutor(&task), path == "success");
+        manager.Stop();
+        assert_eq!(
+            runtime.0.load(Ordering::SeqCst),
+            1,
+            "{path}: holder must release even when runtime capability is retained"
+        );
+        assert_eq!(
+            table.fail_subtask_calls.lock().unwrap().len(),
+            usize::from(path != "success")
+        );
+    }
 }

@@ -30,6 +30,8 @@ use crate::duplicate::{DupeController, ErrorManager, NewDupeDetector, Transactio
 use crate::engine::{Engine, Writer, nextKey};
 use crate::engine_mgr::{EngineManager, ExternalEngine, StoreHelper, newEngineManager};
 use crate::{CancellationToken, ConflictInfo, EngineFileSize, EngineId, Error, KeyRange, Result};
+pub use astersql_ingestor_engineapi as engineapi;
+pub use astersql_lightning_membuf as membuf;
 
 /// 拨号/连接超时（5 分钟）。
 pub const DIAL_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -164,6 +166,16 @@ pub fn CheckTiFlashVersionForTables(
 
 /// 向 Store 写入并 ingest SST 的客户端。
 pub trait ImportClient: Send + Sync {
+    fn WriteAndIngestData(
+        &self,
+        _: &CancellationToken,
+        _: &dyn engineapi::IngestData,
+        _: &[KeyRange],
+    ) -> Result<(i64, i64)> {
+        Err(Error::InvalidArgument(
+            "import client does not support external ingest data".into(),
+        ))
+    }
     /// 将 Engine 中指定键范围写入并导入，返回 (字节数, 键数)。
     fn WriteAndIngest(
         &self,
@@ -461,6 +473,9 @@ impl Backend {
         store_id: u64,
     ) -> Result<()> {
         token.check()?;
+        if let Some(engine) = self.engine_manager.getExternalEngine(id) {
+            return self.import_external_engine(token, id, store_id, engine);
+        }
         let engine = self
             .engine_manager
             .lockEngine(id, crate::engine::IMPORT_MUTEX_STATE_IMPORT)
@@ -542,6 +557,70 @@ impl Backend {
         result
     }
 
+    fn import_external_engine(
+        &self,
+        token: &CancellationToken,
+        id: EngineId,
+        store_id: u64,
+        engine: Arc<dyn ExternalEngine>,
+    ) -> Result<()> {
+        if engine.KVStatistics().0 == 0 {
+            return Ok(());
+        }
+        let split_keys = engine.GetRegionSplitKeys()?;
+        if let Some(client) = &self.split_client {
+            client.SplitKeysAndScatter(token, &split_keys)?;
+        }
+        let factory = self.import_factory.clone().ok_or_else(|| {
+            Error::InvalidArgument("external import client factory missing".into())
+        })?;
+        let generator: crate::import_pipeline::JobGenerator = Arc::new(|_, _, ranges| {
+            Ok(ranges
+                .iter()
+                .map(|range| crate::job_worker::RegionJob {
+                    key_range: KeyRange {
+                        start: range.Start.clone(),
+                        end: range.End.clone(),
+                    },
+                    ..Default::default()
+                })
+                .collect())
+        });
+        let workers: crate::import_pipeline::WorkerFactory = Arc::new(move |token| {
+            Ok(Box::new(crate::import_pipeline::ExternalClientWorker {
+                client: factory.Create(&token, store_id)?,
+                token,
+            }))
+        });
+        let (_, count) = crate::import_pipeline::do_import(
+            token,
+            Arc::new(crate::import_pipeline::ExternalEngineSource(engine.clone())),
+            self.GetWorkerConcurrency(),
+            generator,
+            workers,
+            crate::import_pipeline::ImportOptions {
+                on_pool_started: Some(Arc::new({
+                    let engine = engine.clone();
+                    move |pool| engine.SetWorkerPool(pool)
+                })),
+                ..Default::default()
+            },
+        )?;
+        token.check()?;
+        let loaded = engine.GetTotalLoadedKVsCount();
+        if count != loaded || engine.ImportedStatistics().1 != loaded {
+            return Err(Error::InvalidData(format!(
+                "external imported KV count mismatch: loaded={loaded}, imported={count}, recorded={}",
+                engine.ImportedStatistics().1
+            )));
+        }
+        self.imported_counts
+            .lock()
+            .map_err(|_| Error::Poisoned)?
+            .insert(id, count);
+        Ok(())
+    }
+
     /// 导入后重置 Engine（分配新 TS）。
     pub fn UnsafeImportAndReset(&self, token: &CancellationToken, id: EngineId) -> Result<()> {
         self.ImportEngine(token, id, 0)?;
@@ -558,6 +637,14 @@ impl Backend {
     }
 
     /// 获取外部 Engine 句柄（若有）。
+    pub fn RegisterExternalEngine(
+        &self,
+        id: EngineId,
+        engine: Arc<dyn ExternalEngine>,
+    ) -> Result<()> {
+        self.engine_manager.registerExternalEngine(id, engine)
+    }
+
     pub fn GetExternalEngine(&self, id: EngineId) -> Option<Arc<dyn ExternalEngine>> {
         self.engine_manager.getExternalEngine(id)
     }

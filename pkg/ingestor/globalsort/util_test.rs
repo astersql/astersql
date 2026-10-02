@@ -305,6 +305,38 @@ fn test_clean_up_files() {
     );
 }
 
+#[test]
+fn cleanup_removes_random_partition_files_and_preserves_neighbor_tasks() {
+    let store = MemoryStorage::default();
+    let removed = [
+        "30001/6/meta.json",
+        "30001/plan/ingest/1/meta.json",
+        "p00110000/30001/7/writer_stat/one-file",
+        "p00000000/30001/7/writer/one-file",
+        "/p11111111/30001/8/writer/one-file",
+    ];
+    let kept = [
+        "300010/6/meta.json",
+        "30002/6/meta.json",
+        "p00000000/30002/7/writer/one-file",
+        "p0000000x/30001/7/writer/one-file",
+        "p0000000/30001/7/writer/one-file",
+        "other/30001/7/writer/one-file",
+        "p00000000/30001",
+        "30001",
+    ];
+    for path in removed.iter().chain(&kept) {
+        store.write(path, vec![1]).unwrap();
+    }
+    CleanUpFiles(&store, "30001").unwrap();
+    for path in removed {
+        assert!(store.read(path).is_err(), "task file survives: {path}");
+    }
+    for path in kept {
+        assert_eq!(store.read(path).unwrap(), vec![1], "neighbor file: {path}");
+    }
+}
+
 // Mirrors the shape of Go's `testStruct` in TestReadWriteJSON: `X` stays
 // internal-only while `Y` is written to external storage. Go derives this
 // split from `external:"true"` tags via reflection; this port expresses the

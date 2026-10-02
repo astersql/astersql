@@ -81,9 +81,15 @@ pub(crate) use relational_value::{relational_compare, relational_window_value};
 mod durable_scheduler_test;
 #[cfg(test)]
 mod lifecycle_test;
+mod modify_column_backfill;
+mod modify_column_cloud_meta;
+mod modify_column_cloud_store;
+mod modify_column_dist_backfill;
+mod modify_column_pipeline;
 #[cfg(test)]
 mod normal_ddl_fixture;
 pub mod normal_ddl_service;
+mod normal_ddl_submit;
 #[cfg(test)]
 mod normal_ddl_test;
 mod row_codec;
@@ -1756,3 +1762,18 @@ mod normal_ddl_create_materialized_view_test;
 #[cfg(test)]
 #[path = "runtime/normal_ddl_index_reorg_initialization_test.rs"]
 mod normal_ddl_index_reorg_initialization_test;
+
+#[cfg(test)]
+#[path = "runtime/normal_ddl_masking_policy_test.rs"]
+mod normal_ddl_masking_policy_test;
+
+#[cfg(test)]
+#[path = "runtime/import_sst_test.rs"]
+mod import_sst_test;
+#[cfg(test)]
+#[path = "runtime/modify_column_cloud_store_test.rs"]
+mod modify_column_cloud_store_test;
+
+#[cfg(test)]
+#[path = "runtime/modify_column_cloud_meta_test.rs"]
+mod modify_column_cloud_meta_test;

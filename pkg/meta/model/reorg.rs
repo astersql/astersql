@@ -355,14 +355,14 @@ impl DDLReorgMeta {
 
     // MaxWriteSpeed 的零值本身表示不限速，因此不做旧版本回退。
     /// 获取最大写入速度；零值表示不限速。
-    pub fn GetMaxWriteSpeed(&self) -> i32 {
-        self.MaxWriteSpeed.load(Ordering::SeqCst) as i32
+    pub fn GetMaxWriteSpeed(&self) -> i64 {
+        self.MaxWriteSpeed.load(Ordering::SeqCst)
     }
 
     /// 设置最大写入速度。
-    pub fn SetMaxWriteSpeed(&self, max_write_speed: i32) {
+    pub fn SetMaxWriteSpeed(&self, max_write_speed: i64) {
         self.MaxWriteSpeed
-            .store(max_write_speed as i64, Ordering::SeqCst);
+            .store(max_write_speed, Ordering::SeqCst);
     }
 
     // GetUseNewCollateOrDefault 让字段加入前生成的元数据沿用调用环境默认值。

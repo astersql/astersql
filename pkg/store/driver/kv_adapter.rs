@@ -33,6 +33,9 @@ use tikv_client::{
 
 use crate::{ClientRuntime, TikvStore};
 
+#[path = "region_split_config.rs"]
+mod region_split_config;
+
 type SharedRuntime = Arc<RwLock<ClientRuntime>>;
 pub(crate) type ScanPage = Box<
     dyn FnMut(
@@ -1951,6 +1954,24 @@ fn mem_manager() -> &'static AdapterMemManager {
 }
 
 impl kv::Storage for TikvStore {
+    fn DDLRegionSplitConfig(
+        &self,
+        context: &kv::Context,
+    ) -> Result<Option<(i64, i64)>, kv::errors::SharedError> {
+        let runtime = self.client_runtime().ok_or_else(runtime_error)?;
+        let guard = runtime.read().map_err(adapter_error)?;
+        let addresses = self.GetPDAddrs().map_err(adapter_error)?;
+        guard
+            .runtime()
+            .map_err(adapter_error)?
+            .block_on(region_split_config::get_region_split_config(
+                context,
+                &addresses,
+                self.TLSConfig(),
+            ))
+            .map(Some)
+    }
+
     fn TTLStoreCount(&self) -> Result<Option<usize>, kv::errors::SharedError> {
         let (client, scheme) = tiflash_http_client(self)?;
         let mut last_error = String::new();
@@ -1976,6 +1997,33 @@ impl kv::Storage for TikvStore {
     }
 
     fn TTLRegionRanges(
+        &self,
+        start: &[u8],
+        end: &[u8],
+    ) -> Result<Option<Vec<(Vec<u8>, Vec<u8>)>>, kv::errors::SharedError> {
+        let Some(store) = self.coprocessor_store() else {
+            return Ok(None);
+        };
+        let ranges = store
+            .kv_store()
+            .region_cache()
+            .split_region_ranges(
+                vec![copr::batch_request_sender::KeyRange {
+                    start: start.to_vec(),
+                    end: end.to_vec(),
+                }],
+                -1,
+            )
+            .map_err(adapter_error)?;
+        Ok(Some(
+            ranges
+                .into_iter()
+                .map(|range| (range.start, range.end))
+                .collect(),
+        ))
+    }
+
+    fn DDLRegionRanges(
         &self,
         start: &[u8],
         end: &[u8],
@@ -2198,16 +2246,26 @@ impl kv::Storage for TikvStore {
         commit_ts: u64,
         pairs: Vec<(Vec<u8>, Vec<u8>)>,
     ) -> Result<kv::SSTImportStats, kv::errors::SharedError> {
-        if !self.GetKeyspace().is_empty() {
-            return Err(adapter_error(
-                "physical SST import keyspace codec is not configured",
-            ));
-        }
-        let stats = crate::sst_import::write_and_ingest(
+        self.ImportSSTWithOptions(commit_ts, pairs, kv::SSTImportOptions::default())
+    }
+    fn ImportSSTWithOptions(
+        &self,
+        commit_ts: u64,
+        pairs: Vec<(Vec<u8>, Vec<u8>)>,
+        options: kv::SSTImportOptions,
+    ) -> Result<kv::SSTImportStats, kv::errors::SharedError> {
+        let keyspace_id = if self.GetKeyspace().is_empty() {
+            None
+        } else {
+            Some(self.DDLKeyspaceID()?)
+        };
+        let stats = crate::sst_import::write_and_ingest_with_options(
             &self.GetPDAddrs().map_err(adapter_error)?,
             self.TLSConfig(),
             commit_ts,
             pairs,
+            keyspace_id,
+            options,
         )
         .map_err(adapter_error)?;
         Ok(kv::SSTImportStats {

@@ -179,6 +179,8 @@ impl Connection {
         pairs: &[(Vec<u8>, Vec<u8>)],
         commit_ts: u64,
         stats: &mut ImportStats,
+        keyspace_id: Option<u32>,
+        options: &astersql_kv::SSTImportOptions,
     ) -> Result<usize> {
         let response = self
             .pd
@@ -207,6 +209,11 @@ impl Connection {
             uuid: uuid::Uuid::new_v4().as_bytes().to_vec(),
             region_id: region.id,
             region_epoch: region.region_epoch.clone(),
+            api_version: if keyspace_id.is_some() {
+                kvrpcpb::ApiVersion::V2 as i32
+            } else {
+                kvrpcpb::ApiVersion::V1 as i32
+            },
             range: Some(sst::Range {
                 start: region_key(&pairs[0].0),
                 end: region_key(&pairs[count - 1].0),
@@ -217,13 +224,19 @@ impl Connection {
         for peer in &region.peers {
             let mut client = self.store(peer.store_id).await?;
             let pairs = pairs.clone();
-            let context = context(&region, peer);
+            let context = context(&region, peer, keyspace_id);
             let first = sst::WriteRequest {
                 context: Some(context.clone()),
                 chunk: Some(sst::write_request::Chunk::Meta(meta.clone())),
             };
+            let options = options.clone();
+            let write_failure = Arc::new(std::sync::Mutex::new(None));
+            let failure = write_failure.clone();
+            let store_id = peer.store_id;
             let batches = futures::stream::unfold((pairs, 0), move |(pairs, start)| {
                 let context = context.clone();
+                let options = options.clone();
+                let failure = failure.clone();
                 async move {
                     if start == pairs.len() {
                         return None;
@@ -233,6 +246,28 @@ impl Connection {
                     while end < pairs.len() && (end == start || size < 1024 * 1024) {
                         size += pairs[end].0.len() + pairs[end].1.len();
                         end += 1;
+                    }
+                    if options.context.is_cancelled() {
+                        *failure.lock().unwrap() =
+                            Some(ImportError::permanent("SST import cancelled"));
+                        return None;
+                    }
+                    if let Some(limiter) = options.write_limiter {
+                        let cancel = options.context.clone();
+                        let waiting = tokio::task::spawn_blocking(move || {
+                            limiter.WaitN(&cancel, store_id, size)
+                        });
+                        match waiting.await {
+                            Ok(Ok(())) => {}
+                            Ok(Err(error)) => {
+                                *failure.lock().unwrap() = Some(ImportError::permanent(error));
+                                return None;
+                            }
+                            Err(error) => {
+                                *failure.lock().unwrap() = Some(ImportError::permanent(error));
+                                return None;
+                            }
+                        }
                     }
                     let batch = sst::WriteBatch {
                         commit_ts,
@@ -258,6 +293,9 @@ impl Connection {
             let peer_id = peer.id;
             writes.push(async move {
                 let response = client.write(stream).await?.into_inner();
+                if let Some(error) = write_failure.lock().unwrap().take() {
+                    return Err(error);
+                }
                 if let Some(error) = response.error {
                     return Err(ImportError::retry(format!("TiKV SST write: {error:?}")));
                 }
@@ -280,7 +318,7 @@ impl Connection {
         stats.ingest_rpcs += 1;
         let response = client
             .multi_ingest(sst::MultiIngestRequest {
-                context: Some(context(&region, &leader)),
+                context: Some(context(&region, &leader, keyspace_id)),
                 ssts: metas,
             })
             .await?
@@ -297,13 +335,23 @@ impl Connection {
     }
 }
 
-fn context(region: &metapb::Region, peer: &metapb::Peer) -> kvrpcpb::Context {
+fn context(
+    region: &metapb::Region,
+    peer: &metapb::Peer,
+    keyspace_id: Option<u32>,
+) -> kvrpcpb::Context {
     kvrpcpb::Context {
         region_id: region.id,
         region_epoch: region.region_epoch.clone(),
         peer: Some(peer.clone()),
         request_source: "internal_lightning:import".into(),
         txn_source: 1,
+        api_version: if keyspace_id.is_some() {
+            kvrpcpb::ApiVersion::V2 as i32
+        } else {
+            kvrpcpb::ApiVersion::V1 as i32
+        },
+        keyspace_id: keyspace_id.unwrap_or_default(),
         ..Default::default()
     }
 }
@@ -316,6 +364,25 @@ pub fn write_and_ingest(
     tls: Option<crate::TlsConfig>,
     commit_ts: u64,
     pairs: Vec<(Vec<u8>, Vec<u8>)>,
+) -> Result<ImportStats> {
+    write_and_ingest_with_options(
+        endpoints,
+        tls,
+        commit_ts,
+        pairs,
+        None,
+        astersql_kv::SSTImportOptions::default(),
+    )
+}
+
+/// Runtime import controls and actual API V2 keyspace identity.
+pub fn write_and_ingest_with_options(
+    endpoints: &[String],
+    tls: Option<crate::TlsConfig>,
+    commit_ts: u64,
+    pairs: Vec<(Vec<u8>, Vec<u8>)>,
+    keyspace_id: Option<u32>,
+    options: astersql_kv::SSTImportOptions,
 ) -> Result<ImportStats> {
     if commit_ts == 0 || commit_ts > i64::MAX as u64 {
         return Err(ImportError::permanent(
@@ -330,33 +397,54 @@ pub fn write_and_ingest(
     if pairs.is_empty() {
         return Ok(ImportStats::default());
     }
+    let codec = match keyspace_id {
+        Some(id) => astersql_store_copr::network_backend::KeyCodec::v2(String::new(), id)
+            .map_err(ImportError::permanent)?,
+        None => astersql_store_copr::network_backend::KeyCodec::v1(),
+    };
+    let pairs = pairs
+        .into_iter()
+        .map(|(key, value)| (codec.encode_key(&key), value))
+        .collect::<Vec<_>>();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(ImportError::permanent)?;
     runtime.block_on(async {
-        let mut connection = Connection::connect(endpoints, tls.clone()).await?;
-        let mut stats = ImportStats::default();
-        let mut cursor = 0;
-        let mut attempts = 0;
-        while cursor < pairs.len() {
-            match connection
-                .import_region(&pairs[cursor..], commit_ts, &mut stats)
-                .await
-            {
-                Ok(count) => {
-                    cursor += count;
-                    attempts = 0;
+        let importing = async {
+            let mut connection = Connection::connect(endpoints, tls.clone()).await?;
+            let mut stats = ImportStats::default();
+            let mut cursor = 0;
+            let mut attempts = 0;
+            while cursor < pairs.len() {
+                match connection
+                    .import_region(
+                        &pairs[cursor..],
+                        commit_ts,
+                        &mut stats,
+                        keyspace_id,
+                        &options,
+                    )
+                    .await
+                {
+                    Ok(count) => {
+                        cursor += count;
+                        attempts = 0;
+                    }
+                    Err(error) if error.retryable && attempts < 29 => {
+                        attempts += 1;
+                        tokio::time::sleep(Duration::from_millis((100 * attempts).min(1000))).await;
+                        connection = Connection::connect(endpoints, tls.clone()).await?;
+                    }
+                    Err(error) => return Err(error),
                 }
-                Err(error) if error.retryable && attempts < 29 => {
-                    attempts += 1;
-                    tokio::time::sleep(Duration::from_millis((100 * attempts).min(1000))).await;
-                    connection = Connection::connect(endpoints, tls.clone()).await?;
-                }
-                Err(error) => return Err(error),
             }
+            Ok(stats)
+        };
+        tokio::select! {
+            _ = options.context.cancelled() => Err(ImportError::permanent("SST import cancelled")),
+            result = importing => result,
         }
-        Ok(stats)
     })
 }
 

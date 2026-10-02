@@ -45,6 +45,22 @@ pub trait StoreHelper: Send + Sync {
 
 /// 外部引擎抽象：统计、键范围、Region 切分与关闭。
 pub trait ExternalEngine: Send + Sync {
+    fn LoadIngestData(
+        &self,
+        _: &astersql_ingestor_engineapi::Context,
+        _: &std::sync::mpsc::SyncSender<astersql_ingestor_engineapi::DataAndRanges>,
+    ) -> std::result::Result<(), astersql_ingestor_engineapi::EngineError> {
+        Err(Box::new(Error::InvalidArgument(
+            "external engine has no data loader".into(),
+        )))
+    }
+    fn SetWorkerPool(&self, _: Arc<dyn crate::import_pipeline::ImportPoolTuner>) {}
+    fn GetTotalLoadedKVsCount(&self) -> i64 {
+        self.KVStatistics().1
+    }
+    fn ConflictFiles(&self) -> Vec<String> {
+        Vec::new()
+    }
     fn ID(&self) -> String;
     fn KVStatistics(&self) -> (i64, i64);
     fn ImportedStatistics(&self) -> (i64, i64);

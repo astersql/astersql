@@ -3934,3 +3934,242 @@ fn dispatcher_cancellation_interrupts_open_result_channel() {
     handle.join().unwrap();
     assert_eq!(outcome.unwrap(), Err(crate::Error::Cancelled));
 }
+
+#[test]
+fn external_import_pipeline_tunes_and_closes_actual_region_workers() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    struct CountedWorker(Arc<AtomicUsize>);
+    impl crate::job_worker::RegionJobWorker for CountedWorker {
+        fn HandleTask(
+            &self,
+            job: crate::job_worker::RegionJob,
+        ) -> crate::Result<Vec<crate::job_worker::RegionJob>> {
+            SuccessfulImportWorker { late_error: false }.HandleTask(job)
+        }
+        fn Close(&self) -> crate::Result<()> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+    let state = Arc::new(ImportCleanupState::default());
+    *state.allowed.lock().unwrap() = true;
+    let closed = Arc::new(AtomicUsize::new(0));
+    let created = Arc::new(AtomicUsize::new(0));
+    let factory: crate::import_pipeline::WorkerFactory = {
+        let closed = closed.clone();
+        let created = created.clone();
+        Arc::new(move |_| {
+            created.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(CountedWorker(closed.clone())))
+        })
+    };
+    let result = crate::import_pipeline::do_import(
+        &Default::default(),
+        Arc::new(ImportTestSource {
+            state: state.clone(),
+            wait_for_cancel: false,
+        }),
+        4,
+        import_test_generator(),
+        factory,
+        crate::import_pipeline::ImportOptions {
+            on_pool_started: Some(Arc::new({
+                let closed = closed.clone();
+                move |pool| {
+                    pool.Tune(2).unwrap();
+                    assert_eq!(
+                        closed.load(Ordering::SeqCst),
+                        2,
+                        "Tune must join actual retired workers"
+                    );
+                    pool.Tune(3).unwrap();
+                }
+            })),
+            ..Default::default()
+        },
+    );
+    assert_eq!(result, Ok((2, 1)));
+    assert_eq!(created.load(Ordering::SeqCst), 5);
+    assert_eq!(closed.load(Ordering::SeqCst), 5);
+    assert!(state.done.load(Ordering::SeqCst));
+    assert_eq!(state.refs.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn backend_imports_registered_external_data_and_verifies_loaded_statistics() {
+    use astersql_ingestor_engineapi as api;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicI64, Ordering},
+    };
+    struct Data {
+        rows: BlockingImportData,
+        imported: Arc<AtomicI64>,
+    }
+    impl api::IngestData for Data {
+        fn GetFirstAndLastKey(
+            &self,
+            lower: &[u8],
+            upper: &[u8],
+        ) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>), api::EngineError> {
+            self.rows.GetFirstAndLastKey(lower, upper)
+        }
+        fn NewIter(
+            &self,
+            ctx: &api::Context,
+            lower: &[u8],
+            upper: &[u8],
+            pool: &mut astersql_lightning_membuf::Pool,
+        ) -> Box<dyn api::ForwardIter> {
+            self.rows.NewIter(ctx, lower, upper, pool)
+        }
+        fn GetTS(&self) -> u64 {
+            self.rows.GetTS()
+        }
+        fn IncRef(&self) {
+            self.rows.IncRef();
+        }
+        fn DecRef(&self) {
+            self.rows.DecRef();
+        }
+        fn Finish(&self, _: i64, count: i64) {
+            self.imported.fetch_add(count, Ordering::Relaxed);
+        }
+    }
+    struct Source {
+        cleanup: Arc<ImportCleanupState>,
+        imported: Arc<AtomicI64>,
+        closed: AtomicBool,
+    }
+    impl crate::engine_mgr::ExternalEngine for Source {
+        fn ID(&self) -> String {
+            "external".into()
+        }
+        fn LoadIngestData(
+            &self,
+            _: &api::Context,
+            out: &std::sync::mpsc::SyncSender<api::DataAndRanges>,
+        ) -> Result<(), api::EngineError> {
+            out.send(api::DataAndRanges {
+                Data: Box::new(Data {
+                    rows: BlockingImportData(self.cleanup.clone()),
+                    imported: self.imported.clone(),
+                }),
+                SortedRanges: vec![api::Range {
+                    Start: b"a".to_vec(),
+                    End: b"b".to_vec(),
+                }],
+            })?;
+            Ok(())
+        }
+        fn KVStatistics(&self) -> (i64, i64) {
+            (2, 0)
+        } // Go cloud metadata need not know the KV count.
+        fn GetTotalLoadedKVsCount(&self) -> i64 {
+            1
+        }
+        fn ImportedStatistics(&self) -> (i64, i64) {
+            (
+                self.imported.load(Ordering::Relaxed) * 2,
+                self.imported.load(Ordering::Relaxed),
+            )
+        }
+        fn ConflictInfo(&self) -> crate::ConflictInfo {
+            Default::default()
+        }
+        fn GetKeyRange(&self) -> crate::Result<crate::KeyRange> {
+            Ok(crate::KeyRange {
+                start: b"a".to_vec(),
+                end: b"b".to_vec(),
+            })
+        }
+        fn GetRegionSplitKeys(&self) -> crate::Result<Vec<Vec<u8>>> {
+            Ok(vec![b"a".to_vec(), b"b".to_vec()])
+        }
+        fn Close(&self) -> crate::Result<()> {
+            self.closed.store(true, Ordering::Release);
+            Ok(())
+        }
+    }
+    struct Client;
+    impl crate::local::ImportClient for Client {
+        fn WriteAndIngest(
+            &self,
+            _: &crate::CancellationToken,
+            _: &crate::engine::Engine,
+            _: &[crate::KeyRange],
+        ) -> crate::Result<(i64, i64)> {
+            panic!("external data must not use a local engine snapshot")
+        }
+        fn WriteAndIngestData(
+            &self,
+            token: &crate::CancellationToken,
+            data: &dyn api::IngestData,
+            ranges: &[crate::KeyRange],
+        ) -> crate::Result<(i64, i64)> {
+            token.check()?;
+            assert_eq!(data.GetTS(), 1);
+            let mut pool = astersql_lightning_membuf::NewPool(Vec::new());
+            let mut iter = data.NewIter(
+                &Default::default(),
+                &ranges[0].start,
+                &ranges[0].end,
+                Arc::get_mut(&mut pool).unwrap(),
+            );
+            assert!(iter.First());
+            assert_eq!(iter.Key(), b"a");
+            assert_eq!(iter.Value(), b"a");
+            assert!(!iter.Next());
+            iter.Close().unwrap();
+            Ok((2, 1))
+        }
+        fn Close(&self) {}
+    }
+    struct Factory;
+    impl crate::local::ImportClientFactory for Factory {
+        fn Create(
+            &self,
+            _: &crate::CancellationToken,
+            _: u64,
+        ) -> crate::Result<Arc<dyn crate::local::ImportClient>> {
+            Ok(Arc::new(Client))
+        }
+        fn Close(&self) {}
+    }
+    let cleanup = Arc::new(ImportCleanupState::default());
+    *cleanup.allowed.lock().unwrap() = true;
+    let source = Arc::new(Source {
+        cleanup: cleanup.clone(),
+        imported: Arc::new(AtomicI64::new(0)),
+        closed: AtomicBool::new(false),
+    });
+    let dir = std::env::temp_dir().join(format!("external-backend-{}", crate::EngineId::new()));
+    let config = crate::local::BackendConfig {
+        local_store_dir: dir.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let backend = crate::local::NewBackend(
+        config,
+        Arc::new(GoCommit955fd6550bStoreHelper),
+        Some(Arc::new(Factory)),
+        None,
+    )
+    .unwrap();
+    let id = crate::EngineId::new();
+    backend.RegisterExternalEngine(id, source.clone()).unwrap();
+    let result = backend.ImportEngine(&Default::default(), id, 1);
+    backend.Close();
+    let _ = std::fs::remove_dir_all(dir);
+    assert_eq!(result, Ok(()));
+    assert_eq!(
+        crate::engine_mgr::ExternalEngine::ImportedStatistics(source.as_ref()),
+        (2, 1)
+    );
+    assert_eq!(backend.GetImportedKVCount(id), 1);
+    assert!(source.closed.load(Ordering::Acquire));
+    assert!(cleanup.done.load(Ordering::Acquire));
+    assert_eq!(cleanup.refs.load(Ordering::Acquire), 0);
+}

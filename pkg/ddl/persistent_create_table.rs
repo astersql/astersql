@@ -55,7 +55,7 @@ pub(crate) fn save_args(job: &mut Job, table: &TableInfo) -> Result<(), String> 
     job.args.clear();
     Ok(())
 }
-struct Policies<'a, 'b>(&'a TransactionMutator<'b>);
+pub(crate) struct Policies<'a, 'b>(pub(crate) &'a TransactionMutator<'b>);
 impl astersql_ddl_placement::PolicyGetter for Policies<'_, '_> {
     fn GetPolicy(
         &self,

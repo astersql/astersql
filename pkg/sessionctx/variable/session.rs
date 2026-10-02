@@ -629,6 +629,8 @@ impl PlannerSelectBlockNames {
 /// 会话变量与运行时状态的核心聚合结构。
 // SessionVars 汇总 session 作用域的系统变量、缓存和事务上下文；外部 TiDB 对象用字符串/映射占位。
 pub struct SessionVars {
+    /// Internal restricted-SQL option permitting WriteReorganization index analysis.
+    pub EnableDDLAnalyzeExecOpt: bool,
     pub DMLBatchSize: i32,
     pub RetryLimit: i64,
     pub DisableTxnAutoRetry: bool,
@@ -858,6 +860,7 @@ impl SessionVars {
     /// 构造带 Go 侧等价默认值的会话变量实例。
     pub fn new() -> Self {
         Self {
+            EnableDDLAnalyzeExecOpt: false,
             DMLBatchSize: 0,
             RetryLimit: 10,
             DisableTxnAutoRetry: false,

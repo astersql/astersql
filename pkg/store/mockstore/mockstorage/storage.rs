@@ -521,6 +521,41 @@ impl KVStore {
         entries
     }
 
+    /// Apply physical SST records at the caller's fixed import timestamp.
+    /// Retries may import older versions after newer DML, so maintain MVCC order
+    /// rather than appending a newly allocated transaction version.
+    pub(crate) fn ingest_sst(&self, commit_ts: u64, pairs: Vec<(Vec<u8>, Vec<u8>)>) -> Result<()> {
+        if self.inner.closed.load(Ordering::Acquire) {
+            return Err(MockStorageError::Closed);
+        }
+        if commit_ts == 0 || commit_ts > i64::MAX as u64 {
+            return Err(MockStorageError::Begin(
+                "SST import requires a valid PD commit timestamp".into(),
+            ));
+        }
+        if pairs.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
+            return Err(MockStorageError::Begin(
+                "SST import keys must be strictly increasing".into(),
+            ));
+        }
+        let mut data = self.inner.data.write().expect("kv data lock poisoned");
+        for (key, value) in pairs {
+            let versions = data.entry(key).or_default();
+            match versions.binary_search_by_key(&commit_ts, |entry| entry.commit_ts) {
+                Ok(index) => versions[index].value = Some(value),
+                Err(index) => versions.insert(
+                    index,
+                    VersionedValue {
+                        commit_ts,
+                        value: Some(value),
+                    },
+                ),
+            }
+        }
+        self.inner.current_ts.fetch_max(commit_ts, Ordering::AcqRel);
+        Ok(())
+    }
+
     /// 分配 commit_ts 并将写集追加为新版本。
     fn commit(&self, start_ts: u64, writes: BTreeMap<Vec<u8>, Option<Vec<u8>>>) -> Result<u64> {
         self.commit_with_allocated_timestamp(start_ts, writes, true)

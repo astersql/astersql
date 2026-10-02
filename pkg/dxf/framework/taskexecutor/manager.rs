@@ -33,6 +33,16 @@ pub fn SetTaskCheckIntervalForTest(interval: Duration) -> Duration {
 }
 /// 节点元数据恢复循环间隔。
 pub const recoverMetaInterval: Duration = Duration::from_secs(90);
+// The manager owns the holder; executors only borrow runtime capabilities.
+// Release after Close even when a factory retains the Param or Init fails.
+struct RuntimeLease(Option<Arc<dyn TaskRuntime>>);
+impl Drop for RuntimeLease {
+    fn drop(&mut self) {
+        if let Some(runtime) = &self.0 {
+            runtime.Release();
+        }
+    }
+}
 /// 节点侧任务执行管理器：轮询、slot 分配、拉起/取消 executor。
 pub struct Manager {
     /// 任务表访问接口。
@@ -238,6 +248,17 @@ impl Manager {
         if !self.slotManager.alloc(&task.TaskBase) {
             return false;
         }
+        let runtime = match self.taskTable.AcquireTaskRuntime(&self.ctx, &task) {
+            Ok(runtime) => RuntimeLease(runtime),
+            Err(error) => {
+                eprintln!(
+                    "acquire task runtime failed: task={} keyspace={}: {error}",
+                    task.TaskBase.ID, task.TaskBase.Keyspace
+                );
+                self.slotManager.free(task.TaskBase.ID);
+                return false;
+            }
+        };
         // 未注册的任务类型视为失败。
         let Some(factory) = GetTaskExecutorFactory(&task.TaskBase.Type) else {
             self.failSubtask(
@@ -255,7 +276,7 @@ impl Manager {
             nodeRc: self.getNodeResource(),
             execID: self.id.clone(),
             Extension: extension,
-            TaskRuntime: None,
+            TaskRuntime: runtime.0.clone(),
         };
         let executor = factory(self.ctx.clone(), task.clone(), param);
         if let Err(error) = executor.Init(&self.ctx) {
@@ -267,6 +288,7 @@ impl Manager {
         let manager = self.clone();
         // Run 结束后 Close、注销并释放 slot。
         let worker = thread::spawn(move || {
+            let _runtime = runtime;
             executor.Run();
             executor.Close();
             manager.delTaskExecutor(executor.as_ref());

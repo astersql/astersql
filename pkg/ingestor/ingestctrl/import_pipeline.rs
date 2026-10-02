@@ -190,12 +190,33 @@ pub type JobGenerator = Arc<
 pub type WorkerFactory =
     Arc<dyn Fn(CancellationToken) -> Result<Box<dyn RegionJobWorker>> + Send + Sync>;
 
+/// The external engine receives the actual running region-job pool. Tune waits
+/// for retired workers to finish their callbacks and Close before returning.
+pub trait ImportPoolTuner: Send + Sync {
+    fn Tune(&self, concurrency: usize) -> Result<()>;
+}
+struct RunningPool(Arc<Mutex<pool::WorkerPool<OwnedJob, OwnedJob>>>);
+impl ImportPoolTuner for RunningPool {
+    fn Tune(&self, concurrency: usize) -> Result<()> {
+        let concurrency = i32::try_from(concurrency)
+            .ok()
+            .filter(|value| *value > 0)
+            .ok_or_else(|| Error::InvalidData("invalid region-job concurrency".into()))?;
+        self.0
+            .lock()
+            .map_err(|_| Error::Poisoned)?
+            .Tune(concurrency, true);
+        Ok(())
+    }
+}
+
 /// Hooks correspond to Go's test failpoint boundaries, without global state.
 #[derive(Clone, Default)]
 pub struct ImportOptions {
     /// Local engines use store balancing and parallel generation. External
     /// engines retain one generator to bound resident ingest data.
     pub local_engine: bool,
+    pub on_pool_started: Option<Arc<dyn Fn(Arc<dyn ImportPoolTuner>) + Send + Sync>>,
     pub before_release: Option<Arc<dyn Fn() + Send + Sync>>,
     pub before_wait_outcome: Option<Arc<dyn Fn() + Send + Sync>>,
     pub before_receive_result: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -323,6 +344,10 @@ pub fn do_import(
     workers.SetTaskReceiver(tasks.clone());
     workers.Start(wctx.clone());
     let results = workers.GetResultChan().unwrap();
+    let workers = Arc::new(Mutex::new(workers));
+    if let Some(started) = &options.on_pool_started {
+        started(Arc::new(RunningPool(workers.clone())));
+    }
 
     let submit = |job: RegionJob| {
         let mut owned = OwnedJob(Some(job.clone()));
@@ -508,7 +533,7 @@ pub fn do_import(
         if let Some(before_release) = options.before_release {
             before_release();
         }
-        workers.Release();
+        workers.lock().unwrap().Release();
         // Operator errors may be set after the outstanding-job wait unblocks.
         if let Some(error) = wctx.OperatorErr() {
             let mut first = group.error.lock().unwrap();
@@ -564,6 +589,73 @@ impl RegionJobWorker for ClientWorker {
     }
     fn Close(&self) -> Result<()> {
         Ok(())
+    }
+}
+
+pub(crate) struct ExternalClientWorker {
+    pub client: Arc<dyn crate::local::ImportClient>,
+    pub token: CancellationToken,
+}
+impl RegionJobWorker for ExternalClientWorker {
+    fn HandleTask(&self, mut job: RegionJob) -> Result<Vec<RegionJob>> {
+        let data = job
+            .resources
+            .as_ref()
+            .ok_or_else(|| Error::InvalidData("external region job has no ingest data".into()))?
+            .data
+            .clone();
+        let (bytes, count) =
+            self.client
+                .WriteAndIngestData(&self.token, data.as_ref(), &[job.key_range.clone()])?;
+        self.token.check()?;
+        job.write_result = Some(crate::job_worker::TikvWriteResult {
+            total_bytes: bytes,
+            count,
+            ..Default::default()
+        });
+        job.convertStageTo(RegionJobStage::Ingested);
+        Ok(vec![job])
+    }
+    fn Close(&self) -> Result<()> {
+        self.client.Close();
+        Ok(())
+    }
+}
+
+pub(crate) struct ExternalEngineSource(pub Arc<dyn crate::engine_mgr::ExternalEngine>);
+impl api::Engine for ExternalEngineSource {
+    fn ID(&self) -> String {
+        self.0.ID()
+    }
+    fn LoadIngestData(
+        &self,
+        context: &api::Context,
+        out: &std::sync::mpsc::SyncSender<api::DataAndRanges>,
+    ) -> std::result::Result<(), api::EngineError> {
+        self.0.LoadIngestData(context, out)
+    }
+    fn KVStatistics(&self) -> (i64, i64) {
+        self.0.KVStatistics()
+    }
+    fn ImportedStatistics(&self) -> (i64, i64) {
+        self.0.ImportedStatistics()
+    }
+    fn ConflictInfo(&self) -> api::ConflictInfo {
+        let info = self.0.ConflictInfo();
+        api::ConflictInfo {
+            Count: info.count,
+            Files: self.0.ConflictFiles(),
+        }
+    }
+    fn GetKeyRange(&self) -> std::result::Result<(Vec<u8>, Vec<u8>), api::EngineError> {
+        let range = self.0.GetKeyRange()?;
+        Ok((range.start, range.end))
+    }
+    fn GetRegionSplitKeys(&self) -> std::result::Result<Vec<Vec<u8>>, api::EngineError> {
+        Ok(self.0.GetRegionSplitKeys()?)
+    }
+    fn Close(&mut self) -> std::result::Result<(), api::EngineError> {
+        Ok(self.0.Close()?)
     }
 }
 

@@ -26,7 +26,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use astersql_meta_metadef::BootstrapSystemTableDefinitions;
+use astersql_meta_metadef as metadef;
 
 /// 分布式 DDL Owner 锁在 etcd 上的键前缀。
 pub const bootstrapOwnerKey: &str = "/tidb/distributeDDLOwnerLock/";
@@ -116,103 +116,357 @@ pub struct versionedBootstrapSchema {
     pub version: i32,
     /// 该版本新增或补齐的数据库定义。
     pub databases: &'static [DatabaseBasicInfo],
-}
-
-/// 经典/基线版本下 mysql 库内的系统表清单。
-const fn bootstrap_table(index: usize, id: i64) -> TableBasicInfo {
-    TableBasicInfo {
-        id,
-        name: BootstrapSystemTableDefinitions[index].name,
-        create_sql: BootstrapSystemTableDefinitions[index].create_sql,
-    }
+    /// These tables are created only by NextGen bootstrap.
+    pub nextgen_only: bool,
 }
 
 const BASE_TABLES: &[TableBasicInfo] = &[
-    bootstrap_table(0, 3),
-    bootstrap_table(1, 4),
-    bootstrap_table(2, 5),
-    bootstrap_table(3, 6),
-    bootstrap_table(4, 7),
-    bootstrap_table(5, 8),
-    bootstrap_table(6, 9),
-    bootstrap_table(7, 10),
-    bootstrap_table(8, 11),
-    bootstrap_table(9, 12),
-    bootstrap_table(10, 13),
-    bootstrap_table(11, 14),
-    bootstrap_table(12, 15),
-    bootstrap_table(13, 16),
-    bootstrap_table(14, 17),
-    bootstrap_table(15, 18),
-    bootstrap_table(16, 19),
-    bootstrap_table(17, 20),
-    bootstrap_table(18, 21),
-    bootstrap_table(19, 22),
-    bootstrap_table(20, 23),
-    bootstrap_table(21, 24),
-    bootstrap_table(22, 25),
-    bootstrap_table(23, 26),
-    bootstrap_table(24, 27),
-    bootstrap_table(25, 28),
-    bootstrap_table(26, 29),
-    bootstrap_table(27, 30),
-    bootstrap_table(28, 31),
-    bootstrap_table(29, 32),
-    bootstrap_table(30, 33),
-    bootstrap_table(31, 34),
-    bootstrap_table(32, 35),
-    bootstrap_table(33, 36),
-    bootstrap_table(34, 37),
-    bootstrap_table(35, 38),
-    bootstrap_table(36, 39),
-    bootstrap_table(37, 40),
-    bootstrap_table(38, 41),
-    bootstrap_table(39, 42),
-    bootstrap_table(40, 43),
-    bootstrap_table(41, 44),
-    bootstrap_table(42, 45),
-    bootstrap_table(43, 46),
-    bootstrap_table(44, 47),
-    bootstrap_table(45, 48),
-    bootstrap_table(46, 49),
-    bootstrap_table(47, 50),
-    bootstrap_table(48, 51),
-    bootstrap_table(49, 52),
-    bootstrap_table(50, 53),
-    bootstrap_table(51, 54),
+    TableBasicInfo {
+        id: metadef::UserTableID,
+        name: "user",
+        create_sql: metadef::CreateUserTable,
+    },
+    TableBasicInfo {
+        id: metadef::PasswordHistoryTableID,
+        name: "password_history",
+        create_sql: metadef::CreatePasswordHistoryTable,
+    },
+    TableBasicInfo {
+        id: metadef::GlobalPrivTableID,
+        name: "global_priv",
+        create_sql: metadef::CreateGlobalPrivTable,
+    },
+    TableBasicInfo {
+        id: metadef::DBTableID,
+        name: "db",
+        create_sql: metadef::CreateDBTable,
+    },
+    TableBasicInfo {
+        id: metadef::TablesPrivTableID,
+        name: "tables_priv",
+        create_sql: metadef::CreateTablesPrivTable,
+    },
+    TableBasicInfo {
+        id: metadef::ColumnsPrivTableID,
+        name: "columns_priv",
+        create_sql: metadef::CreateColumnsPrivTable,
+    },
+    TableBasicInfo {
+        id: metadef::GlobalVariablesTableID,
+        name: "global_variables",
+        create_sql: metadef::CreateGlobalVariablesTable,
+    },
+    TableBasicInfo {
+        id: metadef::TiDBTableID,
+        name: "tidb",
+        create_sql: metadef::CreateTiDBTable,
+    },
+    TableBasicInfo {
+        id: metadef::HelpTopicTableID,
+        name: "help_topic",
+        create_sql: metadef::CreateHelpTopicTable,
+    },
+    TableBasicInfo {
+        id: metadef::StatsMetaTableID,
+        name: "stats_meta",
+        create_sql: metadef::CreateStatsMetaTable,
+    },
+    TableBasicInfo {
+        id: metadef::StatsHistogramsTableID,
+        name: "stats_histograms",
+        create_sql: metadef::CreateStatsHistogramsTable,
+    },
+    TableBasicInfo {
+        id: metadef::StatsBucketsTableID,
+        name: "stats_buckets",
+        create_sql: metadef::CreateStatsBucketsTable,
+    },
+    TableBasicInfo {
+        id: metadef::GCDeleteRangeTableID,
+        name: "gc_delete_range",
+        create_sql: metadef::CreateGCDeleteRangeTable,
+    },
+    TableBasicInfo {
+        id: metadef::GCDeleteRangeDoneTableID,
+        name: "gc_delete_range_done",
+        create_sql: metadef::CreateGCDeleteRangeDoneTable,
+    },
+    TableBasicInfo {
+        id: metadef::StatsFeedbackTableID,
+        name: "stats_feedback",
+        create_sql: metadef::CreateStatsFeedbackTable,
+    },
+    TableBasicInfo {
+        id: metadef::RoleEdgesTableID,
+        name: "role_edges",
+        create_sql: metadef::CreateRoleEdgesTable,
+    },
+    TableBasicInfo {
+        id: metadef::DefaultRolesTableID,
+        name: "default_roles",
+        create_sql: metadef::CreateDefaultRolesTable,
+    },
+    TableBasicInfo {
+        id: metadef::BindInfoTableID,
+        name: "bind_info",
+        create_sql: metadef::CreateBindInfoTable,
+    },
+    TableBasicInfo {
+        id: metadef::StatsTopNTableID,
+        name: "stats_top_n",
+        create_sql: metadef::CreateStatsTopNTable,
+    },
+    TableBasicInfo {
+        id: metadef::ExprPushdownBlacklistTableID,
+        name: "expr_pushdown_blacklist",
+        create_sql: metadef::CreateExprPushdownBlacklistTable,
+    },
+    TableBasicInfo {
+        id: metadef::OptRuleBlacklistTableID,
+        name: "opt_rule_blacklist",
+        create_sql: metadef::CreateOptRuleBlacklistTable,
+    },
+    TableBasicInfo {
+        id: metadef::StatsExtendedTableID,
+        name: "stats_extended",
+        create_sql: metadef::CreateStatsExtendedTable,
+    },
+    TableBasicInfo {
+        id: metadef::StatsFMSketchTableID,
+        name: "stats_fm_sketch",
+        create_sql: metadef::CreateStatsFMSketchTable,
+    },
+    TableBasicInfo {
+        id: metadef::GlobalGrantsTableID,
+        name: "global_grants",
+        create_sql: metadef::CreateGlobalGrantsTable,
+    },
+    TableBasicInfo {
+        id: metadef::CapturePlanBaselinesBlacklistTableID,
+        name: "capture_plan_baselines_blacklist",
+        create_sql: metadef::CreateCapturePlanBaselinesBlacklistTable,
+    },
+    TableBasicInfo {
+        id: metadef::ColumnStatsUsageTableID,
+        name: "column_stats_usage",
+        create_sql: metadef::CreateColumnStatsUsageTable,
+    },
+    TableBasicInfo {
+        id: metadef::TableCacheMetaTableID,
+        name: "table_cache_meta",
+        create_sql: metadef::CreateTableCacheMetaTable,
+    },
+    TableBasicInfo {
+        id: metadef::AnalyzeOptionsTableID,
+        name: "analyze_options",
+        create_sql: metadef::CreateAnalyzeOptionsTable,
+    },
+    TableBasicInfo {
+        id: metadef::StatsHistoryTableID,
+        name: "stats_history",
+        create_sql: metadef::CreateStatsHistoryTable,
+    },
+    TableBasicInfo {
+        id: metadef::StatsMetaHistoryTableID,
+        name: "stats_meta_history",
+        create_sql: metadef::CreateStatsMetaHistoryTable,
+    },
+    TableBasicInfo {
+        id: metadef::AnalyzeJobsTableID,
+        name: "analyze_jobs",
+        create_sql: metadef::CreateAnalyzeJobsTable,
+    },
+    TableBasicInfo {
+        id: metadef::AdvisoryLocksTableID,
+        name: "advisory_locks",
+        create_sql: metadef::CreateAdvisoryLocksTable,
+    },
+    TableBasicInfo {
+        id: metadef::PlanReplayerStatusTableID,
+        name: "plan_replayer_status",
+        create_sql: metadef::CreatePlanReplayerStatusTable,
+    },
+    TableBasicInfo {
+        id: metadef::PlanReplayerTaskTableID,
+        name: "plan_replayer_task",
+        create_sql: metadef::CreatePlanReplayerTaskTable,
+    },
+    TableBasicInfo {
+        id: metadef::StatsTableLockedTableID,
+        name: "stats_table_locked",
+        create_sql: metadef::CreateStatsTableLockedTable,
+    },
+    TableBasicInfo {
+        id: metadef::TiDBTTLTableStatusTableID,
+        name: "tidb_ttl_table_status",
+        create_sql: metadef::CreateTiDBTTLTableStatusTable,
+    },
+    TableBasicInfo {
+        id: metadef::TiDBTTLTaskTableID,
+        name: "tidb_ttl_task",
+        create_sql: metadef::CreateTiDBTTLTaskTable,
+    },
+    TableBasicInfo {
+        id: metadef::TiDBTTLJobHistoryTableID,
+        name: "tidb_ttl_job_history",
+        create_sql: metadef::CreateTiDBTTLJobHistoryTable,
+    },
+    TableBasicInfo {
+        id: metadef::TiDBGlobalTaskTableID,
+        name: "tidb_global_task",
+        create_sql: metadef::CreateTiDBGlobalTaskTable,
+    },
+    TableBasicInfo {
+        id: metadef::TiDBGlobalTaskHistoryTableID,
+        name: "tidb_global_task_history",
+        create_sql: metadef::CreateTiDBGlobalTaskHistoryTable,
+    },
+    TableBasicInfo {
+        id: metadef::TiDBImportJobsTableID,
+        name: "tidb_import_jobs",
+        create_sql: metadef::CreateTiDBImportJobsTable,
+    },
+    TableBasicInfo {
+        id: metadef::TiDBRunawayWatchTableID,
+        name: "tidb_runaway_watch",
+        create_sql: metadef::CreateTiDBRunawayWatchTable,
+    },
+    TableBasicInfo {
+        id: metadef::TiDBRunawayQueriesTableID,
+        name: "tidb_runaway_queries",
+        create_sql: metadef::CreateTiDBRunawayQueriesTable,
+    },
+    TableBasicInfo {
+        id: metadef::TiDBTimersTableID,
+        name: "tidb_timers",
+        create_sql: metadef::CreateTiDBTimersTable,
+    },
+    TableBasicInfo {
+        id: metadef::TiDBRunawayWatchDoneTableID,
+        name: "tidb_runaway_watch_done",
+        create_sql: metadef::CreateTiDBRunawayWatchDoneTable,
+    },
+    TableBasicInfo {
+        id: metadef::DistFrameworkMetaTableID,
+        name: "dist_framework_meta",
+        create_sql: metadef::CreateDistFrameworkMetaTable,
+    },
+    TableBasicInfo {
+        id: metadef::RequestUnitByGroupTableID,
+        name: "request_unit_by_group",
+        create_sql: metadef::CreateRequestUnitByGroupTable,
+    },
+    TableBasicInfo {
+        id: metadef::TiDBPITRIDMapTableID,
+        name: "tidb_pitr_id_map",
+        create_sql: metadef::CreateTiDBPITRIDMapTable,
+    },
+    TableBasicInfo {
+        id: metadef::TiDBRestoreRegistryTableID,
+        name: "tidb_restore_registry",
+        create_sql: metadef::CreateTiDBRestoreRegistryTable,
+    },
+    TableBasicInfo {
+        id: metadef::IndexAdvisorResultsTableID,
+        name: "index_advisor_results",
+        create_sql: metadef::CreateIndexAdvisorResultsTable,
+    },
+    TableBasicInfo {
+        id: metadef::TiDBKernelOptionsTableID,
+        name: "tidb_kernel_options",
+        create_sql: metadef::CreateTiDBKernelOptionsTable,
+    },
+    TableBasicInfo {
+        id: metadef::TiDBWorkloadValuesTableID,
+        name: "tidb_workload_values",
+        create_sql: metadef::CreateTiDBWorkloadValuesTable,
+    },
 ];
-/// 数据脱敏策略相关系统表。
-const MASKING_TABLES: &[TableBasicInfo] = &[bootstrap_table(52, 55)];
-/// 基线系统库：mysql（含系统表）与空的 sys。
+const MASKING_TABLES: &[TableBasicInfo] = &[TableBasicInfo {
+    id: metadef::TiDBMaskingPolicyTableID,
+    name: "tidb_masking_policy",
+    create_sql: metadef::CreateTiDBMaskingPolicyTable,
+}];
+const STORAGE_CLASS_TABLES: &[TableBasicInfo] = &[TableBasicInfo {
+    id: metadef::TiDBStorageClassTransitionHistoryTableID,
+    name: "tidb_storage_class_transition_history",
+    create_sql: metadef::CreateTiDBStorageClassTransitionHistoryTable,
+}];
+const MVIEW_TABLES: &[TableBasicInfo] = &[
+    TableBasicInfo {
+        id: metadef::TiDBMViewRefreshInfoTableID,
+        name: "tidb_mview_refresh_info",
+        create_sql: metadef::CreateTiDBMViewRefreshInfoTable,
+    },
+    TableBasicInfo {
+        id: metadef::TiDBMLogPurgeInfoTableID,
+        name: "tidb_mlog_purge_info",
+        create_sql: metadef::CreateTiDBMLogPurgeInfoTable,
+    },
+    TableBasicInfo {
+        id: metadef::TiDBMViewRefreshHistTableID,
+        name: "tidb_mview_refresh_hist",
+        create_sql: metadef::CreateTiDBMViewRefreshHistTable,
+    },
+    TableBasicInfo {
+        id: metadef::TiDBMViewRefreshAlertTableID,
+        name: "tidb_mview_refresh_alert",
+        create_sql: metadef::CreateTiDBMViewRefreshAlertTable,
+    },
+    TableBasicInfo {
+        id: metadef::TiDBMLogPurgeHistTableID,
+        name: "tidb_mlog_purge_hist",
+        create_sql: metadef::CreateTiDBMLogPurgeHistTable,
+    },
+];
 const BASE_DATABASES: &[DatabaseBasicInfo] = &[
     DatabaseBasicInfo {
-        id: 1,
+        id: metadef::SystemDatabaseID,
         name: "mysql",
         tables: BASE_TABLES,
     },
     DatabaseBasicInfo {
-        id: 2,
+        id: metadef::SysDatabaseID,
         name: "sys",
         tables: &[],
     },
 ];
-/// 脱敏功能引入时的增量库表定义。
 const MASKING_DATABASES: &[DatabaseBasicInfo] = &[DatabaseBasicInfo {
-    id: 1,
+    id: metadef::SystemDatabaseID,
     name: "mysql",
     tables: MASKING_TABLES,
 }];
-/// 对外暴露的经典系统库列表。
+const STORAGE_CLASS_DATABASES: &[DatabaseBasicInfo] = &[DatabaseBasicInfo {
+    id: metadef::SystemDatabaseID,
+    name: "mysql",
+    tables: STORAGE_CLASS_TABLES,
+}];
+const MVIEW_DATABASES: &[DatabaseBasicInfo] = &[DatabaseBasicInfo {
+    id: metadef::SystemDatabaseID,
+    name: "mysql",
+    tables: MVIEW_TABLES,
+}];
 pub const systemDatabases: &[DatabaseBasicInfo] = BASE_DATABASES;
-/// 按版本递增的 next-gen bootstrap schema 列表。
 pub const versionedBootstrapSchemas: &[versionedBootstrapSchema] = &[
     versionedBootstrapSchema {
         version: 1,
         databases: BASE_DATABASES,
+        nextgen_only: false,
     },
     versionedBootstrapSchema {
         version: 2,
         databases: MASKING_DATABASES,
+        nextgen_only: false,
+    },
+    versionedBootstrapSchema {
+        version: 3,
+        databases: STORAGE_CLASS_DATABASES,
+        nextgen_only: true,
+    },
+    versionedBootstrapSchema {
+        version: 4,
+        databases: MVIEW_DATABASES,
+        nextgen_only: false,
     },
 ];
 
@@ -223,6 +477,38 @@ pub struct SystemTableInfo {
     pub partitioned: bool,
     /// 是否使用分离自增（AUTO_ID_CACHE=1，系统表禁止）。
     pub separate_auto_increment: bool,
+}
+
+/// Transaction-scoped schema bootstrap operations shared by production and tests.
+pub trait BootstrapSchemaRuntime {
+    type Error;
+    fn nextgen_schema_version(&mut self) -> Result<i32, Self::Error>;
+    fn create_system_database(&mut self, database: DatabaseBasicInfo) -> Result<(), Self::Error>;
+    fn create_and_split_system_table(
+        &mut self,
+        database_id: i64,
+        table: TableBasicInfo,
+    ) -> Result<(), Self::Error>;
+    fn set_nextgen_schema_version(&mut self, version: i32) -> Result<(), Self::Error>;
+}
+impl<T: BootstrapRuntime> BootstrapSchemaRuntime for T {
+    type Error = T::Error;
+    fn nextgen_schema_version(&mut self) -> Result<i32, Self::Error> {
+        BootstrapRuntime::nextgen_schema_version(self)
+    }
+    fn create_system_database(&mut self, database: DatabaseBasicInfo) -> Result<(), Self::Error> {
+        BootstrapRuntime::create_system_database(self, database)
+    }
+    fn create_and_split_system_table(
+        &mut self,
+        database_id: i64,
+        table: TableBasicInfo,
+    ) -> Result<(), Self::Error> {
+        BootstrapRuntime::create_and_split_system_table(self, database_id, table)
+    }
+    fn set_nextgen_schema_version(&mut self, version: i32) -> Result<(), Self::Error> {
+        BootstrapRuntime::set_nextgen_schema_version(self, version)
+    }
 }
 
 /// Bootstrap 所需的运行时依赖（DDL Owner、内部 SQL、系统表创建等）。
@@ -422,7 +708,7 @@ pub fn getBootstrapVersion<R: BootstrapRuntime>(
 }
 
 /// 按 versionedBootstrapSchemas 增量创建尚未应用的系统库表。
-pub fn bootstrapSchemas<R: BootstrapRuntime>(
+pub fn bootstrapSchemas<R: BootstrapSchemaRuntime>(
     runtime: &mut R,
 ) -> Result<(), BootstrapError<R::Error>> {
     let current = runtime.nextgen_schema_version()?;
@@ -457,6 +743,9 @@ pub fn doDDLWorks<R: BootstrapRuntime>(runtime: &mut R) -> Result<(), BootstrapE
             )?;
         }
         for schema in versionedBootstrapSchemas {
+            if schema.nextgen_only {
+                continue;
+            }
             for database in schema.databases {
                 for table in database.tables {
                     mustExecute(runtime, table.create_sql, &[])?;

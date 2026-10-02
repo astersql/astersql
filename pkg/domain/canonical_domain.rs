@@ -1101,13 +1101,11 @@ impl DdlMetadataService {
             }
             // Index IDs are table-local in TiDB metadata. Global catalog IDs
             // are reserved for schemas/tables/partitions.
-            index.ID = new
-                .Indices
-                .iter()
-                .map(|existing| existing.ID)
-                .max()
-                .unwrap_or_default()
-                .saturating_add(1);
+            new.MaxIndexID = new
+                .MaxIndexID
+                .checked_add(1)
+                .ok_or_else(|| kv::errors::New("table index ID exhausted"))?;
+            index.ID = new.MaxIndexID;
             index.Table = new.Name.clone();
             new.Indices.push(index);
             catalog.tables.insert(key, new.clone());
@@ -1643,9 +1641,14 @@ fn read_catalog(retriever: &dyn kv::Retriever) -> Result<MetadataCatalog, kv::er
         })
         .transpose()?
         .unwrap_or(0);
-    if private_catalog
-        .as_ref()
-        .is_some_and(|catalog| catalog.version >= schema_version)
+    // Go metadata is authoritative even when a bootstrap repair deleted a
+    // table without publishing a schema version. The private catalog cannot
+    // override such edits at the same version.
+    let database_entries = scan_tidb_hash(retriever, b"DBs")?;
+    if database_entries.is_empty()
+        && private_catalog
+            .as_ref()
+            .is_some_and(|catalog| catalog.version >= schema_version)
     {
         let mut catalog = private_catalog.expect("catalog checked above");
         catalog.next_id = catalog.next_id.max(next_id);
@@ -1656,7 +1659,7 @@ fn read_catalog(retriever: &dyn kv::Retriever) -> Result<MetadataCatalog, kv::er
         next_id,
         ..MetadataCatalog::default()
     };
-    for (field, value) in scan_tidb_hash(retriever, b"DBs")? {
+    for (field, value) in database_entries {
         if !field.starts_with(b"DB:") {
             continue;
         }
@@ -1668,7 +1671,8 @@ fn read_catalog(retriever: &dyn kv::Retriever) -> Result<MetadataCatalog, kv::er
             if !table_field.starts_with(b"Table:") {
                 continue;
             }
-            let table = DecodeTableInfo(&table_value).map_err(kv::errors::New)?;
+            let mut table = DecodeTableInfo(&table_value).map_err(kv::errors::New)?;
+            table.DBID = database.ID;
             catalog
                 .tables
                 .insert((name.clone(), table.Name.L.clone()), table);

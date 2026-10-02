@@ -21,6 +21,12 @@ pub mod types;
 // 将 types 模块的公开项在 crate 根重导出，方便外部直接引用。
 pub use types::*;
 
+mod go_units;
+pub use go_units::{ParseGoFloat64, ParseGoSize};
+#[cfg(test)]
+#[path = "go_units_test.rs"]
+mod go_units_test;
+
 // 迁移期的单元测试模块：通过 #[path] 指向同目录下的测试文件，
 // 仅在 cfg(test) 下编译，用于验证迁移后行为与原实现一致。
 #[cfg(test)]

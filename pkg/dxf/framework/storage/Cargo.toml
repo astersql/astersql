@@ -17,7 +17,12 @@ path = "converter_1_aster_unit_test.rs"
 name = "task_table_2_aster_unit_test"
 path = "task_table_2_aster_unit_test.rs"
 
+[features]
+nextgen = ["astersql-config-kerneltype/nextgen"]
+
 [dependencies]
+astersql-config = { path = "../../../config" }
+astersql-config-kerneltype = { path = "../../../config/kerneltype" }
 parking_lot = "0.12"
 proto-crate = { package = "astersql-dxf-framework-proto", path = "../proto" }
 schstatus-crate = { package = "astersql-dxf-framework-schstatus", path = "../schstatus" }

@@ -18,11 +18,19 @@
 // `Engine` 从对象存储读取 data/stat 文件，在内存中排序去重后封装为 `MemoryIngestData`，
 // 供下游 regionJob（按 Region 范围导入 SST）消费；支持并发度调节与内存配额等待。
 
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 
+#[path = "engine_api.rs"]
+mod api;
+pub use api::ExternalEngineAdapter;
+
+#[cfg(test)]
+#[path = "engine_test.rs"]
+mod engine_test;
+
 use crate::reader::{CancellationToken, MemKvsAndBuffers, read_all_data};
-use crate::{ConflictInfo, Error, KeyRange, KvPair, OnDuplicateKey, Result, Storage, encode_kvs};
+use crate::{ConflictInfo, Error, KeyRange, KvPair, OnDuplicateKey, Result, Storage};
 
 /// 写步骤与引擎共享内存容量时的份额系数（与 Go `writeStepMemShareCount` 一致）。
 const writeStepMemShareCount: f64 = 6.5;
@@ -48,6 +56,94 @@ pub struct DataAndRanges {
 }
 
 /// 基于外部存储文件的导入引擎状态机。
+/// Shared live controls can be updated by the framework while the loader holds
+/// mutable ownership of its buffers. The actual downstream pool performs Tune.
+#[derive(Default)]
+struct LoadState {
+    loading: bool,
+    finished: bool,
+    applied: i32,
+    pending: bool,
+}
+struct LoadGuard(Arc<EngineResource>);
+impl Drop for LoadGuard {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.0.ready.0.lock() {
+            state.loading = false;
+            state.finished = true;
+            self.0.ready.1.notify_all();
+        }
+    }
+}
+pub struct EngineResource {
+    worker_pool: Mutex<Option<Arc<dyn WorkerPoolTuner>>>,
+    concurrency: AtomicI32,
+    memory_limit: AtomicUsize,
+    ready: (Mutex<LoadState>, Condvar),
+}
+impl EngineResource {
+    pub fn SetWorkerPool(&self, pool: Arc<dyn WorkerPoolTuner>) {
+        *self.worker_pool.lock().unwrap() = Some(pool);
+    }
+    pub fn UpdateResource(&self, concurrency: i32, memory_capacity: i64) -> Result<()> {
+        self.UpdateResourceWith(&CancellationToken::default(), concurrency, memory_capacity)
+    }
+    pub fn WorkerConcurrency(&self) -> i32 {
+        self.concurrency.load(Ordering::Acquire)
+    }
+    pub fn UpdateResourceWith(
+        &self,
+        token: &CancellationToken,
+        concurrency: i32,
+        memory_capacity: i64,
+    ) -> Result<()> {
+        let worker_pool = self
+            .worker_pool
+            .lock()
+            .map_err(|_| Error::Poisoned)?
+            .clone()
+            .ok_or_else(|| {
+                Error::InvalidArgument("region job worker is not initialized, retry later".into())
+            })?;
+        if self.concurrency.load(Ordering::Acquire) == concurrency {
+            return Ok(());
+        }
+        if concurrency <= 0 || memory_capacity <= 0 {
+            return Err(Error::InvalidArgument(
+                "concurrency and memory capacity must be positive".into(),
+            ));
+        }
+        let mut state = self.ready.0.lock().map_err(|_| Error::Poisoned)?;
+        state.pending = state.loading;
+        self.memory_limit
+            .store(getEngineMemoryLimit(memory_capacity), Ordering::Release);
+        self.concurrency.store(concurrency, Ordering::Release);
+        while state.loading && state.applied != concurrency {
+            if token.is_cancelled() {
+                state.pending = false;
+                self.ready.1.notify_all();
+                return Err(Error::Cancelled);
+            }
+            state = self
+                .ready
+                .1
+                .wait_timeout(state, std::time::Duration::from_millis(10))
+                .map_err(|_| Error::Poisoned)?
+                .0;
+        }
+        state.pending = false;
+        self.ready.1.notify_all();
+        if token.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        let finished = state.finished;
+        drop(state);
+        if !finished {
+            worker_pool.Tune(concurrency as usize);
+        }
+        Ok(())
+    }
+}
 pub struct Engine {
     storage: Arc<dyn Storage>,
     data_files: Vec<String>,
@@ -61,17 +157,16 @@ pub struct Engine {
     loaded: MemKvsAndBuffers,
     total_loaded_kvs_count: AtomicI64,
     in_flight_data_count: Arc<AtomicI64>,
+    in_flight_bytes: Arc<AtomicUsize>,
     release_signal: Arc<(Mutex<bool>, Condvar)>,
     active_ingest_data_flags: Vec<Arc<AtomicBool>>,
-    worker_pool: Option<Arc<dyn WorkerPoolTuner>>,
+    resource: Arc<EngineResource>,
     check_hotspot: bool,
-    worker_concurrency: AtomicI32,
     timestamp: u64,
     total_kv_size: i64,
     total_kv_count: i64,
     imported_kv_size: Arc<AtomicI64>,
     imported_kv_count: Arc<AtomicI64>,
-    memory_limit: usize,
     on_duplicate: OnDuplicateKey,
     file_prefix: String,
     recorded_duplicate_count: usize,
@@ -123,17 +218,21 @@ pub fn NewExternalEngine(
         loaded: MemKvsAndBuffers::default(),
         total_loaded_kvs_count: AtomicI64::new(0),
         in_flight_data_count: Arc::new(AtomicI64::new(0)),
+        in_flight_bytes: Arc::new(AtomicUsize::new(0)),
         release_signal: Arc::new((Mutex::new(false), Condvar::new())),
         active_ingest_data_flags: Vec::new(),
-        worker_pool: None,
+        resource: Arc::new(EngineResource {
+            worker_pool: Mutex::new(None),
+            concurrency: AtomicI32::new(worker_concurrency),
+            memory_limit: AtomicUsize::new(getEngineMemoryLimit(memory_capacity)),
+            ready: (Mutex::new(LoadState::default()), Condvar::new()),
+        }),
         check_hotspot,
-        worker_concurrency: AtomicI32::new(worker_concurrency),
         timestamp,
         total_kv_size,
         total_kv_count,
         imported_kv_size: Arc::new(AtomicI64::new(0)),
         imported_kv_count: Arc::new(AtomicI64::new(0)),
-        memory_limit: getEngineMemoryLimit(memory_capacity),
         on_duplicate,
         file_prefix,
         recorded_duplicate_count: 0,
@@ -144,28 +243,124 @@ pub fn NewExternalEngine(
 }
 
 impl Engine {
+    /// Transfer loaded payloads without doubling the batch's live allocation.
+    fn take_deduplicated_pairs(&mut self) -> Vec<KvPair> {
+        let sorted = std::mem::take(&mut self.loaded.kvs);
+        // Classify adjacent keys before consuming the buffer; both retained and
+        // recorded rows keep their original payload allocations and order.
+        let duplicated = (0..sorted.len())
+            .map(|index| {
+                (index > 0 && sorted[index - 1].key == sorted[index].key)
+                    || (index + 1 < sorted.len() && sorted[index + 1].key == sorted[index].key)
+            })
+            .collect::<Vec<_>>();
+        let mut deduplicated = Vec::with_capacity(sorted.len());
+        for (pair, duplicated) in sorted.into_iter().zip(duplicated) {
+            if !duplicated {
+                deduplicated.push(pair);
+            } else if self.on_duplicate == OnDuplicateKey::Record {
+                self.recorded_duplicate_count += 1;
+                self.recorded_duplicate_size += pair.encoded_size() as i64;
+                self.duplicate_pairs.push(pair);
+            }
+        }
+        deduplicated
+    }
+
     /// 按 worker 并发度分批加载 job 键区间数据，返回全部批次；结束后按需写出重复键文件。
     pub fn LoadIngestData(&mut self, token: &CancellationToken) -> Result<Vec<DataAndRanges>> {
+        let mut outputs = Vec::new();
+        self.load_ingest_data_with(token, false, |batch| {
+            outputs.push(batch);
+            Ok(())
+        })?;
+        Ok(outputs)
+    }
+
+    /// Native consumers send each loaded batch through their bounded operator
+    /// channel and release it after ingest. The collecting wrapper remains for
+    /// existing callers whose fixtures deliberately retain all returned batches.
+    pub fn LoadIngestDataWith(
+        &mut self,
+        token: &CancellationToken,
+        consume: impl FnMut(DataAndRanges) -> Result<()>,
+    ) -> Result<()> {
+        self.load_ingest_data_with(token, true, consume)
+    }
+
+    fn load_ingest_data_with(
+        &mut self,
+        token: &CancellationToken,
+        wait_for_release: bool,
+        mut consume: impl FnMut(DataAndRanges) -> Result<()>,
+    ) -> Result<()> {
         if self.closed {
             return Err(Error::Closed);
         }
+        {
+            let mut state = self.resource.ready.0.lock().map_err(|_| Error::Poisoned)?;
+            state.loading = true;
+            state.finished = false;
+            state.applied = self.resource.WorkerConcurrency();
+        }
+        let _loading = LoadGuard(self.resource.clone());
         if self.job_keys.len() < 2 {
-            return Ok(Vec::new());
+            return Ok(());
         }
-        let mut outputs = Vec::new();
+        let offsets = crate::reader::get_read_ranges_from_props(
+            token,
+            self.storage.as_ref(),
+            &self.job_keys,
+            &self.stats_files,
+        )?;
+        let duplicate_storage = self.storage.clone();
+        let duplicate_path = format!("{}/dup", self.file_prefix.trim_end_matches('/'));
+        let mut duplicate_writer = None;
         let mut start = 0;
-        let mut current_batch_size = self.worker_concurrency.load(Ordering::Acquire) as usize;
-        while start + 1 < self.job_keys.len() {
-            if token.is_cancelled() {
-                return Err(Error::Cancelled);
+        let mut batch_size = self.resource.concurrency.load(Ordering::Acquire).max(1) as usize;
+        let result = (|| {
+            while start + 1 < self.job_keys.len() {
+                if token.is_cancelled() {
+                    return Err(Error::Cancelled);
+                }
+                batch_size = self.handle_concurrency_change(token, batch_size)?;
+                let end = (start + batch_size + 1).min(self.job_keys.len());
+                let keys = self.job_keys[start..end].to_vec();
+                let batch = self.load_range_batch_data(
+                    token,
+                    &keys,
+                    &offsets[start],
+                    &offsets[end - 1],
+                    wait_for_release,
+                    &mut |pairs| {
+                        if duplicate_writer.is_none() {
+                            duplicate_writer = Some(duplicate_storage.create(&duplicate_path)?);
+                        }
+                        let writer = duplicate_writer
+                            .as_mut()
+                            .expect("duplicate writer initialized");
+                        for pair in pairs {
+                            if token.is_cancelled() {
+                                return Err(Error::Cancelled);
+                            }
+                            crate::merge::write_stream_pair(
+                                writer.as_mut(),
+                                pair,
+                                duplicate_storage.record_format(),
+                            )?;
+                        }
+                        Ok(())
+                    },
+                )?;
+                consume(batch)?;
+                start += batch_size;
             }
-            current_batch_size = self.handle_concurrency_change(current_batch_size);
-            let end = (start + current_batch_size + 1).min(self.job_keys.len());
-            outputs.push(self.load_range_batch_data(token, &self.job_keys[start..end].to_vec())?);
-            start += current_batch_size;
-        }
-        self.close_duplicate_writer_as_needed()?;
-        Ok(outputs)
+            Ok(())
+        })();
+        // Go closes the duplicate writer on both success and error, preserving
+        // the original load/consumer error when close also fails.
+        let close = duplicate_writer.map_or(Ok(()), |writer| writer.finish());
+        result.and(close)
     }
 
     /// 加载 `[job_keys.first, job_keys.last)` 范围内的 KV，排序去重后封装为批次。
@@ -173,26 +368,36 @@ impl Engine {
         &mut self,
         token: &CancellationToken,
         job_keys: &[Vec<u8>],
+        starts: &[u64],
+        ends: &[u64],
+        wait_for_release: bool,
+        record: &mut dyn FnMut(&[KvPair]) -> Result<()>,
     ) -> Result<DataAndRanges> {
         let start_key = job_keys.first().cloned().unwrap_or_default();
         let end_key = job_keys.last().cloned().unwrap_or_default();
-        let starts = vec![0; self.data_files.len()];
-        let mut ends = Vec::with_capacity(self.data_files.len());
-        for file in &self.data_files {
-            ends.push(self.storage.read(file)?.len() as u64);
+        loop {
+            match read_all_data(
+                token,
+                self.storage.as_ref(),
+                &self.data_files,
+                &self.stats_files,
+                &start_key,
+                &end_key,
+                starts,
+                ends,
+                self.resource
+                    .memory_limit
+                    .load(Ordering::Acquire)
+                    .saturating_sub(self.in_flight_bytes.load(Ordering::Acquire)),
+                &mut self.loaded,
+            ) {
+                Ok(()) => break,
+                Err(Error::OutOfMemory { .. }) if wait_for_release => {
+                    self.wait_ingest_data_released(token)?
+                }
+                Err(error) => return Err(error),
+            }
         }
-        read_all_data(
-            token,
-            self.storage.as_ref(),
-            &self.data_files,
-            &self.stats_files,
-            &start_key,
-            &end_key,
-            &starts,
-            &ends,
-            self.memory_limit,
-            &mut self.loaded,
-        )?;
         self.loaded.build();
         self.loaded
             .kvs
@@ -215,7 +420,8 @@ impl Engine {
                         value: pair.value.clone(),
                     });
                 }
-                OnDuplicateKey::Remove | OnDuplicateKey::Record => {}
+                OnDuplicateKey::Record => record(&[])?,
+                OnDuplicateKey::Remove => {}
             }
         }
         // Matches simplesst.RemoveDuplicates(kvs, key, recordRemoved) with
@@ -223,30 +429,20 @@ impl Engine {
         // (not just the repeats after the first), and Record additionally
         // keeps every dropped copy for the duplicate-key writer.
         // 出现次数 >1 的 key 整组丢弃；Record 另将丢弃副本写入 duplicate_pairs。
-        let sorted = std::mem::take(&mut self.loaded.kvs);
-        let mut deduplicated = Vec::with_capacity(sorted.len());
-        let mut run_start = 0;
-        while run_start < sorted.len() {
-            let mut run_end = run_start + 1;
-            while run_end < sorted.len() && sorted[run_end].key == sorted[run_start].key {
-                run_end += 1;
-            }
-            if run_end - run_start == 1 {
-                deduplicated.push(sorted[run_start].clone());
-            } else if self.on_duplicate == OnDuplicateKey::Record {
-                for pair in &sorted[run_start..run_end] {
-                    self.recorded_duplicate_count += 1;
-                    self.recorded_duplicate_size += pair.encoded_size() as i64;
-                    self.duplicate_pairs.push(pair.clone());
-                }
-            }
-            run_start = run_end;
+        let deduplicated = self.take_deduplicated_pairs();
+        if !self.duplicate_pairs.is_empty() {
+            let written = record(&self.duplicate_pairs);
+            self.duplicate_pairs.clear();
+            written?;
         }
         self.total_loaded_kvs_count
             .fetch_add(deduplicated.len() as i64, Ordering::Relaxed);
         self.loaded.size = 0;
         let in_flight = Arc::clone(&self.in_flight_data_count);
         let signal = Arc::clone(&self.release_signal);
+        let in_flight_bytes = self.in_flight_bytes.clone();
+        let retained_bytes = deduplicated.iter().map(KvPair::encoded_size).sum::<usize>();
+        in_flight_bytes.fetch_add(retained_bytes, Ordering::AcqRel);
         in_flight.fetch_add(1, Ordering::AcqRel);
         // 释放回调：递增 generation 并唤醒 waitIngestDataReleased。
         let data = MemoryIngestData::new(
@@ -255,6 +451,7 @@ impl Engine {
             Arc::clone(&self.imported_kv_size),
             Arc::clone(&self.imported_kv_count),
             move || {
+                in_flight_bytes.fetch_sub(retained_bytes, Ordering::AcqRel);
                 let (lock, condvar) = &*signal;
                 if let Ok(mut pending) = lock.lock() {
                     // Go uses a capacity-one channel: multiple releases may
@@ -281,16 +478,39 @@ impl Engine {
         })
     }
 
-    /// 若并发度变化且无在途批次，则 Reset 缓冲区并采用新批次大小。
-    fn handle_concurrency_change(&mut self, current_batch_size: usize) -> usize {
-        let new_batch_size = self.worker_concurrency.load(Ordering::Acquire).max(1) as usize;
+    /// Resource changes recreate the load buffers only after downstream has
+    /// released every previously generated batch, as in Go's external engine.
+    fn handle_concurrency_change(
+        &mut self,
+        token: &CancellationToken,
+        current_batch_size: usize,
+    ) -> Result<usize> {
+        let new_batch_size = self.resource.concurrency.load(Ordering::Acquire).max(1) as usize;
         self.update_active_ingest_data_flags();
-        if new_batch_size != current_batch_size && self.active_ingest_data_flags.is_empty() {
-            self.Reset();
-            new_batch_size
-        } else {
-            current_batch_size
+        if new_batch_size == current_batch_size {
+            return Ok(current_batch_size);
         }
+        while !self.active_ingest_data_flags.is_empty() {
+            self.wait_ingest_data_released(token)?;
+            self.update_active_ingest_data_flags();
+        }
+        self.Reset();
+        let mut state = self.resource.ready.0.lock().map_err(|_| Error::Poisoned)?;
+        state.applied = new_batch_size as i32;
+        self.resource.ready.1.notify_all();
+        while state.pending {
+            if token.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
+            state = self
+                .resource
+                .ready
+                .1
+                .wait_timeout(state, std::time::Duration::from_millis(10))
+                .map_err(|_| Error::Poisoned)?
+                .0;
+        }
+        Ok(new_batch_size)
     }
 
     /// 剔除已释放的在途 `MemoryIngestData` 标记。
@@ -301,6 +521,13 @@ impl Engine {
 
     /// 阻塞直至有一批在途数据被释放；若当前无在途则快速返回 OOM 错误。
     pub fn waitIngestDataReleased(&self) -> Result<()> {
+        self.wait_ingest_data_released(&CancellationToken::default())
+    }
+
+    fn wait_ingest_data_released(&self, token: &CancellationToken) -> Result<()> {
+        if token.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
         let (lock, condvar) = &*self.release_signal;
         let mut pending = lock.lock().map_err(|_| Error::Poisoned)?;
         if *pending {
@@ -309,51 +536,38 @@ impl Engine {
         }
         if self.in_flight_data_count.load(Ordering::Acquire) == 0 {
             return Err(Error::OutOfMemory {
-                requested: self.memory_limit.saturating_add(1),
-                limit: self.memory_limit,
+                requested: self
+                    .resource
+                    .memory_limit
+                    .load(Ordering::Acquire)
+                    .saturating_add(1),
+                limit: self.resource.memory_limit.load(Ordering::Acquire),
             });
         }
-        pending = condvar
-            .wait_while(pending, |value| !*value)
-            .map_err(|_| Error::Poisoned)?;
+        while !*pending {
+            if token.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
+            pending = condvar
+                .wait_timeout(pending, std::time::Duration::from_millis(10))
+                .map_err(|_| Error::Poisoned)?
+                .0;
+        }
         *pending = false;
         Ok(())
     }
 
     /// 绑定工作池调谐器。
     pub fn SetWorkerPool(&mut self, worker_pool: Arc<dyn WorkerPoolTuner>) {
-        self.worker_pool = Some(worker_pool);
+        *self.resource.worker_pool.lock().unwrap() = Some(worker_pool);
     }
-
-    /// 更新并发度与内存容量，并通知工作池。
+    pub fn ResourceHandle(&self) -> Arc<EngineResource> {
+        self.resource.clone()
+    }
+    /// Keep the existing entrypoint; native loaders share the same atomic
+    /// controls through ResourceHandle rather than locking their entire load.
     pub fn UpdateResource(&mut self, concurrency: i32, memory_capacity: i64) -> Result<()> {
-        let worker_pool = self.worker_pool.as_ref().ok_or_else(|| {
-            Error::InvalidArgument("region job worker is not initialized, retry later".into())
-        })?;
-        // Go treats an unchanged concurrency as a no-op before applying the
-        // new memory capacity or tuning the worker pool.
-        if self.worker_concurrency.load(Ordering::Acquire) == concurrency {
-            return Ok(());
-        }
-        if concurrency <= 0 || memory_capacity <= 0 {
-            return Err(Error::InvalidArgument(
-                "concurrency and memory capacity must be positive".into(),
-            ));
-        }
-        self.worker_concurrency
-            .store(concurrency, Ordering::Release);
-        self.memory_limit = getEngineMemoryLimit(memory_capacity);
-        worker_pool.Tune(concurrency as usize);
-        Ok(())
-    }
-
-    /// Record 策略下将收集到的重复键写出到 `{prefix}/dup`。
-    fn close_duplicate_writer_as_needed(&mut self) -> Result<()> {
-        if self.on_duplicate != OnDuplicateKey::Record || self.duplicate_pairs.is_empty() {
-            return Ok(());
-        }
-        let path = format!("{}/dup", self.file_prefix.trim_end_matches('/'));
-        self.storage.write(&path, encode_kvs(&self.duplicate_pairs))
+        self.resource.UpdateResource(concurrency, memory_capacity)
     }
 
     /// 返回计划导入的总 KV 大小与条数。
@@ -425,13 +639,29 @@ impl Engine {
 
 /// `MemoryIngestData` 的共享内部状态。
 struct MemoryIngestDataInner {
-    kvs: RwLock<Vec<KvPair>>,
+    kvs: RwLock<Arc<Vec<KvPair>>>,
     timestamp: u64,
     released: Arc<AtomicBool>,
     reference_count: AtomicI64,
     imported_kv_size: Arc<AtomicI64>,
     imported_kv_count: Arc<AtomicI64>,
     on_release: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
+impl Drop for MemoryIngestDataInner {
+    fn drop(&mut self) {
+        // A cancelled generator can discard a batch before any job Ref. Return
+        // its allocation before publishing the release signal, just as DecRef.
+        if !self.released.swap(true, Ordering::AcqRel) {
+            if let Ok(kvs) = self.kvs.get_mut() {
+                *kvs = Arc::new(Vec::new());
+            }
+            if let Ok(callback) = self.on_release.get_mut()
+                && let Some(callback) = callback.take()
+            {
+                callback();
+            }
+        }
+    }
 }
 
 /// 内存中的可导入数据批次：支持范围查询、迭代与引用计数释放。
@@ -451,7 +681,7 @@ impl MemoryIngestData {
     ) -> Self {
         Self {
             inner: Arc::new(MemoryIngestDataInner {
-                kvs: RwLock::new(kvs),
+                kvs: RwLock::new(Arc::new(kvs)),
                 timestamp,
                 released: Arc::new(AtomicBool::new(false)),
                 reference_count: AtomicI64::new(0),
@@ -502,14 +732,17 @@ impl MemoryIngestData {
         Ok((kvs[first].key.clone(), kvs[last].key.clone()))
     }
 
-    /// 构造覆盖范围内 KV 的前向迭代器副本。
+    /// Share the sorted ingest buffer; independent range cursors allocate no
+    /// additional KV payload outside the engine's memory budget.
     pub fn NewIter(&self, lower_bound: &[u8], upper_bound: &[u8]) -> Result<MemoryDataIter> {
         let Some((first, last)) = self.first_and_last_key_index(lower_bound, upper_bound)? else {
             return Ok(MemoryDataIter::empty());
         };
         let kvs = self.inner.kvs.read().map_err(|_| Error::Poisoned)?;
         Ok(MemoryDataIter {
-            kvs: kvs[first..=last].to_vec(),
+            kvs: Arc::clone(&kvs),
+            start: first,
+            end: last + 1,
             current: None,
         })
     }
@@ -548,7 +781,7 @@ impl MemoryIngestData {
             return;
         }
         if let Ok(mut kvs) = self.inner.kvs.write() {
-            kvs.clear();
+            *kvs = Arc::new(Vec::new());
         }
         if let Ok(mut callback) = self.inner.on_release.lock()
             && let Some(callback) = callback.take()
@@ -570,27 +803,31 @@ impl MemoryIngestData {
 
 /// 内存 KV 前向迭代器。
 pub struct MemoryDataIter {
-    kvs: Vec<KvPair>,
+    kvs: Arc<Vec<KvPair>>,
+    start: usize,
+    end: usize,
     current: Option<usize>,
 }
 
 impl MemoryDataIter {
     fn empty() -> Self {
         Self {
-            kvs: Vec::new(),
+            kvs: Arc::new(Vec::new()),
+            start: 0,
+            end: 0,
             current: None,
         }
     }
 
     /// 定位首元素。
     pub fn First(&mut self) -> bool {
-        self.current = (!self.kvs.is_empty()).then_some(0);
+        self.current = (self.start < self.end).then_some(self.start);
         self.Valid()
     }
 
     /// 当前位置是否有效。
     pub fn Valid(&self) -> bool {
-        self.current.is_some_and(|index| index < self.kvs.len())
+        self.current.is_some_and(|index| index < self.end)
     }
 
     /// 前进一位。
@@ -613,7 +850,9 @@ impl MemoryDataIter {
 
     /// 关闭并清空内部缓冲。
     pub fn Close(&mut self) -> Result<()> {
-        self.kvs.clear();
+        self.kvs = Arc::new(Vec::new());
+        self.start = 0;
+        self.end = 0;
         self.current = None;
         Ok(())
     }

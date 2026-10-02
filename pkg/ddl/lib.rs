@@ -291,3 +291,7 @@ pub mod persistent_create_materialized_view_shadow;
 pub mod persistent_create_table;
 
 pub mod persistent_create_materialized_view;
+
+pub mod persistent_drop_column;
+pub mod persistent_masking_actions;
+pub mod persistent_modify_column;

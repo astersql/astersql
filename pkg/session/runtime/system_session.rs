@@ -198,11 +198,18 @@ impl sys::SessionContext for ConcreteSystemContext {
     }
 }
 
+struct AnalyzeProgress {
+    start: std::time::Instant,
+    timeout: std::time::Duration,
+    result: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
+}
 #[derive(Default)]
 struct MViewBuildContexts {
     owner_epoch: u64,
     completed: HashMap<i64, (u64, i64)>,
     index_cloud_uris: HashMap<i64, String>,
+    analyzes: HashMap<i64, AnalyzeProgress>,
+    dxf_worker: Option<Arc<super::modify_column_dist_backfill::NodeService>>,
 }
 struct ConcreteDdlContext {
     mview_builds: Arc<Mutex<MViewBuildContexts>>,
@@ -448,6 +455,7 @@ impl Default for SystemSessionCallbacks {
 /// Go's five-session capacity limits idle resources, not concurrent borrowers.
 pub struct SystemSessionPool {
     pool: Arc<ddl::Pool>,
+    builds: Arc<Mutex<MViewBuildContexts>>,
 }
 impl SystemSessionPool {
     pub fn new(domain: Arc<Domain>) -> Arc<Self> {
@@ -485,6 +493,7 @@ impl SystemSessionPool {
             }),
         });
         Arc::new(Self {
+            builds: resources.mview_builds.clone(),
             pool: Arc::new(ddl::Pool::new(resources)),
         })
     }
@@ -510,7 +519,34 @@ impl SystemSessionPool {
         }
         Ok(lease)
     }
+    pub fn start_dxf_worker(&self) -> Result<(), String> {
+        if !astersql_sessionctx_vardef::EnableDistTask.Load() {
+            return Ok(());
+        }
+        let lease = self.acquire()?;
+        let builds = self.builds.clone();
+        lease
+            .concrete()
+            .call(move |session| {
+                let mut contexts = builds.lock().map_err(sys_error)?;
+                if contexts.dxf_worker.is_none() {
+                    contexts.dxf_worker = Some(
+                        super::modify_column_dist_backfill::NodeService::start(session)
+                            .map_err(sys_error)?,
+                    );
+                }
+                Ok(())
+            })
+            .map_err(|e| e.to_string())
+    }
+    pub fn stop_dxf_worker(&self) {
+        let worker = self.builds.lock().unwrap().dxf_worker.take();
+        if let Some(worker) = worker {
+            worker.stop();
+        }
+    }
     pub fn close(&self) {
+        self.stop_dxf_worker();
         self.pool.close();
     }
 }
@@ -526,6 +562,26 @@ pub struct SystemSessionLease {
     context: Arc<dyn ddl::SessionContext>,
 }
 impl SystemSessionLease {
+    pub(super) fn persistent_history(
+        &self,
+        id: i64,
+    ) -> Result<Option<astersql_meta_model::group_3::Job>, String> {
+        self.concrete()
+            .call(move |session| {
+                let snapshot = session
+                    .domain
+                    .storage_handle()
+                    .with_storage(|store| {
+                        let version = store.CurrentVersion("global")?;
+                        Ok::<_, kv::Error>(store.GetSnapshot(version))
+                    })
+                    .map_err(sys_error)?;
+                astersql_meta::SnapshotReader::new(snapshot)
+                    .get_history_ddl_job(id)
+                    .map_err(sys_error)
+            })
+            .map_err(|e| e.to_string())
+    }
     #[cfg(test)]
     pub(super) fn index_cloud_storage_uri_for_test(&self, job_id: i64) -> Option<String> {
         self.concrete()
@@ -1107,6 +1163,78 @@ impl astersql_ddl::job_worker::JobExecutionContext for ConcreteJobExecutionConte
         derive_create_mlog_schedule(schema, &log.Name.O, info)
     }
 
+    fn masking_policy_timestamp(&mut self) -> Result<String, String> {
+        Ok(chrono::Local::now()
+            .format("%Y-%m-%d %H:%M:%S%.6f")
+            .to_string())
+    }
+    fn update_table_labels(
+        &mut self,
+        old_schema: &str,
+        old_name: &str,
+        new_schema: &str,
+        table: &astersql_meta_model::TableInfo,
+        delete_old: bool,
+    ) -> Result<(), String> {
+        create_table_resources::update_labels(
+            &self.0.domain,
+            old_schema,
+            old_name,
+            new_schema,
+            table,
+            delete_old,
+        )
+    }
+    fn delete_drop_table_ttl(&mut self, table: i64) -> Result<(), String> {
+        if let Some(manager) = self.0.domain.external_workload_manager() {
+            manager
+                .lock()
+                .map_err(|e| e.to_string())?
+                .DeleteTTLTableInfo(&astersql_extworkload::context::Background(), table)
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+    fn cleanup_drop_table_resources(
+        &mut self,
+        table: &astersql_meta_model::TableInfo,
+    ) -> Result<(), String> {
+        astersql_domain_infosync::DeleteTiFlashTableSyncProgress(table).map_err(|e| e.to_string())
+    }
+    fn delete_drop_table_affinity(
+        &mut self,
+        table: &astersql_meta_model::TableInfo,
+    ) -> Result<(), String> {
+        create_table_resources::delete_affinity(&self.0.domain, table)
+    }
+    fn drop_table_rule_ids(
+        &mut self,
+        schema: &str,
+        table: &astersql_meta_model::TableInfo,
+    ) -> Result<Vec<String>, String> {
+        let keyspace = self
+            .0
+            .domain
+            .storage_handle()
+            .with_storage(|s| s.DDLKeyspaceID())
+            .map_err(|e| e.to_string())?;
+        let prefix = if astersql_config_kerneltype::IsNextGen() && keyspace != u32::MAX {
+            format!("keyspace/{keyspace}/schema/{schema}/{}", table.Name.L)
+        } else {
+            format!("schema/{schema}/{}", table.Name.L)
+        };
+        let mut rules: Vec<String> = table
+            .GetPartitionInfo()
+            .map(|p| {
+                p.Definitions
+                    .iter()
+                    .map(|d| format!("{prefix}/{}", d.Name.L))
+                    .collect()
+            })
+            .unwrap_or_default();
+        rules.push(prefix);
+        Ok(rules)
+    }
     fn configure_create_table_replica(
         &mut self,
         t: &astersql_meta_model::TableInfo,
@@ -1155,7 +1283,257 @@ impl astersql_ddl::job_worker::JobExecutionContext for ConcreteJobExecutionConte
         Ok(())
     }
 
-    fn query(&mut self, sql: &str, _: &str) -> Result<Vec<Vec<String>>, String> {
+    fn backfill_modified_column(
+        &mut self,
+        table: &astersql_meta_model::TableInfo,
+        old: &astersql_meta_model::ColumnInfo,
+        new: &astersql_meta_model::ColumnInfo,
+        physical: i64,
+        start: &[u8],
+        end: &[u8],
+        limit: usize,
+        mode: u64,
+        location: Option<&astersql_meta_model::TimeZoneLocation>,
+    ) -> Result<(Vec<u8>, i64), String> {
+        super::modify_column_backfill::batch(
+            self.0, table, old, new, physical, start, end, limit, mode, location,
+        )
+    }
+    fn backfill_prepared_indexes(
+        &mut self,
+        request: astersql_ddl::backfilling::IndexBackfillBatch,
+    ) -> Result<astersql_ddl::backfilling::BackfillTaskContext, String> {
+        backfill_index_batch(self.0, request)
+    }
+    fn ingest_modified_indexes(
+        &mut self,
+        request: astersql_ddl::backfilling::IndexBackfillBatch,
+        job: &mut astersql_meta_model::group_3::Job,
+    ) -> Result<astersql_ddl::backfilling::BackfillTaskContext, String> {
+        if job.reorg_meta.as_ref().is_some_and(|meta| meta.IsDistReorg) {
+            let worker = {
+                let mut contexts = self.2.lock().map_err(|e| e.to_string())?;
+                if contexts.dxf_worker.is_none() {
+                    contexts.dxf_worker = Some(
+                        super::modify_column_dist_backfill::NodeService::start(self.0)?,
+                    );
+                }
+                contexts.dxf_worker.as_ref().unwrap().clone()
+            };
+            let cloud_storage_uri = if job
+                .reorg_meta
+                .as_ref()
+                .is_some_and(|meta| meta.UseCloudStorage)
+            {
+                let cached = self
+                    .2
+                    .lock()
+                    .map_err(|e| e.to_string())?
+                    .index_cloud_uris
+                    .get(&job.id)
+                    .cloned()
+                    .unwrap_or_default();
+                if cached.is_empty() {
+                    astersql_ddl::index::ReorgIndexEnvironment::load_cloud_storage_uri(
+                        self, job.id,
+                    )?
+                } else {
+                    cached
+                }
+            } else {
+                String::new()
+            };
+            super::modify_column_dist_backfill::run(
+                self.0,
+                request,
+                job,
+                false,
+                worker,
+                cloud_storage_uri,
+            )
+        } else {
+            backfill_index_batch_with_ingest(self.0, request, Some(job.id))
+        }
+    }
+    fn analyze_modified_table(
+        &mut self,
+        job: &mut astersql_meta_model::group_3::Job,
+        table: &astersql_meta_model::TableInfo,
+    ) -> Result<i8, String> {
+        use astersql_meta_model::group_3::{
+            AnalyzeStateDone, AnalyzeStateFailed, AnalyzeStateRunning, AnalyzeStateTimeout,
+        };
+        let mut contexts = self.2.lock().map_err(|_| "DDL analyze context poisoned")?;
+        if !contexts.analyzes.contains_key(&job.id) {
+            let since = (job.start_ts != 0)
+                .then(|| chrono::DateTime::from_timestamp_millis((job.start_ts >> 18) as i64))
+                .flatten()
+                .unwrap_or_else(chrono::Utc::now)
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string();
+            let schema = job.schema_name.replace('\'', "''");
+            let name = table.Name.O.replace('\'', "''");
+            let metadata = ConcreteSession::new(self.0.domain.clone());
+            metadata.SetInRestrictedSQL(true);
+            query(&metadata, "SET SESSION time_zone='UTC'").map_err(|error| error.to_string())?;
+            // Status reads are separate from the heavy analysis.
+            let states = query(&metadata, &format!("SELECT state FROM mysql.analyze_jobs WHERE table_schema='{schema}' AND table_name='{name}' AND start_time >= '{since}'")).unwrap_or_default();
+            let observed = states
+                .iter()
+                .filter_map(|row| row.first())
+                .find_map(|state| {
+                    if state.eq_ignore_ascii_case("running") {
+                        Some(AnalyzeStateRunning)
+                    } else if state.eq_ignore_ascii_case("failed") {
+                        Some(AnalyzeStateFailed)
+                    } else if state.eq_ignore_ascii_case("finished") {
+                        Some(AnalyzeStateDone)
+                    } else {
+                        None
+                    }
+                });
+            if let Some(state) = observed.filter(|state| *state != AnalyzeStateRunning) {
+                return Ok(state);
+            }
+            let elapsed = if job.real_start_ts == 0 {
+                0
+            } else {
+                chrono::Utc::now()
+                    .timestamp_millis()
+                    .saturating_sub((job.real_start_ts >> 18) as i64)
+                    .max(0) as u64
+            };
+            let timeout = std::time::Duration::from_millis(60_000.max(elapsed.saturating_mul(2)));
+            if observed == Some(AnalyzeStateRunning) {
+                contexts.analyzes.insert(
+                    job.id,
+                    AnalyzeProgress {
+                        start: std::time::Instant::now(),
+                        timeout,
+                        result: None,
+                    },
+                );
+                return Ok(AnalyzeStateRunning);
+            }
+            let domain = self.0.domain.clone();
+            let schema = job.schema_name.replace('`', "``");
+            let name = table.Name.O.replace('`', "``");
+            let (send, receive) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let mut session = ConcreteSession::new(domain);
+                let result = (|| {
+                    let vars = Arc::get_mut(&mut session.session_vars).ok_or_else(|| {
+                        "new DDL analyze session variables are shared".to_string()
+                    })?;
+                    vars.EnableDDLAnalyzeExecOpt = true;
+                    session.SetInRestrictedSQL(true);
+                    query(&session, &format!("ANALYZE TABLE `{schema}`.`{name}`"))
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                })();
+                let _ = send.send(result);
+            });
+            contexts.analyzes.insert(
+                job.id,
+                AnalyzeProgress {
+                    start: std::time::Instant::now(),
+                    timeout,
+                    result: Some(receive),
+                },
+            );
+            return Ok(AnalyzeStateRunning);
+        }
+        let progress = contexts.analyzes.get(&job.id).unwrap();
+        let result = progress
+            .result
+            .as_ref()
+            .and_then(|result| match result.try_recv() {
+                Ok(result) => Some(if result.is_ok() {
+                    AnalyzeStateDone
+                } else {
+                    AnalyzeStateFailed
+                }),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(AnalyzeStateFailed),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            });
+        if let Some(state) = result {
+            contexts.analyzes.remove(&job.id);
+            return Ok(state);
+        }
+        if progress.start.elapsed() > progress.timeout {
+            contexts.analyzes.remove(&job.id);
+            return Ok(AnalyzeStateTimeout);
+        }
+        if progress.result.is_none() {
+            let metadata = ConcreteSession::new(self.0.domain.clone());
+            metadata.SetInRestrictedSQL(true);
+            let schema = job.schema_name.replace('\'', "''");
+            let name = table.Name.O.replace('\'', "''");
+            let since = (job.start_ts != 0)
+                .then(|| chrono::DateTime::from_timestamp_millis((job.start_ts >> 18) as i64))
+                .flatten()
+                .unwrap_or_else(chrono::Utc::now)
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string();
+            if let Ok(rows) = query(
+                &metadata,
+                &format!(
+                    "SELECT state FROM mysql.analyze_jobs WHERE table_schema='{schema}' AND table_name='{name}' AND start_time >= '{since}'"
+                ),
+            ) {
+                for row in rows {
+                    if row.first().is_some_and(|state| {
+                        state.eq_ignore_ascii_case("failed")
+                            || state.eq_ignore_ascii_case("finished")
+                    }) {
+                        let state = if row[0].eq_ignore_ascii_case("finished") {
+                            AnalyzeStateDone
+                        } else {
+                            AnalyzeStateFailed
+                        };
+                        contexts.analyzes.remove(&job.id);
+                        return Ok(state);
+                    }
+                }
+            }
+        }
+        Ok(AnalyzeStateRunning)
+    }
+    fn merge_modified_indexes(
+        &mut self,
+        request: astersql_ddl::backfilling::IndexBackfillBatch,
+        job: &mut astersql_meta_model::group_3::Job,
+    ) -> Result<astersql_ddl::backfilling::BackfillTaskContext, String> {
+        if job.reorg_meta.as_ref().is_some_and(|meta| meta.IsDistReorg) {
+            let worker = {
+                let mut contexts = self.2.lock().map_err(|e| e.to_string())?;
+                if contexts.dxf_worker.is_none() {
+                    contexts.dxf_worker = Some(
+                        super::modify_column_dist_backfill::NodeService::start(self.0)?,
+                    );
+                }
+                contexts.dxf_worker.as_ref().unwrap().clone()
+            };
+            super::modify_column_dist_backfill::run(
+                self.0,
+                request,
+                job,
+                true,
+                worker,
+                String::new(),
+            )
+        } else {
+            super::modify_column_backfill::merge(self.0, request)
+        }
+    }
+    fn query(&mut self, sql: &str, label: &str) -> Result<Vec<Vec<String>>, String> {
+        if label == "query-masking-policy"
+            && astersql_testkit_testfailpoint::eval_bool(
+                "github.com/pingcap/tidb/pkg/ddl/mockMissingMaskingPolicySysTable",
+            )
+        {
+            return Err("[schema:1146]Table 'mysql.tidb_masking_policy' doesn't exist".into());
+        }
         // A handler may read/write system rows, but transaction boundaries and
         // implicit-commit DDL belong exclusively to the enclosing JobWorker.
         let statements = super::parse(sql).map_err(|e| e.to_string())?;
@@ -1329,6 +1707,46 @@ fn backfill_index_batch(
     session: &mut ConcreteSession,
     request: astersql_ddl::backfilling::IndexBackfillBatch,
 ) -> Result<astersql_ddl::backfilling::BackfillTaskContext, String> {
+    backfill_index_batch_with_ingest(session, request, None)
+}
+pub(super) fn backfill_index_batch_with_ingest(
+    session: &mut ConcreteSession,
+    request: astersql_ddl::backfilling::IndexBackfillBatch,
+    ingest_job: Option<i64>,
+) -> Result<astersql_ddl::backfilling::BackfillTaskContext, String> {
+    backfill_index_batch_with_ingest_options(
+        session,
+        request,
+        ingest_job,
+        astersql_kv::SSTImportOptions::default(),
+    )
+}
+pub(super) struct IndexBackfillRecords {
+    pub(super) context: astersql_ddl::backfilling::BackfillTaskContext,
+    pub(super) records: Vec<(
+        kv::Key,
+        astersql_meta_model::IndexInfo,
+        Vec<(kv::Key, Vec<u8>, bool)>,
+    )>,
+}
+
+pub(super) fn backfill_index_batch_with_ingest_options(
+    session: &mut ConcreteSession,
+    request: astersql_ddl::backfilling::IndexBackfillBatch,
+    ingest_job: Option<i64>,
+    options: astersql_kv::SSTImportOptions,
+) -> Result<astersql_ddl::backfilling::BackfillTaskContext, String> {
+    let batch = generate_index_backfill_records(session, request, ingest_job.is_some())?;
+    write_index_backfill_records(session, batch, ingest_job, options)
+}
+
+/// The scan/encode stage produces owned bytes and metadata. KV handles remain
+/// thread-local; the writer reconstructs them from the original record key.
+pub(super) fn generate_index_backfill_records(
+    session: &mut ConcreteSession,
+    request: astersql_ddl::backfilling::IndexBackfillBatch,
+    ingest: bool,
+) -> Result<IndexBackfillRecords, String> {
     use super::row_codec::{
         datum_to_runtime_value, origin_default_runtime_value, relational_index_value_rows,
         runtime_value_to_datum,
@@ -1370,9 +1788,10 @@ fn backfill_index_batch(
         return Err("DDL backfill index is not in write reorganization".into());
     }
     // Transactional add-index explicitly rejects partial indexes in Go.
-    if indexes
-        .iter()
-        .any(|index| !index.ConditionExprString.is_empty())
+    if !ingest
+        && indexes
+            .iter()
+            .any(|index| !index.ConditionExprString.is_empty())
     {
         return Err("[ddl:8200]Unsupported add partial index without fast reorg".into());
     }
@@ -1432,7 +1851,7 @@ fn backfill_index_batch(
         // A bounded batch buffer contains encoded index records, never an
         // in-memory substitute for the source table or MVCC snapshot.
         let mut records = Vec::new();
-        while iterator.Valid() && records.len() < request.batch_size {
+        while iterator.Valid() && context.scan_count < request.batch_size as i64 {
             let row_key = iterator.Key();
             if !row_key.0.starts_with(&prefix) {
                 break;
@@ -1441,8 +1860,25 @@ fn backfill_index_batch(
                 row_key.0.clone(),
             ))
             .map_err(|e| e.to_string())?;
+            txn.LockKeys(
+                &kv::Context::default(),
+                &mut kv::LockCtx::default(),
+                std::slice::from_ref(&row_key),
+            )
+            .map_err(|e| e.to_string())?;
+            let row_value = match txn.Get(&kv::Context::default(), row_key.clone(), &[]) {
+                Ok(value) => value.Value,
+                Err(error) if kv::IsErrNotFound(&error) => {
+                    context.next_key = row_key.Next().0;
+                    kv::NextUntil(iterator.as_mut(), |key| !key.0.starts_with(&row_key.0))
+                        .map_err(|e| e.to_string())?;
+                    continue;
+                }
+                Err(error) => return Err(error.to_string()),
+            };
+            context.scan_count += 1;
             let datums = astersql_tablecodec::DecodeRowToDatumMap(
-                Some(iterator.Value()),
+                Some(row_value),
                 fields.clone(),
                 Some(astersql_tablecodec::time::UTC),
             )
@@ -1480,31 +1916,40 @@ fn backfill_index_batch(
                 datums.insert(col.ID, datum);
             }
             for index in &indexes {
-                let values = if index.MVIndex {
-                    relational_index_value_rows(&table, index, &row, flags)
-                        .map_err(|e| e.to_string())?
-                } else {
-                    vec![
-                        index
-                            .Columns
-                            .iter()
-                            .map(|part| {
-                                let col = table
-                                    .Columns
-                                    .get(part.Offset as usize)
-                                    .ok_or("invalid backfill index column offset")?;
-                                datums.get(&col.ID).cloned().map(Ok).unwrap_or_else(|| {
-                                    runtime_value_to_datum(
-                                        row.get(&col.Name.L).and_then(Option::as_ref),
-                                        col,
-                                        flags,
-                                    )
-                                    .map_err(|e| e.to_string())
+                if !index.ConditionExprString.is_empty() {
+                    let condition =
+                        crate::dml_runtime::ParseGeneratedExpr(&index.ConditionExprString)
+                            .map_err(|e| e.to_string())?;
+                    if !super::row_matches_simple_where(&row, &condition) {
+                        continue;
+                    }
+                }
+                let values =
+                    if index.MVIndex || index.Columns.iter().any(|part| part.UseChangingType) {
+                        relational_index_value_rows(&table, index, &row, flags)
+                            .map_err(|e| e.to_string())?
+                    } else {
+                        vec![
+                            index
+                                .Columns
+                                .iter()
+                                .map(|part| {
+                                    let col = table
+                                        .Columns
+                                        .get(part.Offset as usize)
+                                        .ok_or("invalid backfill index column offset")?;
+                                    datums.get(&col.ID).cloned().map(Ok).unwrap_or_else(|| {
+                                        runtime_value_to_datum(
+                                            row.get(&col.Name.L).and_then(Option::as_ref),
+                                            col,
+                                            flags,
+                                        )
+                                        .map_err(|e| e.to_string())
+                                    })
                                 })
-                            })
-                            .collect::<Result<Vec<_>, String>>()?,
-                    ]
-                };
+                                .collect::<Result<Vec<_>, String>>()?,
+                        ]
+                    };
                 let actual_handle: Box<dyn astersql_tablecodec::kv::Handle> = if index.Global
                     && index.GlobalIndexVersion >= astersql_meta_model::GlobalIndexVersionV1
                 {
@@ -1515,8 +1960,17 @@ fn backfill_index_batch(
                 } else {
                     handle.Copy()
                 };
+                let mut effective_columns = table.Columns.clone();
+                for part in &index.Columns {
+                    if part.UseChangingType {
+                        let column = &mut effective_columns[part.Offset as usize];
+                        if let Some(changing) = &column.ChangingFieldType {
+                            column.FieldType = changing.clone();
+                        }
+                    }
+                }
                 let codec_table = astersql_tablecodec::model::TableInfo {
-                    Columns: table.Columns.clone(),
+                    Columns: effective_columns,
                     Indices: table.Indices.clone(),
                     PKIsHandle: table.PKIsHandle,
                     IsCommonHandle: table.IsCommonHandle,
@@ -1527,7 +1981,7 @@ fn backfill_index_batch(
                 for values in values {
                     let restored = index.Columns.iter().any(|part| {
                         astersql_tablecodec::types::NeedRestoredDataWithCollate(
-                            &table.Columns[part.Offset as usize].FieldType,
+                            &codec_table.Columns[part.Offset as usize].FieldType,
                             astersql_tablecodec::collate::NewCollationEnabled(),
                         )
                     });
@@ -1576,12 +2030,7 @@ fn backfill_index_batch(
                     .map_err(|e| e.to_string())?;
                     entries.push((kv::Key(key), value, distinct));
                 }
-                records.push((
-                    row_key.clone(),
-                    index.clone(),
-                    actual_handle.Copy(),
-                    entries,
-                ));
+                records.push((row_key.clone(), index.clone(), entries));
             }
             context.next_key = row_key.Next().0;
             kv::NextUntil(iterator.as_mut(), |key| !key.0.starts_with(&row_key.0))
@@ -1595,8 +2044,37 @@ fn backfill_index_batch(
     })();
     iterator.Close();
     let records = generated?;
-    for (row_key, index, handle, entries) in records {
-        context.scan_count += 1;
+    Ok(IndexBackfillRecords { context, records })
+}
+
+pub(super) fn write_index_backfill_records(
+    session: &mut ConcreteSession,
+    batch: IndexBackfillRecords,
+    ingest_job: Option<i64>,
+    options: astersql_kv::SSTImportOptions,
+) -> Result<astersql_ddl::backfilling::BackfillTaskContext, String> {
+    let domain = session.domain.clone();
+    let mut state = session.state.borrow_mut();
+    let txn = state
+        .transaction
+        .as_mut()
+        .ok_or("active transaction required")?;
+    let mut context = batch.context;
+    let mut ingest_pairs = Vec::new();
+    for (row_key, index, entries) in batch.records {
+        let (physical_table_id, handle) =
+            astersql_tablecodec::DecodeRecordKey(astersql_tablecodec::kv::Key(row_key.0.clone()))
+                .map_err(|e| e.to_string())?;
+        let handle: Box<dyn astersql_tablecodec::kv::Handle> = if index.Global
+            && index.GlobalIndexVersion >= astersql_meta_model::GlobalIndexVersionV1
+        {
+            Box::new(astersql_tablecodec::kv::NewPartitionHandle(
+                physical_table_id,
+                handle,
+            ))
+        } else {
+            handle
+        };
         let mut pending = Vec::new();
         for (key, value, distinct) in entries {
             if index.Unique {
@@ -1635,9 +2113,30 @@ fn backfill_index_batch(
         )
         .map_err(|e| e.to_string())?;
         for (key, value) in pending {
-            txn.Set(key, value).map_err(|e| e.to_string())?;
+            if ingest_job.is_some() {
+                match txn.Get(&kv::Context::default(), key.clone(), &[]) {
+                    Ok(existing) if existing.Value == value => continue,
+                    Ok(_) => {
+                        return Err(format!(
+                            "[kv:1062]Duplicate entry for key '{}'",
+                            index.Name.O
+                        ));
+                    }
+                    Err(error) if kv::IsErrNotFound(&error) => {}
+                    Err(error) => return Err(error.to_string()),
+                }
+                ingest_pairs.push(astersql_lightning_verification::KvPair {
+                    key: key.0,
+                    val: value,
+                });
+            } else {
+                txn.Set(key, value).map_err(|e| e.to_string())?;
+            }
         }
         context.added_count += 1;
+    }
+    if let Some(job_id) = ingest_job {
+        super::modify_column_backfill::ingest_with_options(domain, job_id, ingest_pairs, options)?;
     }
     Ok(context)
 }

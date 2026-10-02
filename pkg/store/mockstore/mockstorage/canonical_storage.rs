@@ -1185,12 +1185,12 @@ fn leak_option_value(value: Box<dyn Any>) -> Option<&'static (dyn Any + Send + S
 impl kv::Storage for mockStorage {
     fn ImportSST(
         &self,
-        _commit_ts: u64,
+        commit_ts: u64,
         pairs: Vec<(Vec<u8>, Vec<u8>)>,
     ) -> Result<kv::SSTImportStats, kv::errors::SharedError> {
         // This explicitly selected mock KV store has no TiKV RPC endpoint.
-        // Exercise the production encoder/engine with transactional local KV.
-        let mut transaction = kv::Storage::Begin(self, &[])?;
+        // Preserve physical import TS and historical ordering in local MVCC.
+
         let stats = kv::SSTImportStats {
             keys: pairs.len(),
             bytes: pairs
@@ -1199,10 +1199,9 @@ impl kv::Storage for mockStorage {
                 .sum(),
             ..Default::default()
         };
-        for (key, value) in pairs {
-            transaction.Set(kv::Key(key), value)?;
-        }
-        transaction.Commit(&kv::Context::todo())?;
+        self.KVStore
+            .ingest_sst(commit_ts, pairs)
+            .map_err(storage_error)?;
         Ok(stats)
     }
     /// 开启规范事务。

@@ -20,10 +20,10 @@
 // 最终写回外部存储（对象存储或本地文件抽象）。
 
 use crate::merge::OnWriterClose;
+use crate::merge::StreamSummary;
 use crate::reader::{CancellationToken, MemKvsAndBuffers, read_all_data};
 use crate::split::NewRangeSplitter;
-use crate::util::summary_for_file;
-use crate::{Error, MultipleFilesStat, Result, Storage, encode_kvs};
+use crate::{Error, MultipleFilesStat, Result, Storage};
 
 /// 4GiB，用作 RangeSplitter 与读入缓冲的默认大容量上限。
 const FOUR_GIB: i64 = 4 * 1024 * 1024 * 1024;
@@ -44,8 +44,8 @@ pub fn MergeOverlappingFilesV2(
     writer_id: &str,
     _block_size: usize,
     _write_batch_count: u64,
-    _property_size_distance: u64,
-    _property_keys_distance: u64,
+    property_size_distance: u64,
+    property_keys_distance: u64,
     on_writer_close: Option<&OnWriterClose>,
     concurrency: usize,
     _check_hotspot: bool,
@@ -68,8 +68,16 @@ pub fn MergeOverlappingFilesV2(
         i64::MAX,
     )?;
     let mut current_start = start_key.to_vec();
-    let mut merged = Vec::new();
-    // 每个 group：确定当前 end、整文件偏移、读入窗口内 KV 并按键排序后追加。
+    let prefix = new_file_prefix.trim_end_matches('/');
+    let data_file = format!("{prefix}/{writer_id}.data");
+    let stat_file = format!("{prefix}/{writer_id}.stat");
+    let mut writer = store.create(&data_file)?;
+    let mut summary = StreamSummary::new(
+        store.record_format(),
+        property_size_distance,
+        property_keys_distance,
+    );
+    // Each range window is sorted, streamed to the output, then released.
     loop {
         // 取消令牌（CancellationToken）已触发则中止，避免无意义的 I/O。
         if token.is_cancelled() {
@@ -81,12 +89,14 @@ pub fn MergeOverlappingFilesV2(
         } else {
             group.end_key_of_group.clone()
         };
-        let mut start_offsets = Vec::with_capacity(group.data_files.len());
-        let mut end_offsets = Vec::with_capacity(group.data_files.len());
-        for file in &group.data_files {
-            start_offsets.push(0);
-            end_offsets.push(store.read(file)?.len() as u64);
-        }
+        let offsets = crate::reader::get_read_ranges_from_props(
+            token,
+            store,
+            &[current_start.clone(), current_end.clone()],
+            &group.stat_files,
+        )?;
+        let start_offsets = &offsets[0];
+        let end_offsets = &offsets[1];
         let mut loaded = MemKvsAndBuffers::default();
         read_all_data(
             token,
@@ -95,28 +105,27 @@ pub fn MergeOverlappingFilesV2(
             &group.stat_files,
             &current_start,
             &current_end,
-            &start_offsets,
-            &end_offsets,
+            start_offsets,
+            end_offsets,
             FOUR_GIB as usize,
             &mut loaded,
         )?;
         loaded.build();
         loaded.kvs.sort_by(|left, right| left.key.cmp(&right.key));
-        merged.extend(loaded.kvs);
+        // Release each bounded range window after writing it. Keeping prior
+        // windows would turn the entire external merge into a table-sized Vec.
+        for pair in &loaded.kvs {
+            summary.write(writer.as_mut(), pair)?;
+        }
         current_start = current_end;
         if group.end_key_of_group.is_empty() {
             break;
         }
     }
-    // 全部 group 读完后再次全局排序，写出 .data/.stat，并可选触发关闭回调。
     splitter.Close()?;
-    merged.sort_by(|left, right| left.key.cmp(&right.key));
-    let prefix = new_file_prefix.trim_end_matches('/');
-    let data_file = format!("{prefix}/{writer_id}.data");
-    let stat_file = format!("{prefix}/{writer_id}.stat");
-    store.write(&data_file, encode_kvs(&merged))?;
-    store.write(&stat_file, Vec::new())?;
-    let summary = summary_for_file(data_file.clone(), stat_file, &merged);
+    writer.finish()?;
+    summary.write_stats(store, &stat_file)?;
+    let summary = summary.finish(data_file.clone(), stat_file);
     if let Some(callback) = on_writer_close {
         callback(&summary);
     }

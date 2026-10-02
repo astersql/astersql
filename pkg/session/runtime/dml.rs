@@ -731,7 +731,17 @@ impl ConcreteSession {
         if let Some(transaction) = state.transaction.as_mut() {
             for (key, value) in mutations {
                 match value {
-                    Some(value) => transaction.Set(key, value),
+                    Some(value) => {
+                        let value = super::modify_column_backfill::temporary_value(
+                            transaction.as_mut(),
+                            &key,
+                            value,
+                        )
+                        .map_err(|error| {
+                            session_kv_error("merge temporary index history", error)
+                        })?;
+                        transaction.Set(key, value)
+                    }
                     None => transaction.Delete(key),
                 }
                 .map_err(|error| session_kv_error("apply relational transaction DML", error))?;
@@ -773,7 +783,17 @@ impl ConcreteSession {
             state.last_observed_store_ts = transaction.StartTS();
             for (key, value) in mutations {
                 let result = match value {
-                    Some(value) => transaction.Set(key, value),
+                    Some(value) => {
+                        let value = super::modify_column_backfill::temporary_value(
+                            transaction.as_mut(),
+                            &key,
+                            value,
+                        )
+                        .map_err(|error| {
+                            session_kv_error("merge temporary index history", error)
+                        })?;
+                        transaction.Set(key, value)
+                    }
                     None => transaction.Delete(key),
                 };
                 if let Err(error) = result {
@@ -1910,6 +1930,7 @@ impl ConcreteSession {
             let all_columns = table
                 .Columns
                 .iter()
+                .filter(|column| column.State == astersql_meta_model::StatePublic)
                 .map(|column| column.Name.L.clone())
                 .collect::<Vec<_>>();
             if statement
@@ -1925,7 +1946,11 @@ impl ConcreteSession {
                 table
                     .Columns
                     .iter()
-                    .filter(|column| !column.Hidden && !column.IsGenerated())
+                    .filter(|column| {
+                        column.State == astersql_meta_model::StatePublic
+                            && !column.Hidden
+                            && !column.IsGenerated()
+                    })
                     .map(|column| column.Name.L.clone())
                     .collect::<Vec<_>>()
             }
@@ -2223,7 +2248,11 @@ impl ConcreteSession {
                 }
                 row.insert(column.clone(), value);
             }
-            for column in &table.Columns {
+            for column in table
+                .Columns
+                .iter()
+                .filter(|column| column.State == astersql_meta_model::StatePublic)
+            {
                 if row.contains_key(&column.Name.L)
                     || column.IsGenerated()
                     || table

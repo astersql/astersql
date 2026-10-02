@@ -371,6 +371,19 @@ fn register_compatibility_vars() {
 }
 
 /// 构造取值非法类变量错误。
+// Go's units.RAMInBytes accepts fractional binary units and optional B/iB.
+// Keep its separator grammar: internal whitespace is not removed.
+fn ddl_write_speed(value: &str) -> Result<i64, VariableError> {
+    let bytes = astersql_config_configtypes::ParseGoSize(value, true).map_err(error)?;
+    if !(0..=1_i64 << 50).contains(&bytes) {
+        return Err(error(format!(
+            "invalid value for '{bytes}', it should be within [0, {}]",
+            1_i64 << 50
+        )));
+    }
+    Ok(bytes)
+}
+
 fn error(message: impl Into<String>) -> VariableError {
     VariableError::new(VariableErrorKind::InvalidValue, message)
 }
@@ -645,20 +658,55 @@ fn register_basic_clamped_vars() {
         1_024,
         1_048_576,
     ));
-    RegisterSysVar(int_var(
-        "tidb_ddl_reorg_worker_cnt",
-        4,
-        vardef::ScopeGlobal,
+    let mut workers = unsigned_var(
+        vardef::TiDBDDLReorgWorkerCount,
+        vardef::DefTiDBDDLReorgWorkerCount as u64,
+        scope_both(),
         1,
-        256,
-    ));
-    RegisterSysVar(int_var(
-        "tidb_ddl_reorg_batch_size",
-        256,
-        vardef::ScopeGlobal,
-        32,
-        10_240,
-    ));
+        vardef::MaxConfigurableConcurrency as u64,
+    );
+    workers.SetGlobal = Some(Arc::new(|_, _, value| {
+        vardef::SetDDLReorgWorkerCounter(
+            value
+                .parse()
+                .map_err(|_| VariableError::wrong_value(vardef::TiDBDDLReorgWorkerCount, value))?,
+        );
+        Ok(())
+    }));
+    RegisterSysVar(workers);
+    let mut batch = unsigned_var(
+        vardef::TiDBDDLReorgBatchSize,
+        vardef::DefTiDBDDLReorgBatchSize as u64,
+        scope_both(),
+        vardef::MinDDLReorgBatchSize as i64,
+        vardef::MaxDDLReorgBatchSize as u64,
+    );
+    batch.SetGlobal = Some(Arc::new(|_, _, value| {
+        vardef::SetDDLReorgBatchSize(
+            value
+                .parse()
+                .map_err(|_| VariableError::wrong_value(vardef::TiDBDDLReorgBatchSize, value))?,
+        );
+        Ok(())
+    }));
+    RegisterSysVar(batch);
+    let mut nodes = int_var(
+        vardef::TiDBMaxDistTaskNodes,
+        vardef::DefTiDBMaxDistTaskNodes,
+        scope_both(),
+        -1,
+        128,
+    );
+    nodes.Validation = Some(Arc::new(|_, normalized, _, _| {
+        if normalized == "0" {
+            return Err(VariableError::wrong_value(
+                vardef::TiDBMaxDistTaskNodes,
+                "max_dist_task_nodes should be -1 or [1, 128]",
+            ));
+        }
+        Ok(normalized.to_owned())
+    }));
+    RegisterSysVar(nodes);
     RegisterSysVar(int_var(
         "tidb_low_resolution_tso_update_interval",
         2_000,
@@ -1343,6 +1391,11 @@ fn register_getters_and_defaults() {
         scope_both(),
         &[vardef::Off, vardef::On, vardef::IntOnly],
     ));
+    RegisterSysVar(bool_var(
+        vardef::TiDBEnableDDLAnalyze,
+        vardef::DefTiDBEnableDDLAnalyze,
+        scope_both(),
+    ));
     RegisterSysVar(int_var(
         vardef::TiDBAnalyzeVersion,
         vardef::DefTiDBAnalyzeVersion,
@@ -1391,6 +1444,26 @@ fn register_getters_and_defaults() {
         "0",
         scope_both(),
     ));
+
+    let mut service_scope = string_var(vardef::TiDBServiceScope, "", vardef::ScopeInstance);
+    service_scope.Validation = Some(Arc::new(|_, normalized, original, _| {
+        naming::Check(original)
+            .map_err(|message| VariableError::new(VariableErrorKind::InvalidValue, message))?;
+        Ok(normalized.to_owned())
+    }));
+    service_scope.SetGlobal = Some(Arc::new(|_, _, value| {
+        let value = value.to_ascii_lowercase();
+        vardef::ServiceScope.Store(value.clone());
+        let old_config = config::get_global_config();
+        if old_config.instance.tidb_service_scope != value {
+            let mut updated = (*old_config).clone();
+            updated.instance.tidb_service_scope = value;
+            config::store_global_config(updated);
+        }
+        Ok(())
+    }));
+    service_scope.GetGlobal = Some(Arc::new(|_, _| Ok(vardef::ServiceScope.Load())));
+    RegisterSysVar(service_scope);
 
     let mut general_log = bool_var(
         vardef::TiDBGeneralLog,
@@ -1667,14 +1740,21 @@ fn register_global_vars() {
         0,
         i64::MAX as u64,
     ));
-    RegisterSysVar(string_var(
+    let mut write_speed = string_var(
         vardef::TiDBDDLReorgMaxWriteSpeed,
         &vardef::DefTiDBDDLReorgMaxWriteSpeed.to_string(),
         vardef::ScopeGlobal,
-    ));
+    );
+    write_speed.SetGlobal = Some(Arc::new(|_, _, value| {
+        vardef::DDLReorgMaxWriteSpeed.Store(ddl_write_speed(value)?);
+        Ok(())
+    }));
+    write_speed.GetGlobal = Some(Arc::new(|_, _| {
+        Ok(vardef::DDLReorgMaxWriteSpeed.Load().to_string())
+    }));
+    RegisterSysVar(write_speed);
 
     for (name, default) in [
-        ("tidb_enable_dist_task", "OFF"),
         ("tidb_partition_prune_mode", "dynamic"),
         ("tidb_ddl_enable_fast_reorg", "ON"),
         ("tidb_opt_agg_push_down", "OFF"),
@@ -1697,8 +1777,29 @@ fn register_global_vars() {
         RegisterSysVar(variable);
     }
 
+    let mut dist_task = bool_var(
+        vardef::TiDBEnableDistTask,
+        vardef::DefTiDBEnableDistTask,
+        vardef::ScopeGlobal,
+    );
+    dist_task.SetGlobal = Some(Arc::new(|_, _, value| {
+        vardef::EnableDistTask.Store(TiDBOptOn(value));
+        Ok(())
+    }));
+    dist_task.GetGlobal = Some(Arc::new(|_, _| {
+        Ok(BoolToOnOff(vardef::EnableDistTask.Load()))
+    }));
+    RegisterSysVar(dist_task);
+
     let mut fast_ddl = bool_var("tidb_ddl_enable_fast_reorg", true, vardef::ScopeGlobal);
     fast_ddl.Value = "ON".to_owned();
+    fast_ddl.SetGlobal = Some(Arc::new(|_, _, value| {
+        vardef::EnableFastReorg.Store(TiDBOptOn(value));
+        Ok(())
+    }));
+    fast_ddl.GetGlobal = Some(Arc::new(|_, _| {
+        Ok(BoolToOnOff(vardef::EnableFastReorg.Load()))
+    }));
     RegisterSysVar(fast_ddl);
 
     RegisterSysVar(unsigned_var(

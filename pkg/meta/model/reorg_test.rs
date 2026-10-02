@@ -51,3 +51,16 @@ fn backfill_meta_uses_go_json_names_and_byte_encoding() {
     assert_eq!(json["curr_key"], "Y3VycmVudA==");
     assert!(json.get("IsUnique").is_none());
 }
+
+#[test]
+fn reorg_meta_max_write_speed_preserves_go_int64_range() {
+    let speed = 1_i64 << 50;
+    let meta: DDLReorgMeta =
+        serde_json::from_value(serde_json::json!({"max_write_speed": speed})).unwrap();
+    assert_eq!(meta.GetMaxWriteSpeed(), speed);
+    meta.SetMaxWriteSpeed(speed - 1);
+    assert_eq!(meta.GetMaxWriteSpeed(), speed - 1);
+    let encoded = serde_json::to_vec(&meta).unwrap();
+    let decoded: DDLReorgMeta = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(decoded.GetMaxWriteSpeed(), speed - 1);
+}

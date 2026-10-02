@@ -113,7 +113,15 @@ impl importer::TableImporterRuntime for Runtime {
 
 struct StoreBridge {
     domain: Arc<Domain>,
+    options: Arc<Mutex<kv::SSTImportOptions>>,
     stats: Arc<Mutex<kv::SSTImportStats>>,
+    key_prefix: Vec<u8>,
+}
+struct ImportMonitorStop<'a>(&'a std::sync::atomic::AtomicBool);
+impl Drop for ImportMonitorStop<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
 }
 impl local::engine_mgr::StoreHelper for StoreBridge {
     fn GetTS(&self, token: &local::CancellationToken) -> local::Result<(i64, i64)> {
@@ -131,6 +139,113 @@ impl local::engine_mgr::StoreHelper for StoreBridge {
     }
 }
 impl local::local::ImportClient for StoreBridge {
+    fn WriteAndIngestData(
+        &self,
+        token: &local::CancellationToken,
+        data: &dyn local::local::engineapi::IngestData,
+        ranges: &[local::KeyRange],
+    ) -> local::Result<(i64, i64)> {
+        token.check()?;
+        let options = self
+            .options
+            .lock()
+            .map_err(|_| local::Error::Poisoned)?
+            .clone();
+        let done = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let context = local::local::engineapi::Context::background();
+            let monitoring_context = context.clone();
+            let stopping = &done;
+            let physical_context = options.context.clone();
+            let monitor = scope.spawn(move || {
+                while !stopping.load(Ordering::Acquire) {
+                    if token.is_cancelled() {
+                        monitoring_context.cancel();
+                        physical_context.cancel();
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            });
+            let _stop = ImportMonitorStop(&done);
+            let result = (|| {
+                let mut total_bytes = 0i64;
+                let mut total_count = 0i64;
+                let mut pool = local::local::membuf::NewPool(Vec::new());
+                for range in ranges {
+                    let mut iterator = data.NewIter(
+                        &context,
+                        &range.start,
+                        &range.end,
+                        Arc::get_mut(&mut pool)
+                            .ok_or_else(|| local_error("shared import iterator pool"))?,
+                    );
+                    let encoded = (|| {
+                        let mut pairs = Vec::new();
+                        let mut valid = iterator.First();
+                        while valid {
+                            token.check()?;
+                            let key = iterator
+                                .Key()
+                                .strip_prefix(self.key_prefix.as_slice())
+                                .ok_or_else(|| {
+                                    local_error("cloud index key belongs to another keyspace")
+                                })?
+                                .to_vec();
+                            let value = iterator.Value().to_vec();
+                            total_bytes += (iterator.Key().len() + value.len()) as i64;
+                            total_count += 1;
+                            pairs.push((key, value));
+                            valid = iterator.Next();
+                        }
+                        if let Some(error) = iterator.Error() {
+                            return Err(local_error(error));
+                        }
+                        Ok(pairs)
+                    })();
+                    let close = iterator.Close().map_err(local_error);
+                    let pairs = encoded?;
+                    close?;
+                    if pairs.is_empty() {
+                        continue;
+                    }
+                    let stats = self.domain.storage().with_storage(|store| {
+                        let snapshot = store.GetSnapshot(kv::MaxVersion);
+                        let keys = pairs
+                            .iter()
+                            .map(|(key, _)| kv::Key(key.clone()))
+                            .collect::<Vec<_>>();
+                        let existing = snapshot
+                            .BatchGet(&options.context, &keys, &[])
+                            .map_err(local_error)?;
+                        for (key, value) in &pairs {
+                            if let Some(old) = existing.get(&astersql_kv::KeyMapName(key)) {
+                                if old.Value != *value {
+                                    return Err(local::Error::Conflict {
+                                        key: key.clone(),
+                                        value: value.clone(),
+                                    });
+                                }
+                            }
+                        }
+                        store
+                            .ImportSSTWithOptions(data.GetTS(), pairs, options.clone())
+                            .map_err(local_error)
+                    })?;
+                    let mut total = self.stats.lock().map_err(|_| local::Error::Poisoned)?;
+                    total.keys += stats.keys;
+                    total.bytes += stats.bytes;
+                    total.write_rpcs += stats.write_rpcs;
+                    total.ingest_rpcs += stats.ingest_rpcs;
+                }
+                token.check()?;
+                Ok((total_bytes, total_count))
+            })();
+            done.store(true, Ordering::Release);
+            monitor.join().unwrap();
+            result
+        })
+    }
     fn WriteAndIngest(
         &self,
         token: &local::CancellationToken,
@@ -138,6 +253,11 @@ impl local::local::ImportClient for StoreBridge {
         ranges: &[local::KeyRange],
     ) -> local::Result<(i64, i64)> {
         token.check()?;
+        let options = self
+            .options
+            .lock()
+            .map_err(|_| local::Error::Poisoned)?
+            .clone();
         let pairs = engine
             .snapshot()?
             .into_iter()
@@ -163,7 +283,11 @@ impl local::local::ImportClient for StoreBridge {
                 {
                     return Err(kv::errors::New("duplicate key during physical import"));
                 }
-                store.ImportSST(engine.engine_meta.ts.load(Ordering::Acquire), pairs)
+                store.ImportSSTWithOptions(
+                    engine.engine_meta.ts.load(Ordering::Acquire),
+                    pairs,
+                    options.clone(),
+                )
             })
             .map_err(local_error)?;
         let mut total = self.stats.lock().map_err(|_| local::Error::Poisoned)?;
@@ -184,7 +308,9 @@ impl local::local::ImportClientFactory for StoreBridge {
         token.check()?;
         Ok(Arc::new(Self {
             domain: self.domain.clone(),
+            options: self.options.clone(),
             stats: self.stats.clone(),
+            key_prefix: self.key_prefix.clone(),
         }))
     }
     fn Close(&self) {}
@@ -192,10 +318,82 @@ impl local::local::ImportClientFactory for StoreBridge {
 
 pub(super) struct Backend {
     local: local::local::Backend,
+    options: Arc<Mutex<kv::SSTImportOptions>>,
     token: local::CancellationToken,
     seen: Arc<Mutex<HashMap<Uuid, BTreeSet<Vec<u8>>>>>,
     pub stats: Arc<Mutex<kv::SSTImportStats>>,
     directory: std::path::PathBuf,
+}
+struct CloudEngine(Arc<astersql_ingestor_globalsort::engine::ExternalEngineAdapter>);
+struct CloudPool(Arc<dyn local::import_pipeline::ImportPoolTuner>);
+impl astersql_ingestor_globalsort::engine::WorkerPoolTuner for CloudPool {
+    fn Tune(&self, concurrency: usize) {
+        self.0
+            .Tune(concurrency)
+            .expect("failed to tune native region-job pool");
+    }
+}
+impl local::engine_mgr::ExternalEngine for CloudEngine {
+    fn LoadIngestData(
+        &self,
+        context: &local::local::engineapi::Context,
+        out: &std::sync::mpsc::SyncSender<local::local::engineapi::DataAndRanges>,
+    ) -> Result<(), local::local::engineapi::EngineError> {
+        local::local::engineapi::Engine::LoadIngestData(self.0.as_ref(), context, out).map_err(
+            |failure| match failure.downcast::<astersql_ingestor_globalsort::Error>() {
+                Ok(failure) => match *failure {
+                    astersql_ingestor_globalsort::Error::DuplicateKey { key, value } => {
+                        Box::new(local::Error::Conflict { key, value })
+                            as local::local::engineapi::EngineError
+                    }
+                    astersql_ingestor_globalsort::Error::Cancelled => {
+                        Box::new(local::Error::Cancelled)
+                    }
+                    astersql_ingestor_globalsort::Error::Closed => Box::new(local::Error::Closed),
+                    failure => Box::new(failure),
+                },
+                Err(failure) => failure,
+            },
+        )
+    }
+    fn SetWorkerPool(&self, pool: Arc<dyn local::import_pipeline::ImportPoolTuner>) {
+        self.0
+            .ResourceHandle()
+            .SetWorkerPool(Arc::new(CloudPool(pool)));
+    }
+    fn GetTotalLoadedKVsCount(&self) -> i64 {
+        self.0.GetTotalLoadedKVsCount()
+    }
+    fn ID(&self) -> String {
+        local::local::engineapi::Engine::ID(self.0.as_ref())
+    }
+    fn KVStatistics(&self) -> (i64, i64) {
+        local::local::engineapi::Engine::KVStatistics(self.0.as_ref())
+    }
+    fn ImportedStatistics(&self) -> (i64, i64) {
+        local::local::engineapi::Engine::ImportedStatistics(self.0.as_ref())
+    }
+    fn ConflictInfo(&self) -> local::ConflictInfo {
+        let info = local::local::engineapi::Engine::ConflictInfo(self.0.as_ref());
+        local::ConflictInfo {
+            count: info.Count,
+            size: self.0.RecordedDuplicateSize() as u64,
+        }
+    }
+    fn ConflictFiles(&self) -> Vec<String> {
+        local::local::engineapi::Engine::ConflictInfo(self.0.as_ref()).Files
+    }
+    fn GetKeyRange(&self) -> local::Result<local::KeyRange> {
+        let (start, end) =
+            local::local::engineapi::Engine::GetKeyRange(self.0.as_ref()).map_err(local_error)?;
+        Ok(local::KeyRange { start, end })
+    }
+    fn GetRegionSplitKeys(&self) -> local::Result<Vec<Vec<u8>>> {
+        local::local::engineapi::Engine::GetRegionSplitKeys(self.0.as_ref()).map_err(local_error)
+    }
+    fn Close(&self) -> local::Result<()> {
+        self.0.CloseShared().map_err(local_error)
+    }
 }
 impl Backend {
     pub fn disk_quota_pressure(
@@ -204,21 +402,95 @@ impl Backend {
     ) -> astersql_ingestor_ingestctrl::disk_quota::DiskQuotaResult {
         astersql_ingestor_ingestctrl::disk_quota::CheckDiskQuota(&self.local, quota)
     }
+    pub(super) fn register_external(
+        &self,
+        id: Uuid,
+        engine: astersql_ingestor_globalsort::engine::Engine,
+        token: astersql_ingestor_globalsort::reader::CancellationToken,
+    ) -> SessionResult<Arc<astersql_ingestor_globalsort::engine::ExternalEngineAdapter>> {
+        let adapter = Arc::new(
+            astersql_ingestor_globalsort::engine::ExternalEngineAdapter::new(engine, token),
+        );
+        self.local
+            .RegisterExternalEngine(
+                local::EngineId(id.as_u128()),
+                Arc::new(CloudEngine(adapter.clone())),
+            )
+            .map_err(|error| SessionError::new(error.to_string()))?;
+        Ok(adapter)
+    }
+    pub(super) fn import_external(
+        &self,
+        token: &local::CancellationToken,
+        id: Uuid,
+    ) -> SessionResult<()> {
+        self.import_external_native(token, id)
+            .map_err(|error| SessionError::new(error.to_string()))
+    }
+    pub(super) fn import_external_native(
+        &self,
+        token: &local::CancellationToken,
+        id: Uuid,
+    ) -> local::Result<()> {
+        self.local
+            .ImportEngine(token, local::EngineId(id.as_u128()), 0)
+    }
+    pub(super) fn set_import_options(&self, options: kv::SSTImportOptions) -> SessionResult<()> {
+        *self
+            .options
+            .lock()
+            .map_err(|_| SessionError::new("import options poisoned"))? = options;
+        Ok(())
+    }
+    pub(super) fn set_worker_concurrency(&self, concurrency: usize) {
+        self.local.SetWorkerConcurrency(concurrency);
+    }
+    pub(super) fn cleanup_external(&self, id: Uuid) -> SessionResult<()> {
+        self.local
+            .CleanupEngine(local::EngineId(id.as_u128()))
+            .map_err(|error| SessionError::new(error.to_string()))
+    }
     pub fn new(domain: Arc<Domain>, task_id: i64) -> SessionResult<Arc<Self>> {
+        Self::new_with_options(domain, task_id, kv::SSTImportOptions::default())
+    }
+    pub(super) fn new_with_options(
+        domain: Arc<Domain>,
+        task_id: i64,
+        options: kv::SSTImportOptions,
+    ) -> SessionResult<Arc<Self>> {
+        Self::new_with_key_prefix(
+            domain,
+            task_id,
+            options,
+            Vec::new(),
+            local::local::BackendConfig::default().worker_concurrency,
+        )
+    }
+    pub(super) fn new_with_key_prefix(
+        domain: Arc<Domain>,
+        task_id: i64,
+        options: kv::SSTImportOptions,
+        key_prefix: Vec<u8>,
+        concurrency: usize,
+    ) -> SessionResult<Arc<Self>> {
         let directory = std::env::temp_dir().join(format!(
             "astersql-import-{}-{task_id}-{}",
             std::process::id(),
             Uuid::new_v4()
         ));
         let stats = Arc::new(Mutex::new(kv::SSTImportStats::default()));
+        let options = Arc::new(Mutex::new(options));
         let bridge = Arc::new(StoreBridge {
             domain,
+            options: options.clone(),
             stats: stats.clone(),
+            key_prefix,
         });
         let local = local::local::NewBackend(
             local::local::BackendConfig {
                 local_store_dir: directory.to_string_lossy().into_owned(),
                 duplicate_detection: true,
+                worker_concurrency: concurrency.max(1),
                 ..Default::default()
             },
             bridge.clone(),
@@ -228,6 +500,7 @@ impl Backend {
         .map_err(|error| SessionError::new(error.to_string()))?;
         Ok(Arc::new(Self {
             local,
+            options,
             stats,
             directory,
             token: local::CancellationToken::default(),

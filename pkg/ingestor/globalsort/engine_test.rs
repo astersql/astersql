@@ -15,21 +15,13 @@
 
 // 外部导入引擎单元测试：覆盖 `MemoryIngestData` 范围查询、重复键策略、多批次加载与释放等待。
 //
-// 对应 Go `engine_test.go`；Rust 侧 `LoadIngestData` 为同步返回全部批次，无 failpoint。
-
-// Ported from pkg/ingestor/globalsort/engine_test.go. Go's `LoadIngestData`
-// streams `engineapi.DataAndRanges` through a channel while a background
-// worker pool tunes concurrency live and failpoints inject races
-// (`TestLoadRangeBatchDataReleasesReadersWhileWaitingForDownstream`,
-// `TestChangeEngineConcurrency`); this port's `Engine::LoadIngestData`
-// (engine.rs) is synchronous and returns every batch eagerly, with no
-// failpoint hooks. The tests below exercise the same real production
-// entry points — `MemoryIngestData`, `NewExternalEngine`/`LoadIngestData`
-// duplicate handling, `SetWorkerPool`/`UpdateResource`, and
-// `waitIngestDataReleased` — through the APIs this crate actually exposes.
+// Ported from pkg/ingestor/globalsort/engine_test.go. These tests exercise the
+// actual bounded loader, shared memory budget, reference release, and live
+// resource acknowledgement, alongside the compatibility collecting API.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, AtomicI64, Ordering};
+use std::time::Duration;
 
 use crate::engine::{MemoryIngestData, NewExternalEngine, WorkerPoolTuner};
 use crate::reader::CancellationToken;
@@ -40,6 +32,56 @@ fn kv(key: &[u8], value: &[u8]) -> KvPair {
     KvPair {
         key: key.to_vec(),
         value: value.to_vec(),
+    }
+}
+
+#[test]
+fn loaded_batch_dedup_transfers_payload_without_a_second_allocation() {
+    let store = Arc::new(MemoryStorage::default());
+    let mut engine = NewExternalEngine(
+        store,
+        vec![],
+        vec![],
+        b"a".to_vec(),
+        b"z".to_vec(),
+        vec![b"a".to_vec(), b"z".to_vec()],
+        vec![],
+        1,
+        10,
+        0,
+        0,
+        false,
+        1024,
+        OnDuplicateKey::Record,
+        "dedup-ownership".into(),
+    )
+    .unwrap();
+    engine.loaded.kvs = vec![kv(b"a", b"first"), kv(b"a", b"second"), kv(b"b", b"unique")];
+    let pointers = engine
+        .loaded
+        .kvs
+        .iter()
+        .map(|pair| (pair.key.as_ptr(), pair.value.as_ptr()))
+        .collect::<Vec<_>>();
+    let kept = engine.take_deduplicated_pairs();
+    assert_eq!(kept, vec![kv(b"b", b"unique")]);
+    assert_eq!(
+        engine.duplicate_pairs,
+        vec![kv(b"a", b"first"), kv(b"a", b"second")]
+    );
+    assert_eq!(engine.recorded_duplicate_count, 2);
+    assert_eq!(engine.recorded_duplicate_size, 13);
+    assert_eq!(
+        (kept[0].key.as_ptr(), kept[0].value.as_ptr()),
+        pointers[2],
+        "retained payload must not double the live memory charged to this batch"
+    );
+    for (pair, pointer) in engine.duplicate_pairs.iter().zip(pointers) {
+        assert_eq!(
+            (pair.key.as_ptr(), pair.value.as_ptr()),
+            pointer,
+            "recording duplicates must transfer the original payload"
+        );
     }
 }
 
@@ -596,4 +638,509 @@ fn test_wait_ingest_data_released() {
     assert!(released.load(Ordering::SeqCst));
     handle.join().unwrap();
     engine.Close().unwrap();
+}
+
+#[test]
+fn external_engine_reads_bounded_streams_without_whole_objects() {
+    struct StreamStore(MemoryStorage);
+    impl Storage for StreamStore {
+        fn read(&self, _: &str) -> crate::Result<Vec<u8>> {
+            Err(crate::Error::InvalidData(
+                "external engine fetched a whole object".into(),
+            ))
+        }
+        fn file_size(&self, path: &str) -> crate::Result<u64> {
+            Ok(self.0.read(path)?.len() as u64)
+        }
+        fn open(&self, path: &str) -> crate::Result<Box<dyn std::io::Read>> {
+            Ok(Box::new(std::io::Cursor::new(self.0.read(path)?)))
+        }
+        fn write(&self, path: &str, bytes: Vec<u8>) -> crate::Result<()> {
+            self.0.write(path, bytes)
+        }
+        fn delete_files(&self, paths: &[String]) -> crate::Result<()> {
+            self.0.delete_files(paths)
+        }
+        fn list_prefix(&self, prefix: &str) -> crate::Result<Vec<String>> {
+            self.0.list_prefix(prefix)
+        }
+    }
+    let store = Arc::new(StreamStore(Default::default()));
+    let pairs = (1u8..=4).map(|key| kv(&[key], &[key])).collect::<Vec<_>>();
+    store.write("data", crate::encode_kvs(&pairs)).unwrap();
+    let mut engine = NewExternalEngine(
+        store,
+        vec!["data".into()],
+        vec!["stat".into()],
+        vec![0],
+        vec![5],
+        (0u8..=5).map(|key| vec![key]).collect(),
+        vec![],
+        1,
+        123,
+        8,
+        4,
+        false,
+        100,
+        OnDuplicateKey::Error,
+        "out".into(),
+    )
+    .unwrap();
+    let mut result = Vec::new();
+    engine
+        .LoadIngestDataWith(&Default::default(), |batch| {
+            assert!(batch.sorted_ranges.len() <= 1);
+            result.extend(get_all_data(&batch.data));
+            batch.data.release();
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(result, pairs);
+}
+
+#[test]
+fn external_engine_live_resource_handle_changes_later_loaded_ranges() {
+    let store = Arc::new(MemoryStorage::default());
+    let pairs = (1u8..=6).map(|key| kv(&[key], &[key])).collect::<Vec<_>>();
+    store.write("live", encode_kvs(&pairs)).unwrap();
+    let mut engine = NewExternalEngine(
+        store,
+        vec!["live".into()],
+        vec!["stat".into()],
+        vec![1],
+        vec![7],
+        (1u8..=7).map(|key| vec![key]).collect(),
+        vec![],
+        1,
+        123,
+        12,
+        6,
+        false,
+        1024,
+        OnDuplicateKey::Error,
+        "live-out".into(),
+    )
+    .unwrap();
+    let worker = Arc::new(DummyWorker {
+        tuned: AtomicI32::new(1),
+    });
+    engine.SetWorkerPool(worker.clone());
+    let controls = engine.ResourceHandle();
+    let (entered, ready) = std::sync::mpsc::sync_channel(1);
+    let (release, wait) = std::sync::mpsc::sync_channel(1);
+    let loader = std::thread::spawn(move || {
+        let mut batches = Vec::new();
+        let mut loaded = Vec::new();
+        engine
+            .LoadIngestDataWith(&Default::default(), |batch| {
+                batches.push(batch.sorted_ranges.len());
+                loaded.extend(get_all_data(&batch.data));
+                batch.data.release();
+                if batches.len() == 1 {
+                    entered.send(()).unwrap();
+                    wait.recv_timeout(Duration::from_secs(5)).unwrap();
+                }
+                Ok(())
+            })
+            .unwrap();
+        (batches, loaded)
+    });
+    ready.recv_timeout(Duration::from_secs(5)).unwrap();
+    let updating = std::thread::spawn({
+        let controls = controls.clone();
+        move || controls.UpdateResource(2, 2048)
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while controls.WorkerConcurrency() != 2 {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    release.send(()).unwrap();
+    updating.join().unwrap().unwrap();
+    let (batches, loaded) = loader.join().unwrap();
+    assert_eq!(batches, vec![1, 2, 2, 1]);
+    assert_eq!(loaded, pairs);
+}
+
+#[test]
+fn external_engine_resource_change_waits_for_previous_ingest_release() {
+    let store: Arc<dyn Storage> = Arc::new(MemoryStorage::default());
+    let pairs = (1u8..=4).map(|key| kv(&[key], &[key])).collect::<Vec<_>>();
+    let (data_files, stat_files) = write_contents(store.as_ref(), &[pairs]);
+    let mut engine = NewExternalEngine(
+        store,
+        data_files,
+        stat_files,
+        vec![1],
+        vec![5],
+        (1u8..=5).map(|key| vec![key]).collect(),
+        vec![],
+        1,
+        123,
+        8,
+        4,
+        false,
+        1024,
+        OnDuplicateKey::Error,
+        "wait".into(),
+    )
+    .unwrap();
+    struct ReleaseAwareWorker {
+        released: Arc<std::sync::atomic::AtomicBool>,
+        early: std::sync::atomic::AtomicBool,
+        tuned: AtomicI32,
+    }
+    impl WorkerPoolTuner for ReleaseAwareWorker {
+        fn Tune(&self, concurrency: usize) {
+            if !self.released.load(Ordering::Acquire) {
+                self.early.store(true, Ordering::Release);
+            }
+            self.tuned.store(concurrency as i32, Ordering::Release);
+        }
+    }
+    let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let worker = Arc::new(ReleaseAwareWorker {
+        released: released.clone(),
+        early: std::sync::atomic::AtomicBool::new(false),
+        tuned: AtomicI32::new(1),
+    });
+    engine.SetWorkerPool(worker.clone());
+    let controls = engine.ResourceHandle();
+    let mut delayed = None;
+    let mut updating = None;
+    let mut sizes = Vec::new();
+    engine
+        .LoadIngestDataWith(&Default::default(), |batch| {
+            sizes.push(batch.sorted_ranges.len());
+            if sizes.len() == 1 {
+                batch.data.IncRef();
+                updating = Some(std::thread::spawn({
+                    let controls = controls.clone();
+                    move || controls.UpdateResource(2, 2048)
+                }));
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                while controls.WorkerConcurrency() != 2 {
+                    assert!(std::time::Instant::now() < deadline);
+                    std::thread::yield_now();
+                }
+                let released = released.clone();
+                delayed = Some(std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(50));
+                    released.store(true, Ordering::Release);
+                    batch.data.DecRef();
+                }));
+            } else {
+                let was_released = released.load(Ordering::Acquire);
+                batch.data.release();
+                assert!(
+                    was_released,
+                    "resource change must wait for the previous ingest buffer"
+                );
+            }
+            Ok(())
+        })
+        .unwrap();
+    delayed.unwrap().join().unwrap();
+    updating.unwrap().join().unwrap().unwrap();
+    assert_eq!(sizes, vec![1, 2, 1]);
+    assert!(
+        !worker.early.load(Ordering::Acquire),
+        "pool Tune must wait for the buffer-rebuild acknowledgement"
+    );
+    assert_eq!(worker.tuned.load(Ordering::Acquire), 2);
+}
+
+#[test]
+fn external_engine_cancels_resource_wait_without_releasing_active_data() {
+    let store: Arc<dyn Storage> = Arc::new(MemoryStorage::default());
+    let (data_files, stat_files) =
+        write_contents(store.as_ref(), &[vec![kv(&[1], b"v"), kv(&[2], b"v")]]);
+    let mut engine = NewExternalEngine(
+        store,
+        data_files,
+        stat_files,
+        vec![1],
+        vec![3],
+        vec![vec![1], vec![2], vec![3]],
+        vec![],
+        1,
+        123,
+        4,
+        2,
+        false,
+        1024,
+        OnDuplicateKey::Error,
+        "cancel".into(),
+    )
+    .unwrap();
+    engine.SetWorkerPool(Arc::new(DummyWorker {
+        tuned: AtomicI32::new(1),
+    }));
+    let controls = engine.ResourceHandle();
+    let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let token = CancellationToken::from_cancellation_flag(flag.clone());
+    let cancel = flag;
+    let mut retained = None;
+    let mut canceller = None;
+    let mut updating = None;
+    let result = engine.LoadIngestDataWith(&token, |batch| {
+        assert!(
+            retained.is_none(),
+            "no new batch may load before the retained one is released"
+        );
+        retained = Some(batch.data);
+        updating = Some(std::thread::spawn({
+            let controls = controls.clone();
+            let token = token.clone();
+            move || controls.UpdateResourceWith(&token, 2, 2048)
+        }));
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while controls.WorkerConcurrency() != 2 {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        let cancel = cancel.clone();
+        canceller = Some(std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            cancel.store(true, Ordering::Release);
+        }));
+        Ok(())
+    });
+    canceller.unwrap().join().unwrap();
+    assert!(matches!(
+        updating.unwrap().join().unwrap(),
+        Err(Error::Cancelled)
+    ));
+    retained.unwrap().release();
+    assert!(matches!(result, Err(Error::Cancelled)));
+}
+
+#[test]
+fn external_engine_range_iterators_share_the_ingest_buffer() {
+    let data = MemoryIngestData::new(
+        vec![kv(b"a", b"large-value"), kv(b"b", b"second")],
+        1,
+        Arc::new(AtomicI64::new(0)),
+        Arc::new(AtomicI64::new(0)),
+        || {},
+    );
+    let mut first = data.NewIter(b"a", b"b").unwrap();
+    let mut second = data.NewIter(b"a", b"c").unwrap();
+    assert!(first.First());
+    assert!(second.First());
+    assert_eq!(
+        first.Key().as_ptr(),
+        second.Key().as_ptr(),
+        "range iterators must borrow the same sorted KV buffer"
+    );
+    assert_eq!(first.Value().as_ptr(), second.Value().as_ptr());
+    first.Close().unwrap();
+    assert_eq!(second.Key(), b"a");
+    assert!(second.Next());
+    assert_eq!(second.Key(), b"b");
+    second.Close().unwrap();
+    data.release();
+}
+
+#[test]
+fn external_engine_budget_includes_batches_held_by_downstream() {
+    let store: Arc<dyn Storage> = Arc::new(MemoryStorage::default());
+    let pairs = (1u8..=3).map(|key| kv(&[key], &[key])).collect::<Vec<_>>();
+    let (data_files, stat_files) = write_contents(store.as_ref(), &[pairs]);
+    let mut engine = NewExternalEngine(
+        store,
+        data_files,
+        stat_files,
+        vec![1],
+        vec![4],
+        (1u8..=4).map(|key| vec![key]).collect(),
+        vec![],
+        1,
+        123,
+        6,
+        3,
+        false,
+        7,
+        OnDuplicateKey::Error,
+        "budget".into(),
+    )
+    .unwrap();
+    assert_eq!(crate::engine::getEngineMemoryLimit(7), 3);
+    let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut delayed = None;
+    let mut count = 0;
+    engine
+        .LoadIngestDataWith(&Default::default(), |batch| {
+            count += 1;
+            if count == 1 {
+                batch.data.IncRef();
+                let released = released.clone();
+                delayed = Some(std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(50));
+                    released.store(true, Ordering::Release);
+                    batch.data.DecRef();
+                }));
+            } else {
+                let released = released.load(Ordering::Acquire);
+                batch.data.release();
+                assert!(
+                    released,
+                    "3-byte engine budget cannot hold two 2-byte payload batches"
+                );
+            }
+            Ok(())
+        })
+        .unwrap();
+    delayed.unwrap().join().unwrap();
+    assert_eq!(count, 3);
+}
+
+#[test]
+fn collecting_external_engine_reports_exhausted_budget_without_waiting_on_its_own_outputs() {
+    let store: Arc<dyn Storage> = Arc::new(MemoryStorage::default());
+    let (data_files, stat_files) =
+        write_contents(store.as_ref(), &[vec![kv(&[1], &[1]), kv(&[2], &[2])]]);
+    let mut engine = NewExternalEngine(
+        store,
+        data_files,
+        stat_files,
+        vec![1],
+        vec![3],
+        vec![vec![1], vec![2], vec![3]],
+        vec![],
+        1,
+        123,
+        4,
+        2,
+        false,
+        7,
+        OnDuplicateKey::Error,
+        "collect-budget".into(),
+    )
+    .unwrap();
+    assert!(matches!(
+        engine.LoadIngestData(&Default::default()),
+        Err(Error::OutOfMemory { .. })
+    ));
+}
+
+#[test]
+fn record_duplicate_uploads_stream_before_each_batch_is_handed_off() {
+    use std::sync::atomic::AtomicUsize;
+    struct StreamStore {
+        inner: MemoryStorage,
+        creates: AtomicUsize,
+        writes: AtomicUsize,
+        finishes: AtomicUsize,
+    }
+    struct Writer<'a> {
+        store: &'a StreamStore,
+        bytes: Vec<u8>,
+        path: String,
+    }
+    impl std::io::Write for Writer<'_> {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.store.writes.fetch_add(bytes.len(), Ordering::SeqCst);
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl crate::ObjectWriter for Writer<'_> {
+        fn finish(self: Box<Self>) -> crate::Result<()> {
+            self.store.finishes.fetch_add(1, Ordering::SeqCst);
+            self.store.inner.write(&self.path, self.bytes)
+        }
+    }
+    impl Storage for StreamStore {
+        fn read(&self, path: &str) -> crate::Result<Vec<u8>> {
+            self.inner.read(path)
+        }
+        fn write(&self, path: &str, bytes: Vec<u8>) -> crate::Result<()> {
+            self.inner.write(path, bytes)
+        }
+        fn list_prefix(&self, prefix: &str) -> crate::Result<Vec<String>> {
+            self.inner.list_prefix(prefix)
+        }
+        fn delete_files(&self, files: &[String]) -> crate::Result<()> {
+            self.inner.delete_files(files)
+        }
+        fn create(&self, path: &str) -> crate::Result<Box<dyn crate::ObjectWriter + '_>> {
+            self.creates.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(Writer {
+                store: self,
+                bytes: vec![],
+                path: path.into(),
+            }))
+        }
+    }
+    let store = Arc::new(StreamStore {
+        inner: Default::default(),
+        creates: AtomicUsize::new(0),
+        writes: AtomicUsize::new(0),
+        finishes: AtomicUsize::new(0),
+    });
+    let pairs = vec![
+        kv(&[1], b"a"),
+        kv(&[1], b"b"),
+        kv(&[2], b"u"),
+        kv(&[3], b"c"),
+        kv(&[3], b"d"),
+        kv(&[4], b"v"),
+    ];
+    store.write("data", encode_kvs(&pairs)).unwrap();
+    let mut engine = NewExternalEngine(
+        store.clone(),
+        vec!["data".into()],
+        vec!["stat".into()],
+        vec![1],
+        vec![5],
+        vec![vec![1], vec![3], vec![5]],
+        vec![],
+        1,
+        123,
+        12,
+        6,
+        false,
+        10_000,
+        OnDuplicateKey::Record,
+        "record".into(),
+    )
+    .unwrap();
+    let mut batches = 0;
+    engine
+        .LoadIngestDataWith(&Default::default(), |batch| {
+            batches += 1;
+            assert_eq!(
+                store.creates.load(Ordering::SeqCst),
+                1,
+                "duplicates must use one lazily created native upload"
+            );
+            assert_eq!(
+                store.writes.load(Ordering::SeqCst),
+                batches * 20,
+                "the current duplicate batch must be streamed before handing off its data"
+            );
+            assert_eq!(store.finishes.load(Ordering::SeqCst), 0);
+            batch.data.release();
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(batches, 2);
+    assert_eq!(store.finishes.load(Ordering::SeqCst), 1);
+    assert!(
+        engine.duplicate_pairs.is_empty(),
+        "completed loads must not retain duplicate payloads outside the budget"
+    );
+    assert_eq!(
+        crate::decode_kvs(&store.read("record/dup").unwrap(), 0).unwrap(),
+        vec![
+            pairs[0].clone(),
+            pairs[1].clone(),
+            pairs[3].clone(),
+            pairs[4].clone()
+        ]
+    );
 }

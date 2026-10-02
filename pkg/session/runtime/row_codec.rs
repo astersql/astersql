@@ -439,7 +439,14 @@ pub(super) fn runtime_value_to_datum(
         decimal
             .FromString(value.as_bytes())
             .map_err(|error| session_error("parse DECIMAL column", error))?;
-        return Ok(astersql_types::datum::NewDecimalDatum(decimal));
+        return astersql_types::datum::NewDecimalDatum(decimal)
+            .ConvertTo(
+                astersql_sessionctx_stmtctx::NewStmtCtx()
+                    .TypeCtx()
+                    .WithFlags(flags),
+                &column.FieldType,
+            )
+            .map_err(|error| session_error("cast DECIMAL column", error));
     }
     if column.GetType() == astersql_parser_mysql::r#type::TypeEnum && value.is_empty() {
         return Ok(astersql_types::datum::NewMysqlEnumDatum(
@@ -553,12 +560,59 @@ pub(super) fn encode_relational_row_with_format(
     let handle = relational_row_handle(table, row, flags)?;
     let mut values = Vec::with_capacity(table.Columns.len());
     let mut ids = Vec::with_capacity(table.Columns.len());
-    for column in &table.Columns {
-        values.push(runtime_value_to_datum(
-            row.get(&column.Name.L).and_then(Option::as_ref),
-            column,
-            flags,
-        )?);
+    for column in table.Columns.iter().filter(|column| {
+        matches!(
+            column.State,
+            astersql_meta_model::SchemaState::Public
+                | astersql_meta_model::SchemaState::WriteOnly
+                | astersql_meta_model::SchemaState::WriteReorganization
+        )
+    }) {
+        let value = if let Some(change) = column.ChangeStateInfo.as_ref().filter(|_| {
+            matches!(
+                column.State,
+                astersql_meta_model::SchemaState::WriteOnly
+                    | astersql_meta_model::SchemaState::WriteReorganization
+            )
+        }) {
+            let old = table
+                .Columns
+                .get(change.DependencyColumnOffset as usize)
+                .ok_or_else(|| SessionError::new("invalid changing-column dependency offset"))?;
+            let datum =
+                runtime_value_to_datum(row.get(&old.Name.L).and_then(Option::as_ref), old, flags)?;
+            datum
+                .ConvertTo(
+                    astersql_sessionctx_stmtctx::NewStmtCtx()
+                        .TypeCtx()
+                        .WithFlags(flags),
+                    &column.FieldType,
+                )
+                .map_err(|e| SessionError::new(e.to_string()))?
+        } else {
+            runtime_value_to_datum(
+                row.get(&column.Name.L).and_then(Option::as_ref),
+                column,
+                flags,
+            )?
+        };
+        if value.IsNull()
+            && column.GetFlag() & astersql_parser_mysql::r#type::PreventNullInsertFlag != 0
+        {
+            return Err(SessionError::new("[ddl:1138]Invalid use of NULL value"));
+        }
+        if let Some(field_type) = &column.ChangingFieldType {
+            value
+                .clone()
+                .ConvertTo(
+                    astersql_sessionctx_stmtctx::NewStmtCtx()
+                        .TypeCtx()
+                        .WithFlags(flags),
+                    field_type,
+                )
+                .map_err(|e| SessionError::new(e.to_string()))?;
+        }
+        values.push(value);
         ids.push(column.ID);
     }
     let value = astersql_tablecodec::EncodeRow(
@@ -656,7 +710,13 @@ pub(super) fn relational_index_value_rows(
 ) -> SessionResult<Vec<Vec<astersql_types::datum::Datum>>> {
     let mut rows = vec![Vec::with_capacity(index.Columns.len())];
     for index_column in &index.Columns {
-        let column = relational_index_column(table, index_column)?;
+        let mut effective = relational_index_column(table, index_column)?.clone();
+        if index_column.UseChangingType {
+            if let Some(changing) = &effective.ChangingFieldType {
+                effective.FieldType = changing.clone();
+            }
+        }
+        let column = &effective;
         if index.MVIndex && column.FieldType.IsArray() {
             let elements = match row.get(&column.Name.L).and_then(Option::as_ref) {
                 None => vec![serde_json::Value::Null],
@@ -696,7 +756,12 @@ pub(super) fn relational_index_value_rows(
             }
             rows = expanded;
         } else {
-            let runtime_value = row.get(&column.Name.L).and_then(Option::as_ref);
+            let source = column
+                .ChangeStateInfo
+                .as_ref()
+                .and_then(|info| table.Columns.get(info.DependencyColumnOffset as usize))
+                .unwrap_or(column);
+            let runtime_value = row.get(&source.Name.L).and_then(Option::as_ref);
             let datum = if is_binary_string_column(column)
                 && let Some(bytes) = runtime_value.and_then(|value| binary_runtime_bytes(value))
             {
@@ -719,6 +784,16 @@ pub(super) fn encode_relational_index_value_row(
     flags: astersql_types::Flags,
     indexed_values: Vec<astersql_types::datum::Datum>,
 ) -> SessionResult<(kv::Key, Vec<u8>)> {
+    let mut effective = table.clone();
+    for part in &index.Columns {
+        if part.UseChangingType {
+            let column = &mut effective.Columns[part.Offset as usize];
+            if let Some(changing) = &column.ChangingFieldType {
+                column.FieldType = changing.clone();
+            }
+        }
+    }
+    let table = &effective;
     let handle = relational_row_handle(table, row, flags)?;
     let physical_table_id = ConcreteSession::row_physical_id(table, row);
     let codec_table = astersql_tablecodec::model::TableInfo {
@@ -746,7 +821,11 @@ pub(super) fn encode_relational_index_value_row(
         Some(astersql_tablecodec::time::UTC),
         Box::new(codec_table),
         Box::new(index.clone()),
-        false,
+        index.Columns.iter().any(|part| {
+            astersql_types::metadata::NeedRestoredData(
+                &table.Columns[part.Offset as usize].FieldType,
+            )
+        }),
         distinct,
         false,
         indexed_values_for_value,
@@ -766,7 +845,16 @@ pub(super) fn encode_relational_index_entries(
 ) -> SessionResult<Vec<(kv::Key, Vec<u8>)>> {
     let mut entries = Vec::new();
     for index in table.Indices.iter().filter(|index| {
-        index.State == astersql_meta_model::StatePublic && !index.Primary && !index.Global
+        (index.State == astersql_meta_model::StatePublic
+            || ((index.IsChanging() || index.IsRemoving())
+                && matches!(
+                    index.State,
+                    astersql_meta_model::SchemaState::DeleteOnly
+                        | astersql_meta_model::SchemaState::WriteOnly
+                        | astersql_meta_model::SchemaState::WriteReorganization
+                )))
+            && !index.Primary
+            && !index.Global
     }) {
         if !index.ConditionExprString.is_empty() {
             let condition = crate::dml_runtime::ParseGeneratedExpr(&index.ConditionExprString)?;
@@ -825,14 +913,65 @@ pub(super) fn relational_index_mutations(
     flags: astersql_types::Flags,
 ) -> SessionResult<Vec<(kv::Key, Option<Vec<u8>>)>> {
     let mut mutations = BTreeMap::<Vec<u8>, Option<Vec<u8>>>::new();
-    if let Some(row) = old_row {
-        for (key, _) in encode_relational_index_entries(table, row, flags)? {
-            mutations.insert(key.0, None);
-        }
-    }
-    if let Some(row) = new_row {
+    for (row, deleting) in old_row
+        .into_iter()
+        .map(|row| (row, true))
+        .chain(new_row.into_iter().map(|row| (row, false)))
+    {
         for (key, value) in encode_relational_index_entries(table, row, flags)? {
-            mutations.insert(key.0, Some(value));
+            let id =
+                astersql_tablecodec::DecodeIndexID(astersql_tablecodec::kv::Key(key.0.clone()))
+                    .map_err(|e| session_error("decode modifying index", e))?;
+            let index = table
+                .Indices
+                .iter()
+                .find(|index| index.ID == id)
+                .ok_or_else(|| SessionError::new("index metadata missing"))?;
+            if index.State == astersql_meta_model::SchemaState::DeleteOnly && !deleting {
+                continue;
+            }
+            if index.State != astersql_meta_model::StatePublic
+                && index.BackfillState != astersql_meta_model::BackfillStateInapplicable
+            {
+                let distinct = index.Unique
+                    && !relational_index_value_rows(table, index, row, flags)?
+                        .iter()
+                        .flatten()
+                        .any(astersql_types::datum::Datum::IsNull);
+                let mut temp = key.0.clone();
+                astersql_tablecodec::IndexKey2TempIndexKey(&mut temp);
+                let merging = matches!(
+                    index.BackfillState,
+                    astersql_meta_model::BackfillStateReadyToMerge
+                        | astersql_meta_model::BackfillStateMerging
+                );
+                let elem = astersql_tablecodec::TempIndexValueElem {
+                    Value: value.clone(),
+                    Handle: relational_row_handle(table, row, flags)?,
+                    KeyVer: if merging {
+                        astersql_tablecodec::TempIndexKeyTypeMerge
+                    } else {
+                        if index.State == astersql_meta_model::SchemaState::DeleteOnly {
+                            astersql_tablecodec::TempIndexKeyTypeDelete
+                        } else {
+                            astersql_tablecodec::TempIndexKeyTypeBackfill
+                        }
+                    },
+                    Delete: deleting,
+                    Distinct: distinct,
+                    Global: index.Global,
+                };
+                let prior = if distinct {
+                    mutations.remove(&temp).flatten()
+                } else {
+                    None
+                };
+                mutations.insert(temp, Some(elem.Encode(prior)));
+                if !merging {
+                    continue;
+                }
+            }
+            mutations.insert(key.0, (!deleting).then_some(value));
         }
     }
     Ok(mutations

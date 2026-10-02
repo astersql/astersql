@@ -1166,19 +1166,12 @@ pub mod clitutil {
     }
 }
 
-/// 内核类型探测（NextGen 等）。
+/// Use the production kernel and keyspace configuration for service routing.
 pub mod kerneltype {
-    /// 是否为 NextGen 内核（测试默认 false）。
-    pub fn IsNextGen() -> bool {
-        false
-    }
+    pub use astersql_config_kerneltype::IsNextGen;
 }
-/// 全局配置读取占位。
 pub mod config {
-    /// 返回全局 keyspace 名（测试默认空）。
-    pub fn GetGlobalKeyspaceName() -> String {
-        String::new()
-    }
+    pub use astersql_config::get_global_keyspace_name as GetGlobalKeyspaceName;
 }
 /// keyspace 常量。
 pub mod keyspace {

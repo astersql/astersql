@@ -58,6 +58,13 @@ pub fn ErrNonIdempotentSubtask() -> ExecutorError {
 }
 /// 任务 keyspace runtime 的最小校验接口。
 pub trait TaskRuntime: Send + Sync {
+    /// Expose concrete runtime capabilities to the task-type factory.
+    fn AsAny(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+    /// Release the holder after executor Close, including failed startup.
+    fn Release(&self) {}
+
     /// 校验 runtime 是否仍绑定任务目标 keyspace。
     fn CheckTaskKeyspace(&self, keyspace: &str) -> Result<()>;
 }

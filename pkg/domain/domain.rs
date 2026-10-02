@@ -86,6 +86,16 @@ pub trait DdlService: Send + Sync {
     fn stop(&self) -> Result<(), String>;
     fn owner_id(&self) -> Option<String>;
     fn alter_table_mode(&self, target: &str) -> Result<(), String>;
+    /// Normal SQL DDL uses the durable owner queue when supported by this service.
+    fn supports_persistent_actions(&self) -> bool {
+        false
+    }
+    fn submit_persistent_job(
+        &self,
+        _: &mut astersql_meta_model::group_3::Job,
+    ) -> Result<(), String> {
+        Err("normal persistent DDL submission unavailable".into())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

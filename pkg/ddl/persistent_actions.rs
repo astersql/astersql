@@ -21,7 +21,25 @@ pub fn handler_available(action: u8) -> bool {
     action == astersql_meta_model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_ATTRIBUTES
         || matches!(
             action,
-            1 | 3 | 7 | 10 | 17 | 26 | 32 | 39 | 55 | 75 | 76 | 85 | 86 | 93
+            1 | 3
+                | 4
+                | 6
+                | 7
+                | 10
+                | 11
+                | 12
+                | 14
+                | 17
+                | 47
+                | 26
+                | 32
+                | 39
+                | 55
+                | 75
+                | 76
+                | 85
+                | 86
+                | 93
         )
 }
 
@@ -29,6 +47,21 @@ pub fn step(
     context: &mut dyn crate::job_worker::JobExecutionContext,
     job: &mut Job,
 ) -> Result<i64, String> {
+    if job.tp == 12 {
+        return crate::persistent_modify_column::step(context, job);
+    }
+    if job.tp == 6 {
+        return crate::persistent_drop_column::step(context, job);
+    }
+    if job.tp == 11 {
+        return crate::persistent_masking_actions::truncate_table(context, job);
+    }
+    if matches!(job.tp, 14 | 47) {
+        return crate::persistent_masking_actions::rename_tables(context, job);
+    }
+    if job.tp == 4 {
+        return crate::persistent_masking_actions::drop_table(context, job);
+    }
     if matches!(job.tp, 7 | 32) {
         return initialize_prepared_index_action(context, job);
     }

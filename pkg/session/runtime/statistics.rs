@@ -268,11 +268,13 @@ fn quote_show_identifier(identifier: &str, ansi_quotes: bool) -> String {
     }
 }
 
-fn analyze_indexes_info(info: &astersql_meta_model::TableInfo) -> Vec<String> {
+fn analyze_indexes_info(info: &astersql_meta_model::TableInfo, ddl_analyze: bool) -> Vec<String> {
     info.Indices
         .iter()
         .filter(|index| {
-            index.State == astersql_meta_model::SchemaState::Public
+            (index.State == astersql_meta_model::SchemaState::Public
+                || (ddl_analyze
+                    && index.State == astersql_meta_model::SchemaState::WriteReorganization))
                 && !index.MVIndex
                 && index.VectorInfo.is_none()
                 && index.InvertedInfo.is_none()
@@ -1870,7 +1872,8 @@ impl ConcreteSession {
                     index.Name.L
                 ));
             }
-            let analyzed_index_names = analyze_indexes_info(&info);
+            let analyzed_index_names =
+                analyze_indexes_info(&info, self.session_vars.EnableDDLAnalyzeExecOpt);
             let mut rows = self.read_dml_rows_in_database(database, &table.Name.L)?;
             if analyze_snapshot
                 && injected_snapshot

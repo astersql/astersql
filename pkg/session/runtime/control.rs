@@ -3116,7 +3116,10 @@ impl ConcreteSession {
             .Indices
             .iter()
             .filter(|index| {
-                index.State == astersql_meta_model::SchemaState::Public && !index.MVIndex
+                (index.State == astersql_meta_model::SchemaState::Public
+                    || (index.State == astersql_meta_model::SchemaState::WriteReorganization
+                        && self.session_vars.EnableDDLAnalyzeExecOpt))
+                    && !index.MVIndex
             })
             .flat_map(|index| index.Columns.iter())
             .filter_map(|column| {
@@ -4841,6 +4844,7 @@ impl ConcreteSession {
                     .set_stats_global_variable(&name, if enabled { "ON" } else { "OFF" })
                     .map_err(|error| session_error("persist global MDL setting", error))?;
                 astersql_sessionctx_vardef::SetEnableMDL(enabled);
+                astersql_ddl_schemaver::SetMDLEnabled(enabled);
                 continue;
             }
             if matches!(
@@ -4872,6 +4876,25 @@ impl ConcreteSession {
                 metadata.execute(&format!("INSERT INTO mysql.global_variables (variable_name,variable_value) VALUES ('{name}','{normalized}') ON DUPLICATE KEY UPDATE variable_value='{normalized}'"))?;
                 continue;
             }
+            if name == astersql_sessionctx_vardef::TiDBServiceScope {
+                let (normalized, warnings) = self
+                    .session_vars
+                    .ValidateAndSetGlobalSystemVar(
+                        &name,
+                        value.trim_matches(['\'', '"']),
+                        if is_global || raw_name.starts_with("@@instance.") {
+                            astersql_sessionctx_vardef::ScopeGlobal
+                        } else {
+                            astersql_sessionctx_vardef::ScopeSession
+                        },
+                    )
+                    .map_err(|error| session_error("set DDL service scope", error))?;
+                for warning in warnings {
+                    self.set_warning(warning.to_string());
+                }
+                self.domain.set_global_system_variable(&name, &normalized);
+                continue;
+            }
             if self.execute_mem_arbitrator_set(is_global, &name, &value)? {
                 continue;
             }
@@ -4901,48 +4924,19 @@ impl ConcreteSession {
                 continue;
             }
             if is_global && name == astersql_sessionctx_vardef::TiDBDDLReorgMaxWriteSpeed {
-                let raw = value.trim_matches(['\'', '"']);
-                let compact = raw
-                    .chars()
-                    .filter(|c| !c.is_whitespace())
-                    .collect::<String>();
-                let lowercase = compact.to_ascii_lowercase();
-                let (number, shift) = [
-                    ("kib", 10_u32),
-                    ("kb", 10),
-                    ("mib", 20),
-                    ("mb", 20),
-                    ("gib", 30),
-                    ("gb", 30),
-                    ("tib", 40),
-                    ("tb", 40),
-                    ("pib", 50),
-                    ("pb", 50),
-                ]
-                .into_iter()
-                .find_map(|(suffix, shift)| {
-                    lowercase.strip_suffix(suffix).map(|number| (number, shift))
-                })
-                .unwrap_or((lowercase.as_str(), 0));
-                let base = number.parse::<u64>().map_err(|_| {
-                    SessionError::new(format!(
-                        "Variable '{name}' can't be set to the value of '{raw}'"
-                    ))
-                })?;
-                let bytes = base.checked_mul(1_u64 << shift).ok_or_else(|| {
-                    SessionError::new(format!(
-                        "Variable '{name}' can't be set to the value of '{raw}'"
-                    ))
-                })?;
-                if bytes > (1_u64 << 50) {
-                    return Err(SessionError::new(format!(
-                        "Variable '{name}' can't be set to the value of '{raw}'"
-                    )));
+                let (normalized, warnings) = self
+                    .session_vars
+                    .ValidateAndSetGlobalSystemVar(
+                        &name,
+                        value.trim_matches(['\'', '"']),
+                        astersql_sessionctx_vardef::ScopeGlobal,
+                    )
+                    .map_err(|error| session_error("set global DDL write speed", error))?;
+                for warning in warnings {
+                    self.set_warning(warning.to_string());
                 }
-                let bytes = bytes as i64;
-                astersql_sessionctx_vardef::DDLReorgMaxWriteSpeed.Store(bytes);
                 self.domain
-                    .set_stats_global_variable(&name, &bytes.to_string())
+                    .set_stats_global_variable(&name, &normalized)
                     .map_err(|error| session_error("set global DDL variable", error))?;
                 continue;
             }
@@ -5522,6 +5516,9 @@ impl ConcreteSession {
                     self.state.borrow_mut().ddl_fast_reorg_enabled = variable_is_on(&value);
                 }
                 "tidb_stats_update_during_ddl" => {
+                    self.session_vars
+                        .SetHintSystemVarWithOldState(&name, &value)
+                        .map_err(|error| session_error("set DDL analyze", error))?;
                     self.state.borrow_mut().ddl_analyze_enabled = variable_is_on(&value);
                 }
                 "tidb_scatter_region" => {
@@ -5764,6 +5761,34 @@ impl ConcreteSession {
                         )));
                     }
                     self.state.borrow_mut().redact_log = mode;
+                }
+                astersql_sessionctx_vardef::TiDBDDLReorgWorkerCount
+                | astersql_sessionctx_vardef::TiDBDDLReorgBatchSize
+                | astersql_sessionctx_vardef::TiDBMaxDistTaskNodes => {
+                    if is_global {
+                        let (normalized, warnings) = self
+                            .session_vars
+                            .ValidateAndSetGlobalSystemVar(
+                                &name,
+                                value.trim_matches(['\'', '"']),
+                                astersql_sessionctx_vardef::ScopeGlobal,
+                            )
+                            .map_err(|error| {
+                                session_error("set global DDL reorg variable", error)
+                            })?;
+                        for warning in warnings {
+                            self.set_warning(warning.to_string());
+                        }
+                        self.domain
+                            .set_stats_global_variable(&name, &normalized)
+                            .map_err(|error| {
+                                session_error("persist global DDL reorg variable", error)
+                            })?;
+                        continue;
+                    }
+                    self.session_vars
+                        .SetHintSystemVarWithOldState(&name, value.trim_matches(['\'', '"']))
+                        .map_err(|error| session_error("set DDL reorg system variable", error))?;
                 }
                 astersql_sessionctx_vardef::TiDBMLogPurgeBatchSize
                 | astersql_sessionctx_vardef::TiDBMLogPurgeMinRate

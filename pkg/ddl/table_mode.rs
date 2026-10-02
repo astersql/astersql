@@ -268,7 +268,10 @@ impl<B: DdlSchemaBarrier, P: DdlJobPolicy> crate::job_worker::DurableJobExecutor
                     current.error = Some(error);
                     current.error_count += 1;
                     current.last_schema_version = 0;
-                    if current.state == JobState::Running && current.error_count > limit {
+                    if current.state == JobState::Running
+                        && current.error_count > limit
+                        && current.is_rollbackable()
+                    {
                         current.state = JobState::Cancelling
                     }
                 }

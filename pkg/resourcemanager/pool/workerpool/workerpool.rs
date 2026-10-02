@@ -545,7 +545,9 @@ where
         // Go's InjectCall is observational here because numWorkers is passed by
         // value.  `fail::eval` preserves configured pause/panic/log behavior.
         let _ = fail::eval("NewWorkerPool", |_| numWorkers);
-        let (quitSender, quitReceiver) = crossbeam_channel::unbounded();
+        // Go's make(chan tuneConfig) is a rendezvous: accepting the exit
+        // request and finishing Close are separate synchronization points.
+        let (quitSender, quitReceiver) = crossbeam_channel::bounded(0);
         Self {
             wctx: std::option::Option::None,
             ctx: std::option::Option::None,

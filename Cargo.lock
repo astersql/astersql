@@ -1987,6 +1987,7 @@ dependencies = [
  "astersql-util-topsql-state",
  "astersql-util-traceevent",
  "astersql-util-tracing",
+ "chrono",
  "serde",
  "serde_json",
 ]
@@ -3044,6 +3045,8 @@ dependencies = [
 name = "astersql-dxf-framework-storage"
 version = "0.1.0"
 dependencies = [
+ "astersql-config",
+ "astersql-config-kerneltype",
  "astersql-dxf-framework-proto",
  "astersql-dxf-framework-schstatus",
  "parking_lot",
@@ -8460,7 +8463,9 @@ dependencies = [
  "astersql-infoschema-isvalidator",
  "astersql-infoschema-perfschema",
  "astersql-infoschema-validatorapi",
+ "astersql-ingestor-globalsort",
  "astersql-ingestor-ingestctrl",
+ "astersql-ingestor-simplesst",
  "astersql-keyspace",
  "astersql-kv",
  "astersql-lightning-backend",
@@ -8476,6 +8481,9 @@ dependencies = [
  "astersql-metrics",
  "astersql-objstore",
  "astersql-objstore-compressedio",
+ "astersql-objstore-s3like",
+ "astersql-objstore-s3store",
+ "astersql-objstore-storeapi",
  "astersql-owner",
  "astersql-param",
  "astersql-parser",
@@ -8507,6 +8515,7 @@ dependencies = [
  "astersql-privilege-privileges",
  "astersql-resourcegroup",
  "astersql-resourcegroup-runaway",
+ "astersql-resourcemanager-pool-workerpool",
  "astersql-session-cursor",
  "astersql-session-metrics",
  "astersql-session-sessionapi",
@@ -8586,6 +8595,7 @@ dependencies = [
  "astersql-util-topsql-stmtstats",
  "astersql-util-traceevent",
  "astersql-util-tracing",
+ "base64 0.22.1",
  "chrono",
  "chrono-tz",
  "crc32fast",
@@ -8597,6 +8607,7 @@ dependencies = [
  "reqwest 0.12.28",
  "rust_decimal",
  "rustls 0.23.42",
+ "serde",
  "serde_json",
  "tipb",
  "tokio",
@@ -9021,6 +9032,7 @@ name = "astersql-sessionctx-variable"
 version = "0.1.0"
 dependencies = [
  "astersql-config",
+ "astersql-config-configtypes",
  "astersql-config-kerneltype",
  "astersql-kv",
  "astersql-parser-ast",
@@ -9029,6 +9041,7 @@ dependencies = [
  "astersql-sessionctx-stmtctx",
  "astersql-sessionctx-vardef",
  "astersql-util-execdetails",
+ "astersql-util-naming",
  "astersql-util-tiflashcompute",
  "astersql-util-tls",
  "astersql-util-traceevent",
@@ -9926,6 +9939,7 @@ dependencies = [
 name = "astersql-store-driver"
 version = "0.1.0"
 dependencies = [
+ "astersql-config-configtypes",
  "astersql-kv",
  "astersql-store-copr",
  "astersql-store-driver-txn",

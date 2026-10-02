@@ -526,3 +526,40 @@ fn begin_failure_does_not_rollback_an_unstarted_transaction() {
     );
     assert_eq!(*rollback_calls.lock().unwrap(), 0);
 }
+
+#[test]
+fn canonical_submit_preserves_complete_reorg_metadata() {
+    use astersql_meta_model::group_3 as model;
+    let meta: model::DDLReorgMeta = serde_json::from_value(serde_json::json!({
+        "sql_mode": 2097152,
+        "location": {"name":"", "offset":28800},
+        "reorg_tp": 3,
+        "is_fast_reorg": true,
+        "is_dist_reorg": true,
+        "use_cloud_storage": true,
+        "resource_group_name": "ddl_group",
+        "version": 1,
+        "target_scope": "background",
+        "max_node_count": 3,
+        "analyze_state": 2,
+        "stage": 2,
+        "use_new_collate": true,
+        "concurrency": 8,
+        "batch_size": 128,
+        "max_write_speed": 1048576
+    }))
+    .unwrap();
+    let expected = serde_json::to_value(&meta).unwrap();
+    let job = Job {
+        version: 2,
+        job_type: JobType::ModifyColumn,
+        need_reorg: true,
+        reorg_meta: Some(Arc::new(meta)),
+        ..Default::default()
+    };
+    let decoded = model::Job::decode(&job.encode(&JobArgs::Opaque(b"{}".to_vec()))).unwrap();
+    assert_eq!(
+        serde_json::to_value(decoded.reorg_meta.unwrap()).unwrap(),
+        expected
+    );
+}

@@ -358,3 +358,27 @@ fn embedded_rpc_transactions_preserve_snapshot_buffer_and_conflict_errors() {
     client.set_request_interceptor(None);
     store.Close().unwrap();
 }
+
+#[test]
+fn physical_sst_import_preserves_timestamp_and_historical_mvcc_order() {
+    let store = new_storage();
+    let pair = |value: &[u8]| vec![(b"sst-key".to_vec(), value.to_vec())];
+    kv::Storage::ImportSST(&store, 10, pair(b"old")).unwrap();
+    let get = |version| {
+        kv::Storage::GetSnapshot(&store, kv::Version { Ver: version }).Get(
+            &kv::Context::todo(),
+            kv::Key(b"sst-key".to_vec()),
+            &[],
+        )
+    };
+    assert!(get(9).is_err());
+    assert_eq!(get(10).unwrap().Value, b"old");
+    kv::Storage::ImportSST(&store, 20, pair(b"new")).unwrap();
+    kv::Storage::ImportSST(&store, 15, pair(b"middle")).unwrap();
+    kv::Storage::ImportSST(&store, 10, pair(b"old")).unwrap();
+    assert_eq!(get(10).unwrap().Value, b"old");
+    assert_eq!(get(15).unwrap().Value, b"middle");
+    assert_eq!(get(20).unwrap().Value, b"new");
+    assert_eq!(get(u64::MAX).unwrap().Value, b"new");
+    assert!(kv::Storage::CurrentVersion(&store, "global").unwrap().Ver >= 20);
+}

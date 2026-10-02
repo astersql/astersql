@@ -30,9 +30,36 @@ const MAX_MERGE_SORT_FILE_COUNT_STEP: usize = 4000;
 /// 单个合并子任务目标文件数上限（与并发度取较大者参与负载调整）。
 const MERGE_SORT_MAX_SUBTASK_TARGET_FILES: usize = 16;
 
-/// 删除某前缀目录下全部文件（非分区临时目录清理）。
+/// Delete task files from both ordinary and randomly partitioned directories.
 pub fn CleanUpFiles(store: &dyn Storage, non_partitioned_dir: &str) -> Result<()> {
-    let names = store.list_prefix(non_partitioned_dir)?;
+    CleanUpFilesInDirectories(store, &[non_partitioned_dir])
+}
+
+/// Go accepts several task directories and walks the object store only once.
+pub fn CleanUpFilesInDirectories(store: &dyn Storage, non_partitioned_dirs: &[&str]) -> Result<()> {
+    if non_partitioned_dirs.is_empty() {
+        return Ok(());
+    }
+    let dirs: std::collections::HashSet<_> = non_partitioned_dirs
+        .iter()
+        .map(|dir| dir.trim_matches('/'))
+        .collect();
+    let mut names = Vec::new();
+    for path in store.list_prefix("")? {
+        let mut parts = path.trim_start_matches('/').split('/');
+        let Some(first) = parts.next() else { continue };
+        let matches = if dirs.contains(first) {
+            parts.next().is_some()
+        } else if astersql_ingestor_simplesst::writer::IsValidPartition(first.as_bytes()) {
+            parts.next().is_some_and(|second| dirs.contains(second)) && parts.next().is_some()
+        } else {
+            false
+        };
+        if matches {
+            names.push(path);
+        }
+    }
+    names.sort();
     store.delete_files(&names)
 }
 

@@ -1767,6 +1767,30 @@ pub(super) fn relational_expression_value(
                         )))
                     }
                 }
+                "json_extract" if Args.len() >= 2 => {
+                    let Some(document) = relational_expression_value(&Args[0], row)? else {
+                        return Ok(None);
+                    };
+                    let document =
+                        astersql_types::json_functions::ParseBinaryJSONFromString(&document)
+                            .map_err(|error| session_error("parse JSON_EXTRACT document", error))?;
+                    let mut paths = Vec::with_capacity(Args.len() - 1);
+                    for argument in &Args[1..] {
+                        let Some(path) = relational_expression_value(argument, row)? else {
+                            return Ok(None);
+                        };
+                        paths.push(path);
+                    }
+                    let paths = paths.iter().map(String::as_str).collect::<Vec<_>>();
+                    astersql_expression::builtin_json::json_extract(&document, &paths)
+                        .map_err(|error| SessionError::new(error.to_string()))?
+                        .map(|value| {
+                            astersql_types::json_functions::BinaryJSONToSerde(&value)
+                                .map(|value| format_mysql_json(&value))
+                                .map_err(|error| SessionError::new(error.to_string()))
+                        })
+                        .transpose()
+                }
                 "json_array" => {
                     let mut values = Vec::with_capacity(Args.len());
                     for argument in Args {
