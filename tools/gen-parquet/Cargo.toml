@@ -18,4 +18,4 @@ name = "astersql-tools-gen-parquet"
 path = "main.rs"
 
 [dependencies]
-parquet = { git = "https://github.com/astersql/arrow-rs.git", tag = "astersql-parquet-v59.1.0-streaming-pages.1" }
+parquet = { git = "https://github.com/astersql/arrow-rs.git", tag = "astersql-parquet-v60.0.0-streaming-pages.1" }

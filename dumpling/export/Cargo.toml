@@ -20,4 +20,4 @@ lane = 0
 "astersql-dumpling-context" = { package = "astersql-dumpling-context", path = "../context" }
 "astersql-dumpling-log" = { package = "astersql-dumpling-log", path = "../log" }
 "astersql-dumpformat-parquetfile" = { package = "astersql-dumpformat-parquetfile", path = "../../pkg/dumpformat/parquetfile" }
-parquet = { git = "https://github.com/astersql/arrow-rs.git", tag = "astersql-parquet-v59.1.0-streaming-pages.1" }
+parquet = { git = "https://github.com/astersql/arrow-rs.git", tag = "astersql-parquet-v60.0.0-streaming-pages.1" }

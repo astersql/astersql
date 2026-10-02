@@ -12,7 +12,7 @@ doctest = false
 [dependencies]
 anyhow = "1"
 objstore = { package = "astersql-objstore", path = "../../objstore" }
-parquet = { git = "https://github.com/astersql/arrow-rs.git", tag = "astersql-parquet-v59.1.0-streaming-pages.1" }
+parquet = { git = "https://github.com/astersql/arrow-rs.git", tag = "astersql-parquet-v60.0.0-streaming-pages.1" }
 
 [dev-dependencies]
 tempfile = "3"
