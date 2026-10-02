@@ -1628,7 +1628,7 @@ fn test_s3_storage_bucket_region() {
 }
 
 #[test]
-fn go_commit_c50aae2b1b_region_probe_uses_301_bucket_region_header() {
+fn region_probe_uses_301_bucket_region_header() {
     let warnings = Arc::new(Mutex::new(Vec::new()));
     let operation_retry_calls = Arc::new(AtomicUsize::new(0));
     let subscriber = tracing_subscriber::fmt()

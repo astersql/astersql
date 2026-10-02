@@ -19,7 +19,7 @@
 //!
 //! Mapping:
 //! - `TestMain` → [`test_main`] (`--skip-goleak` argument filter) and
-//!   [`go_commit_231dad5225_cleans_global_memory_arbitrator_before_leak_check`]
+//!   [`cleans_global_memory_arbitrator_before_leak_check`]
 //! - `TestRunMain` → [`test_run_main`] (filter DEVEL/`-test.*`, run `main` on a thread, wait)
 //! - `TestCalculateMemoryLimit` → [`test_calculate_memory_limit`]
 //!
@@ -147,7 +147,7 @@ fn test_calculate_memory_limit() {
 }
 
 #[test]
-fn go_commit_231dad5225_cleans_global_memory_arbitrator_before_leak_check() {
+fn cleans_global_memory_arbitrator_before_leak_check() {
     astersql_util_memory::global_arbitrator::CleanupGlobalMemArbitratorForTest();
     astersql_util_memory::global_arbitrator::SetupGlobalMemArbitratorForTest(
         std::env::temp_dir()

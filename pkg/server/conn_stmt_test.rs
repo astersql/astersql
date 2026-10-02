@@ -462,7 +462,7 @@ fn sql_response_connection_with_capability(
     (connection, peer, fault)
 }
 #[test]
-fn go_commit_61792e9a8a_text_failed_row_write_is_accounted() {
+fn text_failed_row_write_is_accounted() {
     let (cc, _peer, fault) = sql_response_connection();
     // Match the source Go regression's single-row fixture exactly.
     cc.dispatch(b"\x03delete from response_t where a=2")
@@ -492,7 +492,7 @@ fn go_commit_61792e9a8a_text_failed_row_write_is_accounted() {
     cc.Close().unwrap();
 }
 #[test]
-fn go_commit_61792e9a8a_cursor_failed_row_write_is_accounted() {
+fn cursor_failed_row_write_is_accounted() {
     use crate::conn::{CancellationToken, Command};
     let (cc, _peer, fault) = sql_response_connection();
     {
@@ -560,7 +560,7 @@ fn fetch_response(
     )
 }
 #[test]
-fn go_commit_61792e9a8a_text_metadata_and_eof_failures_are_accounted() {
+fn text_metadata_and_eof_failures_are_accounted() {
     let (cc, _peer, fault) = sql_response_connection();
     for at in [1, 2, 3, 6] {
         {
@@ -585,7 +585,7 @@ fn go_commit_61792e9a8a_text_metadata_and_eof_failures_are_accounted() {
     cc.Close().unwrap();
 }
 #[test]
-fn go_commit_61792e9a8a_query_flush_failure_is_accounted() {
+fn query_flush_failure_is_accounted() {
     let (cc, _peer, fault) = sql_response_connection();
     {
         let mut f = fault.lock().unwrap();
@@ -606,7 +606,7 @@ fn go_commit_61792e9a8a_query_flush_failure_is_accounted() {
     cc.Close().unwrap();
 }
 #[test]
-fn go_commit_61792e9a8a_next_and_finish_are_excluded_and_errors_preserved() {
+fn next_and_finish_are_excluded_and_errors_preserved() {
     use std::time::{Duration, Instant};
     let (cc, _peer, fault) = sql_response_connection();
     let ctx = cc.getCtx().unwrap().unwrap();
@@ -661,7 +661,7 @@ fn go_commit_61792e9a8a_next_and_finish_are_excluded_and_errors_preserved() {
     cc.Close().unwrap();
 }
 #[test]
-fn go_commit_61792e9a8a_cursor_iteration_is_timed_and_notification_excluded() {
+fn cursor_iteration_is_timed_and_notification_excluded() {
     use std::time::{Duration, Instant};
     let (cc, _peer, fault) = sql_response_connection();
     let ctx = cc.getCtx().unwrap().unwrap();
@@ -700,7 +700,7 @@ fn go_commit_61792e9a8a_cursor_iteration_is_timed_and_notification_excluded() {
     cc.Close().unwrap();
 }
 #[test]
-fn go_commit_61792e9a8a_cursor_iterator_error_is_accounted() {
+fn cursor_iterator_error_is_accounted() {
     use std::time::Duration;
     let (cc, _peer, fault) = sql_response_connection();
     let ctx = cc.getCtx().unwrap().unwrap();
@@ -738,7 +738,7 @@ fn go_commit_61792e9a8a_cursor_iterator_error_is_accounted() {
 }
 
 #[test]
-fn go_commit_61792e9a8a_cursor_eof_and_flush_errors_are_accounted() {
+fn cursor_eof_and_flush_errors_are_accounted() {
     use std::time::Duration;
     let (cc, _peer, fault) = sql_response_connection();
     let id = prepare_response_cursor(&cc, &fault);
@@ -769,7 +769,7 @@ fn go_commit_61792e9a8a_cursor_eof_and_flush_errors_are_accounted() {
     cc.Close().unwrap();
 }
 #[test]
-fn go_commit_61792e9a8a_binary_query_and_cursor_metadata_errors_are_accounted() {
+fn binary_query_and_cursor_metadata_errors_are_accounted() {
     use crate::conn::{CancellationToken, Command};
     let (cc, _peer, fault) = sql_response_connection();
     {
@@ -814,7 +814,7 @@ fn go_commit_61792e9a8a_binary_query_and_cursor_metadata_errors_are_accounted() 
 }
 
 #[test]
-fn go_commit_61792e9a8a_multichunk_next_failure_preserves_written_rows() {
+fn multichunk_next_failure_preserves_written_rows() {
     use std::time::Duration;
     let (cc, _peer, fault) = sql_response_connection();
     let values = (3..=1030)
@@ -858,7 +858,7 @@ fn go_commit_61792e9a8a_multichunk_next_failure_preserves_written_rows() {
     cc.Close().unwrap();
 }
 #[test]
-fn go_commit_61792e9a8a_deprecated_eof_and_absent_details_preserve_wire_rows() {
+fn deprecated_eof_and_absent_details_preserve_wire_rows() {
     let (cc, _peer, fault) = sql_response_connection_with_capability(1 << 24);
     {
         let mut f = fault.lock().unwrap();
@@ -897,7 +897,7 @@ fn go_commit_61792e9a8a_deprecated_eof_and_absent_details_preserve_wire_rows() {
     cc.Close().unwrap();
 }
 #[test]
-fn go_commit_61792e9a8a_binary_encoding_failure_is_accounted() {
+fn binary_encoding_failure_is_accounted() {
     use std::time::Duration;
     let (cc, _peer, fault) = sql_response_connection();
     let id = prepare_response_cursor(&cc, &fault);
@@ -934,7 +934,7 @@ fn go_commit_61792e9a8a_binary_encoding_failure_is_accounted() {
 }
 
 #[test]
-fn go_commit_61792e9a8a_empty_results_and_successful_flush_are_accounted() {
+fn empty_results_and_successful_flush_are_accounted() {
     use std::time::Duration;
     let (cc, _peer, fault) = sql_response_connection();
     let ctx = cc.getCtx().unwrap().unwrap();
@@ -994,7 +994,7 @@ fn go_commit_61792e9a8a_empty_results_and_successful_flush_are_accounted() {
     cc.Close().unwrap();
 }
 #[test]
-fn go_commit_61792e9a8a_worker_releases_domain_when_context_is_dropped() {
+fn worker_releases_domain_when_context_is_dropped() {
     use crate::conn::SessionDriver;
     use std::time::{Duration, Instant};
     let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();

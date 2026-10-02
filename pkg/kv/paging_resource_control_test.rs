@@ -26,7 +26,7 @@ fn request(bytes: u64) -> CopRPCRequestInfo {
     }
 }
 #[test]
-fn go_commit_ab7d93b603_precharge_refunds_and_debits_settlement_immediately() {
+fn precharge_refunds_and_debits_settlement_immediately() {
     let controller = PagingRUInterceptor::new("bounded", config(100.0));
     let req = request(4 * 65536);
     let delta = controller.OnRequestWait(&req).unwrap();
@@ -58,7 +58,7 @@ fn go_commit_ab7d93b603_precharge_refunds_and_debits_settlement_immediately() {
     assert!((controller.available_tokens() + 98.475).abs() < 1e-9);
 }
 #[test]
-fn go_commit_ab7d93b603_precharge_throttled_reservation_keeps_tokens() {
+fn precharge_throttled_reservation_keeps_tokens() {
     let controller = PagingRUInterceptor::new("bounded", config(0.25));
     assert!(
         controller
@@ -78,7 +78,7 @@ fn go_commit_ab7d93b603_precharge_throttled_reservation_keeps_tokens() {
     );
 }
 #[test]
-fn go_commit_ab7d93b603_precharge_cancelled_wait_refunds_reservation() {
+fn precharge_cancelled_wait_refunds_reservation() {
     let mut cfg = config(0.0);
     cfg.fill_rate = 1.0;
     cfg.max_wait = Duration::from_secs(3);
@@ -101,7 +101,7 @@ fn go_commit_ab7d93b603_precharge_cancelled_wait_refunds_reservation() {
     assert!(controller.available_tokens() >= 0.0);
 }
 #[test]
-fn go_commit_ab7d93b603_precharge_grant_wakes_failed_reservation_retry() {
+fn precharge_grant_wakes_failed_reservation_retry() {
     let mut cfg = config(0.0);
     cfg.retry_times = 3;
     cfg.retry_interval = Duration::from_secs(1);
@@ -117,7 +117,7 @@ fn go_commit_ab7d93b603_precharge_grant_wakes_failed_reservation_retry() {
     assert!((controller.available_tokens() - 8.525).abs() < 1e-9);
 }
 #[test]
-fn go_commit_ab7d93b603_no_hint_settlement_preserves_allow_debt_threshold() {
+fn no_hint_settlement_preserves_allow_debt_threshold() {
     let controller = PagingRUInterceptor::new("bounded", config(0.0));
     controller.set_throttled(true);
     let req = request(0);
@@ -159,7 +159,7 @@ fn go_commit_ab7d93b603_no_hint_settlement_preserves_allow_debt_threshold() {
 }
 
 #[test]
-fn go_commit_ab7d93b603_precharge_unlimited_and_burst_cap() {
+fn precharge_unlimited_and_burst_cap() {
     let mut cfg = config(0.0);
     cfg.burst = -1;
     let unlimited = PagingRUInterceptor::new("bounded", cfg);
@@ -178,10 +178,10 @@ fn go_commit_ab7d93b603_precharge_unlimited_and_burst_cap() {
 }
 
 #[test]
-fn go_commit_ab7d93b603_paging_metrics_export_exact_dashboard_series() {
-    let controller = PagingRUInterceptor::new("go_commit_ab7d93b603_metrics", config(100.0));
+fn paging_metrics_export_exact_dashboard_series() {
+    let controller = PagingRUInterceptor::new("metrics", config(100.0));
     let mut req = request(65536);
-    req.resource_group_name = "go_commit_ab7d93b603_metrics".into();
+    req.resource_group_name = "metrics".into();
     controller.OnRequestWait(&req).unwrap();
     controller
         .OnResponseWait(
@@ -203,10 +203,10 @@ fn go_commit_ab7d93b603_paging_metrics_export_exact_dashboard_series() {
             .get_metric()
             .iter()
             .find(|metric| {
-                metric.get_label().iter().any(|label| {
-                    label.name() == "resource_group"
-                        && label.value() == "go_commit_ab7d93b603_metrics"
-                })
+                metric
+                    .get_label()
+                    .iter()
+                    .any(|label| label.name() == "resource_group" && label.value() == "metrics")
             })
             .unwrap()
     };

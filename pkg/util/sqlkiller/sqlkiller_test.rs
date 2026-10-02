@@ -20,7 +20,7 @@ use crate::logutil::log::{BgLogger, LogField};
 use super::{KilledByMemArbitrator, QueryInterrupted, SQLKiller, UnspecifiedKillSignal};
 
 #[test]
-fn go_commit_5af03a2e10_reset_after_successful_kill_signal_cas() {
+fn reset_after_successful_kill_signal_cas() {
     let killer = Arc::new(SQLKiller::new());
     let entries_before = BgLogger().entries().len();
     let callback_killer = Arc::clone(&killer);
@@ -56,7 +56,7 @@ fn go_commit_5af03a2e10_reset_after_successful_kill_signal_cas() {
 }
 
 #[test]
-fn go_commit_5af03a2e10_kill_signal_after_reset_clear() {
+fn kill_signal_after_reset_clear() {
     let killer = Arc::new(SQLKiller::new());
     let callback_killer = Arc::clone(&killer);
     let pending = Arc::new(Mutex::new(None));

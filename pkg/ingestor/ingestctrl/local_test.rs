@@ -2319,7 +2319,7 @@ impl crate::local::ImportClientFactory for GoCommit955fd6550bCancellingFactory {
 }
 
 #[test]
-fn go_commit_955fd6550b_import_propagates_cancellation_from_active_client() {
+fn import_propagates_cancellation_from_active_client() {
     let mut config = crate::local::BackendConfig::default();
     config.local_store_dir = std::env::temp_dir()
         .join(format!("go-commit-955fd6550b-{}", crate::EngineId::new()))

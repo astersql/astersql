@@ -62,7 +62,7 @@ fn go_merge_48_paging_read_bytes_follow_kernel_billing_basis() {
 }
 
 #[test]
-fn go_commit_ab7d93b603_paging_response_mvcc_bytes_cover_go_cases() {
+fn paging_response_mvcc_bytes_cover_go_cases() {
     for (processed, total) in [(1_048_576, 2_097_152), (1_048_576, 512 * 1024), (0, 0)] {
         let mut scan = kvrpcpb::ScanDetailV2::new();
         scan.set_processed_versions_size(processed);

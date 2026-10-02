@@ -21,7 +21,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 #[test]
-fn go_commit_ab7d93b603_ema_seed_and_converge() {
+fn ema_seed_and_converge() {
     let now = Instant::now();
     let seeded = RuEma::new(4 * 1024 * 1024);
     assert_eq!(seeded.predict(), 4 * 1024 * 1024);
@@ -36,7 +36,7 @@ fn go_commit_ab7d93b603_ema_seed_and_converge() {
 }
 
 #[test]
-fn go_commit_ab7d93b603_ema_tracks_shift() {
+fn ema_tracks_shift() {
     let ema = RuEma::new(0);
     let now = Instant::now();
     for i in 0..5 {
@@ -51,7 +51,7 @@ fn go_commit_ab7d93b603_ema_tracks_shift() {
 }
 
 #[test]
-fn go_commit_ab7d93b603_ema_large_gap_collapses_weight() {
+fn ema_large_gap_collapses_weight() {
     let ema = RuEma::new(0);
     let now = Instant::now();
     ema.observe(100_000, now);
@@ -60,7 +60,7 @@ fn go_commit_ab7d93b603_ema_large_gap_collapses_weight() {
 }
 
 #[test]
-fn go_commit_ab7d93b603_ema_non_monotonic_time() {
+fn ema_non_monotonic_time() {
     let ema = RuEma::new(0);
     let now = Instant::now();
     ema.observe(100_000, now);
@@ -76,7 +76,7 @@ fn go_commit_ab7d93b603_ema_non_monotonic_time() {
 }
 
 #[test]
-fn go_commit_ab7d93b603_ema_concurrent_observe_and_predict() {
+fn ema_concurrent_observe_and_predict() {
     let ema = Arc::new(RuEma::new(0));
     let done = Arc::new(AtomicBool::new(false));
     let reader_ema = ema.clone();

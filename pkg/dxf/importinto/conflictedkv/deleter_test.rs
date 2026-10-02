@@ -339,7 +339,7 @@ fn test_deleter_index_kv_conflicts() {
 }
 
 #[test]
-fn go_commit_3268b6550f_propagates_commit_error_without_deleting_key() {
+fn propagates_commit_error_without_deleting_key() {
     let key = row_key(1);
     let deleted = Arc::new(Mutex::new(Vec::new()));
     let store: Arc<dyn ConflictStore> = Arc::new(FakeConflictStore {

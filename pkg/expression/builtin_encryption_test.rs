@@ -158,7 +158,7 @@ fn compression_round_trip_empty_and_corrupt_inputs_preserve_warnings() {
 }
 
 #[test]
-fn go_commit_c6e3cf8399_scalar_uncompress_rejects_output_beyond_declared_length() {
+fn scalar_uncompress_rejects_output_beyond_declared_length() {
     let mut payload = 32_u32.to_le_bytes().to_vec();
     let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
     std::io::Write::write_all(&mut encoder, &vec![0; 1 << 20]).unwrap();

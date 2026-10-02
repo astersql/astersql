@@ -392,7 +392,7 @@ fn skip_missing_reports_unanalyzed_and_empty_item_like_go() {
 }
 
 #[test]
-fn go_commit_52f7a7a3e6_empty_histograms_consume_current_default_map() {
+fn empty_histograms_consume_current_default_map() {
     use astersql_planner_core::planbuilder::{AnalyzeOptionDefault, AnalyzeOptionType as O};
     // The Go caller switched to the public dynamic default map for both
     // synchronous and asynchronous missing-histogram merges.

@@ -36,7 +36,7 @@ fn task_error_uses_normalized_error_json_semantics() {
 }
 
 #[test]
-fn go_commit_4894ac09c7_task_error_null_normalized_and_fallback() {
+fn task_error_null_normalized_and_fallback() {
     for (cell, expected) in [
         (Cell::Null, None),
         (

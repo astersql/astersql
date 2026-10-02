@@ -227,7 +227,7 @@ fn test_load_data_replace() {
 }
 
 #[test]
-fn go_commit_b61f02c672_reuses_shared_store_for_load_data_replace_cases() {
+fn reuses_shared_store_for_load_data_replace_cases() {
     // The Go regression moved this test onto the package-level store. Keep both
     // LOAD DATA invocations on the same table state so the second case observes
     // the rows committed by the first instead of starting from a fresh store.

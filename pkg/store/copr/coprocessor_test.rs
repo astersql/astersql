@@ -2521,7 +2521,7 @@ fn request_wait_ru_and_original_transport_error_reach_runaway_checker() {
 }
 
 #[test]
-fn go_commit_ab7d93b603_paging_prediction_preserves_byte_budget_and_small_limit() {
+fn paging_prediction_preserves_byte_budget_and_small_limit() {
     for (bytes, enabled) in [(0, true), (4 * 1024 * 1024, false), (4 * 1024 * 1024, true)] {
         let backend = TestBackend::with_locations(vec![location(1, 0, vec![key_range("a", "c")])]);
         let mut req = request(vec![key_range("a", "c")]);
@@ -2560,7 +2560,7 @@ fn go_commit_ab7d93b603_paging_prediction_preserves_byte_budget_and_small_limit(
 }
 
 #[test]
-fn go_commit_ab7d93b603_paging_observation_error_zero_final_and_remain_order() {
+fn paging_observation_error_zero_final_and_remain_order() {
     let backend = TestBackend::with_locations(vec![location(1, 0, vec![key_range("a", "c")])]);
     let mut req = request(vec![key_range("a", "c")]);
     req.paging = PagingOptions {
@@ -2711,7 +2711,7 @@ impl CopBackend for PagingSequenceBackend {
     }
 }
 #[test]
-fn go_commit_ab7d93b603_byte_paging_channel_has_real_capacity_and_final_page_stops() {
+fn byte_paging_channel_has_real_capacity_and_final_page_stops() {
     let backend = Arc::new(PagingSequenceBackend {
         routing: TestBackend::with_locations(vec![location(1, 0, vec![key_range("a", "z")])]),
         calls: AtomicUsize::new(0),

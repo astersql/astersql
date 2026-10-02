@@ -214,7 +214,7 @@ fn destroy_and_proto_restore_reset_transient_collector_state() {
 }
 
 #[test]
-fn go_commit_52f7a7a3e6_histogram_uses_active_defaults() {
+fn histogram_uses_active_defaults() {
     struct Restore(u64, u64);
     impl Drop for Restore {
         fn drop(&mut self) {

@@ -182,7 +182,7 @@ fn test_start_scheduler_cross_keyspace_runtime() {
 }
 
 #[test]
-fn go_commit_7d70c1c438_manager_failed_task_updates_metric() {
+fn manager_failed_task_updates_metric() {
     use astersql_dxf_framework_dxfmetric::InitDistTaskMetrics;
 
     let counter = &InitDistTaskMetrics().FinishedTaskCounter;

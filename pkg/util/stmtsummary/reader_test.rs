@@ -3,7 +3,7 @@
 use crate::*;
 
 #[test]
-fn go_commit_59ca78807e_reader_double_metrics() {
+fn reader_double_metrics() {
     let reader = NewStmtSummaryReader(None, true, Vec::new(), String::new(), chrono_tz::UTC);
     let mut stats = stmtSummaryStats::default();
     stats.execCount = 2;

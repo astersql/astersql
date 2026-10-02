@@ -15,7 +15,7 @@ fn assert_cascades_disabled(test_kit: &crate::TestKit, round: &str, caller: &str
     assert_eq!(round, "off");
     assert_eq!(
         caller,
-        "go_commit_2d30398a5f_runs_each_compatibility_helper_only_with_cascades_off"
+        "runs_each_compatibility_helper_only_with_cascades_off"
     );
     test_kit
         .MustQuery("select @@session.tidb_enable_cascades_planner", Vec::new())
@@ -23,7 +23,7 @@ fn assert_cascades_disabled(test_kit: &crate::TestKit, round: &str, caller: &str
 }
 
 #[test]
-fn go_commit_2d30398a5f_runs_each_compatibility_helper_only_with_cascades_off() {
+fn runs_each_compatibility_helper_only_with_cascades_off() {
     CALLBACKS.store(0, Ordering::SeqCst);
 
     RunTestUnderCascades(|test_kit, round, caller| {

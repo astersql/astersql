@@ -151,7 +151,7 @@ fn test_basic_pub_sub() {
 
 /// 多 handler 各失败一次后再成功：交付顺序一致，且全部处理后存储应清空。
 #[test]
-fn go_commit_9812c894b3_deliver_order_and_cleanup() {
+fn deliver_order_and_cleanup() {
     let store = fresh_store("test");
     let notifier = NewDDLNotifier(
         SessionPool::default(),

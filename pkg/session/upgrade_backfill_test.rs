@@ -196,7 +196,7 @@ fn canonical_mock_upgrade_retargets_only_supported_versions() {
 }
 
 #[test]
-fn go_commit_52f7a7a3e6_upgrade_backfills_and_preserves_values() {
+fn upgrade_backfills_and_preserves_values() {
     let mut store = VariableStore::default();
     upgrade_bootstrap_variables(&mut store, 262).unwrap();
     assert_eq!(

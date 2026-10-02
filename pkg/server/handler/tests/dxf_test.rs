@@ -1593,7 +1593,7 @@ fn dxf_default_tune_factor_uses_scheduler_bounds() {
 }
 
 #[test]
-fn go_commit_4894ac09c7_canonical_history_http_preserves_failed_tasks() {
+fn canonical_history_http_preserves_failed_tasks() {
     use astersql_dxf_framework_storage::{self as storage, proto};
     use astersql_server::server::{Server, ServerConfig, ServerDriver, StatusConfig};
     use std::sync::Arc;

@@ -1029,7 +1029,7 @@ fn store_id_for_split(stores: &[metapb::Store], split_index: usize) -> u64 {
 }
 
 #[test]
-fn go_commit_1a99cd1d3b_uses_actual_store_ids_for_deterministic_split_assignment() {
+fn uses_actual_store_ids_for_deterministic_split_assignment() {
     let stores = vec![
         metapb::Store {
             Id: 11,

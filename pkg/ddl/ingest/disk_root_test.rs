@@ -70,7 +70,7 @@ fn risk_threshold_matches_go_floating_point_boundary() {
 }
 
 #[test]
-fn go_commit_d0dfde35b7_precheck_uses_real_filesystem_and_preserves_error_class() {
+fn precheck_uses_real_filesystem_and_preserves_error_class() {
     let path = std::env::temp_dir().join(format!("aster-d0dfde35b7-disk-{}", std::process::id()));
     struct Cleanup(std::path::PathBuf);
     impl Drop for Cleanup {

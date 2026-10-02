@@ -247,7 +247,7 @@ fn TestTaskManagerEntrySize() {
 }
 
 #[test]
-fn go_commit_4894ac09c7_history_selects_error_before_times() {
+fn history_selects_error_before_times() {
     let manager = TaskManager::new();
     let mut cells = vec![
         Cell::Int(5),
@@ -292,7 +292,7 @@ fn go_commit_4894ac09c7_history_selects_error_before_times() {
 }
 
 #[test]
-fn go_commit_4894ac09c7_history_error_metadata_handles_null_and_malformed() {
+fn history_error_metadata_handles_null_and_malformed() {
     for (error, category, code) in [
         (Cell::Null, "", ""),
         (Cell::Bytes(b"not-json: secret".to_vec()), "failed", ""),
@@ -329,7 +329,7 @@ fn go_commit_4894ac09c7_history_error_metadata_handles_null_and_malformed() {
 }
 
 #[test]
-fn go_commit_4894ac09c7_history_error_classification_follows_replacement() {
+fn history_error_classification_follows_replacement() {
     assert_eq!(ClassifyTaskError("failed", None), "");
     for (state, message, expected) in [
         ("failed", "cancelled by user", "failed"),

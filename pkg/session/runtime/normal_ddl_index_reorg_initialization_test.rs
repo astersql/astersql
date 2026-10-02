@@ -70,7 +70,7 @@ fn setup(f: &Fixture, id: i64, dist: bool) -> (Job, Vec<u8>, astersql_meta_model
 }
 
 #[test]
-fn go_commit_d0dfde35b7_persisted_worker_cloud_skips_real_disk_fault() {
+fn persisted_worker_cloud_skips_real_disk_fault() {
     let _serial = CONFIG.lock().unwrap();
     let old_root = astersql_ddl::index::replace_global_lightning_env_for_test(Some(
         std::env::temp_dir().join("aster-d0dfde35b7-ingest"),
@@ -120,7 +120,7 @@ fn go_commit_d0dfde35b7_persisted_worker_cloud_skips_real_disk_fault() {
 }
 
 #[test]
-fn go_commit_d0dfde35b7_persisted_local_disk_error_preserves_queue() {
+fn persisted_local_disk_error_preserves_queue() {
     let _serial = CONFIG.lock().unwrap();
     let old_root = astersql_ddl::index::replace_global_lightning_env_for_test(Some(
         std::env::temp_dir().join("aster-d0dfde35b7-ingest"),
@@ -144,7 +144,7 @@ fn go_commit_d0dfde35b7_persisted_local_disk_error_preserves_queue() {
 }
 
 #[test]
-fn go_commit_d0dfde35b7_initialization_fences_replacement_owner() {
+fn initialization_fences_replacement_owner() {
     let _serial = CONFIG.lock().unwrap();
     let old_root = astersql_ddl::index::replace_global_lightning_env_for_test(Some(
         std::env::temp_dir().join("aster-d0dfde35b7-ingest"),
@@ -213,7 +213,7 @@ impl astersql_ddl::table_mode::DdlJobPolicy for Policy {
 }
 
 #[test]
-fn go_commit_d0dfde35b7_normal_dispatch_initializes_and_reports_next_stage() {
+fn normal_dispatch_initializes_and_reports_next_stage() {
     let _serial = CONFIG.lock().unwrap();
     let old_root = astersql_ddl::index::replace_global_lightning_env_for_test(Some(
         std::env::temp_dir().join("aster-d0dfde35b7-ingest"),

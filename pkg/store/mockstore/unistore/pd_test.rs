@@ -387,7 +387,7 @@ fn test_mock_keyspace_manager() {
 }
 
 #[test]
-fn go_commit_ab7d93b603_mock_pd_loads_keyspace_by_id() {
+fn mock_pd_loads_keyspace_by_id() {
     let metas = vec![
         KeyspaceMeta {
             id: 7,

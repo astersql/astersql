@@ -22,10 +22,10 @@
 //! 本轮工作保持许可证、英文注释、现有断言和所有代码路径原样不动。
 //! 计划要求本文件至少达到 7 行中文注释，下面用索引式说明补足阅读背景。
 //! 当 Rust 与 Go 同名文件并存时，建议优先将同名场景视为语义参照。
-//! 符号 `go_commit_8380b57b58_cross_ks_runtime_gc_loop_started_by_system_domain` 是当前文件里的测试用例。
-//! `go_commit_8380b57b58_cross_ks_runtime_gc_loop_started_by_system_domain` 所处的位置主要服务 `会话生命周期与信息模式` 主题下的一个阅读切面。
-//! 阅读 `go_commit_8380b57b58_cross_ks_runtime_gc_loop_started_by_system_domain` 时可先判断它关联的是哪一段前置准备、主路径执行、结果断言或资源收尾。
-//! 如果 Go 同名文件里也出现 `go_commit_8380b57b58_cross_ks_runtime_gc_loop_started_by_system_domain`，阅读时应优先核对场景目标、断言顺序和清理时机。
+//! 符号 `cross_ks_runtime_gc_loop_started_by_system_domain` 是当前文件里的测试用例。
+//! `cross_ks_runtime_gc_loop_started_by_system_domain` 所处的位置主要服务 `会话生命周期与信息模式` 主题下的一个阅读切面。
+//! 阅读 `cross_ks_runtime_gc_loop_started_by_system_domain` 时可先判断它关联的是哪一段前置准备、主路径执行、结果断言或资源收尾。
+//! 如果 Go 同名文件里也出现 `cross_ks_runtime_gc_loop_started_by_system_domain`，阅读时应优先核对场景目标、断言顺序和清理时机。
 //! 中文说明结束（自动生成）
 
 //! Go-equivalent lifecycle coverage for the cross-keyspace runtime released by
@@ -42,7 +42,7 @@ use astersql_tests_realtikvtest_sessiontest::serial_guard;
 /// `CrossKeyspaceCoordinator`.  SYSTEM acquires a production RAII lease, and
 /// dropping the final lease lets the idle GC remove the target runtime.
 #[test]
-fn go_commit_8380b57b58_cross_ks_runtime_gc_loop_started_by_system_domain() {
+fn cross_ks_runtime_gc_loop_started_by_system_domain() {
     let _serial = serial_guard();
     const TARGET_KEYSPACE: &str = "keyspace2";
 

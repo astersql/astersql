@@ -2110,7 +2110,7 @@ fn go_merge_46_full_outer_join_sysvar_defaults_off_and_tracks_session_value() {
 }
 
 #[test]
-fn go_commit_52f7a7a3e6_global_hooks_unsigned_validation() {
+fn global_hooks_unsigned_validation() {
     go_merge_47_analyze_defaults_follow_global_sysvars();
     let (mut vars, _) = session();
     let ctx = Context;

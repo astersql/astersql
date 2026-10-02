@@ -378,7 +378,7 @@ fn test_split_ranges_by_keys() {
 }
 
 #[test]
-fn go_commit_d0dfde35b7_cloud_storage_precedes_disk_selection() {
+fn cloud_storage_precedes_disk_selection() {
     let _serial = COMMIT_D0_METRICS.lock().unwrap();
     use crate::index::{ReorgIndexEnvironment, init_for_reorg_indexes};
     use astersql_meta_model::group_3::{Job, ReorgType};
@@ -453,7 +453,7 @@ impl crate::index::ReorgIndexEnvironment for CommitD0Environment {
 }
 
 #[test]
-fn go_commit_d0dfde35b7_preserves_started_type_and_go_fallbacks() {
+fn preserves_started_type_and_go_fallbacks() {
     let _serial = COMMIT_D0_METRICS.lock().unwrap();
     use astersql_meta_model::group_3::{DDLReorgMeta, Job, ReorgType::*};
     for (old, fast, initialized, cloud, expected, probes) in [
@@ -516,7 +516,7 @@ fn go_commit_d0dfde35b7_preserves_started_type_and_go_fallbacks() {
 }
 
 #[test]
-fn go_commit_d0dfde35b7_empty_indexes_do_not_access_environment() {
+fn empty_indexes_do_not_access_environment() {
     let _serial = COMMIT_D0_METRICS.lock().unwrap();
     let mut env = CommitD0Environment {
         uri: "s3://bucket".into(),
@@ -532,7 +532,7 @@ fn go_commit_d0dfde35b7_empty_indexes_do_not_access_environment() {
 }
 
 #[test]
-fn go_commit_d0dfde35b7_partial_index_errors_follow_selection_and_loading() {
+fn partial_index_errors_follow_selection_and_loading() {
     let _serial = COMMIT_D0_METRICS.lock().unwrap();
     use astersql_meta_model::group_3::{DDLReorgMeta, Job, ReorgType::*};
     for (fast, initialized, expected) in [

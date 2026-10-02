@@ -1865,7 +1865,7 @@ fn bit_arithmetic_uses_column_metadata_without_reinterpreting_strings() {
 }
 
 #[test]
-fn go_commit_52f7a7a3e6_sql_defaults_and_bootstrap_upgrade() {
+fn sql_defaults_and_bootstrap_upgrade() {
     struct Restore(u64, u64);
     impl Drop for Restore {
         fn drop(&mut self) {
@@ -1964,7 +1964,7 @@ fn go_commit_52f7a7a3e6_sql_defaults_and_bootstrap_upgrade() {
 }
 
 #[test]
-fn go_commit_52f7a7a3e6_saved_options_precede_changed_globals() {
+fn saved_options_precede_changed_globals() {
     struct Restore(u64, u64, bool);
     impl Drop for Restore {
         fn drop(&mut self) {

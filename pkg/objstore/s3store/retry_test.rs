@@ -51,7 +51,7 @@ impl Write for RecordedWarnings {
 }
 
 #[test]
-fn go_commit_c50aae2b1b_redirect_classifier_requires_code_and_status() {
+fn redirect_classifier_requires_code_and_status() {
     for code in ["MovedPermanently", "PermanentRedirect"] {
         assert!(s3store::isBucketRegionRedirectError(&region_error(
             code, 301
@@ -79,7 +79,7 @@ fn go_commit_c50aae2b1b_redirect_classifier_requires_code_and_status() {
 }
 
 #[test]
-fn go_commit_c50aae2b1b_only_probe_suppresses_expected_warning() {
+fn only_probe_suppresses_expected_warning() {
     let output = Arc::new(Mutex::new(Vec::new()));
     let subscriber = tracing_subscriber::fmt()
         .with_ansi(false)

@@ -699,7 +699,7 @@ impl kv::resourcegroup::CopRUInterceptor for PagingHintInterceptor {
 }
 
 #[test]
-fn go_commit_ab7d93b603_kv_adapter_preserves_predicted_read_bytes() {
+fn kv_adapter_preserves_predicted_read_bytes() {
     let metadata = Arc::new(DagMetadata::default());
     let transport = Arc::new(DagTransport::default());
     let backend = copr::NetworkBackend::from_transports(
@@ -745,7 +745,7 @@ fn go_commit_ab7d93b603_kv_adapter_preserves_predicted_read_bytes() {
 }
 
 #[test]
-fn go_commit_ab7d93b603_precharge_waits_before_real_kv_send() {
+fn precharge_waits_before_real_kv_send() {
     let metadata = Arc::new(DagMetadata::default());
     let transport = Arc::new(DagTransport::default());
     let backend = copr::NetworkBackend::from_transports(
@@ -800,7 +800,7 @@ fn go_commit_ab7d93b603_precharge_waits_before_real_kv_send() {
 }
 
 #[test]
-fn go_commit_ab7d93b603_precharge_close_cancels_before_network_send() {
+fn precharge_close_cancels_before_network_send() {
     let metadata = Arc::new(DagMetadata::default());
     let transport = Arc::new(DagTransport::default());
     let backend = copr::NetworkBackend::from_transports(
@@ -870,7 +870,7 @@ impl kv::resourcegroup::CopRUInterceptor for RecordedMVCCResponse {
     }
 }
 #[test]
-fn go_commit_ab7d93b603_kv_adapter_preserves_mvcc_settlement_data() {
+fn kv_adapter_preserves_mvcc_settlement_data() {
     let recorder = Arc::new(RecordedMVCCResponse::default());
     let interceptor = crate::runaway_adapter::KVCopRUInterceptor::new(recorder.clone());
     let mut response = copr::CopProtocolResponse {

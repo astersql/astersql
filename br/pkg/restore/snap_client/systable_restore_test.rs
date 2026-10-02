@@ -353,7 +353,7 @@ fn test_notify_update_all_users_privilege() {
 }
 
 #[test]
-fn go_commit_52f7a7a3e6_monitor_analyze_defaults_bootstrap_version() {
+fn monitor_analyze_defaults_bootstrap_version() {
     // #69886 renumbered this migration from 263 to 283. Later migrations
     // belong to their own source tasks; the supported table must include it.
     let last = astersql_session::upgrade_def::upgradeToVerFunctions

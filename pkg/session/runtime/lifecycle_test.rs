@@ -153,7 +153,7 @@ fn crossks_align_lifecycle_public_components_load_only_system_schema_and_close_o
 }
 
 #[test]
-fn go_commit_3bea8196a5_min_job_id_refresher_can_be_skipped_for_session_count() {
+fn min_job_id_refresher_can_be_skipped_for_session_count() {
     let f = Fixture::new();
     let hook_called = Arc::new(AtomicBool::new(false));
     let called = Arc::clone(&hook_called);

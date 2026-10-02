@@ -106,7 +106,7 @@ fn duplicate_add_and_missing_entries_preserve_state() {
 }
 
 #[test]
-fn go_commit_ab7d93b603_watch_envelope_retains_pre_subscription_events() {
+fn watch_envelope_retains_pre_subscription_events() {
     let client = NewMockResourceManagerClient(7);
     let original = resource_group("queued", 10, -1, 8);
     client.add_resource_group(original.clone()).unwrap();
@@ -149,7 +149,7 @@ fn go_commit_ab7d93b603_watch_envelope_retains_pre_subscription_events() {
 }
 
 #[test]
-fn go_commit_ab7d93b603_watch_capacity_and_shared_consumer_semantics() {
+fn watch_capacity_and_shared_consumer_semantics() {
     let client: std::sync::Arc<dyn ResourceManagerClient> = NewMockResourceManagerClient(7).into();
     for i in 0..100 {
         client

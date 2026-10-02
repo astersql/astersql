@@ -381,7 +381,7 @@ fn test_on_task_finished() {
 }
 
 #[test]
-fn go_commit_7d70c1c438_finished_task_metric_classifies_errors() {
+fn finished_task_metric_classifies_errors() {
     use astersql_dxf_framework_dxfmetric::InitDistTaskMetrics;
 
     let counter = &InitDistTaskMetrics().FinishedTaskCounter;
@@ -474,7 +474,7 @@ fn go_commit_7d70c1c438_finished_task_metric_classifies_errors() {
 }
 
 #[test]
-fn go_commit_7d70c1c438_terminal_transitions_update_metric() {
+fn terminal_transitions_update_metric() {
     use astersql_dxf_framework_dxfmetric::InitDistTaskMetrics;
 
     let counter = &InitDistTaskMetrics().FinishedTaskCounter;

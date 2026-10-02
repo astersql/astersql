@@ -24,7 +24,7 @@ use std::time::{Duration, UNIX_EPOCH};
 use task_stmtsummary_v2::*;
 
 #[test]
-fn go_commit_59ca78807e_v2_unsigned_double_metrics() {
+fn v2_unsigned_double_metrics() {
     let context = ColumnContext::new("instance", chrono_tz::UTC);
     let mut record = StmtRecord::default();
     record.ExecCount = 2;

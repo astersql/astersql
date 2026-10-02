@@ -325,7 +325,7 @@ fn parser_backed_builder_handles_core_statement_shapes() {
 }
 
 #[test]
-fn go_commit_52f7a7a3e6_dynamic_defaults_and_raw_options() {
+fn dynamic_defaults_and_raw_options() {
     use crate::planbuilder::*;
     use vardef_dependency as vardef;
     let old = (
@@ -367,7 +367,7 @@ fn go_commit_52f7a7a3e6_dynamic_defaults_and_raw_options() {
 }
 
 #[test]
-fn go_commit_52f7a7a3e6_explicit_option_boundaries() {
+fn explicit_option_boundaries() {
     use crate::planbuilder::*;
     for (key, value) in [
         (AnalyzeOptionType::TopN, 0),
@@ -405,7 +405,7 @@ fn go_commit_52f7a7a3e6_explicit_option_boundaries() {
 }
 
 #[test]
-fn go_commit_52f7a7a3e6_go_error_messages_and_table_plan() {
+fn go_error_messages_and_table_plan() {
     use crate::planbuilder::*;
     for (key, value, message) in [
         (
