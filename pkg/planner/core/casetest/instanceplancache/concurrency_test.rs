@@ -103,13 +103,7 @@ fn run_statements(mut tk: TestKit, statements: &[TestStmt]) {
             ));
             expected.Check(actual.Rows());
         } else if isDML(&statement.normal_stmt) {
-            if let Err(error) = tk.Exec(&statement.normal_stmt, Vec::new()) {
-                // 多个工作线程更新同一行时允许出现数据库层面的预期死锁。
-                if error.to_string().contains("Deadlock") {
-                    continue;
-                }
-                panic!("normal DML failed: {}: {error}", statement.normal_stmt);
-            }
+            exec(&mut tk, &statement.normal_stmt);
             exec(&mut tk, &statement.prep_stmt);
             exec(&mut tk, &statement.set_stmt);
             exec(&mut tk, &statement.exec_stmt);
@@ -122,22 +116,70 @@ fn test_with_workers(
     store: &Arc<astersql_testkit::mockstore::AnalyzeStatsStore>,
     statements: &[TestStmt],
 ) {
-    let mut per_worker = vec![Vec::new(); 10];
-    for statement in statements {
-        if isDML(&statement.normal_stmt) {
-            per_worker[rand::intn(10) as usize].push(statement.clone());
-        } else {
-            for worker in &mut per_worker {
-                worker.push(statement.clone());
-            }
-        }
-    }
+    let per_worker = distribute_statements(statements);
     thread::scope(|scope| {
         for statements in per_worker {
             let store = Arc::clone(store);
             scope.spawn(move || run_statements(TestKit::new(store), &statements));
         }
     });
+}
+
+fn distribute_statements(statements: &[TestStmt]) -> Vec<Vec<TestStmt>> {
+    let mut per_worker = vec![Vec::new(); 10];
+    // Transaction progress differs across sessions; retain every write in one session.
+    let dml_worker = rand::intn(10) as usize;
+    for statement in statements {
+        if isDML(&statement.normal_stmt) {
+            per_worker[dml_worker].push(statement.clone());
+        } else {
+            for worker in &mut per_worker {
+                worker.push(statement.clone());
+            }
+        }
+    }
+    per_worker
+}
+
+#[test]
+fn writes_share_one_worker_and_preserve_transaction_order() {
+    let statements = vec![
+        txn("begin"),
+        stmt("insert into normal.t values (1)".into(), "", "".into(), ""),
+        stmt("update normal.t set a=2".into(), "", "".into(), ""),
+        stmt("delete from normal.t where a=2".into(), "", "".into(), ""),
+        stmt("select * from normal.t".into(), "", "".into(), ""),
+        txn("rollback"),
+        txn("begin"),
+        stmt("insert into normal.t values (3)".into(), "", "".into(), ""),
+        txn("commit"),
+    ];
+    let workers = distribute_statements(&statements);
+    assert_eq!(workers.len(), 10);
+    let writers: Vec<_> = workers
+        .iter()
+        .filter(|worker| worker.iter().any(|statement| isDML(&statement.normal_stmt)))
+        .collect();
+    assert_eq!(writers.len(), 1, "all DML must use the same session");
+    assert_eq!(writers[0], &statements);
+    for worker in workers
+        .iter()
+        .filter(|worker| !worker.iter().any(|statement| isDML(&statement.normal_stmt)))
+    {
+        assert_eq!(
+            worker
+                .iter()
+                .map(|statement| statement.normal_stmt.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "begin",
+                "select * from normal.t",
+                "rollback",
+                "begin",
+                "commit"
+            ]
+        );
+    }
 }
 
 /// 构造单表点查数据，并在十个会话中用随机键反复验证缓存计划的查询结果。
