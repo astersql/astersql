@@ -5354,6 +5354,7 @@ dependencies = [
  "astersql-util-mock",
  "astersql-util-ranger",
  "astersql-util-redact",
+ "log",
 ]
 
 [[package]]

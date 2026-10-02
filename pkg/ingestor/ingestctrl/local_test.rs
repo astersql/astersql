@@ -3402,3 +3402,535 @@ pub fn mock_engine_with_data_get_region_split_keys() {
 pub fn mock_engine_with_data_close() {
     // 返回语义: return nil
 }
+
+struct CancellationWorkersClient {
+    started: std::sync::atomic::AtomicUsize,
+}
+
+impl crate::local::ImportClient for CancellationWorkersClient {
+    fn WriteAndIngest(
+        &self,
+        token: &crate::CancellationToken,
+        _engine: &crate::engine::Engine,
+        _ranges: &[crate::KeyRange],
+    ) -> crate::Result<(i64, i64)> {
+        if self
+            .started
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            == 0
+        {
+            while !token.is_cancelled() {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            Err(crate::Error::Cancelled)
+        } else {
+            Err(crate::Error::InvalidData("worker fatal error".into()))
+        }
+    }
+    fn Close(&self) {}
+}
+
+struct CancellationWorkersFactory(std::sync::Arc<CancellationWorkersClient>);
+impl crate::local::ImportClientFactory for CancellationWorkersFactory {
+    fn Create(
+        &self,
+        _: &crate::CancellationToken,
+        _: u64,
+    ) -> crate::Result<std::sync::Arc<dyn crate::local::ImportClient>> {
+        Ok(self.0.clone())
+    }
+    fn Close(&self) {}
+}
+
+#[test]
+fn worker_error_cancels_other_running_workers() {
+    use std::sync::{Arc, atomic::Ordering};
+    use std::time::Duration;
+    let client = Arc::new(CancellationWorkersClient {
+        started: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let mut config = crate::local::BackendConfig::default();
+    config.local_store_dir = std::env::temp_dir()
+        .join(format!("worker-cancellation-{}", crate::EngineId::new()))
+        .to_string_lossy()
+        .into_owned();
+    config.worker_concurrency = 2;
+    config.region_split_keys = 1;
+    let backend = Arc::new(
+        crate::local::NewBackend(
+            config,
+            Arc::new(GoCommit955fd6550bStoreHelper),
+            Some(Arc::new(CancellationWorkersFactory(client.clone()))),
+            None,
+        )
+        .unwrap(),
+    );
+    let token = crate::CancellationToken::default();
+    let id = crate::EngineId::new();
+    let engine = backend.OpenEngine(&token, id).unwrap();
+    engine.Put(b"a".to_vec(), b"a".to_vec()).unwrap();
+    engine.Put(b"b".to_vec(), b"b".to_vec()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn({
+        let backend = backend.clone();
+        let token = token.clone();
+        move || tx.send(backend.ImportEngine(&token, id, 1)).unwrap()
+    });
+    let result = rx.recv_timeout(Duration::from_secs(2));
+    token.cancel();
+    handle.join().unwrap();
+    backend.Close();
+    assert_eq!(
+        result.unwrap(),
+        Err(crate::Error::InvalidData("worker fatal error".into()))
+    );
+    assert!(client.started.load(Ordering::SeqCst) >= 2);
+}
+
+#[derive(Default)]
+struct ImportCleanupState {
+    allowed: std::sync::Mutex<bool>,
+    released: std::sync::Condvar,
+    done: std::sync::atomic::AtomicBool,
+    refs: std::sync::atomic::AtomicUsize,
+}
+
+struct BlockingImportData(std::sync::Arc<ImportCleanupState>);
+impl astersql_ingestor_engineapi::IngestData for BlockingImportData {
+    fn GetFirstAndLastKey(
+        &self,
+        _: &[u8],
+        _: &[u8],
+    ) -> std::result::Result<
+        (Option<Vec<u8>>, Option<Vec<u8>>),
+        astersql_ingestor_engineapi::EngineError,
+    > {
+        Ok((Some(b"a".to_vec()), Some(b"a".to_vec())))
+    }
+    fn NewIter(
+        &self,
+        ctx: &astersql_ingestor_engineapi::Context,
+        lower: &[u8],
+        upper: &[u8],
+        pool: &mut astersql_lightning_membuf::Pool,
+    ) -> Box<dyn astersql_ingestor_engineapi::ForwardIter> {
+        astersql_ingestor_engineapi::IngestData::NewIter(
+            &crate::import_pipeline::LocalData {
+                pairs: vec![crate::KvPair {
+                    key: b"a".to_vec(),
+                    value: b"a".to_vec(),
+                }],
+                ts: 1,
+                refs: Default::default(),
+            },
+            ctx,
+            lower,
+            upper,
+            pool,
+        )
+    }
+    fn GetTS(&self) -> u64 {
+        1
+    }
+    fn IncRef(&self) {
+        self.0
+            .refs
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn DecRef(&self) {
+        let mut allowed = self.0.allowed.lock().unwrap();
+        while !*allowed {
+            allowed = self.0.released.wait(allowed).unwrap();
+        }
+        self.0
+            .refs
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.0.done.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn Finish(&self, _: i64, _: i64) {}
+}
+
+struct ImportTestSource {
+    state: std::sync::Arc<ImportCleanupState>,
+    wait_for_cancel: bool,
+}
+impl astersql_ingestor_engineapi::Engine for ImportTestSource {
+    fn ID(&self) -> String {
+        "mock-engine".into()
+    }
+    fn LoadIngestData(
+        &self,
+        ctx: &astersql_ingestor_engineapi::Context,
+        tx: &std::sync::mpsc::SyncSender<astersql_ingestor_engineapi::DataAndRanges>,
+    ) -> std::result::Result<(), astersql_ingestor_engineapi::EngineError> {
+        tx.send(astersql_ingestor_engineapi::DataAndRanges {
+            Data: Box::new(BlockingImportData(self.state.clone())),
+            SortedRanges: vec![astersql_ingestor_engineapi::Range {
+                Start: b"a".to_vec(),
+                End: b"b".to_vec(),
+            }],
+        })
+        .unwrap();
+        if self.wait_for_cancel {
+            while !ctx.is_cancelled() {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            return Err(Box::new(crate::Error::Cancelled));
+        }
+        Ok(())
+    }
+    fn KVStatistics(&self) -> (i64, i64) {
+        (2, 1)
+    }
+    fn ImportedStatistics(&self) -> (i64, i64) {
+        (0, 0)
+    }
+    fn ConflictInfo(&self) -> astersql_ingestor_engineapi::ConflictInfo {
+        Default::default()
+    }
+    fn GetKeyRange(
+        &self,
+    ) -> std::result::Result<(Vec<u8>, Vec<u8>), astersql_ingestor_engineapi::EngineError> {
+        Ok((b"a".to_vec(), b"b".to_vec()))
+    }
+    fn GetRegionSplitKeys(
+        &self,
+    ) -> std::result::Result<Vec<Vec<u8>>, astersql_ingestor_engineapi::EngineError> {
+        Ok(vec![b"a".to_vec(), b"b".to_vec()])
+    }
+    fn Close(&mut self) -> std::result::Result<(), astersql_ingestor_engineapi::EngineError> {
+        Ok(())
+    }
+}
+
+fn import_test_generator() -> crate::import_pipeline::JobGenerator {
+    std::sync::Arc::new(|_, _, ranges| {
+        Ok(ranges
+            .iter()
+            .map(|range| crate::job_worker::RegionJob {
+                region: crate::job_worker::RegionInfo {
+                    id: 1,
+                    leader_store_id: 1,
+                    peer_store_ids: vec![1],
+                },
+                key_range: crate::KeyRange {
+                    start: range.Start.clone(),
+                    end: range.End.clone(),
+                },
+                data: vec![crate::KvPair {
+                    key: b"a".to_vec(),
+                    value: b"a".to_vec(),
+                }],
+                ..Default::default()
+            })
+            .collect())
+    })
+}
+
+#[test]
+fn context_cancellation_waits_for_running_workers() {
+    use std::sync::{Arc, atomic::Ordering};
+    use std::time::Duration;
+    let state = Arc::new(ImportCleanupState::default());
+    let token = crate::CancellationToken::default();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let factory: crate::import_pipeline::WorkerFactory = Arc::new(move |token| {
+        let started = started_tx.clone();
+        Ok(Box::new(crate::job_worker::NewRegionJobBaseWorker(
+            token,
+            Arc::new(|_, _| Ok(Default::default())),
+            Arc::new(|_, _| Ok(())),
+            Arc::new(move |token, _| {
+                started.send(()).unwrap();
+                while !token.is_cancelled() {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(crate::Error::Cancelled)
+            }),
+            Arc::new(|_, _| unreachable!()),
+        )))
+    });
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn({
+        let token = token.clone();
+        let state = state.clone();
+        move || {
+            let release = state.clone();
+            tx.send(crate::import_pipeline::do_import(
+                &token,
+                Arc::new(ImportTestSource {
+                    state,
+                    wait_for_cancel: true,
+                }),
+                1,
+                import_test_generator(),
+                factory,
+                crate::import_pipeline::ImportOptions {
+                    before_release: Some(Arc::new(move || {
+                        *release.allowed.lock().unwrap() = true;
+                        release.released.notify_all();
+                    })),
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+        }
+    });
+    let started = started_rx.recv_timeout(Duration::from_secs(2));
+    token.cancel();
+    // Always unblock cleanup, including a failed startup assertion.
+    if started.is_err() {
+        *state.allowed.lock().unwrap() = true;
+        state.released.notify_all();
+    }
+    let result = rx.recv_timeout(Duration::from_secs(2));
+    handle.join().unwrap();
+    started.unwrap();
+    assert_eq!(result.unwrap(), Err(crate::Error::Cancelled));
+    assert!(
+        state.done.load(Ordering::SeqCst),
+        "import returned before DecRef completed"
+    );
+    assert_eq!(state.refs.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn dispatcher_handles_error_shutdown_when_result_channel_closes() {
+    use std::sync::Arc;
+    let token = crate::CancellationToken::default();
+    let results = astersql_resourcemanager_pool_workerpool::Channel::bounded(0);
+    results.close();
+    let cancel = token.clone();
+    let before_wait: Option<Arc<dyn Fn() + Send + Sync>> = Some(Arc::new(move || cancel.cancel()));
+    assert_eq!(
+        crate::import_pipeline::dispatch_results(
+            &token,
+            &results,
+            &crate::region_job::regionJobRetryer::default(),
+            &std::sync::atomic::AtomicBool::new(false),
+            &before_wait,
+            &None,
+        ),
+        Err(crate::Error::Cancelled),
+    );
+}
+
+#[test]
+fn dispatcher_propagates_context_cancellation() {
+    let token = crate::CancellationToken::default();
+    token.cancel();
+    let results = astersql_resourcemanager_pool_workerpool::Channel::bounded(0);
+    assert_eq!(
+        crate::import_pipeline::dispatch_results(
+            &token,
+            &results,
+            &crate::region_job::regionJobRetryer::default(),
+            &std::sync::atomic::AtomicBool::new(false),
+            &None,
+            &None,
+        ),
+        Err(crate::Error::Cancelled),
+    );
+}
+
+struct SuccessfulImportWorker {
+    late_error: bool,
+}
+impl crate::job_worker::RegionJobWorker for SuccessfulImportWorker {
+    fn HandleTask(
+        &self,
+        mut job: crate::job_worker::RegionJob,
+    ) -> crate::Result<Vec<crate::job_worker::RegionJob>> {
+        job.write_result = Some(crate::job_worker::TikvWriteResult {
+            total_bytes: 2,
+            count: 1,
+            ..Default::default()
+        });
+        job.convertStageTo(crate::job_worker::RegionJobStage::Ingested);
+        Ok(vec![job])
+    }
+    fn Close(&self) -> crate::Result<()> {
+        if self.late_error {
+            Err(crate::Error::InvalidData("worker close failed".into()))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[test]
+fn import_pipeline_marks_success_after_worker_cleanup() {
+    use std::sync::{Arc, atomic::Ordering};
+    let state = Arc::new(ImportCleanupState::default());
+    *state.allowed.lock().unwrap() = true;
+    let result = crate::import_pipeline::do_import(
+        &crate::CancellationToken::default(),
+        Arc::new(ImportTestSource {
+            state: state.clone(),
+            wait_for_cancel: false,
+        }),
+        2,
+        import_test_generator(),
+        Arc::new(|_| Ok(Box::new(SuccessfulImportWorker { late_error: false }))),
+        crate::import_pipeline::ImportOptions {
+            local_engine: true,
+            ..Default::default()
+        },
+    );
+    assert_eq!(result, Ok((2, 1)));
+    assert!(state.done.load(Ordering::SeqCst));
+    assert_eq!(state.refs.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn import_pipeline_retains_error_set_during_worker_release() {
+    use std::sync::{Arc, atomic::Ordering};
+    let state = Arc::new(ImportCleanupState::default());
+    *state.allowed.lock().unwrap() = true;
+    let result = crate::import_pipeline::do_import(
+        &crate::CancellationToken::default(),
+        Arc::new(ImportTestSource {
+            state: state.clone(),
+            wait_for_cancel: false,
+        }),
+        1,
+        import_test_generator(),
+        Arc::new(|_| Ok(Box::new(SuccessfulImportWorker { late_error: true }))),
+        Default::default(),
+    );
+    assert_eq!(
+        result,
+        Err(crate::Error::InvalidData("worker close failed".into()))
+    );
+    assert_eq!(state.refs.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn import_pipeline_recovers_worker_panic_and_releases_data() {
+    use std::sync::{Arc, atomic::Ordering};
+    let state = Arc::new(ImportCleanupState::default());
+    *state.allowed.lock().unwrap() = true;
+    let counter = astersql_metrics::metrics::PanicCounter.with_label_values(&["regionJob"]);
+    let before = counter.get();
+    let result = crate::import_pipeline::do_import(
+        &crate::CancellationToken::default(),
+        Arc::new(ImportTestSource {
+            state: state.clone(),
+            wait_for_cancel: false,
+        }),
+        1,
+        import_test_generator(),
+        Arc::new(|token| {
+            Ok(Box::new(crate::job_worker::NewRegionJobBaseWorker(
+                token,
+                Arc::new(|_, _| panic!("region job failure")),
+                Arc::new(|_, _| Ok(())),
+                Arc::new(|_, _| Ok(())),
+                Arc::new(|_, _| unreachable!()),
+            )))
+        }),
+        Default::default(),
+    );
+    assert_eq!(
+        result,
+        Err(crate::Error::InvalidData("region job worker panic".into()))
+    );
+    assert_eq!(state.refs.load(Ordering::SeqCst), 0);
+    assert_eq!(counter.get(), before + 1.0);
+}
+
+#[test]
+fn import_pipeline_generation_error_cancels_loader() {
+    use std::sync::Arc;
+    let state = Arc::new(ImportCleanupState::default());
+    *state.allowed.lock().unwrap() = true;
+    let result = crate::import_pipeline::do_import(
+        &crate::CancellationToken::default(),
+        Arc::new(ImportTestSource {
+            state,
+            wait_for_cancel: true,
+        }),
+        2,
+        Arc::new(|_, _, _| Err(crate::Error::InvalidData("generate job failed".into()))),
+        Arc::new(|_| Ok(Box::new(SuccessfulImportWorker { late_error: false }))),
+        crate::import_pipeline::ImportOptions {
+            local_engine: true,
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        result,
+        Err(crate::Error::InvalidData("generate job failed".into()))
+    );
+}
+
+struct RetryLimitWorker;
+impl crate::job_worker::RegionJobWorker for RetryLimitWorker {
+    fn HandleTask(
+        &self,
+        job: crate::job_worker::RegionJob,
+    ) -> crate::Result<Vec<crate::job_worker::RegionJob>> {
+        Ok(vec![job])
+    }
+    fn Close(&self) -> crate::Result<()> {
+        Ok(())
+    }
+}
+#[test]
+fn import_pipeline_retry_limit_preserves_error_and_releases_data() {
+    use std::sync::{Arc, atomic::Ordering};
+    let state = Arc::new(ImportCleanupState::default());
+    *state.allowed.lock().unwrap() = true;
+    let result = crate::import_pipeline::do_import(
+        &crate::CancellationToken::default(),
+        Arc::new(ImportTestSource {
+            state: state.clone(),
+            wait_for_cancel: false,
+        }),
+        1,
+        Arc::new(|token, data, ranges| {
+            let mut jobs = import_test_generator()(token, data, ranges)?;
+            for job in &mut jobs {
+                job.retry_count = 30;
+                job.last_retryable_error = Some("last retry failure".into());
+                job.last_retryable_cause = Some(crate::Error::Io("last retry failure".into()));
+            }
+            Ok(jobs)
+        }),
+        Arc::new(|_| Ok(Box::new(RetryLimitWorker))),
+        Default::default(),
+    );
+    assert_eq!(result, Err(crate::Error::Io("last retry failure".into())));
+    assert_eq!(state.refs.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn dispatcher_cancellation_interrupts_open_result_channel() {
+    use std::sync::{Arc, atomic::AtomicBool};
+    use std::time::Duration;
+    let token = crate::CancellationToken::default();
+    let results = astersql_resourcemanager_pool_workerpool::Channel::bounded(0);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn({
+        let token = token.clone();
+        let results = results.clone();
+        move || {
+            let cancel = token.clone();
+            let before_receive: Option<Arc<dyn Fn() + Send + Sync>> =
+                Some(Arc::new(move || cancel.cancel()));
+            tx.send(crate::import_pipeline::dispatch_results(
+                &token,
+                &results,
+                &crate::region_job::regionJobRetryer::default(),
+                &AtomicBool::new(false),
+                &None,
+                &before_receive,
+            ))
+            .unwrap();
+        }
+    });
+    let outcome = rx.recv_timeout(Duration::from_secs(2));
+    results.close();
+    handle.join().unwrap();
+    assert_eq!(outcome.unwrap(), Err(crate::Error::Cancelled));
+}

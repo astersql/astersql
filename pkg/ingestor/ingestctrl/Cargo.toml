@@ -12,6 +12,11 @@ go-package = "pkg/ingestor/ingestctrl"
 legacy-tasks = ["task-996", "task-997", "task-998", "task-1000", "task-1033", "task-1034", "task-1035", "task-1036"]
 
 [dependencies]
+"astersql-metrics" = { package = "astersql-metrics", path = "../../metrics" }
+"astersql-ingestor-engineapi" = { package = "astersql-ingestor-engineapi", path = "../engineapi" }
+"astersql-lightning-membuf" = { package = "astersql-lightning-membuf", path = "../../lightning/membuf" }
+"astersql-resourcemanager-pool-workerpool" = { package = "astersql-resourcemanager-pool-workerpool", path = "../../resourcemanager/pool/workerpool" }
+log = "0.4"
 "astersql-util-compress" = { package = "astersql-util-compress", path = "../../util/compress" }
 
 [target.'cfg(windows)'.dependencies]
@@ -19,7 +24,6 @@ legacy-tasks = ["task-996", "task-997", "task-998", "task-1000", "task-1033", "t
 "astersql-distsql" = { package = "astersql-distsql", path = "../../distsql" }
 "astersql-dxf-framework-taskexecutor-execute" = { package = "astersql-dxf-framework-taskexecutor-execute", path = "../../dxf/framework/taskexecutor/execute" }
 "astersql-infoschema" = { package = "astersql-infoschema", path = "../../infoschema" }
-"astersql-ingestor-engineapi" = { package = "astersql-ingestor-engineapi", path = "../engineapi" }
 "astersql-ingestor-errdef" = { package = "astersql-ingestor-errdef", path = "../errdef" }
 "astersql-ingestor-globalsort" = { package = "astersql-ingestor-globalsort", path = "../globalsort" }
 "astersql-ingestor-ingestcli" = { package = "astersql-ingestor-ingestcli", path = "../ingestcli" }
@@ -33,16 +37,13 @@ legacy-tasks = ["task-996", "task-997", "task-998", "task-1000", "task-1033", "t
 "astersql-lightning-importdef" = { package = "astersql-lightning-importdef", path = "../../lightning/importdef" }
 "astersql-lightning-log" = { package = "astersql-lightning-log", path = "../../lightning/log" }
 "astersql-lightning-manual" = { package = "astersql-lightning-manual", path = "../../lightning/manual" }
-"astersql-lightning-membuf" = { package = "astersql-lightning-membuf", path = "../../lightning/membuf" }
 "astersql-lightning-metric" = { package = "astersql-lightning-metric", path = "../../lightning/metric" }
 "astersql-lightning-tikv" = { package = "astersql-lightning-tikv", path = "../../lightning/tikv" }
 "astersql-lightning-verification" = { package = "astersql-lightning-verification", path = "../../lightning/verification" }
 "astersql-meta" = { package = "astersql-meta", path = "../../meta" }
 "astersql-meta-model" = { package = "astersql-meta-model", path = "../../meta/model" }
-"astersql-metrics" = { package = "astersql-metrics", path = "../../metrics" }
 "astersql-parser-mysql" = { package = "astersql-parser-mysql", path = "../../parser/mysql" }
 "astersql-parser-terror" = { package = "astersql-parser-terror", path = "../../parser/terror" }
-"astersql-resourcemanager-pool-workerpool" = { package = "astersql-resourcemanager-pool-workerpool", path = "../../resourcemanager/pool/workerpool" }
 "astersql-resourcemanager-util" = { package = "astersql-resourcemanager-util", path = "../../resourcemanager/util" }
 "astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../sessionctx/vardef" }
 "astersql-table" = { package = "astersql-table", path = "../../table" }

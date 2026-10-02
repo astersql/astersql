@@ -28,6 +28,8 @@ pub mod duplicate;
 pub mod engine;
 /// 多 Engine 生命周期管理。
 pub mod engine_mgr;
+/// Worker 生命周期、生成、重试与结果分发。
+pub mod import_pipeline;
 /// 有序迭代器与重复键适配器。
 pub mod iterator;
 /// Region 导入任务 Worker。
@@ -247,17 +249,37 @@ pub struct EngineFileSize {
 
 #[derive(Clone, Default)]
 /// 协作式取消令牌（CancellationToken）。
-pub struct CancellationToken(Arc<AtomicBool>);
+pub struct CancellationToken {
+    cancelled: Arc<AtomicBool>,
+    parent: Option<Arc<CancellationToken>>,
+    worker_context: Option<astersql_resourcemanager_pool_workerpool::Context>,
+}
 
 impl CancellationToken {
+    pub(crate) fn for_workers(
+        &self,
+        context: astersql_resourcemanager_pool_workerpool::Context,
+    ) -> Self {
+        Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+            parent: Some(Arc::new(self.clone())),
+            worker_context: Some(context),
+        }
+    }
+
     /// 发出取消信号。
     pub fn cancel(&self) {
-        self.0.store(true, Ordering::Release);
+        self.cancelled.store(true, Ordering::Release);
     }
 
     /// 是否已取消。
     pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+        self.cancelled.load(Ordering::Acquire)
+            || self.parent.as_ref().is_some_and(|p| p.is_cancelled())
+            || self
+                .worker_context
+                .as_ref()
+                .is_some_and(|c| c.IsCancelled())
     }
 
     /// 已取消则返回 `Error::Cancelled`。

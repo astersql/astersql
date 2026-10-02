@@ -58,3 +58,22 @@ fn closed_task_channel_is_drained_before_worker_exits() {
 
     assert_eq!(handled.load(Ordering::SeqCst), TASKS);
 }
+
+#[test]
+fn receive_timeout_preserves_buffered_close_and_open_wait() {
+    use crate::workerpool::RecvTimeoutError;
+    use std::time::Duration;
+    let buffered = Channel::bounded(1);
+    assert!(buffered.send(7));
+    buffered.close();
+    assert_eq!(buffered.recv_timeout(Duration::from_millis(1)), Ok(Some(7)));
+    assert_eq!(buffered.recv_timeout(Duration::from_millis(1)), Ok(None));
+    let open = Channel::<i32>::bounded(0);
+    assert_eq!(
+        open.recv_timeout(Duration::from_millis(1)),
+        Err(RecvTimeoutError::Timeout)
+    );
+    assert!(!open.is_closed());
+    open.close();
+    assert_eq!(open.recv_timeout(Duration::from_millis(1)), Ok(None));
+}

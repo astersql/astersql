@@ -487,9 +487,42 @@ impl Backend {
                 ranges
             };
             let (bytes, count) = if let Some(factory) = &self.import_factory {
-                factory
-                    .Create(token, store_id)?
-                    .WriteAndIngest(token, &engine, &ranges)?
+                let source = Arc::new(crate::import_pipeline::LocalEngineSource::new(
+                    engine.clone(),
+                    ranges,
+                ));
+                let generator: crate::import_pipeline::JobGenerator = Arc::new(|_, _, ranges| {
+                    Ok(ranges
+                        .iter()
+                        .map(|range| crate::job_worker::RegionJob {
+                            key_range: KeyRange {
+                                start: range.Start.clone(),
+                                end: range.End.clone(),
+                            },
+                            ..Default::default()
+                        })
+                        .collect())
+                });
+                let factory = factory.clone();
+                let worker_engine = engine.clone();
+                let workers: crate::import_pipeline::WorkerFactory = Arc::new(move |token| {
+                    Ok(Box::new(crate::import_pipeline::ClientWorker {
+                        client: factory.Create(&token, store_id)?,
+                        engine: worker_engine.clone(),
+                        token,
+                    }))
+                });
+                crate::import_pipeline::do_import(
+                    token,
+                    source,
+                    self.GetWorkerConcurrency(),
+                    generator,
+                    workers,
+                    crate::import_pipeline::ImportOptions {
+                        local_engine: true,
+                        ..Default::default()
+                    },
+                )?
             } else {
                 engine.KVStatistics()
             };

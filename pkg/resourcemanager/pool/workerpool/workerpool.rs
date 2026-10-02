@@ -20,6 +20,7 @@
 
 #![allow(dead_code, non_snake_case, non_upper_case_globals)]
 
+pub use crossbeam_channel::RecvTimeoutError;
 use crossbeam_channel::{Receiver, Sender};
 use std::any::TypeId;
 use std::error::Error as StdError;
@@ -303,6 +304,29 @@ impl<T> Channel<T> {
         crossbeam_channel::select_biased! {
             recv(receiver) -> result => result.ok(),
             recv(closed) -> _ => self.inner.receiver.try_recv().ok(),
+        }
+    }
+
+    /// Receive buffered values before observing closure, as recv does. A timeout
+    /// leaves the channel open and lets callers re-check their cancellation state.
+    /// Exhausted closed channels return Ok(None), distinct from Err(Timeout).
+    pub fn recv_timeout(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<Option<T>, RecvTimeoutError> {
+        if let Ok(value) = self.inner.receiver.try_recv() {
+            return Ok(Some(value));
+        }
+        if self.is_closed() {
+            return Ok(std::option::Option::None);
+        }
+        let receiver = self.inner.receiver.clone();
+        let closed = self.inner.close_receiver.clone();
+        let elapsed = crossbeam_channel::after(timeout);
+        crossbeam_channel::select_biased! {
+            recv(receiver) -> result => Ok(result.ok()),
+            recv(closed) -> _ => Ok(self.inner.receiver.try_recv().ok()),
+            recv(elapsed) -> _ => Err(RecvTimeoutError::Timeout),
         }
     }
 

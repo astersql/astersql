@@ -89,26 +89,45 @@ pub struct RegionJob {
     pub write_result: Option<TikvWriteResult>,
     /// 最近一次可重试错误信息。
     pub last_retryable_error: Option<String>,
+    /// Preserve the original error identity when the dispatcher exhausts retries.
+    pub last_retryable_cause: Option<Error>,
     /// Region 按大小分裂阈值。
     pub region_split_size: i64,
     /// Region 按键数分裂阈值。
     pub region_split_keys: i64,
     /// 任务引用计数（重扫生成多子任务时递增）。
     pub(crate) references: Arc<AtomicUsize>,
+    pub(crate) resources: Option<Arc<crate::import_pipeline::JobResources>>,
+    pub(crate) retry_count: usize,
+    pub(crate) completed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl RegionJob {
     /// 切换任务阶段。
     pub fn convertStageTo(&mut self, stage: RegionJobStage) {
+        if stage == RegionJobStage::Ingested && self.stage != stage {
+            if let (Some(resources), Some(result)) = (&self.resources, &self.write_result) {
+                resources.finish(result.total_bytes, result.count);
+            }
+        }
         self.stage = stage;
     }
     /// 增加引用计数。
     pub fn r#ref(&self) {
         self.references.fetch_add(1, Ordering::AcqRel);
+        if let Some(resources) = &self.resources {
+            resources.reference();
+        }
     }
     /// 减少引用计数。
     pub fn done(&self) {
+        if self.resources.is_some() && self.completed.swap(true, Ordering::AcqRel) {
+            return;
+        }
         self.references.fetch_sub(1, Ordering::AcqRel);
+        if let Some(resources) = &self.resources {
+            resources.done();
+        }
     }
     /// 当前引用计数。
     pub fn ref_count(&self) -> usize {
@@ -117,7 +136,7 @@ impl RegionJob {
 }
 
 /// Region 任务 Worker：处理单个任务并可能产出后续任务。
-pub trait RegionJobWorker {
+pub trait RegionJobWorker: Send {
     /// 处理任务，返回需继续调度的任务列表。
     fn HandleTask(&self, job: RegionJob) -> Result<Vec<RegionJob>>;
     /// 关闭 Worker。
@@ -197,17 +216,25 @@ impl RegionJobBaseWorker {
             }
             RegionJobStage::NeedRescan => {
                 let mut jobs = (self.regenerate_jobs_fn)(&self.token, &job)?;
+                result?;
                 if jobs.len() > 1 {
                     for _ in 1..jobs.len() {
                         job.r#ref();
                     }
                 }
-                for regenerated in &mut jobs {
+                for (index, regenerated) in jobs.iter_mut().enumerate() {
+                    if index == 0 {
+                        regenerated.completed.clone_from(&job.completed);
+                    }
+                    regenerated.resources.clone_from(&job.resources);
+                    regenerated.references.clone_from(&job.references);
+                    regenerated
+                        .last_retryable_cause
+                        .clone_from(&job.last_retryable_cause);
                     regenerated
                         .last_retryable_error
                         .clone_from(&job.last_retryable_error);
                 }
-                result?;
                 Ok(jobs)
             }
         }
@@ -236,6 +263,7 @@ impl RegionJobBaseWorker {
                     Err(error) if isRetryableImportTiKVError(&error) => {
                         let request_too_new = error.to_string().contains("RequestTooNew");
                         job.last_retryable_error = Some(error.to_string());
+                        job.last_retryable_cause = Some(error.clone());
                         job.convertStageTo(if request_too_new {
                             RegionJobStage::RegionScanned
                         } else {
@@ -251,6 +279,7 @@ impl RegionJobBaseWorker {
                     Ok(()) => job.convertStageTo(RegionJobStage::Ingested),
                     Err(error) if isRetryableImportTiKVError(&error) => {
                         job.last_retryable_error = Some(error.to_string());
+                        job.last_retryable_cause = Some(error.clone());
                         job.convertStageTo(getNextStageOnIngestError(&error));
                         return Ok(());
                     }
@@ -289,7 +318,15 @@ impl RegionJobWorker for RegionJobBaseWorker {
     fn HandleTask(&self, job: RegionJob) -> Result<Vec<RegionJob>> {
         match catch_unwind(AssertUnwindSafe(|| self.process(job.clone()))) {
             Ok(result) => result,
-            Err(_) => {
+            Err(payload) => {
+                let (label, info, _) = <RegionJob as astersql_resourcemanager_pool_workerpool::TaskMayPanic>::RecoverArgs(&job);
+                log::error!(
+                    "{label}: {info}: region job worker panic: {payload:?}; stack={}",
+                    std::backtrace::Backtrace::force_capture()
+                );
+                astersql_metrics::metrics::PanicCounter
+                    .with_label_values(&[&label])
+                    .inc();
                 job.done();
                 Err(Error::InvalidData("region job worker panic".into()))
             }
@@ -420,4 +457,16 @@ impl ObjectStoreRegionJobWorker {
 /// 判断导入错误是否可重试（Retryable/Timeout 或含 EOF）。
 pub fn isRetryableImportTiKVError(error: &Error) -> bool {
     matches!(error, Error::Retryable(_) | Error::Timeout) || error.to_string().contains("EOF")
+}
+
+impl astersql_resourcemanager_pool_workerpool::TaskMayPanic for RegionJob {
+    fn RecoverArgs(
+        &self,
+    ) -> (
+        String,
+        String,
+        Option<astersql_resourcemanager_pool_workerpool::Error>,
+    ) {
+        ("regionJob".into(), "regionJob".into(), None)
+    }
 }
