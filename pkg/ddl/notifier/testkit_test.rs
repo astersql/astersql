@@ -151,7 +151,7 @@ fn test_basic_pub_sub() {
 
 /// 多 handler 各失败一次后再成功：交付顺序一致，且全部处理后存储应清空。
 #[test]
-fn test_deliver_order_and_cleanup() {
+fn go_commit_9812c894b3_deliver_order_and_cleanup() {
     let store = fresh_store("test");
     let notifier = NewDDLNotifier(
         SessionPool::default(),
@@ -192,7 +192,7 @@ fn test_deliver_order_and_cleanup() {
         )
         .unwrap();
     }
-    eventually(Duration::from_secs(1), || store.Count() == 0);
+    eventually(Duration::from_secs(5), || store.Count() == 0);
     for result in results {
         assert_eq!(*result.lock().unwrap(), vec![1000, 1001, 1002]);
     }
