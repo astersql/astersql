@@ -283,3 +283,176 @@ fn test_modify_meta_preserves_zero_batch_size() {
 
     assert_eq!(0, scheduler.task_meta.batch_size);
 }
+
+#[test]
+fn test_timestamp_retry_discards_partial_plan() {
+    use crate::backfilling_dist_scheduler::{
+        retry_region_plan, try_generate_plan_for_physical_table,
+    };
+    let mut scans = 0;
+    let mut calls = 0;
+    let mut waits = Vec::new();
+    let plan = retry_region_plan(
+        || {
+            scans += 1;
+            Ok(regions(200))
+        },
+        |regions| {
+            try_generate_plan_for_physical_table(42, &[0], &[200], regions, 2, false, || {
+                calls += 1;
+                if calls == 2 {
+                    Err(PlanError::TimestampAllocation("transient TSO".into()))
+                } else {
+                    Ok(calls)
+                }
+            })
+        },
+        |delay| {
+            waits.push(delay);
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(scans, 2);
+    assert_eq!(calls, 4);
+    assert_eq!(plan.len(), 2);
+    assert_eq!(
+        (plan[0].physical_table_id, plan[1].physical_table_id),
+        (42, 42)
+    );
+    assert_eq!(
+        (&plan[0].row_start, &plan[0].row_end),
+        (&vec![0], &vec![100])
+    );
+    assert_eq!(
+        (&plan[1].row_start, &plan[1].row_end),
+        (&vec![100], &vec![200])
+    );
+    assert_eq!((plan[0].ts, plan[1].ts), (3, 4));
+    assert_eq!(waits, vec![std::time::Duration::from_millis(200)]);
+}
+
+#[test]
+fn test_region_discontinuity_reloads_physical_and_temporary_plans() {
+    use crate::backfilling_dist_scheduler::retry_region_plan;
+    for merging in [false, true] {
+        let mut scans = 0;
+        let mut allocations = 0;
+        let plan = retry_region_plan(
+            || {
+                scans += 1;
+                let mut values = regions(2);
+                if scans == 1 {
+                    values[1].start_key = vec![9];
+                }
+                Ok(values)
+            },
+            |values| {
+                if merging {
+                    generate_temporary_index_plan(42, 7, vec![0], vec![2], values, 2)
+                } else {
+                    generate_plan_for_physical_table(42, &[0], &[2], values, 2, true, || {
+                        allocations += 1;
+                        allocations
+                    })
+                }
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(scans, 2);
+        assert_eq!(plan.len(), 2);
+        assert!(
+            plan.iter()
+                .all(|meta| meta.physical_table_id == 42 && meta.element_ids.is_empty())
+        );
+        if merging {
+            assert_eq!(plan[0].legacy_sorted_kv_meta.start_key, vec![0]);
+            assert_eq!(plan[1].legacy_sorted_kv_meta.end_key, vec![2]);
+            assert_eq!(allocations, 0);
+        } else {
+            assert_eq!(plan[0].row_start, vec![0]);
+            assert_eq!(plan[1].row_end, vec![2]);
+            assert_eq!(allocations, 2);
+        }
+    }
+}
+
+#[test]
+fn test_region_plan_retry_exhaustion_preserves_last_error() {
+    use crate::backfilling_dist_scheduler::{
+        retry_region_plan, try_generate_plan_for_physical_table,
+    };
+    for merging in [false, true] {
+        let mut scans = 0;
+        let mut waits = Vec::new();
+        let mut broken = regions(2);
+        broken[1].start_key = vec![9];
+        let error = retry_region_plan(
+            || {
+                scans += 1;
+                Ok(broken.clone())
+            },
+            |values| {
+                if merging {
+                    generate_temporary_index_plan(42, 7, vec![0], vec![2], values, 2)
+                } else {
+                    generate_plan_for_physical_table(42, &[0], &[2], values, 2, true, || {
+                        panic!("TSO before continuous scan")
+                    })
+                }
+            },
+            |delay| {
+                waits.push(delay.as_millis());
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            PlanError::RegionsNotContinuous {
+                expected: vec![1],
+                actual: vec![9]
+            }
+        );
+        assert_eq!(scans, 8);
+        assert_eq!(waits, vec![200, 400, 800, 1600, 2000, 2000, 2000, 2000]);
+    }
+    let mut calls = 0;
+    let error = retry_region_plan(
+        || Ok(regions(2)),
+        |values| {
+            try_generate_plan_for_physical_table(42, &[0], &[2], values, 2, true, || {
+                calls += 1;
+                Err(PlanError::TimestampAllocation(format!("TSO {calls}")))
+            })
+        },
+        |_| Ok(()),
+    )
+    .unwrap_err();
+    assert_eq!(calls, 8);
+    assert_eq!(error, PlanError::TimestampAllocation("TSO 8".into()));
+}
+
+#[test]
+fn test_region_plan_does_not_retry_scan_or_permanent_plan_errors() {
+    use crate::backfilling_dist_scheduler::retry_region_plan;
+    let error = retry_region_plan(
+        || Err(PlanError::RegionScan("PD unavailable".into())),
+        |_| panic!("must not build after scan failure"),
+        |_| panic!("scan errors are not retryable"),
+    )
+    .unwrap_err();
+    assert_eq!(error, PlanError::RegionScan("PD unavailable".into()));
+    let error = retry_region_plan(
+        || Ok(regions(2)),
+        |values| {
+            generate_plan_for_physical_table(42, &[0], &[2], values, 0, false, || {
+                panic!("invalid nodes")
+            })
+        },
+        |_| panic!("permanent plan error is not retryable"),
+    )
+    .unwrap_err();
+    assert_eq!(error, PlanError::NoNodes);
+}

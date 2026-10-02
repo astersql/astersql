@@ -120,6 +120,10 @@ impl LitBackfillScheduler {
 pub enum PlanError {
     /// 可用执行节点数为 0。
     NoNodes,
+    /// Timestamp allocation failed; the entire region scan must be retried.
+    TimestampAllocation(String),
+    /// Region scan failed; unlike discontinuity this is not retried.
+    RegionScan(String),
     /// Region 列表为空，无法切分范围。
     EmptyRegions,
     /// 相邻 Region 的 key 范围不连续（前一个的结束 key 应等于后一个的起始 key）。
@@ -184,10 +188,31 @@ pub fn generate_plan_for_physical_table(
     physical_table_id: i64,
     table_start: &[u8],
     table_end: &[u8],
-    mut regions: Vec<RegionMeta>,
+    regions: Vec<RegionMeta>,
     node_count: usize,
     use_cloud: bool,
     mut alloc_ts: impl FnMut() -> u64,
+) -> Result<Vec<BackfillSubTaskMeta>, PlanError> {
+    try_generate_plan_for_physical_table(
+        physical_table_id,
+        table_start,
+        table_end,
+        regions,
+        node_count,
+        use_cloud,
+        || Ok(alloc_ts()),
+    )
+}
+
+/// Build one attempt, discarding all metadata if timestamp allocation fails.
+pub fn try_generate_plan_for_physical_table(
+    physical_table_id: i64,
+    table_start: &[u8],
+    table_end: &[u8],
+    mut regions: Vec<RegionMeta>,
+    node_count: usize,
+    use_cloud: bool,
+    mut alloc_ts: impl FnMut() -> Result<u64, PlanError>,
 ) -> Result<Vec<BackfillSubTaskMeta>, PlanError> {
     if table_start.is_empty() && table_end.is_empty() {
         return Ok(Vec::new());
@@ -225,7 +250,7 @@ pub fn generate_plan_for_physical_table(
                 .expect("non-empty region batch")
                 .end_key
                 .clone(),
-            ts: alloc_ts(),
+            ts: alloc_ts()?,
             ..BackfillSubTaskMeta::default()
         };
         // 首尾批次的边界收敛到表本身的范围，避免扫描到表外数据。
@@ -485,4 +510,31 @@ pub fn generate_temporary_index_plan(
         });
     }
     Ok(plan)
+}
+
+/// Retry a full region scan and publish only a complete successful attempt.
+pub fn retry_region_plan(
+    mut load_regions: impl FnMut() -> Result<Vec<RegionMeta>, PlanError>,
+    mut build: impl FnMut(Vec<RegionMeta>) -> Result<Vec<BackfillSubTaskMeta>, PlanError>,
+    mut wait: impl FnMut(std::time::Duration) -> Result<(), PlanError>,
+) -> Result<Vec<BackfillSubTaskMeta>, PlanError> {
+    for attempt in 0..8 {
+        // Reload on every attempt: splits/merges can change the batch boundaries.
+        let result = build(load_regions()?);
+        match result {
+            Err(
+                error
+                @ (PlanError::RegionsNotContinuous { .. } | PlanError::TimestampAllocation(_)),
+            ) => {
+                wait(std::time::Duration::from_millis(
+                    (200_u64 << attempt).min(2000),
+                ))?;
+                if attempt == 7 {
+                    return Err(error);
+                }
+            }
+            result => return result,
+        }
+    }
+    unreachable!("eight attempts always produce a result")
 }

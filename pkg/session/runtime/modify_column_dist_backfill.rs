@@ -1213,68 +1213,68 @@ impl Planner {
                 }
             }
             for (index, (start, end)) in bounds {
-                let mut planned = None;
-                for attempt in 0..8 {
-                    let regions = self
-                        .domain
-                        .storage_handle()
-                        .with_storage(|store| store.DDLRegionRanges(&start, &end))
-                        .map_err(|e| e.to_string())?
-                        .unwrap_or_else(|| vec![(start.clone(), end.clone())]);
-                    let regions = regions
-                        .into_iter()
-                        .map(|(start_key, end_key)| planning::RegionMeta { start_key, end_key })
-                        .collect();
-                    let mut failure = None;
-                    let plan = if merging {
-                        planning::generate_temporary_index_plan(
-                            physical,
-                            index,
-                            start.clone(),
-                            end.clone(),
-                            regions,
-                            node_count,
-                        )
-                    } else {
-                        planning::generate_plan_for_physical_table(
-                            physical,
-                            &start,
-                            &end,
-                            regions,
-                            node_count,
-                            !self.cloud_storage_uri.is_empty(),
-                            || match self.domain.storage_handle().with_storage(|store| {
-                                store.CurrentVersion(super::kv::GlobalTxnScope)
-                            }) {
-                                Ok(version) if version.Ver > 0 => version.Ver,
-                                Ok(_) => {
-                                    failure = Some("invalid storage current version 0".into());
-                                    0
-                                }
-                                Err(error) => {
-                                    failure = Some(error.to_string());
-                                    0
-                                }
-                            },
-                        )
-                    };
-                    if let Some(error) = failure {
-                        return Err(error);
-                    }
-                    match plan {
-                        Ok(plan) => {
-                            planned = Some(plan);
-                            break;
+                let planned = planning::retry_region_plan(
+                    || {
+                        self.domain
+                            .storage_handle()
+                            .with_storage(|store| store.DDLRegionRanges(&start, &end))
+                            .map_err(|e| planning::PlanError::RegionScan(e.to_string()))
+                            .map(|ranges| {
+                                ranges
+                                    .unwrap_or_else(|| vec![(start.clone(), end.clone())])
+                                    .into_iter()
+                                    .map(|(start_key, end_key)| planning::RegionMeta {
+                                        start_key,
+                                        end_key,
+                                    })
+                                    .collect()
+                            })
+                    },
+                    |regions| {
+                        if merging {
+                            planning::generate_temporary_index_plan(
+                                physical,
+                                index,
+                                start.clone(),
+                                end.clone(),
+                                regions,
+                                node_count,
+                            )
+                        } else {
+                            planning::try_generate_plan_for_physical_table(
+                                physical,
+                                &start,
+                                &end,
+                                regions,
+                                node_count,
+                                !self.cloud_storage_uri.is_empty(),
+                                || {
+                                    let version = self
+                                        .domain
+                                        .storage_handle()
+                                        .with_storage(|store| {
+                                            store.CurrentVersion(super::kv::GlobalTxnScope)
+                                        })
+                                        .map_err(|e| {
+                                            planning::PlanError::TimestampAllocation(e.to_string())
+                                        })?;
+                                    if version.Ver == 0 {
+                                        return Err(planning::PlanError::TimestampAllocation(
+                                            "invalid storage current version 0".into(),
+                                        ));
+                                    }
+                                    Ok(version.Ver)
+                                },
+                            )
                         }
-                        Err(planning::PlanError::RegionsNotContinuous { .. }) if attempt < 7 => {
-                            std::thread::sleep(std::time::Duration::from_millis(
-                                (200_u64 << attempt).min(2000),
-                            ));
-                        }
-                        Err(error) => return Err(format!("DXF region planning: {error:?}")),
-                    }
-                }
-                for meta in planned.ok_or("regions are not continuous")? {
+                    },
+                    |delay| {
+                        std::thread::sleep(delay);
+                        Ok(())
+                    },
+                )
+                .map_err(|error| format!("DXF region planning: {error:?}"))?;
+                for meta in planned {
                     result.push(SubtaskMeta {
                         physical_table_id: physical,
                         row_start: (!merging).then(|| codec.encode(meta.row_start)),
