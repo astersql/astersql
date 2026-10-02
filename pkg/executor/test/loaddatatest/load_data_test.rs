@@ -227,6 +227,44 @@ fn test_load_data_replace() {
 }
 
 #[test]
+fn go_commit_b61f02c672_reuses_shared_store_for_load_data_replace_cases() {
+    // The Go regression moved this test onto the package-level store. Keep both
+    // LOAD DATA invocations on the same table state so the second case observes
+    // the rows committed by the first instead of starting from a fresh store.
+    let mut rows = vec![
+        vec![Some("1".into()), Some("val 1".into())],
+        vec![Some("2".into()), Some("val 2".into())],
+    ];
+
+    rows.extend([
+        vec![Some("1".into()), Some("line1".into())],
+        vec![Some("2".into()), Some("line2".into())],
+    ]);
+    assert_eq!(apply_replace(&mut rows, 0, true), 2);
+    assert_eq!(
+        rows,
+        vec![
+            vec![Some("1".into()), Some("line1".into())],
+            vec![Some("2".into()), Some("line2".into())],
+        ]
+    );
+
+    rows.extend([
+        vec![Some("2".into()), Some("new line2".into())],
+        vec![Some("3".into()), Some("new line3".into())],
+    ]);
+    assert_eq!(apply_replace(&mut rows, 0, true), 1);
+    assert_eq!(
+        rows,
+        vec![
+            vec![Some("1".into()), Some("line1".into())],
+            vec![Some("2".into()), Some("new line2".into())],
+            vec![Some("3".into()), Some("new line3".into())],
+        ]
+    );
+}
+
+#[test]
 fn test_load_data_overflow_bigint_unsigned() {
     // 无符号 BIGINT 转换对负数钳制为 0，对正向溢出钳制为 u64 上界，并产生警告标记。
     let values = ["-1", "-18446744073709551615", "-18446744073709551616"];
