@@ -185,7 +185,7 @@ mod test_mocks {
 
     type GetCpFn = Arc<dyn Fn(&str) -> Result<Option<TableCheckpoint>> + Send + Sync>;
     type GetCpsFn = Arc<dyn Fn() -> Result<Vec<TableCheckpoint>> + Send + Sync>;
-    type UpdateFn = Arc<dyn Fn(&TableCheckpoint) -> Result<()> + Send + Sync>;
+    type UpdateFn = Arc<dyn Fn(&context::Context, &TableCheckpoint) -> Result<()> + Send + Sync>;
     type SubmitFn =
         Arc<dyn Fn(&context::Context, &importsdk::TableMeta) -> Result<ImportJob> + Send + Sync>;
     type WaitFn = Arc<dyn Fn(&[ImportJob]) -> Result<()> + Send + Sync>;
@@ -238,10 +238,10 @@ mod test_mocks {
             }
             Ok(self.get_by_table.lock().unwrap().get(tableName).cloned())
         }
-        fn Update(&self, _ctx: &context::Context, cp: &TableCheckpoint) -> Result<()> {
+        fn Update(&self, ctx: &context::Context, cp: &TableCheckpoint) -> Result<()> {
             self.updates.lock().unwrap().push(cp.clone());
             if let Some(f) = self.update_fn.lock().unwrap().clone() {
-                return f(cp);
+                return f(ctx, cp);
             }
             if let Some(v) = self.update_queue.lock().unwrap().pop_front() {
                 return v;

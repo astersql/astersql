@@ -124,6 +124,7 @@
 use crate::test_mocks::{ScriptCheckpointManager, ScriptJobMonitor, ScriptJobSubmitter};
 use crate::*;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -486,25 +487,39 @@ fn test_job_orchestrator_record_submission_gets_fresh_grace_timeout() {
     let _guard = GraceGuard;
 
     let submitter = Arc::new(ScriptJobSubmitter::new("group1"));
-    let update_saw_alive = Arc::new(AtomicBool::new(false));
-    let flag = update_saw_alive.clone();
+    let (submit_started_tx, submit_started_rx) = mpsc::channel();
+    let (parent_canceled_tx, parent_canceled_rx) = mpsc::channel();
+    let (submit_checked_tx, submit_checked_rx) = mpsc::channel();
+    let (allow_submit_tx, allow_submit_rx) = mpsc::channel();
+    let parent_canceled_rx = Mutex::new(parent_canceled_rx);
+    let allow_submit_rx = Mutex::new(allow_submit_rx);
 
-    *submitter.submit_fn.lock().unwrap() = Some(Arc::new(move |_submit_ctx, tableMeta| {
+    *submitter.submit_fn.lock().unwrap() = Some(Arc::new(move |submit_ctx, table_meta| {
+        submit_started_tx.send(()).unwrap();
+        parent_canceled_rx.lock().unwrap().recv().unwrap();
+        submit_checked_tx.send(!submit_ctx.is_cancelled()).unwrap();
+        allow_submit_rx.lock().unwrap().recv().unwrap();
         Ok(ImportJob {
             JobID: 1,
-            TableMeta: Some(tableMeta.clone()),
+            TableMeta: Some(table_meta.clone()),
             GroupKey: "group1".into(),
         })
     }));
 
     let cp = Arc::new(ScriptCheckpointManager::new());
     cp.push_get(Ok(None));
-    *cp.update_fn.lock().unwrap() = Some(Arc::new(move |cp| {
-        // Record ctx is WithoutCancel(parent)+timeout; should not be cancelled immediately.
+    let (update_started_tx, update_started_rx) = mpsc::channel();
+    let (update_checked_tx, update_checked_rx) = mpsc::channel();
+    let (allow_update_tx, allow_update_rx) = mpsc::channel();
+    let allow_update_rx = Mutex::new(allow_update_rx);
+    *cp.update_fn.lock().unwrap() = Some(Arc::new(move |update_ctx, cp| {
+        update_started_tx.send(()).unwrap();
+        update_checked_tx.send(!update_ctx.is_cancelled()).unwrap();
+        allow_update_rx.lock().unwrap().recv().unwrap();
         assert_eq!(common::UniqueTable("db", "t1"), cp.TableName);
         assert_eq!(1, cp.JobID);
         assert_eq!(CheckpointStatus::Running, cp.Status);
-        flag.store(true, Ordering::SeqCst);
+        assert_eq!("group1", cp.GroupKey);
         Ok(())
     }));
     let monitor = Arc::new(ScriptJobMonitor::new());
@@ -520,13 +535,25 @@ fn test_job_orchestrator_record_submission_gets_fresh_grace_timeout() {
     let (ctx, cancel) = context::WithCancel(context::Background());
     let orch2 = orch.clone();
     let handle = std::thread::spawn(move || orch2.SubmitAndWait(&ctx, &[table("t1")]));
-    std::thread::sleep(Duration::from_millis(10));
+
+    submit_started_rx.recv().unwrap();
     cancel();
-    let err = handle.join().unwrap().unwrap_err();
+    parent_canceled_tx.send(()).unwrap();
     assert!(
-        update_saw_alive.load(Ordering::SeqCst),
-        "record submission should run under fresh grace timeout"
+        submit_checked_rx.recv().unwrap(),
+        "submit grace context should survive parent cancellation"
     );
+    allow_submit_tx.send(()).unwrap();
+
+    update_started_rx.recv().unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    allow_update_tx.send(()).unwrap();
+    assert!(
+        update_checked_rx.recv().unwrap(),
+        "record context should get a fresh grace timeout"
+    );
+
+    let err = handle.join().unwrap().unwrap_err();
     assert!(
         err.Error().to_lowercase().contains("cancel"),
         "err={}",
