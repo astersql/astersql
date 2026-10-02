@@ -92,6 +92,7 @@ impl KVCopRUInterceptor {
             region_id: task.region.id,
             store_address: task.store_address.clone(),
             data_bytes: wire.data.len(),
+            predicted_read_bytes: wire.predicted_read_bytes,
             priority_low: wire.priority == copr::Priority::Low,
         }
     }
@@ -110,12 +111,21 @@ impl copr::CopRUInterceptor for KVCopRUInterceptor {
         wire: &copr::CopWireRequest,
     ) -> copr::BatchResult<copr::CopRUDetails> {
         self.inner
-            .OnRequestWait(&Self::request_info(task, wire))
+            .OnRequestWaitCancellable(
+                &Self::request_info(task, wire),
+                wire.resource_control_cancel.as_deref(),
+            )
             .map(|details| copr::CopRUDetails {
                 read_ru: details.read_ru,
                 write_ru: details.write_ru,
             })
-            .map_err(copr::BatchError::OtherResponse)
+            .map_err(|error| {
+                if error == "resource control cancelled" {
+                    copr::BatchError::Cancelled
+                } else {
+                    copr::BatchError::OtherResponse(error)
+                }
+            })
     }
 
     fn on_response_wait(
@@ -144,6 +154,18 @@ impl copr::CopRUInterceptor for KVCopRUInterceptor {
                     .values()
                     .map(|child| child.scanned_keys)
                     .sum::<u64>(),
+            read_bytes: response.read_bytes
+                + response
+                    .batch_responses
+                    .values()
+                    .map(|child| child.read_bytes)
+                    .sum::<u64>(),
+            kv_cpu_ms: response.kv_cpu_ms
+                + response
+                    .batch_responses
+                    .values()
+                    .map(|child| child.kv_cpu_ms)
+                    .sum::<f64>(),
             error,
         };
         self.inner

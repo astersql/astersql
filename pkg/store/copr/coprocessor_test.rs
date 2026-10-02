@@ -1291,10 +1291,12 @@ pub fn TestHandleBatchCopResponseUpdatesChildBucketsOnVersionNotMatch(t *testing
 }
 "################;
 
+use crate::CopClient;
 use protobuf::Message;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use crate::{
     Backoffer, BatchError, BatchResult, BatchedCopTask, BuildCopTaskOptions, CopBackend,
@@ -2516,4 +2518,226 @@ fn request_wait_ru_and_original_transport_error_reach_runaway_checker() {
         *checker.0.lock().unwrap(),
         vec![(1.0, Some("transport error: rpc unavailable".to_owned()))]
     );
+}
+
+#[test]
+fn go_commit_ab7d93b603_paging_prediction_preserves_byte_budget_and_small_limit() {
+    for (bytes, enabled) in [(0, true), (4 * 1024 * 1024, false), (4 * 1024 * 1024, true)] {
+        let backend = TestBackend::with_locations(vec![location(1, 0, vec![key_range("a", "c")])]);
+        let mut req = request(vec![key_range("a", "c")]);
+        req.keep_order = true;
+        req.limit_size = 1;
+        req.paging = PagingOptions {
+            enabled,
+            minimum_size: 128,
+            maximum_size: 1024,
+            size_bytes: bytes,
+        };
+        let tasks = build_cop_tasks(
+            backend.as_ref(),
+            &req,
+            KeyRanges::new(vec![key_range("a", "c")]),
+            BuildCopTaskOptions {
+                keep_order_response_channel: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert!(!tasks[0].paging);
+        assert_eq!(tasks[0].paging_size, 0);
+        assert_eq!(req.paging.size_bytes, bytes);
+        assert_eq!(
+            tasks[0].response_channel_size,
+            if bytes > 0 { 18 } else { 2 }
+        );
+        let worker = worker(backend.clone(), req);
+        worker
+            .handle_task_once(&mut Backoffer::new(1), tasks[0].clone())
+            .unwrap();
+        assert_eq!(backend.wires.lock().unwrap()[0].predicted_read_bytes, bytes);
+    }
+}
+
+#[test]
+fn go_commit_ab7d93b603_paging_observation_error_zero_final_and_remain_order() {
+    let backend = TestBackend::with_locations(vec![location(1, 0, vec![key_range("a", "c")])]);
+    let mut req = request(vec![key_range("a", "c")]);
+    req.paging = PagingOptions {
+        enabled: true,
+        minimum_size: 128,
+        maximum_size: 1024,
+        size_bytes: 4096,
+    };
+    let tasks = build_cop_tasks(
+        backend.as_ref(),
+        &req,
+        KeyRanges::new(vec![key_range("a", "c")]),
+        BuildCopTaskOptions::default(),
+    )
+    .unwrap();
+    let worker = worker(backend.clone(), req);
+    let task = tasks[0].clone();
+    for response in [
+        CopProtocolResponse {
+            region_error: Some("not leader".into()),
+            range: Some(key_range("a", "b")),
+            read_bytes: 123,
+            ..Default::default()
+        },
+        CopProtocolResponse {
+            locked: Some(go_merge_48_lock(42)),
+            range: Some(key_range("a", "b")),
+            read_bytes: 123,
+            ..Default::default()
+        },
+        CopProtocolResponse {
+            range: Some(key_range("a", "b")),
+            read_bytes: 0,
+            ..Default::default()
+        },
+        CopProtocolResponse {
+            data: b"final-row".to_vec(),
+            read_bytes: 123,
+            ..Default::default()
+        },
+    ] {
+        let is_final = response.range.is_none();
+        *backend.response.lock().unwrap() = response;
+        let result = worker
+            .handle_task_once(&mut Backoffer::new(3), task.clone())
+            .unwrap();
+        if is_final {
+            assert!(
+                result.remains.is_empty(),
+                "final page must terminate rather than retry the original ranges"
+            );
+        }
+        if !result.remains.is_empty() && result.response.is_none() {
+            assert_eq!(result.remains[0].paging_size, task.paging_size);
+        }
+        assert_eq!(
+            backend
+                .wires
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .predicted_read_bytes,
+            4096
+        );
+    }
+    *backend.response.lock().unwrap() = CopProtocolResponse {
+        data: b"first-row".to_vec(),
+        range: Some(key_range("a", "b")),
+        read_bytes: 123,
+        ..Default::default()
+    };
+    let result = worker
+        .handle_task_once(&mut Backoffer::new(3), task.clone())
+        .unwrap();
+    assert_eq!(
+        result.remains[0].ranges.to_ranges(),
+        vec![key_range("b", "c")]
+    );
+    assert_eq!(result.remains[0].paging_size, 256);
+    *backend.response.lock().unwrap() = CopProtocolResponse {
+        data: b"final-row".to_vec(),
+        read_bytes: 999,
+        ..Default::default()
+    };
+    worker
+        .handle_task_once(&mut Backoffer::new(3), result.remains[0].clone())
+        .unwrap();
+    assert_eq!(
+        backend
+            .wires
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .predicted_read_bytes,
+        123
+    );
+}
+
+struct PagingSequenceBackend {
+    routing: Arc<TestBackend>,
+    calls: AtomicUsize,
+}
+impl CopBackend for PagingSequenceBackend {
+    fn split_key_ranges(
+        &self,
+        ranges: &KeyRanges,
+        skip: bool,
+    ) -> BatchResult<Vec<LocatedKeyRanges>> {
+        self.routing.split_key_ranges(ranges, skip)
+    }
+    fn build_batch_task(
+        &self,
+        task: &CopTask,
+        read: ReplicaReadType,
+    ) -> BatchResult<Option<BatchedCopTask>> {
+        self.routing.build_batch_task(task, read)
+    }
+    fn tidb_server_addresses(&self) -> BatchResult<Vec<(u64, String)>> {
+        self.routing.tidb_server_addresses()
+    }
+    fn invalidate_region(&self, region: RegionVerId) {
+        self.routing.invalidate_region(region);
+    }
+    fn update_buckets(&self, region: RegionVerId, old: u64, new: u64) {
+        self.routing.update_buckets(region, old, new);
+    }
+    fn resolve_lock(&self, lock: &[u8], ts: u64) -> BatchResult<()> {
+        self.routing.resolve_lock(lock, ts)
+    }
+    fn send(&self, _task: &CopTask, wire: &CopWireRequest) -> BatchResult<CopProtocolResponse> {
+        self.calls.fetch_add(1, Ordering::AcqRel);
+        let start = wire.ranges[0].start[0];
+        let end = wire.ranges[0].end[0];
+        Ok(CopProtocolResponse {
+            data: vec![start],
+            read_bytes: 123,
+            range: (start + 1 < end).then(|| KeyRange {
+                start: vec![start],
+                end: vec![start + 1],
+            }),
+            ..Default::default()
+        })
+    }
+    fn check_visibility(&self, _ts: u64) -> BatchResult<()> {
+        Ok(())
+    }
+}
+#[test]
+fn go_commit_ab7d93b603_byte_paging_channel_has_real_capacity_and_final_page_stops() {
+    let backend = Arc::new(PagingSequenceBackend {
+        routing: TestBackend::with_locations(vec![location(1, 0, vec![key_range("a", "z")])]),
+        calls: AtomicUsize::new(0),
+    });
+    let mut req = request(vec![key_range("a", "z")]);
+    req.keep_order = true;
+    req.paging.size_bytes = 4096;
+    let client = CopClient::new(backend.clone(), None, 1);
+    let mut iterator = client.build_cop_iterator(&mut req).unwrap();
+    iterator.open();
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while backend.calls.load(Ordering::Acquire) < 19 {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    std::thread::sleep(Duration::from_millis(20));
+    assert_eq!(
+        backend.calls.load(Ordering::Acquire),
+        19,
+        "18 responses are buffered while the 19th producer is blocked"
+    );
+    let mut data = Vec::new();
+    while let Some(response) = iterator.next().unwrap() {
+        data.extend(response.response.unwrap().data);
+    }
+    assert_eq!(data, (b'a'..b'z').collect::<Vec<_>>());
+    assert_eq!(backend.calls.load(Ordering::Acquire), 25);
+    iterator.close();
 }

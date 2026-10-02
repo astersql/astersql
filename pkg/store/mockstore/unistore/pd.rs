@@ -251,6 +251,11 @@ impl PdClient {
         self.keyspaces.load(name)
     }
 
+    /// 按 ID 加载 Keyspace 元数据。
+    pub fn load_keyspace_by_id(&self, id: u32) -> Result<KeyspaceMeta> {
+        self.keyspaces.load_by_id(id)
+    }
+
     /// 从 `start_id` 起分页列出 Keyspace；`limit==0` 表示不限制。
     pub fn all_keyspaces(&self, start_id: u32, limit: u32) -> Vec<KeyspaceMeta> {
         self.keyspaces.all(start_id, limit)
@@ -359,6 +364,9 @@ impl MockPdServiceDiscovery {
     pub fn service_client(&self) -> Option<MockPdServiceClient> {
         self.clients.first().cloned()
     }
+    /// Go mock discovery has no cached gRPC connection to remove.
+    pub fn remove_client_conn(&self, _address: &str) {}
+
     /// 返回全部客户端副本。
     pub fn all_service_clients(&self) -> Vec<MockPdServiceClient> {
         self.clients.clone()
@@ -440,6 +448,16 @@ impl MockKeyspaceManager {
             .get(&id)
             .cloned()
             .ok_or_else(|| PdError("keyspace list and name map mismatch".into()))
+    }
+
+    /// ID lookup uses the same ordered metadata store as name lookup and listing.
+    pub fn load_by_id(&self, id: u32) -> Result<KeyspaceMeta> {
+        self.keyspaces
+            .read()
+            .expect("keyspace lock poisoned")
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| PdError("ENTRY_NOT_FOUND".into()))
     }
 
     /// 从 `start_id` 起按 ID 升序取至多 `limit` 条。

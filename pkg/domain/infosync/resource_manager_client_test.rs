@@ -45,7 +45,10 @@ fn crud_and_watch_events_match_go_mock() {
     );
     assert_eq!(client.get_resource_group("analytics").unwrap(), original);
     assert_eq!(
-        receiver.recv_timeout(Duration::from_secs(1)).unwrap(),
+        receiver
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .Events,
         vec![ResourceGroupEvent {
             event_type: EventType::Put,
             group: original,
@@ -59,7 +62,10 @@ fn crud_and_watch_events_match_go_mock() {
     );
     assert_eq!(client.get_resource_group("analytics").unwrap(), modified);
     assert_eq!(
-        receiver.recv_timeout(Duration::from_secs(1)).unwrap(),
+        receiver
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .Events,
         vec![ResourceGroupEvent {
             event_type: EventType::Put,
             group: modified.clone(),
@@ -72,7 +78,10 @@ fn crud_and_watch_events_match_go_mock() {
     );
     assert!(client.get_resource_group("analytics").is_err());
     assert_eq!(
-        receiver.recv_timeout(Duration::from_secs(1)).unwrap(),
+        receiver
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .Events,
         vec![ResourceGroupEvent {
             event_type: EventType::Delete,
             group: modified,
@@ -94,4 +103,94 @@ fn duplicate_add_and_missing_entries_preserve_state() {
     assert!(get_error.to_string().contains("does not exist"));
     assert!(client.delete_resource_group("missing").is_err());
     assert_eq!(client.list_resource_groups().len(), 2);
+}
+
+#[test]
+fn go_commit_ab7d93b603_watch_envelope_retains_pre_subscription_events() {
+    let client = NewMockResourceManagerClient(7);
+    let original = resource_group("queued", 10, -1, 8);
+    client.add_resource_group(original.clone()).unwrap();
+    let receiver = client.watch(&group_settings_path_prefix(7)).unwrap();
+    let response = receiver
+        .recv_timeout(Duration::from_millis(50))
+        .expect("Go constructs a buffered watch channel before any subscription");
+    assert_eq!(response.CompactRevision, 0);
+    assert_eq!(
+        response.Events,
+        vec![ResourceGroupEvent {
+            event_type: EventType::Put,
+            group: original.clone()
+        }]
+    );
+    let modified = resource_group("queued", 20, 30, 4);
+    client.modify_resource_group(modified.clone()).unwrap();
+    assert_eq!(
+        receiver
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .Events,
+        vec![ResourceGroupEvent {
+            event_type: EventType::Put,
+            group: modified.clone()
+        }]
+    );
+    client.delete_resource_group("queued").unwrap();
+    assert_eq!(
+        receiver
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .Events,
+        vec![ResourceGroupEvent {
+            event_type: EventType::Delete,
+            group: modified
+        }]
+    );
+    assert!(client.watch(&group_settings_path_prefix(8)).is_none());
+}
+
+#[test]
+fn go_commit_ab7d93b603_watch_capacity_and_shared_consumer_semantics() {
+    let client: std::sync::Arc<dyn ResourceManagerClient> = NewMockResourceManagerClient(7).into();
+    for i in 0..100 {
+        client
+            .add_resource_group(resource_group(&format!("buffer-{i}"), i, -1, 8))
+            .unwrap();
+    }
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+    let writer_client = client.clone();
+    let writer = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        writer_client
+            .add_resource_group(resource_group("buffer-100", 100, -1, 8))
+            .unwrap();
+        finished_tx.send(()).unwrap();
+    });
+    started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert!(finished_rx.recv_timeout(Duration::from_millis(30)).is_err());
+    let first = client.watch(&group_settings_path_prefix(7)).unwrap();
+    let second = client.watch(&group_settings_path_prefix(7)).unwrap();
+    assert_eq!(
+        first.recv_timeout(Duration::from_secs(1)).unwrap().Events[0]
+            .group
+            .Name,
+        "buffer-0"
+    );
+    finished_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    writer.join().unwrap();
+    // Watch returns the same Go channel, so the other consumer takes the next item.
+    assert_eq!(
+        second.recv_timeout(Duration::from_secs(1)).unwrap().Events[0]
+            .group
+            .Name,
+        "buffer-1"
+    );
+    for i in 2..=100 {
+        assert_eq!(
+            first.recv_timeout(Duration::from_secs(1)).unwrap().Events[0]
+                .group
+                .Name,
+            format!("buffer-{i}")
+        );
+    }
 }

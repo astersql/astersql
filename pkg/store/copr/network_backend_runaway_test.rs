@@ -60,3 +60,40 @@ fn go_merge_48_paging_read_bytes_follow_kernel_billing_basis() {
         }
     );
 }
+
+#[test]
+fn go_commit_ab7d93b603_paging_response_mvcc_bytes_cover_go_cases() {
+    for (processed, total) in [(1_048_576, 2_097_152), (1_048_576, 512 * 1024), (0, 0)] {
+        let mut scan = kvrpcpb::ScanDetailV2::new();
+        scan.set_processed_versions_size(processed);
+        scan.set_total_versions_size(total);
+        let mut details = kvrpcpb::ExecDetailsV2::new();
+        details.set_scan_detail_v2(scan);
+        let mut response = coprocessor::Response::new();
+        response.set_exec_details_v2(details);
+        assert_eq!(
+            super::pb_response(response, &super::KeyCodec::v1())
+                .unwrap()
+                .read_bytes,
+            if astersql_config_kerneltype::IsNextGen() {
+                processed.max(total)
+            } else {
+                processed
+            }
+        );
+    }
+    assert_eq!(
+        super::pb_response(coprocessor::Response::new(), &super::KeyCodec::v1())
+            .unwrap()
+            .read_bytes,
+        0
+    );
+    let mut response = coprocessor::Response::new();
+    response.set_exec_details_v2(kvrpcpb::ExecDetailsV2::new());
+    assert_eq!(
+        super::pb_response(response, &super::KeyCodec::v1())
+            .unwrap()
+            .read_bytes,
+        0
+    );
+}

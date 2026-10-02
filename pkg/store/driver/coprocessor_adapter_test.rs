@@ -666,3 +666,237 @@ fn real_standard_dag_coprocessor_routes_and_streams() {
     );
     store.Close().expect("real TiKV store must close");
 }
+
+#[derive(Debug, Default)]
+struct PagingHintInterceptor {
+    requests: Mutex<Vec<u64>>,
+}
+
+impl kv::resourcegroup::CopRUInterceptor for PagingHintInterceptor {
+    fn OnRequestWait(
+        &self,
+        request: &kv::resourcegroup::CopRPCRequestInfo,
+    ) -> Result<kv::resourcegroup::RUDetails, String> {
+        assert_eq!(
+            request.predicted_read_bytes,
+            4 * 1024 * 1024,
+            "the byte-budget seed must survive the canonical KV adapter on every retry"
+        );
+        self.requests
+            .lock()
+            .unwrap()
+            .push(request.predicted_read_bytes);
+        Ok(kv::resourcegroup::RUDetails::default())
+    }
+    fn OnResponseWait(
+        &self,
+        request: &kv::resourcegroup::CopRPCRequestInfo,
+        _response: &kv::resourcegroup::CopRPCResponseInfo,
+    ) -> Result<kv::resourcegroup::RUDetails, String> {
+        assert_eq!(request.predicted_read_bytes, 4 * 1024 * 1024);
+        Ok(kv::resourcegroup::RUDetails::default())
+    }
+}
+
+#[test]
+fn go_commit_ab7d93b603_kv_adapter_preserves_predicted_read_bytes() {
+    let metadata = Arc::new(DagMetadata::default());
+    let transport = Arc::new(DagTransport::default());
+    let backend = copr::NetworkBackend::from_transports(
+        metadata,
+        transport.clone(),
+        Arc::new(NoopLockResolver),
+    );
+    let coprocessor_store = Arc::new(
+        copr::Store::new(
+            Arc::new(backend),
+            &copr::CoprocessorCacheConfig::default(),
+            false,
+            false,
+        )
+        .unwrap(),
+    );
+    let mut driver = TiKVDriver::with_backend(Arc::new(InMemoryBackend::default()));
+    let store = driver.Open("tikv://paging-hint-adapter-test:2379").unwrap();
+    store.set_coprocessor_store_for_test(coprocessor_store);
+    let interceptor = Arc::new(PagingHintInterceptor::default());
+    let mut request = dag_request();
+    request.Paging.PagingSizeBytes = 4 * 1024 * 1024;
+    request.Paging.Enable = true;
+    request.Paging.MinPagingSize = 128;
+    request.Paging.MaxPagingSize = 1024;
+    request.LimitSize = 1;
+    request.ResourceControlInterceptor = Some(interceptor.clone());
+    let context = kv::Context::todo();
+    let mut response = kv::Storage::GetClient(&store)
+        .Send(&context, &request, &() as &dyn Any, &send_option())
+        .unwrap();
+    assert_eq!(
+        response.Next(&context).unwrap().unwrap().GetData(),
+        b"dag-row"
+    );
+    response.Close().unwrap();
+    assert_eq!(
+        *interceptor.requests.lock().unwrap(),
+        vec![4 * 1024 * 1024; 2]
+    );
+    assert_eq!(transport.unary_calls.load(Ordering::Acquire), 2);
+    store.Close().unwrap();
+}
+
+#[test]
+fn go_commit_ab7d93b603_precharge_waits_before_real_kv_send() {
+    let metadata = Arc::new(DagMetadata::default());
+    let transport = Arc::new(DagTransport::default());
+    let backend = copr::NetworkBackend::from_transports(
+        metadata,
+        transport.clone(),
+        Arc::new(NoopLockResolver),
+    );
+    let coprocessor_store = Arc::new(
+        copr::Store::new(
+            Arc::new(backend),
+            &copr::CoprocessorCacheConfig::default(),
+            false,
+            false,
+        )
+        .unwrap(),
+    );
+    let mut driver = TiKVDriver::with_backend(Arc::new(InMemoryBackend::default()));
+    let store = driver.Open("tikv://paging-wait-adapter-test:2379").unwrap();
+    store.set_coprocessor_store_for_test(coprocessor_store);
+    let interceptor = Arc::new(kv::paging_resource_control::PagingRUInterceptor::new(
+        "default",
+        kv::paging_resource_control::PagingTokenConfig {
+            fill_rate: 10.0,
+            burst: 0,
+            tokens: 0.0,
+            max_wait: Duration::from_secs(1),
+            retry_times: 1,
+            retry_interval: Duration::from_millis(10),
+        },
+    ));
+    let mut request = dag_request();
+    request.Paging.PagingSizeBytes = 65536;
+    request.ResourceControlInterceptor = Some(interceptor);
+    let context = kv::Context::todo();
+    let started = std::time::Instant::now();
+    let mut response = kv::Storage::GetClient(&store)
+        .Send(&context, &request, &() as &dyn Any, &send_option())
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+    assert_eq!(
+        transport.unary_calls.load(Ordering::Acquire),
+        0,
+        "a real request must not pass the empty RU bucket before its reservation matures"
+    );
+    assert_eq!(
+        response.Next(&context).unwrap().unwrap().GetData(),
+        b"dag-row"
+    );
+    assert!(started.elapsed() >= Duration::from_millis(100));
+    response.Close().unwrap();
+    store.Close().unwrap();
+}
+
+#[test]
+fn go_commit_ab7d93b603_precharge_close_cancels_before_network_send() {
+    let metadata = Arc::new(DagMetadata::default());
+    let transport = Arc::new(DagTransport::default());
+    let backend = copr::NetworkBackend::from_transports(
+        metadata,
+        transport.clone(),
+        Arc::new(NoopLockResolver),
+    );
+    let coprocessor_store =
+        Arc::new(copr::Store::new(Arc::new(backend), &Default::default(), false, false).unwrap());
+    let mut driver = TiKVDriver::with_backend(Arc::new(InMemoryBackend::default()));
+    let store = driver
+        .Open("tikv://paging-cancel-adapter-test:2379")
+        .unwrap();
+    store.set_coprocessor_store_for_test(coprocessor_store);
+    let controller = Arc::new(kv::paging_resource_control::PagingRUInterceptor::new(
+        "default",
+        kv::paging_resource_control::PagingTokenConfig {
+            fill_rate: 1.0,
+            burst: 0,
+            tokens: 0.0,
+            max_wait: Duration::from_secs(5),
+            retry_times: 1,
+            retry_interval: Duration::from_millis(10),
+        },
+    ));
+    let mut request = dag_request();
+    request.Paging.PagingSizeBytes = 65536;
+    request.ResourceControlInterceptor = Some(controller.clone());
+    let context = kv::Context::todo();
+    let mut response = kv::Storage::GetClient(&store)
+        .Send(&context, &request, &() as &dyn Any, &send_option())
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    while controller.available_tokens() >= 0.0 {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    let closing = std::time::Instant::now();
+    response.Close().unwrap();
+    assert!(closing.elapsed() < Duration::from_millis(500));
+    assert!(controller.available_tokens() >= 0.0);
+    assert_eq!(transport.unary_calls.load(Ordering::Acquire), 0);
+    store.Close().unwrap();
+}
+
+#[derive(Debug, Default)]
+struct RecordedMVCCResponse(Mutex<Vec<(u64, u64, f64, usize)>>);
+impl kv::resourcegroup::CopRUInterceptor for RecordedMVCCResponse {
+    fn OnRequestWait(
+        &self,
+        _: &kv::resourcegroup::CopRPCRequestInfo,
+    ) -> Result<kv::resourcegroup::RUDetails, String> {
+        Ok(Default::default())
+    }
+    fn OnResponseWait(
+        &self,
+        request: &kv::resourcegroup::CopRPCRequestInfo,
+        response: &kv::resourcegroup::CopRPCResponseInfo,
+    ) -> Result<kv::resourcegroup::RUDetails, String> {
+        self.0.lock().unwrap().push((
+            request.predicted_read_bytes,
+            response.read_bytes,
+            response.kv_cpu_ms,
+            response.data_bytes,
+        ));
+        Ok(Default::default())
+    }
+}
+#[test]
+fn go_commit_ab7d93b603_kv_adapter_preserves_mvcc_settlement_data() {
+    let recorder = Arc::new(RecordedMVCCResponse::default());
+    let interceptor = crate::runaway_adapter::KVCopRUInterceptor::new(recorder.clone());
+    let mut response = copr::CopProtocolResponse {
+        data: vec![1, 2],
+        read_bytes: 123,
+        kv_cpu_ms: 3.0,
+        ..Default::default()
+    };
+    response.batch_responses.insert(
+        7,
+        copr::CopProtocolResponse {
+            data: vec![3, 4, 5],
+            read_bytes: 456,
+            kv_cpu_ms: 6.0,
+            ..Default::default()
+        },
+    );
+    interceptor
+        .on_response_wait(
+            &copr::CopTask::default(),
+            &copr::CopWireRequest {
+                predicted_read_bytes: 65536,
+                ..Default::default()
+            },
+            &response,
+        )
+        .unwrap();
+    assert_eq!(*recorder.0.lock().unwrap(), vec![(65536, 579, 9.0, 5)]);
+}

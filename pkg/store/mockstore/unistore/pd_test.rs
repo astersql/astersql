@@ -385,3 +385,42 @@ fn test_mock_keyspace_manager() {
         .is_err()
     );
 }
+
+#[test]
+fn go_commit_ab7d93b603_mock_pd_loads_keyspace_by_id() {
+    let metas = vec![
+        KeyspaceMeta {
+            id: 7,
+            name: "seven".into(),
+            ..Default::default()
+        },
+        KeyspaceMeta {
+            id: 1,
+            name: "one".into(),
+            ..Default::default()
+        },
+    ];
+    let manager = newMockKeyspaceManager(metas.clone()).unwrap();
+    assert_eq!(manager.load_by_id(7).unwrap(), metas[0]);
+    assert_eq!(manager.load_by_id(1).unwrap(), metas[1]);
+    for id in [0, 2, 8, MAX_KEYSPACE_ID] {
+        assert_eq!(
+            manager.load_by_id(id).unwrap_err().to_string(),
+            "ENTRY_NOT_FOUND"
+        );
+    }
+    let (rpc, client, cluster) = New("", Vec::new(), NULL_KEYSPACE_ID, metas.clone()).unwrap();
+    assert_eq!(client.load_keyspace_by_id(7).unwrap(), metas[0]);
+    assert_eq!(client.load_keyspace_by_id(1).unwrap(), metas[1]);
+    assert_eq!(
+        client.load_keyspace_by_id(2).unwrap_err().to_string(),
+        "ENTRY_NOT_FOUND"
+    );
+    client.close();
+    rpc.close().unwrap();
+    cluster.close();
+    let discovery = NewMockPDServiceDiscovery(vec!["127.0.0.1:2379".into()]);
+    let urls = discovery.service_urls();
+    discovery.remove_client_conn("127.0.0.1:2379");
+    assert_eq!(discovery.service_urls(), urls);
+}

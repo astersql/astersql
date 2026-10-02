@@ -5425,6 +5425,7 @@ dependencies = [
  "fail 0.5.1",
  "kvproto",
  "log",
+ "prometheus 0.14.0",
  "protobuf 2.8.0 (git+https://github.com/pingcap/rust-protobuf?rev=de31a47f395c2f46dbfea2545517ea1b27ad0096)",
  "rand 0.9.5",
  "thiserror 2.0.19",

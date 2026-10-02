@@ -248,14 +248,19 @@ pub mod resourcegroup {
         pub region_id: u64,
         pub store_address: String,
         pub data_bytes: usize,
+        /// MVCC read-byte estimate used for request-side RU pre-charge.
+        pub predicted_read_bytes: u64,
         pub priority_low: bool,
     }
 
-    #[derive(Clone, Debug, Default, Eq, PartialEq)]
+    #[derive(Clone, Debug, Default, PartialEq)]
     pub struct CopRPCResponseInfo {
         pub region_id: u64,
         pub data_bytes: usize,
         pub processed_keys: u64,
+        /// Storage-engine MVCC bytes, independent of the response payload size.
+        pub read_bytes: u64,
+        pub kv_cpu_ms: f64,
         pub error: Option<String>,
     }
 
@@ -296,6 +301,13 @@ pub mod resourcegroup {
 
     pub trait CopRUInterceptor: std::fmt::Debug + Send + Sync {
         fn OnRequestWait(&self, request: &CopRPCRequestInfo) -> Result<RUDetails, String>;
+        fn OnRequestWaitCancellable(
+            &self,
+            request: &CopRPCRequestInfo,
+            _cancelled: Option<&std::sync::atomic::AtomicBool>,
+        ) -> Result<RUDetails, String> {
+            self.OnRequestWait(request)
+        }
         fn OnResponseWait(
             &self,
             request: &CopRPCRequestInfo,
@@ -1026,3 +1038,9 @@ mod version_test;
 #[cfg(test)]
 #[path = "assertion_test.rs"]
 mod assertion_test;
+
+pub mod paging_resource_control;
+
+#[cfg(test)]
+#[path = "paging_resource_control_test.rs"]
+mod paging_resource_control_test;

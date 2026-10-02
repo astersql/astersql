@@ -415,6 +415,7 @@ pub struct CopTask {
     pub paging: bool,
     pub paging_size: u64,
     pub paging_task_index: u32,
+    pub response_channel_size: usize,
     pub partition_index: i64,
     pub request_source: RequestSource,
     pub row_count_hint: isize,
@@ -444,6 +445,7 @@ impl Default for CopTask {
             paging: false,
             paging_size: 0,
             paging_task_index: 0,
+            response_channel_size: 2,
             partition_index: 0,
             request_source: RequestSource::default(),
             row_count_hint: -1,
@@ -522,6 +524,7 @@ pub struct CopWireRequest {
     pub maximum_keys_read: u64,
     pub paging_size_bytes: u64,
     pub predicted_read_bytes: u64,
+    pub resource_control_cancel: Option<Arc<AtomicBool>>,
     pub tasks: Vec<StoreBatchWireTask>,
     pub allow_batch_task_data_merge: bool,
     pub execute_batch_tasks_serially: bool,
@@ -944,6 +947,16 @@ pub fn build_cop_tasks(
                 paging_size = grow_paging_size(paging_size, request.paging.maximum_size);
             }
 
+            task.response_channel_size = if options.keep_order_response_channel {
+                if task.paging || request.paging.size_bytes > 0 {
+                    18
+                } else {
+                    2
+                }
+            } else {
+                0
+            };
+
             let may_batch = request.store_batch_size > 0
                 && (!options.row_hints.is_empty() || request.allow_batch_task_data_merge)
                 && (request.allow_batch_task_data_merge || is_small_task(&task));
@@ -1016,6 +1029,7 @@ fn build_wire_request(
         maximum_keys_read: remaining_key_budget,
         paging_size_bytes: request.paging.size_bytes,
         predicted_read_bytes: 0,
+        resource_control_cancel: None,
         tasks: task.to_pb_batch_tasks(),
         allow_batch_task_data_merge: request.allow_batch_task_data_merge,
         execute_batch_tasks_serially: request.execute_batch_tasks_serially,
@@ -1349,6 +1363,7 @@ impl CopTaskWorker {
             self.request.maximum_keys_read - read
         };
         let mut wire = build_wire_request(&self.request, &task, remaining_budget);
+        wire.resource_control_cancel = self.finish.clone();
         wire.resolved_locks = self
             .resolved_locks
             .lock()
@@ -1658,7 +1673,7 @@ impl CopTaskWorker {
         if response.range.is_some() && response.read_bytes > 0 {
             self.ema.observe(response.read_bytes, Instant::now());
         }
-        if task.paging || response.range.is_some() {
+        if response.range.is_some() {
             let remaining = calculate_remain(
                 &task.ranges,
                 response.range.as_ref(),
@@ -1755,6 +1770,7 @@ pub struct CopIterator {
     store_batched_num: Arc<AtomicU64>,
     store_batched_fallback_num: Arc<AtomicU64>,
     receiver: Option<mpsc::Receiver<IteratorMessage>>,
+    ordered_receivers: Vec<mpsc::Receiver<IteratorMessage>>,
     workers: Vec<JoinHandle<()>>,
     ordered_buffer: HashMap<usize, VecDeque<CopResponse>>,
     ordered_done: HashSet<usize>,
@@ -1806,6 +1822,7 @@ impl CopIterator {
             store_batched_num: Arc::new(AtomicU64::new(0)),
             store_batched_fallback_num: Arc::new(AtomicU64::new(0)),
             receiver: None,
+            ordered_receivers: Vec::new(),
             workers: Vec::new(),
             ordered_buffer: HashMap::new(),
             ordered_done: HashSet::new(),
@@ -1914,6 +1931,20 @@ impl CopIterator {
 
     fn open_concurrent(&mut self) {
         let task_count = self.tasks.len();
+        // Keep-order tasks have their own bounded response channels, matching Go.
+        // Byte-budget paging expands each task to 18 even when row paging is off.
+        let ordered_senders = Arc::new(if self.request.keep_order {
+            self.tasks
+                .iter()
+                .map(|task| {
+                    let (sender, receiver) = mpsc::sync_channel(task.response_channel_size.max(2));
+                    self.ordered_receivers.push(receiver);
+                    sender
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        });
         let queue = Arc::new((
             Mutex::new(
                 std::mem::take(&mut self.tasks)
@@ -1950,6 +1981,7 @@ impl CopIterator {
             let finish = Arc::clone(&self.finish);
             let queue = Arc::clone(&queue);
             let sender = sender.clone();
+            let ordered_senders = Arc::clone(&ordered_senders);
             let completion = RunawayWorkerCompletion {
                 checker: request.runaway_checker.clone(),
                 remaining: Arc::clone(&remaining_workers),
@@ -1967,6 +1999,11 @@ impl CopIterator {
                     let item = queue.0.lock().expect("cop task queue poisoned").pop_front();
                     let Some((sequence, task)) = item else {
                         break;
+                    };
+                    let sender = if ordered_senders.is_empty() {
+                        sender.clone()
+                    } else {
+                        ordered_senders[sequence].clone()
                     };
                     let mut pending = VecDeque::from([task]);
                     let mut backoffer = Backoffer::new(COP_NEXT_MAX_BACKOFF);
@@ -2081,12 +2118,15 @@ impl CopIterator {
             if self.killed.load(Ordering::Acquire) != 0 {
                 return Err(BatchError::QueryInterrupted);
             }
-            match self
-                .receiver
-                .as_ref()
-                .expect("iterator opened")
-                .recv_timeout(Duration::from_secs(3))
-            {
+            let receiver = if self.request.keep_order {
+                let Some(receiver) = self.ordered_receivers.get(self.next_ordered_task) else {
+                    return Ok(None);
+                };
+                receiver
+            } else {
+                self.receiver.as_ref().expect("iterator opened")
+            };
+            match receiver.recv_timeout(Duration::from_secs(3)) {
                 Ok(message) => return Ok(Some(message)),
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(None),

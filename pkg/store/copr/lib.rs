@@ -85,3 +85,7 @@ mod pool_task_details_test;
 #[cfg(test)]
 #[path = "region_cache_test.rs"]
 mod region_cache_test;
+
+#[cfg(test)]
+#[path = "ema_test.rs"]
+mod ema_test;

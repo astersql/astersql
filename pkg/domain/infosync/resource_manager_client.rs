@@ -12,11 +12,11 @@
 // 用于单元测试与本地开发，避免依赖外部 PD / Resource Manager 服务。
 
 use std::collections::HashMap;
-use std::sync::{Mutex, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 
 use crate::{
-    Error, EventType, ResourceGroup, ResourceGroupEvent, ResourceManagerClient, Result,
-    group_settings_path_prefix,
+    Error, EventType, ResourceGroup, ResourceGroupEvent, ResourceGroupWatchReceiver,
+    ResourceGroupWatchResponse, ResourceManagerClient, Result, group_settings_path_prefix,
 };
 
 /// 默认资源组名称；新建 Mock 客户端时会自动插入该组。
@@ -28,12 +28,14 @@ pub struct mockResourceManagerClient {
     keyspaceID: u32,
     /// 资源组名 → 资源组定义。
     groups: Mutex<HashMap<String, ResourceGroup>>,
-    /// 已注册的 watch 订阅者；发送失败的订阅者会被清理。
-    watchers: Mutex<Vec<mpsc::Sender<Vec<ResourceGroupEvent>>>>,
+    /// 与 Go 相同的容量 100 事件通道，在 Watch 之前也保留事件。
+    event_sender: mpsc::SyncSender<ResourceGroupWatchResponse>,
+    event_receiver: ResourceGroupWatchReceiver,
 }
 
 /// 创建 Mock 客户端，并预置一个无限配额（FillRate=MAX、BurstLimit=-1）的 default 资源组。
 pub fn NewMockResourceManagerClient(keyspaceID: u32) -> Box<dyn ResourceManagerClient> {
+    let (event_sender, event_receiver) = mpsc::sync_channel(100);
     let default_group = ResourceGroup {
         Name: DefaultResourceGroupName.into(),
         RUSettings: crate::TokenLimitSettings {
@@ -45,18 +47,21 @@ pub fn NewMockResourceManagerClient(keyspaceID: u32) -> Box<dyn ResourceManagerC
     Box::new(mockResourceManagerClient {
         keyspaceID,
         groups: Mutex::new(HashMap::from([(default_group.Name.clone(), default_group)])),
-        watchers: Mutex::new(Vec::new()),
+        event_sender,
+        event_receiver: ResourceGroupWatchReceiver(Arc::new(Mutex::new(event_receiver))),
     })
 }
 
 impl mockResourceManagerClient {
-    /// 向所有仍存活的 watcher 广播资源组变更事件；发送失败则从列表移除。
+    /// 发布事件到共享通道；多个 Watch 调用竞争消费同一队列。
     fn publish(&self, event_type: EventType, group: ResourceGroup) {
-        let event = vec![ResourceGroupEvent { event_type, group }];
-        self.watchers
-            .lock()
-            .unwrap()
-            .retain(|watcher| watcher.send(event.clone()).is_ok());
+        let event = ResourceGroupWatchResponse {
+            Events: vec![ResourceGroupEvent { event_type, group }],
+            CompactRevision: 0,
+        };
+        self.event_sender
+            .send(event)
+            .expect("resource watch receiver is retained by client");
     }
 }
 
@@ -84,37 +89,30 @@ impl ResourceManagerClient for mockResourceManagerClient {
             )));
         }
         groups.insert(group.Name.clone(), group.clone());
-        drop(groups);
         self.publish(EventType::Put, group);
         Ok("Success!".into())
     }
     /// 覆盖写入资源组（存在则更新、不存在则插入），并发布 Put 事件。
     fn modify_resource_group(&self, group: ResourceGroup) -> Result<String> {
-        self.groups
-            .lock()
-            .unwrap()
-            .insert(group.Name.clone(), group.clone());
+        let mut groups = self.groups.lock().unwrap();
+        groups.insert(group.Name.clone(), group.clone());
         self.publish(EventType::Put, group);
         Ok("Success!".into())
     }
     /// 删除资源组；不存在则报错，成功后发布 Delete 事件。
     fn delete_resource_group(&self, name: &str) -> Result<String> {
-        let group = self
-            .groups
-            .lock()
-            .unwrap()
+        let mut groups = self.groups.lock().unwrap();
+        let group = groups
             .remove(name)
             .ok_or_else(|| Error::External(format!("the group {name} does not exist")))?;
         self.publish(EventType::Delete, group);
         Ok("Success!".into())
     }
-    /// 仅当 `key` 匹配本 keyspace 的资源组设置前缀时注册 watcher，否则返回 None。
-    fn watch(&self, key: &[u8]) -> Option<mpsc::Receiver<Vec<ResourceGroupEvent>>> {
+    /// 匹配前缀时返回同一共享事件队列，否则返回 None。
+    fn watch(&self, key: &[u8]) -> Option<ResourceGroupWatchReceiver> {
         if key != group_settings_path_prefix(self.keyspaceID) {
             return None;
         }
-        let (sender, receiver) = mpsc::channel();
-        self.watchers.lock().unwrap().push(sender);
-        Some(receiver)
+        Some(self.event_receiver.clone())
     }
 }

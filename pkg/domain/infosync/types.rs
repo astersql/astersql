@@ -7,7 +7,11 @@
 // 两个 trait。默认方法大多返回 “unsupported”，由具体实现覆盖。
 
 use std::collections::HashMap;
-use std::sync::mpsc::Receiver;
+use std::sync::{
+    Arc, Mutex,
+    mpsc::{Receiver, RecvTimeoutError},
+};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -239,6 +243,27 @@ pub struct ResourceGroupEvent {
     pub group: ResourceGroup,
 }
 
+/// PD metastorage watch envelope; mock events do not report a compaction revision.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ResourceGroupWatchResponse {
+    pub Events: Vec<ResourceGroupEvent>,
+    pub CompactRevision: i64,
+}
+
+#[derive(Clone)]
+pub struct ResourceGroupWatchReceiver(pub(crate) Arc<Mutex<Receiver<ResourceGroupWatchResponse>>>);
+impl ResourceGroupWatchReceiver {
+    pub fn recv_timeout(
+        &self,
+        timeout: Duration,
+    ) -> std::result::Result<ResourceGroupWatchResponse, RecvTimeoutError> {
+        self.0
+            .lock()
+            .expect("resource watch lock poisoned")
+            .recv_timeout(timeout)
+    }
+}
+
 /// 资源管理客户端：资源组 CRUD、watch 与令牌桶相关接口。
 pub trait ResourceManagerClient: Send + Sync {
     /// 列出全部资源组。
@@ -252,7 +277,7 @@ pub trait ResourceManagerClient: Send + Sync {
     /// 删除资源组。
     fn delete_resource_group(&self, name: &str) -> Result<String>;
     /// 按 etcd key 前缀订阅资源组变更事件。
-    fn watch(&self, key: &[u8]) -> Option<Receiver<Vec<ResourceGroupEvent>>>;
+    fn watch(&self, key: &[u8]) -> Option<ResourceGroupWatchReceiver>;
     /// 申请令牌桶（占位，默认空列表）。
     fn AcquireTokenBuckets(&self) -> Vec<()> {
         Vec::new()
@@ -266,7 +291,7 @@ pub trait ResourceManagerClient: Send + Sync {
         (Vec::new(), 0)
     }
     /// Go 风格大写 Watch，默认转调 `watch`。
-    fn Watch(&self, key: &[u8]) -> Option<Receiver<Vec<ResourceGroupEvent>>> {
+    fn Watch(&self, key: &[u8]) -> Option<ResourceGroupWatchReceiver> {
         self.watch(key)
     }
 }
