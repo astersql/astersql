@@ -128,6 +128,7 @@ impl Drop for PreparedTarget {
 pub struct KeyspaceSessionFactory {
     store: Arc<StoreOpener>,
     transport: Arc<TransportOpener>,
+    min_job_id_refresher_hook: Arc<dyn Fn(&mut bool) + Send + Sync>,
     prepared: Mutex<HashMap<String, PreparedTarget>>,
     transports: Mutex<HashMap<String, TargetTransport>>,
 }
@@ -214,9 +215,19 @@ impl KeyspaceSessionFactory {
         Self {
             store,
             transport,
+            min_job_id_refresher_hook: Arc::new(|_| {}),
             prepared: Mutex::new(HashMap::new()),
             transports: Mutex::new(HashMap::new()),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_min_job_id_refresher_hook(
+        mut self,
+        hook: Arc<dyn Fn(&mut bool) + Send + Sync>,
+    ) -> Self {
+        self.min_job_id_refresher_hook = hook;
+        self
     }
     pub fn install_on_domain(
         self: Arc<Self>,
@@ -451,13 +462,17 @@ impl RuntimeFactory for KeyspaceSessionFactory {
                 })
                 .map_err(|e| ManagerError(e.to_string()))?,
         );
-        let cancellation = lifetime.min_cancel.clone();
-        lifetime.loops.lock().unwrap().push(
-            thread::Builder::new()
-                .name("keyspace-min-job-id".into())
-                .spawn(move || refresher.start(&Default::default(), &cancellation))
-                .map_err(|e| ManagerError(e.to_string()))?,
-        );
+        let mut should_run_min_job_id_refresher = true;
+        (self.min_job_id_refresher_hook)(&mut should_run_min_job_id_refresher);
+        if should_run_min_job_id_refresher {
+            let cancellation = lifetime.min_cancel.clone();
+            lifetime.loops.lock().unwrap().push(
+                thread::Builder::new()
+                    .name("keyspace-min-job-id".into())
+                    .spawn(move || refresher.start(&Default::default(), &cancellation))
+                    .map_err(|e| ManagerError(e.to_string()))?,
+            );
+        }
         let runtime = Arc::new(crossks::SessionManager::new(
             target.store.clone(),
             Arc::new(SharedSchemaCache(cache)),

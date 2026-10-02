@@ -153,6 +153,55 @@ fn crossks_align_lifecycle_public_components_load_only_system_schema_and_close_o
 }
 
 #[test]
+fn go_commit_3bea8196a5_min_job_id_refresher_can_be_skipped_for_session_count() {
+    let f = Fixture::new();
+    let hook_called = Arc::new(AtomicBool::new(false));
+    let called = Arc::clone(&hook_called);
+    let factory = Arc::new(
+        KeyspaceSessionFactory::with_openers(
+            {
+                let storage = f.domain.storage_handle();
+                Arc::new(move |keyspace| {
+                    Ok(super::session_factory::TargetSessionStore::new(
+                        storage.clone(),
+                        keyspace.to_owned(),
+                        false,
+                    ))
+                })
+            },
+            {
+                let server = Arc::clone(&f.server);
+                let protocol = Arc::clone(&f.protocol);
+                Arc::new(move |_| {
+                    Ok(TargetTransport {
+                        server: server.clone(),
+                        schema: protocol.clone(),
+                    })
+                })
+            },
+        )
+        .with_min_job_id_refresher_hook(Arc::new(move |should_run| {
+            called.store(true, Ordering::Release);
+            assert!(
+                *should_run,
+                "the production default must start the refresher"
+            );
+            *should_run = false;
+        })),
+    );
+    factory
+        .install_on_domain(&f.domain, "source".into())
+        .unwrap();
+    let manager = f.domain.cross_ks_manager().unwrap();
+    let runtime = manager.get_or_create("tenant-session-count").unwrap();
+
+    assert!(hook_called.load(Ordering::Acquire));
+    assert_eq!(runtime.coordinator().internal_session_count(), 0);
+
+    manager.close();
+}
+
+#[test]
 fn crossks_align_lifecycle_shared_system_store_survives_idle_eviction() {
     let f = Fixture::new();
     f.factory(false)
