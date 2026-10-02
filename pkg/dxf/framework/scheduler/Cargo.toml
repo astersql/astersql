@@ -15,13 +15,13 @@ legacy-tasks = ["task-838", "task-839", "task-841", "task-1561", "task-1562"]
 "astersql-dxf-framework-proto" = { package = "astersql-dxf-framework-proto", path = "../proto" }
 "astersql-dxf-framework-schstatus" = { package = "astersql-dxf-framework-schstatus", path = "../schstatus" }
 "astersql-dxf-framework-storage" = { package = "astersql-dxf-framework-storage", path = "../storage" }
+"astersql-dxf-framework-dxfmetric" = { package = "astersql-dxf-framework-dxfmetric", path = "../dxfmetric" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 "astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../../../config/kerneltype" }
 "astersql-domain-infosync" = { package = "astersql-domain-infosync", path = "../../../domain/infosync" }
 "astersql-domain-serverinfo" = { package = "astersql-domain-serverinfo", path = "../../../domain/serverinfo" }
 "astersql-domain-sqlsvrapi" = { package = "astersql-domain-sqlsvrapi", path = "../../../domain/sqlsvrapi" }
-"astersql-dxf-framework-dxfmetric" = { package = "astersql-dxf-framework-dxfmetric", path = "../dxfmetric" }
 "astersql-dxf-framework-dxfutil" = { package = "astersql-dxf-framework-dxfutil", path = "../dxfutil" }
 "astersql-dxf-framework-handle" = { package = "astersql-dxf-framework-handle", path = "../handle" }
 "astersql-dxf-framework-taskexecutor-execute" = { package = "astersql-dxf-framework-taskexecutor-execute", path = "../taskexecutor/execute" }

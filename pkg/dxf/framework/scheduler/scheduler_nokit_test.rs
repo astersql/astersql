@@ -379,3 +379,138 @@ fn test_on_task_finished() {
     ))));
     assert!(!IsCancelledErr(&SchedulerError::new("ordinary failure")));
 }
+
+#[test]
+fn go_commit_7d70c1c438_finished_task_metric_classifies_errors() {
+    use astersql_dxf_framework_dxfmetric::InitDistTaskMetrics;
+
+    let counter = &InitDistTaskMetrics().FinishedTaskCounter;
+    let value = |label| counter.with_label_values(&[label]).get();
+    let before = ["all", "succeed", "failed", "cancelled", "data-error"].map(value);
+
+    let cases = [
+        (TASK_STATE_SUCCEED, None, "succeed"),
+        (TASK_STATE_FAILED, Some("ordinary failure"), "failed"),
+        (TASK_STATE_REVERTED, None, "failed"),
+        (TASK_STATE_REVERTED, Some("ordinary failure"), "failed"),
+        (
+            TASK_STATE_REVERTED,
+            Some("wrapped: cancelled by user"),
+            "cancelled",
+        ),
+        (
+            TASK_STATE_REVERTED,
+            Some("ErrEncodeKV Value conversion failed for column 'a'"),
+            "data-error",
+        ),
+        (
+            TASK_STATE_REVERTED,
+            Some("ErrEncodeKV Check constraint 'c' is violated"),
+            "data-error",
+        ),
+        (
+            TASK_STATE_REVERTED,
+            Some("ErrEncodeKV Table has no partition for value 1"),
+            "data-error",
+        ),
+        (
+            TASK_STATE_REVERTED,
+            Some("[executor:8167]Duplicate key conflict found"),
+            "data-error",
+        ),
+        (
+            TASK_STATE_REVERTED,
+            Some("ErrFoundDataConflictRecords found data conflict records"),
+            "data-error",
+        ),
+        (
+            TASK_STATE_REVERTED,
+            Some("ErrFoundIndexConflictRecords found index conflict records"),
+            "data-error",
+        ),
+        (
+            TASK_STATE_REVERTED,
+            Some("[kv:1062]Duplicate entry '1'"),
+            "data-error",
+        ),
+        (
+            TASK_STATE_REVERTED,
+            Some("ErrEncodeKV column count mismatch"),
+            "failed",
+        ),
+        (
+            TASK_STATE_REVERTED,
+            Some("Value conversion failed for column 'a'"),
+            "failed",
+        ),
+        (TASK_STATE_RUNNING, None, ""),
+    ];
+    let mut expected = [0_u64; 5];
+    for (state, message, label) in cases {
+        let error = message.map(SchedulerError::new);
+        super::scheduler::on_task_finished(state, error.as_ref());
+        if !label.is_empty() {
+            expected[0] += 1;
+            let index = match label {
+                "succeed" => 1,
+                "failed" => 2,
+                "cancelled" => 3,
+                "data-error" => 4,
+                _ => unreachable!(),
+            };
+            expected[index] += 1;
+        }
+    }
+    for (index, label) in ["all", "succeed", "failed", "cancelled", "data-error"]
+        .iter()
+        .enumerate()
+    {
+        assert_eq!(
+            value(label) - before[index],
+            expected[index] as f64,
+            "{label}"
+        );
+    }
+}
+
+#[test]
+fn go_commit_7d70c1c438_terminal_transitions_update_metric() {
+    use astersql_dxf_framework_dxfmetric::InitDistTaskMetrics;
+
+    let counter = &InitDistTaskMetrics().FinishedTaskCounter;
+    let all_before = counter.with_label_values(&["all"]).get();
+    let success_before = counter.with_label_values(&["succeed"]).get();
+    let data_before = counter.with_label_values(&["data-error"]).get();
+
+    let manager = Arc::new(TestTaskManager::default());
+    let extension = Arc::new(TestExtension::default());
+    extension.next_step.store(STEP_DONE, Ordering::Release);
+    let mut running = task(801, TASK_STATE_RUNNING);
+    running.base.step = 1;
+    manager
+        .state_counts
+        .lock()
+        .unwrap()
+        .insert((801, 1), HashMap::new());
+    let success_scheduler = scheduler(running, manager, extension, true);
+    success_scheduler.schedule_once().unwrap();
+    assert_eq!(success_scheduler.task().base.state, TASK_STATE_SUCCEED);
+
+    let manager = Arc::new(TestTaskManager::default());
+    let extension = Arc::new(TestExtension::default());
+    let mut reverting = task(802, TASK_STATE_REVERTING);
+    reverting.error = Some(SchedulerError::new("[kv:1062]Duplicate entry '1'"));
+    let reverting_scheduler = scheduler(reverting, manager, extension, false);
+    reverting_scheduler.schedule_once().unwrap();
+    assert_eq!(reverting_scheduler.task().base.state, TASK_STATE_REVERTED);
+
+    assert_eq!(counter.with_label_values(&["all"]).get() - all_before, 2.0);
+    assert_eq!(
+        counter.with_label_values(&["succeed"]).get() - success_before,
+        1.0
+    );
+    assert_eq!(
+        counter.with_label_values(&["data-error"]).get() - data_before,
+        1.0
+    );
+}

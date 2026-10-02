@@ -24,6 +24,7 @@
 use crate::balancer::Balancer;
 use crate::interface::*;
 use crate::nodes::NodeManager;
+use crate::scheduler::on_task_finished;
 use crate::slots::SlotManager;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -203,11 +204,10 @@ impl Manager {
             }
             // 未知任务类型：直接标记失败，避免卡在队列中。
             if get_scheduler_factory(&task.task_type).is_none() {
-                self.task_manager.fail_task(
-                    task.id,
-                    task.state,
-                    SchedulerError::new("unknown task type"),
-                )?;
+                let error = SchedulerError::new("unknown task type");
+                self.task_manager
+                    .fail_task(task.id, task.state, error.clone())?;
+                on_task_finished(TASK_STATE_FAILED, Some(&error));
                 continue;
             }
             schedulable.push(task);
@@ -271,7 +271,8 @@ impl Manager {
         // init 失败视为致命：标记任务失败，不登记到运行表。
         if let Err(error) = scheduler.init() {
             self.task_manager
-                .fail_task(task.base.id, task.base.state, error)?;
+                .fail_task(task.base.id, task.base.state, error.clone())?;
+            on_task_finished(TASK_STATE_FAILED, Some(&error));
             return Ok(());
         }
         if allocated_slots {

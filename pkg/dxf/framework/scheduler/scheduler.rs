@@ -25,6 +25,7 @@
 
 use crate::interface::*;
 use crate::nodes::filter_by_scope;
+use astersql_dxf_framework_dxfmetric::InitDistTaskMetrics;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -160,6 +161,7 @@ impl BaseScheduler {
                 .on_done_with_context(&self.context, self, &mut task)?;
             self.param.task_manager.reverted_task(task.base.id)?;
             task.base.state = TASK_STATE_REVERTED;
+            on_task_finished(task.base.state, task.error.as_ref());
             self.replace_task(task);
         } else {
             self.extension.on_tick_with_context(&self.context, &task);
@@ -281,6 +283,7 @@ impl BaseScheduler {
             self.param.task_manager.succeed_task(task.base.id)?;
             task.base.step = STEP_DONE;
             task.base.state = TASK_STATE_SUCCEED;
+            on_task_finished(task.base.state, task.error.as_ref());
             self.replace_task(task);
             return Ok(());
         }
@@ -417,6 +420,44 @@ impl BaseScheduler {
             self.revert_task(error)
         }
     }
+}
+
+pub(crate) fn on_task_finished(state: TaskState, error: Option<&SchedulerError>) {
+    let metric_state = match state {
+        TASK_STATE_SUCCEED | TASK_STATE_FAILED => state.to_owned(),
+        TASK_STATE_REVERTED if error.is_some_and(|error| error.0.contains(TASK_CANCEL_MESSAGE)) => {
+            "cancelled".to_owned()
+        }
+        TASK_STATE_REVERTED if error.is_some_and(|error| is_data_error_for_metric(&error.0)) => {
+            "data-error".to_owned()
+        }
+        TASK_STATE_REVERTED => TASK_STATE_FAILED.to_owned(),
+        _ => String::new(),
+    };
+    if metric_state.is_empty() {
+        return;
+    }
+    let counter = &InitDistTaskMetrics().FinishedTaskCounter;
+    counter.with_label_values(&["all"]).inc();
+    counter.with_label_values(&[&metric_state]).inc();
+}
+
+// Keep the metric's borrowed-string classification in step with Go's
+// storage.ClassifyTaskError, which replaced the original scheduler helper.
+fn is_data_error_for_metric(message: &str) -> bool {
+    let import_data = message.contains("ErrEncodeKV")
+        && (message.contains("Value conversion failed for column")
+            || (message.contains("Check constraint '") && message.contains("' is violated"))
+            || message.contains("Table has no partition for value"));
+    let import_conflict = (message.contains("[executor:8167]")
+        && message.contains("Duplicate key conflict found"))
+        || (message.contains("ErrFoundDataConflictRecords")
+            && message.contains("found data conflict records"))
+        || (message.contains("ErrFoundIndexConflictRecords")
+            && message.contains("found index conflict records"));
+    import_data
+        || import_conflict
+        || (message.contains("[kv:1062]") && message.contains("Duplicate entry"))
 }
 
 /// 向扩展点暴露历史子任务元数据/摘要查询。

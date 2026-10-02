@@ -182,6 +182,29 @@ fn test_start_scheduler_cross_keyspace_runtime() {
 }
 
 #[test]
+fn go_commit_7d70c1c438_manager_failed_task_updates_metric() {
+    use astersql_dxf_framework_dxfmetric::InitDistTaskMetrics;
+
+    let counter = &InitDistTaskMetrics().FinishedTaskCounter;
+    let all_before = counter.with_label_values(&["all"]).get();
+    let failed_before = counter.with_label_values(&["failed"]).get();
+
+    let task_manager = Arc::new(TestTaskManager::default());
+    let unknown = manager_task(701, "go-commit-7d70c1c438-unknown", TASK_STATE_PENDING);
+    task_manager.insert_task(unknown.clone());
+    *task_manager.top_unfinished.lock().unwrap() = vec![unknown.base];
+    let manager = Manager::new(task_manager.clone(), "server", None);
+    manager.start().unwrap();
+    manager.tick().unwrap();
+    assert_eq!(task_manager.failed_tasks.lock().unwrap().len(), 1);
+    assert_eq!(counter.with_label_values(&["all"]).get() - all_before, 1.0);
+    assert_eq!(
+        counter.with_label_values(&["failed"]).get() - failed_before,
+        1.0
+    );
+}
+
+#[test]
 /// 达到调度器上限后，取消/回滚/修改/暂停任务仍须快速启动且不占 slot。
 fn test_fast_respond_no_need_resource_task_when_schedulers_reach_limit() {
     SetMaxConcurrentTask(DEFAULT_MAX_CONCURRENT_TASKS).unwrap();
