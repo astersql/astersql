@@ -351,3 +351,16 @@ impl SerializeHelper {
         &self.buffer
     }
 }
+
+impl SerializeHelper {
+    pub fn serialize_count_extrema<T: crate::func_max_min_count::CountValue>(
+        &mut self,
+        value: &crate::func_max_min_count::CountPartial<T>,
+    ) -> &[u8] {
+        self.reset();
+        self.put_bool(value.is_null);
+        self.buffer = serialization::SerializeInt64(value.count, std::mem::take(&mut self.buffer));
+        self.buffer = value.value.write(std::mem::take(&mut self.buffer));
+        &self.buffer
+    }
+}

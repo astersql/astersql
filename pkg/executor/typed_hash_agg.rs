@@ -15,12 +15,21 @@ use crate::adapter::{
     AdapterResult, CascadeBatch, ChunkConfig, ExecExecutor, ExecutionContext, Key, SchemaColumn,
 };
 
-#[derive(Clone)]
 enum AggregateValue {
     Count(i64),
-    Sum { value: Datum, count: i64 },
-    First { seen: bool, value: Datum },
+    Sum {
+        value: Datum,
+        count: i64,
+    },
+    First {
+        seen: bool,
+        value: Datum,
+    },
     Extremum(Datum),
+    CountExtrema {
+        function: Box<dyn astersql_executor_aggfuncs::func_max_min_count::CountExtremaAgg>,
+        state: astersql_executor_aggfuncs::aggfuncs::PartialResult,
+    },
 }
 
 struct AggregateState {
@@ -84,12 +93,35 @@ impl TypedHashAgg {
                 | astersql_parser_ast::AggFuncSumInt
                 | astersql_parser_ast::AggFuncFirstRow
                 | astersql_parser_ast::AggFuncMax
-                | astersql_parser_ast::AggFuncMin => {
+                | astersql_parser_ast::AggFuncMin
+                | astersql_parser_ast::AggFuncMaxCount
+                | astersql_parser_ast::AggFuncMinCount => {
                     if function.Args.is_empty() {
                         return Err(format!("typed {} requires one argument", function.Name));
                     }
                 }
                 name => return Err(format!("typed HashAgg does not support aggregate {name}")),
+            }
+            if matches!(
+                function.Name.as_str(),
+                astersql_parser_ast::AggFuncMaxCount | astersql_parser_ast::AggFuncMinCount
+            ) {
+                if function.HasDistinct
+                    || astersql_executor_aggfuncs::func_max_min_count::build_count_extrema_function(
+                        context.GetExprCtx().GetEvalCtx(),
+                        function.Args.clone(),
+                        0,
+                        function.Name == astersql_parser_ast::AggFuncMaxCount,
+                        matches!(
+                            function.Mode,
+                            AggFunctionMode::FinalMode | AggFunctionMode::Partial2Mode
+                        ) && function.Args.len() > 1,
+                        false,
+                    )
+                    .is_none()
+                {
+                    return Err("unsupported typed count-extrema argument or DISTINCT".to_owned());
+                }
             }
             if function.Mode == AggFunctionMode::DedupMode {
                 return Err("typed HashAgg does not support deduplicate mode".to_owned());
@@ -136,6 +168,16 @@ impl TypedHashAgg {
                         },
                         astersql_parser_ast::AggFuncMax | astersql_parser_ast::AggFuncMin => {
                             AggregateValue::Extremum(Datum::default())
+                        }
+                        astersql_parser_ast::AggFuncMaxCount | astersql_parser_ast::AggFuncMinCount => {
+                            let evaluator = astersql_executor_aggfuncs::func_max_min_count::build_count_extrema_function(
+                                self.context.GetExprCtx().GetEvalCtx(), function.Args.clone(), 0,
+                                function.Name == astersql_parser_ast::AggFuncMaxCount,
+                                matches!(function.Mode, AggFunctionMode::FinalMode | AggFunctionMode::Partial2Mode) && function.Args.len() > 1,
+                                false,
+                            ).expect("validated count-extrema argument type");
+                            let (state, _) = evaluator.alloc_partial_result();
+                            AggregateValue::CountExtrema { function: evaluator, state }
                         }
                         _ => unreachable!("aggregate names are validated by new"),
                     },
@@ -269,6 +311,12 @@ fn update_aggregate(
     eval: &dyn astersql_expression_exprctx::EvalContext,
     row: chunk::Row,
 ) -> AdapterResult {
+    if let AggregateValue::CountExtrema { function, state } = &mut state.value {
+        function
+            .update_partial_result(eval, &[row], state)
+            .map_err(|error| astersql_errors::New(error.to_string()))?;
+        return Ok(());
+    }
     let values = evaluated_arguments(function, eval, row)?;
     if function.Name != astersql_parser_ast::AggFuncFirstRow && values.iter().any(Datum::IsNull) {
         return Ok(());
@@ -281,6 +329,7 @@ fn update_aggregate(
         }
     }
     match &mut state.value {
+        AggregateValue::CountExtrema { .. } => unreachable!(),
         AggregateValue::Count(count) => {
             if matches!(
                 function.Mode,
@@ -351,6 +400,10 @@ fn finish_aggregate(
     eval: &dyn astersql_expression_exprctx::EvalContext,
 ) -> AdapterResult<Datum> {
     match &state.value {
+        AggregateValue::CountExtrema {
+            function: evaluator,
+            state,
+        } => Ok(NewIntDatum(evaluator.result_count(state))),
         AggregateValue::Count(count) => Ok(NewIntDatum(*count)),
         AggregateValue::Sum { value, count }
             if function.Name == astersql_parser_ast::AggFuncAvg =>

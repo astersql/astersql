@@ -368,3 +368,80 @@ fn grouped_projection_preserves_declared_identifier_case() {
         &[&["6", "1"]],
     );
 }
+
+#[test]
+fn count_extrema_sql_duplicates_nulls_and_sliding_window() {
+    use astersql_parser_mysql::r#type::TypeLonglong;
+    let (_domain, session) = CreateAnalyzeSession().unwrap();
+    execute(&session, "create database count_extrema_regression");
+    execute(&session, "use count_extrema_regression");
+    execute(&session, "create table t(id int, a int)");
+    execute(
+        &session,
+        "insert into t values (1,1),(2,1),(3,2),(4,2),(5,null),(6,2),(7,1)",
+    );
+    query(
+        &session,
+        "select max_count(a) as mx, min_count(a) as mn from t",
+        &["mx", "mn"],
+        &[TypeLonglong, TypeLonglong],
+        &[&["3", "3"]],
+    );
+    query(
+        &session,
+        "select max_count(a) as mx, min_count(a) as mn from t where a is null",
+        &["mx", "mn"],
+        &[TypeLonglong, TypeLonglong],
+        &[&["0", "0"]],
+    );
+    query(
+        &session,
+        "select max_count(a) over () as mx, min_count(a) over () as mn from t limit 1",
+        &["mx", "mn"],
+        &[TypeLonglong, TypeLonglong],
+        &[&["3", "3"]],
+    );
+    query(
+        &session,
+        "select id,max_count(a) over (order by id rows between 1 preceding and current row) as mx,min_count(a) over (order by id rows between 1 preceding and current row) as mn from t order by id",
+        &["id", "mx", "mn"],
+        &[TypeLong, TypeLonglong, TypeLonglong],
+        &[
+            &["1", "1", "1"],
+            &["2", "2", "2"],
+            &["3", "1", "1"],
+            &["4", "2", "2"],
+            &["5", "1", "1"],
+            &["6", "1", "1"],
+            &["7", "1", "1"],
+        ],
+    );
+    query(
+        &session,
+        "select max_count(all a) as mx,min_count(all a) as mn from t",
+        &["mx", "mn"],
+        &[TypeLonglong, TypeLonglong],
+        &[&["3", "3"]],
+    );
+    query(
+        &session,
+        "select max_count(a) as mx,min_count(a) as mn from t where id < 0",
+        &["mx", "mn"],
+        &[TypeLonglong, TypeLonglong],
+        &[&["0", "0"]],
+    );
+    query(
+        &session,
+        "select a,max_count(a) as mx,min_count(a) as mn from t group by a order by a",
+        &["a", "mx", "mn"],
+        &[TypeLong, TypeLonglong, TypeLonglong],
+        &[&["<nil>", "0", "0"], &["1", "3", "3"], &["2", "3", "3"]],
+    );
+    for name in ["max_count", "min_count"] {
+        assert!(
+            session
+                .execute(&format!("select {name}(distinct a) from t"))
+                .is_err()
+        );
+    }
+}

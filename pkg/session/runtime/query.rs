@@ -884,6 +884,10 @@ impl ConcreteSession {
                     Ok(Some(format!("{average:.4}")))
                 }
             }
+            "min_count" | "max_count" => Ok(Some(
+                relational_count_extrema(values.into_iter().flatten(), name == "max_count")
+                    .to_string(),
+            )),
             "min" | "max" => {
                 let mut values = values.into_iter().flatten();
                 let Some(mut selected) = values.next() else {
@@ -2661,7 +2665,15 @@ impl ConcreteSession {
         // 对齐 Go `attach2Task4PhysicalLimit` 的安全条件。自动提交快照可以进一步
         // 在 KV 游标层消费 OFFSET，只解码最终 count 行。整数聚簇主键 ORDER BY
         // 和精确主键 WHERE 直接使用正向/反向 handle range，避免为 TopN 物化整表。
-        let limit_pushdown_safe = table.GetPartitionInfo().is_none()
+        // Window aggregates need the complete partition before applying LIMIT.
+        let has_window = statement.Fields.Fields.iter().any(|field| {
+            field
+                .Expr
+                .as_ref()
+                .is_some_and(relational_expression_has_window)
+        });
+        let limit_pushdown_safe = !has_window
+            && table.GetPartitionInfo().is_none()
             && !read_committed
             && right_table.is_none()
             && (statement.Where.is_none()
@@ -3227,6 +3239,18 @@ impl ConcreteSession {
                             })?
                             .to_string()
                     }
+                    "min_count" | "max_count" => {
+                        let column = column.ok_or_else(|| {
+                            SessionError::new(format!("{Name} requires a column argument"))
+                        })?;
+                        relational_count_extrema(
+                            rows.iter()
+                                .filter_map(|(_, row)| row.get(column).and_then(Option::as_ref))
+                                .cloned(),
+                            name == "max_count",
+                        )
+                        .to_string()
+                    }
                     "min" | "max" => {
                         let column = column.ok_or_else(|| {
                             SessionError::new(format!("{Name} requires a column argument"))
@@ -3300,7 +3324,7 @@ impl ConcreteSession {
         } else {
             limit_window
         };
-        if !statement.Distinct {
+        if !statement.Distinct && !has_window {
             rows = execute_relational_limit(rows, root_limit_window)?;
         }
         let (columns, projected, result_fields) = project_relational_rows(
@@ -3312,7 +3336,9 @@ impl ConcreteSession {
             &statement.WindowSpecs,
             |args, row| self.execute_embed_text(args, row),
         )?;
-        let projected = if statement.Distinct {
+        let projected = if has_window && !statement.Distinct {
+            execute_relational_limit(projected, root_limit_window)?
+        } else if statement.Distinct {
             let mut seen = HashSet::new();
             let distinct = projected
                 .into_iter()

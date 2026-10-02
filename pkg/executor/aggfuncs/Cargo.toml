@@ -22,7 +22,7 @@ legacy-tasks = ["task-788", "task-789", "task-790", "task-791", "task-792", "tas
 "astersql-types" = { package = "astersql-types", path = "../../types" }
 "astersql-util-chunk" = { package = "astersql-util-chunk", path = "../../util/chunk", optional = true }
 "astersql-util-codec" = { package = "astersql-util-codec", path = "../../util/codec", optional = true }
-"astersql-util-collate" = { package = "astersql-util-collate", path = "../../util/collate", optional = true }
+"astersql-util-collate" = { package = "astersql-util-collate", path = "../../util/collate" }
 "astersql-util-dbterror-plannererrors" = { package = "astersql-util-dbterror-plannererrors", path = "../../util/dbterror/plannererrors", optional = true }
 "astersql-util-hack" = { package = "astersql-util-hack", path = "../../util/hack" }
 "astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../util/logutil", optional = true }
@@ -32,6 +32,7 @@ legacy-tasks = ["task-788", "task-789", "task-790", "task-791", "task-792", "tas
 "astersql-util-stringutil" = { package = "astersql-util-stringutil", path = "../../util/stringutil", optional = true }
 
 [dev-dependencies]
+"astersql-expression-exprstatic" = { package = "astersql-expression-exprstatic", path = "../../expression/exprstatic" }
 "astersql-executor-internal-util" = { package = "astersql-executor-internal-util", path = "../internal/util" }
 "astersql-kv" = { package = "astersql-kv", path = "../../kv" }
 "astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../sessionctx" }

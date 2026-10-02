@@ -3552,6 +3552,7 @@ dependencies = [
  "astersql-expression",
  "astersql-expression-aggregation",
  "astersql-expression-exprctx",
+ "astersql-expression-exprstatic",
  "astersql-kv",
  "astersql-parser-ast",
  "astersql-parser-charset",

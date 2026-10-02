@@ -7841,7 +7841,19 @@ fn attach_canonical_aggregation(
             }
         }
 
-        let input_is_single = child.mpp_partition_type() == property::SinglePartitionType
+        let contains_count_extrema = template.BasePhysicalAgg.AggFuncs.iter().any(|function| {
+            matches!(
+                function.Name.as_str(),
+                parser_ast::AggFuncMaxCount | parser_ast::AggFuncMinCount
+            )
+        });
+        if contains_count_extrema && child.mpp_partition_type() != property::SinglePartitionType {
+            let mut required = PhysicalProperty::default();
+            required.MPPPartitionTp = property::SinglePartitionType;
+            inner = enforce_canonical_mpp_partition(inner, &required)?;
+        }
+        let input_is_single = contains_count_extrema
+            || child.mpp_partition_type() == property::SinglePartitionType
             || inner
                 .as_any()
                 .downcast_ref::<crate::PhysicalWindow>()

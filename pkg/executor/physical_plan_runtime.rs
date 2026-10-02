@@ -34,7 +34,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use astersql_executor_sortexec::{DataChunk, Limit, Row, SortExec, SortKey, SortValue, TopNExec};
 use astersql_expression::Expression as _;
 use astersql_expression_aggregation::{CompleteMode, FinalMode, Partial1Mode, Partial2Mode};
-use astersql_planner_core_base::PhysicalPlan;
+use astersql_planner_core_base::{PhysicalPlan, Plan};
 use astersql_planner_core_operator_physicalop::{
     BasePhysicalAgg, PhysicalHashAgg, PhysicalIndexLookUpReader, PhysicalLimit, PhysicalProjection,
     PhysicalSelection, PhysicalSort, PhysicalStreamAgg, PhysicalTableReader, PhysicalTableScan,
@@ -559,6 +559,10 @@ fn merge_union_rows(
 enum ScalarAggregateState {
     /// COUNT 的累计值。
     Count(i64),
+    CountExtrema {
+        function: Box<dyn astersql_executor_aggfuncs::func_max_min_count::CountExtremaAgg>,
+        state: astersql_executor_aggfuncs::aggfuncs::PartialResult,
+    },
     /// FIRST_ROW 的首值；外层 Option 区分“尚未见行”和“首值为 NULL”。
     FirstRow(Option<SortValue>),
 }
@@ -599,6 +603,38 @@ fn initialize_scalar_aggregate(
                 }
                 Ok(ScalarAggregateState::Count(0))
             }
+            astersql_parser_ast::AggFuncMaxCount | astersql_parser_ast::AggFuncMinCount => {
+                if function.HasDistinct
+                    || function.Mode == astersql_expression_aggregation::DedupMode
+                {
+                    return Err(PhysicalRuntimeError(
+                        "unsupported count-extrema DISTINCT/dedup mode".to_owned(),
+                    ));
+                }
+                let evaluator =
+                    astersql_executor_aggfuncs::func_max_min_count::build_count_extrema_function(
+                        aggregate
+                            .PhysicalSchemaProducer
+                            .BasePhysicalPlan
+                            .s_ctx()
+                            .GetExprCtx()
+                            .GetEvalCtx(),
+                        function.Args.clone(),
+                        0,
+                        function.Name == astersql_parser_ast::AggFuncMaxCount,
+                        matches!(function.Mode, FinalMode | Partial2Mode)
+                            && function.Args.len() > 1,
+                        false,
+                    )
+                    .ok_or_else(|| {
+                        PhysicalRuntimeError("unsupported count-extrema argument type".to_owned())
+                    })?;
+                let (state, _) = evaluator.alloc_partial_result();
+                Ok(ScalarAggregateState::CountExtrema {
+                    function: evaluator,
+                    state,
+                })
+            }
             astersql_parser_ast::AggFuncFirstRow => {
                 if function.HasDistinct {
                     return Err(PhysicalRuntimeError(
@@ -638,6 +674,17 @@ fn update_scalar_aggregate(
     let eval_context = plan.s_ctx().GetExprCtx().GetEvalCtx();
     for (function, state) in aggregate.AggFuncs.iter().zip(states) {
         match state {
+            ScalarAggregateState::CountExtrema {
+                function: evaluator,
+                state,
+            } => {
+                let mutable = astersql_util_chunk::mutrow::MutRowFromDatums(
+                    row.0.iter().map(sort_value_to_datum).collect(),
+                );
+                evaluator
+                    .update_partial_result(eval_context, &[mutable.ToRow()], state)
+                    .map_err(|error| PhysicalRuntimeError(error.to_string()))?;
+            }
             ScalarAggregateState::Count(count) => match function.Mode {
                 CompleteMode | Partial1Mode => {
                     let mut all_non_null = true;
@@ -682,6 +729,9 @@ fn finish_scalar_aggregate(states: Vec<ScalarAggregateState>) -> Vec<Row> {
     let output = states
         .into_iter()
         .map(|state| match state {
+            ScalarAggregateState::CountExtrema { function, state } => {
+                SortValue::Int(function.result_count(&state))
+            }
             ScalarAggregateState::Count(count) => SortValue::Int(count),
             ScalarAggregateState::FirstRow(first) => first.unwrap_or(SortValue::Null),
         })

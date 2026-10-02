@@ -59,3 +59,13 @@ fn aggregation_factors_match_go_entries() {
     }
     assert_eq!(AggFuncFactor.get("unknown_aggregate"), None);
 }
+
+#[test]
+fn count_extrema_cost_matches_max_min() {
+    for name in [crate::ast::AggFuncMaxCount, crate::ast::AggFuncMinCount] {
+        assert_eq!(
+            crate::factors_thresholds::AggFuncFactor.get(name),
+            Some(&1.0)
+        );
+    }
+}

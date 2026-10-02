@@ -36,6 +36,7 @@ pub mod func_json_objectagg;
 pub mod func_lead_lag;
 /// MAX / MIN 聚合。
 pub mod func_max_min;
+pub mod func_max_min_count;
 /// NTILE 窗口函数（分桶编号）。
 pub mod func_ntile;
 /// PERCENT_RANK 窗口函数。
@@ -137,3 +138,6 @@ mod spill_deserialize_helper_test;
 mod spill_helper_test;
 #[cfg(test)]
 mod window_func_test;
+
+#[cfg(test)]
+mod func_max_min_count_test;

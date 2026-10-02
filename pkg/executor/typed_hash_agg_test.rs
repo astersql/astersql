@@ -5,7 +5,7 @@ use std::sync::Arc;
 use astersql_meta_model::ColumnInfo;
 use astersql_parser_ast::NewCIStr;
 use astersql_parser_mysql::r#type::TypeLonglong;
-use astersql_planner_core_base::PhysicalPlan as _;
+use astersql_planner_core_base::{PhysicalPlan as _, Plan as _};
 use astersql_planner_core_operator_physicalop::{
     BasePhysicalAgg, BasePhysicalPlan, PhysicalHashAgg, PhysicalSchemaProducer, PhysicalTableScan,
 };
@@ -126,4 +126,49 @@ fn typed_hash_agg_honors_cancellation_before_consuming_child() {
             .contains("Query execution was interrupted")
     );
     executor.Close().unwrap();
+}
+
+#[test]
+fn typed_hash_agg_count_extrema_real_scan_and_empty_input() {
+    let retriever = Arc::new(MemoryRetriever::default());
+    for (handle, value) in [(1, 1), (2, 1), (3, 2), (4, 2), (5, 2)] {
+        let (key, row) = encode_row(98, handle, value, "unused");
+        retriever.Put(key, row);
+    }
+    let mut plan = hash_agg_plan(false);
+    let ctx = plan.s_ctx().clone();
+    plan.BasePhysicalAgg.AggFuncs = [
+        astersql_parser_ast::AggFuncMaxCount,
+        astersql_parser_ast::AggFuncMinCount,
+    ]
+    .into_iter()
+    .map(|name| {
+        astersql_expression_aggregation::NewAggFuncDesc(
+            ctx.GetExprCtx(),
+            name,
+            vec![Box::new(astersql_expression::Column::new(
+                *astersql_expression::types::NewFieldType(TypeLonglong),
+                1,
+                1,
+                0,
+            ))],
+            false,
+        )
+        .unwrap()
+    })
+    .collect();
+    for (input, expected) in [
+        (retriever, [3, 2]),
+        (Arc::new(MemoryRetriever::default()), [0, 0]),
+    ] {
+        let mut executor =
+            crate::builder::BuildTypedPhysicalPlan(&plan, input, ranges(), 1, 2).unwrap();
+        executor.Open().unwrap();
+        let mut output = executor.NewChunk();
+        executor.Next(&mut output).unwrap();
+        assert_eq!(output.NumRows(), 1);
+        assert_eq!(output.GetRow(0).GetInt64(0), expected[0]);
+        assert_eq!(output.GetRow(0).GetInt64(1), expected[1]);
+        executor.Close().unwrap();
+    }
 }

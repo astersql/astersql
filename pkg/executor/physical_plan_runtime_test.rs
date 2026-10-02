@@ -824,3 +824,37 @@ fn scalar_count_streams_large_input_without_materializing_rows() {
     assert_eq!(source.streamed_rows.load(Ordering::SeqCst), 0);
     assert_eq!(source.count_requests.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn scalar_count_extrema_uses_typed_kernel_for_nulls_and_duplicates() {
+    for name in [
+        astersql_parser_ast::AggFuncMaxCount,
+        astersql_parser_ast::AggFuncMinCount,
+    ] {
+        for mode in [CompleteMode, Partial1Mode, FinalMode, Partial2Mode] {
+            let mut plan = first_row_plan(mode);
+            plan.BasePhysicalAgg.AggFuncs[0].Name = name.to_owned();
+            let input = vec![
+                Row(vec![SortValue::Null]),
+                Row(vec![SortValue::Int(1)]),
+                Row(vec![SortValue::Int(1)]),
+                Row(vec![SortValue::Int(2)]),
+            ];
+            let result = ExecutePhysicalPlan(&plan, &FixedRowsSource(input)).unwrap();
+            assert_eq!(
+                result,
+                vec![Row(vec![SortValue::Int(
+                    if name == astersql_parser_ast::AggFuncMaxCount {
+                        1
+                    } else {
+                        2
+                    }
+                )])]
+            );
+            assert_eq!(
+                ExecutePhysicalPlan(&plan, &FixedRowsSource(vec![])).unwrap(),
+                vec![Row(vec![SortValue::Int(0)])]
+            );
+        }
+    }
+}

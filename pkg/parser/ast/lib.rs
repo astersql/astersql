@@ -4982,11 +4982,11 @@ pub mod functions;
 pub use functions::{
     AggFuncApproxCountDistinct, AggFuncApproxPercentile, AggFuncAvg, AggFuncBitAnd, AggFuncBitOr,
     AggFuncBitXor, AggFuncCount, AggFuncFirstRow, AggFuncGroupConcat, AggFuncJsonArrayagg,
-    AggFuncJsonObjectAgg, AggFuncMax, AggFuncMin, AggFuncStddevPop, AggFuncStddevSamp, AggFuncSum,
-    AggFuncSumInt, AggFuncVarPop, AggFuncVarSamp, BitNeg, Case, CurrentTimestamp, EQ,
-    FTSMysqlMatchAgainst, GE, GT, GetVar, Grouping, If, Ifnull, Ilike, In, IsFalsity, IsNull,
-    IsTruthWithoutNull, LE, LT, Like, LogicAnd, Minus, NE, NullEQ, Nullif, Regexp, RowFunc, SetVar,
-    UnaryMinus, UnaryNot, UnixTimestamp,
+    AggFuncJsonObjectAgg, AggFuncMax, AggFuncMaxCount, AggFuncMin, AggFuncMinCount,
+    AggFuncStddevPop, AggFuncStddevSamp, AggFuncSum, AggFuncSumInt, AggFuncVarPop, AggFuncVarSamp,
+    BitNeg, Case, CurrentTimestamp, EQ, FTSMysqlMatchAgainst, GE, GT, GetVar, Grouping, If, Ifnull,
+    Ilike, In, IsFalsity, IsNull, IsTruthWithoutNull, LE, LT, Like, LogicAnd, Minus, NE, NullEQ,
+    Nullif, Regexp, RowFunc, SetVar, UnaryMinus, UnaryNot, UnixTimestamp,
 };
 /// misc模块。
 #[path = "misc.rs"]

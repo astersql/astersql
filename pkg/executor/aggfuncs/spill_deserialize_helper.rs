@@ -535,3 +535,20 @@ fn value_memory_delta(value: &SpillValue) -> i64 {
             SpillValue::Duration(_) => DEF_DURATION_SIZE,
         }
 }
+
+impl DeserializeHelper<'_> {
+    pub fn deserialize_count_extrema<T: crate::func_max_min_count::CountValue>(
+        &mut self,
+    ) -> Option<crate::func_max_min_count::CountPartial<T>> {
+        self.next(|p| {
+            let is_null = serialization::DeserializeBool(p);
+            let count = serialization::DeserializeInt64(p);
+            let value = T::read(p);
+            crate::func_max_min_count::CountPartial {
+                value,
+                count,
+                is_null,
+            }
+        })
+    }
+}

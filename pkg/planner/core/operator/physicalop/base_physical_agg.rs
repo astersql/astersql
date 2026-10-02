@@ -755,7 +755,11 @@ pub fn BuildFinalModeAggregation(
             final_funcs.push(final_desc);
             continue;
         }
-        let output_count = if function.Name == parser_ast::AggFuncAvg {
+        let count_extrema = matches!(
+            function.Name.as_str(),
+            parser_ast::AggFuncMaxCount | parser_ast::AggFuncMinCount
+        );
+        let output_count = if function.Name == parser_ast::AggFuncAvg || count_extrema {
             2
         } else {
             1
@@ -766,18 +770,28 @@ pub fn BuildFinalModeAggregation(
             .collect::<Vec<_>>();
         let (partial, mut final_desc) = function.Split(&ordinals);
         for output in 0..output_count {
-            let field_type = final_desc
-                .Args
-                .get(output)
-                .and_then(|argument| argument.as_any().downcast_ref::<expression::Column>())
-                .and_then(|column| column.RetType.clone())
-                .or_else(|| {
-                    final_schema
-                        .Columns
-                        .get(offset)
-                        .and_then(|column| column.RetType.clone())
+            let field_type = if count_extrema {
+                Some(if output == 0 {
+                    function.RetTp.clone().unwrap()
+                } else {
+                    function.Args[0]
+                        .GetType(context.GetExprCtx().GetEvalCtx())
+                        .clone()
                 })
-                .ok_or_else(|| expression::errors::New("aggregate output type is required"))?;
+            } else {
+                final_desc
+                    .Args
+                    .get(output)
+                    .and_then(|argument| argument.as_any().downcast_ref::<expression::Column>())
+                    .and_then(|column| column.RetType.clone())
+                    .or_else(|| {
+                        final_schema
+                            .Columns
+                            .get(offset)
+                            .and_then(|column| column.RetType.clone())
+                    })
+            }
+            .ok_or_else(|| expression::errors::New("aggregate output type is required"))?;
             let mut partial_column = expression::Column::new(
                 field_type,
                 0,
@@ -786,6 +800,12 @@ pub fn BuildFinalModeAggregation(
             );
             partial_column.OrigName = format!("Column#{}", partial_column.UniqueID);
             partial_schema_columns.push(partial_column);
+        }
+        if count_extrema {
+            final_desc.Args = partial_schema_columns[start..start + 2]
+                .iter()
+                .map(|column| Box::new(column.Clone()) as ExprBox)
+                .collect();
         }
         for argument in &mut final_desc.Args {
             if let Some(column) = argument.as_any().downcast_ref::<expression::Column>()
@@ -1100,6 +1120,12 @@ pub fn ExhaustPhysicalPlans4LogicalAggregation(
                 .iter()
                 .any(|child| subtree_has_runtime_scalar(child.as_ref()))
     }
+    let contains_count_extrema = logical.AggFuncs.iter().any(|function| {
+        matches!(
+            function.Name.as_str(),
+            parser_ast::AggFuncMaxCount | parser_ast::AggFuncMinCount
+        )
+    });
     let tiflash_root_index = logical.Children().first().is_some_and(|child| {
         prefers_root_index_join(child.as_ref()) && logicalop::GetHasTiFlash(Some(child.as_ref()))
     });
@@ -1313,10 +1339,11 @@ pub fn ExhaustPhysicalPlans4LogicalAggregation(
                     }
                 }
 
-                if !logical
-                    .AggFuncs
-                    .first()
-                    .is_some_and(|function| function.Mode == aggregation::FinalMode)
+                if (!contains_count_extrema || logical.GroupByItems.is_empty())
+                    && !logical
+                        .AggFuncs
+                        .first()
+                        .is_some_and(|function| function.Mode == aggregation::FinalMode)
                 {
                     let producer = PhysicalSchemaProducer::New(BasePhysicalPlan::New(
                         ctx.clone(),
@@ -1325,7 +1352,11 @@ pub fn ExhaustPhysicalPlans4LogicalAggregation(
                     ));
                     if let Ok(mut two_phase) = crate::NewPhysicalHashAgg(logical, producer) {
                         two_phase.BasePhysicalAgg.MppRunMode = if logical.GroupByItems.is_empty() {
-                            scalar_mpp_run_mode(logical.HasDistinct() || logical.HasOrderBy())
+                            scalar_mpp_run_mode(
+                                logical.HasDistinct()
+                                    || logical.HasOrderBy()
+                                    || contains_count_extrema,
+                            )
                         } else {
                             AggMppRunMode::Mpp2Phase
                         };

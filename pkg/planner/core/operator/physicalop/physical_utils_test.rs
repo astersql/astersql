@@ -46,6 +46,7 @@ struct TestPlanContext(
     AtomicI32,
     base::BuiltinFunctionUsageCounter,
     planctx::variable::SessionVars,
+    exprstatic::ExprContext,
 );
 
 impl base::PlanContext for TestPlanContext {
@@ -59,7 +60,7 @@ impl base::PlanContext for TestPlanContext {
         &self.2
     }
     fn GetExprCtx(&self) -> &dyn planctx::exprctx::ExprContext {
-        std::process::abort()
+        &self.3
     }
     fn GetRangerCtx(&self) -> &planctx::rangerctx::RangerContext<'_> {
         panic!("physical_utils flatten test does not build ranges")
@@ -81,6 +82,7 @@ fn context() -> base::ContextRef {
         AtomicI32::new(0),
         base::BuiltinFunctionUsageCounter::default(),
         planctx::variable::SessionVars::default(),
+        exprstatic::NewExprContext(Vec::new()),
     ))
 }
 
@@ -227,4 +229,59 @@ fn test_flatten_tree_push_down_plan() {
     assert_eq!(unnatural.len(), 2);
     assert_eq!(unnatural.get(&2), Some(&6));
     assert_eq!(unnatural.get(&3), Some(&5));
+}
+
+#[test]
+fn count_extrema_partial_schema_keeps_count_and_collated_value() {
+    let ctx = context();
+    for name in [parser_ast::AggFuncMaxCount, parser_ast::AggFuncMinCount] {
+        let mut ft = *expression::types::NewFieldType(expression::mysql::TypeString);
+        ft.SetCharset("utf8mb4".into());
+        ft.SetCollate("utf8mb4_general_ci".into());
+        let function = aggregation::NewAggFuncDesc(
+            ctx.GetExprCtx(),
+            name,
+            vec![Box::new(expression::Column::new(ft, 1, 1, 0))],
+            false,
+        )
+        .unwrap();
+        let mut agg = crate::BasePhysicalAgg::New(crate::PhysicalSchemaProducer::New(
+            crate::BasePhysicalPlan::New(ctx.clone(), "HashAgg", 0),
+        ));
+        agg.PhysicalSchemaProducer
+            .SetSchema(expression::NewSchema(vec![expression::Column::new(
+                function.RetTp.clone().unwrap(),
+                2,
+                2,
+                0,
+            )]));
+        agg.AggFuncs = vec![function];
+        let (partial, final_info) = crate::BuildFinalModeAggregation(&agg, false).unwrap();
+        assert_eq!(partial.Schema.Columns.len(), 2);
+        assert_eq!(
+            partial.Schema.Columns[0]
+                .RetType
+                .as_ref()
+                .unwrap()
+                .GetType(),
+            expression::mysql::TypeLonglong
+        );
+        assert_eq!(
+            partial.Schema.Columns[1]
+                .RetType
+                .as_ref()
+                .unwrap()
+                .GetType(),
+            expression::mysql::TypeString
+        );
+        assert_eq!(
+            partial.Schema.Columns[1]
+                .RetType
+                .as_ref()
+                .unwrap()
+                .GetCollate(),
+            "utf8mb4_general_ci"
+        );
+        assert_eq!(final_info.AggFuncs[0].Args.len(), 2);
+    }
 }

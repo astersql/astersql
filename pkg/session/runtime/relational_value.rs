@@ -2677,9 +2677,19 @@ pub(super) fn relational_expression_type(
             }
             _ => new_type(astersql_parser_mysql::r#type::TypeVarString),
         },
+        ast::ExprKind::WindowFunction { Name, .. }
+            if matches!(
+                Name.to_ascii_lowercase().as_str(),
+                "min_count" | "max_count"
+            ) =>
+        {
+            new_type(astersql_parser_mysql::r#type::TypeLonglong)
+        }
         ast::ExprKind::AggregateFunction { Name, Args, .. } => {
             match Name.to_ascii_lowercase().as_str() {
-                "count" | "bit_xor" => new_type(astersql_parser_mysql::r#type::TypeLonglong),
+                "count" | "min_count" | "max_count" | "bit_xor" => {
+                    new_type(astersql_parser_mysql::r#type::TypeLonglong)
+                }
                 "sum" | "avg" => new_type(astersql_parser_mysql::r#type::TypeNewDecimal),
                 "min" | "max" => Args
                     .first()
@@ -2868,6 +2878,19 @@ where
                 }
             }
             Ok(Some(count.to_string()))
+        }
+        "min_count" | "max_count" => {
+            let values = frame
+                .iter()
+                .map(|candidate| argument(*candidate, 0))
+                .collect::<SessionResult<Vec<_>>>()?;
+            Ok(Some(
+                relational_count_extrema(
+                    values.into_iter().flatten(),
+                    Name.eq_ignore_ascii_case("max_count"),
+                )
+                .to_string(),
+            ))
         }
         "min" | "max" => {
             let mut selected: Option<String> = None;
@@ -3266,4 +3289,31 @@ pub(super) fn project_relational_rows(
         })
         .collect::<SessionResult<Vec<_>>>()?;
     Ok((columns, projected, result_fields))
+}
+
+/// Count peers of the selected extrema using the relational evaluator's comparison contract.
+pub(super) fn relational_count_extrema(
+    values: impl IntoIterator<Item = String>,
+    is_max: bool,
+) -> i64 {
+    let mut selected: Option<String> = None;
+    let mut count = 0_i64;
+    for value in values {
+        let ordering = selected
+            .as_ref()
+            .map(|current| relational_compare(&value, current));
+        if ordering.is_none_or(|ordering| {
+            if is_max {
+                ordering.is_gt()
+            } else {
+                ordering.is_lt()
+            }
+        }) {
+            selected = Some(value);
+            count = 1;
+        } else if ordering.is_some_and(|ordering| ordering.is_eq()) {
+            count = count.wrapping_add(1);
+        }
+    }
+    count
 }

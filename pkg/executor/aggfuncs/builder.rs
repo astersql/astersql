@@ -185,6 +185,8 @@ pub enum FunctionName {
     FirstRow,
     Max,
     Min,
+    MaxCount,
+    MinCount,
     GroupConcat,
     BitOr,
     BitXor,
@@ -266,10 +268,17 @@ pub enum AggImplementation {
     ApproxCountDistinctPartial1,
     ApproxCountDistinctPartial2,
     ApproxCountDistinctFinal,
-    Percentile { kind: ValueKind, percent: i32 },
-    PercentileNull { percent: i32 },
+    Percentile {
+        kind: ValueKind,
+        percent: i32,
+    },
+    PercentileNull {
+        percent: i32,
+    },
     SumDecimal,
-    SumFloat64 { high_precision: bool },
+    SumFloat64 {
+        high_precision: bool,
+    },
     SumOriginalDistinctDecimal,
     SumOriginalDistinctFloat64,
     SumPartialDistinctDecimal,
@@ -279,7 +288,9 @@ pub enum AggImplementation {
     SumDistinctInt,
     SumDistinctUint,
     AvgOriginalDecimal,
-    AvgOriginalFloat64 { high_precision: bool },
+    AvgOriginalFloat64 {
+        high_precision: bool,
+    },
     AvgOriginalDistinctDecimal,
     AvgOriginalDistinctFloat64,
     AvgPartialDecimal,
@@ -287,8 +298,23 @@ pub enum AggImplementation {
     AvgPartialDistinctDecimal,
     AvgPartialDistinctFloat64,
     FirstRow(ValueKind),
-    MaxMin { kind: ValueKind, is_max: bool },
-    SlidingMaxMin { kind: ValueKind, is_max: bool },
+    MaxMin {
+        kind: ValueKind,
+        is_max: bool,
+    },
+    SlidingMaxMin {
+        kind: ValueKind,
+        is_max: bool,
+    },
+    MaxMinCount {
+        kind: ValueKind,
+        is_max: bool,
+        reject_rows: bool,
+    },
+    SlidingMaxMinCount {
+        kind: ValueKind,
+        is_max: bool,
+    },
     GroupConcat,
     GroupConcatDistinctOriginal,
     GroupConcatDistinctPartial,
@@ -312,15 +338,28 @@ pub enum AggImplementation {
     JsonArrayAgg,
     JsonObjectAgg,
     RowNumber,
-    Rank { dense: bool },
+    Rank {
+        dense: bool,
+    },
     FirstValue(ValueKind),
     LastValue(ValueKind),
     CumeDist,
-    NthValue { kind: ValueKind, nth: u64 },
-    Ntile { n: u64 },
+    NthValue {
+        kind: ValueKind,
+        nth: u64,
+    },
+    Ntile {
+        n: u64,
+    },
     PercentRank,
-    Lead { kind: ValueKind, offset: u64 },
-    Lag { kind: ValueKind, offset: u64 },
+    Lead {
+        kind: ValueKind,
+        offset: u64,
+    },
+    Lag {
+        kind: ValueKind,
+        offset: u64,
+    },
 }
 
 /// 构建完成的聚合函数元数据，供执行器实例化。
@@ -409,6 +448,9 @@ pub fn build(
         FunctionName::FirstRow => build_first_row(desc)?,
         FunctionName::Max => build_max_min(desc, true)?,
         FunctionName::Min => build_max_min(desc, false)?,
+        FunctionName::MaxCount | FunctionName::MinCount => {
+            build_max_min_count(desc, desc.name == FunctionName::MaxCount)?
+        }
         FunctionName::GroupConcat => {
             return build_group_concat(context, desc, ordinal);
         }
@@ -455,6 +497,22 @@ pub fn build_window_function(
         FunctionName::PercentRank => AggImplementation::PercentRank,
         FunctionName::Lead | FunctionName::Lag => {
             return build_lead_lag(desc, ordinal, desc.name == FunctionName::Lead);
+        }
+        FunctionName::MaxCount | FunctionName::MinCount => {
+            match build_max_min_count(desc, desc.name == FunctionName::MaxCount)? {
+                AggImplementation::MaxMinCount {
+                    kind,
+                    is_max,
+                    reject_rows: false,
+                } if !matches!(
+                    kind,
+                    ValueKind::Enum | ValueKind::Set | ValueKind::Json | ValueKind::VectorFloat32
+                ) =>
+                {
+                    AggImplementation::SlidingMaxMinCount { kind, is_max }
+                }
+                other => other,
+            }
         }
         FunctionName::Max | FunctionName::Min => {
             let is_max = desc.name == FunctionName::Max;
@@ -755,4 +813,20 @@ fn build_lead_lag(desc: &AggFuncDesc, ordinal: usize, is_lead: bool) -> Option<B
     let mut result = built(desc, ordinal, implementation);
     result.default_value = Some(default_value);
     Some(result)
+}
+
+fn build_max_min_count(desc: &AggFuncDesc, is_max: bool) -> Option<AggImplementation> {
+    if desc.mode == AggMode::Dedup {
+        return None;
+    }
+    let arg = &desc.args.first()?.field_type;
+    if arg.eval_type == EvalType::Real && !matches!(arg.kind, FieldKind::Float | FieldKind::Double)
+    {
+        return None;
+    }
+    Some(AggImplementation::MaxMinCount {
+        kind: value_kind(arg)?,
+        is_max,
+        reject_rows: matches!(desc.mode, AggMode::Final | AggMode::Partial2) && desc.args.len() > 1,
+    })
 }

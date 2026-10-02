@@ -48,6 +48,8 @@ pub static AggFuncFactor: LazyLock<HashMap<&'static str, f64>> = LazyLock::new(|
         (ast::AggFuncAvg, 2.0),
         (ast::AggFuncFirstRow, 0.1),
         (ast::AggFuncMax, 1.0),
+        (ast::AggFuncMaxCount, 1.0),
+        (ast::AggFuncMinCount, 1.0),
         (ast::AggFuncMin, 1.0),
         (ast::AggFuncGroupConcat, 1.0),
         (ast::AggFuncBitOr, 0.9),

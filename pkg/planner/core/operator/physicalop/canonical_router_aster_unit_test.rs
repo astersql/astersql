@@ -708,3 +708,111 @@ fn selected_sort_projection_hash_agg_ids_follow_go_candidate_sequence() {
     assert_eq!(aggregate.id() - root.id(), 6);
     assert_eq!(aggregate.children()[0].id(), child_id);
 }
+
+#[test]
+fn count_extrema_mpp_candidates_preserve_one_phase() {
+    let context = context_with_mpp(true);
+    let column = expression::Column::new(
+        *expression::types::NewFieldType(expression::mysql::TypeLonglong),
+        1,
+        1,
+        0,
+    );
+    let mut source = logicalop::DataSource::default().Init(context.clone(), 0);
+    source.TableInfo.TiFlashReplica = Some(expression::model::TiFlashReplicaInfo {
+        Count: 1,
+        Available: true,
+        ..Default::default()
+    });
+    source.TableInfo.ID = 42;
+    source.TableInfo.Name = model::ast::NewCIStr("count_extrema_source");
+    source.PhysicalTableID = 42;
+    source.TableStats.RowCount = 100.0;
+    source.PossibleAccessPaths = vec![planner_util::AccessPath {
+        IsIntHandlePath: true,
+        CountAfterAccess: 100.0,
+        ..Default::default()
+    }];
+    source.SetSchema(expression::NewSchema(vec![column.Clone()]));
+    source.SetStats(property::StatsInfo {
+        RowCount: 100.0,
+        ..Default::default()
+    });
+    let source_has_tiflash = source.HasTiFlash();
+    source
+        .base_mut()
+        .PreparePossibleProperties(&[source_has_tiflash]);
+
+    let count = aggregation::NewAggFuncDesc(
+        context.GetExprCtx(),
+        parser_ast::AggFuncMaxCount,
+        vec![Box::new(column.Clone())],
+        false,
+    )
+    .expect("build COUNT descriptor");
+    let output = expression::Column::new(count.RetTp.clone().expect("COUNT return type"), 2, 2, 0);
+    let mut logical = logicalop::LogicalAggregation {
+        AggFuncs: vec![count],
+        GroupByItems: vec![Box::new(column)],
+        ..Default::default()
+    }
+    .Init(context, 0);
+    logical.SetSchema(expression::NewSchema(vec![output]));
+    logical.SetStats(property::StatsInfo {
+        RowCount: 10.0,
+        ..Default::default()
+    });
+    logical.SetChildren(vec![Box::new(source)]);
+
+    let required = property::PhysicalProperty::default();
+    let grouped = ExhaustPhysicalPlans4LogicalAggregation(&logical, &required);
+    let modes = grouped
+        .iter()
+        .filter_map(|candidate| candidate.as_any().downcast_ref::<PhysicalHashAgg>())
+        .map(|agg| agg.BasePhysicalAgg.MppRunMode)
+        .collect::<Vec<_>>();
+    assert!(modes.contains(&AggMppRunMode::Mpp1Phase));
+    assert!(!modes.contains(&AggMppRunMode::Mpp2Phase));
+    assert!(!modes.contains(&AggMppRunMode::MppTiDB));
+    logical.GroupByItems.clear();
+    let scalar = ExhaustPhysicalPlans4LogicalAggregation(&logical, &required);
+    assert!(
+        scalar
+            .iter()
+            .filter_map(|candidate| candidate.as_any().downcast_ref::<PhysicalHashAgg>())
+            .any(|agg| agg.BasePhysicalAgg.MppRunMode == AggMppRunMode::MppScalar)
+    );
+    assert!(
+        scalar
+            .iter()
+            .filter_map(|candidate| candidate.as_any().downcast_ref::<PhysicalHashAgg>())
+            .all(|agg| agg.BasePhysicalAgg.MppRunMode != AggMppRunMode::MppTiDB)
+    );
+    let mut mpp_required = property::PhysicalProperty::default();
+    mpp_required.TaskTp = property::MppTaskType;
+    mpp_required.ExpectedCnt = f64::MAX;
+    let task = CanonicalFindBestTaskRouter(&mut logical, &mpp_required)
+        .expect("count-extrema scalar MPP route");
+    assert!(!task.invalid());
+    fn inspect(plan: &dyn base::PhysicalPlan, aggregates: &mut usize, gathers: &mut usize) {
+        if let Some(agg) = plan.as_any().downcast_ref::<PhysicalHashAgg>() {
+            *aggregates += 1;
+            assert_eq!(
+                agg.BasePhysicalAgg.AggFuncs[0].Mode,
+                aggregation::CompleteMode
+            );
+        }
+        if let Some(sender) = plan.as_any().downcast_ref::<PhysicalExchangeSender>() {
+            if sender.ExchangeType == tipb::ExchangeType::PassThrough {
+                *gathers += 1;
+            }
+        }
+        for child in plan.children() {
+            inspect(child, aggregates, gathers);
+        }
+    }
+    let (mut aggregates, mut gathers) = (0, 0);
+    inspect(task.plan(), &mut aggregates, &mut gathers);
+    assert_eq!(aggregates, 1);
+    assert!(gathers >= 1);
+}

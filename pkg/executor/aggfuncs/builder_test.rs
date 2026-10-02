@@ -1,3 +1,4 @@
+// Copyright 2026 AsterSQL.
 // 聚合函数构建器的关键分派与参数提取回归测试。
 //
 // 覆盖普通聚合与窗口函数在不同执行阶段、DISTINCT、ORDER BY 以及常量参数下
@@ -186,4 +187,74 @@ fn build_rejects_dedup_json_and_invalid_percentile_modes() {
         int_type(),
     );
     assert!(build(AggFuncBuildContext::default(), &percentile, 0).is_none());
+}
+
+#[test]
+fn count_extrema_factory_preserves_argument_type_and_modes() {
+    for name in [FunctionName::MaxCount, FunctionName::MinCount] {
+        let mut desc = AggFuncDesc {
+            name,
+            mode: AggMode::Complete,
+            has_distinct: false,
+            args: vec![ArgDesc::typed(FieldType::new(
+                FieldKind::String,
+                EvalType::String,
+            ))],
+            return_type: FieldType::new(FieldKind::LongLong, EvalType::Int),
+            order_by_items: vec![],
+        };
+        assert!(matches!(
+            build(AggFuncBuildContext::default(), &desc, 0)
+                .unwrap()
+                .implementation,
+            AggImplementation::MaxMinCount {
+                kind: ValueKind::String,
+                reject_rows: false,
+                ..
+            }
+        ));
+        assert!(matches!(
+            build_window_function(AggFuncBuildContext::default(), &desc, 0)
+                .unwrap()
+                .implementation,
+            AggImplementation::SlidingMaxMinCount {
+                kind: ValueKind::String,
+                ..
+            }
+        ));
+        for mode in [AggMode::Final, AggMode::Partial2] {
+            desc.mode = mode;
+            assert!(matches!(
+                build(AggFuncBuildContext::default(), &desc, 0)
+                    .unwrap()
+                    .implementation,
+                AggImplementation::MaxMinCount {
+                    reject_rows: false,
+                    ..
+                }
+            ));
+            desc.args.push(desc.args[0].clone());
+            assert!(matches!(
+                build(AggFuncBuildContext::default(), &desc, 0)
+                    .unwrap()
+                    .implementation,
+                AggImplementation::MaxMinCount {
+                    reject_rows: true,
+                    ..
+                }
+            ));
+            assert!(matches!(
+                build_window_function(AggFuncBuildContext::default(), &desc, 0)
+                    .unwrap()
+                    .implementation,
+                AggImplementation::MaxMinCount {
+                    reject_rows: true,
+                    ..
+                }
+            ));
+            desc.args.pop();
+        }
+        desc.mode = AggMode::Dedup;
+        assert!(build(AggFuncBuildContext::default(), &desc, 0).is_none());
+    }
 }
