@@ -133,14 +133,26 @@ impl DiskRoot {
     }
     /// 预检磁盘使用情况：若存在写满风险则返回错误信息，否则返回 Ok。
     pub fn pre_check_usage(&self) -> Result<(), String> {
-        let state = self.state.lock().unwrap();
-        let available = state.capacity.wrapping_sub(state.used);
-        if risk_of_disk_full(available, state.capacity) && !cfg!(target_os = "macos") {
-            Err(format!("no enough space in {}", self.path))
+        let failure = |message: String| {
+            astersql_util_dbterror::ErrIngestCheckEnvFailed
+                .GenWithStackByArgs(&[message.into()])
+                .to_string()
+        };
+        fail::fail_point!(
+            "github.com/pingcap/tidb/pkg/ddl/ingest/mockIngestCheckEnvFailed",
+            |_| Err(failure("mock error".into()))
+        );
+        std::fs::create_dir_all(&self.path).map_err(|error| failure(error.to_string()))?;
+        let capacity = fs2::total_space(&self.path).map_err(|error| failure(error.to_string()))?;
+        let available =
+            fs2::available_space(&self.path).map_err(|error| failure(error.to_string()))?;
+        if risk_of_disk_full(available, capacity) && !cfg!(target_os = "macos") {
+            Err(failure(format!("no enough space in {}", self.path)))
         } else {
             Ok(())
         }
     }
+
     /// 启动时检查磁盘可用空间是否不小于 DDL 配额。
     pub fn startup_check(&self) -> Result<(), String> {
         let state = self.state.lock().unwrap();

@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[dependencies]
+fs2 = "0.4"
+fail = { version = "0.5", features = ["failpoints"] }
+astersql-util-dbterror = { path = "../../util/dbterror" }
+
 [lib]
 path = "lib.rs"
 

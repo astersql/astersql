@@ -241,6 +241,12 @@ pub type TransactionOperation =
 /// release their borrow before SQL execution. Explicit resource callbacks retain
 /// Go transaction boundaries for operations requiring an independent session.
 pub trait JobExecutionContext {
+    /// Use this owner's real URI cache and initialized ingest disk resource.
+    fn reorg_index_environment(
+        &mut self,
+    ) -> Result<&mut dyn crate::index::ReorgIndexEnvironment, String> {
+        Err("DDL index reorg environment unavailable".into())
+    }
     /// Real pooled build session: independently committed rows and actual read TSO.
     fn build_create_mview_data(
         &mut self,
@@ -646,4 +652,111 @@ fn check_job_lease_epoch(lease: &dyn JobLease, epoch: u64) -> Result<(), String>
         return Err("DDL owner tenure changed".into());
     }
     Ok(())
+}
+
+/// The shared initialization stage is a durable worker operation, like the
+/// transactional backfill stage above. It does not pretend to run later index
+/// build, ingest, DXF, rollback or publication stages.
+struct IndexReorgInitialization {
+    indexes: Vec<astersql_meta_model::IndexInfo>,
+}
+impl DurableJobExecutor for IndexReorgInitialization {
+    fn runnable(
+        &mut self,
+        _: &mut dyn DurableJobSession,
+        _: &astersql_meta_model::group_3::Job,
+    ) -> Result<bool, String> {
+        Ok(true)
+    }
+    fn recover(
+        &mut self,
+        _: &astersql_meta_model::group_3::Job,
+        _: &dyn JobLease,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+    fn wait_synced(
+        &mut self,
+        _: &astersql_meta_model::group_3::Job,
+        _: i64,
+        _: &dyn JobLease,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+    fn step(
+        &mut self,
+        session: &mut dyn DurableJobSession,
+        job: &mut astersql_meta_model::group_3::Job,
+    ) -> Result<DurableJobStep, String> {
+        let mut current = astersql_meta_model::group_3::Job::decode(
+            &job.encode(false).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let mut indexes = self.indexes.clone();
+        let output = session.with_execution_context(Box::new(move |context| {
+            let outcome = crate::persistent_actions::initialize_reorg_indexes(
+                context,
+                &mut current,
+                &mut indexes,
+            );
+            serde_json::to_vec(&(
+                current.encode(false).map_err(|e| e.to_string())?,
+                indexes,
+                outcome,
+            ))
+            .map_err(|e| e.to_string())
+        }))?;
+        let (encoded, indexes, outcome): (
+            Vec<u8>,
+            Vec<astersql_meta_model::IndexInfo>,
+            Result<(), String>,
+        ) = serde_json::from_slice(&output).map_err(|e| e.to_string())?;
+        // Initialization only owns ReorgMeta. Preserve the caller's decoded args
+        // and multi-schema proxy fields, which are intentionally absent on wire.
+        job.reorg_meta = astersql_meta_model::group_3::Job::decode(&encoded)
+            .map_err(|e| e.to_string())?
+            .reorg_meta;
+        self.indexes = indexes;
+        outcome?;
+        Ok(DurableJobStep {
+            schema_version: 0,
+            update_raw_args: false,
+            removed: false,
+        })
+    }
+}
+impl JobWorker {
+    /// Initialize the real job through its owner's SQL/KV transaction and URI
+    /// cache. Return the changed index metadata for the action's schema step.
+    pub fn initialize_persisted_index_reorg(
+        &mut self,
+        session: &mut dyn DurableJobSession,
+        lease: &dyn JobLease,
+        job: &mut astersql_meta_model::group_3::Job,
+        expected_bytes: &[u8],
+        indexes: Vec<astersql_meta_model::IndexInfo>,
+    ) -> Result<Vec<astersql_meta_model::IndexInfo>, String> {
+        struct InitializationLease<'a> {
+            lease: &'a dyn JobLease,
+            epoch: u64,
+        }
+        impl JobLease for InitializationLease<'_> {
+            fn owner_epoch(&self) -> u64 {
+                self.epoch
+            }
+            fn is_owner(&self) -> bool {
+                self.lease.is_owner() && self.lease.owner_epoch() == self.epoch
+            }
+            fn is_cancelled(&self) -> bool {
+                self.lease.is_cancelled()
+            }
+        }
+        let captured = InitializationLease {
+            lease,
+            epoch: lease.owner_epoch(),
+        };
+        let mut executor = IndexReorgInitialization { indexes };
+        self.transit_persisted_job_step(session, &captured, &mut executor, job, expected_bytes)?;
+        Ok(executor.indexes)
+    }
 }

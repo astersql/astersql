@@ -2049,6 +2049,8 @@ dependencies = [
  "astersql-util-logutil",
  "astersql-util-memory",
  "astersql-util-size",
+ "fail 0.5.1",
+ "fs2",
 ]
 
 [[package]]
@@ -8568,6 +8570,7 @@ dependencies = [
  "crc32fast",
  "crossbeam-channel",
  "etcd-client",
+ "fail 0.5.1",
  "protobuf 2.8.0 (git+https://github.com/pingcap/rust-protobuf?rev=de31a47f395c2f46dbfea2545517ea1b27ad0096)",
  "regex",
  "reqwest 0.12.28",

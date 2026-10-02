@@ -24,16 +24,23 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 /// 全局 ingest 临时数据根目录，进程内只初始化一次。
-static INGEST_ROOT: OnceLock<Mutex<PathBuf>> = OnceLock::new();
+static INGEST_ROOT: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
 /// 初始化全局 Lightning/ingest 环境，设置临时数据根目录。
 ///
 /// 返回 `true` 表示首次设置成功；若已初始化过则返回 `false`。
 pub fn init_global_lightning_env(path: impl Into<PathBuf>) -> bool {
-    INGEST_ROOT.set(Mutex::new(path.into())).is_ok()
+    let mut root = INGEST_ROOT.get_or_init(|| Mutex::new(None)).lock().unwrap();
+    if root.is_some() {
+        return false;
+    }
+    *root = Some(path.into());
+    true
 }
 /// 获取当前全局 ingest 临时数据根目录；未初始化时返回 `None`。
 pub fn ingest_temp_data_dir() -> Option<PathBuf> {
-    INGEST_ROOT.get().map(|root| root.lock().unwrap().clone())
+    INGEST_ROOT
+        .get()
+        .and_then(|root| root.lock().unwrap().clone())
 }
 /// 为指定 DDL 任务生成其 ingest 临时数据子目录路径。
 ///
@@ -90,4 +97,18 @@ pub fn stale_temp_directories(
             ]
         })
         .collect()
+}
+
+/// The initialized ingest root owns the local disk precheck resource.
+pub fn initialized_disk_root() -> Option<crate::disk_root::DiskRoot> {
+    ingest_temp_data_dir().map(|path| crate::disk_root::DiskRoot::new(path.to_string_lossy(), 0, 0))
+}
+
+/// Mirrors restoration of Go's mutable LitInitialized/LitDiskRoot in tests.
+#[doc(hidden)]
+pub fn replace_global_lightning_env_for_test(path: Option<PathBuf>) -> Option<PathBuf> {
+    std::mem::replace(
+        &mut *INGEST_ROOT.get_or_init(|| Mutex::new(None)).lock().unwrap(),
+        path,
+    )
 }

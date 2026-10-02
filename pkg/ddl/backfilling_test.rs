@@ -376,3 +376,241 @@ fn test_split_ranges_by_keys() {
         assert_eq!(range_bounds(&expected), range_bounds(&actual), "{name}");
     }
 }
+
+#[test]
+fn go_commit_d0dfde35b7_cloud_storage_precedes_disk_selection() {
+    let _serial = COMMIT_D0_METRICS.lock().unwrap();
+    use crate::index::{ReorgIndexEnvironment, init_for_reorg_indexes};
+    use astersql_meta_model::group_3::{Job, ReorgType};
+    struct Environment {
+        loads: usize,
+        probes: usize,
+    }
+    impl ReorgIndexEnvironment for Environment {
+        fn load_cloud_storage_uri(&mut self, job_id: i64) -> Result<String, String> {
+            assert_eq!(job_id, 2);
+            self.loads += 1;
+            Ok("s3://bucket/dxf/".into())
+        }
+        fn after_load_cloud_storage_uri(&mut self, job: &mut Job) {
+            let meta = job.reorg_meta.as_ref().unwrap();
+            assert!(meta.UseCloudStorage);
+            assert_eq!(meta.ReorgTp, ReorgType::ReorgTypeNone);
+            assert_eq!(self.loads, 1);
+        }
+        fn ingest_initialized(&self) -> bool {
+            true
+        }
+        fn pre_check_ingest_disk(&mut self) -> Result<(), String> {
+            self.probes += 1;
+            Err("mock ingest environment check failed".into())
+        }
+    }
+    let mut environment = Environment {
+        loads: 0,
+        probes: 0,
+    };
+    let mut job = Job {
+        id: 2,
+        reorg_meta: Some(astersql_meta_model::group_3::DDLReorgMeta {
+            IsFastReorg: true,
+            IsDistReorg: true,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut indexes = [astersql_meta_model::IndexInfo::default()];
+    init_for_reorg_indexes(&mut environment, &mut job, &mut indexes).unwrap();
+    let meta = job.reorg_meta.as_ref().unwrap();
+    assert!(meta.UseCloudStorage);
+    assert_eq!(meta.ReorgTp, ReorgType::ReorgTypeIngest);
+    assert_eq!((environment.loads, environment.probes), (1, 0));
+    assert_eq!(
+        indexes[0].BackfillState,
+        astersql_meta_model::BackfillStateRunning
+    );
+}
+
+struct CommitD0Environment {
+    uri: String,
+    initialized: bool,
+    disk_error: Option<String>,
+    loads: usize,
+    probes: usize,
+}
+impl crate::index::ReorgIndexEnvironment for CommitD0Environment {
+    fn load_cloud_storage_uri(&mut self, _: i64) -> Result<String, String> {
+        self.loads += 1;
+        Ok(self.uri.clone())
+    }
+    fn ingest_initialized(&self) -> bool {
+        self.initialized
+    }
+    fn pre_check_ingest_disk(&mut self) -> Result<(), String> {
+        self.probes += 1;
+        self.disk_error.clone().map_or(Ok(()), Err)
+    }
+}
+
+#[test]
+fn go_commit_d0dfde35b7_preserves_started_type_and_go_fallbacks() {
+    let _serial = COMMIT_D0_METRICS.lock().unwrap();
+    use astersql_meta_model::group_3::{DDLReorgMeta, Job, ReorgType::*};
+    for (old, fast, initialized, cloud, expected, probes) in [
+        (ReorgTypeTxn, true, true, true, ReorgTypeTxn, 0),
+        (ReorgTypeIngest, false, false, false, ReorgTypeIngest, 0),
+        (ReorgTypeTxnMerge, true, true, true, ReorgTypeTxnMerge, 0),
+        (ReorgTypeNone, false, true, true, ReorgTypeTxn, 0),
+        (ReorgTypeNone, true, false, true, ReorgTypeTxnMerge, 0),
+        (ReorgTypeNone, true, true, false, ReorgTypeIngest, 1),
+        (ReorgTypeNone, true, true, true, ReorgTypeIngest, 0),
+    ] {
+        let mut env = CommitD0Environment {
+            uri: if cloud {
+                "s3://bucket".into()
+            } else {
+                String::new()
+            },
+            initialized,
+            disk_error: None,
+            loads: 0,
+            probes: 0,
+        };
+        let mut job = Job {
+            reorg_meta: Some(DDLReorgMeta {
+                ReorgTp: old,
+                IsFastReorg: fast,
+                IsDistReorg: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut indexes = [
+            astersql_meta_model::IndexInfo::default(),
+            astersql_meta_model::IndexInfo::default(),
+        ];
+        let counter = &astersql_metrics::telemetry::InitTelemetryMetrics()
+            .unwrap()
+            .add_index_ingest;
+        let before = counter.get();
+        crate::index::init_for_reorg_indexes(&mut env, &mut job, &mut indexes).unwrap();
+        assert_eq!(
+            counter.get() - before,
+            if expected.NeedMergeProcess() {
+                1.0
+            } else {
+                0.0
+            }
+        );
+        let meta = job.reorg_meta.as_ref().unwrap();
+        assert_eq!(meta.ReorgTp, expected);
+        assert_eq!(meta.UseCloudStorage, cloud);
+        assert_eq!((env.loads, env.probes), (1, probes));
+        for index in indexes {
+            assert_eq!(
+                index.BackfillState == astersql_meta_model::BackfillStateRunning,
+                expected.NeedMergeProcess()
+            );
+        }
+    }
+}
+
+#[test]
+fn go_commit_d0dfde35b7_empty_indexes_do_not_access_environment() {
+    let _serial = COMMIT_D0_METRICS.lock().unwrap();
+    let mut env = CommitD0Environment {
+        uri: "s3://bucket".into(),
+        initialized: true,
+        disk_error: Some("must not probe".into()),
+        loads: 0,
+        probes: 0,
+    };
+    let mut job = astersql_meta_model::group_3::Job::default();
+    crate::index::init_for_reorg_indexes(&mut env, &mut job, &mut []).unwrap();
+    assert!(job.reorg_meta.is_none());
+    assert_eq!((env.loads, env.probes), (0, 0));
+}
+
+#[test]
+fn go_commit_d0dfde35b7_partial_index_errors_follow_selection_and_loading() {
+    let _serial = COMMIT_D0_METRICS.lock().unwrap();
+    use astersql_meta_model::group_3::{DDLReorgMeta, Job, ReorgType::*};
+    for (fast, initialized, expected) in [
+        (false, true, ReorgTypeTxn),
+        (true, false, ReorgTypeTxnMerge),
+    ] {
+        let mut env = CommitD0Environment {
+            uri: "s3://bucket".into(),
+            initialized,
+            disk_error: None,
+            loads: 0,
+            probes: 0,
+        };
+        let mut job = Job {
+            reorg_meta: Some(DDLReorgMeta {
+                IsFastReorg: fast,
+                IsDistReorg: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut indexes = [
+            astersql_meta_model::IndexInfo::default(),
+            astersql_meta_model::IndexInfo {
+                ConditionExprString: "a > 0".into(),
+                ..Default::default()
+            },
+        ];
+        let counter = &astersql_metrics::telemetry::InitTelemetryMetrics()
+            .unwrap()
+            .add_index_ingest;
+        let before = counter.get();
+        let error =
+            crate::index::init_for_reorg_indexes(&mut env, &mut job, &mut indexes).unwrap_err();
+        assert_eq!(counter.get(), before);
+        assert_eq!(
+            error,
+            astersql_util_dbterror::ErrUnsupportedAddPartialIndex
+                .GenWithStackByArgs(&[
+                    "add partial index without fast reorg is not supported".into()
+                ])
+                .to_string()
+        );
+        assert_eq!(job.reorg_meta.as_ref().unwrap().ReorgTp, expected);
+        assert!(job.reorg_meta.as_ref().unwrap().UseCloudStorage);
+        assert_eq!((env.loads, env.probes), (1, 0));
+        assert!(
+            indexes
+                .iter()
+                .all(|index| index.BackfillState != astersql_meta_model::BackfillStateRunning)
+        );
+    }
+    let mut env = CommitD0Environment {
+        uri: "s3://bucket".into(),
+        initialized: true,
+        disk_error: Some("disk identity".into()),
+        loads: 0,
+        probes: 0,
+    };
+    let mut job = Job {
+        reorg_meta: Some(DDLReorgMeta {
+            IsFastReorg: true,
+            IsDistReorg: false,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut indexes = [astersql_meta_model::IndexInfo {
+        ConditionExprString: "a > 0".into(),
+        ..Default::default()
+    }];
+    assert_eq!(
+        crate::index::init_for_reorg_indexes(&mut env, &mut job, &mut indexes).unwrap_err(),
+        "disk identity"
+    );
+    assert_eq!(job.reorg_meta.as_ref().unwrap().ReorgTp, ReorgTypeNone);
+    assert!(!job.reorg_meta.as_ref().unwrap().UseCloudStorage);
+    assert_eq!((env.loads, env.probes), (1, 1));
+}
+
+static COMMIT_D0_METRICS: std::sync::Mutex<()> = std::sync::Mutex::new(());

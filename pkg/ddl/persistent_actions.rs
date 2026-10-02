@@ -21,7 +21,7 @@ pub fn handler_available(action: u8) -> bool {
     action == astersql_meta_model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_ATTRIBUTES
         || matches!(
             action,
-            1 | 3 | 10 | 17 | 26 | 39 | 55 | 75 | 76 | 85 | 86 | 93
+            1 | 3 | 7 | 10 | 17 | 26 | 32 | 39 | 55 | 75 | 76 | 85 | 86 | 93
         )
 }
 
@@ -29,6 +29,9 @@ pub fn step(
     context: &mut dyn crate::job_worker::JobExecutionContext,
     job: &mut Job,
 ) -> Result<i64, String> {
+    if matches!(job.tp, 7 | 32) {
+        return initialize_prepared_index_action(context, job);
+    }
     if job.tp == 86 {
         return crate::persistent_create_materialized_view::step(context, job);
     }
@@ -435,4 +438,101 @@ pub fn async_notify_event(
             .map_err(astersql_ddl_notifier::Error::Message)
     })
     .map_err(|e| e.to_string())
+}
+
+/// Shared initialization stage of ADD INDEX and changing-index reorganization.
+/// The caller owns building the index metadata and its subsequent schema step;
+/// this dispatcher must not publish indexes or substitute a transaction backend.
+pub fn initialize_reorg_indexes(
+    context: &mut dyn crate::job_worker::JobExecutionContext,
+    job: &mut Job,
+    indexes: &mut [astersql_meta_model::IndexInfo],
+) -> Result<(), String> {
+    use astersql_meta_model::group_3::{
+        ACTION_ADD_INDEX, ACTION_ADD_PRIMARY_KEY, ACTION_MODIFY_COLUMN,
+    };
+    if !matches!(
+        job.tp,
+        ACTION_ADD_INDEX | ACTION_ADD_PRIMARY_KEY | ACTION_MODIFY_COLUMN
+    ) {
+        return Err(format!(
+            "index reorg initialization unavailable for action {}",
+            job.tp
+        ));
+    }
+    if indexes.is_empty() {
+        return Ok(());
+    }
+    crate::index::init_for_reorg_indexes(context.reorg_index_environment()?, job, indexes)
+}
+
+/// Resume the initialization phase using the action's prepared canonical indexes.
+/// Building missing indexes, schema transitions and backend execution remain
+/// separate stages: never claim publication or fall back to a different backend.
+fn initialize_prepared_index_action(
+    context: &mut dyn crate::job_worker::JobExecutionContext,
+    job: &mut Job,
+) -> Result<i64, String> {
+    use astersql_meta_model::group_3::ReorgType;
+    if job.state == JobState::Rollingback {
+        return Err("ADD INDEX rollback stage is not implemented".into());
+    }
+    if job.schema_state != SchemaState::None
+        || job
+            .reorg_meta
+            .as_ref()
+            .is_some_and(|meta| meta.ReorgTp != ReorgType::ReorgTypeNone)
+    {
+        return Err("ADD INDEX stage after reorg initialization is not implemented".into());
+    }
+    let args = astersql_meta_model::group_2::GetModifyIndexArgs(job).map_err(|error| {
+        job.state = JobState::Cancelled;
+        error.to_string()
+    })?;
+    if args.IndexArgs.is_empty() {
+        return Err(
+            "ADD INDEX metadata preparation stage is not implemented: no index arguments".into(),
+        );
+    }
+    let mut table = None;
+    context.with_transaction(&mut |txn| {
+        table = Some(public_table(
+            &astersql_meta::TransactionMutator::new(txn),
+            job,
+        )?);
+        Ok(Vec::new())
+    })?;
+    let mut table = table.ok_or("ADD INDEX table metadata missing")?;
+    let mut positions = Vec::with_capacity(args.IndexArgs.len());
+    for arg in &args.IndexArgs {
+        let position = table
+            .Indices
+            .iter()
+            .position(|index| index.Name.L == arg.IndexName.L)
+            .ok_or("ADD INDEX metadata preparation stage is not implemented: index missing")?;
+        if table.Indices[position].State != SchemaState::None {
+            return Err("ADD INDEX stage after reorg initialization is not implemented".into());
+        }
+        positions.push(position);
+    }
+    let mut indexes = positions
+        .iter()
+        .map(|position| table.Indices[*position].clone())
+        .collect::<Vec<_>>();
+    // Go onCreateIndex cancels initialization failures, unlike later retryable
+    // backfill errors. The normal executor retains the error in durable history.
+    initialize_reorg_indexes(context, job, &mut indexes).map_err(|error| {
+        job.state = JobState::Cancelled;
+        error
+    })?;
+    for (position, index) in positions.into_iter().zip(indexes) {
+        table.Indices[position] = index;
+    }
+    context.with_transaction(&mut |txn| {
+        astersql_meta::TransactionMutator::new(txn).update_table(job.schema_id, &mut table)?;
+        Ok(Vec::new())
+    })?;
+    // Initialization does not itself publish a schema state; the next invocation
+    // must report the unimplemented following stage without repeating telemetry.
+    Ok(0)
 }

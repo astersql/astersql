@@ -200,6 +200,7 @@ regex = "1"
 tipb = { git = "https://github.com/pingcap/tipb.git", rev = "07f0ea6b6bffa9d8ac100d81ee51dbbfe4dda3bf", default-features = false, features = ["protobuf-codec"] }
 
 [dev-dependencies]
+fail = { version = "0.5", features = ["failpoints"] }
 "astersql-keyspace" = { package = "astersql-keyspace", path = "../keyspace" }
 "astersql-store-mockstore-teststore" = { package = "astersql-store-mockstore-teststore", path = "../store/mockstore/teststore" }
 "astersql-testkit-testmain" = { package = "astersql-testkit-testmain", path = "../testkit/testmain" }

@@ -1752,3 +1752,7 @@ mod normal_ddl_create_materialized_view_shadow_test;
 #[cfg(test)]
 #[path = "runtime/normal_ddl_create_materialized_view_test.rs"]
 mod normal_ddl_create_materialized_view_test;
+
+#[cfg(test)]
+#[path = "runtime/normal_ddl_index_reorg_initialization_test.rs"]
+mod normal_ddl_index_reorg_initialization_test;

@@ -519,6 +519,23 @@ pub fn GetCloudStorageURI(ctx: &Context) -> Result<String> {
     if uri.is_empty() {
         return Ok(uri);
     }
+    Ok(resolve_cloud_storage_uri(
+        &uri,
+        runtime.sem_enabled(),
+        || runtime.cluster_id(ctx),
+    ))
+}
+
+/// Resolve the same URI for a concrete worker store without installing a global
+/// task runtime. The cluster lookup remains lazy and is skipped without a prefix.
+pub fn resolve_cloud_storage_uri(
+    uri: &str,
+    sem_enabled: bool,
+    cluster_id: impl FnOnce() -> Option<u64>,
+) -> String {
+    if uri.is_empty() {
+        return String::new();
+    }
     // 拆分 query/fragment，再在 path 末尾插入 /dxf[/cluster_id]。
     let suffix_at = uri
         .char_indices()
@@ -531,8 +548,8 @@ pub fn GetCloudStorageURI(ctx: &Context) -> Result<String> {
         .unwrap_or(base.len());
     let (authority, path) = base.split_at(path_start);
     let has_prefix = !path.trim_matches('/').is_empty();
-    let cluster = if !runtime.sem_enabled() && has_prefix {
-        runtime.cluster_id(ctx).map(|id| id.to_string())
+    let cluster = if !sem_enabled && has_prefix {
+        cluster_id().map(|id| id.to_string())
     } else {
         None
     };
@@ -548,7 +565,7 @@ pub fn GetCloudStorageURI(ctx: &Context) -> Result<String> {
     if !joined.ends_with('/') {
         joined.push('/');
     }
-    Ok(format!("{authority}{joined}{suffix}"))
+    format!("{authority}{joined}{suffix}")
 }
 
 /// 更新“暂停缩容”TTL 标志。

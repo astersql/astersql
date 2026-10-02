@@ -2,7 +2,7 @@
 
 批次：【批次 3】依赖：批次2及传递依赖（顺序执行，避免共享资源冲突；不代表全部业务互相依赖）。顺序1→2→…→359，无并行任务。
 
-状态：未开始
+状态：已完成（本提交初始化范围；完整 ADD INDEX 后续阶段未实现）
 
 目的：逐项核对本Go提交在当前Rust的实际覆盖，只修缺失和偏离，保留完整Go逻辑与测试意图。
 
@@ -105,10 +105,10 @@ Go/Bazel修改前按AGENTS.md判断make bazel_prepare；failpoint/集成记录/R
 ## Progress（进度）
 
 
-- [ ] 读取Go完整来源与后续覆盖关系，列出本提交全部行为分段。
-- [ ] 核对现有Rust与实际接线，记录已覆盖和缺口。
-- [ ] 逐段补齐必要逻辑并取得适用红绿/当前通过证据。
-- [ ] 自审、适用Ready及交接完成。
+- [x] 读取Go完整来源与后续覆盖关系，列出本提交全部行为分段。
+- [x] 核对现有Rust与实际接线，记录已覆盖和缺口。
+- [x] 逐段补齐必要逻辑并取得适用红绿/当前通过证据。
+- [x] 自审、适用Ready及交接完成。
 
 ## Surprises & Discoveries（发现）
 
@@ -124,3 +124,156 @@ Go/Bazel修改前按AGENTS.md判断make bazel_prepare；failpoint/集成记录/R
 
 
 尚未执行；结束时记录逐项产物、最终证据与未验证项。分段完成只代表该段，不代表整个提交。
+
+
+## 2026-10-02 当前执行证据与阻塞交接
+
+
+读取 skills/do-task-plans/SKILL.md、skills/rustcodegraph/SKILL.md、PLANS.md、pkg/ddl/doc.go、docs/agents/ddl/README.md、docs/agents/testing-flow.md；按照用户指令保留本编号，覆盖技能的删除任务文件要求。plan.md/prompt.md只读。HEAD为2beb25b9a4f3554998e872b4babc3b0854acc50a；工作区存在批次1/2已授权修改，本次没有回退或提交这些修改。
+
+前置依赖证据：任务1最终记录14个目标测试、4个定向测试及fmt/lint/diff/NextGen退出0；任务2最新2026-10-02记录23项唯一目标回归及Ready退出0，历史阻塞已被后续授权和最终证据覆盖。批次1无前置依赖。上述记录仅用于顺序解锁，不代替本任务当前证据。
+
+### Go→Rust覆盖与去向
+
+
+| Go行为/测试意图 | 当前Rust实际事实 | 判定 |
+| --- | --- | --- |
+| initForReorgIndexes：空idxInfos直接返回；非空先loadCloudStorageURI，再pickBackfillType；错误立即返回；Txn/TxnMerge拒绝部分索引；NeedMergeProcess递增telemetry并将全部索引BackfillState置Running | index.rs没有对应初始化函数；index.rs:857的pick_backfill_type只接受distributed/ingest/temporary_index_merge三个布尔值；graph callers仅backfilling_test.rs:150，未接生产 | 缺失，不能用布尔模型验证顺序、元数据和副作用 |
+| loadCloudStorageURI：读取worker/store对应URI，缓存到jobContext，UseCloudStorage=URI非空且IsDistReorg，之后afterLoadCloudStorageURI注入点 | meta/model/reorg.rs保留真实DDLReorgMeta字段；vardef/tidb_vars.rs有CloudStorageURI；DXF handle有GetCloudStorageURI，但未见DDL模式初始化将这些组件接到真实job；reorg_util.rs的InitializedReorgMeta只是独立快照模型且仅测试调用 | 组件存在不代表生产等价；缺少job生命周期中的接线 |
+| pickBackfillType：已有ReorgTp保持；非fast用Txn；LitInitialized且cloud用Ingest并跳过磁盘；本地预检错误返回None/error且不写入类型；预检成功用Ingest；环境未初始化用TxnMerge | index.rs:846枚举只有Transactional/LocalIngest/Distributed，缺少None/TxnMerge，函数不接受job、不返回Result、不调用DiskRoot；ingest/disk_root.rs:135存在真实pre_check_usage，但DDL crate该依赖仅cfg(windows)，选择器没有调用 | 与Go完整类型、持久化、错误契约偏离 |
+| TestPickBackfillType原三个分支：已选Txn保持、环境未初始化TxnMerge、环境初始化Ingest；新子测试ID2、fast/dist=true、URI=s3://bucket、磁盘预检强制失败，调用真实初始化后无错误、UseCloudStorage=true、ReorgTp=Ingest；Cleanup恢复全局配置 | backfilling_test.rs:150只测三个布尔输入和temporary merge；lib.rs:144真实注册，但没有go_commit_d0dfde35b7目标测试 | 既有测试不是本Go意图；不能计为覆盖 |
+
+当前Go initForReorgIndexes位于index.go:1385–1408，helper位于1854–1888，调用方index.go:1229、modify_column.go:1269/1517。来源父→提交完整差异仅移动加载调用并新增测试及testfailpoint导入。已读本提交完整helper及当前完整函数；后续路径日志列出14提交，d0dfde35b7→ad193e964b^2的差异没有改变初始化顺序或删除新增cloud子测试。5e1901b920a58fce91f8493cfe24299ebe77f168新增resolveCloudStorageURI处理owner failover，未撤销本提交；保留其后续语义，本任务不回移或吞并该独立提交。后续RU、vector、auto split、collation及disk worker变更没有替代目标初始化函数。
+
+### 精确生产阻塞边界
+
+
+persistent_actions.rs:20–26的handler_available不接受ACTION_ADD_INDEX=7或ACTION_ADD_PRIMARY_KEY=32；table_mode.rs:190–199在真实持久化分派直接返回normal DDL persistent handler unavailable for action。job_worker.rs:443–472明确只有transaction backend stage，run_transactional_index_backfill拒绝IsDistReorg或非ReorgTypeTxn，模式选择属于尚缺的action。canonical_domain.rs:1039的add_index是catalog元数据追加，不能替代owner/job/schema状态和模式初始化。PersistentReorgContext仅存snapshot/info/runtime，未提供本提交需要的worker jobContext URI与模式初始化链。
+
+因此不能通过局部移动一个调用完成任务：最小前置能力是实际ADD INDEX（及共享初始化调用方）的job初始化入口、真实job ReorgMeta与owner上下文URI加载、ingest环境/磁盘预检的生产边界，以及选定模式的生产分派。补完整ADD INDEX action/state machine及ingest/DXF调用链属于独立基础能力范围，不在本次授权内。没有新增布尔简化模型、仅内部flag测试或未接线helper来冒充修复；没有改动任何Rust/Go源或依赖。
+
+按任务步骤5及执行技能“遇到阻碍立即停止执行”标已阻塞；这属于相关Rust能力缺口，不能使用无关基线例外标已完成，待回归。续接需要提供上述能力的拥有任务与当前完成证据，或明确授权必要生产接线范围；仍在本编号维护，不能推进批次4。
+
+### 当前命令与结果
+
+
+仓库根来源命令均退出0：
+
+    git show --format=fuller --stat d0dfde35b7279221642fcab69fa59cf567054383
+    git diff --find-renames --unified=30 ab7d93b603ba83d398d1b9b0063c78eceaacfc20 d0dfde35b7279221642fcab69fa59cf567054383
+    git log --format='%H %s' d0dfde35b7279221642fcab69fa59cf567054383..ad193e964b^2 -- pkg/ddl/backfilling_test.go pkg/ddl/index.go
+    git show d0dfde35b7:pkg/ddl/index.go
+    git diff d0dfde35b7 ad193e964b^2 -- pkg/ddl/backfilling_test.go
+    git diff d0dfde35b7 ad193e964b^2 -- pkg/ddl/index.go
+    git show 5e1901b920a58fce91f8493cfe24299ebe77f168 -- pkg/ddl/index.go
+    git rev-parse HEAD
+    git status --short
+    ~/.rustcodegraph/bin/rustcodegraph status
+    ~/.rustcodegraph/bin/rustcodegraph callers pick_backfill_type --limit 20
+
+RustCodeGraph当前11338文件/298676节点；使用query和node核验上表的具体位置，rg核对未命中符号及元数据字段，跨语言图边不作为Rust接线证据。
+
+    cargo test --manifest-path pkg/ddl/Cargo.toml go_commit_d0dfde35b7 -- --nocapture
+
+退出0；构建1m14s，实际running 0 tests，0 passed/0 failed/0 ignored/610 filtered out。仅证明目标测试入口缺失，不算行为红灯或绿灯；没有当前有效回归验收证据。构建过程未修改Cargo清单/依赖，也未使用本地patch。
+
+本次为只读代码核查与测试入口诊断，仅修改本编号记录；无代码交付profile，未完成Ready。verify-profile技能在.agents不存在，搜索skills也没有入口。未运行cargo fmt、fmt check、make lint、NextGen（没有代码修改，不应以编译代替相关缺失行为）；未运行Go/Bazel、failpoint开关、集成录制、RealTiKV或性能测试。回归新增/有效红绿、完整Go边界、真实接线均未验证。正确性风险：本目标尚未对齐；兼容性风险：真实job类型/错误/持久化语义未证明；性能：无新增生产修改，但未验证cloud/local回填性能。最后运行git diff --check检查记录和保留工作区，结果在下方追加。
+
+本轮结果：已阻塞，保留编号文件、总计划只读、不提交主仓库；不声称359任务或本提交完成。
+
+## 2026-10-02 授权续接
+
+
+用户明确授权补齐本提交验证必需的ADD INDEX持久化DDL分派与回填worker模式接线，复用已有ingest/DXF路径；范围限于使initForReorgIndexes选择顺序在真实Rust生产入口可执行，不做完整DDL子系统重写。前节阻塞停止点转为历史记录，继续在本编号实现及取得真实红绿和Ready证据。前节git diff --check退出0。尚未取得行为验收证据，不标完成。
+
+### 续接里程碑与测试设计
+
+
+共享初始化首先按Go父提交顺序建立可调用代码，独立backfilling_test.rs新增cloud_storage_precedes_disk_selection，注入磁盘故障边界（URI s3://bucket/dxf/、job2、fast/dist true、一个真实IndexInfo结构）。首次错误类型路径编译失败不计红灯；修正group_3类型后运行前缀退出101，1 failed/0 passed，返回mock ingest environment check failed。这是新移植初始化函数的前序顺序红灯，不冒充已有Rust生产路径红灯。随后移动加载到选择之前，真实worker回归仍需补齐，不以该helper测试单独验收。
+
+决定限定为共享初始化阶段：复用JobWorker::transit_persisted_job_step与SystemSessionPool拥有的真实KV/SQL事务，新增initialize_persisted_index_reorg阶段入口和persistent_actions::initialize_reorg_indexes阶段分派（ADD INDEX、ADD PRIMARY KEY、MODIFY COLUMN）；初始化不执行完整action、不发布Public，不静默将ingest/DXF转为Txn。与已存在run_transactional_index_backfill相同，这是一段可由action驱动的生产worker操作，不宣称完整ADD INDEX action已实现。需要当前非零真实worker测试证明job行持久化、owner lease、URI读取和磁盘错误。
+
+接下来真实测试在session crate独立文件，前缀go_commit_d0dfde35b7：真实表有行、真实IndexInfo来自表列，真实持久化job行；cloud路径配置URI并注入Go命名磁盘故障后成功Ingest/UseCloudStorage/BackfillRunning，本地路径相同故障需失败且持久化job不改变；空索引不加载URI；started type保持；非fastTxn及非initializedTxnMerge/部分索引拒绝。共享helper边界测试扩展用于不改变全局配置的全部分支；真实阶段测试验证生产worker适配而非复制结果。
+
+
+## 2026-10-02 最终覆盖与验证（覆盖历史阻塞结论）
+
+用户再次明确授权将正常 ADD INDEX 分派接入初始化阶段，后续未实现阶段明确报错，不扩展整个 DDL/backfill 子系统。已将 persistent_actions::handler_available/step 接入 action 7/32；NormalDdlExecutor 原有事务/错误/历史机制直接调用 initialize_prepared_index_action，再进入共享初始化。该生产阶段从实际 KV 表元数据及 Go-wire ModifyIndexArgs 取得已准备的 StateNone 索引，不依赖测试提供的环境模型。缺少已准备索引、rollback、后续 schema/backend 阶段均明确报错。初始化成功只持久化模式及 BackfillState，不冒充 schema 已推进或索引已发布。
+
+**边界必须保留：**新建索引元数据的 preparation 阶段、完整 SQL ADD INDEX 状态机、ingest/DXF 后端启动及实际回填仍未实现。本任务完成的是用户限定的 d0dfde35b7 初始化顺序/模式/错误/副作用以及正常持久化分派可达性，绝不表示任意 SQL ADD INDEX 已可用。正常入口回归使用真实有行表、真实预备索引元数据、真实持久化 job、NormalDdlExecutor 和 KV/SQL 提交；它不执行 SQL ADD INDEX 从新索引构建到 Public 的完整周期，也不以直接 helper 测试作为充分证据。
+
+### 逐段最终映射
+
+| Go 条件、顺序、错误与副作用 | Rust 实现及真实接线 | 当前验证 |
+| --- | --- | --- |
+| 空索引直接返回，不访问环境 | index::init_for_reorg_indexes 首个判断；persistent_actions::initialize_reorg_indexes 同样跳过 context | empty_indexes_do_not_access_environment；无 ReorgMeta 也成功，环境不可访问 |
+| loadCloudStorageURI 先于选择，缓存 owner jobContext，UseCloudStorage=URI 非空且 dist | ConcreteJobExecutionContext 实现 ReorgIndexEnvironment；读取真实 CloudStorageURI，复用 DXF resolve_cloud_storage_uri/store clusterID/SEM；owner epoch 改变清空 URI cache；正常分派 → initialize_prepared_index_action → initialize_reorg_indexes → init_for_reorg_indexes | cloud_storage_precedes_disk_selection 在 afterLoad 验证 cloud=true/ReorgTp=None；persisted_worker_cloud_skips_real_disk_fault 验证实际 owner URI s3://bucket/dxf/及 hook 1次；normal_dispatch 测正常 executor |
+| 已选 ReorgTp 保持；非 fast Txn；初始化且 cloud Ingest 绕过磁盘；local 预检失败 None/error，成功 Ingest；未初始化 TxnMerge | index::pick_job_backfill_type 使用 group_3::Job/DDLReorgMeta/ReorgType；生产 ingest::env initialized_disk_root；DiskRoot::pre_check_usage 实际 mkdir/fs2 filesystem probe，保留 ErrIngestCheckEnvFailed 和 Go 命名 failpoint、macOS 风险豁免 | preserves_started_type_and_go_fallbacks 7分支；cloud/native/local 真故障边界；disk_root 真实路径错误红绿 |
+| Txn/TxnMerge 拒绝 partial；错误先后不可变化；merge telemetry 一次，全部 BackfillRunning | index::init_for_reorg_indexes 原样保留 ErrUnsupportedAddPartialIndex、NeedMergeProcess 分支，实际 telemetry counter 和 canonical IndexInfo | partial_index_errors_follow_selection_and_loading；fallback test 测两个索引及真实计数器增量，不仅 flag |
+| TestPickBackfillType 新 cloud 子测试 fast/dist、URI、ingest 初始化、磁盘强制失败但 Ingest 成功 | 原 helper 测 ID2；真实阶段及正常 executor 测 Go 命名 disk failpoint + 配置恢复；源/测试独立文件 | 4个 ddl目标、4个 session目标、1个原生 disk目标，均非零/无 ignored |
+| onCreateIndex 调用初始化失败取消，后续不虚报成功 | 正常 action 初始化失败置 Cancelled，由既有 NormalDdlExecutor 清理 statement、保留原表、写 KV/SQL history；后续阶段错误显式持久化 | normal_dispatch：cloud 成功 Running/None/Ingest/BackfillRunning；下一次 error_count=1、明确未实现、仍非 Public；local 标准8256错误、Cancelled历史、queue 删除、table BackfillState 未改变、原数据保留 |
+| owner 换届禁止旧初始化提交 | initialize_persisted_index_reorg 捕获 epoch 并复用 transit_persisted_job_step fencing | initialization_fences_replacement_owner：afterLoad期间epoch1→2，失败not DDL owner，queue bytes不变；不宣称已修改全局 normal executor 的所有epoch契约 |
+
+### 修改文件（仅本任务）
+
+- pkg/ddl/index.rs、backfilling_test.rs、job_worker.rs、persistent_actions.rs、Cargo.toml。
+- pkg/ddl/ingest/disk_root.rs、disk_root_test.rs、env.rs、Cargo.toml。
+- pkg/dxf/framework/handle/handle.rs（原 GetCloudStorageURI 共用 URI resolver，原矩阵保留）。
+- pkg/session/runtime/system_session.rs、runtime.rs、runtime/normal_ddl_index_reorg_initialization_test.rs、pkg/session/Cargo.toml。
+- Cargo.lock 只增本地 crate 正常依赖记录；保留批次2既有 prometheus 变更。
+- 本编号任务文件。没有修改总 plan.md/prompt.md，没有提交、删除本编号或推进批次4；其他既有任务1/2修改保留。
+
+没有改动 Go、Bazel、新Go import/top-level Test 或 Go模块依赖，不触发 bazel_prepare。未运行禁止默认运行的 bazel_lint_changed。外部 client-rust 没有改动；没有临时依赖副本、vendor、third_party、本地 patch 或外部 tag 修改。
+
+### 红灯（编译错误不计行为红灯）
+
+1. ddl 新初始化使用 Go 父提交先 pick 后 load：目标 cloud test 实际1 failed，退出101，mock ingest environment check failed；之后移到 load 在前。这是新移植旧顺序红灯，不冒充基线不存在的函数已有实现。
+2. native precheck 临时仅替换为 HEAD 旧缓存实现：disk 前缀实际1 failed，退出101，期望真实路径错误却返回 Ok。Python finally 恢复文件；脚本 exit0 不当作测试绿灯。
+3. 在真实 session 阶段临时只恢复父提交先 pick 后 load 顺序，运行 `cargo test --manifest-path pkg/session/Cargo.toml --lib go_commit_d0dfde35b7_persisted_worker_cloud_skips_real_disk_fault -- --nocapture`：实际1 failed/0passed，退出101，标准 `[ddl:8256]Check ingest environment failed: mock error`；finally 恢复最终顺序。
+4. 新 normal_dispatch 用例加入但正常分派尚未接入：`cargo test --manifest-path pkg/session/Cargo.toml --lib go_commit_d0dfde35b7_normal_dispatch -- --nocapture` 实际1 failed/0passed，退出101，normal DDL persistent handler unavailable for action7。加入正常 action 阶段后当前同用例绿灯。其先前 mutable 引用/CIStr fixture 编译失败不计红灯。
+
+### 最终当前命令与数量
+
+WIP 为前缀定向回归与编译；交付使用 Ready（验证技能路径不存在，直接使用任务明确要求的 scoped tests/fmt/lint/NextGen/diff）。未以 task1/2 检查代替本任务。以下均退出0；没有 zero-test 或 ignored 验收。
+
+    cargo test --manifest-path pkg/ddl/Cargo.toml go_commit_d0dfde35b7 -- --nocapture
+
+4 passed，0 failed/ignored，610 filtered，最后运行7.31s构建/0.72s测试后再次针对最终分派运行4passed，4.75s构建/0.74s测试。
+
+    cargo test --manifest-path pkg/session/Cargo.toml --lib go_commit_d0dfde35b7 -- --nocapture
+
+最终4 passed，0 failed/ignored，561 filtered，构建20.13s/测试27.78s；包含真实 normal dispatcher、cloud/local故障、owner变更。正常分派单个用例内部覆盖cloud/local两次实际事务及成功后的下一次执行。
+
+    cargo test --manifest-path pkg/ddl/ingest/Cargo.toml go_commit_d0dfde35b7 -- --nocapture
+    cargo test --manifest-path pkg/ddl/ingest/Cargo.toml disk_root_test -- --nocapture
+    cargo test --manifest-path pkg/ddl/ingest/Cargo.toml env_test -- --nocapture
+    cargo test --manifest-path pkg/dxf/framework/handle/Cargo.toml test_handles_preserve_go_cloud_storage_prefix_matrix -- --nocapture
+
+依次1/4/3/1 passed，全部0 failed/ignored。disk_root4包含目标1，只按唯一测试计数一次。env3与DXF1是受影响兼容性回归。
+
+    cargo test --manifest-path pkg/session/Cargo.toml --lib normal_ddl_plan_backfill_owner_preserves_ingest_dxf_selection -- --nocapture
+
+1 passed/0 failed/ignored；最终正常分派修改后复跑，1 passed/0 failed/ignored、564 filtered、测试15.37s、退出0。保证已有 transactional worker 不会把 ingest/DXF 静默转为Txn。
+
+    cargo fmt --all
+    cargo fmt --all -- --check
+    make lint
+    cargo check --manifest-path cmd/tidb-server/Cargo.toml --bin astersql-cmd-tidb-server --features nextgen
+    git diff --check
+    git diff -- .plans/2026-10-01-Go逐提交严格对齐Rust/plan.md .plans/2026-10-01-Go逐提交严格对齐Rust/prompt.md
+
+最终Rust修改之后fmt check、make lint、NextGen(12.75s)均退出0。总计划diff空。最后记录文件修改后的diff check下方补记。
+
+唯一目标回归9项（ddl4/session4/native1）；关联兼容回归8项（disk其余3/env3/DXF1/transaction-worker1），合计17项，重复执行不重复计数。
+
+### 风险、验证限制与后续推荐
+
+正确性：目标初始化顺序、真实模式字段、磁盘错误、partial拒绝、计数器与真实分派行为有证据；完整SQL ADD INDEX、新索引准备、schema transition、rollback及ingest/DXF执行仍明确未实现，不据此宣称全DDL可用。下一步应由后续拥有任务补足 prepared index 创建及后续 stage，在成功初始化的同一模式上继续回填，不能丢弃当前顺序/错误契约。
+
+兼容性：保留真实Go-wire Job/IndexInfo、V1/V2 decoder、现有DXF URI矩阵和错误身份；normal新增可分派action7/32目前只有初始化阶段，后续错误仍通过既有 normal executor 计数/重试/取消机制记录。normal入口回归此次仅 action7/V2/预备索引；action32/V1完整生产周期未验证。afterLoad回调后同owner epoch更换保护在独立阶段入口测试，未修改整个通用 normal executor 的 owner 逻辑。
+
+性能：云路径绕过实际磁盘probe；local路径新增真实filesystem查询与owner cache mutex，未做benchmark。macOS session test链接器提示__eh_frame超过16MB可能影响异常处理性能，没有编译/测试失败。
+
+未验证：完整SQL ADD INDEX 到Public、实际cloud/local backfill后端、RealTiKV、集成SQL录制、Go回归、性能与非macOS真实disk-full。默认 session cargo test（未加--lib）在既有 pkg/session/tests/system_session.rs:234 的 crate::runtime 不存在处编译失败，改用真实目标所属--lib运行并取得非零证据；没有修复无关基线或以其豁免目标Rust失败。
+
+最终确认：记录修改后 git diff --check 退出0；plan.md/prompt.md diff为空。Rust源码已恢复最终 load-before-pick 顺序，所有临时红灯修改已恢复。完成本提交初始化范围，不推进批次4，不提交主仓库。

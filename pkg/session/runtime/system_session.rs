@@ -202,6 +202,7 @@ impl sys::SessionContext for ConcreteSystemContext {
 struct MViewBuildContexts {
     owner_epoch: u64,
     completed: HashMap<i64, (u64, i64)>,
+    index_cloud_uris: HashMap<i64, String>,
 }
 struct ConcreteDdlContext {
     mview_builds: Arc<Mutex<MViewBuildContexts>>,
@@ -525,6 +526,16 @@ pub struct SystemSessionLease {
     context: Arc<dyn ddl::SessionContext>,
 }
 impl SystemSessionLease {
+    #[cfg(test)]
+    pub(super) fn index_cloud_storage_uri_for_test(&self, job_id: i64) -> Option<String> {
+        self.concrete()
+            .mview_builds
+            .lock()
+            .unwrap()
+            .index_cloud_uris
+            .get(&job_id)
+            .cloned()
+    }
     fn concrete(&self) -> &ConcreteDdlContext {
         self.context.as_any().unwrap().downcast_ref().unwrap()
     }
@@ -919,7 +930,47 @@ struct ConcreteJobExecutionContext<'a>(
     Arc<ddl::Pool>,
     Arc<Mutex<MViewBuildContexts>>,
 );
+impl astersql_ddl::index::ReorgIndexEnvironment for ConcreteJobExecutionContext<'_> {
+    fn load_cloud_storage_uri(&mut self, job_id: i64) -> Result<String, String> {
+        let configured = astersql_sessionctx_vardef::CloudStorageURI.Load();
+        let uri = astersql_ddl::index::resolve_cloud_storage_uri(
+            &configured,
+            astersql_util_sem_compat::IsEnabled(),
+            || {
+                self.0
+                    .domain
+                    .storage_handle()
+                    .with_storage(|store| Some(store.GetClusterID()))
+            },
+        );
+        self.2
+            .lock()
+            .map_err(|_| "index reorg context poisoned")?
+            .index_cloud_uris
+            .insert(job_id, uri.clone());
+        Ok(uri)
+    }
+    fn after_load_cloud_storage_uri(&mut self, _: &mut astersql_meta_model::group_3::Job) {
+        astersql_testkit_testfailpoint::inject(
+            "github.com/pingcap/tidb/pkg/ddl/afterLoadCloudStorageURI",
+        );
+    }
+    fn ingest_initialized(&self) -> bool {
+        astersql_ddl::index::initialized_disk_root().is_some()
+    }
+    fn pre_check_ingest_disk(&mut self) -> Result<(), String> {
+        astersql_ddl::index::initialized_disk_root()
+            .ok_or("ingest environment is not initialized")?
+            .pre_check_usage()
+    }
+}
 impl astersql_ddl::job_worker::JobExecutionContext for ConcreteJobExecutionContext<'_> {
+    fn reorg_index_environment(
+        &mut self,
+    ) -> Result<&mut dyn astersql_ddl::index::ReorgIndexEnvironment, String> {
+        Ok(self)
+    }
+
     fn build_create_mview_data(
         &mut self,
         job: &mut astersql_meta_model::group_3::Job,
@@ -1153,6 +1204,7 @@ impl astersql_ddl::job_worker::DurableJobSession for SystemSessionLease {
             .map_err(|_| "materialized view reorg context poisoned")?;
         if contexts.owner_epoch != epoch {
             contexts.completed.clear();
+            contexts.index_cloud_uris.clear();
             contexts.owner_epoch = epoch;
         }
         Ok(())

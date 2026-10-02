@@ -5,6 +5,9 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+astersql-metrics = { path = "../metrics" }
+astersql-ddl-ingest = { path = "ingest" }
+astersql-dxf-framework-handle = { path = "../dxf/framework/handle" }
 astersql-ddl-placement = { path = "placement" }
 astersql-table-tables = { path = "../table/tables" }
 astersql-tablecodec = { path = "../tablecodec" }

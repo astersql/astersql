@@ -1078,3 +1078,86 @@ pub fn build_index_condition_checker<'a>(
         Ok(value.is_some_and(|value| value > 0))
     }
 }
+
+/// Owner-local services used by Go's shared add-index/modify-column initializer.
+/// The URI is cached by job ID by the owning execution context; disk probing is
+/// deliberately separate so cloud jobs never touch the local ingest directory.
+pub trait ReorgIndexEnvironment {
+    fn load_cloud_storage_uri(&mut self, job_id: i64) -> Result<String, String>;
+    fn after_load_cloud_storage_uri(&mut self, _job: &mut astersql_meta_model::group_3::Job) {}
+    fn ingest_initialized(&self) -> bool;
+    fn pre_check_ingest_disk(&mut self) -> Result<(), String>;
+}
+
+/// Select and persist the Go backfill type without changing a started job.
+pub fn pick_job_backfill_type(
+    environment: &mut dyn ReorgIndexEnvironment,
+    job: &mut astersql_meta_model::group_3::Job,
+) -> Result<astersql_meta_model::group_3::ReorgType, String> {
+    use astersql_meta_model::group_3::ReorgType::*;
+    let meta = job
+        .reorg_meta
+        .as_mut()
+        .ok_or("DDL reorg metadata missing")?;
+    if meta.ReorgTp != ReorgTypeNone {
+        return Ok(meta.ReorgTp);
+    }
+    let selected = if !meta.IsFastReorg {
+        ReorgTypeTxn
+    } else if environment.ingest_initialized() {
+        if !meta.UseCloudStorage {
+            environment.pre_check_ingest_disk()?;
+        }
+        ReorgTypeIngest
+    } else {
+        ReorgTypeTxnMerge
+    };
+    meta.ReorgTp = selected;
+    Ok(selected)
+}
+
+/// Go initForReorgIndexes, shared by index creation and changing-index reorg.
+pub fn init_for_reorg_indexes(
+    environment: &mut dyn ReorgIndexEnvironment,
+    job: &mut astersql_meta_model::group_3::Job,
+    indexes: &mut [astersql_meta_model::IndexInfo],
+) -> Result<(), String> {
+    if indexes.is_empty() {
+        return Ok(());
+    }
+    let uri = environment.load_cloud_storage_uri(job.id)?;
+    let meta = job
+        .reorg_meta
+        .as_mut()
+        .ok_or("DDL reorg metadata missing")?;
+    meta.UseCloudStorage = !uri.is_empty() && meta.IsDistReorg;
+    environment.after_load_cloud_storage_uri(job);
+    let selected = pick_job_backfill_type(environment, job)?;
+    if matches!(
+        selected,
+        astersql_meta_model::group_3::ReorgType::ReorgTypeTxn
+            | astersql_meta_model::group_3::ReorgType::ReorgTypeTxnMerge
+    ) && indexes
+        .iter()
+        .any(|index| !index.ConditionExprString.is_empty())
+    {
+        return Err(astersql_util_dbterror::ErrUnsupportedAddPartialIndex
+            .GenWithStackByArgs(&["add partial index without fast reorg is not supported".into()])
+            .to_string());
+    }
+    if selected.NeedMergeProcess() {
+        astersql_metrics::telemetry::InitTelemetryMetrics()
+            .map_err(|error| error.to_string())?
+            .add_index_ingest
+            .inc();
+        for index in indexes {
+            index.BackfillState = astersql_meta_model::BackfillStateRunning;
+        }
+    }
+    Ok(())
+}
+
+pub use astersql_ddl_ingest::env::{
+    init_global_lightning_env, initialized_disk_root, replace_global_lightning_env_for_test,
+};
+pub use astersql_dxf_framework_handle::resolve_cloud_storage_uri;

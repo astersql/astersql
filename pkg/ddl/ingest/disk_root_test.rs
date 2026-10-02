@@ -68,3 +68,27 @@ fn risk_threshold_matches_go_floating_point_boundary() {
     assert!(!risk_of_disk_full(10, 100));
     assert!(risk_of_disk_full(9, 100));
 }
+
+#[test]
+fn go_commit_d0dfde35b7_precheck_uses_real_filesystem_and_preserves_error_class() {
+    let path = std::env::temp_dir().join(format!("aster-d0dfde35b7-disk-{}", std::process::id()));
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            if self.0.is_file() {
+                let _ = std::fs::remove_file(&self.0);
+            } else {
+                let _ = std::fs::remove_dir(&self.0);
+            }
+        }
+    }
+    let _cleanup = Cleanup(path.clone());
+    std::fs::write(&path, b"not a directory").unwrap();
+    let root = DiskRoot::new(path.to_string_lossy(), u64::MAX, u64::MAX);
+    let error = root.pre_check_usage().unwrap_err();
+    assert!(error.contains("[ddl:"), "{error}");
+    std::fs::remove_file(&path).unwrap();
+    root.pre_check_usage().unwrap();
+    assert!(path.is_dir());
+    std::fs::remove_dir(&path).unwrap();
+}
