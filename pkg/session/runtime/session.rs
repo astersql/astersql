@@ -589,6 +589,8 @@ pub struct ConcreteSessionInner {
     /// innermost-to-outermost, matching Go's CTE name-resolution order.
     pub(super) cte_scopes: RefCell<Vec<HashMap<String, InsertSelectRows>>>,
     pub(crate) session_vars: Arc<astersql_sessionctx_variable::session::SessionVars>,
+    /// Retain the Domain queue across statement contexts and SQL executions.
+    pub(super) stats_sync_load: SessionStatsSyncLoadAdapter,
     /// Session-local display timezone for metadata timestamps.
     /// `SessionVars.StmtCtx` is shared through an `Arc`; keep this small
     /// mutable value beside it so `SET time_zone` affects metadata queries
@@ -1285,6 +1287,7 @@ impl ConcreteSession {
         let instance_plan_cache = runtime_instance_plan_cache(&domain);
         let session = Self {
             inner: Rc::new(ConcreteSessionInner {
+                stats_sync_load: SessionStatsSyncLoadAdapter::new_with_domain(Arc::clone(&domain)),
                 domain,
                 instance_plan_cache,
                 state: RefCell::new(state),

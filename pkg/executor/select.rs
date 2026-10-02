@@ -1007,8 +1007,25 @@ impl<R: SelectRuntime> MaxOneRowExec<R> {
     }
 }
 
+/// A statement boundary does not require chunk execution or row-lock operations.
+/// Keeping this capability separate lets concrete sessions reset a parsed AST
+/// before direct planning without implementing unrelated executor operations.
+pub trait StatementContextRuntime {
+    type Statement;
+    type Error;
+    fn reset_statement_context(&mut self, statement: &Self::Statement) -> Result<(), Self::Error>;
+}
+
+impl<R: SelectRuntime> StatementContextRuntime for R {
+    type Statement = R::Statement;
+    type Error = R::Error;
+    fn reset_statement_context(&mut self, statement: &Self::Statement) -> Result<(), Self::Error> {
+        SelectRuntime::reset_statement_context(self, statement)
+    }
+}
+
 /// 按语句重置通用 StatementContext。
-pub fn ResetContextOfStmt<R: SelectRuntime>(
+pub fn ResetContextOfStmt<R: StatementContextRuntime>(
     runtime: &mut R,
     statement: &R::Statement,
 ) -> Result<(), R::Error> {

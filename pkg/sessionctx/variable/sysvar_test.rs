@@ -2138,3 +2138,46 @@ fn global_hooks_unsigned_validation() {
             .unwrap();
     }
 }
+
+#[test]
+#[serial]
+fn stats_load_pseudo_timeout_global_hooks_validate_and_control_fallback() {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            vardef::StatsLoadPseudoTimeout.Store(self.0);
+        }
+    }
+    let _restore = Restore(vardef::StatsLoadPseudoTimeout.Load());
+    let (mut vars, accessor) = session();
+    let variable = sysvar(vardef::TiDBStatsLoadPseudoTimeout);
+    assert_eq!(variable.Scope, vardef::ScopeGlobal);
+    assert_eq!(variable.Type, vardef::TypeBool);
+    assert_eq!(
+        variable.Value,
+        BoolToOnOff(vardef::DefTiDBStatsLoadPseudoTimeout)
+    );
+    for (input, expected) in [("off", "OFF"), ("on", "ON"), ("0", "OFF"), ("1", "ON")] {
+        assert_eq!(
+            global_set(&mut vars, &accessor, variable.Name.as_str(), input).unwrap(),
+            expected
+        );
+        assert_eq!(vardef::StatsLoadPseudoTimeout.Load(), expected == "ON");
+        assert_eq!(
+            variable
+                .GetGlobalFromHook(&Context::default(), &mut vars)
+                .unwrap(),
+            expected
+        );
+    }
+    assert!(
+        variable
+            .Validate(&mut vars, "OFF", vardef::ScopeSession)
+            .is_err()
+    );
+    assert!(
+        variable
+            .Validate(&mut vars, "invalid", vardef::ScopeGlobal)
+            .is_err()
+    );
+}

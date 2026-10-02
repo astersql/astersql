@@ -2059,8 +2059,33 @@ fn collect_predicate_columns_descendants(
 
     if let Some(source) = plan.as_any_mut().downcast_mut::<logicalop::DataSource>() {
         interesting.retain(|column| source.Schema().Contains(column));
+        // Go collects statistics from pushed-down filters. AllConds also
+        // contributes to index-pruning interests, but partition-pruning-only
+        // expressions must not cause additional histogram load requests.
+        let mut statistics_columns = interesting.clone();
+        for condition in &source.PushedDownConds {
+            let columns = expression::ExtractColumns(condition.as_ref());
+            if columns
+                .iter()
+                .all(|column| source.Schema().Contains(column))
+            {
+                statistics_columns.extend(columns.into_iter().cloned());
+            }
+        }
+        interesting = statistics_columns.clone();
+        for condition in &source.AllConds {
+            let columns = expression::ExtractColumns(condition.as_ref());
+            if columns
+                .iter()
+                .all(|column| source.Schema().Contains(column))
+            {
+                interesting.extend(columns.into_iter().cloned());
+            }
+        }
+        interesting.sort_by_key(|column| column.UniqueID);
+        interesting.dedup_by_key(|column| column.UniqueID);
         source.InterestingColumns = interesting;
-        collect_stats_load_items_for_source(source);
+        collect_stats_load_items_for_source(source, &statistics_columns);
         return;
     }
     if let Some(projection) = plan
@@ -2098,7 +2123,10 @@ fn collect_predicate_columns_descendants(
 }
 
 /// 将单个 DataSource 的谓词列、可用索引与直接依赖虚拟列写入语句同步加载集合。
-fn collect_stats_load_items_for_source(source: &logicalop::DataSource) {
+fn collect_stats_load_items_for_source(
+    source: &logicalop::DataSource,
+    statistics_columns: &[expression::Column],
+) {
     let Some(context) = source.SCtx() else {
         return;
     };
@@ -2115,8 +2143,7 @@ fn collect_stats_load_items_for_source(source: &logicalop::DataSource) {
     } else {
         source.TableInfo.ID
     };
-    let interesting_ids = source
-        .InterestingColumns
+    let interesting_ids = statistics_columns
         .iter()
         .map(|column| column.ID)
         .filter(|id| *id != 0)

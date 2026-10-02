@@ -2801,6 +2801,12 @@ impl ConcreteSession {
             .ok_or_else(|| SessionError::new(format!("Unknown system variable '{name}'")))?;
             return Ok(u8::from(astersql_sessionctx_variable::TiDBOptOn(&value)).to_string());
         }
+        if name == astersql_sessionctx_vardef::TiDBStatsLoadPseudoTimeout {
+            // GLOBAL getter reads the live atomic; SQL's native Bool is 0/1.
+            return Ok(
+                u8::from(astersql_sessionctx_vardef::StatsLoadPseudoTimeout.Load()).to_string(),
+            );
+        }
         if global_scope
             && !matches!(name.as_str(), "tx_read_only" | "transaction_read_only")
             && let Some(value) = self.domain.global_system_variable(&name)
@@ -4842,6 +4848,7 @@ impl ConcreteSession {
                 astersql_sessionctx_vardef::TiDBAnalyzeDefaultNumBuckets
                     | astersql_sessionctx_vardef::TiDBAnalyzeDefaultNumTopN
                     | astersql_sessionctx_vardef::TiDBPersistAnalyzeOptions
+                    | astersql_sessionctx_vardef::TiDBStatsLoadPseudoTimeout
             ) {
                 let metadata = ConcreteSession::new(Arc::clone(&self.domain));
                 metadata.SetInRestrictedSQL(true);

@@ -3763,6 +3763,10 @@ impl ConcreteSession {
                 self.state.borrow_mut().current_warnings.clear();
                 self.session_vars.StmtCtx.SetWarnings(Vec::new());
             }
+            // Reset per-statement sync-load results before planning the next SQL.
+            self.session_vars
+                .StmtCtx
+                .CompleteStatsSyncWait(Duration::ZERO);
             let variables = &self.session_vars;
             if dp_join_reorder_ignores_leading_hint(statement.as_ref(), variables.as_ref()) {
                 self.state
@@ -3958,11 +3962,20 @@ impl ConcreteSession {
             let slow_log_items = astersql_sessionctx_variable::slow_log::SlowQueryLogItems {
                 SQL: current_sql.to_owned(),
                 Succ: execution.is_ok(),
+                IsSyncStatsFailed: variables.StmtCtx.IsSyncStatsFailed(),
                 PlanFromBinding: variables
                     .GetHintSystemVar(astersql_sessionctx_vardef::TiDBFoundInBinding)
                     .is_ok_and(|value| value == astersql_sessionctx_vardef::On),
                 ..Default::default()
             };
+            if astersql_testkit_testfailpoint::eval_bool(
+                "github.com/pingcap/executor/assertSyncStatsFailed",
+            ) {
+                assert!(
+                    slow_log_items.IsSyncStatsFailed,
+                    "isSyncStatsFailed should be true"
+                );
+            }
             if self.state.borrow().defer_protocol_finish && logger.is_none() {
                 self.state
                     .borrow_mut()

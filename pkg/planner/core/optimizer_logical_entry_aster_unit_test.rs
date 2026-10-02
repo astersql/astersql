@@ -936,6 +936,68 @@ fn collect_predicate_columns_populates_data_source_interesting_columns() {
 }
 
 #[test]
+fn collect_predicate_columns_retains_pushed_down_local_filters() {
+    let (_, collected) = logical_optimize_for_test(
+        "select a from t where b > 1",
+        rule_dependency::FLAG_PREDICATE_PUSH_DOWN
+            | rule_dependency::FLAG_COLLECT_PREDICATE_COLUMNS_POINT,
+    )
+    .expect("push down and collect predicate columns");
+    let source = find_source(collected.as_ref()).expect("data source");
+    assert!(
+        !source.PushedDownConds.is_empty(),
+        "filter must reach the data source"
+    );
+    assert!(
+        source
+            .InterestingColumns
+            .iter()
+            .any(|column| column.OrigName.ends_with(".b")),
+        "the pushed-down b predicate must remain interesting: {:?}",
+        source
+            .InterestingColumns
+            .iter()
+            .map(|column| &column.OrigName)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn collect_predicate_columns_keeps_partition_only_filters_out_of_stats_requests() {
+    let (context, mut plan) = build_logical_for_test("select a from t where c > 1")
+        .expect("local partition-only filter plan");
+    super::optimizer_runtime::LogicalOptimizeForTest(
+        rule_dependency::FLAG_PREDICATE_PUSH_DOWN,
+        &mut plan,
+    )
+    .expect("push down local filter");
+    let source = find_source_mut(plan.as_mut()).expect("data source");
+    assert!(!source.AllConds.is_empty());
+    source.PushedDownConds.clear();
+    context
+        .GetSessionVars()
+        .StatsLoadSyncWait
+        .store(1, std::sync::atomic::Ordering::Release);
+    super::optimizer_runtime::LogicalOptimizeForTest(
+        rule_dependency::FLAG_COLLECT_PREDICATE_COLUMNS_POINT,
+        &mut plan,
+    )
+    .expect("collect index-pruning interests");
+    let source = find_source(plan.as_ref()).expect("collected data source");
+    assert!(
+        source
+            .InterestingColumns
+            .iter()
+            .any(|column| column.OrigName.ends_with(".c"))
+    );
+    assert_eq!(
+        context.GetSessionVars().StmtCtx.PendingStatsLoadItems(),
+        0,
+        "AllConds alone is not a reason to load statistics"
+    );
+}
+
+#[test]
 /// 关闭跨 Join/Union 聚合下推时，仍须吸收下方投影。
 fn push_down_agg_substitutes_projection_expressions_when_pushdown_disabled() {
     let sql = "select sum(x) from (select a + 1 as x from t) d";

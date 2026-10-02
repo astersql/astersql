@@ -23,6 +23,7 @@ legacy-tasks = ["task-1421"]
 "astersql-planner-core-operator-physicalop" = { package = "astersql-planner-core-operator-physicalop", path = "../../operator/physicalop" }
 "astersql-planner-core-resolve" = { package = "astersql-planner-core-resolve", path = "../../resolve" }
 "astersql-planner-core-rule" = { package = "astersql-planner-core-rule", path = "../../rule" }
+"astersql-session" = { package = "astersql-session", path = "../../../../session" }
 "astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../../../sessionctx" }
 "astersql-sessionctx-stmtctx" = { package = "astersql-sessionctx-stmtctx", path = "../../../../sessionctx/stmtctx" }
 "astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../../../sessionctx/vardef" }
@@ -30,6 +31,7 @@ legacy-tasks = ["task-1421"]
 "astersql-statistics-asyncload" = { package = "astersql-statistics-asyncload", path = "../../../../statistics/asyncload" }
 "astersql-statistics-handle" = { package = "astersql-statistics-handle", path = "../../../../statistics/handle" }
 "astersql-statistics-handle-ddl-testutil" = { package = "astersql-statistics-handle-ddl-testutil", path = "../../../../statistics/handle/ddl/testutil" }
+"astersql-statistics-handle-syncload" = { package = "astersql-statistics-handle-syncload", path = "../../../../statistics/handle/syncload" }
 "astersql-statistics-handle-types" = { package = "astersql-statistics-handle-types", path = "../../../../statistics/handle/types" }
 "astersql-testkit" = { package = "astersql-testkit", path = "../../../../testkit" }
 "astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../../testkit/testfailpoint" }

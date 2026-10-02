@@ -1434,6 +1434,20 @@ fn register_getters_and_defaults() {
 
 /// 注册仅全局作用域的系统变量。
 fn register_global_vars() {
+    let mut stats_load_pseudo_timeout = bool_var(
+        vardef::TiDBStatsLoadPseudoTimeout,
+        vardef::DefTiDBStatsLoadPseudoTimeout,
+        vardef::ScopeGlobal,
+    );
+    stats_load_pseudo_timeout.GetGlobal = Some(Arc::new(|_, _| {
+        Ok(BoolToOnOff(vardef::StatsLoadPseudoTimeout.Load()))
+    }));
+    stats_load_pseudo_timeout.SetGlobal = Some(Arc::new(|_, _, value| {
+        vardef::StatsLoadPseudoTimeout.Store(TiDBOptOn(value));
+        Ok(())
+    }));
+    RegisterSysVar(stats_load_pseudo_timeout);
+
     // 注册仅 GLOBAL 作用域变量（DDL、内存限制、资源控制等）。
     for (name, default, min, max, state) in [
         (

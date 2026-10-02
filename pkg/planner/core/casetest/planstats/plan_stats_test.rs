@@ -1153,3 +1153,368 @@ fn test_stats_analyzed_during_ddl_nine_step_sequence() {
         last_was_select = true;
     }
 }
+
+/// A disabled loader must not consume the bounded queue on the planning thread.
+#[test]
+fn test_plan_stats_load_queue_without_workers_times_out() {
+    let _guard = ASYNC_HISTOGRAM_TEST_LOCK
+        .lock()
+        .expect("async histogram test lock");
+    struct RestoreConfig(astersql_config::Config, bool);
+    impl Drop for RestoreConfig {
+        fn drop(&mut self) {
+            astersql_config::store_global_config(self.0.clone());
+            astersql_sessionctx_vardef::StatsLoadPseudoTimeout.Store(self.1);
+        }
+    }
+    let old = astersql_config::get_global_config();
+    let _restore = RestoreConfig(
+        (*old).clone(),
+        astersql_sessionctx_vardef::StatsLoadPseudoTimeout.Load(),
+    );
+    let mut config = (*old).clone();
+    config.performance.stats_load_concurrency = -1;
+    config.performance.stats_load_queue_size = 1;
+    astersql_config::store_global_config(config);
+    astersql_sessionctx_vardef::StatsLoadPseudoTimeout.Store(false);
+    setup_common();
+    let (store, domain) = CreateMockStoreAndDomain();
+    let mut tk = TestKit::new(store);
+    tk.MustExec(
+        "create table t(a int, b int, c int, primary key(a))",
+        Vec::new(),
+    );
+    tk.MustExec("insert into t values (1,1,1),(2,2,2),(3,3,3)", Vec::new());
+    tk.MustExec("analyze table t all columns", Vec::new());
+    domain.set_stats_lease(Duration::from_millis(1)).unwrap();
+    domain.stats_handle().lock().unwrap().clear();
+    domain.update_stats().unwrap();
+    tk.MustExec("set @@session.tidb_stats_load_sync_wait = 1", Vec::new());
+    let error = tk.QueryToErr("select /*+ MAX_EXECUTION_TIME(1000) */ * from t where c>1");
+    assert!(error.message().contains("sync load"), "{error:?}");
+}
+
+/// Direct planning must reset the same AST's context after previous SQLs,
+/// including a sync-load failure, rather than skipping the next sync wait.
+#[test]
+fn test_plan_stats_load_full_queue_resets_direct_select_context() {
+    use astersql_executor::select::ResetContextOfStmt;
+    use astersql_parser_ast::NodeRef;
+    use astersql_planner_core_base::Plan;
+    use astersql_statistics_handle_syncload::{NeededItemTask, StatsLoadItem, TableItemID};
+    use std::time::Instant;
+
+    let _guard = ASYNC_HISTOGRAM_TEST_LOCK
+        .lock()
+        .expect("async histogram test lock");
+    struct RestoreConfig(astersql_config::Config, bool);
+    impl Drop for RestoreConfig {
+        fn drop(&mut self) {
+            astersql_config::store_global_config(self.0.clone());
+            astersql_sessionctx_vardef::StatsLoadPseudoTimeout.Store(self.1);
+        }
+    }
+    let old = astersql_config::get_global_config();
+    let _restore = RestoreConfig(
+        (*old).clone(),
+        astersql_sessionctx_vardef::StatsLoadPseudoTimeout.Load(),
+    );
+    let mut config = (*old).clone();
+    config.performance.stats_load_concurrency = -1;
+    config.performance.stats_load_queue_size = 1;
+    astersql_config::store_global_config(config);
+    setup_common();
+    let (domain, mut session) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    session
+        .execute("set @@session.tidb_analyze_version=2")
+        .unwrap();
+    session
+        .execute("set @@session.tidb_stats_load_sync_wait = 1")
+        .unwrap();
+    session
+        .execute("create table t(a int, b int, c int, primary key(a))")
+        .unwrap();
+    session
+        .execute("insert into t values (1,1,1),(2,2,2),(3,3,3)")
+        .unwrap();
+    domain.set_stats_lease(Duration::from_nanos(1)).unwrap();
+    session.execute("analyze table t all columns").unwrap();
+    // Re-read the persisted ANALYZE statistics as lite metadata, as Go's
+    // positive-lease StatsHandle.Update does before planning this SELECT.
+    domain.stats_handle().lock().unwrap().clear();
+    domain.update_stats().unwrap();
+    let table = domain.table_by_name("test", "t").unwrap();
+    let timeout = Duration::from_nanos(i64::MAX as u64);
+    let (result_sender, _result_receiver) = std::sync::mpsc::sync_channel(1);
+    session
+        .AppendNeededStatsLoadItem(
+            NeededItemTask {
+                Item: StatsLoadItem {
+                    TableItemID: TableItemID {
+                        TableID: table.ID,
+                        ID: table.Columns[0].ID,
+                        IsIndex: false,
+                    },
+                    FullLoad: true,
+                },
+                ToTimeout: Instant::now() + timeout,
+                ResultCh: result_sender,
+                Retry: 0,
+            },
+            timeout,
+        )
+        .unwrap();
+    let sql = "select /*+ MAX_EXECUTION_TIME(1000) */ * from t where c>1";
+    let statement = NodeRef::new(
+        astersql_parser::Parser::default()
+            .ParseOneStmt(sql, "", "")
+            .unwrap(),
+    );
+
+    session
+        .execute("set global tidb_stats_load_pseudo_timeout=false")
+        .unwrap();
+    let mut value = session
+        .execute("select @@tidb_stats_load_pseudo_timeout")
+        .unwrap();
+    assert_eq!(value[0].next_row().unwrap().unwrap(), vec!["0"]);
+    drop(value);
+    ResetContextOfStmt(&mut session, &statement).unwrap();
+    session.WithSessionVars(|vars| {
+        assert!(vars.StmtCtx.InSelectStmt);
+        assert_eq!(vars.StmtCtx.StatsLoad.Timeout, Duration::ZERO);
+        assert!(!vars.StmtCtx.IsSyncStatsFailed());
+        assert_eq!(vars.StmtCtx.PendingStatsLoadItems(), 0);
+    });
+    assert_eq!(session.LastStatementHintsForTest().1, 1000);
+    let error = match session.OptimizeParsedSelect(&statement) {
+        Ok(plan) => panic!(
+            "a full queue must fail direct planning when pseudo=false: wait={}, pending={}, failed={}, plan={}",
+            plan.s_ctx()
+                .GetSessionVars()
+                .StatsLoadSyncWait
+                .load(std::sync::atomic::Ordering::Acquire),
+            plan.s_ctx()
+                .GetSessionVars()
+                .StmtCtx
+                .PendingStatsLoadItems(),
+            plan.s_ctx().GetSessionVars().StmtCtx.IsSyncStatsFailed(),
+            plan.explain_info()
+        ),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("sync load"), "{error}");
+    session.WithSessionVars(|vars| assert!(vars.StmtCtx.IsSyncStatsFailed()));
+
+    session
+        .execute("set global tidb_stats_load_pseudo_timeout=true")
+        .unwrap();
+    let mut value = session
+        .execute("select @@global.tidb_stats_load_pseudo_timeout")
+        .unwrap();
+    assert_eq!(value[0].next_row().unwrap().unwrap(), vec!["1"]);
+    drop(value);
+    for case in 0..2 {
+        let _assertion = if case == 0 {
+            astersql_testkit_testfailpoint::enable(
+                "github.com/pingcap/executor/assertSyncStatsFailed",
+                "return(true)",
+            )
+        } else {
+            astersql_testkit_testfailpoint::enable(
+                "github.com/pingcap/tidb/pkg/planner/core/assertSyncWaitFailed",
+                "return(true)",
+            )
+        };
+        let mut result = session.execute(sql).expect("pseudo SQL fallback");
+        assert_eq!(result[0].next_row().unwrap().unwrap(), vec!["2", "2", "2"]);
+        assert_eq!(result[0].next_row().unwrap().unwrap(), vec!["3", "3", "3"]);
+        assert!(result[0].next_row().unwrap().is_none());
+        // The two Go failpoints assert these exact states at their SQL
+        // boundaries; inspect the real statement here instead of mocking them.
+        session.WithSessionVars(|vars| {
+            assert!(vars.StmtCtx.IsSyncStatsFailed());
+            assert!(vars.StmtCtx.StatsSyncWaitError().is_some());
+            assert_eq!(vars.StmtCtx.StatsLoad.Timeout, Duration::from_millis(1));
+        });
+    }
+    ResetContextOfStmt(&mut session, &statement).unwrap();
+    session.WithSessionVars(|vars| {
+        assert!(!vars.StmtCtx.IsSyncStatsFailed());
+        assert_eq!(vars.StmtCtx.PendingStatsLoadItems(), 0);
+        assert_eq!(vars.StmtCtx.StatsLoad.Timeout, Duration::ZERO);
+        assert!(vars.StmtCtx.StatsSyncWaitError().is_none());
+    });
+    assert_eq!(session.LastStatementHintsForTest().1, 1000);
+    let plan = session
+        .OptimizeParsedSelect(&statement)
+        .expect("pseudo direct fallback");
+    let reader = plan
+        .as_any()
+        .downcast_ref::<astersql_planner_core_operator_physicalop::PhysicalTableReader>()
+        .expect("physical table reader");
+    let hist = reader
+        .stats_info()
+        .HistColl
+        .as_ref()
+        .unwrap()
+        .downcast_ref::<astersql_statistics::HistColl>()
+        .expect("real histogram collection");
+    for column in [&table.Columns[0], &table.Columns[2]] {
+        let column_stats = hist
+            .GetCol(column.ID)
+            .expect("column metadata must be retained");
+        assert_eq!(
+            column_stats.Histogram.Len() + column_stats.TopN.as_ref().map_or(0, |topn| topn.Num()),
+            0
+        );
+    }
+    session.WithSessionVars(|vars| {
+        assert!(
+            vars.StmtCtx.IsSyncStatsFailed(),
+            "reset must permit the second real sync wait"
+        );
+        assert!(vars.StmtCtx.StatsSyncWaitError().is_some());
+    });
+    drop(plan);
+    session.execute("select 1").unwrap();
+    session.WithSessionVars(|vars| {
+        assert!(
+            !vars.StmtCtx.IsSyncStatsFailed(),
+            "the next SQL must not inherit the slow-log failure flag"
+        );
+        assert!(vars.StmtCtx.StatsSyncWaitError().is_none());
+    });
+}
+
+/// Concurrent requests for one histogram share a load without consuming each
+/// other's queue task. Both statements must receive the worker's result.
+#[test]
+fn test_plan_stats_load_shared_workers_complete_singleflight_followers() {
+    use astersql_session::runtime::ConcreteSession;
+    use std::sync::{Condvar, mpsc};
+    let _guard = ASYNC_HISTOGRAM_TEST_LOCK.lock().unwrap();
+    struct RestoreConfig(astersql_config::Config, bool);
+    impl Drop for RestoreConfig {
+        fn drop(&mut self) {
+            astersql_config::store_global_config(self.0.clone());
+            astersql_sessionctx_vardef::StatsLoadPseudoTimeout.Store(self.1);
+        }
+    }
+    let _restore = RestoreConfig(
+        astersql_config::get_global_config().as_ref().clone(),
+        astersql_sessionctx_vardef::StatsLoadPseudoTimeout.Load(),
+    );
+    for concurrency in [2, 0] {
+        let mut config = _restore.0.clone();
+        config.performance.stats_load_concurrency = concurrency;
+        config.performance.stats_load_queue_size = 1;
+        astersql_config::store_global_config(config);
+        astersql_sessionctx_vardef::StatsLoadPseudoTimeout.Store(false);
+        setup_common();
+        let (domain, session) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+        session.execute("create table t(a int, c int)").unwrap();
+        session
+            .execute("insert into t values (1,1),(2,2),(3,3)")
+            .unwrap();
+        session
+            .execute("set @@session.tidb_analyze_version = 2")
+            .unwrap();
+        session.execute("analyze table t all columns").unwrap();
+        domain.set_stats_lease(Duration::from_millis(1)).unwrap();
+        domain.stats_handle().lock().unwrap().clear();
+        domain.update_stats().unwrap();
+        let table = domain.table_by_name("test", "t").unwrap();
+        let c_id = column_id(&domain, table.ID, "c");
+        assert_eq!(
+            count_full_stats(
+                domain
+                    .stats_handle()
+                    .lock()
+                    .unwrap()
+                    .stats_meta(table.ID)
+                    .unwrap(),
+                c_id
+            ),
+            0
+        );
+        let sent = Arc::new((Mutex::new(0usize), Condvar::new()));
+        let _requests = astersql_testkit_testfailpoint::enable_concurrent_call(
+            "astersql/session/statsSyncLoadRequestsSent",
+            {
+                let sent = Arc::clone(&sent);
+                move || {
+                    *sent.0.lock().unwrap() += 1;
+                    sent.1.notify_all();
+                }
+            },
+        );
+        let _read = astersql_testkit_testfailpoint::enable_concurrent_call(
+            "astersql/session/statsSyncLoadBeforeRead",
+            {
+                let sent = Arc::clone(&sent);
+                move || {
+                    let (count, timeout) = sent
+                        .1
+                        .wait_timeout_while(
+                            sent.0.lock().unwrap(),
+                            Duration::from_secs(5),
+                            |count| *count < 2,
+                        )
+                        .unwrap();
+                    assert!(
+                        !timeout.timed_out() && *count == 2,
+                        "both singleflight requests must reach the queue before loading"
+                    );
+                }
+            },
+        );
+        let (sender, receiver) = mpsc::channel();
+        let mut callers = Vec::new();
+        for _ in 0..2 {
+            let domain = Arc::clone(&domain);
+            let sender = sender.clone();
+            callers.push(std::thread::spawn(move || {
+                let session = ConcreteSession::new(domain);
+                session.execute("use test").unwrap();
+                session
+                    .execute("set @@session.tidb_stats_load_sync_wait = 3000")
+                    .unwrap();
+                let rows = session
+                    .execute("select c from t where c>1")
+                    .and_then(|mut results| {
+                        let mut rows = Vec::new();
+                        let result = results.first_mut().expect("SELECT result");
+                        while let Some(row) = result.next_row()? {
+                            rows.push(row);
+                        }
+                        Ok(rows)
+                    });
+                sender.send(rows).unwrap();
+            }));
+        }
+        drop(sender);
+        for _ in 0..2 {
+            let rows = receiver
+                .recv_timeout(Duration::from_secs(5))
+                .expect("singleflight follower must finish without draining an empty queue")
+                .unwrap();
+            assert_eq!(rows, vec![vec!["2".to_owned()], vec!["3".to_owned()]]);
+        }
+        for caller in callers {
+            caller.join().unwrap();
+        }
+        assert_eq!(*sent.0.lock().unwrap(), 2);
+        assert!(
+            count_full_stats(
+                domain
+                    .stats_handle()
+                    .lock()
+                    .unwrap()
+                    .stats_meta(table.ID)
+                    .unwrap(),
+                c_id
+            ) > 0
+        );
+    }
+}

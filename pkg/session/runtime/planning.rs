@@ -64,7 +64,7 @@ impl kv::Client for SessionPushdownCapabilityClient {
 struct DomainStatsSyncLoadHandle {
     handle:
         Arc<Mutex<astersql_statistics_handle::Handle<astersql_domain::domain::DomainStatsBackend>>>,
-    domain: Option<Arc<astersql_domain::Domain>>,
+    domain: Option<std::sync::Weak<astersql_domain::Domain>>,
 }
 
 impl DomainStatsSyncLoadHandle {
@@ -123,9 +123,11 @@ impl astersql_statistics_handle_syncload::StatsStorage for DomainStatsSyncLoadHa
     ) -> astersql_statistics_handle_syncload::Result<
         Option<(astersql_statistics_handle_syncload::Histogram, i64)>,
     > {
+        astersql_testkit_testfailpoint::inject("astersql/session/statsSyncLoadBeforeRead");
         let persisted = self
             .domain
             .as_ref()
+            .and_then(std::sync::Weak::upgrade)
             .and_then(|domain| domain.persisted_table_stats(item.TableID));
         let handle = self
             .handle
@@ -173,6 +175,7 @@ impl astersql_statistics_handle_syncload::StatsStorage for DomainStatsSyncLoadHa
         let persisted = self
             .domain
             .as_ref()
+            .and_then(std::sync::Weak::upgrade)
             .and_then(|domain| domain.persisted_table_stats(item.TableID));
         let handle = self
             .handle
@@ -366,9 +369,27 @@ impl astersql_statistics_handle_syncload::StatsHandle for DomainStatsSyncLoadHan
     }
 }
 
+/// Own worker lifetimes without retaining the Domain through the loader.
+struct DomainStatsLoadWorkers {
+    loader: Arc<astersql_statistics_handle_syncload::statsSyncLoad>,
+    exit: Arc<AtomicBool>,
+    workers: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for DomainStatsLoadWorkers {
+    fn drop(&mut self) {
+        self.exit.store(true, Ordering::Release);
+        for worker in self.workers.drain(..) {
+            let _ = worker.join();
+        }
+    }
+}
+
 /// 会话统计同步加载适配器，实现 StatsLoadWaiter。
 pub(crate) struct SessionStatsSyncLoadAdapter {
-    loader: astersql_statistics_handle_syncload::statsSyncLoad,
+    loader: Arc<astersql_statistics_handle_syncload::statsSyncLoad>,
+    consume_tasks: bool,
+    _workers: Option<Arc<DomainStatsLoadWorkers>>,
 }
 
 impl SessionStatsSyncLoadAdapter {
@@ -384,19 +405,64 @@ impl SessionStatsSyncLoadAdapter {
                 domain: None,
             });
         Self {
-            loader: astersql_statistics_handle_syncload::NewStatsSyncLoad(handle, 128),
+            loader: Arc::new(astersql_statistics_handle_syncload::NewStatsSyncLoad(
+                handle, 128,
+            )),
+            consume_tasks: true,
+            _workers: None,
         }
     }
 
-    /// 用 Domain 构造生产同步加载器，存储读取使用 ANALYZE 的持久化载荷。
+    /// Every context for one Domain shares its bounded queue. Weak entries do
+    /// not keep a closed Domain alive; sessions retain the loader while in use.
     pub(crate) fn new_with_domain(domain: Arc<astersql_domain::Domain>) -> Self {
+        type Queues = HashMap<usize, std::sync::Weak<DomainStatsLoadWorkers>>;
+        static QUEUES: OnceLock<Mutex<Queues>> = OnceLock::new();
+        let mut queues = QUEUES
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .expect("domain statistics queue lock");
+        queues.retain(|_, workers| workers.strong_count() != 0);
+        let domain_id = Arc::as_ptr(&domain) as usize;
+        if let Some(workers) = queues.get(&domain_id).and_then(std::sync::Weak::upgrade) {
+            return Self {
+                loader: Arc::clone(&workers.loader),
+                consume_tasks: false,
+                _workers: Some(workers),
+            };
+        }
+        let config = astersql_config::get_global_config();
+        let queue_size = usize::try_from(config.performance.stats_load_queue_size)
+            .expect("statistics queue size must be nonnegative");
+        let concurrency = match config.performance.stats_load_concurrency {
+            0 => astersql_statistics_handle_syncload::GetSyncLoadConcurrencyByCPU(),
+            value => value.max(0) as usize,
+        };
         let handle: Arc<dyn astersql_statistics_handle_syncload::StatsHandle> =
             Arc::new(DomainStatsSyncLoadHandle {
                 handle: domain.stats_handle(),
-                domain: Some(domain),
+                domain: Some(Arc::downgrade(&domain)),
             });
+        let loader = Arc::new(astersql_statistics_handle_syncload::NewStatsSyncLoad(
+            handle, queue_size,
+        ));
+        let exit = Arc::new(AtomicBool::new(false));
+        let mut worker_handles = Vec::with_capacity(concurrency);
+        for _ in 0..concurrency {
+            let loader = Arc::clone(&loader);
+            let exit = Arc::clone(&exit);
+            worker_handles.push(std::thread::spawn(move || loader.SubLoadWorker(&exit)));
+        }
+        let workers = Arc::new(DomainStatsLoadWorkers {
+            loader: Arc::clone(&loader),
+            exit,
+            workers: worker_handles,
+        });
+        queues.insert(domain_id, Arc::downgrade(&workers));
         Self {
-            loader: astersql_statistics_handle_syncload::NewStatsSyncLoad(handle, 128),
+            loader,
+            consume_tasks: false,
+            _workers: Some(workers),
         }
     }
 }
@@ -439,13 +505,24 @@ impl astersql_planner_core_base::StatsLoadWaiter for SessionStatsSyncLoadAdapter
         // zero is an intentional immediate timeout, not a request to fall back
         // to the session default.
         let timeout = statement_context.StatsLoad.Timeout;
+        if astersql_testkit_testfailpoint::eval_bool(
+            "github.com/pingcap/tidb/pkg/planner/core/assertSyncWaitFailed",
+        ) {
+            assert_eq!(
+                timeout,
+                Duration::from_millis(1),
+                "syncWait should be 1(ms)"
+            );
+        }
         self.loader
             .SendLoadRequests(&mut sync_context, &items, timeout)
             .map_err(|error| error.to_string())?;
-        // 同步路径：按请求数逐个 HandleOneTask，再 SyncWait 等待完成或超时。
+        astersql_testkit_testfailpoint::inject("astersql/session/statsSyncLoadRequestsSent");
+        // The handle-only adapter drives tasks locally; Domain queues use their
+        // configured workers so singleflight followers never drain an empty queue.
         let work_items = sync_context.StatsLoad.NeededItems.len();
         let exit = AtomicBool::new(false);
-        for _ in 0..work_items {
+        for _ in 0..if self.consume_tasks { work_items } else { 0 } {
             self.loader
                 .HandleOneTask(None, &exit)
                 .map_err(|error| error.to_string())?;
@@ -2484,5 +2561,155 @@ impl ConcreteSession {
     /// 返回进程列表用计划快照。
     pub fn ProcessPlanSnapshot(&self) -> Option<ProcessPlanSnapshot> {
         self.state.borrow().process_plan_snapshot.clone()
+    }
+}
+
+impl ConcreteSession {
+    /// Append to the same bounded statistics queue used by SQL and direct planning.
+    pub fn AppendNeededStatsLoadItem(
+        &self,
+        task: astersql_statistics_handle_syncload::NeededItemTask,
+        timeout: Duration,
+    ) -> SessionResult<()> {
+        self.stats_sync_load
+            .loader
+            .AppendNeededItem(task, timeout)
+            .map_err(|error| session_error("append needed statistics item", error))
+    }
+
+    /// Optimize an already parsed SELECT on this session's real Domain. The
+    /// caller owns the statement boundary and must reset it before each call.
+    pub fn OptimizeParsedSelect(
+        &mut self,
+        statement: &ast::NodeRef,
+    ) -> SessionResult<Box<dyn astersql_planner_core_base::PhysicalPlan>> {
+        let is_select = statement
+            .with_node(|node| node.as_any().is::<ast::SelectStmt>())
+            .unwrap_or(false);
+        if !is_select {
+            return Err(SessionError::new(
+                "direct SELECT planning requires a SELECT AST",
+            ));
+        }
+        // RequestLoadStats installs the wait after ResetContextOfStmt cleared it.
+        let max_time = self.state.borrow().last_statement_hints_for_test.1;
+        let inner = Rc::get_mut(&mut self.inner)
+            .ok_or_else(|| SessionError::new("cannot plan a shared session"))?;
+        let variables = Arc::get_mut(&mut inner.session_vars).ok_or_else(|| {
+            SessionError::new("cannot plan while a previous statement is retained")
+        })?;
+        let wait = variables.StatsLoadSyncWait.load(Ordering::Acquire).max(0) as u64;
+        let wait = if max_time > 0 {
+            wait.min(max_time)
+        } else {
+            wait
+        };
+        variables.StmtCtx.StatsLoad.Timeout = Duration::from_millis(wait);
+        // Go buildLogicalPlan starts a new allocation sequence for this AST.
+        variables.PlanColumnID.store(0, Ordering::SeqCst);
+        let plan_context = plan_context_with_params_and_explain(
+            Arc::clone(&self.session_vars),
+            &[],
+            false,
+            false,
+            false,
+            Some(Arc::clone(&self.domain)),
+            None,
+        );
+        let (mut builder, _) = astersql_planner_core::NewPlanBuilder()
+            .withDataSourceProvider(Arc::new(SessionDomainDataSourceProvider {
+                domain: Arc::clone(&self.domain),
+            }))
+            .Init(
+                plan_context.clone(),
+                self.domain.info_schema(),
+                astersql_util_hint::NewQBHintHandler(None),
+            );
+        let mut logical = builder
+            .buildResultSetNode(astersql_planner_core::context::TODO(), statement, false)
+            .map_err(|error| session_error("build parsed SELECT", error))?;
+        // Go's normal SELECT optimization enables both statistics rules in
+        // adjustOptimizationFlags, independently of the builder's rewrite flags.
+        let mut flags = builder.GetOptFlag();
+        if !self.session_vars.InRestrictedSQL {
+            flags |= astersql_planner_core_rule::FLAG_COLLECT_PREDICATE_COLUMNS_POINT
+                | astersql_planner_core_rule::FLAG_SYNC_WAIT_STATS_LOAD_POINT;
+        }
+        let (physical, _) = astersql_planner_core::DoOptimize(
+            astersql_planner_core::context::TODO(),
+            &plan_context,
+            flags,
+            &mut logical,
+        )
+        .map_err(|error| session_error("optimize parsed SELECT", error))?;
+        Ok(physical)
+    }
+}
+
+impl astersql_executor::select::StatementContextRuntime for ConcreteSession {
+    type Statement = ast::NodeRef;
+    type Error = SessionError;
+
+    fn reset_statement_context(&mut self, statement: &Self::Statement) -> SessionResult<()> {
+        if !statement
+            .with_node(|node| node.as_any().is::<ast::SelectStmt>())
+            .unwrap_or(false)
+        {
+            return Err(SessionError::new(
+                "direct SELECT context reset requires a SELECT AST",
+            ));
+        }
+        let inner = Rc::get_mut(&mut self.inner)
+            .ok_or_else(|| SessionError::new("cannot reset a shared session"))?;
+        let variables = Arc::get_mut(&mut inner.session_vars)
+            .ok_or_else(|| SessionError::new("cannot reset while a statement plan is retained"))?;
+        variables
+            .FinishHintStatement()
+            .map_err(|error| session_error("restore statement hint variables", error))?;
+        variables.RestoreScalarSubQueries(Vec::new());
+        let timezone = variables.StmtCtx.TimeZone();
+        if !variables.StmtCtx.Reset() {
+            return Err(SessionError::new("statement context is in use"));
+        }
+        variables.StmtCtx.SetTimeZone(timezone);
+        variables.StmtCtx.TaskID.store(
+            astersql_sessionctx_stmtctx::AllocateTaskID(),
+            Ordering::Release,
+        );
+        variables.StmtCtx.InSelectStmt = true;
+        variables.StmtCtx.MemSensitive = true;
+        let mode = astersql_parser_mysql::r#const::GetSQLMode(&inner.state.borrow().sql_mode)
+            .map_err(|error| session_error("parse SELECT sql_mode", error))?;
+        variables.StmtCtx.SetTypeFlags(
+            variables
+                .StmtCtx
+                .TypeFlags()
+                .WithTruncateAsWarning(true)
+                .WithIgnoreZeroInDate(true)
+                .WithIgnoreInvalidDateErr(mode.HasAllowInvalidDatesMode()),
+        );
+        variables.StmtCtx.CTEStorageMap = None;
+        variables.StmtCtx.InRestrictedSQL = variables.InRestrictedSQL;
+        variables.StmtCtx.SetUseDynamicPruneMode(
+            variables.PartitionPruneMode
+                == astersql_sessionctx_variable::session::PartitionPruneMode::Dynamic,
+        );
+        variables.ResetRelevantOptVarsAndFixes(false);
+        inner.cte_scopes.borrow_mut().clear();
+        inner.sql_killer.Reset();
+        statement.with_node(|node| {
+            let select = node
+                .as_any()
+                .downcast_ref::<ast::SelectStmt>()
+                .expect("validated SELECT");
+            variables.StmtCtx.NotFillCache = !select.SelectStmtOpts.SQLCache;
+            inner.state.borrow_mut().current_warnings.clear();
+            let guard = crate::hint_runtime::StartStatementHints(variables, node, None);
+            inner.state.borrow_mut().last_statement_hints_for_test = (
+                guard.EffectiveHints().MemQuotaQuery,
+                guard.EffectiveHints().MaxExecutionTime,
+            );
+        });
+        Ok(())
     }
 }
