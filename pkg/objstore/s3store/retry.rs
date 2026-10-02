@@ -25,6 +25,10 @@ use std::hash::{BuildHasher, Hasher};
 use std::time::Duration;
 
 use anyhow::{Error, Result};
+use aws_sdk_s3::error::ProvideErrorMetadata;
+use aws_sdk_s3::operation::head_bucket::HeadBucketError;
+use storeapi::aws_smithy_runtime_api::client::orchestrator::HttpResponse;
+use storeapi::aws_smithy_runtime_api::client::result::SdkError;
 
 /// 单次操作允许的最大尝试次数（含首次），与 Go 常量对齐。
 pub const MAX_ATTEMPTS: i32 = 20;
@@ -36,6 +40,40 @@ const MAX_BACKOFF: Duration = Duration::from_secs(32);
 /// 构造包装了 `S3StandardRetryer` 的通用 `s3like::Retryer`。
 pub fn newRetryer() -> s3like::Retryer {
     s3like::NewRetryer(Box::new(S3StandardRetryer))
+}
+
+/// Region discovery uses its own retryer so the caller's operation policy is
+/// untouched. Only the expected HTTP 301 redirect has its warning suppressed.
+pub fn newBucketRegionDetectionRetryer() -> s3like::Retryer {
+    newRetryer().WithLogSuppressor(|error| {
+        error
+            .downcast_ref::<SdkError<HeadBucketError, HttpResponse>>()
+            .is_some_and(isBucketRegionRedirectError)
+    })
+}
+
+/// Both the modeled S3 error code and the HTTP status must identify the
+/// expected bucket-region redirect. A matching message alone is insufficient.
+pub fn isBucketRegionRedirectError(error: &SdkError<HeadBucketError, HttpResponse>) -> bool {
+    let Some(response) = error.raw_response() else {
+        return false;
+    };
+    if response.status().as_u16() != 301 {
+        return false;
+    }
+    match error
+        .as_service_error()
+        .and_then(ProvideErrorMetadata::code)
+    {
+        Some("MovedPermanently" | "PermanentRedirect") => true,
+        // Go synthesizes MovedPermanently from an empty 301 HeadBucket
+        // response. The Rust SDK leaves the API code unset in this case.
+        None => {
+            error.as_service_error().is_some()
+                && response.body().bytes().is_some_and(|body| body.is_empty())
+        }
+        _ => false,
+    }
 }
 
 /// S3 场景下的标准重试策略：可重试错误判定、最大次数与退避延迟。

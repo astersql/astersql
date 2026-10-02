@@ -48,16 +48,27 @@ pub trait StandardRetryer: Send + Sync {
 /// 包装 `StandardRetryer`，注入对象存储场景下的额外可重试判定。
 pub struct Retryer {
     standardRetryer: Box<dyn StandardRetryer>,
+    suppressLog: Option<Box<dyn Fn(&Error) -> bool + Send + Sync>>,
 }
 
 /// 由底层标准重试器构造带对象存储特化逻辑的 `Retryer`。
 pub fn NewRetryer(inner: Box<dyn StandardRetryer>) -> Retryer {
     Retryer {
         standardRetryer: inner,
+        suppressLog: None,
     }
 }
 
 impl Retryer {
+    /// Suppress the ordinary retryability warning for a narrowly matched error.
+    pub fn WithLogSuppressor(
+        mut self,
+        suppress_log: impl Fn(&Error) -> bool + Send + Sync + 'static,
+    ) -> Self {
+        self.suppressLog = Some(Box::new(suppress_log));
+        self
+    }
+
     /// 综合 failpoint 注入、元数据超时、连接复位/拒绝与 HTTP/2 中断判定是否可重试。
     pub fn IsErrorRetryable(&self, err: &Error) -> bool {
         // 测试用 failpoint：把任意错误替换为「连接被对端重置」消息。
@@ -89,6 +100,13 @@ impl Retryer {
         };
         if retryable {
             RecordRetryableError(&effective.to_string());
+        }
+        if !self
+            .suppressLog
+            .as_ref()
+            .is_some_and(|test| test(effective))
+        {
+            tracing::warn!(error = %effective, retry = retryable, "failed to request s3, checking whether we can retry");
         }
         retryable
     }

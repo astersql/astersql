@@ -15,9 +15,95 @@
 
 // `retry` 模块单元测试：验证令牌不耗尽、退避总时长区间，以及元数据错误与普通超时的可重试性区分。
 
+use std::io::Write;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::anyhow;
+use aws_sdk_s3::error::ErrorMetadata;
+use aws_sdk_s3::operation::head_bucket::HeadBucketError;
+use storeapi::aws_smithy_runtime_api::client::orchestrator::HttpResponse;
+use storeapi::aws_smithy_runtime_api::client::result::SdkError;
+
+fn region_error(code: &str, status: u16) -> SdkError<HeadBucketError, HttpResponse> {
+    let response = HttpResponse::new(
+        status.try_into().unwrap(),
+        aws_sdk_s3::primitives::SdkBody::empty(),
+    );
+    SdkError::service_error(
+        HeadBucketError::generic(ErrorMetadata::builder().code(code).build()),
+        response,
+    )
+}
+
+#[derive(Clone)]
+struct RecordedWarnings(Arc<Mutex<Vec<u8>>>);
+
+impl Write for RecordedWarnings {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn go_commit_c50aae2b1b_redirect_classifier_requires_code_and_status() {
+    for code in ["MovedPermanently", "PermanentRedirect"] {
+        assert!(s3store::isBucketRegionRedirectError(&region_error(
+            code, 301
+        )));
+    }
+    assert!(!s3store::isBucketRegionRedirectError(&region_error(
+        "MovedPermanently",
+        403
+    )));
+    assert!(!s3store::isBucketRegionRedirectError(&region_error(
+        "AccessDenied",
+        301
+    )));
+    let no_response: SdkError<HeadBucketError, HttpResponse> =
+        SdkError::construction_failure("missing response");
+    assert!(!s3store::isBucketRegionRedirectError(&no_response));
+    let code_from_empty_301 = SdkError::service_error(
+        HeadBucketError::generic(ErrorMetadata::builder().build()),
+        HttpResponse::new(
+            301.try_into().unwrap(),
+            aws_sdk_s3::primitives::SdkBody::empty(),
+        ),
+    );
+    assert!(s3store::isBucketRegionRedirectError(&code_from_empty_301));
+}
+
+#[test]
+fn go_commit_c50aae2b1b_only_probe_suppresses_expected_warning() {
+    let output = Arc::new(Mutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_max_level(tracing::Level::WARN)
+        .with_writer({
+            let output = output.clone();
+            move || RecordedWarnings(output.clone())
+        })
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        let redirect = anyhow::Error::new(region_error("MovedPermanently", 301));
+        let _ = s3store::newBucketRegionDetectionRetryer().IsErrorRetryable(&redirect);
+        assert!(output.lock().unwrap().is_empty());
+
+        let _ = s3store::newRetryer().IsErrorRetryable(&redirect);
+        let normal_warning = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        assert_eq!(normal_warning.matches("failed to request s3").count(), 1);
+
+        let unexpected = anyhow::Error::new(region_error("AccessDenied", 301));
+        let _ = s3store::newBucketRegionDetectionRetryer().IsErrorRetryable(&unexpected);
+        let all_warnings = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        assert_eq!(all_warnings.matches("failed to request s3").count(), 2);
+    });
+}
 
 /// 反复申请重试令牌，确认关闭令牌桶后不会因请求次数耗尽而失败。
 #[test]

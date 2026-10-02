@@ -28,6 +28,7 @@ tracing = "0.1"
 
 [dev-dependencies]
 objstore = { package = "astersql-objstore", path = ".." }
+tracing-subscriber = "0.3"
 
 [[test]]
 name = "s3_test"

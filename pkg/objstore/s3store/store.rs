@@ -51,6 +51,12 @@ pub enum CredentialSource {
     DefaultChain,
 }
 
+#[derive(Clone, Copy)]
+enum ClientPurpose {
+    Storage,
+    RegionProbe,
+}
+
 /// 按配置字段判断应使用的凭证来源。
 pub fn credential_source(options: &backuppb::S3) -> CredentialSource {
     if !options.AccessKey.is_empty() && !options.SecretAccessKey.is_empty() {
@@ -81,7 +87,13 @@ pub fn NewS3Storage(
     };
     let runtime = Arc::new(Runtime::new().context("create S3 async runtime")?);
     let mut sdk_config = load_sdk_config(&runtime, &query, &configured_region, options)?;
-    let mut api = build_api(&runtime, &sdk_config, &query, options);
+    let mut api = build_api(
+        &runtime,
+        &sdk_config,
+        &query,
+        options,
+        ClientPurpose::Storage,
+    );
 
     // SendCredentials=false 时从 backend 抹掉密钥，避免序列化外泄；
     // 否则若配置未带密钥，尝试从已解析的 provider 回填到 backend。
@@ -102,8 +114,17 @@ pub fn NewS3Storage(
     // 官方 AWS S3 通过 API 探测真实 region；其他 provider 信任配置中的 Region。
     let official_s3 = query.Provider.is_empty() || query.Provider == "aws";
     let mut detected_region = if official_s3 {
-        api.bucket_region(ctx, &query.Bucket)
-            .with_context(|| format!("failed to get region of bucket {}", query.Bucket))?
+        // The region probe uses the same credentials and transport, but its
+        // retry policy and classifiers are independent of S3Retryer.
+        build_api(
+            &runtime,
+            &sdk_config,
+            &query,
+            options,
+            ClientPurpose::RegionProbe,
+        )
+        .bucket_region(ctx, &query.Bucket)
+        .with_context(|| format!("failed to get region of bucket {}", query.Bucket))?
     } else {
         query.Region.clone()
     };
@@ -124,7 +145,13 @@ pub fn NewS3Storage(
         backend.Region = detected_region.clone();
         if detected_region != DEFAULT_REGION {
             sdk_config = load_sdk_config(&runtime, &query, &detected_region, options)?;
-            api = build_api(&runtime, &sdk_config, &query, options);
+            api = build_api(
+                &runtime,
+                &sdk_config,
+                &query,
+                options,
+                ClientPurpose::Storage,
+            );
         }
     }
 
@@ -156,13 +183,20 @@ fn build_api(
     config: &aws_types::SdkConfig,
     options: &backuppb::S3,
     store_options: &storeapi::Options,
+    purpose: ClientPurpose,
 ) -> Arc<AwsS3Api> {
     let mut builder =
         aws_sdk_s3::config::Builder::from(config).force_path_style(options.ForcePathStyle);
     if let Some(http_client) = http_client_for_options(store_options) {
         builder.set_http_client(Some(http_client));
     }
-    if let Some(classifier) = retry_classifier_for_options(store_options) {
+    if matches!(purpose, ClientPurpose::RegionProbe) {
+        builder = builder.retry_config(
+            <crate::S3StandardRetryer as storeapi::Retryer>::retry_config(
+                &crate::S3StandardRetryer,
+            ),
+        );
+    } else if let Some(classifier) = retry_classifier_for_options(store_options) {
         builder.push_retry_classifier(classifier);
     }
     // As in Go, the endpoint is S3-local rather than global so AssumeRole STS

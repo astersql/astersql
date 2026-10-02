@@ -218,7 +218,7 @@ pub struct Options {
     pub HTTPClient: Option<aws_smithy_runtime_api::client::http::SharedHttpClient>,
     /// New 中需要主动探测的权限列表。
     pub CheckPermissions: Vec<Permission>,
-    /// S3 创建流程使用的重试器；None 时具体实现使用默认重试器。
+    /// 创建后的 S3 storage 使用的重试器；None 时使用默认重试器。
     pub S3Retryer: Option<Arc<dyn Retryer>>,
     /// 是否检查 S3 bucket 的 ObjectLock 并把结果发送给 TiKV。
     pub CheckS3ObjectLockOptions: bool,

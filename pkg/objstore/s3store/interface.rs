@@ -483,7 +483,7 @@ pub trait S3API: Send + Sync {
         Err(anyhow!("PresignObject requires concrete S3 client"))
     }
     fn bucket_region(&self, _: &storeapi::Context, _: &str) -> Result<String> {
-        Err(anyhow!("S3 operation GetBucketLocation is not implemented"))
+        Err(anyhow!("S3 operation HeadBucket is not implemented"))
     }
 }
 
@@ -981,12 +981,24 @@ impl S3API for AwsS3Api {
 
     fn bucket_region(&self, ctx: &storeapi::Context, bucket: &str) -> Result<String> {
         self.record_get();
-        let output = self
-            .run(ctx, self.client.get_bucket_location().bucket(bucket).send())?
-            .map_err(|error| sdk_error("GetBucketLocation", error))?;
-        Ok(output
-            .location_constraint()
-            .map(|region| region.as_str().to_owned())
-            .unwrap_or_default())
+        match self.run(ctx, self.client.head_bucket().bucket(bucket).send())? {
+            Ok(output) => Ok(output.bucket_region().unwrap_or_default().to_owned()),
+            Err(error) => {
+                // S3 returns the bucket's region in the response header even
+                // when the configured region caused an expected HTTP redirect.
+                let detected_region = error
+                    .raw_response()
+                    .and_then(|response| response.headers().get("x-amz-bucket-region"))
+                    .filter(|region| !region.is_empty())
+                    .map(str::to_owned);
+                let diagnostic = sdk_error("HeadBucket", &error);
+                let _ = crate::newBucketRegionDetectionRetryer()
+                    .IsErrorRetryable(&anyhow::Error::new(error));
+                if let Some(region) = detected_region {
+                    return Ok(region);
+                }
+                Err(diagnostic)
+            }
+        }
     }
 }

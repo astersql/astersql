@@ -27,7 +27,7 @@ extern crate astersql_objstore_s3store as s3store;
 
 use std::any::Any;
 use std::collections::VecDeque;
-use std::io::{self, Cursor, Read, Seek, SeekFrom};
+use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -103,6 +103,95 @@ impl storeapi::aws_smithy_runtime_api::client::http::HttpClient for BucketRegion
     ) -> storeapi::aws_smithy_runtime_api::client::http::SharedHttpConnector {
         storeapi::aws_smithy_runtime_api::client::http::SharedHttpConnector::new(
             BucketRegionHttpConnector(self.0.clone()),
+        )
+    }
+}
+
+#[derive(Debug)]
+struct BucketRegionRedirectHttpClient;
+
+#[derive(Debug)]
+struct BucketRegionRedirectHttpConnector;
+
+struct OperationOnlyRetryer(Arc<AtomicUsize>);
+
+#[derive(Debug)]
+struct OperationOnlyClassifier(Arc<AtomicUsize>);
+
+impl storeapi::Retryer for OperationOnlyRetryer {
+    fn retry_config(&self) -> aws_sdk_s3::config::retry::RetryConfig {
+        aws_sdk_s3::config::retry::RetryConfig::standard().with_max_attempts(1)
+    }
+
+    fn retry_classifier(
+        &self,
+    ) -> Option<storeapi::aws_smithy_runtime_api::client::retries::classifiers::SharedRetryClassifier>
+    {
+        Some(
+            storeapi::aws_smithy_runtime_api::client::retries::classifiers::SharedRetryClassifier::new(
+                OperationOnlyClassifier(self.0.clone()),
+            ),
+        )
+    }
+}
+
+impl storeapi::aws_smithy_runtime_api::client::retries::classifiers::ClassifyRetry
+    for OperationOnlyClassifier
+{
+    fn classify_retry(
+        &self,
+        _: &storeapi::aws_smithy_runtime_api::client::interceptors::context::InterceptorContext,
+    ) -> storeapi::aws_smithy_runtime_api::client::retries::classifiers::RetryAction {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        storeapi::aws_smithy_runtime_api::client::retries::classifiers::RetryAction::NoActionIndicated
+    }
+
+    fn name(&self) -> &'static str {
+        "operation-only retry classifier"
+    }
+}
+
+#[derive(Clone)]
+struct BucketRegionWarningWriter(Arc<Mutex<Vec<u8>>>);
+
+impl Write for BucketRegionWarningWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl storeapi::aws_smithy_runtime_api::client::http::HttpConnector
+    for BucketRegionRedirectHttpConnector
+{
+    fn call(
+        &self,
+        _: storeapi::aws_smithy_runtime_api::client::orchestrator::HttpRequest,
+    ) -> storeapi::aws_smithy_runtime_api::client::http::HttpConnectorFuture {
+        let mut response =
+            storeapi::aws_smithy_runtime_api::client::orchestrator::HttpResponse::new(
+                301.try_into().unwrap(),
+                aws_sdk_s3::primitives::SdkBody::empty(),
+            );
+        response
+            .headers_mut()
+            .insert("x-amz-bucket-region", "us-west-2");
+        storeapi::aws_smithy_runtime_api::client::http::HttpConnectorFuture::ready(Ok(response))
+    }
+}
+
+impl storeapi::aws_smithy_runtime_api::client::http::HttpClient for BucketRegionRedirectHttpClient {
+    fn http_connector(
+        &self,
+        _: &storeapi::aws_smithy_runtime_api::client::http::HttpConnectorSettings,
+        _: &storeapi::aws_smithy_runtime_api::client::runtime_components::RuntimeComponents,
+    ) -> storeapi::aws_smithy_runtime_api::client::http::SharedHttpConnector {
+        storeapi::aws_smithy_runtime_api::client::http::SharedHttpConnector::new(
+            BucketRegionRedirectHttpConnector,
         )
     }
 }
@@ -1536,6 +1625,55 @@ fn test_s3_storage_bucket_region() {
         .unwrap();
         assert_eq!(storage.GetOptions().Region, expected);
     }
+}
+
+#[test]
+fn go_commit_c50aae2b1b_region_probe_uses_301_bucket_region_header() {
+    let warnings = Arc::new(Mutex::new(Vec::new()));
+    let operation_retry_calls = Arc::new(AtomicUsize::new(0));
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_max_level(tracing::Level::WARN)
+        .with_writer({
+            let warnings = warnings.clone();
+            move || BucketRegionWarningWriter(warnings.clone())
+        })
+        .finish();
+    let mut backend = backuppb::S3 {
+        Bucket: "bucket".to_owned(),
+        AccessKey: "ab".to_owned(),
+        SecretAccessKey: "cd".to_owned(),
+        Endpoint: "http://s3.test".to_owned(),
+        ForcePathStyle: true,
+        ..Default::default()
+    };
+    let result = tracing::subscriber::with_default(subscriber, || {
+        NewS3Storage(
+            &storeapi::Context::default(),
+            &mut backend,
+            &storeapi::Options {
+                HTTPClient: Some(
+                    storeapi::aws_smithy_runtime_api::client::http::SharedHttpClient::new(
+                        BucketRegionRedirectHttpClient,
+                    ),
+                ),
+                S3Retryer: Some(Arc::new(OperationOnlyRetryer(
+                    operation_retry_calls.clone(),
+                ))),
+                ..Default::default()
+            },
+        )
+    });
+    let storage = result.unwrap();
+    assert_eq!(storage.GetOptions().Region, "us-west-2");
+    assert_eq!(operation_retry_calls.load(Ordering::SeqCst), 0);
+    let _ = storage.FileExists(&storeapi::Context::default(), "object");
+    assert!(operation_retry_calls.load(Ordering::SeqCst) > 0);
+    let warnings = String::from_utf8(warnings.lock().unwrap().clone()).unwrap();
+    assert!(
+        !warnings.contains("failed to request s3, checking whether we can retry"),
+        "{warnings}"
+    );
 }
 
 #[test]

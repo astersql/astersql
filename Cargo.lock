@@ -5976,6 +5976,7 @@ dependencies = [
  "os_pipe",
  "prometheus 0.14.0",
  "regex",
+ "tracing",
  "url",
 ]
 
@@ -6012,6 +6013,7 @@ dependencies = [
  "serde",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
