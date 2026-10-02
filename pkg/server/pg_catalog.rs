@@ -387,6 +387,7 @@ impl CatalogQuery {
             rows,
             state: context.state(),
             response_lifecycle: None,
+            result_set: None,
         })
     }
     fn evaluate(&self, expr: &Expr, row: &[Value], database: &str) -> ConnResult<Value> {

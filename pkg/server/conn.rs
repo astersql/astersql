@@ -564,6 +564,41 @@ pub struct NativeType {
     pub decimal: isize,
 }
 
+/// Owned-value bridge to the session worker's result set. Iterators and chunks
+/// remain on their owning thread; protocol encoding consumes their original rows.
+pub trait ProtocolResultSet: fmt::Debug + Send + Sync {
+    fn next_chunk(&self) -> ConnResult<Vec<Vec<Value>>>;
+    fn current_row(&self) -> ConnResult<Option<Vec<Value>>>;
+    fn advance(&self) -> ConnResult<()>;
+    fn finish(&self) -> ConnResult<()>;
+    fn on_fetch_returned(&self) -> ConnResult<()>;
+    fn close(&self) -> ConnResult<()>;
+}
+
+/// A write section is finished exactly once, including every error return.
+struct WriteSQLResponseTimer {
+    detail: Option<Arc<ResponseLifecycle>>,
+    start: Option<Instant>,
+}
+impl WriteSQLResponseTimer {
+    fn begin(detail: &Option<Arc<ResponseLifecycle>>) -> Self {
+        Self {
+            detail: detail.clone(),
+            start: detail.as_ref().map(|_| Instant::now()),
+        }
+    }
+    fn finish(&mut self) {
+        if let (Some(detail), Some(start)) = (&self.detail, self.start.take()) {
+            detail.add_write_duration(start.elapsed());
+        }
+    }
+}
+impl Drop for WriteSQLResponseTimer {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 /// 一次查询/命令产生的结果集（列、行与会话状态）。
 pub struct QueryResult {
@@ -574,6 +609,7 @@ pub struct QueryResult {
     pub rows: Vec<Vec<Value>>,
     pub state: SessionState,
     pub response_lifecycle: Option<Arc<ResponseLifecycle>>,
+    pub result_set: Option<Arc<dyn ProtocolResultSet>>,
 }
 
 #[derive(Debug, Clone)]
@@ -733,6 +769,22 @@ pub trait TiDBContext: Send + Sync {
         allow_multi_statements: bool,
         cancel: &CancellationToken,
     ) -> ConnResult<Vec<QueryResult>>;
+    fn execute_query_streaming(
+        &self,
+        sql: &str,
+        multi: bool,
+        cancel: &CancellationToken,
+    ) -> ConnResult<Vec<QueryResult>> {
+        self.execute_query(sql, multi, cancel)
+    }
+    fn execute_prepared_streaming(
+        &self,
+        id: u32,
+        args: &[crate::conn_stmt::BinaryParam],
+        cancel: &CancellationToken,
+    ) -> ConnResult<QueryResult> {
+        self.execute_prepared_statement(id, args, cancel)
+    }
     fn field_list(&self, table: &str, wildcard: &str) -> ConnResult<Vec<ColumnInfo>>;
     fn prepare_statement(
         &self,
@@ -753,6 +805,24 @@ pub trait TiDBContext: Send + Sync {
         cancel: &CancellationToken,
     ) -> ConnResult<Option<QueryResult>>;
     fn finish_protocol_response(&self, _write_duration: Duration) {}
+    #[cfg(test)]
+    fn result_fault_for_test(
+        &self,
+        _operation: &'static str,
+        _at: usize,
+        _delay: Duration,
+        _fail: bool,
+    ) {
+    }
+    #[cfg(test)]
+    fn result_events_for_test(&self) -> Vec<String> {
+        Vec::new()
+    }
+    #[cfg(test)]
+    fn protocol_write_duration_for_test(&self) -> Duration {
+        Duration::ZERO
+    }
+
     fn change_user(&self, payload: &[u8], cancel: &CancellationToken) -> ConnResult<()>;
     fn reset_connection(&self, cancel: &CancellationToken) -> ConnResult<()>;
     fn cancel(&self);
@@ -836,6 +906,8 @@ pub struct ClientConn {
     current_cancel: Mutex<Option<Arc<CancellationToken>>>,
     prepared_statements: Mutex<HashMap<u32, crate::conn_stmt::PreparedStatement>>,
     prepared_columns: Mutex<HashMap<u32, Vec<ColumnInfo>>>,
+    #[cfg(test)]
+    encoding_fault: Mutex<Option<(Duration, ConnError)>>,
     last_packet: Mutex<Vec<u8>>,
     packet_close: Option<PacketCloseHandle>,
     closed: AtomicBool,
@@ -878,6 +950,8 @@ pub fn newClientConn(
         current_cancel: Mutex::new(None),
         prepared_statements: Mutex::new(HashMap::new()),
         prepared_columns: Mutex::new(HashMap::new()),
+        #[cfg(test)]
+        encoding_fault: Mutex::new(None),
         last_packet: Mutex::new(Vec::new()),
         packet_close,
         closed: AtomicBool::new(false),
@@ -1409,7 +1483,7 @@ impl ClientConn {
     /// 执行文本协议查询并写回一个或多个结果集。
     pub fn handleQuery(&self, sql: &str, cancel: &CancellationToken) -> ConnResult<()> {
         let context = self.openSession()?;
-        let results = context.execute_query(
+        let results = context.execute_query_streaming(
             sql,
             self.capability.load(Ordering::Acquire) & CLIENT_MULTI_STATEMENTS != 0,
             cancel,
@@ -1423,10 +1497,10 @@ impl ClientConn {
                 result.state.status |= SERVER_MORE_RESULTS_EXISTS;
             }
             let lifecycle = result.response_lifecycle.clone();
-            let started = Instant::now();
-            let write_result = self.handleStmtResult(result).and_then(|_| self.flush());
+            let write_result = self
+                .handleStmtResult(result)
+                .and_then(|_| self.flush_response(&lifecycle));
             if let Some(lifecycle) = lifecycle {
-                lifecycle.add_write_duration(started.elapsed());
                 lifecycle.finish();
             }
             write_result?;
@@ -1491,16 +1565,15 @@ impl ClientConn {
                         .map_err(|error| ConnError::Session(error.to_string()))?
                 };
                 let mut result =
-                    context.execute_prepared_statement(statement_id, &arguments, cancel)?;
+                    context.execute_prepared_streaming(statement_id, &arguments, cancel)?;
                 if use_cursor && !result.columns.is_empty() {
                     result.state.status |= SERVER_STATUS_CURSOR_EXISTS;
                     let lifecycle = result.response_lifecycle.clone();
-                    let started = Instant::now();
-                    self.write_binary_result_metadata(&result)?;
-                    self.flush()?;
-                    if let Some(lifecycle) = lifecycle {
-                        lifecycle.add_write_duration(started.elapsed());
+                    {
+                        let _timer = WriteSQLResponseTimer::begin(&lifecycle);
+                        self.write_binary_result_metadata(&result)?;
                     }
+                    self.flush_response(&lifecycle)?;
                     let mut statements = self
                         .prepared_statements
                         .lock()
@@ -1513,10 +1586,10 @@ impl ClientConn {
                     return Ok(());
                 }
                 let lifecycle = result.response_lifecycle.clone();
-                let started = Instant::now();
-                let write_result = self.write_binary_result(result).and_then(|_| self.flush());
+                let write_result = self
+                    .write_binary_result(result)
+                    .and_then(|_| self.flush_response(&lifecycle));
                 if let Some(lifecycle) = lifecycle {
-                    lifecycle.add_write_duration(started.elapsed());
                     lifecycle.finish();
                 }
                 write_result
@@ -1605,22 +1678,7 @@ impl ClientConn {
     }
 
     fn write_binary_result(&self, result: QueryResult) -> ConnResult<()> {
-        if result.columns.is_empty() {
-            return self.writeOkWith(OK_HEADER, false, &result.state);
-        }
-        let mut count = Vec::new();
-        put_lenenc_int(&mut count, result.columns.len() as u64);
-        self.writePacket(&count)?;
-        for column in &result.columns {
-            self.writeColumnInfo(column)?;
-        }
-        if self.capability.load(Ordering::Acquire) & CLIENT_DEPRECATE_EOF == 0 {
-            self.writeEOF(result.state.status)?;
-        }
-        for row in &result.rows {
-            self.write_binary_row(&result.columns, row)?;
-        }
-        self.writeEOF(result.state.status)
+        self.write_result_chunks(&result, true)
     }
 
     fn write_binary_result_metadata(&self, result: &QueryResult) -> ConnResult<()> {
@@ -1634,6 +1692,18 @@ impl ClientConn {
             self.writeEOF(result.state.status)?;
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cursor_write_duration_for_test(&self, id: u32) -> Duration {
+        self.prepared_statements
+            .lock()
+            .unwrap()
+            .get(&id)
+            .and_then(|stmt| stmt.protocol_cursor.as_ref())
+            .and_then(|result| result.response_lifecycle.as_ref())
+            .map(|lifecycle| *lifecycle.write_duration.lock().unwrap())
+            .unwrap_or_default()
     }
 
     fn write_prepared_cursor_fetch(&self, payload: &[u8]) -> ConnResult<()> {
@@ -1659,22 +1729,44 @@ impl ClientConn {
             .as_mut()
             .ok_or_else(|| ConnError::Session("prepared cursor is not active".to_owned()))?;
         let lifecycle = cursor.response_lifecycle.clone();
-        let started = Instant::now();
-        let count = fetch_size.min(cursor.rows.len());
-        for row in cursor.rows.drain(..count) {
-            self.write_binary_row(&cursor.columns, &row)?;
+        let exhausted;
+        {
+            let mut timer = WriteSQLResponseTimer::begin(&lifecycle);
+            if let Some(source) = &cursor.result_set {
+                for _ in 0..fetch_size {
+                    let Some(row) = source.current_row()? else {
+                        break;
+                    };
+                    self.write_binary_row(&cursor.columns, &row)?;
+                    source.advance()?;
+                }
+                exhausted = source.current_row()?.is_none();
+                timer.finish();
+                source.on_fetch_returned()?;
+            } else {
+                let count = fetch_size.min(cursor.rows.len());
+                for row in cursor.rows.drain(..count) {
+                    self.write_binary_row(&cursor.columns, &row)?;
+                }
+                exhausted = cursor.rows.is_empty();
+                timer.finish();
+            }
         }
-        let exhausted = cursor.rows.is_empty();
         let mut status = cursor.state.status;
         if exhausted {
             status &= !SERVER_STATUS_CURSOR_EXISTS;
             status |= SERVER_STATUS_LAST_ROW_SENT;
         }
-        self.writeEOF(status)?;
-        self.flush()?;
-        if let Some(lifecycle) = lifecycle {
-            lifecycle.add_write_duration(started.elapsed());
-            if exhausted {
+        {
+            let _timer = WriteSQLResponseTimer::begin(&lifecycle);
+            self.writeEOF(status)?;
+        }
+        self.flush_response(&lifecycle)?;
+        if exhausted {
+            if let Some(source) = &cursor.result_set {
+                source.close()?;
+            }
+            if let Some(lifecycle) = lifecycle {
                 lifecycle.finish();
             }
         }
@@ -1685,7 +1777,17 @@ impl ClientConn {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(crate) fn fail_binary_encoding_for_test(&self, delay: Duration, error: ConnError) {
+        *self.encoding_fault.lock().unwrap() = Some((delay, error));
+    }
+
     fn write_binary_row(&self, columns: &[ColumnInfo], row: &[Value]) -> ConnResult<()> {
+        #[cfg(test)]
+        if let Some((delay, error)) = self.encoding_fault.lock().unwrap().take() {
+            std::thread::sleep(delay);
+            return Err(error);
+        }
         let mut packet = vec![0_u8; 1 + (columns.len() + 9) / 8];
         for (index, (column, value)) in columns.iter().zip(row).enumerate() {
             let bytes = value.encode_text();
@@ -1722,11 +1824,7 @@ impl ClientConn {
 
     /// 无列则写 OK，否则写完整结果集。
     fn handleStmtResult(&self, result: QueryResult) -> ConnResult<()> {
-        if result.columns.is_empty() {
-            self.writeOkWith(OK_HEADER, false, &result.state)
-        } else {
-            self.writeResultSet(&result)
-        }
+        self.writeResultSet(&result)
     }
 
     /// 切换当前数据库并更新本地缓存名。
@@ -1864,21 +1962,52 @@ impl ClientConn {
 
     /// 写列数、列定义、EOF、行数据与结束 EOF。
     pub fn writeResultSet(&self, result: &QueryResult) -> ConnResult<()> {
-        let mut count = Vec::new();
-        put_lenenc_int(&mut count, result.columns.len() as u64);
-        self.writePacket(&count)?;
-        for column in &result.columns {
-            self.writeColumnInfo(column)?;
+        self.write_result_chunks(result, false)
+    }
+
+    fn write_result_chunks(&self, result: &QueryResult, binary: bool) -> ConnResult<()> {
+        if result.columns.is_empty() {
+            let _timer = WriteSQLResponseTimer::begin(&result.response_lifecycle);
+            return self.writeOkWith(OK_HEADER, false, &result.state);
         }
-        // CLIENT_DEPRECATE_EOF removes the metadata terminator entirely; the
-        // next packet must be the first row (or the final OK packet). Sending
-        // an OK-shaped 0xfe packet here makes current MySQL clients treat an
-        // otherwise valid result set as empty.
-        if self.capability.load(Ordering::Acquire) & CLIENT_DEPRECATE_EOF == 0 {
-            self.writeEOF(result.state.status)?;
+        let mut first = true;
+        loop {
+            // Next must precede metadata, and must not contribute to write time.
+            let rows = if let Some(source) = &result.result_set {
+                source.next_chunk()?
+            } else if first {
+                result.rows.clone()
+            } else {
+                Vec::new()
+            };
+            if first {
+                let _timer = WriteSQLResponseTimer::begin(&result.response_lifecycle);
+                self.write_binary_result_metadata(result)?;
+                first = false;
+            }
+            if rows.is_empty() {
+                break;
+            }
+            let _timer = WriteSQLResponseTimer::begin(&result.response_lifecycle);
+            if binary {
+                for row in &rows {
+                    self.write_binary_row(&result.columns, row)?;
+                }
+            } else {
+                self.writeChunks(&rows)?;
+            }
         }
-        self.writeChunks(&result.rows)?;
-        self.writeEOF(result.state.status)
+        if let Some(source) = &result.result_set {
+            source.finish()?;
+        }
+        let write_result = {
+            let _timer = WriteSQLResponseTimer::begin(&result.response_lifecycle);
+            self.writeEOF(result.state.status)
+        };
+        if let Some(source) = &result.result_set {
+            source.close()?;
+        }
+        write_result
     }
 
     /// 按文本协议编码单列定义包。
@@ -2074,6 +2203,11 @@ impl ClientConn {
             .lock()
             .map_err(|_| ConnError::Poisoned("packet"))?
             .write_packet(data)
+    }
+
+    fn flush_response(&self, detail: &Option<Arc<ResponseLifecycle>>) -> ConnResult<()> {
+        let _timer = WriteSQLResponseTimer::begin(detail);
+        self.flush()
     }
 
     /// 刷新写缓冲。

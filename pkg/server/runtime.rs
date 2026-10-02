@@ -594,6 +594,7 @@ impl SessionDriver for ConcreteSessionDriver {
         _tls_state: Option<&TlsState>,
     ) -> ConnResult<Arc<dyn TiDBContext>> {
         let (request_tx, request_rx) = mpsc::channel();
+        let request_tx = Arc::new(request_tx);
         let (init_tx, init_rx) = mpsc::sync_channel(1);
         let domain = Arc::clone(&self.domain);
         let database = database.to_owned();
@@ -602,6 +603,7 @@ impl SessionDriver for ConcreteSessionDriver {
             .read()
             .map_err(|_| ConnError::Poisoned("session manager"))?
             .clone();
+        let result_sender = Arc::downgrade(&request_tx);
         let worker = thread::Builder::new()
             .name(format!("mysql-session-{connection_id}"))
             .spawn(move || {
@@ -614,6 +616,7 @@ impl SessionDriver for ConcreteSessionDriver {
                     session_manager,
                     init_tx,
                     request_rx,
+                    result_sender,
                 );
             })
             .map_err(packet_error)?;
@@ -664,7 +667,7 @@ impl SessionDriver for ConcreteSessionDriver {
 
 struct ConcreteTiDBContext {
     domain: Arc<Domain>,
-    requests: Mutex<Option<mpsc::Sender<SessionRequest>>>,
+    requests: Mutex<Option<Arc<mpsc::Sender<SessionRequest>>>>,
     worker: Mutex<Option<JoinHandle<()>>>,
     auth_mode: BootstrapAuthMode,
     state: Mutex<SessionState>,
@@ -678,7 +681,7 @@ struct ConcreteTiDBContext {
     closed: AtomicBool,
 }
 
-enum SessionRequest {
+pub(crate) enum SessionRequest {
     SetAuthenticatedUser {
         username: String,
         has_process_privilege: bool,
@@ -713,6 +716,36 @@ enum SessionRequest {
     Reset {
         response: mpsc::SyncSender<ConnResult<ConcreteProtocolState>>,
     },
+    #[cfg(test)]
+    WriteDuration {
+        response: mpsc::SyncSender<Duration>,
+    },
+    #[cfg(test)]
+    SetResultFault {
+        operation: &'static str,
+        at: usize,
+        delay: Duration,
+        fail: bool,
+        response: mpsc::SyncSender<()>,
+    },
+    #[cfg(test)]
+    ResultEvents {
+        response: mpsc::SyncSender<Vec<String>>,
+    },
+    ExecuteStreaming {
+        statements: Vec<String>,
+        response: mpsc::SyncSender<ConnResult<Vec<QueryResult>>>,
+    },
+    ExecutePreparedStreaming {
+        statement_id: u32,
+        arguments: Vec<crate::conn_stmt::BinaryParam>,
+        response: mpsc::SyncSender<ConnResult<QueryResult>>,
+    },
+    ResultOperation {
+        id: u64,
+        operation: super::protocol_result::Operation,
+        response: mpsc::SyncSender<ConnResult<super::protocol_result::OperationResult>>,
+    },
     Shutdown,
 }
 
@@ -730,6 +763,7 @@ fn run_session_worker(
         )>,
     >,
     requests: mpsc::Receiver<SessionRequest>,
+    result_sender: Weak<mpsc::Sender<SessionRequest>>,
 ) {
     let setup = (|| {
         let mut session = ConcreteSession::new(domain);
@@ -760,8 +794,61 @@ fn run_session_worker(
     {
         return;
     }
+    let mut results = super::protocol_result::WorkerResults::new(result_sender);
     while let Ok(request) = requests.recv() {
         match request {
+            #[cfg(test)]
+            SessionRequest::WriteDuration { response } => {
+                let _ = response.send(session.LastWriteSQLRespDurationForTest());
+            }
+            #[cfg(test)]
+            SessionRequest::SetResultFault {
+                operation,
+                at,
+                delay,
+                fail,
+                response,
+            } => {
+                results.set_fault(operation, at, delay, fail);
+                let _ = response.send(());
+            }
+            #[cfg(test)]
+            SessionRequest::ResultEvents { response } => {
+                let _ = response.send(results.events());
+            }
+            SessionRequest::ExecuteStreaming {
+                statements,
+                response,
+            } => {
+                let _ = response.send(execute_on_session(
+                    &session,
+                    &cancellation,
+                    u16::from(collation),
+                    statements,
+                    Some(&mut results),
+                ));
+            }
+            SessionRequest::ExecutePreparedStreaming {
+                statement_id,
+                arguments,
+                response,
+            } => {
+                let _ = response.send(execute_prepared_on_session(
+                    &session,
+                    &cancellation,
+                    u16::from(collation),
+                    statement_id,
+                    &arguments,
+                    Some(&mut results),
+                ));
+            }
+            SessionRequest::ResultOperation {
+                id,
+                operation,
+                response,
+            } => {
+                let _ = response.send(results.operate(id, operation));
+            }
             SessionRequest::SetAuthenticatedUser {
                 username,
                 has_process_privilege,
@@ -774,8 +861,13 @@ fn run_session_worker(
                 statements,
                 response,
             } => {
-                let result =
-                    execute_on_session(&session, &cancellation, u16::from(collation), statements);
+                let result = execute_on_session(
+                    &session,
+                    &cancellation,
+                    u16::from(collation),
+                    statements,
+                    None,
+                );
                 let _ = response.send(result);
             }
             SessionRequest::FieldList {
@@ -825,6 +917,7 @@ fn run_session_worker(
                     u16::from(collation),
                     statement_id,
                     &arguments,
+                    None,
                 );
                 let _ = response.send(result);
             }
@@ -920,6 +1013,7 @@ fn execute_on_session(
     cancellation: &SQLKiller,
     collation: u16,
     statements: Vec<String>,
+    mut streaming: Option<&mut super::protocol_result::WorkerResults>,
 ) -> ConnResult<Vec<QueryResult>> {
     let mut results = Vec::with_capacity(statements.len());
     for statement in statements {
@@ -937,7 +1031,20 @@ fn execute_on_session(
             });
         } else {
             for record_set in record_sets {
-                let mut result = result_from_record_set(record_set, state.clone(), collation)?;
+                let mut result = if let Some(streaming) = streaming.as_deref_mut() {
+                    {
+                        let (initial, maximum) = protocol_chunk_sizes(session);
+                        streaming.register(
+                            record_set,
+                            state.clone(),
+                            collation,
+                            initial,
+                            maximum,
+                        )?
+                    }
+                } else {
+                    result_from_record_set(record_set, state.clone(), collation)?
+                };
                 // Preserve engine metadata separately from existing MySQL wire columns.
                 // Metadata unavailable from the native resolver remains explicit.
                 if !result.columns.is_empty()
@@ -1087,6 +1194,7 @@ fn execute_prepared_on_session(
     collation: u16,
     statement_id: u32,
     arguments: &[crate::conn_stmt::BinaryParam],
+    streaming: Option<&mut super::protocol_result::WorkerResults>,
 ) -> ConnResult<QueryResult> {
     let arguments = arguments
         .iter()
@@ -1105,7 +1213,13 @@ fn execute_prepared_on_session(
     }
     let state = map_protocol_state(session.protocol_state());
     match record_sets.pop() {
-        Some(record_set) => result_from_record_set(record_set, state, collation),
+        Some(record_set) => match streaming {
+            Some(streaming) => {
+                let (initial, maximum) = protocol_chunk_sizes(session);
+                streaming.register(record_set, state, collation, initial, maximum)
+            }
+            None => result_from_record_set(record_set, state, collation),
+        },
         None => Ok(QueryResult {
             state,
             ..QueryResult::default()
@@ -1129,6 +1243,40 @@ fn result_from_record_set(
     state: SessionState,
     collation: u16,
 ) -> ConnResult<QueryResult> {
+    let mut result = result_metadata(&record_set, state, collation);
+    let mut rows = Vec::new();
+    while let Some(row) = record_set
+        .next_row()
+        .map_err(|error| ConnError::Session(error.to_string()))?
+    {
+        rows.push(row.into_iter().map(protocol_value).collect());
+    }
+    record_set
+        .close()
+        .map_err(|error| ConnError::Session(error.to_string()))?;
+    result.rows = rows;
+    Ok(result)
+}
+
+fn protocol_chunk_sizes(session: &ConcreteSession) -> (usize, usize) {
+    session.WithSessionVars(|vars| {
+        let initial = vars
+            .GetSystemVar("tidb_init_chunk_size")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(32);
+        let maximum = vars
+            .GetSystemVar("tidb_max_chunk_size")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1024);
+        (initial, maximum)
+    })
+}
+
+pub(crate) fn result_metadata(
+    record_set: &astersql_session::runtime::ConcreteRecordSet,
+    state: SessionState,
+    collation: u16,
+) -> QueryResult {
     let native_types = record_set
         .result_fields()
         .iter()
@@ -1168,52 +1316,39 @@ fn result_from_record_set(
                 })
         })
         .collect();
-    let mut rows = Vec::new();
-    while let Some(row) = record_set
-        .next_row()
-        .map_err(|error| ConnError::Session(error.to_string()))?
-    {
-        rows.push(
-            row.into_iter()
-                .map(|value| {
-                    const PREFIX: &str = "__astersql_binary_hex__:";
-                    // Canonical record sets use the internal sentinel for newer
-                    // paths, while legacy relational rows still render SQL NULL
-                    // as `<nil>`. Normalize both at the protocol boundary so the
-                    // text and binary encoders emit MySQL NULL, never literal text.
-                    if value == CONCRETE_NULL_VALUE || value == "<nil>" {
-                        return Value::Null;
-                    }
-                    let Some(hex) = value.strip_prefix(PREFIX) else {
-                        return Value::Text(value);
-                    };
-                    if hex.len() % 2 != 0 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                        return Value::Text(value);
-                    }
-                    let bytes = hex
-                        .as_bytes()
-                        .chunks(2)
-                        .map(|chunk| {
-                            let high = (chunk[0] as char).to_digit(16).unwrap_or_default();
-                            let low = (chunk[1] as char).to_digit(16).unwrap_or_default();
-                            ((high << 4) | low) as u8
-                        })
-                        .collect();
-                    Value::Bytes(bytes)
-                })
-                .collect(),
-        );
-    }
-    record_set
-        .close()
-        .map_err(|error| ConnError::Session(error.to_string()))?;
-    Ok(QueryResult {
+    QueryResult {
         native_types,
         columns,
-        rows,
         state,
-        response_lifecycle: None,
-    })
+        ..QueryResult::default()
+    }
+}
+
+pub(crate) fn protocol_value(value: String) -> Value {
+    const PREFIX: &str = "__astersql_binary_hex__:";
+    // Canonical record sets use the internal sentinel for newer
+    // paths, while legacy relational rows still render SQL NULL
+    // as `<nil>`. Normalize both at the protocol boundary so the
+    // text and binary encoders emit MySQL NULL, never literal text.
+    if value == CONCRETE_NULL_VALUE || value == "<nil>" {
+        return Value::Null;
+    }
+    let Some(hex) = value.strip_prefix(PREFIX) else {
+        return Value::Text(value);
+    };
+    if hex.len() % 2 != 0 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Value::Text(value);
+    }
+    let bytes = hex
+        .as_bytes()
+        .chunks(2)
+        .map(|chunk| {
+            let high = (chunk[0] as char).to_digit(16).unwrap_or_default();
+            let low = (chunk[1] as char).to_digit(16).unwrap_or_default();
+            ((high << 4) | low) as u8
+        })
+        .collect();
+    Value::Bytes(bytes)
 }
 
 impl ConcreteTiDBContext {
@@ -1403,6 +1538,47 @@ impl TiDBContext for ConcreteTiDBContext {
         Ok(results)
     }
 
+    fn execute_query_streaming(
+        &self,
+        sql: &str,
+        allow_multi_statements: bool,
+        cancel: &CancellationToken,
+    ) -> ConnResult<Vec<QueryResult>> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(ConnError::Session("session is closed".to_owned()));
+        }
+        self.ensure_not_cancelled(cancel)?;
+        let statements =
+            SplitSQLStatements(sql).map_err(|error| ConnError::Session(error.to_string()))?;
+        if !allow_multi_statements && statements.len() > 1 {
+            return Err(ConnError::Session(
+                "multi-statement execution is disabled".to_owned(),
+            ));
+        }
+        if let Some(statement) = statements.last() {
+            *self
+                .last_statement
+                .lock()
+                .map_err(|_| ConnError::Poisoned("last statement"))? = statement.clone();
+        }
+        let (response_tx, response_rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::ExecuteStreaming {
+            statements,
+            response: response_tx,
+        })?;
+        let mut results = response_rx.recv().map_err(packet_error)??;
+        for result in &mut results {
+            result.response_lifecycle = Some(self.response_lifecycle()?);
+        }
+        if let Some(result) = results.last() {
+            *self
+                .state
+                .lock()
+                .map_err(|_| ConnError::Poisoned("session state"))? = result.state.clone();
+        }
+        Ok(results)
+    }
+
     fn field_list(&self, table: &str, wildcard: &str) -> ConnResult<Vec<ColumnInfo>> {
         if self.closed.load(Ordering::Acquire) {
             return Err(ConnError::Session("session is closed".to_owned()));
@@ -1452,6 +1628,28 @@ impl TiDBContext for ConcreteTiDBContext {
         Ok(result)
     }
 
+    fn execute_prepared_streaming(
+        &self,
+        statement_id: u32,
+        arguments: &[crate::conn_stmt::BinaryParam],
+        cancel: &CancellationToken,
+    ) -> ConnResult<QueryResult> {
+        self.ensure_not_cancelled(cancel)?;
+        let (response_tx, response_rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::ExecutePreparedStreaming {
+            statement_id,
+            arguments: arguments.to_vec(),
+            response: response_tx,
+        })?;
+        let mut result = response_rx.recv().map_err(packet_error)??;
+        result.response_lifecycle = Some(self.response_lifecycle()?);
+        *self
+            .state
+            .lock()
+            .map_err(|_| ConnError::Poisoned("session state"))? = result.state.clone();
+        Ok(result)
+    }
+
     fn close_prepared_statement(&self, statement_id: u32) -> ConnResult<()> {
         let (response_tx, response_rx) = mpsc::sync_channel(1);
         self.send_request(SessionRequest::ClosePrepared {
@@ -1468,6 +1666,41 @@ impl TiDBContext for ConcreteTiDBContext {
         _cancel: &CancellationToken,
     ) -> ConnResult<Option<QueryResult>> {
         Err(ConnError::UnsupportedCommand(command as u8))
+    }
+
+    #[cfg(test)]
+    fn result_fault_for_test(
+        &self,
+        operation: &'static str,
+        at: usize,
+        delay: Duration,
+        fail: bool,
+    ) {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::SetResultFault {
+            operation,
+            at,
+            delay,
+            fail,
+            response: tx,
+        })
+        .unwrap();
+        rx.recv().unwrap();
+    }
+    #[cfg(test)]
+    fn result_events_for_test(&self) -> Vec<String> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::ResultEvents { response: tx })
+            .unwrap();
+        rx.recv().unwrap()
+    }
+
+    #[cfg(test)]
+    fn protocol_write_duration_for_test(&self) -> Duration {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::WriteDuration { response: tx })
+            .unwrap();
+        rx.recv().unwrap()
     }
 
     fn finish_protocol_response(&self, write_duration: Duration) {

@@ -97,10 +97,15 @@ impl PreparedStatement {
     pub(crate) fn reset(&mut self) -> Result<(), Error> {
         self.bound_params.fill(None);
         self.cursor_active = false;
-        if let Some(cursor) = self.protocol_cursor.take()
-            && let Some(lifecycle) = cursor.response_lifecycle
-        {
-            lifecycle.finish();
+        if let Some(cursor) = self.protocol_cursor.take() {
+            if let Some(source) = &cursor.result_set {
+                source
+                    .close()
+                    .map_err(|error| Error::Runtime(error.to_string()))?;
+            }
+            if let Some(lifecycle) = cursor.response_lifecycle {
+                lifecycle.finish();
+            }
         }
         if let Some(mut cursor) = self.cursor.take() {
             cursor.close()?;

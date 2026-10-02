@@ -1491,7 +1491,7 @@ impl ConcreteSession {
         }
     }
 
-    #[cfg(test)]
+    /// Read-only protocol response accounting, also available to server crate regressions.
     pub fn LastWriteSQLRespDurationForTest(&self) -> Duration {
         self.state.borrow().last_write_sql_resp_duration
     }

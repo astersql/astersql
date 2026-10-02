@@ -36,6 +36,7 @@ mod pg_conn_test;
 /// PostgreSQL 3.2 startup framing.
 pub mod pg_protocol;
 pub mod pg_result;
+mod protocol_result;
 /// gRPC / RPC 服务端。
 pub mod rpc_server;
 /// 真实 TCP PacketIO 与 canonical ConcreteSession 生产适配。
