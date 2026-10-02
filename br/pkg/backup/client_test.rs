@@ -1024,6 +1024,30 @@ fn split_ranges(ranges: &[rtree::KeyRange], limit: usize) -> Vec<Vec<u8>> {
     res
 }
 
+fn store_id_for_split(stores: &[metapb::Store], split_index: usize) -> u64 {
+    stores[split_index % stores.len()].GetId()
+}
+
+#[test]
+fn go_commit_1a99cd1d3b_uses_actual_store_ids_for_deterministic_split_assignment() {
+    let stores = vec![
+        metapb::Store {
+            Id: 11,
+            ..Default::default()
+        },
+        metapb::Store {
+            Id: 42,
+            ..Default::default()
+        },
+    ];
+
+    let assigned = (0..6)
+        .map(|i| store_id_for_split(&stores, i))
+        .collect::<Vec<_>>();
+
+    assert_eq!(assigned, vec![11, 42, 11, 42, 11, 42]);
+}
+
 /// `RunLoop` 是备份客户端调度逻辑的总入口，因此这里集中覆盖多种时序。
 /// 场景一是所有响应正常返回，主循环顺利结束。
 /// 场景二让响应缺少文件产物，进度树无法真正清空，随后通过取消信号退出。
@@ -1077,18 +1101,16 @@ fn test_main_backup_loop() {
         // 把切碎的子区间轮流分发到两个 store，模拟最常见的均匀回传。
         let mut map = mock_responses.lock().unwrap();
         for i in 0..split_keys.len() - 1 {
-            let rand_store_id = (i % stores.len()) as u64 + 1;
-            map.entry(rand_store_id)
-                .or_default()
-                .push(ResponseAndStore {
-                    StoreID: rand_store_id,
-                    Resp: BackupResponse {
-                        StartKey: split_keys[i].clone(),
-                        EndKey: split_keys[i + 1].clone(),
-                        Files: vec![dummy_file()],
-                        ..Default::default()
-                    },
-                });
+            let store_id = store_id_for_split(&stores, i);
+            map.entry(store_id).or_default().push(ResponseAndStore {
+                StoreID: store_id,
+                Resp: BackupResponse {
+                    StartKey: split_keys[i].clone(),
+                    EndKey: split_keys[i + 1].clone(),
+                    Files: vec![dummy_file()],
+                    ..Default::default()
+                },
+            });
         }
     }
     let (ch_tx, ch_rx) = mpsc::channel();
@@ -1130,19 +1152,17 @@ fn test_main_backup_loop() {
         map.clear();
         let split_keys = split_ranges(&ranges, 10);
         for i in 0..split_keys.len().saturating_sub(2) {
-            let rand_store_id = (i % stores.len()) as u64 + 1;
-            map.entry(rand_store_id)
-                .or_default()
-                .push(ResponseAndStore {
-                    StoreID: rand_store_id,
-                    Resp: BackupResponse {
-                        StartKey: split_keys[i].clone(),
-                        EndKey: split_keys[i + 1].clone(),
-                        // Go 以响应区间判定完成，Files 可为空。
-                        Files: vec![],
-                        ..Default::default()
-                    },
-                });
+            let store_id = store_id_for_split(&stores, i);
+            map.entry(store_id).or_default().push(ResponseAndStore {
+                StoreID: store_id,
+                Resp: BackupResponse {
+                    StartKey: split_keys[i].clone(),
+                    EndKey: split_keys[i + 1].clone(),
+                    // Go 以响应区间判定完成，Files 可为空。
+                    Files: vec![],
+                    ..Default::default()
+                },
+            });
         }
     }
     let (ch_tx, ch_rx) = mpsc::channel();
@@ -1190,18 +1210,16 @@ fn test_main_backup_loop() {
         map.clear();
         let split_keys = split_ranges(&ranges, 10);
         for i in 0..split_keys.len() - 1 {
-            let rand_store_id = (i % stores.len()) as u64 + 1;
-            map.entry(rand_store_id)
-                .or_default()
-                .push(ResponseAndStore {
-                    StoreID: rand_store_id,
-                    Resp: BackupResponse {
-                        StartKey: split_keys[i].clone(),
-                        EndKey: split_keys[i + 1].clone(),
-                        Files: vec![dummy_file()],
-                        ..Default::default()
-                    },
-                });
+            let store_id = store_id_for_split(&stores, i);
+            map.entry(store_id).or_default().push(ResponseAndStore {
+                StoreID: store_id,
+                Resp: BackupResponse {
+                    StartKey: split_keys[i].clone(),
+                    EndKey: split_keys[i + 1].clone(),
+                    Files: vec![dummy_file()],
+                    ..Default::default()
+                },
+            });
         }
         s.pd.mark_tombstone(drop_store_id);
         drop_backup_responses = map.remove(&drop_store_id).unwrap_or_default();
@@ -1263,18 +1281,16 @@ fn test_main_backup_loop() {
         map.clear();
         let split_keys = split_ranges(&ranges, 10);
         for i in 0..split_keys.len() - 1 {
-            let rand_store_id = (i % stores.len()) as u64 + 1;
-            map.entry(rand_store_id)
-                .or_default()
-                .push(ResponseAndStore {
-                    StoreID: rand_store_id,
-                    Resp: BackupResponse {
-                        StartKey: split_keys[i].clone(),
-                        EndKey: split_keys[i + 1].clone(),
-                        Files: vec![dummy_file()],
-                        ..Default::default()
-                    },
-                });
+            let store_id = store_id_for_split(&stores, i);
+            map.entry(store_id).or_default().push(ResponseAndStore {
+                StoreID: store_id,
+                Resp: BackupResponse {
+                    StartKey: split_keys[i].clone(),
+                    EndKey: split_keys[i + 1].clone(),
+                    Files: vec![dummy_file()],
+                    ..Default::default()
+                },
+            });
         }
     }
     // 延迟把 tombstone 节点恢复成正常状态，观察主循环是否愿意重新连接它。
@@ -1326,18 +1342,16 @@ fn test_main_backup_loop() {
         map.clear();
         let split_keys = split_ranges(&ranges, 10);
         for i in 0..split_keys.len() - 1 {
-            let rand_store_id = (i % stores.len()) as u64 + 1;
-            map.entry(rand_store_id)
-                .or_default()
-                .push(ResponseAndStore {
-                    StoreID: rand_store_id,
-                    Resp: BackupResponse {
-                        StartKey: split_keys[i].clone(),
-                        EndKey: split_keys[i + 1].clone(),
-                        Files: vec![dummy_file()],
-                        ..Default::default()
-                    },
-                });
+            let store_id = store_id_for_split(&stores, i);
+            map.entry(store_id).or_default().push(ResponseAndStore {
+                StoreID: store_id,
+                Resp: BackupResponse {
+                    StartKey: split_keys[i].clone(),
+                    EndKey: split_keys[i + 1].clone(),
+                    Files: vec![dummy_file()],
+                    ..Default::default()
+                },
+            });
         }
         drop_backup_responses = map.remove(&drop_store_id).unwrap_or_default();
     }
