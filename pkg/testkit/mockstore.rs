@@ -19,6 +19,7 @@
 // - [`MockStore`]：按规范化 SQL 注册期望查询/执行结果的轻量 Mock；
 // - [`AnalyzeStatsStore`] / [`AnalyzeSessionDatabase`]：在真实 `Domain` 上
 //   为每个会话绑定线程固定的 `ConcreteSession`，供 ANALYZE / 自动分析等路径使用。
+use std::any::type_name;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak, mpsc};
@@ -28,7 +29,7 @@ use std::time::Duration;
 use crate::db_driver::{
     AnalyzeStatsContext, Database, DbValue, ExecutionResult, PreparedResultField, QueryRows,
 };
-use crate::{TestError, TestResult};
+use crate::{NewTestKit, TestError, TestKit, TestResult};
 use astersql_domain::domain::CrossKeyspaceCoordinator;
 use astersql_domain::{
     AutoAnalyzeExecutor, Domain, DomainConfig, InfoSchemaLoader, KvInfoSchemaLoader, SQLKiller,
@@ -248,6 +249,65 @@ fn normalize_sql(sql: &str) -> String {
 /// 创建默认配置的 MockStore。
 pub fn CreateMockStore() -> Arc<MockStore> {
     Arc::new(MockStore::default())
+}
+
+/// Build the Go `TestOption` that selects the requested Cascades planner mode.
+pub fn WithCascades(on: bool) -> impl FnOnce(&mut TestKit) {
+    move |test_kit| {
+        let value = if on { "on" } else { "off" };
+        test_kit.MustExec(
+            &format!("set @@tidb_enable_cascades_planner = {value}"),
+            Vec::new(),
+        );
+    }
+}
+
+/// Run a planner test once with the Cascades planner disabled.
+///
+/// Go commit `2d30398a5f4977b04044d2493fbc2863788937dd` deliberately removed the
+/// second, Cascades-enabled round from this compatibility helper.
+pub fn RunTestUnderCascades<F>(test_func: F)
+where
+    F: FnOnce(&mut TestKit, &str, &str),
+{
+    let caller = test_callback_caller::<F>();
+    let (store, _domain) = CreateMockStoreAndDomain();
+    let mut test_kit = NewTestKit(store);
+    WithCascades(false)(&mut test_kit);
+    test_func(&mut test_kit, "off", caller);
+}
+
+/// Run a planner test once with its Domain and the Cascades planner disabled.
+pub fn RunTestUnderCascadesWithDomain<F>(test_func: F)
+where
+    F: FnOnce(&mut TestKit, &Arc<Domain>, &str, &str),
+{
+    let caller = test_callback_caller::<F>();
+    let (store, domain) = CreateMockStoreAndDomain();
+    let mut test_kit = NewTestKit(store);
+    WithCascades(false)(&mut test_kit);
+    test_func(&mut test_kit, &domain, "off", caller);
+}
+
+/// Run a planner test once with an explicit schema lease and Cascades disabled.
+pub fn RunTestUnderCascadesAndDomainWithSchemaLease<F>(schema_lease: Duration, test_func: F)
+where
+    F: FnOnce(&mut TestKit, &Arc<Domain>, &str, &str),
+{
+    let caller = test_callback_caller::<F>();
+    let (store, domain) = CreateMockStoreAndDomainWithSchemaLease(schema_lease);
+    let mut test_kit = NewTestKit(store);
+    WithCascades(false)(&mut test_kit);
+    test_func(&mut test_kit, &domain, "off", caller);
+}
+
+fn test_callback_caller<F>() -> &'static str {
+    type_name::<F>()
+        .strip_suffix("::{{closure}}")
+        .unwrap_or_else(|| type_name::<F>())
+        .rsplit("::")
+        .next()
+        .expect("callback type name must not be empty")
 }
 /// 按配置创建 MockStore。
 pub fn CreateMockStoreWithConfig(config: MockStoreConfig) -> Arc<MockStore> {

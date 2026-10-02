@@ -124,6 +124,10 @@ mod mocksessionmanager_test;
 mod mockstore_test;
 
 #[cfg(test)]
+#[path = "go_commit_2d30398a5f_test.rs"]
+mod go_commit_2d30398a5f_test;
+
+#[cfg(test)]
 #[path = "result_test.rs"]
 mod result_test;
 
