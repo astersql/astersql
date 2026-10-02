@@ -1592,3 +1592,64 @@ fn test_plan_stats_load_shared_workers_complete_singleflight_followers() {
         );
     }
 }
+
+#[test]
+fn truncated_handle_estimation_preserves_bounds_and_merges_prefixes() {
+    use astersql_parser_ast::NodeRef;
+    use astersql_planner_core_base::{PhysicalPlan, Plan};
+    use astersql_planner_core_operator_physicalop::{PhysicalIndexLookUpReader, PhysicalIndexScan};
+
+    fn index_scan(plan: &dyn PhysicalPlan) -> Option<&PhysicalIndexScan> {
+        if let Some(scan) = plan.as_any().downcast_ref::<PhysicalIndexScan>() {
+            return Some(scan);
+        }
+        if let Some(reader) = plan.as_any().downcast_ref::<PhysicalIndexLookUpReader>() {
+            return reader.IndexPlan.as_deref().and_then(index_scan);
+        }
+        plan.children().iter().find_map(|child| index_scan(*child))
+    }
+
+    setup_common();
+    let (domain, mut session) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    session.execute("use test").unwrap();
+    session
+        .execute("create table t(id bigint primary key clustered, a int, key ia(a))")
+        .unwrap();
+    let values = (1..=100)
+        .map(|id| format!("({id},{})", id % 10))
+        .collect::<Vec<_>>()
+        .join(",");
+    session
+        .execute(&format!("insert into t values {values}"))
+        .unwrap();
+    session.execute("analyze table t all columns").unwrap();
+    // The later appended-handle selectivity change retains the boundary fix,
+    // but credits the two handle points: their final estimate is 2, not 10.
+    for (predicate, execution_range, estimate) in [
+        ("id > 10", "(5 10,5 +inf]", 10.0),
+        ("id < 10", "[5 -inf,5 10)", 10.0),
+        ("id in (11, 22)", "[5 11,5 11], [5 22,5 22]", 2.0),
+    ] {
+        let mut session = astersql_session::runtime::ConcreteSession::new(domain.clone());
+        let sql = format!("select * from t use index(ia) where a = 5 and {predicate}");
+        let statement = NodeRef::new(
+            astersql_parser::Parser::default()
+                .ParseOneStmt(&sql, "", "")
+                .unwrap(),
+        );
+        astersql_executor::select::ResetContextOfStmt(&mut session, &statement).unwrap();
+        let plan = session
+            .OptimizeParsedSelect(&statement)
+            .expect("optimize real SELECT");
+        let scan = index_scan(plan.as_ref()).expect("physical index scan");
+        assert_eq!(scan.stats_info().RowCount, estimate, "{predicate}");
+        let ranges = scan
+            .Ranges
+            .0
+            .iter()
+            .map(|range| range.String())
+            .collect::<Vec<_>>()
+            .join(", ");
+        assert_eq!(ranges, execution_range, "{predicate}");
+    }
+}
