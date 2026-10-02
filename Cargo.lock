@@ -1093,6 +1093,7 @@ dependencies = [
  "astersql-br-pkg-task",
  "astersql-br-pkg-task-operator",
  "astersql-br-pkg-trace",
+ "astersql-util-memory",
  "hex 0.4.3",
  "serde",
  "serde_json",

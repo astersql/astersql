@@ -18,7 +18,8 @@
 //! Reference: https://dzone.com/articles/measuring-integration-test-coverage-rate-in-pouchc
 //!
 //! Mapping:
-//! - `TestMain` → [`test_main`] (`--skip-goleak` argument filter)
+//! - `TestMain` → [`test_main`] (`--skip-goleak` argument filter) and
+//!   [`go_commit_231dad5225_cleans_global_memory_arbitrator_before_leak_check`]
 //! - `TestRunMain` → [`test_run_main`] (filter DEVEL/`-test.*`, run `main` on a thread, wait)
 //! - `TestCalculateMemoryLimit` → [`test_calculate_memory_limit`]
 //!
@@ -30,6 +31,10 @@ use std::sync::mpsc;
 
 use crate::cmd::calculateMemoryLimit;
 use crate::stubs::os_stub;
+
+fn cleanup_main_test_resources() {
+    astersql_util_memory::global_arbitrator::CleanupGlobalMemArbitratorForTest();
+}
 
 /// Go `TestMain` arg rewrite: drop `--skip-goleak`, return whether leak checks are skipped.
 ///
@@ -139,4 +144,25 @@ fn test_calculate_memory_limit() {
         calculateMemoryLimit(32 * 1024 * 1024 * 1024),
         33_822_867_456_u64
     );
+}
+
+#[test]
+fn go_commit_231dad5225_cleans_global_memory_arbitrator_before_leak_check() {
+    astersql_util_memory::global_arbitrator::CleanupGlobalMemArbitratorForTest();
+    astersql_util_memory::global_arbitrator::SetupGlobalMemArbitratorForTest(
+        std::env::temp_dir()
+            .join("go_commit_231dad5225")
+            .display()
+            .to_string(),
+    );
+    assert!(
+        astersql_util_memory::global_arbitrator::SetGlobalMemArbitratorWorkMode(
+            "standard".to_owned()
+        )
+    );
+    assert!(astersql_util_memory::global_arbitrator::GlobalMemArbitrator().is_some());
+
+    cleanup_main_test_resources();
+
+    assert!(astersql_util_memory::global_arbitrator::GlobalMemArbitrator().is_none());
 }
