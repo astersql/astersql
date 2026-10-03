@@ -1166,6 +1166,9 @@ pub const TiDBEnableExternalTSRead: &str = "tidb_enable_external_ts_read";
 // TiDBEnablePlanReplayerCapture indicates whether to enable plan replayer capture
 pub const TiDBEnablePlanReplayerCapture: &str = "tidb_enable_plan_replayer_capture";
 
+// Retention duration for non-capture plan replayer files.
+pub const TiDBPlanReplayerFileRetentionTime: &str = "tidb_plan_replayer_file_retention_time";
+
 // TiDBEnablePlanReplayerContinuousCapture indicates whether to enable continuous capture
 pub const TiDBEnablePlanReplayerContinuousCapture: &str =
     "tidb_enable_plan_replayer_continuous_capture";
@@ -1885,6 +1888,7 @@ pub const DefTiDBEnableExternalTSRead: bool = false;
 pub const DefTiDBEnableReusechunk: bool = true;
 pub const DefTiDBUseAlloc: bool = false;
 pub const DefTiDBEnablePlanReplayerCapture: bool = true;
+pub const DefTiDBPlanReplayerFileRetentionTime: i64 = 7 * 24 * 3_600_000_000_000;
 pub const DefTiDBIndexMergeIntersectionConcurrency: i64 = ConcurrencyUnset;
 pub const DefTiDBTTLJobEnable: bool = true;
 pub const DefTiDBTTLScanBatchSize: i64 = 500;

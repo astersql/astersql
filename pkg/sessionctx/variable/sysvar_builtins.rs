@@ -1639,6 +1639,28 @@ fn register_global_vars() {
     index_join_build_v2.GetGlobal = Some(Arc::new(|_, _| Ok(vardef::On.to_owned())));
     RegisterSysVar(index_join_build_v2);
 
+    let mut plan_replayer_retention = SysVar {
+        Scope: vardef::ScopeGlobal,
+        Name: vardef::TiDBPlanReplayerFileRetentionTime.to_owned(),
+        Value: format_go_duration(vardef::DefTiDBPlanReplayerFileRetentionTime as i128),
+        Type: vardef::TypeDuration,
+        MaxValue: (365_u64 * 24 * 3_600_000_000_000),
+        ..SysVar::default()
+    };
+    plan_replayer_retention.GetGlobal = Some(Arc::new(|_, _| {
+        Ok(format_go_duration(
+            vardef::GetPlanReplayerFileRetentionTime().as_nanos() as i128,
+        ))
+    }));
+    plan_replayer_retention.SetGlobal = Some(Arc::new(|_, _, value| {
+        let duration = parse_go_duration(value)
+            .and_then(|duration| i64::try_from(duration).ok())
+            .ok_or_else(|| VariableError::wrong_type(vardef::TiDBPlanReplayerFileRetentionTime))?;
+        vardef::SetPlanReplayerFileRetentionTime(std::time::Duration::from_nanos(duration as u64));
+        Ok(())
+    }));
+    RegisterSysVar(plan_replayer_retention);
+
     let mut advancer_check_point_lag_limit = SysVar {
         Scope: vardef::ScopeGlobal,
         Name: vardef::TiDBAdvancerCheckPointLagLimit.to_owned(),

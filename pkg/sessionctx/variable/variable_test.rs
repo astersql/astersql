@@ -85,3 +85,62 @@ fn duration_validation_matches_go_string_precision() {
         "1.23456789s"
     );
 }
+
+#[test]
+fn plan_replayer_file_retention_global_hooks_match_go() {
+    use std::time::Duration;
+    let original = vardef::GetPlanReplayerFileRetentionTime();
+    struct Restore(Duration);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            vardef::SetPlanReplayerFileRetentionTime(self.0);
+        }
+    }
+    let _restore = Restore(original);
+    let mut vars = session_vars();
+    let name = "tidb_plan_replayer_file_retention_time";
+    let sys_var = crate::GetSysVar(name).expect("plan replayer retention must be registered");
+    assert_eq!(sys_var.Value, "168h0m0s");
+    assert_eq!(sys_var.Scope, vardef::ScopeGlobal);
+    assert_eq!(sys_var.Type, vardef::TypeDuration);
+    assert_eq!(
+        crate::set_global_system_var(&mut vars, name, "2h").unwrap(),
+        "2h0m0s"
+    );
+    assert_eq!(
+        vardef::GetPlanReplayerFileRetentionTime(),
+        Duration::from_secs(7200)
+    );
+    assert_eq!(
+        sys_var.GetGlobalFromHook(&Context, &mut vars).unwrap(),
+        "2h0m0s"
+    );
+    assert!(crate::set_global_system_var(&mut vars, name, "2hours").is_err());
+    assert!(
+        sys_var
+            .SetGlobalFromHook(&Context, &mut vars, "2hours", false)
+            .is_err()
+    );
+    assert_eq!(
+        vardef::GetPlanReplayerFileRetentionTime(),
+        Duration::from_secs(7200)
+    );
+    assert!(
+        sys_var
+            .Validate(&mut vars, "2h", vardef::ScopeSession)
+            .is_err()
+    );
+    assert_eq!(
+        crate::set_global_system_var(&mut vars, name, "-1s").unwrap(),
+        "0s"
+    );
+    assert_eq!(vardef::GetPlanReplayerFileRetentionTime(), Duration::ZERO);
+    assert_eq!(
+        crate::set_global_system_var(&mut vars, name, "8761h").unwrap(),
+        "8760h0m0s"
+    );
+    assert_eq!(
+        vardef::GetPlanReplayerFileRetentionTime(),
+        Duration::from_secs(365 * 24 * 3600)
+    );
+}

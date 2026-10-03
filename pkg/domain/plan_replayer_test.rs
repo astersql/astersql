@@ -77,7 +77,7 @@ fn gc_matches_go_by_continuing_after_walk_delete_and_status_errors() {
 }
 
 #[test]
-fn go_merge_43_dump_gc_uses_current_plan_replayer_retention() {
+fn dump_gc_uses_current_retention_and_keeps_capture_seven_days() {
     let original = astersql_sessionctx_vardef::GetPlanReplayerFileRetentionTime();
     struct Restore(Duration);
     impl Drop for Restore {
@@ -86,14 +86,48 @@ fn go_merge_43_dump_gc_uses_current_plan_replayer_retention() {
         }
     }
     let _restore = Restore(original);
-    astersql_sessionctx_vardef::SetPlanReplayerFileRetentionTime(Duration::from_secs(1));
-    let store = FaultTolerantStore::default();
+    // Deletion succeeds for capture files as well, so retention is what keeps them.
+    struct Store;
+    impl DumpFileStore for Store {
+        fn list(&self, _: &str) -> Result<Vec<String>, String> {
+            Ok(vec![
+                "plan_replayer_capture_100.zip".into(),
+                "plan_replayer_100.zip".into(),
+                "trace_100.zip".into(),
+            ])
+        }
+        fn delete(&self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn delete_status(&self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
     let checker = DumpFileGcChecker::new(vec!["good".to_string()]);
-
-    let deleted = checker
-        .gc_with_current_retention(&store, UNIX_EPOCH + Duration::from_secs(2))
-        .unwrap();
-    assert!(deleted.contains(&"plan_replayer_100.zip".to_string()));
-    assert!(deleted.contains(&"trace_100.zip".to_string()));
-    assert!(!deleted.contains(&"plan_replayer_capture_100.zip".to_string()));
+    let now = UNIX_EPOCH + Duration::from_secs(2);
+    astersql_sessionctx_vardef::SetPlanReplayerFileRetentionTime(Duration::from_secs(3));
+    assert!(
+        checker
+            .gc_with_current_retention(&Store, now)
+            .unwrap()
+            .is_empty()
+    );
+    astersql_sessionctx_vardef::SetPlanReplayerFileRetentionTime(Duration::from_secs(1));
+    assert_eq!(
+        checker.gc_with_current_retention(&Store, now).unwrap(),
+        vec!["plan_replayer_100.zip", "trace_100.zip"]
+    );
+    assert_eq!(
+        checker
+            .gc_with_current_retention(
+                &Store,
+                UNIX_EPOCH + Duration::from_secs(7 * 24 * 60 * 60 + 1)
+            )
+            .unwrap(),
+        vec![
+            "plan_replayer_capture_100.zip",
+            "plan_replayer_100.zip",
+            "trace_100.zip"
+        ]
+    );
 }
