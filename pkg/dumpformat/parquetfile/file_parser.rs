@@ -6,7 +6,7 @@ use crate::source_reader::SourceReader;
 use crate::spark_rebase::{
     AppVersion, SparkFileMeta, SparkRebaseMicrosLookup, spark_rebase_time_zone_id,
 };
-use crate::type_converter::{self as convert, ConvertedInfo, Datum};
+use crate::type_converter::{self as convert, Datum, ParquetColumnType};
 use crate::{Error, Result};
 use chrono::{Offset, TimeZone};
 use parquet::basic::{ConvertedType as CT, LogicalType, TimeUnit};
@@ -15,15 +15,95 @@ use parquet::file::reader::FileReader;
 use parquet::file::serialized_reader::SerializedFileReader;
 use std::collections::VecDeque;
 
+/// Logical annotations take precedence; legacy annotations are normalized once.
+/// parquet-rs calls the Parquet NULL annotation `Unknown`.
+fn normalized_logical_type(
+    descriptor: &parquet::schema::types::ColumnDescriptor,
+) -> Result<Option<LogicalType>> {
+    let logical = match descriptor.logical_type_ref() {
+        Some(LogicalType::_Unknown { .. }) | None => match descriptor.converted_type() {
+            CT::NONE => None,
+            CT::UTF8 => Some(LogicalType::String),
+            CT::ENUM => Some(LogicalType::Enum),
+            CT::JSON => Some(LogicalType::Json),
+            CT::BSON => Some(LogicalType::Bson),
+            CT::DECIMAL => Some(LogicalType::decimal(
+                descriptor.type_scale(),
+                descriptor.type_precision(),
+            )),
+            CT::DATE => Some(LogicalType::Date),
+            CT::TIME_MILLIS => Some(LogicalType::time(true, TimeUnit::MILLIS)),
+            CT::TIME_MICROS => Some(LogicalType::time(true, TimeUnit::MICROS)),
+            CT::TIMESTAMP_MILLIS => Some(LogicalType::timestamp(true, TimeUnit::MILLIS)),
+            CT::TIMESTAMP_MICROS => Some(LogicalType::timestamp(true, TimeUnit::MICROS)),
+            CT::UINT_8 => Some(LogicalType::integer(8, false)),
+            CT::UINT_16 => Some(LogicalType::integer(16, false)),
+            CT::UINT_32 => Some(LogicalType::integer(32, false)),
+            CT::UINT_64 => Some(LogicalType::integer(64, false)),
+            CT::INT_8 => Some(LogicalType::integer(8, true)),
+            CT::INT_16 => Some(LogicalType::integer(16, true)),
+            CT::INT_32 => Some(LogicalType::integer(32, true)),
+            CT::INT_64 => Some(LogicalType::integer(64, true)),
+            other => {
+                return Err(Error(format!(
+                    "column {:?}: unsupported parquet logical type {other:?}",
+                    descriptor.name()
+                )));
+            }
+        },
+        logical => logical.cloned(),
+    };
+    validate_parquet_logical_type(
+        &logical,
+        descriptor.physical_type(),
+        descriptor.type_length(),
+        descriptor.name(),
+    )?;
+    Ok(logical)
+}
+
+pub(crate) fn validate_parquet_logical_type(
+    logical: &Option<LogicalType>,
+    physical: parquet::basic::Type,
+    length: i32,
+    name: &str,
+) -> Result<()> {
+    use parquet::basic::{Repetition, Type as P};
+    if matches!(
+        logical,
+        Some(LogicalType::List | LogicalType::Map | LogicalType::Float16 | LogicalType::Variant(_))
+    ) {
+        return Err(Error(format!(
+            "column {name:?}: {}",
+            convert::unsupported_logical(logical)
+        )));
+    }
+    if matches!(logical, Some(LogicalType::Integer(i)) if !matches!(i.bit_width, 8 | 16 | 32 | 64))
+    {
+        return Err(Error(format!(
+            "column {name:?}: logical type {logical:?} is not applicable to physical type {physical:?}"
+        )));
+    }
+    // Reuse the upstream schema validator for physical width/precision constraints.
+    let (scale, precision) = match logical {
+        Some(LogicalType::Decimal(d)) => (d.scale, d.precision),
+        _ => (-1, -1),
+    };
+    parquet::schema::types::Type::primitive_type_builder(name, physical)
+        .with_repetition(Repetition::OPTIONAL)
+        .with_length(if physical == P::FIXED_LEN_BYTE_ARRAY { length } else { -1 })
+        .with_logical_type(logical.clone()).with_scale(scale).with_precision(precision)
+        .build().map_err(|e| Error(format!("column {name:?}: logical type {logical:?} is not applicable to physical type {physical:?}: {e}")))?;
+    Ok(())
+}
+
 struct Column {
     reader: ColumnReader,
     batch_size: usize,
-    info: ConvertedInfo,
+    info: ParquetColumnType,
     nullable: bool,
-    unsigned: bool,
-    adjusted: bool,
     location: chrono_tz::Tz,
-    rows: VecDeque<Datum>,
+    rows: VecDeque<Result<Datum>>,
 }
 fn error(e: impl std::fmt::Display) -> Error {
     Error(e.to_string())
@@ -46,39 +126,40 @@ impl Column {
                     let mut values = values.into_iter();
                     for row in 0..records {
                         let value = if self.nullable && levels[row] == 0 {
-                            Datum::Null
+                            Ok(Datum::Null)
                         } else {
                             let value = values
                                 .next()
                                 .ok_or_else(|| Error("missing parquet column value".into()))?;
-                            ($convert)(value)?
+                            if matches!(self.info.logical, Some(LogicalType::Unknown)) {
+                                Err(convert::unsupported_logical(&self.info.logical))
+                            } else {
+                                ($convert)(value)
+                            }
                         };
                         self.rows.push_back(value);
                     }
                 }};
             }
             let info = &self.info;
-            let unsigned = self.unsigned;
+            let location = self.location;
             match &mut self.reader {
                 ColumnReader::BoolColumnReader(r) => {
                     read!(r, |v: bool| Ok::<_, Error>(Datum::Int(i64::from(v))))
                 }
-                ColumnReader::Int32ColumnReader(r) => read!(r, |v| if unsigned {
-                    Ok(Datum::UInt(v as u32 as u64))
-                } else {
-                    convert::convert_int32(v, info)
-                }),
-                ColumnReader::Int64ColumnReader(r) => read!(r, |v| if unsigned {
-                    Ok(Datum::UInt(v as u64))
-                } else {
-                    convert::convert_int64(v, info)
-                }),
+                ColumnReader::Int32ColumnReader(r) => {
+                    read!(r, |v| convert::convert_logical_int32(v, info, location))
+                }
+                ColumnReader::Int64ColumnReader(r) => {
+                    read!(r, |v| convert::convert_logical_int64(v, info, location))
+                }
                 ColumnReader::Int96ColumnReader(r) => read!(r, |v: parquet::data_type::Int96| {
                     let mut bytes = [0; 12];
                     for (index, word) in v.data().iter().enumerate() {
                         bytes[index * 4..index * 4 + 4].copy_from_slice(&word.to_le_bytes());
                     }
-                    convert::convert_int96(bytes, info)
+                    convert::int96_micros_with_rebase(bytes, info.spark_rebase.as_ref())
+                        .map(Datum::TimeMicros)
                 }),
                 ColumnReader::FloatColumnReader(r) => {
                     read!(r, |v| Ok::<_, Error>(Datum::Float32(v)))
@@ -86,19 +167,21 @@ impl Column {
                 ColumnReader::DoubleColumnReader(r) => {
                     read!(r, |v| Ok::<_, Error>(Datum::Float64(v)))
                 }
-                ColumnReader::ByteArrayColumnReader(r) => read!(
-                    r,
-                    |v: parquet::data_type::ByteArray| convert::convert_bytes(v.data(), info)
-                ),
+                ColumnReader::ByteArrayColumnReader(r) => {
+                    read!(r, |v: parquet::data_type::ByteArray| {
+                        convert::convert_logical_bytes(v.data(), info, false)
+                    })
+                }
                 ColumnReader::FixedLenByteArrayColumnReader(r) => {
                     read!(r, |v: parquet::data_type::FixedLenByteArray| {
-                        convert::convert_bytes(v.data(), info)
+                        convert::convert_logical_bytes(v.data(), info, true)
                     })
                 }
             }
         }
-        let mut value = self.rows.pop_front().ok_or_else(|| Error("EOF".into()))?;
-        if self.adjusted {
+        let mut value = self.rows.pop_front().ok_or_else(|| Error("EOF".into()))??;
+        // INT96 keeps its historical UTC semantics even without an annotation.
+        if matches!(self.reader, ColumnReader::Int96ColumnReader(_)) {
             if let Datum::TimeMicros(micros) = &mut value {
                 let offset = self
                     .location
@@ -130,7 +213,7 @@ pub struct FileParser {
     pub row_id: i64,
     closed: bool,
     location: chrono_tz::Tz,
-    infos: Vec<ConvertedInfo>,
+    infos: Vec<ParquetColumnType>,
 }
 impl FileParser {
     pub fn new(source: SourceReader) -> Result<Self> {
@@ -151,6 +234,9 @@ impl FileParser {
             return Err(Error(
                 "nested or repeated Parquet fields are unsupported".into(),
             ));
+        }
+        for descriptor in schema.columns() {
+            normalized_logical_type(descriptor)?;
         }
         let names = schema
             .columns()
@@ -251,53 +337,7 @@ impl FileParser {
                 .file_metadata()
                 .schema_descr()
                 .column(index);
-            let mut converted = match descriptor.converted_type() {
-                CT::DECIMAL => ConvertedType::Decimal,
-                CT::DATE => ConvertedType::Date,
-                CT::TIME_MILLIS => ConvertedType::TimeMillis,
-                CT::TIME_MICROS => ConvertedType::TimeMicros,
-                CT::TIMESTAMP_MILLIS => ConvertedType::TimestampMillis,
-                CT::TIMESTAMP_MICROS => ConvertedType::TimestampMicros,
-                CT::LIST | CT::MAP | CT::MAP_KEY_VALUE | CT::INTERVAL => {
-                    return Err(Error("unsupported parquet logical type".into()));
-                }
-                _ => ConvertedType::None,
-            };
-            let mut adjusted = matches!(
-                descriptor.converted_type(),
-                CT::TIME_MILLIS | CT::TIME_MICROS | CT::TIMESTAMP_MILLIS | CT::TIMESTAMP_MICROS
-            );
-            let mut scale = descriptor.type_scale();
-            let mut unsigned = matches!(
-                descriptor.converted_type(),
-                CT::UINT_8 | CT::UINT_16 | CT::UINT_32 | CT::UINT_64
-            );
-            match descriptor.logical_type_ref() {
-                Some(LogicalType::Timestamp(t)) | Some(LogicalType::Time(t)) => {
-                    let timestamp = matches!(
-                        descriptor.logical_type_ref(),
-                        Some(LogicalType::Timestamp(_))
-                    );
-                    adjusted = t.is_adjusted_to_u_t_c;
-                    converted = match (timestamp, t.unit.clone()) {
-                        (true, TimeUnit::MILLIS) => ConvertedType::TimestampMillis,
-                        (true, TimeUnit::MICROS) => ConvertedType::TimestampMicros,
-                        (false, TimeUnit::MILLIS) => ConvertedType::TimeMillis,
-                        (false, TimeUnit::MICROS) => ConvertedType::TimeMicros,
-                        _ => return Err(Error("unsupported timestamp time unit Nanos".into())),
-                    };
-                }
-                Some(LogicalType::Decimal(d)) => {
-                    converted = ConvertedType::Decimal;
-                    scale = d.scale;
-                }
-                Some(LogicalType::Date) => converted = ConvertedType::Date,
-                Some(LogicalType::Integer(i)) => unsigned = !i.is_signed,
-                Some(LogicalType::List | LogicalType::Map | LogicalType::Unknown) => {
-                    return Err(Error("unsupported parquet logical type".into()));
-                }
-                _ => {}
-            }
+            let logical = normalized_logical_type(&descriptor)?;
             let metadata = self.reader.metadata().file_metadata();
             let spark = SparkFileMeta {
                 created_by: metadata.created_by().unwrap_or_default().into(),
@@ -310,12 +350,8 @@ impl FileParser {
             };
             let int96 = descriptor.physical_type() == parquet::basic::Type::INT96;
             let temporal = int96
-                || matches!(
-                    converted,
-                    ConvertedType::Date
-                        | ConvertedType::TimestampMillis
-                        | ConvertedType::TimestampMicros
-                );
+                || matches!(logical, Some(LogicalType::Date))
+                || matches!(&logical, Some(LogicalType::Timestamp(t)) if t.unit != TimeUnit::NANOS);
             let rebase = if temporal {
                 let cutoff =
                     AppVersion::parse_spark(if int96 { "3.1.0" } else { "3.0.0" }).unwrap();
@@ -337,11 +373,8 @@ impl FileParser {
             } else {
                 None
             };
-            let info = ConvertedInfo {
-                converted,
-                scale,
-                adjusted_to_utc: false,
-                timezone_offset_seconds: 0,
+            let info = ParquetColumnType {
+                logical,
                 spark_rebase: rebase,
             };
             self.infos.push(info.clone());
@@ -349,8 +382,6 @@ impl FileParser {
                 reader: group.get_column_reader(index).map_err(error)?,
                 batch_size: self.batch_size,
                 nullable: descriptor.max_def_level() > 0,
-                unsigned,
-                adjusted,
                 location: self.location,
                 info,
                 rows: VecDeque::new(),
@@ -501,11 +532,22 @@ impl astersql_lightning_mydump::Parser for ImportParser {
                 Datum::Decimal(v) => Ok(D::Bytes(v.into_bytes())),
                 Datum::Float32(v) => Ok(D::Bytes(v.to_string().into_bytes())),
                 Datum::Float64(v) => Ok(D::Bytes(v.to_string().into_bytes())),
+                Datum::DurationMicros(v) => {
+                    let text = format!(
+                        "{:02}:{:02}:{:02}.{:06}",
+                        v / 3_600_000_000,
+                        v / 60_000_000 % 60,
+                        v / 1_000_000 % 60,
+                        v % 1_000_000
+                    );
+                    Ok(D::Bytes(text.into_bytes()))
+                }
                 Datum::TimeMicros(v) => {
                     let time = chrono::DateTime::from_timestamp_micros(v).ok_or_else(|| {
                         astersql_lightning_mydump::MydumpError::Io("timestamp out of range".into())
                     })?;
-                    let text = if self.inner.infos[index].converted == ConvertedType::Date {
+                    let text = if matches!(self.inner.infos[index].logical, Some(LogicalType::Date))
+                    {
                         time.format("%Y-%m-%d").to_string()
                     } else {
                         time.format("%Y-%m-%d %H:%M:%S%.6f").to_string()

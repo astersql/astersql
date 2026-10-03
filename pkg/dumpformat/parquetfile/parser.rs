@@ -938,7 +938,7 @@ pub struct Parser {
     closed: bool,
 }
 impl Parser {
-    /// 构造解析器；拒绝 List/Map/Interval/NA 与 Nanos 时间戳。
+    /// 构造内存行解析器；拒绝不支持的容器类型。
     pub fn new(file: ParquetFile) -> Result<Self> {
         for column in &file.columns {
             // 与 Go unsupportedParquetTypes 对齐：导入路径暂不支持这些逻辑类型。
@@ -954,15 +954,6 @@ impl Parser {
                     "unsupported parquet logical type {:?}",
                     column.converted
                 )));
-            }
-            if matches!(
-                column.logical,
-                LogicalType::Timestamp {
-                    unit: crate::TimeUnit::Nanos,
-                    ..
-                }
-            ) {
-                return Err(Error("unsupported timestamp time unit Nanos".into()));
             }
         }
         let names = file

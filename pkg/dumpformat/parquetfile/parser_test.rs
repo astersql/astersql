@@ -245,7 +245,7 @@ fn parquet_parser_set_pos_skips_forward_and_allows_go_style_row_id_reset() {
 }
 
 #[test]
-fn parquet_parser_rejects_unsupported_logical_and_nanos_types() {
+fn parquet_parser_rejects_unsupported_containers_and_accepts_nanos() {
     let mut unsupported = ParquetFile {
         columns: vec![descriptor(
             "items",
@@ -268,7 +268,7 @@ fn parquet_parser_rejects_unsupported_logical_and_nanos_types() {
         )],
         ..ParquetFile::default()
     };
-    assert!(NewParser(nanos).is_err());
+    assert!(NewParser(nanos).is_ok());
 }
 
 #[test]
@@ -663,4 +663,480 @@ fn parquet_import_scanned_pos_set_pos_and_empty_file() {
     assert_eq!(parser.ScannedPos().unwrap(), size);
     assert!(matches!(parser.ReadRow(), Err(MydumpError::Eof)));
     assert_eq!(parser.ScannedPos().unwrap(), size);
+}
+
+fn logical_parquet_source(bytes: Vec<u8>) -> crate::source_reader::SourceReader {
+    use crate::source_reader::{RangeOpener, SourceReader};
+    let data = Arc::new(bytes);
+    let size = data.len() as u64;
+    let open: RangeOpener = Arc::new(move |start, end| {
+        Ok(Box::new(std::io::Cursor::new(
+            data[start as usize..end as usize].to_vec(),
+        )))
+    });
+    SourceReader::prepare(size as i64, || Ok(size), open).unwrap()
+}
+
+fn logical_int64_file(annotation: &str, values: &[i64], metadata: Option<&str>) -> Vec<u8> {
+    use parquet::data_type::Int64Type;
+    use parquet::file::{properties::WriterProperties, writer::SerializedFileWriter};
+    let schema = Arc::new(
+        parquet::schema::parser::parse_message_type(&format!(
+            "message schema {{ OPTIONAL INT64 value ({annotation}); }}"
+        ))
+        .unwrap(),
+    );
+    let mut props = WriterProperties::builder().set_created_by("parquet-mr version 1.10.1".into());
+    if let Some(zone) = metadata {
+        props = props.set_key_value_metadata(Some(vec![
+            parquet::file::metadata::KeyValue::new(
+                "org.apache.spark.legacyDateTime".into(),
+                Some("".into()),
+            ),
+            parquet::file::metadata::KeyValue::new(
+                "org.apache.spark.timeZone".into(),
+                Some(zone.into()),
+            ),
+        ]));
+    }
+    let mut writer =
+        SerializedFileWriter::new(Vec::new(), schema, Arc::new(props.build())).unwrap();
+    let mut group = writer.next_row_group().unwrap();
+    let mut column = group.next_column().unwrap().unwrap();
+    column
+        .typed::<Int64Type>()
+        .write_batch(values, Some(&vec![1; values.len()]), None)
+        .unwrap();
+    column.close().unwrap();
+    group.close().unwrap();
+    writer.into_inner().unwrap()
+}
+
+#[test]
+fn logical_nanos_fixture_reaches_import_parser_with_midnight_carry() {
+    use crate::file_parser::{FileParser, ImportParser};
+    use astersql_lightning_mydump::{Datum as D, Parser as _};
+    let bytes =
+        include_bytes!("../../../tests/realtikvtest/importintotest/logical-time-nanos.parquet");
+    let mut parser =
+        ImportParser::new(FileParser::new(logical_parquet_source(bytes.to_vec())).unwrap());
+    for expected in [
+        ["1", "23:59:59.999999", "1969-12-31 23:59:59.999999"],
+        ["2", "24:00:00.000000", "2020-10-29 09:27:52.356956"],
+    ] {
+        parser.ReadRow().unwrap();
+        let actual = parser.LastRow();
+        assert_eq!(actual.row[0], D::I64(expected[0].parse().unwrap()));
+        for (value, text) in actual.row[1..].iter().zip(&expected[1..]) {
+            assert_eq!(value, &D::Bytes(text.as_bytes().to_vec()));
+        }
+    }
+    assert!(parser.ReadRow().is_err());
+}
+
+#[test]
+fn logical_time_preserves_duration_and_wraps_only_utc_adjusted_wall_clock() {
+    use crate::file_parser::{FileParser, ImportParser};
+    use astersql_lightning_mydump::{Datum as D, Parser as _};
+    for (annotation, values, expected) in [
+        (
+            "TIME(MICROS,false)",
+            vec![123_456_789],
+            vec!["00:02:03.456789"],
+        ),
+        (
+            "TIME(MICROS,true)",
+            vec![86_399_999_999],
+            vec!["07:59:59.999999"],
+        ),
+        (
+            "TIME(NANOS,false)",
+            vec![86_400_000_000_000 - 501, 86_400_000_000_000 - 500],
+            vec!["23:59:59.999999", "24:00:00.000000"],
+        ),
+    ] {
+        let mut parser = ImportParser::new(
+            FileParser::new_with_location(
+                logical_parquet_source(logical_int64_file(annotation, &values, None)),
+                "Asia/Shanghai",
+            )
+            .unwrap(),
+        );
+        for text in expected {
+            parser.ReadRow().unwrap();
+            assert_eq!(
+                parser.LastRow().row,
+                vec![D::Bytes(text.as_bytes().to_vec())]
+            );
+        }
+    }
+    for value in [-1, 86_400_000_000_000] {
+        let mut parser = FileParser::new(logical_parquet_source(logical_int64_file(
+            "TIME(NANOS,false)",
+            &[value],
+            None,
+        )))
+        .unwrap();
+        assert!(
+            parser
+                .read_row()
+                .unwrap_err()
+                .0
+                .contains("outside the valid range")
+        );
+    }
+}
+
+#[test]
+fn logical_timestamp_nanos_skips_spark_rebase_and_preserves_adjustment() {
+    use crate::file_parser::FileParser;
+    for (adjusted, expected) in [
+        (false, 1_603_963_672_356_956),
+        (true, 1_603_992_472_356_956),
+    ] {
+        let mut parser = FileParser::new_with_location(
+            logical_parquet_source(logical_int64_file(
+                &format!("TIMESTAMP(NANOS,{adjusted})"),
+                &[1_603_963_672_356_956_000],
+                Some("Unknown/SparkZone"),
+            )),
+            "Asia/Shanghai",
+        )
+        .unwrap();
+        assert_eq!(
+            parser.read_row().unwrap(),
+            vec![Datum::TimeMicros(expected)]
+        );
+    }
+}
+
+fn logical_null_file(physical: parquet::basic::Type, present: bool) -> Vec<u8> {
+    logical_null_file_rows(physical, &[i16::from(present)])
+}
+
+fn logical_null_file_rows(physical: parquet::basic::Type, levels: &[i16]) -> Vec<u8> {
+    use parquet::{
+        basic::{LogicalType as L, Repetition},
+        data_type::*,
+        file::writer::SerializedFileWriter,
+        schema::types::Type,
+    };
+    let field = Type::primitive_type_builder("value", physical)
+        .with_repetition(Repetition::OPTIONAL)
+        .with_logical_type(Some(L::Unknown))
+        .with_length(if physical == parquet::basic::Type::FIXED_LEN_BYTE_ARRAY {
+            2
+        } else {
+            -1
+        })
+        .build()
+        .unwrap();
+    let schema = Arc::new(
+        Type::group_type_builder("schema")
+            .with_fields(vec![Arc::new(field)])
+            .build()
+            .unwrap(),
+    );
+    let mut writer = SerializedFileWriter::new(Vec::new(), schema, Default::default()).unwrap();
+    let mut group = writer.next_row_group().unwrap();
+    let mut column = group.next_column().unwrap().unwrap();
+    macro_rules! write {
+        ($ty:ty, $value:expr) => {{
+            let values = vec![$value; levels.iter().filter(|&&level| level > 0).count()];
+            column
+                .typed::<$ty>()
+                .write_batch(&values, Some(levels), None)
+                .unwrap();
+        }};
+    }
+    use parquet::basic::Type as P;
+    match physical {
+        P::BOOLEAN => write!(BoolType, true),
+        P::INT32 => write!(Int32Type, 1),
+        P::INT64 => write!(Int64Type, 1),
+        P::INT96 => write!(Int96Type, Int96::default()),
+        P::FLOAT => write!(FloatType, 1.0),
+        P::DOUBLE => write!(DoubleType, 1.0),
+        P::BYTE_ARRAY => write!(ByteArrayType, ByteArray::from("ab")),
+        P::FIXED_LEN_BYTE_ARRAY => {
+            write!(FixedLenByteArrayType, FixedLenByteArray::from(vec![1, 2]))
+        }
+    }
+    column.close().unwrap();
+    group.close().unwrap();
+    writer.into_inner().unwrap()
+}
+
+#[test]
+fn logical_null_accepts_nulls_and_rejects_non_null_values_for_every_physical_type() {
+    use crate::file_parser::FileParser;
+    use parquet::basic::Type as P;
+    for physical in [
+        P::BOOLEAN,
+        P::INT32,
+        P::INT64,
+        P::INT96,
+        P::FLOAT,
+        P::DOUBLE,
+        P::BYTE_ARRAY,
+        P::FIXED_LEN_BYTE_ARRAY,
+    ] {
+        let mut parser =
+            FileParser::new(logical_parquet_source(logical_null_file(physical, false))).unwrap();
+        assert_eq!(parser.read_row().unwrap(), vec![Datum::Null]);
+        let mut parser =
+            FileParser::new(logical_parquet_source(logical_null_file(physical, true))).unwrap();
+        assert!(
+            parser
+                .read_row()
+                .unwrap_err()
+                .0
+                .contains("unsupported parquet logical type Null")
+        );
+    }
+}
+
+#[test]
+fn logical_uint32_preserves_high_bits_and_uuid_preserves_bytes() {
+    use crate::file_parser::FileParser;
+    use parquet::{
+        data_type::{FixedLenByteArray, FixedLenByteArrayType, Int32Type},
+        file::writer::SerializedFileWriter,
+    };
+    let schema = Arc::new(parquet::schema::parser::parse_message_type("message schema { REQUIRED INT32 u32 (UINT_32); REQUIRED FIXED_LEN_BYTE_ARRAY(16) uuid (UUID); }").unwrap());
+    let mut writer = SerializedFileWriter::new(Vec::new(), schema, Default::default()).unwrap();
+    let mut group = writer.next_row_group().unwrap();
+    let mut column = group.next_column().unwrap().unwrap();
+    column
+        .typed::<Int32Type>()
+        .write_batch(&[0, i32::MAX, i32::MIN, -1], None, None)
+        .unwrap();
+    column.close().unwrap();
+    let mut column = group.next_column().unwrap().unwrap();
+    column
+        .typed::<FixedLenByteArrayType>()
+        .write_batch(
+            &vec![FixedLenByteArray::from(b"0123456789abcdef".to_vec()); 4],
+            None,
+            None,
+        )
+        .unwrap();
+    column.close().unwrap();
+    group.close().unwrap();
+    let mut parser = FileParser::new(logical_parquet_source(writer.into_inner().unwrap())).unwrap();
+    for value in [0, 2147483647, 2147483648, 4294967295] {
+        assert_eq!(
+            parser.read_row().unwrap(),
+            vec![
+                Datum::UInt(value),
+                Datum::Bytes(b"0123456789abcdef".to_vec())
+            ]
+        );
+    }
+}
+
+#[test]
+fn logical_validation_enforces_scalar_scope_and_physical_encoding() {
+    use crate::file_parser::validate_parquet_logical_type as validate;
+    use parquet::basic::{LogicalType as L, TimeUnit as U, Type as P};
+    for logical in [L::List, L::Map, L::Float16, L::variant(None)] {
+        assert!(
+            validate(&Some(logical), P::FIXED_LEN_BYTE_ARRAY, 2, "column")
+                .unwrap_err()
+                .0
+                .contains("unsupported parquet logical type")
+        );
+    }
+    for (logical, physical, length) in [
+        (L::time(false, U::NANOS), P::INT32, -1),
+        (L::decimal(2, 10), P::INT32, -1),
+        (L::Uuid, P::FIXED_LEN_BYTE_ARRAY, 15),
+        (L::integer(7, true), P::INT32, -1),
+    ] {
+        assert!(
+            validate(&Some(logical), physical, length, "column")
+                .unwrap_err()
+                .0
+                .contains("not applicable")
+        );
+    }
+    // Empty files must still be rejected at schema initialization.
+    let schema = Arc::new(parquet::schema::parser::parse_message_type("message schema { OPTIONAL group values (LIST) { REPEATED group list { REQUIRED INT32 element; } } }").unwrap());
+    let writer =
+        parquet::file::writer::SerializedFileWriter::new(Vec::new(), schema, Default::default())
+            .unwrap();
+    assert!(
+        crate::file_parser::FileParser::new(logical_parquet_source(writer.into_inner().unwrap()))
+            .err()
+            .unwrap()
+            .0
+            .contains("nested or repeated")
+    );
+}
+
+#[test]
+fn logical_int64_decimal_signedness_and_timestamp_units_match_go() {
+    use crate::file_parser::FileParser;
+    for (annotation, value, expected) in [
+        ("DECIMAL(18,0)", 0, Datum::Decimal("0".into())),
+        ("DECIMAL(18,3)", 0, Datum::Decimal("0.000".into())),
+        ("DECIMAL(18,6)", 0, Datum::Decimal("0.000000".into())),
+        ("DECIMAL(18,0)", 123, Datum::Decimal("123".into())),
+        ("DECIMAL(18,3)", 123, Datum::Decimal("0.123".into())),
+        ("DECIMAL(18,0)", -7, Datum::Decimal("-7".into())),
+        ("DECIMAL(18,2)", -7, Datum::Decimal("-0.07".into())),
+        ("DECIMAL(18,3)", 1, Datum::Decimal("0.001".into())),
+        ("DECIMAL(18,1)", 10, Datum::Decimal("1.0".into())),
+        ("DECIMAL(18,4)", -1, Datum::Decimal("-0.0001".into())),
+        (
+            "DECIMAL(18,2)",
+            -12345678,
+            Datum::Decimal("-123456.78".into()),
+        ),
+        ("DECIMAL(18,4)", -1, Datum::Decimal("-0.0001".into())),
+        ("INT_64", -1, Datum::Int(-1)),
+        ("UINT_64", -1, Datum::UInt(u64::MAX)),
+        (
+            "TIMESTAMP(MILLIS,false)",
+            1603963672356,
+            Datum::TimeMicros(1603963672356000),
+        ),
+        (
+            "TIMESTAMP(MICROS,false)",
+            1603963672356956,
+            Datum::TimeMicros(1603963672356956),
+        ),
+        (
+            "TIMESTAMP(MILLIS,true)",
+            1603963672356,
+            Datum::TimeMicros(1603992472356000),
+        ),
+        (
+            "TIMESTAMP(MICROS,true)",
+            1603963672356956,
+            Datum::TimeMicros(1603992472356956),
+        ),
+        ("TIMESTAMP(NANOS,false)", -501, Datum::TimeMicros(-1)),
+        ("TIMESTAMP(NANOS,false)", -500, Datum::TimeMicros(0)),
+    ] {
+        let mut parser = FileParser::new_with_location(
+            logical_parquet_source(logical_int64_file(annotation, &[value], None)),
+            "Asia/Shanghai",
+        )
+        .unwrap();
+        assert_eq!(parser.read_row().unwrap(), vec![expected], "{annotation}");
+    }
+}
+
+#[test]
+fn logical_null_later_non_null_value_does_not_fail_an_earlier_null_row() {
+    let mut parser = crate::file_parser::FileParser::new(logical_parquet_source(
+        logical_null_file_rows(parquet::basic::Type::INT32, &[0, 1]),
+    ))
+    .unwrap();
+    assert_eq!(parser.read_row().unwrap(), vec![Datum::Null]);
+    assert!(
+        parser
+            .read_row()
+            .unwrap_err()
+            .0
+            .contains("unsupported parquet logical type Null")
+    );
+}
+
+#[test]
+fn logical_int32_legacy_bridge_preserves_date_decimal_signedness_and_time() {
+    use crate::file_parser::{FileParser, ImportParser};
+    use astersql_lightning_mydump::{Datum as D, Parser as _};
+    use parquet::{data_type::Int32Type, file::writer::SerializedFileWriter};
+    for (annotation, value, expected) in [
+        ("TIME_MILLIS", 123456, "08:02:03.456000"),
+        ("TIME(MILLIS,false)", 123456, "00:02:03.456000"),
+        ("DATE", 18564, "2020-10-29"),
+        ("DECIMAL(9,2)", -12345678, "-123456.78"),
+    ] {
+        let schema = Arc::new(
+            parquet::schema::parser::parse_message_type(&format!(
+                "message schema {{ OPTIONAL INT32 value ({annotation}); }}"
+            ))
+            .unwrap(),
+        );
+        let mut writer = SerializedFileWriter::new(Vec::new(), schema, Default::default()).unwrap();
+        let mut group = writer.next_row_group().unwrap();
+        let mut column = group.next_column().unwrap().unwrap();
+        column
+            .typed::<Int32Type>()
+            .write_batch(&[value], Some(&[1]), None)
+            .unwrap();
+        column.close().unwrap();
+        group.close().unwrap();
+        let mut parser = ImportParser::new(
+            FileParser::new_with_location(
+                logical_parquet_source(writer.into_inner().unwrap()),
+                "Asia/Shanghai",
+            )
+            .unwrap(),
+        );
+        parser.ReadRow().unwrap();
+        assert_eq!(
+            parser.LastRow().row,
+            vec![D::Bytes(expected.as_bytes().to_vec())],
+            "{annotation}"
+        );
+    }
+}
+
+#[test]
+fn logical_int96_without_annotation_keeps_utc_adjustment_and_rounding() {
+    use crate::file_parser::FileParser;
+    use parquet::{
+        data_type::{Int96, Int96Type},
+        file::writer::SerializedFileWriter,
+    };
+    let schema = Arc::new(
+        parquet::schema::parser::parse_message_type("message schema { REQUIRED INT96 value; }")
+            .unwrap(),
+    );
+    let mut writer = SerializedFileWriter::new(Vec::new(), schema, Default::default()).unwrap();
+    let mut group = writer.next_row_group().unwrap();
+    let mut column = group.next_column().unwrap().unwrap();
+    let mut bytes = new_int96(86_399_999_999);
+    let nanos = u64::from_le_bytes(bytes[..8].try_into().unwrap()) + 500;
+    bytes[..8].copy_from_slice(&nanos.to_le_bytes());
+    let mut value = Int96::default();
+    value.set_data(
+        u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
+        u32::from_le_bytes(bytes[8..].try_into().unwrap()),
+    );
+    column
+        .typed::<Int96Type>()
+        .write_batch(&[value], None, None)
+        .unwrap();
+    column.close().unwrap();
+    group.close().unwrap();
+    let mut parser = FileParser::new_with_location(
+        logical_parquet_source(writer.into_inner().unwrap()),
+        "Asia/Shanghai",
+    )
+    .unwrap();
+    assert_eq!(
+        parser.read_row().unwrap(),
+        vec![Datum::TimeMicros(115_200_000_000)]
+    );
+}
+
+#[test]
+fn logical_timestamp_nanos_rounding_observes_the_dst_transition_offset() {
+    // 2020-03-08 06:59:59.999999500 UTC rounds into New York's 03:00 DST clock.
+    let value = 1_583_650_800_000_000_000 - 500;
+    let mut parser = crate::file_parser::FileParser::new_with_location(
+        logical_parquet_source(logical_int64_file("TIMESTAMP(NANOS,true)", &[value], None)),
+        "America/New_York",
+    )
+    .unwrap();
+    assert_eq!(
+        parser.read_row().unwrap(),
+        vec![Datum::TimeMicros(1_583_636_400_000_000)]
+    );
 }

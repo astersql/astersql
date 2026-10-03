@@ -38,6 +38,7 @@ use parquet::schema::types::{ColumnPath, Type, TypePtr};
 pub enum ParquetValueBuffer {
     Int96(Vec<Int96>),
     Int64(Vec<i64>),
+    Float32(Vec<f32>),
     Float64(Vec<f64>),
     ByteArray(Vec<ByteArray>),
     FixedLenByteArray(Vec<FixedLenByteArray>),
@@ -52,6 +53,7 @@ impl ParquetValueBuffer {
         match self {
             Self::Int96(values) => values.len(),
             Self::Int64(values) => values.len(),
+            Self::Float32(values) => values.len(),
             Self::Float64(values) => values.len(),
             Self::ByteArray(values) => values.len(),
             Self::FixedLenByteArray(values) => values.len(),
@@ -70,6 +72,7 @@ impl ParquetValueBuffer {
         match self {
             Self::Int96(_) => "INT96",
             Self::Int64(_) => "INT64",
+            Self::Float32(_) => "FLOAT",
             Self::Float64(_) => "DOUBLE",
             Self::ByteArray(_) => "BYTE_ARRAY",
             Self::FixedLenByteArray(_) => "FIXED_LEN_BYTE_ARRAY",
@@ -90,6 +93,7 @@ impl ParquetValueBuffer {
         Ok(match self {
             Self::Int96(values) => Self::Int96(values[start..end].to_vec()),
             Self::Int64(values) => Self::Int64(values[start..end].to_vec()),
+            Self::Float32(values) => Self::Float32(values[start..end].to_vec()),
             Self::Float64(values) => Self::Float64(values[start..end].to_vec()),
             Self::ByteArray(values) => Self::ByteArray(values[start..end].to_vec()),
             Self::FixedLenByteArray(values) => Self::FixedLenByteArray(values[start..end].to_vec()),
@@ -429,6 +433,7 @@ fn validate_generated_column(
     let expected_kind = match column.Type {
         PhysicalType::INT96 => "INT96",
         PhysicalType::INT64 => "INT64",
+        PhysicalType::FLOAT => "FLOAT",
         PhysicalType::DOUBLE => "DOUBLE",
         PhysicalType::BYTE_ARRAY => "BYTE_ARRAY",
         PhysicalType::FIXED_LEN_BYTE_ARRAY => "FIXED_LEN_BYTE_ARRAY",
@@ -498,7 +503,9 @@ fn write_parquet_column_batch(
         (ColumnWriter::BoolColumnWriter(writer), ParquetValueBuffer::Boolean(values)) => {
             writer.write_batch(values, def_levels, None)?;
         }
-        (ColumnWriter::FloatColumnWriter(_), _) => bail!("unsupported column type FLOAT"),
+        (ColumnWriter::FloatColumnWriter(writer), ParquetValueBuffer::Float32(values)) => {
+            writer.write_batch(values, def_levels, None)?;
+        }
         (_, values) => {
             bail!(
                 "parquet column writer and {} value buffer type mismatch",

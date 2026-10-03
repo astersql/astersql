@@ -240,6 +240,8 @@ pub enum Datum {
     Decimal(String),
     /// 时间/时间戳，存 Unix 微秒。
     TimeMicros(i64),
+    /// MySQL TIME(6) duration, including a possible carry to 24:00:00.
+    DurationMicros(i64),
     /// 单精度浮点。
     Float32(f32),
     /// 双精度浮点。
@@ -426,13 +428,20 @@ fn int96_to_unix_micros_rounded(value: [u8; 12]) -> i64 {
     let nanos_of_day = u64::from_le_bytes(value[..8].try_into().unwrap());
     int96_to_unix_micros(value) + i64::from(nanos_of_day % 1000 >= 500)
 }
+/// Borrow the cached Spark table; do not allocate a timezone string per value.
+pub(crate) fn int96_micros_with_rebase(
+    value: [u8; 12],
+    rebase: Option<&SparkRebaseMicrosLookup>,
+) -> Result<i64> {
+    if let Some(lookup) = rebase {
+        lookup.rebase(int96_to_unix_micros(value))
+    } else {
+        Ok(int96_to_unix_micros_rounded(value))
+    }
+}
 /// INT96 列：转微秒、可选 rebase、可选 UTC 调整。
 pub fn convert_int96(value: [u8; 12], info: &ConvertedInfo) -> Result<Datum> {
-    let mut micros = if let Some(lookup) = &info.spark_rebase {
-        lookup.rebase(int96_to_unix_micros(value))?
-    } else {
-        int96_to_unix_micros_rounded(value)
-    };
+    let mut micros = int96_micros_with_rebase(value, info.spark_rebase.as_ref())?;
     if info.adjusted_to_utc {
         micros += info.timezone_offset_seconds as i64 * 1_000_000;
     }
@@ -461,4 +470,151 @@ pub fn newInt96(v: i64) -> [u8; 12] {
 /// Go 风格别名。
 pub fn int96ToUnixMicros(v: [u8; 12]) -> i64 {
     int96_to_unix_micros(v)
+}
+
+/// The normalized Parquet annotation is retained without a lossy ConvertedType bridge.
+#[derive(Clone, Debug)]
+pub(crate) struct ParquetColumnType {
+    pub logical: Option<parquet::basic::LogicalType>,
+    pub spark_rebase: Option<SparkRebaseMicrosLookup>,
+}
+
+pub(crate) fn unsupported_logical(logical: &Option<parquet::basic::LogicalType>) -> Error {
+    let name = if matches!(logical, Some(parquet::basic::LogicalType::Unknown)) {
+        "Null".into()
+    } else {
+        format!("{logical:?}")
+    };
+    Error(format!("unsupported parquet logical type {name}"))
+}
+
+fn time_as_duration(
+    value: i64,
+    unit: &parquet::basic::TimeUnit,
+    adjusted: bool,
+    location: chrono_tz::Tz,
+) -> Result<Datum> {
+    use chrono::{Offset, TimeZone};
+    use parquet::basic::TimeUnit;
+    let factor = match unit {
+        TimeUnit::MILLIS => 1_000_000,
+        TimeUnit::MICROS => 1_000,
+        TimeUnit::NANOS => 1,
+    };
+    let nanos_per_day = MICROS_PER_DAY * 1_000;
+    if value < 0 || value >= nanos_per_day / factor {
+        return Err(Error(format!(
+            "parquet TIME value {value} is outside the valid range for unit {unit:?}"
+        )));
+    }
+    let mut nanos = value * factor;
+    if adjusted {
+        let offset = location
+            .timestamp_opt(nanos / 1_000_000_000, (nanos % 1_000_000_000) as u32)
+            .single()
+            .ok_or_else(|| Error("timestamp out of range".into()))?
+            .offset()
+            .fix()
+            .local_minus_utc();
+        nanos = (nanos + i64::from(offset) * 1_000_000_000).rem_euclid(nanos_per_day);
+    }
+    // Keep the carry: 23:59:59.999999500 is a duration of 24:00:00, not midnight.
+    Ok(Datum::DurationMicros((nanos + 500) / 1_000))
+}
+
+pub(crate) fn convert_logical_int32(
+    value: i32,
+    info: &ParquetColumnType,
+    location: chrono_tz::Tz,
+) -> Result<Datum> {
+    use parquet::basic::LogicalType as L;
+    match &info.logical {
+        Some(L::Decimal(d)) => scaled_decimal(i64::from(value), d.scale),
+        Some(L::Date) => {
+            let days = if info.spark_rebase.is_some() {
+                crate::spark_rebase::rebase_julian_to_gregorian_days(value)
+            } else {
+                value
+            };
+            Ok(Datum::TimeMicros(i64::from(days) * MICROS_PER_DAY))
+        }
+        Some(L::Time(t)) => {
+            time_as_duration(i64::from(value), &t.unit, t.is_adjusted_to_u_t_c, location)
+        }
+        Some(L::Integer(i)) if !i.is_signed => Ok(Datum::UInt(u64::from(value as u32))),
+        None | Some(L::Integer(_)) => Ok(Datum::Int(i64::from(value))),
+        _ => Err(unsupported_logical(&info.logical)),
+    }
+}
+
+pub(crate) fn convert_logical_int64(
+    mut value: i64,
+    info: &ParquetColumnType,
+    location: chrono_tz::Tz,
+) -> Result<Datum> {
+    use chrono::{Offset, TimeZone};
+    use parquet::basic::{LogicalType as L, TimeUnit};
+    match &info.logical {
+        Some(L::Decimal(d)) => scaled_decimal(value, d.scale),
+        Some(L::Integer(i)) if !i.is_signed => Ok(Datum::UInt(value as u64)),
+        None | Some(L::Integer(_)) => Ok(Datum::Int(value)),
+        Some(L::Time(t)) => time_as_duration(value, &t.unit, t.is_adjusted_to_u_t_c, location),
+        Some(L::Timestamp(t)) => {
+            let per_second = match t.unit {
+                TimeUnit::MILLIS => 1_000,
+                TimeUnit::MICROS => 1_000_000,
+                TimeUnit::NANOS => 1_000_000_000,
+            };
+            if t.unit != TimeUnit::NANOS {
+                if let Some(lookup) = &info.spark_rebase {
+                    value = if t.unit == TimeUnit::MILLIS {
+                        lookup.rebase(
+                            value
+                                .checked_mul(1_000)
+                                .ok_or_else(|| Error("timestamp overflow".into()))?,
+                        )? / 1_000
+                    } else {
+                        lookup.rebase(value)?
+                    };
+                }
+            }
+            let seconds = value.div_euclid(per_second);
+            let nanos = value.rem_euclid(per_second) * (1_000_000_000 / per_second);
+            let mut micros = seconds
+                .checked_mul(1_000_000)
+                .and_then(|v| v.checked_add((nanos + 500) / 1_000))
+                .ok_or_else(|| Error("timestamp overflow".into()))?;
+            if t.is_adjusted_to_u_t_c {
+                // FromGoTime adds 500ns before reading local fields: a carry can
+                // cross a DST transition, so use the rounded instant's offset.
+                let offset = location
+                    .timestamp_opt(
+                        micros.div_euclid(1_000_000),
+                        (micros.rem_euclid(1_000_000) * 1_000) as u32,
+                    )
+                    .single()
+                    .ok_or_else(|| Error("timestamp out of range".into()))?
+                    .offset()
+                    .fix()
+                    .local_minus_utc();
+                micros += i64::from(offset) * 1_000_000;
+            }
+            Ok(Datum::TimeMicros(micros))
+        }
+        _ => Err(unsupported_logical(&info.logical)),
+    }
+}
+
+pub(crate) fn convert_logical_bytes(
+    value: &[u8],
+    info: &ParquetColumnType,
+    fixed: bool,
+) -> Result<Datum> {
+    use parquet::basic::LogicalType as L;
+    match &info.logical {
+        Some(L::Decimal(d)) => set_datum_from_decimal_bytes(value, d.scale),
+        None | Some(L::Bson | L::Json | L::String | L::Enum) => Ok(Datum::Bytes(value.to_vec())),
+        Some(L::Uuid) if fixed => Ok(Datum::Bytes(value.to_vec())),
+        _ => Err(unsupported_logical(&info.logical)),
+    }
 }

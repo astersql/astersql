@@ -52,6 +52,7 @@ fn every_go_value_buffer_variant_slices_without_changing_type() {
     let cases = vec![
         ParquetValueBuffer::Int96(vec![Default::default(), Default::default()]),
         ParquetValueBuffer::Int64(vec![1, 2]),
+        ParquetValueBuffer::Float32(vec![1.0, 2.0]),
         ParquetValueBuffer::Float64(vec![1.0, 2.0]),
         ParquetValueBuffer::ByteArray(vec![ByteArray::from("a"), ByteArray::from("b")]),
         ParquetValueBuffer::FixedLenByteArray(vec![vec![1].into(), vec![2].into()]),
@@ -365,4 +366,49 @@ fn rejects_bad_ranges_options_and_generator_lengths_before_leaving_a_file() {
     )
     .unwrap_err();
     assert!(err.to_string().contains("definition levels"));
+}
+
+#[test]
+fn float32_columns_write_and_slice_across_row_groups_with_nulls() {
+    let dir = tempfile::tempdir().unwrap();
+    let column = ParquetColumn::new(
+        "float",
+        PhysicalType::FLOAT,
+        ConvertedType::NONE,
+        None,
+        -1,
+        -1,
+        -1,
+        |_| {
+            (
+                ParquetValueBuffer::Float32(vec![1.5, -2.25, 3.0]),
+                Some(vec![1, 0, 1, 1]),
+            )
+        },
+    );
+    write_parquet_file(
+        dir.path().to_str().unwrap(),
+        "float.parquet",
+        &[column],
+        4,
+        vec![ParquetWriterOption::WriterProperty(
+            WriterProperty::MaxRowGroupLength(2),
+        )],
+    )
+    .unwrap();
+    let reader =
+        SerializedFileReader::new(File::open(dir.path().join("float.parquet")).unwrap()).unwrap();
+    assert_eq!(reader.num_row_groups(), 2);
+    let rows = reader
+        .get_row_iter(None)
+        .unwrap()
+        .map(Result::unwrap)
+        .collect::<Vec<_>>();
+    assert_eq!(rows[0].get_float(0).unwrap(), 1.5);
+    assert!(matches!(
+        rows[1].get_column_iter().next().unwrap().1,
+        parquet::record::Field::Null
+    ));
+    assert_eq!(rows[2].get_float(0).unwrap(), -2.25);
+    assert_eq!(rows[3].get_float(0).unwrap(), 3.0);
 }
