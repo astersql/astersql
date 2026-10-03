@@ -394,6 +394,7 @@ impl CatalogQuery {
                         | "pg_tablespace"
                         | "pg_description"
                         | "pg_shdescription"
+                        | "pg_sequence"
                         | "pg_inherits"
                         | "pg_opclass"
                 )
@@ -1175,10 +1176,17 @@ impl CatalogQuery {
                         .collect::<ConnResult<Vec<_>>>()?
                 }
             }
-            // Native database/schema metadata has no comment source. These
-            // relations are empty, not one NULL-description row per object.
-            // The same column definitions serve direct queries and LEFT JOINs.
-            "pg_description" | "pg_shdescription" => Vec::new(),
+            // Native databases have no shared comment source. Table, column,
+            // index and sequence comments are projected separately below.
+            "pg_shdescription" => Vec::new(),
+            "pg_description" | "pg_sequence" => native_metadata_rows(
+                name,
+                snapshot
+                    .ok_or_else(|| ConnError::Session("schema snapshot is unavailable".into()))?
+                    .as_ref(),
+                database,
+                cancel,
+            )?,
             // Native storage has no PostgreSQL tablespace source. Keep the
             // typed relation empty, without synthetic pg_default/pg_global
             // rows or exposing paths from the server host.
@@ -2091,8 +2099,7 @@ fn visit_expr<E>(
     visitor(expr)
 }
 
-// All description fields are NULL-extended for an unmatched LEFT JOIN.
-// Their row slots also define direct access to the empty description providers.
+// Description fields are NULL-extended for an unmatched LEFT JOIN.
 fn description_column(relation: &str, name: &str) -> Option<(usize, u8, usize)> {
     match (relation, name) {
         ("pg_description" | "pg_shdescription", "description") => Some((2, 253, 0)),
@@ -2222,6 +2229,90 @@ fn class_rows(
                     if partitioned { "I" } else { "i" },
                 ));
             }
+        }
+    }
+    Ok(rows)
+}
+
+// Both providers read the execution snapshot and share pg_class identities.
+fn native_metadata_rows(
+    name: &str,
+    snapshot: &dyn astersql_infoschema::InfoSchema,
+    database: &str,
+    cancel: &CancellationToken,
+) -> ConnResult<Vec<Vec<Value>>> {
+    let mut rows = Vec::new();
+    for table in snapshot
+        .SchemaTableInfos(&astersql_infoschema::CiString::new(database))
+        .map_err(|e| ConnError::Session(e.to_string()))?
+    {
+        check_catalog_cancel(cancel)?;
+        let model = table
+            .model_meta
+            .as_ref()
+            .ok_or(ConnError::UnsupportedCommand(0))?;
+        if model.State != astersql_meta_model::StatePublic {
+            continue;
+        }
+        let oid = i64::from(crate::pg_oid::table_oid(model.ID)?);
+        if name == "pg_sequence" {
+            if let Some(sequence) = &model.Sequence {
+                rows.push(vec![
+                    Value::Signed(oid),
+                    Value::Signed(20),
+                    Value::Signed(sequence.Start),
+                    Value::Signed(sequence.Increment),
+                    Value::Signed(sequence.MinValue),
+                    Value::Signed(sequence.MaxValue),
+                    Value::Signed(if sequence.Cache {
+                        sequence.CacheValue
+                    } else {
+                        1
+                    }),
+                    Value::Text(sequence.Cycle.to_string()),
+                ]);
+            }
+        } else {
+            let mut comment = |object: i64, subid: i64, text: &str| {
+                if !text.is_empty() {
+                    let mut row = vec![Value::Null; 10];
+                    row[2] = Value::Text(text.into());
+                    row[6] = Value::Signed(object);
+                    row[7] = Value::Signed(1259);
+                    row[9] = Value::Signed(subid);
+                    rows.push(row);
+                }
+            };
+            comment(
+                oid,
+                0,
+                model
+                    .Sequence
+                    .as_ref()
+                    .map_or(model.Comment.as_str(), |s| s.Comment.as_str()),
+            );
+            for column in &model.Columns {
+                if column.State == astersql_meta_model::StatePublic {
+                    comment(
+                        oid,
+                        i64::try_from(column.Offset + 1)
+                            .map_err(|_| ConnError::UnsupportedCommand(0))?,
+                        &column.Comment,
+                    );
+                }
+            }
+            for index in &model.Indices {
+                if index.State == astersql_meta_model::StatePublic {
+                    comment(
+                        i64::from(crate::pg_oid::index_oid(model.ID, index.ID)?),
+                        0,
+                        &index.Comment,
+                    );
+                }
+            }
+        }
+        if rows.len() > MAX_CATALOG_ROWS {
+            return Err(catalog_row_limit());
         }
     }
     Ok(rows)
@@ -2357,6 +2448,14 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
     let oid = crate::pg_oid::OID_TYPE;
     let internal_char = crate::pg_result::CatalogColumnType::InternalChar as u8;
     let (slot, code) = match (relation, name) {
+        ("pg_sequence", "seqrelid") => (0, oid),
+        ("pg_sequence", "seqtypid") => (1, oid),
+        ("pg_sequence", "seqstart") => (2, 8),
+        ("pg_sequence", "seqincrement") => (3, 8),
+        ("pg_sequence", "seqmin") => (4, 8),
+        ("pg_sequence", "seqmax") => (5, 8),
+        ("pg_sequence", "seqcache") => (6, 8),
+        ("pg_sequence", "seqcycle") => (7, 1),
         ("pg_opclass", "oid") => (0, oid),
         ("pg_opclass", "opcmethod") => (1, oid),
         ("pg_inherits", "inhrelid") => (0, oid),

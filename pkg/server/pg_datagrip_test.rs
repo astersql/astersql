@@ -366,3 +366,112 @@ fn pg_datagrip_templates_sets() {
     );
     context.close().unwrap();
 }
+
+#[test]
+fn pg_datagrip_metadata() {
+    let context = context();
+    for sql in [
+        "CREATE SEQUENCE test.dg_metadata_seq START WITH 7 INCREMENT BY 3 MINVALUE 1 MAXVALUE 100 CACHE 5 CYCLE",
+        "CREATE TABLE test.dg_metadata (id INT COMMENT 'identifier') COMMENT='table note'",
+    ] {
+        context
+            .execute_query(sql, false, &CancellationToken::new())
+            .unwrap();
+    }
+    let Value::Signed(namespace) = execute(
+        context.as_ref(),
+        "SELECT oid FROM pg_namespace WHERE nspname='public'",
+    )[0][0] else {
+        panic!()
+    };
+    let sql =
+        include_str!("testdata/pg_datagrip/1869280140.sql").replace('?', &namespace.to_string());
+    let rows = execute(context.as_ref(), &sql);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0][2], Value::Text("dg_metadata_seq".into()));
+    assert_eq!(
+        &rows[0][3..10],
+        &[
+            Value::Text("bigint".into()),
+            Value::Signed(7),
+            Value::Signed(3),
+            Value::Signed(1),
+            Value::Signed(100),
+            Value::Signed(5),
+            Value::Text("true".into())
+        ]
+    );
+    let id = execute(
+        context.as_ref(),
+        "SELECT oid FROM pg_class WHERE relname='dg_metadata'",
+    )[0][0]
+        .clone();
+    let comments = execute(
+        context.as_ref(),
+        "SELECT objoid, objsubid, description FROM pg_description ORDER BY objsubid",
+    );
+    assert_eq!(
+        comments,
+        vec![
+            vec![
+                id.clone(),
+                Value::Signed(0),
+                Value::Text("table note".into())
+            ],
+            vec![id, Value::Signed(1), Value::Text("identifier".into())]
+        ]
+    );
+    context
+        .execute_query(
+            "CREATE SEQUENCE test.dg_metadata_uncached NOCACHE",
+            false,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+    let uncached = execute(context.as_ref(), &sql)
+        .into_iter()
+        .find(|r| r[2] == Value::Text("dg_metadata_uncached".into()))
+        .unwrap();
+    assert_eq!(uncached[8], Value::Signed(1));
+    context
+        .execute_query(
+            "ALTER TABLE test.dg_metadata COMMENT='updated note'",
+            false,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+    assert_eq!(
+        execute(
+            context.as_ref(),
+            "SELECT description FROM pg_description WHERE objsubid=0"
+        ),
+        vec![vec![Value::Text("updated note".into())]]
+    );
+    context
+        .execute_query(
+            "CREATE TABLE test.dg_metadata_partition (id INT) PARTITION BY HASH(id) PARTITIONS 2",
+            false,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+    let tables =
+        include_str!("testdata/pg_datagrip/1869280142.sql").replace('?', &namespace.to_string());
+    let partition = execute(context.as_ref(), &tables)
+        .into_iter()
+        .find(|r| r[1] == Value::Text("dg_metadata_partition".into()))
+        .unwrap();
+    assert_eq!(partition[0], Value::Text("p".into()));
+    assert_eq!(partition[10], Value::Text("false".into()));
+    assert_eq!(partition[11], Value::Text("HASH (\"id\")".into()));
+    assert_eq!(partition[12], Value::Null);
+    assert_eq!(partition[13], Value::Signed(0)); // Native storage has no PG access method.
+    context
+        .execute_query(
+            "DROP TABLE test.dg_metadata",
+            false,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+    assert!(execute(context.as_ref(), "SELECT objoid FROM pg_description").is_empty());
+    context.close().unwrap();
+}
