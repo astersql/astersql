@@ -75,7 +75,8 @@ const NO_ENOUGH_SLOTS: &str =
     "github.com/pingcap/tidb/pkg/dxf/framework/scheduler/mockNoEnoughSlots";
 const AFTER_CANCEL_SUBTASK: &str =
     "github.com/pingcap/tidb/pkg/dxf/framework/taskexecutor/afterCancelSubtaskExec";
-const CLEANUP_TASK: &str = "github.com/pingcap/tidb/pkg/dxf/framework/scheduler/doCleanupTask";
+const CLEANUP_TASK: &str =
+    "github.com/pingcap/tidb/pkg/dxf/framework/scheduler/processCleanupTaskBatch";
 
 // 该辅助函数负责 prepare。
 // 它把重复出现的准备、读取、校验或清理步骤集中到一处，减少 case 间样板差异。

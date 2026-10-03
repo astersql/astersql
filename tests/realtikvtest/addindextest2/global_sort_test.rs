@@ -344,7 +344,7 @@ fn test_global_sort_basic() {
         let tx1 = tx1.clone();
         testfailpoint::EnableCall(
             &t,
-            "github.com/pingcap/tidb/pkg/dxf/framework/scheduler/doCleanupTask",
+            "github.com/pingcap/tidb/pkg/dxf/framework/scheduler/processCleanupTaskBatch",
             move |_| {
                 let _ = tx1.send(());
             },
@@ -431,7 +431,7 @@ fn test_global_sort_basic() {
     }
     check_file_exist(&t, &cloud_storage_uri, &task_id.to_string(), "/plan/ingest");
     rx1.recv_timeout(Duration::from_secs(2))
-        .expect("doCleanupTask failpoint must signal before cleanup verification");
+        .expect("processCleanupTaskBatch failpoint must signal before cleanup verification");
     rx2.recv_timeout(Duration::from_secs(2))
         .expect("WaitCleanUpFinished failpoint must signal before cleanup verification");
     if let Some(s) = {
@@ -463,7 +463,7 @@ fn test_global_sort_basic() {
         "/plan/merge-sort",
     );
     rx1.recv_timeout(Duration::from_secs(2))
-        .expect("doCleanupTask failpoint must signal before cleanup verification");
+        .expect("processCleanupTaskBatch failpoint must signal before cleanup verification");
     rx2.recv_timeout(Duration::from_secs(2))
         .expect("WaitCleanUpFinished failpoint must signal before cleanup verification");
     server.clear_prefix("sorted", &format!("{task_id}/"));
@@ -485,7 +485,7 @@ fn test_global_sort_basic() {
         "/plan/merge-sort",
     );
     rx1.recv_timeout(Duration::from_secs(2))
-        .expect("doCleanupTask failpoint must signal before cleanup verification");
+        .expect("processCleanupTaskBatch failpoint must signal before cleanup verification");
     rx2.recv_timeout(Duration::from_secs(2))
         .expect("WaitCleanUpFinished failpoint must signal before cleanup verification");
     server.clear_prefix("sorted", &format!("{task_id}/"));

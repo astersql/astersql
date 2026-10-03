@@ -3323,7 +3323,7 @@ impl ConcreteSession {
                         "github.com/pingcap/tidb/pkg/dxf/framework/taskexecutor/afterRunSubtask",
                     );
                     astersql_testkit_testfailpoint::inject(
-                        "github.com/pingcap/tidb/pkg/dxf/framework/scheduler/doCleanupTask",
+                        "github.com/pingcap/tidb/pkg/dxf/framework/scheduler/processCleanupTaskBatch",
                     );
                     astersql_testkit_testfailpoint::inject(
                         "github.com/pingcap/tidb/pkg/ddl/pauseAfterDistTaskFinished",

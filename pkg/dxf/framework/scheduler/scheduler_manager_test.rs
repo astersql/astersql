@@ -57,3 +57,85 @@ fn test_clean_up_routine() {
     assert_eq!(transferred.len(), 1);
     assert_eq!(transferred[0].meta, b"meta-clean");
 }
+
+#[test]
+fn cleanup_starts_immediately_and_drains_all_bounded_batches() {
+    let restore = crate::proto::SetTaskCleanupBatchSizeForTest(2);
+    let task_manager = Arc::new(TestTaskManager::default());
+    for id in 1..=5 {
+        task_manager.insert_task(task(id, TASK_STATE_SUCCEED));
+    }
+    let manager = Manager::new(task_manager.clone(), "server", None);
+    manager.start().unwrap();
+    restore();
+    assert_eq!(task_manager.transferred_tasks.lock().unwrap().len(), 5);
+}
+
+struct PartialCleanup(Arc<AtomicUsize>);
+impl CleanUpRoutine for PartialCleanup {
+    fn clean_up(&self, task: &mut Task) -> Result<()> {
+        self.0.fetch_add(1, Ordering::AcqRel);
+        if task.base.id == 2 {
+            Err(SchedulerError::new("cleanup failed"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[test]
+fn cleanup_drain_stops_on_empty_query_failure_transfer_failure_and_partial_progress() {
+    for failure in ["empty", "query", "transfer", "partial", "zero"] {
+        let tasks = Arc::new(TestTaskManager::default());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let kind = format!("drain-stop-{failure}");
+        if failure == "partial" || failure == "zero" {
+            let calls = calls.clone();
+            RegisterSchedulerCleanUpFactory(
+                &kind,
+                Arc::new(move || Arc::new(PartialCleanup(calls.clone()))),
+            );
+        }
+        if failure != "empty" && failure != "query" {
+            for id in if failure == "zero" {
+                vec![2]
+            } else {
+                vec![1, 2]
+            } {
+                let mut task = task(id, TASK_STATE_SUCCEED);
+                task.base.task_type = kind.clone();
+                tasks.insert_task(task);
+            }
+        }
+        if failure == "query" {
+            *tasks.cleanup_error.lock().unwrap() = Some(SchedulerError::new("query failed"));
+        }
+        if failure == "transfer" {
+            *tasks.transfer_error.lock().unwrap() = Some(SchedulerError::new("transfer failed"));
+        }
+        let manager = Manager::new(tasks.clone(), "server", None);
+        manager.drain_cleanup_task_batches();
+        assert_eq!(tasks.cleanup_reads.load(Ordering::Acquire), 1, "{failure}");
+        assert_eq!(
+            tasks.transferred_tasks.lock().unwrap().len(),
+            usize::from(failure == "partial"),
+            "{failure}"
+        );
+        if failure == "partial" || failure == "zero" {
+            assert!(tasks.task_by_id(2).is_ok());
+        }
+    }
+}
+
+#[test]
+fn cleanup_batch_reports_full_progress_and_tick_drains_new_terminal_tasks() {
+    let tasks = Arc::new(TestTaskManager::default());
+    tasks.insert_task(task(1, TASK_STATE_SUCCEED));
+    let manager = Manager::new(tasks.clone(), "server", None);
+    assert!(manager.process_cleanup_task_batch());
+    assert!(!manager.process_cleanup_task_batch());
+    manager.start().unwrap();
+    tasks.insert_task(task(2, TASK_STATE_REVERTED));
+    manager.tick().unwrap();
+    assert_eq!(tasks.transferred_tasks.lock().unwrap().len(), 2);
+}

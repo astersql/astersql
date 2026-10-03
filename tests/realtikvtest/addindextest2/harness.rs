@@ -2647,7 +2647,7 @@ pub mod testkit {
 
             // cleanup failpoints (async in Go — fire synchronously then clear files)
             fire_call(
-                "github.com/pingcap/tidb/pkg/dxf/framework/scheduler/doCleanupTask",
+                "github.com/pingcap/tidb/pkg/dxf/framework/scheduler/processCleanupTaskBatch",
                 FailCtx::None,
             );
             fire_call(

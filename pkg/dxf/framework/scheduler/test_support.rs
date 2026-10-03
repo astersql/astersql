@@ -30,6 +30,8 @@ pub(super) struct TestTaskManager {
     pub deleted_nodes: Mutex<Vec<String>>,
     pub transferred_tasks: Mutex<Vec<Task>>,
     pub transfer_error: Mutex<Option<SchedulerError>>,
+    pub cleanup_error: Mutex<Option<SchedulerError>>,
+    pub cleanup_reads: AtomicUsize,
     pub failed_tasks: Mutex<Vec<(i64, TaskState, SchedulerError)>>,
     /// 规划下一批子任务时返回的上一阶段结果。
     pub previous_metas: Mutex<Vec<Vec<u8>>>,
@@ -67,6 +69,17 @@ impl TestTaskManager {
 }
 
 impl TaskManager for TestTaskManager {
+    fn cleanup_tasks(&self) -> Result<Vec<Task>> {
+        self.cleanup_reads.fetch_add(1, Ordering::AcqRel);
+        if let Some(error) = self.cleanup_error.lock().unwrap().clone() {
+            return Err(error);
+        }
+        let mut tasks =
+            self.tasks_in_states(&[TASK_STATE_FAILED, TASK_STATE_REVERTED, TASK_STATE_SUCCEED])?;
+        tasks.truncate(crate::proto::GetTaskCleanupBatchSize() as usize);
+        Ok(tasks)
+    }
+
     fn top_unfinished_tasks(&self) -> Result<Vec<TaskBase>> {
         Ok(self
             .top_unfinished

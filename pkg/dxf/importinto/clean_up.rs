@@ -22,7 +22,8 @@
 #![allow(non_snake_case)]
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use astersql_dxf_framework_proto::{Task, TaskStateSucceed};
 use astersql_errors as errors;
@@ -39,6 +40,46 @@ pub enum RestoreTableModeError {
     /// 其它需向上传递的错误。
     Other(errors::SharedError),
 }
+
+/// Cancellation visible to cleanup workers, without cancelling the caller's context.
+#[derive(Clone)]
+pub struct CleanupMeteringContext {
+    parent: astersql_dxf_framework_metering::Context,
+    cancelled: Arc<AtomicBool>,
+}
+impl CleanupMeteringContext {
+    fn new(parent: &astersql_dxf_framework_metering::Context) -> Self {
+        Self {
+            parent: parent.clone(),
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+    /// Whether the parent or another metering worker has cancelled this batch.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire) || self.parent.is_cancelled()
+    }
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+    fn check(&self) -> Result<(), errors::SharedError> {
+        if self.is_cancelled() {
+            let deadline_exceeded = !self.cancelled.load(Ordering::Acquire)
+                && self
+                    .parent
+                    .deadline()
+                    .is_some_and(|deadline| std::time::Instant::now() >= deadline);
+            Err(errors::New(if deadline_exceeded {
+                "context deadline exceeded"
+            } else {
+                "context canceled"
+            }))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+const CLEANUP_METERING_CONCURRENCY: usize = 4;
 
 /// 清理所需副作用的运行时抽象。
 ///
@@ -67,6 +108,27 @@ pub trait ImportCleanUpRuntime: Send + Sync {
         &self,
         task_id: i64,
     ) -> Result<Option<PostProcessStepMeta>, errors::SharedError>;
+    /// Context-aware metadata boundary for cancellable backend implementations.
+    fn post_process_meta_with_context(
+        &self,
+        context: &CleanupMeteringContext,
+        task_id: i64,
+    ) -> Result<Option<PostProcessStepMeta>, errors::SharedError> {
+        context.check()?;
+        self.post_process_meta(task_id)
+    }
+    /// Context-aware send boundary; implementations with blocking IO should observe cancellation.
+    fn send_meter_data_with_context(
+        &self,
+        context: &CleanupMeteringContext,
+        task: &Task,
+        row_count: i64,
+        data_kv_size: i64,
+        index_kv_size: i64,
+    ) -> Result<(), errors::SharedError> {
+        context.check()?;
+        self.send_meter_data(task, row_count, data_kv_size, index_kv_size)
+    }
     /// 上报导入行数与 KV 体积等到计量系统。
     fn send_meter_data(
         &self,
@@ -112,6 +174,18 @@ impl ImportCleanUp {
     /// Restore all table modes, delete each URI group with one scan, then meter.
     /// Cleanup and history transfer are not atomic; retries must be safe.
     pub fn CleanUpBatch(&self, tasks: &mut [Task]) -> Result<(), errors::SharedError> {
+        self.CleanUpBatchWithContext(
+            &astersql_dxf_framework_metering::Context::background(),
+            tasks,
+        )
+    }
+
+    /// Cleanup with caller cancellation propagated to the parallel metering workers.
+    pub fn CleanUpBatchWithContext(
+        &self,
+        context: &astersql_dxf_framework_metering::Context,
+        tasks: &mut [Task],
+    ) -> Result<(), errors::SharedError> {
         let mut groups: HashMap<String, Vec<String>> = HashMap::new();
         let mut meter_tasks = Vec::new();
         for (index, task) in tasks.iter_mut().enumerate() {
@@ -148,24 +222,91 @@ impl ImportCleanUp {
             astersql_ingestor_globalsort::CleanUpFilesInDirectories(store.0.as_ref(), &dirs)
                 .map_err(|error| errors::New(error.to_string()))?;
         }
-        for index in meter_tasks {
-            self.sendMeterOnCleanUp(&tasks[index])?;
-        }
-        Ok(())
+        let meter_tasks: Vec<_> = meter_tasks.into_iter().map(|index| &tasks[index]).collect();
+        sendMeterOnCleanUpInParallel(context, &meter_tasks, |context, task| {
+            self.sendMeterOnCleanUp(context, task)
+        })
     }
 
     /// 从 post-process 元数据提取行数/数据 KV/索引 KV 大小并发送计量。
-    fn sendMeterOnCleanUp(&self, task: &Task) -> Result<(), errors::SharedError> {
-        let Some(meta) = self.runtime.post_process_meta(task.ID)? else {
+    fn sendMeterOnCleanUp(
+        &self,
+        context: &CleanupMeteringContext,
+        task: &Task,
+    ) -> Result<(), errors::SharedError> {
+        let Some(meta) = self
+            .runtime
+            .post_process_meta_with_context(context, task.ID)?
+        else {
             return Ok(());
         };
         let (row_count, data_kv_size, index_kv_size) = meterDataFromPostProcess(&meta);
-        self.runtime.send_meter_data(
+        self.runtime.send_meter_data_with_context(
+            context,
             task,
             row_count as i64,
             data_kv_size as i64,
             index_kv_size as i64,
         )
+    }
+}
+
+/// Run bounded workers, stop dispatch after the first error, and join every worker.
+pub(crate) fn sendMeterOnCleanUpInParallel<F>(
+    parent: &astersql_dxf_framework_metering::Context,
+    tasks: &[&Task],
+    send: F,
+) -> Result<(), errors::SharedError>
+where
+    F: Fn(&CleanupMeteringContext, &Task) -> Result<(), errors::SharedError> + Sync,
+{
+    if tasks.is_empty() {
+        return Ok(());
+    }
+    let context = CleanupMeteringContext::new(parent);
+    let pending = Mutex::new(tasks.iter());
+    let first_error = Mutex::new(None);
+    std::thread::scope(|scope| {
+        for _ in 0..CLEANUP_METERING_CONCURRENCY.min(tasks.len()) {
+            let context = &context;
+            let pending = &pending;
+            let first_error = &first_error;
+            let send = &send;
+            scope.spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    loop {
+                        let task = {
+                            let mut pending = pending.lock().unwrap();
+                            context.check()?;
+                            pending.next().copied()
+                        };
+                        let Some(task) = task else {
+                            return Ok(());
+                        };
+                        send(context, task)?;
+                    }
+                }))
+                .unwrap_or_else(|panic| {
+                    let message = panic
+                        .downcast_ref::<String>()
+                        .map(String::as_str)
+                        .or_else(|| panic.downcast_ref::<&str>().copied())
+                        .unwrap_or("metering panic");
+                    Err(errors::New(message.to_owned()))
+                });
+                if let Err(error) = result {
+                    let mut first = first_error.lock().unwrap();
+                    if first.is_none() {
+                        *first = Some(error);
+                    }
+                    context.cancel();
+                }
+            });
+        }
+    });
+    match first_error.into_inner().unwrap() {
+        Some(error) => Err(error),
+        None => Ok(()),
     }
 }
 

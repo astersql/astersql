@@ -123,6 +123,7 @@ impl Manager {
     pub fn start(&self) -> Result<()> {
         self.node_manager
             .refresh_nodes(self.task_manager.as_ref(), &self.slot_manager)?;
+        self.drain_cleanup_task_batches();
         self.initialized.store(true, Ordering::Release);
         Ok(())
     }
@@ -185,6 +186,7 @@ impl Manager {
         let schedulable = self.get_schedulable_tasks()?;
         self.start_schedulers(schedulable)?;
         self.drive_schedulers();
+        self.drain_cleanup_task_batches();
         Ok(())
     }
 
@@ -333,7 +335,28 @@ impl Manager {
 
     /// 对终态任务执行类型相关清理，再批量迁入历史表。
     pub fn cleanup_finished_tasks(&self) -> Result<usize> {
-        let mut tasks = self.task_manager.cleanup_tasks()?;
+        let tasks = self.task_manager.cleanup_tasks()?;
+        self.cleanup_task_batch(tasks)
+    }
+
+    /// Process one bounded batch; errors or partial progress stop this drain.
+    pub fn process_cleanup_task_batch(&self) -> bool {
+        let Ok(tasks) = self.task_manager.cleanup_tasks() else {
+            return false;
+        };
+        if tasks.is_empty() {
+            return false;
+        }
+        let count = tasks.len();
+        matches!(self.cleanup_task_batch(tasks), Ok(transferred) if transferred == count)
+    }
+
+    /// Drain consecutive batches only while every task reaches history.
+    pub fn drain_cleanup_task_batches(&self) {
+        while self.process_cleanup_task_batch() {}
+    }
+
+    fn cleanup_task_batch(&self, mut tasks: Vec<Task>) -> Result<usize> {
         if tasks.is_empty() {
             return Ok(0);
         }
