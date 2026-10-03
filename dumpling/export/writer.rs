@@ -19,6 +19,7 @@ pub struct Writer {
     pub ext_storage: Arc<dyn Storage>,
     // file_fmt 由 NewWriter 从 conf.FileType 解析得到。
     pub file_fmt: FileFormat,
+    metrics: Option<metrics>,
     // received_task_count 每 handleTask 递增，供 countTotalTask 汇总。
     pub received_task_count: i32,
     // finish_task_callback 单任务完成钩子，默认空实现。
@@ -27,14 +28,14 @@ pub struct Writer {
     pub finish_table_callback: Box<dyn Fn(&TaskEnum) + Send>,
 }
 
-// 根据 conf.FileType 解析输出格式；metrics 参数保留以匹配 Go 签名，Rust 侧暂未挂载。
+// Preserve shared collector ownership across the existing write paths.
 pub fn NewWriter(
     tctx: tcontext::Context,
     id: i64,
     config: Arc<Config>,
     conn: Conn,
     external_store: Arc<dyn Storage>,
-    _metrics: Option<&metrics>,
+    metrics: Option<&metrics>,
 ) -> Writer {
     let file_fmt = match config.FileType.to_ascii_lowercase().as_str() {
         FileFormatSQLTextString => FileFormat::FileFormatSQLText,
@@ -50,6 +51,7 @@ pub fn NewWriter(
         conn: Some(conn),
         ext_storage: external_store,
         file_fmt,
+        metrics: metrics.cloned(),
         received_task_count: 0,
         finish_task_callback: Box::new(|_| {}),
         finish_table_callback: Box::new(|_| {}),
@@ -197,7 +199,13 @@ impl Writer {
                         Concurrency: uploadConcurrency,
                         PartSize: uploadPartSize,
                     });
-                    let result = writeCSVFile(&self.conf, meta, iter.as_mut(), &mut lazy, None);
+                    let result = writeCSVFile(
+                        &self.conf,
+                        meta,
+                        iter.as_mut(),
+                        &mut lazy,
+                        self.metrics.as_ref(),
+                    );
                     let closed = lazy.Close();
                     result?;
                     closed?;
@@ -240,9 +248,14 @@ impl Writer {
                 PartSize: uploadPartSize,
             });
         }
-        let write_result = self
-            .file_fmt
-            .WriteInsert(&self.tctx, &self.conf, meta, ir, &mut lazy, None);
+        let write_result = self.file_fmt.WriteInsert(
+            &self.tctx,
+            &self.conf,
+            meta,
+            ir,
+            &mut lazy,
+            self.metrics.as_ref(),
+        );
         let close_writer_result = lazy.Close();
         let close_ir_result = ir.Close();
         write_result?;
@@ -266,7 +279,13 @@ impl Writer {
                     Concurrency: uploadConcurrency,
                     PartSize: uploadPartSize,
                 });
-                let result = writeSQLFile(&self.conf, meta, iter.as_mut(), &mut lazy, None);
+                let result = writeSQLFile(
+                    &self.conf,
+                    meta,
+                    iter.as_mut(),
+                    &mut lazy,
+                    self.metrics.as_ref(),
+                );
                 let closed = lazy.Close();
                 result?;
                 closed?;

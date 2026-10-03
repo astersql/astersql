@@ -8,6 +8,7 @@
 
 // metrics 聚合 export 主流程关心的核心统计项。
 // 字段命名与 Go prometheus 指标名对齐，便于跨语言对照观测面板。
+#[derive(Clone)]
 pub struct metrics {
     // finished_size / finished_rows / finished_tables 共同表示已完成导出的工作量。
     pub finishedSizeGauge: GaugeVec,
@@ -19,9 +20,9 @@ pub struct metrics {
     pub errorCount: CounterVec,
     // 下面三个原子字段服务于进度条，而不是 Prometheus registry 本身。
     pub taskChannelCapacity: GaugeVec,
-    pub totalChunks: AtomicI64,
-    pub completedChunks: AtomicI64,
-    pub progressReady: AtomicBool,
+    pub totalChunks: Arc<AtomicI64>,
+    pub completedChunks: Arc<AtomicI64>,
+    pub progressReady: Arc<AtomicBool>,
 }
 
 pub fn newMetrics(f: &dyn Factory, _const_labels: &Labels) -> metrics {
@@ -33,21 +34,52 @@ pub fn newMetrics(f: &dyn Factory, _const_labels: &Labels) -> metrics {
         finishedTablesCounter: f.NewCounterVec("finished_tables"),
         errorCount: f.NewCounterVec("error_count"),
         taskChannelCapacity: f.NewGaugeVec("channel_capacity"),
-        totalChunks: AtomicI64::new(0),
-        completedChunks: AtomicI64::new(0),
-        progressReady: AtomicBool::new(false),
+        totalChunks: Arc::new(AtomicI64::new(0)),
+        completedChunks: Arc::new(AtomicI64::new(0)),
+        progressReady: Arc::new(AtomicBool::new(false)),
     }
 }
 
 impl metrics {
     pub fn registerTo(&self, registry: &dyn Registry) {
-        // 显式逐项注册，便于测试替身 registry 精确记录被挂载的名字。
-        registry.MustRegister("finished_size");
-        registry.MustRegister("finished_rows");
-        registry.MustRegister("estimate_total_rows");
-        registry.MustRegister("finished_tables");
-        registry.MustRegister("error_count");
-        registry.MustRegister("channel_capacity");
+        for (name, kind, value) in [
+            (
+                "finished_size",
+                "gauge",
+                self.finishedSizeGauge.inner.v.clone(),
+            ),
+            (
+                "finished_rows",
+                "gauge",
+                self.finishedRowsGauge.inner.v.clone(),
+            ),
+            (
+                "estimate_total_rows",
+                "counter",
+                self.estimateTotalRowsCounter.inner.v.clone(),
+            ),
+            (
+                "finished_tables",
+                "counter",
+                self.finishedTablesCounter.inner.v.clone(),
+            ),
+            ("error_count", "counter", self.errorCount.inner.v.clone()),
+            (
+                "channel_capacity",
+                "gauge",
+                self.taskChannelCapacity.inner.v.clone(),
+            ),
+        ] {
+            registry.RegisterMetric(
+                name,
+                Arc::new(move || {
+                    format!(
+                        "# TYPE dumpling_dump_{name} {kind}\ndumpling_dump_{name} {}\n",
+                        f64::from_bits(value.load(Ordering::SeqCst))
+                    )
+                }),
+            );
+        }
     }
     pub fn unregisterFrom(&self, registry: &dyn Registry) {
         // 与 registerTo 成对出现，避免重复运行测试时留下脏注册状态。

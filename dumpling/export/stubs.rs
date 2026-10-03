@@ -1072,20 +1072,37 @@ impl Factory for DefaultFactory {
 pub trait Registry: Send + Sync {
     fn MustRegister(&self, _name: &str);
     fn Unregister(&self, _name: &str) -> bool;
+    /// Registerers that cannot gather preserve Go's default-gatherer fallback.
+    fn Gather(&self) -> Option<String> {
+        None
+    }
+    fn RegisterMetric(&self, name: &str, _sample: Arc<dyn Fn() -> String + Send + Sync>) {
+        self.MustRegister(name);
+    }
 }
 
-#[derive(Clone, Debug, Default)]
-// 仅记录已注册名称的 Registry 桩。
-// 仅记录已注册名称的 Registry 桩。
+#[derive(Clone, Default)]
+// Live metric samples share ownership with the registered collectors.
 pub struct DefaultRegistry {
     pub names: Arc<Mutex<Vec<String>>>,
+    samples: Arc<Mutex<HashMap<String, Arc<dyn Fn() -> String + Send + Sync>>>>,
 }
 // 名称列表式注册/注销。
 impl Registry for DefaultRegistry {
     fn MustRegister(&self, name: &str) {
         self.names.lock().unwrap().push(name.to_string());
     }
+    fn Gather(&self) -> Option<String> {
+        let samples = self.samples.lock().unwrap().clone();
+        let mut samples: Vec<_> = samples.into_iter().collect();
+        samples.sort_by(|a, b| a.0.cmp(&b.0));
+        Some(samples.into_iter().map(|(_, sample)| sample()).collect())
+    }
+    fn RegisterMetric(&self, name: &str, sample: Arc<dyn Fn() -> String + Send + Sync>) {
+        self.RegisterSample(name, sample);
+    }
     fn Unregister(&self, name: &str) -> bool {
+        self.samples.lock().unwrap().remove(name);
         let mut g = self.names.lock().unwrap();
         if let Some(i) = g.iter().position(|n| n == name) {
             g.remove(i);
@@ -1094,6 +1111,28 @@ impl Registry for DefaultRegistry {
             false
         }
     }
+}
+
+impl std::fmt::Debug for DefaultRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DefaultRegistry")
+            .field("names", &self.names)
+            .finish()
+    }
+}
+impl DefaultRegistry {
+    pub fn RegisterSample(&self, name: &str, sample: Arc<dyn Fn() -> String + Send + Sync>) {
+        self.MustRegister(name);
+        self.samples.lock().unwrap().insert(name.to_owned(), sample);
+    }
+}
+
+/// Process-wide scrape source for register-only configurations.
+pub fn DefaultGatherer() -> Arc<DefaultRegistry> {
+    static DEFAULT: std::sync::OnceLock<Arc<DefaultRegistry>> = std::sync::OnceLock::new();
+    DEFAULT
+        .get_or_init(|| Arc::new(DefaultRegistry::default()))
+        .clone()
 }
 
 // 构造 DefaultFactory 的 Arc<dyn Factory>。
@@ -1162,11 +1201,14 @@ pub fn RAMInBytes(s: &str) -> Result<i64> {
     Ok((v * mul as f64) as i64)
 }
 
-// --- failpoint 空实现 ---
-// --- failpoint no-op ---
-// failpoint 桩：恒 false，不触发注入。
-pub fn failpoint_inject(_name: &str) -> bool {
-    false
+// The progress failpoint uses Go-compatible process-local configuration.
+pub fn failpoint_inject(name: &str) -> bool {
+    name == "EnableLogProgress"
+        && std::env::var("GO_FAILPOINTS").is_ok_and(|settings| {
+            settings.split(';').any(|entry| {
+                entry == "github.com/pingcap/tidb/dumpling/export/EnableLogProgress=return()"
+            })
+        })
 }
 
 // --- 可重试错误判定（dbutil 子集）---

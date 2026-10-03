@@ -28,9 +28,10 @@ fn make_dumper(mut conf: Config) -> Dumper {
         conf: Arc::new(conf),
         db: Some(DB::new()),
         ext_storage: None,
-        metrics: newMetrics(factory.as_ref(), &labels),
-        speedRecorder: std::sync::Mutex::new(NewSpeedRecorder()),
-        totalTables: std::sync::atomic::AtomicI64::new(0),
+        metrics: std::sync::Arc::new(newMetrics(factory.as_ref(), &labels)),
+        speedRecorder: std::sync::Arc::new(std::sync::Mutex::new(NewSpeedRecorder())),
+        status: std::sync::Arc::new(std::sync::Mutex::new(DumpStatus::default())),
+        totalTables: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
         cancel: Some(cancel),
         http: None,
         pd_client: None,
@@ -870,4 +871,37 @@ fn column_projection_csv_export_excludes_secret_values() {
             "\"id\",\"name\"\r\n1,\"alice\"\r\n2,\"bob\"\r\n"
         );
     }
+}
+
+#[test]
+fn dump_publishes_final_nonempty_sql_export_status() {
+    let mut conf = default_config_for_test();
+    conf.SQL = "SELECT value FROM source".to_owned();
+    conf.Consistency = ConsistencyTypeNone.to_owned();
+    conf.FileType = FileFormatCSVString.to_owned();
+    let mut d = make_dumper(conf);
+    d.db.as_ref().unwrap().seed_query(
+        "SELECT value FROM source",
+        vec!["value".to_owned()],
+        vec![vec![Some(b"visible-row".to_vec())]],
+    );
+    d.db.as_ref().unwrap().seed_query(
+        "EXPLAIN SELECT value FROM source",
+        vec!["rows".to_owned()],
+        vec![vec![Some(b"1".to_vec())]],
+    );
+    let store = Arc::new(MemStorage::new("task36"));
+    d.ext_storage = Some(store.clone());
+    d.Dump().unwrap();
+    let files = store.files.lock().unwrap();
+    assert!(
+        files
+            .values()
+            .any(|bytes| String::from_utf8_lossy(bytes).contains("visible-row"))
+    );
+    let final_status = d.GetStatus();
+    assert_eq!(final_status.FinishedRows, 1.0);
+    assert!(final_status.FinishedBytes > 0.0);
+    assert_eq!(final_status.ProgressPercent, Some(100.0));
+    assert_eq!(final_status.CompletedTables, 1.0);
 }

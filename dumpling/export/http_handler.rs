@@ -13,6 +13,8 @@ pub fn startHTTPServer(
     tctx: &tcontext::Context,
     listener: std::net::TcpListener,
     handle: &HttpServiceHandle,
+    status: Option<Arc<Mutex<DumpStatus>>>,
+    registry: Arc<dyn Registry>,
 ) {
     if let Err(err) = listener.set_nonblocking(true) {
         tctx.L().Info(
@@ -28,7 +30,9 @@ pub fn startHTTPServer(
         }
 
         match listener.accept() {
-            Ok((stream, _)) => serveHTTPConnection(stream),
+            Ok((stream, _)) => {
+                serveHTTPConnection(stream, tctx, status.as_ref(), registry.as_ref())
+            }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(5));
             }
@@ -46,7 +50,12 @@ pub fn startHTTPServer(
     }
 }
 
-fn serveHTTPConnection(mut stream: std::net::TcpStream) {
+fn serveHTTPConnection(
+    mut stream: std::net::TcpStream,
+    tctx: &tcontext::Context,
+    snapshot: Option<&Arc<Mutex<DumpStatus>>>,
+    registry: &dyn Registry,
+) {
     use std::io::{Read, Write};
 
     let _ = stream.set_nonblocking(false);
@@ -62,31 +71,53 @@ fn serveHTTPConnection(mut stream: std::net::TcpStream) {
         .and_then(|line| line.split_whitespace().nth(1))
         .unwrap_or("/");
 
-    let (status, content_type, body) = match path {
-        "/metrics" => (
-            "200 OK",
-            "text/plain; version=0.0.4",
-            "# dumpling metrics\n",
-        ),
-        "/debug/pprof/" => (
-            "200 OK",
-            "text/html; charset=utf-8",
-            "<html><body><a href=\"cmdline\">cmdline</a> <a href=\"profile\">profile</a> <a href=\"symbol\">symbol</a> <a href=\"trace\">trace</a></body></html>\n",
-        ),
-        "/debug/pprof/cmdline" => ("200 OK", "text/plain", "astersql-dumpling\n"),
-        "/debug/pprof/profile" | "/debug/pprof/symbol" | "/debug/pprof/trace" => {
-            ("200 OK", "application/octet-stream", "")
-        }
-        _ => ("404 Not Found", "text/plain", "404 page not found\n"),
+    let (status, content_type, body): (&str, &str, String) = match path.split('?').next().unwrap_or(path) {
+        "/status" => match snapshot {
+            None => ("503 Service Unavailable", "text/plain; charset=utf-8", "dumper is not running\n".to_owned()),
+            Some(snapshot) => {
+                let body = snapshot.lock().unwrap().clone().toJSON().unwrap_or_else(|err| {
+                    tctx.L().Warn("failed to write dumpling status response", [Field::string("error", err.msg)]);
+                    String::new()
+                });
+                ("200 OK", "application/json", body)
+            }
+        },
+        "/metrics" => ("200 OK", "text/plain; version=0.0.4", metricsHandler(registry)),
+        "/debug/pprof/" => ("200 OK", "text/html; charset=utf-8",
+            "<html><body><a href=\"cmdline\">cmdline</a> <a href=\"profile\">profile</a> <a href=\"symbol\">symbol</a> <a href=\"trace\">trace</a></body></html>\n".to_owned()),
+        "/debug/pprof/cmdline" => ("200 OK", "text/plain", "astersql-dumpling\n".to_owned()),
+        "/debug/pprof/profile" | "/debug/pprof/symbol" | "/debug/pprof/trace" => ("200 OK", "application/octet-stream", String::new()),
+        _ => ("404 Not Found", "text/plain", "404 page not found\n".to_owned()),
     };
     let response = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
-    let _ = stream.write_all(response.as_bytes());
+    if let Err(err) = stream.write_all(response.as_bytes()) {
+        if path.split('?').next() == Some("/status") {
+            tctx.L().Warn(
+                "failed to write dumpling status response",
+                [Field::string("error", err.to_string())],
+            );
+        }
+    }
+}
+
+pub fn metricsHandler(registry: &dyn Registry) -> String {
+    registry
+        .Gather()
+        .unwrap_or_else(|| DefaultGatherer().Gather().unwrap_or_default())
 }
 
 pub fn startDumplingService(tctx: &tcontext::Context, addr: &str) -> Result<HttpServiceHandle> {
+    startDumplingServiceWithDumper(tctx, addr, None)
+}
+
+pub fn startDumplingServiceWithDumper(
+    tctx: &tcontext::Context,
+    addr: &str,
+    d: Option<&Dumper>,
+) -> Result<HttpServiceHandle> {
     let listener = std::net::TcpListener::bind(addr)
         .map_err(|err| errors_annotate(errors_new(err.to_string()), "start listening"))?;
     let local_addr = listener
@@ -97,10 +128,14 @@ pub fn startDumplingService(tctx: &tcontext::Context, addr: &str) -> Result<Http
         started: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         stopped: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
+    let snapshot = d.map(|d| d.status.clone());
+    let registry: Arc<dyn Registry> = d
+        .map(|d| d.conf.PromRegistry.clone())
+        .unwrap_or_else(|| DefaultGatherer());
     let tctx2 = tctx.clone();
     let h2 = handle.clone();
     std::thread::spawn(move || {
-        startHTTPServer(&tctx2, listener, &h2);
+        startHTTPServer(&tctx2, listener, &h2, snapshot, registry);
     });
     Ok(handle)
 }

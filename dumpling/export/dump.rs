@@ -22,11 +22,12 @@ pub struct Dumper {
     // ext_storage 由初始化阶段创建，writer 侧直接复用它输出文件。
     // metrics / speedRecorder / totalTables 共同支撑进度和吞吐统计。
     pub ext_storage: Option<Arc<dyn Storage>>,
-    pub metrics: metrics,
-    pub speedRecorder: Mutex<SpeedRecorder>,
+    pub metrics: Arc<metrics>,
+    pub speedRecorder: Arc<Mutex<SpeedRecorder>>,
+    pub status: Arc<Mutex<DumpStatus>>,
     // totalTables 会在表清单准备完成后一次性写入，用于进度估算。
     // cancel / http / pd_client 都属于需要在 Close 中显式回收的外部资源。
-    pub totalTables: AtomicI64,
+    pub totalTables: Arc<AtomicI64>,
     pub cancel: Option<astersql_dumpling_context::CancelFunc>,
     pub http: Option<HttpServiceHandle>,
     pub pd_client: Option<PdClient>,
@@ -43,9 +44,10 @@ pub fn NewDumper(conf: Config) -> Result<Dumper> {
         conf: Arc::new(conf),
         db: None,
         ext_storage: None,
-        metrics: newMetrics(factory.as_ref(), &labels),
-        speedRecorder: Mutex::new(NewSpeedRecorder()),
-        totalTables: AtomicI64::new(0),
+        metrics: std::sync::Arc::new(newMetrics(factory.as_ref(), &labels)),
+        speedRecorder: std::sync::Arc::new(Mutex::new(NewSpeedRecorder())),
+        status: std::sync::Arc::new(std::sync::Mutex::new(DumpStatus::default())),
+        totalTables: std::sync::Arc::new(AtomicI64::new(0)),
         cancel: Some(cancel),
         http: None,
         pd_client: None,
@@ -159,12 +161,14 @@ impl Dumper {
                 }
                 self.conf = Arc::new(conf);
             }
+            let mut progress = self.startLogProgress(&self.tctx);
             let (tx, rx) = std::sync::mpsc::channel::<TaskEnum>();
             let produce_result = self.dumpDatabases(&mut meta_conn, tx);
             if let Some(conn) = meta_conn.DBConn.take() {
                 let _ = conn.Close();
             }
             produce_result?;
+            self.metrics.progressReady.store(true, Ordering::SeqCst);
 
             let store = self
                 .ext_storage
@@ -179,10 +183,23 @@ impl Dumper {
                 store,
                 Some(&self.metrics),
             );
+            let table_metrics = self.metrics.clone();
+            writer.setFinishTableCallBack(Box::new(move |task| {
+                if matches!(task, TaskEnum::TableData(_)) {
+                    IncCounter(Some(&table_metrics.finishedTablesCounter));
+                }
+            }));
+            let chunk_metrics = self.metrics.clone();
+            writer.setFinishTaskCallBack(Box::new(move |task| {
+                if matches!(task, TaskEnum::TableData(_)) {
+                    chunk_metrics.completedChunks.fetch_add(1, Ordering::SeqCst);
+                }
+            }));
             while let Ok(mut task) = rx.recv() {
                 writer.handleTask(&mut task)?;
                 (writer.finish_task_callback)(&task);
             }
+            progress.stop();
             if let Some(conn) = writer.conn.take() {
                 let _ = conn.Close();
             }
@@ -413,7 +430,7 @@ pub fn startHTTPService(d: &mut Dumper) -> Result<()> {
     if d.conf.StatusAddr.is_empty() {
         return Ok(());
     }
-    match startDumplingService(&d.tctx, &d.conf.StatusAddr) {
+    match startDumplingServiceWithDumper(&d.tctx, &d.conf.StatusAddr, Some(d)) {
         Ok(h) => {
             d.http = Some(h);
             Ok(())

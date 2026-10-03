@@ -6,74 +6,149 @@
 // 负责周期性日志输出、HTTP/CLI 可见的 DumpStatus 快照，以及按表类型统计导出范围。
 // 指标来自 Prometheus counter/gauge；chunk 进度在 progressReady 后才写入 Progress 字段。
 
-/// 进度日志 tick 间隔；Go 同名常量，默认 2 分钟。
+/// Snapshot sampling is independent of HTTP polling and progress logging.
+pub const statusRefreshTick: Duration = Duration::from_secs(5);
+
 pub const logProgressTick: Duration = Duration::from_secs(2 * 60);
 
-impl Dumper {
-    /// 周期性输出导出进度日志，直到 context 被取消；Go `runLogProgress`。
-    ///
-    /// failpoint `EnableLogProgress` 可将 tick 缩短为 1 秒便于测试。
-    /// 平均 MiB/s 由两次采样间 FinishedBytes 差除以 elapsed 计算。
-    pub fn runLogProgress(&self, tctx: &tcontext::Context) {
-        let mut tick = logProgressTick;
-        if failpoint_inject("EnableLogProgress") {
-            // 测试 failpoint：加速进度日志以便集成测试观察。
-            tick = Duration::from_secs(1);
-            tctx.L().Debug("EnableLogProgress", []);
+/// The join guard mirrors Go's cancel-and-wait stop function, including repeated stop calls.
+pub struct LogProgressGuard {
+    cancel: astersql_dumpling_context::CancelFunc,
+    worker: Option<thread::JoinHandle<()>>,
+}
+impl LogProgressGuard {
+    pub fn stop(&mut self) {
+        self.cancel.call();
+        if let Some(worker) = self.worker.take() {
+            worker.join().expect("dump progress worker panicked");
         }
-        let mut last_checkpoint = Instant::now();
-        let mut last_bytes = 0.0_f64;
-        let mut next_tick = last_checkpoint + tick;
-        loop {
-            if tctx.Done() {
-                tctx.L().Debug("stopping log progress", []);
-                return;
-            }
+    }
+}
+impl Drop for LogProgressGuard {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
 
-            let now = Instant::now();
-            if now < next_tick {
-                // Context exposes Go-style polling rather than a waitable channel. Poll at a
-                // short interval so cancellation remains prompt while preserving ticker timing.
-                thread::sleep((next_tick - now).min(Duration::from_millis(10)));
-                continue;
-            }
-
-            let nanoseconds = now.duration_since(last_checkpoint).as_nanos() as f64;
-            let s = self.GetStatus();
-            // 汇总 tables/rows/size/chunk 等字段写入 progress 日志。
-            // 与 Go 相同：用 1048576e-9 将字节/纳秒换算为 MiB/s。
-            let avg = (s.FinishedBytes - last_bytes) / (1048576e-9 * nanoseconds);
-            let total_tables = self.totalTables.load(Ordering::SeqCst) as f64;
-            tctx.L().Info(
-                "progress",
-                [
-                    Field::string(
-                        "tables",
-                        format!(
-                            "{:.0}/{:.0} ({:.1}%)",
-                            s.CompletedTables,
-                            total_tables,
-                            s.CompletedTables / total_tables * 100.0
-                        ),
-                    ),
-                    Field::string("finished rows", format!("{:.0}", s.FinishedRows)),
-                    Field::string("estimate total rows", format!("{:.0}", s.EstimateTotalRows)),
-                    Field::string("finished size", HumanSize(s.FinishedBytes)),
-                    Field::string("average speed(MiB/s)", avg.to_string()),
-                    Field::string("recent speed bps", s.CurrentSpeedBPS.to_string()),
-                    Field::string("chunks progress", s.Progress.clone()),
-                ],
-            );
-            last_checkpoint = Instant::now();
-            last_bytes = s.FinishedBytes;
-            next_tick = last_checkpoint + tick;
+impl Dumper {
+    fn progressView(&self) -> Dumper {
+        Dumper {
+            tctx: self.tctx.clone(),
+            conf: self.conf.clone(),
+            db: None,
+            ext_storage: None,
+            metrics: self.metrics.clone(),
+            speedRecorder: self.speedRecorder.clone(),
+            status: self.status.clone(),
+            totalTables: self.totalTables.clone(),
+            cancel: None,
+            http: None,
+            pd_client: None,
         }
     }
 
-    /// 聚合当前导出指标为 `DumpStatus`；Go `GetStatus`。
-    ///
-    /// chunk 百分比仅在 `progressReady` 为真时填充；completed > total 时钳制为 100% 并打 Warn。
+    pub fn startLogProgress(&self, tctx: &tcontext::Context) -> LogProgressGuard {
+        let (ctx, cancel) = tctx.WithCancel();
+        let view = self.progressView();
+        let worker = thread::spawn(move || view.runLogProgress(&ctx));
+        LogProgressGuard {
+            cancel,
+            worker: Some(worker),
+        }
+    }
+
+    pub fn runLogProgress(&self, tctx: &tcontext::Context) {
+        self.runLogProgressWithTicks(
+            tctx,
+            statusRefreshTick,
+            logProgressTick,
+            failpoint_inject("EnableLogProgress"),
+        );
+    }
+
+    // Tick durations are the explicit time boundary used by Rust's deterministic scoped tests.
+    fn runLogProgressWithTicks(
+        &self,
+        tctx: &tcontext::Context,
+        refresh_tick: Duration,
+        log_tick: Duration,
+        accelerated: bool,
+    ) {
+        self.RefreshStatus();
+        let tick = if accelerated {
+            Duration::from_secs(1)
+        } else {
+            log_tick
+        };
+        if accelerated {
+            tctx.L().Debug("EnableLogProgress", []);
+        }
+        let mut last_checkpoint = Instant::now();
+        let mut last_bytes = 0.0;
+        let mut next_status = last_checkpoint + refresh_tick;
+        let mut next_log = last_checkpoint + tick;
+        loop {
+            if tctx.Done() {
+                tctx.L().Debug("stopping log progress", []);
+                self.RefreshStatus();
+                return;
+            }
+            let now = Instant::now();
+            if now >= next_status {
+                self.RefreshStatus();
+                while next_status <= now {
+                    next_status += refresh_tick;
+                }
+            }
+            if now >= next_log {
+                if accelerated {
+                    self.RefreshStatus();
+                }
+                let nanoseconds = now.duration_since(last_checkpoint).as_nanos() as f64;
+                let finished_bytes = ReadGauge(Some(&self.metrics.finishedSizeGauge));
+                let s = self.GetStatus();
+                let avg = (finished_bytes - last_bytes) / (1048576e-9 * nanoseconds);
+                tctx.L().Info(
+                    "progress",
+                    [
+                        Field::string(
+                            "tables",
+                            format!(
+                                "{:.0}/{:.0} ({:.1}%)",
+                                s.CompletedTables,
+                                s.TotalTables,
+                                s.CompletedTables / s.TotalTables as f64 * 100.0
+                            ),
+                        ),
+                        Field::string("finished rows", format!("{:.0}", s.FinishedRows)),
+                        Field::string("estimate total rows", format!("{:.0}", s.EstimateTotalRows)),
+                        Field::string("finished size", HumanSize(s.FinishedBytes)),
+                        Field::string("average speed(MiB/s)", avg.to_string()),
+                        Field::string("recent speed bps", s.CurrentSpeedBPS.to_string()),
+                        Field::string("chunks progress", s.Progress),
+                    ],
+                );
+                last_checkpoint = Instant::now();
+                last_bytes = finished_bytes;
+                while next_log <= now {
+                    next_log += tick;
+                }
+            }
+            thread::sleep(
+                next_status
+                    .min(next_log)
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_millis(10)),
+            );
+        }
+    }
+
+    /// Return an independent snapshot without changing the speed sampling window.
     pub fn GetStatus(&self) -> DumpStatus {
+        self.status.lock().unwrap().clone()
+    }
+
+    pub fn RefreshStatus(&self) {
         let mut ret = DumpStatus::default();
         ret.TotalTables = self.totalTables.load(Ordering::SeqCst);
         ret.CompletedTables = ReadCounter(Some(&self.metrics.finishedTablesCounter));
@@ -90,15 +165,16 @@ impl Dumper {
             // chunk 进度条仅在 dump 初始化完分片计数后启用。
             if self.metrics.totalChunks.load(Ordering::SeqCst) == 0 {
                 // 无 chunk 任务时视为已全部完成。
-                ret.Progress = "100 %".to_string();
-                return ret;
+                ret.setProgress(1.0);
+                *self.status.lock().unwrap() = ret;
+                return;
             }
             // completed/total 换算百分比字符串供日志与 HTTP 展示。
             let progress = self.metrics.completedChunks.load(Ordering::SeqCst) as f64
                 / self.metrics.totalChunks.load(Ordering::SeqCst) as f64;
             if progress > 1.0 {
                 // 计数器竞态可能导致 completed>total，钳制并告警。
-                ret.Progress = "100 %".to_string();
+                ret.setProgress(1.0);
                 self.L().Warn(
                     "completedChunks is greater than totalChunks",
                     [
@@ -116,15 +192,15 @@ impl Dumper {
                     ],
                 );
             } else {
-                ret.Progress = format!("{:5.2} %", progress * 100.0);
+                ret.setProgress(progress);
             }
         }
-        ret
+        *self.status.lock().unwrap() = ret;
     }
 }
 
 /// 对外暴露的导出快照；字段名与 Go `DumpStatus` JSON 标签一致。
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct DumpStatus {
     pub CompletedTables: f64,
     pub FinishedBytes: f64,
@@ -133,6 +209,50 @@ pub struct DumpStatus {
     pub TotalTables: i64,
     pub CurrentSpeedBPS: f64,
     pub Progress: String,
+    pub ProgressPercent: Option<f64>,
+}
+
+impl DumpStatus {
+    fn setProgress(&mut self, fraction: f64) {
+        self.ProgressPercent = Some(fraction * 100.0);
+        self.Progress = if fraction >= 1.0 {
+            "100 %".to_owned()
+        } else {
+            format!("{:5.2} %", fraction * 100.0)
+        };
+    }
+
+    fn toJSON(&self) -> Result<String> {
+        let values = [
+            self.CompletedTables,
+            self.FinishedBytes,
+            self.FinishedRows,
+            self.EstimateTotalRows,
+            self.CurrentSpeedBPS,
+        ];
+        if values.iter().any(|n| !n.is_finite())
+            || self.ProgressPercent.is_some_and(|n| !n.is_finite())
+        {
+            return Err(errors_new("unsupported non-finite JSON status value"));
+        }
+        let mut body = format!(
+            "{{\"completedTables\":{},\"finishedBytes\":{},\"finishedRows\":{},\"estimateTotalRows\":{},\"totalTables\":{},\"currentSpeedBPS\":{}",
+            self.CompletedTables,
+            self.FinishedBytes,
+            self.FinishedRows,
+            self.EstimateTotalRows,
+            self.TotalTables,
+            self.CurrentSpeedBPS
+        );
+        if !self.Progress.is_empty() {
+            body.push_str(&format!(",\"progress\":\"{}\"", self.Progress));
+        }
+        if let Some(percent) = self.ProgressPercent {
+            body.push_str(&format!(",\"progressPercent\":{percent}"));
+        }
+        body.push_str("}\n");
+        Ok(body)
+    }
 }
 
 /// 统计 `DatabaseTables` 中基表（非视图/序列）数量；Go `calculateTableCount`。
