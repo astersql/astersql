@@ -49,6 +49,7 @@ pub struct GCSWriter {
     current_part: usize,
     total_size: u64,
     closed: bool,
+    stage_error: Option<Arc<io::Error>>,
 }
 
 impl GCSWriter {
@@ -102,7 +103,16 @@ impl GCSWriter {
             current_part: 1,
             total_size: 0,
             closed: false,
+            stage_error: None,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn wrap_upload_for_test(
+        &mut self,
+        wrap: impl FnOnce(Box<dyn MultipartUpload>) -> Box<dyn MultipartUpload>,
+    ) {
+        self.upload = Some(wrap(self.upload.take().expect("active multipart upload")));
     }
 
     /// 配置的分片大小。
@@ -145,56 +155,91 @@ impl GCSWriter {
         Ok(())
     }
 
-    /// 完成或中止上传：无分片时 abort；有分片则 complete，失败再 abort。
-    fn finish(&mut self) -> Result<()> {
+    /// Finish staged parts, aborting on either a staging or finalization error.
+    fn finish(&mut self, ctx: &objectio::Context) -> Result<()> {
         if self.closed {
             return Ok(());
         }
-        self.context.check()?;
         let Some(mut upload) = self.upload.take() else {
             self.closed = true;
             return Ok(());
         };
-
-        if self.current_part == 1 {
-            // Go returns success without finalizing an upload that has no parts.
-            // Abort explicitly so the mature backend cannot leak an incomplete MPU.
-            // Go 无分片时直接成功；此处显式 abort，避免后端残留未完成 multipart。
-            self.core.runtime.block_on(upload.abort())?;
-            self.closed = true;
-            return Ok(());
-        }
-
-        if let Err(error) = self.core.runtime.block_on(upload.complete()) {
-            let cancel_error = self.core.runtime.block_on(upload.abort()).err();
-            return match cancel_error {
-                Some(cancel_error) => Err(anyhow::anyhow!(
-                    "failed to finalize multipart upload: {error}; failed to cancel multipart upload: {cancel_error}"
-                )),
-                None => Err(error).context("failed to finalize multipart upload"),
-            };
-        }
+        let result = if let Some(error) = self.stage_error.take() {
+            Err(anyhow::Error::new(error))
+        } else if self.current_part == 1 {
+            // Match Go: no staged parts means success, with no finalize or abort.
+            Ok(())
+        } else {
+            ctx.check()
+                .and_then(|()| self.context.check())
+                .map_err(anyhow::Error::from)
+                .and_then(|()| {
+                    self.core
+                        .runtime
+                        .block_on(upload.complete())
+                        .map(|_| ())
+                        .context("failed to finalize multipart upload")
+                })
+        };
+        // Cleanup uses the upload handle directly so a cancelled caller context
+        // cannot prevent the DELETE that stops billing staged parts.
+        let result = match result {
+            Err(error) => match self.core.runtime.block_on(upload.abort()) {
+                Err(cancel_error) => {
+                    Err(error.context(format!("failed to cancel multipart upload: {cancel_error}")))
+                }
+                Ok(()) => Err(error),
+            },
+            Ok(()) => Ok(()),
+        };
         self.closed = true;
-        Ok(())
+        result
+    }
+}
+
+// Keep the original failure available through Error::source while displaying
+// both finalization/staging and cancellation annotations like Go's errors.
+#[derive(Debug)]
+struct MultipartCloseError(anyhow::Error);
+
+impl std::fmt::Display for MultipartCloseError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{:#}", self.0)
+    }
+}
+
+impl std::error::Error for MultipartCloseError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref())
     }
 }
 
 impl objectio::Writer for GCSWriter {
     fn write(&mut self, ctx: &objectio::Context, data: &[u8]) -> io::Result<usize> {
-        ctx.check()?;
         if self.closed {
             return Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
                 "writer is closed",
             ));
         }
-        self.upload_part(data).map_err(io::Error::other)?;
+        if let Some(error) = &self.stage_error {
+            return Err(io::Error::other(error.clone()));
+        }
+        if let Err(error) = ctx
+            .check()
+            .map_err(anyhow::Error::from)
+            .and_then(|()| self.upload_part(data))
+        {
+            let error = Arc::new(io::Error::other(error));
+            self.stage_error = Some(error.clone());
+            return Err(io::Error::other(error));
+        }
         Ok(data.len())
     }
 
     fn close(&mut self, ctx: &objectio::Context) -> io::Result<()> {
-        ctx.check()?;
-        self.finish().map_err(io::Error::other)
+        self.finish(ctx)
+            .map_err(|error| io::Error::other(MultipartCloseError(error)))
     }
 }
 

@@ -387,3 +387,242 @@ fn test_gcs_access_recording() {
     // corresponding traffic must pass through access recording as well.
     assert_eq!(recorder.snapshot(), (6, 3, 23, 17));
 }
+
+// Faults replace only the remote multipart boundary; successful requests still
+// use the real InMemory upload and its nonempty payload.
+#[derive(Debug)]
+struct FaultingGCSUpload {
+    inner: Box<dyn object_store::MultipartUpload>,
+    events: Arc<std::sync::Mutex<Vec<&'static str>>>,
+    fail_part: bool,
+    fail_complete: bool,
+    fail_abort: bool,
+}
+
+fn multipart_failure(message: &str) -> object_store::Error {
+    object_store::Error::Generic {
+        store: "gcs-test",
+        source: Box::new(std::io::Error::other(message.to_owned())),
+    }
+}
+
+impl object_store::MultipartUpload for FaultingGCSUpload {
+    fn put_part(&mut self, data: object_store::PutPayload) -> object_store::UploadPart {
+        assert!(data.content_length() > 0);
+        self.events.lock().unwrap().push("part");
+        if self.fail_part {
+            Box::pin(async { Err(multipart_failure("stage failed")) })
+        } else {
+            self.inner.put_part(data)
+        }
+    }
+
+    fn complete<'a, 'b>(
+        &'a mut self,
+    ) -> futures::future::BoxFuture<'b, object_store::Result<object_store::PutResult>>
+    where
+        'a: 'b,
+        Self: 'b,
+    {
+        Box::pin(async move {
+            self.events.lock().unwrap().push("complete");
+            if self.fail_complete {
+                Err(multipart_failure("finalize failed"))
+            } else {
+                self.inner.complete().await
+            }
+        })
+    }
+
+    fn abort<'a, 'b>(&'a mut self) -> futures::future::BoxFuture<'b, object_store::Result<()>>
+    where
+        'a: 'b,
+        Self: 'b,
+    {
+        Box::pin(async move {
+            self.events.lock().unwrap().push("abort");
+            if self.fail_abort {
+                Err(multipart_failure("delete failed"))
+            } else {
+                self.inner.abort().await
+            }
+        })
+    }
+}
+
+#[test]
+fn test_gcs_writer_aborts_on_error() {
+    use objstore::gcs_extra::{GCS_MINIMUM_CHUNK_SIZE, GCSWriter};
+    use objstore::objectio::Writer;
+
+    for (fail_part, fail_complete, fail_abort, prior_part) in [
+        (true, false, false, false),
+        (true, false, false, true),
+        (false, true, false, false),
+        (false, true, true, false),
+        (true, false, true, false),
+    ] {
+        let ctx = Context::default();
+        let store = Arc::new(InMemory::new());
+        let mut writer = GCSWriter::new(
+            ctx.clone(),
+            store.clone(),
+            "object",
+            GCS_MINIMUM_CHUNK_SIZE,
+            2,
+        )
+        .unwrap();
+        if prior_part {
+            writer.write(&ctx, b"staged data").unwrap();
+        }
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        writer.wrap_upload_for_test(|inner| {
+            Box::new(FaultingGCSUpload {
+                inner,
+                events: events.clone(),
+                fail_part,
+                fail_complete,
+                fail_abort,
+            })
+        });
+        let stage = writer.write(&ctx, b"next data");
+        assert_eq!(stage.is_err(), fail_part);
+        let close_error = writer
+            .close(&ctx)
+            .expect_err("failed uploads must fail Close");
+        let mut source: &(dyn std::error::Error + 'static) = &close_error;
+        let mut preserved = false;
+        while let Some(next) = source.source() {
+            preserved |= next.to_string().contains(if fail_part {
+                "stage failed"
+            } else {
+                "finalize failed"
+            });
+            source = next;
+        }
+        assert!(
+            preserved,
+            "original upload failure must remain in the error chain"
+        );
+        let error = close_error.to_string();
+        if fail_part {
+            assert!(error.contains("stage failed"), "{error}");
+        } else {
+            assert!(
+                error.contains("failed to finalize multipart upload"),
+                "{error}"
+            );
+            assert!(error.contains("finalize failed"), "{error}");
+        }
+        if fail_abort {
+            assert!(
+                error.contains("failed to cancel multipart upload"),
+                "{error}"
+            );
+            assert!(error.contains("delete failed"), "{error}");
+        }
+        drop(writer);
+        let expected = if fail_part {
+            vec!["part", "abort"]
+        } else {
+            vec!["part", "complete", "abort"]
+        };
+        assert_eq!(*events.lock().unwrap(), expected);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        assert!(
+            runtime
+                .block_on(object_store::ObjectStoreExt::head(
+                    store.as_ref(),
+                    &object_store::path::Path::from("object")
+                ))
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn test_gcs_writer_success_does_not_abort() {
+    use objstore::gcs_extra::{GCS_MINIMUM_CHUNK_SIZE, GCSWriter};
+    use objstore::objectio::Writer;
+    for empty in [false, true] {
+        let ctx = Context::default();
+        let store = Arc::new(InMemory::new());
+        let mut writer = GCSWriter::new(
+            ctx.clone(),
+            store.clone(),
+            "object",
+            GCS_MINIMUM_CHUNK_SIZE,
+            2,
+        )
+        .unwrap();
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        writer.wrap_upload_for_test(|inner| {
+            Box::new(FaultingGCSUpload {
+                inner,
+                events: events.clone(),
+                fail_part: false,
+                fail_complete: false,
+                fail_abort: false,
+            })
+        });
+        if !empty {
+            writer.write(&ctx, b"data").unwrap();
+        }
+        writer.close(&ctx).unwrap();
+        drop(writer);
+        assert_eq!(
+            *events.lock().unwrap(),
+            if empty {
+                vec![]
+            } else {
+                vec!["part", "complete"]
+            }
+        );
+        if !empty {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let result = runtime
+                .block_on(object_store::ObjectStoreExt::get(
+                    store.as_ref(),
+                    &object_store::path::Path::from("object"),
+                ))
+                .unwrap();
+            assert_eq!(runtime.block_on(result.bytes()).unwrap().as_ref(), b"data");
+        }
+    }
+}
+
+#[test]
+fn test_gcs_writer_cancelled_context_still_aborts() {
+    use objstore::gcs_extra::{GCS_MINIMUM_CHUNK_SIZE, GCSWriter};
+    use objstore::objectio::Writer;
+    let ctx = Context::default();
+    let mut writer = GCSWriter::new(
+        ctx.clone(),
+        Arc::new(InMemory::new()),
+        "object",
+        GCS_MINIMUM_CHUNK_SIZE,
+        2,
+    )
+    .unwrap();
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    writer.wrap_upload_for_test(|inner| {
+        Box::new(FaultingGCSUpload {
+            inner,
+            events: events.clone(),
+            fail_part: false,
+            fail_complete: false,
+            fail_abort: false,
+        })
+    });
+    ctx.cancel();
+    assert!(writer.write(&ctx, b"data").is_err());
+    assert!(
+        writer
+            .close(&ctx)
+            .unwrap_err()
+            .to_string()
+            .contains("operation cancelled")
+    );
+    drop(writer);
+    assert_eq!(*events.lock().unwrap(), vec!["abort"]);
+}
