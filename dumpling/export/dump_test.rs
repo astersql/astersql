@@ -1186,3 +1186,213 @@ fn column_projection_unchanged_writable_columns_and_no_schemas_skip_schema_analy
         );
     }
 }
+
+#[test]
+fn column_projection_invisible_columns_require_explicit_fields() {
+    let mut conf = projection_config(&[]);
+    let conn = Conn::new();
+    seed_writable_columns(&conn, &[("id", ""), ("inv", "invisible")]);
+    conn.seed_rows(
+        "SELECT `id`,`inv` FROM `db`.`t` LIMIT 1",
+        projection_rows(
+            &[("id", "INT"), ("inv", "INT")],
+            vec![vec![Some(b"1".to_vec()), Some(b"2".to_vec())]],
+        ),
+    );
+    let mut base = newBaseConn(conn, false, None);
+    prepareColumnProjection(&tcontext::Background(), &mut conf, &mut base).unwrap();
+    assert_eq!(
+        conf.columnProjection[&("db".into(), "t".into())].selectField,
+        "`id`,`inv`"
+    );
+}
+
+#[test]
+fn column_projection_generated_columns_modes_and_invisible_attributes() {
+    for (stored, columns, names, expected) in [
+        (
+            false,
+            vec![
+                ("id", ""),
+                ("stored", "STORED GENERATED"),
+                ("virtual", "VIRTUAL GENERATED"),
+                ("invisible", "STORED GENERATED INVISIBLE"),
+            ],
+            vec!["id"],
+            "`id`",
+        ),
+        (
+            true,
+            vec![
+                ("id", ""),
+                ("stored", "stored generated"),
+                ("virtual", "virtual generated"),
+                ("invisible", "stored generated invisible"),
+            ],
+            vec!["id", "stored", "invisible"],
+            "`id`,`stored`,`invisible`",
+        ),
+        (
+            true,
+            vec![("id", ""), ("stored", "STORED GENERATED")],
+            vec!["id", "stored"],
+            "*",
+        ),
+        (
+            false,
+            vec![("id", ""), ("inv", "INVISIBLE")],
+            vec!["id", "inv"],
+            "`id`,`inv`",
+        ),
+        (
+            true,
+            vec![("id", ""), ("inv", "STORED GENERATED INVISIBLE")],
+            vec!["id", "inv"],
+            "`id`,`inv`",
+        ),
+    ] {
+        let mut conf = projection_config(&[]);
+        if stored {
+            conf.IncludeGeneratedColumns = GeneratedColumnsStored.into();
+        }
+        let conn = Conn::new();
+        seed_writable_columns(&conn, &columns);
+        let fields =
+            columnNamesToSelectFields(&names.iter().map(|n| n.to_string()).collect::<Vec<_>>())
+                .join(",");
+        let types = names.iter().map(|n| (*n, "INT")).collect::<Vec<_>>();
+        conn.seed_rows(
+            &format!("SELECT {fields} FROM `db`.`t` LIMIT 1"),
+            projection_rows(
+                &types,
+                vec![names.iter().map(|_| Some(b"1".to_vec())).collect()],
+            ),
+        );
+        let mut base = newBaseConn(conn, false, None);
+        prepareColumnProjection(&tcontext::Background(), &mut conf, &mut base).unwrap();
+        let projection = &conf.columnProjection[&("db".into(), "t".into())];
+        assert_eq!(projection.selectField, expected);
+        assert_eq!(
+            projection
+                .sourceTypes
+                .iter()
+                .map(|c| c.Name())
+                .collect::<Vec<_>>(),
+            names
+        );
+        assert_eq!(
+            projection
+                .selectedTypes
+                .iter()
+                .map(|c| c.Name())
+                .collect::<Vec<_>>(),
+            names
+        );
+    }
+}
+
+#[test]
+fn generated_columns_csv_data_changes_while_schema_is_unchanged() {
+    let schema =
+        "CREATE TABLE t(id INT PRIMARY KEY,a INT,s INT AS(a*2) STORED,v INT AS(a+1) VIRTUAL)";
+    let mut schemas = Vec::new();
+    for (mode, where_filter, expected) in [
+        (
+            GeneratedColumnsNone,
+            false,
+            "\"id\",\"a\"\r\n1,10\r\n2,20\r\n",
+        ),
+        ("", true, "\"id\",\"a\"\r\n2,20\r\n"),
+        (GeneratedColumnsNone, true, "\"id\",\"a\"\r\n2,20\r\n"),
+        (
+            GeneratedColumnsStored,
+            false,
+            "\"id\",\"a\",\"s\"\r\n1,10,20\r\n2,20,40\r\n",
+        ),
+    ] {
+        let mut conf = projection_config(&[]);
+        conf.NoSchemas = false;
+        conf.FileType = FileFormatCSVString.into();
+        if !mode.is_empty() {
+            conf.IncludeGeneratedColumns = mode.into();
+        }
+        if where_filter {
+            conf.Where = "a > 10".into();
+        }
+        validateIncludeGeneratedColumns(&mut conf).unwrap();
+        conf.ServerInfo.ServerType = ServerType::ServerTypeMySQL;
+        let conn = Conn::new();
+        seed_writable_columns(
+            &conn,
+            &[
+                ("id", ""),
+                ("a", ""),
+                ("s", "STORED GENERATED"),
+                ("v", "VIRTUAL GENERATED"),
+            ],
+        );
+        let names = if mode == GeneratedColumnsStored {
+            vec!["id", "a", "s"]
+        } else {
+            vec!["id", "a"]
+        };
+        let types = names.iter().map(|n| (*n, "INT")).collect::<Vec<_>>();
+        let mut data: Vec<Vec<Option<Vec<u8>>>> = [vec!["1", "10", "20"], vec!["2", "20", "40"]]
+            .iter()
+            .map(|r| {
+                r[..names.len()]
+                    .iter()
+                    .map(|v| Some(v.as_bytes().to_vec()))
+                    .collect()
+            })
+            .collect::<Vec<_>>();
+        let fields =
+            columnNamesToSelectFields(&names.iter().map(|n| n.to_string()).collect::<Vec<_>>())
+                .join(",");
+        conn.seed_rows(
+            &format!("SELECT {fields} FROM `db`.`t` LIMIT 1"),
+            projection_rows(&types, vec![data[0].clone()]),
+        );
+        conn.seed_query(
+            "SHOW CREATE TABLE `db`.`t`",
+            vec!["Create Table".into()],
+            vec![vec![Some(schema.as_bytes().to_vec())]],
+        );
+        let ctx = tcontext::Background();
+        let mut base = newBaseConn(conn.clone(), false, None);
+        prepareColumnProjection(&ctx, &mut conf, &mut base).unwrap();
+        let meta = dumpTableMeta(
+            &ctx,
+            &conf,
+            &mut base,
+            "db",
+            &projection_table(TableType::TableTypeBase),
+        )
+        .unwrap();
+        assert_eq!(meta.ShowCreateTable(), schema);
+        let where_clause = if where_filter { " WHERE a > 10 " } else { "" };
+        let query = format!(
+            "SELECT {} FROM `db`.`t`{where_clause}",
+            meta.SelectedField()
+        );
+        if where_filter {
+            data.remove(0);
+        }
+        conn.seed_rows(&query, projection_rows(&types, data));
+        let mut ir = SelectAllFromTable(&conf, meta.as_ref(), "", "");
+        let storage = Arc::new(MemStorage::new("generated-columns-csv"));
+        let mut writer = NewWriter(ctx, 0, Arc::new(conf), conn, storage.clone(), None);
+        writer
+            .WriteTableData(meta.as_ref(), ir.as_mut(), 0)
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(storage.ReadFile("db.t.000000000.csv").unwrap()).unwrap(),
+            expected
+        );
+        writer
+            .WriteTableMeta("db", "t", meta.ShowCreateTable())
+            .unwrap();
+        schemas.push(storage.ReadFile("db.t-schema.sql").unwrap());
+    }
+    assert!(schemas.iter().all(|schema| schema == &schemas[0]));
+}

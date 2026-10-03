@@ -575,3 +575,52 @@ fn column_filter_decode_precedes_compile_and_unknown_keys_keep_input_order() {
         error.msg
     );
 }
+
+#[test]
+fn generated_columns_flags_parse_modes_and_reject_reserved_values() {
+    assert_eq!(
+        DefaultConfig().IncludeGeneratedColumns,
+        GeneratedColumnsNone
+    );
+    assert_eq!(
+        parse_config_from_args_for_test(&[]).IncludeGeneratedColumns,
+        GeneratedColumnsNone
+    );
+    for value in ["none", "NONE", "", "  none  "] {
+        assert_eq!(
+            parse_config_from_args_for_test(&["--include-generated-columns", value])
+                .IncludeGeneratedColumns,
+            GeneratedColumnsNone
+        );
+    }
+    let conf = parse_config_from_args_for_test(&[
+        "--include-generated-columns",
+        " Stored ",
+        "--filetype",
+        "csv",
+    ]);
+    assert_eq!(conf.IncludeGeneratedColumns, GeneratedColumnsStored);
+    assert_eq!(
+        conf.clone_for_mutate().IncludeGeneratedColumns,
+        GeneratedColumnsStored
+    );
+    assert!(!conf.NoSchemas);
+    for value in ["virtual", "all"] {
+        assert_eq!(
+            parse_config_from_args_for_test_with_err(&["--include-generated-columns", value])
+                .err()
+                .unwrap()
+                .msg,
+            format!(
+                "--include-generated-columns={value} is not supported yet, supported values: none, stored"
+            )
+        );
+    }
+    assert_eq!(
+        parse_config_from_args_for_test_with_err(&["--include-generated-columns=true"])
+            .err()
+            .unwrap()
+            .msg,
+        "invalid --include-generated-columns value 'true', supported values: none, stored"
+    );
+}

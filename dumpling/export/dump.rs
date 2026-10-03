@@ -33,7 +33,12 @@ pub struct Dumper {
     pub pd_client: Option<PdClient>,
 }
 
-pub fn NewDumper(conf: Config) -> Result<Dumper> {
+pub fn NewDumper(mut conf: Config) -> Result<Dumper> {
+    // Resolve the format before checking generated-column options and opening resources.
+    buildTLSConfig(&mut conf)?;
+    validateSpecifiedSQL(&conf)?;
+    adjustFileFormat(&mut conf)?;
+    validateIncludeGeneratedColumns(&mut conf)?;
     // Dumper 自己创建一份可取消上下文，确保整个导出会话有统一的停止入口。
     let (tctx, cancel) = tcontext::Background().WithCancel();
     let factory = conf.PromFactory.clone();
@@ -1005,18 +1010,25 @@ pub fn buildColumnProjection(
     if table.Type != TableType::TableTypeBase {
         return Ok(columnProjection::default());
     }
-    let (source, generated) = getWritableColumnNames(tctx, conn, database, &table.Name)?;
+    let (source, need_explicit_fields) = getWritableColumnNames(
+        tctx,
+        conn,
+        database,
+        &table.Name,
+        conf.includeStoredGeneratedColumns(),
+    )?;
     let (selected, indexes) = conf
         .columnFilter
         .applyToColumns(database, &table.Name, &source)?;
     if selected.is_empty() {
         return Ok(columnProjection::default());
     }
-    let selectField = if !generated && source.len() == selected.len() && !conf.CompleteInsert {
-        "*".to_owned()
-    } else {
-        columnNamesToSelectFields(&selected).join(",")
-    };
+    let selectField =
+        if !need_explicit_fields && source.len() == selected.len() && !conf.CompleteInsert {
+            "*".to_owned()
+        } else {
+            columnNamesToSelectFields(&selected).join(",")
+        };
     let sourceTypes = getColumnTypes(
         tctx,
         conn,

@@ -296,3 +296,118 @@ fn test_validate_resolve_auto_consistency() {
     d.conf = std::sync::Arc::new(conf);
     assert!(validateResolveAutoConsistency(&mut d).is_ok());
 }
+
+#[test]
+fn generated_columns_validation_preserves_defaults_and_error_order() {
+    for mode in ["", GeneratedColumnsNone] {
+        let mut conf = DefaultConfig();
+        conf.IncludeGeneratedColumns = mode.into();
+        conf.FileType = FileFormatSQLTextString.into();
+        conf.NoData = true;
+        conf.SQL = "select 1".into();
+        conf.Where = "a > 0".into();
+        conf.columnFilter =
+            parseColumnFilterArgs(&[r#"{matcher=["db.t"],columns=["*"]}"#.into()], false).unwrap();
+        validateIncludeGeneratedColumns(&mut conf).unwrap();
+        assert_eq!(conf.IncludeGeneratedColumns, GeneratedColumnsNone);
+    }
+    for format in [FileFormatCSVString, FileFormatParquetString] {
+        let mut conf = DefaultConfig();
+        conf.IncludeGeneratedColumns = GeneratedColumnsStored.into();
+        conf.FileType = format.into();
+        validateIncludeGeneratedColumns(&mut conf).unwrap();
+    }
+    for (option, expected) in [
+        (
+            "format",
+            "--include-generated-columns=stored is only supported with --filetype csv or parquet",
+        ),
+        (
+            "sql",
+            "can't specify both --include-generated-columns=stored and --sql at the same time",
+        ),
+        (
+            "where",
+            "can't specify both --include-generated-columns=stored and --where at the same time",
+        ),
+        (
+            "filter",
+            "can't specify --include-generated-columns=stored with --column-filter or --column-filter-file",
+        ),
+        (
+            "no-data",
+            "can't specify both --include-generated-columns=stored and --no-data at the same time",
+        ),
+    ] {
+        let mut conf = DefaultConfig();
+        conf.IncludeGeneratedColumns = GeneratedColumnsStored.into();
+        conf.FileType = FileFormatCSVString.into();
+        match option {
+            "format" => conf.FileType = FileFormatSQLTextString.into(),
+            "sql" => {
+                conf.SQL = "select * from t".into();
+                conf.Where = "a > 0".into();
+                conf.NoData = true;
+            }
+            "where" => {
+                conf.Where = "a >= 0".into();
+                conf.NoData = true;
+            }
+            "filter" => {
+                conf.columnFilter =
+                    parseColumnFilterArgs(&[r#"{matcher=["db.t"],columns=["*"]}"#.into()], false)
+                        .unwrap();
+                conf.NoData = true;
+            }
+            "no-data" => conf.NoData = true,
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            validateIncludeGeneratedColumns(&mut conf).unwrap_err().msg,
+            expected
+        );
+    }
+    for (mode, expected) in [
+        (
+            GeneratedColumnsVirtual,
+            "--include-generated-columns=virtual is not supported yet, supported values: none, stored",
+        ),
+        (
+            GeneratedColumnsAll,
+            "--include-generated-columns=all is not supported yet, supported values: none, stored",
+        ),
+        (
+            "bad",
+            "invalid --include-generated-columns value 'bad', supported values: none, stored",
+        ),
+    ] {
+        let mut conf = DefaultConfig();
+        conf.IncludeGeneratedColumns = mode.into();
+        assert_eq!(
+            validateIncludeGeneratedColumns(&mut conf).unwrap_err().msg,
+            expected
+        );
+    }
+}
+
+#[test]
+fn generated_columns_dumper_validates_before_opening_resources() {
+    for (format, sql, expected) in [
+        (
+            "",
+            "",
+            "--include-generated-columns=stored is only supported with --filetype csv or parquet",
+        ),
+        (
+            "CSV",
+            "select * from t",
+            "can't specify both --include-generated-columns=stored and --sql at the same time",
+        ),
+    ] {
+        let mut conf = DefaultConfig();
+        conf.IncludeGeneratedColumns = GeneratedColumnsStored.into();
+        conf.FileType = format.into();
+        conf.SQL = sql.into();
+        assert_eq!(NewDumper(conf).err().unwrap().msg, expected);
+    }
+}

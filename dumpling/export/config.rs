@@ -91,6 +91,8 @@ pub struct Config {
     pub NoSchemas: bool,
     pub NoData: bool,
     pub CompleteInsert: bool,
+    /// Generated column values included in data files; schema output is unchanged.
+    pub IncludeGeneratedColumns: GeneratedColumnsMode,
     pub TransactionalConsistency: bool,
     pub EscapeBackslash: bool,
     pub DumpEmptyDatabase: bool,
@@ -245,6 +247,7 @@ pub fn DefaultConfig() -> Config {
         ParquetRowGroupSize: DefaultRowGroupMemoryLimitBytes,
         AllowCleartextPasswords: false,
         CompleteInsert: false,
+        IncludeGeneratedColumns: GeneratedColumnsNone.into(),
         CompressType: CompressType::NoCompression,
         Security: Security::default(),
         LogLevel: String::new(),
@@ -315,6 +318,7 @@ impl Config {
             NoSchemas: self.NoSchemas,
             NoData: self.NoData,
             CompleteInsert: self.CompleteInsert,
+            IncludeGeneratedColumns: self.IncludeGeneratedColumns.clone(),
             TransactionalConsistency: self.TransactionalConsistency,
             EscapeBackslash: self.EscapeBackslash,
             DumpEmptyDatabase: self.DumpEmptyDatabase,
@@ -776,6 +780,7 @@ impl Config {
         flags.String("csv-line-terminator", &self.CsvLineTerminator, "");
         flags.String("output-filename-template", "", "");
         flags.Bool("complete-insert", false, "");
+        flags.String("include-generated-columns", GeneratedColumnsNone, "Which generated column values to include in data files: none, stored. Only supported with --filetype csv or parquet, and can't be used with --sql, --where, --column-filter, --column-filter-file or --no-data. Schema files are unchanged, so the output may not be importable back into TiDB/MySQL as-is");
         // 方言、分区和集群相关参数。
         flags.String("csv-output-dialect", "", "");
         flags.StringSlice("partitions", &[], "");
@@ -840,6 +845,8 @@ impl Config {
         self.CsvDelimiter = flags.GetString("csv-delimiter");
         self.CsvLineTerminator = flags.GetString("csv-line-terminator");
         self.CompleteInsert = flags.GetBool("complete-insert");
+        self.IncludeGeneratedColumns =
+            parseGeneratedColumnsMode(&flags.GetString("include-generated-columns"))?;
         self.TransactionalConsistency = flags.GetBool("transactional-consistency");
         self.Partitions = normalizePartitions(&flags.GetStringSlice("partitions"));
         // 基础约束优先在这里拦截，避免后续逻辑建立在明显非法值上。
@@ -913,5 +920,71 @@ impl Config {
         self.ClusterSSLKey = flags.GetString("cluster-tls-key");
         // 简化版当前不在这里解析 read-timeout / params / TLS bytes 等更深层配置。
         Ok(())
+    }
+}
+
+/// Value of --include-generated-columns, kept as a string to validate programmatic configurations.
+pub type GeneratedColumnsMode = String;
+pub const GeneratedColumnsNone: &str = "none";
+pub const GeneratedColumnsStored: &str = "stored";
+pub const GeneratedColumnsVirtual: &str = "virtual";
+pub const GeneratedColumnsAll: &str = "all";
+
+pub fn parseGeneratedColumnsMode(value: &str) -> Result<GeneratedColumnsMode> {
+    let mode = value.trim().to_lowercase();
+    match mode.as_str() {
+        "" | GeneratedColumnsNone => Ok(GeneratedColumnsNone.into()),
+        GeneratedColumnsStored => Ok(mode),
+        GeneratedColumnsVirtual | GeneratedColumnsAll => Err(errors_new(format!(
+            "--include-generated-columns={mode} is not supported yet, supported values: none, stored"
+        ))),
+        _ => Err(errors_new(format!(
+            "invalid --include-generated-columns value '{value}', supported values: none, stored"
+        ))),
+    }
+}
+
+/// Run after adjustFileFormat resolves the output format.
+pub fn validateIncludeGeneratedColumns(conf: &mut Config) -> Result<()> {
+    conf.IncludeGeneratedColumns = parseGeneratedColumnsMode(&conf.IncludeGeneratedColumns)?;
+    if conf.IncludeGeneratedColumns == GeneratedColumnsNone {
+        return Ok(());
+    }
+    let option = format!(
+        "--include-generated-columns={}",
+        conf.IncludeGeneratedColumns
+    );
+    if !conf.SQL.is_empty() {
+        return Err(errors_new(format!(
+            "can't specify both {option} and --sql at the same time"
+        )));
+    }
+    if !conf.Where.is_empty() {
+        // The chunk splitter cannot cover NULL stored-generated chunk keys with --where.
+        return Err(errors_new(format!(
+            "can't specify both {option} and --where at the same time"
+        )));
+    }
+    if !conf.columnFilter.Filters.is_empty() {
+        return Err(errors_new(format!(
+            "can't specify {option} with --column-filter or --column-filter-file"
+        )));
+    }
+    if conf.NoData {
+        return Err(errors_new(format!(
+            "can't specify both {option} and --no-data at the same time"
+        )));
+    }
+    if conf.FileType == FileFormatSQLTextString {
+        return Err(errors_new(format!(
+            "{option} is only supported with --filetype csv or parquet"
+        )));
+    }
+    Ok(())
+}
+
+impl Config {
+    pub fn includeStoredGeneratedColumns(&self) -> bool {
+        self.IncludeGeneratedColumns == GeneratedColumnsStored
     }
 }

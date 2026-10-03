@@ -981,11 +981,13 @@ pub fn createConnWithConsistency(db: &DB, repeatable_read: bool) -> Result<Conn>
     Ok(conn)
 }
 
+/// Values to dump and whether SELECT * would omit or include unwanted columns.
 pub fn getWritableColumnNames(
     tctx: &tcontext::Context,
     db: &mut BaseConn,
     db_name: &str,
     table_name: &str,
+    include_stored_generated: bool,
 ) -> Result<(Vec<String>, bool)> {
     let query = format!(
         "SHOW COLUMNS FROM `{}`.`{}`",
@@ -993,16 +995,22 @@ pub fn getWritableColumnNames(
         escapeString(table_name)
     );
     let results = db.QuerySQLWithColumns(tctx, &["FIELD", "EXTRA"], &query)?;
-    let mut names = Vec::new();
-    let mut generated = false;
+    let mut names = Vec::with_capacity(results.len());
+    let mut need_explicit_fields = false;
     for row in results {
-        if row[1] == "STORED GENERATED" || row[1] == "VIRTUAL GENERATED" {
-            generated = true;
+        let extra = row[1].to_uppercase();
+        if extra.contains("VIRTUAL GENERATED")
+            || (extra.contains("STORED GENERATED") && !include_stored_generated)
+        {
+            need_explicit_fields = true;
             continue;
+        }
+        if extra.contains("INVISIBLE") {
+            need_explicit_fields = true;
         }
         names.push(row[0].clone());
     }
-    Ok((names, generated))
+    Ok((names, need_explicit_fields))
 }
 
 pub fn buildSelectField(
@@ -1012,7 +1020,7 @@ pub fn buildSelectField(
     table_name: &str,
     complete_insert: bool,
 ) -> Result<(String, i32)> {
-    let (names, generated) = getWritableColumnNames(tctx, db, db_name, table_name)?;
+    let (names, generated) = getWritableColumnNames(tctx, db, db_name, table_name, false)?;
     Ok((
         if complete_insert || generated {
             columnNamesToSelectFields(&names).join(",")
