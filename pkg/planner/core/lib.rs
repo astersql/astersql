@@ -110,9 +110,6 @@ pub mod rule_join_reorder_projection_inline;
 mod rule_join_reorder_projection_inline_test;
 #[cfg(test)]
 mod rule_join_reorder_test;
-pub mod rule_outer_to_inner_join;
-#[cfg(test)]
-mod rule_outer_to_inner_join_test;
 pub mod rule_predicate_push_down;
 #[cfg(test)]
 mod rule_predicate_push_down_test;

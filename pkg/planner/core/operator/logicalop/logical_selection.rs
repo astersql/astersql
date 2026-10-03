@@ -466,12 +466,6 @@ impl LogicalSelection {
         fds
     }
 
-    /// 结合本节点条件尝试将外连接转为内连接。
-    pub fn ConvertOuterToInnerJoin(&mut self, mut predicates: Vec<Expression>) {
-        predicates.extend(self.Conditions.clone());
-        self.BaseLogicalPlan.ConvertOuterToInnerJoin(&predicates);
-    }
-
     /// 识别 `row_number() ... WHERE rn <= N` 模式，返回 N。
     fn windowIsTopN(&self) -> Option<u64> {
         let window = self
@@ -578,12 +572,6 @@ impl LogicalPlan for LogicalSelection {
         predicates: Vec<Expression>,
     ) -> Result<(Vec<Expression>, Option<LogicalPlanRef>)> {
         Self::PredicatePushDownRoot(self, predicates)
-    }
-    fn ConvertOuterToInner(&mut self, mut predicates: Vec<Expression>) {
-        predicates.extend(self.Conditions.iter().cloned());
-        for child in self.Children_mut() {
-            child.ConvertOuterToInner(predicates.iter().cloned().collect());
-        }
     }
     fn PredicateSimplification(&mut self) {
         Self::PredicateSimplification(self)

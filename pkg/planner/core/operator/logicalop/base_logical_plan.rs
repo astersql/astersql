@@ -192,12 +192,6 @@ pub trait LogicalPlan: Any {
     fn BuildKeyInfo(&mut self) {
         self.base_mut().BuildKeyInfo();
     }
-    /// 在谓词保证下尝试将外连接转为内连接。
-    fn ConvertOuterToInner(&mut self, predicates: Vec<Expression>) {
-        for child in self.Children_mut() {
-            child.ConvertOuterToInner(predicates.iter().cloned().collect());
-        }
-    }
     /// 谓词化简，默认递归子节点。
     fn PredicateSimplification(&mut self) {
         for child in self.Children_mut() {
@@ -508,13 +502,6 @@ impl BaseLogicalPlan {
     /// 获取包装后的逻辑计划（此处即自身）。
     pub fn GetWrappedLogicalPlan(&self) -> &BaseLogicalPlan {
         self
-    }
-
-    /// 递归尝试外连接转内连接。
-    pub fn ConvertOuterToInnerJoin(&mut self, predicates: &[Expression]) {
-        for child in &mut self.children {
-            child.base_mut().ConvertOuterToInnerJoin(predicates);
-        }
     }
 
     /// 子计划只读切片。

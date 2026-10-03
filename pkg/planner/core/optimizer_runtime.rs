@@ -276,7 +276,6 @@ pub enum LogicalRule {
     MaxMinEliminate,
     ConstantPropagation,
     FullTextIndexResolveWhere,
-    ConvertOuterToInnerJoin,
     PredicatePushDown,
     JoinKeyTypeCast,
     EliminateOuterJoin,
@@ -316,7 +315,6 @@ pub const LOGICAL_RULES: &[LogicalRule] = &[
     LogicalRule::MaxMinEliminate,
     LogicalRule::ConstantPropagation,
     LogicalRule::FullTextIndexResolveWhere,
-    LogicalRule::ConvertOuterToInnerJoin,
     LogicalRule::PredicatePushDown,
     LogicalRule::JoinKeyTypeCast,
     LogicalRule::EliminateOuterJoin,
@@ -358,9 +356,8 @@ pub fn InstallOptimizeAstNode(
     OptimizeAstNodeNoCache.set(no_cache)
 }
 
-/// Go `optRuleFlags` order. Rule masks are persisted by bit value, so this
-/// order must remain aligned with optimizer.go.
-/// 对应 Go `optRuleFlags`；位值持久化，顺序须与规则列表对齐。
+/// Go `optRuleFlags` order. Masks are process-local, and this mapping must
+/// stay aligned with the execution order in `LOGICAL_RULES`.
 pub const LOGICAL_RULE_FLAGS: &[u64] = &[
     rule::FLAG_GC_SUBSTITUTE,
     rule::FLAG_PRUNE_COLUMNS,
@@ -374,7 +371,6 @@ pub const LOGICAL_RULE_FLAGS: &[u64] = &[
     rule::FLAG_MAX_MIN_ELIMINATE,
     rule::FLAG_CONSTANT_PROPAGATION,
     rule::FLAG_FULLTEXT_INDEX_RESOLVE_WHERE,
-    rule::FLAG_CONVERT_OUTER_TO_INNER_JOIN,
     rule::FLAG_PREDICATE_PUSH_DOWN,
     rule::FLAG_JOIN_KEY_TYPE_CAST,
     rule::FLAG_ELIMINATE_OUTER_JOIN,
@@ -442,7 +438,6 @@ fn logical_optimize_in_place(
                 eliminate_outer_join_descendants(plan, &used, None);
             }
             LogicalRule::EliminateProjection => eliminate_identity_projections(plan),
-            LogicalRule::ConvertOuterToInnerJoin => plan.ConvertOuterToInner(Vec::new()),
             LogicalRule::FullTextIndexResolveWhere => full_text_resolve_where(plan)?,
             LogicalRule::PredicatePushDown => {
                 let residual = logicalop::PredicatePushDownPlan(plan, Vec::new())

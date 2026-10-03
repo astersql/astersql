@@ -1,5 +1,5 @@
-// Copyright 2024 PingCAP, Inc.
 // Copyright 2026 AsterSQL.
+// Copyright 2024 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,11 +16,11 @@
 // 逻辑优化规则位掩码（bit flags）定义。
 //
 // 每个 `FLAG_*` 对应一条逻辑改写规则在优化器流水线中的开关位。
-// 位值按追加顺序分配，会持久化到优化器配置与调试信息，不可重排。
+// 位值仅用于进程内，不持久化或在线路上传输；新规则在末尾追加以避免无谓重编号。
 
 // 优化规则位掩码常量。
 
-// 规则值必须保持追加顺序；位值会被持久化到优化器配置和调试信息中。
+// 执行顺序由优化器规则列表及显式位映射定义。
 /// 生成列（Generated Column）表达式替换。
 pub const FLAG_GC_SUBSTITUTE: u64 = 1 << 0;
 /// 列裁剪：删除未引用列。
@@ -43,54 +43,52 @@ pub const FLAG_ELIMINATE_PROJECTION: u64 = 1 << 8;
 pub const FLAG_MAX_MIN_ELIMINATE: u64 = 1 << 9;
 /// 常量传播。
 pub const FLAG_CONSTANT_PROPAGATION: u64 = 1 << 10;
-/// 外连接转内连接。
-pub const FLAG_CONVERT_OUTER_TO_INNER_JOIN: u64 = 1 << 11;
 /// 谓词下推（Predicate Push Down）。
-pub const FLAG_PREDICATE_PUSH_DOWN: u64 = 1 << 12;
+pub const FLAG_PREDICATE_PUSH_DOWN: u64 = 1 << 11;
 /// Join 键类型强制转换。
-pub const FLAG_JOIN_KEY_TYPE_CAST: u64 = 1 << 13;
+pub const FLAG_JOIN_KEY_TYPE_CAST: u64 = 1 << 12;
 /// 消除外连接。
-pub const FLAG_ELIMINATE_OUTER_JOIN: u64 = 1 << 14;
+pub const FLAG_ELIMINATE_OUTER_JOIN: u64 = 1 << 13;
 /// 分区表处理器。
-pub const FLAG_PARTITION_PROCESSOR: u64 = 1 << 15;
+pub const FLAG_PARTITION_PROCESSOR: u64 = 1 << 14;
 /// 收集谓词列统计加载点。
-pub const FLAG_COLLECT_PREDICATE_COLUMNS_POINT: u64 = 1 << 16;
+pub const FLAG_COLLECT_PREDICATE_COLUMNS_POINT: u64 = 1 << 15;
 /// 聚合下推。
-pub const FLAG_PUSH_DOWN_AGG: u64 = 1 << 17;
+pub const FLAG_PUSH_DOWN_AGG: u64 = 1 << 16;
 /// 从窗口函数推导 TopN。
-pub const FLAG_DERIVE_TOP_N_FROM_WINDOW: u64 = 1 << 18;
+pub const FLAG_DERIVE_TOP_N_FROM_WINDOW: u64 = 1 << 17;
 /// 谓词简化。
-pub const FLAG_PREDICATE_SIMPLIFICATION: u64 = 1 << 19;
+pub const FLAG_PREDICATE_SIMPLIFICATION: u64 = 1 << 18;
 /// TopN 下推。
-pub const FLAG_PUSH_DOWN_TOP_N: u64 = 1 << 20;
+pub const FLAG_PUSH_DOWN_TOP_N: u64 = 1 << 19;
 /// 保序感知 Join 重排。
-pub const FLAG_ORDER_AWARE_JOIN_REORDER: u64 = 1 << 21;
+pub const FLAG_ORDER_AWARE_JOIN_REORDER: u64 = 1 << 20;
 /// 同步等待统计加载点。
-pub const FLAG_SYNC_WAIT_STATS_LOAD_POINT: u64 = 1 << 22;
+pub const FLAG_SYNC_WAIT_STATS_LOAD_POINT: u64 = 1 << 21;
 /// Join 重排。
-pub const FLAG_JOIN_REORDER: u64 = 1 << 23;
+pub const FLAG_JOIN_REORDER: u64 = 1 << 22;
 /// 外连接转半连接。
-pub const FLAG_OUTER_JOIN_TO_SEMI_JOIN: u64 = 1 << 24;
+pub const FLAG_OUTER_JOIN_TO_SEMI_JOIN: u64 = 1 << 23;
 /// 相关化（correlate）。
-pub const FLAG_CORRELATE: u64 = 1 << 25;
+pub const FLAG_CORRELATE: u64 = 1 << 24;
 /// 二次列裁剪。
-pub const FLAG_PRUNE_COLUMNS_AGAIN: u64 = 1 << 26;
+pub const FLAG_PRUNE_COLUMNS_AGAIN: u64 = 1 << 25;
 /// Sequence 下推。
-pub const FLAG_PUSH_DOWN_SEQUENCE: u64 = 1 << 27;
+pub const FLAG_PUSH_DOWN_SEQUENCE: u64 = 1 << 26;
 /// 消除 UnionAll 中的 Dual 项。
-pub const FLAG_ELIMINATE_UNION_ALL_DUAL_ITEM: u64 = 1 << 28;
+pub const FLAG_ELIMINATE_UNION_ALL_DUAL_ITEM: u64 = 1 << 27;
 /// 空 Selection 消除。
-pub const FLAG_EMPTY_SELECTION_ELIMINATOR: u64 = 1 << 29;
+pub const FLAG_EMPTY_SELECTION_ELIMINATOR: u64 = 1 << 28;
 /// 解析 Expand 算子。
-pub const FLAG_RESOLVE_EXPAND: u64 = 1 << 30;
+pub const FLAG_RESOLVE_EXPAND: u64 = 1 << 29;
 /// 全文索引：解析 WHERE。
-pub const FLAG_FULLTEXT_INDEX_RESOLVE_WHERE: u64 = 1 << 31;
+pub const FLAG_FULLTEXT_INDEX_RESOLVE_WHERE: u64 = 1 << 30;
 /// 全文索引：解析 TopN。
-pub const FLAG_FULLTEXT_INDEX_RESOLVE_TOP_N: u64 = 1 << 32;
+pub const FLAG_FULLTEXT_INDEX_RESOLVE_TOP_N: u64 = 1 << 31;
 /// 全文索引：解析 Projection。
-pub const FLAG_FULLTEXT_INDEX_RESOLVE_PROJECTION: u64 = 1 << 33;
+pub const FLAG_FULLTEXT_INDEX_RESOLVE_PROJECTION: u64 = 1 << 32;
 /// 全文索引：拒绝不支持路径。
-pub const FLAG_FULLTEXT_INDEX_RESOLVE_REJECT: u64 = 1 << 34;
+pub const FLAG_FULLTEXT_INDEX_RESOLVE_REJECT: u64 = 1 << 33;
 
 // setPredicatePushDownFlag 对应 Go 的按位或操作，保留其它规则位。
 /// 在已有规则位集合上开启谓词下推标志。

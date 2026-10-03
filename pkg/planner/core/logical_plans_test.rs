@@ -46,8 +46,7 @@ fn fixture_flags(name: &str) -> Option<u64> {
         }
         "TestPlanBuilder" => prune,
         "TestPredicatePushDown" => {
-            rule::FLAG_CONVERT_OUTER_TO_INNER_JOIN
-                | rule::FLAG_PREDICATE_PUSH_DOWN
+            rule::FLAG_PREDICATE_PUSH_DOWN
                 | rule::FLAG_DECORRELATE
                 | prune
                 | rule::FLAG_PREDICATE_SIMPLIFICATION
@@ -78,9 +77,7 @@ fn fixture_flags(name: &str) -> Option<u64> {
             rule::FLAG_PREDICATE_PUSH_DOWN | rule::FLAG_DECORRELATE | prune
         }
         "TestJoinReOrder" => rule::FLAG_PREDICATE_PUSH_DOWN | rule::FLAG_JOIN_REORDER,
-        "TestSimplifyOuterJoin" => {
-            rule::FLAG_PREDICATE_PUSH_DOWN | prune | rule::FLAG_CONVERT_OUTER_TO_INNER_JOIN
-        }
+        "TestSimplifyOuterJoin" => rule::FLAG_PREDICATE_PUSH_DOWN | prune,
         "TestTablePartition" => {
             rule::FLAG_PREDICATE_PUSH_DOWN | prune | rule::FLAG_PARTITION_PROCESSOR
         }

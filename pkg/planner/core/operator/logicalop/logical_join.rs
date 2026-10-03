@@ -1558,26 +1558,6 @@ impl LogicalPlan for LogicalJoin {
     ) -> Result<(Vec<Expression>, Option<LogicalPlanRef>)> {
         Self::PredicatePushDownRoot(self, predicates)
     }
-    fn ConvertOuterToInner(&mut self, predicates: Vec<Expression>) {
-        if let Some(context) = self.SCtx().cloned()
-            && let [left, right] = self.Children()
-        {
-            let reject_left = predicates.iter().any(|predicate| {
-                planner_util::IsNullRejected(context.as_ref(), left.Schema(), predicate.CloneExpr())
-            });
-            let reject_right = predicates.iter().any(|predicate| {
-                planner_util::IsNullRejected(
-                    context.as_ref(),
-                    right.Schema(),
-                    predicate.CloneExpr(),
-                )
-            });
-            LogicalJoin::ConvertOuterToInnerJoin(self, reject_left, reject_right);
-        }
-        for child in self.Children_mut() {
-            child.ConvertOuterToInner(predicates.iter().cloned().collect());
-        }
-    }
     fn PruneColumns(&mut self, columns: &[Column]) -> Result<()> {
         Self::PruneColumns(self, columns)
     }

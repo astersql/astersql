@@ -18,7 +18,7 @@
 // 当 WHERE/上层谓词能证明内表侧在 null-extended（外连接未匹配时补 NULL）行上
 // 必然被拒绝（null-reject）时，可将 LEFT/RIGHT OUTER JOIN 安全改写为 INNER JOIN，
 // 以便后续下推与重排。本文件保留 Go suite 与多个 issue 回归原文，并提供可运行的
-// null-reject 最小单测。
+// null-reject SQL 回归。
 
 // outer join 转 inner join 规则、null-reject 推导、lateral selection 和特定 issue 回归。
 
@@ -285,44 +285,6 @@ FROM t0
     });
 }
 "########;
-
-/// 内表侧存在 null-reject 谓词时，LeftOuter 应被改写为 Inner。
-#[test]
-fn null_rejected_inner_predicate_converts_left_outer_join() {
-    use astersql_planner_core::rule_join_reorder::{JoinNode, JoinPlan};
-    use astersql_planner_core::rule_outer_to_inner_join::ConvertOuterToInnerJoin;
-    use astersql_planner_core::task::JoinType;
-    // 构造 LeftOuterJoin，再在其上挂 Selection，条件引用内表列且能拒绝 NULL。
-    let join = crate::support::join(
-        3,
-        JoinType::LeftOuter,
-        crate::support::leaf(1, "outer", vec![1], 10.0),
-        crate::support::leaf(2, "inner", vec![2], 10.0),
-        Some((1, 2)),
-    );
-    let selection = JoinPlan {
-        id: 4,
-        node: JoinNode::Selection {
-            conditions: vec![crate::support::expr("gt_zero", Some(2))],
-            child: Box::new(join),
-        },
-        schema: vec![1, 2],
-        row_count: 10.0,
-    };
-    let (result, changed) = ConvertOuterToInnerJoin.Optimize(selection).unwrap();
-    assert!(
-        !changed,
-        "Go ConvertOuterToInnerJoin reports planChanged=false"
-    );
-    // Selection 根保留，其子 Join 类型应变为 Inner。
-    match result.node {
-        JoinNode::Selection { child, .. } => match child.node {
-            JoinNode::Join { join_type, .. } => assert_eq!(join_type, JoinType::Inner),
-            _ => panic!("selection child must remain join"),
-        },
-        _ => panic!("selection must remain root"),
-    }
-}
 
 #[test]
 fn outer2inner_fixture_inventory_matches_go() {

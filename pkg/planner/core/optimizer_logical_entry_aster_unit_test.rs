@@ -1359,6 +1359,8 @@ fn logical_optimizer_preserves_operator_structure_and_replaces_nested_roots() {
 #[test]
 /// 规则应按 Go 顺序派发，且 flag 位彼此隔离。
 fn logical_optimizer_dispatches_rules_in_go_order_and_isolates_flags() {
+    assert_eq!(rule_dependency::FLAG_PREDICATE_PUSH_DOWN, 1 << 11);
+    assert_eq!(rule_dependency::FLAG_FULLTEXT_INDEX_RESOLVE_REJECT, 1 << 33);
     let (_, without_ppd) = logical_optimize_for_test("select a from t where a > 1", 0)
         .expect("unoptimized logical plan");
     assert!(
@@ -1393,19 +1395,42 @@ fn logical_optimizer_dispatches_rules_in_go_order_and_isolates_flags() {
     let (_, without_convert) = logical_optimize_for_test(sql, 0).expect("outer join plan");
     assert_eq!(
         find_join(without_convert.as_ref())
-            .expect("outer join without convert flag")
+            .expect("outer join without ppd")
             .JoinType,
         logicalop::JoinType::LeftOuterJoin
     );
     let (_, with_convert) =
-        logical_optimize_for_test(sql, rule_dependency::FLAG_CONVERT_OUTER_TO_INNER_JOIN)
+        logical_optimize_for_test(sql, rule_dependency::FLAG_PREDICATE_PUSH_DOWN)
             .expect("converted join plan");
     assert_eq!(
         find_join(with_convert.as_ref())
-            .expect("join with convert flag")
+            .expect("join with ppd")
             .JoinType,
         logicalop::JoinType::InnerJoin
     );
+
+    for (sql, expected) in [
+        (
+            "select t.a from t right join t t2 on t.a = t2.a where t.b > 1",
+            logicalop::JoinType::InnerJoin,
+        ),
+        (
+            "select t.a from t left join t t2 on t.a = t2.a where t2.b is null",
+            logicalop::JoinType::LeftOuterJoin,
+        ),
+        (
+            "select t.a from t left join t t2 on t.a = t2.a where t.b > 1",
+            logicalop::JoinType::LeftOuterJoin,
+        ),
+    ] {
+        let (_, plan) = logical_optimize_for_test(sql, rule_dependency::FLAG_PREDICATE_PUSH_DOWN)
+            .expect("predicate pushdown outer-join plan");
+        assert_eq!(
+            find_join(plan.as_ref()).expect("join").JoinType,
+            expected,
+            "{sql}"
+        );
+    }
 
     super::optimizer_runtime::StartLogicalRuleTrace();
     let (_, ordered) = logical_optimize_for_test(

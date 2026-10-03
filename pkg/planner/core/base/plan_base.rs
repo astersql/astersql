@@ -332,11 +332,6 @@ pub trait LogicalPlan: Plan + cascades_base::HashEquals {
     fn extract_fd(&self) -> fd::FDSet;
     /// 返回具体算子内部的 baseLogicalPlan 抽象。
     fn get_base_logical_plan(&self) -> &dyn LogicalPlan;
-    /// 当谓词过滤掉外连接补空行时，把外连接转换为内连接。
-    fn convert_outer_to_inner_join(
-        &mut self,
-        predicates: &[expression::ExprBox],
-    ) -> Box<dyn LogicalPlan>;
     /// 保存子树计划 ID 的 hash64。
     fn set_plan_ids_hash(&mut self, hash: u64);
     /// 读取子树计划 ID 的 hash64。

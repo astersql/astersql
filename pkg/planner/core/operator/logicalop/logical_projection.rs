@@ -439,14 +439,6 @@ impl LogicalProjection {
         dependencies
     }
 
-    /// 可下推谓词参与外连接转内连接。
-    pub fn ConvertOuterToInnerJoin(&mut self, predicates: Vec<Expression>) {
-        let (pushable, _) = breakDownPredicates(self, predicates);
-        self.LogicalSchemaProducer
-            .BaseLogicalPlan
-            .ConvertOuterToInnerJoin(&pushable);
-    }
-
     /// 收集投影表达式引用的全部列。
     pub fn GetUsedCols(&self) -> Vec<Column> {
         self.Exprs
@@ -658,12 +650,6 @@ impl LogicalPlan for LogicalProjection {
     }
     fn PredicatePushDown(&mut self, predicates: Vec<Expression>) -> Result<Vec<Expression>> {
         LogicalProjection::PredicatePushDown(self, predicates)
-    }
-    fn ConvertOuterToInner(&mut self, predicates: Vec<Expression>) {
-        let (pushable, _) = breakDownPredicates(self, predicates);
-        for child in self.Children_mut() {
-            child.ConvertOuterToInner(pushable.iter().cloned().collect());
-        }
     }
     fn PruneColumns(&mut self, parent_used_cols: &[Column]) -> Result<()> {
         LogicalProjection::PruneColumns(self, parent_used_cols)
