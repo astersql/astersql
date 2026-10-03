@@ -131,6 +131,8 @@ pub struct MemoryStorage {
     /// path -> 完整对象内容；写覆盖、读克隆。
     files: Arc<RwLock<BTreeMap<String, Vec<u8>>>>,
     #[cfg(test)]
+    read_gate: Arc<Mutex<Option<Arc<crate::iter_test::ReadGate>>>>,
+    #[cfg(test)]
     write_failures: Arc<Mutex<Vec<WriteFailure>>>,
     #[cfg(test)]
     write_attempts: Arc<Mutex<Vec<String>>>,
@@ -153,6 +155,8 @@ impl Default for MemoryStorage {
     fn default() -> Self {
         Self {
             files: Arc::default(),
+            #[cfg(test)]
+            read_gate: Arc::default(),
             #[cfg(test)]
             write_failures: Arc::default(),
             #[cfg(test)]
@@ -198,6 +202,13 @@ impl MemoryStorage {
 
     /// 读取整对象；路径不存在返回 `NotFound`。
     pub fn read(&self, path: &str) -> Result<Vec<u8>> {
+        #[cfg(test)]
+        {
+            let gate = self.read_gate.lock().map_err(|_| Error::Poisoned)?.clone();
+            if let Some(gate) = gate {
+                gate.before_read(path)?;
+            }
+        }
         #[cfg(test)]
         {
             let active = self.active_reads.fetch_add(1, Ordering::AcqRel) + 1;

@@ -408,3 +408,195 @@ fn test_merge_kv_iter_pass_wrong_param() {
         .unwrap();
     assert!(error.to_string().contains("outerConcurrency"));
 }
+
+#[test]
+fn merge_prop_close_with_async_open_error() {
+    close_with_pending_property_opens(true, 64);
+}
+
+#[test]
+fn merge_prop_close_with_async_open_success() {
+    close_with_pending_property_opens(false, 64);
+}
+
+#[test]
+fn merge_prop_close_drains_full_preopen_queue() {
+    close_with_pending_property_opens(false, 100);
+}
+
+fn close_with_pending_property_opens(fail: bool, count: usize) {
+    use crate::{
+        MemoryStorage,
+        codec::{RangeProperty, encode_multi_props},
+        iter::MergePropIter,
+        writer::MultipleFilesStat,
+    };
+    use std::{sync::mpsc, time::Duration};
+    let storage = MemoryStorage::default();
+    let paths = (0..count)
+        .map(|i| format!("/test{i:06}"))
+        .collect::<Vec<_>>();
+    for (i, path) in paths[..if fail { 32 } else { count }].iter().enumerate() {
+        storage
+            .write(
+                path,
+                encode_multi_props(&[RangeProperty {
+                    FirstKey: vec![i as u8],
+                    ..Default::default()
+                }])
+                .unwrap(),
+            )
+            .unwrap();
+    }
+    let (gate, started) = storage.gate_reads(paths[32..].to_vec(), fail);
+    let stat = MultipleFilesStat {
+        MaxOverlappingNum: 31,
+        Filenames: paths
+            .into_iter()
+            .map(|path| [String::new(), path])
+            .collect(),
+        ..Default::default()
+    };
+    let (send, receive) = mpsc::channel();
+    let constructor = std::thread::spawn(move || {
+        let _ = send.send(MergePropIter::new(vec![stat], &storage));
+    });
+    let result = receive.recv_timeout(Duration::from_secs(3));
+    // Always unblock and join the constructor even when the pre-fix synchronous path fails.
+    if result.is_err() {
+        gate.release();
+        constructor.join().unwrap();
+        panic!("constructor waited for asynchronous opens");
+    }
+    let mut iter = result.unwrap().unwrap();
+    for _ in 0..(count - 32).min(33) {
+        if started.recv_timeout(Duration::from_secs(3)).is_err() {
+            gate.release();
+            panic!("not all 32 asynchronous opens started");
+        }
+    }
+    let signal = iter.close_signal();
+    let closer = std::thread::spawn(move || iter.close());
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while !signal.load(std::sync::atomic::Ordering::Acquire) && std::time::Instant::now() < deadline
+    {
+        std::thread::yield_now();
+    }
+    let signaled = signal.load(std::sync::atomic::Ordering::Acquire);
+    let waited = !closer.is_finished();
+    gate.release();
+    assert!(signaled, "close did not signal pending opens");
+    assert!(waited, "close returned before blocked opens finished");
+    closer.join().unwrap().unwrap();
+    constructor.join().unwrap();
+}
+
+#[test]
+fn merge_prop_preopened_readers_preserve_order_and_surface_errors() {
+    use crate::{
+        MemoryStorage,
+        codec::{RangeProperty, encode_multi_props},
+        iter::MergePropIter,
+        writer::MultipleFilesStat,
+    };
+    for missing in [false, true] {
+        let storage = MemoryStorage::default();
+        let mut filenames = Vec::new();
+        for i in 0..64_u8 {
+            let path = format!("prop-{i:06}");
+            if !missing || i < 32 {
+                storage
+                    .write(
+                        &path,
+                        encode_multi_props(&[RangeProperty {
+                            FirstKey: vec![i],
+                            ..Default::default()
+                        }])
+                        .unwrap(),
+                    )
+                    .unwrap();
+            }
+            filenames.push([String::new(), path]);
+        }
+        let mut iter = MergePropIter::new(
+            vec![MultipleFilesStat {
+                Filenames: filenames,
+                MaxOverlappingNum: 31,
+                ..Default::default()
+            }],
+            &storage,
+        )
+        .unwrap();
+        let mut keys = Vec::new();
+        while iter.next() {
+            keys.push(iter.current_property().unwrap().FirstKey[0]);
+        }
+        if missing {
+            assert_eq!(keys, vec![0]);
+            assert!(matches!(iter.Error(), Some(crate::Error::NotFound(_))));
+        } else {
+            assert_eq!(keys, (0..64_u8).collect::<Vec<_>>());
+            assert!(iter.Error().is_none());
+        }
+        iter.close().unwrap();
+        iter.close().unwrap();
+        assert!(!iter.next());
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct ReadGate {
+    paths: std::collections::HashSet<String>,
+    started: std::sync::mpsc::Sender<String>,
+    released: (std::sync::Mutex<bool>, std::sync::Condvar),
+    fail: bool,
+}
+#[cfg(test)]
+impl ReadGate {
+    pub(crate) fn before_read(&self, path: &str) -> crate::Result<()> {
+        if !self.paths.contains(path) {
+            return Ok(());
+        }
+        let _ = self.started.send(path.to_owned());
+        let mut released = self.released.0.lock().map_err(|_| crate::Error::Poisoned)?;
+        while !*released {
+            released = self
+                .released
+                .1
+                .wait(released)
+                .map_err(|_| crate::Error::Poisoned)?;
+        }
+        if self.fail {
+            return Err(crate::Error::Io(
+                std::io::ErrorKind::Other,
+                "async open failed".into(),
+            ));
+        }
+        Ok(())
+    }
+    pub(crate) fn release(&self) {
+        *self.released.0.lock().unwrap() = true;
+        self.released.1.notify_all();
+    }
+}
+
+impl crate::MemoryStorage {
+    /// Pause selected object opens at the storage boundary until explicitly released.
+    #[cfg(test)]
+    pub(crate) fn gate_reads(
+        &self,
+        paths: Vec<String>,
+        fail: bool,
+    ) -> (std::sync::Arc<ReadGate>, std::sync::mpsc::Receiver<String>) {
+        let (started, receiver) = std::sync::mpsc::channel();
+        let gate = std::sync::Arc::new(ReadGate {
+            paths: paths.into_iter().collect(),
+            started,
+            released: (std::sync::Mutex::new(false), std::sync::Condvar::new()),
+            fail,
+        });
+        *self.read_gate.lock().unwrap() = Some(gate.clone());
+        (gate, receiver)
+    }
+}

@@ -18,7 +18,7 @@
 // `MergeKVIter` 用最小堆按 key 归并 KV；`MergePropIter` 按 FirstKey 归并
 // RangeProperty（范围属性）。输入须各自有序，输出才保证全局有序。
 
-// 当前不会打开对象存储、启动后台任务或执行业务动作；reader、任务组、通道和指标类型等待跨文件接线。
+// 属性 reader 按组限制活动窗口，并由后台任务预开后续统计文件。
 //
 // use std::collections::HashMap;
 // use std::sync::atomic::{AtomicBool, Ordering};
@@ -471,74 +471,199 @@ impl PartialOrd for PropertyEntry {
     }
 }
 
+// Each group owns its pre-open queue and joins every worker before releasing readers.
+struct PropertyGroup {
+    pending: VecDeque<usize>,
+    initial_end: usize,
+    limit: usize,
+    active: usize,
+    queue: Option<std::sync::mpsc::Receiver<std::sync::mpsc::Receiver<Result<StatsReader>>>>,
+    worker: Option<std::thread::JoinHandle<Result<()>>>,
+    shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl PropertyGroup {
+    fn stop(&mut self) -> Result<()> {
+        self.shutdown
+            .store(true, std::sync::atomic::Ordering::Release);
+        // Drain before joining so a producer blocked on the bounded queue can finish.
+        if let Some(queue) = self.queue.take() {
+            for task in queue {
+                if let Ok(Ok(mut reader)) = task.recv() {
+                    let _ = reader.close();
+                }
+            }
+        }
+        if let Some(worker) = self.worker.take() {
+            worker
+                .join()
+                .map_err(|_| Error::InvalidData("property pre-open worker panicked".into()))??;
+        }
+        Ok(())
+    }
+}
+impl Drop for PropertyGroup {
+    fn drop(&mut self) {
+        let _ = self.stop();
+    }
+}
+
+struct PropertySource {
+    path: String,
+    inner: usize,
+    reader: Option<StatsReader>,
+}
+
 /// 多组 MultipleFilesStat 的范围属性归并迭代器。
 pub struct MergePropIter {
     heap: BinaryHeap<PropertyEntry>,
-    sources: Vec<Vec<RangeProperty>>,
-    positions: Vec<usize>,
+    sources: Vec<PropertySource>,
+    groups: Vec<PropertyGroup>,
+    storage: MemoryStorage,
     current: Option<PropertyEntry>,
     closed_reader_after_next: bool,
     error: Option<Error>,
     closed: bool,
 }
 impl MergePropIter {
-    /// 按 MinKey 排序统计组，加载各属性文件后建立初始最小堆。
+    /// Open each group's bounded initial window and pre-open the remaining readers asynchronously.
     pub fn new(mut stats: Vec<MultipleFilesStat>, storage: &MemoryStorage) -> Result<Self> {
         if stats.is_empty() {
             return Err(Error::InvalidData("no property statistics".into()));
         }
         stats.sort_by(|a, b| a.MinKey.cmp(&b.MinKey));
-        let mut sources = Vec::new();
-        let mut heap = BinaryHeap::new();
-        for (outer, stat) in stats.iter().enumerate() {
-            for (inner, files) in stat.Filenames.iter().enumerate() {
-                // Filenames[i] = [data_path, stat_path]；属性读自统计文件。
-                let mut reader = match StatsReader::from_storage(storage, &files[1], 250 * 1024) {
-                    Ok(reader) => reader,
-                    Err(error) if error.is_eof() => {
-                        sources.push(Vec::new());
-                        continue;
-                    }
-                    Err(error) => return Err(error),
-                };
-                let properties_result = (|| {
-                    let mut properties = Vec::new();
-                    loop {
-                        match reader.next_prop() {
-                            Ok(property) => properties.push(property),
-                            Err(error) if error.is_eof() => return Ok(properties),
-                            Err(error) => return Err(error),
-                        }
-                    }
-                })();
-                let close_result = reader.close();
-                let properties = properties_result?;
-                close_result?;
-                let source_index = sources.len();
-                if let Some(first) = properties.first() {
-                    heap.push(PropertyEntry {
-                        property: first.clone(),
-                        outer,
-                        inner,
-                        source: source_index,
-                    });
-                }
-                sources.push(properties);
-            }
-        }
-        // positions 从 1 起：堆中已放入每源首条。
-        let positions = vec![1; sources.len()];
-        Ok(Self {
-            heap,
-            sources,
-            positions,
+        let mut iter = Self {
+            heap: BinaryHeap::new(),
+            sources: Vec::new(),
+            groups: Vec::new(),
+            storage: storage.clone(),
             current: None,
             closed_reader_after_next: false,
             error: None,
             closed: false,
-        })
+        };
+        for (outer, stat) in stats.iter().enumerate() {
+            let count = stat.Filenames.len();
+            if count == 0 {
+                return Err(Error::InvalidData("no reader openers".into()));
+            }
+            let limit = if stat.MaxOverlappingNum <= 0 {
+                count
+            } else {
+                (stat.MaxOverlappingNum as usize)
+                    .saturating_add(1)
+                    .min(count)
+            };
+            let start = iter.sources.len();
+            for (inner, files) in stat.Filenames.iter().enumerate() {
+                iter.sources.push(PropertySource {
+                    path: files[1].clone(),
+                    inner,
+                    reader: None,
+                });
+            }
+            let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (send, receive) = std::sync::mpsc::sync_channel(limit.min(count - limit));
+            let paths = stat.Filenames[limit..]
+                .iter()
+                .map(|files| files[1].clone())
+                .collect::<Vec<_>>();
+            let store = storage.clone();
+            let closing = shutdown.clone();
+            let worker = std::thread::spawn(move || {
+                let mut workers = Vec::new();
+                for path in paths {
+                    if closing.load(std::sync::atomic::Ordering::Acquire) {
+                        break;
+                    }
+                    let (send_reader, receive_reader) = std::sync::mpsc::sync_channel(1);
+                    let store = store.clone();
+                    let closing = closing.clone();
+                    workers.push(std::thread::spawn(move || {
+                        let result = StatsReader::from_storage(&store, &path, 250 * 1024);
+                        if closing.load(std::sync::atomic::Ordering::Acquire) {
+                            // Failed opens have no reader to close (Go's rd != nil guard).
+                            if let Ok(mut reader) = result {
+                                let _ = reader.close();
+                            }
+                        } else if let Err(unsent) = send_reader.send(result) {
+                            if let Ok(mut reader) = unsent.0 {
+                                let _ = reader.close();
+                            }
+                        }
+                    }));
+                    if send.send(receive_reader).is_err() {
+                        break;
+                    }
+                }
+                let mut panicked = false;
+                for worker in workers {
+                    panicked |= worker.join().is_err();
+                }
+                if panicked {
+                    Err(Error::InvalidData("property open worker panicked".into()))
+                } else {
+                    Ok(())
+                }
+            });
+            iter.groups.push(PropertyGroup {
+                pending: (start..start + count).collect(),
+                initial_end: start + limit,
+                limit,
+                active: 0,
+                queue: Some(receive),
+                worker: Some(worker),
+                shutdown,
+            });
+            iter.fill_window(outer)?;
+        }
+        Ok(iter)
     }
-    /// 弹出堆顶属性，并将来源的下一条推入堆；耗尽则标记 closed_reader_after_next。
+
+    fn fill_window(&mut self, outer: usize) -> Result<()> {
+        while self.groups[outer].active < self.groups[outer].limit {
+            let Some(source) = self.groups[outer].pending.pop_front() else {
+                break;
+            };
+            let opened = if source < self.groups[outer].initial_end {
+                StatsReader::from_storage(&self.storage, &self.sources[source].path, 250 * 1024)
+            } else {
+                let queue = self.groups[outer].queue.as_ref().ok_or(Error::Closed)?;
+                queue
+                    .recv()
+                    .map_err(|_| Error::Closed)?
+                    .recv()
+                    .map_err(|_| Error::Closed)?
+            };
+            let mut reader = match opened {
+                Ok(reader) => reader,
+                Err(error) if error.is_eof() => continue,
+                Err(error) => return Err(error),
+            };
+            match reader.next_prop() {
+                Ok(property) => {
+                    self.heap.push(PropertyEntry {
+                        property,
+                        outer,
+                        inner: self.sources[source].inner,
+                        source,
+                    });
+                    self.sources[source].reader = Some(reader);
+                    self.groups[outer].active += 1;
+                }
+                Err(error) if error.is_eof() => {
+                    let _ = reader.close();
+                }
+                Err(error) => {
+                    let _ = reader.close();
+                    return Err(error);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Advance the minimum property, closing exhausted readers and refilling their group window.
     pub fn next(&mut self) -> bool {
         if self.closed || self.error.is_some() {
             return false;
@@ -549,17 +674,26 @@ impl MergePropIter {
             return false;
         };
         let source = entry.source;
-        let position = self.positions[source];
-        if let Some(property) = self.sources[source].get(position) {
-            self.heap.push(PropertyEntry {
-                property: property.clone(),
+        match self.sources[source].reader.as_mut().unwrap().next_prop() {
+            Ok(property) => self.heap.push(PropertyEntry {
+                property,
                 outer: entry.outer,
                 inner: entry.inner,
                 source,
-            });
-            self.positions[source] += 1;
-        } else {
-            self.closed_reader_after_next = true;
+            }),
+            Err(error) => {
+                let mut reader = self.sources[source].reader.take().unwrap();
+                let _ = reader.close();
+                self.groups[entry.outer].active -= 1;
+                self.closed_reader_after_next = true;
+                if error.is_eof() {
+                    if let Err(error) = self.fill_window(entry.outer) {
+                        self.error = Some(error);
+                    }
+                } else {
+                    self.error = Some(error);
+                }
+            }
         }
         self.current = Some(entry);
         true
@@ -574,9 +708,35 @@ impl MergePropIter {
     }
     /// 清空堆并标记已关闭。
     pub fn close(&mut self) -> Result<()> {
+        if self.closed {
+            return Ok(());
+        }
         self.closed = true;
+        // Signal all groups first, before any potentially slow join.
+        for group in &self.groups {
+            group
+                .shutdown
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        let mut first = None;
+        for group in &mut self.groups {
+            if let Err(error) = group.stop() {
+                first.get_or_insert(error);
+            }
+        }
+        for source in &mut self.sources {
+            if let Some(mut reader) = source.reader.take() {
+                if let Err(error) = reader.close() {
+                    first.get_or_insert(error);
+                }
+            }
+        }
         self.heap.clear();
-        Ok(())
+        first.map_or(Ok(()), Err)
+    }
+    #[cfg(test)]
+    pub(crate) fn close_signal(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.groups[0].shutdown.clone()
     }
     /// Go 风格别名：`next`。
     pub fn Next(&mut self) -> bool {
@@ -594,7 +754,7 @@ impl MergePropIter {
     pub fn GetBaseIterCloseReaderFlag(&self) -> bool {
         self.closed_reader_after_next
     }
-    /// 迭代错误（本简化实现通常保持 None）。
+    /// 迭代或惰性打开期间的非 EOF 错误。
     pub fn Error(&self) -> Option<&Error> {
         self.error.as_ref()
     }
@@ -609,4 +769,10 @@ pub fn NewMergePropIter(
     storage: &MemoryStorage,
 ) -> Result<MergePropIter> {
     MergePropIter::new(stats, storage)
+}
+
+impl Drop for MergePropIter {
+    fn drop(&mut self) {
+        let _ = self.close();
+    }
 }
