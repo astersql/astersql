@@ -301,3 +301,277 @@ fn parse_config_from_args_for_test_with_err(args: &[&str]) -> Result<Config> {
     conf.ParseFromFlags(&flags)?;
     Ok(conf)
 }
+
+#[test]
+fn column_filter_flags_project_writable_columns() {
+    let mut conf = DefaultConfig();
+    let mut flags = FlagSet::new();
+    conf.DefineFlags(&mut flags);
+    flags
+        .Parse(&[
+            "--no-schemas",
+            "--column-filter",
+            r#"{ matcher = ["db.t"], columns = ["name"] }"#,
+        ])
+        .unwrap();
+    conf.ParseFromFlags(&flags).unwrap();
+    let conn = Conn::new();
+    conn.seed_query(
+        "SHOW COLUMNS FROM `db`.`t`",
+        vec!["Field".into(), "Extra".into()],
+        vec![
+            vec![Some(b"id".to_vec()), Some(vec![])],
+            vec![Some(b"name".to_vec()), Some(vec![])],
+        ],
+    );
+    conn.seed_query(
+        "SELECT `id`,`name` FROM `db`.`t` LIMIT 1",
+        vec!["id".into(), "name".into()],
+        vec![vec![Some(b"1".to_vec()), Some(b"alice".to_vec())]],
+    );
+    let mut db = newBaseConn(conn, false, None);
+    conf.Tables.insert(
+        "db".into(),
+        vec![TableInfo {
+            Name: "t".into(),
+            Type: TableType::TableTypeBase,
+            AvgRowLength: 0,
+        }],
+    );
+    prepareColumnProjection(&tcontext::Background(), &mut conf, &mut db).unwrap();
+    let meta = dumpTableMeta(
+        &tcontext::Background(),
+        &conf,
+        &mut db,
+        "db",
+        &TableInfo {
+            Name: "t".into(),
+            Type: TableType::TableTypeBase,
+            AvgRowLength: 0,
+        },
+    )
+    .unwrap();
+    assert_eq!(meta.SelectedField(), "`name`");
+    assert_eq!(meta.ColumnNames(), vec!["name"]);
+}
+
+fn inline_column_filters(rules: &[&str], sensitive: bool) -> columnFilterConfig {
+    parseColumnFilterArgs(
+        &rules.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+        sensitive,
+    )
+    .unwrap()
+}
+
+#[test]
+fn column_filters_preserve_rule_priority_case_and_unmatched_tables() {
+    let filter = inline_column_filters(
+        &[
+            r#"{ matcher = ["db1.*"], columns = ["*", "!c*"] }"#,
+            r#"{ matcher = ["db1.t1"], columns = ["c2"] }"#,
+            r#"{ matcher = ["db1.t2"], columns = ["*", "!c3"] }"#,
+        ],
+        false,
+    );
+    for (db, table, source, expected, indexes) in [
+        (
+            "DB1",
+            "T1",
+            vec!["c1", "C2", "c3", "d"],
+            vec!["C2", "d"],
+            vec![1, 3],
+        ),
+        ("db2", "t1", vec!["c1"], vec!["c1"], vec![0]),
+        ("db1", "t2", vec!["c1", "c3"], vec!["c1"], vec![0]),
+    ] {
+        let source = source.iter().map(|c| c.to_string()).collect::<Vec<_>>();
+        let (columns, actual_indexes) = filter.applyToColumns(db, table, &source).unwrap();
+        assert_eq!(columns, expected);
+        assert_eq!(actual_indexes, indexes);
+    }
+    let filter = inline_column_filters(&[r#"{ matcher = ["db1.t1"], columns = ["C2"] }"#], true);
+    assert_eq!(
+        filter
+            .applyToColumns("DB1", "T1", &["c1".into()])
+            .unwrap()
+            .0,
+        vec!["c1"]
+    );
+    assert_eq!(
+        filter
+            .applyToColumns("db1", "t1", &["C2".into()])
+            .unwrap()
+            .0,
+        vec!["C2"]
+    );
+    assert!(
+        filter
+            .applyToColumns("db1", "t1", &["missing".into()])
+            .unwrap_err()
+            .msg
+            .contains("selects no writable columns")
+    );
+}
+
+#[test]
+fn column_filter_inline_validation_preserves_errors_and_indices() {
+    for (rule, expected) in [
+        (
+            r#"{ matcher = ["db.t"], columns = ["/unterminated"] }"#,
+            "filter 0 columns",
+        ),
+        (
+            r#"{ matcher = ["db.t"], colums = ["*"] }"#,
+            "unknown TOML keys: filter.colums",
+        ),
+        (
+            r#"{ matcher = ["db.t"] }"#,
+            "requires at least one column rule",
+        ),
+        (
+            r#"{ matcher = ["db.t"], columns = [] }"#,
+            "requires at least one column rule",
+        ),
+        (r#"{ columns = ["*"] }"#, "requires at least one matcher"),
+        (
+            r#"{ matcher = ["/unterminated"], columns = ["*"] }"#,
+            "filter 0 matcher",
+        ),
+        ("{", "failed to parse --column-filter 0"),
+        (
+            r#"{ matcher = "db.t", columns = ["*"] }"#,
+            "matcher must be an array",
+        ),
+        (
+            r#"{ matcher = ["db.t"], columns = [1] }"#,
+            "columns must contain strings",
+        ),
+    ] {
+        let error = parseColumnFilterArgs(&[rule.into()], false).unwrap_err();
+        assert!(error.msg.contains(expected), "{}", error.msg);
+    }
+    let error = parseColumnFilterArgs(
+        &[
+            r#"{matcher=["*.*"],columns=["*"]}"#.into(),
+            r#"{matcher=["*.*"]}"#.into(),
+        ],
+        false,
+    )
+    .unwrap_err();
+    assert!(error.msg.contains("filter 1 requires"));
+    assert!(
+        parseColumnFilterArgs(&[], false)
+            .unwrap_err()
+            .msg
+            .contains("at least one column filter")
+    );
+}
+
+#[test]
+fn column_filter_file_validation_and_flags_match_inline_rules() {
+    let path = std::env::temp_dir().join(format!(
+        "dumpling-column-filter-{}.toml",
+        std::process::id()
+    ));
+    for (content, expected) in [
+        ("", "requires at least one column filter"),
+        (
+            "[[filters]]\nmatcher=['db.t']\ncolums=['*']",
+            "unknown TOML keys: filters.colums",
+        ),
+        (
+            "[[filters]]\nmatcher=['db.t']",
+            "requires at least one column rule",
+        ),
+        (
+            "[[filters]]\nmatcher=['db.t']\ncolumns=[]",
+            "requires at least one column rule",
+        ),
+        (
+            "[[filters]]\nmatcher=['db.t']\ncolumns=['/unterminated']",
+            "filter 0 columns",
+        ),
+        ("[[", "failed to parse --column-filter-file"),
+    ] {
+        std::fs::write(&path, content).unwrap();
+        let error = parseColumnFilterConfig(path.to_str().unwrap(), false).unwrap_err();
+        assert!(error.msg.contains(expected), "{}", error.msg);
+    }
+    std::fs::write(
+        &path,
+        "[[filters]]\nmatcher=['db1.t1','db2.t2']\ncolumns=['c1','C2']",
+    )
+    .unwrap();
+    for sensitive in [false, true] {
+        let filter = parseColumnFilterConfig(path.to_str().unwrap(), sensitive).unwrap();
+        assert_eq!(
+            filter
+                .applyToColumns("DB1", "T1", &["c1".into(), "C2".into(), "c3".into()])
+                .unwrap()
+                .0,
+            if sensitive {
+                vec!["c1", "C2", "c3"]
+            } else {
+                vec!["c1", "C2"]
+            }
+        );
+    }
+    let mut conf = DefaultConfig();
+    let mut flags = FlagSet::new();
+    conf.DefineFlags(&mut flags);
+    flags
+        .Parse(&["--column-filter-file", path.to_str().unwrap()])
+        .unwrap();
+    conf.ParseFromFlags(&flags).unwrap();
+    assert_eq!(conf.columnFilter.Filters.len(), 1);
+    let args = vec![r#"{matcher=["*.*"],columns=["*"]}"#.into()];
+    assert!(
+        conf.parseColumnFilterOptions(&args, path.to_str().unwrap(), false)
+            .unwrap_err()
+            .msg
+            .contains("can't specify both --column-filter and --column-filter-file")
+    );
+    conf.SQL = "select * from t".into();
+    assert!(
+        conf.parseColumnFilterOptions(&args, "", false)
+            .unwrap_err()
+            .msg
+            .contains("both --sql and --column-filter")
+    );
+    assert!(
+        conf.parseColumnFilterOptions(&[], path.to_str().unwrap(), false)
+            .unwrap_err()
+            .msg
+            .contains("both --sql and --column-filter-file")
+    );
+    std::fs::remove_file(&path).unwrap();
+    assert!(
+        parseColumnFilterConfig(path.to_str().unwrap(), false)
+            .unwrap_err()
+            .msg
+            .contains("failed to read --column-filter-file")
+    );
+}
+
+#[test]
+fn column_filter_decode_precedes_compile_and_unknown_keys_keep_input_order() {
+    let error = parseColumnFilterArgs(
+        &[
+            r#"{matcher=["db.t"],columns=["/unterminated"]}"#.into(),
+            "{".into(),
+        ],
+        false,
+    )
+    .unwrap_err();
+    assert!(error.msg.contains("failed to parse --column-filter 1"));
+    let error = parseColumnFilterArgs(
+        &[r#"{matcher=["db.t"],columns=["*"],z=1,a=2}"#.into()],
+        false,
+    )
+    .unwrap_err();
+    assert!(
+        error.msg.contains("unknown TOML keys: filter.z, filter.a"),
+        "{}",
+        error.msg
+    );
+}

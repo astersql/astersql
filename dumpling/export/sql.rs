@@ -981,7 +981,30 @@ pub fn createConnWithConsistency(db: &DB, repeatable_read: bool) -> Result<Conn>
     Ok(conn)
 }
 
-/// SHOW COLUMNS 决定 SELECT * 或显式列；跳过生成列。
+pub fn getWritableColumnNames(
+    tctx: &tcontext::Context,
+    db: &mut BaseConn,
+    db_name: &str,
+    table_name: &str,
+) -> Result<(Vec<String>, bool)> {
+    let query = format!(
+        "SHOW COLUMNS FROM `{}`.`{}`",
+        escapeString(db_name),
+        escapeString(table_name)
+    );
+    let results = db.QuerySQLWithColumns(tctx, &["FIELD", "EXTRA"], &query)?;
+    let mut names = Vec::new();
+    let mut generated = false;
+    for row in results {
+        if row[1] == "STORED GENERATED" || row[1] == "VIRTUAL GENERATED" {
+            generated = true;
+            continue;
+        }
+        names.push(row[0].clone());
+    }
+    Ok((names, generated))
+}
+
 pub fn buildSelectField(
     tctx: &tcontext::Context,
     db: &mut BaseConn,
@@ -989,32 +1012,15 @@ pub fn buildSelectField(
     table_name: &str,
     complete_insert: bool,
 ) -> Result<(String, i32)> {
-    let query = format!(
-        "SHOW COLUMNS FROM `{}`.`{}`",
-        escapeString(db_name),
-        escapeString(table_name)
-    );
-    // SHOW COLUMNS 投影。
-    let results = db.QuerySQLWithColumns(tctx, &["FIELD", "EXTRA"], &query)?;
-    let mut available = Vec::new();
-    let mut has_generated = false;
-    for row in results {
-        let field = row.first().cloned().unwrap_or_default();
-        let extra = row.get(1).cloned().unwrap_or_default();
-        // 生成列不参与 INSERT 列清单。
-        if extra == "STORED GENERATED" || extra == "VIRTUAL GENERATED" {
-            has_generated = true;
-            continue;
-        }
-        available.push(wrapBackTicks(&field));
-    }
-    let len = available.len() as i32;
-    // 须显式列名时使用 join 列清单。
-    if complete_insert || has_generated {
-        Ok((available.join(","), len))
-    } else {
-        Ok(("*".into(), len))
-    }
+    let (names, generated) = getWritableColumnNames(tctx, db, db_name, table_name)?;
+    Ok((
+        if complete_insert || generated {
+            columnNamesToSelectFields(&names).join(",")
+        } else {
+            "*".into()
+        },
+        names.len() as i32,
+    ))
 }
 
 /// information_schema.partitions 非空 PARTITION_NAME。
@@ -1199,7 +1205,7 @@ pub fn getNumericIndex(
     let database = meta.DatabaseName();
     let table = meta.TableName();
     // 列名→类型映射供整数判定。
-    let col_map = string2Map(&meta.ColumnNames(), &meta.ColumnTypes());
+    let col_map = string2Map(&tableSourceColumnNames(meta), &tableSourceColumnTypes(meta));
     let query = format!(
         "SHOW INDEX FROM `{}`.`{}`",
         escapeString(database),

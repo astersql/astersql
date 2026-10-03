@@ -25,6 +25,12 @@ pub trait TableMeta: Send + Sync {
     fn ColumnCount(&self) -> u32;
     fn ColumnTypes(&self) -> Vec<String>;
     fn ColumnNames(&self) -> Vec<String>;
+    fn sourceColumnNames(&self) -> Vec<String> {
+        self.ColumnNames()
+    }
+    fn sourceColumnTypes(&self) -> Vec<String> {
+        self.ColumnTypes()
+    }
     fn SelectedField(&self) -> &str;
     fn SelectedLen(&self) -> i32;
     fn SpecialComments(&self) -> Box<dyn StringIter>;
@@ -107,9 +113,9 @@ pub fn setTableMetaFromRows(server_type: ServerType, rows: &Rows) -> Result<Box<
     Ok(Box::new(tableMeta {
         database: String::new(),
         table: String::new(),
+        source_col_types: tps.clone(),
         col_types: tps,
         selected_field: nms.join(","),
-        selected_len: nms.len() as i32,
         spec_cmts: getSpecialComments(server_type),
         show_create_table: String::new(),
         show_create_view: String::new(),

@@ -239,7 +239,7 @@ fn test_dump_table_meta() {
         ]],
     );
     conn.seed_query(
-        "SELECT * FROM `db`.`t` LIMIT 1",
+        "SELECT `id` FROM `db`.`t` LIMIT 1",
         vec!["id".into()],
         vec![vec![Some(b"1".to_vec())]],
     );
@@ -452,5 +452,422 @@ fn test_manual_gc_lifetime_warning_initialization() {
             assert!(!entries[0].contains("'10m'"));
         }
         d.Close().unwrap();
+    }
+}
+
+fn projection_rows(columns: &[(&str, &str)], data: Vec<Vec<Option<Vec<u8>>>>) -> Rows {
+    let mut rows = Rows::new(
+        columns.iter().map(|(name, _)| name.to_string()).collect(),
+        data,
+    );
+    for (column, (_, typ)) in rows.col_types.iter_mut().zip(columns) {
+        column.database_type_name = typ.to_string();
+    }
+    rows
+}
+
+fn seed_writable_columns(conn: &Conn, columns: &[(&str, &str)]) {
+    conn.seed_query(
+        "SHOW COLUMNS FROM `db`.`t`",
+        vec!["Field".into(), "Extra".into()],
+        columns
+            .iter()
+            .map(|(name, extra)| {
+                vec![
+                    Some(name.as_bytes().to_vec()),
+                    Some(extra.as_bytes().to_vec()),
+                ]
+            })
+            .collect(),
+    );
+}
+
+fn projection_table(typ: TableType) -> TableInfo {
+    TableInfo {
+        Name: "t".into(),
+        AvgRowLength: 100,
+        Type: typ,
+    }
+}
+
+fn projection_config(rules: &[&str]) -> Config {
+    let mut conf = DefaultConfig();
+    conf.NoSchemas = true;
+    conf.Tables.insert(
+        "db".into(),
+        vec![projection_table(TableType::TableTypeBase)],
+    );
+    if !rules.is_empty() {
+        conf.columnFilter = parseColumnFilterArgs(
+            &rules.iter().map(|r| r.to_string()).collect::<Vec<_>>(),
+            false,
+        )
+        .unwrap();
+    }
+    conf
+}
+
+#[test]
+fn column_projection_split_source_columns_survive_cached_filter_mutation() {
+    let mut conf = projection_config(&[r#"{matcher=["db.t"],columns=["name"]}"#]);
+    let conn = Conn::new();
+    seed_writable_columns(&conn, &[("id", ""), ("name", "")]);
+    conn.seed_rows(
+        "SELECT `id`,`name` FROM `db`.`t` LIMIT 1",
+        projection_rows(
+            &[("id", "INT"), ("name", "VARCHAR")],
+            vec![vec![Some(b"1".to_vec()), Some(b"alice".to_vec())]],
+        ),
+    );
+    let tctx = tcontext::Background();
+    let mut base = newBaseConn(conn.clone(), false, None);
+    prepareColumnProjection(&tctx, &mut conf, &mut base).unwrap();
+    conf.columnFilter =
+        parseColumnFilterArgs(&[r#"{matcher=["db.t"],columns=["missing"]}"#.into()], false)
+            .unwrap();
+    let meta = dumpTableMeta(
+        &tctx,
+        &conf,
+        &mut base,
+        "db",
+        &projection_table(TableType::TableTypeBase),
+    )
+    .unwrap();
+    assert_eq!(meta.SelectedField(), "`name`");
+    assert_eq!(meta.SelectedLen(), 1);
+    assert_eq!(meta.ColumnNames(), vec!["name"]);
+    assert_eq!(meta.ColumnTypes(), vec!["VARCHAR"]);
+    assert_eq!(tableSourceColumnNames(meta.as_ref()), vec!["id", "name"]);
+    assert_eq!(
+        tableSourceColumnTypes(meta.as_ref()),
+        vec!["INT", "VARCHAR"]
+    );
+    conn.seed_query(
+        "SHOW INDEX FROM `db`.`t`",
+        vec![
+            "NON_UNIQUE".into(),
+            "SEQ_IN_INDEX".into(),
+            "KEY_NAME".into(),
+            "COLUMN_NAME".into(),
+            "CARDINALITY".into(),
+        ],
+        vec![vec![
+            Some(b"0".to_vec()),
+            Some(b"1".to_vec()),
+            Some(b"PRIMARY".to_vec()),
+            Some(b"id".to_vec()),
+            Some(b"1".to_vec()),
+        ]],
+    );
+    assert_eq!(
+        getNumericIndex(&tctx, &mut base, meta.as_ref()).unwrap(),
+        "id"
+    );
+    conn.seed_query(
+        "SHOW INDEX FROM `db`.`t`",
+        vec!["KEY_NAME".into(), "COLUMN_NAME".into()],
+        vec![vec![Some(b"PRIMARY".to_vec()), Some(b"id".to_vec())]],
+    );
+    assert_eq!(
+        GetPrimaryKeyAndColumnTypes(&tctx, &mut base, meta.as_ref()).unwrap(),
+        (vec!["id".into()], vec!["INT".into()])
+    );
+}
+
+#[test]
+fn column_projection_empty_rows_preserve_driver_metadata() {
+    let mut conf = projection_config(&[]);
+    let conn = Conn::new();
+    seed_writable_columns(&conn, &[("id", ""), ("task_id", "")]);
+    conn.seed_rows(
+        "SELECT `id`,`task_id` FROM `db`.`t` LIMIT 1",
+        projection_rows(&[("id", "BIGINT"), ("task_id", "BIGINT")], vec![]),
+    );
+    let mut base = newBaseConn(conn, false, None);
+    let tctx = tcontext::Background();
+    prepareColumnProjection(&tctx, &mut conf, &mut base).unwrap();
+    let meta = dumpTableMeta(
+        &tctx,
+        &conf,
+        &mut base,
+        "db",
+        &projection_table(TableType::TableTypeBase),
+    )
+    .unwrap();
+    assert_eq!(meta.SelectedField(), "*");
+    assert_eq!(meta.SelectedLen(), 2);
+    assert_eq!(meta.ColumnNames(), vec!["id", "task_id"]);
+    assert_eq!(meta.ColumnTypes(), vec!["BIGINT", "BIGINT"]);
+    assert_eq!(tableSourceColumnNames(meta.as_ref()), meta.ColumnNames());
+}
+
+#[test]
+fn column_projection_complete_insert_quotes_and_generated_columns() {
+    for (complete, columns, expected, names) in [
+        (
+            false,
+            vec![("id", ""), ("name", "")],
+            "*",
+            vec!["id", "name"],
+        ),
+        (
+            true,
+            vec![("id", ""), ("name", ""), ("quo`te", "")],
+            "`id`,`name`,`quo``te`",
+            vec!["id", "name", "quo`te"],
+        ),
+        (
+            false,
+            vec![("id", ""), ("generated", "VIRTUAL GENERATED")],
+            "`id`",
+            vec!["id"],
+        ),
+        (
+            false,
+            vec![("id", ""), ("generated", "STORED GENERATED")],
+            "`id`",
+            vec!["id"],
+        ),
+    ] {
+        let mut conf = projection_config(&[]);
+        conf.CompleteInsert = complete;
+        let conn = Conn::new();
+        seed_writable_columns(&conn, &columns);
+        let fields =
+            columnNamesToSelectFields(&names.iter().map(|n| n.to_string()).collect::<Vec<_>>())
+                .join(",");
+        conn.seed_rows(
+            &format!("SELECT {fields} FROM `db`.`t` LIMIT 1"),
+            projection_rows(
+                &names.iter().map(|n| (*n, "INT")).collect::<Vec<_>>(),
+                vec![names.iter().map(|_| Some(b"1".to_vec())).collect()],
+            ),
+        );
+        let mut base = newBaseConn(conn, false, None);
+        prepareColumnProjection(&tcontext::Background(), &mut conf, &mut base).unwrap();
+        let meta = dumpTableMeta(
+            &tcontext::Background(),
+            &conf,
+            &mut base,
+            "db",
+            &projection_table(TableType::TableTypeBase),
+        )
+        .unwrap();
+        assert_eq!(meta.SelectedField(), expected);
+        assert_eq!(meta.ColumnNames(), names);
+        assert_eq!(meta.ColumnCount() as usize, names.len());
+        assert_eq!(meta.SelectedLen() as usize, names.len());
+    }
+}
+
+#[test]
+fn column_projection_generated_only_and_empty_selection_are_distinct() {
+    for filtered in [false, true] {
+        let rules = if filtered {
+            vec![r#"{matcher=["db.t"],columns=["*"]}"#]
+        } else {
+            vec![]
+        };
+        let mut conf = projection_config(&rules);
+        let conn = Conn::new();
+        seed_writable_columns(&conn, &[("generated", "VIRTUAL GENERATED")]);
+        let mut base = newBaseConn(conn, false, None);
+        let result = prepareColumnProjection(&tcontext::Background(), &mut conf, &mut base);
+        if filtered {
+            assert!(
+                result
+                    .unwrap_err()
+                    .msg
+                    .contains("selects no writable columns")
+            );
+        } else {
+            result.unwrap();
+            let meta = dumpTableMeta(
+                &tcontext::Background(),
+                &conf,
+                &mut base,
+                "db",
+                &projection_table(TableType::TableTypeBase),
+            )
+            .unwrap();
+            assert_eq!(meta.SelectedField(), "");
+            assert_eq!(meta.SelectedLen(), 0);
+            assert!(meta.ColumnNames().is_empty());
+            assert!(tableSourceColumnNames(meta.as_ref()).is_empty());
+        }
+    }
+    let mut conf = projection_config(&[r#"{matcher=["db.t"],columns=["missing"]}"#]);
+    let conn = Conn::new();
+    seed_writable_columns(&conn, &[("id", "")]);
+    let mut base = newBaseConn(conn, false, None);
+    assert!(
+        prepareColumnProjection(&tcontext::Background(), &mut conf, &mut base)
+            .unwrap_err()
+            .msg
+            .contains("selects no writable columns")
+    );
+}
+
+#[test]
+fn column_projection_views_sequences_and_missing_cache() {
+    let mut conf = projection_config(&[r#"{matcher=["db.*"],columns=["missing"]}"#]);
+    let mut base = newBaseConn(Conn::new(), false, None);
+    for typ in [TableType::TableTypeView, TableType::TableTypeSequence] {
+        conf.Tables.insert("db".into(), vec![projection_table(typ)]);
+        prepareColumnProjection(&tcontext::Background(), &mut conf, &mut base).unwrap();
+        let meta = dumpTableMeta(
+            &tcontext::Background(),
+            &conf,
+            &mut base,
+            "db",
+            &projection_table(typ),
+        )
+        .unwrap();
+        assert_eq!(meta.SelectedLen(), 0);
+        assert_eq!(meta.SelectedField(), "");
+    }
+    conf.columnProjection.clear();
+    let error = dumpTableMeta(
+        &tcontext::Background(),
+        &conf,
+        &mut base,
+        "d`b",
+        &projection_table(TableType::TableTypeBase),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(error.msg, "missing column projection for table `d``b`.`t`");
+}
+
+#[test]
+fn column_projection_table_meta_all_server_types_and_runtime_sql_guard() {
+    for server in [
+        ServerType::ServerTypeUnknown,
+        ServerType::ServerTypeMySQL,
+        ServerType::ServerTypeTiDB,
+        ServerType::ServerTypeMariaDB,
+    ] {
+        let mut conf = projection_config(&[]);
+        conf.ServerInfo.ServerType = server;
+        let conn = Conn::new();
+        seed_writable_columns(&conn, &[("id", "")]);
+        conn.seed_rows(
+            "SELECT `id` FROM `db`.`t` LIMIT 1",
+            projection_rows(&[("id", "INT")], vec![vec![Some(b"1".to_vec())]]),
+        );
+        let mut base = newBaseConn(conn, false, None);
+        let meta = dumpTableMeta(
+            &tcontext::Background(),
+            &conf,
+            &mut base,
+            "db",
+            &projection_table(TableType::TableTypeBase),
+        )
+        .unwrap();
+        assert_eq!(meta.DatabaseName(), "db");
+        assert_eq!(meta.TableName(), "t");
+        assert_eq!(meta.SelectedField(), "*");
+        assert_eq!(meta.SelectedLen(), 1);
+        assert_eq!(
+            meta.HasImplicitRowID(),
+            server == ServerType::ServerTypeTiDB
+        );
+    }
+    let mut conf = projection_config(&[r#"{matcher=["*.*"],columns=["*"]}"#]);
+    conf.SQL = "select 1".into();
+    let mut dumper = make_dumper(conf);
+    assert!(
+        dumper
+            .Dump()
+            .unwrap_err()
+            .msg
+            .contains("both --sql and --column-filter-file")
+    );
+}
+
+#[test]
+fn column_projection_csv_export_excludes_secret_values() {
+    struct Output(Vec<u8>);
+    impl ObjectWriter for Output {
+        fn Write(&mut self, bytes: &[u8]) -> Result<usize> {
+            self.0.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn Close(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+    for file in [false, true] {
+        let mut conf = projection_config(&[]);
+        conf.FileType = "csv".into();
+        let path =
+            std::env::temp_dir().join(format!("column-filter-export-{}.toml", std::process::id()));
+        if file {
+            std::fs::write(
+                &path,
+                "[[filters]]\nmatcher=['db.t']\ncolumns=['id','name']",
+            )
+            .unwrap();
+            conf.parseColumnFilterOptions(&[], path.to_str().unwrap(), false)
+                .unwrap();
+            std::fs::remove_file(path).unwrap();
+        } else {
+            conf.parseColumnFilterOptions(
+                &[r#"{matcher=["db.t"],columns=["*","!secret"]}"#.into()],
+                "",
+                false,
+            )
+            .unwrap();
+        }
+        let conn = Conn::new();
+        seed_writable_columns(&conn, &[("id", ""), ("name", ""), ("secret", "")]);
+        conn.seed_rows(
+            "SELECT `id`,`name`,`secret` FROM `db`.`t` LIMIT 1",
+            projection_rows(
+                &[("id", "INT"), ("name", "VARCHAR"), ("secret", "VARCHAR")],
+                vec![vec![
+                    Some(b"1".to_vec()),
+                    Some(b"alice".to_vec()),
+                    Some(b"hidden1".to_vec()),
+                ]],
+            ),
+        );
+        conn.seed_rows(
+            "SELECT `id`,`name` FROM `db`.`t`",
+            projection_rows(
+                &[("id", "INT"), ("name", "VARCHAR")],
+                vec![
+                    vec![Some(b"1".to_vec()), Some(b"alice".to_vec())],
+                    vec![Some(b"2".to_vec()), Some(b"bob".to_vec())],
+                ],
+            ),
+        );
+        let tctx = tcontext::Background();
+        let mut base = newBaseConn(conn.clone(), false, None);
+        prepareColumnProjection(&tctx, &mut conf, &mut base).unwrap();
+        let meta = dumpTableMeta(
+            &tctx,
+            &conf,
+            &mut base,
+            "db",
+            &projection_table(TableType::TableTypeBase),
+        )
+        .unwrap();
+        let mut data = SelectAllFromTable(&conf, meta.as_ref(), "", "");
+        data.Start(&tctx, &conn).unwrap();
+        let mut output = Output(vec![]);
+        WriteInsertInCsv(
+            &tctx,
+            &conf,
+            meta.as_ref(),
+            data.as_mut(),
+            &mut output,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(output.0).unwrap(),
+            "\"id\",\"name\"\r\n1,\"alice\"\r\n2,\"bob\"\r\n"
+        );
     }
 }

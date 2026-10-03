@@ -44,6 +44,7 @@ pub enum FlagValue {
     String(String),
     // StringSlice 对应 database/filter/tables-list 等可重复或逗号分隔输入。
     StringSlice(Vec<String>),
+    StringArray(Vec<String>),
     // StringToString 目前主要服务 `--params k=v,...`。
     StringToString(HashMap<String, String>),
     Duration(Duration),
@@ -162,6 +163,16 @@ impl FlagSet {
 
     pub fn String(&mut self, name: &str, value: &str, usage: &str) {
         self.define(name, None, usage, FlagValue::String(value.to_string()));
+    }
+
+    pub fn StringArray(&mut self, name: &str, value: Vec<String>, usage: &str) {
+        self.define(name, None, usage, FlagValue::StringArray(value));
+    }
+    pub fn GetStringArray(&self, name: &str) -> Result<Vec<String>, String> {
+        match self.flags.get(name).map(|f| &f.value) {
+            Some(FlagValue::StringArray(v)) => Ok(v.clone()),
+            _ => Err(format!("flag --{name} is not a string array")),
+        }
     }
 
     pub fn StringSliceP(&mut self, name: &str, shorthand: char, value: Vec<String>, usage: &str) {
@@ -398,6 +409,17 @@ impl FlagSet {
                     .parse()
                     .map_err(|_| format!("invalid argument {v:?} for --{name}"))?;
                 self.apply_value(name, FlagValue::Uint64(n))?;
+                Ok(next)
+            }
+            FlagValue::StringArray(_) => {
+                let (value, next) = take_value(name, inline, argv, i)?;
+                let mut values = if self.Changed(name) {
+                    self.GetStringArray(name)?
+                } else {
+                    vec![]
+                };
+                values.push(value);
+                self.apply_value(name, FlagValue::StringArray(values))?;
                 Ok(next)
             }
             FlagValue::StringSlice(_) => {

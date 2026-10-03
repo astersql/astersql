@@ -754,3 +754,29 @@ fn test_pickup_possible_field_prefers_implicit_tidb_rowid() {
         "_tidb_rowid"
     );
 }
+
+#[test]
+fn get_column_types_retries_close_errors_and_discards_failed_metadata() {
+    let conn = Conn::new();
+    let query = "SELECT `id` FROM `db`.`t` LIMIT 1";
+    let mut first = Rows::new(vec!["wrong".into()], vec![vec![Some(b"1".to_vec())]]);
+    first.close_error = Some(errors_new("close failed"));
+    conn.seed_rows(query, first);
+    let mut second = Rows::new(vec!["id".into()], vec![vec![Some(b"1".to_vec())]]);
+    second.col_types[0].database_type_name = "INT".into();
+    conn.seed_rows(query, second);
+    let mut base = newBaseConn(conn.clone(), true, None);
+    let columns = getColumnTypes(&tcontext::Background(), &mut base, "`id`", "db", "t").unwrap();
+    assert_eq!(columns.len(), 1);
+    assert_eq!(columns[0].Name(), "id");
+    assert_eq!(columns[0].DatabaseTypeName(), "INT");
+    assert!(
+        conn.row_responses
+            .lock()
+            .unwrap()
+            .get(query)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(base.backOffer.RemainingAttempts(), dumpChunkRetryTime);
+}

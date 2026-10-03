@@ -282,6 +282,12 @@ pub fn DefineFlags(flags: &mut FlagSet) {
         vec!["*.*".into(), DefaultTableFilter.into()],
         "filter to select which tables to dump",
     );
+    flags.StringArray("column-filter", vec![], "Inline TOML column filter. Repeat for multiple rules; mutually exclusive with --column-filter-file and --sql");
+    flags.String(
+        "column-filter-file",
+        "",
+        "Column filter TOML file; mutually exclusive with --column-filter and --sql",
+    );
     flags.Bool(
         FLAG_CASE_SENSITIVE,
         false,
@@ -502,6 +508,12 @@ pub fn ParseFromFlags(conf: &mut Config, flags: &FlagSet) -> Result<(), String> 
     let file_size_str = flags.GetString(FLAG_FILESIZE)?;
     let filters = flags.GetStringSlice(FLAG_FILTER)?;
     let case_sensitive = flags.GetBool(FLAG_CASE_SENSITIVE)?;
+    conf.parseColumnFilterOptions(
+        &flags.GetStringArray("column-filter")?,
+        &flags.GetString("column-filter-file")?,
+        case_sensitive,
+    )
+    .map_err(|e| e.msg)?;
     let mut output_filename_format = flags.GetString(FLAG_OUTPUT_FILENAME_TEMPLATE)?;
     let params = flags.GetStringToString(FLAG_PARAMS)?;
     // `params` 不在前面直接写入，是因为这里要保留一次性合并的上下文。

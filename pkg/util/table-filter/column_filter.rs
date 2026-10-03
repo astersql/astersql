@@ -32,6 +32,18 @@ pub trait ColumnFilter: Debug {
 pub struct ColumnFilterRules(Vec<columnRule>);
 
 impl ColumnFilterRules {
+    /// First matching rule, including an explicit exclusion. Used when composing rule groups.
+    pub fn match_rule(&self, column: &str) -> Option<bool> {
+        let column: String = column
+            .chars()
+            .map(|ch| ch.to_lowercase().next().unwrap_or(ch))
+            .collect();
+        self.0
+            .iter()
+            .find(|rule| rule.column.matchString(&column))
+            .map(|rule| rule.positive)
+    }
+
     pub fn len(&self) -> usize {
         self.0.len()
     }
@@ -73,15 +85,6 @@ pub fn ParseColumnFilterRules(args: Vec<String>) -> Result<ColumnFilterRules, Fi
 
 impl ColumnFilter for ColumnFilterRules {
     fn MatchColumn(&self, column: &str) -> bool {
-        // Go 的 strings.ToLower 对每个 rune 使用简单大小写映射；Rust 的
-        // str::to_lowercase 可能把一个字符扩展成多个字符（例如 İ -> i + ◌̇）。
-        let column: String = column
-            .chars()
-            .map(|ch| ch.to_lowercase().next().unwrap_or(ch))
-            .collect();
-        self.0
-            .iter()
-            .find(|rule| rule.column.matchString(&column))
-            .is_some_and(|rule| rule.positive)
+        self.match_rule(column).unwrap_or(false)
     }
 }

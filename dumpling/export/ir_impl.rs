@@ -320,7 +320,7 @@ pub struct tableMeta {
     // col_types 同时承担列名、数据库类型和 nullable/precision 等信息来源。
     pub col_types: Vec<ColumnType>,
     pub selected_field: String,
-    pub selected_len: i32,
+    pub source_col_types: Vec<ColumnType>,
     // special comments 会先于 schema/data SQL 输出，用于对齐不同数据库方言习惯。
     pub spec_cmts: Vec<String>,
     pub show_create_table: String,
@@ -330,6 +330,18 @@ pub struct tableMeta {
 }
 
 impl TableMeta for tableMeta {
+    fn sourceColumnNames(&self) -> Vec<String> {
+        self.source_col_types
+            .iter()
+            .map(|c| c.Name().to_owned())
+            .collect()
+    }
+    fn sourceColumnTypes(&self) -> Vec<String> {
+        self.source_col_types
+            .iter()
+            .map(|c| c.DatabaseTypeName().to_owned())
+            .collect()
+    }
     fn ColumnInfos(&self) -> Vec<ColumnInfo> {
         // 这里把底层驱动 `ColumnType` 投影成更稳定的导出层结构体。
         self.col_types
@@ -374,7 +386,7 @@ impl TableMeta for tableMeta {
         &self.selected_field
     }
     fn SelectedLen(&self) -> i32 {
-        self.selected_len
+        self.col_types.len() as i32
     }
     fn SpecialComments(&self) -> Box<dyn StringIter> {
         // 每次都新建迭代器，避免前一次消费位置污染后续 writer。

@@ -19,10 +19,10 @@
 
 use super::{FilterError, matcherParser, tableRule, tableRulesParser};
 use std::fmt::Debug;
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// 表过滤器接口：匹配库表、仅匹配 schema，以及生成小写变体。
-pub trait Filter: Debug {
+pub trait Filter: Debug + Send + Sync {
     fn MatchTable(&self, schema: &str, table: &str) -> bool;
     fn MatchSchema(&self, schema: &str) -> bool;
     fn toLower(&self) -> Box<dyn Filter>;
@@ -51,7 +51,7 @@ pub fn Parse(args: Vec<String>) -> Result<Box<dyn Filter>, FilterError> {
 /// 包装为大小写不敏感：匹配前将输入与规则侧均按小写处理。
 pub fn CaseInsensitive(filter: Box<dyn Filter>) -> Box<dyn Filter> {
     Box::new(loweredFilter {
-        wrapped: Rc::from(filter.toLower()),
+        wrapped: Arc::from(filter.toLower()),
     })
 }
 
@@ -91,7 +91,7 @@ impl Filter for tableFilter {
 #[derive(Debug)]
 /// 将输入库表名转小写后再委托给内层 Filter。
 struct loweredFilter {
-    wrapped: Rc<dyn Filter>,
+    wrapped: Arc<dyn Filter>,
 }
 
 // Go strings.ToLower maps each rune independently, without expansions or
@@ -115,7 +115,7 @@ impl Filter for loweredFilter {
 
     fn toLower(&self) -> Box<dyn Filter> {
         Box::new(loweredFilter {
-            wrapped: Rc::clone(&self.wrapped),
+            wrapped: Arc::clone(&self.wrapped),
         })
     }
 }

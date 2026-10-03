@@ -131,6 +131,8 @@ pub struct Config {
     pub StatementSize: u64,
     pub SessionParams: HashMap<String, String>,
     pub Tables: DatabaseTables,
+    pub columnFilter: columnFilterConfig,
+    pub columnProjection: HashMap<(String, String), columnProjection>,
     // Collation / CSV dialect / partitions 都是格式兼容和范围裁剪的细节选项。
     pub CollationCompatible: String,
     pub CsvOutputDialect: CSVDialect,
@@ -199,6 +201,8 @@ pub fn DefaultConfig() -> Config {
         ServerInfo: ServerInfoUnknown(),
         SortByPk: true,
         Tables: HashMap::new(),
+        columnFilter: columnFilterConfig::default(),
+        columnProjection: HashMap::new(),
         Snapshot: String::new(),
         Consistency: ConsistencyTypeAuto.to_string(),
         // 视图/序列默认不导，和上游 dumpling 的保守策略一致。
@@ -358,6 +362,8 @@ impl Config {
             StatementSize: self.StatementSize,
             SessionParams: self.SessionParams.clone(),
             Tables: self.Tables.clone(),
+            columnFilter: self.columnFilter.clone(),
+            columnProjection: self.columnProjection.clone(),
             // 格式兼容项和分区列表也应继承，否则副本很容易跑出不同结果。
             CollationCompatible: self.CollationCompatible.clone(),
             CsvOutputDialect: self.CsvOutputDialect,
@@ -603,6 +609,7 @@ pub struct FlagSet {
     values: HashMap<String, String>,
     changed: HashSet<String>,
     defaults: HashMap<String, String>,
+    arrays: HashMap<String, Vec<String>>,
 }
 
 impl FlagSet {
@@ -628,6 +635,19 @@ impl FlagSet {
     pub fn StringSlice(&mut self, name: &str, default: &[&str], _usage: &str) {
         self.String(name, &default.join(","), _usage);
     }
+    pub fn StringArray(&mut self, name: &str) {
+        self.arrays.insert(name.into(), vec![]);
+    }
+    pub fn GetStringArray(&self, name: &str) -> Vec<String> {
+        self.arrays.get(name).cloned().unwrap_or_default()
+    }
+    fn setFlagValue(&mut self, name: &str, value: &str) {
+        if let Some(array) = self.arrays.get_mut(name) {
+            array.push(value.into());
+        } else {
+            self.values.insert(name.into(), value.into());
+        }
+    }
     pub fn Parse(&mut self, args: &[&str]) -> Result<()> {
         // 这里只实现 `--name value` 和 `--name=value` 两种最常见形式。
         // 其目的不是替代真正 pflag，而是给配置测试提供一个稳定输入面。
@@ -639,7 +659,7 @@ impl FlagSet {
             }
             let name = a.trim_start_matches('-');
             if let Some((n, v)) = name.split_once('=') {
-                self.values.insert(n.to_string(), v.to_string());
+                self.setFlagValue(n, v);
                 self.changed.insert(n.to_string());
                 i += 1;
                 continue;
@@ -659,7 +679,7 @@ impl FlagSet {
                 // 对缺值参数直接报错，避免静默吞掉下一个 flag。
                 return Err(errors_new(format!("flag --{name} needs a value")));
             }
-            self.values.insert(name.to_string(), args[i].to_string());
+            self.setFlagValue(name, args[i]);
             self.changed.insert(name.to_string());
             i += 1;
         }
@@ -712,6 +732,9 @@ impl Config {
         // 数据源与筛选入口。
         flags.String("database", "", "");
         flags.StringSlice("tables-list", &[], "");
+        flags.StringArray("column-filter");
+        flags.String("column-filter-file", "", "");
+        flags.Bool("case-sensitive", false, "");
         // 连接参数。
         flags.String("host", &self.Host, "");
         flags.String("user", &self.User, "");
@@ -835,6 +858,11 @@ impl Config {
         let tables_list = flags.GetStringSlice("tables-list");
         let file_size_str = flags.GetString("filesize");
         let filters = flags.GetStringSlice("filter");
+        self.parseColumnFilterOptions(
+            &flags.GetStringArray("column-filter"),
+            &flags.GetString("column-filter-file"),
+            flags.GetBool("case-sensitive"),
+        )?;
         let mut output_filename_format = flags.GetString("output-filename-template");
         // 表清单、结构化表集合和过滤器三者需要在这里同时推导完成。
         // 这样下游无论消费显式表集合还是 pattern filter，都能看到一致结果。

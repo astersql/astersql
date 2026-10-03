@@ -49,6 +49,7 @@ include!("sql_type.rs");
 // writer_util / config / retry / util 提供公共辅助逻辑，位于主流程模块之前方便共享。
 include!("writer_util.rs");
 include!("config.rs");
+include!("column_filter.rs");
 include!("block_allow_list.rs");
 include!("retry.rs");
 include!("util.rs");

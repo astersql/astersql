@@ -2816,7 +2816,9 @@ dependencies = [
  "astersql-dumpling-context",
  "astersql-dumpling-log",
  "astersql-objstore-storeapi",
+ "astersql-util-table-filter",
  "parquet",
+ "toml",
 ]
 
 [[package]]
@@ -20224,6 +20226,7 @@ version = "0.8.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc1beb996b9d83529a9e75c17a1686767d148d70663143c7854d8b4a09ced362"
 dependencies = [
+ "indexmap 2.14.0",
  "serde",
  "serde_spanned",
  "toml_datetime 0.6.11",

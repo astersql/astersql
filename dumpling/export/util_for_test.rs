@@ -94,8 +94,6 @@ pub struct mockTableIR {
     pub data: Vec<Vec<Option<Vec<u8>>>>,
     // selected_field 写入 INSERT 列列表段，默认 "*"。
     pub selected_field: String,
-    // selected_len 影响 CSV header 列数判定。
-    pub selected_len: i32,
     pub spec_cmt: Vec<String>,
     // col_types/col_names 驱动 MakeRowReceiver 与列元数据。
     pub col_types: Vec<String>,
@@ -125,7 +123,6 @@ impl mockTableIR {
             chunk_index: 0,
             data,
             selected_field: "*".into(),
-            selected_len: col_types.len() as i32,
             spec_cmt: special_comments.iter().map(|s| (*s).to_string()).collect(),
             col_types: col_types.iter().map(|s| (*s).to_string()).collect(),
             col_names: col_types.iter().map(|s| (*s).to_string()).collect(),
@@ -136,7 +133,7 @@ impl mockTableIR {
         }
     }
 
-    // with_column_info 从 ColumnInfo 推导 col_types/col_names/selected_len。
+    // with_column_info 从 ColumnInfo 推导 col_types/col_names。
     pub fn with_column_info(
         database_name: &str,
         table_name: &str,
@@ -146,14 +143,12 @@ impl mockTableIR {
     ) -> Self {
         let col_types: Vec<String> = infos.iter().map(|i| i.DatabaseTypeName.clone()).collect();
         let col_names: Vec<String> = infos.iter().map(|i| i.Name.clone()).collect();
-        let selected_len = infos.len() as i32;
         Self {
             db_name: database_name.into(),
             tbl_name: table_name.into(),
             chunk_index: 0,
             data,
             selected_field: "*".into(),
-            selected_len,
             spec_cmt: special_comments.iter().map(|s| (*s).to_string()).collect(),
             col_types,
             col_names,
@@ -189,7 +184,7 @@ impl TableMeta for mockTableIR {
     }
     fn SelectedLen(&self) -> i32 {
         // CSV header 与 INSERT 列段均参考此长度。
-        self.selected_len
+        self.col_types.len() as i32
     }
     fn SpecialComments(&self) -> Box<dyn StringIter> {
         newStringIter(self.spec_cmt.clone())

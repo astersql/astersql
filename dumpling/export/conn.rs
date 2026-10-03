@@ -37,6 +37,30 @@ impl BaseConn {
         &mut self,
         tctx: &tcontext::Context,
         mut handle_one_row: F,
+        reset: R,
+        query: &str,
+    ) -> Result<()>
+    where
+        F: FnMut(&mut Rows) -> Result<()>,
+        R: FnMut(),
+    {
+        self.queryRows(
+            tctx,
+            |rows| {
+                while rows.Next() {
+                    handle_one_row(rows)?;
+                }
+                Ok(())
+            },
+            reset,
+            query,
+        )
+    }
+
+    pub fn queryRows<F, R>(
+        &mut self,
+        tctx: &tcontext::Context,
+        mut handle_rows: F,
         mut reset: R,
         query: &str,
     ) -> Result<()>
@@ -44,45 +68,44 @@ impl BaseConn {
         F: FnMut(&mut Rows) -> Result<()>,
         R: FnMut(),
     {
-        // retry_time 从 1 开始计数，便于日志直接反映当前是第几次尝试。
         let mut retry_time = 0;
-        let done = tctx.Done();
         let result = WithRetry(
-            done,
+            tctx.Done(),
             || {
                 retry_time += 1;
                 if retry_time > 1 {
-                    // 首次直接使用现有连接，后续重试才尝试重建连接。
-                    // 避免每次执行前都无意义重连，只有确认前一轮失败后才付出代价。
                     if let Some(rebuild) = &self.rebuildConnFn {
                         let old = self.DBConn.as_ref().unwrap().clone();
                         self.DBConn = Some(rebuild(&old, false)?);
                     }
                 }
-                let conn = self.DBConn.as_ref().unwrap();
-                match simpleQueryWithArgs(tctx, conn, &mut handle_one_row, query) {
-                    Ok(()) => Ok(()),
-                    Err(err) => {
-                        // 失败时记录 SQL 与重试次数，便于排查是否是瞬时连接问题。
-                        tctx.L().Info(
-                            "cannot execute query",
-                            [
-                                Field::string("retryTime", (retry_time as i64).to_string()),
-                                Field::string("sql", query.to_string()),
-                                Field::string("error", err.msg.clone()),
-                            ],
-                        );
-                        // reset 由调用方提供，用来清理已经部分累计的查询状态。
-                        // 没有这一步的话，下一轮重试成功后可能把旧结果重复追加进去。
-                        reset();
-                        Err(err)
-                    }
+                let attempt =
+                    self.DBConn
+                        .as_ref()
+                        .unwrap()
+                        .QueryContext(query)
+                        .and_then(|mut rows| {
+                            let result =
+                                handle_rows(&mut rows).and_then(|_| rows.Err().map_or(Ok(()), Err));
+                            let _ = rows.Close();
+                            result
+                        });
+                if let Err(err) = attempt {
+                    tctx.L().Info(
+                        "cannot execute query",
+                        [
+                            Field::string("retryTime", retry_time.to_string()),
+                            Field::string("sql", query),
+                            Field::string("error", err.msg.clone()),
+                        ],
+                    );
+                    reset();
+                    return Err(errors_annotatef(err, format!("sql: {query}, args: []")));
                 }
+                Ok(())
             },
             self.backOffer.as_mut(),
         );
-        // 无论成功还是失败，都要把 backoff 状态清空，避免污染下一条 SQL。
-        // 同一个 BaseConn 往往会连续执行多条语句，因此 reset 是必须的。
         self.backOffer.Reset();
         result
     }
@@ -93,75 +116,17 @@ impl BaseConn {
         columns: &[&str],
         query: &str,
     ) -> Result<Vec<Vec<String>>> {
-        let mut retry_time = 0;
-        // results 放在闭包外，便于重试成功后把最终结果带出。
-        // 同时这也要求失败时显式 clear，不能让半截结果泄露给调用方。
-        let mut results = Vec::new();
-        let done = tctx.Done();
-        let result = WithRetry(
-            done,
-            || {
-                retry_time += 1;
-                if retry_time > 1 {
-                    // 重试时的重建失败也要写日志，因为它会直接阻断后续查询。
-                    if let Some(rebuild) = &self.rebuildConnFn {
-                        let old = self.DBConn.as_ref().unwrap().clone();
-                        match rebuild(&old, false) {
-                            Ok(c) => self.DBConn = Some(c),
-                            Err(err) => {
-                                // 重建阶段失败说明连“重新拿到可用连接”都做不到，应尽快终止。
-                                tctx.L().Warn(
-                                    "rebuild connection failed",
-                                    [Field::string("error", err.msg.clone())],
-                                );
-                                return Err(err);
-                            }
-                        }
-                    }
-                }
-                let conn = self.DBConn.as_ref().unwrap();
-                let mut rows = match conn.QueryContext(query) {
-                    Ok(r) => r,
-                    Err(err) => {
-                        // QueryContext 失败时直接包装 sql 文本，方便日志和错误链一起看。
-                        tctx.L().Info(
-                            "cannot execute query",
-                            [
-                                Field::string("retryTime", (retry_time as i64).to_string()),
-                                Field::string("sql", query.to_string()),
-                                Field::string("error", err.msg.clone()),
-                            ],
-                        );
-                        return Err(errors_annotatef(err, format!("sql: {query}")));
-                    }
-                };
-                match GetSpecifiedColumnValuesAndClose(&mut rows, columns) {
-                    Ok(r) => {
-                        // 只有完整读取并关闭 rows 成功后，才更新结果集。
-                        // 这能保证返回值始终来自同一轮成功尝试。
-                        results = r;
-                        Ok(())
-                    }
-                    Err(err) => {
-                        tctx.L().Info(
-                            "cannot execute query",
-                            [
-                                Field::string("retryTime", (retry_time as i64).to_string()),
-                                Field::string("sql", query.to_string()),
-                                Field::string("error", err.msg.clone()),
-                            ],
-                        );
-                        // 失败后清空部分结果，防止调用方误拿到半截数据。
-                        results.clear();
-                        Err(errors_annotatef(err, format!("sql: {query}")))
-                    }
-                }
+        let results = std::cell::RefCell::new(Vec::new());
+        self.queryRows(
+            tctx,
+            |rows| {
+                *results.borrow_mut() = GetSpecifiedColumnValuesAndClose(rows, columns)?;
+                Ok(())
             },
-            self.backOffer.as_mut(),
-        );
-        self.backOffer.Reset();
-        result?;
-        Ok(results)
+            || results.borrow_mut().clear(),
+            query,
+        )?;
+        Ok(results.into_inner())
     }
 
     pub fn ExecSQL<F>(

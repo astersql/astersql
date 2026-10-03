@@ -97,6 +97,9 @@ impl Dumper {
     }
 
     pub fn Dump(&mut self) -> Result<()> {
+        if !self.conf.columnFilter.Filters.is_empty() {
+            validateColumnFilterOptions(&self.conf, "column-filter-file")?;
+        }
         self.metrics.registerTo(self.conf.PromRegistry.as_ref());
         let db = self
             .db
@@ -146,6 +149,16 @@ impl Dumper {
                 canRebuildConn(&self.conf.Consistency, self.conf.TransactionalConsistency),
                 None,
             );
+            if self.conf.SQL.is_empty() && !self.conf.columnFilter.Filters.is_empty() {
+                let mut conf = self.conf.clone_for_mutate();
+                if let Err(err) = prepareColumnProjection(&self.tctx, &mut conf, &mut meta_conn) {
+                    if let Some(conn) = meta_conn.DBConn.take() {
+                        let _ = conn.Close();
+                    }
+                    return Err(err);
+                }
+                self.conf = Arc::new(conf);
+            }
             let (tx, rx) = std::sync::mpsc::channel::<TaskEnum>();
             let produce_result = self.dumpDatabases(&mut meta_conn, tx);
             if let Some(conn) = meta_conn.DBConn.take() {
@@ -306,7 +319,7 @@ impl Dumper {
             table: "result".into(),
             col_types: vec![],
             selected_field: String::new(),
-            selected_len: 0,
+            source_col_types: vec![],
             spec_cmts: getSpecialComments(self.conf.ServerInfo.ServerType),
             show_create_table: String::new(),
             show_create_view: String::new(),
@@ -574,25 +587,26 @@ pub fn dumpTableMeta(
     db: &str,
     table: &TableInfo,
 ) -> Result<Box<dyn TableMeta>> {
-    // selected_field / selected_len 由列选择逻辑给出，后续 writer 直接依赖它们。
-    let (selected_field, selected_len) =
-        buildSelectField(tctx, conn, db, &table.Name, conf.CompleteInsert)?;
+    let projection = match conf
+        .columnProjection
+        .get(&(db.to_owned(), table.Name.clone()))
+    {
+        Some(projection) => projection.clone(),
+        None if !conf.columnFilter.Filters.is_empty() => {
+            return Err(errors_new(format!(
+                "missing column projection for table `{}`.`{}`",
+                escapeString(db),
+                escapeString(&table.Name)
+            )));
+        }
+        None => buildColumnProjection(tctx, conf, conn, db, table)?,
+    };
     let mut has_implicit_row_id = false;
     if conf.ServerInfo.ServerType == ServerType::ServerTypeTiDB {
         if let Ok(has_row_id) = SelectTiDBRowID(tctx, conn, db, &table.Name) {
             has_implicit_row_id = has_row_id;
         }
     }
-    let col_types = if table.Type == TableType::TableTypeBase {
-        let fields = if selected_field.is_empty() {
-            "*"
-        } else {
-            &selected_field
-        };
-        getColumnTypes(tctx, conn, fields, db, &table.Name)?
-    } else {
-        Vec::new()
-    };
     let (show_create_table, show_create_view) = if conf.NoSchemas {
         (String::new(), String::new())
     } else {
@@ -610,9 +624,9 @@ pub fn dumpTableMeta(
     Ok(Box::new(tableMeta {
         database: db.to_string(),
         table: table.Name.clone(),
-        col_types,
-        selected_field,
-        selected_len,
+        col_types: projection.selectedTypes,
+        source_col_types: projection.sourceTypes,
+        selected_field: projection.selectField,
         spec_cmts: getSpecialComments(conf.ServerInfo.ServerType),
         show_create_table,
         show_create_view,
@@ -635,11 +649,12 @@ fn getColumnTypes(
         escapeString(table)
     );
     let col_types = std::cell::RefCell::new(Vec::new());
-    conn.QuerySQL(
+    conn.queryRows(
         tctx,
         |rows| {
             *col_types.borrow_mut() = rows.ColumnTypes()?;
-            rows.Close()
+            rows.Close()?;
+            rows.Err().map_or(Ok(()), Err)
         },
         || col_types.borrow_mut().clear(),
         &query,
@@ -847,4 +862,92 @@ fn runGCProtectionUpdater<U, C>(
             return;
         }
     }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct columnProjection {
+    pub sourceTypes: Vec<ColumnType>,
+    pub selectedTypes: Vec<ColumnType>,
+    pub selectField: String,
+}
+
+pub fn prepareColumnProjection(
+    tctx: &tcontext::Context,
+    conf: &mut Config,
+    conn: &mut BaseConn,
+) -> Result<()> {
+    conf.columnProjection = HashMap::with_capacity(calculateTableCount(&conf.Tables) as usize);
+    for (db, tables) in &conf.Tables {
+        for table in tables {
+            let projection = buildColumnProjection(tctx, conf, conn, db, table)?;
+            conf.columnProjection
+                .insert((db.clone(), table.Name.clone()), projection);
+        }
+    }
+    Ok(())
+}
+
+pub fn buildColumnProjection(
+    tctx: &tcontext::Context,
+    conf: &Config,
+    conn: &mut BaseConn,
+    database: &str,
+    table: &TableInfo,
+) -> Result<columnProjection> {
+    if table.Type != TableType::TableTypeBase {
+        return Ok(columnProjection::default());
+    }
+    let (source, generated) = getWritableColumnNames(tctx, conn, database, &table.Name)?;
+    let (selected, indexes) = conf
+        .columnFilter
+        .applyToColumns(database, &table.Name, &source)?;
+    if selected.is_empty() {
+        return Ok(columnProjection::default());
+    }
+    let selectField = if !generated && source.len() == selected.len() && !conf.CompleteInsert {
+        "*".to_owned()
+    } else {
+        columnNamesToSelectFields(&selected).join(",")
+    };
+    let sourceTypes = getColumnTypes(
+        tctx,
+        conn,
+        &columnNamesToSelectFields(&source).join(","),
+        database,
+        &table.Name,
+    )?;
+    let selectedTypes = indexes
+        .into_iter()
+        .map(|i| sourceTypes[i].clone())
+        .collect();
+    Ok(columnProjection {
+        sourceTypes,
+        selectedTypes,
+        selectField,
+    })
+}
+
+pub fn columnNamesToSelectFields(columns: &[String]) -> Vec<String> {
+    columns.iter().map(|c| wrapBackTicks(c)).collect()
+}
+
+pub fn tableSourceColumnNames(meta: &dyn TableMeta) -> Vec<String> {
+    meta.sourceColumnNames()
+}
+pub fn tableSourceColumnTypes(meta: &dyn TableMeta) -> Vec<String> {
+    meta.sourceColumnTypes()
+}
+
+pub fn GetPrimaryKeyAndColumnTypes(
+    tctx: &tcontext::Context,
+    conn: &mut BaseConn,
+    meta: &dyn TableMeta,
+) -> Result<(Vec<String>, Vec<String>)> {
+    let names = GetPrimaryKeyColumns(tctx, conn, meta.DatabaseName(), meta.TableName())?;
+    let types = string2Map(&tableSourceColumnNames(meta), &tableSourceColumnTypes(meta));
+    let column_types = names
+        .iter()
+        .map(|n| types.get(n).cloned().unwrap_or_default())
+        .collect();
+    Ok((names, column_types))
 }

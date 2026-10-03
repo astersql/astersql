@@ -24,3 +24,6 @@ parquet = { git = "https://github.com/astersql/arrow-rs.git", tag = "astersql-pa
 
 "astersql-dumpformat-csvfile" = { path = "../../pkg/dumpformat/csvfile" }
 "astersql-objstore-storeapi" = { path = "../../pkg/objstore/storeapi" }
+
+toml = { version = "0.8.23", features = ["preserve_order"] }
+"astersql-util-table-filter" = { path = "../../pkg/util/table-filter" }

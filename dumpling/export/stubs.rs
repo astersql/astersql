@@ -329,6 +329,7 @@ pub struct Rows {
     pub idx: isize,
     pub closed: bool,
     pub err: Option<Error>,
+    pub close_error: Option<Error>,
 }
 // 结果集迭代：Next/Scan/Columns/Close。
 // 结果集迭代：Next/Scan/Columns/Close。
@@ -352,6 +353,7 @@ impl Rows {
             idx: -1,
             closed: false,
             err: None,
+            close_error: None,
         }
     }
     // 游标前进，closed 或越界时返回 false。
@@ -391,7 +393,7 @@ impl Rows {
     // 标记 closed，后续 Next 恒 false。
     pub fn Close(&mut self) -> Result<()> {
         self.closed = true;
-        Ok(())
+        self.close_error.take().map_or(Ok(()), Err)
     }
     // 迭代过程中设置的行级错误。
     pub fn Err(&self) -> Option<Error> {
@@ -425,6 +427,7 @@ pub struct Conn {
     pub fail_query: Arc<Mutex<Option<Error>>>,
     pub fail_queue: Arc<Mutex<VecDeque<Error>>>,
     pub ping_err: Arc<Mutex<Option<Error>>>,
+    pub row_responses: Arc<Mutex<HashMap<String, std::collections::VecDeque<Rows>>>>,
 }
 // 脚本化 Query/Exec/Ping：exact 优先再模糊匹配 SQL。
 impl Conn {
@@ -444,6 +447,15 @@ impl Conn {
             .entry(query.to_string())
             .or_default()
             .push_back(data);
+    }
+    // Preserve driver column metadata and errors independently of whether any row exists.
+    pub fn seed_rows(&self, query: &str, rows: Rows) {
+        self.row_responses
+            .lock()
+            .unwrap()
+            .entry(query.into())
+            .or_default()
+            .push_back(rows);
     }
     // 向 fail_queue 追加下一次 Query/Exec 应返回的错误。
     pub fn push_fail(&self, err: Error) {
@@ -492,6 +504,15 @@ impl Conn {
     pub fn QueryContext(&self, query: &str) -> Result<Rows> {
         if let Some(err) = self.take_fail() {
             return Err(err);
+        }
+        if let Some(rows) = self
+            .row_responses
+            .lock()
+            .unwrap()
+            .get_mut(query)
+            .and_then(|queue| queue.pop_front())
+        {
+            return Ok(rows);
         }
         let (cols, data) = self.lookup_scripted(query);
         Ok(Rows::new(cols, data))
@@ -578,6 +599,7 @@ impl DB {
             fail_query: self.fail_query.clone(),
             fail_queue: self.fail_queue.clone(),
             ping_err: Arc::new(Mutex::new(None)),
+            row_responses: Arc::new(Mutex::new(HashMap::new())),
         })
     }
     pub fn Close(&self) -> Result<()> {

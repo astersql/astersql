@@ -56,7 +56,7 @@ pub struct columnRule {
 }
 
 /// 名称匹配器接口：单串匹配、是否匹配任意串、转小写变体。
-pub trait matcher: Debug {
+pub trait matcher: Debug + Send + Sync {
     fn matchString(&self, name: &str) -> bool;
     fn matchAllStrings(&self) -> bool;
     fn toLower(&self) -> Box<dyn matcher>;
