@@ -113,15 +113,20 @@ fn catalog_projection_variants() {
         .into_iter()
         .find(|s| s.name.lower == "catalog_projection_live")
         .unwrap();
-    assert!(response.iter().any(|m| *m
-        == (
+    assert!(response.iter().any(|m| {
+        *m == (
             b'D',
             row(&[
                 Some("catalog_projection_live"),
-                Some(&schema.id.to_string()),
-                None
-            ])
-        )));
+                Some(
+                    &crate::pg_catalog::namespace_oid(schema.id)
+                        .unwrap()
+                        .to_string(),
+                ),
+                None,
+            ]),
+        )
+    }));
     assert_eq!(
         columns(&response[0].1),
         vec![
@@ -130,7 +135,9 @@ fn catalog_projection_variants() {
             ("absent".into(), 25)
         ]
     );
-    let expected_id = schema.id.to_string();
+    let expected_id = crate::pg_catalog::namespace_oid(schema.id)
+        .unwrap()
+        .to_string();
     for sql in [
         "SELECT datname FROM pg_catalog.pg_database WHERE datname = 'catalog_projection_live'",
         "SELECT datname AS name FROM pg_catalog.pg_database WHERE datname = 'catalog_projection_live' ORDER BY name",
@@ -238,7 +245,14 @@ fn catalog_projection_variants() {
         executed[1],
         (
             b'D',
-            row(&[Some("catalog_after_parse"), Some(&latest.id.to_string())])
+            row(&[
+                Some("catalog_after_parse"),
+                Some(
+                    &crate::pg_catalog::namespace_oid(latest.id)
+                        .unwrap()
+                        .to_string()
+                )
+            ])
         )
     );
     send(&mut socket, b'X', b"");
@@ -317,7 +331,11 @@ fn catalog_database_description_semantics() {
         (
             b'D',
             row(&[
-                Some(&schema.id.to_string()),
+                Some(
+                    &crate::pg_catalog::namespace_oid(schema.id)
+                        .unwrap()
+                        .to_string()
+                ),
                 Some("catalog_description_live"),
                 None,
                 Some("f"),

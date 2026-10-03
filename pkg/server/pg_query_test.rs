@@ -388,7 +388,14 @@ fn datagrip_catalog_live_metadata() {
         .into_iter()
         .find(|schema| schema.name.lower == "pg_catalog_live")
         .unwrap();
-    assert_eq!(created[0], Some(schema.id.to_string()));
+    assert_eq!(
+        created[0],
+        Some(
+            crate::pg_catalog::namespace_oid(schema.id)
+                .unwrap()
+                .to_string()
+        )
+    );
     assert_eq!(created[2], None);
     assert_eq!(created[3].as_deref(), Some("f"));
     assert_eq!(created[4].as_deref(), Some("t"));
@@ -463,15 +470,13 @@ fn datagrip_catalog_live_metadata() {
 #[test]
 fn namespace_catalog_live_metadata() {
     use crate::pg_catalog::namespace_oid;
-    assert_eq!(namespace_oid(1).unwrap(), 2);
-    assert_eq!(namespace_oid(-1).unwrap(), 1);
-    assert_eq!(namespace_oid(-2000).unwrap(), 3999);
-    assert_eq!(
-        namespace_oid(i64::from(u32::MAX / 2)).unwrap(),
-        i64::from(u32::MAX - 1)
-    );
-    assert_eq!(namespace_oid(-2147483648).unwrap(), i64::from(u32::MAX));
-    for id in [0, 2147483648, -2147483649, i64::MIN, i64::MAX] {
+    assert_eq!(namespace_oid(1).unwrap(), 16386);
+    assert_eq!(namespace_oid(-1).unwrap(), 16385);
+    assert_eq!(namespace_oid(-2000).unwrap(), 20383);
+    let max = (0x4000_0000i64 - 16384 - 1) / 2;
+    assert_eq!(namespace_oid(max).unwrap(), 16384 + max * 2);
+    assert_eq!(namespace_oid(-(max + 1)).unwrap(), 0x3fff_ffff);
+    for id in [0, max + 1, -(max + 2), i64::MIN, i64::MAX] {
         assert!(namespace_oid(id).is_err(), "{id}");
     }
     let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
@@ -552,7 +557,10 @@ fn namespace_catalog_live_metadata() {
         .into_iter()
         .find(|s| s.name.lower == "namespace_live")
         .unwrap();
-    assert_eq!(created[0], Some((native.id * 2).to_string()));
+    assert_eq!(
+        created[0],
+        Some(namespace_oid(native.id).unwrap().to_string())
+    );
     let mut second = TcpStream::connect(addr).unwrap();
     second
         .set_read_timeout(Some(Duration::from_secs(5)))
@@ -613,7 +621,7 @@ fn tablespace_catalog_empty_relation() {
         (
             "SELECT T.oid, T.spcname, T.spcowner, T.spcacl, T.spcoptions, D.description, pg_catalog.pg_get_userbyid(T.spcowner) AS owner FROM pg_catalog.pg_tablespace T LEFT JOIN pg_catalog.pg_shdescription D ON T.oid = D.objoid ORDER BY T.oid",
             vec![
-                ("oid", 20),
+                ("oid", 26),
                 ("spcname", 25),
                 ("spcowner", 20),
                 ("spcacl", 25),

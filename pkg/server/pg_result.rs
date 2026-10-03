@@ -233,6 +233,8 @@ fn pg_type(column: &ColumnInfo, native: Option<&NativeType>) -> io::Result<(u32,
     }
     let unsigned = flags & astersql_parser_mysql::r#type::UnsignedFlag != 0;
     Ok(match code {
+        crate::pg_oid::OID_TYPE => (26, 4),
+        crate::pg_oid::REGCLASS_TYPE => (2205, 4),
         1 => (21, 2), // tinyint fits int2, including unsigned
         2 if unsigned => (23, 4),
         2 => (21, 2),

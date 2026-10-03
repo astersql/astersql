@@ -114,16 +114,16 @@ impl CatalogQuery {
         if belongs_main {
             let boolean = astersql_parser_mysql::r#type::IsBooleanFlag;
             let field = match (main.name.as_str(), name) {
-                ("pg_database", "oid") => Some((0, 8, 0)),
+                ("pg_database", "oid") => Some((0, crate::pg_oid::OID_TYPE, 0)),
                 ("pg_database", "datname") => Some((1, 253, 0)),
                 ("pg_database", "datistemplate") => Some((3, 1, boolean)),
                 ("pg_database", "datallowconn") => Some((4, 1, boolean)),
                 ("pg_database", "datdba") => Some((5, 8, 0)),
-                ("pg_namespace", "oid") => Some((0, 8, 0)),
+                ("pg_namespace", "oid") => Some((0, crate::pg_oid::OID_TYPE, 0)),
                 ("pg_namespace", "nspname") => Some((1, 253, 0)),
                 ("pg_namespace", "nspowner") => Some((5, 8, 0)),
                 ("pg_namespace", "xmin") => Some((8, 8, 0)),
-                ("pg_tablespace", "oid") => Some((0, 8, 0)),
+                ("pg_tablespace", "oid") => Some((0, crate::pg_oid::OID_TYPE, 0)),
                 ("pg_tablespace", "spcname") => Some((1, 253, 0)),
                 ("pg_tablespace", "spcowner") => Some((5, 8, 0)),
                 // Optional ACL/options use the bounded catalog's nullable text
@@ -167,6 +167,8 @@ impl CatalogQuery {
                     match target {
                         CastType::Bigint => 8,
                         CastType::Varchar => 253,
+                        CastType::Oid => crate::pg_oid::OID_TYPE,
+                        CastType::Regclass => crate::pg_oid::REGCLASS_TYPE,
                     },
                     0,
                 ))
@@ -206,7 +208,13 @@ impl CatalogQuery {
                 let left_type = self.expr_type(left)?.0;
                 let right_type = self.expr_type(right)?.0;
                 if left_type != right_type
-                    && !(matches!(left_type, 3 | 8) && matches!(right_type, 3 | 8))
+                    && !(matches!(
+                        left_type,
+                        3 | 8 | crate::pg_oid::OID_TYPE | crate::pg_oid::REGCLASS_TYPE
+                    ) && matches!(
+                        right_type,
+                        3 | 8 | crate::pg_oid::OID_TYPE | crate::pg_oid::REGCLASS_TYPE
+                    ))
                 {
                     return Err(("0A000", "incompatible catalog equality types".into()));
                 }
@@ -280,11 +288,12 @@ impl CatalogQuery {
     }
     pub(crate) fn execute(&self, context: &dyn TiDBContext) -> ConnResult<QueryResult> {
         let metadata = self.metadata();
+        let snapshot = context.schema_snapshot();
         let mut database = String::new();
         let rows = match self.select.from.name.as_str() {
             "pg_database" | "pg_namespace" => {
-                let snapshot = context
-                    .schema_snapshot()
+                let snapshot = snapshot
+                    .as_ref()
                     .ok_or_else(|| ConnError::Session("schema snapshot is unavailable".into()))?;
                 let current =
                     context.execute_query("SELECT DATABASE()", false, &CancellationToken::new())?;
@@ -313,11 +322,8 @@ impl CatalogQuery {
                 schemas
                     .into_iter()
                     .map(|schema| {
-                        let oid = if self.select.from.name == "pg_namespace" {
-                            namespace_oid(schema.id)?
-                        } else {
-                            schema.id
-                        };
+                        // Both projections refer to the same native database object.
+                        let oid = namespace_oid(schema.id)?;
                         Ok(vec![
                             Value::Signed(oid),
                             Value::Text(schema.name.original.clone()),
@@ -380,7 +386,7 @@ impl CatalogQuery {
             }
             _ => unreachable!("validated catalog provider"),
         };
-        let rows = self.project(rows, &database)?;
+        let rows = self.project(rows, &database, snapshot.as_deref())?;
         Ok(QueryResult {
             columns: metadata.columns,
             native_types: metadata.native_types,
@@ -390,8 +396,14 @@ impl CatalogQuery {
             result_set: None,
         })
     }
-    fn evaluate(&self, expr: &Expr, row: &[Value], database: &str) -> ConnResult<Value> {
-        let evaluate = |expr: &Expr| self.evaluate(expr, row, database);
+    fn evaluate(
+        &self,
+        expr: &Expr,
+        row: &[Value],
+        database: &str,
+        snapshot: Option<&dyn astersql_infoschema::InfoSchema>,
+    ) -> ConnResult<Value> {
+        let evaluate = |expr: &Expr| self.evaluate(expr, row, database, snapshot);
         Ok(match expr {
             Expr::Column(path) => row[self.column(path).expect("validated column").0].clone(),
             Expr::Null => Value::Null,
@@ -400,7 +412,43 @@ impl CatalogQuery {
             Expr::Cast(inner, target) => match (evaluate(inner)?, target) {
                 (Value::Null, _) => Value::Null,
                 (Value::Signed(n), CastType::Bigint) => Value::Signed(n),
-                (Value::Signed(n), CastType::Varchar) => Value::Text(n.to_string()),
+                (Value::Signed(n), CastType::Oid | CastType::Regclass) => {
+                    Value::Signed(i64::from(u32::try_from(n).map_err(|_| {
+                        ConnError::Session("PG oid conversion out of range".into())
+                    })?))
+                }
+                (Value::Text(s), CastType::Oid) => Value::Signed(i64::from(
+                    u32::try_from(
+                        s.trim()
+                            .parse::<i128>()
+                            .map_err(|_| ConnError::Session("invalid PG oid input".into()))?,
+                    )
+                    .map_err(|_| ConnError::Session("PG oid conversion out of range".into()))?,
+                )),
+                (Value::Text(s), CastType::Regclass) => {
+                    let snapshot = snapshot.ok_or_else(|| {
+                        ConnError::Session("schema snapshot is unavailable".into())
+                    })?;
+                    Value::Signed(i64::from(crate::pg_oid::resolve(&s, database, snapshot)?))
+                }
+                (Value::Signed(n), CastType::Varchar) => {
+                    if self.expr_type(inner).expect("validated expression").0
+                        == crate::pg_oid::REGCLASS_TYPE
+                    {
+                        let snapshot = snapshot.ok_or_else(|| {
+                            ConnError::Session("schema snapshot is unavailable".into())
+                        })?;
+                        Value::Text(crate::pg_oid::display(
+                            u32::try_from(n).map_err(|_| {
+                                ConnError::Session("PG oid conversion out of range".into())
+                            })?,
+                            database,
+                            snapshot,
+                        )?)
+                    } else {
+                        Value::Text(n.to_string())
+                    }
+                }
                 (Value::Text(s), CastType::Varchar) => Value::Text(s),
                 (Value::Text(s), CastType::Bigint) => {
                     Value::Signed(s.parse().map_err(|_| {
@@ -456,11 +504,16 @@ impl CatalogQuery {
             }
         })
     }
-    fn project(&self, rows: Vec<Vec<Value>>, database: &str) -> ConnResult<Vec<Vec<Value>>> {
+    fn project(
+        &self,
+        rows: Vec<Vec<Value>>,
+        database: &str,
+        snapshot: Option<&dyn astersql_infoschema::InfoSchema>,
+    ) -> ConnResult<Vec<Vec<Value>>> {
         let mut selected = Vec::new();
         for row in rows {
             if let Some(filter) = &self.select.filter {
-                if !matches!(self.evaluate(filter, &row, database)?, Value::Text(s) if s == "true")
+                if !matches!(self.evaluate(filter, &row, database, snapshot)?, Value::Text(s) if s == "true")
                 {
                     continue;
                 }
@@ -475,6 +528,7 @@ impl CatalogQuery {
                             .expect("validated order expression"),
                         &row,
                         database,
+                        snapshot,
                     )
                 })
                 .collect::<ConnResult<Vec<_>>>()?;
@@ -508,7 +562,29 @@ impl CatalogQuery {
                 self.select
                     .projections
                     .iter()
-                    .map(|projection| self.evaluate(&projection.expr, &row, database))
+                    .map(|projection| {
+                        let value = self.evaluate(&projection.expr, &row, database, snapshot)?;
+                        if self
+                            .expr_type(&projection.expr)
+                            .expect("validated expression")
+                            .0
+                            == crate::pg_oid::REGCLASS_TYPE
+                        {
+                            if let Value::Signed(oid) = value {
+                                let snapshot = snapshot.ok_or_else(|| {
+                                    ConnError::Session("schema snapshot is unavailable".into())
+                                })?;
+                                return Ok(Value::Text(crate::pg_oid::display(
+                                    u32::try_from(oid).map_err(|_| {
+                                        ConnError::Session("PG oid conversion out of range".into())
+                                    })?,
+                                    database,
+                                    snapshot,
+                                )?));
+                            }
+                        }
+                        Ok(value)
+                    })
                     .collect()
             })
             .collect()
@@ -543,25 +619,7 @@ fn contains_age(expr: &Expr) -> bool {
     }
 }
 
-/// Stable injective encoding for native signed schema IDs: positive IDs use
-/// even OIDs, negative system IDs use odd OIDs. Reject zero and values outside
-/// the representable range rather than truncate or hash into collisions.
+/// PG-only checked namespace mapping shared with all later directory providers.
 pub(crate) fn namespace_oid(id: i64) -> ConnResult<i64> {
-    let encoded = if id > 0 {
-        (id as u64).checked_mul(2)
-    } else if id < 0 {
-        id.unsigned_abs()
-            .checked_mul(2)
-            .and_then(|n| n.checked_sub(1))
-    } else {
-        None
-    };
-    encoded
-        .and_then(|n| u32::try_from(n).ok())
-        .map(i64::from)
-        .ok_or_else(|| {
-            ConnError::Session(format!(
-                "native schema ID {id} cannot be represented as a PostgreSQL namespace OID"
-            ))
-        })
+    crate::pg_oid::namespace_oid(id).map(i64::from)
 }

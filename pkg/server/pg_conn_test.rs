@@ -529,6 +529,13 @@ fn catalog_error_recovery_and_cleanup() {
     )
     .unwrap();
     let (mut socket, key) = authenticated(addr);
+    // The canonical malformed-input syntax gate can take over seven seconds
+    // on a cold run. Keep a bounded read while allowing its 42601 response;
+    // resource cleanup deadlines and all protocol assertions stay unchanged.
+    socket
+        .set_read_timeout(Some(Duration::from_secs(15)))
+        .unwrap();
+
     let pid = u32::from_be_bytes(key[..4].try_into().unwrap());
     let context = service.with_query(pid, Arc::downgrade).unwrap();
     let (mut unaffected, _) = authenticated(addr);

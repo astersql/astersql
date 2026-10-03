@@ -33,6 +33,10 @@ pub mod pg_conn;
 #[cfg(test)]
 #[path = "pg_conn_test.rs"]
 mod pg_conn_test;
+mod pg_oid;
+#[cfg(test)]
+#[path = "pg_oid_test.rs"]
+mod pg_oid_test;
 /// PostgreSQL 3.2 startup framing.
 pub mod pg_protocol;
 pub mod pg_result;

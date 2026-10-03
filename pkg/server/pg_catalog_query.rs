@@ -40,6 +40,8 @@ pub(crate) enum Expr {
 pub(crate) enum CastType {
     Bigint,
     Varchar,
+    Oid,
+    Regclass,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Projection {
@@ -326,6 +328,8 @@ impl Parser {
             let target = match target.as_str() {
                 "bigint" => CastType::Bigint,
                 "varchar" => CastType::Varchar,
+                "oid" => CastType::Oid,
+                "regclass" => CastType::Regclass,
                 _ => return Err(unsupported("unsupported catalog cast")),
             };
             expr = Expr::Cast(Box::new(expr), target);

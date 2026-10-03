@@ -599,7 +599,15 @@ pub(crate) fn sqlstate(error: &crate::conn::ConnError) -> &'static str {
         ConnError::ServerShutdown => "57P01",
         ConnError::MalformedPacket(_) | ConnError::UnsupportedProtocol => "08P01",
         ConnError::Session(message) => {
-            if message.starts_with("[kv:1062]") || message.starts_with("Duplicate entry ") {
+            if message == "PG oid conversion out of range"
+                || message == "PG object ID exceeds the supported OID range"
+            {
+                "22003"
+            } else if message == "invalid PG oid input" || message == "invalid PG regclass name" {
+                "22P02"
+            } else if message == "ambiguous PG index relation name" {
+                "42725"
+            } else if message.starts_with("[kv:1062]") || message.starts_with("Duplicate entry ") {
                 "23505"
             } else if message.starts_with("Unknown column ") {
                 "42703"
