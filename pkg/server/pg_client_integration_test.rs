@@ -222,8 +222,6 @@ fn run_jdbc(port: u16, database: &str, view_source: &str) -> Result<(), String> 
 const JDBC_WORKFLOW: &str = r#"
 import java.sql.*;
 import org.postgresql.util.PGobject;
-import org.postgresql.core.BaseConnection;
-import java.util.Set;
 class PgIntrospection {
     static void check(boolean ok, String message) { if (!ok) throw new AssertionError(message); }
     static String viewSource;
@@ -239,12 +237,10 @@ class PgIntrospection {
     }
     public static void main(String[] args) throws Exception {
         viewSource = args[5];
-        String options = "sslmode=disable&gssEncMode=disable&prepareThreshold=1&binaryTransfer=false&connectTimeout=5&socketTimeout=10";
+        String options = "sslmode=disable&gssEncMode=disable&prepareThreshold=1&connectTimeout=5&socketTimeout=10";
         try (Connection c = DriverManager.getConnection("jdbc:postgresql://127.0.0.1:"+args[0]+"/"+args[4]+"?"+options, "root", ""); Statement s = c.createStatement()) {
-            // Keep text results, but force the real JDBC Bind encoder to send
-            // schema IDs as binary int8. binaryTransfer=false alone masked this.
-            ((BaseConnection)c).getQueryExecutor().setBinarySendOids(Set.of(20, 26));
-            ((BaseConnection)c).getQueryExecutor().setBinaryReceiveOids(Set.of());
+            // Preserve the installed driver defaults for binary parameters/results.
+
             System.out.println("installed PostgreSQL JDBC " + c.getMetaData().getDriverVersion() + "; " + options);
             long namespace;
             try (ResultSet r = s.executeQuery("select oid from pg_namespace where nspname='public'")) { check(r.next(), "public missing"); namespace = r.getLong(1); }
