@@ -183,3 +183,7 @@ mod pg_catalog_test;
 mod pg_catalog_query;
 #[cfg(test)]
 mod pg_catalog_query_test;
+
+#[cfg(test)]
+#[path = "pg_datagrip_test.rs"]
+mod pg_datagrip_test;

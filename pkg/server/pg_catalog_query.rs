@@ -34,6 +34,9 @@ pub(crate) enum Expr {
     Compare(Box<Expr>, CompareOp, Box<Expr>),
     In(Box<Expr>, Vec<Expr>),
     InSubquery(Box<Expr>, Box<Select>),
+    ScalarSubquery(Box<Select>),
+    ArrayAgg(Box<Expr>, Vec<Ordering>),
+    TypedLiteral(Box<Expr>, u8, usize),
     Not(Box<Expr>),
     IsNull(Box<Expr>),
     Or(Box<Expr>, Box<Expr>),
@@ -499,7 +502,12 @@ impl Parser {
                 no: Box::new(no),
             }
         } else if self.symbol('(') {
-            let expr = self.expr()?;
+            let expr = if matches!(self.peek(), Some(Token::Word(w)) if w == "select" || w == "with")
+            {
+                Expr::ScalarSubquery(Box::new(self.query()?))
+            } else {
+                self.expr()?
+            };
             self.require_symbol(')')?;
             expr
         } else if self.symbol('-') {
@@ -523,17 +531,38 @@ impl Parser {
                 Some(Token::Word(_) | Token::Quoted(_)) => {
                     let path = self.path()?;
                     if self.symbol('(') {
-                        let mut args = Vec::new();
-                        if !self.symbol(')') {
-                            loop {
-                                args.push(self.expr()?);
-                                if !self.symbol(',') {
-                                    break;
+                        if path.last().is_some_and(|n| n == "array_agg") {
+                            let value = self.expr()?;
+                            let mut order = Vec::new();
+                            if self.word("order") {
+                                self.require_word("by")?;
+                                loop {
+                                    let expr = self.expr()?;
+                                    let descending = self.word("desc");
+                                    if !descending {
+                                        self.word("asc");
+                                    }
+                                    order.push(Ordering { expr, descending });
+                                    if !self.symbol(',') {
+                                        break;
+                                    }
                                 }
                             }
                             self.require_symbol(')')?;
+                            Expr::ArrayAgg(Box::new(value), order)
+                        } else {
+                            let mut args = Vec::new();
+                            if !self.symbol(')') {
+                                loop {
+                                    args.push(self.expr()?);
+                                    if !self.symbol(',') {
+                                        break;
+                                    }
+                                }
+                                self.require_symbol(')')?;
+                            }
+                            Expr::Call(path, args)
                         }
-                        Expr::Call(path, args)
                     } else {
                         Expr::Column(path)
                     }

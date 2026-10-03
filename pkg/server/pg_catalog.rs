@@ -20,9 +20,9 @@ struct Execution<'a> {
     cancel: &'a CancellationToken,
     snapshot: Option<astersql_infoschema::SchemaRef>,
     database: String,
-    providers: std::collections::HashMap<String, CatalogRows>,
-    ctes: std::collections::HashMap<usize, CatalogRows>,
-    materialized: usize,
+    providers: std::cell::RefCell<std::collections::HashMap<String, CatalogRows>>,
+    ctes: std::cell::RefCell<std::collections::HashMap<usize, CatalogRows>>,
+    materialized: std::cell::Cell<usize>,
     work: std::cell::Cell<usize>,
 }
 impl Execution<'_> {
@@ -35,10 +35,10 @@ impl Execution<'_> {
         self.work.set(work);
         Ok(())
     }
-    fn materialize(&mut self, rows: Vec<Vec<Value>>) -> ConnResult<CatalogRows> {
+    fn materialize(&self, rows: Vec<Vec<Value>>) -> ConnResult<CatalogRows> {
         check_catalog_cancel(self.cancel)?;
-        self.materialized += rows.len();
-        if self.materialized > MAX_CATALOG_ROWS {
+        self.materialized.set(self.materialized.get() + rows.len());
+        if self.materialized.get() > MAX_CATALOG_ROWS {
             return Err(catalog_row_limit());
         }
         Ok(std::sync::Arc::new(rows))
@@ -169,6 +169,27 @@ impl CatalogQuery {
             parameter_values: self.parameter_values.clone(),
         }
     }
+    fn correlated(&self, select: &Select, row: Option<&[Value]>) -> ParseResult<Self> {
+        let mut query = self.nested(select.clone());
+        let local = query.clone();
+        visit_select_exprs(&mut query.select, &mut |expr| {
+            if let Expr::Column(path) = expr {
+                // Local aliases shadow outer ones; unqualified names resolve
+                // locally first. Only unresolved names can be correlated.
+                if local.column(path).is_ok() {
+                    return Ok(());
+                }
+                if path.len() > 1 && local.relations().any(|r| r.alias == path[path.len() - 2]) {
+                    return Ok(());
+                }
+                let (slot, code, flags) = self.column(path)?;
+                let value = row.map_or(Expr::Null, |row| literal(&row[slot], code));
+                *expr = Expr::TypedLiteral(Box::new(value), code, flags);
+            }
+            Ok(())
+        })?;
+        Ok(query)
+    }
     // Parameters are indexed across the entire statement, including CTEs and
     // subqueries. Only a direct ::oid cast infers an otherwise unknown type.
     fn parameters(&mut self, supplied: &[u32]) -> ParseResult<()> {
@@ -266,6 +287,7 @@ impl CatalogQuery {
                         | "pg_tablespace"
                         | "pg_description"
                         | "pg_shdescription"
+                        | "pg_inherits"
                 )
             {
                 return Err(("0A000", "catalog provider is not implemented yet".into()));
@@ -308,6 +330,21 @@ impl CatalogQuery {
         }
         for order in &self.select.order {
             self.expr_type(self.order_expr(&order.expr)?)?;
+        }
+        if self
+            .select
+            .projections
+            .iter()
+            .any(|p| has_aggregate(&p.expr))
+        {
+            for p in &self.select.projections {
+                if ungrouped_column(&p.expr) {
+                    return Err((
+                        "42803",
+                        "catalog aggregate contains an ungrouped column".into(),
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -417,6 +454,24 @@ impl CatalogQuery {
             Expr::Column(path) => self.column(path).map(|(_, code, flags)| (code, flags)),
             Expr::Parameter(index) => catalog_parameter_type(self.parameter_oids[*index]),
             Expr::Null | Expr::Text(_) => Ok((253, 0)),
+            Expr::TypedLiteral(_, code, flags) => Ok((*code, *flags)),
+            Expr::ScalarSubquery(select) => {
+                let mut query = self.correlated(select, None)?;
+                query.bind()?;
+                if query.select.projections.len() != 1 {
+                    return Err(("42601", "scalar subquery requires one column".into()));
+                }
+                query.expr_type(&query.select.projections[0].expr)
+            }
+            Expr::ArrayAgg(inner, order) => {
+                for key in order {
+                    self.expr_type(&key.expr)?;
+                }
+                if self.expr_type(inner)?.0 != 8 {
+                    return Err(("0A000", "array_agg currently requires bigint input".into()));
+                }
+                Ok((crate::pg_result::CatalogColumnType::Int8Array as u8, 0))
+            }
             Expr::Integer(_) => Ok((8, 0)),
             Expr::Boolean(_) => Ok((1, astersql_parser_mysql::r#type::IsBooleanFlag)),
             Expr::Cast(inner, target) => {
@@ -478,9 +533,13 @@ impl CatalogQuery {
                     {
                         Ok((253, 0))
                     }
-                    ("pg_get_indexdef" | "pg_get_constraintdef" | "pg_get_viewdef", [oid])
-                        if matches!(oid, Expr::Null) || numeric_type(self.expr_type(oid)?.0) =>
-                    {
+                    (
+                        "pg_get_partkeydef"
+                        | "pg_get_indexdef"
+                        | "pg_get_constraintdef"
+                        | "pg_get_viewdef",
+                        [oid],
+                    ) if matches!(oid, Expr::Null) || numeric_type(self.expr_type(oid)?.0) => {
                         Ok((253, 0))
                     }
                     ("pg_get_constraintdef" | "pg_get_viewdef", [oid, pretty])
@@ -669,7 +728,7 @@ impl CatalogQuery {
             database,
             providers: Default::default(),
             ctes: Default::default(),
-            materialized: 0,
+            materialized: std::cell::Cell::new(0),
             work: std::cell::Cell::new(0),
         };
         let rows = self.execute_select(&mut execution, true)?;
@@ -684,12 +743,12 @@ impl CatalogQuery {
     }
     fn execute_select(
         &self,
-        execution: &mut Execution<'_>,
+        execution: &Execution<'_>,
         display: bool,
     ) -> ConnResult<Vec<Vec<Value>>> {
         check_catalog_cancel(execution.cancel)?;
         for cte in &self.select.ctes {
-            if !execution.ctes.contains_key(&cte.id) {
+            if !execution.ctes.borrow().contains_key(&cte.id) {
                 let rows = self
                     .nested(cte.query.clone())
                     .execute_select(execution, false)?;
@@ -698,7 +757,7 @@ impl CatalogQuery {
                     row.resize(CATALOG_ROW_WIDTH, Value::Null);
                 }
                 let rows = execution.materialize(rows)?;
-                execution.ctes.insert(cte.id, rows);
+                execution.ctes.borrow_mut().insert(cte.id, rows);
             }
         }
         let mut query = self.clone();
@@ -731,7 +790,7 @@ impl CatalogQuery {
     }
     fn execute_rows(
         &self,
-        execution: &mut Execution<'_>,
+        execution: &Execution<'_>,
         display: bool,
     ) -> ConnResult<Vec<Vec<Value>>> {
         // CTE rows have the same fixed slots as providers, but distinct IDs.
@@ -739,9 +798,9 @@ impl CatalogQuery {
         for relation in self.relations() {
             check_catalog_cancel(execution.cancel)?;
             if let Some(id) = relation.cte_id {
-                providers.push(execution.ctes[&id].clone());
+                providers.push(execution.ctes.borrow()[&id].clone());
             } else {
-                if !execution.providers.contains_key(&relation.name) {
+                if !execution.providers.borrow().contains_key(&relation.name) {
                     let mut rows = self.provider_rows(
                         &relation.name,
                         execution.context,
@@ -753,9 +812,12 @@ impl CatalogQuery {
                         row.resize(CATALOG_ROW_WIDTH, Value::Null);
                     }
                     let rows = execution.materialize(rows)?;
-                    execution.providers.insert(relation.name.clone(), rows);
+                    execution
+                        .providers
+                        .borrow_mut()
+                        .insert(relation.name.clone(), rows);
                 }
-                providers.push(execution.providers[&relation.name].clone());
+                providers.push(execution.providers.borrow()[&relation.name].clone());
             }
         }
         let mut rows = (*providers[0]).clone();
@@ -810,6 +872,9 @@ impl CatalogQuery {
                 cancel,
             )?,
             "pg_proc" => function_rows(),
+            // Native physical partitions are not independent SQL relations in
+            // this adapter. There are no PG inheritance edges to those objects.
+            "pg_inherits" => Vec::new(),
             "pg_language" => vec![vec![
                 Value::Signed(INTERNAL_LANGUAGE_OID),
                 Value::Text("internal".into()),
@@ -928,6 +993,23 @@ impl CatalogQuery {
         Ok(match expr {
             Expr::Column(path) => row[self.column(path).expect("validated column").0].clone(),
             Expr::Null => Value::Null,
+            Expr::TypedLiteral(inner, _, _) => evaluate(inner)?,
+            Expr::ArrayAgg(_, _) => return Err(ConnError::UnsupportedCommand(0)),
+            Expr::ScalarSubquery(select) => {
+                let query = self
+                    .correlated(select, Some(row))
+                    .map_err(|(_, message)| ConnError::Session(message))?;
+                let rows = query.execute_select(execution, false)?;
+                if rows.len() > 1 {
+                    return Err(ConnError::Session(
+                        "PG scalar subquery returned more than one row".into(),
+                    ));
+                }
+                rows.first()
+                    .and_then(|row| row.first())
+                    .cloned()
+                    .unwrap_or(Value::Null)
+            }
             Expr::Parameter(index) => evaluate(&self.parameter_values[*index])?,
             Expr::Integer(n) => Value::Signed(*n),
             Expr::Boolean(value) => Value::Text(value.to_string()),
@@ -1115,6 +1197,49 @@ impl CatalogQuery {
                     }
                     result
                 }
+                "pg_get_partkeydef" => match evaluate(&args[0])? {
+                    Value::Null => Value::Null,
+                    Value::Signed(oid) => {
+                        let snapshot = snapshot.ok_or_else(|| {
+                            ConnError::Session("schema snapshot is unavailable".into())
+                        })?;
+                        let mut key = Value::Null;
+                        let tables = snapshot
+                            .SchemaTableInfos(&astersql_infoschema::CiString::new(database))
+                            .map_err(|e| ConnError::Session(e.to_string()))?;
+                        for table in tables {
+                            if i64::from(crate::pg_oid::table_oid(table.id)?) != oid {
+                                continue;
+                            }
+                            let model = table
+                                .model_meta
+                                .as_ref()
+                                .ok_or(ConnError::UnsupportedCommand(0))?;
+                            if let Some(partition) = model.GetPartitionInfo() {
+                                let columns = if partition.Columns.is_empty() {
+                                    let column = partition.Expr.trim().trim_matches('`');
+                                    if column.is_empty()
+                                        || !column.chars().all(|c| c.is_alphanumeric() || c == '_')
+                                    {
+                                        return Err(ConnError::UnsupportedCommand(0));
+                                    }
+                                    pg_identifier(column)
+                                } else {
+                                    partition
+                                        .Columns
+                                        .iter()
+                                        .map(|c| pg_identifier(&c.O))
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                };
+                                key = Value::Text(format!("{} ({columns})", partition.Type));
+                            }
+                            break;
+                        }
+                        key
+                    }
+                    _ => unreachable!("validated partition key"),
+                },
                 "format_type" => match (evaluate(&args[0])?, evaluate(&args[1])?) {
                     (Value::Null, _) => Value::Null,
                     (Value::Signed(oid), modifier) => Value::Text(format_column_type(
@@ -1262,6 +1387,49 @@ impl CatalogQuery {
                 .collect::<ConnResult<Vec<_>>>()?;
             selected.push((row, keys));
         }
+        if self
+            .select
+            .projections
+            .iter()
+            .any(|p| has_aggregate(&p.expr))
+        {
+            let rows = selected.into_iter().map(|(row, _)| row).collect::<Vec<_>>();
+            let mut result = Vec::new();
+            for p in &self.select.projections {
+                let mut expr = p.expr.clone();
+                visit_expr(&mut expr, &mut |expr| {
+                    if let Expr::ArrayAgg(value, order) = expr {
+                        let mut values = Vec::new();
+                        for row in &rows {
+                            execution.comparison()?;
+                            let keys = order
+                                .iter()
+                                .map(|o| self.evaluate(&o.expr, row, execution))
+                                .collect::<ConnResult<Vec<_>>>()?;
+                            values.push((self.evaluate(value, row, execution)?, keys));
+                        }
+                        values.sort_by(|(_, a), (_, b)| compare_keys(a, b, order));
+                        let value = if values.is_empty() {
+                            Value::Null
+                        } else {
+                            Value::Text(array_text(values.into_iter().map(|(v, _)| v)))
+                        };
+                        *expr = Expr::TypedLiteral(
+                            Box::new(literal(&value, 253)),
+                            crate::pg_result::CatalogColumnType::Int8Array as u8,
+                            0,
+                        );
+                    }
+                    Ok::<_, ConnError>(())
+                })?;
+                result.push(self.evaluate(&expr, &[], execution)?);
+            }
+            return Ok(if self.select.limit == Some(0) {
+                Vec::new()
+            } else {
+                vec![result]
+            });
+        }
         selected.sort_by(|(_, a), (_, b)| {
             for ((a, b), order) in a.iter().zip(b).zip(&self.select.order) {
                 let comparison = match (a, b) {
@@ -1325,6 +1493,64 @@ impl CatalogQuery {
 fn textual_type(code: u8) -> bool {
     code == 253 || code == crate::pg_result::CatalogColumnType::InternalChar as u8
 }
+fn literal(value: &Value, code: u8) -> Expr {
+    match value {
+        Value::Null => Expr::Null,
+        Value::Signed(n) => Expr::Integer(*n),
+        Value::Text(s) if code == 1 => Expr::Boolean(s == "true" || s == "t"),
+        Value::Text(s) => Expr::Text(s.clone()),
+        _ => unreachable!("catalog scalar value"),
+    }
+}
+fn has_aggregate(expr: &Expr) -> bool {
+    match expr {
+        Expr::ArrayAgg(_, _) => true,
+        Expr::Cast(e, _) | Expr::TypedLiteral(e, _, _) => has_aggregate(e),
+        Expr::Call(_, args) => args.iter().any(has_aggregate),
+        _ => false,
+    }
+}
+fn ungrouped_column(expr: &Expr) -> bool {
+    match expr {
+        Expr::Column(_) => true,
+        Expr::ArrayAgg(_, _) | Expr::ScalarSubquery(_) => false,
+        Expr::Cast(e, _) | Expr::TypedLiteral(e, _, _) => ungrouped_column(e),
+        Expr::Call(_, args) => args.iter().any(ungrouped_column),
+        _ => false,
+    }
+}
+fn compare_keys(
+    a: &[Value],
+    b: &[Value],
+    order: &[pg_catalog_query::Ordering],
+) -> std::cmp::Ordering {
+    for ((a, b), key) in a.iter().zip(b).zip(order) {
+        let cmp = match (a, b) {
+            (Value::Null, Value::Null) => std::cmp::Ordering::Equal,
+            (Value::Null, _) => std::cmp::Ordering::Greater,
+            (_, Value::Null) => std::cmp::Ordering::Less,
+            (Value::Signed(a), Value::Signed(b)) => a.cmp(b),
+            (Value::Text(a), Value::Text(b)) => a.cmp(b),
+            _ => std::cmp::Ordering::Equal,
+        };
+        let cmp = if key.descending { cmp.reverse() } else { cmp };
+        if !cmp.is_eq() {
+            return cmp;
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+fn array_text(values: impl Iterator<Item = Value>) -> String {
+    let values = values
+        .map(|v| match v {
+            Value::Null => "NULL".into(),
+            Value::Signed(n) => n.to_string(),
+            Value::Text(s) => format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")),
+            _ => unreachable!("catalog array element"),
+        })
+        .collect::<Vec<_>>();
+    format!("{{{}}}", values.join(","))
+}
 fn numeric_type(code: u8) -> bool {
     matches!(
         code,
@@ -1352,7 +1578,7 @@ fn visit_all_select_exprs<E>(
         visit_all_select_exprs(&mut cte.query, visitor)?;
     }
     visit_select_exprs(select, &mut |expr| {
-        if let Expr::InSubquery(_, query) = expr {
+        if let Expr::InSubquery(_, query) | Expr::ScalarSubquery(query) = expr {
             visit_all_select_exprs(query, visitor)?;
         }
         visitor(expr)
@@ -1382,11 +1608,18 @@ fn visit_expr<E>(
     visitor: &mut impl FnMut(&mut Expr) -> Result<(), E>,
 ) -> Result<(), E> {
     match expr {
-        Expr::Cast(e, _)
+        Expr::TypedLiteral(e, _, _)
+        | Expr::Cast(e, _)
         | Expr::Not(e)
         | Expr::IsNull(e)
         | Expr::NotNull(e)
         | Expr::InSubquery(e, _) => visit_expr(e, visitor)?,
+        Expr::ArrayAgg(e, order) => {
+            visit_expr(e, visitor)?;
+            for key in order {
+                visit_expr(&mut key.expr, visitor)?;
+            }
+        }
         Expr::Call(_, values) => {
             for v in values {
                 visit_expr(v, visitor)?;
@@ -1472,6 +1705,15 @@ fn class_row(oid: u32, name: &str, namespace: u32, kind: &str) -> Vec<Value> {
         Value::Text(name.into()),
         Value::Signed(i64::from(namespace)),
         Value::Text(kind.into()),
+        Value::Null,
+        Value::Signed(0),
+        Value::Null,
+        Value::Text("p".into()),
+        Value::Text("false".into()),
+        Value::Null,
+        Value::Signed(0),
+        Value::Null,
+        Value::Null,
     ]
 }
 
@@ -1646,6 +1888,18 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
     let oid = crate::pg_oid::OID_TYPE;
     let internal_char = crate::pg_result::CatalogColumnType::InternalChar as u8;
     let (slot, code) = match (relation, name) {
+        ("pg_inherits", "inhrelid") => (0, oid),
+        ("pg_inherits", "inhparent") => (1, oid),
+        ("pg_inherits", "inhseqno") => (2, 3),
+        ("pg_class", "xmin") => (4, 8),
+        ("pg_class", "reltablespace") => (5, oid),
+        ("pg_class", "reloptions") => (6, crate::pg_result::CatalogColumnType::TextArray as u8),
+        ("pg_class", "relpersistence") => (7, internal_char),
+        ("pg_class", "relispartition") => (8, 1),
+        ("pg_class", "relpartbound") => (9, 253),
+        ("pg_class", "relam") => (10, oid),
+        ("pg_class", "relowner") => (11, 8),
+        ("pg_class", "relacl") => (12, crate::pg_result::CatalogColumnType::TextArray as u8),
         ("pg_depend", "classid") => (0, oid),
         ("pg_depend", "objid") => (1, oid),
         ("pg_depend", "refclassid") => (2, oid),
