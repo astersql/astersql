@@ -280,9 +280,8 @@ fn appended_handle_selectivity_merges_bounds_damps_and_caps_points() {
 }
 
 #[test]
-fn go_merge_46_virtual_column_recursive_index_error_uses_next_candidate() {
+fn virtual_column_recursive_index_estimates_propagate_and_retry() {
     let _scenario = fail::FailScenario::setup();
-    fail::cfg("afterRecursiveIndexEstimation", "return(11)").expect("inject first index error");
     let field_type = types::NewFieldType(mysql::TypeBlob);
     let low = codec::EncodeKey(codec::time::UTC, Vec::new(), vec![types::NewIntDatum(0)])
         .expect("encode lower bound");
@@ -311,7 +310,7 @@ fn go_merge_46_virtual_column_recursive_index_error_uses_next_candidate() {
             StatsVer: statistics::Version2 as i64,
         }
     };
-    let main_index = make_index(1, 2, 50);
+    let mut main_index = make_index(1, 2, 50);
     let mut coll = *statistics::NewHistColl(1, 500, 0, 0, 2);
     coll.Indices.insert(11, Box::new(make_index(11, 1, 10)));
     coll.Indices.insert(12, Box::new(make_index(12, 1, 50)));
@@ -327,16 +326,54 @@ fn go_merge_46_virtual_column_recursive_index_error_uses_next_candidate() {
         Collators: collate::GetBinaryCollatorSlice(2),
         ..Default::default()
     };
-    let (estimate, _, _, found) = expBackoffEstimation(
+    // Both candidates have nonempty statistics for 500 rows. The successful
+    // first candidate must stop the search; its repeat count estimates 10 rows.
+    let estimate = |coll: &statistics::HistColl| {
+        expBackoffEstimation(
+            &TestContext::default(),
+            &main_index,
+            coll,
+            &range,
+            &[&virtual_column, &status_column],
+        )
+        .expect("recursive candidate errors must not escape exponential backoff")
+    };
+    assert_eq!(estimate(&coll), (0.02, 0.02, 0.02, true));
+
+    // The Go regression forces the first candidate to fail and requires the
+    // next index's estimate (50 / 500) to survive the recursive call.
+    fail::cfg("afterRecursiveIndexEstimation", "return(11)").expect("inject first index error");
+    assert_eq!(estimate(&coll), (0.1, 0.1, 0.1, true));
+
+    // No successful candidate must leave foundStats false, preserving the
+    // virtual-column fallback to the composite index's own statistics.
+    coll.ColUniqueID2IdxIDs.insert(1, vec![11]);
+    assert_eq!(estimate(&coll), (0.0, 0.0, 0.0, false));
+    fail::remove("afterRecursiveIndexEstimation");
+
+    // MV index entries can outnumber analyzed table rows. With 500 entries
+    // versus 250 analyzed rows the recursive denominator is 1000, not 500.
+    coll.GetIdxMut(11).unwrap().Info.as_mut().unwrap().MVIndex = true;
+    coll.GetIdxMut(12).unwrap().Histogram.Buckets[0].Count = 250;
+    coll.ColUniqueID2IdxIDs.insert(1, vec![11]);
+    coll.ColUniqueID2IdxIDs.insert(2, vec![12]);
+    assert_eq!(
+        coll.GetScaledRealtimeAndModifyCnt(coll.GetIdx(11).unwrap())
+            .0,
+        1000
+    );
+    // Keep the composite NDV floor below the recursive upper bound.
+    main_index.Histogram.NDV = 500;
+    let (_, _, upper, found) = expBackoffEstimation(
         &TestContext::default(),
         &main_index,
         &coll,
         &range,
         &[&virtual_column, &status_column],
     )
-    .expect("second index must recover recursive estimation");
+    .expect("scaled candidate estimation");
     assert!(found);
-    assert!((estimate - 0.1).abs() < 1e-9, "estimate={estimate}");
+    assert!((upper - 0.02).abs() < 1e-9, "upper={upper}");
 }
 
 #[test]
