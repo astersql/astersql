@@ -2,7 +2,7 @@
 
 批次：【批次 6】 依赖全部前置批次 1 至 5
 
-状态：已阻塞（仅真实 UI 验收；生产修复、完整客户端与 Ready 检查已完成）
+状态：已阻塞
 
 目的：全部完整 SQL 通过真实 JDBC/PG listener，真实 DataGrip 表树显示表与结构；Ready 检查及手册更新。
 
@@ -101,3 +101,17 @@ Ready：最后隔离 cargo fmt --all 与共享 make lint 均退出 0（/tmp/data
 最终状态为已阻塞，阻塞范围仅真实 DataGrip UI：macOS 未授予 Computer Use Accessibility（辅助功能）和 Screen Recording（屏幕录制）权限，三次工具请求均返回 permissions are still pending，无可观察 UI 状态。无需新增权限的生产修复、完整 SQL 客户端、边界回归、Ready 与交付均已完成。应在系统权限具备后重新打开 DataGrip，刷新 PostgreSQL 数据源并核对 public 表、列、主键索引和约束树；这一步完成之前不得标记整阶段已完成。
 
 正确性/兼容风险：仅支持冻结查询所需有界 PG 目录语法；txid_current 使用原生 TSO、未知访问方法属性为 NULL，不承诺 PG XID/复制/生产鉴权或任意 PG SQL。性能为带预算的逐行数组展开/目录连接，仍执行取消、行数和工作量检查。未本地验证完整最新共享工作区 Cargo 构建、持久重启、RealTiKV 或大 schema 性能；最终 PG 文件通过隔离基线与逐字节交付核对。自有槽位锁已释放，缓存保留；同步完成后清理仅本任务临时源码快照。
+
+## UI 阻塞恢复判定（2026-10-04）
+
+阻塞范围仅真实 DataGrip UI；生产修复、完整客户端与 Ready 检查已通过并在 4b44877fbf 提交。主状态严格为“已阻塞”，不以 JDBC 的 27/27 通过替代表树证据，也不以仅尝试打开应用认定成功。
+
+复核本会话三次 cua.getApp("DataGrip") 的实际结果：每次都返回“Computer Use permissions are still pending”，说明用户尚未完成 ChatGPT Computer Use 窗口中的 Accessibility / Screen Recording 授权；三次均没有返回 DataGrip AX 树或截图。没有收到权限已开启的证据，本次不重复同一失败调用。允许的 Computer Use 原生 UI 入口均受此权限门控制；当前没有能操作 DataGrip 原生窗口的专用连接器、用户提供的 UI 截图或其他获授权的 UI 通道。浏览器页面、JDBC/SQL 回归和 DataGrip 日志不能观察 Database Explorer 表树；仅限语音会话的屏幕上下文工具不适用于本任务，shell/AppleScript 等替代 UI 控制被 Computer Use 协议禁止。因此本会话现有安全 UI 访问方案已穷尽，恢复依赖用户完成系统授权。
+
+授权对象是 Computer Use 的宿主应用，不是 DataGrip，也不是数据库服务。只读进程检查显示本机运行宿主可执行文件为 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT；该应用 Info.plist 的 CFBundleDisplayName=ChatGPT、CFBundleIdentifier=com.openai.codex。/Applications/Codex.app 的 bundle ID 同为 com.openai.codex，因此系统权限条目可能显示 ChatGPT 或 Codex；应以正在运行的 /Applications/ChatGPT.app 和权限窗口指向的宿主为准，避免给同名旧安装副本授权。
+
+用户恢复操作：打开 macOS“系统设置 → 隐私与安全性 → 辅助功能”，为上述宿主开启 Accessibility；再在“屏幕录制”或“屏幕与系统音频录制”中为同一宿主开启 Screen Recording。按系统提示退出并重新打开该宿主应用，然后在 Computer Use 权限窗口完成检查，并在本会话告知权限已开启。授予这些权限会允许宿主读取屏幕和操作原生 UI，需由用户亲自完成；代理没有修改系统权限或绕过权限门。
+
+收到恢复证据后，先用 cua.getApp("DataGrip") 检查实际 AX 状态/截图可用，再连接测试 PG listener，刷新 PostgreSQL 数据源并展开 public 中真实表、列、主键索引与约束，核对名称、列类型和对象身份，记录成功或具体失败证据。只有真实 UI 验收通过后才把本阶段判为已完成并按调度协议删除编号文件；若仍无法读取窗口，保持已阻塞并记录新的实际原因。
+
+本次仅更新编号记录，不改变生产代码、测试或系统设置；Ready 文档交付检查为 git diff --check 和 git diff --cached --check，无代码构建/测试触发项。编号文件原有两处“独立会话”协调差异继续保留在工作区并排除出本记录提交。
