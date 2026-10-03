@@ -10,7 +10,7 @@ path = "lib.rs"
 [dependencies]
 driver-error-dependency = { package = "astersql-store-driver-error", path = "../error" }
 kv-dependency = { package = "astersql-kv", path = "../../../kv" }
-tikv-client = { version = "=0.4.2", git = "ssh://git@github.com/astersql/client-rust.git", tag = "v0.4.2-aster.6", default-features = false }
+tikv-client = { version = "=0.4.2", git = "ssh://git@github.com/astersql/client-rust.git", tag = "v0.4.2-aster.7", default-features = false }
 tokio-util = "0.7"
 
 [package.metadata.porting]

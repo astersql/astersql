@@ -84,7 +84,7 @@ impl ConcreteSession {
                 SessionMemTracker: None,
                 EnabledRateLimitAction: false,
                 EventCb: None,
-                EnableCollectExecutionInfo: false,
+                EnableCollectExecutionInfo: true,
                 TiFlashReplicaRead: kv::tiflash::ReplicaRead::default(),
                 AppendWarning: None,
                 TryCopLiteWorker: None,
@@ -99,6 +99,11 @@ impl ConcreteSession {
                     .Next(&context)
                     .map_err(|error| session_error("execute TiFlash ANN scan", error))?
                 {
+                    self.WithSessionVars(|vars| {
+                        vars.StmtCtx
+                            .SyncExecDetails
+                            .MergeReadPoolTaskDetails(subset.ReadPoolTaskDetails().as_ref())
+                    });
                     let result: tipb::SelectResponse = protobuf::parse_from_bytes(subset.GetData())
                         .map_err(|error| session_error("decode TiFlash ANN response", error))?;
                     if result.has_error() {
@@ -583,6 +588,7 @@ fn scan_relational_rows_with_coprocessor(
     connection_id: u64,
     resource_group_name: &str,
     paging_size_bytes: u64,
+    exec_details: &astersql_util_execdetails::execdetails::SyncExecDetails,
 ) -> SessionResult<Option<Vec<RelationalRow>>> {
     if table.GetPartitionInfo().is_some() {
         return Ok(None);
@@ -607,7 +613,7 @@ fn scan_relational_rows_with_coprocessor(
         SessionMemTracker: None,
         EnabledRateLimitAction: false,
         EventCb: None,
-        EnableCollectExecutionInfo: false,
+        EnableCollectExecutionInfo: true,
         TiFlashReplicaRead: kv::tiflash::ReplicaRead::default(),
         AppendWarning: None,
         TryCopLiteWorker: None,
@@ -621,6 +627,7 @@ fn scan_relational_rows_with_coprocessor(
             .Next(&context)
             .map_err(|error| session_error("execute ANALYZE TableScan in TiKV", error))?
         {
+            exec_details.MergeReadPoolTaskDetails(subset.ReadPoolTaskDetails().as_ref());
             let result: tipb::SelectResponse = protobuf::parse_from_bytes(subset.GetData())
                 .map_err(|error| session_error("decode ANALYZE TableScan response", error))?;
             if result.has_error() {
@@ -786,6 +793,7 @@ pub(super) fn execute_relational_count_request(
     request: &kv::Request,
     option: &kv::ClientSendOption,
     checksum: bool,
+    exec_details: &astersql_util_execdetails::execdetails::SyncExecDetails,
 ) -> SessionResult<usize> {
     let mut response = client
         .Send(context, request, &(), option)
@@ -796,6 +804,7 @@ pub(super) fn execute_relational_count_request(
             .Next(context)
             .map_err(|error| session_error("execute relational COUNT in TiKV", error))?
         {
+            exec_details.MergeReadPoolTaskDetails(subset.ReadPoolTaskDetails().as_ref());
             count = count
                 .checked_add(if checksum {
                     decode_relational_checksum_count_response(subset.GetData())?
@@ -823,6 +832,7 @@ pub(super) fn count_relational_rows_with_coprocessor(
     checker: Option<kv::resourcegroup::SharedRunawayChecker>,
     resource_group_name: &str,
     paging_size_bytes: u64,
+    exec_details: &astersql_util_execdetails::execdetails::SyncExecDetails,
 ) -> SessionResult<Option<usize>> {
     if table.GetPartitionInfo().is_some() {
         return Ok(None);
@@ -836,7 +846,7 @@ pub(super) fn count_relational_rows_with_coprocessor(
         SessionMemTracker: None,
         EnabledRateLimitAction: false,
         EventCb: None,
-        EnableCollectExecutionInfo: false,
+        EnableCollectExecutionInfo: true,
         TiFlashReplicaRead: kv::tiflash::ReplicaRead::default(),
         AppendWarning: None,
         TryCopLiteWorker: None,
@@ -848,15 +858,29 @@ pub(super) fn count_relational_rows_with_coprocessor(
     checksum_request.RunawayChecker = checker.clone();
     checksum_request.ResourceGroupName = resource_group_name.to_owned();
     checksum_request.Paging.PagingSizeBytes = paging_size_bytes;
-    match execute_relational_count_request(client, &context, &checksum_request, &option, true) {
+    match execute_relational_count_request(
+        client,
+        &context,
+        &checksum_request,
+        &option,
+        true,
+        exec_details,
+    ) {
         Ok(count) => Ok(Some(count)),
         Err(_) => {
             let mut dag_request = relational_coprocessor_request(table, start_ts)?;
             dag_request.RunawayChecker = checker;
             dag_request.ResourceGroupName = resource_group_name.to_owned();
             dag_request.Paging.PagingSizeBytes = paging_size_bytes;
-            execute_relational_count_request(client, &context, &dag_request, &option, false)
-                .map(Some)
+            execute_relational_count_request(
+                client,
+                &context,
+                &dag_request,
+                &option,
+                false,
+                exec_details,
+            )
+            .map(Some)
         }
     }
 }
@@ -874,6 +898,7 @@ pub(super) fn count_relational_key_range_with_coprocessor(
     checker: Option<kv::resourcegroup::SharedRunawayChecker>,
     resource_group_name: &str,
     paging_size_bytes: u64,
+    exec_details: &astersql_util_execdetails::execdetails::SyncExecDetails,
 ) -> SessionResult<Option<usize>> {
     if start_key.Cmp(&end_key) >= 0 {
         return Ok(Some(0));
@@ -887,7 +912,7 @@ pub(super) fn count_relational_key_range_with_coprocessor(
         SessionMemTracker: None,
         EnabledRateLimitAction: false,
         EventCb: None,
-        EnableCollectExecutionInfo: false,
+        EnableCollectExecutionInfo: true,
         TiFlashReplicaRead: kv::tiflash::ReplicaRead::default(),
         AppendWarning: None,
         TryCopLiteWorker: None,
@@ -897,7 +922,14 @@ pub(super) fn count_relational_key_range_with_coprocessor(
     checksum_request.RunawayChecker = checker.clone();
     checksum_request.ResourceGroupName = resource_group_name.to_owned();
     checksum_request.Paging.PagingSizeBytes = paging_size_bytes;
-    match execute_relational_count_request(client, &context, &checksum_request, &option, true) {
+    match execute_relational_count_request(
+        client,
+        &context,
+        &checksum_request,
+        &option,
+        true,
+        exec_details,
+    ) {
         Ok(count) => Ok(Some(count)),
         Err(_) => {
             let mut dag_request =
@@ -905,8 +937,15 @@ pub(super) fn count_relational_key_range_with_coprocessor(
             dag_request.RunawayChecker = checker;
             dag_request.ResourceGroupName = resource_group_name.to_owned();
             dag_request.Paging.PagingSizeBytes = paging_size_bytes;
-            execute_relational_count_request(client, &context, &dag_request, &option, false)
-                .map(Some)
+            execute_relational_count_request(
+                client,
+                &context,
+                &dag_request,
+                &option,
+                false,
+                exec_details,
+            )
+            .map(Some)
         }
     }
 }
@@ -919,6 +958,7 @@ pub(super) fn count_relational_rows_with_planned_filter_coprocessor(
     checker: Option<kv::resourcegroup::SharedRunawayChecker>,
     resource_group_name: &str,
     paging_size_bytes: u64,
+    exec_details: &astersql_util_execdetails::execdetails::SyncExecDetails,
 ) -> SessionResult<Option<usize>> {
     let client = store.GetClient();
     if !client.IsRequestTypeSupported(kv::ReqTypeDAG, kv::ReqSubTypeBasic) {
@@ -934,12 +974,13 @@ pub(super) fn count_relational_rows_with_planned_filter_coprocessor(
         SessionMemTracker: None,
         EnabledRateLimitAction: false,
         EventCb: None,
-        EnableCollectExecutionInfo: false,
+        EnableCollectExecutionInfo: true,
         TiFlashReplicaRead: kv::tiflash::ReplicaRead::default(),
         AppendWarning: None,
         TryCopLiteWorker: None,
     };
-    execute_relational_count_request(client, &context, &request, &option, false).map(Some)
+    execute_relational_count_request(client, &context, &request, &option, false, exec_details)
+        .map(Some)
 }
 
 /// 扫描表前缀，并在安全的无排序 SELECT 中限制解码行数。
@@ -2085,17 +2126,20 @@ impl ConcreteSession {
                 let version = store
                     .CurrentVersion("global")
                     .map_err(|error| session_error("get ANALYZE snapshot version", error))?;
-                if let Some(rows) = scan_relational_rows_with_coprocessor(
-                    store,
-                    table,
-                    version.Ver,
-                    concurrency,
-                    replica_read,
-                    kv::GlobalTxnScope,
-                    connection_id,
-                    &self.cop_resource_group_name(),
-                    self.cop_paging_size_bytes(&self.cop_resource_group_name()),
-                )? {
+                if let Some(rows) = self.WithSessionVars(|vars| {
+                    scan_relational_rows_with_coprocessor(
+                        store,
+                        table,
+                        version.Ver,
+                        concurrency,
+                        replica_read,
+                        kv::GlobalTxnScope,
+                        connection_id,
+                        &self.cop_resource_group_name(),
+                        self.cop_paging_size_bytes(&self.cop_resource_group_name()),
+                        &vars.StmtCtx.SyncExecDetails,
+                    )
+                })? {
                     return Ok(rows);
                 }
                 let snapshot = store.GetSnapshot(version);
@@ -2215,16 +2259,19 @@ impl ConcreteSession {
                     integer_handle_offset_candidate(snapshot.as_mut(), table, window.offset)?
             {
                 let prefix = kv::Key(astersql_tablecodec::GenTableRecordPrefix(table.ID).0);
-                if let Some(skipped) = count_relational_key_range_with_coprocessor(
-                    store,
-                    table,
-                    version.Ver,
-                    prefix,
-                    candidate.clone(),
-                    runaway_checker.clone(),
-                    &resource_group_name,
-                    self.cop_paging_size_bytes(&resource_group_name),
-                )? && skipped <= window.offset
+                if let Some(skipped) = self.WithSessionVars(|vars| {
+                    count_relational_key_range_with_coprocessor(
+                        store,
+                        table,
+                        version.Ver,
+                        prefix,
+                        candidate.clone(),
+                        runaway_checker.clone(),
+                        &resource_group_name,
+                        self.cop_paging_size_bytes(&resource_group_name),
+                        &vars.StmtCtx.SyncExecDetails,
+                    )
+                })? && skipped <= window.offset
                 {
                     remaining_offset = window.offset - skipped;
                     start_key = Some(candidate);
@@ -2504,15 +2551,18 @@ impl ConcreteSession {
             let Some(data) = self.planned_scalar_count_dag(sql, table.ID)? else {
                 return Ok(None);
             };
-            count_relational_rows_with_planned_filter_coprocessor(
-                store,
-                table,
-                version.Ver,
-                data,
-                runaway_checker,
-                &resource_group_name,
-                self.cop_paging_size_bytes(&resource_group_name),
-            )
+            self.WithSessionVars(|vars| {
+                count_relational_rows_with_planned_filter_coprocessor(
+                    store,
+                    table,
+                    version.Ver,
+                    data,
+                    runaway_checker,
+                    &resource_group_name,
+                    self.cop_paging_size_bytes(&resource_group_name),
+                    &vars.StmtCtx.SyncExecDetails,
+                )
+            })
         })
     }
 
@@ -2526,14 +2576,17 @@ impl ConcreteSession {
         let resource_group_name = self.cop_resource_group_name();
         if let Some(read_ts) = read_ts {
             return self.domain.storage().with_storage(|store| {
-                if let Some(count) = count_relational_rows_with_coprocessor(
-                    store,
-                    table,
-                    read_ts,
-                    runaway_checker.clone(),
-                    &resource_group_name,
-                    self.cop_paging_size_bytes(&resource_group_name),
-                )? {
+                if let Some(count) = self.WithSessionVars(|vars| {
+                    count_relational_rows_with_coprocessor(
+                        store,
+                        table,
+                        read_ts,
+                        runaway_checker.clone(),
+                        &resource_group_name,
+                        self.cop_paging_size_bytes(&resource_group_name),
+                        &vars.StmtCtx.SyncExecDetails,
+                    )
+                })? {
                     return Ok(count);
                 }
                 let snapshot = store.GetSnapshot(kv::NewVersion(read_ts));
@@ -2551,14 +2604,17 @@ impl ConcreteSession {
             })
         {
             return self.domain.storage().with_storage(|store| {
-                if let Some(count) = count_relational_rows_with_coprocessor(
-                    store,
-                    table,
-                    read_ts,
-                    runaway_checker.clone(),
-                    &resource_group_name,
-                    self.cop_paging_size_bytes(&resource_group_name),
-                )? {
+                if let Some(count) = self.WithSessionVars(|vars| {
+                    count_relational_rows_with_coprocessor(
+                        store,
+                        table,
+                        read_ts,
+                        runaway_checker.clone(),
+                        &resource_group_name,
+                        self.cop_paging_size_bytes(&resource_group_name),
+                        &vars.StmtCtx.SyncExecDetails,
+                    )
+                })? {
                     return Ok(count);
                 }
                 let snapshot = store.GetSnapshot(kv::NewVersion(read_ts));
@@ -2580,14 +2636,17 @@ impl ConcreteSession {
                 let version = store
                     .CurrentVersion("global")
                     .map_err(|error| session_error("get relational snapshot version", error))?;
-                if let Some(count) = count_relational_rows_with_coprocessor(
-                    store,
-                    table,
-                    version.Ver,
-                    runaway_checker,
-                    &resource_group_name,
-                    self.cop_paging_size_bytes(&resource_group_name),
-                )? {
+                if let Some(count) = self.WithSessionVars(|vars| {
+                    count_relational_rows_with_coprocessor(
+                        store,
+                        table,
+                        version.Ver,
+                        runaway_checker,
+                        &resource_group_name,
+                        self.cop_paging_size_bytes(&resource_group_name),
+                        &vars.StmtCtx.SyncExecDetails,
+                    )
+                })? {
                     return Ok(count);
                 }
                 let snapshot = store.GetSnapshot(version);

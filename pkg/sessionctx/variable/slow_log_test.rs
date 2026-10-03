@@ -118,3 +118,38 @@ fn ia_scan_details_are_logged_independently_in_seconds() {
     assert!(!log.contains("IA_remote_read_segment_size"));
     assert!(log.contains("IA_remote_read_segment_wait_time: 0.005"));
 }
+
+#[test]
+fn read_pool_task_details_are_logged_as_one_complete_field() {
+    use execdetails::execdetails::{ExecDetails, util::PoolTaskDetails};
+    let vars = crate::session::SessionVars::new();
+    let mut items = slow_log::SlowQueryLogItems::default();
+    assert!(
+        !vars
+            .SlowLogFormat(&items)
+            .contains("Read_pool_task_details")
+    );
+    let pool = PoolTaskDetails {
+        TaskCount: 2,
+        PollCount: 8,
+        MaxPollCount: 4,
+        MinPollCount: 4,
+        DispatchCount: 4,
+        MaxDispatchCount: 2,
+        MinDispatchCount: 2,
+        PollWallTime: std::time::Duration::from_millis(12),
+        ..Default::default()
+    };
+    let mut details = ExecDetails::default();
+    details.ReadPoolTaskDetails = Some(pool.clone());
+    items.ExecDetail = Some(Box::new(details));
+    let expected = format!("# Read_pool_task_details: {}\n", pool.String());
+    let log = vars.SlowLogFormat(&items);
+    assert!(log.contains(&expected), "{log}");
+    items.ExecDetail.as_mut().unwrap().ReadPoolTaskDetails = Some(PoolTaskDetails::default());
+    assert!(
+        !vars
+            .SlowLogFormat(&items)
+            .contains("Read_pool_task_details")
+    );
+}

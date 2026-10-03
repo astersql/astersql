@@ -1145,17 +1145,18 @@ impl ConcreteSession {
                 .borrow()
                 .slow_query_plans
                 .iter()
-                .map(|(query, plan)| {
+                .map(|(query, plan, read_pool)| {
                     HashMap::from([
                         ("time".to_owned(), Some(String::new())),
                         ("query".to_owned(), Some(query.clone())),
                         ("plan".to_owned(), Some(plan.clone())),
+                        ("read_pool_task_details".to_owned(), Some(read_pool.clone())),
                     ])
                 })
                 .collect();
             return Ok(Some(project_virtual_rows(
                 statement,
-                &["TIME", "QUERY", "PLAN"],
+                &["TIME", "QUERY", "PLAN", "READ_POOL_TASK_DETAILS"],
                 rows,
             )?));
         }

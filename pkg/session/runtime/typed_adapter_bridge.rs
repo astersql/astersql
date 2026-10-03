@@ -52,6 +52,8 @@ pub struct SessionBoundAdapterOwner {
         RefCell<Option<Arc<astersql_resourcegroup_runaway::checker::Checker>>>,
     pub(super) runaway_resource_group_override: RefCell<Option<String>>,
     pub(super) point_read_stats_active: Cell<bool>,
+    pub(super) point_read_pool_merged: Cell<bool>,
+    pub(super) point_read_pool_runtime_registered: Cell<bool>,
     pub(super) point_read_stats: Arc<std::sync::Mutex<Arc<astersql_store_driver::ReadStats>>>,
     pub(super) point_cache: RefCell<
         HashMap<String, Arc<std::sync::Mutex<astersql_executor::typed_point_get::TypedPointGet>>>,
@@ -499,6 +501,8 @@ impl SessionBoundAdapterOwner {
             runaway_checker: RefCell::new(None),
             runaway_resource_group_override: RefCell::new(None),
             point_read_stats_active: Cell::new(false),
+            point_read_pool_merged: Cell::new(false),
+            point_read_pool_runtime_registered: Cell::new(false),
             point_read_stats: Arc::new(std::sync::Mutex::new(Arc::new(
                 astersql_store_driver::ReadStats::default(),
             ))),

@@ -269,6 +269,8 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
         telemetry: Option<&TelemetryInfo>,
     ) -> AdapterResult<Box<dyn ExecExecutor>> {
         self.point_read_stats_active.set(false);
+        self.point_read_pool_merged.set(false);
+        self.point_read_pool_runtime_registered.set(false);
         #[cfg(test)]
         if let Some(core) = astersql_util_memory::global_arbitrator::GlobalMemArbitrator() {
             self.session.compiler_quota_at_executor_build.store(
@@ -380,6 +382,8 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
         if plan.kind != PlanKind::PointGet {
             return Err(errors::New("point get requires a PointGet plan"));
         }
+        self.point_read_pool_merged.set(false);
+        self.point_read_pool_runtime_registered.set(false);
         // RU v3 is the statement model, not a new domain RUVersion value.
         // Collect point RPC evidence for both Go-compatible versions (1 and 2).
         self.point_read_stats_active.set(true);
@@ -1359,6 +1363,21 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
                 .unwrap_or(300)
         });
         if duration_ms >= threshold_ms {
+            let pool = self
+                .session
+                .WithSessionVars(|vars| vars.StmtCtx.GetExecDetails().ReadPoolTaskDetails);
+            if let Some(pool) = pool.filter(|pool| !pool.Empty()) {
+                let query = if sql.ends_with(';') {
+                    sql.to_owned()
+                } else {
+                    format!("{sql};")
+                };
+                self.session.state.borrow_mut().slow_query_plans.push((
+                    query,
+                    String::new(),
+                    pool.String(),
+                ));
+            }
             self.session
                 .domain
                 .log_slow_query(astersql_domain::domain::SlowQueryInfo {
@@ -1511,6 +1530,19 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
         stats.OnExecutionFinished(&sql_digest, &plan_digest, Some(&finish));
     }
     fn OnFinishStatement(&self, retries: usize, success: bool, affected_rows: u64) {
+        if self.point_read_stats_active.get() && !self.point_read_pool_merged.replace(true) {
+            let pool = self
+                .point_read_stats
+                .lock()
+                .unwrap()
+                .read_pool_task_details();
+            let pool = astersql_store_driver::read_pool_task_details(&pool);
+            self.session.WithSessionVars(|vars| {
+                vars.StmtCtx
+                    .SyncExecDetails
+                    .MergeReadPoolTaskDetails(pool.as_ref());
+            });
+        }
         use std::sync::atomic::Ordering;
         let (processed_keys, write_size, write_keys) = self.session.WithSessionVars(|vars| {
             vars.StmtCtx
@@ -1644,6 +1676,26 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
     fn AttachFinishRuntimeStats(&self, plan_id: i32) {
         self.session.WithSessionVars(|vars| {
             let details = vars.StmtCtx.GetExecDetails();
+            if self.point_read_stats_active.get() && !self.point_read_pool_runtime_registered.get()
+            {
+                if let (Some(pool), Some(coll)) = (
+                    details.ReadPoolTaskDetails.as_ref(),
+                    vars.StmtCtx.RuntimeStatsColl.as_ref(),
+                ) {
+                    self.point_read_pool_runtime_registered.set(true);
+                    coll.RegisterStatsShared(
+                        plan_id,
+                        Box::new(astersql_executor::point_get::runtimeStatsWithSnapshot {
+                            snapshot_runtime_stats: Some(Arc::new(std::sync::Mutex::new(
+                                astersql_executor::point_get::SnapshotRuntimeStats {
+                                    read_pool_task_details: Some(pool.clone()),
+                                    ..Default::default()
+                                },
+                            ))),
+                        }),
+                    );
+                }
+            }
             if details.CommitDetail.is_none()
                 && details.LockKeysDetail.is_none()
                 && details.SharedLockKeysDetail.is_none()

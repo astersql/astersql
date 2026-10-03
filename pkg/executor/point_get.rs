@@ -318,6 +318,7 @@ pub struct SnapshotRuntimeStats {
     pub command_get_rpc_count: u64,
     pub process_time_micros: u64,
     pub description: String,
+    pub read_pool_task_details: Option<astersql_kv::PoolTaskDetails>,
 }
 
 impl SnapshotRuntimeStats {
@@ -329,6 +330,13 @@ impl SnapshotRuntimeStats {
         self.process_time_micros = self
             .process_time_micros
             .saturating_add(other.process_time_micros);
+        if let Some(pool) = other.read_pool_task_details.as_ref() {
+            if let Some(current) = self.read_pool_task_details.as_mut() {
+                current.Merge(pool);
+            } else {
+                self.read_pool_task_details = Some(pool.clone());
+            }
+        }
         if !other.description.is_empty() {
             if !self.description.is_empty() {
                 self.description.push_str(", ");
@@ -348,7 +356,22 @@ impl runtimeStatsWithSnapshot {
     pub fn String(&self) -> String {
         self.snapshot_runtime_stats
             .as_ref()
-            .and_then(|stats| stats.lock().ok().map(|stats| stats.description.clone()))
+            .and_then(|stats| {
+                stats.lock().ok().map(|stats| {
+                    let mut text = stats.description.clone();
+                    if let Some(pool) = stats
+                        .read_pool_task_details
+                        .as_ref()
+                        .filter(|pool| !pool.Empty())
+                    {
+                        if !text.is_empty() {
+                            text.push_str(", ");
+                        }
+                        text.push_str(&format!("read_pool:{}", pool.String()));
+                    }
+                    text
+                })
+            })
             .unwrap_or_default()
     }
 
@@ -388,6 +411,26 @@ impl runtimeStatsWithSnapshot {
     /// 返回统计类型标签。
     pub fn Tp(&self) -> i32 {
         TP_RUNTIME_STATS_WITH_SNAPSHOT
+    }
+}
+
+impl astersql_util_execdetails::execdetails::RuntimeStats for runtimeStatsWithSnapshot {
+    fn String(&self) -> String {
+        runtimeStatsWithSnapshot::String(self)
+    }
+    fn Merge(&mut self, other: &dyn astersql_util_execdetails::execdetails::RuntimeStats) {
+        if let Some(other) = other.as_any().downcast_ref::<Self>() {
+            runtimeStatsWithSnapshot::Merge(self, other);
+        }
+    }
+    fn CloneBox(&self) -> Box<dyn astersql_util_execdetails::execdetails::RuntimeStats> {
+        Box::new(self.Clone())
+    }
+    fn Tp(&self) -> i32 {
+        runtimeStatsWithSnapshot::Tp(self)
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 

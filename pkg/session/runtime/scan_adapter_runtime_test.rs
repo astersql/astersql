@@ -2554,3 +2554,287 @@ fn paging_byte_budget_default_reset_through_sql() {
         assert!(rows[0].Next().unwrap().is_none());
     }
 }
+
+#[test]
+fn read_pool_slow_query_consumer_exposes_the_statement_aggregate() {
+    use crate::testutil::TestSession;
+    use astersql_util_execdetails::execdetails::util::PoolTaskDetails;
+    let owner = SessionBoundAdapterOwner::new(canonical_dml_session());
+    owner.session.WithSessionVars(|vars| {
+        vars.StmtCtx
+            .SyncExecDetails
+            .MergeReadPoolTaskDetails(Some(&PoolTaskDetails {
+                TaskCount: 2,
+                PollCount: 8,
+                MaxPollCount: 4,
+                MinPollCount: 4,
+                ..Default::default()
+            }));
+    });
+    let expected = owner.session.WithSessionVars(|vars| {
+        vars.StmtCtx
+            .GetExecDetails()
+            .ReadPoolTaskDetails
+            .unwrap()
+            .String()
+    });
+    owner.SetProcessInfo(
+        "select b from t where a=1",
+        std::time::SystemTime::now() - std::time::Duration::from_secs(1),
+        3,
+        0,
+    );
+    owner.SlowQuery(0, "select b from t where a=1", true, false);
+    let mut rows = owner
+        .session
+        .Execute("select read_pool_task_details from information_schema.slow_query")
+        .unwrap();
+    let row = rows[0].Next().unwrap().expect("slow query row");
+    assert_eq!(row[0], expected);
+}
+
+#[test]
+fn read_pool_point_finish_runtime_is_attached_once_without_disabling_ru_evidence() {
+    use astersql_util_execdetails::execdetails::{NewRuntimeStatsColl, util::PoolTaskDetails};
+    let mut session = canonical_dml_session();
+    Arc::get_mut(&mut session.session_vars)
+        .unwrap()
+        .StmtCtx
+        .RuntimeStatsColl = Some(Arc::new(NewRuntimeStatsColl(None)));
+    let owner = SessionBoundAdapterOwner::new(session);
+    let pool = PoolTaskDetails {
+        TaskCount: 2,
+        PollCount: 8,
+        MaxPollCount: 4,
+        MinPollCount: 4,
+        ..Default::default()
+    };
+    owner.point_read_stats_active.set(true);
+    owner.session.WithSessionVars(|vars| {
+        vars.StmtCtx
+            .SyncExecDetails
+            .MergeReadPoolTaskDetails(Some(&pool));
+    });
+    owner.OnFinishStatement(0, false, 0);
+    owner.OnFinishStatement(0, false, 0);
+    owner.AttachFinishRuntimeStats(57);
+    owner.AttachFinishRuntimeStats(57);
+    assert!(owner.point_read_stats_active.get());
+    owner.session.WithSessionVars(|vars| {
+        assert_eq!(
+            vars.StmtCtx
+                .GetExecDetails()
+                .ReadPoolTaskDetails
+                .unwrap()
+                .TaskCount,
+            2
+        );
+        assert!(
+            vars.StmtCtx
+                .RuntimeStatsColl
+                .as_ref()
+                .unwrap()
+                .GetRootStatsStringShared(57)
+                .contains(&format!("read_pool:{}", pool.String()))
+        );
+    });
+}
+
+#[test]
+fn read_pool_canonical_count_consumer_keeps_completed_stats_on_decode_error() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Subset(Vec<u8>);
+    impl kv::ResultSubset for Subset {
+        fn ReadPoolTaskDetails(&self) -> Option<kv::PoolTaskDetails> {
+            Some(kv::PoolTaskDetails {
+                TaskCount: 1,
+                PollCount: 4,
+                MaxPollCount: 4,
+                MinPollCount: 4,
+                ..Default::default()
+            })
+        }
+        fn GetData(&self) -> &[u8] {
+            &self.0
+        }
+        fn GetStartKey(&self) -> kv::Key {
+            kv::Key(Vec::new())
+        }
+        fn MemSize(&self) -> i64 {
+            self.0.len() as i64
+        }
+        fn RespTime(&self) -> std::time::Duration {
+            std::time::Duration::ZERO
+        }
+    }
+    struct Response {
+        data: Option<Vec<u8>>,
+        closed: Arc<AtomicUsize>,
+    }
+    impl kv::Response for Response {
+        fn Next(
+            &mut self,
+            _: &kv::Context,
+        ) -> Result<Option<Box<dyn kv::ResultSubset>>, kv::errors::SharedError> {
+            Ok(self
+                .data
+                .take()
+                .map(|data| Box::new(Subset(data)) as Box<dyn kv::ResultSubset>))
+        }
+        fn Close(&mut self) -> Result<(), kv::errors::SharedError> {
+            self.closed.fetch_add(1, Ordering::AcqRel);
+            Ok(())
+        }
+    }
+    struct Client {
+        data: Vec<u8>,
+        closed: Arc<AtomicUsize>,
+    }
+    impl kv::Client for Client {
+        fn Send(
+            &self,
+            _: &kv::Context,
+            _: &kv::Request,
+            _: &dyn std::any::Any,
+            _: &kv::ClientSendOption,
+        ) -> Option<Box<dyn kv::Response>> {
+            Some(Box::new(Response {
+                data: Some(self.data.clone()),
+                closed: self.closed.clone(),
+            }))
+        }
+        fn IsRequestTypeSupported(&self, _: i64, _: i64) -> bool {
+            true
+        }
+    }
+    let session = canonical_dml_session();
+    let request = super::relational_scan::relational_coprocessor_request(
+        &astersql_meta_model::TableInfo {
+            ID: 123,
+            Columns: vec![astersql_meta_model::ColumnInfo {
+                ID: 1,
+                FieldType: astersql_parser_types::NewFieldType(
+                    astersql_parser_mysql::r#type::TypeLonglong,
+                ),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+        10,
+    )
+    .unwrap();
+    let option = kv::ClientSendOption {
+        SessionMemTracker: None,
+        EnabledRateLimitAction: false,
+        EventCb: None,
+        EnableCollectExecutionInfo: true,
+        TiFlashReplicaRead: Default::default(),
+        AppendWarning: None,
+        TryCopLiteWorker: None,
+    };
+    let mut response = tipb::ChecksumResponse::new();
+    response.set_total_kvs(3);
+    let data = protobuf::Message::write_to_bytes(&response).unwrap();
+    let closed = Arc::new(AtomicUsize::new(0));
+    let client = Client {
+        data,
+        closed: closed.clone(),
+    };
+    session.WithSessionVars(|vars| {
+        let count = super::relational_scan::execute_relational_count_request(
+            &client,
+            &kv::Context::todo(),
+            &request,
+            &option,
+            true,
+            &vars.StmtCtx.SyncExecDetails,
+        )
+        .unwrap();
+        assert_eq!(count, 3);
+        assert_eq!(
+            vars.StmtCtx
+                .GetExecDetails()
+                .ReadPoolTaskDetails
+                .unwrap()
+                .TaskCount,
+            1
+        );
+        let invalid = Client {
+            data: vec![0xff],
+            closed: closed.clone(),
+        };
+        assert!(
+            super::relational_scan::execute_relational_count_request(
+                &invalid,
+                &kv::Context::todo(),
+                &request,
+                &option,
+                true,
+                &vars.StmtCtx.SyncExecDetails
+            )
+            .is_err()
+        );
+        let pool = vars.StmtCtx.GetExecDetails().ReadPoolTaskDetails.unwrap();
+        assert_eq!(
+            (
+                pool.TaskCount,
+                pool.PollCount,
+                pool.MaxPollCount,
+                pool.MinPollCount
+            ),
+            (2, 8, 4, 4)
+        );
+    });
+    assert_eq!(closed.load(Ordering::Acquire), 2);
+}
+
+#[test]
+fn read_pool_point_builder_reinitializes_diagnostics_for_cached_fast_path() {
+    use astersql_infoschema::infoschema::{CiString, InfoSchema};
+    let session = canonical_dml_session();
+    let model = session
+        .domain
+        .info_schema()
+        .ModelTableInfoByName(&CiString::new("test"), &CiString::new("t"))
+        .unwrap();
+    let mut version = session
+        .domain
+        .storage()
+        .with_storage(|store| store.CurrentVersion("global"))
+        .unwrap();
+    version.Ver = u64::MAX;
+    let owner = Arc::new(SessionBoundAdapterOwner::new(session));
+    let mut physical = astersql_planner_core_operator_physicalop::PointGetPlan::New(
+        owner.session.AdapterPlanContext(),
+    );
+    physical.TblInfo = Some(model.as_ref().clone());
+    physical.Handle = Some(1);
+    physical.Columns = model.Columns.clone();
+    owner
+        .BindTypedPhysicalPlan(Box::new(physical), Vec::new(), version, 1, 1)
+        .unwrap();
+    let statement = point_lock_stmt(owner.clone(), "select b from t where a=1", &model.Columns);
+    for _ in 0..2 {
+        owner.point_read_pool_merged.set(true);
+        owner.point_read_pool_runtime_registered.set(true);
+        let previous = owner.point_read_stats.lock().unwrap().clone();
+        let mut executor = owner
+            .BuildPointGetExecutor(&statement.Plan, version.Ver, Some("read-pool-cache"))
+            .unwrap();
+        assert!(!owner.point_read_pool_merged.get());
+        assert!(!owner.point_read_pool_runtime_registered.get());
+        assert!(!Arc::ptr_eq(
+            &previous,
+            &owner.point_read_stats.lock().unwrap()
+        ));
+        executor.Open().unwrap();
+        executor.Close().unwrap();
+    }
+    assert!(
+        owner
+            .Effects()
+            .events
+            .iter()
+            .any(|event| event == "point_get_cache_hit")
+    );
+}

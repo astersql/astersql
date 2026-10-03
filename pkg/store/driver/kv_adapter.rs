@@ -1577,6 +1577,7 @@ impl kv::Transaction for ClientTransaction {
 }
 
 struct CopResultSubset {
+    read_pool: Option<kv::PoolTaskDetails>,
     data: Vec<u8>,
     start_key: kv::Key,
     memory_size: i64,
@@ -1587,7 +1588,19 @@ impl From<copr::CopResponse> for CopResultSubset {
     fn from(mut response: copr::CopResponse) -> Self {
         let data = response.get_data().to_vec();
         let memory_size = response.mem_size() as i64;
+        let pool = response
+            .detail
+            .as_ref()
+            .and_then(|details| details.read_pool_task_details.as_ref())
+            .or_else(|| {
+                response
+                    .response
+                    .as_ref()
+                    .and_then(|response| response.read_pool_task_details.as_ref())
+            });
+        let read_pool = pool.and_then(crate::read_pool_task_details::cop_read_pool_task_details);
         Self {
+            read_pool,
             data,
             start_key: kv::Key(response.start_key),
             memory_size,
@@ -1600,6 +1613,7 @@ impl From<copr::batch_request_sender::BatchResponse> for CopResultSubset {
     fn from(response: copr::batch_request_sender::BatchResponse) -> Self {
         let memory_size = response.data.len() as i64;
         Self {
+            read_pool: None,
             data: response.data,
             start_key: kv::Key(Vec::new()),
             memory_size,
@@ -1609,6 +1623,9 @@ impl From<copr::batch_request_sender::BatchResponse> for CopResultSubset {
 }
 
 impl kv::ResultSubset for CopResultSubset {
+    fn ReadPoolTaskDetails(&self) -> Option<kv::PoolTaskDetails> {
+        self.read_pool.clone()
+    }
     fn GetData(&self) -> &[u8] {
         &self.data
     }
@@ -2451,3 +2468,7 @@ impl kv::Storage for TikvStore {
         TikvStore::GetKeyspace(self)
     }
 }
+
+#[cfg(test)]
+#[path = "read_pool_task_details_test.rs"]
+pub(crate) mod read_pool_task_details_test;

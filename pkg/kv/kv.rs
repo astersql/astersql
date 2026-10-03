@@ -639,8 +639,14 @@ pub struct PartitionIDAndRanges {
 
 pub const GlobalReplicaScope: &str = oracle::GlobalTxnScope;
 
+pub use execdetails_group1::util::PoolTaskDetails;
+
 // ResultSubset 表示单个存储单元返回的一段结果及其内存/耗时元数据。
 pub trait ResultSubset {
+    /// Read-pool diagnostics retained by this completed response.
+    fn ReadPoolTaskDetails(&self) -> Option<PoolTaskDetails> {
+        None
+    }
     fn GetData(&self) -> &[u8];
     fn GetStartKey(&self) -> Key;
     fn MemSize(&self) -> i64;

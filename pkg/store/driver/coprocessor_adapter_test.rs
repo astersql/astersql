@@ -270,6 +270,7 @@ impl copr::RegionMetadataTransport for DagMetadata {
 #[derive(Default)]
 /// 可控的标准 Coprocessor 传输：首次返回 Region 错误，重试后返回数据。
 struct DagTransport {
+    read_pool: Option<copr::pool_task_details::PoolTaskDetails>,
     unary_calls: AtomicUsize,
     closed: AtomicBool,
 }
@@ -318,6 +319,7 @@ impl copr::StandardCoprocessorTransport for DagTransport {
         } else {
             copr::CopProtocolResponse {
                 data: b"dag-row".to_vec(),
+                read_pool_task_details: self.read_pool.clone(),
                 ..copr::CopProtocolResponse::default()
             }
         })
@@ -899,4 +901,66 @@ fn kv_adapter_preserves_mvcc_settlement_data() {
         )
         .unwrap();
     assert_eq!(*recorder.0.lock().unwrap(), vec![(65536, 579, 9.0, 5)]);
+}
+
+#[test]
+/// 使用可控后端验证请求路由、Region 重试、响应结束语义和关闭传播。
+fn canonical_dag_read_pool_diagnostics_survive_region_retry() {
+    let metadata = Arc::new(DagMetadata::default());
+    let transport = Arc::new(DagTransport {
+        read_pool: Some(crate::kv_adapter::read_pool_task_details_test::sample()),
+        ..Default::default()
+    });
+    let backend = copr::NetworkBackend::from_transports(
+        Arc::clone(&metadata) as Arc<dyn copr::RegionMetadataTransport>,
+        Arc::clone(&transport) as Arc<dyn copr::StandardCoprocessorTransport>,
+        Arc::new(NoopLockResolver) as Arc<dyn copr::TransactionLockResolver>,
+    );
+    let backend: Arc<dyn copr::StoreBackend> = Arc::new(backend);
+    let coprocessor_store = Arc::new(
+        copr::Store::new(
+            backend,
+            &copr::CoprocessorCacheConfig::default(),
+            false,
+            false,
+        )
+        .unwrap(),
+    );
+
+    let mut driver = TiKVDriver::with_backend(Arc::new(InMemoryBackend::default()));
+    let store = driver.Open("tikv://dag-adapter-test:2379").unwrap();
+    store.set_coprocessor_store_for_test(Arc::clone(&coprocessor_store));
+    let client = kv::Storage::GetClient(&store);
+    assert!(client.IsRequestTypeSupported(kv::ReqTypeAnalyze, kv::ReqSubTypeBasic));
+
+    let ctx = kv::Context::todo();
+    let request = dag_request();
+    let mut response = client
+        .Send(&ctx, &request, &() as &dyn Any, &send_option())
+        .expect("configured client response");
+    let subset = response
+        .Next(&ctx)
+        .expect("region retry must succeed")
+        .expect("DAG must return one row packet");
+    assert_eq!(subset.GetData(), b"dag-row");
+    let pool = subset
+        .ReadPoolTaskDetails()
+        .expect("real canonical response retains diagnostics");
+    assert_eq!(
+        (pool.TaskCount, pool.PollCount, pool.DispatchCount),
+        (1, 4, 2)
+    );
+    assert!(
+        pool.String()
+            .contains("poll_wall:{total:12ms, avg:3ms, max:5ms, min:2ms}")
+    );
+    response
+        .Close()
+        .expect("explicit stream close must succeed");
+    assert!(response.Next(&ctx).unwrap().is_none());
+    assert_eq!(transport.unary_calls.load(Ordering::Acquire), 2);
+    assert!(!metadata.invalidated.lock().unwrap().is_empty());
+
+    store.Close().unwrap();
+    assert!(transport.closed.load(Ordering::Acquire));
 }

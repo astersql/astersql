@@ -20,6 +20,6 @@ path = "bin_main.rs"
 [dependencies]
 log = "0.4"
 pprof = { version = "0.15", features = ["prost-codec"] }
-tikv-client = { version = "=0.4.2", git = "ssh://git@github.com/astersql/client-rust.git", tag = "v0.4.2-aster.6", default-features = false }
+tikv-client = { version = "=0.4.2", git = "ssh://git@github.com/astersql/client-rust.git", tag = "v0.4.2-aster.7", default-features = false }
 tiny_http = "0.12"
 tokio = { version = "1", features = ["rt-multi-thread"] }

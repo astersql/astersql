@@ -623,7 +623,7 @@ impl ConcreteSession {
         if slow_enabled {
             state
                 .slow_query_plans
-                .push((query.clone(), plan.to_owned()));
+                .push((query.clone(), plan.to_owned(), String::new()));
         }
         if summary_enabled {
             state.statement_summary_plans.push((query, plan.to_owned()));

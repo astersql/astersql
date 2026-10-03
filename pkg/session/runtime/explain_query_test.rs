@@ -90,3 +90,29 @@ fn hash_join_explain_places_named_key_before_generated_projection_key() {
     assert!(!should_swap_generated_hash_key("test.t3.a", "Column#267"));
     assert!(!should_swap_generated_hash_key("Column#267", "Column#268"));
 }
+
+#[test]
+fn read_pool_explain_execution_info_preserves_the_complete_captured_aggregate() {
+    use super::explain_analyze::append_read_pool_execution_info;
+    let mut execution = "time:1ms, loops:1".to_owned();
+    let unchanged = execution.clone();
+    append_read_pool_execution_info(&mut execution, None);
+    append_read_pool_execution_info(
+        &mut execution,
+        Some(&astersql_kv::PoolTaskDetails::default()),
+    );
+    assert_eq!(execution, unchanged);
+    let pool = astersql_kv::PoolTaskDetails {
+        TaskCount: 2,
+        PollCount: 8,
+        MaxPollCount: 4,
+        MinPollCount: 4,
+        PollWallTime: std::time::Duration::from_millis(24),
+        ..Default::default()
+    };
+    append_read_pool_execution_info(&mut execution, Some(&pool));
+    assert_eq!(
+        execution,
+        format!("{unchanged}, read_pool:{}", pool.String())
+    );
+}

@@ -15,6 +15,18 @@
 
 use super::*;
 
+pub(super) fn append_read_pool_execution_info(
+    execution: &mut String,
+    pool: Option<&kv::PoolTaskDetails>,
+) {
+    if let Some(pool) = pool.filter(|pool| !pool.Empty()) {
+        if !execution.is_empty() {
+            execution.push_str(", ");
+        }
+        execution.push_str(&format!("read_pool:{}", pool.String()));
+    }
+}
+
 // 为关系型 SELECT 执行真实查询，并把实际行数、耗时及模拟的 TiKV RPC 统计
 // 组织成与执行器树一致的 EXPLAIN ANALYZE 结果。
 impl ConcreteSession {
@@ -158,11 +170,25 @@ impl ConcreteSession {
                     _ => None,
                 })
                 .unwrap_or_default();
+            let pool =
+                self.WithSessionVars(|vars| vars.StmtCtx.GetExecDetails().ReadPoolTaskDetails);
             let rows = operators
                 .into_iter()
                 .map(|(name, depth, is_root, store, estimate, info)| {
                     let scanned = name.contains("Scan");
                     let actual = if scanned { scanned_rows } else { returned_rows };
+                    let mut execution = format!(
+                        "time:{:?}, loops:1{}",
+                        started.elapsed(),
+                        if scanned {
+                            format!(", total_process_keys: {scanned_rows}")
+                        } else {
+                            String::new()
+                        }
+                    );
+                    if scanned || name.to_ascii_lowercase().contains("point") {
+                        append_read_pool_execution_info(&mut execution, pool.as_ref());
+                    }
                     let id = if depth == 0 {
                         name
                     } else {
@@ -182,15 +208,7 @@ impl ConcreteSession {
                         } else {
                             String::new()
                         },
-                        format!(
-                            "time:{:?}, loops:1{}",
-                            started.elapsed(),
-                            if scanned {
-                                format!(", total_process_keys: {scanned_rows}")
-                            } else {
-                                String::new()
-                            }
-                        ),
+                        execution,
                         info,
                         "0 Bytes".to_owned(),
                         "0 Bytes".to_owned(),
@@ -562,7 +580,11 @@ impl ConcreteSession {
         .into_iter()
         .map(str::to_owned)
         .collect();
-        let row = |operator: &str, actual: usize, execution: String| {
+        let pool = self.WithSessionVars(|vars| vars.StmtCtx.GetExecDetails().ReadPoolTaskDetails);
+        let row = |operator: &str, actual: usize, mut execution: String| {
+            if operator.contains("Scan") || operator.contains("Point_Get") {
+                append_read_pool_execution_info(&mut execution, pool.as_ref());
+            }
             vec![
                 operator.to_owned(),
                 actual.to_string(),

@@ -79,3 +79,44 @@ fn point_get_falls_back_when_partition_metadata_is_absent() {
 
     assert_eq!(GetPhysID(&table, Some(0)), 19);
 }
+
+#[test]
+fn read_pool_snapshot_runtime_clone_merge_and_string_preserve_diagnostics() {
+    use crate::point_get::{SnapshotRuntimeStats, runtimeStatsWithSnapshot};
+    use std::sync::{Arc, Mutex};
+    let pool = astersql_kv::PoolTaskDetails {
+        TaskCount: 1,
+        PollCount: 4,
+        MaxPollCount: 4,
+        MinPollCount: 4,
+        PollWallTime: std::time::Duration::from_millis(12),
+        ..Default::default()
+    };
+    let mut stats = runtimeStatsWithSnapshot {
+        snapshot_runtime_stats: Some(Arc::new(Mutex::new(SnapshotRuntimeStats {
+            description: "rpc:1".into(),
+            read_pool_task_details: Some(pool.clone()),
+            ..Default::default()
+        }))),
+    };
+    let cloned = stats.Clone();
+    stats.Merge(&cloned);
+    assert!(
+        cloned
+            .String()
+            .contains(&format!("read_pool:{}", pool.String()))
+    );
+    let mut aggregate = pool.clone();
+    aggregate.Merge(&pool);
+    assert_eq!(
+        stats.String(),
+        format!("rpc:1, rpc:1, read_pool:{}", aggregate.String())
+    );
+    let collector = astersql_util_execdetails::execdetails::NewRuntimeStatsColl(None);
+    collector.RegisterStatsShared(57, Box::new(stats));
+    assert!(
+        collector
+            .GetRootStatsStringShared(57)
+            .contains(&aggregate.String())
+    );
+}

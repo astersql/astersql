@@ -14,6 +14,7 @@ nextgen = ["kerneltype/nextgen", "keyspace/nextgen"]
 test-fixtures = []
 
 [dependencies]
+execdetails-group1 = { package = "astersql-util-execdetails-group1", path = "../util/execdetails/internal/group1" }
 prometheus = "0.14"
 codec-dependency = { package = "astersql-util-codec", path = "../util/codec" }
 config-dependency = { package = "astersql-config", path = "../config" }

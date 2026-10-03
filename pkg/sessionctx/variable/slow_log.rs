@@ -251,6 +251,14 @@ impl SessionVars {
                 duration_seconds(ia_stats.WaitTime),
             );
         }
+        if let Some(pool) = items
+            .ExecDetail
+            .as_deref()
+            .and_then(|details| details.ReadPoolTaskDetails.as_ref())
+            .filter(|pool| !pool.Empty())
+        {
+            writeSlowLogItem(&mut buffer, ed::ReadPoolTaskDetailsStr, pool.String());
+        }
         if !self.CurrentDB().is_empty() {
             writeSlowLogItem(
                 &mut buffer,

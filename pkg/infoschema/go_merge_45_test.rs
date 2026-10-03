@@ -670,6 +670,28 @@ fn go_merge_45_metrics_and_storage_class_metadata() {
     ] {
         assert!(slow.columns.iter().any(|column| column.name == name));
     }
+    let read_pool_offset = slow
+        .columns
+        .iter()
+        .position(|column| column.name == "Read_pool_task_details")
+        .unwrap();
+    let read_pool = &slow_model.Columns[read_pool_offset];
+    assert_eq!(
+        read_pool.GetType(),
+        astersql_parser_mysql::r#type::TypeLongBlob
+    );
+    assert_eq!(read_pool.GetFlen(), 1isize << 32);
+    assert_eq!(read_pool.Offset, read_pool_offset as isize);
+    assert!(read_pool.DefaultValue.is_none());
+    assert_eq!(
+        read_pool.GetFlag() & astersql_parser_mysql::r#type::NotNullFlag,
+        0
+    );
+    assert_eq!(
+        slow.columns[read_pool_offset - 1].name,
+        "IA_remote_read_segment_wait_time"
+    );
+    assert_eq!(slow.columns[read_pool_offset + 1].name, "DB");
     let summary = table_registry().get(TableStatementsSummary).unwrap();
     assert_eq!(summary.columns.len(), 127);
     assert_eq!(summary.columns[45].name, "IA_EXEC_COUNT");

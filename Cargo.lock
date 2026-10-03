@@ -5494,6 +5494,7 @@ dependencies = [
  "astersql-testkit-testsetup",
  "astersql-util-codec",
  "astersql-util-dbterror",
+ "astersql-util-execdetails-group1",
  "astersql-util-hack",
  "astersql-util-resourcegrouptag",
  "astersql-util-size",
@@ -20064,7 +20065,7 @@ dependencies = [
 [[package]]
 name = "tikv-client"
 version = "0.4.2"
-source = "git+ssh://git@github.com/astersql/client-rust.git?tag=v0.4.2-aster.6#cf433f207671a41f810bb181334e35cbedd8971a"
+source = "git+ssh://git@github.com/astersql/client-rust.git?tag=v0.4.2-aster.7#7af332cab58b0ac6185e4a87442439ec10a60363"
 dependencies = [
  "async-recursion",
  "async-trait",

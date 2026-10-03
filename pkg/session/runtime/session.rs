@@ -212,7 +212,7 @@ pub(super) struct SessionState {
     )>,
     pub(super) slow_log_threshold_ms: u64,
     /// Session-visible rows backing INFORMATION_SCHEMA.SLOW_QUERY.
-    pub(super) slow_query_plans: Vec<(String, String)>,
+    pub(super) slow_query_plans: Vec<(String, String, String)>,
     /// Session-visible rows backing INFORMATION_SCHEMA.STATEMENTS_SUMMARY.
     pub(super) statement_summary_plans: Vec<(String, String)>,
     pub(super) last_explain_for_rows: Option<Vec<Vec<String>>>,

@@ -31,7 +31,7 @@ impl ConcreteSession {
             let state = self.state.borrow();
             state.snapshot_read_ts.or(state.session_stale_read_ts)
         });
-        self.domain.storage().with_storage(|store| {
+        let result = self.domain.storage().with_storage(|store| {
             if store.Name() != "TiKV" { return Ok(None); }
             let version = match read_ts {
                 Some(ts) => kv::NewVersion(ts),
@@ -92,6 +92,7 @@ impl ConcreteSession {
             let result = (|| {
                 let mut rows = Vec::new();
                 while let Some(subset) = response.Next(&context).map_err(|error| session_error("EXPLAIN Coprocessor", error))? {
+                    self.WithSessionVars(|vars| vars.StmtCtx.SyncExecDetails.MergeReadPoolTaskDetails(subset.ReadPoolTaskDetails().as_ref()));
                     let result: tipb::SelectResponse = protobuf::parse_from_bytes(subset.GetData()).map_err(|error| session_error("decode EXPLAIN Coprocessor", error))?;
                     if result.has_error() { return Err(SessionError::new(result.get_error().get_msg())); }
                     for chunk in result.get_chunks() {
@@ -111,6 +112,13 @@ impl ConcreteSession {
             })();
             let closed = response.Close().map_err(|error| session_error("close EXPLAIN Coprocessor", error));
             match (result, closed) { (Err(error), _) | (_, Err(error)) => Err(error), (Ok(rows), Ok(())) => Ok(Some(rows)) }
-        })
+        });
+        let pool = astersql_store_driver::read_pool_task_details(&stats.read_pool_task_details());
+        self.WithSessionVars(|vars| {
+            vars.StmtCtx
+                .SyncExecDetails
+                .MergeReadPoolTaskDetails(pool.as_ref())
+        });
+        result
     }
 }
