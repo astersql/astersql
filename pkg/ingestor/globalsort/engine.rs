@@ -486,13 +486,32 @@ impl Engine {
         current_batch_size: usize,
     ) -> Result<usize> {
         let new_batch_size = self.resource.concurrency.load(Ordering::Acquire).max(1) as usize;
-        self.update_active_ingest_data_flags();
         if new_batch_size == current_batch_size {
+            self.update_active_ingest_data_flags();
             return Ok(current_batch_size);
         }
-        while !self.active_ingest_data_flags.is_empty() {
-            self.wait_ingest_data_released(token)?;
+        // A memory-retry notification is sent inside on_release, before the
+        // completed flag is published. Only the flag permits rebuilding buffers.
+        let tick_interval = if cfg!(test) {
+            std::time::Duration::from_millis(10)
+        } else {
+            std::time::Duration::from_secs(1)
+        };
+        loop {
+            let next_tick = std::time::Instant::now() + tick_interval;
+            while std::time::Instant::now() < next_tick {
+                if token.is_cancelled() {
+                    return Err(Error::Cancelled);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            if token.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
             self.update_active_ingest_data_flags();
+            if self.active_ingest_data_flags.is_empty() {
+                break;
+            }
         }
         self.Reset();
         let mut state = self.resource.ready.0.lock().map_err(|_| Error::Poisoned)?;
@@ -641,6 +660,7 @@ impl Engine {
 struct MemoryIngestDataInner {
     kvs: RwLock<Arc<Vec<KvPair>>>,
     timestamp: u64,
+    // Published only after buffer cleanup and the release callback complete.
     released: Arc<AtomicBool>,
     reference_count: AtomicI64,
     imported_kv_size: Arc<AtomicI64>,
@@ -651,7 +671,7 @@ impl Drop for MemoryIngestDataInner {
     fn drop(&mut self) {
         // A cancelled generator can discard a batch before any job Ref. Return
         // its allocation before publishing the release signal, just as DecRef.
-        if !self.released.swap(true, Ordering::AcqRel) {
+        if !self.released.load(Ordering::Acquire) {
             if let Ok(kvs) = self.kvs.get_mut() {
                 *kvs = Arc::new(Vec::new());
             }
@@ -660,6 +680,7 @@ impl Drop for MemoryIngestDataInner {
             {
                 callback();
             }
+            self.released.store(true, Ordering::Release);
         }
     }
 }
@@ -772,22 +793,21 @@ impl MemoryIngestData {
 
     /// 清空 KV 并执行一次性释放回调（幂等）。
     pub fn release(&self) {
-        if self
+        // Serialize explicit releases without publishing completion early.
+        let mut callback = self
             .inner
-            .released
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
+            .on_release
+            .lock()
+            .expect("release callback lock poisoned");
+        if self.inner.released.load(Ordering::Acquire) {
             return;
         }
-        if let Ok(mut kvs) = self.inner.kvs.write() {
-            *kvs = Arc::new(Vec::new());
-        }
-        if let Ok(mut callback) = self.inner.on_release.lock()
-            && let Some(callback) = callback.take()
-        {
+        *self.inner.kvs.write().expect("ingest buffer lock poisoned") = Arc::new(Vec::new());
+        if let Some(callback) = callback.take() {
             callback();
         }
+        // Engine resize observes this only after payload cleanup and on_release.
+        self.inner.released.store(true, Ordering::Release);
     }
 
     /// 累加已导入字节与条数到引擎共享计数器。

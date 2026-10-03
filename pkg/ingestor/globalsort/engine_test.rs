@@ -1144,3 +1144,187 @@ fn record_duplicate_uploads_stream_before_each_batch_is_handed_off() {
         ]
     );
 }
+
+#[test]
+fn release_completion_waits_for_buffer_cleanup_and_callback() {
+    use std::sync::mpsc;
+    let mut engine = NewExternalEngine(
+        Arc::new(MemoryStorage::default()),
+        vec![],
+        vec![],
+        vec![1],
+        vec![3],
+        vec![vec![1], vec![3]],
+        vec![],
+        1,
+        123,
+        2,
+        1,
+        false,
+        1024,
+        OnDuplicateKey::Error,
+        "release-order".into(),
+    )
+    .unwrap();
+    let (callback_started, started) = mpsc::channel();
+    let (continue_callback, continued) = mpsc::channel();
+    let count = Arc::new(AtomicI32::new(0));
+    let callback_count = count.clone();
+    let data = MemoryIngestData::new(
+        vec![kv(&[1], b"value")],
+        123,
+        Arc::new(AtomicI64::new(0)),
+        Arc::new(AtomicI64::new(0)),
+        move || {
+            callback_count.fetch_add(1, Ordering::SeqCst);
+            callback_started.send(()).unwrap();
+            continued.recv().unwrap();
+        },
+    );
+    data.IncRef();
+    let flag = data.inner.released.clone();
+    engine.active_ingest_data_flags.push(flag.clone());
+    // Hold the actual KV buffer lock so clearing its payload cannot complete.
+    let buffer = data.inner.kvs.write().unwrap();
+    let releasing_data = data.clone();
+    let (release_started, releasing) = mpsc::channel();
+    let release = std::thread::spawn(move || {
+        release_started.send(()).unwrap();
+        releasing_data.DecRef();
+    });
+    releasing.recv_timeout(Duration::from_secs(5)).unwrap();
+    let early_flag = flag.load(Ordering::Acquire);
+    engine.update_active_ingest_data_flags();
+    let buffers_active = engine.active_ingest_data_flags.len();
+    drop(buffer);
+    started.recv_timeout(Duration::from_secs(5)).unwrap();
+    let callback_flag = flag.load(Ordering::Acquire);
+    engine.update_active_ingest_data_flags();
+    let callback_active = engine.active_ingest_data_flags.len();
+    engine.resource.concurrency.store(2, Ordering::Release);
+    let (resized, result) = mpsc::channel();
+    let resize = std::thread::spawn(move || {
+        let answer = engine.handle_concurrency_change(&Default::default(), 1);
+        resized
+            .send((answer, engine.active_ingest_data_flags.len()))
+            .unwrap();
+    });
+    let early_resize = result.recv_timeout(Duration::from_millis(50)).ok();
+    continue_callback.send(()).unwrap();
+    release.join().unwrap();
+    let (batch_size, remaining) = early_resize
+        .clone()
+        .unwrap_or_else(|| result.recv_timeout(Duration::from_secs(1)).unwrap());
+    resize.join().unwrap();
+    data.release();
+    assert!(!early_flag, "release was published before buffer cleanup");
+    assert_eq!(buffers_active, 1);
+    assert!(
+        !callback_flag,
+        "release was published before callback completion"
+    );
+    assert_eq!(callback_active, 1);
+    assert!(
+        early_resize.is_none(),
+        "resized while the release callback was blocked"
+    );
+    assert!(flag.load(Ordering::Acquire));
+    assert_eq!(batch_size.unwrap(), 2);
+    assert_eq!(remaining, 0);
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+    assert!(data.inner.kvs.read().unwrap().is_empty());
+}
+
+#[test]
+fn discard_completion_waits_for_release_callback() {
+    use std::sync::mpsc;
+    let (callback_started, started) = mpsc::channel();
+    let (continue_callback, continued) = mpsc::channel();
+    let data = MemoryIngestData::new(
+        vec![kv(&[1], b"value")],
+        123,
+        Arc::new(AtomicI64::new(0)),
+        Arc::new(AtomicI64::new(0)),
+        move || {
+            callback_started.send(()).unwrap();
+            continued.recv().unwrap();
+        },
+    );
+    let flag = data.inner.released.clone();
+    let release = std::thread::spawn(move || drop(data));
+    started.recv_timeout(Duration::from_secs(5)).unwrap();
+    let early = flag.load(Ordering::Acquire);
+    continue_callback.send(()).unwrap();
+    release.join().unwrap();
+    assert!(!early, "discard was published before callback completion");
+    assert!(flag.load(Ordering::Acquire));
+}
+
+#[test]
+fn external_engine_resizes_down_and_up_and_updates_after_loading_finishes() {
+    for new_concurrency in [1, 8] {
+        let store = Arc::new(MemoryStorage::default());
+        let pairs = (1u8..=6).map(|key| kv(&[key], &[key])).collect::<Vec<_>>();
+        store.write("resize", encode_kvs(&pairs)).unwrap();
+        let mut engine = NewExternalEngine(
+            store,
+            vec!["resize".into()],
+            vec!["stat".into()],
+            vec![1],
+            vec![7],
+            (1u8..=7).map(|key| vec![key]).collect(),
+            vec![],
+            4,
+            123,
+            12,
+            6,
+            false,
+            1024,
+            OnDuplicateKey::Error,
+            "resize-out".into(),
+        )
+        .unwrap();
+        let worker = Arc::new(DummyWorker {
+            tuned: AtomicI32::new(4),
+        });
+        engine.SetWorkerPool(worker.clone());
+        let controls = engine.ResourceHandle();
+        let mut updating = None;
+        let mut batches = Vec::new();
+        let mut loaded = Vec::new();
+        engine
+            .LoadIngestDataWith(&Default::default(), |batch| {
+                batches.push(batch.sorted_ranges.len());
+                loaded.extend(get_all_data(&batch.data));
+                batch.data.release();
+                if batches.len() == 1 {
+                    let updating_controls = controls.clone();
+                    updating = Some(std::thread::spawn(move || {
+                        updating_controls.UpdateResource(new_concurrency, 2048)
+                    }));
+                    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                    while controls.WorkerConcurrency() != new_concurrency {
+                        assert!(std::time::Instant::now() < deadline);
+                        std::thread::yield_now();
+                    }
+                }
+                Ok(())
+            })
+            .unwrap();
+        updating.unwrap().join().unwrap().unwrap();
+        assert_eq!(loaded, pairs);
+        assert_eq!(
+            batches,
+            if new_concurrency == 1 {
+                vec![4, 1, 1]
+            } else {
+                vec![4, 2]
+            }
+        );
+        assert_eq!(worker.tuned.load(Ordering::SeqCst), new_concurrency);
+        // Finished loading has no outstanding resize acknowledgement to await.
+        controls.UpdateResource(16, 4096).unwrap();
+        assert_eq!(controls.WorkerConcurrency(), 16);
+        assert_eq!(worker.tuned.load(Ordering::SeqCst), new_concurrency);
+    }
+}
