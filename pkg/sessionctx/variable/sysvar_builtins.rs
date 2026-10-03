@@ -595,11 +595,14 @@ fn register_basic_clamped_vars() {
         false,
         vardef::ScopeSession,
     ));
-    RegisterSysVar(bool_var(
+    let mut full_outer_join = bool_var(
         vardef::TiDBEnableFullOuterJoin,
         vardef::DefTiDBEnableFullOuterJoin,
         scope_both(),
-    ));
+    );
+    full_outer_join.IsHintUpdatableVerified =
+        crate::setvar_affect::HINT_UPDATABLE_VERIFIED.contains(&vardef::TiDBEnableFullOuterJoin);
+    RegisterSysVar(full_outer_join);
     RegisterSysVar(bool_var(
         vardef::TiDBEnablePseudoForOutdatedStats,
         vardef::DefTiDBEnablePseudoForOutdatedStats,

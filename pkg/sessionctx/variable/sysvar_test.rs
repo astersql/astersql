@@ -2181,3 +2181,33 @@ fn stats_load_pseudo_timeout_global_hooks_validate_and_control_fallback() {
             .is_err()
     );
 }
+
+#[test]
+fn full_outer_join_sysvar_supports_hints_and_boolean_values() {
+    let (mut validation_vars, _) = session();
+    let variable = sysvar(vardef::TiDBEnableFullOuterJoin);
+    assert_eq!(variable.Scope, vardef::ScopeGlobal | vardef::ScopeSession);
+    assert_eq!(variable.Type, vardef::TypeBool);
+    assert_eq!(variable.Value, "OFF");
+    assert!(variable.IsHintUpdatableVerified);
+    let mut vars = crate::session::SessionVars::default();
+    assert!(!vars.EnableFullOuterJoin);
+    for (input, expected) in [("on", true), ("0", false), ("1", true), ("off", false)] {
+        for scope in [vardef::ScopeGlobal, vardef::ScopeSession] {
+            assert_eq!(
+                variable
+                    .Validate(&mut validation_vars, input, scope)
+                    .unwrap(),
+                if expected { "ON" } else { "OFF" }
+            );
+        }
+        vars.SetSystemVar(vardef::TiDBEnableFullOuterJoin, input)
+            .unwrap();
+        assert_eq!(vars.EnableFullOuterJoin, expected);
+    }
+    assert!(
+        vars.SetSystemVar(vardef::TiDBEnableFullOuterJoin, "invalid")
+            .is_err()
+    );
+    assert!(!vars.EnableFullOuterJoin);
+}

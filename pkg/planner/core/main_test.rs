@@ -1981,3 +1981,50 @@ fn typed_object_decoder_rejects_unknown_fields() {
         .expect_err("unknown fields must not be silently ignored");
     assert!(error.contains("Unexpected"), "{error}");
 }
+
+#[test]
+fn full_join_rejects_lateral_before_correlated_resolution() {
+    let sqls = [
+        "select * from t t1 full outer join t t2 on t1.a = t2.a",
+        "select * from t t1 full outer join lateral (select 1 as a) as t2 on false",
+        "select * from t t1 full outer join lateral (select t1.a) as t2 on true",
+        "select * from t t1 full outer join (t t2 join lateral (select t2.a) as t3 on true) on false",
+    ];
+    for enabled in [false, true] {
+        for (index, sql) in sqls.iter().enumerate() {
+            // Later full-join planning allows the ordinary ON join when enabled.
+            if enabled && index == 0 {
+                continue;
+            }
+            let context = planner_test_context_with_stats_state(0, false, None, false, |vars| {
+                vars.SetSystemVar(
+                    "tidb_enable_full_outer_join",
+                    if enabled { "ON" } else { "OFF" },
+                )
+                .unwrap();
+            });
+            crate::InstallPlannerExpressionFactory().unwrap();
+            let statement = crate::ast::NodeRef::new(
+                parser_dependency::New().ParseOneStmt(sql, "", "").unwrap(),
+            );
+            let (mut builder, _) = crate::NewPlanBuilder()
+                .withDataSourceProvider(Arc::new(PlannerTestStatsProvider))
+                .Init(
+                    context,
+                    planner_test_schema(),
+                    hint_dependency::NewQBHintHandler(None),
+                );
+            let error = builder
+                .BuildNodeRef(crate::context::TODO(), &statement)
+                .err()
+                .expect("FULL OUTER JOIN must be rejected before lateral resolution");
+            let expected = plannererrors_dependency::ErrNotSupportedYet
+                .GenWithStackByArgs(&["FULL OUTER JOIN".into()]);
+            assert!(
+                error.Equal(&plannererrors_dependency::ErrNotSupportedYet),
+                "enabled={enabled}, {sql}: {error}"
+            );
+            assert_eq!(error.to_string(), expected.to_string());
+        }
+    }
+}

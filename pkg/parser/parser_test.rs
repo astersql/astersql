@@ -2110,3 +2110,46 @@ pub fn test_table_affinity_option() {
 pub fn test_split_partition() {
     run_contract_table("TestSplitPartition", false);
 }
+
+#[test]
+fn full_outer_join_syntax_preserves_alias_and_restore() {
+    for (sql, expected, kind) in [
+        (
+            "select * from t1 full join t2 on t1.a = t2.a",
+            "SELECT * FROM `t1` AS `full` JOIN `t2` ON `t1`.`a`=`t2`.`a`",
+            parser_ast::JoinType::CrossJoin,
+        ),
+        (
+            "select * from t1 full outer join t2 on t1.a <=> t2.a",
+            "SELECT * FROM `t1` FULL OUTER JOIN `t2` ON `t1`.`a`<=>`t2`.`a`",
+            parser_ast::JoinType::FullJoin,
+        ),
+        (
+            "select * from t1 full /* lookahead */ outer join t2 on t1.a <=> t2.a",
+            "SELECT * FROM `t1` FULL OUTER JOIN `t2` ON `t1`.`a`<=>`t2`.`a`",
+            parser_ast::JoinType::FullJoin,
+        ),
+        (
+            "select * from full",
+            "SELECT * FROM `full`",
+            parser_ast::JoinType::CrossJoin,
+        ),
+        (
+            "select * from t1 as full",
+            "SELECT * FROM `t1` AS `full`",
+            parser_ast::JoinType::CrossJoin,
+        ),
+    ] {
+        let statement = crate::New().ParseOneStmt(sql, "", "").unwrap();
+        let select = statement
+            .as_any()
+            .downcast_ref::<parser_ast::SelectStmt>()
+            .unwrap();
+        assert_eq!(select.From.as_ref().unwrap().TableRefs.Tp, kind, "{sql}");
+        assert_eq!(
+            parser_ast::sql_restore::restore_node(statement.as_ref()).unwrap(),
+            expected,
+            "{sql}"
+        );
+    }
+}

@@ -4049,9 +4049,9 @@ fn build_join_runtime(
     if join.Tp == crate::ast::JoinType::FullJoin {
         let session_vars = builder.ctx.GetSessionVars();
         if !session_vars.EnableFullOuterJoin {
-            return Err(expression::errors::New(
-                "FULL OUTER JOIN is not supported yet",
-            ));
+            return Err(plannererrors::ErrNotSupportedYet
+                .GenWithStackByArgs(&["FULL OUTER JOIN".into()])
+                .into());
         }
         if session_vars
             .GetSystemVar(vardef_dependency::TiDBEnableCascadesPlanner)
@@ -4062,9 +4062,9 @@ fn build_join_runtime(
             ));
         }
         if join.NaturalJoin || !join.Using.is_empty() || join.On.is_none() || has_lateral {
-            return Err(expression::errors::New(
-                "FULL OUTER JOIN is not supported yet",
-            ));
+            return Err(plannererrors::ErrNotSupportedYet
+                .GenWithStackByArgs(&["FULL OUTER JOIN".into()])
+                .into());
         }
     }
     let lateral_outer = find_join_full_schema(left.as_ref())
