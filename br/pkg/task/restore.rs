@@ -517,7 +517,7 @@ pub fn DefineRestoreFlags(flags: &mut FlagSet) {
     flags.DefineUint64(FlagRestorePhase, 0);
     flags.DefineBool(FlagWaitTiFlashReady, false);
     flags.DefineBool(flagAllowPITRFromIncremental, true);
-    flags.DefineBool(FlagSysCheckCollation, false);
+    flags.DefineBool(FlagSysCheckCollation, true);
     flags.DefineUint(FlagSplitRegionIndexStep, DefaultRegionIndexStep as u64);
     let _ = flags.MarkHidden(FlagSplitRegionIndexStep);
     flags.DefineBool(FlagCoarseScatter, false);

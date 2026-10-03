@@ -437,11 +437,32 @@ fn test_default_restore() {
     assert!(def.UseCheckpoint);
     // 系统表默认包含（来自 RestoreCommonConfig 解析）。
     assert!(def.RestoreCommonConfig.WithSysTable);
+    assert!(def.RestoreCommonConfig.SysCheckCollation);
     // 重置系统用户列表含 cloud_admin/root。
     assert_eq!(
         def.RestoreCommonConfig.ResetSysUsers,
         vec!["cloud_admin".to_string(), "root".to_string()]
     );
+}
+
+#[test]
+fn test_restore_sys_check_collation_flags() {
+    use crate::restore::{DefineRestoreFlags, FlagSysCheckCollation};
+
+    for override_value in [None, Some(false), Some(true)] {
+        let mut flags = FlagSet::new();
+        DefineRestoreFlags(&mut flags);
+        assert!(flags.GetBool(FlagSysCheckCollation).unwrap());
+        if let Some(value) = override_value {
+            flags.Set(FlagSysCheckCollation, FlagValue::Bool(value));
+        }
+        let mut cfg = RestoreConfig::default();
+        cfg.ParseFromFlags(&flags, true).unwrap();
+        assert_eq!(
+            cfg.RestoreCommonConfig.SysCheckCollation,
+            override_value.unwrap_or(true)
+        );
+    }
 }
 
 /// 对应 Go `TestParseAndValidateMasterKeyInfo`：单/多云 URL 与非法 scheme。
