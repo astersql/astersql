@@ -239,21 +239,24 @@ for options, expected_protocol in [('', 30000), (' min_protocol_version=3.2 max_
             finally:
                 finish(invalid)
         query('SELECT 1', [['1']])
-        # Source SQL remains frozen. Function sources execute against the real
-        # empty native stored-program set; other providers remain unsupported.
+        # Source SQL remains frozen. Functions have no native stored-program rows;
+        # native independent sequences have no auto/internal column ownership.
         # Use the real current namespace ID; no catalog rows are mocked.
         namespace_id = int(query("select oid from pg_catalog.pg_namespace where nspname = 'public'")[0][0])
         for label, displayed, simple_state, parse_state in zip(
                 ['RetrieveViewSources', 'RetrieveFunctionSources', 'RetrieveRelations'],
-                sys.argv[3:6], ['0A000', None, '0A000'], ['0A000', None, '0A000']):
+                sys.argv[3:6], ['0A000', None, None], ['0A000', None, None]):
             assert displayed.count('?') == 1, label
-            function_metadata = [('id', 26), ('arguments_def', 25), ('result_def', 25), ('sqlbody_def', 25), ('source_text', 25)] if label == 'RetrieveFunctionSources' else None
+            source_metadata = {
+                'RetrieveFunctionSources': [('id', 26), ('arguments_def', 25), ('result_def', 25), ('sqlbody_def', 25), ('source_text', 25)],
+                'RetrieveRelations': [('dependent_id', 26), ('owner_id', 26), ('owner_subobject_id', 23)],
+            }.get(label)
             query(displayed.replace('?', str(namespace_id)), sqlstate=simple_state,
-                  expected=[] if function_metadata else None, metadata=function_metadata)
+                  expected=[] if source_metadata else None, metadata=source_metadata)
             query('SELECT 1', [['1']])
             query(displayed.replace('?', '$1'), parameter=namespace_id,
                   parameter_oid=26, sqlstate=parse_state,
-                  expected=[] if function_metadata else None, metadata=function_metadata)
+                  expected=[] if source_metadata else None, metadata=source_metadata)
             query('SELECT 1', [['1']])
             print(f'{expected_protocol}: {label}: Query={simple_state or "typed empty result"}, Execute(oid 26)={parse_state or "typed empty result"}; recovery passed', flush=True)
         namespace_sql = """select N.oid::bigint as id, N.xmin as state_number, nspname as name,

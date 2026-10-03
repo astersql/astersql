@@ -259,6 +259,7 @@ impl CatalogQuery {
                         | "pg_constraint"
                         | "pg_proc"
                         | "pg_language"
+                        | "pg_depend"
                         | "pg_database"
                         | "pg_locks"
                         | "pg_namespace"
@@ -801,6 +802,13 @@ impl CatalogQuery {
         cancel: &CancellationToken,
     ) -> ConnResult<Vec<Vec<Value>>> {
         let rows = match name {
+            "pg_depend" => sequence_dependency_rows(
+                snapshot
+                    .ok_or_else(|| ConnError::Session("schema snapshot is unavailable".into()))?
+                    .as_ref(),
+                database,
+                cancel,
+            )?,
             "pg_proc" => function_rows(),
             "pg_language" => vec![vec![
                 Value::Signed(INTERNAL_LANGUAGE_OID),
@@ -1483,6 +1491,65 @@ fn class_rows(
     Ok(rows)
 }
 
+// Project only the representable native sequence dependency: its persistent
+// schema membership. SequenceInfo has no owning table/column, and the native
+// default builder does not retain resolved sequence IDs. Neither AUTO_INCREMENT
+// nor default SQL text justifies a PostgreSQL auto/internal ownership edge.
+// This is a bounded sequence provider, not a general PostgreSQL dependency graph.
+fn sequence_dependency_rows(
+    snapshot: &dyn astersql_infoschema::InfoSchema,
+    database: &str,
+    cancel: &CancellationToken,
+) -> ConnResult<Vec<Vec<Value>>> {
+    check_catalog_cancel(cancel)?;
+    let Some(schema) = snapshot
+        .AllSchemas()
+        .into_iter()
+        .find(|s| s.name.lower == database.to_lowercase())
+    else {
+        return Ok(Vec::new());
+    };
+    let namespace = i64::from(crate::pg_oid::namespace_oid(schema.id)?);
+    // Use the same fixed identities as regclass resolution and pg_class.
+    let catalog_oid = |name| {
+        crate::pg_oid::SYSTEM_RELATIONS
+            .iter()
+            .find(|(relation, _)| *relation == name)
+            .map(|(_, oid)| i64::from(*oid))
+            .expect("sequence dependency catalog must be registered")
+    };
+    let classid = catalog_oid("pg_class");
+    let refclassid = catalog_oid("pg_namespace");
+    let mut rows = Vec::new();
+    for table in snapshot
+        .SchemaTableInfos(&schema.name)
+        .map_err(|e| ConnError::Session(e.to_string()))?
+    {
+        check_catalog_cancel(cancel)?;
+        let model = table.model_meta.as_ref().ok_or_else(|| {
+            ConnError::Session(format!(
+                "complete table metadata is unavailable for {}",
+                table.name.original
+            ))
+        })?;
+        if model.State != astersql_meta_model::StatePublic || model.Sequence.is_none() {
+            continue;
+        }
+        rows.push(vec![
+            Value::Signed(classid),
+            Value::Signed(i64::from(crate::pg_oid::table_oid(model.ID)?)),
+            Value::Signed(refclassid),
+            Value::Signed(namespace),
+            Value::Signed(0),
+            Value::Text("n".into()),
+        ]);
+        if rows.len() > MAX_CATALOG_ROWS {
+            return Err(catalog_row_limit());
+        }
+    }
+    Ok(rows)
+}
+
 // This bounded registry describes only the PG adapter's introspection
 // primitives, not the shared expression engine or PostgreSQL's full pg_proc.
 // Native INFORMATION_SCHEMA.ROUTINES/PARAMETERS are empty because stored
@@ -1536,6 +1603,12 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
     let oid = crate::pg_oid::OID_TYPE;
     let internal_char = crate::pg_result::CatalogColumnType::InternalChar as u8;
     let (slot, code) = match (relation, name) {
+        ("pg_depend", "classid") => (0, oid),
+        ("pg_depend", "objid") => (1, oid),
+        ("pg_depend", "refclassid") => (2, oid),
+        ("pg_depend", "refobjid") => (3, oid),
+        ("pg_depend", "refobjsubid") => (4, 3),
+        ("pg_depend", "deptype") => (5, internal_char),
         ("pg_proc", "oid") => (0, oid),
         ("pg_proc", "proname") => (1, 253),
         ("pg_proc", "pronamespace") => (2, oid),

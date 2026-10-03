@@ -2423,3 +2423,310 @@ where pronamespace = ?::oid
     send(&mut socket, b'X', b"");
     service.close();
 }
+
+#[test]
+fn pg_introspection_dependencies_live() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native
+        .execute("CREATE SEQUENCE test.dependency_seq START WITH 7")
+        .unwrap();
+    native.execute("CREATE TABLE test.dependency_auto (id BIGINT PRIMARY KEY AUTO_INCREMENT, source BIGINT DEFAULT 7)").unwrap();
+    // The native default builder cannot represent a durable sequence reference.
+    let error = native
+        .execute(
+            "CREATE TABLE test.dependency_reference (id BIGINT DEFAULT (NEXTVAL(dependency_seq)))",
+        )
+        .err()
+        .unwrap();
+    assert!(
+        error
+            .to_string()
+            .contains("expression form is not valid in CREATE TABLE metadata"),
+        "{error}"
+    );
+    let (_, metadata) = domain.stats_table("test", "dependency_auto").unwrap();
+    assert!(metadata.Sequence.is_none());
+    assert!(!metadata.Columns[1].DefaultIsExpr);
+    assert!(metadata.Columns[1].GetDefaultValue().is_some());
+    let (_, sequence) = domain.stats_table("test", "dependency_seq").unwrap();
+    assert_eq!(sequence.Sequence.as_ref().unwrap().Start, 7);
+    native.execute("CREATE DATABASE dependency_other").unwrap();
+    native
+        .execute("CREATE SEQUENCE dependency_other.hidden_seq")
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    let namespace = query(
+        &mut socket,
+        "SELECT oid FROM pg_namespace WHERE nspname='public'",
+    );
+    assert_eq!(namespace[1].0, b'D', "{namespace:?}");
+    let length = i32::from_be_bytes(namespace[1].1[2..6].try_into().unwrap()) as usize;
+    let namespace = std::str::from_utf8(&namespace[1].1[6..6 + length])
+        .unwrap()
+        .to_owned();
+    // Frozen original statement 1869279760: both class guards are essential.
+    let source_sql = r#"select D.objid as dependent_id,
+       D.refobjid as owner_id,
+       D.refobjsubid as owner_subobject_id
+from pg_depend D
+  join pg_class C_SEQ on D.objid    = C_SEQ.oid and D.classid    = 'pg_class'::regclass::oid
+  join pg_class C_TAB on D.refobjid = C_TAB.oid and D.refclassid = 'pg_class'::regclass::oid
+where C_SEQ.relkind = 'S'
+  and C_TAB.relkind = 'r'
+  and D.refobjsubid <> 0
+  and (D.deptype = 'a' or D.deptype = 'i')
+  and C_TAB.relnamespace = ?::oid
+order by owner_id
+"#;
+    let result = query(&mut socket, &source_sql.replace("?", &namespace));
+    assert_eq!(
+        result[0].0, b'T',
+        "complete sequence dependency query: {result:?}"
+    );
+    assert_eq!(
+        columns(&result[0].1),
+        vec![
+            ("dependent_id".into(), 26),
+            ("owner_id".into(), 26),
+            ("owner_subobject_id".into(), 23)
+        ]
+    );
+    assert!(
+        result.iter().all(|m| m.0 != b'D'),
+        "native sequences have no column ownership: {result:?}"
+    );
+    // Actual sequences are S; AUTO_INCREMENT and default expressions do not create more sequences.
+    let result = query(
+        &mut socket,
+        "SELECT relname,relkind FROM pg_class WHERE relname IN ('dependency_seq','dependency_auto','hidden_seq') ORDER BY relname",
+    );
+    assert_eq!(
+        result
+            .iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            row(&[Some("dependency_auto"), Some("r")]),
+            row(&[Some("dependency_seq"), Some("S")])
+        ]
+    );
+    // Persistent schema membership is the representable normal dependency.
+    let membership_sql = "SELECT C.relname,N.nspname,D.classid,D.refclassid,D.refobjsubid,D.deptype FROM pg_depend D JOIN pg_class C ON D.objid=C.oid AND D.classid='pg_class'::regclass::oid JOIN pg_namespace N ON D.refobjid=N.oid AND D.refclassid='pg_namespace'::regclass::oid ORDER BY C.relname";
+    let result = query(&mut socket, membership_sql);
+    assert_eq!(result[0].0, b'T', "{result:?}");
+    assert_eq!(
+        columns(&result[0].1),
+        vec![
+            ("relname".into(), 25),
+            ("nspname".into(), 25),
+            ("classid".into(), 26),
+            ("refclassid".into(), 26),
+            ("refobjsubid".into(), 23),
+            ("deptype".into(), 18)
+        ]
+    );
+    assert_eq!(
+        result
+            .iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect::<Vec<_>>(),
+        vec![row(&[
+            Some("dependency_seq"),
+            Some("public"),
+            Some("1259"),
+            Some("2615"),
+            Some("0"),
+            Some("n")
+        ])]
+    );
+    for sql in [
+        "SELECT objid FROM pg_depend WHERE refobjid=NULL::oid OR deptype=NULL",
+        "SELECT objid FROM pg_depend WHERE refobjid=4294967295::oid",
+        "SELECT D.objid FROM pg_depend D JOIN pg_class C ON D.refobjid=C.oid AND D.refclassid='pg_class'::regclass::oid",
+    ] {
+        let result = query(&mut socket, sql);
+        assert_eq!(result[0].0, b'T', "{sql}: {result:?}");
+        assert!(result.iter().all(|m| m.0 != b'D'), "{sql}: {result:?}");
+    }
+    for (sql, state) in [
+        ("SELECT missing_field FROM pg_depend WHERE objid=0", "0A000"),
+        (
+            "SELECT objid FROM pg_depend WHERE unsupported_dependency(objid) IS NOT NULL",
+            "0A000",
+        ),
+        ("DELETE FROM pg_depend", "0A000"),
+    ] {
+        let result = query(&mut socket, sql);
+        assert_eq!(result[0].0, b'E', "{sql}: {result:?}");
+        assert!(
+            result[0]
+                .1
+                .windows(7)
+                .any(|w| w == format!("C{state}\0").as_bytes()),
+            "{sql}: {result:?}"
+        );
+        assert_eq!(query(&mut socket, "SELECT 1")[1], (b'D', row(&[Some("1")])));
+    }
+    // Exercise the original multi-JOIN statement with explicit OID parameters and NULL.
+    let sql = source_sql.replace("?", "$1");
+    send(
+        &mut socket,
+        b'P',
+        &[
+            b"dependencies\0".as_slice(),
+            sql.as_bytes(),
+            b"\0",
+            &1u16.to_be_bytes(),
+            &26u32.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut socket, b'D', b"Sdependencies\0");
+    send(&mut socket, b'S', b"");
+    let described = until_ready(&mut socket);
+    assert!(described.iter().all(|m| m.0 != b'E'), "{described:?}");
+    assert!(described.iter().any(|m|m.0==b't' && m.1==[&1u16.to_be_bytes()[..],&26u32.to_be_bytes()].concat()),"{described:?}");
+    for value in [Some(namespace.as_str()), None, Some("4294967295")] {
+        let parameter = match value {
+            Some(value) => [&(value.len() as i32).to_be_bytes()[..], value.as_bytes()].concat(),
+            None => (-1i32).to_be_bytes().to_vec(),
+        };
+        send(
+            &mut socket,
+            b'B',
+            &[
+                b"\0dependencies\0".as_slice(),
+                &0u16.to_be_bytes(),
+                &1u16.to_be_bytes(),
+                &parameter,
+                &0u16.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        send(
+            &mut socket,
+            b'E',
+            &[b"\0".as_slice(), &0u32.to_be_bytes()].concat(),
+        );
+        send(&mut socket, b'S', b"");
+        let result = until_ready(&mut socket);
+        assert!(
+            result.iter().all(|m| m.0 != b'E' && m.0 != b'D'),
+            "{result:?}"
+        );
+        assert!(result.iter().any(|m| m.0 == b'C'), "{result:?}");
+    }
+    // Parse freezes syntax and metadata, not rows. A later replacement must
+    // replace the original sequence in this nonempty dependency join.
+    send(
+        &mut socket,
+        b'P',
+        &[
+            b"membership\0".as_slice(),
+            membership_sql.as_bytes(),
+            b"\0",
+            &0u16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut socket, b'S', b"");
+    let parsed = until_ready(&mut socket);
+    assert!(parsed.iter().all(|m| m.0 != b'E'), "{parsed:?}");
+    // Independent native sequences can be dropped while tables remain:
+    // neither AUTO_INCREMENT nor a default expression establishes ownership.
+    native.execute("DROP SEQUENCE test.dependency_seq").unwrap();
+    let result = query(&mut socket, membership_sql);
+    assert_eq!(result[0].0, b'T', "{result:?}");
+    assert!(
+        result.iter().all(|m| m.0 != b'D'),
+        "DROP must remove membership: {result:?}"
+    );
+    assert_eq!(
+        query(
+            &mut socket,
+            "SELECT relname FROM pg_class WHERE relname='dependency_auto'"
+        )[1],
+        (b'D', row(&[Some("dependency_auto")]))
+    );
+    native
+        .execute("CREATE SEQUENCE test.replacement_seq")
+        .unwrap();
+    let result = query(&mut socket, membership_sql);
+    assert_eq!(
+        result[1],
+        (
+            b'D',
+            row(&[
+                Some("replacement_seq"),
+                Some("public"),
+                Some("1259"),
+                Some("2615"),
+                Some("0"),
+                Some("n")
+            ])
+        )
+    );
+    send(
+        &mut socket,
+        b'B',
+        &[
+            b"\0membership\0".as_slice(),
+            &0u16.to_be_bytes(),
+            &0u16.to_be_bytes(),
+            &0u16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(
+        &mut socket,
+        b'E',
+        &[b"\0".as_slice(), &0u32.to_be_bytes()].concat(),
+    );
+    send(&mut socket, b'S', b"");
+    let result = until_ready(&mut socket);
+    assert!(result.iter().all(|m| m.0 != b'E'), "{result:?}");
+    assert_eq!(
+        result
+            .iter()
+            .filter(|m| m.0 == b'D')
+            .map(|m| m.1.clone())
+            .collect::<Vec<_>>(),
+        vec![row(&[
+            Some("replacement_seq"),
+            Some("public"),
+            Some("1259"),
+            Some("2615"),
+            Some("0"),
+            Some("n")
+        ])]
+    );
+    send(&mut socket, b'X', b"");
+    service.close();
+}
