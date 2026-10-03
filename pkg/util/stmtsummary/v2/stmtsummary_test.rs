@@ -77,6 +77,15 @@ fn go_merge_38_internal_cleanup_keeps_mixed_record_and_capacity() {
     assert_eq!(summary.Len(), 6);
     assert_eq!(summary.EvictedCount(), 2);
     assert_eq!(
+        summary
+            .currentWindowSnapshot()
+            .unwrap()
+            .evicted
+            .unwrap()
+            .ExecCount,
+        2
+    );
+    assert_eq!(
         digests(&summary),
         [
             "new_2",

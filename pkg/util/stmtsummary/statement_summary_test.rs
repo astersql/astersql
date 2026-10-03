@@ -106,7 +106,7 @@ fn go_merge_36_plan_error_keeps_statement() {
 }
 
 #[test]
-fn go_merge_36_current_rows_exclude_previous_evicted_interval() {
+fn current_rows_exclude_previous_evicted_interval() {
     let mut map = newStmtSummaryByDigestMap();
     map.SetMaxStmtCount(10).unwrap();
     map.SetRefreshInterval(10).unwrap();
@@ -118,9 +118,18 @@ fn go_merge_36_current_rows_exclude_previous_evicted_interval() {
     map.set_now_for_test(Some(110));
     map.AddStatement(&exec_info("current", "user", 110));
     let map = Box::leak(Box::new(Mutex::new(map)));
-    let mut reader = NewStmtSummaryReader(None, true, Vec::new(), String::new(), chrono_tz::UTC);
+    let mut reader = NewStmtSummaryReader(
+        None,
+        true,
+        columns(&[SummaryBeginTimeStr, DigestStr]),
+        String::new(),
+        chrono_tz::UTC,
+    );
     reader.ssMap = map;
-    assert_eq!(reader.GetStmtSummaryCurrentRows().len(), 1);
+    let rows = reader.GetStmtSummaryCurrentRows();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0][1].GetString(), "current");
+    assert_eq!(rows[0][0].GetMysqlTime().String(), "1970-01-01 00:01:50");
 }
 
 #[test]
@@ -170,35 +179,65 @@ fn go_merge_36_history_resize_returns_latest_intervals() {
 }
 
 #[test]
-fn go_merge_36_disabling_internal_preserves_lru_order() {
+fn disabling_internal_preserves_lru_order_and_other_rows() {
     let mut map = newStmtSummaryByDigestMap();
+    map.SetMaxStmtCount(20).unwrap();
     map.SetEnabledInternalQuery(true).unwrap();
     map.set_now_for_test(Some(100));
-    for digest in ["a", "b", "c"] {
-        map.AddStatement(&exec_info(digest, "user", 100));
+    for index in 0..18 {
+        map.AddStatement(&exec_info(&format!("digest_{index:02}"), "user", 100));
     }
-    let mut internal = exec_info("internal", "user", 100);
+    let mut internal = exec_info("pure_internal_digest", "user", 100);
     internal.IsInternal = true;
     map.AddStatement(&internal);
-    map.AddStatement(&exec_info("a", "user", 100));
-    let before = map
-        .summaryMap
-        .iter()
-        .map(|(_, summary)| summary.digest.clone())
-        .collect::<Vec<_>>();
+    let mut mixed = exec_info("mixed_digest", "user", 100);
+    mixed.IsInternal = true;
+    map.AddStatement(&mixed);
+    map.AddStatement(&exec_info("mixed_digest", "user", 100));
+    for digest in ["digest_00", "digest_01"] {
+        map.AddStatement(&exec_info(digest, "user", 100));
+    }
+    let digests = |map: &stmtSummaryByDigestMap| {
+        map.summaryMap
+            .iter()
+            .map(|(_, summary)| summary.digest.clone())
+            .collect::<Vec<_>>()
+    };
+    let before = digests(&map);
     map.SetEnabledInternalQuery(false).unwrap();
-    let after = map
-        .summaryMap
-        .iter()
-        .map(|(_, summary)| summary.digest.clone())
-        .collect::<Vec<_>>();
     assert_eq!(
-        after,
+        digests(&map),
         before
             .into_iter()
-            .filter(|digest| digest != "internal")
+            .filter(|digest| digest != "pure_internal_digest")
             .collect::<Vec<_>>()
     );
+    for digest in ["new_digest_0", "new_digest_1", "new_digest_2"] {
+        map.AddStatement(&exec_info(digest, "user", 100));
+    }
+    let evicted = map.ToEvictedCountDatum();
+    assert_eq!(evicted.len(), 1);
+    assert_eq!(evicted[0][2].GetInt64(), 2);
+    let reader = reader_for(map, &[DigestStr, ExecCountStr]);
+    let rows = reader.GetStmtSummaryCurrentRows();
+    assert_eq!(rows.len(), 21);
+    let mut counts = HashMap::new();
+    let mut others = None;
+    for row in rows {
+        if row[0].IsNull() {
+            others = Some(row[1].GetInt64());
+        } else {
+            counts.insert(row[0].GetString(), row[1].GetInt64());
+        }
+    }
+    assert_eq!(counts.len(), 20);
+    for digest in ["digest_00", "digest_01", "mixed_digest"] {
+        assert_eq!(counts.get(digest), Some(&2));
+    }
+    for digest in ["pure_internal_digest", "digest_02", "digest_03"] {
+        assert!(!counts.contains_key(digest));
+    }
+    assert_eq!(others, Some(2));
 }
 
 /// 构造带 Coprocessor/提交细节与 RU/CPU 的完整 StmtExecInfo 夹具。
