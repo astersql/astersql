@@ -11,6 +11,9 @@ path = "lib.rs"
 go-package = "pkg/dxf/framework/taskexecutor"
 legacy-tasks = ["task-844", "task-848", "task-1565"]
 
+[dependencies]
+"astersql-lightning-log" = { package = "astersql-lightning-log", path = "../../../lightning/log" }
+
 [target.'cfg(any())'.dependencies]
 "astersql-config" = { package = "astersql-config", path = "../../../config" }
 "astersql-domain-sqlsvrapi" = { package = "astersql-domain-sqlsvrapi", path = "../../../domain/sqlsvrapi" }
@@ -23,7 +26,6 @@ legacy-tasks = ["task-844", "task-848", "task-1565"]
 "astersql-dxf-framework-storage" = { package = "astersql-dxf-framework-storage", path = "../storage" }
 "astersql-dxf-framework-taskexecutor-execute" = { package = "astersql-dxf-framework-taskexecutor-execute", path = "execute" }
 "astersql-kv" = { package = "astersql-kv", path = "../../../kv" }
-"astersql-lightning-log" = { package = "astersql-lightning-log", path = "../../../lightning/log" }
 "astersql-metrics" = { package = "astersql-metrics", path = "../../../metrics" }
 "astersql-objstore" = { package = "astersql-objstore", path = "../../../objstore" }
 "astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../../sessionctx" }

@@ -48,6 +48,7 @@ pub fn SetSubtaskCheckIntervalForTest(
 pub const DetectParamModifyInterval: Duration = Duration::from_secs(5);
 /// 连续无子任务时最多空转检查次数，之后退出 Run 循环。
 pub const maxChecksWhenNoSubtask: i32 = 7;
+/// Expected cancellation, including when StepExecutor propagates the context cause.
 /// 取消子任务时使用的哨兵错误。
 pub fn ErrCancelSubtask() -> ExecutorError {
     ExecutorError("cancel subtasks".into())
@@ -117,6 +118,8 @@ pub struct BaseTaskExecutor {
     stepCtx: Mutex<Option<Context>>,
     /// 用于把当前执行器安全地交给子任务监控线程。
     selfRef: OnceLock<Weak<BaseTaskExecutor>>,
+    /// Per-executor log sink, shared with the node logging configuration.
+    pub sampleLogger: RwLock<astersql_lightning_log::log::Logger>,
     /// 当前正在执行的子任务 ID。
     currSubtaskID: AtomicI64,
 }
@@ -131,6 +134,7 @@ pub fn NewBaseTaskExecutor(ctx: Context, task: Task, param: Param) -> Arc<BaseTa
         stepCtx: Mutex::new(None),
         selfRef: OnceLock::new(),
         currSubtaskID: AtomicI64::new(0),
+        sampleLogger: RwLock::new(astersql_lightning_log::log::L()),
     });
     let _ = executor.selfRef.set(Arc::downgrade(&executor));
     executor
@@ -321,7 +325,24 @@ impl BaseTaskExecutor {
             if self.currentStepContext().Done() {
                 continue;
             }
-            let _ = self.runSubtask(&mut subtask);
+            if let Err(error) = self.runSubtask(&mut subtask) {
+                let logger = self.sampleLogger.read().expect("logger lock poisoned");
+                // Context cancellation and the explicit cancel cause are expected
+                // during shutdown/reverting; keep actual failures at error level.
+                if error == ErrCancelSubtask() || error.0 == "context canceled" {
+                    logger.Info(
+                        "subtask run canceled",
+                        [astersql_lightning_log::log::ShortError(Some(&error))],
+                    );
+                } else {
+                    logger.Error(
+                        "run subtask failed",
+                        [astersql_lightning_log::filter::Field::string(
+                            "error", error.0,
+                        )],
+                    );
+                }
+            }
         }
     }
     /// 懒创建并 Init 当前步骤的 StepExecutor。

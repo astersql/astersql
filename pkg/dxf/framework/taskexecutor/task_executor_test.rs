@@ -630,6 +630,8 @@ fn test_previous_left_idempotent_subtask_running_is_run_again() {
 /// 运行中 CancelRunningSubtask → 状态 Canceled。
 fn test_subtask_cancelled_during_running() {
     let e = new_env();
+    let (logger, logs) = astersql_lightning_log::testlogger::MakeTestLogger([]);
+    *e.executor.sampleLogger.write().unwrap() = logger;
     e.table.push_task(task1());
     e.table.push_subtask(Some(pending_subtask1()));
     let executor = e.executor.clone();
@@ -644,6 +646,11 @@ fn test_subtask_cancelled_during_running() {
     e.table
         .push_task_err(ExecutorError("task not found".into()));
     e.executor.Run();
+    let lines = logs.lines();
+    assert_eq!(1, lines.len(), "{lines:?}");
+    assert!(lines[0].contains("subtask run canceled"));
+    assert!(lines[0].contains("INFO"));
+    assert!(!lines[0].contains("run subtask failed"));
     let updates = e.table.update_state_calls.lock().unwrap();
     assert_eq!(1, updates.len());
     assert_eq!(SubtaskState::Canceled, updates[0].1);
@@ -691,6 +698,8 @@ fn test_cancel_running_subtask_propagates_to_step_context() {
 /// 仅 executor.Cancel（未 CancelRunningSubtask）走非重试 Failed 分支。
 fn test_task_executor_cancelled_during_subtask_running() {
     let e = new_env();
+    let (logger, logs) = astersql_lightning_log::testlogger::MakeTestLogger([]);
+    *e.executor.sampleLogger.write().unwrap() = logger;
     e.table.push_task(task1());
     e.table.push_subtask(Some(pending_subtask1()));
     let executor = e.executor.clone();
@@ -703,6 +712,11 @@ fn test_task_executor_cancelled_during_subtask_running() {
             Err(ExecutorError("context canceled".into()))
         }));
     e.executor.Run();
+    let lines = logs.lines();
+    assert_eq!(1, lines.len(), "{lines:?}");
+    assert!(lines[0].contains("subtask run canceled"));
+    assert!(lines[0].contains("INFO"));
+    assert!(lines[0].contains("context canceled"));
     // Executor-level cancellation is graceful shutdown; Go leaves the
     // subtask state unchanged unless the explicit running-subtask cancel
     // cause was used.
@@ -1167,4 +1181,42 @@ fn test_task_base_get_runtime_slots() {
         ..Default::default()
     };
     assert_eq!(7, base.GetRuntimeSlots());
+}
+
+#[test]
+fn test_subtask_run_logs_failure_and_no_error_on_success() {
+    for error in [Some(ExecutorError("disk failed".into())), None] {
+        let e = new_env();
+        let (logger, logs) = astersql_lightning_log::testlogger::MakeTestLogger([]);
+        *e.executor.sampleLogger.write().unwrap() = logger;
+        e.table.push_task(task1());
+        e.table.push_subtask(Some(pending_subtask1()));
+        let result = error.clone();
+        e.step
+            .run_subtask_result
+            .lock()
+            .unwrap()
+            .push_back(Box::new(move |_, _| match result.clone() {
+                Some(error) => Err(error),
+                None => Ok(()),
+            }));
+        e.table
+            .push_task_err(ExecutorError("task not found".into()));
+        e.executor.Run();
+        let lines = logs.lines();
+        if let Some(error) = error {
+            assert_eq!(1, lines.len(), "{lines:?}");
+            assert!(lines[0].contains("run subtask failed"));
+            assert!(lines[0].contains("ERROR"));
+            assert!(lines[0].contains(&error.0));
+            let updates = e.table.update_state_calls.lock().unwrap();
+            assert_eq!(1, updates.len());
+            assert_eq!(SubtaskState::Failed, updates[0].1);
+            assert_eq!(Some(error), updates[0].2);
+        } else {
+            assert!(lines.is_empty());
+            assert_eq!(1, e.table.finish_subtask_calls.lock().unwrap().len());
+            assert!(e.table.update_state_calls.lock().unwrap().is_empty());
+        }
+    }
 }
