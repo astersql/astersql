@@ -1222,7 +1222,22 @@ impl DdlMetadataService {
                     ..DdlMetadataChange::default()
                 });
             }
-            index.Invisible = invisible;
+            // A suffix alone does not identify a modify-column temporary index.
+            // Keep its visibility in sync only while it references changing columns.
+            for index in &mut new.Indices {
+                if index.Name.L == index_name
+                    || (index.IsChanging()
+                        && index.Columns.iter().any(|column| {
+                            column.UseChangingType
+                                || new.Columns[column.Offset as usize]
+                                    .ChangeStateInfo
+                                    .is_some()
+                        })
+                        && index_visibility_equal_fold(&index.GetChangingOriginName(), &index_name))
+                {
+                    index.Invisible = invisible;
+                }
+            }
             catalog.tables.insert(key, new.clone());
             Ok(DdlMetadataChange {
                 old_tables: vec![(database.clone(), old)],
@@ -1562,6 +1577,31 @@ pub(crate) fn assign_table_physical_ids(catalog: &mut MetadataCatalog, table: &m
         }
         partition.Num = partition.Definitions.len() as u64;
     }
+}
+
+/// Go strings.EqualFold uses simple Unicode folding, including final sigma,
+/// long s and Kelvin sign, but excluding Turkish dotted/dotless I mappings.
+fn index_visibility_equal_fold(left: &str, right: &str) -> bool {
+    fn fold(character: char) -> char {
+        if matches!(character, 'İ' | 'ı') {
+            return character;
+        }
+        let single = |mut mapping: std::char::ToLowercase, fallback| match (
+            mapping.next(),
+            mapping.next(),
+        ) {
+            (Some(value), None) => value,
+            _ => fallback,
+        };
+        let lower = single(character.to_lowercase(), character);
+        let mut uppercase = lower.to_uppercase();
+        let upper = match (uppercase.next(), uppercase.next()) {
+            (Some(value), None) => value,
+            _ => lower,
+        };
+        single(upper.to_lowercase(), upper)
+    }
+    left.chars().map(fold).eq(right.chars().map(fold))
 }
 
 /// Loads the current typed InfoSchema from the same KV metadata written by

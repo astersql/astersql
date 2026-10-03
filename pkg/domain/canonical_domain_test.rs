@@ -1621,3 +1621,178 @@ fn external_workload_manager_binding_isolated_by_storage_owner() {
     first.close();
     second.close();
 }
+
+#[test]
+fn alter_index_visibility_preserves_suffixes_and_updates_changing_indexes() {
+    use astersql_meta_model as model;
+    use astersql_parser_ast::NewCIStr;
+
+    for invisible in [true, false] {
+        let storage = astersql_store_mockstore_mockstorage::NewMockStorage(
+            astersql_store_mockstore_mockstorage::KVStore::NewMemoryWithWallClockTSO(),
+            None,
+        )
+        .unwrap();
+        let service = super::canonical_domain::DdlMetadataService::new();
+        service
+            .create_database(storage.as_ref(), "test", false)
+            .unwrap();
+        let columns = vec![
+            model::ColumnInfo {
+                ID: 1,
+                Name: NewCIStr("k"),
+                State: model::StatePublic,
+                ..Default::default()
+            },
+            model::ColumnInfo {
+                ID: 2,
+                Name: NewCIStr("changing_k"),
+                State: model::StateWriteOnly,
+                ChangeStateInfo: Some(model::ChangeStateInfo::default()),
+                ..Default::default()
+            },
+        ];
+        let specs = [
+            ("idx_k", 0, false, true),
+            ("idx_k_1", 0, false, false),
+            ("idx_k_copy", 0, false, false),
+            ("_Idx$_IDX_K_2", 0, true, true),
+            ("_Idx$_idx_k_3", 1, false, true),
+            ("_Idx$_idx_k_4", 0, false, false),
+            ("idx_k_5", 1, true, false),
+            ("_Idx$_other_6", 1, true, false),
+        ];
+        let indices = specs
+            .iter()
+            .enumerate()
+            .map(|(i, (name, offset, changing, _))| model::IndexInfo {
+                ID: i as i64 + 1,
+                Name: NewCIStr(name),
+                State: model::StatePublic,
+                Invisible: !invisible,
+                Columns: vec![model::IndexColumn {
+                    Name: columns[*offset].Name.clone(),
+                    Offset: *offset as isize,
+                    UseChangingType: *changing,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })
+            .collect();
+        service
+            .create_table(
+                storage.as_ref(),
+                "test",
+                model::TableInfo {
+                    Name: NewCIStr("t"),
+                    Columns: columns,
+                    Indices: indices,
+                    ..Default::default()
+                },
+                false,
+            )
+            .unwrap();
+        let change = service
+            .set_index_visibility(storage.as_ref(), "test", "t", "IDX_K", invisible)
+            .unwrap();
+        assert!(change.changed);
+        let loaded = super::canonical_domain::KvInfoSchemaLoader::new()
+            .load_info_schema(storage.as_ref(), "target")
+            .unwrap();
+        let table = loaded
+            .schema
+            .TableByName(
+                &infoschema::CiString::new("test"),
+                &infoschema::CiString::new("t"),
+            )
+            .unwrap();
+        let metadata = table.Meta();
+        let table = metadata.model_meta.as_ref().unwrap();
+        for (name, _, _, should_change) in specs {
+            let index = table
+                .Indices
+                .iter()
+                .find(|index| index.Name.O == name)
+                .unwrap();
+            assert_eq!(
+                index.Invisible,
+                if should_change { invisible } else { !invisible },
+                "{name}, invisible={invisible}"
+            );
+        }
+    }
+}
+
+#[test]
+fn alter_index_visibility_uses_unicode_simple_folding_for_temporary_origins() {
+    use astersql_meta_model as model;
+    use astersql_parser_ast::NewCIStr;
+
+    for (origin, temporary, matches) in [
+        ("idx_k", "_Idx$_idx_K_1", true),
+        ("idx_s", "_Idx$_idx_ſ_1", true),
+        ("idx_σ", "_Idx$_idx_ς_1", true),
+        ("idx_ä", "_Idx$_idx_Ä_1", true),
+        ("idx_i", "_Idx$_idx_ı_1", false),
+        ("idx_i", "_Idx$_idx_İ_1", false),
+        ("idx_ss", "_Idx$_idx_ß_1", false),
+    ] {
+        let storage = astersql_store_mockstore_mockstorage::NewMockStorage(
+            astersql_store_mockstore_mockstorage::KVStore::NewMemoryWithWallClockTSO(),
+            None,
+        )
+        .unwrap();
+        let service = super::canonical_domain::DdlMetadataService::new();
+        let indices = [origin, temporary]
+            .into_iter()
+            .enumerate()
+            .map(|(id, name)| model::IndexInfo {
+                ID: id as i64 + 1,
+                Name: NewCIStr(name),
+                State: model::StatePublic,
+                Columns: vec![model::IndexColumn {
+                    Name: NewCIStr("k"),
+                    Offset: 0,
+                    UseChangingType: id == 1,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })
+            .collect();
+        service
+            .create_table(
+                storage.as_ref(),
+                "test",
+                model::TableInfo {
+                    Name: NewCIStr("t"),
+                    Columns: vec![model::ColumnInfo {
+                        ID: 1,
+                        Name: NewCIStr("k"),
+                        State: model::StatePublic,
+                        ..Default::default()
+                    }],
+                    Indices: indices,
+                    ..Default::default()
+                },
+                false,
+            )
+            .unwrap();
+        service
+            .set_index_visibility(storage.as_ref(), "test", "t", origin, true)
+            .unwrap();
+        let loaded = super::canonical_domain::KvInfoSchemaLoader::new()
+            .load_info_schema(storage.as_ref(), "target")
+            .unwrap();
+        let table = loaded
+            .schema
+            .TableByName(
+                &infoschema::CiString::new("test"),
+                &infoschema::CiString::new("t"),
+            )
+            .unwrap();
+        let metadata = table.Meta();
+        let indices = &metadata.model_meta.as_ref().unwrap().Indices;
+        assert!(indices[0].Invisible);
+        assert_eq!(indices[1].Invisible, matches, "{origin} / {temporary}");
+    }
+}
