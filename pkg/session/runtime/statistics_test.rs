@@ -63,3 +63,41 @@ fn show_stats_like_underscore_matches_one_unicode_character() {
     assert_eq!(row[0], "库a");
     assert_eq!(result.Next().expect("SHOW rows exhausted"), None);
 }
+
+#[test]
+fn full_sampling_analyze_keeps_unsigned_boundary_rows_and_single_remaining_row() {
+    let (domain, session) = CreateAnalyzeSession().expect("create statistics session");
+    for sql in [
+        "use test",
+        "create table tu(a bigint unsigned primary key)",
+        "insert into tu values (9223372036854775807), (9223372036854775808)",
+        "analyze table tu with 1 samplerate, 0 topn, 2 buckets",
+    ] {
+        session.execute(sql).expect(sql);
+    }
+    let mut buckets = session
+        .execute("show stats_buckets where db_name = 'test' and table_name = 'tu' and column_name = 'a' and is_index = 0")
+        .expect("show unsigned histogram")
+        .remove(0);
+    let mut bounds = std::collections::BTreeSet::new();
+    while let Some(row) = buckets.Next().expect("read bucket") {
+        bounds.insert(row[8].clone());
+        bounds.insert(row[9].clone());
+    }
+    assert!(bounds.contains("9223372036854775807"), "{bounds:?}");
+    assert!(bounds.contains("9223372036854775808"), "{bounds:?}");
+    for sql in [
+        "truncate table tu",
+        "insert into tu values (1)",
+        "analyze table tu with 1 samplerate, 0 topn, 2 buckets",
+    ] {
+        session.execute(sql).expect(sql);
+    }
+    let meta = domain
+        .stats_meta_rows()
+        .into_iter()
+        .filter(|row| row.database == "test" && row.table == "tu")
+        .collect::<Vec<_>>();
+    assert_eq!(meta.len(), 1);
+    assert_eq!(meta[0].row_count, 1);
+}

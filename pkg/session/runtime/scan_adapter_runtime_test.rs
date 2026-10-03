@@ -1396,6 +1396,13 @@ fn restricted_adapter_analyze_publishes_stats_and_restores_temporary_session_set
     )
     .unwrap();
     assert_eq!(request.Concurrency, 7);
+    // ANALYZE scans the complete record prefix in one unordered request.
+    assert!(!request.KeepOrder);
+    let ranges = request.KeyRanges.as_ref().unwrap();
+    assert_eq!(ranges.TotalRangeNum(), 1);
+    let prefix = kv::Key(astersql_tablecodec::GenTableRecordPrefix(table.ID).0);
+    assert_eq!(ranges.FirstPartitionRange()[0].StartKey, prefix);
+    assert_eq!(ranges.FirstPartitionRange()[0].EndKey, prefix.PrefixNext());
     let owner = Arc::new(SessionBoundAdapterOwner::new(session));
     let sql = "analyze table adapter_analyze_t";
     owner.BindAnalyzeStatement(sql).unwrap();
