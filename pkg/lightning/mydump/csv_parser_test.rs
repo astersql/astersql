@@ -550,3 +550,61 @@ fn TestBenchHarnesses() {
     BenchmarkReadRowUsingMydumpCSVParser();
     BenchmarkReadRowUsingEncodingCSV();
 }
+
+#[test]
+fn TestCustomEscapeCharMetacharacter() {
+    let cfg = CsvConfig {
+        fields_escaped_by: "*".into(),
+        null: "*N".into(),
+        ..Default::default()
+    };
+    let mut parser = make_parser(br#""*0*b*n*r*t*Z***q",*N,**N"#, cfg, false).unwrap();
+    parser.ReadRow().unwrap();
+    assert_eq!(
+        parser.LastRow().row,
+        vec![
+            Datum::Bytes(vec![0, 8, 10, 13, 9, 26, b'*', b'q']),
+            Datum::Null,
+            Datum::Bytes(b"*N".to_vec()),
+        ]
+    );
+    assert!(matches!(parser.ReadRow(), Err(Error::Eof)));
+}
+
+#[test]
+fn TestCSVParserUnescapeDenseRows() {
+    for escape in [b'\\', b'!', b'*'] {
+        let cfg = CsvConfig {
+            fields_escaped_by: String::from_utf8(vec![escape]).unwrap(),
+            ..Default::default()
+        };
+        let json = br#"{"id":123,"name":"alice","nested":{"enabled":true,"items":["a","b","c"]}}"#;
+        let mut input = b"1,\"".to_vec();
+        for &byte in json {
+            if byte == b'"' {
+                input.push(escape);
+            }
+            input.push(byte);
+        }
+        input.extend_from_slice(b"\",3\n");
+        let mut parser = make_parser(&input.repeat(4096), cfg, false).unwrap();
+        for id in 1..=4096 {
+            parser.ReadRow().unwrap();
+            assert_eq!(parser.LastRow().row_id, id);
+            assert_eq!(
+                parser.LastRow().row,
+                vec![
+                    Datum::Bytes(b"1".to_vec()),
+                    Datum::Bytes(json.to_vec()),
+                    Datum::Bytes(b"3".to_vec())
+                ]
+            );
+            parser.RecycleRow(parser.LastRow());
+        }
+        assert!(matches!(parser.ReadRow(), Err(Error::Eof)));
+    }
+    assert_eq!(
+        read_all(b"1,plain-text,3\n", CsvConfig::default()).unwrap()[0][1],
+        Some("plain-text".into())
+    );
+}

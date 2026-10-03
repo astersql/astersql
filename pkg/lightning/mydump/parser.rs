@@ -1,3 +1,4 @@
+// Copyright 2026 AsterSQL.
 // Copyright 2019 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -11,7 +12,6 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-// Copyright 2026 AsterSQL.
 
 // SQL dump 行解析：BlockParser 缓冲读取 + ChunkParser 词法驱动的 VALUES 行解析。
 //
@@ -266,31 +266,56 @@ impl fmt::Display for Token {
 }
 /// 展开引号内转义：双定界符与可选的反斜杠序列（\\0/\\n/...）。
 pub fn unescapeString(input: &[u8], delimiter: u8, flavor: EscapeFlavor, escape: u8) -> Vec<u8> {
-    let mut out = Vec::with_capacity(input.len());
-    let mut i = 0;
-    while i < input.len() {
-        if input[i] == delimiter && i + 1 < input.len() && input[i + 1] == delimiter {
-            out.push(delimiter);
-            i += 2;
-            continue;
+    // Go collapses doubled delimiters before scanning escape pairs. Combining
+    // the two passes changes sequences such as a backslash followed by two quotes.
+    let collapsed = if delimiter != 0 && input.windows(2).any(|pair| pair == [delimiter, delimiter])
+    {
+        let mut out = Vec::with_capacity(input.len());
+        let mut i = 0;
+        while i < input.len() {
+            out.push(input[i]);
+            i += if input[i] == delimiter && input.get(i + 1) == Some(&delimiter) {
+                2
+            } else {
+                1
+            };
         }
-        if flavor != EscapeFlavor::None && input[i] == escape && i + 1 < input.len() {
-            i += 1;
-            out.push(match input[i] {
-                b'0' => 0,
-                b'b' => 8,
-                b'n' => b'\n',
-                b'r' => b'\r',
-                b't' => b'\t',
-                b'Z' => 26,
-                b => b,
-            });
-            i += 1;
-            continue;
-        }
-        out.push(input[i]);
-        i += 1
+        std::borrow::Cow::Owned(out)
+    } else {
+        std::borrow::Cow::Borrowed(input)
+    };
+    if flavor == EscapeFlavor::None {
+        return collapsed.into_owned();
     }
+    let input = collapsed.as_ref();
+    let Some(first) = input.iter().position(|&byte| byte == escape) else {
+        return collapsed.into_owned();
+    };
+    if first + 1 == input.len() {
+        return collapsed.into_owned();
+    }
+    let mut out = Vec::with_capacity(input.len() - 1);
+    out.extend_from_slice(&input[..first]);
+    let mut remaining = &input[first..];
+    while remaining.len() > 1 {
+        out.push(match remaining[1] {
+            b'0' => 0,
+            b'b' => 8,
+            b'n' => b'\n',
+            b'r' => b'\r',
+            b't' => b'\t',
+            b'Z' => 26,
+            byte => byte,
+        });
+        remaining = &remaining[2..];
+        let Some(next) = remaining.iter().position(|&byte| byte == escape) else {
+            out.extend_from_slice(remaining);
+            return out;
+        };
+        out.extend_from_slice(&remaining[..next]);
+        remaining = &remaining[next..];
+    }
+    out.extend_from_slice(remaining);
     out
 }
 impl ChunkParser {

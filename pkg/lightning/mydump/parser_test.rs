@@ -235,3 +235,30 @@ fn read_until_accepts_eof_before_target() {
     ReadUntil(&mut p, i64::MAX).unwrap();
     assert_eq!(p.LastRow().row_id, 1);
 }
+
+#[test]
+fn TestUnescapeBytePairs() {
+    for escape in [b'\\', b'!', b'*'] {
+        let input = [
+            escape, b'0', escape, b'b', escape, b'n', escape, b'r', escape, b't', escape, b'Z',
+            escape, escape, escape, b'q', 0xff, escape,
+        ];
+        assert_eq!(
+            unescape(&input, 0, EscapeFlavor::MySql, escape),
+            vec![0, 8, 10, 13, 9, 26, escape, b'q', 0xff, escape]
+        );
+        assert_eq!(unescape(&input, 0, EscapeFlavor::None, escape), input);
+        assert_eq!(unescape(b"plain", 0, EscapeFlavor::MySql, escape), b"plain");
+        assert_eq!(
+            unescape(&[escape], 0, EscapeFlavor::MySql, escape),
+            [escape]
+        );
+    }
+}
+
+#[test]
+fn TestUnescapeDelimiterBeforeEscape() {
+    assert_eq!(unescape(br#"\''"#, b'\'', EscapeFlavor::MySql, b'\\'), b"'");
+    let rows = collect(r#"INSERT INTO t VALUES ('a\nb');"#, 1, false).unwrap();
+    assert_eq!(rows[0].row, vec![Datum::Bytes(b"a\nb".to_vec())]);
+}
