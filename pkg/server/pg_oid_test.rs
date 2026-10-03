@@ -11,6 +11,8 @@ fn pg_introspection_oid_ranges_and_local_indexes() {
         assert!(index_oid(id, 1).is_err());
     }
     assert!(index_oid(1, i64::MAX).is_err());
+    assert_ne!(index_oid(42, -1).unwrap(), index_oid(42, 1).unwrap());
+    assert_ne!(index_oid(42, -1).unwrap(), index_oid(42, -2).unwrap());
     let mut seen = std::collections::HashSet::new();
     for (_, oid) in SYSTEM_RELATIONS {
         assert!(seen.insert(*oid));

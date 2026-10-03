@@ -140,9 +140,14 @@ pub(crate) fn resolve_with_path(
         }
         let mut found = None;
         for table in &tables {
-            for index in &table.indices {
-                if index.name.original == *name {
-                    let oid = index_oid(table.id, index.id)?;
+            for index in &crate::pg_catalog::catalog_indexes(
+                table
+                    .model_meta
+                    .as_ref()
+                    .ok_or(ConnError::UnsupportedCommand(0))?,
+            )? {
+                if index.Name.O == *name {
+                    let oid = index_oid(table.id, index.ID)?;
                     if found.replace(oid).is_some() {
                         return Err(ConnError::Session(
                             "ambiguous PG index relation name".into(),
@@ -179,9 +184,14 @@ pub(crate) fn resolve_with_path(
     }
     let mut found = None;
     for table in tables {
-        for index in &table.indices {
-            if index.name.original == *name {
-                let oid = index_oid(table.id, index.id)?;
+        for index in &crate::pg_catalog::catalog_indexes(
+            table
+                .model_meta
+                .as_ref()
+                .ok_or(ConnError::UnsupportedCommand(0))?,
+        )? {
+            if index.Name.O == *name {
+                let oid = index_oid(table.id, index.ID)?;
                 if found.replace(oid).is_some() {
                     return Err(ConnError::Session(
                         "ambiguous PG index relation name".into(),
@@ -207,9 +217,14 @@ pub(crate) fn display(oid: u32, database: &str, snapshot: &dyn InfoSchema) -> Co
         if table_oid(table.id)? == oid {
             return Ok(native_name(&table.name.original));
         }
-        for index in &table.indices {
-            if index_oid(table.id, index.id)? == oid {
-                return Ok(native_name(&index.name.original));
+        for index in &crate::pg_catalog::catalog_indexes(
+            table
+                .model_meta
+                .as_ref()
+                .ok_or(ConnError::UnsupportedCommand(0))?,
+        )? {
+            if index_oid(table.id, index.ID)? == oid {
+                return Ok(native_name(&index.Name.O));
             }
         }
     }

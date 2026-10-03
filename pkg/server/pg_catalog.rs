@@ -7,7 +7,7 @@ use crate::conn::{
 
 // Fixed provider slots preserve the existing catalog column layout. Joined
 // relations get separate slots, including empty providers after LEFT JOIN.
-const CATALOG_ROW_WIDTH: usize = 16;
+const CATALOG_ROW_WIDTH: usize = 24;
 const MAX_CATALOG_ROWS: usize = 16_384;
 const MAX_CATALOG_JOIN_WORK: usize = 100_000;
 type CteColumns = std::collections::HashMap<usize, Vec<(String, u8, usize)>>;
@@ -255,6 +255,8 @@ impl CatalogQuery {
                         | "pg_attribute"
                         | "pg_type"
                         | "pg_attrdef"
+                        | "pg_index"
+                        | "pg_constraint"
                         | "pg_database"
                         | "pg_locks"
                         | "pg_namespace"
@@ -461,6 +463,25 @@ impl CatalogQuery {
                     }
                     ("pg_get_userbyid", [arg])
                         if matches!(arg, Expr::Null) || self.expr_type(arg)?.0 == 8 =>
+                    {
+                        Ok((253, 0))
+                    }
+                    ("pg_get_indexdef" | "pg_get_constraintdef", [oid])
+                        if matches!(oid, Expr::Null) || numeric_type(self.expr_type(oid)?.0) =>
+                    {
+                        Ok((253, 0))
+                    }
+                    ("pg_get_constraintdef", [oid, pretty])
+                        if (matches!(oid, Expr::Null) || numeric_type(self.expr_type(oid)?.0))
+                            && (matches!(pretty, Expr::Null) || self.expr_type(pretty)?.0 == 1) =>
+                    {
+                        Ok((253, 0))
+                    }
+                    ("pg_get_indexdef", [oid, position, pretty])
+                        if (matches!(oid, Expr::Null) || numeric_type(self.expr_type(oid)?.0))
+                            && (matches!(position, Expr::Null)
+                                || numeric_type(self.expr_type(position)?.0))
+                            && (matches!(pretty, Expr::Null) || self.expr_type(pretty)?.0 == 1) =>
                     {
                         Ok((253, 0))
                     }
@@ -769,6 +790,14 @@ impl CatalogQuery {
         cancel: &CancellationToken,
     ) -> ConnResult<Vec<Vec<Value>>> {
         let rows = match name {
+            "pg_index" | "pg_constraint" => index_constraint_rows(
+                name,
+                snapshot
+                    .ok_or_else(|| ConnError::Session("schema snapshot is unavailable".into()))?
+                    .as_ref(),
+                database,
+                cancel,
+            )?,
             "pg_attribute" | "pg_attrdef" | "pg_type" => column_catalog_rows(
                 name,
                 snapshot
@@ -947,6 +976,56 @@ impl CatalogQuery {
                 "pg_get_userbyid" => {
                     evaluate(&args[0])?;
                     Value::Null
+                }
+                "pg_get_indexdef" | "pg_get_constraintdef" => {
+                    let values = args.iter().map(evaluate).collect::<ConnResult<Vec<_>>>()?;
+                    if values.contains(&Value::Null) {
+                        return Ok(Value::Null);
+                    }
+                    let Value::Signed(oid) = values[0] else {
+                        unreachable!("validated oid");
+                    };
+                    let provider = if path.last().unwrap() == "pg_get_indexdef" {
+                        "pg_index"
+                    } else {
+                        "pg_constraint"
+                    };
+                    let fallback;
+                    let rows = if let Some(rows) = execution.providers.get(provider) {
+                        rows.as_slice()
+                    } else {
+                        fallback = index_constraint_rows(
+                            provider,
+                            snapshot.ok_or_else(|| {
+                                ConnError::Session("schema snapshot is unavailable".into())
+                            })?,
+                            database,
+                            execution.cancel,
+                        )?;
+                        fallback.as_slice()
+                    };
+                    let mut result = Value::Null;
+                    for row in rows {
+                        execution.comparison()?;
+                        if row[0] != Value::Signed(oid) {
+                            continue;
+                        }
+                        result = row[21].clone();
+                        if let [_, Value::Signed(position), _] = values.as_slice() {
+                            if *position != 0 {
+                                result = match &row[22] {
+                                    Value::Text(columns) => usize::try_from(*position)
+                                        .ok()
+                                        .and_then(|n| n.checked_sub(1))
+                                        .and_then(|n| columns.split('\0').nth(n))
+                                        .map_or(Value::Null, |name| Value::Text(name.into())),
+                                    _ => Value::Null,
+                                };
+                            }
+                        }
+                        break;
+                    }
+                    result
                 }
                 "format_type" => match (evaluate(&args[0])?, evaluate(&args[1])?) {
                     (Value::Null, _) => Value::Null,
@@ -1353,7 +1432,7 @@ fn class_rows(
             namespace,
             kind,
         ));
-        for index in &model.Indices {
+        for index in &catalog_indexes(model)? {
             if index.State == astersql_meta_model::StatePublic {
                 rows.push(class_row(
                     crate::pg_oid::index_oid(model.ID, index.ID)?,
@@ -1372,6 +1451,37 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
     let oid = crate::pg_oid::OID_TYPE;
     let internal_char = crate::pg_result::CatalogColumnType::InternalChar as u8;
     let (slot, code) = match (relation, name) {
+        ("pg_index", "indexrelid") => (0, oid),
+        ("pg_index", "indrelid") => (1, oid),
+        ("pg_index", "indnatts") => (2, 2),
+        ("pg_index", "indnkeyatts") => (3, 2),
+        ("pg_index", "indisunique") => (4, 1),
+        ("pg_index", "indisprimary") => (5, 1),
+        ("pg_index", "indnullsnotdistinct") => (6, 1),
+        ("pg_index", "indkey") => (7, crate::pg_result::CatalogColumnType::Int2Vector as u8),
+        ("pg_index", "indoption") => (8, crate::pg_result::CatalogColumnType::Int2Vector as u8),
+        ("pg_index", "indcollation") | ("pg_index", "indclass") => return None,
+        ("pg_index", "indexprs") => (11, 253),
+        ("pg_index", "indpred") => (12, 253),
+        ("pg_index", "indisvalid") => (13, 1),
+        ("pg_index", "indisready") => (14, 1),
+        ("pg_constraint", "oid") => (0, oid),
+        ("pg_constraint", "conname") => (1, 253),
+        ("pg_constraint", "contype") => (2, internal_char),
+        ("pg_constraint", "conrelid") => (3, oid),
+        ("pg_constraint", "connamespace") => (4, oid),
+        ("pg_constraint", "conkey") => (5, crate::pg_result::CatalogColumnType::Int2Array as u8),
+        ("pg_constraint", "conindid") => (6, oid),
+        ("pg_constraint", "confrelid") => (7, oid),
+        ("pg_constraint", "confkey") => (8, crate::pg_result::CatalogColumnType::Int2Array as u8),
+        ("pg_constraint", "confupdtype") => (9, internal_char),
+        ("pg_constraint", "confdeltype") => (10, internal_char),
+        ("pg_constraint", "condeferrable") => (11, 1),
+        ("pg_constraint", "condeferred") => (12, 1),
+        ("pg_constraint", "connoinherit") => (13, 1),
+        ("pg_constraint", "conbin") => (14, 253),
+        ("pg_constraint", "conexclop") => (15, crate::pg_result::CatalogColumnType::OidArray as u8),
+        ("pg_constraint", "xmin") => (16, 8),
         ("pg_attribute", "attrelid") => (0, oid),
         ("pg_attribute", "attnum") => (1, 2),
         ("pg_attribute", "attname") => (2, 253),
@@ -1753,6 +1863,307 @@ fn column_catalog_rows(
                     Value::Null,
                 ]);
             }
+            if rows.len() > MAX_CATALOG_ROWS {
+                return Err(catalog_row_limit());
+            }
+        }
+    }
+    Ok(rows)
+}
+
+// Quote all native names, including PostgreSQL keywords and embedded quotes.
+fn pg_identifier(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+// Native integer handles have a real primary key but no secondary IndexInfo.
+// Reserve the negative local ID -1 for that projection; ordinary IDs are positive.
+pub(crate) fn catalog_indexes(
+    model: &astersql_meta_model::TableInfo,
+) -> ConnResult<Vec<astersql_meta_model::IndexInfo>> {
+    if model.Indices.iter().any(|i| i.ID <= 0) {
+        return Err(ConnError::UnsupportedCommand(0));
+    }
+    let mut indexes = model.Indices.clone();
+    if model.PKIsHandle && !indexes.iter().any(|i| i.Primary) {
+        let column = model
+            .Columns
+            .iter()
+            .find(|c| {
+                c.State == astersql_meta_model::StatePublic
+                    && !c.Hidden
+                    && astersql_parser_mysql::r#type::HasPriKeyFlag(c.GetFlag())
+            })
+            .ok_or(ConnError::UnsupportedCommand(0))?;
+        indexes.push(astersql_meta_model::IndexInfo {
+            ID: -1,
+            Name: astersql_parser_ast::NewCIStr("PRIMARY"),
+            Columns: vec![astersql_meta_model::IndexColumn {
+                Name: column.Name.clone(),
+                Offset: column.Offset,
+                Length: -1,
+                ..Default::default()
+            }],
+            Unique: true,
+            Primary: true,
+            State: astersql_meta_model::StatePublic,
+            ..Default::default()
+        });
+    }
+    Ok(indexes)
+}
+
+fn index_constraint_rows(
+    relation: &str,
+    snapshot: &dyn astersql_infoschema::InfoSchema,
+    database: &str,
+    cancel: &CancellationToken,
+) -> ConnResult<Vec<Vec<Value>>> {
+    use astersql_meta_model::StatePublic;
+    check_catalog_cancel(cancel)?;
+    let Some(schema) = snapshot
+        .AllSchemas()
+        .into_iter()
+        .find(|s| s.name.lower == database.to_lowercase())
+    else {
+        return Ok(Vec::new());
+    };
+    let tables = snapshot
+        .SchemaTableInfos(&schema.name)
+        .map_err(|e| ConnError::Session(e.to_string()))?;
+    let namespace = i64::from(crate::pg_oid::namespace_oid(schema.id)?);
+    let mut rows = Vec::new();
+    let unsupported = || ConnError::UnsupportedCommand(0);
+    let key_columns = |model: &astersql_meta_model::TableInfo,
+                       names: &[String]|
+     -> ConnResult<Vec<(i64, String)>> {
+        names
+            .iter()
+            .map(|name| {
+                let column = model
+                    .Columns
+                    .iter()
+                    .find(|c| c.State == StatePublic && !c.Hidden && c.Name.O == *name)
+                    .ok_or_else(unsupported)?;
+                let position = column
+                    .Offset
+                    .checked_add(1)
+                    .filter(|n| *n > 0 && *n <= i16::MAX as isize)
+                    .ok_or_else(unsupported)?;
+                Ok((position as i64, pg_identifier(&column.Name.O)))
+            })
+            .collect()
+    };
+    let array = |columns: &[(i64, String)]| {
+        Value::Text(format!(
+            "{{{}}}",
+            columns
+                .iter()
+                .map(|c| c.0.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        ))
+    };
+    let names = |columns: &[(i64, String)]| {
+        columns
+            .iter()
+            .map(|c| c.1.clone())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let action = |value: i32| -> ConnResult<(&str, &str)> {
+        Ok(match value {
+            0 | 4 => ("a", "NO ACTION"),
+            1 => ("r", "RESTRICT"),
+            2 => ("c", "CASCADE"),
+            3 => ("n", "SET NULL"),
+            5 => ("d", "SET DEFAULT"),
+            _ => return Err(unsupported()),
+        })
+    };
+    for table in &tables {
+        check_catalog_cancel(cancel)?;
+        let model = table.model_meta.as_ref().ok_or_else(unsupported)?;
+        if model.State != StatePublic || model.Sequence.is_some() || model.View.is_some() {
+            continue;
+        }
+        let relid = i64::from(crate::pg_oid::table_oid(model.ID)?);
+        let indexes = catalog_indexes(model)?;
+        for index in indexes.iter().filter(|i| i.State == StatePublic) {
+            if !matches!(
+                index.Tp,
+                astersql_meta_model::ast::IndexType::Invalid
+                    | astersql_meta_model::ast::IndexType::Btree
+            ) || index.Columns.is_empty()
+                || index.Columns.len() > i16::MAX as usize
+                || index.MVIndex
+                || index.VectorInfo.is_some()
+                || index.InvertedInfo.is_some()
+                || index.FullTextInfo.is_some()
+                || !index.ConditionExprString.is_empty()
+                || index
+                    .Columns
+                    .iter()
+                    .any(|c| c.Length != -1 || c.UseChangingType)
+            {
+                return Err(unsupported());
+            }
+            let columns = key_columns(
+                model,
+                &index
+                    .Columns
+                    .iter()
+                    .map(|c| c.Name.O.clone())
+                    .collect::<Vec<_>>(),
+            )?;
+            if index
+                .Columns
+                .iter()
+                .zip(&columns)
+                .any(|(c, p)| c.Offset + 1 != p.0 as isize)
+            {
+                return Err(unsupported());
+            }
+            let oid = i64::from(crate::pg_oid::index_oid(model.ID, index.ID)?);
+            let definition = format!(
+                "CREATE {}INDEX {} ON public.{} USING btree ({})",
+                if index.Unique { "UNIQUE " } else { "" },
+                pg_identifier(&index.Name.O),
+                pg_identifier(&model.Name.O),
+                names(&columns)
+            );
+            let mut row = vec![Value::Null; CATALOG_ROW_WIDTH];
+            if relation == "pg_index" {
+                row[0] = Value::Signed(oid);
+                row[1] = Value::Signed(relid);
+                row[2] = Value::Signed(columns.len() as i64);
+                row[3] = row[2].clone();
+                row[4] = Value::Text(index.Unique.to_string());
+                row[5] = Value::Text(index.Primary.to_string());
+                row[6] = Value::Text("false".into());
+                row[7] = Value::Text(
+                    columns
+                        .iter()
+                        .map(|c| c.0.to_string())
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                );
+                row[8] = Value::Text(vec!["0"; columns.len()].join(" "));
+                row[13] = Value::Text("true".into());
+                row[14] = Value::Text("true".into());
+                row[21] = Value::Text(definition);
+                row[22] = Value::Text(
+                    columns
+                        .iter()
+                        .map(|c| c.1.clone())
+                        .collect::<Vec<_>>()
+                        .join("\0"),
+                );
+            } else if index.Primary || index.Unique {
+                row[0] = Value::Signed(oid);
+                row[1] = Value::Text(index.Name.O.clone());
+                row[2] = Value::Text(if index.Primary { "p" } else { "u" }.into());
+                row[3] = Value::Signed(relid);
+                row[4] = Value::Signed(namespace);
+                row[5] = array(&columns);
+                row[6] = Value::Signed(oid);
+                row[7] = Value::Signed(0);
+                row[9] = Value::Text(" ".into());
+                row[10] = Value::Text(" ".into());
+                for slot in [11, 12, 13] {
+                    row[slot] = Value::Text("false".into());
+                }
+                row[21] = Value::Text(format!(
+                    "{} ({})",
+                    if index.Primary {
+                        "PRIMARY KEY"
+                    } else {
+                        "UNIQUE"
+                    },
+                    names(&columns)
+                ));
+            } else {
+                continue;
+            }
+            rows.push(row);
+            if rows.len() > MAX_CATALOG_ROWS {
+                return Err(catalog_row_limit());
+            }
+        }
+        if relation != "pg_constraint" {
+            continue;
+        }
+        // CHECK expression translation is not established by this task. Reject
+        // rather than exposing native expressions as PostgreSQL parse trees.
+        if model.Constraints.iter().any(|c| c.State == StatePublic) {
+            return Err(unsupported());
+        }
+        for fk in model.ForeignKeys.iter().filter(|f| f.State == StatePublic) {
+            if fk.ID <= 0
+                || fk.Cols.is_empty()
+                || fk.Cols.len() != fk.RefCols.len()
+                || fk.RefSchema.L != schema.name.lower
+            {
+                return Err(unsupported());
+            }
+            let parent = tables
+                .iter()
+                .find(|t| t.name.lower == fk.RefTable.L)
+                .and_then(|t| t.model_meta.as_ref())
+                .ok_or_else(unsupported)?;
+            let columns = key_columns(
+                model,
+                &fk.Cols.iter().map(|c| c.O.clone()).collect::<Vec<_>>(),
+            )?;
+            let referenced = key_columns(
+                parent,
+                &fk.RefCols.iter().map(|c| c.O.clone()).collect::<Vec<_>>(),
+            )?;
+            let parent_indexes = catalog_indexes(parent)?;
+            let referenced_index = parent_indexes
+                .iter()
+                .find(|i| {
+                    i.State == StatePublic
+                        && i.Unique
+                        && i.Columns.len() == referenced.len()
+                        && i.Columns
+                            .iter()
+                            .zip(&fk.RefCols)
+                            .all(|(c, r)| c.Name.L == r.L)
+                })
+                .ok_or_else(unsupported)?;
+            let (update, update_sql) = action(fk.OnUpdate)?;
+            let (delete, delete_sql) = action(fk.OnDelete)?;
+            // Negative even IDs are disjoint from native index constraints and
+            // the handle primary key (-1), retaining table-local FK identity.
+            let local_id = fk.ID.checked_mul(-2).ok_or_else(unsupported)?;
+            let mut row = vec![Value::Null; CATALOG_ROW_WIDTH];
+            row[0] = Value::Signed(i64::from(crate::pg_oid::index_oid(model.ID, local_id)?));
+            row[1] = Value::Text(fk.Name.O.clone());
+            row[2] = Value::Text("f".into());
+            row[3] = Value::Signed(relid);
+            row[4] = Value::Signed(namespace);
+            row[5] = array(&columns);
+            row[6] = Value::Signed(i64::from(crate::pg_oid::index_oid(
+                parent.ID,
+                referenced_index.ID,
+            )?));
+            row[7] = Value::Signed(i64::from(crate::pg_oid::table_oid(parent.ID)?));
+            row[8] = array(&referenced);
+            row[9] = Value::Text(update.into());
+            row[10] = Value::Text(delete.into());
+            for slot in [11, 12, 13] {
+                row[slot] = Value::Text("false".into());
+            }
+            row[21] = Value::Text(format!(
+                "FOREIGN KEY ({}) REFERENCES public.{} ({}) ON UPDATE {} ON DELETE {}",
+                names(&columns),
+                pg_identifier(&parent.Name.O),
+                names(&referenced),
+                update_sql,
+                delete_sql
+            ));
+            rows.push(row);
             if rows.len() > MAX_CATALOG_ROWS {
                 return Err(catalog_row_limit());
             }

@@ -1985,3 +1985,256 @@ fn pg_introspection_columns_live() {
     service.close();
     domain.close();
 }
+
+#[test]
+fn pg_introspection_constraints_live() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE TABLE test.constraints_parent (a INT, b INT, label VARCHAR(20), PRIMARY KEY(a,b), UNIQUE KEY uq_label(label), KEY ix_b(b))").unwrap();
+    native.execute("CREATE TABLE test.constraints_child (a INT, b INT, CONSTRAINT fk_parent FOREIGN KEY(a,b) REFERENCES test.constraints_parent(a,b) ON DELETE CASCADE ON UPDATE RESTRICT)").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    let result = query(
+        &mut socket,
+        "SELECT i.indnkeyatts,i.indisunique,i.indisprimary,i.indkey,pg_get_indexdef(i.indexrelid) AS definition FROM pg_index i WHERE i.indrelid='public.constraints_parent'::regclass::oid ORDER BY i.indexrelid",
+    );
+    assert_eq!(result[0].0, b'T', "real index catalog: {result:?}");
+    assert_eq!(
+        result.iter().filter(|m| m.0 == b'D').count(),
+        3,
+        "{result:?}"
+    );
+    assert!(result.iter().any(|m| m.0==b'D' && m.1==row(&[Some("2"),Some("t"),Some("t"),Some("1 2"),Some("CREATE UNIQUE INDEX \"PRIMARY\" ON public.\"constraints_parent\" USING btree (\"a\", \"b\")")])));
+    assert!(result.iter().any(|m| m.0 == b'D'
+        && m.1
+            == row(&[
+                Some("1"),
+                Some("t"),
+                Some("f"),
+                Some("3"),
+                Some(
+                    "CREATE UNIQUE INDEX \"uq_label\" ON public.\"constraints_parent\" USING btree (\"label\")"
+                )
+            ])));
+    assert!(result.iter().any(|m| m.0 == b'D'
+        && m.1
+            == row(&[
+                Some("1"),
+                Some("f"),
+                Some("f"),
+                Some("2"),
+                Some("CREATE INDEX \"ix_b\" ON public.\"constraints_parent\" USING btree (\"b\")")
+            ])));
+    let result = query(
+        &mut socket,
+        "SELECT conname,contype,conkey,confkey,confupdtype,confdeltype,pg_get_constraintdef(oid),xmin FROM pg_constraint WHERE conrelid='public.constraints_child'::regclass::oid",
+    );
+    assert_eq!(result[0].0, b'T', "real FK catalog: {result:?}");
+    assert!(result.iter().any(|m| m.0==b'D' && m.1==row(&[Some("fk_parent"),Some("f"),Some("{1,2}"),Some("{1,2}"),Some("r"),Some("c"),Some("FOREIGN KEY (\"a\", \"b\") REFERENCES public.\"constraints_parent\" (\"a\", \"b\") ON UPDATE RESTRICT ON DELETE CASCADE"),None])),"{result:?}");
+    let result = query(
+        &mut socket,
+        "SELECT conname,contype,conkey,pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid='public.constraints_parent'::regclass::oid ORDER BY conname",
+    );
+    assert_eq!(
+        result.iter().filter(|m| m.0 == b'D').count(),
+        2,
+        "{result:?}"
+    );
+    let linked = query(
+        &mut socket,
+        "SELECT c.conname FROM pg_constraint c JOIN pg_index i ON c.conindid=i.indexrelid JOIN pg_class t ON c.confrelid=t.oid WHERE c.contype='f' AND i.indisprimary AND t.relname='constraints_parent'",
+    );
+    assert!(
+        linked
+            .iter()
+            .any(|m| m.0 == b'D' && m.1 == row(&[Some("fk_parent")]))
+    );
+    let typed = query(
+        &mut socket,
+        "SELECT conkey,confkey,conexclop,contype FROM pg_constraint WHERE contype='f'",
+    );
+    assert_eq!(
+        columns(&typed[0].1).iter().map(|c| c.1).collect::<Vec<_>>(),
+        vec![1005, 1005, 1028, 18]
+    );
+    let part = query(
+        &mut socket,
+        "SELECT pg_get_indexdef(indexrelid,2,true),pg_get_indexdef(indexrelid,99,false),pg_get_indexdef(indexrelid,-1,true) FROM pg_index WHERE indisprimary",
+    );
+    assert!(
+        part.iter()
+            .any(|m| m.0 == b'D' && m.1 == row(&[Some("\"b\""), None, None]))
+    );
+    let primary_type = query(
+        &mut socket,
+        "SELECT indkey,indoption FROM pg_index WHERE indisprimary",
+    );
+    assert_eq!(
+        columns(&primary_type[0].1)
+            .iter()
+            .map(|c| c.1)
+            .collect::<Vec<_>>(),
+        vec![22, 22]
+    );
+    // Same parsed statement must re-read current metadata at Execute.
+    let statement_sql = "SELECT conname FROM pg_constraint WHERE contype='f'";
+    send(
+        &mut socket,
+        b'P',
+        &[
+            b"constraint_stmt\0",
+            statement_sql.as_bytes(),
+            b"\0",
+            &0i16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut socket, b'S', &[]);
+    assert_eq!(until_ready(&mut socket)[0].0, b'1');
+    send(
+        &mut socket,
+        b'B',
+        &[
+            b"\0constraint_stmt\0".as_slice(),
+            &0i16.to_be_bytes(),
+            &0i16.to_be_bytes(),
+            &0i16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(
+        &mut socket,
+        b'E',
+        &[b"\0".as_slice(), &0i32.to_be_bytes()].concat(),
+    );
+    send(&mut socket, b'S', &[]);
+    let before = until_ready(&mut socket);
+    assert!(
+        before
+            .iter()
+            .any(|m| m.0 == b'D' && m.1 == row(&[Some("fk_parent")])),
+        "{before:?}"
+    );
+
+    native
+        .execute("ALTER TABLE test.constraints_child DROP FOREIGN KEY fk_parent")
+        .unwrap();
+    assert!(
+        !query(
+            &mut socket,
+            "SELECT oid FROM pg_constraint WHERE conrelid='public.constraints_child'::regclass::oid"
+        )
+        .iter()
+        .any(|m| m.0 == b'D')
+    );
+    send(
+        &mut socket,
+        b'B',
+        &[
+            b"\0constraint_stmt\0".as_slice(),
+            &0i16.to_be_bytes(),
+            &0i16.to_be_bytes(),
+            &0i16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(
+        &mut socket,
+        b'E',
+        &[b"\0".as_slice(), &0i32.to_be_bytes()].concat(),
+    );
+    send(&mut socket, b'S', &[]);
+    let refreshed = until_ready(&mut socket);
+    assert_eq!(refreshed[0].0, b'2', "{refreshed:?}");
+    assert!(!refreshed.iter().any(|m| m.0 == b'D'));
+    native
+        .execute("ALTER TABLE test.constraints_parent DROP INDEX ix_b")
+        .unwrap();
+    assert_eq!(query(&mut socket,"SELECT indexrelid FROM pg_index WHERE indrelid='public.constraints_parent'::regclass::oid").iter().filter(|m|m.0==b'D').count(),2);
+    assert!(
+        query(
+            &mut socket,
+            "SELECT pg_get_indexdef(NULL),pg_get_constraintdef(0) FROM pg_index"
+        )
+        .iter()
+        .filter(|m| m.0 == b'D')
+        .all(|m| m.1 == row(&[None, None]))
+    );
+    let rejected = query(
+        &mut socket,
+        "SELECT pg_get_indexdef(indexrelid,1,true,0) FROM pg_index",
+    );
+    assert_eq!(rejected[0].0, b'E');
+    assert!(rejected[0].1.windows(6).any(|w| w == b"0A000\0"));
+    native
+        .execute("CREATE TABLE test.constraints_handle (id INT PRIMARY KEY)")
+        .unwrap();
+    let handle = query(
+        &mut socket,
+        "SELECT pg_get_indexdef(i.indexrelid),pg_get_constraintdef(c.oid) FROM pg_index i JOIN pg_constraint c ON i.indexrelid=c.conindid JOIN pg_class t ON t.oid=i.indexrelid WHERE i.indrelid='public.constraints_handle'::regclass::oid AND t.relkind='i'",
+    );
+    assert!(handle.iter().any(|m|m.0==b'D' && m.1==row(&[Some("CREATE UNIQUE INDEX \"PRIMARY\" ON public.\"constraints_handle\" USING btree (\"id\")"),Some("PRIMARY KEY (\"id\")")])) ,"{handle:?}");
+    native
+        .execute("DROP TABLE test.constraints_handle")
+        .unwrap();
+    native
+        .execute(r#"CREATE TABLE test.`order` (`select` INT, KEY `ix"quote`(`select`))"#)
+        .unwrap();
+    let quoted = query(
+        &mut socket,
+        "SELECT pg_get_indexdef(indexrelid) FROM pg_index WHERE indrelid='public.order'::regclass::oid",
+    );
+    assert!(
+        quoted.iter().any(|m| m.0 == b'D'
+            && m.1
+                == row(&[Some(
+                    r#"CREATE INDEX "ix""quote" ON public."order" USING btree ("select")"#
+                )])),
+        "{quoted:?}"
+    );
+    native.execute("DROP TABLE test.`order`").unwrap();
+    native
+        .execute(
+            "CREATE TABLE test.constraints_prefix (label VARCHAR(20), KEY ix_prefix(label(3)))",
+        )
+        .unwrap();
+    let rejected = query(&mut socket, "SELECT indkey FROM pg_index");
+    assert_eq!(rejected[0].0, b'E');
+    assert!(rejected[0].1.windows(6).any(|w| w == b"0A000\0"));
+    native
+        .execute("DROP TABLE test.constraints_prefix")
+        .unwrap();
+    native.execute("DROP TABLE test.constraints_child").unwrap();
+    native
+        .execute("DROP TABLE test.constraints_parent")
+        .unwrap();
+    let empty = query(&mut socket, "SELECT indexrelid FROM pg_index");
+    assert_eq!(empty[0].0, b'T', "{empty:?}");
+    assert!(!empty.iter().any(|m| m.0 == b'D'));
+    send(&mut socket, b'X', &[]);
+    drop(socket);
+    service.close();
+}
