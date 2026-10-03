@@ -183,6 +183,8 @@ pub struct CheckpointAdvancer {
     checkpoints: Arc<Mutex<Option<ValueSortedFull>>>,
     /// flush 订阅器；Owner 期间持有。
     subscriber: Mutex<Option<FlushSubscriber>>,
+    #[cfg(test)]
+    subscribeTickHook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 /// 以 TiDB 默认配置创建推进器。
@@ -200,6 +202,8 @@ pub fn NewTiDBCheckpointAdvancer(env: Arc<dyn Env>) -> CheckpointAdvancer {
         isPaused: AtomicBool::new(false),
         checkpoints: Arc::new(Mutex::new(None)),
         subscriber: Mutex::new(None),
+        #[cfg(test)]
+        subscribeTickHook: Mutex::new(None),
     }
 }
 
@@ -218,6 +222,8 @@ pub fn NewCommandCheckpointAdvancer(env: Arc<dyn Env>) -> CheckpointAdvancer {
         isPaused: AtomicBool::new(false),
         checkpoints: Arc::new(Mutex::new(None)),
         subscriber: Mutex::new(None),
+        #[cfg(test)]
+        subscribeTickHook: Mutex::new(None),
     }
 }
 
@@ -560,6 +566,8 @@ impl CheckpointAdvancer {
 
     /// 可选 tick：对任务范围执行 tryAdvance，合并最新 flush TS。
     pub fn optionalTick(&self) -> Result<(), String> {
+        // Subscription errors fall back to polling, as in Go optionalTick.
+        let _ = self.subscribeTick();
         let ranges = self.taskRange.lock().unwrap().clone();
         if ranges.is_empty() {
             return Ok(());
@@ -605,6 +613,32 @@ impl CheckpointAdvancer {
     /// 关闭外部全局检查点存储；本端口无存储时为空操作。
     pub fn closeGlobalCheckpointStorage(&self) {
         // storage is optional boundary; no-op when absent.
+    }
+
+    /// Hold the subscriber lock across the hook and topology/error maintenance.
+    /// OnStop must wait for an in-flight subscription tick before dropping it.
+    pub(crate) fn subscribeTick(&self) -> Result<(), String> {
+        let mut subscriber = self.subscriber.lock().unwrap();
+        let Some(subscriber) = subscriber.as_mut() else {
+            return Ok(());
+        };
+        #[cfg(test)]
+        {
+            let hook = self.subscribeTickHook.lock().unwrap().clone();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
+        if let Err(error) = subscriber.UpdateStoreTopology() {
+            eprintln!("Error when updating store topology: {error}");
+        }
+        subscriber.HandleErrors();
+        subscriber.PendingErrors()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn setSubscribeTickHook(&self, hook: Option<Arc<dyn Fn() + Send + Sync>>) {
+        *self.subscribeTickHook.lock().unwrap() = hook;
     }
 
     /// 清空并丢弃 flush 订阅器。

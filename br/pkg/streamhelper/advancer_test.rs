@@ -540,18 +540,66 @@ fn test_resolve_lock_retry_when_checkpoint_not_advanced() {
     ));
 }
 
-/// 成为 Owner 后 OnStop 应清空订阅计数。
+/// OnStop waits for an in-flight subscription tick, then polling remains usable.
 #[test]
 fn test_owner_dropped() {
+    use std::sync::{Arc, Mutex, mpsc};
+    use std::time::Duration;
+
     let c = create_fake_cluster(4, false);
+    c.cluster.split_and_scatter(&split_keys());
+    crate::basic_lib_for_test::install_subscribe_support(&c);
     let env = new_test_env(&c);
-    let adv = NewCheckpointAdvancer(env.clone());
-    adv.OnBecomeOwner();
-    let mut sub = crate::flush_subscriber::NewSubscriber(env, Vec::new());
-    sub.UpdateStoreTopology().unwrap();
-    assert!(sub.SubscriptionCount() > 0);
-    adv.OnStop();
+    let adv = Arc::new(NewCheckpointAdvancer(env.clone()));
+    bind_whole_task(&adv);
+    adv.SpawnSubscriptionHandler();
+    adv.OnTick().unwrap();
+    assert!(adv.HasSubscriptions());
+
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let release_rx = Mutex::new(release_rx);
+    adv.setSubscribeTickHook(Some(Arc::new(move || {
+        entered_tx.send(()).unwrap();
+        release_rx.lock().unwrap().recv().unwrap();
+    })));
+    let (tick_tx, tick_rx) = mpsc::channel();
+    let ticking = adv.clone();
+    let tick = std::thread::spawn(move || {
+        tick_tx.send(ticking.OnTick()).unwrap();
+    });
+    entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+
+    let (started_tx, started_rx) = mpsc::channel();
+    let (stop_tx, stop_rx) = mpsc::channel();
+    let stopping = adv.clone();
+    let stop = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        stopping.OnStop();
+        stop_tx.send(()).unwrap();
+    });
+    started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    // Give the stop thread a chance to contend for the subscriber lock.
+    let early_stop = stop_rx.recv_timeout(Duration::from_millis(30));
+    release_tx.send(()).unwrap();
+    adv.setSubscribeTickHook(None);
+    assert!(matches!(early_stop, Err(mpsc::RecvTimeoutError::Timeout)));
+    tick_rx
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap()
+        .unwrap();
+    stop_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    tick.join().unwrap();
+    stop.join().unwrap();
     assert!(!adv.HasSubscriptions());
+
+    let cp = c.cluster.advance_checkpoints();
+    adv.OnTick().unwrap();
+    assert_eq!(
+        adv.WithCheckpoints(|vsf| vsf.MinValue()).flatten(),
+        Some(cp)
+    );
+    assert_eq!(env.get_checkpoint(), cp);
 }
 
 /// 移除任务绑定后新 Advancer 无任务；flush_all 为空操作边界。
