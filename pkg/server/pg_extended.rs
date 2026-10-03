@@ -275,6 +275,38 @@ fn catalog_parameter(oid: u32, value: Option<&[u8]>) -> Result<crate::pg_catalog
     })
 }
 
+fn catalog_binary_parameter(
+    oid: u32,
+    value: Option<&[u8]>,
+) -> Result<crate::pg_catalog_query::Expr> {
+    use crate::pg_catalog_query::Expr;
+    let Some(value) = value else {
+        return Ok(Expr::Null);
+    };
+    let invalid = || error("22P03", "invalid binary catalog parameter");
+    // JDBC can bind a schema identifier as int4/int8 and cast it to oid in
+    // SQL, or bind an oid directly. OIDs preserve the full unsigned range.
+    Ok(match oid {
+        26 => Expr::Integer(i64::from(u32::from_be_bytes(
+            value.try_into().map_err(|_| invalid())?,
+        ))),
+        20 => Expr::Integer(i64::from_be_bytes(value.try_into().map_err(|_| invalid())?)),
+        23 => Expr::Integer(i64::from(i32::from_be_bytes(
+            value.try_into().map_err(|_| invalid())?,
+        ))),
+        21 => Expr::Integer(i64::from(i16::from_be_bytes(
+            value.try_into().map_err(|_| invalid())?,
+        ))),
+        16 => match value {
+            [0] => Expr::Boolean(false),
+            [1] => Expr::Boolean(true),
+            _ => return Err(invalid()),
+        },
+        25 | 1042 | 1043 => return catalog_parameter(oid, Some(value)),
+        _ => return Err(error("0A000", "unsupported binary catalog parameter OID")),
+    })
+}
+
 fn temporal(oid: u32, text: &str) -> Result<(u8, Vec<u8>)> {
     use chrono::{Datelike, Timelike};
     let invalid = || error("22007", "invalid date or time parameter");
@@ -566,10 +598,13 @@ impl Extended {
                     .get(&statement_name)
                     .ok_or_else(|| error("26000", "unknown prepared statement"))?;
                 let formats = reader.count()?;
+                let mut parameter_formats = Vec::with_capacity(formats);
                 for _ in 0..formats {
-                    if reader.count()? != 0 {
-                        return Err(error("0A000", "binary parameters are unsupported"));
+                    let format = reader.count()?;
+                    if format > 1 {
+                        return Err(error("08P01", "invalid parameter format code"));
                     }
+                    parameter_formats.push(format);
                 }
                 let count = reader.count()?;
                 if count != statement.oids.len()
@@ -579,7 +614,12 @@ impl Extended {
                 }
                 let mut args = Vec::new();
                 let mut catalog_values = Vec::new();
-                for oid in &statement.oids {
+                for (index, oid) in statement.oids.iter().enumerate() {
+                    let format = match parameter_formats.as_slice() {
+                        [] => 0,
+                        [format] => *format,
+                        formats => formats[index],
+                    };
                     let length = i32::from_be_bytes(reader.take(4)?.try_into().unwrap());
                     let value = if length == -1 {
                         None
@@ -592,8 +632,15 @@ impl Extended {
                         )
                     };
                     if statement.catalog.is_some() {
-                        catalog_values.push(catalog_parameter(*oid, value)?);
+                        catalog_values.push(if format == 1 {
+                            catalog_binary_parameter(*oid, value)?
+                        } else {
+                            catalog_parameter(*oid, value)?
+                        });
                     } else {
+                        if format == 1 {
+                            return Err(error("0A000", "binary parameters are unsupported"));
+                        }
                         args.push(parameter(*oid, value)?);
                     }
                 }

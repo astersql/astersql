@@ -24,7 +24,7 @@ startup 接受 user、database、application_name、UTF8/UTF-8 client_encoding�
 
 简单 Query 只接受一条现有引擎可执行的语句；空查询返回 EmptyQueryResponse，多语句返回 0A000。允许的 AST 命令还包括集合查询、CREATE/DROP DATABASE、ALTER/TRUNCATE TABLE、DROP VIEW、SET；这些命令的全部 SQL 变体没有逐一验收。REPLACE 与其他不支持命令被拒绝。DataGrip 的 `select round(extract(epoch from pg_postmaster_start_time() at time zone 'UTC')) as startup_time` 探测在 PG 适配层按 SQL token 识别，以 PG listener 本次启动时记录的微秒时间计算并四舍五入到 epoch 秒；同一 PG 服务的所有连接和预处理查询共用该值，结果 OID 为 numeric（1700），保留别名。此支持仅覆盖该 UTC 启动时间探测，不代表通用 EXTRACT、AT TIME ZONE 或 PostgreSQL 时间函数兼容。PG 适配层按 AST 投影和源码位置将未引用、未限定的直接 `current_catalog` 投影映射到 canonical 会话的数据库名，保留默认结果列名与显式别名；普通与扩展查询共用该适配。字符串、引用列名、限定列名不改写；完整 PostgreSQL 表达式及 pg_catalog 仿真不作兼容承诺。
 
-扩展查询支持 Parse、Bind、Describe、Execute、Close、Sync、Flush，具备命名 statement/portal、重复和乱序 `$n` 参数映射、分段返回 PortalSuspended、错误后丢弃消息直到 Sync。参数传给既有预处理接口，不通过字符串拼接值。原生执行查询的参数必须提供明确类型 OID；目录查询可从显式 `$n::oid` 等转换取得参数类型，无转换时仍需客户端提供 OID。没有通用参数类型推断，参数化投影的结果元数据缺失或 prepare/execute 元数据不一致时明确报错。二进制参数与结果格式被拒绝。JDBC 连接需设置 `binaryTransfer=false`，避免驱动在达到 prepareThreshold 后切换为二进制结果。美元引用、引擎可执行注释/提示注释及 `?` 参数标记不支持。
+扩展查询支持 Parse、Bind、Describe、Execute、Close、Sync、Flush，具备命名 statement/portal、重复和乱序 `$n` 参数映射、分段返回 PortalSuspended、错误后丢弃消息直到 Sync。参数传给既有预处理接口，不通过字符串拼接值。原生执行查询的参数必须提供明确类型 OID；目录查询可从显式 `$n::oid` 等转换取得参数类型，无转换时仍需客户端提供 OID。没有通用参数类型推断，参数化投影的结果元数据缺失或 prepare/execute 元数据不一致时明确报错。目录查询的二进制参数支持 OID、int2/int4/int8、boolean 和 text/varchar/bpchar；Bind 按零个、一个或逐参数格式代码解码，OID 保留完整无符号范围，非法定长值返回 22P03。原生执行查询的二进制参数与全部二进制结果格式仍被拒绝。JDBC 连接需设置 `binaryTransfer=false`，避免驱动在达到 prepareThreshold 后切换为二进制结果。美元引用、引擎可执行注释/提示注释及 `?` 参数标记不支持。
 
 3.0 BackendKeyData 使用 4 字节随机取消密钥，3.2 使用 32 字节；CancelRequest 必须匹配当前后端和密钥。真实 libpq 验证 idle cancel 不影响下一条查询；相邻 TCP 测试验证正在执行的命令取消、错误密钥及旧/空闲取消不会污染下一命令。事务状态来自共享会话的 in_transaction；只报告 I/T，不承诺 PostgreSQL 出错事务的 E 状态及其后续语义。
 
@@ -52,7 +52,7 @@ PG startup 的 database 选择同名原生库；该连接的 `public` 虚拟映�
 
 结果 OID 由引擎原始类型和完整标志得到，不凭列名或数据值猜测。支持整数（unsigned 按范围扩大）、numeric、float4/float8、text、bytea、布尔标志、date、time、无时区 timestamp 及 NULL。BOOL 表定义仍遵循现有引擎 TINYINT 语义；布尔表达式保留 bool 标志。DATETIME/TIMESTAMP 都映射无时区 timestamp，不推测绝对时区。结果只使用文本格式，表 OID/属性编号未知为 0，typmod 为 -1。
 
-参数支持 OID 16、17、20、21、23、25、700、701、1042、1043、1082、1083、1114、1700 的文本值及 NULL；bytea 仅接受十六进制形式。日期时间参数使用明确格式，时间精度最多微秒。不支持类型、缺失元数据、零日期、负数或超出一天的 TIME duration、文本 NUL 等明确返回错误。原生 JSON、enum/set、数组、带时区类型及全部二进制格式不作兼容承诺。目录结果另支持 OID/regclass、内部 char、int2vector 和 int2/int4/OID/text 数组的文本编码；目录参数支持 OID 26 的十进制文本及 NULL，检查 0..u32::MAX 范围，不代表原生 SQL 数组参数支持。
+参数支持 OID 16、17、20、21、23、25、700、701、1042、1043、1082、1083、1114、1700 的文本值及 NULL；bytea 仅接受十六进制形式。日期时间参数使用明确格式，时间精度最多微秒。不支持类型、缺失元数据、零日期、负数或超出一天的 TIME duration、文本 NUL 等明确返回错误。原生 JSON、enum/set、数组、带时区类型及全部二进制格式不作兼容承诺。目录结果另支持 OID/regclass、内部 char、int2vector 和 int2/int4/OID/text 数组的文本编码；目录参数支持 OID 26 的十进制文本、四字节网络字节序二进制值及 NULL，检查 0..u32::MAX 范围，不代表原生 SQL 数组参数支持。
 
 PG 边界映射语法错误 42601、已知唯一键错误 23505、未知列 42703、未知表 42P01、未知库 3D000、取消 57014，并对不支持功能使用 0A000、错误报文使用 08P01。部分执行错误仍是共享接口字符串，仅匹配已知引擎错误形式；未知错误保留 XX000，不保证全量 PostgreSQL 错误分类。
 
@@ -446,3 +446,5 @@ order by owner_id
 | 真实客户端和默认 MySQL 隔离 | pg_introspection_clients、postgres_client_protocol_versions、mysql_protocol_ | libpq 3.0/3.2、JDBC 文本结果；UI 未验收 |
 
 原生类型与目录私有类型使用互不重叠的内部码，DECIMAL 结果仍为 numeric（1700）；没有借目录数组支持扩大原生 JSON/数组类型承诺。完整 DataGrip UI 元数据树、持久重启、RealTiKV、生产鉴权与大 schema 性能仍未验证。
+
+2026-10-03 DataGrip 实际 Bind 回归：会话 1533977259 的函数源、序列依赖等查询被二进制参数拒绝。现补齐目录参数解码，TCP 覆盖 OID 无符号边界、NULL、混合格式及坏数据后的 Sync 恢复；本机 JDBC 42.7.13/42.7.3 强制二进制 int8 参数且保留文本结果，对三条原始来源查询执行回归。此证据不代表默认二进制结果或完整 UI 验收；同会话 RetrieveTables 的有序 array_agg/关联标量子查询仍报 expected )，其他目录存在独立缺口。

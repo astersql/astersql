@@ -222,6 +222,8 @@ fn run_jdbc(port: u16, database: &str, view_source: &str) -> Result<(), String> 
 const JDBC_WORKFLOW: &str = r#"
 import java.sql.*;
 import org.postgresql.util.PGobject;
+import org.postgresql.core.BaseConnection;
+import java.util.Set;
 class PgIntrospection {
     static void check(boolean ok, String message) { if (!ok) throw new AssertionError(message); }
     static String viewSource;
@@ -239,6 +241,10 @@ class PgIntrospection {
         viewSource = args[5];
         String options = "sslmode=disable&gssEncMode=disable&prepareThreshold=1&binaryTransfer=false&connectTimeout=5&socketTimeout=10";
         try (Connection c = DriverManager.getConnection("jdbc:postgresql://127.0.0.1:"+args[0]+"/"+args[4]+"?"+options, "root", ""); Statement s = c.createStatement()) {
+            // Keep text results, but force the real JDBC Bind encoder to send
+            // schema IDs as binary int8. binaryTransfer=false alone masked this.
+            ((BaseConnection)c).getQueryExecutor().setBinarySendOids(Set.of(20, 26));
+            ((BaseConnection)c).getQueryExecutor().setBinaryReceiveOids(Set.of());
             System.out.println("installed PostgreSQL JDBC " + c.getMetaData().getDriverVersion() + "; " + options);
             long namespace;
             try (ResultSet r = s.executeQuery("select oid from pg_namespace where nspname='public'")) { check(r.next(), "public missing"); namespace = r.getLong(1); }
@@ -247,6 +253,8 @@ class PgIntrospection {
                 try (PreparedStatement p = c.prepareStatement(args[i])) {
                     PGobject oid = new PGobject(); oid.setType("oid"); oid.setValue(Long.toString(namespace)); p.setObject(1, oid);
                     check(p.getMetaData().getColumnCount() == (i==2?5:3), "Statement Describe");
+                    for (int repeat=0; repeat<2; repeat++) { try (ResultSet r=p.executeQuery()) { verify(r, i==2?5:3, i==1); } }
+                    p.setLong(1, namespace);
                     for (int repeat=0; repeat<2; repeat++) { try (ResultSet r=p.executeQuery()) { verify(r, i==2?5:3, i==1); } }
                     p.setNull(1, Types.OTHER, "oid"); try (ResultSet r=p.executeQuery()) { verify(r, i==2?5:3, false); }
                     oid.setValue("4294967295"); p.setObject(1, oid); try (ResultSet r=p.executeQuery()) { verify(r, i==2?5:3, false); }
@@ -528,15 +536,18 @@ for options, expected_protocol in [('', 30000), (' min_protocol_version=3.2 max_
         assert protocol(conn) == expected_protocol, protocol(conn)
         assert parameter_status(conn, b'server_version') == b'18.0 (AsterSQL)'
         assert server_version(conn) == 180000, server_version(conn)
-        def query(sql, expected=None, parameter=None, metadata=None, extended=False, sqlstate=None, parameter_oid=23, null_parameter=False):
+        def query(sql, expected=None, parameter=None, metadata=None, extended=False, sqlstate=None, parameter_oid=23, null_parameter=False, binary_parameter=False):
             if extended:
                 result = params(conn, sql.encode(), 0, None, None, None, None, 0)
             elif parameter is None and not null_parameter:
                 result = execute(conn, sql.encode())
             else:
                 oids = (c.c_uint * 1)(parameter_oid)
-                values = (text * 1)(None if null_parameter else str(parameter).encode())
-                result = params(conn, sql.encode(), 1, oids, values, None, None, 0)
+                payload = None if null_parameter else (int(parameter).to_bytes(4, 'big') if binary_parameter else str(parameter).encode())
+                values = (text * 1)(payload)
+                lengths = (integer * 1)(0 if payload is None else len(payload))
+                formats = (integer * 1)(int(binary_parameter))
+                result = params(conn, sql.encode(), 1, oids, values, lengths, formats, 0)
             assert result
             try:
                 if sqlstate is not None:
@@ -587,6 +598,10 @@ for options, expected_protocol in [('', 30000), (' min_protocol_version=3.2 max_
             query('SELECT 1', [['1']])
             query(displayed.replace('?', '$1'), parameter_oid=26, null_parameter=True, expected=[], metadata=source_metadata)
             query(displayed.replace('?', '$1'), parameter=4294967295, parameter_oid=26, expected=[], metadata=source_metadata)
+            query(displayed.replace('?', '$1'), parameter=namespace_id, parameter_oid=26, binary_parameter=True,
+                  expected=source_rows if source_rows is not None else [], metadata=source_metadata)
+            query(displayed.replace('?', '$1'), parameter_oid=26, null_parameter=True, binary_parameter=True, expected=[], metadata=source_metadata)
+            query(displayed.replace('?', '$1'), parameter=4294967295, parameter_oid=26, binary_parameter=True, expected=[], metadata=source_metadata)
             print(f'{expected_protocol}: {label}: Query/Execute(oid 26)={source_rows if source_rows is not None else "typed empty result"}; recovery passed', flush=True)
         for extended in [False, True]:
             for expression in ['pg_get_viewdef(NULL, true)', 'pg_get_viewdef(4294967295::oid, true)', 'pg_get_viewdef(oid, NULL)']:

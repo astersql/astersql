@@ -566,6 +566,103 @@ fn pg_introspection_parameters_live() {
     assert_eq!(read(&mut socket).0, b'C');
     send(&mut socket, b'S', &[]);
     assert_eq!(read(&mut socket).0, b'Z');
+    // DataGrip sends the schema OID in network byte order even when results
+    // use text. Exercise Bind on the real listener, including unsigned limits.
+    for number in [0u32, 2200, u32::MAX] {
+        let body = [
+            b"\0oid\0".as_slice(),
+            &1i16.to_be_bytes(),
+            &1i16.to_be_bytes(),
+            &1i16.to_be_bytes(),
+            &4i32.to_be_bytes(),
+            &number.to_be_bytes(),
+            &0i16.to_be_bytes(),
+        ]
+        .concat();
+        send(&mut socket, b'B', &body);
+        assert_eq!(read(&mut socket), (b'2', vec![]), "binary OID Bind");
+        execute(&mut socket, "", 0);
+        assert_eq!(
+            read(&mut socket),
+            (
+                b'D',
+                row(&[Some(&number.to_string()), Some("parameter_live"), Some("t")])
+            )
+        );
+        assert_eq!(read(&mut socket).0, b'C');
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket).0, b'Z');
+    }
+    for (value, expected) in [
+        (None, None),
+        (Some(&[0u8, 0, 1][..]), Some("22P03")),
+        (Some(&[0u8, 0, 0, 0, 1][..]), Some("22P03")),
+    ] {
+        bind_formats(&mut socket, "oid", &[1], &[value]);
+        let response = read(&mut socket);
+        if let Some(state) = expected {
+            assert_eq!(response.0, b'E');
+            assert!(
+                response
+                    .1
+                    .windows(6)
+                    .any(|w| w == format!("C{state}").as_bytes())
+            );
+        } else {
+            assert_eq!(response, (b'2', vec![]));
+            execute(&mut socket, "", 0);
+            assert_eq!(read(&mut socket), (b'C', b"SELECT 0\0".to_vec()));
+        }
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket).0, b'Z');
+        assert_eq!(query(&mut socket, "SELECT 1")[1], (b'D', row(&[Some("1")])));
+    }
+    parse(
+        &mut socket,
+        "mixed",
+        "SELECT $1::oid AS id, $2::bigint AS number, $3::varchar AS label FROM pg_class WHERE relname = 'parameter_live'",
+        &[26, 20, 25],
+    );
+    assert_eq!(read(&mut socket), (b'1', vec![]));
+    bind_formats(
+        &mut socket,
+        "mixed",
+        &[1, 1, 0],
+        &[
+            Some(&u32::MAX.to_be_bytes()),
+            Some(&i64::MIN.to_be_bytes()),
+            Some(b"mixed"),
+        ],
+    );
+    assert_eq!(read(&mut socket), (b'2', vec![]));
+    execute(&mut socket, "", 0);
+    assert_eq!(
+        read(&mut socket),
+        (
+            b'D',
+            row(&[
+                Some("4294967295"),
+                Some("-9223372036854775808"),
+                Some("mixed")
+            ])
+        )
+    );
+    assert_eq!(read(&mut socket).0, b'C');
+    send(&mut socket, b'S', &[]);
+    assert_eq!(read(&mut socket).0, b'Z');
+    for (formats, state) in [(&[2][..], "08P01"), (&[1, 0][..], "08P01")] {
+        bind_formats(&mut socket, "oid", formats, &[Some(&2200u32.to_be_bytes())]);
+        let response = read(&mut socket);
+        assert_eq!(response.0, b'E');
+        assert!(
+            response
+                .1
+                .windows(6)
+                .any(|w| w == format!("C{state}").as_bytes())
+        );
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket).0, b'Z');
+    }
     let unbound = query(&mut socket, "SELECT $1::oid FROM pg_class");
     assert_eq!(unbound[0].0, b'E');
     assert!(unbound[0].1.windows(6).any(|w| w == b"C42P02"));
@@ -793,6 +890,36 @@ fn pg_introspection_parameters_live() {
     send(&mut socket, b'X', &[]);
     drop(socket);
     service.close();
+}
+
+fn bind_formats(
+    socket: &mut TcpStream,
+    statement: &str,
+    formats: &[i16],
+    values: &[Option<&[u8]>],
+) {
+    let mut body = [
+        b"\0".as_slice(),
+        statement.as_bytes(),
+        b"\0",
+        &(formats.len() as i16).to_be_bytes(),
+    ]
+    .concat();
+    for format in formats {
+        body.extend_from_slice(&format.to_be_bytes());
+    }
+    body.extend_from_slice(&(values.len() as i16).to_be_bytes());
+    for value in values {
+        match value {
+            Some(bytes) => {
+                body.extend_from_slice(&(bytes.len() as i32).to_be_bytes());
+                body.extend_from_slice(bytes);
+            }
+            None => body.extend_from_slice(&(-1i32).to_be_bytes()),
+        }
+    }
+    body.extend_from_slice(&0i16.to_be_bytes());
+    send(socket, b'B', &body);
 }
 
 #[test]
