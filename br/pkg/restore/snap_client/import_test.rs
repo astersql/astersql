@@ -549,6 +549,14 @@ fn test_snap_importer_pd_scan_request_flow_control() {
 
 // Compacted 模式文件组带特殊 CF/范围，供批量下载断言。
 fn make_compacted_file_sets(file_group_count: usize, files_per_group: usize) -> Vec<BackupFileSet> {
+    make_compacted_file_sets_with_cf(file_group_count, files_per_group, "write")
+}
+
+fn make_compacted_file_sets_with_cf(
+    file_group_count: usize,
+    files_per_group: usize,
+    cf: &str,
+) -> Vec<BackupFileSet> {
     let mut file_sets = Vec::with_capacity(file_group_count);
     for i in 0..file_group_count {
         let mut files = Vec::with_capacity(files_per_group);
@@ -556,8 +564,8 @@ fn make_compacted_file_sets(file_group_count: usize, files_per_group: usize) -> 
             let mut end = tablecodec::EncodeTablePrefix(100);
             end.push(b'z');
             files.push(crate::stubs::backuppb::File {
-                Name: format!("file-{i}-{j}_write.sst"),
-                Cf: "write".into(),
+                Name: format!("file-{i}-{j}_{cf}.sst"),
+                Cf: cf.into(),
                 StartKey: tablecodec::EncodeTablePrefix(100),
                 EndKey: end,
                 ..Default::default()
@@ -627,6 +635,84 @@ fn test_batch_download_latest_mvcc_parallelizes_file_groups_per_peer() {
     assert_eq!(ingests.len(), 1);
     assert_eq!(ingests[0].1.Ssts.len(), 3);
     drop(ingests);
+    importer.Close().unwrap();
+}
+
+#[test]
+fn test_batch_download_latest_mvcc_skips_default_only_file_groups() {
+    let ctx = Context::Background();
+    let split = Arc::new(MemSplitClient::default());
+    *split.regions.lock().unwrap() = vec![RegionInfo {
+        Region: metapb::Region {
+            Id: 1,
+            StartKey: codec::EncodeBytes(Vec::new(), &tablecodec::EncodeTablePrefix(1)),
+            EndKey: codec::EncodeBytes(Vec::new(), &tablecodec::EncodeTablePrefix(2)),
+            Peers: vec![metapb::Peer { Id: 1, StoreId: 1 }],
+            ..Default::default()
+        },
+        Leader: Some(metapb::Peer { Id: 1, StoreId: 1 }),
+    }];
+    let import_client = Arc::new(MemImporterClient::default());
+    let stores = vec![metapb::Store {
+        Id: 1,
+        State: metapb::StoreState::Up,
+        ..Default::default()
+    }];
+    let opt = NewSnapFileImporterOptions(
+        None,
+        split,
+        import_client.clone(),
+        None,
+        RewriteMode::RewriteModeKeyspace,
+        stores.clone(),
+        2,
+        0,
+        true,
+        Vec::new(),
+        Vec::new(),
+    );
+    let mut importer = NewSnapFileImporter(&ctx, 1, KvMode::TiDBCompacted, opt).unwrap();
+    import_client
+        .CheckBatchDownloadLatestMVCCSupport(&ctx, &[1])
+        .unwrap();
+    importer
+        .Import(&ctx, &make_compacted_file_sets_with_cf(1, 2, "default"))
+        .unwrap();
+    assert!(import_client.downloads.lock().unwrap().is_empty());
+    assert!(import_client.ingests.lock().unwrap().is_empty());
+    let mut sets = make_compacted_file_sets_with_cf(1, 2, "default");
+    sets.extend(make_compacted_file_sets(1, 1));
+    importer.Import(&ctx, &sets).unwrap();
+    assert_eq!(import_client.downloads.lock().unwrap().len(), 1);
+    let mut mixed = make_compacted_file_sets_with_cf(1, 1, "default");
+    mixed[0]
+        .SSTFiles
+        .extend(make_compacted_file_sets(1, 1).remove(0).SSTFiles);
+    importer.Import(&ctx, &mixed).unwrap();
+    assert_eq!(import_client.downloads.lock().unwrap().len(), 3);
+    // A write SST outside the region must not keep its default SST group alive.
+    let mut outside = make_compacted_file_sets(1, 1).remove(0).SSTFiles.remove(0);
+    outside.StartKey = tablecodec::EncodeTablePrefix(101);
+    outside.EndKey = [tablecodec::EncodeTablePrefix(101), vec![b'z']].concat();
+    mixed[0]
+        .RewriteRules
+        .as_mut()
+        .unwrap()
+        .Data
+        .push(import_sstpb::RewriteRule {
+            OldKeyPrefix: tablecodec::EncodeTablePrefix(101),
+            NewKeyPrefix: tablecodec::EncodeTablePrefix(2),
+            ..Default::default()
+        });
+    mixed[0].SSTFiles.pop();
+    mixed[0].SSTFiles.push(outside);
+    importer.Import(&ctx, &mixed).unwrap();
+    assert_eq!(import_client.downloads.lock().unwrap().len(), 3);
+    importer.retainLatestMVCCVersion = false;
+    importer
+        .Import(&ctx, &make_compacted_file_sets_with_cf(1, 2, "default"))
+        .unwrap();
+    assert_eq!(import_client.downloads.lock().unwrap().len(), 5);
     importer.Close().unwrap();
 }
 

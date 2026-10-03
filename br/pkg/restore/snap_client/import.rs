@@ -686,12 +686,22 @@ impl SnapFileImporter {
     ) -> Result<Vec<import_sstpb::SSTMeta>> {
         let mut metas = Vec::new();
         for files in file_sets {
+            let mut requests = Vec::new();
+            let mut has_write_cf = false;
             for file in &files.SSTFiles {
-                let Some((req, meta)) =
+                if let Some(request) =
                     self.buildDownloadRequest(file, files.RewriteRules.as_ref(), region_info)?
-                else {
-                    continue;
-                };
+                {
+                    has_write_cf |= file.Cf.contains("write");
+                    requests.push(request);
+                }
+            }
+            // Write CF determines MVCC visibility; keep default CF only in groups
+            // that also contain a write SST overlapping this region.
+            if self.retainLatestMVCCVersion && !has_write_cf {
+                continue;
+            }
+            for (req, meta) in requests {
                 for peer in &region_info.Region.Peers {
                     if ctx.Done() {
                         return Err(ctx.Err().unwrap_or_else(|| Error::new("context canceled")));
