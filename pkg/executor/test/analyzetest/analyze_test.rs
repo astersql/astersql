@@ -1052,6 +1052,113 @@ fn auto_analyze_new_index_keeps_column_and_index_stats() {
     assert_eq!(stats.indexes.len(), 1);
 }
 
+const ANALYZE_STATUS_QUERY: &str =
+    "show analyze status where table_schema = 'test' and table_name = 't' and partition_name = ''";
+
+// Go checkAnalyzeStatus: query errors fail immediately; state mismatches retry.
+fn check_analyze_status(tk: &mut TestKit, job_info: &str, status: &str, fail_reason: &str) {
+    assert!(
+        wait_for_analyze_status(
+            || { tk.MustQuery(ANALYZE_STATUS_QUERY, Vec::new(),).Rows() },
+            job_info,
+            status,
+            fail_reason,
+            std::time::Duration::from_secs(3),
+        ),
+        "analyze status did not converge: {job_info}, {status}, {fail_reason}"
+    );
+}
+
+fn wait_for_analyze_status(
+    mut query: impl FnMut() -> Vec<Vec<String>>,
+    job_info: &str,
+    status: &str,
+    fail_reason: &str,
+    timeout: std::time::Duration,
+) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let rows = query();
+        if rows.len() == 1
+            && rows[0][3] == job_info
+            && rows[0][7] == status
+            && rows[0][8] == fail_reason
+        {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn analyze_status_waits_for_delayed_publication() {
+    let mut tk = analyze_testkit();
+    tk.MustExec("use test", Vec::new());
+    tk.MustExec("create table t(a int)", Vec::new());
+    tk.MustExec("insert into t values (1),(2)", Vec::new());
+    let mut attempts = 0;
+    assert!(wait_for_analyze_status(
+        || {
+            attempts += 1;
+            // Control only the publication boundary; every sample is a real SQL query.
+            if attempts == 2 {
+                tk.MustExec("analyze table t", Vec::new());
+            }
+            tk.MustQuery(ANALYZE_STATUS_QUERY, Vec::new()).Rows()
+        },
+        "analyze table all columns with 256 buckets, 100 topn, 1 samplerate",
+        "finished",
+        "<nil>",
+        std::time::Duration::from_secs(3)
+    ));
+    assert!(attempts >= 2);
+    check_analyze_status(
+        &mut tk,
+        "analyze table all columns with 256 buckets, 100 topn, 1 samplerate",
+        "finished",
+        "<nil>",
+    );
+}
+
+#[test]
+fn analyze_status_requires_exact_job_state_and_failure() {
+    let mut tk = analyze_testkit();
+    tk.MustExec("use test", Vec::new());
+    tk.MustExec("create table t(a int)", Vec::new());
+    tk.MustExec("insert into t values (1),(2)", Vec::new());
+    let failure = astersql_util_dbterror_exeerrors::exeerrors::ErrQueryInterrupted.to_string();
+    let insert = format!(
+        "insert into mysql.analyze_jobs(table_schema,table_name,partition_name,job_info,processed_rows,start_time,end_time,state,fail_reason,instance) values('test','t','','auto analyze table all columns with 256 buckets, 100 topn, 1 samplerate',2,'2026-10-03 12:00:00','2026-10-03 12:00:01','failed','{failure}','127.0.0.1:4000')"
+    );
+    tk.MustExec(&insert, Vec::new());
+    let job_info = "auto analyze table all columns with 256 buckets, 100 topn, 1 samplerate";
+    check_analyze_status(&mut tk, job_info, "failed", &failure);
+    for (info, state, reason) in [
+        ("wrong job", "failed", failure.as_str()),
+        (job_info, "finished", failure.as_str()),
+        (job_info, "failed", "<nil>"),
+    ] {
+        assert!(!wait_for_analyze_status(
+            || { tk.MustQuery(ANALYZE_STATUS_QUERY, Vec::new()).Rows() },
+            info,
+            state,
+            reason,
+            std::time::Duration::from_millis(20)
+        ));
+    }
+    tk.MustExec(&insert, Vec::new());
+    assert!(!wait_for_analyze_status(
+        || { tk.MustQuery(ANALYZE_STATUS_QUERY, Vec::new()).Rows() },
+        job_info,
+        "failed",
+        &failure,
+        std::time::Duration::from_millis(20)
+    ));
+}
+
 /// Go `TestAnalyzeJob`：SHOW ANALYZE STATUS 可观察最近完成作业。
 #[test]
 fn analyze_job_status_records_completed_job() {
