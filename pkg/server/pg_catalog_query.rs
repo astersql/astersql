@@ -16,6 +16,7 @@ pub(crate) enum Token {
     Quoted(String),
     String(String),
     Number(i64),
+    Parameter(usize),
     Symbol(char),
     Cast,
 }
@@ -23,6 +24,7 @@ pub(crate) enum Token {
 pub(crate) enum Expr {
     Column(Vec<String>),
     Null,
+    Parameter(usize),
     Integer(i64),
     Boolean(bool),
     Text(String),
@@ -175,6 +177,26 @@ pub(crate) fn lex(sql: &str) -> ParseResult<Vec<Token>> {
                 i += 1;
             }
             out.push(Token::Word(sql[start..i].to_lowercase()));
+            continue;
+        }
+        if b[i] == b'$' {
+            i += 1;
+            let start = i;
+            while i < b.len() && b[i].is_ascii_digit() {
+                i += 1;
+            }
+            let index = sql[start..i]
+                .parse::<usize>()
+                .map_err(|_| ("42P02", "invalid catalog parameter index".into()))?;
+            if !(1..=32767).contains(&index) {
+                return Err(("42P02", "catalog parameter index out of range".into()));
+            }
+            if b.get(i)
+                .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_')
+            {
+                return Err(syntax("parameter marker is part of an identifier"));
+            }
+            out.push(Token::Parameter(index - 1));
             continue;
         }
         if b[i].is_ascii_digit() {
@@ -453,12 +475,9 @@ impl Parser {
                         Expr::Column(path)
                     }
                 }
-                Some(Token::Symbol('$'))
-                    if matches!(self.tokens.get(self.pos + 1), Some(Token::Number(_))) =>
-                {
-                    // JOIN parsing can now reach parameters formerly hidden by
-                    // an unsupported clause. Binding remains a separate feature.
-                    return Err(unsupported("catalog parameters are unsupported"));
+                Some(Token::Parameter(index)) => {
+                    self.pos += 1;
+                    Expr::Parameter(index)
                 }
                 Some(Token::Symbol('*')) => {
                     return Err(unsupported("wildcard catalog projections are unsupported"));
@@ -835,7 +854,9 @@ pub(crate) fn parse_shadowed(sql: &str, shadowed: &[String]) -> ParseResult<Opti
 
 fn constant(expr: &Expr) -> bool {
     match expr {
-        Expr::Null | Expr::Integer(_) | Expr::Text(_) | Expr::Boolean(_) => true,
+        Expr::Null | Expr::Integer(_) | Expr::Text(_) | Expr::Boolean(_) | Expr::Parameter(_) => {
+            true
+        }
         Expr::Cast(inner, _) => constant(inner),
         _ => false,
     }

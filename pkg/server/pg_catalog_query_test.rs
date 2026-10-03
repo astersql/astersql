@@ -421,13 +421,17 @@ fn pg_introspection_oid_live_casts() {
 }
 
 #[test]
-fn pg_introspection_joins_parameter_rejection() {
+fn pg_introspection_joins_parameter_nodes() {
     for sql in [
         "SELECT A.oid FROM pg_class A JOIN pg_namespace N ON N.oid = A.relnamespace WHERE N.oid = $1::oid",
         "SELECT A.oid FROM pg_class A JOIN pg_namespace N ON N.oid = $1::oid",
         "SELECT $1::oid FROM pg_class A JOIN pg_namespace N ON N.oid = A.relnamespace",
     ] {
-        assert_eq!(parse(sql).unwrap_err().0, "0A000", "{sql}");
+        assert!(parse(sql).unwrap().is_some(), "{sql}");
+        assert_eq!(
+            parse(&sql.replace("::oid", "::numeric")).unwrap_err().0,
+            "0A000"
+        );
     }
     assert!(
         parse("SELECT '$1' FROM pg_class A JOIN pg_namespace N ON N.oid = A.relnamespace")

@@ -75,6 +75,8 @@ pub(crate) struct CatalogQuery {
     pub(crate) current_schema: Option<String>,
     pub(crate) public_first: bool,
     cte_columns: CteColumns,
+    parameter_oids: Vec<u32>,
+    parameter_values: Vec<Expr>,
 }
 impl CatalogQuery {
     pub(crate) fn parse(sql: &str) -> ParseResult<Option<Self>> {
@@ -86,7 +88,10 @@ impl CatalogQuery {
             current_schema: Some("public".into()),
             public_first: false,
             cte_columns: CteColumns::new(),
+            parameter_oids: Vec::new(),
+            parameter_values: Vec::new(),
         };
+        query.parameters(&[])?;
         query.bind()?;
         Ok(Some(query))
     }
@@ -94,6 +99,21 @@ impl CatalogQuery {
         sql: &str,
         context: &dyn TiDBContext,
         session: &crate::pg_session::PgSession,
+    ) -> ParseResult<Option<Self>> {
+        let query = Self::parse_session_with_types(sql, context, session, &[])?;
+        if query
+            .as_ref()
+            .is_some_and(|query| !query.parameter_oids.is_empty())
+        {
+            return Err(("42P02", "catalog parameters require Parse and Bind".into()));
+        }
+        Ok(query)
+    }
+    pub(crate) fn parse_session_with_types(
+        sql: &str,
+        context: &dyn TiDBContext,
+        session: &crate::pg_session::PgSession,
+        oids: &[u32],
     ) -> ParseResult<Option<Self>> {
         let mut shadowed = Vec::new();
         let public_first = session.public_precedes_catalog();
@@ -129,7 +149,10 @@ impl CatalogQuery {
             current_schema: session.schema().map(str::to_owned),
             public_first,
             cte_columns: CteColumns::new(),
+            parameter_oids: Vec::new(),
+            parameter_values: Vec::new(),
         };
+        query.parameters(oids)?;
         query.bind()?;
         Ok(Some(query))
     }
@@ -142,7 +165,50 @@ impl CatalogQuery {
             current_schema: self.current_schema.clone(),
             public_first: self.public_first,
             cte_columns: self.cte_columns.clone(),
+            parameter_oids: self.parameter_oids.clone(),
+            parameter_values: self.parameter_values.clone(),
         }
+    }
+    // Parameters are indexed across the entire statement, including CTEs and
+    // subqueries. Only a direct ::oid cast infers an otherwise unknown type.
+    fn parameters(&mut self, supplied: &[u32]) -> ParseResult<()> {
+        let mut select = self.select.clone();
+        let mut count = 0;
+        visit_all_select_exprs(&mut select, &mut |expr| {
+            if let Expr::Parameter(index) = expr {
+                count = count.max(*index + 1);
+            }
+            Ok::<_, (&'static str, String)>(())
+        })?;
+        if supplied.len() > count {
+            return Err(("08P01", "too many parameter OIDs".into()));
+        }
+        self.parameter_oids = supplied.to_vec();
+        self.parameter_oids.resize(count, 0);
+        visit_all_select_exprs(&mut select, &mut |expr| {
+            if let Expr::Cast(inner, CastType::Oid) = expr {
+                if let Expr::Parameter(index) = **inner {
+                    if self.parameter_oids[index] == 0 {
+                        self.parameter_oids[index] = 26;
+                    }
+                }
+            }
+            Ok::<_, (&'static str, String)>(())
+        })?;
+        for oid in &self.parameter_oids {
+            catalog_parameter_type(*oid)?;
+        }
+        Ok(())
+    }
+    pub(crate) fn parameter_oids(&self) -> &[u32] {
+        &self.parameter_oids
+    }
+    pub(crate) fn bind_values(&mut self, values: Vec<Expr>) -> ParseResult<()> {
+        if values.len() != self.parameter_oids.len() {
+            return Err(("08P01", "catalog parameter count mismatch".into()));
+        }
+        self.parameter_values = values;
+        Ok(())
     }
     fn bind(&mut self) -> ParseResult<()> {
         for cte in self.select.ctes.clone() {
@@ -328,6 +394,7 @@ impl CatalogQuery {
     fn expr_type(&self, expr: &Expr) -> ParseResult<(u8, usize)> {
         match expr {
             Expr::Column(path) => self.column(path).map(|(_, code, flags)| (code, flags)),
+            Expr::Parameter(index) => catalog_parameter_type(self.parameter_oids[*index]),
             Expr::Null | Expr::Text(_) => Ok((253, 0)),
             Expr::Integer(_) => Ok((8, 0)),
             Expr::Boolean(_) => Ok((1, astersql_parser_mysql::r#type::IsBooleanFlag)),
@@ -386,13 +453,7 @@ impl CatalogQuery {
                 if !matches!(**left, Expr::Null)
                     && !matches!(**right, Expr::Null)
                     && left_type != right_type
-                    && !(matches!(
-                        left_type,
-                        3 | 8 | crate::pg_oid::OID_TYPE | crate::pg_oid::REGCLASS_TYPE
-                    ) && matches!(
-                        right_type,
-                        3 | 8 | crate::pg_oid::OID_TYPE | crate::pg_oid::REGCLASS_TYPE
-                    ))
+                    && !(numeric_type(left_type) && numeric_type(right_type))
                 {
                     return Err(("0A000", "incompatible catalog equality types".into()));
                 }
@@ -497,7 +558,7 @@ impl CatalogQuery {
         // engine prepared statement. No backend handle is allocated or closed.
         PreparedMetadata {
             statement_id: 0,
-            parameter_count: 0,
+            parameter_count: self.parameter_oids.len(),
             columns,
             native_types,
         }
@@ -512,6 +573,9 @@ impl CatalogQuery {
         cancel: &CancellationToken,
     ) -> ConnResult<QueryResult> {
         check_catalog_cancel(cancel)?;
+        if self.parameter_values.len() != self.parameter_oids.len() {
+            return Err(ConnError::Session("unbound PG catalog parameters".into()));
+        }
         let metadata = self.metadata();
         let snapshot = context.schema_snapshot();
         let current = context.execute_query("SELECT DATABASE()", false, cancel)?;
@@ -761,6 +825,7 @@ impl CatalogQuery {
         Ok(match expr {
             Expr::Column(path) => row[self.column(path).expect("validated column").0].clone(),
             Expr::Null => Value::Null,
+            Expr::Parameter(index) => evaluate(&self.parameter_values[*index])?,
             Expr::Integer(n) => Value::Signed(*n),
             Expr::Boolean(value) => Value::Text(value.to_string()),
             Expr::Text(s) => Value::Text(s.clone()),
@@ -1012,9 +1077,37 @@ impl CatalogQuery {
 fn numeric_type(code: u8) -> bool {
     matches!(
         code,
-        3 | 8 | crate::pg_oid::OID_TYPE | crate::pg_oid::REGCLASS_TYPE
+        2 | 3 | 8 | crate::pg_oid::OID_TYPE | crate::pg_oid::REGCLASS_TYPE
     )
 }
+fn catalog_parameter_type(oid: u32) -> ParseResult<(u8, usize)> {
+    Ok(match oid {
+        0 => return Err(("42P18", "could not determine catalog parameter type".into())),
+        26 => (crate::pg_oid::OID_TYPE, 0),
+        16 => (1, astersql_parser_mysql::r#type::IsBooleanFlag),
+        20 => (8, 0),
+        21 => (2, 0),
+        23 => (3, 0),
+        25 | 1042 | 1043 => (253, 0),
+        _ => return Err(("0A000", "unsupported catalog parameter OID".into())),
+    })
+}
+
+fn visit_all_select_exprs<E>(
+    select: &mut Select,
+    visitor: &mut impl FnMut(&mut Expr) -> Result<(), E>,
+) -> Result<(), E> {
+    for cte in &mut select.ctes {
+        visit_all_select_exprs(&mut cte.query, visitor)?;
+    }
+    visit_select_exprs(select, &mut |expr| {
+        if let Expr::InSubquery(_, query) = expr {
+            visit_all_select_exprs(query, visitor)?;
+        }
+        visitor(expr)
+    })
+}
+
 fn visit_select_exprs<E>(
     select: &mut Select,
     visitor: &mut impl FnMut(&mut Expr) -> Result<(), E>,

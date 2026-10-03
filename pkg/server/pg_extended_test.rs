@@ -478,3 +478,394 @@ fn canonical_prepare_parameter_syntax_probe() {
     );
     context.close().unwrap();
 }
+
+#[test]
+fn pg_introspection_parameters_live() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native
+        .execute("CREATE TABLE test.parameter_live (id INT)")
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    parse(
+        &mut socket,
+        "oid",
+        "SELECT $1::oid AS id, relname, relname = 'parameter_live' AS matched FROM pg_class WHERE relname = 'parameter_live' AND ($1::oid = $1::oid)",
+        &[26],
+    );
+    assert_eq!(
+        read(&mut socket),
+        (b'1', vec![]),
+        "catalog Parse must accept OID parameters"
+    );
+    send(&mut socket, b'D', b"Soid\0");
+    assert_eq!(
+        read(&mut socket),
+        (
+            b't',
+            [
+                1i16.to_be_bytes().as_slice(),
+                26u32.to_be_bytes().as_slice()
+            ]
+            .concat()
+        )
+    );
+    let description = read(&mut socket);
+    assert_eq!(description.0, b'T');
+    let mut fields = &description.1[2..];
+    for oid in [26u32, 25, 16] {
+        let end = fields.iter().position(|b| *b == 0).unwrap();
+        fields = &fields[end + 1..];
+        assert_eq!(u32::from_be_bytes(fields[6..10].try_into().unwrap()), oid);
+        fields = &fields[18..];
+    }
+    assert!(fields.is_empty());
+    let namespace = query(
+        &mut socket,
+        "SELECT oid::varchar FROM pg_namespace WHERE nspname = 'public'",
+    );
+    let namespace = namespace.iter().find(|m| m.0 == b'D').unwrap();
+    let namespace = String::from_utf8(namespace.1[6..].to_vec()).unwrap();
+
+    bind(&mut socket, "p", "oid", &[Some("4294967295")]);
+    assert_eq!(read(&mut socket), (b'2', vec![]));
+    send(&mut socket, b'D', b"Pp\0");
+    assert_eq!(read(&mut socket), description);
+    execute(&mut socket, "p", 0);
+    assert_eq!(
+        read(&mut socket),
+        (
+            b'D',
+            row(&[Some("4294967295"), Some("parameter_live"), Some("t")])
+        )
+    );
+    assert_eq!(read(&mut socket).0, b'C');
+    send(&mut socket, b'S', &[]);
+    assert_eq!(read(&mut socket).0, b'Z');
+    let unbound = query(&mut socket, "SELECT $1::oid FROM pg_class");
+    assert_eq!(unbound[0].0, b'E');
+    assert!(unbound[0].1.windows(6).any(|w| w == b"C42P02"));
+    // Inference, out-of-order/repeated indexes, and NULL keep fixed metadata.
+    for (name, sql, oids, values, expected) in [
+        (
+            "namespace",
+            "SELECT relname FROM pg_class WHERE relnamespace = $1::oid AND relname = 'parameter_live' AND $1::oid IN ($1::oid)",
+            vec![],
+            vec![Some(namespace.as_str())],
+            vec![Some("parameter_live")],
+        ),
+        (
+            "inferred",
+            "SELECT $1::oid AS id FROM pg_class WHERE relname = 'parameter_live'",
+            vec![],
+            vec![Some("0")],
+            vec![Some("0")],
+        ),
+        (
+            "zero_type",
+            "SELECT $1::oid FROM pg_class WHERE relname = 'parameter_live'",
+            vec![0],
+            vec![Some("42")],
+            vec![Some("42")],
+        ),
+        (
+            "text_cast",
+            "SELECT $1::oid FROM pg_class WHERE relname = 'parameter_live'",
+            vec![25],
+            vec![Some("4294967295")],
+            vec![Some("4294967295")],
+        ),
+        (
+            "explicit",
+            "SELECT $1 AS id FROM pg_class WHERE relname = 'parameter_live'",
+            vec![26],
+            vec![Some("42")],
+            vec![Some("42")],
+        ),
+        (
+            "reordered",
+            "SELECT $2::oid AS second, $1::oid AS first, $2::oid AS again FROM pg_class WHERE relname = 'parameter_live'",
+            vec![],
+            vec![Some("12"), Some("34")],
+            vec![Some("34"), Some("12"), Some("34")],
+        ),
+        (
+            "nested",
+            "WITH ids AS (SELECT $1::oid AS id FROM pg_class WHERE relname = 'parameter_live') SELECT id FROM ids WHERE id IN (SELECT $1::oid FROM pg_namespace WHERE nspname = 'public')",
+            vec![],
+            vec![Some("17")],
+            vec![Some("17")],
+        ),
+        (
+            "null",
+            "SELECT $1::oid AS id, $1::oid IS NULL AS empty FROM pg_class WHERE relname = 'parameter_live'",
+            vec![],
+            vec![None],
+            vec![None, Some("t")],
+        ),
+        (
+            "text",
+            "SELECT relname FROM pg_class WHERE relname = $1",
+            vec![25],
+            vec![Some("parameter_live")],
+            vec![Some("parameter_live")],
+        ),
+        (
+            "boolean",
+            "SELECT $1 AS value FROM pg_class WHERE relname = 'parameter_live'",
+            vec![16],
+            vec![Some("true")],
+            vec![Some("t")],
+        ),
+    ] {
+        parse(&mut socket, name, sql, &oids);
+        assert_eq!(read(&mut socket), (b'1', vec![]), "{name}");
+        send(&mut socket, b'D', &[b"S", name.as_bytes(), b"\0"].concat());
+        let parameters = read(&mut socket);
+        assert_eq!(parameters.0, b't');
+        assert_eq!(
+            i16::from_be_bytes(parameters.1[..2].try_into().unwrap()) as usize,
+            values.len()
+        );
+        let expected_oids = if oids.is_empty() {
+            vec![26; values.len()]
+        } else {
+            oids.iter()
+                .map(|oid| if *oid == 0 { 26 } else { *oid })
+                .collect()
+        };
+        for (bytes, oid) in parameters.1[2..].chunks_exact(4).zip(expected_oids) {
+            assert_eq!(u32::from_be_bytes(bytes.try_into().unwrap()), oid);
+        }
+        let description = read(&mut socket);
+        bind(&mut socket, "p", name, &values);
+        assert_eq!(read(&mut socket).0, b'2');
+        send(&mut socket, b'D', b"Pp\0");
+        assert_eq!(read(&mut socket), description);
+        execute(&mut socket, "p", 0);
+        assert_eq!(read(&mut socket), (b'D', row(&expected)), "{name}");
+        assert_eq!(read(&mut socket).0, b'C');
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket).0, b'Z');
+    }
+    bind(&mut socket, "one", "explicit", &[Some("1")]);
+    assert_eq!(read(&mut socket).0, b'2');
+    bind(&mut socket, "two", "explicit", &[Some("2")]);
+    assert_eq!(read(&mut socket).0, b'2');
+    for (portal, value) in [("two", "2"), ("one", "1")] {
+        execute(&mut socket, portal, 0);
+        assert_eq!(read(&mut socket), (b'D', row(&[Some(value)])));
+        assert_eq!(read(&mut socket).0, b'C');
+    }
+    send(&mut socket, b'S', &[]);
+    assert_eq!(read(&mut socket).0, b'Z');
+    parse(
+        &mut socket,
+        "refresh",
+        "SELECT relname FROM pg_class WHERE relnamespace = $1::oid AND relname = 'parameter_after_parse'",
+        &[],
+    );
+    assert_eq!(read(&mut socket).0, b'1');
+    native
+        .execute("CREATE TABLE test.parameter_after_parse (id INT)")
+        .unwrap();
+    bind(&mut socket, "p", "refresh", &[Some(namespace.as_str())]);
+    assert_eq!(read(&mut socket).0, b'2');
+    execute(&mut socket, "p", 0);
+    assert_eq!(
+        read(&mut socket),
+        (b'D', row(&[Some("parameter_after_parse")]))
+    );
+    assert_eq!(read(&mut socket).0, b'C');
+    send(&mut socket, b'S', &[]);
+    assert_eq!(read(&mut socket).0, b'Z');
+    bind(
+        &mut socket,
+        "p",
+        "text",
+        &[Some("parameter_live' OR true --")],
+    );
+    assert_eq!(read(&mut socket).0, b'2');
+    execute(&mut socket, "p", 0);
+    assert_eq!(read(&mut socket), (b'C', b"SELECT 0\0".to_vec()));
+    send(&mut socket, b'S', &[]);
+    assert_eq!(read(&mut socket).0, b'Z');
+    parse(
+        &mut socket,
+        "small",
+        "SELECT $1 AS small, $1 = 1 AS matched FROM pg_class WHERE relname = 'parameter_live'",
+        &[21],
+    );
+    assert_eq!(read(&mut socket).0, b'1');
+    bind(&mut socket, "p", "small", &[Some("1")]);
+    assert_eq!(read(&mut socket).0, b'2');
+    execute(&mut socket, "p", 0);
+    assert_eq!(read(&mut socket), (b'D', row(&[Some("1"), Some("t")])));
+    assert_eq!(read(&mut socket).0, b'C');
+    send(&mut socket, b'S', &[]);
+    assert_eq!(read(&mut socket).0, b'Z');
+    for (sql, oids, state) in [
+        ("SELECT $0::oid FROM pg_class", vec![], "42P02"),
+        ("SELECT $32768::oid FROM pg_class", vec![], "42P02"),
+        ("SELECT $32767::oid FROM pg_class", vec![], "42P18"),
+        ("SELECT $1 FROM pg_class", vec![], "42P18"),
+        ("SELECT $2::oid FROM pg_class", vec![], "42P18"),
+        ("SELECT $1::oid FROM pg_class", vec![26, 26], "08P01"),
+        ("SELECT $1 FROM pg_class", vec![99999], "0A000"),
+    ] {
+        parse(&mut socket, "bad", sql, &oids);
+        let response = read(&mut socket);
+        assert_eq!(response.0, b'E', "{sql}: {response:?}");
+        assert!(
+            response
+                .1
+                .windows(6)
+                .any(|w| w == [b"C", state.as_bytes()].concat()),
+            "{sql}: {response:?}"
+        );
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket).0, b'Z');
+        send(&mut socket, b'C', b"Sbad\0");
+        assert_eq!(read(&mut socket).0, b'3');
+    }
+    for (values, state) in [
+        (vec![Some("-1")], "22003"),
+        (vec![Some("4294967296")], "22003"),
+        (
+            vec![Some("170141183460469231731687303715884105728")],
+            "22003",
+        ),
+        (vec![Some("abc")], "22P02"),
+        (vec![Some("1' OR true")], "22P02"),
+        (vec![], "08P01"),
+    ] {
+        bind(&mut socket, "p", "oid", &values);
+        let response = read(&mut socket);
+        assert_eq!(response.0, b'E', "{values:?}: {response:?}");
+        assert!(
+            response
+                .1
+                .windows(6)
+                .any(|w| w == [b"C", state.as_bytes()].concat()),
+            "{values:?}: {response:?}"
+        );
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket).0, b'Z');
+    }
+    bind(&mut socket, "p", "oid", &[None]);
+    assert_eq!(read(&mut socket).0, b'2');
+    send(&mut socket, b'D', b"Pp\0");
+    assert_eq!(read(&mut socket), description);
+    execute(&mut socket, "p", 0);
+    // NULL = NULL is unknown: no rows, but identical Describe.
+    assert_eq!(read(&mut socket), (b'C', b"SELECT 0\0".to_vec()));
+    send(&mut socket, b'C', b"Pp\0");
+    assert_eq!(read(&mut socket).0, b'3');
+    send(&mut socket, b'C', b"Soid\0");
+    assert_eq!(read(&mut socket).0, b'3');
+    send(&mut socket, b'S', &[]);
+    assert_eq!(read(&mut socket).0, b'Z');
+    assert_eq!(query(&mut socket, "SELECT 1")[0].0, b'T');
+    send(&mut socket, b'X', &[]);
+    drop(socket);
+    service.close();
+}
+
+#[test]
+fn pg_introspection_parameters_array_metadata() {
+    use crate::conn::{ColumnInfo, NativeType, QueryResult, Value};
+    // Provider-owned array types must not become generic MySQL BLOB/text OIDs.
+    let result = QueryResult {
+        columns: vec![
+            ColumnInfo {
+                schema: String::new(),
+                table: String::new(),
+                org_table: String::new(),
+                name: "array".into(),
+                org_name: String::new(),
+                charset: 45,
+                column_length: 64,
+                column_type: 253,
+                flags: 0,
+                decimals: 0,
+                default_value: None
+            };
+            4
+        ],
+        native_types: [
+            crate::pg_result::CatalogColumnType::Int2Array as u8,
+            crate::pg_result::CatalogColumnType::Int4Array as u8,
+            crate::pg_result::CatalogColumnType::OidArray as u8,
+            crate::pg_result::CatalogColumnType::TextArray as u8,
+        ]
+        .into_iter()
+        .map(|code| NativeType {
+            code,
+            flags: 0,
+            length: 64,
+            decimal: 0,
+        })
+        .collect(),
+        rows: vec![vec![
+            Value::Text("{1,NULL,2}".into()),
+            Value::Text("{1,2}".into()),
+            Value::Text("{0,4294967295}".into()),
+            Value::Text("{\"a,b\",NULL}".into()),
+        ]],
+        ..QueryResult::default()
+    };
+    let encoded = crate::pg_result::encode(&result, "SELECT").unwrap();
+    let mut rest = &encoded[0].1[2..];
+    for oid in [1005u32, 1007, 1028, 1009] {
+        let end = rest.iter().position(|b| *b == 0).unwrap();
+        rest = &rest[end + 1..];
+        assert_eq!(u32::from_be_bytes(rest[6..10].try_into().unwrap()), oid);
+        rest = &rest[18..];
+    }
+    assert!(rest.is_empty());
+    assert_eq!(
+        encoded[1],
+        (
+            b'D',
+            row(&[
+                Some("{1,NULL,2}"),
+                Some("{1,2}"),
+                Some("{0,4294967295}"),
+                Some("{\"a,b\",NULL}")
+            ])
+        )
+    );
+
+    let empty = QueryResult {
+        rows: vec![],
+        ..result
+    };
+    assert_eq!(
+        crate::pg_result::encode(&empty, "SELECT").unwrap()[0],
+        encoded[0]
+    );
+}

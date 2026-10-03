@@ -235,6 +235,46 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
         ..BinaryParam::default()
     })
 }
+fn catalog_parameter(oid: u32, value: Option<&[u8]>) -> Result<crate::pg_catalog_query::Expr> {
+    use crate::pg_catalog_query::Expr;
+    let Some(value) = value else {
+        return Ok(Expr::Null);
+    };
+    if oid == 26 {
+        let text =
+            std::str::from_utf8(value).map_err(|_| error("22021", "OID parameter is not UTF-8"))?;
+        if text.contains('\0') {
+            return Err(error("22021", "OID parameter contains NUL"));
+        }
+        let number = text.trim().parse::<i128>().map_err(|cause| {
+            if matches!(
+                cause.kind(),
+                std::num::IntErrorKind::PosOverflow | std::num::IntErrorKind::NegOverflow
+            ) {
+                error("22003", "OID parameter out of range")
+            } else {
+                error("22P02", "invalid OID parameter")
+            }
+        })?;
+        let number =
+            u32::try_from(number).map_err(|_| error("22003", "OID parameter out of range"))?;
+        return Ok(Expr::Integer(i64::from(number)));
+    }
+    let parsed = parameter(oid, Some(value))?;
+    Ok(match oid {
+        16 => Expr::Boolean(parsed.value[0] != 0),
+        21 => Expr::Integer(i64::from(i16::from_le_bytes(
+            parsed.value.try_into().unwrap(),
+        ))),
+        23 => Expr::Integer(i64::from(i32::from_le_bytes(
+            parsed.value.try_into().unwrap(),
+        ))),
+        20 => Expr::Integer(i64::from_le_bytes(parsed.value.try_into().unwrap())),
+        25 | 1042 | 1043 => Expr::Text(String::from_utf8(parsed.value).unwrap()),
+        _ => return Err(error("0A000", "unsupported catalog parameter OID")),
+    })
+}
+
 fn temporal(oid: u32, text: &str) -> Result<(u8, Vec<u8>)> {
     use chrono::{Datelike, Timelike};
     let invalid = || error("22007", "invalid date or time parameter");
@@ -407,10 +447,11 @@ impl Extended {
                 let catalog = if session_query.is_some() {
                     None
                 } else {
-                    crate::pg_catalog::CatalogQuery::parse_session(
+                    crate::pg_catalog::CatalogQuery::parse_session_with_types(
                         &sql,
                         context.as_ref(),
                         &self.session,
+                        &oids,
                     )?
                 };
                 let (sql, mapping) = if catalog.is_some() || session_query.is_some() {
@@ -424,7 +465,13 @@ impl Extended {
                 } else {
                     crate::pg_result::adapt_session_query(&sql, self.startup_epoch_micros)?
                 };
-                let n = mapping.iter().max().map_or(0, |n| n + 1);
+                let n = catalog.as_ref().map_or_else(
+                    || mapping.iter().max().map_or(0, |n| n + 1),
+                    |query| query.parameter_oids().len(),
+                );
+                if let Some(query) = &catalog {
+                    oids = query.parameter_oids().to_vec();
+                }
                 if count > n {
                     return Err(error("08P01", "too many parameter OIDs"));
                 }
@@ -438,22 +485,24 @@ impl Extended {
                     ));
                 }
                 for oid in &oids {
-                    if !matches!(
-                        *oid,
-                        16 | 17
-                            | 20
-                            | 21
-                            | 23
-                            | 25
-                            | 700
-                            | 701
-                            | 1042
-                            | 1043
-                            | 1082
-                            | 1083
-                            | 1114
-                            | 1700
-                    ) {
+                    if catalog.is_none()
+                        && !matches!(
+                            *oid,
+                            16 | 17
+                                | 20
+                                | 21
+                                | 23
+                                | 25
+                                | 700
+                                | 701
+                                | 1042
+                                | 1043
+                                | 1082
+                                | 1083
+                                | 1114
+                                | 1700
+                        )
+                    {
                         return Err(error("0A000", "unsupported text parameter OID"));
                     }
                 }
@@ -476,7 +525,7 @@ impl Extended {
                         .prepare_statement(&sql, &CancellationToken::new())
                         .map_err(engine)?
                 };
-                if metadata.parameter_count != mapping.len() {
+                if catalog.is_none() && metadata.parameter_count != mapping.len() {
                     if catalog.is_none() && session_query.is_none() {
                         let _ = context.close_prepared_statement(metadata.statement_id);
                     }
@@ -529,6 +578,7 @@ impl Extended {
                     return Err(error("08P01", "parameter count mismatch"));
                 }
                 let mut args = Vec::new();
+                let mut catalog_values = Vec::new();
                 for oid in &statement.oids {
                     let length = i32::from_be_bytes(reader.take(4)?.try_into().unwrap());
                     let value = if length == -1 {
@@ -541,7 +591,11 @@ impl Extended {
                             )?,
                         )
                     };
-                    args.push(parameter(*oid, value)?);
+                    if statement.catalog.is_some() {
+                        catalog_values.push(catalog_parameter(*oid, value)?);
+                    } else {
+                        args.push(parameter(*oid, value)?);
+                    }
                 }
                 let formats = reader.count()?;
                 if !(formats == 0 || formats == 1 || formats == statement.metadata.columns.len()) {
@@ -554,10 +608,14 @@ impl Extended {
                 }
                 reader.end()?;
                 let description = description(&statement.metadata)?;
+                let mut catalog = statement.catalog.clone();
+                if let Some(query) = &mut catalog {
+                    query.bind_values(catalog_values)?;
+                }
                 self.portals.insert(
                     name,
                     Portal {
-                        catalog: statement.catalog.clone(),
+                        catalog,
                         session_query: statement.session_query.clone(),
                         statement_name,
                         columns: statement.metadata.columns.clone(),

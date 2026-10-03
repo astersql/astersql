@@ -224,6 +224,41 @@ fn count(n: usize) -> io::Result<i16> {
 fn length(n: usize) -> io::Result<i32> {
     i32::try_from(n).map_err(|_| invalid("PostgreSQL result field exceeds maximum length"))
 }
+// Reserved codes belong exclusively to PG catalog providers. Shared engine
+// NativeType inference and MySQL column/protocol mappings never use them.
+#[derive(Clone, Copy)]
+#[repr(u8)]
+pub(crate) enum CatalogColumnType {
+    Oid = 240,
+    Regclass = 241,
+    Int2Array = 242,
+    Int4Array = 243,
+    OidArray = 244,
+    TextArray = 245,
+}
+impl CatalogColumnType {
+    fn from_code(code: u8) -> Option<Self> {
+        Some(match code {
+            240 => Self::Oid,
+            241 => Self::Regclass,
+            242 => Self::Int2Array,
+            243 => Self::Int4Array,
+            244 => Self::OidArray,
+            245 => Self::TextArray,
+            _ => return None,
+        })
+    }
+    fn wire_type(self) -> (u32, i16) {
+        match self {
+            Self::Oid => (26, 4),
+            Self::Regclass => (2205, 4),
+            Self::Int2Array => (1005, -1),
+            Self::Int4Array => (1007, -1),
+            Self::OidArray => (1028, -1),
+            Self::TextArray => (1009, -1),
+        }
+    }
+}
 /// PostgreSQL metadata derived only from the engine type, never cell contents.
 fn pg_type(column: &ColumnInfo, native: Option<&NativeType>) -> io::Result<(u32, i16)> {
     let code = native.map_or(column.column_type, |t| t.code);
@@ -231,10 +266,11 @@ fn pg_type(column: &ColumnInfo, native: Option<&NativeType>) -> io::Result<(u32,
     if flags & astersql_parser_mysql::r#type::IsBooleanFlag != 0 {
         return Ok((16, 1));
     }
+    if let Some(kind) = CatalogColumnType::from_code(code) {
+        return Ok(kind.wire_type());
+    }
     let unsigned = flags & astersql_parser_mysql::r#type::UnsignedFlag != 0;
     Ok(match code {
-        crate::pg_oid::OID_TYPE => (26, 4),
-        crate::pg_oid::REGCLASS_TYPE => (2205, 4),
         1 => (21, 2), // tinyint fits int2, including unsigned
         2 if unsigned => (23, 4),
         2 => (21, 2),
