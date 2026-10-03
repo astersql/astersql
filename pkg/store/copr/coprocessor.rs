@@ -1574,12 +1574,11 @@ impl CopTaskWorker {
             }
         }
         self.resolve_batch_locks(backoffer, &wire, &mut response, &mut backed_off_for_hint)?;
-        if !task.batch_task_list.is_empty()
+        let batch_counts = if !task.batch_task_list.is_empty()
             && !response.region_error.as_deref().is_some_and(|error| {
                 !task.busy_threshold.is_zero()
                     && error.to_ascii_lowercase().contains("server is busy")
-            })
-        {
+            }) {
             let fallback = task
                 .batch_task_list
                 .keys()
@@ -1589,19 +1588,27 @@ impl CopTaskWorker {
                         || !response.batch_responses.contains_key(id)
                 })
                 .count() as u64;
-            self.store_batched_num.fetch_add(
-                task.batch_task_list.len() as u64 - fallback,
-                Ordering::AcqRel,
-            );
-            self.store_batched_fallback_num
-                .fetch_add(fallback, Ordering::AcqRel);
-        }
+            Some((task.batch_task_list.len() as u64 - fallback, fallback))
+        } else {
+            None
+        };
+        // Match Go's deferred accounting: count failed inputs once, only after
+        // all child backoffs and retry rebuilds have succeeded.
+        let record_batch_counts = || {
+            if let Some((successful, fallback)) = batch_counts {
+                self.store_batched_num
+                    .fetch_add(successful, Ordering::AcqRel);
+                self.store_batched_fallback_num
+                    .fetch_add(fallback, Ordering::AcqRel);
+            }
+        };
         if let Some(region_error) = &response.region_error {
             backoffer.backoff(&BatchError::Transport(region_error.clone()))?;
             let remains = self.rebuild(&task, false, task.exceeds_bound_retry)?;
             let mut result = batch_remains_on_error(task, remains, &response);
             result.remains =
                 self.rebuild_failed_batch_children(backoffer, &response, result.remains)?;
+            record_batch_counts();
             return Ok(result);
         }
         if response.locked.is_some() {
@@ -1609,6 +1616,7 @@ impl CopTaskWorker {
             let mut result = batch_remains_on_error(task.clone(), vec![task], &response);
             result.remains =
                 self.rebuild_failed_batch_children(backoffer, &response, result.remains)?;
+            record_batch_counts();
             return Ok(result);
         }
         if !response.other_error.is_empty() {
@@ -1626,6 +1634,7 @@ impl CopTaskWorker {
                 let mut result = batch_remains_on_error(task, remains, &response);
                 result.remains =
                     self.rebuild_failed_batch_children(backoffer, &response, result.remains)?;
+                record_batch_counts();
                 return Ok(result);
             }
             if response.other_error.contains("write conflict") {
@@ -1670,6 +1679,7 @@ impl CopTaskWorker {
             handle_batch_responses(&response, &task.batch_task_list);
         let mut batch_remains =
             self.rebuild_failed_batch_children(backoffer, &response, batch_remains)?;
+        record_batch_counts();
         if response.range.is_some() && response.read_bytes > 0 {
             self.ema.observe(response.read_bytes, Instant::now());
         }

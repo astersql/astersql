@@ -2180,11 +2180,86 @@ fn go_merge_48_child_retry_fanout_does_not_underflow_batch_metrics() {
         ..CopProtocolResponse::default()
     };
     let worker = worker(backend, request(vec![key_range("a", "d")]));
+    // Go's deferred accounting skips all counters if rebuilding fails.
+    assert!(
+        worker
+            .handle_task_once(&mut Backoffer::new(0), task.clone())
+            .is_err()
+    );
+    assert_eq!(worker.store_batch_stats(), (0, 0));
     let result = worker
         .handle_task_once(&mut Backoffer::new(3), task)
         .unwrap();
     assert_eq!(result.remains.len(), 2);
+    assert!(
+        result
+            .remains
+            .iter()
+            .all(|task| task.batch_task_list.is_empty())
+    );
     assert_eq!(worker.store_batch_stats(), (0, 1));
+}
+
+#[test]
+fn store_batch_counters_cover_success_lock_missing_and_busy_fallback() {
+    for case in ["success", "lock", "missing", "busy", "empty"] {
+        let backend = TestBackend::with_locations(vec![location(2, 0, vec![key_range("b", "c")])]);
+        let mut task = CopTask {
+            region: RegionVerId::new(1, 1, 1),
+            ranges: KeyRanges::new(vec![key_range("a", "b")]),
+            ..CopTask::default()
+        };
+        if case != "empty" {
+            task.batch_task_list.insert(
+                2,
+                BatchedCopTask {
+                    task: Box::new(CopTask {
+                        task_id: 2,
+                        region: RegionVerId::new(2, 1, 1),
+                        ranges: KeyRanges::new(vec![key_range("b", "c")]),
+                        ..CopTask::default()
+                    }),
+                    store_id: 1,
+                    peer: Some(Peer { id: 1, store_id: 1 }),
+                    load_based_replica_retry: false,
+                },
+            );
+        }
+        if matches!(case, "success" | "lock") {
+            backend.response.lock().unwrap().batch_responses.insert(
+                2,
+                CopProtocolResponse {
+                    data: b"child".to_vec(),
+                    locked: (case == "lock").then(|| b"lock".to_vec()),
+                    ..CopProtocolResponse::default()
+                },
+            );
+        }
+        if case == "busy" {
+            task.busy_threshold = Duration::from_millis(1);
+            backend.response.lock().unwrap().region_error = Some("server is busy".into());
+        }
+        let worker = worker(backend.clone(), request(vec![key_range("a", "c")]));
+        let result = worker
+            .handle_task_once(&mut Backoffer::new(3), task)
+            .unwrap();
+        let expected = match case {
+            "success" => (1, 0),
+            "lock" | "missing" => (0, 1),
+            _ => (0, 0),
+        };
+        assert_eq!(worker.store_batch_stats(), expected, "{case}");
+        if case == "lock" {
+            assert!(result.remains[0].meet_lock_fallback);
+            assert_eq!(
+                *backend.resolved_lock_calls.lock().unwrap(),
+                vec![b"lock".to_vec()]
+            );
+        }
+        if case == "missing" {
+            assert_eq!(result.remains.len(), 1);
+        }
+    }
 }
 
 #[test]
