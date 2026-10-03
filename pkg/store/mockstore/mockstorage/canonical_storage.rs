@@ -295,6 +295,14 @@ impl kv::Mutator for KVTxn {
     }
 
     fn Delete(&mut self, key: kv::Key) -> Result<(), kv::errors::SharedError> {
+        let previous_size = self
+            .writes
+            .get(&key.0)
+            .map_or(0, |value| key.0.len() + value.as_ref().map_or(0, Vec::len));
+        let total_size = self.buffered_write_size - previous_size + key.0.len();
+        if total_size as u64 > kv::TxnTotalSizeLimit.load(Ordering::Relaxed) {
+            return Err(kv::ErrTxnTooLarge.FastGenByArgs(&[(total_size as u64).into()]));
+        }
         self.Delete(key.0);
         Ok(())
     }

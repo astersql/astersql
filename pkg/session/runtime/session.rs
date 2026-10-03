@@ -707,6 +707,60 @@ pub struct CanonicalSessionFactory {
     domain: Arc<Domain>,
 }
 
+struct StarterStoreMetadata {
+    store: astersql_store::TikvStore,
+}
+impl crate::starter_bootstrap_file::StarterPrivilegeResetMetadata for StarterStoreMetadata {
+    fn snapshot(
+        &self,
+    ) -> SessionResult<Option<crate::starter_bootstrap_file::StarterKeyspaceMeta>> {
+        use astersql_metaservice::EtcdMetadataStore;
+        self.store
+            .keyspace_meta()
+            .map(|meta| {
+                meta.map(|meta| crate::starter_bootstrap_file::StarterKeyspaceMeta {
+                    name: meta.name,
+                    config: meta.config,
+                })
+            })
+            .map_err(|e| session_error("read starter privilege reset metadata", e))
+    }
+    fn refresh(
+        &self,
+        name: &str,
+    ) -> SessionResult<Option<crate::starter_bootstrap_file::StarterKeyspaceMeta>> {
+        use astersql_metaservice::EtcdMetadataStore;
+        let pd = self.store.pd_client().map_err(|e| {
+            session_error(
+                "PD client is required to refresh starter privilege reset metadata",
+                e,
+            )
+        })?;
+        pd.load_keyspace(&astersql_metaservice::Context::default(), name)
+            .map(|meta| {
+                meta.map(|meta| crate::starter_bootstrap_file::StarterKeyspaceMeta {
+                    name: meta.name,
+                    config: meta.config,
+                })
+            })
+            .map_err(|e| session_error("refresh starter privilege reset metadata", e))
+    }
+    fn complete(
+        &self,
+        state: &crate::starter_bootstrap_file::PrivilegeResetState,
+    ) -> SessionResult {
+        let endpoints = self
+            .store
+            .GetPDAddrs()
+            .map_err(|e| session_error("read starter PD HTTP endpoints", e))?;
+        let tls = self
+            .store
+            .TLSConfig()
+            .map(|tls| (tls.ca_path, tls.cert_path, tls.key_path));
+        crate::starter_bootstrap_file::update_privilege_reset_config(&endpoints, tls, state)
+    }
+}
+
 impl CanonicalSessionFactory {
     /// Load an already bootstrapped target keyspace without registering a
     /// primary server or modifying that keyspace's schema during construction.
@@ -764,6 +818,13 @@ impl CanonicalSessionFactory {
         config.keyspace = store.GetKeyspace();
         let keyspace_name = config.keyspace.clone();
         check_user_keyspace_bootstrap(&store);
+        let starter_metadata = if !keyspace_name.is_empty() && store.has_real_client_runtime() {
+            Some(StarterStoreMetadata {
+                store: store.clone(),
+            })
+        } else {
+            None
+        };
         let factory = Self::from_storage(store, config)?;
         let workload_config = astersql_config::get_global_config()
             .external_workload
@@ -948,31 +1009,36 @@ impl CanonicalSessionFactory {
             factory.domain.close();
             return Err(session_error("start canonical Domain", error));
         }
-        factory.reconcile_configured_starter_bootstrap(|| {
-            let Some(client) = starter_owner_client.as_ref() else {
-                return Ok(None);
-            };
-            let runtime = Arc::new(
-                tokio::runtime::Runtime::new()
-                    .map_err(|e| session_error("starter bootstrap lock runtime", e))?,
-            );
-            let lock = runtime
-                .block_on(astersql_owner::AcquireDistributedLock(
-                    &astersql_owner::Context::new(),
-                    client.raw_client(),
-                    format!(
-                        "{}{}",
-                        client.namespace(),
-                        crate::bootstrap::bootstrapOwnerKey
-                    ),
-                    10,
-                ))
-                .map_err(|e| session_error("starter bootstrap owner lock", e))?;
-            Ok(Some(BootstrapOwnerLock {
-                runtime,
-                lock: Some(lock),
-            }))
-        })?;
+        factory.reconcile_configured_starter_bootstrap(
+            || {
+                let Some(client) = starter_owner_client.as_ref() else {
+                    return Ok(None);
+                };
+                let runtime = Arc::new(
+                    tokio::runtime::Runtime::new()
+                        .map_err(|e| session_error("starter bootstrap lock runtime", e))?,
+                );
+                let lock = runtime
+                    .block_on(astersql_owner::AcquireDistributedLock(
+                        &astersql_owner::Context::new(),
+                        client.raw_client(),
+                        format!(
+                            "{}{}",
+                            client.namespace(),
+                            crate::bootstrap::bootstrapOwnerKey
+                        ),
+                        10,
+                    ))
+                    .map_err(|e| session_error("starter bootstrap owner lock", e))?;
+                Ok(Some(BootstrapOwnerLock {
+                    runtime,
+                    lock: Some(lock),
+                }))
+            },
+            starter_metadata
+                .as_ref()
+                .map(|m| m as &dyn crate::starter_bootstrap_file::StarterPrivilegeResetMetadata),
+        )?;
         initialize_external_workload_gcv2(&factory.domain);
         if let Err(error) = factory.domain.initialize_stats() {
             BgLogger().log(
@@ -1042,24 +1108,35 @@ impl CanonicalSessionFactory {
             Duration::from_millis(50),
         )
         .map_err(|e| session_error("serving DDL runtime", e))?;
-        factory.reconcile_configured_starter_bootstrap(|| Ok(()))?;
+        factory.reconcile_configured_starter_bootstrap(|| Ok(()), None)?;
         Ok(factory)
     }
 
     // Core bootstrap has loaded persisted settings and the normal SQL/DDL
     // runtime is ready before executing starter migrations against regular schemas.
-    fn reconcile_configured_starter_bootstrap<G>(
+    pub(crate) fn reconcile_configured_starter_bootstrap<G>(
         &self,
         acquire: impl FnOnce() -> SessionResult<G>,
+        metadata: Option<&dyn crate::starter_bootstrap_file::StarterPrivilegeResetMetadata>,
     ) -> SessionResult<()> {
         let result = (|| {
             if let Some(file) = crate::starter_bootstrap_file::load_starter_bootstrap_file()? {
-                crate::starter_bootstrap_file::reconcile_starter_bootstrap(
+                crate::starter_bootstrap_file::reconcile_starter_bootstrap_with_metadata(
                     &self.domain,
                     &file,
                     &astersql_config::get_global_keyspace_name(),
                     acquire,
+                    metadata,
                 )?;
+            } else {
+                let reset = crate::starter_bootstrap_file::parse_privilege_reset(
+                    metadata.map(|m| m.snapshot()).transpose()?.flatten(),
+                )?;
+                if !reset.pending_markers.is_empty() {
+                    return Err(SessionError::new(
+                        "starter bootstrap file is required for pending privilege reset",
+                    ));
+                }
             }
             Ok(())
         })();
@@ -2753,6 +2830,25 @@ impl ConcreteSession {
         );
         drop(state);
         parse_with_sql_mode(sql, mode).map(|statements| statements.len())
+    }
+
+    pub(crate) fn validate_starter_bootstrap_statement(&self, sql: &str) -> SessionResult<bool> {
+        let state = self.state.borrow();
+        let mode = astersql_parser_mysql::r#const::GetSQLMode(&state.sql_mode)
+            .map_err(|e| session_error("parse sql_mode", e))?;
+        let mode = astersql_parser_mysql::r#const::DelSQLMode(
+            mode,
+            astersql_parser_mysql::r#const::ModeNoBackslashEscapes,
+        );
+        drop(state);
+        let statements = parse_with_sql_mode(sql, mode)?;
+        if statements.len() != 1 {
+            return Err(SessionError::new("must contain exactly one statement"));
+        }
+        let stmt = statements[0].as_any();
+        Ok(stmt.is::<ast::InsertStmt>()
+            || stmt.is::<ast::UpdateStmt>()
+            || stmt.is::<ast::DeleteStmt>())
     }
 
     pub(crate) fn set_starter_clustered_index_mode(&self) {

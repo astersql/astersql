@@ -382,3 +382,38 @@ fn physical_sst_import_preserves_timestamp_and_historical_mvcc_order() {
     assert_eq!(get(u64::MAX).unwrap().Value, b"new");
     assert!(kv::Storage::CurrentVersion(&store, "global").unwrap().Ver >= 20);
 }
+
+#[test]
+fn test_canonical_transaction_delete_enforces_total_size_limit() {
+    let _guard = transaction_test_guard();
+    let mut store = new_storage();
+    let storage: &mut dyn kv::Storage = &mut store;
+    let ctx = kv::Context::default();
+    let first = kv::Key(b"first".to_vec());
+    let second = kv::Key(b"second".to_vec());
+    let mut seed = storage.Begin(&[]).unwrap();
+    seed.Set(first.clone(), b"first-value".to_vec()).unwrap();
+    seed.Set(second.clone(), b"second-value".to_vec()).unwrap();
+    seed.Commit(&ctx).unwrap();
+    let _limit = TxnTotalSizeLimitGuard::set(8);
+    let mut transaction = storage.Begin(&[]).unwrap();
+    transaction.Delete(first.clone()).unwrap();
+    let error = transaction
+        .Delete(second.clone())
+        .expect_err("deletion tombstones must obey the transaction size limit");
+    assert!(error.to_string().to_ascii_lowercase().contains("too large"));
+    assert_eq!(
+        transaction.Get(&ctx, second.clone(), &[]).unwrap().Value,
+        b"second-value"
+    );
+    transaction.Rollback().unwrap();
+    let snapshot = storage.GetSnapshot(storage.CurrentVersion("global").unwrap());
+    assert_eq!(
+        snapshot.Get(&ctx, first, &[]).unwrap().Value,
+        b"first-value"
+    );
+    assert_eq!(
+        snapshot.Get(&ctx, second, &[]).unwrap().Value,
+        b"second-value"
+    );
+}

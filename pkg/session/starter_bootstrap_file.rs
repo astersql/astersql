@@ -303,15 +303,150 @@ pub fn get_starter_bootstrap_version(session: &ConcreteSession) -> SessionResult
 pub fn update_starter_bootstrap_version(session: &ConcreteSession, version: i64) -> SessionResult {
     session.with_starter_restricted_sql(|| execute_and_close(session, &format!("INSERT HIGH_PRIORITY INTO mysql.tidb VALUES ({}, {}, {}) ON DUPLICATE KEY UPDATE VARIABLE_VALUE={}", quote_argument(VERSION_VAR), quote_argument(&version.to_string()), quote_argument(VERSION_COMMENT), quote_argument(&version.to_string()))))
 }
+pub const PRIVILEGE_RESET_TABLES: [&str; 8] = [
+    "columns_priv",
+    "db",
+    "default_roles",
+    "global_grants",
+    "global_priv",
+    "role_edges",
+    "tables_priv",
+    "user",
+];
+const PRIVILEGE_RESET_BATCH_SIZE: u64 = 128;
+
+fn prepare_bootstrap_stmts(
+    session: &ConcreteSession,
+    blocks: &[String],
+    keyspace: &str,
+) -> SessionResult<Vec<String>> {
+    if blocks.is_empty() {
+        return Err(SessionError::new(
+            "starter bootstrap file must contain bootstrap SQL",
+        ));
+    }
+    session.with_starter_restricted_sql(|| {
+        let mut stmts = Vec::with_capacity(blocks.len());
+        // Parse every block before validating statement types or deleting rows.
+        for (i, block) in blocks.iter().enumerate() {
+            let sql = render_starter_bootstrap_sql(block, keyspace);
+            let count = session
+                .starter_statement_count(&sql)
+                .map_err(|e| SessionError::new(format!("parse SQL block {i}: {e}")))?;
+            if count != 1 {
+                return Err(SessionError::new(format!(
+                    "SQL block {i} must contain exactly one statement"
+                )));
+            }
+            stmts.push(sql);
+        }
+        for (i, sql) in stmts.iter().enumerate() {
+            if !session.validate_starter_bootstrap_statement(sql)? {
+                return Err(SessionError::new(format!(
+                    "bootstrap SQL block {i} must be INSERT, REPLACE, UPDATE, or DELETE"
+                )));
+            }
+        }
+        Ok(stmts)
+    })
+}
+fn execute_bootstrap_stmts(session: &ConcreteSession, stmts: &[String]) -> SessionResult {
+    session.with_starter_restricted_sql(|| {
+        for (i, sql) in stmts.iter().enumerate() {
+            let records = session
+                .execute(sql)
+                .map_err(|e| SessionError::new(format!("execute SQL block {i}: {e}")))?;
+            for mut record in records {
+                record
+                    .close()
+                    .map_err(|e| SessionError::new(format!("close SQL result: {e}")))?;
+            }
+        }
+        Ok(())
+    })
+}
+fn verify_root_user(session: &ConcreteSession, keyspace: &str) -> SessionResult {
+    let root = format!("{keyspace}.root");
+    let mut records = session
+        .execute(&format!(
+            "SELECT 1 FROM mysql.user WHERE Host = '%' AND User = {} LIMIT 1",
+            quote_argument(&root)
+        ))
+        .map_err(|e| SessionError::new(format!("verify starter root user: {e}")))?;
+    let record = records
+        .first_mut()
+        .ok_or_else(|| SessionError::new("verify starter root user returned no result"))?;
+    let row = record.next_row();
+    let closed = record.close();
+    let row = row.map_err(|e| SessionError::new(format!("verify starter root user: {e}")))?;
+    closed
+        .map_err(|e| SessionError::new(format!("close starter root verification result: {e}")))?;
+    if row.is_none() {
+        return Err(SessionError::new(format!(
+            "starter bootstrap file must create '{root}'@'%'"
+        )));
+    }
+    Ok(())
+}
 pub fn run_starter_bootstrap_locked(
     session: &ConcreteSession,
     file: &StarterBootstrapFile,
     keyspace: &str,
 ) -> SessionResult {
+    let stmts = prepare_bootstrap_stmts(session, &file.bootstrap, keyspace)?;
+    run_bootstrap_txn(session, file, &stmts, keyspace)
+}
+pub fn reset_privileges_locked(
+    session: &ConcreteSession,
+    file: &StarterBootstrapFile,
+    keyspace: &str,
+) -> SessionResult {
+    let stmts = prepare_bootstrap_stmts(session, &file.bootstrap, keyspace)?;
+    for table in PRIVILEGE_RESET_TABLES {
+        loop {
+            let affected = delete_privilege_batch(session, table).map_err(|e| {
+                SessionError::new(format!("reset starter privilege table mysql.{table}: {e}"))
+            })?;
+            if affected < PRIVILEGE_RESET_BATCH_SIZE {
+                break;
+            }
+        }
+    }
+    run_bootstrap_txn(session, file, &stmts, keyspace)
+}
+fn delete_privilege_batch(session: &ConcreteSession, table: &str) -> SessionResult<u64> {
+    execute_and_close(session, "BEGIN")?;
+    let result = (|| {
+        execute_and_close(
+            session,
+            &format!("DELETE FROM mysql.`{table}` LIMIT {PRIVILEGE_RESET_BATCH_SIZE}"),
+        )?;
+        let affected = session.protocol_state().affected_rows;
+        execute_and_close(session, "COMMIT")?;
+        Ok(affected)
+    })();
+    if result.is_err() {
+        if let Err(error) = execute_and_close(session, "ROLLBACK") {
+            BgLogger().log(
+                LogLevel::Warn,
+                "rollback starter privilege reset batch failed",
+                [LogField::String("error".into(), error.to_string())],
+            );
+        }
+    }
+    result
+}
+fn run_bootstrap_txn(
+    session: &ConcreteSession,
+    file: &StarterBootstrapFile,
+    stmts: &[String],
+    keyspace: &str,
+) -> SessionResult {
     execute_and_close(session, "BEGIN")
         .map_err(|e| SessionError::new(format!("begin starter bootstrap file: {e}")))?;
     let result = (|| {
-        execute_starter_bootstrap_sql_blocks(session, &file.bootstrap, keyspace)?;
+        execute_bootstrap_stmts(session, stmts)?;
+        verify_root_user(session, keyspace)?;
         update_starter_bootstrap_version(session, file.version)?;
         execute_and_close(session, "COMMIT")
             .map_err(|e| SessionError::new(format!("commit starter bootstrap file: {e}")))
@@ -410,19 +545,67 @@ pub fn reconcile_starter_bootstrap<G>(
     keyspace: &str,
     acquire: impl FnOnce() -> SessionResult<G>,
 ) -> SessionResult {
-    if !file.needs_upgrade(get_store_starter_bootstrap_version(domain)?) {
+    reconcile_starter_bootstrap_with_metadata(domain, file, keyspace, acquire, None)
+}
+pub fn reconcile_starter_bootstrap_with_metadata<G>(
+    domain: &Arc<Domain>,
+    file: &StarterBootstrapFile,
+    keyspace: &str,
+    acquire: impl FnOnce() -> SessionResult<G>,
+    metadata: Option<&dyn StarterPrivilegeResetMetadata>,
+) -> SessionResult {
+    let mut reset = parse_privilege_reset(metadata.map(|m| m.snapshot()).transpose()?.flatten())?;
+    if reset.pending_markers.is_empty()
+        && !file.needs_upgrade(get_store_starter_bootstrap_version(domain)?)
+    {
         return Ok(());
     }
     let started = std::time::Instant::now();
     let _guard = acquire().map_err(|e| {
         SessionError::new(format!("acquire starter bootstrap file upgrade lock: {e}"))
     })?;
-    if !file.needs_upgrade(get_store_starter_bootstrap_version(domain)?) {
+    if !reset.pending_markers.is_empty() {
+        let refreshed = metadata
+            .expect("pending reset requires snapshot provider")
+            .refresh(&reset.keyspace_name)?
+            .ok_or_else(|| {
+                SessionError::new("refresh starter privilege reset metadata returned no keyspace")
+            })?;
+        reset = parse_privilege_reset(Some(refreshed))?;
+    }
+    if reset.pending_markers.is_empty()
+        && !file.needs_upgrade(get_store_starter_bootstrap_version(domain)?)
+    {
         return Ok(());
     }
     let session = ConcreteSession::new(domain.clone());
     session.set_starter_clustered_index_mode();
     let version = get_starter_bootstrap_version(&session)?;
+    if !reset.pending_markers.is_empty() {
+        let copied_version = get_store_starter_bootstrap_version(domain)?.max(version);
+        if copied_version > file.version {
+            return Err(SessionError::new(format!(
+                "starter bootstrap file version {} is older than copied version {copied_version}",
+                file.version
+            )));
+        }
+        reset_privileges_locked(&session, file, keyspace)?;
+        finish_starter_bootstrap(domain, file.version)?;
+        metadata
+            .expect("pending reset requires snapshot provider")
+            .complete(&reset)
+            .map_err(|e| SessionError::new(format!("complete starter privilege reset: {e}")))?;
+        BgLogger().log(
+            LogLevel::Info,
+            "starter privilege reset finished",
+            [
+                LogField::String("keyspace".into(), reset.keyspace_name),
+                LogField::I64("version".into(), file.version),
+                LogField::String("cost".into(), format!("{:?}", started.elapsed())),
+            ],
+        );
+        return Ok(());
+    }
     if !file.needs_upgrade(version) {
         return finish_starter_bootstrap(domain, version);
     }
@@ -445,4 +628,147 @@ pub fn reconcile_starter_bootstrap<G>(
         ],
     );
     Ok(())
+}
+pub const BRANCH_RESET_DONE_KEY: &str = "serverless_is_branch_bootstrapped";
+pub const RESTORE_RESET_DONE_KEY: &str = "serverless_is_bootstrapped_for_restore";
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PrivilegeResetState {
+    pub keyspace_name: String,
+    pub pending_markers: std::collections::HashMap<String, String>,
+}
+#[derive(Clone, Debug, Default)]
+pub struct StarterKeyspaceMeta {
+    pub name: String,
+    pub config: std::collections::HashMap<String, String>,
+}
+/// Storage codec snapshot and PD refresh/update boundaries. SQL/KV execution
+/// remains in the canonical session, including retries after a failed PD CAS.
+pub trait StarterPrivilegeResetMetadata {
+    fn snapshot(&self) -> SessionResult<Option<StarterKeyspaceMeta>>;
+    fn refresh(&self, name: &str) -> SessionResult<Option<StarterKeyspaceMeta>>;
+    fn complete(&self, state: &PrivilegeResetState) -> SessionResult;
+}
+pub fn parse_privilege_reset(
+    meta: Option<StarterKeyspaceMeta>,
+) -> SessionResult<PrivilegeResetState> {
+    let Some(meta) = meta else {
+        return Ok(PrivilegeResetState::default());
+    };
+    let mut state = PrivilegeResetState {
+        keyspace_name: meta.name,
+        ..Default::default()
+    };
+    for key in [BRANCH_RESET_DONE_KEY, RESTORE_RESET_DONE_KEY] {
+        let Some(value) = meta.config.get(key).filter(|v| !v.is_empty()) else {
+            continue;
+        };
+        match value.as_str() {
+            "1" | "t" | "T" | "TRUE" | "true" | "True" => {}
+            "0" | "f" | "F" | "FALSE" | "false" | "False" => {
+                state.pending_markers.insert(key.into(), value.clone());
+            }
+            _ => {
+                return Err(SessionError::new(format!(
+                    "invalid starter privilege reset marker {key}={value:?}"
+                )));
+            }
+        }
+    }
+    Ok(state)
+}
+pub fn privilege_reset_completion_params(
+    state: &PrivilegeResetState,
+) -> astersql_domain_infosync::UpdateKeyspaceConfigParams {
+    astersql_domain_infosync::UpdateKeyspaceConfigParams {
+        Config: state
+            .pending_markers
+            .keys()
+            .map(|key| (key.clone(), Some("True".into())))
+            .collect(),
+        Preconditions: state
+            .pending_markers
+            .iter()
+            .map(|(key, value)| (key.clone(), Some(value.clone())))
+            .collect(),
+    }
+}
+
+pub(crate) fn update_privilege_reset_config(
+    endpoints: &[String],
+    tls: Option<(String, String, String)>,
+    state: &PrivilegeResetState,
+) -> SessionResult {
+    let mut builder =
+        reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(10));
+    let scheme = if let Some((ca, cert, key)) = tls {
+        let ca = std::fs::read(ca).map_err(|e| SessionError::new(e.to_string()))?;
+        let mut identity = std::fs::read(cert).map_err(|e| SessionError::new(e.to_string()))?;
+        identity.extend(std::fs::read(key).map_err(|e| SessionError::new(e.to_string()))?);
+        builder = builder
+            .add_root_certificate(
+                reqwest::Certificate::from_pem(&ca)
+                    .map_err(|e| SessionError::new(e.to_string()))?,
+            )
+            .identity(
+                reqwest::Identity::from_pem(&identity)
+                    .map_err(|e| SessionError::new(e.to_string()))?,
+            );
+        "https"
+    } else {
+        "http"
+    };
+    let client = builder
+        .build()
+        .map_err(|e| SessionError::new(e.to_string()))?;
+    let params = privilege_reset_completion_params(state);
+    let mut last_error =
+        SessionError::new("PD HTTP client is required to complete starter privilege reset");
+    for endpoint in endpoints {
+        let endpoint = if endpoint.contains("://") {
+            endpoint.clone()
+        } else {
+            format!("{scheme}://{endpoint}")
+        };
+        let mut url = url::Url::parse(&endpoint).map_err(|e| SessionError::new(e.to_string()))?;
+        url.path_segments_mut()
+            .map_err(|_| SessionError::new("invalid PD HTTP endpoint"))?
+            .clear()
+            .extend([
+                "pd",
+                "api",
+                "v2",
+                "keyspaces",
+                state.keyspace_name.as_str(),
+                "config",
+            ]);
+        match client.patch(url).json(&params).send() {
+            Ok(response) => {
+                let status = response.status();
+                if !status.is_success() {
+                    let body = response
+                        .text()
+                        .map_err(|e| SessionError::new(e.to_string()))?;
+                    last_error = SessionError::new(format!(
+                        "PD keyspace config update returned {status}: {body}"
+                    ));
+                    continue;
+                }
+                // Consume/validate the response rather than acknowledge a malformed PD reply.
+                let meta = response
+                    .json::<serde_json::Value>()
+                    .map_err(|e| SessionError::new(e.to_string()))?;
+                if !matches!(
+                    meta.get("state").and_then(serde_json::Value::as_str),
+                    Some("ENABLED" | "DISABLED" | "ARCHIVED" | "TOMBSTONE")
+                ) {
+                    return Err(SessionError::new(
+                        "invalid PD keyspace state in privilege reset response",
+                    ));
+                }
+                return Ok(());
+            }
+            Err(error) => last_error = SessionError::new(error.to_string()),
+        }
+    }
+    Err(last_error)
 }
