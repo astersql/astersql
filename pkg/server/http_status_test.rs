@@ -447,3 +447,137 @@ fn maintenance_routes_reject_user_keyspace_before_runtime_access() {
     }
     server.close();
 }
+
+#[test]
+fn profiling_routes_log_request_fields_over_tcp() {
+    use astersql_util_logutil::log::{LogField, background_logger};
+    let server = Server::new_test(
+        ServerConfig {
+            host: "127.0.0.1".into(),
+            port: 0,
+            status: StatusConfig {
+                report_status: true,
+                host: "127.0.0.1".into(),
+                port: 0,
+                ..StatusConfig::default()
+            },
+            ..ServerConfig::default()
+        },
+        Arc::new(Driver),
+    );
+    server.run(Arc::new(TestDomain)).unwrap();
+    let logger = background_logger();
+    for route in [
+        "/debug/pprof/",
+        "/debug/pprof/heap?debug=1&gc=1",
+        "/debug/pprof/goroutine?debug=2",
+        "/debug/pprof/allocs?debug=1",
+        "/debug/pprof/block?debug=1",
+        "/debug/pprof/threadcreate?debug=1",
+        "/debug/pprof/cmdline",
+        "/debug/pprof/profile?seconds=5",
+        "/debug/pprof/mutex?debug=1",
+        "/debug/pprof/symbol",
+        "/debug/pprof/trace",
+        "/debug/zip?seconds=1",
+        "/debug/gogc",
+        "/debug/ballast-object-sz",
+    ] {
+        let mut stream = TcpStream::connect(server.status_listener_addr().unwrap()).unwrap();
+        let remote = stream.local_addr().unwrap().to_string();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        write!(stream, "GET {route} HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        assert!(
+            response.starts_with("HTTP/1.1 200 OK"),
+            "{route}: {response}"
+        );
+        let entries: Vec<_> = logger
+            .entries()
+            .into_iter()
+            .filter(|entry| {
+                entry.message == "profiling request received"
+                    && entry
+                        .fields
+                        .contains(&LogField::String("remote-addr".into(), remote.clone()))
+            })
+            .collect();
+        let profiling = route.starts_with("/debug/pprof/") || route.starts_with("/debug/zip");
+        assert_eq!(entries.len(), usize::from(profiling), "{route}");
+        if profiling {
+            let (path, query) = route.split_once('?').unwrap_or((route, ""));
+            let fields = &entries[0].fields;
+            assert!(fields.contains(&LogField::String("method".into(), "GET".into())));
+            assert!(fields.contains(&LogField::String("path".into(), path.into())));
+            for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+                let (key, value) = pair.split_once('=').unwrap();
+                assert!(fields.contains(&LogField::String(key.into(), value.into())));
+            }
+        }
+    }
+    server.close();
+}
+
+#[test]
+fn profiling_log_query_values_match_go_first_value_and_decode_rules() {
+    use astersql_util_logutil::log::{LogField, background_logger};
+    let server = Server::new_test(ServerConfig::default(), Arc::new(Driver));
+    let router = crate::http_status::build_status_router(server);
+    let logger = background_logger();
+    for (raw, expected) in [
+        (
+            "seconds=%35&seconds=9&debug=2&gc=1&ignored=secret",
+            vec![("seconds", "5"), ("debug", "2"), ("gc", "1")],
+        ),
+        ("seconds=&seconds=9&debug&gc=", vec![]),
+        ("seconds=%ZZ&debug=1&gc=2;bad=1", vec![("debug", "1")]),
+        (
+            "%73econds=5&debug=a+b&gc=%2B",
+            vec![("seconds", "5"), ("debug", "a b"), ("gc", "+")],
+        ),
+    ] {
+        let before = logger.entries().len();
+        let mut request = ballast_request(Method::Get, b"");
+        request.path = "/debug/pprof/log-query-contract".into();
+        request.raw_query = raw.into();
+        assert_eq!(router.handle(&request).status, 200);
+        let entries = logger.entries();
+        let entries: Vec<_> = entries[before..]
+            .iter()
+            .filter(|entry| {
+                entry
+                    .fields
+                    .contains(&LogField::String("path".into(), request.path.clone()))
+            })
+            .collect();
+        assert_eq!(entries.len(), 1);
+        let fields = &entries[0].fields;
+        for key in ["seconds", "debug", "gc"] {
+            let actual: Vec<_> = fields.iter().filter(|field| field.key() == key).collect();
+            let wanted = expected.iter().find(|(name, _)| *name == key);
+            assert_eq!(
+                actual,
+                wanted
+                    .map(|(_, value)| LogField::String(key.into(), (*value).into()))
+                    .as_ref()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            );
+        }
+        assert!(!fields.iter().any(|field| field.key() == "ignored"));
+    }
+    // The wrapper must log even when the downstream handler rejects a method.
+    let before = logger.entries().len();
+    let mut request = ballast_request(Method::Post, b"");
+    request.path = "/debug/zip".into();
+    assert_eq!(router.handle(&request).status, 405);
+    assert!(logger.entries()[before..].iter().any(|entry| {
+        entry.message == "profiling request received"
+            && entry
+                .fields
+                .contains(&LogField::String("method".into(), "POST".into()))
+    }));
+}

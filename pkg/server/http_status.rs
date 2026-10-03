@@ -202,6 +202,7 @@ struct Route {
     method: Option<Method>,
     /// 处理函数。
     handler: Handler,
+    profiling: bool,
 }
 
 #[derive(Clone, Default)]
@@ -221,6 +222,20 @@ impl Router {
                 pattern: pattern.into(),
                 method: None,
                 handler,
+                profiling: false,
+            });
+    }
+
+    /// Register a diagnostic handler whose requests must be logged before execution.
+    fn add_profiling(&self, pattern: &str, handler: Handler) {
+        self.routes
+            .lock()
+            .expect("router lock poisoned")
+            .push(Route {
+                pattern: pattern.into(),
+                method: None,
+                handler,
+                profiling: true,
             });
     }
 
@@ -233,6 +248,7 @@ impl Router {
                 pattern: pattern.into(),
                 method: Some(method),
                 handler,
+                profiling: false,
             });
     }
 
@@ -251,12 +267,17 @@ impl Router {
                 pattern,
                 method: route.method.clone(),
                 handler: Arc::clone(&route.handler),
+                profiling: route.profiling,
             }
         }));
     }
 
     /// 按注册顺序匹配首条路由；未命中返回 404。
     pub fn handle(&self, request: &Request) -> Response {
+        self.handle_from(request, "")
+    }
+
+    fn handle_from(&self, request: &Request, remote_addr: &str) -> Response {
         let routes = self.routes.lock().expect("router lock poisoned");
         routes
             .iter()
@@ -269,9 +290,61 @@ impl Router {
             })
             .map_or_else(
                 || Response::text(404, "Not Found"),
-                |route| (route.handler)(request),
+                |route| {
+                    if route.profiling {
+                        log_profiling_request(request, remote_addr);
+                    }
+                    (route.handler)(request)
+                },
             )
     }
+}
+
+/// Match Go URL.Query().Get: keep the first value, skip malformed pairs and
+/// semicolon-containing pairs, and omit empty values from the audit event.
+fn log_profiling_request(request: &Request, remote_addr: &str) {
+    use astersql_util_logutil::log::{LogField, LogLevel, background_logger};
+    let method = match &request.method {
+        Method::Get => "GET",
+        Method::Post => "POST",
+        Method::Put => "PUT",
+        Method::Delete => "DELETE",
+        Method::Other(method) => method,
+    };
+    let mut fields = vec![
+        LogField::String("method".into(), method.into()),
+        LogField::String("path".into(), request.path.clone()),
+        LogField::String("remote-addr".into(), remote_addr.into()),
+    ];
+    let mut query = HashMap::new();
+    for pair in request
+        .raw_query
+        .split('&')
+        .filter(|pair| !pair.contains(';'))
+    {
+        let raw_key = pair.split('=').next().unwrap_or_default();
+        let Ok(key) = astersql_server_handler_tikvhandler::tikv_handler::parseQuery(
+            &format!("key={raw_key}"),
+            true,
+        ) else {
+            continue;
+        };
+        let key = key.get("key");
+        if matches!(key.as_str(), "seconds" | "debug" | "gc") {
+            if let Ok(values) =
+                astersql_server_handler_tikvhandler::tikv_handler::parseQuery(pair, true)
+            {
+                let value = values.get(&key);
+                query.entry(key).or_insert(value);
+            }
+        }
+    }
+    for key in ["seconds", "debug", "gc"] {
+        if let Some(value) = query.get(key).filter(|value| !value.is_empty()) {
+            fields.push(LogField::String(key.into(), value.clone()));
+        }
+    }
+    background_logger().log(LogLevel::Info, "profiling request received", fields);
 }
 
 /// 路径匹配：`/*` 前缀或分段 `{var}` 模板。
@@ -1820,7 +1893,7 @@ pub fn build_status_router(server: Arc<Server>) -> Router {
 
     // These are real process diagnostics in Rust rather than the Go pprof
     // wire format, so register them before the generic unavailable routes.
-    router.add("/debug/pprof/*", Arc::new(debug_pprof_response));
+    router.add_profiling("/debug/pprof/*", Arc::new(debug_pprof_response));
     router.add("/debug/gogc", Arc::new(debug_gogc_response));
     let settings_server = Arc::clone(&server);
     router.add(
@@ -1837,7 +1910,7 @@ pub fn build_status_router(server: Arc<Server>) -> Router {
         "/info/all",
         Arc::new(move |request| all_server_info_response(&all_info_server, request)),
     );
-    router.add("/debug/zip", Arc::new(debug_zip_response));
+    router.add_profiling("/debug/zip", Arc::new(debug_zip_response));
     let labels_server = Arc::clone(&server);
     router.add(
         "/labels",
@@ -2197,7 +2270,7 @@ fn serve_status_loop(
 ) {
     while server.health() && !server.force_shutdown() {
         match listener.accept() {
-            Ok((stream, _)) => {
+            Ok((stream, remote_addr)) => {
                 if stream.set_nonblocking(false).is_err() {
                     continue;
                 }
@@ -2208,10 +2281,14 @@ fn serve_status_loop(
                     .spawn(move || {
                         if let Some(config) = tls_config {
                             if let Ok(connection) = rustls::ServerConnection::new(config) {
-                                serve_stream(rustls::StreamOwned::new(connection, stream), &router);
+                                serve_stream(
+                                    rustls::StreamOwned::new(connection, stream),
+                                    &router,
+                                    &remote_addr.to_string(),
+                                );
                             }
                         } else {
-                            serve_stream(stream, &router);
+                            serve_stream(stream, &router, &remote_addr.to_string());
                         }
                     });
             }
@@ -2224,7 +2301,7 @@ fn serve_status_loop(
 }
 
 /// 读取单个请求、路由处理并写回简易 HTTP/1.1 响应。
-fn serve_stream<S: Read + Write>(mut stream: S, router: &Router) {
+fn serve_stream<S: Read + Write>(mut stream: S, router: &Router, remote_addr: &str) {
     let mut buffer = vec![0; 64 << 10];
     let Ok(read) = stream.read(&mut buffer) else {
         return;
@@ -2246,7 +2323,7 @@ fn serve_stream<S: Read + Write>(mut stream: S, router: &Router) {
             .split_once("\r\n\r\n")
             .map_or_else(Vec::new, |(_, body)| body.as_bytes().to_vec()),
     };
-    let response = router.handle(&request);
+    let response = router.handle_from(&request, remote_addr);
     let reason = match response.status {
         200 => "OK",
         400 => "Bad Request",

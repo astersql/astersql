@@ -430,7 +430,10 @@ impl RowSource for IdentityRows {
         }
     }
     fn local_profile(&self, _profile: &str) -> Result<Vec<Vec<Datum>>, PerfSchemaError> {
-        Ok(vec![])
+        Ok(vec![vec![
+            Datum::String("profile-node".into()),
+            Datum::Unsigned(1),
+        ]])
     }
     fn session_variables(&self) -> Result<Vec<Vec<Datum>>, PerfSchemaError> {
         Ok(vec![])
@@ -457,7 +460,7 @@ impl Write for SharedWriter {
 }
 
 #[test]
-fn go_merge_45_local_profile_audit_log_has_session_identity() {
+fn local_profile_audit_log_has_session_identity() {
     let output = Arc::new(Mutex::new(Vec::new()));
     let writer = SharedWriter(output.clone());
     let subscriber = tracing_subscriber::fmt()
@@ -487,7 +490,7 @@ fn go_merge_45_local_profile_audit_log_has_session_identity() {
     assert!(log.contains("performance_schema.tidb_profile_cpu"), "{log}");
     assert!(log.contains("conn=42"), "{log}");
     assert!(log.contains("alice"), "{log}");
-    assert!(log.contains("127.0.0.1"), "{log}");
+    assert!(log.contains("client-ip=\"127.0.0.1\""), "{log}");
 }
 
 impl RowSource for ProfileRequestRows {
@@ -512,7 +515,7 @@ impl RowSource for ProfileRequestRows {
 }
 
 #[test]
-fn go_merge_32_every_local_profile_query_records_its_table() {
+fn every_local_profile_query_records_its_table() {
     let database = build_performance_schema().unwrap();
     let source = ProfileRequestRows {
         observed: Mutex::new(Vec::new()),
@@ -823,4 +826,115 @@ fn plugin_and_invalid_index_paths_match_go_factory_order() {
         table_from_meta(&meta).expect_err("invalid index state"),
         PerfSchemaError::InvalidIndexState("not_public".to_string())
     );
+}
+
+#[test]
+fn local_profile_logs_all_tables_before_collecting_nonempty_rows() {
+    let output = Arc::new(Mutex::new(Vec::new()));
+    let writer = SharedWriter(output.clone());
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(move || writer.clone())
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        let database = build_performance_schema().unwrap();
+        for (name, profile) in [
+            ("tidb_profile_cpu", "cpu"),
+            ("tidb_profile_memory", "heap"),
+            ("tidb_profile_allocs", "allocs"),
+            ("tidb_profile_mutex", "mutex"),
+            ("tidb_profile_block", "block"),
+            ("tidb_profile_goroutines", "goroutine"),
+        ] {
+            let table = table_from_meta(
+                database
+                    .tables
+                    .iter()
+                    .find(|table| table.name == name)
+                    .unwrap(),
+            )
+            .unwrap();
+            let source = AuditedRows {
+                output: output.clone(),
+                table: name,
+                profile,
+                fail: false,
+            };
+            let rows = table
+                .get_rows(table.columns(), &source, &NoRemote, &mut vec![])
+                .unwrap();
+            assert_eq!(
+                rows,
+                vec![vec![
+                    Datum::String("profile-node".into()),
+                    Datum::Unsigned(1)
+                ]]
+            );
+        }
+        let table = table_from_meta(
+            database
+                .tables
+                .iter()
+                .find(|table| table.name == "tidb_profile_cpu")
+                .unwrap(),
+        )
+        .unwrap();
+        let source = AuditedRows {
+            output: output.clone(),
+            table: "tidb_profile_cpu",
+            profile: "cpu",
+            fail: true,
+        };
+        assert_eq!(
+            table.get_rows(table.columns(), &source, &NoRemote, &mut vec![]),
+            Err(PerfSchemaError::Profile("collector failed".into()))
+        );
+    });
+    let log = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+    assert_eq!(
+        log.matches("profiling request received").count(),
+        7,
+        "{log}"
+    );
+    assert_eq!(log.matches("conn=0").count(), 7, "{log}");
+    assert!(!log.contains("user="), "{log}");
+    assert!(!log.contains("client-ip="), "{log}");
+}
+
+struct AuditedRows {
+    output: Arc<Mutex<Vec<u8>>>,
+    table: &'static str,
+    profile: &'static str,
+    fail: bool,
+}
+impl RowSource for AuditedRows {
+    fn profile_request_identity(&self) -> ProfileRequestIdentity {
+        ProfileRequestIdentity::default()
+    }
+    fn local_profile(&self, profile: &str) -> Result<Vec<Vec<Datum>>, PerfSchemaError> {
+        assert_eq!(profile, self.profile);
+        let log = String::from_utf8(self.output.lock().unwrap().clone()).unwrap();
+        assert!(
+            log.contains(&format!("performance_schema.{}", self.table)),
+            "log must precede collection: {log}"
+        );
+        if self.fail {
+            Err(PerfSchemaError::Profile("collector failed".into()))
+        } else {
+            Ok(vec![vec![
+                Datum::String("profile-node".into()),
+                Datum::Unsigned(1),
+            ]])
+        }
+    }
+    fn session_variables(&self) -> Result<Vec<Vec<Datum>>, PerfSchemaError> {
+        unreachable!()
+    }
+    fn session_connect_attrs(&self, _: bool) -> Result<Vec<Vec<Datum>>, PerfSchemaError> {
+        unreachable!()
+    }
+    fn status_by_connection(&self) -> Result<Vec<Vec<Datum>>, PerfSchemaError> {
+        unreachable!()
+    }
 }

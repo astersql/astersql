@@ -222,7 +222,7 @@ pub trait RowSource: Send + Sync {
             table = table,
             conn = identity.connection_id,
             user = identity.user.as_deref(),
-            client_ip = identity.client_ip.as_deref(),
+            "client-ip" = identity.client_ip.as_deref(),
             "profiling request received"
         );
     }
