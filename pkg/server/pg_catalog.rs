@@ -478,12 +478,12 @@ impl CatalogQuery {
                     {
                         Ok((253, 0))
                     }
-                    ("pg_get_indexdef" | "pg_get_constraintdef", [oid])
+                    ("pg_get_indexdef" | "pg_get_constraintdef" | "pg_get_viewdef", [oid])
                         if matches!(oid, Expr::Null) || numeric_type(self.expr_type(oid)?.0) =>
                     {
                         Ok((253, 0))
                     }
-                    ("pg_get_constraintdef", [oid, pretty])
+                    ("pg_get_constraintdef" | "pg_get_viewdef", [oid, pretty])
                         if (matches!(oid, Expr::Null) || numeric_type(self.expr_type(oid)?.0))
                             && (matches!(pretty, Expr::Null) || self.expr_type(pretty)?.0 == 1) =>
                     {
@@ -1021,6 +1021,49 @@ impl CatalogQuery {
                         // Native PG adapter primitives have no SQL-language body.
                         _ => Value::Null,
                     }
+                }
+                "pg_get_viewdef" => {
+                    let values = args.iter().map(evaluate).collect::<ConnResult<Vec<_>>>()?;
+                    if values.contains(&Value::Null) {
+                        return Ok(Value::Null);
+                    }
+                    let Value::Signed(oid) = values[0] else {
+                        unreachable!("validated view oid");
+                    };
+                    let snapshot = snapshot.ok_or_else(|| {
+                        ConnError::Session("schema snapshot is unavailable".into())
+                    })?;
+                    let mut definition = Value::Null;
+                    if let Some(schema) = snapshot
+                        .AllSchemas()
+                        .into_iter()
+                        .find(|s| s.name.lower == database.to_lowercase())
+                    {
+                        for table in snapshot
+                            .SchemaTableInfos(&schema.name)
+                            .map_err(|e| ConnError::Session(e.to_string()))?
+                        {
+                            execution.comparison()?;
+                            let model = table
+                                .model_meta
+                                .as_ref()
+                                .ok_or(ConnError::UnsupportedCommand(0))?;
+                            if model.State == astersql_meta_model::StatePublic
+                                && i64::from(crate::pg_oid::table_oid(model.ID)?) == oid
+                            {
+                                if let Some(view) = &model.View {
+                                    // Return the persisted source, never infer a definition
+                                    // from columns or pretty-print through a different parser.
+                                    definition = Value::Text(
+                                        crate::pg_name::stored_view_select(&view.SelectStmt)
+                                            .map_err(|(_, message)| ConnError::Session(message))?,
+                                    );
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    definition
                 }
                 "pg_get_indexdef" | "pg_get_constraintdef" => {
                     let values = args.iter().map(evaluate).collect::<ConnResult<Vec<_>>>()?;

@@ -29,6 +29,9 @@ fn quote(name: &str) -> String {
     format!("`{}`", name.replace('`', "``"))
 }
 fn tokens(sql: &str) -> ParseResult<Vec<Token>> {
+    source_tokens(sql, false)
+}
+fn source_tokens(sql: &str, native: bool) -> ParseResult<Vec<Token>> {
     let b = sql.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
@@ -71,9 +74,9 @@ fn tokens(sql: &str) -> ParseResult<Vec<Token>> {
         let mut name = None;
         let mut quoted = false;
         let mut symbol = None;
-        if b[i] == b'\'' || b[i] == b'"' {
+        if b[i] == b'\'' || b[i] == b'"' || native && b[i] == b'`' {
             let delimiter = b[i];
-            quoted = delimiter == b'"';
+            quoted = delimiter != b'\'';
             i += 1;
             let content = i;
             loop {
@@ -86,7 +89,8 @@ fn tokens(sql: &str) -> ParseResult<Vec<Token>> {
                         continue;
                     }
                     if quoted {
-                        let n = sql[content..i].replace("\"\"", "\"");
+                        let doubled = format!("{0}{0}", delimiter as char);
+                        let n = sql[content..i].replace(&doubled, &(delimiter as char).to_string());
                         if n.is_empty() {
                             return Err(error("42601", "empty quoted identifier"));
                         }
@@ -128,6 +132,60 @@ fn tokens(sql: &str) -> ParseResult<Vec<Token>> {
         });
     }
     Ok(out)
+}
+
+/// Native ViewInfo currently stores CREATE VIEW text. Extract its validated
+/// SELECT using token spans so AS in quoted names, strings and comments is safe.
+/// This native quoting mode is used only for stored source, never PG input.
+pub(crate) fn stored_view_select(sql: &str) -> ParseResult<String> {
+    let (statements, _) = astersql_parser::New()
+        .ParseSQL(sql, &[])
+        .map_err(|e| error("0A000", &format!("invalid stored view source: {e}")))?;
+    let [statement] = statements.as_slice() else {
+        return Err(error("0A000", "invalid stored view source statement count"));
+    };
+    if statement.as_any().is::<astersql_parser_ast::SelectStmt>()
+        || statement.as_any().is::<astersql_parser_ast::SetOprStmt>()
+    {
+        return Ok(sql.trim().to_owned());
+    }
+    if !statement
+        .as_any()
+        .is::<astersql_parser_ast::CreateViewStmt>()
+    {
+        return Err(error("0A000", "stored view source is not a view SELECT"));
+    }
+    let tokens = source_tokens(sql, true)?;
+    let view = tokens
+        .iter()
+        .position(|t| t.word("view"))
+        .ok_or_else(|| error("0A000", "stored VIEW token is unavailable"))?;
+    let start = tokens
+        .iter()
+        .skip(view + 1)
+        .find(|t| t.word("as"))
+        .ok_or_else(|| error("0A000", "stored view AS token is unavailable"))?
+        .end;
+    let mut end = tokens.len();
+    if tokens.last().is_some_and(|t| t.symbol == Some(b';')) {
+        end -= 1;
+    }
+    if end >= 4
+        && tokens[end - 4].word("with")
+        && (tokens[end - 3].word("cascaded") || tokens[end - 3].word("local"))
+        && tokens[end - 2].word("check")
+        && tokens[end - 1].word("option")
+    {
+        end -= 4;
+    } else if end >= 3
+        && tokens[end - 3].word("with")
+        && tokens[end - 2].word("check")
+        && tokens[end - 1].word("option")
+    {
+        end -= 3;
+    }
+    let end = tokens.get(end).map_or(sql.len(), |t| t.start);
+    Ok(sql[start..end].trim().to_owned())
 }
 struct Resolver<'a> {
     tokens: Vec<Token>,
