@@ -68,6 +68,11 @@ impl Chunk {
         format!("{}:{}", self.Path, self.Offset)
     }
 
+    /// Original file bytes in this chunk; Parquet offsets represent rows.
+    pub fn GetSize(&self) -> i64 {
+        ImportChunk::GetSize(self)
+    }
+
     /// 转换为 mydump 使用的源文件元信息。
     pub fn toSourceFileMeta(&self) -> SourceFileMeta {
         SourceFileMeta {

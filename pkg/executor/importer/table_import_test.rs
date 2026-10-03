@@ -132,3 +132,25 @@ fn region_split_size_keys_propagates_service_errors() {
             .unwrap_err();
     assert_eq!("get region split size and keys failed", error);
 }
+
+#[test]
+fn chunk_size_uses_file_bytes_for_parquet_and_offsets_for_other_sources() {
+    use astersql_lightning_mydump::SourceType;
+    for (source_type, offset, end, file_size, expected) in [
+        (SourceType::Csv, 5, 23, 1000, 18),
+        (SourceType::Sql, 7, 7, 99, 0),
+        (SourceType::Csv, 10, 4, 100, -6),
+        (SourceType::Parquet, 5, 23, 4096, 4096),
+        (SourceType::Parquet, 0, 100, 0, 0),
+    ] {
+        let chunk = super::Chunk {
+            Type: source_type,
+            Offset: offset,
+            EndOffset: end,
+            FileSize: file_size,
+            ..Default::default()
+        };
+        assert_eq!(chunk.GetSize(), expected);
+        assert_eq!(super::ImportChunk::GetSize(&chunk), expected);
+    }
+}

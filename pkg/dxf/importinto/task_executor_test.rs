@@ -674,6 +674,7 @@ fn encode_sort_step_dispatch_runs_and_persists_external_subtask_meta() {
         }
     }
 
+    let (logger, logs) = astersql_lightning_log::testlogger::MakeTestLogger([]);
     let count = Arc::new(AtomicUsize::new(0));
     let store = Arc::new(NewMemStorage::default());
     let closes = Arc::new(AtomicUsize::new(0));
@@ -692,7 +693,7 @@ fn encode_sort_step_dispatch_runs_and_persists_external_subtask_meta() {
                 }))
             }
         })),
-        LoggerFactory: Arc::new(|| unreachable!()),
+        LoggerFactory: Arc::new(move || logger.clone()),
         LocalEngines: None,
         Collector: None,
         WorkerFactory: Some(Arc::new({
@@ -731,6 +732,7 @@ fn encode_sort_step_dispatch_runs_and_persists_external_subtask_meta() {
             &meta.Marshal().unwrap(),
         )
         .unwrap();
+    meta.Chunks.clear(); // Only external metadata carries the real chunk list.
     meta.BaseExternalMeta.ExternalPath = "input/meta.json".into();
     let mut subtask = subtask::NewSubtask(
         step::ImportStepEncodeAndSort,
@@ -745,6 +747,18 @@ fn encode_sort_step_dispatch_runs_and_persists_external_subtask_meta() {
     executor
         .RunSubtask(execute::Context::new(), &mut subtask)
         .unwrap();
+    let starts = logs
+        .lines()
+        .into_iter()
+        .map(|line| serde_json::from_str::<serde_json::Value>(&line).unwrap())
+        .filter(|entry| entry["$msg"] == "start processing chunks")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        starts.len(),
+        1,
+        "must log after reading external chunk metadata"
+    );
+    assert_eq!(starts[0]["chunkCount"], 1);
     assert_eq!(count.load(Ordering::Relaxed), 1);
     let inline = crate::ImportStepMeta::Unmarshal(&subtask.Meta).unwrap();
     assert_eq!(inline.BaseExternalMeta.ExternalPath, "11/0/meta.json");

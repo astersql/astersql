@@ -271,6 +271,15 @@ impl EncodeSortStepExecutor {
             owned: self.runtime.ObjectStoreFactory.is_some(),
         };
         let mut step_meta = self.read_meta(&subtask.Meta, &object_store)?;
+        (self.runtime.LoggerFactory)()
+            .With([astersql_lightning_log::Field::int("subtask-id", subtask.ID)])
+            .Info(
+                "start processing chunks",
+                [astersql_lightning_log::Field::int(
+                    "chunkCount",
+                    step_meta.Chunks.len() as i64,
+                )],
+            );
         let resource = execute::StepExecFrameworkInfo::GetResource(self)
             .ok_or_else(|| anyhow::anyhow!("encode sort resource is unavailable"))?;
         let (data_memory, index_memory) = getWriterMemorySizeLimit(&resource, &self.task_meta.Plan);

@@ -241,3 +241,107 @@ fn query_reader_skips_empty_chunks_without_panicking() {
     assert_eq!(vec![Datum::Int(7)], row.row);
     assert!(reader.ReadRow(Vec::new()).unwrap().is_none());
 }
+
+#[test]
+fn file_chunk_process_logs_original_size_with_nonempty_indexed_rows() {
+    use astersql_meta_model::{IndexColumn, IndexInfo, StatePublic};
+    let columns = ["a", "b", "c"]
+        .into_iter()
+        .enumerate()
+        .map(|(offset, name)| {
+            let mut column = ColumnInfo {
+                ID: offset as i64 + 1,
+                Name: ast::NewCIStr(name),
+                Offset: offset as isize,
+                State: StatePublic,
+                ..Default::default()
+            };
+            column.SetType(astersql_parser_mysql::r#type::TypeLong);
+            column
+        })
+        .collect();
+    let indices = [("a", vec![0]), ("bc", vec![1, 2])]
+        .into_iter()
+        .enumerate()
+        .map(|(id, (name, offsets))| IndexInfo {
+            ID: id as i64 + 1,
+            Name: ast::NewCIStr(name),
+            State: StatePublic,
+            Columns: offsets
+                .into_iter()
+                .map(|offset| IndexColumn {
+                    Name: ast::NewCIStr(["a", "b", "c"][offset]),
+                    Offset: offset as isize,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        })
+        .collect();
+    let meta = TableInfo {
+        ID: 42,
+        Columns: columns,
+        Indices: indices,
+        ..Default::default()
+    };
+    let config = EncodingConfig {
+        Table: Some(Arc::new(NewTableDefinitionFromMeta(&meta).unwrap())),
+        ..Default::default()
+    };
+    let encoder = NewTableKVEncoderFromMeta(
+        &config,
+        &meta,
+        Arc::new(CanonicalImportDatumConverter(
+            astersql_types::StrictContext.Flags(),
+        )),
+    )
+    .unwrap();
+    let source = "1,2,3\n4,5,6\n7,8,9\n";
+    let chunk = Chunk {
+        Path: "test.csv".into(),
+        EndOffset: source.len() as i64,
+        RowIDMax: 10000,
+        ..Default::default()
+    };
+    let (logger, logs) = astersql_lightning_log::testlogger::MakeTestLogger([]);
+    let logger = logger.With([astersql_lightning_log::Field::string("task", "import")]);
+    let data = WriterState::default();
+    let index = WriterState::default();
+    let checksum = Arc::new(Mutex::new(NewKVGroupChecksumWithKeyspace(&[])));
+    let collector = Arc::new(TestCollector::default());
+    let mut processor = NewFileChunkProcessor(
+        csv_parser(source),
+        encoder,
+        Vec::new(),
+        chunk.GetKey(),
+        0,
+        chunk.EndOffset,
+        writer(&data, None),
+        writer(&index, None),
+        Some(checksum.clone()),
+        Some(collector.clone()),
+    )
+    .WithChunkLogger(&chunk, &logger);
+    processor.encoder.min_deliver_row_count = 2;
+    processor.Process(&Context::default()).unwrap();
+    assert_eq!(data.rows.load(Ordering::SeqCst), 3);
+    assert_eq!(index.rows.load(Ordering::SeqCst), 6);
+    assert_eq!(checksum.lock().unwrap().DataAndIndexSumKVS(), (3, 6));
+    assert_eq!(collector.Rows.load(Ordering::SeqCst), 3);
+    assert_eq!(collector.ReadBytes.load(Ordering::SeqCst), 18);
+    let (data_bytes, index_bytes) = checksum.lock().unwrap().DataAndIndexSumSize();
+    // Check real encoded accounting independently of this commit's source-byte log.
+    assert_eq!(
+        collector.ProcessedCnt.load(Ordering::SeqCst) as u64,
+        data_bytes + index_bytes
+    );
+    let starts = logs
+        .lines()
+        .into_iter()
+        .filter(|line| line.contains("process chunk start"))
+        .collect::<Vec<_>>();
+    assert_eq!(starts.len(), 1);
+    assert!(starts[0].contains("\"chunkSize\":18"));
+    assert!(starts[0].contains("\"key\":\"test.csv:0\""));
+    assert!(starts[0].contains("\"task\":\"import\""));
+}

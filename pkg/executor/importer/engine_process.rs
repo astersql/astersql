@@ -43,6 +43,14 @@ pub trait ImportChunk: Send + Sync {
     fn Path(&self) -> &str;
     /// 文件总大小（字节）。
     fn FileSize(&self) -> i64;
+    /// Original source bytes; Parquet offsets describe rows rather than bytes.
+    fn GetSize(&self) -> i64 {
+        if self.SourceType() == SourceType::Parquet {
+            self.FileSize()
+        } else {
+            self.EndOffset() - self.Offset()
+        }
+    }
     /// 本 chunk 起始字节偏移。
     fn Offset(&self) -> i64;
     /// 本 chunk 结束字节偏移（不含或含依调用约定）。
@@ -96,6 +104,29 @@ pub fn ProcessChunk(
     group_checksum: Option<Arc<Mutex<KVGroupChecksum>>>,
     collector: Option<Arc<dyn Collector + Send + Sync>>,
 ) -> Result<(), String> {
+    ProcessChunkAndLogger(
+        context,
+        chunk,
+        table_importer,
+        data_engine,
+        index_engine,
+        group_checksum,
+        collector,
+        &astersql_lightning_log::L(),
+    )
+}
+
+/// Process the chunk with the caller's structured log context.
+pub fn ProcessChunkAndLogger(
+    context: &Context,
+    chunk: &dyn ImportChunk,
+    table_importer: &dyn TableImporterRuntime,
+    data_engine: &OpenedEngine,
+    index_engine: &OpenedEngine,
+    group_checksum: Option<Arc<Mutex<KVGroupChecksum>>>,
+    collector: Option<Arc<dyn Collector + Send + Sync>>,
+    logger: &astersql_lightning_log::Logger,
+) -> Result<(), String> {
     let table_info = table_importer.TableInfo();
     // 判断行号是否天然有序：有序则可向 writer 声明 IsKVSorted。
     let has_ordered_auto_row_id = !table_info.PKIsHandle
@@ -116,7 +147,7 @@ pub fn ProcessChunk(
             return Err(error.to_string());
         }
     };
-    ProcessChunkWithWriter(
+    ProcessChunkWithWriterAndLogger(
         context,
         chunk,
         table_importer,
@@ -124,6 +155,7 @@ pub fn ProcessChunk(
         index_writer,
         group_checksum,
         collector,
+        logger,
     )
 }
 
@@ -138,6 +170,29 @@ pub fn ProcessChunkWithWriter(
     index_writer: Box<dyn EngineWriter>,
     group_checksum: Option<Arc<Mutex<KVGroupChecksum>>>,
     collector: Option<Arc<dyn Collector + Send + Sync>>,
+) -> Result<(), String> {
+    ProcessChunkWithWriterAndLogger(
+        context,
+        chunk,
+        table_importer,
+        data_writer,
+        index_writer,
+        group_checksum,
+        collector,
+        &astersql_lightning_log::L(),
+    )
+}
+
+/// Process the chunk with the caller's structured log context.
+pub fn ProcessChunkWithWriterAndLogger(
+    context: &Context,
+    chunk: &dyn ImportChunk,
+    table_importer: &dyn TableImporterRuntime,
+    data_writer: Box<dyn EngineWriter>,
+    index_writer: Box<dyn EngineWriter>,
+    group_checksum: Option<Arc<Mutex<KVGroupChecksum>>>,
+    collector: Option<Arc<dyn Collector + Send + Sync>>,
+    logger: &astersql_lightning_log::Logger,
 ) -> Result<(), String> {
     let encoder = table_importer.GetKVEncoder(chunk)?;
     let keyspace = table_importer.GetKeySpace();
@@ -162,7 +217,8 @@ pub fn ProcessChunkWithWriter(
                 index_writer,
                 group_checksum,
                 collector,
-            );
+            )
+            .WithChunkLogger(chunk, logger);
             processor.Process(context)
         }
         DataSourceTypeQuery => {

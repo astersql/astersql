@@ -323,7 +323,7 @@ pub fn runImportMinimalTask(
             .IndexEngine
             .as_ref()
             .ok_or_else(|| errors::New("local sort index engine is not initialized"))?;
-        importer::ProcessChunk(
+        importer::ProcessChunkAndLogger(
             ctx,
             &chunk,
             &task.SharedVars.TableImporter,
@@ -331,6 +331,7 @@ pub fn runImportMinimalTask(
             index_engine,
             Some(Arc::clone(&checksum)),
             collector,
+            &task.logger,
         )
         .map_err(errors::New)?;
     } else {
@@ -339,7 +340,7 @@ pub fn runImportMinimalTask(
             data_writer.ok_or_else(|| errors::New("global sort data writer is not initialized"))?;
         let index_writer = index_writer
             .ok_or_else(|| errors::New("global sort index writer is not initialized"))?;
-        importer::ProcessChunkWithWriter(
+        importer::ProcessChunkWithWriterAndLogger(
             ctx,
             &chunk,
             &task.SharedVars.TableImporter,
@@ -347,6 +348,7 @@ pub fn runImportMinimalTask(
             index_writer,
             Some(Arc::clone(&checksum)),
             collector,
+            &task.logger,
         )
         .map_err(errors::New)?;
     }

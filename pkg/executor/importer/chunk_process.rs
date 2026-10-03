@@ -401,11 +401,15 @@ pub struct BaseChunkProcessor {
     pub encoder: ChunkEncoder,
     pub deliver: DataDeliver,
     pub group_checksum: Option<Arc<Mutex<KVGroupChecksum>>>,
+    logger: Option<astersql_lightning_log::Logger>,
 }
 
 impl ChunkProcessor for BaseChunkProcessor {
     /// 启动投递线程，主线程编码；结束后合并校验并关闭资源。
     fn Process(&mut self, context: &Context) -> Result<(), String> {
+        if let Some(logger) = &self.logger {
+            logger.Info("process chunk start", []);
+        }
         // 有界队列解耦编码与投递，避免无界堆积。
         let (sender, receiver) = mpsc::sync_channel(maxKVQueueSize);
         let (encode_result, deliver_result) = std::thread::scope(|scope| {
@@ -462,6 +466,7 @@ pub fn NewQueryChunkProcessor(
             deliver_total_duration: Duration::ZERO,
         },
         group_checksum,
+        logger: None,
     }
 }
 
@@ -482,7 +487,7 @@ pub fn NewFileChunkProcessor(
     BaseChunkProcessor {
         encoder: newChunkEncoder(
             name.clone(),
-            Box::new(parserEncodeReader(parser, end_offset, name)),
+            Box::new(parserEncodeReader(parser, end_offset, name.clone())),
             offset,
             collector,
             encoder,
@@ -494,6 +499,26 @@ pub fn NewFileChunkProcessor(
             deliver_total_duration: Duration::ZERO,
         },
         group_checksum,
+        logger: Some(astersql_lightning_log::L().With([
+            astersql_lightning_log::Field::string("key", name.clone()),
+            astersql_lightning_log::Field::int("chunkSize", end_offset - offset),
+        ])),
+    }
+}
+
+impl BaseChunkProcessor {
+    /// Preserve the caller's log context while adding the source chunk identity and byte size.
+    pub fn WithChunkLogger(
+        mut self,
+        chunk: &dyn crate::ImportChunk,
+        logger: &astersql_lightning_log::Logger,
+    ) -> Self {
+        use astersql_lightning_log::Field;
+        self.logger = Some(logger.With([
+            Field::string("key", chunk.Key()),
+            Field::int("chunkSize", chunk.GetSize()),
+        ]));
+        self
     }
 }
 
