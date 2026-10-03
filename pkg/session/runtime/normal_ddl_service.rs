@@ -372,6 +372,9 @@ impl DdlService for NormalDdlService {
         self.pool.close();
         joined.and(schema_result)
     }
+    fn local_id(&self) -> String {
+        self.owner.ID()
+    }
     fn owner_id(&self) -> Option<String> {
         self.owner_runtime
             .block_on(self.owner.GetOwnerID(&self.cancellation))

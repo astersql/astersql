@@ -264,6 +264,7 @@ fn tikv_storage_wiring_uses_registered_real_driver() {
 fn canonical_listener_config_maps_ports_socket_proxy_and_tls() {
     let mut cfg = config::NewConfig();
     cfg.Host = "127.0.0.1".into();
+    cfg.AdvertiseAddress = "status.example".into();
     cfg.Port = 0;
     cfg.Socket.clear();
     cfg.MaxServerConnections = 37;
@@ -274,6 +275,7 @@ fn canonical_listener_config_maps_ports_socket_proxy_and_tls() {
     assert_eq!(mapped.host, "127.0.0.1");
     assert_eq!(mapped.port, 0);
     assert_eq!(mapped.max_connections, 37);
+    assert_eq!(mapped.advertise_address, "status.example");
     assert_eq!(mapped.status.host, "127.0.0.1");
     assert_eq!(mapped.status.port, 0);
 

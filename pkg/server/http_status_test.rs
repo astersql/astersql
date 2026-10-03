@@ -581,3 +581,153 @@ fn profiling_log_query_values_match_go_first_value_and_decode_rules() {
                 .contains(&LogField::String("method".into(), "POST".into()))
     }));
 }
+
+#[test]
+fn advertised_status_info_returns_the_local_ddl_identity() {
+    struct IdentityDomain;
+    impl Domain for IdentityDomain {
+        fn server_id(&self) -> u64 {
+            11
+        }
+        fn start_timestamp(&self) -> i64 {
+            1
+        }
+        fn local_ddl_id(&self) -> String {
+            "local-ddl-id".into()
+        }
+    }
+    let server = Server::new_test(
+        ServerConfig {
+            host: "127.0.0.1".into(),
+            port: 0,
+            status: StatusConfig {
+                host: "127.0.0.1".into(),
+                port: 0,
+                ..StatusConfig::default()
+            },
+            ..ServerConfig::default()
+        },
+        Arc::new(Driver),
+    );
+    server.run(Arc::new(IdentityDomain)).unwrap();
+    let mut stream = TcpStream::connect(server.status_listener_addr().unwrap()).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    stream
+        .write_all(b"GET /info HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    server.close();
+    let body: serde_json::Value =
+        serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(body["ddl_id"], "local-ddl-id");
+    assert_ne!(body["ddl_id"], "11", "server_id is not the DDL identity");
+}
+
+#[test]
+fn advertised_status_start_requests_configured_host_and_close_cancels_inflight_request() {
+    struct IdentityDomain;
+    impl Domain for IdentityDomain {
+        fn server_id(&self) -> u64 {
+            11
+        }
+        fn start_timestamp(&self) -> i64 {
+            1
+        }
+        fn local_ddl_id(&self) -> String {
+            "local-ddl-id".into()
+        }
+    }
+    for complete in [true, false] {
+        // The advertised host is distinct from the listening host, at the
+        // same effective port. Only the external network peer is substituted.
+        let endpoint = std::net::TcpListener::bind("[::1]:0").unwrap();
+        let port = endpoint.local_addr().unwrap().port();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (closed_tx, closed_rx) = std::sync::mpsc::channel();
+        let peer = std::thread::spawn(move || {
+            let (mut stream, _) = endpoint.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0];
+            while !request.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+            }
+            tx.send(String::from_utf8(request).unwrap()).unwrap();
+            if complete {
+                stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 25\r\n\r\n{\"ddl_id\":\"local-ddl-id\"}").unwrap();
+            }
+            match stream.read(&mut byte) {
+                Ok(0) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+                result => panic!("shutdown did not cancel diagnostics: {result:?}"),
+            }
+            closed_tx.send(()).unwrap();
+        });
+        let server = Server::new_test(
+            ServerConfig {
+                host: "127.0.0.1".into(),
+                port: 0,
+                advertise_address: "::1".into(),
+                status: StatusConfig {
+                    host: "127.0.0.1".into(),
+                    port,
+                    ..StatusConfig::default()
+                },
+                ..ServerConfig::default()
+            },
+            Arc::new(Driver),
+        );
+        server.run(Arc::new(IdentityDomain)).unwrap();
+        let request = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(request.starts_with("GET /info HTTP/1.1\r\n"));
+        assert!(
+            request
+                .to_lowercase()
+                .contains(&format!("host: [::1]:{port}\r\n"))
+        );
+        if complete {
+            closed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+        let closing = std::time::Instant::now();
+        server.close();
+        peer.join().unwrap();
+        assert!(closing.elapsed() < Duration::from_secs(2));
+    }
+}
+
+#[test]
+fn advertised_status_disabled_does_not_read_domain_identity() {
+    struct NoIdentityDomain;
+    impl Domain for NoIdentityDomain {
+        fn server_id(&self) -> u64 {
+            11
+        }
+        fn start_timestamp(&self) -> i64 {
+            1
+        }
+        fn local_ddl_id(&self) -> String {
+            panic!("disabled status must not read DDL identity")
+        }
+    }
+    let server = Server::new_test(
+        ServerConfig {
+            host: "127.0.0.1".into(),
+            port: 0,
+            advertise_address: "unused.invalid".into(),
+            status: StatusConfig {
+                report_status: false,
+                ..StatusConfig::default()
+            },
+            ..ServerConfig::default()
+        },
+        Arc::new(Driver),
+    );
+    server.run(Arc::new(NoIdentityDomain)).unwrap();
+    server.close();
+}

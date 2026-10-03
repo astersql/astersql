@@ -8241,7 +8241,13 @@ dependencies = [
 name = "astersql-server-internal"
 version = "0.1.0"
 dependencies = [
+ "astersql-domain-serverinfo",
+ "astersql-util-logutil",
  "flate2",
+ "hyper 1.11.0",
+ "openssl",
+ "reqwest 0.12.28",
+ "tokio",
  "zstd 0.13.3",
 ]
 

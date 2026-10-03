@@ -1403,6 +1403,11 @@ fn crossks_align_normal_ddl_service_public_owner_handoff_consumes_same_queue() {
     }
     assert!(owners[0].IsOwner());
     assert!(!owners[1].IsOwner());
+    assert_eq!(services[0].local_id(), "first");
+    assert_eq!(services[1].local_id(), "second");
+    // MockManager deliberately returns NoLeader for a non-owner. The local
+    // DDL UUID must remain available independently of that lookup.
+    assert!(services[1].owner_id().is_none());
     f.insert(99401, JobState::Queueing);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     while f.reader().get_history_ddl_job(99401).unwrap().is_none() {

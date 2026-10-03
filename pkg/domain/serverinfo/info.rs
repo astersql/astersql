@@ -155,6 +155,57 @@ impl fmt::Display for ServerInfoError {
 }
 impl std::error::Error for ServerInfoError {}
 
+impl StaticInfo {
+    /// Decode the static part embedded in /info using the same Go-compatible
+    /// field converters as ServerInfo; dynamic labels are intentionally ignored.
+    pub fn Unmarshal(&mut self, value: &[u8]) -> Result<(), ServerInfoError> {
+        let text = String::from_utf8_lossy(value);
+        match JsonParser::new(&text).parse()? {
+            Json::Null => Ok(()),
+            Json::Object(object) => {
+                self.unmarshal_fields(object.iter().map(|(key, value)| (key.as_str(), value)))
+            }
+            _ => Err(ServerInfoError("server info JSON must be an object".into())),
+        }
+    }
+
+    fn unmarshal_fields<'a>(
+        &mut self,
+        object: impl IntoIterator<Item = (&'a str, &'a Json)>,
+    ) -> Result<(), ServerInfoError> {
+        let mut first_error = None;
+        for (key, value) in object {
+            let result = if key.eq_ignore_ascii_case("version") {
+                assign_string(value, "version", &mut self.VersionInfo.Version)
+            } else if key.eq_ignore_ascii_case("git_hash") {
+                assign_string(value, "git_hash", &mut self.VersionInfo.GitHash)
+            } else if key.eq_ignore_ascii_case("ddl_id") {
+                assign_string(value, "ddl_id", &mut self.ID)
+            } else if key.eq_ignore_ascii_case("ip") {
+                assign_string(value, "ip", &mut self.IP)
+            } else if key.eq_ignore_ascii_case("listening_port") {
+                assign_u32(value, "listening_port", &mut self.Port)
+            } else if key.eq_ignore_ascii_case("status_port") {
+                assign_u32(value, "status_port", &mut self.StatusPort)
+            } else if key.eq_ignore_ascii_case("lease") {
+                assign_string(value, "lease", &mut self.Lease)
+            } else if key.eq_ignore_ascii_case("start_timestamp") {
+                assign_i64(value, "start_timestamp", &mut self.StartTimestamp)
+            } else if key.eq_ignore_ascii_case("keyspace") {
+                assign_string(value, "keyspace", &mut self.Keyspace)
+            } else if key.eq_ignore_ascii_case("assumed_keyspace") {
+                assign_string(value, "assumed_keyspace", &mut self.AssumedKeyspace)
+            } else if key.eq_ignore_ascii_case("server_id") {
+                assign_u64(value, "server_id", &mut self.JSONServerID)
+            } else {
+                Ok(())
+            };
+            preserve_first_error(&mut first_error, result);
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+}
+
 impl ServerInfo {
     /// 堆分配克隆。
     pub fn Clone(&self) -> Box<ServerInfo> {
@@ -212,40 +263,11 @@ impl ServerInfo {
         };
         let mut first_error = None;
         for (key, value) in &object {
-            let result = if key.eq_ignore_ascii_case("version") {
-                assign_string(value, "version", &mut self.StaticInfo.VersionInfo.Version)
-            } else if key.eq_ignore_ascii_case("git_hash") {
-                assign_string(value, "git_hash", &mut self.StaticInfo.VersionInfo.GitHash)
-            } else if key.eq_ignore_ascii_case("ddl_id") {
-                assign_string(value, "ddl_id", &mut self.StaticInfo.ID)
-            } else if key.eq_ignore_ascii_case("ip") {
-                assign_string(value, "ip", &mut self.StaticInfo.IP)
-            } else if key.eq_ignore_ascii_case("listening_port") {
-                assign_u32(value, "listening_port", &mut self.StaticInfo.Port)
-            } else if key.eq_ignore_ascii_case("status_port") {
-                assign_u32(value, "status_port", &mut self.StaticInfo.StatusPort)
-            } else if key.eq_ignore_ascii_case("lease") {
-                assign_string(value, "lease", &mut self.StaticInfo.Lease)
-            } else if key.eq_ignore_ascii_case("start_timestamp") {
-                assign_i64(
-                    value,
-                    "start_timestamp",
-                    &mut self.StaticInfo.StartTimestamp,
-                )
-            } else if key.eq_ignore_ascii_case("keyspace") {
-                assign_string(value, "keyspace", &mut self.StaticInfo.Keyspace)
-            } else if key.eq_ignore_ascii_case("assumed_keyspace") {
-                assign_string(
-                    value,
-                    "assumed_keyspace",
-                    &mut self.StaticInfo.AssumedKeyspace,
-                )
-            } else if key.eq_ignore_ascii_case("server_id") {
-                assign_u64(value, "server_id", &mut self.StaticInfo.JSONServerID)
-            } else if key.eq_ignore_ascii_case("labels") {
+            let result = if key.eq_ignore_ascii_case("labels") {
                 assign_labels(value, "labels", &mut self.DynamicInfo.Labels)
             } else {
-                Ok(())
+                self.StaticInfo
+                    .unmarshal_fields(std::iter::once((key.as_str(), value)))
             };
             preserve_first_error(&mut first_error, result);
         }

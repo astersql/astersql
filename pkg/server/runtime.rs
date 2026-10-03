@@ -446,6 +446,12 @@ impl CanonicalServerDomain {
 }
 
 impl ServerDomain for CanonicalServerDomain {
+    fn local_ddl_id(&self) -> String {
+        self.domain
+            .ddl()
+            .map_or_else(String::new, |ddl| ddl.local_id())
+    }
+
     fn dxf_history_available(&self) -> bool {
         self.domain.storage().with_storage(astersql_kv::IsSystemKS)
     }

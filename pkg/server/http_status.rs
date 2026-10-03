@@ -1840,6 +1840,7 @@ fn server_info_response(server: &Server, request: &Request) -> Response {
     Response::json(
         200,
         serde_json::json!({
+            "ddl_id": server.domain().map_or_else(String::new, |domain| domain.local_ddl_id()),
             "is_owner": true,
             "max_procs": thread::available_parallelism().map_or(1, usize::from),
             "gogc": null,

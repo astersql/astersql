@@ -122,3 +122,29 @@ fn clone_keeps_static_getter_and_deep_copies_labels() {
     assert_eq!(cloned.StaticInfo.ServerIDGetter.as_ref().unwrap()(), 9);
     assert!(!info.DynamicInfo.Labels.contains_key("new"));
 }
+
+#[test]
+fn static_info_identity_decoding_ignores_dynamic_fields() {
+    let mut info = StaticInfo::default();
+    info.Unmarshal(br#"{"DDL_ID":"local-id","labels":42,"version":"v","status_port":10080}"#)
+        .unwrap();
+    assert_eq!(info.ID, "local-id");
+    assert_eq!(info.VersionInfo.Version, "v");
+    assert_eq!(info.StatusPort, 10080);
+    info.Unmarshal(b"null").unwrap();
+    assert_eq!(info.ID, "local-id");
+    for body in [
+        br#"{"ddl_id":1}"#.as_slice(),
+        br#"{"ddl_id":"local","status_port":-1}"#,
+        br#"{"ddl_id":"local","version":1}"#,
+        b"[]",
+        b"true",
+        br#"{"ddl_id":"local"} {}"#,
+    ] {
+        assert!(StaticInfo::default().Unmarshal(body).is_err(), "{body:?}");
+    }
+    let mut info = StaticInfo::default();
+    info.Unmarshal(br#"{"ddl_id":"old","ddl_id":null,"DDL_ID":"new"}"#)
+        .unwrap();
+    assert_eq!(info.ID, "new");
+}

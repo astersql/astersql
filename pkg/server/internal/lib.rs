@@ -14,3 +14,11 @@ pub use packetio::*;
 #[cfg(test)]
 #[path = "migration_aster_unit_test.rs"]
 mod migration_aster_unit_test;
+
+/// One-shot verification of the advertised status endpoint's TiDB identity.
+#[path = "advertisedstatus/checker.rs"]
+pub mod advertisedstatus;
+
+#[cfg(test)]
+#[path = "advertisedstatus/checker_test.rs"]
+mod advertisedstatus_test;

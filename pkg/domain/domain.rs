@@ -85,6 +85,10 @@ pub trait DdlService: Send + Sync {
     /// 停止后台 worker。
     fn stop(&self) -> Result<(), String>;
     fn owner_id(&self) -> Option<String>;
+    /// This instance's DDL identity, independent of which member is owner.
+    fn local_id(&self) -> String {
+        String::new()
+    }
     fn alter_table_mode(&self, target: &str) -> Result<(), String>;
     /// Normal SQL DDL uses the durable owner queue when supported by this service.
     fn supports_persistent_actions(&self) -> bool {

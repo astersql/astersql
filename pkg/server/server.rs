@@ -427,6 +427,8 @@ impl Default for StatusConfig {
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
+    /// Host published to other instances for the status endpoint.
+    pub advertise_address: String,
     /// None disables PostgreSQL; Some(0) requests an OS-assigned TCP port.
     pub postgres_port: Option<u16>,
     pub socket: Option<String>,
@@ -450,6 +452,7 @@ impl Default for ServerConfig {
         Self {
             host: "0.0.0.0".into(),
             port: 4_000,
+            advertise_address: String::new(),
             postgres_port: None,
             socket: None,
             max_connections: 0,
@@ -590,6 +593,10 @@ pub trait ServerDriver: Send + Sync {
 pub trait Domain: Send + Sync {
     fn server_id(&self) -> u64;
     fn start_timestamp(&self) -> i64;
+    /// DDL UUID used by /info and advertised endpoint verification.
+    fn local_ddl_id(&self) -> String {
+        String::new()
+    }
 
     fn system_process_list(&self) -> HashMap<u64, Arc<SessionProcessInfo>> {
         HashMap::new()
@@ -722,6 +729,7 @@ pub struct Server {
     #[cfg(unix)]
     unix_accept_worker: Mutex<Option<JoinHandle<()>>>,
     status_worker: Mutex<Option<JoinHandle<()>>>,
+    advertised_status_check: Mutex<Option<astersql_server_internal::advertisedstatus::CheckHandle>>,
     connection_workers: Mutex<Vec<JoinHandle<()>>>,
     normal_closed: Mutex<NormalCloseCache>,
     internal_sessions: Mutex<HashMap<usize, u64>>,
@@ -787,6 +795,7 @@ impl Server {
             #[cfg(unix)]
             unix_accept_worker: Mutex::new(None),
             status_worker: Mutex::new(None),
+            advertised_status_check: Mutex::new(None),
             connection_workers: Mutex::new(Vec::new()),
             normal_closed: Mutex::new(NormalCloseCache::default()),
             internal_sessions: Mutex::new(HashMap::new()),
@@ -1082,6 +1091,25 @@ impl Server {
             self.close_listeners();
             self.join_listener_workers();
             return Err(error);
+        }
+        let tls = &self.config.status;
+        if tls.report_status {
+            *self.advertised_status_check.lock().unwrap() =
+                astersql_server_internal::advertisedstatus::start(
+                    astersql_server_internal::advertisedstatus::Options {
+                        report_status: tls.report_status,
+                        status_address: self.status_listener_addr(),
+                        advertise_address: self.config.advertise_address.clone(),
+                        local_id: self
+                            .domain()
+                            .map_or_else(String::new, |domain| domain.local_ddl_id()),
+                        tls: astersql_server_internal::advertisedstatus::TlsOptions {
+                            ca: tls.tls_ca.clone(),
+                            certificate: tls.tls_certificate.clone(),
+                            key: tls.tls_key.clone(),
+                        },
+                    },
+                );
         }
         Ok(())
     }
@@ -1411,6 +1439,9 @@ impl Server {
 
     /// 关闭 SQL/状态监听并清空地址。
     pub fn close_listeners(&self) {
+        // Cancel and join diagnostics while their serving listeners are still
+        // alive; shutdown must never produce a spurious endpoint warning.
+        self.advertised_status_check.lock().unwrap().take();
         if let Some(service) = self.postgres_service.lock().unwrap().take() {
             service.close();
         }

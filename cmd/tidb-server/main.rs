@@ -1945,6 +1945,7 @@ pub fn canonicalServerConfig(cfg: &config::Config) -> Result<CanonicalServerConf
     }
     Ok(CanonicalServerConfig {
         host: cfg.Host.clone(),
+        advertise_address: cfg.AdvertiseAddress.clone(),
         port,
         postgres_port: cfg.PostgresPort,
         socket: (!cfg.Socket.is_empty()).then(|| cfg.Socket.clone()),

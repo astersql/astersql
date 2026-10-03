@@ -10,6 +10,14 @@ path = "lib.rs"
 [dependencies]
 flate2 = "1"
 zstd = "0.13"
+hyper = { version = "1", features = ["http1"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
+astersql-domain-serverinfo = { path = "../../domain/serverinfo" }
+astersql-util-logutil = { path = "../../util/logutil" }
+
+[dev-dependencies]
+openssl = "0.10"
 
 [package.metadata.porting]
 go-package = "pkg/server/internal"
