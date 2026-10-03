@@ -1318,6 +1318,8 @@ struct TestBackend {
     transport_error: Mutex<Option<String>>,
     missing_region_once: AtomicBool,
     resolved_lock_calls: Mutex<Vec<Vec<u8>>>,
+    resolved_lock_start_ts: Mutex<Vec<u64>>,
+    resolve_lock_error: Mutex<Option<BatchError>>,
 }
 
 impl TestBackend {
@@ -1380,8 +1382,12 @@ impl CopBackend for TestBackend {
             .push((region, old_version, new_version));
     }
 
-    fn resolve_lock(&self, lock: &[u8], _start_ts: u64) -> BatchResult<()> {
+    fn resolve_lock(&self, lock: &[u8], start_ts: u64) -> BatchResult<()> {
         self.resolved_lock_calls.lock().unwrap().push(lock.to_vec());
+        self.resolved_lock_start_ts.lock().unwrap().push(start_ts);
+        if let Some(error) = self.resolve_lock_error.lock().unwrap().clone() {
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -2815,4 +2821,77 @@ fn byte_paging_channel_has_real_capacity_and_final_page_stops() {
     assert_eq!(data, (b'a'..b'z').collect::<Vec<_>>());
     assert_eq!(backend.calls.load(Ordering::Acquire), 25);
     iterator.close();
+}
+
+#[test]
+fn store_batch_child_lock_reaches_resolver_and_falls_back() {
+    use kvproto::kvrpcpb::{LockInfo, Op};
+    use protobuf::Message;
+
+    // Match Go's pessimistic child lock with an unlocked parent response.
+    for resolver_fails in [false, true] {
+        let backend = TestBackend::with_locations(Vec::new());
+        let mut lock = LockInfo::new();
+        lock.set_key(b"key".to_vec());
+        lock.set_primary_lock(b"primary".to_vec());
+        lock.set_lock_version(1);
+        lock.set_lock_type(Op::PessimisticLock);
+        let lock_bytes = lock.write_to_bytes().unwrap();
+        backend.response.lock().unwrap().batch_responses.insert(
+            1,
+            CopProtocolResponse {
+                locked: Some(lock_bytes.clone()),
+                ..CopProtocolResponse::default()
+            },
+        );
+        if resolver_fails {
+            *backend.resolve_lock_error.lock().unwrap() =
+                Some(BatchError::Transport("lock cleanup failed".into()));
+        }
+        let mut parent = CopTask {
+            region: RegionVerId::new(2, 1, 1),
+            ranges: KeyRanges::new(vec![key_range("a", "b")]),
+            ..CopTask::default()
+        };
+        parent.batch_task_list.insert(
+            1,
+            BatchedCopTask {
+                task: Box::new(CopTask {
+                    task_id: 1,
+                    region: RegionVerId::new(1, 1, 1),
+                    ranges: KeyRanges::new(vec![key_range("b", "c")]),
+                    ..CopTask::default()
+                }),
+                store_id: 1,
+                peer: Some(Peer { id: 1, store_id: 1 }),
+                load_based_replica_retry: false,
+            },
+        );
+        let mut req = request(vec![key_range("a", "c")]);
+        req.start_ts = 10;
+        let worker = worker(backend.clone(), req);
+        let result = worker.handle_task_once(&mut Backoffer::new(3), parent);
+        assert_eq!(
+            *backend.resolved_lock_calls.lock().unwrap(),
+            vec![lock_bytes]
+        );
+        assert_eq!(*backend.resolved_lock_start_ts.lock().unwrap(), vec![10]);
+        if resolver_fails {
+            assert!(
+                matches!(result, Err(BatchError::Transport(message)) if message == "lock cleanup failed")
+            );
+            assert_eq!(worker.store_batch_stats(), (0, 0));
+        } else {
+            let result = result.unwrap();
+            assert!(result.batch_responses.is_empty());
+            assert_eq!(result.remains.len(), 1);
+            assert_eq!(result.remains[0].task_id, 1);
+            assert!(result.remains[0].meet_lock_fallback);
+            assert_eq!(
+                result.remains[0].ranges.to_ranges(),
+                vec![key_range("b", "c")]
+            );
+            assert_eq!(worker.store_batch_stats(), (0, 1));
+        }
+    }
 }
