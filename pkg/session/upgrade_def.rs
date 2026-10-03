@@ -192,12 +192,13 @@ pub const version253: i64 = 253;
 pub const version254: i64 = 254;
 pub const version255: i64 = 255;
 pub const version256: i64 = 256;
-pub const version257: i64 = 257;
-pub const version258: i64 = 258;
-pub const version259: i64 = 259;
-pub const version260: i64 = 260;
-pub const version261: i64 = 261;
-pub const version262: i64 = 262;
+// Versions 257 through 276 are reserved for release-nextgen-202603.
+pub const version277: i64 = 277;
+pub const version278: i64 = 278;
+pub const version279: i64 = 279;
+pub const version280: i64 = 280;
+pub const version281: i64 = 281;
+pub const version282: i64 = 282;
 /// Analyze defaults migration, renumbered from v263 by Go #69886.
 pub const version283: i64 = 283;
 
@@ -756,23 +757,23 @@ pub static upgradeToVerFunctions: LazyLock<Vec<VersionedUpgradeFunction>> = Lazy
         (256) => {
             upgradeToVer256
         };
-        (257) => {
-            upgradeToVer257
+        (277) => {
+            upgradeToVer277
         };
-        (258) => {
-            upgradeToVer258
+        (278) => {
+            upgradeToVer278
         };
-        (259) => {
-            upgradeToVer259
+        (279) => {
+            upgradeToVer279
         };
-        (260) => {
-            upgradeToVer260
+        (280) => {
+            upgradeToVer280
         };
-        (261) => {
-            upgradeToVer261
+        (281) => {
+            upgradeToVer281
         };
-        (262) => {
-            upgradeToVer262
+        (282) => {
+            upgradeToVer282
         };
         (283) => {
             upgradeToVer283
@@ -798,7 +799,7 @@ pub static upgradeToVerFunctions: LazyLock<Vec<VersionedUpgradeFunction>> = Lazy
         141, 142, 143, 144, 146, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179,
         190, 191, 192, 193, 194, 195, 196, 197, 198, 209, 210, 211, 212, 213, 214, 215, 216, 217,
         218, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255,
-        256, 257, 258, 259, 260, 261, 262, 283,
+        256, 277, 278, 279, 280, 281, 282, 283,
     ]
 });
 
@@ -1534,32 +1535,32 @@ pub fn upgradeToVer256(_s: &sessionapi::Session, _version: i64) {
     upgrade_action("upgradeToVer256");
 }
 
-pub fn upgradeToVer257(_s: &sessionapi::Session, _version: i64) {
-    upgrade_action("upgradeToVer257");
+pub fn upgradeToVer277(_s: &sessionapi::Session, _version: i64) {
+    upgrade_action("upgradeToVer277");
 }
 
-pub fn upgradeToVer258(_s: &sessionapi::Session, _version: i64) {
-    upgrade_action("upgradeToVer258");
+pub fn upgradeToVer278(_s: &sessionapi::Session, _version: i64) {
+    upgrade_action("upgradeToVer278");
 }
 
 /// 回填 ignore-inlist plan digest 相关变量。
-pub fn upgradeToVer259(_s: &sessionapi::Session, _version: i64) {
-    upgrade_action("upgradeToVer259");
+pub fn upgradeToVer279(_s: &sessionapi::Session, _version: i64) {
+    upgrade_action("upgradeToVer279");
 }
 
-/// 升级到版本 260。
-pub fn upgradeToVer260(_s: &sessionapi::Session, _version: i64) {
-    upgrade_action("upgradeToVer260");
+/// 升级到版本 280。
+pub fn upgradeToVer280(_s: &sessionapi::Session, _version: i64) {
+    upgrade_action("upgradeToVer280");
 }
 
 /// 回填默认字符串匹配选择率。
-pub fn upgradeToVer261(_s: &sessionapi::Session, _version: i64) {
-    upgrade_action("upgradeToVer261");
+pub fn upgradeToVer281(_s: &sessionapi::Session, _version: i64) {
+    upgrade_action("upgradeToVer281");
 }
 
 /// 刷新 binding digest 算法。
-pub fn upgradeToVer262(_s: &sessionapi::Session, _version: i64) {
-    upgrade_action("upgradeToVer262");
+pub fn upgradeToVer282(_s: &sessionapi::Session, _version: i64) {
+    upgrade_action("upgradeToVer282");
 }
 
 /// 安装生产环境按名执行升级 DDL/DML 的 handler；未安装则升级必须失败。

@@ -26,7 +26,7 @@ use std::time::Duration;
 pub struct VersionedUpgrade {
     /// 目标 bootstrap 版本号。
     pub version: i64,
-    /// 升级函数名（如 `upgradeToVer259`）。
+    /// 升级函数名（如 `upgradeToVer279`）。
     pub name: &'static str,
 }
 
@@ -85,7 +85,7 @@ pub fn upgrade_bootstrap_variables<R: BootstrapVariableUpgradeRuntime>(
 ) -> Result<(), R::Error> {
     use crate::upgrade_def::{
         version54, version59, version68, version80, version81, version97, version105, version135,
-        version215, version255, version259, version261, version283,
+        version215, version255, version279, version281, version283,
     };
 
     if from < version54 && from <= crate::upgrade_def::version38 {
@@ -126,10 +126,10 @@ pub fn upgrade_bootstrap_variables<R: BootstrapVariableUpgradeRuntime>(
     if from < version255 {
         runtime.update_global_if_equal("tidb_analyze_version", "1", "2")?;
     }
-    if from < version259 {
+    if from < version279 {
         runtime.insert_global_if_missing("tidb_ignore_inlist_plan_digest", "OFF")?;
     }
-    if from < version261 {
+    if from < version281 {
         // Clusters upgraded from the old implementation retain its historical
         // 0.8 behaviour even though the current built-in default has changed.
         runtime.insert_global_if_missing("tidb_default_string_match_selectivity", "0.8")?;
@@ -148,7 +148,7 @@ pub fn upgrade_bootstrap_variables<R: BootstrapVariableUpgradeRuntime>(
     Ok(())
 }
 
-/// Persisted bind-info fields needed by the v262 digest refresh. Callers must
+/// Persisted bind-info fields needed by the v282 digest refresh. Callers must
 /// provide rows newest first, matching Go's update/create/row-id ordering.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BindingDigestRefreshRow {
@@ -159,7 +159,7 @@ pub struct BindingDigestRefreshRow {
     pub plan_digest: Option<String>,
 }
 
-/// One database mutation produced by the v262 refresh planner.
+/// One database mutation produced by the v282 refresh planner.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BindingDigestRefreshAction {
     ClearInvalidPlanDigest {
@@ -175,7 +175,7 @@ pub enum BindingDigestRefreshAction {
     },
 }
 
-/// Plan Go-equivalent v262 binding mutations without coupling the algorithm to
+/// Plan Go-equivalent v282 binding mutations without coupling the algorithm to
 /// a particular SQL result-set implementation.
 pub fn plan_binding_digest_refresh(
     rows: impl IntoIterator<Item = BindingDigestRefreshRow>,

@@ -294,11 +294,11 @@ impl Drop for LabelResources {
 }
 
 #[test]
-fn masking_policy_upgrade_189_254_recreates_missing_masking_table_after_restart() {
+fn masking_policy_upgrade_189_254_279_recreates_missing_masking_table_after_restart() {
     if astersql_config_kerneltype::IsNextGen() {
         return;
     }
-    for version in [189, 254] {
+    for version in [189, 254, 279] {
         let f = Fixture::new();
         let handle = f.domain.storage_handle();
         let policy = f
@@ -3273,7 +3273,7 @@ fn masking_policy_dependent_table_initialization_is_versioned_and_idempotent() {
         .unwrap()
         .query("RENAME TABLE mysql.tidb_masking_policy TO mysql.tidb_masking_policy_bak")
         .unwrap();
-    for version in [None, Some(0), Some(260), Some(261)] {
+    for version in [None, Some(0), Some(280), Some(281)] {
         super::session::init_bootstrap_dependent_tables(&f.domain, version).unwrap();
         assert!(
             f.domain
@@ -3300,5 +3300,51 @@ fn masking_policy_dependent_table_initialization_is_versioned_and_idempotent() {
         let after = read_id();
         super::session::init_bootstrap_dependent_tables(&f.domain, Some(189)).unwrap();
         assert_eq!(read_id(), after);
+    }
+}
+
+#[test]
+fn bootstrap_reserved_versions_preserve_compatibility_variables() {
+    if astersql_config_kerneltype::IsNextGen() {
+        return;
+    }
+    for (version, expected) in [(278, "0.8"), (280, "0.8"), (281, "0")] {
+        let f = Fixture::new();
+        let mut sql = f.pool.acquire().unwrap();
+        sql.query(format!("UPDATE mysql.tidb SET variable_value='{version}' WHERE variable_name='tidb_server_version'")).unwrap();
+        sql.query("DELETE FROM mysql.global_variables WHERE variable_name='tidb_default_string_match_selectivity'").unwrap();
+        super::BootstrapCanonicalDomain(f.domain.clone()).unwrap();
+        // The historical value must be materialized before bootstrap's current
+        // sysvar default, while a cluster already at 281 keeps that default.
+        assert_eq!(sql.query("SELECT variable_value FROM mysql.global_variables WHERE variable_name='tidb_default_string_match_selectivity'").unwrap(), vec![vec![expected.to_string()]]);
+        sql.query("UPDATE mysql.global_variables SET variable_value='0.6' WHERE variable_name='tidb_default_string_match_selectivity'").unwrap();
+        sql.query(format!("UPDATE mysql.tidb SET variable_value='{version}' WHERE variable_name='tidb_server_version'")).unwrap();
+        super::BootstrapCanonicalDomain(f.domain.clone()).unwrap();
+        assert_eq!(sql.query("SELECT variable_value FROM mysql.global_variables WHERE variable_name='tidb_default_string_match_selectivity'").unwrap(), vec![vec!["0.6".to_string()]]);
+    }
+}
+
+#[test]
+fn bootstrap_binding_digest_refresh_runs_until_version282() {
+    if astersql_config_kerneltype::IsNextGen() {
+        return;
+    }
+    for version in [281, 282] {
+        let f = Fixture::new();
+        let mut sql = f.pool.acquire().unwrap();
+        sql.query(format!("UPDATE mysql.tidb SET variable_value='{version}' WHERE variable_name='tidb_server_version'")).unwrap();
+        sql.query("INSERT INTO mysql.bind_info (original_sql,bind_sql,default_db,status,create_time,update_time,charset,collation,source,sql_digest,plan_digest) VALUES ('old','select * from test.normal_ddl_target where ((id = 1))','test','enabled','2026-01-01 00:00:00','2026-01-01 00:00:00','utf8mb4','utf8mb4_bin','manual','old-digest','plan-digest')").unwrap();
+        super::BootstrapCanonicalDomain(f.domain.clone()).unwrap();
+        let rows = sql
+            .query("SELECT sql_digest,plan_digest FROM mysql.bind_info WHERE source='manual'")
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][1], "plan-digest");
+        if version < 282 {
+            assert_ne!(rows[0][0], "old-digest");
+            assert!(!rows[0][0].is_empty());
+        } else {
+            assert_eq!(rows[0][0], "old-digest");
+        }
     }
 }

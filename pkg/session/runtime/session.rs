@@ -1989,7 +1989,7 @@ fn upgrade_canonical_domain(
              ADD COLUMN IF NOT EXISTS summary JSON",
         )?;
     }
-    if previous_bootstrap_version.is_some_and(|version| version < crate::upgrade_def::version262) {
+    if previous_bootstrap_version.is_some_and(|version| version < crate::upgrade_def::version282) {
         refresh_canonical_binding_digests(session)?;
     }
     Ok(())
@@ -2006,14 +2006,14 @@ fn refresh_canonical_binding_digests(session: &ConcreteSession) -> SessionResult
     )?;
     let Some(mut result) = result_sets.pop() else {
         return Err(SessionError::new(
-            "v262 bind_info scan returned no result set",
+            "v282 bind_info scan returned no result set",
         ));
     };
     let mut rows = Vec::new();
     while let Some(row) = result.next_row()? {
         if row.len() != 4 {
             return Err(SessionError::new(
-                "v262 bind_info scan returned an invalid row",
+                "v282 bind_info scan returned an invalid row",
             ));
         }
         rows.push(BindingDigestRefreshRow {
@@ -2194,8 +2194,8 @@ pub(super) fn init_bootstrap_dependent_tables(
     version: Option<i64>,
 ) -> SessionResult<()> {
     if astersql_config_kerneltype::IsNextGen()
-        || !version.is_some_and(|v| v > 0 && v < crate::upgrade_def::version260)
-        || unsafe { crate::upgrade_def::currentBootstrapVersion } < crate::upgrade_def::version260
+        || !version.is_some_and(|v| v > 0 && v < crate::upgrade_def::version280)
+        || unsafe { crate::upgrade_def::currentBootstrapVersion } < crate::upgrade_def::version280
     {
         return Ok(());
     }
@@ -2294,7 +2294,7 @@ pub fn BootstrapCanonicalDomain(domain: Arc<Domain>) -> SessionResult<ConcreteSe
         session.execute(&format!("CREATE DATABASE IF NOT EXISTS {database}"))?;
     }
     for definition in astersql_meta_metadef::BootstrapSystemTableDefinitions {
-        // Fresh bootstrap owns creation; classic upgrades below v260 were
+        // Fresh bootstrap owns creation; classic upgrades below v280 were
         // initialized directly above. A later restart must preserve user renames.
         if definition.name == "tidb_masking_policy"
             && previous_bootstrap_version.is_some_and(|v| v > 0)

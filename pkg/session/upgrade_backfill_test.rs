@@ -55,32 +55,28 @@ impl BootstrapVariableUpgradeRuntime for VariableStore {
 }
 
 #[test]
-fn upgrade_to_ver259_backfills_ignore_inlist_plan_digest() {
+fn upgrade_to_ver279_backfills_ignore_inlist_plan_digest() {
     let mut store = VariableStore::default();
-    upgrade_bootstrap_variables(&mut store, crate::upgrade_def::version258)
-        .expect("upgrade variables from v258");
+    upgrade_bootstrap_variables(&mut store, 278).expect("upgrade variables from v278");
     assert_eq!(store.0["tidb_ignore_inlist_plan_digest"], "OFF");
 
     store
         .0
         .insert("tidb_ignore_inlist_plan_digest".into(), "ON".into());
-    upgrade_bootstrap_variables(&mut store, crate::upgrade_def::version258)
-        .expect("repeat v259 backfill");
+    upgrade_bootstrap_variables(&mut store, 278).expect("repeat v279 backfill");
     assert_eq!(store.0["tidb_ignore_inlist_plan_digest"], "ON");
 }
 
 #[test]
-fn upgrade_to_ver261_backfills_historical_string_match_selectivity() {
+fn upgrade_to_ver281_backfills_historical_string_match_selectivity() {
     let mut store = VariableStore::default();
-    upgrade_bootstrap_variables(&mut store, crate::upgrade_def::version260)
-        .expect("upgrade variables from v260");
+    upgrade_bootstrap_variables(&mut store, 280).expect("upgrade variables from v280");
     assert_eq!(store.0["tidb_default_string_match_selectivity"], "0.8");
 
     store
         .0
         .insert("tidb_default_string_match_selectivity".into(), "0.6".into());
-    upgrade_bootstrap_variables(&mut store, crate::upgrade_def::version260)
-        .expect("repeat v261 backfill");
+    upgrade_bootstrap_variables(&mut store, 280).expect("repeat v281 backfill");
     assert_eq!(store.0["tidb_default_string_match_selectivity"], "0.6");
 }
 
@@ -95,7 +91,7 @@ fn binding(identity: &str, bind_sql: &str, plan_digest: Option<&str>) -> Binding
 }
 
 #[test]
-fn upgrade_to_ver262_refreshes_digests_and_resolves_duplicates_newest_first() {
+fn upgrade_to_ver282_refreshes_digests_and_resolves_duplicates_newest_first() {
     let winner = binding(
         "winner",
         "select /*+ use_index(t_issue, idx_issue_b) */ * from t_issue where ((a = 1) and (b = 1))",
@@ -154,7 +150,7 @@ fn upgrade_to_ver262_refreshes_digests_and_resolves_duplicates_newest_first() {
 }
 
 #[test]
-fn upgrade_to_ver262_keeps_equal_sql_digests_when_plan_digests_differ() {
+fn upgrade_to_ver282_keeps_equal_sql_digests_when_plan_digests_differ() {
     let first = binding(
         "first",
         "select /*+ use_index(t, idx_a) */ * from t where a = 1",
@@ -198,7 +194,7 @@ fn canonical_mock_upgrade_retargets_only_supported_versions() {
 #[test]
 fn upgrade_backfills_and_preserves_values() {
     let mut store = VariableStore::default();
-    upgrade_bootstrap_variables(&mut store, 262).unwrap();
+    upgrade_bootstrap_variables(&mut store, 282).unwrap();
     assert_eq!(
         store
             .0
@@ -219,10 +215,26 @@ fn upgrade_backfills_and_preserves_values() {
     store
         .0
         .insert("tidb_analyze_default_num_topn".into(), "150".into());
-    upgrade_bootstrap_variables(&mut store, 262).unwrap();
+    upgrade_bootstrap_variables(&mut store, 282).unwrap();
     assert_eq!(store.0["tidb_analyze_default_num_buckets"], "512");
     assert_eq!(store.0["tidb_analyze_default_num_topn"], "150");
     let mut current = VariableStore::default();
     upgrade_bootstrap_variables(&mut current, 283).unwrap();
     assert!(current.0.is_empty());
+}
+
+#[test]
+fn bootstrap_variable_backfills_stop_at_their_renumbered_versions() {
+    let mut at279 = VariableStore::default();
+    upgrade_bootstrap_variables(&mut at279, 279).unwrap();
+    assert!(!at279.0.contains_key("tidb_ignore_inlist_plan_digest"));
+    assert_eq!(at279.0["tidb_default_string_match_selectivity"], "0.8");
+    let mut at281 = VariableStore::default();
+    upgrade_bootstrap_variables(&mut at281, 281).unwrap();
+    assert!(
+        !at281
+            .0
+            .contains_key("tidb_default_string_match_selectivity")
+    );
+    assert_eq!(at281.0["tidb_analyze_default_num_buckets"], "256");
 }
