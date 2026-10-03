@@ -122,10 +122,12 @@ fn noop_removed_and_hint_metadata_match_go_behavior() {
     let mut sysvars = vec![
         setvar_affect::SysVar::new("tidb_allow_mpp"),
         setvar_affect::SysVar::new("not_hint_updatable"),
+        setvar_affect::SysVar::new("tidb_paging_size_bytes"),
     ];
     setvar_affect::setHintUpdatable(&mut sysvars);
     assert!(sysvars[0].IsHintUpdatableVerified);
     assert!(!sysvars[1].IsHintUpdatableVerified);
+    assert!(!sysvars[2].IsHintUpdatableVerified);
 }
 
 /// 校验序列（SEQUENCE）状态的并发更新、深拷贝隔离与合并写入语义。
