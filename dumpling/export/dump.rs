@@ -633,9 +633,14 @@ pub fn dumpTableMeta(
                 ShowCreateSequence(tctx, conn, db, &table.Name, conf)?,
                 String::new(),
             ),
-            TableType::TableTypeBase => {
-                (ShowCreateTable(tctx, conn, db, &table.Name)?, String::new())
-            }
+            TableType::TableTypeBase => (
+                if projection.schemaSQL.is_empty() {
+                    ShowCreateTable(tctx, conn, db, &table.Name)?
+                } else {
+                    projection.schemaSQL.clone()
+                },
+                String::new(),
+            ),
         }
     };
     Ok(Box::new(tableMeta {
@@ -886,6 +891,7 @@ pub struct columnProjection {
     pub sourceTypes: Vec<ColumnType>,
     pub selectedTypes: Vec<ColumnType>,
     pub selectField: String,
+    pub schemaSQL: String,
 }
 
 pub fn prepareColumnProjection(
@@ -894,11 +900,96 @@ pub fn prepareColumnProjection(
     conn: &mut BaseConn,
 ) -> Result<()> {
     conf.columnProjection = HashMap::with_capacity(calculateTableCount(&conf.Tables) as usize);
+    let mut any_filtered_columns = false;
     for (db, tables) in &conf.Tables {
         for table in tables {
             let projection = buildColumnProjection(tctx, conf, conn, db, table)?;
+            any_filtered_columns |= projection.sourceTypes.len() != projection.selectedTypes.len();
             conf.columnProjection
                 .insert((db.clone(), table.Name.clone()), projection);
+        }
+    }
+    if conf.NoSchemas || !any_filtered_columns {
+        return Ok(());
+    }
+    if conf
+        .Tables
+        .values()
+        .flatten()
+        .any(|table| table.Type == TableType::TableTypeView)
+    {
+        return Err(errors_new(
+            "schema output with an active column filter is not supported when the dump includes views",
+        ));
+    }
+    let mut parser = schema_projection::new_schema_parser(&conf.SessionParams)?;
+    let mut schemas = schema_projection::ProjectedTableSchemas::new();
+    for (db, tables) in &conf.Tables {
+        for table in tables {
+            if table.Type != TableType::TableTypeBase {
+                continue;
+            }
+            let key = (db.clone(), table.Name.clone());
+            let mut projection = conf.columnProjection.get(&key).unwrap().clone();
+            let original = ShowCreateTable(tctx, conn, db, &table.Name)?;
+            let filtered = projection.sourceTypes.len() != projection.selectedTypes.len();
+            let schema = if filtered {
+                schema_projection::build_projected_table_schema(
+                    &mut parser,
+                    &original,
+                    &projection
+                        .selectedTypes
+                        .iter()
+                        .map(|column| column.Name().to_owned())
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                schema_projection::parse_table_schema(&mut parser, &original)
+            }
+            .map_err(|err| {
+                errors_new(format!(
+                    "failed to analyze schema projection for table `{}`.`{}`: {}",
+                    escapeString(db),
+                    escapeString(&table.Name),
+                    err.msg
+                ))
+            })?;
+            projection.schemaSQL = if filtered {
+                schema_projection::restore_projected_schema(&schema.create_table).map_err(
+                    |err| {
+                        errors_new(format!(
+                            "failed to restore schema projection for table `{}`.`{}`: {}",
+                            escapeString(db),
+                            escapeString(&table.Name),
+                            err.msg
+                        ))
+                    },
+                )?
+            } else {
+                original
+            };
+            conf.columnProjection.insert(key.clone(), projection);
+            schemas.insert(key, schema);
+        }
+    }
+    // Every parent must exist before FK validation; HashMap iteration order must
+    // not turn an unbuilt parent into an apparently external table.
+    for (db, tables) in &conf.Tables {
+        for table in tables {
+            if table.Type != TableType::TableTypeBase {
+                continue;
+            }
+            let schema = schemas.get(&(db.clone(), table.Name.clone())).unwrap();
+            schema_projection::validate_foreign_key_parents(db, schema, &schemas).map_err(
+                |err| {
+                    errors_new(format!(
+                        "failed to validate schema projection for table `{}`.`{}`: {}",
+                        escapeString(db),
+                        escapeString(&table.Name),
+                        err.msg
+                    ))
+                },
+            )?;
         }
     }
     Ok(())
@@ -941,6 +1032,7 @@ pub fn buildColumnProjection(
         sourceTypes,
         selectedTypes,
         selectField,
+        schemaSQL: String::new(),
     })
 }
 

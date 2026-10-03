@@ -2831,8 +2831,12 @@ dependencies = [
  "astersql-dumpling-context",
  "astersql-dumpling-log",
  "astersql-objstore-storeapi",
+ "astersql-parser",
+ "astersql-parser-format",
+ "astersql-parser-mysql",
  "astersql-util-table-filter",
  "parquet",
+ "regex",
  "toml",
 ]
 

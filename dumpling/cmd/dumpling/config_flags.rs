@@ -282,11 +282,11 @@ pub fn DefineFlags(flags: &mut FlagSet) {
         vec!["*.*".into(), DefaultTableFilter.into()],
         "filter to select which tables to dump",
     );
-    flags.StringArray("column-filter", vec![], "Inline TOML column filter. Repeat for multiple rules; mutually exclusive with --column-filter-file and --sql");
+    flags.StringArray("column-filter", vec![], "Inline TOML column filter rule for data and schema projection. Can be specified multiple times. Example: --column-filter '{ matcher = [\"db.tbl\"], columns = [\"*\", \"!col\"] }'. Unmatched tables are dumped with all columns; column rules are case-insensitive. Mutually exclusive with --column-filter-file and cannot be used with --sql");
     flags.String(
         "column-filter-file",
         "",
-        "Column filter TOML file; mutually exclusive with --column-filter and --sql",
+        "Path to the column filter TOML file for data and schema projection. Unmatched tables are dumped with all columns; column rules are case-insensitive. Cannot be used with --sql",
     );
     flags.Bool(
         FLAG_CASE_SENSITIVE,
@@ -615,7 +615,7 @@ pub fn ParseFromFlags(conf: &mut Config, flags: &FlagSet) -> Result<(), String> 
 
     // session params 逐项并入 Config，保留调用方显式设置的键值对。
     for (k, v) in params {
-        conf.SessionParams.insert(k, v);
+        conf.SessionParams.insert(k.to_lowercase(), v);
     }
     // 不做覆盖保护是因为 CLI 语义本来就是“用户传什么就写什么”。
     // 若调用方重复传同名键，后写入值覆盖前值，符合常见 map 参数预期。

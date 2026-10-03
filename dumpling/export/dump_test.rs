@@ -905,3 +905,284 @@ fn dump_publishes_final_nonempty_sql_export_status() {
     assert_eq!(final_status.ProgressPercent, Some(100.0));
     assert_eq!(final_status.CompletedTables, 1.0);
 }
+
+#[test]
+fn column_projection_rejects_views_before_schema_queries() {
+    let mut conf = projection_config(&[r#"{matcher=["db.t"],columns=["id"]}"#]);
+    conf.NoSchemas = false;
+    conf.Tables.get_mut("db").unwrap().push(TableInfo {
+        Name: "v".into(),
+        AvgRowLength: 0,
+        Type: TableType::TableTypeView,
+    });
+    let conn = Conn::new();
+    seed_writable_columns(&conn, &[("id", ""), ("secret", "")]);
+    conn.seed_rows(
+        "SELECT `id`,`secret` FROM `db`.`t` LIMIT 1",
+        projection_rows(
+            &[("id", "INT"), ("secret", "VARCHAR")],
+            vec![vec![Some(b"1".to_vec()), Some(b"hidden".to_vec())]],
+        ),
+    );
+    let mut base = newBaseConn(conn, false, None);
+    let err = prepareColumnProjection(&tcontext::Background(), &mut conf, &mut base).unwrap_err();
+    assert_eq!(
+        err.msg,
+        "schema output with an active column filter is not supported when the dump includes views"
+    );
+}
+
+#[test]
+fn column_projection_schema_excludes_removed_columns() {
+    let mut conf = projection_config(&[r#"{matcher=["db.t"],columns=["id"]}"#]);
+    conf.NoSchemas = false;
+    conf.ServerInfo.ServerType = ServerType::ServerTypeMySQL;
+    let conn = Conn::new();
+    seed_writable_columns(&conn, &[("id", ""), ("secret", "")]);
+    conn.seed_rows(
+        "SELECT `id`,`secret` FROM `db`.`t` LIMIT 1",
+        projection_rows(
+            &[("id", "INT"), ("secret", "VARCHAR")],
+            vec![vec![Some(b"1".to_vec()), Some(b"hidden".to_vec())]],
+        ),
+    );
+    conn.seed_query(
+        "SHOW CREATE TABLE `db`.`t`",
+        vec!["Create Table".into()],
+        vec![vec![Some(
+            b"CREATE TABLE `t` (`id` INT PRIMARY KEY, `secret` VARCHAR(12))".to_vec(),
+        )]],
+    );
+    let mut base = newBaseConn(conn, false, None);
+    let ctx = tcontext::Background();
+    prepareColumnProjection(&ctx, &mut conf, &mut base).unwrap();
+    let meta = dumpTableMeta(
+        &ctx,
+        &conf,
+        &mut base,
+        "db",
+        &projection_table(TableType::TableTypeBase),
+    )
+    .unwrap();
+    assert!(
+        !meta.ShowCreateTable().contains("`secret`"),
+        "{}",
+        meta.ShowCreateTable()
+    );
+}
+
+fn seed_schema_projection_table(
+    conn: &Conn,
+    table: &str,
+    columns: &[(&str, &str)],
+    create_sql: &str,
+) {
+    conn.seed_query(
+        &format!("SHOW COLUMNS FROM `db`.`{table}`"),
+        vec!["Field".into(), "Extra".into()],
+        columns
+            .iter()
+            .map(|(name, _)| vec![Some(name.as_bytes().to_vec()), Some(vec![])])
+            .collect(),
+    );
+    let fields = columns
+        .iter()
+        .map(|(name, _)| wrapBackTicks(name))
+        .collect::<Vec<_>>()
+        .join(",");
+    conn.seed_rows(
+        &format!("SELECT {fields} FROM `db`.`{table}` LIMIT 1"),
+        projection_rows(
+            columns,
+            vec![columns.iter().map(|_| Some(b"1".to_vec())).collect()],
+        ),
+    );
+    conn.seed_query(
+        &format!("SHOW CREATE TABLE `db`.`{table}`"),
+        vec!["Create Table".into()],
+        vec![vec![Some(create_sql.as_bytes().to_vec())]],
+    );
+}
+
+#[test]
+fn column_projection_prepares_ansi_schema_and_caches_filtered_and_plain_tables() {
+    let mut conf = projection_config(&[r#"{matcher=["db.t"],columns=["id","name"]}"#]);
+    conf.NoSchemas = false;
+    conf.ServerInfo.ServerType = ServerType::ServerTypeMySQL;
+    conf.SessionParams.insert("sql_mode".into(), "ANSI".into());
+    conf.Tables.get_mut("db").unwrap().push(TableInfo {
+        Name: "plain".into(),
+        AvgRowLength: 0,
+        Type: TableType::TableTypeBase,
+    });
+    let conn = Conn::new();
+    seed_schema_projection_table(
+        &conn,
+        "t",
+        &[("id", "INT"), ("name", "VARCHAR"), ("secret", "VARCHAR")],
+        r#"CREATE TABLE "t"("id" INT PRIMARY KEY,"name" VARCHAR(12),"secret" VARCHAR(12))"#,
+    );
+    let plain = r#"CREATE TABLE "plain"("id" INT PRIMARY KEY)"#;
+    seed_schema_projection_table(&conn, "plain", &[("id", "INT")], plain);
+    let mut base = newBaseConn(conn.clone(), false, None);
+    let ctx = tcontext::Background();
+    prepareColumnProjection(&ctx, &mut conf, &mut base).unwrap();
+    // Changing the network boundary after prepare proves metadata consumes the
+    // cached schema rather than issuing a second SHOW CREATE TABLE query.
+    for table in ["t", "plain"] {
+        conn.seed_query(
+            &format!("SHOW CREATE TABLE `db`.`{table}`"),
+            vec!["Create Table".into()],
+            vec![vec![Some(b"uncached schema must not be consumed".to_vec())]],
+        );
+    }
+    let meta = dumpTableMeta(
+        &ctx,
+        &conf,
+        &mut base,
+        "db",
+        &projection_table(TableType::TableTypeBase),
+    )
+    .unwrap();
+    assert!(meta.ShowCreateTable().contains("`id`"));
+    assert!(meta.ShowCreateTable().contains("`name`"));
+    assert!(!meta.ShowCreateTable().contains("`secret`"));
+    let plain_table = conf.Tables["db"]
+        .iter()
+        .find(|table| table.Name == "plain")
+        .unwrap();
+    assert_eq!(
+        dumpTableMeta(&ctx, &conf, &mut base, "db", plain_table)
+            .unwrap()
+            .ShowCreateTable(),
+        plain
+    );
+}
+
+#[test]
+fn column_projection_validates_foreign_keys_after_all_schemas_without_adding_collation() {
+    for parent_first in [false, true] {
+        for remove_parent in [false, true] {
+            let rules = if remove_parent {
+                r#"{matcher=["db.parent"],columns=["id"]}"#
+            } else {
+                r#"{matcher=["db.parent"],columns=["id","name"]}"#
+            };
+            let mut conf = projection_config(&[rules]);
+            conf.NoSchemas = false;
+            conf.ServerInfo.ServerType = ServerType::ServerTypeMySQL;
+            let child = TableInfo {
+                Name: "child".into(),
+                AvgRowLength: 0,
+                Type: TableType::TableTypeBase,
+            };
+            let parent = TableInfo {
+                Name: "parent".into(),
+                AvgRowLength: 0,
+                Type: TableType::TableTypeBase,
+            };
+            conf.Tables.insert(
+                "db".into(),
+                if parent_first {
+                    vec![parent, child]
+                } else {
+                    vec![child, parent]
+                },
+            );
+            let conn = Conn::new();
+            seed_schema_projection_table(
+                &conn,
+                "child",
+                &[("id", "INT"), ("parent_name", "VARCHAR")],
+                "CREATE TABLE child(id INT PRIMARY KEY,parent_name VARCHAR(12),FOREIGN KEY(parent_name) REFERENCES parent(name))",
+            );
+            seed_schema_projection_table(
+                &conn,
+                "parent",
+                &[("id", "INT"), ("name", "VARCHAR"), ("secret", "INT")],
+                "CREATE TABLE parent(id INT PRIMARY KEY,name VARCHAR(12),secret INT,KEY(name))",
+            );
+            let mut base = newBaseConn(conn, false, None);
+            let result = prepareColumnProjection(&tcontext::Background(), &mut conf, &mut base);
+            if remove_parent {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .msg
+                        .contains("foreign key references removed column `db`.`parent`.`name`")
+                );
+            } else {
+                result.unwrap();
+                let sql = &conf.columnProjection[&("db".into(), "parent".into())].schemaSQL;
+                assert!(!sql.contains("CHARACTER SET"), "{sql}");
+                assert!(!sql.contains("COLLATE"), "{sql}");
+                assert!(!sql.contains("`secret`"), "{sql}");
+            }
+        }
+    }
+}
+
+#[test]
+fn column_projection_schema_retains_generated_columns_and_indexes_that_depend_on_selected_fields() {
+    let mut conf = projection_config(&[r#"{matcher=["db.t"],columns=["id","name"]}"#]);
+    conf.NoSchemas = false;
+    conf.ServerInfo.ServerType = ServerType::ServerTypeMySQL;
+    let conn = Conn::new();
+    seed_schema_projection_table(
+        &conn,
+        "t",
+        &[("id", "INT"), ("name", "VARCHAR"), ("secret", "VARCHAR")],
+        "CREATE TABLE t(id INT PRIMARY KEY,name VARCHAR(32),secret VARCHAR(32),generated_name VARCHAR(32) GENERATED ALWAYS AS(name) STORED,generated_secret VARCHAR(32) GENERATED ALWAYS AS(secret) STORED,KEY idx_generated_name(generated_name),KEY idx_secret(secret))",
+    );
+    let mut base = newBaseConn(conn, false, None);
+    let ctx = tcontext::Background();
+    prepareColumnProjection(&ctx, &mut conf, &mut base).unwrap();
+    let meta = dumpTableMeta(
+        &ctx,
+        &conf,
+        &mut base,
+        "db",
+        &projection_table(TableType::TableTypeBase),
+    )
+    .unwrap();
+    let sql = meta.ShowCreateTable();
+    for kept in ["`id`", "`name`", "`generated_name`", "`idx_generated_name`"] {
+        assert!(sql.contains(kept), "{sql}");
+    }
+    for removed in ["`secret`", "`generated_secret`", "`idx_secret`"] {
+        assert!(!sql.contains(removed), "{sql}");
+    }
+    assert_eq!(meta.ColumnNames(), vec!["id", "name"]);
+    let ast = crate::schema_projection::parse_table_schema(&mut schema_parser::New(), sql).unwrap();
+    assert_eq!(ast.create_table.Cols.len(), 3);
+}
+
+#[test]
+fn column_projection_unchanged_writable_columns_and_no_schemas_skip_schema_analysis() {
+    for (columns, no_schemas) in [("*", false), ("id", true)] {
+        let mut conf =
+            projection_config(&[&format!(r#"{{matcher=["db.t"],columns=["{columns}"]}}"#)]);
+        conf.NoSchemas = no_schemas;
+        conf.ServerInfo.ServerType = ServerType::ServerTypeMySQL;
+        conf.SessionParams
+            .insert("sql_mode".into(), "INVALID_MODE".into());
+        let original = "CREATE TABLE t(id INT,secret INT,generated_value INT GENERATED ALWAYS AS(id+1) VIRTUAL,PRIMARY KEY(id,secret)) PARTITION BY KEY() PARTITIONS 2";
+        let conn = Conn::new();
+        seed_schema_projection_table(&conn, "t", &[("id", "INT"), ("secret", "INT")], original);
+        let mut base = newBaseConn(conn, false, None);
+        let ctx = tcontext::Background();
+        prepareColumnProjection(&ctx, &mut conf, &mut base).unwrap();
+        let meta = dumpTableMeta(
+            &ctx,
+            &conf,
+            &mut base,
+            "db",
+            &projection_table(TableType::TableTypeBase),
+        )
+        .unwrap();
+        assert_eq!(
+            meta.ShowCreateTable(),
+            if no_schemas { "" } else { original }
+        );
+    }
+}

@@ -93,3 +93,31 @@ fn column_filters_cli_file_conflict_and_sql_validation() {
     }
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn session_param_keys_are_normalized() {
+    for value in [
+        "SQL_MODE=ANSI_QUOTES",
+        "SQL_MODE=ANSI_QUOTES,CHARACTER_SET_CLIENT=latin1",
+    ] {
+        let mut flags = FlagSet::new();
+        DefineFlags(&mut flags);
+        flags.Parse(&["--params".into(), value.into()]).unwrap();
+        let mut conf = export::DefaultConfig();
+        ParseFromFlags(&mut conf, &flags).unwrap();
+        assert_eq!(
+            conf.SessionParams.get("sql_mode").map(String::as_str),
+            Some("ANSI_QUOTES")
+        );
+        assert!(!conf.SessionParams.contains_key("SQL_MODE"));
+        if value.contains("CHARACTER_SET_CLIENT") {
+            assert_eq!(
+                conf.SessionParams
+                    .get("character_set_client")
+                    .map(String::as_str),
+                Some("latin1")
+            );
+            assert!(!conf.SessionParams.contains_key("CHARACTER_SET_CLIENT"));
+        }
+    }
+}

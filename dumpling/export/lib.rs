@@ -155,3 +155,9 @@ mod writer_util_test;
 #[cfg(test)]
 #[path = "writer_test.rs"]
 mod writer_test;
+
+#[path = "schema_projection.rs"]
+mod schema_projection;
+#[cfg(test)]
+#[path = "schema_projection_test.rs"]
+mod schema_projection_test;

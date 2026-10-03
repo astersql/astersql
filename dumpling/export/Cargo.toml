@@ -29,3 +29,8 @@ toml = { version = "0.8.23", features = ["preserve_order"] }
 "astersql-util-table-filter" = { path = "../../pkg/util/table-filter" }
 
 astersql-dumpformat-sqlfile = { path = "../../pkg/dumpformat/sqlfile" }
+
+schema-parser = { package = "astersql-parser", path = "../../pkg/parser" }
+regex = "1"
+schema-format = { package = "astersql-parser-format", path = "../../pkg/parser/format" }
+schema-mysql = { package = "astersql-parser-mysql", path = "../../pkg/parser/mysql" }
