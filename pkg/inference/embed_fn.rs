@@ -1,5 +1,19 @@
 // Copyright 2026 AsterSQL.
+// Copyright 2025 PingCAP, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//	http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, Weak};
@@ -24,8 +38,9 @@ const BATCH_WINDOW: Duration = Duration::from_millis(100);
 const MAX_BATCH_SIZE: usize = 16;
 
 struct Call {
-    text: String,
-    result: Mutex<Option<Result<Vec<f32>, String>>>,
+    texts: Vec<String>,
+    cacheable: bool,
+    result: Mutex<Option<Result<Vec<Vec<f32>>, String>>>,
     done: Condvar,
     waiters: AtomicUsize,
     cancelled: AtomicBool,
@@ -33,9 +48,10 @@ struct Call {
 }
 
 impl Call {
-    fn new(text: String) -> Self {
+    fn new(texts: Vec<String>, cacheable: bool) -> Self {
         Self {
-            text,
+            texts,
+            cacheable,
             result: Mutex::new(None),
             done: Condvar::new(),
             waiters: AtomicUsize::new(1),
@@ -60,7 +76,7 @@ struct State {
     cache: HashMap<String, Vec<f32>>,
     cache_order: VecDeque<String>,
     in_flight: HashMap<String, Arc<Call>>,
-    batches: HashMap<String, Vec<Arc<Batch>>>,
+    batches: HashMap<BatchKey, Vec<Arc<Batch>>>,
     tasks: Vec<JoinHandle<()>>,
     closed: bool,
 }
@@ -71,6 +87,7 @@ pub struct EmbedFn {
     config_version: AtomicU64,
     batch_window: Duration,
     max_batch_size: usize,
+    next_call: AtomicU64,
 }
 
 impl Default for EmbedFn {
@@ -102,6 +119,7 @@ impl EmbedFn {
             } else {
                 batch_window
             },
+            next_call: AtomicU64::new(0),
             max_batch_size: if max_batch_size == 0 {
                 MAX_BATCH_SIZE
             } else {
@@ -112,7 +130,7 @@ impl EmbedFn {
 
     /// Register before the first embedding request.
     pub fn register(&self, provider: &str, embedder: Arc<dyn Embedder>) -> Result<(), String> {
-        let provider = provider.trim().to_ascii_lowercase();
+        let provider = provider.trim().to_lowercase();
         if provider.is_empty() || provider.contains('/') {
             return Err(format!("invalid embedding provider: {provider:?}"));
         }
@@ -134,7 +152,7 @@ impl EmbedFn {
             .lock()
             .expect("embedding state poisoned")
             .providers
-            .contains_key(&provider.trim().to_ascii_lowercase())
+            .contains_key(&provider.trim().to_lowercase())
     }
 
     /// Invalidate previously cached embeddings after provider configuration changes.
@@ -151,31 +169,75 @@ impl EmbedFn {
         opts: &Options,
         should_cancel: &dyn Fn() -> bool,
     ) -> Result<Vec<f32>, String> {
-        if should_cancel() {
-            return Err("context canceled".into());
+        let version = self.config_version.load(Ordering::Acquire);
+        let key = serde_json::to_string(&(model_with_provider, text, opts, version))
+            .map_err(|error| error.to_string())?;
+        let values = self.request(
+            model_with_provider,
+            &[text.to_owned()],
+            opts,
+            &|| should_cancel().then(|| "context canceled".into()),
+            key,
+            true,
+        )?;
+        let value = values.into_iter().next().expect("one text result");
+        if value.len() > 16_383 {
+            return Err("vector cannot have more than 16383 dimensions".into());
+        }
+        Ok(value)
+    }
+
+    /// Multi-text provider batching without the runtime embedding cache. Owned
+    /// snapshots allow a canceled caller to reuse its input immediately.
+    pub fn create_embeddings(
+        &self,
+        model_with_provider: &str,
+        texts: &[String],
+        opts: &Options,
+        cancellation: &dyn Fn() -> Option<String>,
+    ) -> Result<Vec<Vec<f32>>, String> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let key = format!(
+            "batch-call:{}",
+            self.next_call.fetch_add(1, Ordering::Relaxed)
+        );
+        self.request(model_with_provider, texts, opts, cancellation, key, false)
+    }
+
+    fn request(
+        &self,
+        model_with_provider: &str,
+        texts: &[String],
+        opts: &Options,
+        cancellation: &dyn Fn() -> Option<String>,
+        key: String,
+        cacheable: bool,
+    ) -> Result<Vec<Vec<f32>>, String> {
+        if let Some(cause) = poll_cancellation(cancellation) {
+            return Err(cause);
         }
         let (provider_name, model) = model_with_provider.split_once('/').ok_or_else(|| {
             format!("model name must be in format 'provider/model', got: {model_with_provider}")
         })?;
-        let provider_name = provider_name.trim().to_ascii_lowercase();
+        let provider_name = provider_name.trim().to_lowercase();
         let model = model.trim();
         let opts = opts.clone();
-        let version = self.config_version.load(Ordering::Acquire);
-        let key = serde_json::to_string(&(model_with_provider, text, &opts, version))
-            .map_err(|error| error.to_string())?;
-        let batch_key = serde_json::to_string(&(&provider_name, model, &opts))
-            .map_err(|error| error.to_string())?;
+        let batch_key = new_batch_key(&provider_name, model, &opts)?;
 
         let call = {
             let mut state = self.state.lock().expect("embedding state poisoned");
             if state.closed {
                 return Err("embedding function is closed".into());
             }
-            if let Some(cached) = state.cache.get(&key) {
-                if should_cancel() {
-                    return Err("context canceled".into());
+            if cacheable {
+                if let Some(cached) = state.cache.get(&key) {
+                    if let Some(cause) = poll_cancellation(cancellation) {
+                        return Err(cause);
+                    }
+                    return Ok(vec![cached.clone()]);
                 }
-                return Ok(cached.clone());
             }
             if let Some(call) = state.in_flight.get(&key) {
                 call.waiters.fetch_add(1, Ordering::AcqRel);
@@ -185,8 +247,15 @@ impl EmbedFn {
                     .providers
                     .get(&provider_name)
                     .cloned()
-                    .ok_or_else(|| format!("unknown embedding provider '{provider_name}'"))?;
-                let call = Arc::new(Call::new(text.to_owned()));
+                    .ok_or_else(|| {
+                        let mut providers = state.providers.keys().cloned().collect::<Vec<_>>();
+                        providers.sort();
+                        format!(
+                            "unknown embedding provider '{provider_name}', available providers: {}",
+                            providers.join(", ")
+                        )
+                    })?;
+                let call = Arc::new(Call::new(texts.to_vec(), cacheable));
                 state.in_flight.insert(key.clone(), Arc::clone(&call));
                 let existing = state
                     .batches
@@ -194,7 +263,14 @@ impl EmbedFn {
                     .and_then(|batches| {
                         batches.iter().find(|batch| {
                             !batch.cancelled.load(Ordering::Acquire)
-                                && batch.calls.lock().expect("batch poisoned").len()
+                                && batch.opts == opts
+                                && batch
+                                    .calls
+                                    .lock()
+                                    .expect("batch poisoned")
+                                    .iter()
+                                    .map(|(_, call)| call.texts.len())
+                                    .sum::<usize>()
                                     < self.max_batch_size
                         })
                     })
@@ -220,6 +296,7 @@ impl EmbedFn {
                     let worker_batch = Arc::clone(&batch);
                     let worker_key = batch_key.clone();
                     let batch_window = self.batch_window;
+                    let max_batch_size = self.max_batch_size;
                     state.tasks.retain(|task| !task.is_finished());
                     state.tasks.push(thread::spawn(move || {
                         let flush = worker_batch
@@ -230,14 +307,19 @@ impl EmbedFn {
                             .flush_ready
                             .wait_timeout_while(flush, batch_window, |flush| !*flush)
                             .expect("batch flush lock poisoned");
-                        run_batch(&shared, &worker_key, &worker_batch);
+                        run_batch(&shared, &worker_key, &worker_batch, max_batch_size);
                     }));
                     batch
                 };
                 *call.batch.lock().expect("call batch poisoned") = Arc::downgrade(&batch);
                 let mut calls = batch.calls.lock().expect("batch poisoned");
                 calls.push((key.clone(), Arc::clone(&call)));
-                if calls.len() >= self.max_batch_size {
+                if calls
+                    .iter()
+                    .map(|(_, call)| call.texts.len())
+                    .sum::<usize>()
+                    >= self.max_batch_size
+                {
                     *batch.flush_now.lock().expect("batch flush lock poisoned") = true;
                     batch.flush_ready.notify_one();
                 }
@@ -247,10 +329,10 @@ impl EmbedFn {
 
         let mut result = call.result.lock().expect("embedding call poisoned");
         loop {
-            if should_cancel() {
+            if let Some(cause) = poll_cancellation(cancellation) {
                 drop(result);
                 self.release_waiter(&key, &call);
-                return Err("context canceled".into());
+                return Err(cause);
             }
             if let Some(value) = result.clone() {
                 drop(result);
@@ -343,7 +425,12 @@ impl Drop for EmbedFn {
     }
 }
 
-fn run_batch(state: &Arc<Mutex<State>>, batch_key: &str, batch: &Arc<Batch>) {
+fn run_batch(
+    state: &Arc<Mutex<State>>,
+    batch_key: &BatchKey,
+    batch: &Arc<Batch>,
+    max_batch_size: usize,
+) {
     let calls = {
         let mut state = state.lock().expect("embedding state poisoned");
         if let Some(batches) = state.batches.get_mut(batch_key) {
@@ -364,36 +451,55 @@ fn run_batch(state: &Arc<Mutex<State>>, batch_key: &str, batch: &Arc<Batch>) {
     }
     let texts = active
         .iter()
-        .map(|(_, call)| call.text.clone())
+        .flat_map(|(_, call)| call.texts.clone())
         .collect::<Vec<_>>();
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        batch
-            .provider
-            .create_embeddings(&batch.cancelled, &batch.model, &texts, &batch.opts)
-    }))
-    .unwrap_or_else(|_| Err("embedding request panicked".into()));
-    let values = match outcome {
-        Ok(values) if values.len() == active.len() => values
-            .into_iter()
-            .map(|value| {
-                if value.len() > 16_383 {
-                    Err("vector cannot have more than 16383 dimensions".into())
-                } else {
-                    Ok(value)
+        let mut values = Vec::with_capacity(texts.len());
+        for chunk in texts.chunks(max_batch_size) {
+            let result = batch.provider.create_embeddings(
+                &batch.cancelled,
+                &batch.model,
+                chunk,
+                &batch.opts,
+            )?;
+            if result.len() != chunk.len() {
+                if result.is_empty() {
+                    return Err(format!("no embeddings returned for model {}", batch.model));
                 }
-            })
-            .collect(),
-        Ok(_) => vec![Err("embedding provider returned wrong result count".into()); active.len()],
-        Err(error) => vec![Err(error); active.len()],
-    };
+                return Err(format!(
+                    "embedding provider returned {} embeddings for {} texts",
+                    result.len(),
+                    chunk.len()
+                ));
+            }
+            values.extend(result);
+        }
+        Ok(values)
+    }))
+    .unwrap_or_else(|_| Err("embedding batch processing panicked".into()));
+    let mut offset = 0;
+    let values = active
+        .iter()
+        .map(|(_, call)| match &outcome {
+            Ok(values) => {
+                let end = offset + call.texts.len();
+                let result = values[offset..end].to_vec();
+                offset = end;
+                Ok(result)
+            }
+            Err(error) => Err(error.clone()),
+        })
+        .collect::<Vec<_>>();
     let mut state = state.lock().expect("embedding state poisoned");
     for ((key, call), value) in active.into_iter().zip(values) {
-        if !state.closed && call.waiters.load(Ordering::Acquire) > 0 {
+        if !state.closed && call.cacheable && call.waiters.load(Ordering::Acquire) > 0 {
             if let Ok(embedding) = &value {
-                if !state.cache.contains_key(&key) {
-                    state.cache_order.push_back(key.clone());
+                if embedding[0].len() <= 16_383 {
+                    if !state.cache.contains_key(&key) {
+                        state.cache_order.push_back(key.clone());
+                    }
+                    state.cache.insert(key.clone(), embedding[0].clone());
                 }
-                state.cache.insert(key.clone(), embedding.clone());
                 while state.cache.len() > CACHE_CAPACITY {
                     if let Some(oldest) = state.cache_order.pop_front() {
                         state.cache.remove(&oldest);
@@ -414,4 +520,48 @@ fn run_batch(state: &Arc<Mutex<State>>, batch_key: &str, batch: &Arc<Batch>) {
             call.done.notify_all();
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct BatchKey {
+    provider: String,
+    model: String,
+    pub(crate) options_digest: [u8; 32],
+}
+
+pub(crate) fn new_batch_key(
+    provider: &str,
+    model: &str,
+    opts: &Options,
+) -> Result<BatchKey, String> {
+    let serialized =
+        serde_json::to_vec(opts).map_err(|error| format!("failed to serialize opts: {error}"))?;
+    Ok(BatchKey {
+        provider: provider.into(),
+        model: model.into(),
+        options_digest: Sha256::digest(serialized).into(),
+    })
+}
+
+impl Embedder for EmbedFn {
+    fn create_embeddings(
+        &self,
+        cancel: &AtomicBool,
+        model: &str,
+        texts: &[String],
+        opts: &Options,
+    ) -> Result<Vec<Vec<f32>>, String> {
+        self.create_embeddings(model, texts, opts, &|| {
+            cancel
+                .load(Ordering::Acquire)
+                .then(|| "context canceled".into())
+        })
+    }
+}
+
+fn poll_cancellation(cancellation: &dyn Fn() -> Option<String>) -> Option<String> {
+    // A panicking cancellation observer must release its waiter and cancel a
+    // provider with no remaining callers, just as Go's recovery watcher does.
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(cancellation))
+        .unwrap_or_else(|_| Some("context canceled".into()))
 }

@@ -1,5 +1,6 @@
 // Copyright 2026 AsterSQL.
 
+pub mod base;
 pub mod cohere;
 pub mod embed_fn;
 pub mod gemini;
@@ -12,6 +13,8 @@ pub mod tidbcloud;
 pub use embed_fn::{EmbedFn, Embedder, Options};
 pub use mock::MockEmbedder;
 
+#[cfg(test)]
+mod base_test;
 #[cfg(test)]
 mod cohere_test;
 #[cfg(test)]

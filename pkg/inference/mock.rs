@@ -1,4 +1,17 @@
 // Copyright 2026 AsterSQL.
+// Copyright 2025 PingCAP, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//	http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -47,14 +60,26 @@ impl Embedder for MockEmbedder {
                 );
             }
         }
-        if cancel.load(Ordering::Acquire) {
+        if opts.contains_key("delay") && cancel.load(Ordering::Acquire) {
             return Err("context canceled".into());
         }
         texts
             .iter()
             .map(|text| {
-                let mut vector: Vec<f32> =
-                    serde_json::from_str(text).map_err(|error| error.to_string())?;
+                let decoded = serde_json::from_str::<Option<Vec<Option<f64>>>>(text)
+                    .map_err(|error| error.to_string())?
+                    .unwrap_or_default();
+                let mut vector = decoded
+                    .into_iter()
+                    .map(|value| {
+                        let value = value.unwrap_or_default() as f32;
+                        if value.is_finite() {
+                            Ok(value)
+                        } else {
+                            Err("invalid float32 value in embedding".to_owned())
+                        }
+                    })
+                    .collect::<Result<Vec<f32>, String>>()?;
                 if plus != 0.0 {
                     for value in &mut vector {
                         *value += plus;
@@ -67,42 +92,65 @@ impl Embedder for MockEmbedder {
 }
 
 fn parse_go_delay(value: &str) -> Option<Duration> {
-    if value == "0" {
-        return Some(Duration::ZERO);
-    }
-    let (negative, value) = if let Some(rest) = value.strip_prefix('-') {
+    let (negative, mut rest) = if let Some(rest) = value.strip_prefix('-') {
         (true, rest)
     } else {
         (false, value.strip_prefix('+').unwrap_or(value))
     };
-    let mut rest = value;
-    let mut nanos = 0.0_f64;
+    if rest == "0" {
+        return Some(Duration::ZERO);
+    }
+    let limit = if negative {
+        1u128 << 63
+    } else {
+        i64::MAX as u128
+    };
+    let mut nanos = 0u128;
     let mut parsed = false;
     while !rest.is_empty() {
-        let number_len = rest
-            .char_indices()
-            .take_while(|(_, ch)| ch.is_ascii_digit() || *ch == '.')
-            .last()
-            .map(|(idx, ch)| idx + ch.len_utf8())?;
-        let (number, suffix) = rest.split_at(number_len);
-        let number = number.parse::<f64>().ok()?;
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        let integer = if digits == 0 {
+            0
+        } else {
+            rest[..digits].parse::<u128>().ok()?
+        };
+        rest = &rest[digits..];
+        let mut fraction = 0u128;
+        let mut scale = 1u128;
+        let mut fraction_digits = 0;
+        if let Some(suffix) = rest.strip_prefix('.') {
+            fraction_digits = suffix.bytes().take_while(u8::is_ascii_digit).count();
+            for digit in suffix[..fraction_digits].bytes().take(18) {
+                fraction = fraction * 10 + u128::from(digit - b'0');
+                scale *= 10;
+            }
+            rest = &suffix[fraction_digits..];
+        }
+        if digits == 0 && fraction_digits == 0 {
+            return None;
+        }
         let (unit, factor) = [
-            ("ns", 1.0),
-            ("us", 1_000.0),
-            ("µs", 1_000.0),
-            ("μs", 1_000.0),
-            ("ms", 1_000_000.0),
-            ("s", 1_000_000_000.0),
-            ("m", 60_000_000_000.0),
-            ("h", 3_600_000_000_000.0),
+            ("ns", 1u128),
+            ("us", 1000),
+            ("µs", 1000),
+            ("μs", 1000),
+            ("ms", 1_000_000),
+            ("s", 1_000_000_000),
+            ("m", 60_000_000_000),
+            ("h", 3_600_000_000_000),
         ]
         .into_iter()
-        .find(|(unit, _)| suffix.starts_with(unit))?;
-        nanos += number * factor;
-        rest = &suffix[unit.len()..];
+        .find(|(unit, _)| rest.starts_with(unit))?;
+        nanos = nanos
+            .checked_add(integer.checked_mul(factor)?)?
+            .checked_add(fraction * factor / scale)?;
+        if nanos > limit {
+            return None;
+        }
+        rest = &rest[unit.len()..];
         parsed = true;
     }
-    if !parsed || !nanos.is_finite() || nanos > u64::MAX as f64 {
+    if !parsed {
         return None;
     }
     Some(if negative {
