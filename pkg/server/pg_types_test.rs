@@ -233,3 +233,25 @@ fn missing_original_metadata_is_explicitly_unsupported() {
     assert!(crate::pg_result::encode(&result, "SELECT").is_err());
     context.close().unwrap();
 }
+
+#[test]
+fn catalog_char_and_acl_wire_types() {
+    let metadata = crate::pg_catalog::CatalogQuery::parse(
+        "SELECT 'x'::char AS kind, T.relacl FROM pg_class T",
+    )
+    .unwrap()
+    .unwrap()
+    .metadata();
+    let result = crate::conn::QueryResult {
+        columns: metadata.columns,
+        native_types: metadata.native_types,
+        rows: vec![vec![
+            crate::conn::Value::Text("x".into()),
+            crate::conn::Value::Null,
+        ]],
+        ..Default::default()
+    };
+    let messages = crate::pg_result::encode(&result, "SELECT").unwrap();
+    assert_eq!(oids(&messages[0].1), vec![1042, 1034]);
+    assert_eq!(messages[1].1, row(&[Some("x"), None]));
+}

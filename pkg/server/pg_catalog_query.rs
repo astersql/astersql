@@ -65,11 +65,15 @@ pub(crate) enum CompareOp {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CastType {
     InternalChar,
+    Char,
     Bigint,
     Varchar,
     Oid,
     Regclass,
     OperatorName,
+    TypeName,
+    ProcedureName,
+    FunctionName,
     IntArray,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -625,25 +629,33 @@ impl Parser {
             let target = self.identifier()?;
             let target = match target.as_str() {
                 "char" if quoted => CastType::InternalChar,
+                "char" => CastType::Char,
                 "bigint" => CastType::Bigint,
                 "varchar" => CastType::Varchar,
                 "oid" => CastType::Oid,
                 "regclass" => CastType::Regclass,
                 // Keep the supported name conversion atomic: a standalone
-                // regoper result would require an operator catalog and wire type.
-                "regoper" => {
+                // reg* result would require a separate catalog wire type.
+                "regtype" | "regoperator" | "regprocedure" | "regoper" | "regproc" => {
                     if self.peek() != Some(&Token::Cast) {
-                        return Err(unsupported("regoper requires a varchar name conversion"));
+                        return Err(unsupported(
+                            "catalog object names require a varchar conversion",
+                        ));
                     }
                     self.pos += 1;
-                    if self.identifier()? != "varchar" {
-                        return Err(unsupported("unsupported regoper conversion"));
+                    if !matches!(self.identifier()?.as_str(), "varchar" | "text") {
+                        return Err(unsupported("unsupported catalog object name conversion"));
                     }
                     self.casts += 1;
                     if self.casts > 128 {
                         return Err(unsupported("too many catalog casts"));
                     }
-                    CastType::OperatorName
+                    match target.as_str() {
+                        "regtype" => CastType::TypeName,
+                        "regprocedure" => CastType::ProcedureName,
+                        "regproc" => CastType::FunctionName,
+                        _ => CastType::OperatorName,
+                    }
                 }
                 "int" | "integer" => {
                     self.require_symbol('[')?;

@@ -29,6 +29,16 @@ pub(crate) const SYSTEM_RELATIONS: &[(&str, u32)] = &[
     ("pg_shdescription", 2396),
     ("pg_sequence", 2224),
     ("pg_inherits", 2611),
+    ("pg_opclass", 2616),
+    ("pg_opfamily", 2753),
+    ("pg_amop", 2602),
+    ("pg_amproc", 2603),
+    ("pg_collation", 3456),
+    ("pg_policy", 3256),
+    ("pg_trigger", 2620),
+    ("pg_rewrite", 2618),
+    ("pg_foreign_table", 3118),
+    ("pg_foreign_server", 1417),
 ];
 fn range_error() -> ConnError {
     ConnError::Session("PG object ID exceeds the supported OID range".into())

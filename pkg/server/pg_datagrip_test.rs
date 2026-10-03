@@ -418,7 +418,11 @@ fn pg_datagrip_metadata() {
                 Value::Signed(0),
                 Value::Text("table note".into())
             ],
-            vec![id, Value::Signed(1), Value::Text("identifier".into())]
+            vec![
+                id.clone(),
+                Value::Signed(1),
+                Value::Text("identifier".into())
+            ]
         ]
     );
     context
@@ -435,11 +439,24 @@ fn pg_datagrip_metadata() {
     assert_eq!(uncached[8], Value::Signed(1));
     context
         .execute_query(
-            "ALTER TABLE test.dg_metadata COMMENT='updated note'",
+            "DROP TABLE test.dg_metadata",
             false,
             &CancellationToken::new(),
         )
         .unwrap();
+    context
+        .execute_query(
+            "CREATE TABLE test.dg_metadata (id INT) COMMENT='updated note'",
+            false,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+    let replaced_id = execute(
+        context.as_ref(),
+        "SELECT oid FROM pg_class WHERE relname='dg_metadata'",
+    )[0][0]
+        .clone();
+    assert_ne!(replaced_id, id);
     assert_eq!(
         execute(
             context.as_ref(),
@@ -473,5 +490,154 @@ fn pg_datagrip_metadata() {
         )
         .unwrap();
     assert!(execute(context.as_ref(), "SELECT objoid FROM pg_description").is_empty());
+    context.close().unwrap();
+}
+
+#[test]
+fn pg_datagrip_metadata_templates() {
+    let context = context();
+    context.execute_query("CREATE TABLE test.dg_metadata_templates (id INT COMMENT 'column text') COMMENT='table text'", false, &CancellationToken::new()).unwrap();
+    let Value::Signed(namespace) = execute(
+        context.as_ref(),
+        "SELECT oid FROM pg_namespace WHERE nspname='public'",
+    )[0][0] else {
+        panic!()
+    };
+    let table_id = execute(
+        context.as_ref(),
+        "SELECT oid FROM pg_class WHERE relname='dg_metadata_templates'",
+    )[0][0]
+        .clone();
+    for source in [
+        include_str!("testdata/pg_datagrip/1869280141.sql"),
+        include_str!("testdata/pg_datagrip/1869280143.sql"),
+        include_str!("testdata/pg_datagrip/1869280146.sql"),
+        include_str!("testdata/pg_datagrip/1869280147.sql"),
+        include_str!("testdata/pg_datagrip/1869280148.sql"),
+        include_str!("testdata/pg_datagrip/1869280149.sql"),
+        include_str!("testdata/pg_datagrip/1869280150.sql"),
+        include_str!("testdata/pg_datagrip/1869280151.sql"),
+        include_str!("testdata/pg_datagrip/1869280152.sql"),
+        include_str!("testdata/pg_datagrip/1869280155.sql"),
+        include_str!("testdata/pg_datagrip/1869280156.sql"),
+        include_str!("testdata/pg_datagrip/1869280157.sql"),
+    ] {
+        let sql = source.replace('?', &namespace.to_string());
+        let rows = execute(context.as_ref(), &sql);
+        if source.contains("D.description") {
+            assert_eq!(rows.len(), 2);
+            assert!(
+                rows.iter()
+                    .all(|r| r[0] == table_id && r[1] == Value::Text("r".into()))
+            );
+            assert!(
+                rows.iter()
+                    .any(|r| r[3] == Value::Text("table text".into()))
+            );
+            assert!(
+                rows.iter()
+                    .any(|r| r[3] == Value::Text("column text".into()))
+            );
+        } else if source.contains("relacl") {
+            let query = CatalogQuery::parse(&sql).unwrap().unwrap();
+            assert_eq!(
+                query.metadata().native_types[1].code,
+                crate::pg_result::CatalogColumnType::AclArray as u8
+            );
+            assert!(rows.iter().any(|r| r[1] == Value::Null));
+        } else {
+            assert!(rows.is_empty(), "{sql}");
+        }
+    }
+    assert_eq!(
+        execute(
+            context.as_ref(),
+            "SELECT pg_catalog.translate('pufc', 'pufc', 'kkxz'), translate('abc', 'ac', 'X'), translate(NULL, 'a', 'b') FROM pg_namespace WHERE nspname='public'"
+        ),
+        vec![vec![
+            Value::Text("kkxz".into()),
+            Value::Text("Xb".into()),
+            Value::Null
+        ]]
+    );
+    assert_eq!(
+        execute(
+            context.as_ref(),
+            "SELECT oid::regtype::varchar FROM pg_type WHERE oid=20"
+        ),
+        vec![vec![Value::Text("bigint".into())]]
+    );
+    assert_eq!(
+        execute(
+            context.as_ref(),
+            "SELECT oid::regprocedure::varchar FROM pg_proc WHERE oid=16000"
+        ),
+        vec![vec![Value::Text("pg_get_function_arguments(oid)".into())]]
+    );
+    assert_eq!(
+        execute(
+            context.as_ref(),
+            "SELECT oid::regproc::text FROM pg_proc WHERE oid=16000"
+        ),
+        vec![vec![Value::Text("pg_get_function_arguments".into())]]
+    );
+    for sql in [
+        "SELECT oid::regtype FROM pg_type",
+        "SELECT oid::regprocedure FROM pg_proc",
+        "SELECT translate(oid, 'a', 'b') FROM pg_type",
+        "SELECT 'text'::regtype::varchar FROM pg_type",
+    ] {
+        assert!(CatalogQuery::parse(sql).is_err(), "{sql}");
+    }
+    let chars = CatalogQuery::parse(
+        "SELECT 'wide'::char, 'r'::\"char\" FROM pg_namespace WHERE nspname='public'",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        chars.metadata().native_types[0].code,
+        crate::pg_result::CatalogColumnType::Char as u8
+    );
+    assert_eq!(
+        chars.metadata().native_types[1].code,
+        crate::pg_result::CatalogColumnType::InternalChar as u8
+    );
+    assert_eq!(
+        chars
+            .execute(context.as_ref(), &CancellationToken::new())
+            .unwrap()
+            .rows,
+        vec![vec![Value::Text("w".into()), Value::Text("r".into())]]
+    );
+    assert_eq!(
+        execute(
+            context.as_ref(),
+            "SELECT translate('aab', 'aa', 'XY'), translate('猫狗猫', '猫狗', '虎') FROM pg_namespace WHERE nspname='public'"
+        ),
+        vec![vec![Value::Text("XXb".into()), Value::Text("虎虎".into())]]
+    );
+    let bounded = format!(
+        "SELECT translate('{}', 'x', 'y') FROM pg_class",
+        "x".repeat(8000)
+    );
+    assert!(
+        CatalogQuery::parse(&bounded)
+            .unwrap()
+            .unwrap()
+            .execute(context.as_ref(), &CancellationToken::new())
+            .unwrap_err()
+            .to_string()
+            .contains("work limit")
+    );
+    assert_eq!(
+        execute(
+            context.as_ref(),
+            "SELECT CASE WHEN oid=20 THEN 0 ELSE oid END FROM pg_type WHERE oid IN (20,25) ORDER BY oid"
+        ),
+        vec![vec![Value::Signed(0)], vec![Value::Signed(25)]]
+    );
+    assert!(
+        CatalogQuery::parse("SELECT CASE WHEN oid=20 THEN true ELSE oid END FROM pg_type").is_err()
+    );
     context.close().unwrap();
 }

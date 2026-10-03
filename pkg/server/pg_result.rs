@@ -240,6 +240,8 @@ pub(crate) enum CatalogColumnType {
     Int2Vector = 237,
     Int8Array = 238,
     OidVector = 239,
+    Char = 240,
+    AclArray = 241,
 }
 impl CatalogColumnType {
     fn from_code(code: u8) -> Option<Self> {
@@ -254,12 +256,16 @@ impl CatalogColumnType {
             237 => Self::Int2Vector,
             238 => Self::Int8Array,
             239 => Self::OidVector,
+            240 => Self::Char,
+            241 => Self::AclArray,
             _ => return None,
         })
     }
     fn wire_type(self) -> (u32, i16) {
         match self {
             Self::InternalChar => (18, 1),
+            Self::Char => (1042, -1),
+            Self::AclArray => (1034, -1),
             Self::Oid => (26, 4),
             Self::Regclass => (2205, 4),
             Self::Int2Array => (1005, -1),

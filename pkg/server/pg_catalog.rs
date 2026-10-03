@@ -395,6 +395,15 @@ impl CatalogQuery {
                         | "pg_description"
                         | "pg_shdescription"
                         | "pg_sequence"
+                        | "pg_foreign_table"
+                        | "pg_foreign_server"
+                        | "pg_collation"
+                        | "pg_opfamily"
+                        | "pg_amop"
+                        | "pg_amproc"
+                        | "pg_policy"
+                        | "pg_trigger"
+                        | "pg_rewrite"
                         | "pg_inherits"
                         | "pg_opclass"
                 )
@@ -651,7 +660,7 @@ impl CatalogQuery {
             Expr::Boolean(_) => Ok((1, astersql_parser_mysql::r#type::IsBooleanFlag)),
             Expr::Cast(inner, target) => {
                 let (code, _) = self.expr_type(inner)?;
-                if *target == CastType::InternalChar
+                if matches!(target, CastType::InternalChar | CastType::Char)
                     && !matches!(**inner, Expr::Null)
                     && !textual_type(code)
                 {
@@ -669,24 +678,36 @@ impl CatalogQuery {
                 {
                     return Err(("0A000", "int[] requires a numeric catalog array".into()));
                 }
-                if *target == CastType::OperatorName
-                    && !matches!(**inner, Expr::Null)
+                if matches!(
+                    target,
+                    CastType::OperatorName
+                        | CastType::TypeName
+                        | CastType::ProcedureName
+                        | CastType::FunctionName
+                ) && !matches!(**inner, Expr::Null)
                     && !numeric_type(code)
                 {
-                    return Err(("0A000", "regoper requires an operator OID".into()));
+                    return Err((
+                        "0A000",
+                        "catalog object name conversions require an OID".into(),
+                    ));
                 }
                 Ok((
                     match target {
                         CastType::InternalChar => {
                             crate::pg_result::CatalogColumnType::InternalChar as u8
                         }
+                        CastType::Char => crate::pg_result::CatalogColumnType::Char as u8,
                         CastType::Bigint => 8,
                         CastType::Varchar => 253,
                         CastType::Oid => crate::pg_oid::OID_TYPE,
                         CastType::Regclass => crate::pg_oid::REGCLASS_TYPE,
                         // No native exclusion operators have a PG name mapping.
                         // The only supported regoper value is zero, displayed as '-'.
-                        CastType::OperatorName => 253,
+                        CastType::OperatorName
+                        | CastType::TypeName
+                        | CastType::ProcedureName
+                        | CastType::FunctionName => 253,
                         CastType::IntArray => crate::pg_result::CatalogColumnType::Int4Array as u8,
                     },
                     0,
@@ -754,6 +775,16 @@ impl CatalogQuery {
                         if (matches!(oid, Expr::Null) || numeric_type(self.expr_type(oid)?.0))
                             && (matches!(modifier, Expr::Null)
                                 || numeric_type(self.expr_type(modifier)?.0)) =>
+                    {
+                        Ok((253, 0))
+                    }
+                    ("translate", [text, from, to])
+                        if [text, from, to].iter().all(|arg| {
+                            matches!(**arg, Expr::Null)
+                                || self
+                                    .expr_type(arg)
+                                    .is_ok_and(|(code, _)| textual_type(code))
+                        }) =>
                     {
                         Ok((253, 0))
                     }
@@ -836,12 +867,20 @@ impl CatalogQuery {
                 Ok((1, astersql_parser_mysql::r#type::IsBooleanFlag))
             }
             Expr::Case { condition, yes, no } => {
-                if self.expr_type(condition)?.0 != 1
-                    || self.expr_type(yes)? != self.expr_type(no)?
-                {
-                    return Err(("0A000", "unsupported CASE types".into()));
+                if self.expr_type(condition)?.0 != 1 {
+                    return Err(("0A000", "unsupported CASE condition".into()));
                 }
-                self.expr_type(yes)
+                let yes = self.expr_type(yes)?;
+                let no = self.expr_type(no)?;
+                if yes == no {
+                    Ok(yes)
+                } else if numeric_type(yes.0) && numeric_type(no.0) {
+                    // Source aggregate metadata mixes zero with an OID. Both
+                    // branches store signed integers, as in UNION promotion.
+                    Ok((8, 0))
+                } else {
+                    Err(("0A000", "unsupported CASE types".into()))
+                }
             }
         }
     }
@@ -1109,7 +1148,12 @@ impl CatalogQuery {
             "pg_proc" => function_rows(),
             // Native physical partitions are not independent SQL relations in
             // this adapter. There are no PG inheritance edges to those objects.
-            "pg_inherits" | "pg_opclass" | "pg_operator" | "pg_aggregate" => Vec::new(),
+            // PostgreSQL extension objects (foreign wrappers, operator classes,
+            // policies, triggers and rewrite rules) have no native PG object
+            // identity or definition. MySQL collations are not PG collations.
+            "pg_inherits" | "pg_opclass" | "pg_operator" | "pg_aggregate" | "pg_foreign_table"
+            | "pg_foreign_server" | "pg_collation" | "pg_opfamily" | "pg_amop" | "pg_amproc"
+            | "pg_policy" | "pg_trigger" | "pg_rewrite" => Vec::new(),
             "pg_language" => vec![vec![
                 Value::Signed(INTERNAL_LANGUAGE_OID),
                 Value::Text("internal".into()),
@@ -1306,6 +1350,27 @@ impl CatalogQuery {
                     }
                     Value::Text(array_text(values.into_iter()))
                 }
+                (Value::Text(s), CastType::Char) => Value::Text(s.chars().take(1).collect()),
+                (Value::Signed(oid), CastType::TypeName) => {
+                    Value::Text(format_column_type(oid, None)?)
+                }
+                (Value::Signed(0), CastType::FunctionName) => Value::Text("-".into()),
+                (Value::Signed(oid), CastType::FunctionName) => Value::Text(
+                    FUNCTION_INTROSPECTION
+                        .iter()
+                        .find(|f| f.oid == oid)
+                        .ok_or(ConnError::UnsupportedCommand(0))?
+                        .name
+                        .into(),
+                ),
+                (Value::Signed(0), CastType::ProcedureName) => Value::Text("-".into()),
+                (Value::Signed(oid), CastType::ProcedureName) => {
+                    let function = FUNCTION_INTROSPECTION
+                        .iter()
+                        .find(|f| f.oid == oid)
+                        .ok_or(ConnError::UnsupportedCommand(0))?;
+                    Value::Text(format!("{}(oid)", function.name))
+                }
                 (Value::Signed(0), CastType::OperatorName) => Value::Text("-".into()),
                 (Value::Signed(_), CastType::OperatorName) => {
                     return Err(ConnError::UnsupportedCommand(0));
@@ -1368,6 +1433,34 @@ impl CatalogQuery {
                 _ => return Err(ConnError::Session("unsupported catalog conversion".into())),
             },
             Expr::Call(path, args) => match path.last().unwrap().as_str() {
+                "translate" => match (
+                    evaluate(&args[0])?,
+                    evaluate(&args[1])?,
+                    evaluate(&args[2])?,
+                ) {
+                    (Value::Null, _, _) | (_, Value::Null, _) | (_, _, Value::Null) => Value::Null,
+                    (Value::Text(text), Value::Text(from), Value::Text(to)) => {
+                        let mut replacements = std::collections::HashMap::new();
+                        let mut to = to.chars();
+                        for c in from.chars() {
+                            execution.comparison()?;
+                            let replacement = to.next();
+                            // PostgreSQL uses the first occurrence in `from`.
+                            replacements.entry(c).or_insert(replacement);
+                        }
+                        let mut translated = String::new();
+                        for c in text.chars() {
+                            execution.comparison()?;
+                            match replacements.get(&c) {
+                                Some(Some(replacement)) => translated.push(*replacement),
+                                Some(None) => {}
+                                None => translated.push(c),
+                            }
+                        }
+                        Value::Text(translated)
+                    }
+                    _ => unreachable!("validated translate arguments"),
+                },
                 "current_database" | "current_catalog" => Value::Text(database.into()),
                 "current_schema" => self
                     .current_schema
@@ -1862,7 +1955,9 @@ fn distinct_rows(rows: Vec<Vec<Value>>, execution: &Execution<'_>) -> ConnResult
 }
 
 fn textual_type(code: u8) -> bool {
-    code == 253 || code == crate::pg_result::CatalogColumnType::InternalChar as u8
+    code == 253
+        || code == crate::pg_result::CatalogColumnType::InternalChar as u8
+        || code == crate::pg_result::CatalogColumnType::Char as u8
 }
 fn literal(value: &Value, code: u8) -> Expr {
     match value {
@@ -2369,6 +2464,7 @@ fn sequence_dependency_rows(
             Value::Signed(namespace),
             Value::Signed(0),
             Value::Text("n".into()),
+            Value::Signed(0),
         ]);
         if rows.len() > MAX_CATALOG_ROWS {
             return Err(catalog_row_limit());
@@ -2448,6 +2544,90 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
     let oid = crate::pg_oid::OID_TYPE;
     let internal_char = crate::pg_result::CatalogColumnType::InternalChar as u8;
     let (slot, code) = match (relation, name) {
+        ("pg_foreign_table", "ftrelid") => (0, oid),
+        ("pg_foreign_table", "ftserver") => (1, oid),
+        ("pg_foreign_table", "ftoptions") => {
+            (2, crate::pg_result::CatalogColumnType::TextArray as u8)
+        }
+        ("pg_foreign_server", "oid") => (0, oid),
+        ("pg_foreign_server", "srvname") => (1, 253),
+        ("pg_collation", "oid") => (0, oid),
+        ("pg_collation", "xmin") => (1, 8),
+        ("pg_collation", "collname") => (2, 253),
+        ("pg_collation", "collcollate") => (3, 253),
+        ("pg_collation", "collctype") => (4, 253),
+        ("pg_collation", "collowner") => (5, 8),
+        ("pg_collation", "collnamespace") => (6, oid),
+        ("pg_opfamily", "oid") => (0, oid),
+        ("pg_opfamily", "xmin") => (1, 8),
+        ("pg_opfamily", "opfname") => (2, 253),
+        ("pg_opfamily", "opfmethod") => (3, oid),
+        ("pg_opfamily", "opfowner") => (4, 8),
+        ("pg_opfamily", "opfnamespace") => (5, oid),
+        ("pg_amop", "oid") => (0, oid),
+        ("pg_amop", "amopstrategy") => (1, 2),
+        ("pg_amop", "amopopr") => (2, oid),
+        ("pg_amop", "amopsortfamily") => (3, oid),
+        ("pg_amop", "amopfamily") => (4, oid),
+        ("pg_amproc", "oid") => (0, oid),
+        ("pg_amproc", "amprocnum") => (1, 2),
+        ("pg_amproc", "amproc") => (2, oid),
+        ("pg_amproc", "amproclefttype") => (3, oid),
+        ("pg_amproc", "amprocrighttype") => (4, oid),
+        ("pg_amproc", "amprocfamily") => (5, oid),
+        ("pg_policy", "oid") => (0, oid),
+        ("pg_policy", "xmin") => (1, 8),
+        ("pg_policy", "polname") => (2, 253),
+        ("pg_policy", "polrelid") => (3, oid),
+        ("pg_policy", "polpermissive") => (4, 1),
+        ("pg_policy", "polroles") => (5, crate::pg_result::CatalogColumnType::OidArray as u8),
+        ("pg_policy", "polcmd") => (6, internal_char),
+        ("pg_policy", "polqual") => (7, 253),
+        ("pg_policy", "polwithcheck") => (8, 253),
+        ("pg_trigger", "oid") => (0, oid),
+        ("pg_trigger", "tgrelid") => (1, oid),
+        ("pg_rewrite", "oid") => (0, oid),
+        ("pg_rewrite", "ev_class") => (1, oid),
+        ("pg_opclass", "xmin") => (2, 8),
+        ("pg_opclass", "opcname") => (3, 253),
+        ("pg_opclass", "opcintype") => (4, oid),
+        ("pg_opclass", "opckeytype") => (5, oid),
+        ("pg_opclass", "opcdefault") => (6, 1),
+        ("pg_opclass", "opcfamily") => (7, oid),
+        ("pg_opclass", "opcowner") => (8, 8),
+        ("pg_opclass", "opcnamespace") => (9, oid),
+        ("pg_operator", "oid") => (4, oid),
+        ("pg_proc", "proacl") => (24, crate::pg_result::CatalogColumnType::AclArray as u8),
+        ("pg_type", "typacl") => (15, crate::pg_result::CatalogColumnType::AclArray as u8),
+        ("pg_depend", "objsubid") => (6, 3),
+        ("pg_operator", "xmin") => (5, 8),
+        ("pg_operator", "oprname") => (6, 253),
+        ("pg_operator", "oprkind") => (7, internal_char),
+        ("pg_operator", "oprcode") => (8, oid),
+        ("pg_operator", "oprrest") => (9, oid),
+        ("pg_operator", "oprjoin") => (10, oid),
+        ("pg_operator", "oprcom") => (11, oid),
+        ("pg_operator", "oprnegate") => (12, oid),
+        ("pg_operator", "oprcanmerge") => (13, 1),
+        ("pg_operator", "oprcanhash") => (14, 1),
+        ("pg_operator", "oprowner") => (15, 8),
+        ("pg_aggregate", "aggtransfn") => (3, oid),
+        ("pg_aggregate", "aggfinalfn") => (4, oid),
+        ("pg_aggregate", "agginitval") => (5, 253),
+        ("pg_aggregate", "aggsortop") => (6, oid),
+        ("pg_aggregate", "aggfinalextra") => (7, 1),
+        ("pg_aggregate", "aggtransspace") => (8, 3),
+        ("pg_aggregate", "aggmtransfn") => (9, oid),
+        ("pg_aggregate", "aggminvtransfn") => (10, oid),
+        ("pg_aggregate", "aggmtransspace") => (11, 3),
+        ("pg_aggregate", "aggmfinalfn") => (12, oid),
+        ("pg_aggregate", "aggmfinalextra") => (13, 1),
+        ("pg_aggregate", "aggminitval") => (14, 253),
+        ("pg_aggregate", "aggkind") => (15, internal_char),
+        ("pg_aggregate", "aggnumdirectargs") => (16, 2),
+        ("pg_aggregate", "aggcombinefn") => (17, oid),
+        ("pg_aggregate", "aggserialfn") => (18, oid),
+        ("pg_aggregate", "aggdeserialfn") => (19, oid),
         ("pg_sequence", "seqrelid") => (0, oid),
         ("pg_sequence", "seqtypid") => (1, oid),
         ("pg_sequence", "seqstart") => (2, 8),
@@ -2469,7 +2649,7 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
         ("pg_class", "relpartbound") => (9, 253),
         ("pg_class", "relam") => (10, oid),
         ("pg_class", "relowner") => (11, 8),
-        ("pg_class", "relacl") => (12, crate::pg_result::CatalogColumnType::TextArray as u8),
+        ("pg_class", "relacl") => (12, crate::pg_result::CatalogColumnType::AclArray as u8),
         ("pg_depend", "classid") => (0, oid),
         ("pg_depend", "objid") => (1, oid),
         ("pg_depend", "refclassid") => (2, oid),
