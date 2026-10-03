@@ -4863,6 +4863,20 @@ fn install_declared_index_paths(
         .as_ref()
         .unwrap_or(&source.TableInfo.Name)
         .clone();
+    // Pruning runs after building: preserve explicit merge indexes even when
+    // they provide no marginal coverage beyond the clustered-key prefix.
+    source.IndexMergeHints = builder
+        .TableHints()
+        .into_iter()
+        .flat_map(|hints| hints.IndexMergeHintList.iter())
+        .filter(|hint| hint.Match(source.DBName.clone(), effective_name.clone()))
+        .map(|hint| {
+            hint.IndexHint
+                .as_ref()
+                .map(|index| index.IndexNames.iter().map(|name| name.O.clone()).collect())
+                .unwrap_or_default()
+        })
+        .collect();
     let matching_hints = builder
         .TableHints()
         .into_iter()

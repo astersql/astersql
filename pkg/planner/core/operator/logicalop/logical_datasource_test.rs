@@ -506,3 +506,28 @@ fn appended_handle_point_estimate_aligns_to_table_selectivity() {
     assert_eq!(path.MinCountAfterAccess, 2.0);
     assert_eq!(path.MaxCountAfterAccess, 5.0);
 }
+
+#[test]
+fn unresolved_declared_column_suppresses_entire_handle_append() {
+    let handle = planner_column(3, 103);
+    let mut source = DataSource::default();
+    source.TableInfo.IsCommonHandle = true;
+    source.TableInfo.CommonHandleVersion = 1;
+    source.CommonHandleCols = vec![handle.clone()];
+    source.CommonHandleLens = vec![-1];
+    let path = planner_util::AccessPath {
+        Index: Some(model::IndexInfo {
+            Columns: vec![model::IndexColumn::default(), model::IndexColumn::default()],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let declared = vec![Some(planner_column(1, 101)), Some(planner_column(2, 102))];
+    assert_eq!(
+        source.HandleColsToAppend(&path, &declared).0[0].UniqueID,
+        103
+    );
+    let (columns, lengths) = source.HandleColsToAppend(&path, &[declared[0].clone(), None]);
+    assert!(columns.is_empty());
+    assert!(lengths.is_empty());
+}

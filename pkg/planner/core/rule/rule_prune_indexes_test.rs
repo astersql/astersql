@@ -105,3 +105,100 @@ fn index_merge_hint_names_use_unicode_case_insensitive_matching() {
         vec![1, 2]
     );
 }
+
+#[test]
+fn identical_coverage_prefers_longer_prefix_and_narrower_key() {
+    let source = DataSource {
+        table_columns: vec![1, 2, 3, 4],
+        ..Default::default()
+    };
+    let paths = vec![
+        index_path(1, &[0, 1, 2, 3], Some(&[1, 2, 3, 4])),
+        index_path(2, &[0, 1, 2], Some(&[1, 2, 3])),
+        index_path(3, &[0, 3, 1, 2], Some(&[1, 4, 2, 3])),
+    ];
+    let kept = prune_indexes_by_where_and_order(&source, paths, &[1, 2, 3], 1);
+    assert_eq!(kept.iter().map(|path| path.id).collect::<Vec<_>>(), vec![2]);
+}
+
+#[test]
+fn clustered_prefix_only_indexes_are_redundant_but_covering_and_hinted_paths_survive() {
+    let mut source = DataSource {
+        table_columns: vec![1, 2, 3],
+        ..Default::default()
+    };
+    source.discounted_column_ids.insert(1);
+    let mut table = index_path(0, &[], None);
+    table.table_path = true;
+    table.index = None;
+    let redundant = index_path(1, &[0, 1], Some(&[1, 2]));
+    let mut covering = index_path(2, &[0, 2], Some(&[1, 3]));
+    covering.single_scan = true;
+    for threshold in [0, 1, 20] {
+        let kept = prune_indexes_by_where_and_order(
+            &source,
+            vec![table.clone(), redundant.clone(), covering.clone()],
+            &[1],
+            threshold,
+        );
+        assert_eq!(
+            kept.iter().map(|path| path.id).collect::<Vec<_>>(),
+            vec![0, 2]
+        );
+    }
+    source.index_merge_hints = vec![IndexMergeHint {
+        index_names: vec!["idx_1".into()],
+    }];
+    let kept = prune_indexes_by_where_and_order(&source, vec![table, redundant], &[1], 0);
+    assert_eq!(
+        kept.iter().map(|path| path.id).collect::<Vec<_>>(),
+        vec![0, 1]
+    );
+}
+
+#[test]
+fn appended_handle_keeps_different_access_orders() {
+    let mut source = DataSource {
+        table_columns: vec![1, 2, 3],
+        ..Default::default()
+    };
+    let tenant_first = index_path(1, &[0, 1], Some(&[1, 2]));
+    let value_first = index_path(2, &[1], Some(&[2]));
+    source
+        .effective_index_columns
+        .insert(2, vec![Some(2), Some(1), Some(3)]);
+    let wider = index_path(3, &[1, 2], Some(&[2, 3]));
+    source
+        .effective_index_columns
+        .insert(3, vec![Some(2), Some(3), Some(1)]);
+    let kept = prune_indexes_by_where_and_order(
+        &source,
+        vec![tenant_first, value_first, wider],
+        &[1, 2],
+        1,
+    );
+    assert_eq!(
+        kept.iter().map(|path| path.id).collect::<Vec<_>>(),
+        vec![2, 1]
+    );
+}
+
+#[test]
+fn partial_index_bad_constraint_offsets_have_zero_coverage() {
+    let source = DataSource {
+        table_columns: vec![1],
+        ..Default::default()
+    };
+    for offset in [1, usize::MAX] {
+        let mut bad = index_path(1, &[0], Some(&[1]));
+        bad.index.as_mut().unwrap().condition_expression = Some("a > 0".into());
+        bad.index.as_mut().unwrap().affected_column_offsets = vec![offset];
+        let kept = prune_indexes_by_where_and_order(
+            &source,
+            vec![bad, index_path(2, &[0], Some(&[1]))],
+            &[1],
+            0,
+        );
+        assert_eq!(kept.iter().map(|path| path.id).collect::<Vec<_>>(), vec![2]);
+    }
+}

@@ -2028,3 +2028,367 @@ fn full_join_rejects_lateral_before_correlated_resolution() {
         }
     }
 }
+
+fn clustered_pruning_source() -> logicalop::DataSource {
+    crate::InstallPlannerExpressionFactory().unwrap();
+    let context = planner_test_context();
+    let names = [
+        "tenant_ws",
+        "id",
+        "label",
+        "obj_type_id",
+        "payload",
+        "num1",
+        "num2",
+        "num3",
+        "txt1",
+        "txt2",
+        "txt3",
+        "txt4",
+        "txt5",
+        "txt6",
+        "txt7",
+        "txt8",
+        "created_on",
+    ];
+    let columns = names
+        .iter()
+        .enumerate()
+        .map(|(offset, name)| {
+            let mut column = expression::Column::new(
+                *expression::types::NewFieldType(expression::mysql::TypeLonglong),
+                offset as i64 + 1,
+                offset as i64 + 101,
+                offset as isize,
+            );
+            column.OrigName = (*name).into();
+            column
+        })
+        .collect::<Vec<_>>();
+    let mut source = logicalop::DataSource::default().Init(context, 0);
+    source.TableInfo.Columns = names
+        .iter()
+        .enumerate()
+        .map(|(offset, name)| {
+            let mut column =
+                model_dependency::ColumnInfo::New(offset as i64 + 1, crate::ast::NewCIStr(*name));
+            column.Offset = offset as isize;
+            column.FieldType = *expression::types::NewFieldType(expression::mysql::TypeLonglong);
+            column
+        })
+        .collect();
+    source.Columns = source.TableInfo.Columns.clone();
+    source.TblCols = columns.clone();
+    source
+        .LogicalSchemaProducer
+        .SetSchema(expression::NewSchema(columns.clone()));
+    source.TableInfo.IsCommonHandle = true;
+    source.TableInfo.CommonHandleVersion = 1;
+    source.CommonHandleCols = columns[..2].to_vec();
+    source.CommonHandleLens = vec![-1, -1];
+    let mut primary = model_dependency::IndexInfo {
+        ID: 100,
+        Name: crate::ast::NewCIStr("PRIMARY"),
+        Primary: true,
+        Unique: true,
+        ..Default::default()
+    };
+    primary.Columns = [0, 1]
+        .into_iter()
+        .map(|offset| model_dependency::IndexColumn {
+            Name: crate::ast::NewCIStr(names[offset]),
+            Offset: offset as isize,
+            Length: -1,
+            ..Default::default()
+        })
+        .collect();
+    source.TableInfo.Indices.push(primary);
+    let definitions = [
+        ("ix_tenant_label", vec![0, 2], false),
+        ("ix_tenant_obj_type", vec![0, 3], false),
+        ("uk_tenant_type_num1", vec![0, 3, 5], true),
+        ("ix_tenant_num1", vec![0, 5], false),
+        ("ix_tenant_num2", vec![0, 6], false),
+        ("ix_tenant_num3", vec![0, 7], false),
+        ("ix_tenant_txt1", vec![0, 8], false),
+        ("ix_tenant_txt2", vec![0, 9], false),
+        ("ix_tenant_txt3", vec![0, 10], false),
+        ("ix_tenant_txt4", vec![0, 11], false),
+        ("ix_tenant_txt5", vec![0, 12], false),
+        ("ix_tenant_txt6", vec![0, 13], false),
+        ("ix_tenant_txt7", vec![0, 14], false),
+        ("ix_tenant_txt8", vec![0, 15], false),
+        ("ix_tenant_created", vec![0, 16], false),
+        ("ix_tenant_label_type", vec![0, 2, 3], false),
+    ];
+    source
+        .AllPossibleAccessPaths
+        .push(planner_util_dependency::AccessPath {
+            IsCommonHandlePath: true,
+            ..Default::default()
+        });
+    for (position, (name, offsets, unique)) in definitions.into_iter().enumerate() {
+        let index = model_dependency::IndexInfo {
+            ID: position as i64 + 1,
+            Name: crate::ast::NewCIStr(name),
+            Unique: unique,
+            Columns: offsets
+                .into_iter()
+                .map(|offset| model_dependency::IndexColumn {
+                    Name: crate::ast::NewCIStr(names[offset]),
+                    Offset: offset as isize,
+                    Length: -1,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        source.TableInfo.Indices.push(index.clone());
+        source
+            .AllPossibleAccessPaths
+            .push(planner_util_dependency::AccessPath {
+                Index: Some(index),
+                ..Default::default()
+            });
+    }
+    source.PossibleAccessPaths = source.AllPossibleAccessPaths.clone();
+    source
+}
+
+#[test]
+fn shared_clustered_prefix_prunes_real_datasource_access_paths() {
+    for (operator, interests, expected) in [
+        (
+            expression::ast::EQ,
+            vec![0, 2, 3, 5, 7],
+            vec![
+                "ix_tenant_label",
+                "ix_tenant_label_type",
+                "ix_tenant_num1",
+                "ix_tenant_num3",
+                "ix_tenant_obj_type",
+                "uk_tenant_type_num1",
+            ],
+        ),
+        (expression::ast::EQ, vec![0, 2], vec!["ix_tenant_label"]),
+        (expression::ast::EQ, vec![0], vec![]),
+        (expression::ast::NullEQ, vec![0], vec![]),
+        (expression::ast::In, vec![0], vec![]),
+        (
+            expression::ast::EQ,
+            vec![5],
+            vec!["ix_tenant_num1", "uk_tenant_type_num1"],
+        ),
+    ] {
+        let mut source = clustered_pruning_source();
+        source.InterestingColumns = interests
+            .iter()
+            .map(|offset| source.TblCols[*offset].clone())
+            .collect();
+        source.PushedDownConds = vec![
+            expression::NewFunction(
+                source.SCtx().unwrap().GetExprCtx(),
+                operator,
+                *expression::types::NewFieldType(expression::mysql::TypeTiny),
+                vec![
+                    Box::new(source.TblCols[if interests.contains(&0) { 0 } else { 5 }].clone()),
+                    Box::new(expression::NewInt64Const(1)),
+                ],
+            )
+            .unwrap(),
+        ];
+        crate::optimizer_runtime::prune_data_source_indexes(&mut source, 10);
+        let mut names = source
+            .AllPossibleAccessPaths
+            .iter()
+            .filter(|path| !path.IsTablePath())
+            .filter_map(|path| path.Index.as_ref().map(|index| index.Name.L.as_str()))
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        assert_eq!(names, expected, "{operator}, interests={interests:?}");
+        assert!(
+            source
+                .AllPossibleAccessPaths
+                .iter()
+                .any(|path| path.IsTablePath())
+        );
+        assert_eq!(
+            source.AllPossibleAccessPaths.len(),
+            source.PossibleAccessPaths.len()
+        );
+    }
+    let mut source = clustered_pruning_source();
+    source.AllPossibleAccessPaths[15].Forced = true;
+    source.InterestingColumns = vec![source.TblCols[0].clone()];
+    crate::optimizer_runtime::prune_data_source_indexes(&mut source, 10);
+    assert_eq!(source.AllPossibleAccessPaths.len(), 17);
+}
+
+#[test]
+fn clustered_prefix_pruning_is_wired_into_predicate_collection() {
+    let mut source = clustered_pruning_source();
+    source.PushedDownConds = vec![
+        expression::NewFunction(
+            source.SCtx().unwrap().GetExprCtx(),
+            expression::ast::EQ,
+            *expression::types::NewFieldType(expression::mysql::TypeTiny),
+            vec![
+                Box::new(source.TblCols[0].clone()),
+                Box::new(expression::NewInt64Const(1)),
+            ],
+        )
+        .unwrap(),
+    ];
+    source.AllConds = source.PushedDownConds.clone();
+    source
+        .SCtx()
+        .unwrap()
+        .GetSessionVars()
+        .StatsLoadSyncWait
+        .store(10, Ordering::Release);
+    let mut plan: logicalop::LogicalPlanRef = Box::new(source);
+    crate::LogicalOptimizeForTest(
+        rule_dependency::FLAG_COLLECT_PREDICATE_COLUMNS_POINT,
+        &mut plan,
+    )
+    .unwrap();
+    let source = plan
+        .as_any()
+        .downcast_ref::<logicalop::DataSource>()
+        .unwrap();
+    assert_eq!(source.AllPossibleAccessPaths.len(), 1);
+    assert!(source.AllPossibleAccessPaths[0].IsTablePath());
+    assert_eq!(source.PossibleAccessPaths.len(), 1);
+    let items = source
+        .SCtx()
+        .unwrap()
+        .GetSessionVars()
+        .StmtCtx
+        .StatsLoad
+        .NeededItems
+        .lock()
+        .unwrap();
+    assert!(
+        items
+            .iter()
+            .filter_map(|item| stmtctx_dependency::cache_downcast_ref::<
+                model_dependency::StatsLoadItem,
+            >(item))
+            .all(|item| !item.TableItemID.IsIndex),
+        "pruned indexes must not be queued for stats load"
+    );
+}
+
+#[test]
+fn json_selectivity_does_not_record_missing_column_stats() {
+    property_dependency::SetScaleNDVFunc(Some(|vars, ndv, rows, selected| {
+        cardinality_dependency::ScaleNDV(Some(vars), ndv, rows, selected)
+    }));
+    for json in [false, true] {
+        let mut source = clustered_pruning_source();
+        source.TableInfo.ID = 42;
+        source.PhysicalTableID = 42;
+        let field_type = *expression::types::NewFieldType(if json {
+            expression::mysql::TypeJSON
+        } else {
+            expression::mysql::TypeLonglong
+        });
+        source.TableInfo.Columns[4].FieldType = field_type.clone();
+        source.TblCols[4].RetType = Some(field_type);
+        source
+            .LogicalSchemaProducer
+            .SetSchema(expression::NewSchema(source.TblCols.clone()));
+        let mut histogram = logicalop::BuildPseudoHistColl(&source.TableInfo, 42, &source.TblCols);
+        histogram.Columns.remove(&source.TblCols[4].UniqueID);
+        histogram.Pseudo = false;
+        histogram.RealtimeCount = 100;
+        source.TableStats.RowCount = 100.0;
+        source.TableStats.StatsVersion = statistics_dependency::Version2 as u64;
+        source.TableStats.HistColl = Some(Arc::new(histogram));
+        source.AllPossibleAccessPaths.clear();
+        source.PossibleAccessPaths.clear();
+        source.AllConds = vec![
+            expression::NewFunction(
+                source.SCtx().unwrap().GetExprCtx(),
+                expression::ast::EQ,
+                *expression::types::NewFieldType(expression::mysql::TypeTiny),
+                vec![
+                    Box::new(source.TblCols[4].clone()),
+                    Box::new(expression::NewInt64Const(1)),
+                ],
+            )
+            .unwrap(),
+        ];
+        source.DeriveStats(false).unwrap();
+        let statuses = source
+            .SCtx()
+            .unwrap()
+            .GetSessionVars()
+            .StmtCtx
+            .UsedStatsLoadStatus();
+        assert_eq!(
+            statuses.contains_key(&(42, 5, false)),
+            !json,
+            "json={json}: {statuses:?}"
+        );
+    }
+}
+
+#[test]
+fn merge_hint_keeps_a_real_datasource_index_even_when_coverage_is_redundant() {
+    let mut source = clustered_pruning_source();
+    source.InterestingColumns = vec![source.TblCols[0].clone()];
+    source.PushedDownConds = vec![
+        expression::NewFunction(
+            source.SCtx().unwrap().GetExprCtx(),
+            expression::ast::EQ,
+            *expression::types::NewFieldType(expression::mysql::TypeTiny),
+            vec![
+                Box::new(source.TblCols[0].clone()),
+                Box::new(expression::NewInt64Const(1)),
+            ],
+        )
+        .unwrap(),
+    ];
+    source.IndexMergeHints = vec![vec!["IX_TENANT_CREATED".into()]];
+    crate::optimizer_runtime::prune_data_source_indexes(&mut source, 10);
+    let names = source
+        .AllPossibleAccessPaths
+        .iter()
+        .filter(|path| !path.IsTablePath())
+        .filter_map(|path| path.Index.as_ref().map(|index| index.Name.L.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(names, vec!["ix_tenant_created"]);
+}
+
+#[test]
+fn parsed_merge_hint_survives_real_predicate_collection_pruning() {
+    let (_, plan) = logical_optimize_for_test(
+        "select /*+ use_index_merge(t,g) */ f from t where f=1",
+        rule_dependency::FLAG_PREDICATE_PUSH_DOWN
+            | rule_dependency::FLAG_COLLECT_PREDICATE_COLUMNS_POINT,
+    )
+    .unwrap();
+    fn source(plan: &dyn logicalop::LogicalPlan) -> Option<&logicalop::DataSource> {
+        plan.as_any()
+            .downcast_ref::<logicalop::DataSource>()
+            .or_else(|| {
+                plan.Children()
+                    .iter()
+                    .find_map(|child| source(child.as_ref()))
+            })
+    }
+    let source = source(plan.as_ref()).unwrap();
+    assert!(
+        source
+            .IndexMergeHints
+            .iter()
+            .any(|names| names.iter().any(|name| name == "g"))
+    );
+    assert!(
+        source
+            .AllPossibleAccessPaths
+            .iter()
+            .any(|path| path.Index.as_ref().is_some_and(|index| index.Name.L == "g"))
+    );
+}

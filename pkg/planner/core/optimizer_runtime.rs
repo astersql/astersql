@@ -2085,6 +2085,16 @@ fn collect_predicate_columns_descendants(
         interesting.sort_by_key(|column| column.UniqueID);
         interesting.dedup_by_key(|column| column.UniqueID);
         source.InterestingColumns = interesting;
+        let threshold = source
+            .SCtx()
+            .and_then(|context| {
+                context
+                    .GetSessionVars()
+                    .GetSystemVar(vardef_dependency::TiDBOptIndexPruneThreshold)
+            })
+            .and_then(|value| value.parse::<isize>().ok())
+            .unwrap_or(vardef_dependency::DefTiDBOptIndexPruneThreshold as isize);
+        prune_data_source_indexes(source, threshold);
         collect_stats_load_items_for_source(source, &statistics_columns);
         return;
     }
@@ -2119,6 +2129,215 @@ fn collect_predicate_columns_descendants(
             .cloned()
             .collect::<Vec<_>>();
         collect_predicate_columns_descendants(child.as_mut(), &child_interesting);
+    }
+}
+
+/// Project the real pre-ranger access paths into the pruning rule. Keep key
+/// layout shared with range construction, and apply survivors before stats load.
+pub(crate) fn prune_data_source_indexes(source: &mut logicalop::DataSource, threshold: isize) {
+    use rule_dependency::rule_prune_indexes as pruning;
+    if source.AllPossibleAccessPaths.len() <= 1 || threshold < 0 {
+        return;
+    }
+    let mut requirements = pruning::DataSource {
+        table_columns: source
+            .TableInfo
+            .Columns
+            .iter()
+            .map(|column| column.ID)
+            .collect(),
+        index_merge_hints: source
+            .IndexMergeHints
+            .iter()
+            .map(|names| pruning::IndexMergeHint {
+                index_names: names.clone(),
+            })
+            .collect(),
+        fix_52869: source.SCtx().is_some_and(|context| {
+            context
+                .GetRangerCtx()
+                .OptimizerFixControl
+                .get(&52869)
+                .is_some_and(|value| value.eq_ignore_ascii_case("ON") || value == "1")
+        }),
+        ..Default::default()
+    };
+    let interesting = source
+        .InterestingColumns
+        .iter()
+        .map(|column| column.ID)
+        .collect::<Vec<_>>();
+    let mut eq_bound = std::collections::BTreeSet::new();
+    for condition in &source.PushedDownConds {
+        let Some(function) = condition.as_scalar_function() else {
+            continue;
+        };
+        let args = function.GetArgs();
+        match function.FuncName.L.as_str() {
+            expression::ast::EQ | expression::ast::NullEQ if args.len() == 2 => {
+                if let Some(column) = args[0].as_column() {
+                    if args[1].as_constant().is_some() {
+                        eq_bound.insert(column.ID);
+                    }
+                } else if let Some(column) = args[1].as_column() {
+                    if args[0].as_constant().is_some() {
+                        eq_bound.insert(column.ID);
+                    }
+                }
+            }
+            expression::ast::In if !args.is_empty() => {
+                if let Some(column) = args[0].as_column() {
+                    if args[1..]
+                        .iter()
+                        .all(|argument| argument.as_constant().is_some())
+                    {
+                        eq_bound.insert(column.ID);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut key_ids = Vec::new();
+    if source.TableInfo.PKIsHandle {
+        if let Some(column) = source.TableInfo.GetPkColInfo() {
+            key_ids.push(column.ID);
+        }
+    } else if source.TableInfo.IsCommonHandle {
+        if let Some(primary) = source.TableInfo.GetPrimaryKey() {
+            for column in &primary.Columns {
+                let Some(info) = source.TableInfo.Columns.get(column.Offset as usize) else {
+                    key_ids.clear();
+                    break;
+                };
+                if column.Length > 0 {
+                    break;
+                }
+                key_ids.push(info.ID);
+            }
+        }
+    }
+    for id in key_ids {
+        if !eq_bound.contains(&id) || !interesting.contains(&id) {
+            break;
+        }
+        requirements.discounted_column_ids.insert(id);
+    }
+    let paths = source
+        .AllPossibleAccessPaths
+        .iter()
+        .enumerate()
+        .map(|(position, path)| {
+            let declared = path.Index.as_ref().map(|index| {
+                index
+                    .Columns
+                    .iter()
+                    .map(|column| {
+                        let info = source.TableInfo.Columns.get(column.Offset as usize)?;
+                        source
+                            .Schema()
+                            .Columns
+                            .iter()
+                            .chain(source.TblCols.iter())
+                            .find(|column| column.ID == info.ID)
+                            .cloned()
+                    })
+                    .collect::<Vec<_>>()
+            });
+            if let Some(declared) = &declared {
+                let (handles, _) = source.HandleColsToAppend(path, declared);
+                let mut effective = declared
+                    .iter()
+                    .map(|column| column.as_ref().map(|column| column.ID))
+                    .collect::<Vec<_>>();
+                effective.extend(handles.iter().map(|column| Some(column.ID)));
+                requirements
+                    .effective_index_columns
+                    .insert(position as u64, effective);
+            }
+            let single_scan =
+                declared
+                    .as_ref()
+                    .zip(path.Index.as_ref())
+                    .is_some_and(|(columns, index)| {
+                        let lengths = index
+                            .Columns
+                            .iter()
+                            .map(|column| column.Length)
+                            .collect::<Vec<_>>();
+                        !columns.iter().any(Option::is_none)
+                            && source.IsSingleScan(
+                                &columns.iter().flatten().cloned().collect::<Vec<_>>(),
+                                &lengths,
+                            )
+                    });
+            pruning::AccessPath {
+                id: position as u64,
+                index: path.Index.as_ref().map(|index| pruning::IndexInfo {
+                    id: index.ID,
+                    name: index.Name.L.clone(),
+                    columns: index
+                        .Columns
+                        .iter()
+                        .map(|column| pruning::IndexColumn {
+                            offset: column.Offset as usize,
+                        })
+                        .collect(),
+                    multi_value: index.MVIndex,
+                    condition_expression: Some(index.ConditionExprString.clone()),
+                    affected_column_offsets: index
+                        .AffectColumn
+                        .iter()
+                        .flatten()
+                        .map(|column| column.Offset as usize)
+                        .collect(),
+                }),
+                table_path: path.IsTablePath(),
+                forced: path.Forced,
+                full_index_columns: declared.map(|columns| {
+                    columns
+                        .iter()
+                        .map(|column| column.as_ref().map(|column| column.ID))
+                        .collect()
+                }),
+                single_scan,
+            }
+        })
+        .collect();
+    let kept =
+        pruning::prune_indexes_by_where_and_order(&requirements, paths, &interesting, threshold);
+    let retained_indexes = kept
+        .iter()
+        .filter_map(|path| path.index.as_ref().map(|index| index.id))
+        .collect::<std::collections::BTreeSet<_>>();
+    let original = std::mem::take(&mut source.AllPossibleAccessPaths);
+    source.AllPossibleAccessPaths = kept
+        .iter()
+        .map(|path| {
+            let mut physical = original[path.id as usize].clone();
+            if !physical.IsTablePath() {
+                physical.IsSingleScan = path.single_scan;
+            }
+            physical
+        })
+        .collect();
+    source.PossibleAccessPaths.retain(|path| {
+        path.IsTablePath()
+            || path
+                .Index
+                .as_ref()
+                .is_some_and(|index| retained_indexes.contains(&index.ID))
+    });
+    for path in &mut source.PossibleAccessPaths {
+        if path.IsTablePath() {
+            continue;
+        }
+        if let Some(selected) = source.AllPossibleAccessPaths.iter().find(|selected| {
+            selected.Index.as_ref().map(|index| index.ID)
+                == path.Index.as_ref().map(|index| index.ID)
+        }) {
+            path.IsSingleScan = selected.IsSingleScan;
+        }
     }
 }
 
@@ -2175,7 +2394,7 @@ fn collect_stats_load_items_for_source(
             })
         });
         (covers_interesting
-            && (possible_index_ids.is_empty() || possible_index_ids.contains(&index.ID)))
+            && (source.AllPossibleAccessPaths.is_empty() || possible_index_ids.contains(&index.ID)))
         .then_some(model_dependency::StatsLoadItem {
             TableItemID: model_dependency::TableItemID {
                 TableID: table_id,
@@ -7239,6 +7458,7 @@ fn clone_partition_source(
             .map(expression::Column::Clone)
             .collect(),
         CommonHandleLens: source.CommonHandleLens.clone(),
+        IndexMergeHints: source.IndexMergeHints.clone(),
         PreferStoreType: source.PreferStoreType,
         IsForUpdateRead: source.IsForUpdateRead,
         ContainExprPrefixUk: source.ContainExprPrefixUk,

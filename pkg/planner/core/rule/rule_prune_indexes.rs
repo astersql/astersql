@@ -601,7 +601,7 @@
 // }
 // */
 use std::cmp::Ordering;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// 第一阶段剪枝至少保留的索引数下限（防止阈值过小过度剪枝）。
 pub const DEFAULT_MAX_INDEXES: usize = 10;
@@ -657,6 +657,10 @@ pub struct DataSource {
     pub index_merge_hints: Vec<IndexMergeHint>,
     /// Result of TiDB fix control 52869.
     pub fix_52869: bool,
+    /// Equality/IN-bound leading clustered-key prefix, resolved by the caller.
+    pub discounted_column_ids: BTreeSet<i64>,
+    /// Physical keys by stable access-path identity; declared widths stay on paths.
+    pub effective_index_columns: HashMap<u64, Vec<Option<i64>>>,
 }
 
 /// 是否因提示或 fix 52869 而偏好 Index Merge。
@@ -670,6 +674,8 @@ struct IndexWithScore {
     path_index: usize,
     interesting_count: usize,
     consecutive_column_ids: Vec<i64>,
+    covered_column_ids: Vec<i64>,
+    covers_non_discounted: bool,
 }
 
 /// 排序用的打分结果：分数、列数、是否单扫（覆盖索引）。
@@ -679,6 +685,21 @@ struct ScoredIndex {
     score: usize,
     columns: usize,
     single_scan: bool,
+    droppable: bool,
+    covered_key: Vec<i64>,
+}
+
+struct ColumnRequirements {
+    interesting: BTreeSet<i64>,
+    discounted: BTreeSet<i64>,
+}
+impl ColumnRequirements {
+    fn contains(&self, column: &i64) -> bool {
+        self.interesting.contains(column)
+    }
+    fn len(&self) -> usize {
+        self.interesting.len()
+    }
 }
 
 /// Go-equivalent first-phase index pruning. Table paths, MV indexes, forced
@@ -696,7 +717,10 @@ pub fn prune_indexes_by_where_and_order(
 
     let total_path_count = paths.len();
     let only_prune_zero_score = threshold == 0 || threshold as usize > total_path_count;
-    let requirements: BTreeSet<i64> = interesting_columns.iter().copied().collect();
+    let requirements = ColumnRequirements {
+        interesting: interesting_columns.iter().copied().collect(),
+        discounted: source.discounted_column_ids.clone(),
+    };
     let prefer_merge = should_prefer_index_merge(source);
     let has_specified_indexes = source
         .index_merge_hints
@@ -766,7 +790,8 @@ pub fn prune_indexes_by_where_and_order(
                     path.table_path || path.index.as_ref().is_some_and(|i| i.multi_value)
                 })
                 .count()
-            && preferred.is_empty())
+            && preferred.is_empty()
+            && requirements.discounted.is_empty())
     {
         return paths;
     }
@@ -810,12 +835,14 @@ fn score_index_path(
     source: &DataSource,
     path_index: usize,
     path: &AccessPath,
-    requirements: &BTreeSet<i64>,
+    requirements: &ColumnRequirements,
 ) -> IndexWithScore {
     let mut result = IndexWithScore {
         path_index,
         interesting_count: 0,
         consecutive_column_ids: Vec::new(),
+        covered_column_ids: Vec::new(),
+        covers_non_discounted: false,
     };
     let Some(index) = path.index.as_ref() else {
         return result;
@@ -835,13 +862,22 @@ fn score_index_path(
         return result;
     }
 
-    if let Some(columns) = &path.full_index_columns {
+    if let Some(columns) = source
+        .effective_index_columns
+        .get(&path.id)
+        .or(path.full_index_columns.as_ref())
+    {
         for (position, column) in columns.iter().enumerate() {
             let Some(column) = column else {
                 continue;
             };
+            if *column < 0 {
+                continue;
+            }
             if requirements.contains(column) {
                 result.interesting_count += 1;
+                result.covered_column_ids.push(*column);
+                result.covers_non_discounted |= !requirements.discounted.contains(column);
                 if position == result.consecutive_column_ids.len() {
                     result.consecutive_column_ids.push(*column);
                 }
@@ -854,6 +890,7 @@ fn score_index_path(
             };
             if requirements.contains(column_id) {
                 result.interesting_count += 1;
+                result.covers_non_discounted |= !requirements.discounted.contains(column_id);
             }
         }
     }
@@ -870,7 +907,7 @@ fn build_final_result(
     preferred: Vec<IndexWithScore>,
     max_to_keep: usize,
     only_prune_zero_score: bool,
-    requirements: &BTreeSet<i64>,
+    requirements: &ColumnRequirements,
 ) -> Vec<usize> {
     let mut result = Vec::new();
     let mut added = HashSet::new();
@@ -888,6 +925,9 @@ fn build_final_result(
     // threshold==0 或大于路径数：只丢掉零分索引，其余全留。
     if only_prune_zero_score {
         for entry in scored {
+            if entry.droppable {
+                continue;
+            }
             if added.insert(paths[entry.info.path_index].id) {
                 result.push(entry.info.path_index);
             }
@@ -901,13 +941,12 @@ fn build_final_result(
         if added.contains(&path.id) || state.remaining == 0 {
             continue;
         }
-        if state.has_non_zero_score && entry.score == 0 {
+        if entry.droppable {
             continue;
         }
         if should_add_index(&entry, path, requirements, &mut state) {
             result.push(entry.info.path_index);
             added.insert(path.id);
-            state.has_non_zero_score |= entry.score > 0;
             state.remaining -= 1;
         }
     }
@@ -925,7 +964,15 @@ fn score_and_sort(
         .filter_map(|info| {
             let path = &paths[info.path_index];
             let score = calculate_score_from_coverage(&info, total_columns, path.single_scan);
+            let mut covered_key = if info.consecutive_column_ids.is_empty() {
+                Vec::new()
+            } else {
+                info.covered_column_ids.clone()
+            };
+            covered_key.sort_unstable();
             (score != 0).then(|| ScoredIndex {
+                droppable: !info.covers_non_discounted && !path.single_scan,
+                covered_key,
                 columns: path.full_index_columns.as_ref().map_or(0, Vec::len),
                 single_scan: path.single_scan,
                 info,
@@ -942,6 +989,7 @@ fn compare_scored(paths: &[AccessPath], left: &ScoredIndex, right: &ScoredIndex)
     right
         .score
         .cmp(&left.score)
+        .then_with(|| left.droppable.cmp(&right.droppable))
         .then_with(|| {
             right
                 .info
@@ -950,13 +998,7 @@ fn compare_scored(paths: &[AccessPath], left: &ScoredIndex, right: &ScoredIndex)
                 .cmp(&left.info.consecutive_column_ids.len())
         })
         .then_with(|| right.single_scan.cmp(&left.single_scan))
-        .then_with(|| {
-            if left.info.consecutive_column_ids.len() == 1 {
-                left.columns.cmp(&right.columns)
-            } else {
-                Ordering::Equal
-            }
-        })
+        .then_with(|| left.columns.cmp(&right.columns))
         .then_with(|| {
             let left_id = paths[left.info.path_index]
                 .index
@@ -975,10 +1017,9 @@ fn compare_scored(paths: &[AccessPath], left: &ScoredIndex, right: &ScoredIndex)
 struct IndexSelectionState {
     phase_one_limit: usize,
     remaining: usize,
-    has_non_zero_score: bool,
     phase_one_count: usize,
     seen_consecutive_columns: BTreeSet<i64>,
-    seen_ordering_keys: BTreeSet<String>,
+    seen_consecutive_by_covered: HashMap<Vec<i64>, Vec<Vec<i64>>>,
 }
 
 impl IndexSelectionState {
@@ -991,12 +1032,24 @@ impl IndexSelectionState {
         }
     }
 
-    /// 记录已选索引的连续列集合与次序键，避免重复次序。
-    fn record_consecutive_columns(&mut self, columns: &[i64]) {
+    fn is_dominated(&self, entry: &ScoredIndex) -> bool {
+        self.seen_consecutive_by_covered
+            .get(&entry.covered_key)
+            .is_some_and(|prefixes| {
+                prefixes
+                    .iter()
+                    .any(|prefix| prefix.starts_with(&entry.info.consecutive_column_ids))
+            })
+    }
+
+    fn record_coverage(&mut self, entry: &ScoredIndex) {
         self.seen_consecutive_columns
-            .extend(columns.iter().copied());
-        if !columns.is_empty() {
-            self.seen_ordering_keys.insert(build_ordering_key(columns));
+            .extend(entry.info.consecutive_column_ids.iter().copied());
+        if !entry.covered_key.is_empty() {
+            self.seen_consecutive_by_covered
+                .entry(entry.covered_key.clone())
+                .or_default()
+                .push(entry.info.consecutive_column_ids.clone());
         }
     }
 }
@@ -1005,21 +1058,23 @@ impl IndexSelectionState {
 fn should_add_index(
     entry: &ScoredIndex,
     path: &AccessPath,
-    requirements: &BTreeSet<i64>,
+    requirements: &ColumnRequirements,
     state: &mut IndexSelectionState,
 ) -> bool {
     // 第一阶段：按排序直接收下前 phase_one_limit 个。
     if state.phase_one_count < state.phase_one_limit {
+        if !entry.info.consecutive_column_ids.is_empty() && state.is_dominated(entry) {
+            return false;
+        }
         state.phase_one_count += 1;
-        state.record_consecutive_columns(&entry.info.consecutive_column_ids);
+        state.record_coverage(entry);
         return true;
     }
     if !entry.info.consecutive_column_ids.is_empty() {
-        let key = build_ordering_key(&entry.info.consecutive_column_ids);
-        if state.seen_ordering_keys.contains(&key) {
+        if state.is_dominated(entry) {
             return false;
         }
-        state.record_consecutive_columns(&entry.info.consecutive_column_ids);
+        state.record_coverage(entry);
         return true;
     }
     if entry.info.interesting_count != 1 {
@@ -1032,13 +1087,16 @@ fn should_add_index(
 }
 
 /// 在全索引列中找第一个属于感兴趣集合的列。
-fn find_single_interesting_column(path: &AccessPath, requirements: &BTreeSet<i64>) -> Option<i64> {
+fn find_single_interesting_column(
+    path: &AccessPath,
+    requirements: &ColumnRequirements,
+) -> Option<i64> {
     path.full_index_columns
         .as_ref()?
         .iter()
         .flatten()
         .copied()
-        .find(|column| requirements.contains(column))
+        .find(|column| !requirements.discounted.contains(column) && requirements.contains(column))
 }
 
 /// 由覆盖统计计算综合分：感兴趣列、连续前缀、全覆盖、单扫加权。
@@ -1051,7 +1109,7 @@ fn calculate_score_from_coverage(
     let consecutive = coverage.consecutive_column_ids.len();
     interesting * 10
         + consecutive * 10
-        + usize::from(interesting == total_columns) * 10
+        + usize::from(total_columns > 0 && interesting == total_columns) * 10
         + usize::from(single_scan) * 20
 }
 

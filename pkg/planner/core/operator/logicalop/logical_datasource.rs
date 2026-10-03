@@ -439,6 +439,8 @@ pub struct DataSource {
     pub AccessPathMinSelectivity: f64,
     pub AskedColumnGroup: Vec<Vec<Column>>,
     pub InterestingColumns: Vec<Column>,
+    /// Parsed USE_INDEX_MERGE names; an empty entry denotes a general hint.
+    pub IndexMergeHints: Vec<Vec<String>>,
     pub FtsPushDown: Option<FTSPushDown>,
 }
 
@@ -473,6 +475,7 @@ impl Default for DataSource {
             AccessPathMinSelectivity: 0.0,
             AskedColumnGroup: Vec::new(),
             InterestingColumns: Vec::new(),
+            IndexMergeHints: Vec::new(),
             FtsPushDown: None,
         }
     }
@@ -586,6 +589,7 @@ impl DataSource {
             .map(|handle| handle.IterColumns().cloned().collect::<Vec<_>>())
             .unwrap_or_default();
 
+        let integer_handle = self.GetPKIsHandleCol();
         let mut appended_handles = Vec::new();
         for path in &mut self.PossibleAccessPaths {
             if path.IsTablePath() {
@@ -736,57 +740,26 @@ impl DataSource {
                 .take(index_columns.len())
                 .map(|column| column.Length as i32)
                 .collect::<Vec<_>>();
-            if !index.Unique && !index.Primary && index.Columns.len() == declared_col_count {
-                let append_common_handle = self.TableInfo.IsCommonHandle
-                    && !index.Global
-                    && !index.MVIndex
-                    && !index.IsColumnarIndex()
-                    && self.CommonHandleCols.len() == self.CommonHandleLens.len()
-                    && !self.CommonHandleCols.is_empty()
-                    && !(self.TableInfo.CommonHandleVersion == 0
-                        && expression::collate::NewCollationEnabled()
-                        && self.CommonHandleCols.iter().any(|column| {
-                            column.RetType.as_ref().is_some_and(|field| {
-                                field.EvalType() == expression::types::ETString
-                                    && !expression::mysql::HasBinaryFlag(field.GetFlag())
-                            })
-                        }))
-                    && self.CommonHandleCols.iter().all(|handle| {
-                        !index_columns
-                            .iter()
-                            .any(|column| column.UniqueID == handle.UniqueID)
-                    });
-                if append_common_handle {
-                    appended_handles.push((
-                        index.ID,
-                        index.Columns.len(),
-                        self.CommonHandleCols
-                            .iter()
-                            .map(|column| column.UniqueID)
-                            .collect::<Vec<_>>(),
-                    ));
-                    index_columns.extend(self.CommonHandleCols.iter().map(Column::Clone));
-                    index_lengths.extend(self.CommonHandleLens.iter().map(|length| *length as i32));
-                } else if self.TableInfo.PKIsHandle
-                    && handle_columns.len() == 1
-                    && handle_columns[0]
-                        .RetType
-                        .as_ref()
-                        .is_some_and(|field| !expression::mysql::HasUnsignedFlag(field.GetFlag()))
-                    && !index_columns
+            let declared_columns = index_columns.iter().cloned().map(Some).collect::<Vec<_>>();
+            let (append_columns, append_lengths) = handle_cols_to_append(
+                &self.TableInfo,
+                &self.CommonHandleCols,
+                &self.CommonHandleLens,
+                integer_handle.as_ref(),
+                path,
+                &declared_columns,
+            );
+            if !append_columns.is_empty() {
+                appended_handles.push((
+                    index.ID,
+                    index.Columns.len(),
+                    append_columns
                         .iter()
-                        .any(|column| column.UniqueID == handle_columns[0].UniqueID)
-                {
-                    // Selectivity's index backoff must see the appended handle
-                    // in the same column mapping as the execution range.
-                    appended_handles.push((
-                        index.ID,
-                        index.Columns.len(),
-                        vec![handle_columns[0].UniqueID],
-                    ));
-                    index_columns.push(handle_columns[0].Clone());
-                    index_lengths.push(expression::types::UnspecifiedLength);
-                }
+                        .map(|column| column.UniqueID)
+                        .collect::<Vec<_>>(),
+                ));
+                index_columns.extend(append_columns);
+                index_lengths.extend(append_lengths.into_iter().map(|length| length as i32));
             }
             path.IdxCols = index_columns.clone();
             path.IdxColLens = index_lengths
@@ -1640,6 +1613,27 @@ impl DataSource {
         getPKIsHandleColFromSchema(&self.Columns, self.Schema(), self.TableInfo.PKIsHandle)
     }
 
+    /// Shared physical-key layout used by pruning and range construction.
+    pub fn HandleColsToAppend(
+        &self,
+        path: &planner_util::AccessPath,
+        declared: &[Option<Column>],
+    ) -> (Vec<Column>, Vec<isize>) {
+        handle_cols_to_append(
+            &self.TableInfo,
+            &self.CommonHandleCols,
+            &self.CommonHandleLens,
+            self.GetPKIsHandleCol().as_ref(),
+            path,
+            declared,
+        )
+    }
+
+    /// Whether v0 stores non-binary string handle columns as collation weights.
+    pub fn HasV0NewCollationStringHandle(&self) -> bool {
+        has_v0_new_collation_string_handle(&self.TableInfo, &self.CommonHandleCols)
+    }
+
     /// 创建隐藏的额外句柄列（_tidb_rowid 语义）。
     pub fn NewExtraHandleSchemaCol(&self) -> Column {
         let mut field_type = expression::types::NewFieldType(mysql::r#type::TypeLonglong);
@@ -1848,6 +1842,74 @@ impl DataSource {
             .retain(&mut partial_index_is_usable);
         self.PossibleAccessPaths.retain(partial_index_is_usable);
     }
+}
+
+fn has_v0_new_collation_string_handle(table: &model::TableInfo, handles: &[Column]) -> bool {
+    table.CommonHandleVersion == 0
+        && expression::collate::NewCollationEnabled()
+        && handles.iter().any(|column| {
+            column.RetType.as_ref().is_some_and(|field| {
+                field.EvalType() == expression::types::ETString
+                    && !expression::mysql::HasBinaryFlag(field.GetFlag())
+            })
+        })
+}
+
+fn handle_cols_to_append(
+    table: &model::TableInfo,
+    handles: &[Column],
+    lengths: &[isize],
+    integer_handle: Option<&Column>,
+    path: &planner_util::AccessPath,
+    declared: &[Option<Column>],
+) -> (Vec<Column>, Vec<isize>) {
+    let empty = || (Vec::new(), Vec::new());
+    let Some(index) = path.Index.as_ref() else {
+        return empty();
+    };
+    if index.Unique
+        || index.Primary
+        || index.Columns.len() != declared.len()
+        || declared.iter().any(Option::is_none)
+    {
+        return empty();
+    }
+    if table.IsCommonHandle {
+        if handles.is_empty()
+            || lengths.len() != handles.len()
+            || index.Global
+            || index.MVIndex
+            || index.IsColumnarIndex()
+            || has_v0_new_collation_string_handle(table, handles)
+            || handles.iter().any(|handle| {
+                declared
+                    .iter()
+                    .flatten()
+                    .any(|column| column.UniqueID == handle.UniqueID)
+            })
+        {
+            return empty();
+        }
+        return (handles.to_vec(), lengths.to_vec());
+    }
+    let Some(handle) = integer_handle else {
+        return empty();
+    };
+    if handle
+        .RetType
+        .as_ref()
+        .is_none_or(|field| expression::mysql::HasUnsignedFlag(field.GetFlag()))
+        || declared
+            .iter()
+            .flatten()
+            .any(|column| column.ID == model::ExtraHandleID || column.UniqueID == handle.UniqueID)
+    {
+        return empty();
+    }
+    (
+        vec![handle.Clone()],
+        vec![expression::types::UnspecifiedLength as isize],
+    )
 }
 
 /// Go only treats a single `IS NOT NULL` partial-index predicate as invariant
