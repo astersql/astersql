@@ -130,3 +130,59 @@ fn ddl_identifiers_enforce_the_go_length_boundary() {
     assert!(check_identifier(&"x".repeat(64), "table").is_ok());
     assert!(check_identifier(&"x".repeat(65), "table").is_err());
 }
+
+#[test]
+fn modify_generated_column_metadata_strips_qualifiers() {
+    let cases = [
+        (
+            "ALTER TABLE t MODIFY COLUMN b INT GENERATED ALWAYS AS (t.a + 1) STORED",
+            "`a` + 1",
+            true,
+            vec!["a"],
+        ),
+        (
+            "ALTER TABLE t MODIFY COLUMN c VARCHAR(100) GENERATED ALWAYS AS (LOWER(t.a)) STORED",
+            "lower(`a`)",
+            true,
+            vec!["a"],
+        ),
+        (
+            "ALTER TABLE t MODIFY COLUMN d INT GENERATED ALWAYS AS (t.a * t.b) VIRTUAL",
+            "`a` * `b`",
+            false,
+            vec!["a", "b"],
+        ),
+        (
+            "ALTER TABLE t MODIFY COLUMN d INT GENERATED ALWAYS AS (db.t.a * db.t.b) VIRTUAL",
+            "`a` * `b`",
+            false,
+            vec!["a", "b"],
+        ),
+    ];
+    let mut parser = astersql_parser::New();
+    for (sql, expected, stored, dependencies) in cases {
+        let statement = parser.ParseOneStmt(sql, "", "").expect("parse ALTER TABLE");
+        let alter = statement
+            .as_any()
+            .downcast_ref::<astersql_parser_ast::AlterTableStmt>()
+            .expect("ALTER TABLE AST");
+        let definition = &alter.Specs[0].NewColumns[0];
+        let column =
+            crate::create_table::BuildColumnInfoFromAST(definition, 0, "utf8mb4", "utf8mb4_bin")
+                .expect("MODIFY COLUMN metadata");
+        assert_eq!(column.GeneratedExprString, expected, "{sql}");
+        assert_eq!(column.GeneratedStored, stored, "{sql}");
+        // Rust retains the parsed expression in the column definition, while
+        // durable ColumnInfo carries its restored text and dependency names.
+        assert!(definition.Options.iter().any(|option| option.Tp
+            == astersql_parser_ast::ColumnOptionType::Generated
+            && option.Expr.is_some()));
+        let mut actual = column
+            .Dependences
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        actual.sort_unstable();
+        assert_eq!(actual, dependencies, "{sql}");
+    }
+}

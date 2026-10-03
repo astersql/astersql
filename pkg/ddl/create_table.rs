@@ -274,10 +274,16 @@ fn expression_text_with_column_qualifiers(
                 })
                 .collect::<BuildResult<Vec<_>>>()?
                 .join(",");
-            if Schema.O.is_empty() {
-                format!("{}({arguments})", FnName.O)
+            // Generated column metadata uses RestoreKeyWordLowercase in Go.
+            let function_name = if keep_column_qualifiers {
+                &FnName.O
             } else {
-                format!("`{}`.{}({arguments})", Schema.O, FnName.O)
+                &FnName.L
+            };
+            if Schema.O.is_empty() {
+                format!("{function_name}({arguments})")
+            } else {
+                format!("`{}`.{function_name}({arguments})", Schema.O)
             }
         }
         ast::ExprKind::Binary { Op, L, R } => {
