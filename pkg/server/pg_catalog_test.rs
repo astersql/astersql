@@ -1547,3 +1547,441 @@ fn pg_introspection_cte_live() {
     service.close();
     domain.close();
 }
+
+#[test]
+fn pg_introspection_columns_live() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE TABLE test.columns_live (id INT PRIMARY KEY, amount DECIMAL(12,3) DEFAULT 1.250, label VARCHAR(24) DEFAULT 'hello', day DATE, stamp DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3))").unwrap();
+    native.execute("CREATE DATABASE columns_other").unwrap();
+    native
+        .execute("CREATE TABLE columns_other.hidden (id INT)")
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    let sql = "SELECT a.attnum, a.attname, a.atttypid, pg_catalog.format_type(a.atttypid,a.atttypmod) AS spec, a.attnotnull, pg_catalog.pg_get_expr(d.adbin,a.attrelid) AS def FROM pg_catalog.pg_attribute a LEFT JOIN pg_catalog.pg_attrdef d ON a.attrelid=d.adrelid AND a.attnum=d.adnum WHERE a.attrelid='public.columns_live'::regclass::oid ORDER BY a.attnum";
+    let result = query(&mut socket, sql);
+    assert_eq!(
+        result[0].0, b'T',
+        "column provider must return real metadata: {result:?}"
+    );
+    assert_eq!(
+        columns(&result[0].1),
+        vec![
+            ("attnum".into(), 21),
+            ("attname".into(), 25),
+            ("atttypid".into(), 26),
+            ("spec".into(), 25),
+            ("attnotnull".into(), 16),
+            ("def".into(), 25)
+        ]
+    );
+    for expected in [
+        row(&[
+            Some("1"),
+            Some("id"),
+            Some("23"),
+            Some("integer"),
+            Some("t"),
+            None,
+        ]),
+        row(&[
+            Some("2"),
+            Some("amount"),
+            Some("1700"),
+            Some("numeric(12,3)"),
+            Some("f"),
+            Some("1.250"),
+        ]),
+        row(&[
+            Some("3"),
+            Some("label"),
+            Some("1043"),
+            Some("character varying(24)"),
+            Some("f"),
+            Some("'hello'::character varying"),
+        ]),
+        row(&[
+            Some("4"),
+            Some("day"),
+            Some("1082"),
+            Some("date"),
+            Some("f"),
+            None,
+        ]),
+        row(&[
+            Some("5"),
+            Some("stamp"),
+            Some("1114"),
+            Some("timestamp(3) without time zone"),
+            Some("f"),
+            Some("CURRENT_TIMESTAMP(3)"),
+        ]),
+    ] {
+        assert!(result.contains(&(b'D', expected)), "{result:?}");
+    }
+    let result = query(
+        &mut socket,
+        "SELECT t.oid,t.typname FROM pg_catalog.pg_type t JOIN pg_catalog.pg_attribute a ON t.oid=a.atttypid WHERE a.attrelid='public.columns_live'::regclass::oid ORDER BY a.attnum",
+    );
+    assert_eq!(result[0].0, b'T', "{result:?}");
+    assert!(result.contains(&(b'D', row(&[Some("1700"), Some("numeric")]))));
+    let source = include_str!("../../docs/postgresql-protocol-first-phase.md");
+    let template = source
+        .split("#### RetrieveColumns")
+        .nth(1)
+        .unwrap()
+        .split("```sql")
+        .nth(1)
+        .unwrap()
+        .split("```")
+        .next()
+        .unwrap();
+    let schema = domain
+        .info_schema()
+        .AllSchemas()
+        .into_iter()
+        .find(|s| s.name.lower == "test")
+        .unwrap();
+    let namespace = crate::pg_oid::namespace_oid(schema.id).unwrap();
+    let full = query(&mut socket, &template.replace("$1", &namespace.to_string()));
+    assert_eq!(full[0].0, b'T', "complete PG18 column template: {full:?}");
+    assert_eq!(full.iter().filter(|(tag, _)| *tag == b'D').count(), 5);
+    assert_eq!(columns(&full[0].1)[11].1, 1009);
+    let types_template = source
+        .split("#### RetrieveDataTypes")
+        .nth(1)
+        .unwrap()
+        .split("```sql")
+        .nth(1)
+        .unwrap()
+        .split("```")
+        .next()
+        .unwrap();
+    let types = query(&mut socket, &types_template.replace("$1", "11"));
+    assert_eq!(types[0].0, b'T', "complete PG18 type template: {types:?}");
+    let mut previous = 0u32;
+    for (_, body) in types.iter().filter(|(tag, _)| *tag == b'D') {
+        let length = i32::from_be_bytes(body[2..6].try_into().unwrap()) as usize;
+        let id = std::str::from_utf8(&body[6..6 + length])
+            .unwrap()
+            .parse::<u32>()
+            .unwrap();
+        assert!(
+            id > previous,
+            "ORDER BY 1 must sort projected type OID: {types:?}"
+        );
+        previous = id;
+    }
+    assert!(previous > 0, "builtin types must be real nonempty rows");
+    let types = query(
+        &mut socket,
+        &types_template.replace("$1", &namespace.to_string()),
+    );
+    assert_eq!(types[0].0, b'T', "{types:?}");
+    assert_eq!(types.iter().filter(|(tag, _)| *tag == b'D').count(), 0);
+    // Parse/Describe does not freeze catalog rows; reuse the same Bind/Execute
+    // after native DROP/ADD, then verify offset differs from persistent ID.
+    send(
+        &mut socket,
+        b'P',
+        &[
+            b"cols\0".as_slice(),
+            template.as_bytes(),
+            b"\0",
+            &1i16.to_be_bytes(),
+            &26u32.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut socket, b'D', b"Scols\0");
+    send(&mut socket, b'S', b"");
+    let described = until_ready(&mut socket);
+    assert_eq!(described[0].0, b'1', "{described:?}");
+    assert_eq!(
+        columns(&described.iter().find(|(tag, _)| *tag == b'T').unwrap().1),
+        columns(&full[0].1)
+    );
+    let bind = |socket: &mut TcpStream| {
+        let text = namespace.to_string();
+        send(
+            socket,
+            b'B',
+            &[
+                b"\0cols\0".as_slice(),
+                &0i16.to_be_bytes(),
+                &1i16.to_be_bytes(),
+                &(text.len() as i32).to_be_bytes(),
+                text.as_bytes(),
+                &0i16.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        send(
+            socket,
+            b'E',
+            &[b"\0".as_slice(), &0i32.to_be_bytes()].concat(),
+        );
+        send(socket, b'S', b"");
+        until_ready(socket)
+    };
+    let before = bind(&mut socket);
+    assert_eq!(
+        before
+            .iter()
+            .filter(|(tag, _)| *tag == b'D')
+            .collect::<Vec<_>>(),
+        full.iter()
+            .filter(|(tag, _)| *tag == b'D')
+            .collect::<Vec<_>>()
+    );
+    native
+        .execute("ALTER TABLE test.columns_live DROP COLUMN label")
+        .unwrap();
+    native
+        .execute("ALTER TABLE test.columns_live ADD COLUMN added VARCHAR(7) DEFAULT 'new'")
+        .unwrap();
+    let result = query(&mut socket, sql);
+    assert_eq!(result[0].0, b'T', "{result:?}");
+    assert!(
+        result.contains(&(
+            b'D',
+            row(&[
+                Some("5"),
+                Some("added"),
+                Some("1043"),
+                Some("character varying(7)"),
+                Some("f"),
+                Some("'new'::character varying")
+            ])
+        )),
+        "{result:?}"
+    );
+    native
+        .execute(
+            "ALTER TABLE test.columns_live MODIFY COLUMN amount DECIMAL(8,2) NOT NULL DEFAULT 2.50",
+        )
+        .unwrap();
+    let changed = query(&mut socket, sql);
+    assert!(
+        changed.contains(&(
+            b'D',
+            row(&[
+                Some("2"),
+                Some("amount"),
+                Some("1700"),
+                Some("numeric(8,2)"),
+                Some("t"),
+                Some("2.50")
+            ])
+        )),
+        "ALTER must reread type/null/default: {changed:?}"
+    );
+    let table = domain
+        .info_schema()
+        .TableByName(
+            &astersql_infoschema::CiString::new("test"),
+            &astersql_infoschema::CiString::new("columns_live"),
+        )
+        .unwrap();
+    let model = table.Meta().model_meta.as_ref().unwrap();
+    let added = model.Columns.iter().find(|c| c.Name.O == "added").unwrap();
+    assert_ne!(
+        added.ID,
+        added.Offset as i64 + 1,
+        "fixture must distinguish native ID from offset"
+    );
+    let after = bind(&mut socket);
+    assert_eq!(after.iter().filter(|(tag, _)| *tag == b'D').count(), 5);
+    assert_ne!(
+        before
+            .iter()
+            .filter(|(tag, _)| *tag == b'D')
+            .collect::<Vec<_>>(),
+        after
+            .iter()
+            .filter(|(tag, _)| *tag == b'D')
+            .collect::<Vec<_>>()
+    );
+    for sql in [
+        "SELECT attname FROM pg_attribute WHERE attrelid=0",
+        "SELECT adbin FROM pg_attrdef WHERE adrelid=0",
+        "SELECT typname FROM pg_type WHERE typnamespace=0",
+    ] {
+        let result = query(&mut socket, sql);
+        assert_eq!(result[0].0, b'T', "{sql}: {result:?}");
+        assert_eq!(result.iter().filter(|(tag, _)| *tag == b'D').count(), 0);
+    }
+    let result = query(
+        &mut socket,
+        "SELECT xmin,attfdwoptions,attidentity,attgenerated FROM pg_attribute WHERE attrelid='public.columns_live'::regclass::oid AND attname='id'",
+    );
+    assert_eq!(result[1], (b'D', row(&[None, None, Some(""), Some("")])));
+    let result = query(
+        &mut socket,
+        "SELECT format_type(NULL,NULL), format_type(0,-1), format_type(999999,-1), format_type(1042,NULL), format_type(1042,-1), format_type(23,7), format_type(1009,NULL), pg_get_expr(NULL,0) FROM pg_type LIMIT 1",
+    );
+    assert_eq!(
+        result[1],
+        (
+            b'D',
+            row(&[
+                None,
+                Some("-"),
+                Some("???"),
+                Some("character"),
+                Some("bpchar"),
+                Some("integer"),
+                Some("text[]"),
+                None
+            ])
+        )
+    );
+    for (expression, expected) in [
+        ("(1,2)=(1,2)", Some("t")),
+        ("(NULL,1)=(NULL,2)", Some("f")),
+        ("(NULL,1)=(NULL,1)", None),
+        ("(1,NULL)=(2,NULL)", Some("f")),
+    ] {
+        let result = query(
+            &mut socket,
+            &format!("SELECT {expression} FROM pg_type LIMIT 1"),
+        );
+        assert_eq!(
+            result[1],
+            (b'D', row(&[expected])),
+            "{expression}: {result:?}"
+        );
+    }
+    let result = query(
+        &mut socket,
+        "SELECT 'c'::\"char\" AS kind FROM pg_type LIMIT 1",
+    );
+    assert_eq!(columns(&result[0].1), vec![("kind".into(), 18)]);
+    assert_eq!(result[1], (b'D', row(&[Some("c")])));
+    for (sql, state) in [
+        ("SELECT 'wide'::\"char\" FROM pg_type LIMIT 1", "0A000"),
+        ("SELECT oid FROM pg_type ORDER BY 0", "42P10"),
+        ("SELECT oid FROM pg_type ORDER BY 2", "42P10"),
+        (
+            "SELECT format_type(4294967296,NULL) FROM pg_type LIMIT 1",
+            "22003",
+        ),
+        (
+            "SELECT format_type(1700,2147483648) FROM pg_type LIMIT 1",
+            "22003",
+        ),
+        ("SELECT format_type(1114,7) FROM pg_type LIMIT 1", "0A000"),
+        ("SELECT (1,2,3)=(1,2,3) FROM pg_type LIMIT 1", "0A000"),
+        ("SELECT (1,2)<(1,3) FROM pg_type LIMIT 1", "0A000"),
+        ("SELECT (1,2)=(1,'two') FROM pg_type LIMIT 1", "0A000"),
+        ("SELECT format_type('bad',-1) FROM pg_type LIMIT 1", "0A000"),
+        ("SELECT pg_get_expr('fake',0) FROM pg_type LIMIT 1", "0A000"),
+        (
+            "SELECT attname FROM pg_attribute WHERE (attrelid,attnum)=(0)",
+            "0A000",
+        ),
+    ] {
+        let result = query(&mut socket, sql);
+        assert_eq!(result[0].0, b'E', "{sql}: {result:?}");
+        assert!(
+            result[0]
+                .1
+                .windows(7)
+                .any(|w| w == format!("C{state}\0").as_bytes()),
+            "{sql}: {result:?}"
+        );
+        assert_eq!(query(&mut socket, "SELECT 1")[1], (b'D', row(&[Some("1")])));
+    }
+    native
+        .execute("CREATE TABLE test.columns_unsupported (value ENUM('a','b'))")
+        .unwrap();
+    let rejected = query(&mut socket, "SELECT attname FROM pg_attribute");
+    assert_eq!(
+        rejected[0].0, b'E',
+        "unsupported native enum must not be guessed: {rejected:?}"
+    );
+    assert!(rejected[0].1.windows(7).any(|w| w == b"C0A000\0"));
+    let rejected = query(&mut socket, "SELECT typname FROM pg_type");
+    assert_eq!(
+        rejected[0].0, b'E',
+        "type catalog cannot silently hide unmapped native enum: {rejected:?}"
+    );
+    assert!(rejected[0].1.windows(7).any(|w| w == b"C0A000\0"));
+    native
+        .execute("DROP TABLE test.columns_unsupported")
+        .unwrap();
+    native.execute("CREATE TABLE test.columns_auto (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, tiny TINYINT(1), nullable INT DEFAULT NULL)").unwrap();
+    let result = query(
+        &mut socket,
+        "SELECT attname,atttypid,attidentity FROM pg_attribute WHERE attrelid='public.columns_auto'::regclass::oid ORDER BY attnum",
+    );
+    assert_eq!(
+        result[1],
+        (b'D', row(&[Some("id"), Some("1700"), Some("")]))
+    );
+    assert_eq!(
+        result[2],
+        (b'D', row(&[Some("tiny"), Some("21"), Some("")]))
+    );
+
+    native
+        .execute(
+            "CREATE TABLE test.columns_generated (a INT, b INT GENERATED ALWAYS AS (a+1) STORED)",
+        )
+        .unwrap();
+    let rejected = query(&mut socket, "SELECT attname FROM pg_attribute");
+    assert_eq!(
+        rejected[0].0, b'E',
+        "native generated expression cannot be copied as PG SQL: {rejected:?}"
+    );
+    assert!(rejected[0].1.windows(7).any(|w| w == b"C0A000\0"));
+    native.execute("DROP TABLE test.columns_generated").unwrap();
+    let result = query(
+        &mut socket,
+        "SELECT a.attname FROM pg_attribute a JOIN pg_type b ON true JOIN pg_type c ON true JOIN pg_type d ON true",
+    );
+    assert_eq!(result[0].0, b'E', "{result:?}");
+    assert!(result[0].1.windows(7).any(|w| w == b"C54000\0"));
+    assert!(result.iter().all(|(tag, _)| *tag != b'D'));
+    use crate::conn::{CancellationToken, SessionDriver};
+    let driver =
+        ConcreteSessionDriver::new_for_test(domain.clone(), BootstrapAuthMode::InsecureRootOnly);
+    let context = driver.open_ctx(97010, 0, 45, "", None).unwrap();
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    let catalog = crate::pg_catalog::CatalogQuery::parse("SELECT attname FROM pg_attribute")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        crate::pg_conn::sqlstate(&catalog.execute(context.as_ref(), &cancel).unwrap_err()),
+        "57014"
+    );
+    context.close().unwrap();
+    send(&mut socket, b'X', &[]);
+    service.close();
+    domain.close();
+}

@@ -229,6 +229,7 @@ fn length(n: usize) -> io::Result<i32> {
 #[derive(Clone, Copy)]
 #[repr(u8)]
 pub(crate) enum CatalogColumnType {
+    InternalChar = 239,
     Oid = 240,
     Regclass = 241,
     Int2Array = 242,
@@ -239,6 +240,7 @@ pub(crate) enum CatalogColumnType {
 impl CatalogColumnType {
     fn from_code(code: u8) -> Option<Self> {
         Some(match code {
+            239 => Self::InternalChar,
             240 => Self::Oid,
             241 => Self::Regclass,
             242 => Self::Int2Array,
@@ -250,6 +252,7 @@ impl CatalogColumnType {
     }
     fn wire_type(self) -> (u32, i16) {
         match self {
+            Self::InternalChar => (18, 1),
             Self::Oid => (26, 4),
             Self::Regclass => (2205, 4),
             Self::Int2Array => (1005, -1),

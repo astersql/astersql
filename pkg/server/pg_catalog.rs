@@ -7,7 +7,7 @@ use crate::conn::{
 
 // Fixed provider slots preserve the existing catalog column layout. Joined
 // relations get separate slots, including empty providers after LEFT JOIN.
-const CATALOG_ROW_WIDTH: usize = 11;
+const CATALOG_ROW_WIDTH: usize = 16;
 const MAX_CATALOG_ROWS: usize = 16_384;
 const MAX_CATALOG_JOIN_WORK: usize = 100_000;
 type CteColumns = std::collections::HashMap<usize, Vec<(String, u8, usize)>>;
@@ -212,7 +212,7 @@ impl CatalogQuery {
     }
     fn bind(&mut self) -> ParseResult<()> {
         for cte in self.select.ctes.clone() {
-            if cte.query.projections.len() > CATALOG_ROW_WIDTH {
+            if cte.query.projections.len() > 11 {
                 return Err((
                     "0A000",
                     "catalog CTEs support at most eleven columns".into(),
@@ -252,6 +252,9 @@ impl CatalogQuery {
                 && !matches!(
                     relation.name.as_str(),
                     "pg_class"
+                        | "pg_attribute"
+                        | "pg_type"
+                        | "pg_attrdef"
                         | "pg_database"
                         | "pg_locks"
                         | "pg_namespace"
@@ -304,6 +307,19 @@ impl CatalogQuery {
         Ok(())
     }
     fn order_expr<'a>(&'a self, expr: &'a Expr) -> ParseResult<&'a Expr> {
+        if let Expr::Integer(position) = expr {
+            return usize::try_from(*position)
+                .ok()
+                .and_then(|n| n.checked_sub(1))
+                .and_then(|n| self.select.projections.get(n))
+                .map(|p| &p.expr)
+                .ok_or_else(|| {
+                    (
+                        "42P10",
+                        "catalog ORDER BY position is not in select list".into(),
+                    )
+                });
+        }
         if let Expr::Column(path) = expr {
             if let [name] = path.as_slice() {
                 let mut projections = self
@@ -373,7 +389,7 @@ impl CatalogQuery {
                     ("pg_description" | "pg_shdescription", _) => {
                         description_column(&relation.name, name)
                     }
-                    _ => None,
+                    _ => column_catalog_field(&relation.name, name),
                 }
             };
             if let Some((slot, code, flags)) = field {
@@ -400,6 +416,12 @@ impl CatalogQuery {
             Expr::Boolean(_) => Ok((1, astersql_parser_mysql::r#type::IsBooleanFlag)),
             Expr::Cast(inner, target) => {
                 let (code, _) = self.expr_type(inner)?;
+                if *target == CastType::InternalChar
+                    && !matches!(**inner, Expr::Null)
+                    && !textual_type(code)
+                {
+                    return Err(("0A000", "catalog internal char casts require text".into()));
+                }
                 if *target == CastType::Bigint && code == 1 {
                     return Err((
                         "0A000",
@@ -408,6 +430,9 @@ impl CatalogQuery {
                 }
                 Ok((
                     match target {
+                        CastType::InternalChar => {
+                            crate::pg_result::CatalogColumnType::InternalChar as u8
+                        }
                         CastType::Bigint => 8,
                         CastType::Varchar => 253,
                         CastType::Oid => crate::pg_oid::OID_TYPE,
@@ -439,6 +464,21 @@ impl CatalogQuery {
                     {
                         Ok((253, 0))
                     }
+                    ("format_type", [oid, modifier])
+                        if (matches!(oid, Expr::Null) || numeric_type(self.expr_type(oid)?.0))
+                            && (matches!(modifier, Expr::Null)
+                                || numeric_type(self.expr_type(modifier)?.0)) =>
+                    {
+                        Ok((253, 0))
+                    }
+                    ("pg_get_expr", [expression, relation])
+                        if (matches!(expression, Expr::Null)
+                            || self.expr_type(expression)?.0 == 253)
+                            && (matches!(relation, Expr::Null)
+                                || numeric_type(self.expr_type(relation)?.0)) =>
+                    {
+                        Ok((253, 0))
+                    }
                     ("age", [Expr::Column(path)])
                         if self.select.from.name == "pg_locks" && self.column(path)?.0 == 0 =>
                     {
@@ -454,6 +494,7 @@ impl CatalogQuery {
                     && !matches!(**right, Expr::Null)
                     && left_type != right_type
                     && !(numeric_type(left_type) && numeric_type(right_type))
+                    && !(textual_type(left_type) && textual_type(right_type))
                 {
                     return Err(("0A000", "incompatible catalog equality types".into()));
                 }
@@ -486,6 +527,7 @@ impl CatalogQuery {
                     && !matches!(projection, Expr::Null)
                     && left != right
                     && !(numeric_type(left) && numeric_type(right))
+                    && !(textual_type(left) && textual_type(right))
                 {
                     return Err(("0A000", "incompatible catalog IN subquery types".into()));
                 }
@@ -727,6 +769,14 @@ impl CatalogQuery {
         cancel: &CancellationToken,
     ) -> ConnResult<Vec<Vec<Value>>> {
         let rows = match name {
+            "pg_attribute" | "pg_attrdef" | "pg_type" => column_catalog_rows(
+                name,
+                snapshot
+                    .ok_or_else(|| ConnError::Session("schema snapshot is unavailable".into()))?
+                    .as_ref(),
+                database,
+                cancel,
+            )?,
             "pg_class" | "pg_database" | "pg_namespace" => {
                 let snapshot = snapshot
                     .ok_or_else(|| ConnError::Session("schema snapshot is unavailable".into()))?;
@@ -874,6 +924,12 @@ impl CatalogQuery {
                         Value::Text(n.to_string())
                     }
                 }
+                (Value::Text(s), CastType::InternalChar) if s.len() == 1 && s.is_ascii() => {
+                    Value::Text(s)
+                }
+                (Value::Text(_), CastType::InternalChar) => {
+                    return Err(ConnError::UnsupportedCommand(0));
+                }
                 (Value::Text(s), CastType::Varchar) => Value::Text(s),
                 (Value::Text(s), CastType::Bigint) => {
                     Value::Signed(s.parse().map_err(|_| {
@@ -892,6 +948,31 @@ impl CatalogQuery {
                     evaluate(&args[0])?;
                     Value::Null
                 }
+                "format_type" => match (evaluate(&args[0])?, evaluate(&args[1])?) {
+                    (Value::Null, _) => Value::Null,
+                    (Value::Signed(oid), modifier) => Value::Text(format_column_type(
+                        oid,
+                        match modifier {
+                            Value::Signed(n) => Some(n),
+                            Value::Null => None,
+                            _ => unreachable!(),
+                        },
+                    )?),
+                    _ => unreachable!("validated format_type"),
+                },
+                "pg_get_expr" => match (evaluate(&args[0])?, evaluate(&args[1])?) {
+                    (Value::Null, _) | (_, Value::Null) => Value::Null,
+                    (Value::Text(encoded), Value::Signed(relation)) => {
+                        let (owner, expression) = encoded
+                            .split_once(':')
+                            .ok_or(ConnError::UnsupportedCommand(0))?;
+                        if owner.parse::<i64>().ok() != Some(relation) {
+                            return Err(ConnError::UnsupportedCommand(0));
+                        }
+                        Value::Text(expression.into())
+                    }
+                    _ => return Err(ConnError::UnsupportedCommand(0)),
+                },
                 // Preserve the native oldest-transaction meaning: smaller TSO
                 // has greater age. This is ordering, not a fabricated PG XID.
                 "age" => match evaluate(&args[0])? {
@@ -1074,6 +1155,9 @@ impl CatalogQuery {
     }
 }
 
+fn textual_type(code: u8) -> bool {
+    code == 253 || code == crate::pg_result::CatalogColumnType::InternalChar as u8
+}
 fn numeric_type(code: u8) -> bool {
     matches!(
         code,
@@ -1277,6 +1361,400 @@ fn class_rows(
                     namespace,
                     if partitioned { "I" } else { "i" },
                 ));
+            }
+        }
+    }
+    Ok(rows)
+}
+
+// Optional arrays retain their PG element type even without native FDW options.
+fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)> {
+    let oid = crate::pg_oid::OID_TYPE;
+    let internal_char = crate::pg_result::CatalogColumnType::InternalChar as u8;
+    let (slot, code) = match (relation, name) {
+        ("pg_attribute", "attrelid") => (0, oid),
+        ("pg_attribute", "attnum") => (1, 2),
+        ("pg_attribute", "attname") => (2, 253),
+        ("pg_attribute", "atttypid") => (3, oid),
+        ("pg_attribute", "atttypmod") => (4, 3),
+        ("pg_attribute", "attndims") => (5, 3),
+        ("pg_attribute", "attnotnull") => (6, 1),
+        ("pg_attribute", "attisdropped") => (7, 1),
+        ("pg_attribute", "attislocal") => (8, 1),
+        ("pg_attribute", "attidentity") => (9, internal_char),
+        ("pg_attribute", "attgenerated") => (10, internal_char),
+        ("pg_attribute", "attfdwoptions") => {
+            (11, crate::pg_result::CatalogColumnType::TextArray as u8)
+        }
+        ("pg_attribute", "atthasdef") => (12, 1),
+        ("pg_attribute", "xmin") => (13, 8),
+        ("pg_attrdef", "adrelid") => (0, oid),
+        ("pg_attrdef", "adnum") => (1, 2),
+        ("pg_attrdef", "adbin") => (2, 253),
+        ("pg_type", "oid") => (0, oid),
+        ("pg_type", "typname") => (1, 253),
+        ("pg_type", "typnamespace") => (2, oid),
+        ("pg_type", "typtype") => (3, internal_char),
+        ("pg_type", "typcategory") => (4, internal_char),
+        ("pg_type", "typrelid") => (5, oid),
+        ("pg_type", "typbasetype") => (6, oid),
+        ("pg_type", "typtypmod") => (7, 3),
+        ("pg_type", "typndims") => (8, 3),
+        ("pg_type", "typdefault") => (9, 253),
+        ("pg_type", "typnotnull") => (10, 1),
+        ("pg_type", "typowner") => (11, 8),
+        ("pg_type", "typelem") => (12, oid),
+        ("pg_type", "typisdefined") => (13, 1),
+        ("pg_type", "xmin") => (14, 8),
+        _ => return None,
+    };
+    Some((
+        slot,
+        code,
+        if code == 1 {
+            astersql_parser_mysql::r#type::IsBooleanFlag
+        } else {
+            0
+        },
+    ))
+}
+
+// Canonical builtins used by native column mappings and the nullable options
+// array. No native enum/set/domain is invented to disguise incompatible types.
+const COLUMN_TYPES: &[(i64, &str, &str, &str)] = &[
+    (16, "bool", "boolean", "B"),
+    (17, "bytea", "bytea", "U"),
+    (18, "char", "\"char\"", "Z"),
+    (20, "int8", "bigint", "N"),
+    (21, "int2", "smallint", "N"),
+    (23, "int4", "integer", "N"),
+    (25, "text", "text", "S"),
+    (26, "oid", "oid", "N"),
+    (700, "float4", "real", "N"),
+    (701, "float8", "double precision", "N"),
+    (1009, "_text", "text[]", "A"),
+    (1042, "bpchar", "character", "S"),
+    (1043, "varchar", "character varying", "S"),
+    (1082, "date", "date", "D"),
+    (1114, "timestamp", "timestamp without time zone", "D"),
+    (1700, "numeric", "numeric", "N"),
+    (114, "json", "json", "U"),
+];
+
+fn native_column_type(column: &astersql_meta_model::ColumnInfo) -> ConnResult<(i64, i64)> {
+    use astersql_parser_mysql::r#type as mysql;
+    if column.FieldType.IsArray() {
+        return Err(ConnError::UnsupportedCommand(0));
+    }
+    if column.GetFlag() & mysql::IsBooleanFlag != 0 {
+        return Ok((16, -1));
+    }
+    let unsigned = mysql::HasUnsignedFlag(column.GetFlag());
+    let mut modifier = -1;
+    let oid = match column.GetType() {
+        1 | 13 => 21,
+        2 => {
+            if unsigned {
+                23
+            } else {
+                21
+            }
+        }
+        3 => {
+            if unsigned {
+                20
+            } else {
+                23
+            }
+        }
+        9 => 23,
+        8 => {
+            if unsigned {
+                1700
+            } else {
+                20
+            }
+        }
+        4 => 700,
+        5 => 701,
+        0 | 246 => {
+            let precision =
+                i64::try_from(column.GetFlen()).map_err(|_| ConnError::UnsupportedCommand(0))?;
+            let scale =
+                i64::try_from(column.GetDecimal()).map_err(|_| ConnError::UnsupportedCommand(0))?;
+            if !(1..=65).contains(&precision) || !(0..=precision).contains(&scale) {
+                return Err(ConnError::Session(format!(
+                    "incomplete column type metadata for {}",
+                    column.Name.O
+                )));
+            }
+            modifier = 4 + (precision << 16) + scale;
+            1700
+        }
+        15 | 253 | 254 => {
+            if column.GetCharset() == "binary" {
+                17
+            } else {
+                let length = i64::try_from(column.GetFlen())
+                    .map_err(|_| ConnError::UnsupportedCommand(0))?;
+                if length <= 0 || length > i64::from(i32::MAX) - 4 {
+                    return Err(ConnError::Session(format!(
+                        "incomplete column length metadata for {}",
+                        column.Name.O
+                    )));
+                }
+                modifier = length + 4;
+                if column.GetType() == 254 { 1042 } else { 1043 }
+            }
+        }
+        249..=252 => {
+            if column.GetCharset() == "binary" {
+                17
+            } else {
+                25
+            }
+        }
+        10 | 14 => 1082,
+        7 | 12 => {
+            modifier =
+                i64::try_from(column.GetDecimal()).map_err(|_| ConnError::UnsupportedCommand(0))?;
+            if !(0..=6).contains(&modifier) {
+                return Err(ConnError::Session(format!(
+                    "incomplete datetime precision metadata for {}",
+                    column.Name.O
+                )));
+            }
+            1114
+        }
+        245 => 114,
+        // Native TIME is a duration, not PG time-of-day; enums and sets need
+        // identities/labels not provided by this compatibility phase.
+        _ => return Err(ConnError::UnsupportedCommand(0)),
+    };
+    if column.GetType() == 8 && unsigned {
+        modifier = 4 + (20 << 16);
+    }
+    Ok((oid, modifier))
+}
+
+fn format_column_type(oid: i64, modifier: Option<i64>) -> ConnResult<String> {
+    u32::try_from(oid).map_err(|_| ConnError::Session("PG oid conversion out of range".into()))?;
+    if let Some(modifier) = modifier {
+        i32::try_from(modifier)
+            .map_err(|_| ConnError::Session("PG oid conversion out of range".into()))?;
+    }
+    if oid == 0 {
+        return Ok("-".into());
+    }
+    let Some((_, _, name, _)) = COLUMN_TYPES.iter().find(|t| t.0 == oid) else {
+        return Ok("???".into());
+    };
+    let Some(modifier) = modifier else {
+        return Ok((*name).into());
+    };
+    if modifier < 0 {
+        return Ok(if oid == 1042 {
+            "bpchar".into()
+        } else {
+            (*name).into()
+        });
+    }
+    Ok(match oid {
+        1042 | 1043 if modifier >= 4 => format!("{name}({})", modifier - 4),
+        1700 if modifier >= 4 => {
+            let n = modifier - 4;
+            let precision = (n >> 16) & 0xffff;
+            // PG encodes a signed 11-bit scale (including negative scales).
+            let scale = ((n & 0x7ff) ^ 1024) - 1024;
+            format!("numeric({precision},{scale})")
+        }
+        1114 if (0..=6).contains(&modifier) => format!("timestamp({modifier}) without time zone"),
+        1042 | 1043 | 1700 | 1114 => return Err(ConnError::UnsupportedCommand(0)),
+        _ => (*name).into(),
+    })
+}
+
+fn column_default(
+    column: &astersql_meta_model::ColumnInfo,
+    oid: i64,
+) -> ConnResult<Option<String>> {
+    use astersql_meta_model::DefaultValue;
+    if !column.GeneratedExprString.is_empty() {
+        // A MySQL generated expression cannot be exposed as PG SQL by copying
+        // its source text. Reject until its expression semantics are supported.
+        return Err(ConnError::UnsupportedCommand(0));
+    }
+    let Some(value) = column.GetDefaultValue() else {
+        return Ok(None);
+    };
+    let text = match value {
+        DefaultValue::Bool(v) => v.to_string(),
+        DefaultValue::Int(v) => v.to_string(),
+        DefaultValue::Uint(v) => v.to_string(),
+        DefaultValue::Float(v) if v.is_finite() => v.to_string(),
+        DefaultValue::Float(_) => return Err(ConnError::UnsupportedCommand(0)),
+        DefaultValue::String(v) => {
+            String::from_utf8(v).map_err(|_| ConnError::UnsupportedCommand(0))?
+        }
+    };
+    if column.DefaultIsExpr || oid == 1114 && text.to_uppercase().starts_with("CURRENT_TIMESTAMP") {
+        let mut upper = text.to_uppercase();
+        for precision in 0..=6 {
+            if upper == format!("CURRENT_TIMESTAMP('{precision}')") {
+                upper = format!("CURRENT_TIMESTAMP({precision})");
+                break;
+            }
+        }
+        if upper == "CURRENT_TIMESTAMP"
+            || (0..=6).any(|n| upper == format!("CURRENT_TIMESTAMP({n})"))
+        {
+            return Ok(Some(upper));
+        }
+        return Err(ConnError::UnsupportedCommand(0));
+    }
+    if oid == 16 {
+        return match text.as_str() {
+            "0" | "false" => Ok(Some("false".into())),
+            "1" | "true" => Ok(Some("true".into())),
+            _ => Err(ConnError::UnsupportedCommand(0)),
+        };
+    }
+    if matches!(oid, 20 | 21 | 23 | 700 | 701 | 1700) {
+        if !text.parse::<f64>().is_ok_and(f64::is_finite) {
+            return Err(ConnError::UnsupportedCommand(0));
+        }
+        return Ok(Some(text));
+    }
+    if oid == 17 {
+        return Err(ConnError::UnsupportedCommand(0));
+    }
+    if oid == 1082 && text.starts_with("0000-") || oid == 1114 && text.starts_with("0000-") {
+        return Err(ConnError::UnsupportedCommand(0));
+    }
+    let name = format_column_type(oid, None)?;
+    Ok(Some(format!("'{}'::{name}", text.replace('\'', "''"))))
+}
+
+fn column_catalog_rows(
+    relation: &str,
+    snapshot: &dyn astersql_infoschema::InfoSchema,
+    database: &str,
+    cancel: &CancellationToken,
+) -> ConnResult<Vec<Vec<Value>>> {
+    check_catalog_cancel(cancel)?;
+    let mut rows = if relation == "pg_type" {
+        COLUMN_TYPES
+            .iter()
+            .map(|(oid, name, _, category)| {
+                vec![
+                    Value::Signed(*oid),
+                    Value::Text((*name).into()),
+                    Value::Signed(11),
+                    Value::Text("b".into()),
+                    Value::Text((*category).into()),
+                    Value::Signed(0),
+                    Value::Signed(0),
+                    Value::Signed(-1),
+                    Value::Signed(0),
+                    Value::Null,
+                    Value::Text("false".into()),
+                    Value::Null,
+                    Value::Signed(if *oid == 1009 { 25 } else { 0 }),
+                    Value::Text("true".into()),
+                    Value::Null,
+                ]
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let Some(schema) = snapshot
+        .AllSchemas()
+        .into_iter()
+        .find(|s| s.name.lower == database.to_lowercase())
+    else {
+        return Ok(rows);
+    };
+    for table in snapshot
+        .SchemaTableInfos(&schema.name)
+        .map_err(|e| ConnError::Session(e.to_string()))?
+    {
+        check_catalog_cancel(cancel)?;
+        let model = table.model_meta.as_ref().ok_or_else(|| {
+            ConnError::Session(format!(
+                "PG column catalog requires complete ModelMeta for {}",
+                table.name.original
+            ))
+        })?;
+        if model.State != astersql_meta_model::StatePublic || model.Sequence.is_some() {
+            continue;
+        }
+        let relid = i64::from(crate::pg_oid::table_oid(model.ID)?);
+        let mut positions = std::collections::HashSet::new();
+        for column in &model.Columns {
+            check_catalog_cancel(cancel)?;
+            if column.State != astersql_meta_model::StatePublic || column.Hidden {
+                continue;
+            }
+            let position = column
+                .Offset
+                .checked_add(1)
+                .filter(|n| *n > 0 && *n <= i16::MAX as isize)
+                .ok_or_else(|| {
+                    ConnError::Session(format!(
+                        "invalid column offset metadata for {}",
+                        column.Name.O
+                    ))
+                })? as i64;
+            if column.ID <= 0 || !positions.insert(position) {
+                return Err(ConnError::Session(format!(
+                    "invalid column identity metadata for {}",
+                    column.Name.O
+                )));
+            }
+            let (oid, modifier) = native_column_type(column)?;
+            if relation == "pg_type" {
+                // Builtins describe the validated native column set. Do not
+                // silently hide an unmapped enum/set or incomplete model as
+                // an empty collection of public user-defined types.
+                continue;
+            }
+            let default = column_default(column, oid)?;
+            if relation == "pg_attrdef" {
+                if let Some(default) = default {
+                    // PG-private opaque deparse input, tied to its owning
+                    // relation. It is not native SQL passed back to the engine.
+                    rows.push(vec![
+                        Value::Signed(relid),
+                        Value::Signed(position),
+                        Value::Text(format!("{relid}:{default}")),
+                    ]);
+                }
+            } else {
+                rows.push(vec![
+                    Value::Signed(relid),
+                    Value::Signed(position),
+                    Value::Text(column.Name.O.clone()),
+                    Value::Signed(oid),
+                    Value::Signed(modifier),
+                    Value::Signed(0),
+                    Value::Text(
+                        astersql_parser_mysql::r#type::HasNotNullFlag(column.GetFlag()).to_string(),
+                    ),
+                    // Native DROP removes the column rather than retaining PG
+                    // tombstone attributes; surviving offsets remain authoritative.
+                    Value::Text("false".into()),
+                    Value::Text("true".into()),
+                    // AUTO_INCREMENT is not a PG identity or sequence.
+                    Value::Text(String::new()),
+                    Value::Text(String::new()),
+                    Value::Null,
+                    Value::Text(default.is_some().to_string()),
+                    Value::Null,
+                ]);
+            }
+            if rows.len() > MAX_CATALOG_ROWS {
+                return Err(catalog_row_limit());
             }
         }
     }

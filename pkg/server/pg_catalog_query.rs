@@ -56,6 +56,7 @@ pub(crate) enum CompareOp {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CastType {
+    InternalChar,
     Bigint,
     Varchar,
     Oid,
@@ -319,7 +320,69 @@ impl Parser {
         }
         self.comparison()
     }
+    // RetrieveColumns joins (attrelid, attnum) to (adrelid, adnum).
+    // A two-field row equality is exactly the SQL conjunction of the two
+    // scalar equalities, including false/unknown precedence. Keep other row
+    // operators and widths outside this bounded grammar.
+    fn tuple_start(&self) -> bool {
+        if self.peek() != Some(&Token::Symbol('(')) {
+            return false;
+        }
+        let mut depth = 0usize;
+        let mut comma = false;
+        for token in &self.tokens[self.pos..] {
+            match token {
+                Token::Symbol('(') => depth += 1,
+                Token::Symbol(')') => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return comma;
+                    }
+                }
+                Token::Symbol(',') if depth == 1 => comma = true,
+                _ => {}
+            }
+        }
+        false
+    }
+    fn tuple_pair(&mut self) -> ParseResult<(Expr, Expr)> {
+        self.require_symbol('(')?;
+        let first = self.atom()?;
+        if !self.symbol(',') {
+            return Err(unsupported("catalog row equality requires two fields"));
+        }
+        let second = self.atom()?;
+        if !self.symbol(')') {
+            return Err(unsupported("catalog row equality requires two fields"));
+        }
+        Ok((first, second))
+    }
+    fn tuple_equality(&mut self) -> ParseResult<Expr> {
+        if self.depth == 64 {
+            return Err(unsupported("catalog expression nesting is too deep"));
+        }
+        self.depth += 1;
+        let result = (|| {
+            let (left_a, left_b) = self.tuple_pair()?;
+            if !self.symbol('=') {
+                return Err(unsupported("catalog row comparison supports only equality"));
+            }
+            let (right_a, right_b) = self.tuple_pair()?;
+            for _ in 0..3 {
+                self.predicate_budget()?;
+            }
+            Ok(Expr::And(
+                Box::new(Expr::Equal(Box::new(left_a), Box::new(right_a))),
+                Box::new(Expr::Equal(Box::new(left_b), Box::new(right_b))),
+            ))
+        })();
+        self.depth -= 1;
+        result
+    }
     fn comparison(&mut self) -> ParseResult<Expr> {
+        if self.tuple_start() {
+            return self.tuple_equality();
+        }
         let mut expr = self.atom()?;
         if self.symbol('=') {
             self.predicate_budget()?;
@@ -493,8 +556,10 @@ impl Parser {
                 return Err(unsupported("too many catalog casts"));
             }
             self.pos += 1;
+            let quoted = matches!(self.peek(), Some(Token::Quoted(_)));
             let target = self.identifier()?;
             let target = match target.as_str() {
+                "char" if quoted => CastType::InternalChar,
                 "bigint" => CastType::Bigint,
                 "varchar" => CastType::Varchar,
                 "oid" => CastType::Oid,
