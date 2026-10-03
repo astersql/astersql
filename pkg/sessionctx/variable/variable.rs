@@ -876,7 +876,7 @@ impl SysVar {
 }
 
 /// 解析 Go `time.Duration` 风格字符串，返回纳秒。
-pub(crate) fn parse_go_duration(value: &str) -> Option<i128> {
+pub fn parse_go_duration(value: &str) -> Option<i128> {
     if value.is_empty() {
         return None;
     }
@@ -919,7 +919,7 @@ pub(crate) fn parse_go_duration(value: &str) -> Option<i128> {
 }
 
 /// 将纳秒格式化为 Go Duration 字符串。
-pub(crate) fn format_go_duration(value: i128) -> String {
+pub fn format_go_duration(value: i128) -> String {
     if value == 0 {
         return "0s".to_owned();
     }

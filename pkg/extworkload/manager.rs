@@ -24,11 +24,6 @@ use std::time::Duration;
 
 use crate::{Manager, client, config, context, grpc, keyspacepb, logutil, metrics, zap};
 
-/// 本地 `gc_life_time` 加载前，InitializeGCV2 写入控制器的默认秒数。
-// defGCLifeTimeSec 是本地 gc_life_time 加载前，InitializeGCV2 写入控制器的默认秒数。
-#[allow(non_upper_case_globals)]
-const defGCLifeTimeSec: i64 = 600;
-
 /// 同时限制管理器创建阶段的同步拨号和 Ping。
 // dialTimeout 同时限制管理器创建阶段的同步拨号和 Ping。
 #[allow(non_upper_case_globals)]
@@ -209,16 +204,22 @@ impl Manager for manager {
         Some(&self.meta)
     }
 
-    /// 注册 safePoint=0 的初始任务，并使用默认 600 秒 GC 生命周期。
-    // InitializeGCV2 注册 safePoint=0 的初始任务，并使用默认 600 秒 GC 生命周期。
-    fn InitializeGCV2(&mut self, context: &context::Context) -> Result<(), ManagerError> {
+    /// 注册 safePoint=0 的初始任务，并使用调用方加载的有效 GC 生命周期。
+    // InitializeGCV2 注册 safePoint=0 的初始任务，并使用调用方加载的有效 GC 生命周期。
+    fn InitializeGCV2(
+        &mut self,
+        context: &context::Context,
+        gc_life_time: std::time::Duration,
+    ) -> Result<(), ManagerError> {
         let (context, cancel) = withRequestTimeout(context);
         let context = withMetric(
             &context,
             config::RoleGCV2Worker.to_string(),
             metrics::WorkerActionInit.to_owned(),
         );
-        let result = self.cli.RegisterGCV2(&context, 0, defGCLifeTimeSec);
+        let result = self
+            .cli
+            .RegisterGCV2(&context, 0, gc_life_time.as_secs_f64() as i64);
         cancel();
         result.map_err(|error| Box::new(error) as ManagerError)
     }
@@ -243,7 +244,7 @@ impl Manager for manager {
         &mut self,
         context: &context::Context,
         safePoint: u64,
-        gcLifeTime: i64,
+        gcLifeTime: std::time::Duration,
     ) -> Result<(), ManagerError> {
         let (context, cancel) = withRequestTimeout(context);
         let context = withMetric(
@@ -251,7 +252,9 @@ impl Manager for manager {
             config::RoleGCV2Worker.to_string(),
             metrics::WorkerActionRegister.to_owned(),
         );
-        let result = self.cli.RegisterGCV2(&context, safePoint, gcLifeTime);
+        let result = self
+            .cli
+            .RegisterGCV2(&context, safePoint, gcLifeTime.as_secs_f64() as i64);
         cancel();
         result.map_err(|error| Box::new(error) as ManagerError)
     }
@@ -279,10 +282,12 @@ impl Manager for manager {
     fn UpdateGCLifeTime(
         &mut self,
         context: &context::Context,
-        gcLifeTime: i64,
+        gcLifeTime: std::time::Duration,
     ) -> Result<(), ManagerError> {
         let (context, cancel) = withRequestTimeout(context);
-        let result = self.cli.UpdateGCLifeTime(&context, gcLifeTime);
+        let result = self
+            .cli
+            .UpdateGCLifeTime(&context, gcLifeTime.as_secs_f64() as i64);
         cancel();
         result.map_err(|error| Box::new(error) as ManagerError)
     }

@@ -766,57 +766,68 @@ impl CanonicalSessionFactory {
             .external_workload
             .clone();
         if astersql_config_deploymode::IsStarter() && workload_config.Enable {
-            let keyspace_id = etcd_namespace
-                .rsplit_once('/')
-                .and_then(|(_, id)| id.parse::<u32>().ok());
-            if let Some(id) = keyspace_id {
-                let meta = astersql_extworkload::keyspacepb::KeyspaceMeta {
-                    id,
-                    name: keyspace_name.clone(),
+            let meta = (|| -> SessionResult<astersql_extworkload::keyspacepb::KeyspaceMeta> {
+                use astersql_store_copr::network_backend::{
+                    NetworkPdKeyspaceClient, NetworkSecurity,
                 };
-                let options = astersql_extworkload::config::ExternalWorkload {
-                    Enable: true,
-                    Role: workload_config.Role.clone(),
-                    TidbPool: workload_config.TidbPool.clone(),
-                    ControllerAddr: workload_config.ControllerAddr.clone(),
-                };
-                let controller_tls = tls.as_ref().map(|tls| {
-                    (
-                        tls.ca_path.as_str(),
-                        tls.cert_path.as_str(),
-                        tls.key_path.as_str(),
-                    )
+                let security = tls.as_ref().map(|tls| NetworkSecurity {
+                    ca_path: tls.ca_path.clone(),
+                    cert_path: tls.cert_path.clone(),
+                    key_path: tls.key_path.clone(),
                 });
-                match astersql_extworkload::NewManagerWithTLS(
-                    &astersql_extworkload::context::Background(),
-                    Some(&meta),
-                    options,
-                    controller_tls,
-                ) {
-                    Ok(manager) => factory.domain.set_external_workload_manager(manager),
-                    Err(error) => {
-                        if workload_config.Role == astersql_extworkload::config::RoleGCV2Worker {
-                            factory.domain.close();
-                            return Err(SessionError::new(format!(
-                                "initialize external workload GCV2 manager: {error}"
-                            )));
-                        }
-                        BgLogger().log(
-                            LogLevel::Error,
-                            "initialize external workload manager failed",
-                            [LogField::String("error".to_owned(), error.to_string())],
-                        );
-                    }
-                }
-            } else if workload_config.Role == astersql_extworkload::config::RoleGCV2Worker {
-                factory.domain.close();
-                return Err(SessionError::new(
-                    "external workload GCV2 role requires keyspace metadata",
-                ));
-            }
+                let client = NetworkPdKeyspaceClient::connect(
+                    &pd_addrs,
+                    security.as_ref(),
+                    Duration::from_secs(10),
+                    "tidb-extworkload",
+                )
+                .map_err(|e| session_error("load external workload keyspace metadata", e))?;
+                let meta = client
+                    .load_keyspace_meta(&keyspace_name)
+                    .map_err(|e| session_error("load external workload keyspace metadata", e))?;
+                Ok(astersql_extworkload::keyspacepb::KeyspaceMeta {
+                    id: meta.get_id(),
+                    name: meta.get_name().to_owned(),
+                    config: meta
+                        .get_config()
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
+                })
+            })();
+            install_external_workload_manager(
+                &factory.domain,
+                &workload_config.Role,
+                meta,
+                |meta| {
+                    let options = astersql_extworkload::config::ExternalWorkload {
+                        Enable: true,
+                        Role: workload_config.Role.clone(),
+                        TidbPool: workload_config.TidbPool.clone(),
+                        ControllerAddr: workload_config.ControllerAddr.clone(),
+                    };
+                    let controller_tls = tls.as_ref().map(|tls| {
+                        (
+                            tls.ca_path.as_str(),
+                            tls.cert_path.as_str(),
+                            tls.key_path.as_str(),
+                        )
+                    });
+                    astersql_extworkload::NewManagerWithTLS(
+                        &astersql_extworkload::context::Background(),
+                        Some(meta),
+                        options,
+                        controller_tls,
+                    )
+                    .map_err(|e| {
+                        SessionError::new(format!("initialize external workload manager: {e}"))
+                    })
+                },
+            )?;
         }
         let mut ttl_watch_transport = None;
         let mut serving_ddl_runtime = None;
+        let mut bootstrap_owner_lock = None;
         if !etcd_addrs.is_empty() {
             let tls_files = tls.as_ref().map(|tls| {
                 (
@@ -829,6 +840,28 @@ impl CanonicalSessionFactory {
                 astersql_domain_serverinfo::RealEtcdClient::connect(etcd_addrs.clone(), tls_files)
                     .map_err(|error| session_error("connect Domain server-info etcd", error))?
                     .with_namespace(etcd_namespace);
+            bootstrap_owner_lock = acquire_bootstrap_upgrade_lock(&factory.domain, || {
+                let runtime = Arc::new(
+                    tokio::runtime::Runtime::new()
+                        .map_err(|e| session_error("bootstrap lock runtime", e))?,
+                );
+                let lock = runtime
+                    .block_on(astersql_owner::AcquireDistributedLock(
+                        &astersql_owner::Context::new(),
+                        client.raw_client(),
+                        format!(
+                            "{}{}",
+                            client.namespace(),
+                            crate::bootstrap::bootstrapOwnerKey
+                        ),
+                        10,
+                    ))
+                    .map_err(|e| session_error("acquire bootstrap owner lock", e))?;
+                Ok(BootstrapOwnerLock {
+                    runtime,
+                    lock: Some(lock),
+                })
+            })?;
             ttl_watch_transport = Some(Arc::new(super::ttl_runtime::EtcdTtlWatchTransport::new(
                 client.raw_client(),
                 client.namespace().to_owned(),
@@ -891,6 +924,8 @@ impl CanonicalSessionFactory {
             factory.domain.close();
             return Err(error);
         }
+        drop(bootstrap_owner_lock);
+        initialize_external_workload_gcv2(&factory.domain);
         if let Some((owner, owner_runtime, cancellation, schema_client, id)) = serving_ddl_runtime {
             if let Err(error) = super::session_factory::install_serving_ddl_runtime(
                 &factory.domain,
@@ -2112,6 +2147,31 @@ pub fn BootstrapCanonicalDomain(domain: Arc<Domain>) -> SessionResult<ConcreteSe
     }
     let session = ConcreteSession::new(Arc::clone(&domain));
     let previous_bootstrap_version = canonical_bootstrap_version(&session, &domain)?;
+    // The serving factory holds the owner lock; this read observes upgrades by other nodes.
+    if previous_bootstrap_version.is_some_and(|version| {
+        version > 0 && version < unsafe { crate::upgrade_def::currentBootstrapVersion }
+    }) && astersql_config_deploymode::IsStarter()
+    {
+        if let Some(manager) = domain.external_workload_manager() {
+            let mut manager = manager
+                .lock()
+                .expect("external workload manager lock poisoned");
+            let terminate = astersql_extworkload::AbortGCV2ForUpgrade(
+                &astersql_extworkload::context::Background(),
+                Some(manager.as_mut()),
+            )
+            .map_err(|e| SessionError::new(format!("abort GCV2 worker failed: {e}")))?;
+            if terminate {
+                if cfg!(test) {
+                    return Ok(session);
+                }
+                return Err(SessionError::new(
+                    "GCV2 worker aborted before bootstrap upgrade",
+                ));
+            }
+        }
+    }
+
     for database in ["mysql", "sys", "test"] {
         session.execute(&format!("CREATE DATABASE IF NOT EXISTS {database}"))?;
     }
@@ -2359,4 +2419,148 @@ where
     fn ArgsToExpressions(&self, arguments: &[String]) -> Vec<String> {
         arguments.to_vec()
     }
+}
+
+struct BootstrapOwnerLock {
+    runtime: Arc<tokio::runtime::Runtime>,
+    lock: Option<astersql_owner::DistributedLock>,
+}
+
+impl Drop for BootstrapOwnerLock {
+    fn drop(&mut self) {
+        if let Some(lock) = self.lock.take() {
+            if let Err(error) = self.runtime.block_on(lock.release()) {
+                BgLogger().log(
+                    LogLevel::Warn,
+                    "release bootstrap owner lock failed",
+                    [LogField::String("error".into(), error.to_string())],
+                );
+            }
+        }
+    }
+}
+
+pub(super) fn acquire_bootstrap_upgrade_lock<G>(
+    domain: &Arc<Domain>,
+    acquire: impl FnOnce() -> SessionResult<G>,
+) -> SessionResult<Option<G>> {
+    let session = ConcreteSession::new(domain.clone());
+    let version = canonical_bootstrap_version(&session, domain)?;
+    if version.is_some_and(|v| v > 0 && v < unsafe { crate::upgrade_def::currentBootstrapVersion })
+    {
+        acquire().map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+pub(super) fn load_external_gc_lifetime(domain: &Arc<Domain>) -> SessionResult<Duration> {
+    let session = ConcreteSession::new(domain.clone());
+    // Match getTiDBTableValue: missing rows and storage-read errors use the registered default.
+    let stored = session
+        .execute("SELECT VARIABLE_VALUE FROM mysql.tidb WHERE VARIABLE_NAME='tikv_gc_life_time'")
+        .ok()
+        .and_then(|mut records| {
+            records
+                .first_mut()
+                .and_then(|r| r.next_row().ok().flatten())
+                .and_then(|row| row.first().cloned())
+        });
+    let value = stored.unwrap_or_else(|| "10m0s".into());
+    let nanos = astersql_sessionctx_variable::parse_go_duration(&value)
+        .and_then(|value| u64::try_from(value).ok())
+        .ok_or_else(|| SessionError::new(format!("invalid effective GC lifetime {value:?}")))?;
+    Ok(Duration::from_nanos(nanos))
+}
+
+pub(super) fn initialize_external_workload_gcv2(domain: &Arc<Domain>) {
+    let Some(manager) = domain.external_workload_manager() else {
+        return;
+    };
+    {
+        let manager = manager
+            .lock()
+            .expect("external workload manager lock poisoned");
+        if manager.Role() != astersql_extworkload::config::RoleMaster
+            || !astersql_extworkload::IsKeyspaceUsingKeyspaceLevelGC(manager.Meta())
+        {
+            return;
+        }
+    }
+    let result = load_external_gc_lifetime(domain).and_then(|lifetime| {
+        manager
+            .lock()
+            .expect("external workload manager lock poisoned")
+            .InitializeGCV2(&astersql_extworkload::context::Background(), lifetime)
+            .map_err(|e| SessionError::new(e.to_string()))
+    });
+    if let Err(error) = result {
+        BgLogger().log(
+            LogLevel::Warn,
+            "initialize external workload GCV2 failed",
+            [LogField::String("error".into(), error.to_string())],
+        );
+        domain.set_external_workload_manager(None);
+    }
+}
+
+pub(super) fn notify_external_workload_gc_lifetime(domain: &Arc<Domain>) {
+    let Some(manager) = domain.external_workload_manager() else {
+        return;
+    };
+    if !astersql_extworkload::IsKeyspaceUsingKeyspaceLevelGC(
+        manager
+            .lock()
+            .expect("external workload manager lock poisoned")
+            .Meta(),
+    ) {
+        return;
+    }
+    let result = load_external_gc_lifetime(domain).and_then(|lifetime| {
+        manager
+            .lock()
+            .expect("external workload manager lock poisoned")
+            .UpdateGCLifeTime(&astersql_extworkload::context::Background(), lifetime)
+            .map_err(|e| SessionError::new(e.to_string()))
+    });
+    if let Err(error) = result {
+        BgLogger().log(
+            LogLevel::Warn,
+            "update external workload GC lifetime failed",
+            [LogField::String("error".into(), error.to_string())],
+        );
+    }
+}
+
+pub(super) fn install_external_workload_manager(
+    domain: &Arc<Domain>,
+    role: &str,
+    meta: SessionResult<astersql_extworkload::keyspacepb::KeyspaceMeta>,
+    create: impl FnOnce(
+        &astersql_extworkload::keyspacepb::KeyspaceMeta,
+    ) -> SessionResult<Option<Box<dyn astersql_extworkload::Manager>>>,
+) -> SessionResult<()> {
+    let manager = meta.and_then(|meta| {
+        if role == astersql_extworkload::config::RoleGCV2Worker
+            && !astersql_extworkload::IsKeyspaceUsingKeyspaceLevelGC(Some(&meta))
+        {
+            return Err(SessionError::new(
+                "external workload GCV2 role requires keyspace-level GC",
+            ));
+        }
+        create(&meta)
+    });
+    match manager {
+        Ok(manager) => domain.set_external_workload_manager(manager),
+        Err(error) if role == astersql_extworkload::config::RoleGCV2Worker => {
+            domain.close();
+            return Err(error);
+        }
+        Err(error) => BgLogger().log(
+            LogLevel::Warn,
+            "initialize external workload manager failed",
+            [LogField::String("error".into(), error.to_string())],
+        ),
+    }
+    Ok(())
 }

@@ -353,6 +353,12 @@ pub trait GCWorkerRuntime: Send + Sync + 'static {
     fn RecordFailure(&self, stage: &str, error: &GCError);
     /// 记录 GC 事件。
     fn RecordEvent(&self, event: &str);
+    /// Controller attached to this runtime's storage, if enabled.
+    fn ExternalWorkloadManager(
+        &self,
+    ) -> Option<Arc<Mutex<Box<dyn astersql_extworkload::Manager>>>> {
+        None
+    }
 }
 
 #[derive(Clone)]
@@ -815,8 +821,45 @@ impl GCWorker {
         self.redoDeleteRanges(safe_point, concurrency)
             .map_err(|error| self.stageError("redo_delete_range", error))?;
         // 阶段 4：向 PD/集群广播新的 GC 安全点。
-        self.broadcastGCSafePoint(safe_point)
-            .map_err(|error| self.stageError("upload_safe_point", error))
+        let gc_safe_point = self
+            .broadcastGCSafePoint(safe_point)
+            .map_err(|error| self.stageError("upload_safe_point", error))?;
+        self.notifyGCV2AfterGC(gc_safe_point);
+        Ok(())
+    }
+
+    /// Notify the controller only after PD successfully advances the GC safe point.
+    pub(crate) fn notifyGCV2AfterGC(&self, safe_point: u64) {
+        let Some(manager) = self.runtime.ExternalWorkloadManager() else {
+            return;
+        };
+        let mut manager = manager
+            .lock()
+            .expect("external workload manager lock poisoned");
+        if !astersql_extworkload::IsKeyspaceUsingKeyspaceLevelGC(manager.Meta()) {
+            return;
+        }
+        let role = manager.Role();
+        let ctx = astersql_extworkload::context::Background();
+        if matches!(role.as_str(), "master" | "ttl" | "gcv2") {
+            if let Err(error) = manager.RecycleGCV2(&ctx, safe_point) {
+                self.runtime
+                    .RecordEvent(&format!("failed_recycle_gcv2: {error}"));
+            }
+        }
+        if matches!(role.as_str(), "master" | "ttl") {
+            match self.loadDurationWithDefault(gcLifeTimeKey, gcDefaultLifeTime) {
+                Err(error) => self
+                    .runtime
+                    .RecordEvent(&format!("failed_load_gcv2_lifetime: {error}")),
+                Ok(lifetime) => {
+                    if let Err(error) = manager.RegisterGCV2(&ctx, safe_point, lifetime) {
+                        self.runtime
+                            .RecordEvent(&format!("failed_register_gcv2: {error}"));
+                    }
+                }
+            }
+        }
     }
 
     /// 统一 GC 模式下仅执行 delete-range / redo（安全点由别处推进）。
@@ -1086,8 +1129,10 @@ impl GCWorker {
     }
 
     /// 将新的 GC 安全点推进到 PD。
-    fn broadcastGCSafePoint(&self, safe_point: u64) -> GCResult {
-        self.runtime.AdvanceGCSafePoint(safe_point).map(|_| ())
+    fn broadcastGCSafePoint(&self, safe_point: u64) -> GCResult<u64> {
+        self.runtime
+            .AdvanceGCSafePoint(safe_point)
+            .map(|result| result.new_safe_point)
     }
 
     /// 竞选或续租 GC 领导者；成功返回 true。
@@ -1269,7 +1314,7 @@ pub fn RunDistributedGCJob(
         return Err(GCError::new("distributed GC cancelled"));
     }
     worker.resolveLocks(new_safe_point, concurrency)?;
-    worker.broadcastGCSafePoint(new_safe_point)
+    worker.broadcastGCSafePoint(new_safe_point).map(|_| ())
 }
 
 /// 仅执行指定区间上的锁解析。

@@ -184,6 +184,14 @@ impl NetworkPdKeyspaceClient {
 
     /// 按名称加载 Keyspace 元数据。
     pub fn load_keyspace(&self, name: &str) -> Result<u32, PdKeyspaceError> {
+        self.load_keyspace_meta(name).map(|meta| meta.get_id())
+    }
+
+    /// Load full metadata so consumers can honor PD GC management settings.
+    pub fn load_keyspace_meta(
+        &self,
+        name: &str,
+    ) -> Result<keyspacepb::KeyspaceMeta, PdKeyspaceError> {
         let mut request = keyspacepb::LoadKeyspaceRequest::new();
         let mut header = pd_header(self.cluster_id);
         header.set_caller_id(self.caller_id.clone());
@@ -197,7 +205,7 @@ impl NetworkPdKeyspaceClient {
                         return Err(error);
                     }
                     if response.has_keyspace() {
-                        return Ok(response.take_keyspace().get_id());
+                        return Ok(response.take_keyspace());
                     }
                     return Err(PdKeyspaceError::unexpected(
                         "PD returned no keyspace metadata",

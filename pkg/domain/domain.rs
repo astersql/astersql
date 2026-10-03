@@ -5229,11 +5229,8 @@ impl Domain {
         &self,
         manager: Option<Box<dyn astersql_extworkload::Manager>>,
     ) {
-        let previous = std::mem::replace(
-            &mut *self
-                .external_workload_manager
-                .write()
-                .expect("external workload manager lock poisoned"),
+        let previous = astersql_extworkload::SetManagerForStore(
+            Some(self),
             manager.map(|manager| Arc::new(Mutex::new(manager))),
         );
         if let Some(previous) = previous {
@@ -5248,10 +5245,7 @@ impl Domain {
     pub fn external_workload_manager(
         &self,
     ) -> Option<Arc<Mutex<Box<dyn astersql_extworkload::Manager>>>> {
-        self.external_workload_manager
-            .read()
-            .expect("external workload manager lock poisoned")
-            .clone()
+        astersql_extworkload::GetManagerFromStore(Some(self))
     }
 
     /// Returns the embedding function shared by sessions on this Domain.
@@ -6324,5 +6318,26 @@ impl astersql_infoschema_issyncer::KvSchemaSource for StorageHandle {
     }
     fn delete_cached_table(&self, id: i64) {
         self.with_storage(|store| store.GetMemCache().Delete(id));
+    }
+}
+
+impl astersql_extworkload::ManagerStore for Domain {
+    fn replace_external_workload_manager(
+        &self,
+        manager: Option<astersql_extworkload::SharedManager>,
+    ) -> Option<astersql_extworkload::SharedManager> {
+        std::mem::replace(
+            &mut *self
+                .external_workload_manager
+                .write()
+                .expect("external workload manager lock poisoned"),
+            manager,
+        )
+    }
+    fn get_external_workload_manager(&self) -> Option<astersql_extworkload::SharedManager> {
+        self.external_workload_manager
+            .read()
+            .expect("external workload manager lock poisoned")
+            .clone()
     }
 }

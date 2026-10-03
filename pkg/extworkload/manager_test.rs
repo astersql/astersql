@@ -32,6 +32,7 @@ fn test_new_manager_lifecycle() {
     let meta = keyspacepb::KeyspaceMeta {
         id: 42,
         name: "starter-ks".to_owned(),
+        config: Default::default(),
     };
 
     assert!(
@@ -67,6 +68,7 @@ fn test_new_manager_ping_failure() {
     let meta = keyspacepb::KeyspaceMeta {
         id: 1,
         name: "ks".to_owned(),
+        config: Default::default(),
     };
     let config = config::ExternalWorkload {
         Enable: true,
@@ -90,6 +92,7 @@ fn go_merge_43_production_controller_uses_grpc_client() {
     let meta = keyspacepb::KeyspaceMeta {
         id: 42,
         name: "starter-ks".to_owned(),
+        config: Default::default(),
     };
     let config = config::ExternalWorkload {
         Enable: true,
@@ -294,6 +297,7 @@ fn run_manager_call(call: impl FnOnce(&mut manager) -> Result<(), ManagerError>)
         meta: keyspacepb::KeyspaceMeta {
             id: 1,
             name: "ks".to_owned(),
+            config: Default::default(),
         },
     };
     call(&mut manager).expect("manager call should succeed");
@@ -314,10 +318,12 @@ fn assert_labels(state: &FakeState, worker_type: &str, action: &str) {
 fn test_manager_methods_set_deadline_and_metrics() {
     let background = context::Background();
 
-    let state = run_manager_call(|manager| manager.InitializeGCV2(&background));
+    let state = run_manager_call(|manager| {
+        manager.InitializeGCV2(&background, std::time::Duration::from_secs(3600))
+    });
     assert_eq!("RegisterGCV2", state.call);
     assert_eq!(0, state.safe_point);
-    assert_eq!(600, state.gc_life_time);
+    assert_eq!(3600, state.gc_life_time);
     assert!(state.deadline_set);
     assert_labels(&state, config::RoleGCV2Worker, "init");
 
@@ -327,7 +333,9 @@ fn test_manager_methods_set_deadline_and_metrics() {
     assert!(state.deadline_set);
     assert_labels(&state, config::RoleGCV2Worker, "abort");
 
-    let state = run_manager_call(|manager| manager.RegisterGCV2(&background, 10, 600));
+    let state = run_manager_call(|manager| {
+        manager.RegisterGCV2(&background, 10, std::time::Duration::from_secs(600))
+    });
     assert_eq!(
         ("RegisterGCV2", 10, 600),
         (state.call.as_str(), state.safe_point, state.gc_life_time)
@@ -340,7 +348,9 @@ fn test_manager_methods_set_deadline_and_metrics() {
     assert!(state.deadline_set);
     assert_labels(&state, config::RoleGCV2Worker, "recycle");
 
-    let state = run_manager_call(|manager| manager.UpdateGCLifeTime(&background, 60));
+    let state = run_manager_call(|manager| {
+        manager.UpdateGCLifeTime(&background, std::time::Duration::from_secs(60))
+    });
     assert_eq!(
         ("UpdateGCLifeTime", 60),
         (state.call.as_str(), state.gc_life_time)
@@ -411,6 +421,7 @@ fn test_manager_method_error_propagation() {
         meta: keyspacepb::KeyspaceMeta {
             id: 1,
             name: "ks".to_owned(),
+            config: Default::default(),
         },
     };
 
@@ -418,4 +429,28 @@ fn test_manager_method_error_propagation() {
         .RegisterTTLTask(&context::Background(), 1, true)
         .expect_err("client error must propagate");
     assert_eq!("boom", error.to_string());
+}
+
+#[test]
+fn test_initialize_gcv2_uses_effective_lifetime() {
+    let state = run_manager_call(|manager| {
+        manager.InitializeGCV2(&context::Background(), std::time::Duration::from_secs(3600))
+    });
+    assert_eq!(3600, state.gc_life_time);
+}
+
+#[test]
+fn test_gcv2_lifetime_truncates_fractional_seconds() {
+    let ctx = context::Background();
+    let lifetime = std::time::Duration::from_millis(3600999);
+    let state = run_manager_call(|m| m.InitializeGCV2(&ctx, lifetime));
+    assert_eq!((0, 3600), (state.safe_point, state.gc_life_time));
+    assert_labels(&state, config::RoleGCV2Worker, "init");
+    let state = run_manager_call(|m| m.RegisterGCV2(&ctx, 123, lifetime));
+    assert_eq!((123, 3600), (state.safe_point, state.gc_life_time));
+    assert_labels(&state, config::RoleGCV2Worker, "register");
+    let state = run_manager_call(|m| m.UpdateGCLifeTime(&ctx, lifetime));
+    assert_eq!(3600, state.gc_life_time);
+    assert!(state.labels.is_none());
+    assert!(state.deadline_set);
 }

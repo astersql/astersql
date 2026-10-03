@@ -163,6 +163,7 @@ fn make_manager(cli: FakeClient, role: &str) -> manager_impl::manager {
         meta: keyspacepb::KeyspaceMeta {
             id: 42,
             name: "starter-ks".into(),
+            config: Default::default(),
         },
     }
 }
@@ -228,15 +229,18 @@ fn new_manager_disabled_and_nil_meta_match_go() {
 fn manager_methods_match_go_arguments_deadlines_labels_and_errors() {
     let ctx = context::Background();
     let mut m = make_manager(FakeClient::default(), "master");
-    m.InitializeGCV2(&ctx).unwrap();
-    assert_call(&m, "RegisterGCV2", 0, 600, Some(("gcv2", "init")));
+    m.InitializeGCV2(&ctx, std::time::Duration::from_secs(3600))
+        .unwrap();
+    assert_call(&m, "RegisterGCV2", 0, 3600, Some(("gcv2", "init")));
     m.AbortGCV2(&ctx).unwrap();
-    assert_call(&m, "RecycleGCV2", u64::MAX, 600, Some(("gcv2", "abort")));
-    m.RegisterGCV2(&ctx, 10, 700).unwrap();
+    assert_call(&m, "RecycleGCV2", u64::MAX, 3600, Some(("gcv2", "abort")));
+    m.RegisterGCV2(&ctx, 10, std::time::Duration::from_secs(700))
+        .unwrap();
     assert_call(&m, "RegisterGCV2", 10, 700, Some(("gcv2", "register")));
     m.RecycleGCV2(&ctx, 20).unwrap();
     assert_call(&m, "RecycleGCV2", 20, 700, Some(("gcv2", "recycle")));
-    m.UpdateGCLifeTime(&ctx, 60).unwrap();
+    m.UpdateGCLifeTime(&ctx, std::time::Duration::from_secs(60))
+        .unwrap();
     assert_call(&m, "UpdateGCLifeTime", 20, 60, None);
     m.RegisterTTLTask(&ctx, 11, true).unwrap();
     assert_call(&m, "RegisterTTLTask", 20, 60, Some(("ttl", "register")));

@@ -458,6 +458,7 @@ impl astersql_extworkload::Manager for TtlBoundary {
     fn InitializeGCV2(
         &mut self,
         _: &astersql_extworkload::context::Context,
+        _: std::time::Duration,
     ) -> Result<(), astersql_extworkload::ManagerError> {
         Ok(())
     }
@@ -471,7 +472,7 @@ impl astersql_extworkload::Manager for TtlBoundary {
         &mut self,
         _: &astersql_extworkload::context::Context,
         _: u64,
-        _: i64,
+        _: std::time::Duration,
     ) -> Result<(), astersql_extworkload::ManagerError> {
         Ok(())
     }
@@ -485,7 +486,7 @@ impl astersql_extworkload::Manager for TtlBoundary {
     fn UpdateGCLifeTime(
         &mut self,
         _: &astersql_extworkload::context::Context,
-        _: i64,
+        _: std::time::Duration,
     ) -> Result<(), astersql_extworkload::ManagerError> {
         Ok(())
     }

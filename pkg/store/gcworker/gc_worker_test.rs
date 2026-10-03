@@ -126,6 +126,7 @@ struct FakeRuntime {
 }
 
 struct FakeState {
+    external_manager: Option<Arc<Mutex<Box<dyn astersql_extworkload::Manager>>>>,
     values: HashMap<String, String>,
     oracle_time: SystemTime,
     current_version: u64,
@@ -146,6 +147,8 @@ struct FakeState {
     fail_delete_range: bool,
     fail_unsafe_destroy: bool,
     fail_resolve: bool,
+    fail_broadcast: bool,
+    broadcast_safe_point: Option<u64>,
     raft_v2: bool,
     starter_mode: bool,
     in_test: bool,
@@ -156,6 +159,7 @@ struct FakeState {
 impl Default for FakeState {
     fn default() -> Self {
         Self {
+            external_manager: None,
             values: HashMap::new(),
             oracle_time: SystemTime::UNIX_EPOCH + Duration::from_secs(3_600),
             current_version: 100,
@@ -180,6 +184,8 @@ impl Default for FakeState {
             fail_delete_range: false,
             fail_unsafe_destroy: false,
             fail_resolve: false,
+            fail_broadcast: false,
+            broadcast_safe_point: None,
             raft_v2: false,
             starter_mode: false,
             in_test: true,
@@ -259,6 +265,11 @@ impl GCSession for FakeSession {
 }
 
 impl GCWorkerRuntime for FakeRuntime {
+    fn ExternalWorkloadManager(
+        &self,
+    ) -> Option<Arc<Mutex<Box<dyn astersql_extworkload::Manager>>>> {
+        self.state.lock().unwrap().external_manager.clone()
+    }
     fn CurrentVersion(&self) -> GCResult<u64> {
         Ok(self.state.lock().unwrap().current_version)
     }
@@ -329,9 +340,13 @@ impl GCWorkerRuntime for FakeRuntime {
     }
     fn AdvanceGCSafePoint(&self, safe_point: u64) -> GCResult<SafePointAdvance> {
         self.update(|state| state.calls.push(format!("advance_gc:{safe_point}")));
+        let state = self.state.lock().unwrap();
+        if state.fail_broadcast {
+            return Err(GCError::new("broadcast failed"));
+        }
         Ok(SafePointAdvance {
             old_safe_point: 0,
-            new_safe_point: safe_point,
+            new_safe_point: state.broadcast_safe_point.unwrap_or(safe_point),
             blocker_description: String::new(),
         })
     }
@@ -1025,4 +1040,247 @@ fn TestCalcDeleteRangeConcurrency() {
         2,
         worker.calcDeleteRangeConcurrency(gcConcurrency { v: 8, isAuto: true }, 200_000)
     );
+}
+
+struct Gcv2Manager {
+    role: String,
+    meta: astersql_extworkload::keyspacepb::KeyspaceMeta,
+    calls: Arc<Mutex<Vec<(String, u64, u64)>>>,
+    fail: bool,
+    fail_register: bool,
+}
+impl astersql_extworkload::Manager for Gcv2Manager {
+    fn Close(&mut self) -> Result<(), astersql_extworkload::ManagerError> {
+        Ok(())
+    }
+    fn Role(&self) -> String {
+        self.role.clone()
+    }
+    fn Meta(&self) -> Option<&astersql_extworkload::keyspacepb::KeyspaceMeta> {
+        Some(&self.meta)
+    }
+    fn InitializeGCV2(
+        &mut self,
+        _: &astersql_extworkload::context::Context,
+        life: std::time::Duration,
+    ) -> Result<(), astersql_extworkload::ManagerError> {
+        let _ = life;
+        Ok(())
+    }
+    fn AbortGCV2(
+        &mut self,
+        _: &astersql_extworkload::context::Context,
+    ) -> Result<(), astersql_extworkload::ManagerError> {
+        Ok(())
+    }
+    fn RegisterGCV2(
+        &mut self,
+        _: &astersql_extworkload::context::Context,
+        safe_point: u64,
+        life: Duration,
+    ) -> Result<(), astersql_extworkload::ManagerError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(("register".into(), safe_point, life.as_secs()));
+        if self.fail_register {
+            Err(std::io::Error::other("register failed").into())
+        } else {
+            Ok(())
+        }
+    }
+    fn RecycleGCV2(
+        &mut self,
+        _: &astersql_extworkload::context::Context,
+        safe_point: u64,
+    ) -> Result<(), astersql_extworkload::ManagerError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(("recycle".into(), safe_point, 0));
+        if self.fail {
+            Err(std::io::Error::other("recycle failed").into())
+        } else {
+            Ok(())
+        }
+    }
+    fn UpdateGCLifeTime(
+        &mut self,
+        _: &astersql_extworkload::context::Context,
+        life: std::time::Duration,
+    ) -> Result<(), astersql_extworkload::ManagerError> {
+        let _ = life;
+        Ok(())
+    }
+    fn RegisterTTLTask(
+        &mut self,
+        _: &astersql_extworkload::context::Context,
+        _: i64,
+        _: bool,
+    ) -> Result<(), astersql_extworkload::ManagerError> {
+        Ok(())
+    }
+    fn DeleteTTLTableInfo(
+        &mut self,
+        _: &astersql_extworkload::context::Context,
+        _: i64,
+    ) -> Result<(), astersql_extworkload::ManagerError> {
+        Ok(())
+    }
+    fn RecycleTTLTask(
+        &mut self,
+        _: &astersql_extworkload::context::Context,
+        _: u64,
+    ) -> Result<(), astersql_extworkload::ManagerError> {
+        Ok(())
+    }
+    fn UpdateTTLJobEnable(
+        &mut self,
+        _: &astersql_extworkload::context::Context,
+        enabled: bool,
+    ) -> Result<(), astersql_extworkload::ManagerError> {
+        let _ = enabled;
+        Ok(())
+    }
+    fn RegisterAutoAnalyze(
+        &mut self,
+        _: &astersql_extworkload::context::Context,
+        _: u64,
+    ) -> Result<(), astersql_extworkload::ManagerError> {
+        Ok(())
+    }
+    fn RecycleAutoAnalyze(
+        &mut self,
+        _: &astersql_extworkload::context::Context,
+        _: u64,
+    ) -> Result<(), astersql_extworkload::ManagerError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn gc_job_notifies_controller_after_success() {
+    let (worker, runtime) = worker_fixture();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    runtime.update(|state| {
+        state.external_manager = Some(Arc::new(Mutex::new(Box::new(Gcv2Manager {
+            role: "gcv2".into(),
+            meta: astersql_extworkload::keyspacepb::KeyspaceMeta {
+                config: [("gc_management_type".into(), "keyspace_level".into())].into(),
+                ..Default::default()
+            },
+            calls: calls.clone(),
+            fail: false,
+            fail_register: false,
+        }))));
+    });
+    worker
+        .runGCJob(
+            123,
+            gcConcurrency {
+                v: 1,
+                isAuto: false,
+            },
+        )
+        .unwrap();
+    assert_eq!(*calls.lock().unwrap(), vec![("recycle".into(), 123, 0)]);
+}
+
+#[test]
+fn gc_controller_roles_order_and_best_effort_errors() {
+    for (role, keyspace_level, recycle_error, register_error, lifetime, expected) in [
+        ("master", true, false, false, "24h", 2),
+        ("ttl", true, false, false, "24h", 2),
+        ("gcv2", true, false, false, "invalid", 1),
+        ("auto-analyze", true, false, false, "24h", 0),
+        ("gcv2", false, false, false, "24h", 0),
+        ("gcv2", true, true, false, "24h", 1),
+        ("master", true, true, false, "24h", 2),
+        ("master", true, false, true, "24h", 2),
+        ("master", true, false, false, "invalid", 1),
+    ] {
+        let (worker, runtime) = worker_fixture();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        runtime.update(|state| {
+            state
+                .values
+                .insert(crate::gc_worker::gcLifeTimeKey.into(), lifetime.into());
+            state.external_manager = Some(Arc::new(Mutex::new(Box::new(Gcv2Manager {
+                role: role.into(),
+                meta: astersql_extworkload::keyspacepb::KeyspaceMeta {
+                    config: [(
+                        "gc_management_type".into(),
+                        if keyspace_level {
+                            "keyspace_level"
+                        } else {
+                            "unified"
+                        }
+                        .into(),
+                    )]
+                    .into(),
+                    ..Default::default()
+                },
+                calls: calls.clone(),
+                fail: recycle_error,
+                fail_register: register_error,
+            }))));
+        });
+        worker.notifyGCV2AfterGC(123);
+        let calls = calls.lock().unwrap();
+        assert_eq!(expected, calls.len(), "{role}/{keyspace_level}/{lifetime}");
+        if expected > 0 {
+            assert_eq!(calls[0], ("recycle".into(), 123, 0));
+        }
+        if expected > 1 {
+            assert_eq!(calls[1], ("register".into(), 123, 86400));
+        }
+        if recycle_error || register_error || (role == "master" && lifetime == "invalid") {
+            assert!(
+                runtime
+                    .snapshot()
+                    .events
+                    .iter()
+                    .any(|event| event.starts_with("failed_") && event.contains("gcv2"))
+            );
+            assert!(runtime.snapshot().failures.is_empty());
+        }
+    }
+}
+
+#[test]
+fn gc_job_notifies_actual_safe_point_and_skips_failed_broadcast() {
+    for fail_broadcast in [false, true] {
+        let (worker, runtime) = worker_fixture();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        runtime.update(|state| {
+            state.broadcast_safe_point = Some(150);
+            state.fail_broadcast = fail_broadcast;
+            state.external_manager = Some(Arc::new(Mutex::new(Box::new(Gcv2Manager {
+                role: "gcv2".into(),
+                meta: astersql_extworkload::keyspacepb::KeyspaceMeta {
+                    config: [("gc_management_type".into(), "keyspace_level".into())].into(),
+                    ..Default::default()
+                },
+                calls: calls.clone(),
+                fail: false,
+                fail_register: false,
+            }))));
+        });
+        let result = worker.runGCJob(
+            100,
+            gcConcurrency {
+                v: 1,
+                isAuto: false,
+            },
+        );
+        assert_eq!(fail_broadcast, result.is_err());
+        assert_eq!(
+            *calls.lock().unwrap(),
+            if fail_broadcast {
+                vec![]
+            } else {
+                vec![("recycle".into(), 150, 0)]
+            }
+        );
+    }
 }

@@ -78,12 +78,14 @@ pub mod context {
 /// Keyspace（键空间）元数据的 protobuf 风格桩类型。
 pub mod keyspacepb {
     /// 绑定到当前 TiDB 的 keyspace 标识：数值 ID 与名称。
-    #[derive(Clone, Debug, Eq, PartialEq)]
+    #[derive(Clone, Debug, Default, Eq, PartialEq)]
     pub struct KeyspaceMeta {
         /// keyspace 数值 ID。
         pub id: u32,
         /// keyspace 名称。
         pub name: String,
+        /// PD keyspace settings, including GC management type.
+        pub config: std::collections::BTreeMap<String, String>,
     }
     impl KeyspaceMeta {
         /// 返回 keyspace ID。

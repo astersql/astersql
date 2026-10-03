@@ -27,6 +27,8 @@ use astersql_extworkload::{
 struct StubManager {
     /// 预设的外部工作负载角色。
     role: config::ExternalWorkloadRole,
+    abort_count: usize,
+    abort_error: bool,
 }
 
 impl Manager for StubManager {
@@ -39,19 +41,37 @@ impl Manager for StubManager {
     fn Meta(&self) -> Option<&keyspacepb::KeyspaceMeta> {
         None
     }
-    fn InitializeGCV2(&mut self, _: &context::Context) -> Result<(), ManagerError> {
+    fn InitializeGCV2(
+        &mut self,
+        _: &context::Context,
+        _: std::time::Duration,
+    ) -> Result<(), ManagerError> {
         unreachable!()
     }
     fn AbortGCV2(&mut self, _: &context::Context) -> Result<(), ManagerError> {
-        unreachable!()
+        self.abort_count += 1;
+        if self.abort_error {
+            Err(std::io::Error::other("abort failed").into())
+        } else {
+            Ok(())
+        }
     }
-    fn RegisterGCV2(&mut self, _: &context::Context, _: u64, _: i64) -> Result<(), ManagerError> {
+    fn RegisterGCV2(
+        &mut self,
+        _: &context::Context,
+        _: u64,
+        _: std::time::Duration,
+    ) -> Result<(), ManagerError> {
         unreachable!()
     }
     fn RecycleGCV2(&mut self, _: &context::Context, _: u64) -> Result<(), ManagerError> {
         unreachable!()
     }
-    fn UpdateGCLifeTime(&mut self, _: &context::Context, _: i64) -> Result<(), ManagerError> {
+    fn UpdateGCLifeTime(
+        &mut self,
+        _: &context::Context,
+        _: std::time::Duration,
+    ) -> Result<(), ManagerError> {
         unreachable!()
     }
     fn RegisterTTLTask(
@@ -107,7 +127,11 @@ fn test_role_predicates_dedicated() {
     ];
 
     for (role, _) in &cases {
-        let manager = StubManager { role: role.clone() };
+        let manager = StubManager {
+            role: role.clone(),
+            abort_count: 0,
+            abort_error: false,
+        };
         for (other_role, predicate) in &cases {
             assert_eq!(
                 other_role == role,
@@ -116,4 +140,34 @@ fn test_role_predicates_dedicated() {
             );
         }
     }
+}
+
+#[test]
+fn test_abort_gcv2_for_upgrade_role_and_error() {
+    let ctx = context::Background();
+    assert!(!crate::AbortGCV2ForUpgrade(&ctx, None).unwrap());
+    for (role, should_terminate, calls) in [
+        (config::RoleMaster, false, 0),
+        (config::RoleGCV2Worker, true, 1),
+    ] {
+        let mut manager = StubManager {
+            role: role.into(),
+            abort_count: 0,
+            abort_error: false,
+        };
+        assert_eq!(
+            should_terminate,
+            crate::AbortGCV2ForUpgrade(&ctx, Some(&mut manager)).unwrap()
+        );
+        assert_eq!(calls, manager.abort_count);
+    }
+    let mut manager = StubManager {
+        role: config::RoleGCV2Worker.into(),
+        abort_count: 0,
+        abort_error: true,
+    };
+    let err = crate::AbortGCV2ForUpgrade(&ctx, Some(&mut manager)).unwrap_err();
+    assert_eq!("abort failed", err.to_string());
+    assert!(err.downcast_ref::<std::io::Error>().is_some());
+    assert_eq!(1, manager.abort_count);
 }

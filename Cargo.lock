@@ -10018,6 +10018,7 @@ dependencies = [
  "astersql-ddl-util",
  "astersql-domain",
  "astersql-domain-infosync",
+ "astersql-extworkload",
  "astersql-kv",
  "astersql-meta-model",
  "astersql-metrics",

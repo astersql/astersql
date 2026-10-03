@@ -124,6 +124,7 @@ impl astersql_extworkload::Manager for GoMerge43ExternalManager {
     fn InitializeGCV2(
         &mut self,
         _: &astersql_extworkload::context::Context,
+        _: std::time::Duration,
     ) -> Result<(), astersql_extworkload::ManagerError> {
         Ok(())
     }
@@ -137,7 +138,7 @@ impl astersql_extworkload::Manager for GoMerge43ExternalManager {
         &mut self,
         _: &astersql_extworkload::context::Context,
         _: u64,
-        _: i64,
+        _: std::time::Duration,
     ) -> Result<(), astersql_extworkload::ManagerError> {
         Ok(())
     }
@@ -151,7 +152,7 @@ impl astersql_extworkload::Manager for GoMerge43ExternalManager {
     fn UpdateGCLifeTime(
         &mut self,
         _: &astersql_extworkload::context::Context,
-        _: i64,
+        _: std::time::Duration,
     ) -> Result<(), astersql_extworkload::ManagerError> {
         Ok(())
     }
@@ -1586,4 +1587,37 @@ fn masking_policy_loader_honors_same_version_go_metadata_deletion() {
             )
             .is_err()
     );
+}
+
+#[test]
+fn external_workload_manager_binding_isolated_by_storage_owner() {
+    use astersql_extworkload::{GetManagerFromStore, SetManagerForStore, SharedManager};
+    let first = Domain::new(
+        TestStorage::new(),
+        Arc::new(TestSchemaLoader::new(1)),
+        DomainConfig::default(),
+    );
+    let second = Domain::new(
+        TestStorage::new(),
+        Arc::new(TestSchemaLoader::new(1)),
+        DomainConfig::default(),
+    );
+    let manager: SharedManager = Arc::new(Mutex::new(Box::new(GoMerge43ExternalManager {
+        role: "master".into(),
+        updated: Default::default(),
+        ttl_events: Default::default(),
+    })));
+    assert!(GetManagerFromStore(None).is_none());
+    assert!(SetManagerForStore(None, None).is_none());
+    assert!(GetManagerFromStore(Some(&first)).is_none());
+    SetManagerForStore(Some(&first), Some(manager.clone()));
+    assert!(Arc::ptr_eq(
+        &manager,
+        &GetManagerFromStore(Some(&first)).unwrap()
+    ));
+    assert!(GetManagerFromStore(Some(&second)).is_none());
+    SetManagerForStore(Some(&first), None);
+    assert!(GetManagerFromStore(Some(&first)).is_none());
+    first.close();
+    second.close();
 }

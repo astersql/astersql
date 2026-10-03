@@ -49,7 +49,11 @@ pub trait Manager: Send {
 
     /// 使用初始 keyspace 级 GC 任务初始化控制器。
     // InitializeGCV2 使用初始 keyspace 级 GC 任务初始化控制器。
-    fn InitializeGCV2(&mut self, context: &context::Context) -> Result<(), ManagerError>;
+    fn InitializeGCV2(
+        &mut self,
+        context: &context::Context,
+        gc_life_time: std::time::Duration,
+    ) -> Result<(), ManagerError>;
 
     /// 请求控制器终止尚未完成的全部 keyspace 级 GC 任务。
     // AbortGCV2 请求控制器终止尚未完成的全部 keyspace 级 GC 任务。
@@ -61,7 +65,7 @@ pub trait Manager: Send {
         &mut self,
         context: &context::Context,
         safePoint: u64,
-        gcLifeTime: i64,
+        gcLifeTime: std::time::Duration,
     ) -> Result<(), ManagerError>;
 
     /// 上报截至 safePoint 的 keyspace 级 GC 已处理完毕。
@@ -77,7 +81,7 @@ pub trait Manager: Send {
     fn UpdateGCLifeTime(
         &mut self,
         context: &context::Context,
-        gcLifeTime: i64,
+        gcLifeTime: std::time::Duration,
     ) -> Result<(), ManagerError>;
 
     /// 上报创建了 TTL 表，或已有 TTL 表发生变更。

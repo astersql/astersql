@@ -2828,6 +2828,12 @@ impl ConcreteSession {
                 u8::from(astersql_sessionctx_vardef::StatsLoadPseudoTimeout.Load()).to_string(),
             );
         }
+        if global_scope && name == astersql_sessionctx_vardef::TiDBGCLifetime {
+            let lifetime = super::session::load_external_gc_lifetime(&self.domain)?;
+            return Ok(astersql_sessionctx_variable::format_go_duration(
+                lifetime.as_nanos() as i128,
+            ));
+        }
         if global_scope
             && !matches!(name.as_str(), "tx_read_only" | "transaction_read_only")
             && let Some(value) = self.domain.global_system_variable(&name)
@@ -4895,6 +4901,32 @@ impl ConcreteSession {
                 }
                 self.domain.set_global_system_variable(&name, &normalized);
                 metadata.execute(&format!("INSERT INTO mysql.global_variables (variable_name,variable_value) VALUES ('{name}','{normalized}') ON DUPLICATE KEY UPDATE variable_value='{normalized}'"))?;
+                continue;
+            }
+            if name == astersql_sessionctx_vardef::TiDBGCLifetime {
+                if !is_global {
+                    return Err(SessionError::new(
+                        "Variable 'tidb_gc_life_time' is a GLOBAL variable and should be set with SET GLOBAL",
+                    ));
+                }
+                let nanos = astersql_sessionctx_variable::parse_go_duration(
+                    value.trim_matches(['\'', '"']),
+                )
+                .ok_or_else(|| {
+                    SessionError::new(format!("Incorrect argument type to variable '{name}'"))
+                })?;
+                let bounded = nanos.clamp(600_000_000_000, 31_536_000_000_000_000);
+                let normalized = astersql_sessionctx_variable::format_go_duration(bounded);
+                // GC's hook stores the effective lifetime in mysql.tidb, not the generic global-variable cache.
+                let metadata = ConcreteSession::new(self.domain.clone());
+                metadata.execute(&format!("INSERT INTO mysql.tidb (VARIABLE_NAME,VARIABLE_VALUE,COMMENT) VALUES ('tikv_gc_life_time','{normalized}','All versions within life time will not be collected by GC, at least 10m, in Go format.') ON DUPLICATE KEY UPDATE VARIABLE_VALUE='{normalized}'"))?;
+                self.domain.set_global_system_variable(&name, &normalized);
+                if bounded != nanos {
+                    self.set_warning(format!(
+                        "Truncated incorrect tidb_gc_life_time value: '{value}'"
+                    ));
+                }
+                super::session::notify_external_workload_gc_lifetime(&self.domain);
                 continue;
             }
             if name == astersql_sessionctx_vardef::TiDBServiceScope {

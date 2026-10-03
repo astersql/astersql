@@ -12,6 +12,7 @@ go-package = "pkg/store/gcworker"
 legacy-tasks = ["task-1273", "task-1275", "task-1277", "task-1278"]
 
 [dependencies]
+astersql-extworkload = { path = "../../extworkload" }
 "astersql-config-deploymode" = { package = "astersql-config-deploymode", path = "../../config/deploymode" }
 "astersql-ddl" = { package = "astersql-ddl", path = "../../ddl" }
 "astersql-ddl-label" = { package = "astersql-ddl-label", path = "../../ddl/label" }

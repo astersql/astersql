@@ -73,3 +73,52 @@ fn roleIs(manager: Option<&dyn Manager>, role: config::ExternalWorkloadRole) -> 
         false
     }
 }
+
+/// Abort outstanding work only for a dedicated GCV2 worker before upgrade.
+#[allow(non_snake_case)]
+pub fn AbortGCV2ForUpgrade(
+    context: &crate::context::Context,
+    manager: Option<&mut dyn Manager>,
+) -> Result<bool, crate::ManagerError> {
+    let Some(manager) = manager else {
+        return Ok(false);
+    };
+    if manager.Role() != config::RoleGCV2Worker {
+        return Ok(false);
+    }
+    manager.AbortGCV2(context)?;
+    Ok(true)
+}
+
+/// Match PD's GC management setting; absent metadata uses unified GC.
+#[allow(non_snake_case)]
+pub fn IsKeyspaceUsingKeyspaceLevelGC(meta: Option<&crate::keyspacepb::KeyspaceMeta>) -> bool {
+    meta.and_then(|m| m.config.get("gc_management_type"))
+        .is_some_and(|v| v == "keyspace_level")
+}
+
+/// Shared controller ownership for all consumers of one canonical storage runtime.
+pub type SharedManager = std::sync::Arc<std::sync::Mutex<Box<dyn Manager>>>;
+
+/// Storage-owner boundary implemented by the canonical Domain.
+/// This reuses its existing store lifetime and avoids a process-wide manager registry.
+pub trait ManagerStore {
+    fn replace_external_workload_manager(
+        &self,
+        manager: Option<SharedManager>,
+    ) -> Option<SharedManager>;
+    fn get_external_workload_manager(&self) -> Option<SharedManager>;
+}
+
+#[allow(non_snake_case)]
+pub fn SetManagerForStore(
+    store: Option<&dyn ManagerStore>,
+    manager: Option<SharedManager>,
+) -> Option<SharedManager> {
+    store.and_then(|store| store.replace_external_workload_manager(manager))
+}
+
+#[allow(non_snake_case)]
+pub fn GetManagerFromStore(store: Option<&dyn ManagerStore>) -> Option<SharedManager> {
+    store.and_then(ManagerStore::get_external_workload_manager)
+}
