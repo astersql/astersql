@@ -311,14 +311,17 @@ fn TestGlobalMemArbitrator() {
 
     tk.MustExec("set global tidb_enable_resource_control=on", Vec::new());
     tk.MustExec(
-        "create resource group rg1 RU_PER_SEC=111 priority=LOW",
+        "create resource group rg1 RU_PER_SEC=111 priority=LOW BURSTABLE",
         Vec::new(),
     );
     tk.MustExec(
-        "create resource group rg2 RU_PER_SEC=222 priority=HIGH",
+        "create resource group rg2 RU_PER_SEC=222 priority=HIGH BURSTABLE",
         Vec::new(),
     );
-    tk.MustExec("create resource group rg3 RU_PER_SEC=333", Vec::new());
+    tk.MustExec(
+        "create resource group rg3 RU_PER_SEC=333 BURSTABLE",
+        Vec::new(),
+    );
     tk.MustQuery(
         "select NAME,RU_PER_SEC,PRIORITY from information_schema.resource_groups \
          where name='rg2'",
