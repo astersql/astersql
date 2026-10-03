@@ -357,14 +357,293 @@ fn test_drop_not_null_column() {
     );
 }
 
-/// 验证新增列可停留在 DeleteOnly / WriteOnly 两个中间状态，且两状态存在先后次序。
+// Only the callback boundary is substituted here: column creation, state
+// advancement, defaults and AFTER positioning use the real add-column module.
+// The SQL compiler/executor coverage of the older Go suite is independent of
+// this commit's callback scheduling change.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StateCheckStep {
+    Compile(usize),
+    Execute(usize),
+}
+
+#[derive(Default)]
+struct TwoStateChecks {
+    previous: SchemaState,
+    visits: usize,
+    error: Option<&'static str>,
+}
+
+impl TwoStateChecks {
+    fn observe(
+        &mut self,
+        state: SchemaState,
+        mut check: impl FnMut(StateCheckStep) -> Result<(), &'static str>,
+    ) {
+        // Retain the later target-state filter from 0079af820ee15bc88759027fcf16dadba5dbfb28.
+        if !matches!(
+            state,
+            SchemaState::DeleteOnly | SchemaState::WriteOnly | SchemaState::WriteReorganization
+        ) || state == self.previous
+            || self.error.is_some()
+            || self.visits >= 3
+        {
+            return;
+        }
+        self.previous = state;
+        self.visits += 1;
+        let steps: &[StateCheckStep] = match state {
+            SchemaState::DeleteOnly => &[StateCheckStep::Compile(0), StateCheckStep::Execute(0)],
+            SchemaState::WriteOnly => &[StateCheckStep::Compile(1)],
+            SchemaState::WriteReorganization => &[
+                StateCheckStep::Compile(2),
+                StateCheckStep::Execute(2),
+                StateCheckStep::Execute(1),
+                StateCheckStep::Compile(3),
+            ],
+            _ => unreachable!(),
+        };
+        for step in steps {
+            if let Err(error) = check(*step) {
+                self.error = Some(error);
+                break;
+            }
+        }
+    }
+}
+
+fn fallback_state_checks(
+    mut check: impl FnMut(StateCheckStep) -> Result<(), &'static str>,
+) -> Result<(), &'static str> {
+    for step in [
+        StateCheckStep::Compile(0),
+        StateCheckStep::Execute(0),
+        StateCheckStep::Compile(1),
+        StateCheckStep::Compile(2),
+        StateCheckStep::Execute(2),
+        StateCheckStep::Execute(1),
+        StateCheckStep::Compile(3),
+    ] {
+        check(step)?;
+    }
+    Ok(())
+}
+
+fn two_states_column(table: &mut ColumnTable) -> i64 {
+    use crate::add_column::{ColumnConstraint, ColumnDefinition, start_add_column};
+    let mut field_type = FieldType::integer();
+    field_type.kind = ColumnKind::Enum;
+    start_add_column(
+        table,
+        &ColumnDefinition {
+            name: "d3".into(),
+            field_type,
+            constraints: vec![ColumnConstraint::NotNull],
+            default_value: Some(DefaultValue::String("a".into())),
+            comment: String::new(),
+            generated: None,
+        },
+        &ColumnPosition::After("c3".into()),
+        512,
+        false,
+        false,
+    )
+    .unwrap()
+}
+
 #[test]
 fn test_two_states() {
-    let states = [SchemaState::DeleteOnly, SchemaState::WriteOnly];
-    for state in states {
-        assert_write_state(state, Some(DefaultValue::Integer(3)));
+    use crate::add_column::advance_add_column;
+    // Probe a real transition with a callback present and absent, matching the
+    // rewritten-hook/plain-test distinction without changing global failpoints.
+    for hook_enabled in [true, false] {
+        let mut probe = column_table(&["a"]);
+        let probe_id = two_states_column(&mut probe);
+        let mut probe_version = 0;
+        let probe_outcome = advance_add_column(
+            &mut probe,
+            probe_id,
+            &ColumnPosition::None,
+            &mut probe_version,
+            false,
+        )
+        .unwrap();
+        let hook_name = if hook_enabled {
+            "ddl-two-states-rewritten"
+        } else {
+            "ddl-two-states-marker"
+        };
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let probe_observations = Arc::clone(&observations);
+        let probe_guard =
+            astersql_testkit_testfailpoint::enable_value_call(hook_name, move |value| {
+                probe_observations.lock().unwrap().push(value.to_owned());
+            });
+        // A plain-test marker does not reach the registered callback. Only
+        // this external injection boundary differs between the two modes.
+        if hook_enabled {
+            astersql_testkit_testfailpoint::inject_value(
+                hook_name,
+                &format!("{:?}", probe_outcome.schema_state),
+            );
+        }
+        let hook_available = !observations.lock().unwrap().is_empty();
+        assert_eq!(hook_enabled, hook_available);
+        drop(probe_guard);
+        observations.lock().unwrap().clear();
+        astersql_testkit_testfailpoint::inject_value(hook_name, "Public");
+        assert!(
+            observations.lock().unwrap().is_empty(),
+            "probe callback must be disabled before the target DDL"
+        );
+        drop(probe);
+        let target_observations = Arc::clone(&observations);
+        let target_guard =
+            astersql_testkit_testfailpoint::enable_value_call(hook_name, move |value| {
+                target_observations.lock().unwrap().push(value.to_owned());
+            });
+
+        let mut table = column_table(&["c1", "c2", "c3", "c4"]);
+        let id = two_states_column(&mut table);
+        let position = ColumnPosition::After("c3".into());
+        let mut version = 0;
+        let mut checks = TwoStateChecks::default();
+        let mut steps = Vec::new();
+        let mut snapshots = BTreeMap::new();
+        let mut check = |step| {
+            if let StateCheckStep::Compile(case) = step {
+                snapshots.insert(case, table.clone());
+            } else if let StateCheckStep::Execute(case) = step {
+                assert!(snapshots.contains_key(&case), "execute must follow compile");
+            }
+            steps.push(step);
+            Ok(())
+        };
+        if !hook_available {
+            fallback_state_checks(&mut check).unwrap();
+        }
+        drop(check);
+        loop {
+            let outcome =
+                advance_add_column(&mut table, id, &position, &mut version, false).unwrap();
+            if hook_available {
+                // Replay the same real observation, as schema synchronization
+                // can report a state more than once. Do not advance the state.
+                for _ in 0..2 {
+                    astersql_testkit_testfailpoint::inject_value(
+                        hook_name,
+                        &format!("{:?}", outcome.schema_state),
+                    );
+                }
+                for observed in observations.lock().unwrap().drain(..) {
+                    let state = match observed.as_str() {
+                        "DeleteOnly" => SchemaState::DeleteOnly,
+                        "WriteOnly" => SchemaState::WriteOnly,
+                        "WriteReorganization" => SchemaState::WriteReorganization,
+                        "Public" => SchemaState::Public,
+                        _ => panic!("unexpected production state {observed}"),
+                    };
+                    checks.observe(state, |step| {
+                        if let StateCheckStep::Compile(case) = step {
+                            snapshots.insert(case, table.clone());
+                        } else if let StateCheckStep::Execute(case) = step {
+                            assert!(snapshots.contains_key(&case));
+                        }
+                        steps.push(step);
+                        Ok(())
+                    });
+                }
+            }
+            if outcome.finished {
+                break;
+            }
+        }
+        drop(target_guard);
+        assert_eq!(if hook_available { 3 } else { 0 }, checks.visits);
+        assert_eq!(None, checks.error);
+        assert_eq!(
+            vec![
+                StateCheckStep::Compile(0),
+                StateCheckStep::Execute(0),
+                StateCheckStep::Compile(1),
+                StateCheckStep::Compile(2),
+                StateCheckStep::Execute(2),
+                StateCheckStep::Execute(1),
+                StateCheckStep::Compile(3),
+            ],
+            steps
+        );
+        assert_eq!(4, version);
+        assert_eq!(
+            vec!["c1", "c2", "c3", "d3", "c4"],
+            table
+                .columns
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>()
+        );
+        for (case, snapshot) in snapshots {
+            let column = snapshot.columns.iter().find(|c| c.id == id).unwrap();
+            assert_ne!(SchemaState::Public, column.state);
+            assert_eq!(Some(DefaultValue::String("a".into())), column.default_value);
+            if hook_available {
+                assert_eq!(
+                    match case {
+                        0 => SchemaState::DeleteOnly,
+                        1 => SchemaState::WriteOnly,
+                        _ => SchemaState::WriteReorganization,
+                    },
+                    column.state
+                );
+            } else {
+                assert_eq!(SchemaState::None, column.state);
+            }
+        }
     }
-    assert!(SchemaState::DeleteOnly < SchemaState::WriteOnly);
+}
+
+#[test]
+fn test_two_states_stops_after_check_error() {
+    let mut table = column_table(&["c1", "c2", "c3", "c4"]);
+    let id = two_states_column(&mut table);
+    let mut version = 0;
+    let outcome = crate::add_column::advance_add_column(
+        &mut table,
+        id,
+        &ColumnPosition::After("c3".into()),
+        &mut version,
+        false,
+    )
+    .unwrap();
+    let mut checks = TwoStateChecks::default();
+    let mut called = Vec::new();
+    checks.observe(outcome.schema_state, |step| {
+        called.push(step);
+        Err("compile failed")
+    });
+    let outcome = crate::add_column::advance_add_column(
+        &mut table,
+        id,
+        &ColumnPosition::After("c3".into()),
+        &mut version,
+        false,
+    )
+    .unwrap();
+    checks.observe(outcome.schema_state, |_| {
+        panic!("must preserve first error")
+    });
+    assert_eq!(Some("compile failed"), checks.error);
+    assert_eq!(1, checks.visits);
+    assert_eq!(vec![StateCheckStep::Compile(0)], called);
+    let mut fallback_calls = 0;
+    assert_eq!(
+        Err("compile failed"),
+        fallback_state_checks(|_| {
+            fallback_calls += 1;
+            Err("compile failed")
+        })
+    );
+    assert_eq!(1, fallback_calls);
 }
 
 /// 验证 WriteOnly 状态下新增列可携带 NULL 默认值。
