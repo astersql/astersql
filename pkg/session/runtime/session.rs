@@ -828,6 +828,7 @@ impl CanonicalSessionFactory {
         let mut ttl_watch_transport = None;
         let mut serving_ddl_runtime = None;
         let mut bootstrap_owner_lock = None;
+        let mut starter_owner_client = None;
         if !etcd_addrs.is_empty() {
             let tls_files = tls.as_ref().map(|tls| {
                 (
@@ -876,6 +877,7 @@ impl CanonicalSessionFactory {
                     .as_nanos()
             );
             let client = Arc::new(client);
+            starter_owner_client = Some(Arc::clone(&client));
             factory
                 .domain
                 .install_server_info_syncer(id.clone(), client.clone(), options)
@@ -925,7 +927,6 @@ impl CanonicalSessionFactory {
             return Err(error);
         }
         drop(bootstrap_owner_lock);
-        initialize_external_workload_gcv2(&factory.domain);
         if let Some((owner, owner_runtime, cancellation, schema_client, id)) = serving_ddl_runtime {
             if let Err(error) = super::session_factory::install_serving_ddl_runtime(
                 &factory.domain,
@@ -944,6 +945,32 @@ impl CanonicalSessionFactory {
             factory.domain.close();
             return Err(session_error("start canonical Domain", error));
         }
+        factory.reconcile_configured_starter_bootstrap(|| {
+            let Some(client) = starter_owner_client.as_ref() else {
+                return Ok(None);
+            };
+            let runtime = Arc::new(
+                tokio::runtime::Runtime::new()
+                    .map_err(|e| session_error("starter bootstrap lock runtime", e))?,
+            );
+            let lock = runtime
+                .block_on(astersql_owner::AcquireDistributedLock(
+                    &astersql_owner::Context::new(),
+                    client.raw_client(),
+                    format!(
+                        "{}{}",
+                        client.namespace(),
+                        crate::bootstrap::bootstrapOwnerKey
+                    ),
+                    10,
+                ))
+                .map_err(|e| session_error("starter bootstrap owner lock", e))?;
+            Ok(Some(BootstrapOwnerLock {
+                runtime,
+                lock: Some(lock),
+            }))
+        })?;
+        initialize_external_workload_gcv2(&factory.domain);
         if let Err(error) = factory.domain.initialize_stats() {
             BgLogger().log(
                 LogLevel::Error,
@@ -1012,7 +1039,31 @@ impl CanonicalSessionFactory {
             Duration::from_millis(50),
         )
         .map_err(|e| session_error("serving DDL runtime", e))?;
+        factory.reconcile_configured_starter_bootstrap(|| Ok(()))?;
         Ok(factory)
+    }
+
+    // Core bootstrap has loaded persisted settings and the normal SQL/DDL
+    // runtime is ready before executing starter migrations against regular schemas.
+    fn reconcile_configured_starter_bootstrap<G>(
+        &self,
+        acquire: impl FnOnce() -> SessionResult<G>,
+    ) -> SessionResult<()> {
+        let result = (|| {
+            if let Some(file) = crate::starter_bootstrap_file::load_starter_bootstrap_file()? {
+                crate::starter_bootstrap_file::reconcile_starter_bootstrap(
+                    &self.domain,
+                    &file,
+                    &astersql_config::get_global_keyspace_name(),
+                    acquire,
+                )?;
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            self.domain.close();
+        }
+        result
     }
 
     /// Return the single Domain shared by every session from this factory.
@@ -2637,4 +2688,41 @@ pub(super) fn install_external_workload_manager(
         ),
     }
     Ok(())
+}
+
+impl ConcreteSession {
+    /// Starter SQL uses the normal executor with the same internal SQL mode as
+    /// Go's bootstrap session. Restore the caller's mode on every error path.
+    pub(crate) fn with_starter_restricted_sql<T>(
+        &self,
+        operation: impl FnOnce() -> SessionResult<T>,
+    ) -> SessionResult<T> {
+        struct Restore<'a>(&'a ConcreteSession, bool);
+        impl Drop for Restore<'_> {
+            fn drop(&mut self) {
+                self.0.state.borrow_mut().in_restricted_sql = self.1;
+            }
+        }
+        let previous = self.state.borrow().in_restricted_sql;
+        self.state.borrow_mut().in_restricted_sql = true;
+        let _restore = Restore(self, previous);
+        operation()
+    }
+
+    pub(crate) fn starter_statement_count(&self, sql: &str) -> SessionResult<usize> {
+        let state = self.state.borrow();
+        let mode = astersql_parser_mysql::r#const::GetSQLMode(&state.sql_mode)
+            .map_err(|e| session_error("parse sql_mode", e))?;
+        let mode = astersql_parser_mysql::r#const::DelSQLMode(
+            mode,
+            astersql_parser_mysql::r#const::ModeNoBackslashEscapes,
+        );
+        drop(state);
+        parse_with_sql_mode(sql, mode).map(|statements| statements.len())
+    }
+
+    pub(crate) fn set_starter_clustered_index_mode(&self) {
+        self.state.borrow_mut().clustered_index_def_mode =
+            astersql_sessionctx_vardef::ClusteredIndexDefModeIntOnly;
+    }
 }

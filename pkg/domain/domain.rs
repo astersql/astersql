@@ -2879,6 +2879,19 @@ impl Domain {
             .map_err(|error| DomainError::Stats(error.to_string()))
     }
 
+    /// Borrow the SQL session transaction for mysql.tidb rows. The caller owns
+    /// commit/rollback, including starter bootstrap's version update.
+    pub fn restricted_system_sql_in_transaction(
+        &self,
+        transaction: &mut Box<dyn astersql_kv::Transaction>,
+        sql: &str,
+        arguments: &[lockstats::SqlValue],
+    ) -> Result<Vec<Vec<String>>, DomainError> {
+        self.stats_store
+            .system_sql_in_transaction(transaction, sql, arguments)
+            .map_err(|error| DomainError::Stats(error.to_string()))
+    }
+
     pub fn fail_next_stats_lock_delete_for_test(&self) {
         self.stats_store.fail_next_lock_delete_for_test();
     }

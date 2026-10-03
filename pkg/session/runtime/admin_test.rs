@@ -68,3 +68,75 @@ fn show_regions_deduplicates_unsplit_index_ranges_like_go_mockstore() {
 
     assert_eq!(rows.len(), 3);
 }
+
+#[test]
+fn mysql_tidb_insert_uses_session_transaction_and_preserves_duplicate_semantics() {
+    let (domain, session) = crate::runtime::CreateAnalyzeSession().unwrap();
+    let check = crate::runtime::ConcreteSession::new(domain.clone());
+    let rows = |session: &crate::runtime::ConcreteSession| {
+        let mut record = session.execute("SELECT VARIABLE_VALUE, COMMENT FROM mysql.tidb WHERE VARIABLE_NAME='starter_txn_boundary'").unwrap().remove(0);
+        let row = record.next_row().unwrap();
+        record.close().unwrap();
+        row
+    };
+    session.execute("BEGIN").unwrap();
+    session
+        .execute(
+            "INSERT INTO mysql.tidb VALUES ('starter_txn_boundary','first','original comment')",
+        )
+        .unwrap();
+    assert_eq!(
+        rows(&session),
+        Some(vec!["first".into(), "original comment".into()])
+    );
+    assert_eq!(rows(&check), None);
+    assert!(
+        session
+            .execute("INSERT INTO mysql.tidb VALUES ('starter_txn_boundary','duplicate','test')")
+            .err()
+            .expect("duplicate insert must fail")
+            .to_string()
+            .contains("1062")
+    );
+    session.execute("ROLLBACK").unwrap();
+    assert_eq!(rows(&check), None);
+    session
+        .execute(
+            "INSERT INTO mysql.tidb VALUES ('starter_txn_boundary','first','original comment')",
+        )
+        .unwrap();
+    session.execute("INSERT IGNORE INTO mysql.tidb VALUES ('starter_txn_boundary','ignored','changed comment')").unwrap();
+    assert_eq!(
+        rows(&check),
+        Some(vec!["first".into(), "original comment".into()])
+    );
+    session.execute("INSERT HIGH_PRIORITY INTO mysql.tidb VALUES ('starter_txn_boundary','second','changed comment') ON DUPLICATE KEY UPDATE VARIABLE_VALUE='second'").unwrap();
+    assert_eq!(
+        rows(&check),
+        Some(vec!["second".into(), "original comment".into()])
+    );
+    session.execute("BEGIN").unwrap();
+    session.execute("UPDATE mysql.tidb SET VARIABLE_VALUE='temporary' WHERE VARIABLE_NAME='starter_txn_boundary'").unwrap();
+    assert_eq!(
+        rows(&session),
+        Some(vec!["temporary".into(), "original comment".into()])
+    );
+    assert_eq!(
+        rows(&check),
+        Some(vec!["second".into(), "original comment".into()])
+    );
+    session.execute("ROLLBACK").unwrap();
+    assert_eq!(
+        rows(&check),
+        Some(vec!["second".into(), "original comment".into()])
+    );
+    session.execute("BEGIN").unwrap();
+    session
+        .execute("DELETE FROM mysql.tidb WHERE VARIABLE_NAME='starter_txn_boundary'")
+        .unwrap();
+    assert_eq!(rows(&session), None);
+    assert!(rows(&check).is_some());
+    session.execute("ROLLBACK").unwrap();
+    assert!(rows(&check).is_some());
+    domain.close();
+}

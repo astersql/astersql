@@ -927,7 +927,21 @@ impl ConcreteSession {
         Ok(true)
     }
 
-    /// Upsert rows in TiDB's small `mysql.tidb` system-variable table. Stale
+    fn execute_mysql_tidb_sql(&self, sql: &str) -> SessionResult<()> {
+        let mut state = self.state.borrow_mut();
+        if let Some(transaction) = state.transaction.as_mut() {
+            self.domain
+                .restricted_system_sql_in_transaction(transaction, sql, &[])
+                .map_err(|e| session_error("execute mysql.tidb in session transaction", e))?;
+        } else {
+            self.domain
+                .restricted_stats_execute(sql, &[])
+                .map_err(|e| session_error("execute mysql.tidb system variable", e))?;
+        }
+        Ok(())
+    }
+
+    /// Insert rows in TiDB's small `mysql.tidb` system-variable table. Stale
     /// read tests use this real SQL boundary to install the GC safe point.
     pub(super) fn execute_mysql_tidb_insert(
         &self,
@@ -944,9 +958,7 @@ impl ConcreteSession {
         if source.Source.Schema.L != "mysql" || source.Source.Name.L != "tidb" {
             return Ok(false);
         }
-        self.domain
-            .restricted_stats_execute(sql, &[])
-            .map_err(|error| session_error("upsert mysql.tidb system variable", error))?;
+        self.execute_mysql_tidb_sql(sql)?;
         Ok(true)
     }
 
@@ -970,9 +982,7 @@ impl ConcreteSession {
         if source.Source.Schema.L != "mysql" || source.Source.Name.L != "tidb" {
             return Ok(false);
         }
-        self.domain
-            .restricted_stats_execute(sql, &[])
-            .map_err(|error| session_error("update mysql.tidb system variable", error))?;
+        self.execute_mysql_tidb_sql(sql)?;
         Ok(true)
     }
 
@@ -993,9 +1003,7 @@ impl ConcreteSession {
         if source.Source.Schema.L != "mysql" || source.Source.Name.L != "tidb" {
             return Ok(false);
         }
-        self.domain
-            .restricted_stats_execute(sql, &[])
-            .map_err(|error| session_error("delete mysql.tidb system variable", error))?;
+        self.execute_mysql_tidb_sql(sql)?;
         Ok(true)
     }
 }

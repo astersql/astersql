@@ -3467,10 +3467,20 @@ impl ConcreteSession {
                 }
             }?);
         }
-        let rows = self
-            .domain
-            .restricted_stats_query(sql, &[])
-            .map_err(|error| session_error("read mysql statistics system table", error))?;
+        let rows = {
+            let mut state = self.state.borrow_mut();
+            if source.Source.Name.L == "tidb" {
+                if let Some(transaction) = state.transaction.as_mut() {
+                    self.domain
+                        .restricted_system_sql_in_transaction(transaction, sql, &[])
+                } else {
+                    self.domain.restricted_stats_query(sql, &[])
+                }
+            } else {
+                self.domain.restricted_stats_query(sql, &[])
+            }
+        }
+        .map_err(|error| session_error("read mysql statistics system table", error))?;
         Ok(Some(ConcreteRecordSet::new(columns, rows)))
     }
 }

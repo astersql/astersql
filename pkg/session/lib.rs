@@ -78,6 +78,7 @@ pub mod nontransactional;
 pub mod plan_cache_runtime;
 pub mod runtime;
 pub mod session;
+pub mod starter_bootstrap_file;
 pub mod sync_upgrade;
 pub mod testutil;
 pub mod tidb;
@@ -211,3 +212,6 @@ extern crate self as astersql_session;
 #[cfg(test)]
 #[path = "tests/system_session.rs"]
 mod system_session_alignment_test;
+
+#[cfg(test)]
+mod starter_bootstrap_file_test;

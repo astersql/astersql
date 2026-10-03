@@ -155,6 +155,56 @@ impl<B: HandleBackend + Send> KvStatsStore<B> {
         self.with_executor(|executor| executor.ExecRestrictedSQL(sql, arguments))
     }
 
+    /// Execute only mysql.tidb SQL in the caller's existing transaction. Do not
+    /// commit or roll back it: starter bootstrap owns the SQL/version boundary.
+    pub fn system_sql_in_transaction(
+        &self,
+        transaction: &mut Box<dyn kv::Transaction>,
+        sql: &str,
+        arguments: &[SqlValue],
+    ) -> Result<Vec<Vec<String>>, StatsError> {
+        let normalized = normalize(sql);
+        let allowed = sql_table(&normalized) == Some("tidb")
+            && (normalized.starts_with("select ")
+                || normalized.starts_with("insert into mysql.tidb")
+                || normalized.starts_with("insert ignore into mysql.tidb")
+                || normalized.starts_with("insert high_priority into mysql.tidb")
+                || normalized.starts_with("update mysql.tidb")
+                || normalized.starts_with("delete from mysql.tidb"));
+        if !allowed {
+            return Err(StatsError("borrowed system SQL requires mysql.tidb".into()));
+        }
+        astersql_statistics_handle_util::ExecRowsTimeout().map_err(StatsError)?;
+        let _operation = self
+            .operation_lock
+            .lock()
+            .expect("statistics SQL operation lock poisoned");
+        let start_ts = transaction.StartTS();
+        let mut executor = KvRestrictedExecutor {
+            transaction,
+            handle: &self.handle,
+            fail_next_lock_delete: &self.fail_next_lock_delete,
+            pending_meta: BTreeMap::new(),
+            pending_cache_meta: BTreeMap::new(),
+            removed_tables: BTreeSet::new(),
+            start_ts,
+        };
+        executor.ExecRestrictedSQL(sql, arguments).map(|rows| {
+            rows.into_iter()
+                .map(|row| {
+                    row.0
+                        .into_iter()
+                        .map(|value| match value {
+                            SqlValue::Int(value) => value.to_string(),
+                            SqlValue::UInt(value) => value.to_string(),
+                            SqlValue::Text(value) => value,
+                        })
+                        .collect()
+                })
+                .collect()
+        })
+    }
+
     /// 执行查询并将每个单元格格式化为字符串。
     pub fn query_strings(
         &self,
@@ -630,10 +680,10 @@ impl<B: HandleBackend + Send> KvStatsStore<B> {
         &self,
         operation: impl FnOnce(&mut KvRestrictedExecutor<'_, B>) -> Result<T, StatsError>,
     ) -> Result<T, StatsError> {
-        let transaction = self.storage.begin().map_err(stats_error)?;
+        let mut transaction = self.storage.begin().map_err(stats_error)?;
         let start_ts = transaction.StartTS().max(current_stats_timestamp());
         let mut executor = KvRestrictedExecutor {
-            transaction,
+            transaction: &mut transaction,
             handle: &self.handle,
             fail_next_lock_delete: &self.fail_next_lock_delete,
             pending_meta: BTreeMap::new(),
@@ -927,7 +977,7 @@ impl<B: HandleBackend + Send> storage::SqlStore for KvStatsStore<B> {
 /// 单事务内的受限 SQL 执行器；提交时把 pending meta 刷进内存 Handle。
 struct KvRestrictedExecutor<'a, B: HandleBackend + Send> {
     /// 当前写事务。
-    transaction: Box<dyn kv::Transaction>,
+    transaction: &'a mut Box<dyn kv::Transaction>,
     handle: &'a Arc<Mutex<Handle<B>>>,
     fail_next_lock_delete: &'a AtomicBool,
     /// 本事务已写 meta（读路径可见）。
@@ -1166,9 +1216,18 @@ impl<B: HandleBackend + Send> KvRestrictedExecutor<'_, B> {
                 let value = String::from_utf8(value)
                     .map_err(|error| StatsError(format!("invalid system value: {error}")))?;
                 Ok(BTreeMap::from([
-                    ("variable_name", SqlValue::Text(name)),
+                    ("variable_name", SqlValue::Text(name.clone())),
                     ("variable_value", SqlValue::Text(value)),
-                    ("comment", SqlValue::Text(String::new())),
+                    (
+                        "comment",
+                        SqlValue::Text(
+                            get(self.transaction.as_ref(), system_comment_key(&name))?
+                                .map(String::from_utf8)
+                                .transpose()
+                                .map_err(|e| StatsError(format!("invalid system comment: {e}")))?
+                                .unwrap_or_default(),
+                        ),
+                    ),
                 ]))
             })
             .collect()
@@ -1628,11 +1687,9 @@ impl<B: HandleBackend + Send> KvRestrictedExecutor<'_, B> {
             }
             return Ok(());
         }
-        // Bootstrap emits `INSERT IGNORE` for idempotent system-variable
-        // initialization.  Restricted SQL has the same conflict-tolerant
-        // semantics for `mysql.tidb`: overwrite the value when present and
-        // otherwise insert it.  Accept both spellings so canonical session
-        // bootstrap can run through the real statistics backend.
+        // mysql.tidb has a unique VARIABLE_NAME. Plain INSERT must surface
+        // duplicate keys; IGNORE preserves the existing row, whereas version
+        // writes explicitly request ON DUPLICATE KEY UPDATE.
         if lower.starts_with("insert into mysql.tidb")
             || lower.starts_with("insert ignore into mysql.tidb")
             || lower.starts_with("insert high_priority into mysql.tidb")
@@ -1640,21 +1697,41 @@ impl<B: HandleBackend + Send> KvRestrictedExecutor<'_, B> {
             let values = quoted_values(&lower);
             let name = values
                 .first()
-                .ok_or_else(|| StatsError("missing system variable name".to_owned()))?;
+                .ok_or_else(|| StatsError("missing system variable name".into()))?;
             let value = values
                 .get(1)
-                .ok_or_else(|| StatsError("missing system variable value".to_owned()))?;
-            return set(
-                self.transaction.as_mut(),
-                system_key(name),
-                value.as_bytes().to_vec(),
-            );
+                .ok_or_else(|| StatsError("missing system variable value".into()))?;
+            let key = system_key(name);
+            let existing = get(self.transaction.as_ref(), key.clone())?.is_some();
+            if existing {
+                if lower.starts_with("insert ignore ") {
+                    return Ok(());
+                }
+                if !lower.contains(" on duplicate key update ") {
+                    return Err(StatsError(format!(
+                        "[kv:1062]Duplicate entry '{name}' for key 'tidb.PRIMARY'"
+                    )));
+                }
+            }
+            set(self.transaction.as_mut(), key, value.as_bytes().to_vec())?;
+            // Keep the bootstrap version comment while updating only its value.
+            if !existing {
+                if let Some(comment) = values.get(2) {
+                    set(
+                        self.transaction.as_mut(),
+                        system_comment_key(name),
+                        comment.as_bytes().to_vec(),
+                    )?;
+                }
+            }
+            return Ok(());
         }
         if lower.starts_with("delete from mysql.tidb") {
             let values = quoted_values(&lower);
             let name = values
                 .first()
                 .ok_or_else(|| StatsError("missing system variable name".to_owned()))?;
+            delete(self.transaction.as_mut(), system_comment_key(name))?;
             return delete(self.transaction.as_mut(), system_key(name));
         }
         if lower.starts_with("update mysql.tidb") {
@@ -1834,6 +1911,10 @@ fn record_key(table: &[u8], table_id: i64) -> kv::Key {
 /// 系统变量键：`system/ || name`。
 fn system_key(name: &str) -> kv::Key {
     kv::Key([prefix(SYSTEM), name.as_bytes().to_vec()].concat())
+}
+
+fn system_comment_key(name: &str) -> kv::Key {
+    kv::Key([prefix(b"system-comment/"), name.as_bytes().to_vec()].concat())
 }
 
 /// 从系统变量键解码变量名。
