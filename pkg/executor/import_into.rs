@@ -463,8 +463,7 @@ pub(crate) fn cancelImportJobWithFallbackHook(
             task_manager.WithNewTxn((), |session| {
                 task_manager.CancelTaskByKeySession((), session, key.clone())
             })?;
-            astersql_dxf_framework_handle::WaitTaskDoneByKey(context, &key)
-                .map_err(|error| storage::Error::new(error.to_string()))
+            astersql_dxf_framework_handle::WaitTaskDoneByKeyWithManager(context, &key, task_manager)
         }
         Err(error) if error == storage::ErrTaskNotFound => {
             before_fallback();

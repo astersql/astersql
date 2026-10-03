@@ -406,16 +406,49 @@ pub fn WaitTaskDoneByKey(ctx: &Context, task_key: &str) -> Result<()> {
     WaitTask(ctx, task.ID, proto::TaskBase::IsDone).map(|_| ())
 }
 
+/// Wait using the same manager that probed and cancelled the task. This keeps
+/// user-keyspace cancellation on the SYSTEM task store without installing a
+/// separate process-wide runtime merely to perform the wait.
+pub fn WaitTaskDoneByKeyWithManager(
+    ctx: &Context,
+    task_key: &str,
+    manager: &storage::TaskManager,
+) -> Result<()> {
+    let task = manager.GetTaskByKeyWithHistory((), task_key.to_owned())?;
+    wait_task_with_lookup(
+        ctx,
+        task.ID,
+        |task: &storage::proto::TaskBase| {
+            task.State == proto::TaskStateSucceed
+                || task.State == proto::TaskStateReverted
+                || task.State == proto::TaskStateFailed
+        },
+        |id| manager.GetTaskBaseByIDWithHistory((), id),
+    )
+    .map(|_| ())
+}
+
 /// 按间隔轮询任务基座，直到 `matches` 为真；瞬时管理器失败时继续轮询（对齐 Go）。
-pub fn WaitTask<F>(ctx: &Context, id: i64, mut matches: F) -> Result<proto::TaskBase>
+pub fn WaitTask<F>(ctx: &Context, id: i64, matches: F) -> Result<proto::TaskBase>
 where
     F: FnMut(&proto::TaskBase) -> bool,
 {
     let runtime = runtime()?;
+    wait_task_with_lookup(ctx, id, matches, |id| {
+        runtime.get_task_base_by_id_with_history(ctx, id)
+    })
+}
+
+fn wait_task_with_lookup<T>(
+    ctx: &Context,
+    id: i64,
+    mut matches: impl FnMut(&T) -> bool,
+    mut lookup: impl FnMut(i64) -> Result<T>,
+) -> Result<T> {
     loop {
         ctx.wait(CHECK_TASK_FINISH_INTERVAL)?;
         // Go deliberately keeps polling after transient manager failures.
-        let Ok(task) = runtime.get_task_base_by_id_with_history(ctx, id) else {
+        let Ok(task) = lookup(id) else {
             continue;
         };
         if matches(&task) {

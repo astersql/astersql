@@ -424,3 +424,164 @@ fn failed_task_probe_does_not_cancel_import_job() {
         "task lookup unavailable"
     );
 }
+
+#[cfg(feature = "nextgen")]
+#[test]
+fn archived_reverted_task_does_not_cancel_pending_user_job() {
+    use astersql_dxf_framework_storage as storage;
+    use astersql_dxf_importinto::scheduler::{ImportJobJsonCodec, withImportJobSession};
+    use astersql_executor_importer as importer;
+    let (_user_domain, user) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let (_sys_domain, system) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let jobs = user.ImportTaskManager().unwrap();
+    let tasks = system.ImportTaskManager().unwrap();
+    tasks
+        .InitMeta((), ":4000".into(), "dxf_service".into())
+        .unwrap();
+    let mut id = 0;
+    withImportJobSession(&jobs, |executor| {
+        id = importer::CreateJob(
+            executor,
+            &ImportJobJsonCodec,
+            "test",
+            "t",
+            8,
+            "root@%",
+            "",
+            &importer::ImportParameters::default(),
+            123,
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let key = astersql_dxf_importinto::TaskKey(id);
+    let task_id = tasks
+        .CreateTask(
+            (),
+            key.clone(),
+            storage::proto::ImportInto,
+            "".into(),
+            1,
+            "".into(),
+            0,
+            Default::default(),
+            b"{}".to_vec(),
+        )
+        .unwrap();
+    // As in Go, bypass scheduler OnDone to isolate existence from cancellability.
+    tasks
+        .RevertTask(
+            (),
+            task_id,
+            storage::proto::TaskStatePending,
+            storage::Error::new("already reverted"),
+        )
+        .unwrap();
+    tasks.RevertedTask((), task_id).unwrap();
+    tasks
+        .TransferTasks2History((), vec![tasks.GetTaskByID((), task_id).unwrap()])
+        .unwrap();
+    assert_eq!(
+        tasks.GetTaskByKey((), key.clone()).unwrap_err(),
+        storage::ErrTaskNotFound
+    );
+    crate::import_into::cancelAndWaitImportJobInStorage(&Default::default(), id, &tasks, &jobs)
+        .unwrap();
+    assert_eq!(
+        tasks.GetTaskBaseByKeyWithHistory((), key).unwrap().State,
+        storage::proto::TaskStateReverted
+    );
+    withImportJobSession(&jobs, |executor| {
+        let job = importer::GetJob(executor, &ImportJobJsonCodec, id, "", true)?;
+        assert_eq!(job.Status, importer::jobStatusPending);
+        assert!(job.ErrorMessage.is_empty());
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[cfg(feature = "nextgen")]
+#[test]
+fn task_committed_after_lookup_miss_does_not_delay_pending_job_cancel() {
+    use astersql_dxf_framework_storage as storage;
+    use astersql_dxf_importinto::scheduler::{ImportJobJsonCodec, withImportJobSession};
+    use astersql_executor_importer as importer;
+    let (_user_domain, user) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let (_sys_domain, system) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let jobs = user.ImportTaskManager().unwrap();
+    let tasks = system.ImportTaskManager().unwrap();
+    tasks
+        .InitMeta((), ":4000".into(), "dxf_service".into())
+        .unwrap();
+    let mut id = 0;
+    withImportJobSession(&jobs, |executor| {
+        id = importer::CreateJob(
+            executor,
+            &ImportJobJsonCodec,
+            "test",
+            "t",
+            8,
+            "root@%",
+            "",
+            &importer::ImportParameters::default(),
+            123,
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let key = astersql_dxf_importinto::TaskKey(id);
+    assert_eq!(
+        tasks
+            .GetTaskBaseByKeyWithHistory((), key.clone())
+            .unwrap_err(),
+        storage::ErrTaskNotFound
+    );
+    let context = astersql_dxf_framework_handle::Context::background();
+    let (done, receive) = std::sync::mpsc::channel();
+    let watchdog_context = context.clone();
+    let watchdog = std::thread::spawn(move || {
+        if receive
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .is_err()
+        {
+            watchdog_context.cancel();
+        }
+    });
+    let result =
+        crate::import_into::cancelImportJobWithFallbackHook(&context, id, &tasks, &jobs, || {
+            tasks
+                .CreateTask(
+                    (),
+                    key.clone(),
+                    storage::proto::ImportInto,
+                    "".into(),
+                    1,
+                    "".into(),
+                    0,
+                    Default::default(),
+                    b"{}".to_vec(),
+                )
+                .unwrap();
+        });
+    let _ = done.send(());
+    watchdog.join().unwrap();
+    result.expect("cancel must not wait for the task committed after the probe miss");
+    assert_eq!(
+        tasks
+            .GetTaskBaseByKeyWithHistory((), key.clone())
+            .unwrap()
+            .State,
+        storage::proto::TaskStatePending
+    );
+    assert_eq!(
+        jobs.GetTaskBaseByKeyWithHistory((), key).unwrap_err(),
+        storage::ErrTaskNotFound
+    );
+    withImportJobSession(&jobs, |executor| {
+        let job = importer::GetJob(executor, &ImportJobJsonCodec, id, "", true)?;
+        assert!(job.IsCancelled());
+        assert_eq!(job.ErrorMessage, "cancelled by user");
+        Ok(())
+    })
+    .unwrap();
+}
