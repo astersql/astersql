@@ -10,6 +10,7 @@ path = "lib.rs"
 doctest = false
 
 [dependencies]
+inference = { package = "astersql-inference", path = "../../inference" }
 anyhow = "1"
 chrono-tz = "0.10"
 auth-crate = { package = "astersql-parser-auth", path = "../../parser/auth" }

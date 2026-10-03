@@ -41,6 +41,15 @@ pub trait SessionContext: expropt::AdvisoryLockContext + Send + Sync + 'static {
     type Store: Send + Sync + 'static;
     type SqlExecutor: expropt::SQLExecutor + Send + Sync + 'static;
 
+    fn embedding_runtime(&self) -> Option<Arc<expropt::inference::EmbedFn>> {
+        None
+    }
+    fn embedding_cancellation(&self) -> Option<String> {
+        None
+    }
+    fn embedding_context_values(&self) -> expropt::inference::embed_fn::ContextValues {
+        Default::default()
+    }
     fn session_vars(&self) -> Arc<variable::session::SessionVars>;
     fn current_user(&self) -> Arc<auth::UserIdentity>;
     fn active_roles(&self) -> Vec<Arc<auth::RoleIdentity>>;
@@ -383,6 +392,9 @@ pub fn NewEvalContext<C: SessionContext>(sctx: Arc<C>) -> EvalContext<C> {
         sctx.session_vars(),
     )));
 
+    ctx.set_optional_prop(Box::new(expropt::SessionContextPropProvider::new(
+        Arc::new(EmbeddingSession(Arc::clone(&sctx))),
+    )));
     let info_schema_session = Arc::clone(&sctx);
     ctx.set_optional_prop(Box::new(
         expropt::InfoSchemaPropProvider::<C::InfoSchema>::new(move |is_domain| {
@@ -717,4 +729,17 @@ pub fn getStmtTimestamp<C: SessionContext>(
         timestamp.as_deref().map_err(ToOwned::to_owned),
         now,
     )
+}
+
+struct EmbeddingSession<C: SessionContext>(Arc<C>);
+impl<C: SessionContext> expropt::SessionContext for EmbeddingSession<C> {
+    fn embedding_runtime(&self) -> Option<Arc<expropt::inference::EmbedFn>> {
+        self.0.embedding_runtime()
+    }
+    fn embedding_cancellation(&self) -> Option<String> {
+        self.0.embedding_cancellation()
+    }
+    fn embedding_context_values(&self) -> expropt::inference::embed_fn::ContextValues {
+        self.0.embedding_context_values()
+    }
 }

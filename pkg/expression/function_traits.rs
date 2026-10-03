@@ -77,6 +77,7 @@ static UNFOLDABLE_FUNCTIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| 
         "lastval",
         "setval",
         "any_value",
+        "embed_text",
     ])
 });
 
@@ -92,6 +93,7 @@ pub static TRY_FOLD_FUNCTIONS: LazyLock<HashSet<&'static str>> =
 pub static ILLEGAL_FUNCTIONS_FOR_GENERATED_COLUMNS: LazyLock<HashSet<&'static str>> =
     LazyLock::new(|| {
         set(&[
+            "embed_text",
             "benchmark",
             "connection_id",
             "curdate",
@@ -230,6 +232,7 @@ static MUTABLE_EFFECT_FUNCTIONS: LazyLock<HashSet<&'static str>> = LazyLock::new
         "setvar",
         "getvar",
         "any_value",
+        "embed_text",
     ])
 });
 

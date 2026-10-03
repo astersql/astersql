@@ -415,14 +415,17 @@ impl<B: SetBackend> SetExecutor<B> {
                 self.BaseExecutor
                     .set_instance_system_variable(context, name, &value)?;
             }
-            self.BaseExecutor
-                .audit_global_variable_event(name, &value)?;
             let names = self.BaseExecutor.variable_names();
-            let shown_value = if name == names.cloud_storage_uri {
+            let shown_value = if name.eq_ignore_ascii_case(&names.cloud_storage_uri) {
                 self.BaseExecutor.redact_url(&value)
+            } else if astersql_sessionctx_variable::is_embedding_api_key(name) && !value.is_empty()
+            {
+                "******".into()
             } else {
                 value.clone()
             };
+            self.BaseExecutor
+                .audit_global_variable_event(name, &shown_value)?;
             self.BaseExecutor.log_global_variable(
                 self.vars[assignment_index].is_instance,
                 name,

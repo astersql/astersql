@@ -2153,6 +2153,7 @@ pub fn register_builtin_sysvars() {
         register_sql_and_session_vars();
         register_getters_and_defaults();
         register_global_vars();
+        crate::embedding_vars::register_embedding_vars();
         register_mem_arbitrator_vars();
         register_compatibility_vars();
         register_noop_compatibility_vars();

@@ -63,7 +63,7 @@ struct Backend {
     privileges: HashSet<String>,
     warnings: Vec<String>,
     audit: Vec<(String, String)>,
-    global_log: Vec<(bool, String, String)>,
+    global_log: std::cell::RefCell<Vec<(bool, String, String)>>,
     session_log: Vec<(String, String)>,
     snapshot_log: Vec<u64>,
     snapshot_schema: Option<u64>,
@@ -165,7 +165,7 @@ impl Backend {
             privileges: HashSet::new(),
             warnings: Vec::new(),
             audit: Vec::new(),
-            global_log: Vec::new(),
+            global_log: Default::default(),
             session_log: Vec::new(),
             snapshot_log: Vec::new(),
             snapshot_schema: None,
@@ -349,7 +349,11 @@ impl SetBackend for Backend {
             .unwrap_or_else(|| value.to_owned())
     }
 
-    fn log_global_variable(&self, _instance: bool, _name: &str, _value: &str) {}
+    fn log_global_variable(&self, instance: bool, name: &str, value: &str) {
+        self.global_log
+            .borrow_mut()
+            .push((instance, name.into(), value.into()));
+    }
 
     fn current_service_scope(&self) -> String {
         self.service_scope.clone()
@@ -832,4 +836,49 @@ fn test_set_tidb_service_scope_case_insensitive() {
         Some("Analytics")
     );
     assert_eq!(backend.task_manager_scopes, ["Analytics"]);
+}
+
+#[test]
+fn embedding_api_keys_are_redacted_for_global_audit() {
+    for name in [
+        "tidb_exp_embed_jina_ai_api_key",
+        "tidb_exp_embed_openai_api_key",
+        "tidb_exp_embed_cohere_api_key",
+        "tidb_exp_embed_huggingface_api_key",
+        "tidb_exp_embed_nvidia_nim_api_key",
+        "tidb_exp_embed_gemini_api_key",
+    ] {
+        for value in ["", "secret-key-1234"] {
+            let mut backend = Backend::new();
+            backend.privileges.insert("SYSTEM_VARIABLES_ADMIN".into());
+            backend.system.insert(
+                name.into(),
+                SystemVariable {
+                    name: name.into(),
+                    default_value: String::new(),
+                    is_noop: false,
+                    has_instance_scope: false,
+                },
+            );
+            let mut var = assignment(name, SetDatum::String(value.into()), true);
+            var.is_global = true;
+            let backend = execute(backend, vec![var]).unwrap();
+            assert_eq!(backend.global[name], value);
+            assert_eq!(
+                *backend.global_log.borrow(),
+                vec![(
+                    false,
+                    name.to_owned(),
+                    if value.is_empty() { "" } else { "******" }.to_owned()
+                )]
+            );
+            assert_eq!(
+                backend.audit,
+                vec![(
+                    name.into(),
+                    if value.is_empty() { "" } else { "******" }.into()
+                )]
+            );
+        }
+    }
 }

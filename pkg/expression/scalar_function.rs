@@ -133,6 +133,11 @@ impl ScalarFunction {
         input: &chunk::Chunk,
         result: &mut chunk::Column,
     ) -> Result<(), Error> {
+        intest::AssertNotNil(Some(ctx), &[]);
+        if intest::EnableAssert.load(std::sync::atomic::Ordering::Relaxed) {
+            let asserted = wrapEvalAssert(ctx, self.Function.as_ref());
+            return self.Function.vecEvalVectorFloat32(&asserted, input, result);
+        }
         self.Function.vecEvalVectorFloat32(ctx, input, result)
     }
 
@@ -425,6 +430,11 @@ impl ScalarFunction {
         ctx: &dyn EvalContext,
         row: chunk::Row,
     ) -> Result<(types::VectorFloat32, bool), Error> {
+        intest::AssertNotNil(Some(ctx), &[]);
+        if intest::EnableAssert.load(std::sync::atomic::Ordering::Relaxed) {
+            let asserted = wrapEvalAssert(ctx, self.Function.as_ref());
+            return self.Function.evalVectorFloat32(&asserted, row);
+        }
         self.Function.evalVectorFloat32(ctx, row)
     }
 

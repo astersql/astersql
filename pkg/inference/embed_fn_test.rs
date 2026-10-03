@@ -901,3 +901,101 @@ fn mock_json_null_elements_decode_as_zero_and_float_overflow_fails() {
             .is_err()
     );
 }
+
+#[test]
+fn shared_embedding_call_keeps_first_context_values_and_cancellation_cause() {
+    struct TraceProvider(std::sync::mpsc::Sender<String>, Arc<AtomicBool>);
+    impl Embedder for TraceProvider {
+        fn create_embeddings(
+            &self,
+            _: &AtomicBool,
+            _: &str,
+            _: &[String],
+            _: &Options,
+        ) -> Result<Vec<Vec<f32>>, String> {
+            panic!("context boundary required")
+        }
+        fn create_embeddings_with_values(
+            &self,
+            cancel: &AtomicBool,
+            _: &str,
+            texts: &[String],
+            _: &Options,
+            values: &crate::embed_fn::ContextValues,
+        ) -> Result<Vec<Vec<f32>>, String> {
+            let trace = values
+                .get("trace")
+                .and_then(|value| value.downcast_ref::<String>())
+                .cloned()
+                .unwrap_or_default();
+            self.0.send(trace).unwrap();
+            while !self.1.load(Ordering::Acquire) {
+                if cancel.load(Ordering::Acquire) {
+                    return Err("context canceled".into());
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+            Ok(texts.iter().map(|_| vec![1.0, 2.0]).collect())
+        }
+    }
+    let runtime = Arc::new(EmbedFn::new());
+    let (sent, received) = std::sync::mpsc::channel();
+    let release = Arc::new(AtomicBool::new(false));
+    runtime
+        .register("trace", Arc::new(TraceProvider(sent, release.clone())))
+        .unwrap();
+    let first_runtime = runtime.clone();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let first_cancel = cancel.clone();
+    let first = thread::spawn(move || {
+        let mut values = crate::embed_fn::ContextValues::new();
+        values.insert("trace".into(), Arc::new("first-caller-trace".to_owned()));
+        first_runtime.embed_with_context_values(
+            "trace/model",
+            "text",
+            &Options::new(),
+            &|| {
+                first_cancel
+                    .load(Ordering::Acquire)
+                    .then(|| "caller cause".into())
+            },
+            &values,
+        )
+    });
+    assert_eq!(
+        received.recv_timeout(Duration::from_secs(5)).unwrap(),
+        "first-caller-trace"
+    );
+    let second_runtime = runtime.clone();
+    let polls = Arc::new(AtomicUsize::new(0));
+    let second_polls = polls.clone();
+    let second = thread::spawn(move || {
+        let mut values = crate::embed_fn::ContextValues::new();
+        values.insert("trace".into(), Arc::new("second-caller-trace".to_owned()));
+        second_runtime.embed_with_context_values(
+            "trace/model",
+            "text",
+            &Options::new(),
+            &|| {
+                second_polls.fetch_add(1, Ordering::AcqRel);
+                None
+            },
+            &values,
+        )
+    });
+    // The second cancellation poll happens after joining the in-flight call.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while polls.load(Ordering::Acquire) < 2 {
+        assert!(std::time::Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(1));
+    }
+    cancel.store(true, Ordering::Release);
+    assert_eq!(first.join().unwrap().unwrap_err(), "caller cause");
+    release.store(true, Ordering::Release);
+    assert_eq!(second.join().unwrap().unwrap(), vec![1.0, 2.0]);
+    assert!(
+        received.try_recv().is_err(),
+        "both callers must share one provider call"
+    );
+    runtime.close();
+}

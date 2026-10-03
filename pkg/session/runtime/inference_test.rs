@@ -108,3 +108,118 @@ fn go_merge_43_embed_text_sql_calls_domain_provider_and_returns_vector() {
     domain.close();
     astersql_config_deploymode::Set(previous).unwrap();
 }
+
+#[test]
+fn embed_text_checks_deployment_before_null_and_invalid_options() {
+    let (_, session) = CreateAnalyzeSession().expect("SQL session");
+    for sql in [
+        "SELECT EMBED_TEXT(NULL, 'text')",
+        "SELECT EMBED_TEXT('mock/json', NULL)",
+        "SELECT EMBED_TEXT('mock/json', '[1]', '{invalid}')",
+    ] {
+        let error = session
+            .execute(sql)
+            .err()
+            .expect("deployment rejected before arguments");
+        assert!(
+            error.to_string().contains("starter deployment mode"),
+            "{sql}: {error}"
+        );
+    }
+}
+
+#[cfg(feature = "nextgen")]
+#[test]
+fn embedding_sql_starter_options_nulls_errors_and_key_variables() {
+    let previous = astersql_config_deploymode::Get();
+    astersql_config_deploymode::Set(astersql_config_deploymode::Starter).unwrap();
+    let (domain, session) = CreateAnalyzeSession().unwrap();
+    domain
+        .start(astersql_domain::domain::StartMode::Normal)
+        .unwrap();
+    domain
+        .get_embed_fn()
+        .unwrap()
+        .register(
+            "mock",
+            std::sync::Arc::new(astersql_inference::MockEmbedder),
+        )
+        .unwrap();
+    for (sql, expected) in [
+        ("SELECT EMBED_TEXT('mock/json', '[1,2,3]')", "[1,2,3]"),
+        (
+            "SELECT EMBED_TEXT('mock/json', '[1,2,3]', '{\"plus\":1,\"plus@search\":10}')",
+            "[2,3,4]",
+        ),
+        ("SELECT EMBED_TEXT('mock/json', '[1]', NULL)", "[1]"),
+    ] {
+        let mut result = session.execute(sql).unwrap();
+        assert_eq!(
+            result.remove(0).next_row().unwrap().unwrap(),
+            vec![expected.to_owned()]
+        );
+    }
+    for sql in [
+        "SELECT EMBED_TEXT('mock/json', '[1]', 'null')",
+        "SELECT EMBED_TEXT('mock/json', '[1]', '[]')",
+        "SELECT EMBED_TEXT('mock/json', '[1]', '{bad}')",
+    ] {
+        assert!(
+            session
+                .execute(sql)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("options in JSON")
+        );
+    }
+    for name in [
+        "tidb_exp_embed_jina_ai_api_key",
+        "tidb_exp_embed_openai_api_key",
+        "tidb_exp_embed_cohere_api_key",
+        "tidb_exp_embed_huggingface_api_key",
+        "tidb_exp_embed_nvidia_nim_api_key",
+        "tidb_exp_embed_gemini_api_key",
+    ] {
+        session
+            .execute(&format!("SET GLOBAL {name} = '1234567890'"))
+            .unwrap();
+        assert_eq!(
+            domain.global_system_variable(name).as_deref(),
+            Some("1234567890")
+        );
+        let mut persisted = session
+            .execute(&format!(
+                "SELECT variable_value FROM mysql.global_variables WHERE variable_name = '{name}'"
+            ))
+            .unwrap();
+        assert_eq!(
+            persisted.remove(0).next_row().unwrap().unwrap(),
+            vec!["1234567890".to_owned()]
+        );
+        let mut result = session.execute(&format!("SELECT @@global.{name}")).unwrap();
+        assert_eq!(
+            result.remove(0).next_row().unwrap().unwrap(),
+            vec!["******7890".to_owned()]
+        );
+        assert!(session.execute(&format!("SET {name} = 'key'")).is_err());
+    }
+    assert!(
+        session
+            .execute("SET GLOBAL tidb_exp_embed_openai_api_base = 'https://evil.example/v1'")
+            .is_err()
+    );
+    session
+        .execute(
+            "SET GLOBAL tidb_exp_embed_openai_api_base = 'https://api.openai.com/v1/embeddings'",
+        )
+        .unwrap();
+    assert_eq!(
+        domain
+            .global_system_variable("tidb_exp_embed_openai_api_base")
+            .as_deref(),
+        Some("https://api.openai.com/v1")
+    );
+    domain.close();
+    astersql_config_deploymode::Set(previous).unwrap();
+}

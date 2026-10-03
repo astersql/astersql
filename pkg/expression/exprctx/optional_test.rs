@@ -20,6 +20,7 @@
 
 #![allow(non_snake_case)]
 
+use exprctx_crate::OptPropSessionContext;
 use std::ptr;
 
 use exprctx_crate::{
@@ -71,6 +72,7 @@ pub fn TestOptionalPropKeySet() {
     // 凑齐全部有效键后应为满集。
     key_set4 = key_set3
         .Add(OptPropSessionVars)
+        .Add(OptPropSessionContext)
         .Add(OptPropInfoSchema)
         .Add(OptPropKVStore)
         .Add(OptPropSQLExecutor)

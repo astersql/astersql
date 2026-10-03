@@ -2586,3 +2586,40 @@ pub const TiDBEnableConnectionEventLog: &str = "tidb_enable_connection_event_log
 pub const DefTiDBEnableConnectionEventLog: bool = false;
 pub static EnableConnectionEventLog: AtomicBoolValue =
     AtomicBoolValue::new(DefTiDBEnableConnectionEventLog);
+
+pub const TiDBExpEmbedJinaAIAPIKey: &str = "tidb_exp_embed_jina_ai_api_key";
+pub const TiDBExpEmbedOpenAIAPIKey: &str = "tidb_exp_embed_openai_api_key";
+pub const TiDBExpEmbedOpenAIAPIBase: &str = "tidb_exp_embed_openai_api_base";
+pub const TiDBExpEmbedCohereAPIKey: &str = "tidb_exp_embed_cohere_api_key";
+pub const TiDBExpEmbedHuggingFaceAPIKey: &str = "tidb_exp_embed_huggingface_api_key";
+pub const TiDBExpEmbedNvidiaNIMAPIKey: &str = "tidb_exp_embed_nvidia_nim_api_key";
+pub const TiDBExpEmbedGeminiAPIKey: &str = "tidb_exp_embed_gemini_api_key";
+pub const DefTiDBEmbedOpenAIAPIBase: &str = "https://api.openai.com/v1";
+pub static EmbedJinaAPIKey: LazyLock<AtomicStringValue> =
+    LazyLock::new(|| AtomicStringValue::new(""));
+pub static EmbedOpenAIAPIKey: LazyLock<AtomicStringValue> =
+    LazyLock::new(|| AtomicStringValue::new(""));
+pub static EmbedOpenAIAPIBase: LazyLock<AtomicStringValue> =
+    LazyLock::new(|| AtomicStringValue::new(""));
+pub static EmbedCohereAPIKey: LazyLock<AtomicStringValue> =
+    LazyLock::new(|| AtomicStringValue::new(""));
+pub static EmbedHuggingFaceAPIKey: LazyLock<AtomicStringValue> =
+    LazyLock::new(|| AtomicStringValue::new(""));
+pub static EmbedNvidiaNIMAPIKey: LazyLock<AtomicStringValue> =
+    LazyLock::new(|| AtomicStringValue::new(""));
+pub static EmbedGeminiAPIKey: LazyLock<AtomicStringValue> =
+    LazyLock::new(|| AtomicStringValue::new(""));
+pub static EmbeddingConfigVersion: AtomicU64Value = AtomicU64Value::new(0);
+impl AtomicStringValue {
+    pub fn Swap(&self, value: impl Into<String>) -> String {
+        std::mem::replace(
+            &mut *self.0.write().expect("atomic string poisoned"),
+            value.into(),
+        )
+    }
+}
+impl AtomicU64Value {
+    pub fn Inc(&self) -> u64 {
+        self.0.fetch_add(1, Ordering::SeqCst) + 1
+    }
+}

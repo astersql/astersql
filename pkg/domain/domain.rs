@@ -2437,16 +2437,36 @@ impl Domain {
     /// Store a global system-variable value for current and future sessions.
     pub fn set_global_system_variable(&self, name: &str, value: &str) {
         let name = name.to_ascii_lowercase();
-        self.global_system_variables
+        let previous = self
+            .global_system_variables
             .write()
             .expect("global system variable lock poisoned")
-            .insert(name.clone(), value.to_owned());
-        if matches!(
-            name.as_str(),
-            "tidb_exp_embed_openai_api_key"
-                | "tidb_exp_embed_openai_api_base"
-                | "tidb_exp_embed_jina_ai_api_key"
-        ) {
+            .insert(name.clone(), value.to_owned())
+            .unwrap_or_default();
+        let changed = if name == "tidb_exp_embed_openai_api_base" {
+            let effective = |value: &str| {
+                if value.is_empty() {
+                    "https://api.openai.com/v1".to_owned()
+                } else {
+                    value.to_owned()
+                }
+            };
+            effective(&previous) != effective(value)
+        } else {
+            previous != value
+        };
+        if changed
+            && matches!(
+                name.as_str(),
+                "tidb_exp_embed_openai_api_key"
+                    | "tidb_exp_embed_openai_api_base"
+                    | "tidb_exp_embed_jina_ai_api_key"
+                    | "tidb_exp_embed_cohere_api_key"
+                    | "tidb_exp_embed_huggingface_api_key"
+                    | "tidb_exp_embed_nvidia_nim_api_key"
+                    | "tidb_exp_embed_gemini_api_key"
+            )
+        {
             let version = self.embedding_config_version.fetch_add(1, Ordering::AcqRel) + 1;
             if let Some(embed_fn) = self.get_embed_fn() {
                 embed_fn.set_config_version(version);

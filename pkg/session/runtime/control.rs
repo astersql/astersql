@@ -2826,6 +2826,25 @@ impl ConcreteSession {
             .or_else(|| name.strip_prefix("global."))
             .unwrap_or(&name)
             .to_owned();
+        if astersql_sessionctx_variable::is_embedding_api_key(&name) {
+            return Ok(astersql_sessionctx_variable::mask_embedding_api_key(
+                &self
+                    .domain
+                    .global_system_variable(&name)
+                    .unwrap_or_default(),
+            ));
+        }
+        if name == astersql_sessionctx_variable::EMBEDDING_API_BASE {
+            let value = self
+                .domain
+                .global_system_variable(&name)
+                .unwrap_or_default();
+            return Ok(if value.is_empty() {
+                astersql_sessionctx_variable::DEFAULT_EMBEDDING_API_BASE.to_owned()
+            } else {
+                value
+            });
+        }
         // Match Go SysVar.GetNativeValType for these numeric booleans:
         // SQL exposes integers while mysql.global_variables retains ON/OFF.
         if matches!(
@@ -5046,6 +5065,38 @@ impl ConcreteSession {
                 }
                 self.domain.set_global_system_variable(&name, &normalized);
                 metadata.execute(&format!("INSERT INTO mysql.global_variables (variable_name,variable_value) VALUES ('{name}','{normalized}') ON DUPLICATE KEY UPDATE variable_value='{normalized}'"))?;
+                continue;
+            }
+            if astersql_sessionctx_variable::is_embedding_api_key(&name)
+                || name == astersql_sessionctx_variable::EMBEDDING_API_BASE
+            {
+                if !is_global {
+                    return Err(SessionError::new(format!(
+                        "Variable '{name}' is a GLOBAL variable and should be set with SET GLOBAL"
+                    )));
+                }
+                let (raw, warnings) = self
+                    .session_vars
+                    .ValidateAndSetGlobalSystemVar(
+                        &name,
+                        value.trim_matches(['\'', '"']),
+                        astersql_sessionctx_vardef::ScopeGlobal,
+                    )
+                    .map_err(|error| SessionError::new(error.to_string()))?;
+                for warning in warnings {
+                    self.set_warning(warning.to_string());
+                }
+                let normalized = if name == astersql_sessionctx_variable::EMBEDDING_API_BASE {
+                    astersql_sessionctx_variable::NormalizeOpenAIEmbeddingAPIBase(&raw)
+                        .map_err(SessionError::new)?
+                } else {
+                    raw
+                };
+                let metadata = ConcreteSession::new(Arc::clone(&self.domain));
+                metadata.SetInRestrictedSQL(true);
+                let persisted = normalized.replace('\\', "\\\\").replace('\'', "''");
+                metadata.execute(&format!("INSERT INTO mysql.global_variables (variable_name,variable_value) VALUES ('{name}','{persisted}') ON DUPLICATE KEY UPDATE variable_value='{persisted}'"))?;
+                self.domain.set_global_system_variable(&name, &normalized);
                 continue;
             }
             if name == astersql_sessionctx_vardef::TiDBGCLifetime {

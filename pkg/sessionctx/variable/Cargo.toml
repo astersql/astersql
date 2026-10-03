@@ -10,6 +10,7 @@ path = "lib.rs"
 doctest = false
 
 [dependencies]
+url = "2"
 chrono = "0.4"
 config = { package = "astersql-config", path = "../../config" }
 astersql-config-configtypes = { path = "../../config/configtypes" }

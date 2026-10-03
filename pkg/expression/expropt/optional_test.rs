@@ -100,6 +100,7 @@ fn assert_after_add(ctx: &MockEvalCtx, key: exprctx::OptionalEvalPropKey) {
 fn verify_all_go_cases(ctx: &mut MockEvalCtx) {
     verify_current_user(ctx);
     verify_session_vars(ctx);
+    verify_session_context(ctx);
     verify_info_schema(ctx);
     verify_kv_store(ctx);
     verify_sql_executor(ctx);
@@ -679,4 +680,30 @@ fn verify_privilege_checker(ctx: &mut MockEvalCtx) {
     assert!(Arc::ptr_eq(&expected, &got));
     assert!(got.request_verification("db1", "table1", "column1", mysql::PrivilegeType(1)));
     assert!(got.request_dynamic_verification("BACKUP_ADMIN", true));
+}
+
+struct EmbeddingSession;
+impl SessionContext for EmbeddingSession {
+    fn embedding_runtime(&self) -> Option<Arc<inference::EmbedFn>> {
+        None
+    }
+    fn embedding_cancellation(&self) -> Option<String> {
+        None
+    }
+}
+fn verify_session_context(ctx: &mut MockEvalCtx) {
+    let key = exprctx::OptPropSessionContext;
+    let provider = SessionContextPropProvider::new(Arc::new(EmbeddingSession));
+    let reader = SessionContextPropReader;
+    assert_before_add(ctx, key, &provider, &reader);
+    assert_missing(reader.get_session_context(ctx));
+    ctx.props.add(Box::new(provider));
+    assert_after_add(ctx, key);
+    assert!(
+        reader
+            .get_session_context(ctx)
+            .unwrap()
+            .embedding_runtime()
+            .is_none()
+    );
 }

@@ -66,3 +66,8 @@ mod optional_test;
 #[cfg(test)]
 #[path = "sessionvars_test.rs"]
 mod sessionvars_test;
+
+mod sessioncontext;
+pub use sessioncontext::*;
+
+pub use inference;

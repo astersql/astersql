@@ -3501,6 +3501,11 @@ impl ConcreteSession {
         if !(2..=3).contains(&args.len()) {
             return Err(SessionError::new("invalid EMBED_TEXT() usage"));
         }
+        if !astersql_config_deploymode::IsStarter() {
+            return Err(SessionError::new(
+                "EMBED_TEXT is only supported in starter deployment mode",
+            ));
+        }
         let Some(model) = relational_expression_value(&args[0], row)? else {
             return Ok(CONCRETE_NULL_VALUE.into());
         };
@@ -3526,11 +3531,6 @@ impl ConcreteSession {
                     .filter(|(key, _)| !key.ends_with("@search"))
                     .map(|(key, value)| (key.clone(), value.clone())),
             );
-        }
-        if !astersql_config_deploymode::IsStarter() {
-            return Err(SessionError::new(
-                "EMBED_TEXT is only supported in starter deployment mode",
-            ));
         }
         let embed_fn = self.domain.get_embed_fn().ok_or_else(|| {
             SessionError::new("EMBED_TEXT requires an initialized Domain embedding runtime")

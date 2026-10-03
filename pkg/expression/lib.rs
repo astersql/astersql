@@ -871,3 +871,8 @@ mod expression_files_36 {
 #[cfg(test)]
 #[path = "builtin_now_test.rs"]
 mod builtin_now_test;
+
+#[path = "builtin_inference.rs"]
+mod builtin_inference;
+#[cfg(test)]
+mod builtin_inference_test;

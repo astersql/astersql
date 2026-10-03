@@ -4771,12 +4771,14 @@ dependencies = [
  "adler2",
  "aes",
  "anyhow",
+ "astersql-config-deploymode",
  "astersql-errctx",
  "astersql-errno",
  "astersql-expression-exprctx",
  "astersql-expression-expropt",
  "astersql-expression-exprstatic",
  "astersql-extension",
+ "astersql-inference",
  "astersql-kv",
  "astersql-meta-model",
  "astersql-param",
@@ -4886,6 +4888,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "astersql-expression-exprctx",
+ "astersql-inference",
  "astersql-infoschema-context",
  "astersql-parser-auth",
  "astersql-parser-mysql",
@@ -9122,6 +9125,7 @@ dependencies = [
  "serde_json",
  "serial_test",
  "sysinfo",
+ "url",
 ]
 
 [[package]]

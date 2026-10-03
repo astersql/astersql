@@ -30,24 +30,25 @@ impl OptionalEvalPropKey {
     pub const OptPropCurrentUser: Self = Self(0);
     /// 会话变量快照。
     pub const OptPropSessionVars: Self = Self(1);
+    pub const OptPropSessionContext: Self = Self(2);
     /// 元数据 InfoSchema（库表结构视图）。
-    pub const OptPropInfoSchema: Self = Self(2);
+    pub const OptPropInfoSchema: Self = Self(3);
     /// KV 存储句柄。
-    pub const OptPropKVStore: Self = Self(3);
+    pub const OptPropKVStore: Self = Self(4);
     /// 内部 SQL 执行器。
-    pub const OptPropSQLExecutor: Self = Self(4);
+    pub const OptPropSQLExecutor: Self = Self(5);
     /// 序列（SEQUENCE）操作接口。
-    pub const OptPropSequenceOperator: Self = Self(5);
+    pub const OptPropSequenceOperator: Self = Self(6);
     /// 咨询锁（GET_LOCK / RELEASE_LOCK）。
-    pub const OptPropAdvisoryLock: Self = Self(6);
+    pub const OptPropAdvisoryLock: Self = Self(7);
     /// DDL Owner 信息。
-    pub const OptPropDDLOwnerInfo: Self = Self(7);
+    pub const OptPropDDLOwnerInfo: Self = Self(8);
     /// 权限检查器。
-    pub const OptPropPrivilegeChecker: Self = Self(8);
+    pub const OptPropPrivilegeChecker: Self = Self(9);
 }
 
 /// 已注册可选属性个数；位图有效宽度。
-pub const OPT_PROPS_CNT: usize = 9;
+pub const OPT_PROPS_CNT: usize = 10;
 /// 与 Go 导出名对齐的别名。
 pub const OptPropsCnt: usize = OPT_PROPS_CNT;
 /// 覆盖全部有效属性位的掩码。
@@ -56,6 +57,7 @@ const ALL_OPT_PROPS_MASK: u64 = (1_u64 << OPT_PROPS_CNT) - 1;
 /// 包级键常量，便于 `use` 时直接引用。
 pub const OptPropCurrentUser: OptionalEvalPropKey = OptionalEvalPropKey::OptPropCurrentUser;
 pub const OptPropSessionVars: OptionalEvalPropKey = OptionalEvalPropKey::OptPropSessionVars;
+pub const OptPropSessionContext: OptionalEvalPropKey = OptionalEvalPropKey::OptPropSessionContext;
 pub const OptPropInfoSchema: OptionalEvalPropKey = OptionalEvalPropKey::OptPropInfoSchema;
 pub const OptPropKVStore: OptionalEvalPropKey = OptionalEvalPropKey::OptPropKVStore;
 pub const OptPropSQLExecutor: OptionalEvalPropKey = OptionalEvalPropKey::OptPropSQLExecutor;
@@ -124,6 +126,10 @@ pub static OPTIONAL_PROPERTY_DESC_LIST: [OptionalEvalPropDesc; OPT_PROPS_CNT] = 
     OptionalEvalPropDesc {
         key: OptPropSessionVars,
         str: "OptPropSessionVars",
+    },
+    OptionalEvalPropDesc {
+        key: OptPropSessionContext,
+        str: "OptPropSessionContext",
     },
     OptionalEvalPropDesc {
         key: OptPropInfoSchema,

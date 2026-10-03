@@ -20,10 +20,24 @@ use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+pub type ContextValues = BTreeMap<String, Arc<dyn std::any::Any + Send + Sync>>;
+
 pub type Options = BTreeMap<String, serde_json::Value>;
 
 /// Provider boundary used by the Domain-owned embedding function.
 pub trait Embedder: Send + Sync {
+    /// Values belong to the first caller, independently of shared cancellation.
+    fn create_embeddings_with_values(
+        &self,
+        cancel: &AtomicBool,
+        model: &str,
+        texts: &[String],
+        opts: &Options,
+        _values: &ContextValues,
+    ) -> Result<Vec<Vec<f32>>, String> {
+        self.create_embeddings(cancel, model, texts, opts)
+    }
+
     /// Preserve a caller cancellation cause and inspectable errors at the provider boundary.
     fn create_embeddings_with_context(
         &self,
@@ -74,6 +88,7 @@ impl Call {
 }
 
 struct Batch {
+    context_values: ContextValues,
     provider: Arc<dyn Embedder>,
     model: String,
     opts: Options,
@@ -181,6 +196,36 @@ impl EmbedFn {
         opts: &Options,
         should_cancel: &dyn Fn() -> bool,
     ) -> Result<Vec<f32>, String> {
+        self.embed_with_context(model_with_provider, text, opts, &|| {
+            should_cancel().then(|| "context canceled".into())
+        })
+    }
+
+    /// Preserve parent cancellation causes while sharing the single-text cache.
+    pub fn embed_with_context(
+        &self,
+        model_with_provider: &str,
+        text: &str,
+        opts: &Options,
+        cancellation: &dyn Fn() -> Option<String>,
+    ) -> Result<Vec<f32>, String> {
+        self.embed_with_context_values(
+            model_with_provider,
+            text,
+            opts,
+            cancellation,
+            &ContextValues::new(),
+        )
+    }
+
+    pub fn embed_with_context_values(
+        &self,
+        model_with_provider: &str,
+        text: &str,
+        opts: &Options,
+        cancellation: &dyn Fn() -> Option<String>,
+        context_values: &ContextValues,
+    ) -> Result<Vec<f32>, String> {
         let version = self.config_version.load(Ordering::Acquire);
         let key = serde_json::to_string(&(model_with_provider, text, opts, version))
             .map_err(|error| error.to_string())?;
@@ -188,9 +233,10 @@ impl EmbedFn {
             model_with_provider,
             &[text.to_owned()],
             opts,
-            &|| should_cancel().then(|| "context canceled".into()),
+            cancellation,
             key,
             true,
+            context_values,
         )?;
         let value = values.into_iter().next().expect("one text result");
         if value.len() > 16_383 {
@@ -215,7 +261,15 @@ impl EmbedFn {
             "batch-call:{}",
             self.next_call.fetch_add(1, Ordering::Relaxed)
         );
-        self.request(model_with_provider, texts, opts, cancellation, key, false)
+        self.request(
+            model_with_provider,
+            texts,
+            opts,
+            cancellation,
+            key,
+            false,
+            &ContextValues::new(),
+        )
     }
 
     fn request(
@@ -226,6 +280,7 @@ impl EmbedFn {
         cancellation: &dyn Fn() -> Option<String>,
         key: String,
         cacheable: bool,
+        context_values: &ContextValues,
     ) -> Result<Vec<Vec<f32>>, String> {
         if let Some(cause) = poll_cancellation(cancellation) {
             return Err(cause);
@@ -291,6 +346,7 @@ impl EmbedFn {
                     batch
                 } else {
                     let batch = Arc::new(Batch {
+                        context_values: context_values.clone(),
                         provider,
                         model: model.to_owned(),
                         opts,
@@ -468,11 +524,12 @@ fn run_batch(
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut values = Vec::with_capacity(texts.len());
         for chunk in texts.chunks(max_batch_size) {
-            let result = batch.provider.create_embeddings(
+            let result = batch.provider.create_embeddings_with_values(
                 &batch.cancelled,
                 &batch.model,
                 chunk,
                 &batch.opts,
+                &batch.context_values,
             )?;
             if result.len() != chunk.len() {
                 if result.is_empty() {

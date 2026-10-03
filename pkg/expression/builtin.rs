@@ -6352,6 +6352,13 @@ pub mod formal_registry {
                             opcode::Op::IsFalsity,
                             false,
                         )),
+                        "embed_text" => {
+                            Arc::new(crate::builtin_inference::embedTextFunctionClass {
+                                baseFunctionClass: baseFunctionClass::new(
+                                    *name, *min_args, *max_args,
+                                ),
+                            })
+                        }
                         _ => Arc::new(registeredFunctionClass::new(name, *min_args, *max_args)),
                     };
                     ((*name).to_owned(), class)
@@ -6731,6 +6738,7 @@ pub mod formal_registry {
         ("json_depth", 1, 1),
         ("json_keys", 1, 2),
         ("json_length", 1, 2),
+        ("embed_text", 2, 3),
         ("vec_dims", 1, 1),
         ("vec_l1_distance", 2, 2),
         ("vec_l2_distance", 2, 2),

@@ -113,3 +113,8 @@ mod variable_test;
 #[cfg(test)]
 #[path = "varsutil_test.rs"]
 mod varsutil_test;
+
+pub mod embedding_vars;
+pub use embedding_vars::*;
+#[cfg(test)]
+mod embedding_vars_test;

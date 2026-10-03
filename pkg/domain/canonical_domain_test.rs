@@ -1796,3 +1796,71 @@ fn alter_index_visibility_uses_unicode_simple_folding_for_temporary_origins() {
         assert_eq!(indices[1].Invisible, matches, "{origin} / {temporary}");
     }
 }
+
+#[test]
+fn embedding_config_changes_invalidate_all_providers_but_identical_values_keep_cache() {
+    struct Counter(std::sync::atomic::AtomicUsize);
+    impl astersql_inference::Embedder for Counter {
+        fn create_embeddings(
+            &self,
+            _: &AtomicBool,
+            _: &str,
+            texts: &[String],
+            _: &astersql_inference::Options,
+        ) -> Result<Vec<Vec<f32>>, String> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(texts.iter().map(|_| vec![1.0]).collect())
+        }
+    }
+    let domain = Domain::new(
+        TestStorage::new(),
+        Arc::new(TestSchemaLoader::new(1)),
+        DomainConfig::default(),
+    );
+    domain.init().unwrap();
+    domain.start(crate::domain::StartMode::Normal).unwrap();
+    let runtime = domain.get_embed_fn().unwrap();
+    let provider = Arc::new(Counter(std::sync::atomic::AtomicUsize::new(0)));
+    runtime.register("counter", provider.clone()).unwrap();
+    let embed = || {
+        runtime
+            .embed("counter/model", "text", &Default::default(), &|| false)
+            .unwrap()
+    };
+    embed();
+    let mut calls = 1;
+    for name in [
+        "tidb_exp_embed_jina_ai_api_key",
+        "tidb_exp_embed_openai_api_key",
+        "tidb_exp_embed_cohere_api_key",
+        "tidb_exp_embed_huggingface_api_key",
+        "tidb_exp_embed_nvidia_nim_api_key",
+        "tidb_exp_embed_gemini_api_key",
+    ] {
+        domain.set_global_system_variable(name, "new-key");
+        embed();
+        calls += 1;
+        assert_eq!(provider.0.load(Ordering::SeqCst), calls, "{name}");
+        domain.set_global_system_variable(name, "new-key");
+        embed();
+        assert_eq!(provider.0.load(Ordering::SeqCst), calls, "identical {name}");
+    }
+    domain.set_global_system_variable(
+        "tidb_exp_embed_openai_api_base",
+        "https://api.openai.com/v1",
+    );
+    embed();
+    assert_eq!(
+        provider.0.load(Ordering::SeqCst),
+        calls,
+        "empty/default effective base unchanged"
+    );
+    domain.set_global_system_variable(
+        "tidb_exp_embed_openai_api_base",
+        "https://custom.openai.azure.com/v1",
+    );
+    embed();
+    calls += 1;
+    assert_eq!(provider.0.load(Ordering::SeqCst), calls);
+    domain.close();
+}
