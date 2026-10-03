@@ -208,6 +208,7 @@ impl CatalogQuery {
             Expr::Column(path) => self.column(path).map(|(_, code, flags)| (code, flags)),
             Expr::Null | Expr::Text(_) => Ok((253, 0)),
             Expr::Integer(_) => Ok((8, 0)),
+            Expr::Boolean(_) => Ok((1, astersql_parser_mysql::r#type::IsBooleanFlag)),
             Expr::Cast(inner, target) => {
                 let (code, _) = self.expr_type(inner)?;
                 if *target == CastType::Bigint && code == 1 {
@@ -257,10 +258,12 @@ impl CatalogQuery {
                     _ => Err(("0A000", "unsupported catalog function or arguments".into())),
                 }
             }
-            Expr::Equal(left, right) => {
+            Expr::Equal(left, right) | Expr::Compare(left, _, right) => {
                 let left_type = self.expr_type(left)?.0;
                 let right_type = self.expr_type(right)?.0;
-                if left_type != right_type
+                if !matches!(**left, Expr::Null)
+                    && !matches!(**right, Expr::Null)
+                    && left_type != right_type
                     && !(matches!(
                         left_type,
                         3 | 8 | crate::pg_oid::OID_TYPE | crate::pg_oid::REGCLASS_TYPE
@@ -273,13 +276,30 @@ impl CatalogQuery {
                 }
                 Ok((1, astersql_parser_mysql::r#type::IsBooleanFlag))
             }
-            Expr::And(left, right) => {
-                if self.expr_type(left)?.0 != 1 || self.expr_type(right)?.0 != 1 {
-                    return Err(("0A000", "catalog AND requires predicates".into()));
+            Expr::And(left, right) | Expr::Or(left, right) => {
+                if (self.expr_type(left)?.0 != 1 && !matches!(**left, Expr::Null))
+                    || (self.expr_type(right)?.0 != 1 && !matches!(**right, Expr::Null))
+                {
+                    return Err((
+                        "0A000",
+                        "catalog logical operators require predicates".into(),
+                    ));
                 }
                 Ok((1, astersql_parser_mysql::r#type::IsBooleanFlag))
             }
-            Expr::NotNull(inner) => {
+            Expr::In(inner, values) => {
+                for value in values {
+                    self.expr_type(&Expr::Equal(inner.clone(), Box::new(value.clone())))?;
+                }
+                Ok((1, astersql_parser_mysql::r#type::IsBooleanFlag))
+            }
+            Expr::Not(inner) => {
+                if self.expr_type(inner)?.0 != 1 && !matches!(**inner, Expr::Null) {
+                    return Err(("0A000", "catalog NOT requires a predicate".into()));
+                }
+                Ok((1, astersql_parser_mysql::r#type::IsBooleanFlag))
+            }
+            Expr::NotNull(inner) | Expr::IsNull(inner) => {
                 self.expr_type(inner)?;
                 Ok((1, astersql_parser_mysql::r#type::IsBooleanFlag))
             }
@@ -466,6 +486,7 @@ impl CatalogQuery {
             Expr::Column(path) => row[self.column(path).expect("validated column").0].clone(),
             Expr::Null => Value::Null,
             Expr::Integer(n) => Value::Signed(*n),
+            Expr::Boolean(value) => Value::Text(value.to_string()),
             Expr::Text(s) => Value::Text(s.clone()),
             Expr::Cast(inner, target) => match (evaluate(inner)?, target) {
                 (Value::Null, _) => Value::Null,
@@ -545,6 +566,60 @@ impl CatalogQuery {
             Expr::Equal(left, right) => match (evaluate(left)?, evaluate(right)?) {
                 (Value::Null, _) | (_, Value::Null) => Value::Null,
                 (left, right) => Value::Text((left == right).to_string()),
+            },
+            Expr::Compare(left, op, right) => match (evaluate(left)?, evaluate(right)?) {
+                (Value::Null, _) | (_, Value::Null) => Value::Null,
+                (left, right) => {
+                    let order = match (left, right) {
+                        (Value::Signed(a), Value::Signed(b)) => a.cmp(&b),
+                        (Value::Text(a), Value::Text(b)) => a.cmp(&b),
+                        _ => unreachable!("validated comparison types"),
+                    };
+                    use crate::pg_catalog_query::CompareOp::*;
+                    Value::Text(
+                        match op {
+                            NotEqual => !order.is_eq(),
+                            Less => order.is_lt(),
+                            LessEqual => !order.is_gt(),
+                            Greater => order.is_gt(),
+                            GreaterEqual => !order.is_lt(),
+                        }
+                        .to_string(),
+                    )
+                }
+            },
+            Expr::In(inner, values) => {
+                let value = evaluate(inner)?;
+                let mut unknown = matches!(value, Value::Null);
+                let mut found = false;
+                for item in values {
+                    let item = evaluate(item)?;
+                    if matches!(item, Value::Null) {
+                        unknown = true;
+                    } else if !matches!(value, Value::Null) && value == item {
+                        found = true;
+                        break;
+                    }
+                }
+                if found {
+                    Value::Text("true".into())
+                } else if unknown {
+                    Value::Null
+                } else {
+                    Value::Text("false".into())
+                }
+            }
+            Expr::Not(inner) => match evaluate(inner)? {
+                Value::Null => Value::Null,
+                Value::Text(value) => Value::Text((value != "true").to_string()),
+                _ => unreachable!("validated predicate"),
+            },
+            Expr::IsNull(inner) => Value::Text(matches!(evaluate(inner)?, Value::Null).to_string()),
+            Expr::Or(left, right) => match (evaluate(left)?, evaluate(right)?) {
+                (Value::Text(left), _) if left == "true" => Value::Text("true".into()),
+                (_, Value::Text(right)) if right == "true" => Value::Text("true".into()),
+                (Value::Null, _) | (_, Value::Null) => Value::Null,
+                _ => Value::Text("false".into()),
             },
             Expr::And(left, right) => match (evaluate(left)?, evaluate(right)?) {
                 (Value::Text(left), _) if left == "false" => Value::Text("false".into()),
@@ -668,10 +743,14 @@ fn contains_age(expr: &Expr) -> bool {
         Expr::Call(path, args) => {
             path.last().is_some_and(|name| name == "age") || args.iter().any(contains_age)
         }
-        Expr::Cast(inner, _) | Expr::NotNull(inner) => contains_age(inner),
-        Expr::Equal(left, right) | Expr::And(left, right) => {
-            contains_age(left) || contains_age(right)
+        Expr::Cast(inner, _) | Expr::NotNull(inner) | Expr::IsNull(inner) | Expr::Not(inner) => {
+            contains_age(inner)
         }
+        Expr::In(inner, values) => contains_age(inner) || values.iter().any(contains_age),
+        Expr::Equal(left, right)
+        | Expr::Compare(left, _, right)
+        | Expr::And(left, right)
+        | Expr::Or(left, right) => contains_age(left) || contains_age(right),
         Expr::Case { condition, yes, no } => {
             contains_age(condition) || contains_age(yes) || contains_age(no)
         }

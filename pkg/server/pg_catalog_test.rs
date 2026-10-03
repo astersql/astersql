@@ -850,3 +850,188 @@ fn pg_introspection_relations_ownership() {
         );
     }
 }
+
+#[test]
+fn pg_introspection_predicates_live() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native
+        .execute("CREATE TABLE test.predicate_live (id INT)")
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    for (predicate, keep) in [
+        ("relkind IN ('r','v')", true),
+        ("relkind NOT IN ('v', NULL)", false),
+        ("relkind IN (NULL, 'r')", true),
+        ("NULL IN (1,2)", false),
+        ("NULL NOT IN (1,2)", false),
+        ("relkind NOT IN ('v')", true),
+        ("relkind IN ('r'::varchar)", true),
+        ("oid IN (0, NULL)", false),
+        ("1 <= 1 AND 1 >= 1 AND NOT (1 < 1 OR 1 > 1 OR 1 <> 1)", true),
+        ("'a' < 'b' AND 'b' > 'a'", true),
+        ("relkind NOT IN ('r', NULL)", false),
+        ("relkind IN ('v')", false),
+        ("NOT (relkind = 'v')", true),
+        ("NULL IS NULL", true),
+        ("NOT NULL", false),
+        ("NULL OR true", true),
+        ("NULL AND false", false),
+        ("true AND NOT false", true),
+        ("NULL IS NOT NULL", false),
+        ("oid = NULL", false),
+        ("NOT (oid <> NULL)", false),
+        ("(NULL = NULL OR 1 = 1) AND NOT (2 = 3)", true),
+        ("1 = 1 OR 1 = 2 AND 2 = 3", true),
+        ("NOT 1 = 1 OR 1 = 2", false),
+        ("NULL = NULL AND 1 = 2", false),
+        ("NULL = NULL OR 1 = 2", false),
+        (
+            "oid > 0 AND oid >= 0 AND 0 < oid AND 0 <= oid AND oid != 0",
+            true,
+        ),
+        ("relkind <> 'v'", true),
+    ] {
+        let sql = format!(
+            "SELECT relname FROM pg_catalog.pg_class WHERE relname = 'predicate_live' AND ({predicate})"
+        );
+        let result = query(&mut socket, &sql);
+        assert_eq!(result[0].0, b'T', "{sql}: {result:?}");
+        let rows: Vec<_> = result.iter().filter(|m| m.0 == b'D').collect();
+        assert_eq!(rows.len(), usize::from(keep), "{sql}: {result:?}");
+        if keep {
+            assert_eq!(rows[0].1, row(&[Some("predicate_live")]));
+        }
+    }
+    // Every combination of true, false and unknown is checked on a real catalog row.
+    let truths = [
+        ("1 = 1", Some(true)),
+        ("1 = 2", Some(false)),
+        ("NULL = 1", None),
+    ];
+    for (left_sql, left) in truths {
+        for (right_sql, right) in truths {
+            let and = match (left, right) {
+                (Some(false), _) | (_, Some(false)) => Some(false),
+                (Some(true), Some(true)) => Some(true),
+                _ => None,
+            };
+            let or = match (left, right) {
+                (Some(true), _) | (_, Some(true)) => Some(true),
+                (Some(false), Some(false)) => Some(false),
+                _ => None,
+            };
+            let sql = format!(
+                "SELECT ({left_sql}) AND ({right_sql}) AS a, ({left_sql}) OR ({right_sql}) AS o FROM pg_catalog.pg_class WHERE relname = 'predicate_live'"
+            );
+            let result = query(&mut socket, &sql);
+            let text = |v: Option<bool>| v.map(|v| if v { "t" } else { "f" });
+            assert_eq!(result[1], (b'D', row(&[text(and), text(or)])), "{sql}");
+        }
+    }
+    let joined = query(
+        &mut socket,
+        "SELECT nspname, D.description IS NULL AS absent FROM pg_catalog.pg_namespace N LEFT JOIN pg_catalog.pg_description D ON N.oid = D.objoid WHERE nspname = 'public' AND NOT (D.description IS NOT NULL)",
+    );
+    assert_eq!(joined[1], (b'D', row(&[Some("public"), Some("t")])));
+    let sql = "SELECT relname FROM pg_catalog.pg_class WHERE relname IN ('predicate_live') AND NOT (oid <= 0 OR relkind <> 'r')";
+    send(
+        &mut socket,
+        b'P',
+        &[
+            b"predicates\0".as_slice(),
+            sql.as_bytes(),
+            b"\0",
+            &0u16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(
+        &mut socket,
+        b'B',
+        &[
+            b"predicate_portal\0predicates\0".as_slice(),
+            &0u16.to_be_bytes(),
+            &0u16.to_be_bytes(),
+            &0u16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(
+        &mut socket,
+        b'E',
+        &[b"predicate_portal\0".as_slice(), &0u32.to_be_bytes()].concat(),
+    );
+    send(&mut socket, b'S', b"");
+    let extended = until_ready(&mut socket);
+    assert_eq!(extended.iter().map(|m| m.0).collect::<Vec<_>>(), b"12DCZ");
+    assert_eq!(extended[2], (b'D', row(&[Some("predicate_live")])));
+    let projected = query(
+        &mut socket,
+        "SELECT NULL = 1 AS unknown, NOT (NULL = 1) AS negated, NULL = 1 OR 1 = 1 AS yes, NULL = 1 AND 1 = 2 AS no FROM pg_catalog.pg_class WHERE relname = 'predicate_live'",
+    );
+    assert_eq!(
+        projected[1],
+        (b'D', row(&[None, None, Some("t"), Some("f")]))
+    );
+    for (predicate, state) in [
+        ("relkind IN ()".to_string(), "42601"),
+        ("relkind IN (relname)".to_string(), "0A000"),
+        (
+            "relkind IN (SELECT relkind FROM pg_catalog.pg_class)".to_string(),
+            "0A000",
+        ),
+        ("oid LIKE 'x'".to_string(), "0A000"),
+        ("oid + 1 = 1".to_string(), "0A000"),
+        (format!("oid IN ({})", vec!["1"; 129].join(",")), "0A000"),
+        ("NOT oid".to_string(), "0A000"),
+        ("oid IN ('x')".to_string(), "0A000"),
+        (format!("{}oid = 1", "NOT ".repeat(70)), "0A000"),
+        (
+            format!("{}oid = 1{}", "(".repeat(70), ")".repeat(70)),
+            "0A000",
+        ),
+        (vec!["1 = 1"; 140].join(" OR "), "0A000"),
+    ] {
+        let result = query(
+            &mut socket,
+            &format!("SELECT relname FROM pg_catalog.pg_class WHERE {predicate}"),
+        );
+        assert_eq!(result[0].0, b'E', "{predicate}: {result:?}");
+        assert!(
+            result[0]
+                .1
+                .windows(7)
+                .any(|w| w == format!("C{state}\0").as_bytes()),
+            "{predicate}: {result:?}"
+        );
+    }
+    assert_eq!(query(&mut socket, "SELECT 1")[1], (b'D', row(&[Some("1")])));
+    send(&mut socket, b'X', b"");
+    service.close();
+    domain.close();
+}

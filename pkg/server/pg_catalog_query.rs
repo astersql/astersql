@@ -24,10 +24,16 @@ pub(crate) enum Expr {
     Column(Vec<String>),
     Null,
     Integer(i64),
+    Boolean(bool),
     Text(String),
     Call(Vec<String>, Vec<Expr>),
     Cast(Box<Expr>, CastType),
     Equal(Box<Expr>, Box<Expr>),
+    Compare(Box<Expr>, CompareOp, Box<Expr>),
+    In(Box<Expr>, Vec<Expr>),
+    Not(Box<Expr>),
+    IsNull(Box<Expr>),
+    Or(Box<Expr>, Box<Expr>),
     NotNull(Box<Expr>),
     And(Box<Expr>, Box<Expr>),
     Case {
@@ -36,6 +42,15 @@ pub(crate) enum Expr {
         no: Box<Expr>,
     },
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CompareOp {
+    NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CastType {
     Bigint,
@@ -180,6 +195,7 @@ struct Parser {
     pos: usize,
     depth: usize,
     casts: usize,
+    predicates: usize,
 }
 impl Parser {
     fn peek(&self) -> Option<&Token> {
@@ -231,19 +247,126 @@ impl Parser {
         }
         Ok(path)
     }
+    fn predicate_budget(&mut self) -> ParseResult<()> {
+        self.predicates += 1;
+        if self.predicates > 128 {
+            return Err(unsupported("too many catalog predicate terms"));
+        }
+        Ok(())
+    }
+    // SQL precedence: scalar/cast, comparison, NOT, AND, then OR.
     fn expr(&mut self) -> ParseResult<Expr> {
-        let mut expr = self.comparison()?;
-        let mut terms = 1;
-        while self.word("and") {
-            terms += 1;
-            if terms > 64 {
-                return Err(unsupported("too many catalog predicate terms"));
-            }
-            expr = Expr::And(Box::new(expr), Box::new(self.comparison()?));
+        let mut expr = self.conjunction()?;
+        while self.word("or") {
+            self.predicate_budget()?;
+            expr = Expr::Or(Box::new(expr), Box::new(self.conjunction()?));
         }
         Ok(expr)
     }
+    fn conjunction(&mut self) -> ParseResult<Expr> {
+        let mut expr = self.negation()?;
+        while self.word("and") {
+            self.predicate_budget()?;
+            expr = Expr::And(Box::new(expr), Box::new(self.negation()?));
+        }
+        Ok(expr)
+    }
+    fn negation(&mut self) -> ParseResult<Expr> {
+        if self.word("not") {
+            self.predicate_budget()?;
+            if self.depth == 64 {
+                return Err(unsupported("catalog expression nesting is too deep"));
+            }
+            self.depth += 1;
+            let result = self.negation();
+            self.depth -= 1;
+            return result.map(|expr| Expr::Not(Box::new(expr)));
+        }
+        self.comparison()
+    }
     fn comparison(&mut self) -> ParseResult<Expr> {
+        let mut expr = self.atom()?;
+        if self.symbol('=') {
+            self.predicate_budget()?;
+            expr = Expr::Equal(Box::new(expr), Box::new(self.atom()?));
+        } else if self.symbol('<') {
+            self.predicate_budget()?;
+            let op = if self.symbol('>') {
+                CompareOp::NotEqual
+            } else if self.symbol('=') {
+                CompareOp::LessEqual
+            } else {
+                CompareOp::Less
+            };
+            expr = Expr::Compare(Box::new(expr), op, Box::new(self.atom()?));
+        } else if self.symbol('>') {
+            self.predicate_budget()?;
+            let op = if self.symbol('=') {
+                CompareOp::GreaterEqual
+            } else {
+                CompareOp::Greater
+            };
+            expr = Expr::Compare(Box::new(expr), op, Box::new(self.atom()?));
+        } else if self.symbol('!') {
+            self.require_symbol('=')?;
+            self.predicate_budget()?;
+            expr = Expr::Compare(Box::new(expr), CompareOp::NotEqual, Box::new(self.atom()?));
+        } else if self.word("is") {
+            self.predicate_budget()?;
+            let not = self.word("not");
+            self.require_word("null")?;
+            expr = if not {
+                Expr::NotNull(Box::new(expr))
+            } else {
+                Expr::IsNull(Box::new(expr))
+            };
+        } else {
+            let not = self.word("not");
+            if not || self.word("in") {
+                if not {
+                    self.require_word("in")?;
+                }
+                self.predicate_budget()?;
+                self.require_symbol('(')?;
+                if self.symbol(')') {
+                    return Err(syntax("IN requires a nonempty constant list"));
+                }
+                let mut values = Vec::new();
+                loop {
+                    if self.peek() == Some(&Token::Word("select".into())) {
+                        return Err(unsupported("catalog IN subqueries are unsupported"));
+                    }
+                    let value = self.atom()?;
+                    if !constant(&value) {
+                        return Err(unsupported("catalog IN requires constants"));
+                    }
+                    values.push(value);
+                    if values.len() > 128 {
+                        return Err(unsupported("too many catalog IN values"));
+                    }
+                    if !self.symbol(',') {
+                        break;
+                    }
+                }
+                self.require_symbol(')')?;
+                expr = Expr::In(Box::new(expr), values);
+                if not {
+                    expr = Expr::Not(Box::new(expr));
+                }
+            }
+        }
+        if matches!(
+            self.peek(),
+            Some(Token::Symbol(
+                '+' | '-' | '/' | '*' | '<' | '>' | '!' | '|' | '&' | '='
+            ))
+        ) || self.peek() == Some(&Token::Word("like".into()))
+        {
+            return Err(unsupported("unsupported catalog operator"));
+        }
+        Ok(expr)
+    }
+    fn atom(&mut self) -> ParseResult<Expr> {
         if self.depth == 64 {
             return Err(unsupported("catalog expression nesting is too deep"));
         }
@@ -255,6 +378,10 @@ impl Parser {
     fn expr_inner(&mut self) -> ParseResult<Expr> {
         let mut expr = if self.word("null") {
             Expr::Null
+        } else if self.word("true") {
+            Expr::Boolean(true)
+        } else if self.word("false") {
+            Expr::Boolean(false)
         } else if self.word("current_catalog") {
             Expr::Call(vec!["current_catalog".into()], vec![])
         } else if self.word("case") {
@@ -333,24 +460,6 @@ impl Parser {
                 _ => return Err(unsupported("unsupported catalog cast")),
             };
             expr = Expr::Cast(Box::new(expr), target);
-        }
-        if self.symbol('=') {
-            expr = Expr::Equal(Box::new(expr), Box::new(self.comparison()?));
-        } else if self.word("is") {
-            if self.word("null") {
-                return Err(unsupported("IS NULL catalog predicates are unsupported"));
-            }
-            self.require_word("not")?;
-            self.require_word("null")?;
-            expr = Expr::NotNull(Box::new(expr));
-        }
-        if matches!(
-            self.peek(),
-            Some(Token::Symbol(
-                '+' | '-' | '/' | '*' | '<' | '>' | '!' | '|' | '&'
-            ))
-        ) {
-            return Err(unsupported("unsupported catalog operator"));
         }
         Ok(expr)
     }
@@ -605,7 +714,16 @@ pub(crate) fn parse_shadowed(sql: &str, shadowed: &[String]) -> ParseResult<Opti
         pos: 0,
         depth: 0,
         casts: 0,
+        predicates: 0,
     }
     .select()
     .map(Some)
+}
+
+fn constant(expr: &Expr) -> bool {
+    match expr {
+        Expr::Null | Expr::Integer(_) | Expr::Text(_) | Expr::Boolean(_) => true,
+        Expr::Cast(inner, _) => constant(inner),
+        _ => false,
+    }
 }
