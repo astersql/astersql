@@ -355,3 +355,34 @@ fn test_filter_path() {
         assert_eq!(FilterPathByTs(path, shift, restore), expected, "{path}");
     }
 }
+
+#[test]
+fn test_fast_unmarshal_metadata_skip_condition_can_skip_empty_meta() {
+    let storage = Arc::new(MemStorage::new());
+    let empty = "v1/backupmeta/00000000000000140000000000000001-d0000000000000000l0000000000000000u0000000000000000p0000000000000002.meta";
+    let normal = "v1/backupmeta/000000000000001E0000000000000001-d0000000000000005l000000000000000Au0000000000000014p0000000000000000.meta";
+    storage
+        .WriteFile(empty, b"invalid empty meta payload")
+        .unwrap();
+    storage.WriteFile(normal, b"normal meta payload").unwrap();
+    assert_eq!(FilterPathByTs(empty, 5, 10), empty);
+    let reads = AtomicI32::new(0);
+    crate::stream_mgr::FastUnmarshalMetaDataWithOptions(
+        storage,
+        0,
+        100,
+        1,
+        |path| {
+            crate::stream_metas::TryParseTaggedBackupMetaFileNameWrapper(path)
+                .is_ok_and(|parsed| parsed.IsEmpty())
+        },
+        |path, raw| {
+            assert_eq!(path, normal);
+            assert_eq!(raw, b"normal meta payload");
+            reads.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(reads.load(Ordering::SeqCst), 1);
+}

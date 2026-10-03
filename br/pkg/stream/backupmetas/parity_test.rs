@@ -134,3 +134,28 @@ fn tagged_validation_and_forward_compatibility_match_go() {
         assert!(ParseName(invalid).is_err(), "unexpectedly parsed {invalid}");
     }
 }
+
+#[test]
+fn empty_flag_requires_presence_and_preserves_ddl_bits() {
+    for flags in [0u64, 1, 2, 3, 4, u64::MAX] {
+        let parsed = ParseName(&tagged(&format!(
+            "d0000000000000000l0000000000000000u0000000000000000p{flags:016X}"
+        )))
+        .unwrap();
+        assert_eq!(parsed.IsEmpty(), flags & 2 != 0);
+        assert_eq!(parsed.HasDDLFiles(), flags & 1 == 0);
+    }
+    assert!(
+        !crate::ParsedName {
+            Flags: 2,
+            HasFlags: false,
+            ..Default::default()
+        }
+        .IsEmpty()
+    );
+    assert!(
+        !ParseName("0000000000000001-0000000000000002-0000000000000003-0000000000000004")
+            .unwrap()
+            .IsEmpty()
+    );
+}

@@ -822,6 +822,7 @@ pub mod backuppb {
     /// `File`：承载状态/配置；关注谁填充、谁消费、何时需要回写。
     /// 字段语义与 Go 对照，避免测试桩字段被误读为协议扩展。
     /// `File` 生命周期：构造后是否可变、是否跨线程共享需明确。
+    #[serde(default)]
     pub struct File {
         pub Name: String,
         pub StartKey: Vec<u8>,
@@ -909,7 +910,8 @@ pub mod backuppb {
     /// `DataFileInfo` 契约：返回值与副作用应可被上层测试稳定观察。
     pub type DataFileInfo = File;
 
-    #[derive(Clone, Debug, Default)]
+    #[derive(Clone, Debug, Default, serde::Deserialize)]
+    #[serde(default)]
     /// `DataFileGroup`：承载状态/配置；关注谁填充、谁消费、何时需要回写。
     /// 字段语义与 Go 对照，避免测试桩字段被误读为协议扩展。
     /// `DataFileGroup` 生命周期：构造后是否可变、是否跨线程共享需明确。
@@ -922,7 +924,8 @@ pub mod backuppb {
         pub Length: u64,
     }
 
-    #[derive(Clone, Debug, Default)]
+    #[derive(Clone, Debug, Default, serde::Deserialize)]
+    #[serde(default)]
     /// `Metadata`：承载状态/配置；关注谁填充、谁消费、何时需要回写。
     /// 字段语义与 Go 对照，避免测试桩字段被误读为协议扩展。
     /// `Metadata` 生命周期：构造后是否可变、是否跨线程共享需明确。
@@ -1762,8 +1765,26 @@ pub mod stream {
         /// `ParseToMetadata`：承担本模块局部职责，输入输出与错误语义需与 Go 对齐。
         /// 留意空集合、取消上下文与默认值是否保持一致。
         /// `ParseToMetadata` 数据流：调用方准备输入，本函数产出可断言结果或错误。
-        pub fn ParseToMetadata(&self, _raw: &[u8]) -> Result<super::backuppb::Metadata> {
-            Ok(super::backuppb::Metadata::default())
+        pub fn ParseToMetadata(&self, raw: &[u8]) -> Result<super::backuppb::Metadata> {
+            use astersql_br_pkg_stream::stubs::backuppb::MetaVersion;
+            let parsed = astersql_br_pkg_stream::stream_mgr::MetadataHelper::ParseToMetadata(raw)
+                .map_err(|err| super::Error::new(err.to_string()))?;
+            // Preserve restore-only file fields while reusing stream's validation and V1 grouping.
+            let mut value: serde_json::Value =
+                serde_json::from_slice(raw).map_err(|err| super::Error::new(err.to_string()))?;
+            if parsed.MetaVersion == MetaVersion::V1
+                && value["FileGroups"]
+                    .as_array()
+                    .is_none_or(|groups| groups.is_empty())
+            {
+                value["FileGroups"] = serde_json::json!([{ "DataFilesInfo": value["Files"].as_array().cloned().unwrap_or_default() }]);
+            }
+            value["MetaVersion"] = serde_json::json!(if parsed.MetaVersion == MetaVersion::V1 {
+                1
+            } else {
+                2
+            });
+            serde_json::from_value(value).map_err(|err| super::Error::new(err.to_string()))
         }
         /// `Close`：承担本模块局部职责，输入输出与错误语义需与 Go 对齐。
         /// 留意空集合、取消上下文与默认值是否保持一致。

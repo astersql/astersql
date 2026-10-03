@@ -1397,6 +1397,7 @@ dependencies = [
  "astersql-br-pkg-restore",
  "astersql-br-pkg-restore-split",
  "astersql-br-pkg-restore-utils",
+ "astersql-br-pkg-stream",
  "astersql-br-pkg-utils",
  "astersql-br-pkg-utils-iter",
  "astersql-errors",

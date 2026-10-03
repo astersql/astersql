@@ -829,3 +829,45 @@ fn write_meta_only(storage: &MemStorage, flush_ts: u64, store_id: u64) -> (Strin
     storage.write_file(&log_path, b"log".to_vec());
     (meta_path, log_path)
 }
+
+#[test]
+fn test_checkpoint_calculator_advances_with_empty_meta_flag() {
+    let ctx = Context::Background();
+    let upstream = MemStorage::new("file:///tmp/upstream");
+    let empty_path = "v1/backupmeta/00000000000000140000000000000001-d0000000000000000l0000000000000000u0000000000000000p0000000000000002.meta";
+    upstream.write_file(empty_path, b"invalid metadata payload".to_vec());
+    let pd = FakePDMetaReader::default();
+    pd.set(15, &[1]);
+    let observer = RecordingObserver::default();
+    let mut calculator = NewCalculator(
+        CalculatorDeps {
+            PD: Box::new(pd),
+            Upstream: Box::new(upstream),
+            Sync: Box::new(NewExistenceSyncChecker(FileExistenceMap::default())),
+        },
+        CheckpointCalculatorConfig {
+            TaskName: "drr_test_task".into(),
+            ..Default::default()
+        },
+        Some(Box::new(observer.clone())),
+    )
+    .unwrap();
+    assert_eq!(calculator.ComputeNextCheckpoint(&ctx).unwrap(), 15);
+    assert_eq!(calculator.SyncedTS(), 20);
+    let events = observer.events();
+    assert_eq!(events.len(), 3);
+    assert!(matches!(events[1].Type, EventType::EventRoundPlanned));
+    let planned = events[1].Statistic.as_ref().unwrap();
+    assert_eq!(planned.UpstreamReadMetaFileCount, 0);
+    assert_eq!(planned.EstimatedSyncLogFileCount, 0);
+    assert_eq!(events[1].PendingFileCount, 0);
+    assert!(matches!(events[2].Type, EventType::EventCheckpointAdvanced));
+    assert_eq!(
+        events[2]
+            .Statistic
+            .as_ref()
+            .unwrap()
+            .DownstreamCheckFileCount,
+        0
+    );
+}

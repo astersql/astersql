@@ -94,6 +94,7 @@ fn fuzz_case(
     );
     // flags 缺省为 0 → HasDDLFiles 为真。
     assert!(tagged_parsed.HasDDLFiles());
+    assert!(!tagged_parsed.IsEmpty());
 
     // flags=1 显式关闭 DDL 文件标记。
     // `p` 为 NAME_FLAGS_TAG；HasFlags 须为真且 HasDDLFiles 为假。
@@ -115,13 +116,31 @@ fn fuzz_case(
         }
     );
     assert!(!no_ddl.HasDDLFiles());
+    assert!(!no_ddl.IsEmpty());
+    let empty = ParseName(&format!("{flush_ts:016X}{store_id:016X}-d{min_begin:016X}u{max_ts:016X}l{min_ts:016X}p0000000000000003")).unwrap();
+    assert!(empty.IsEmpty());
+    assert!(!empty.HasDDLFiles());
+    assert_eq!(
+        (
+            empty.FlushTS,
+            empty.StoreID,
+            empty.MinBeginTsInDefaultCf,
+            empty.MinTS,
+            empty.MaxTS,
+            empty.Flags,
+            empty.HasFlags
+        ),
+        (flush_ts, store_id, min_begin, min_ts, max_ts, 3, true)
+    );
 
     // flags=0 与缺省等价，仍应报告含 DDL。
     let tagged_default_ddl = format!(
         "{flush_ts:016X}{store_id:016X}-d{min_begin:016X}u{max_ts:016X}l{min_ts:016X}p{flags:016X}",
         flags = 0u64
     );
-    assert!(ParseName(&tagged_default_ddl).unwrap().HasDDLFiles());
+    let default_ddl = ParseName(&tagged_default_ddl).unwrap();
+    assert!(default_ddl.HasDDLFiles());
+    assert!(!default_ddl.IsEmpty());
 
     // 依次省略 d/u/l 中一个必选 tag，错误信息需点名缺失 tag。
     // 与 Go 错误文案 `missing 'x' tag` 对齐，防止静默吞掉缺字段。

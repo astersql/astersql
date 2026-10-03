@@ -178,3 +178,49 @@ fn test_meta_file_seq_includes_uppercase_meta_names_after_synced_ts() {
     // 集合相等即可；顺序在断言前统一排序。
     assert_eq!(expected, got);
 }
+
+#[test]
+fn test_load_empty_meta_file_skips_content_read() {
+    let ctx = Context::Background();
+    let upstream = MemStorage::new("file:///tmp/upstream");
+    let meta_path = "v1/backupmeta/06745D833D8C001400000000000003E9-d0000000000000000l0000000000000000u0000000000000000p0000000000000002.meta";
+    // Invalid payload must not be parsed for an empty name.
+    upstream.write_file(meta_path, b"invalid metadata payload".to_vec());
+    let calc = NewCalculator(
+        CalculatorDeps {
+            PD: Box::new(StubPDMetaReader),
+            Upstream: Box::new(upstream.clone()),
+            Sync: Box::new(StubSyncChecker),
+        },
+        CheckpointCalculatorConfig {
+            TaskName: "task".into(),
+            ..Default::default()
+        },
+        None,
+    )
+    .unwrap();
+    let parsed = calc.new_meta_file_iter(&ctx).next().unwrap().unwrap();
+    assert!(parsed.empty);
+    // Remove the content to prove that loading never touches storage.
+    upstream.files.lock().unwrap().clear();
+    let (loaded, ignored) = crate::storage::load_meta_file(&ctx, &upstream, parsed).unwrap();
+    assert!(!ignored);
+    assert_eq!(loaded.path, meta_path);
+    assert_eq!(loaded.flush_ts, 0x06745D833D8C0014);
+    assert_eq!(loaded.store_id, 1001);
+    assert!(loaded.empty);
+    assert!(loaded.data_file_paths.is_empty());
+}
+
+#[test]
+fn test_load_empty_meta_file_with_zero_store_id_is_ignored() {
+    let (loaded, ignored) = crate::storage::load_meta_file(&Context::Background(), &MemStorage::new("file:///tmp/upstream"), crate::storage::parsedMetaFile {
+        path: "v1/backupmeta/00000000000000140000000000000000-d0000000000000000l0000000000000000u0000000000000000p0000000000000002.meta".into(),
+        flush_ts: 20, store_id: 0, empty: true,
+    }).unwrap();
+    assert!(ignored);
+    assert!(loaded.empty);
+    assert_eq!(loaded.flush_ts, 20);
+    assert_eq!(loaded.store_id, 0);
+    assert!(loaded.data_file_paths.is_empty());
+}

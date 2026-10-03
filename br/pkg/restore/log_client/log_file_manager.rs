@@ -3,7 +3,7 @@
 
 //! Log file manager types and pure filter/read helpers, matching `log_file_manager.go`.
 //! 日志文件管理器：在给定 StartTS/RestoreTS/shiftStartTS 下过滤并遍历备份元数据与数据文件。
-//! 本文件侧重类型与纯过滤/迭代组装；对象存储 walk 在无桩环境用 injected_metas 替代。
+//! 元数据从对象存储枚举；测试注入数据作为附加输入。
 //! TS 过滤对 WriteCF/DefaultCF 使用不同下界（startTS vs shiftStartTS），与 Go 一致。
 //! MetaVersion>1 时文件 Path 取物理 group 路径，兼容合并后的元数据布局。
 //! 迭代器组合依赖 `astersql_br_pkg_utils_iter`，保持惰性求值以降低内存峰值。
@@ -186,8 +186,8 @@ pub struct LogFileManager {
     pub injected_metas: Vec<MetaName>,
 }
 
-/// 构造管理器并加载 shiftStartTS（无 walk 时回退为 startTS）。
-pub fn CreateLogFileManager(_ctx: &Context, init: LogFileManagerInit) -> Result<LogFileManager> {
+/// 构造管理器并从备份元数据加载 shiftStartTS。
+pub fn CreateLogFileManager(ctx: &Context, init: LogFileManagerInit) -> Result<LogFileManager> {
     let mut fm = LogFileManager {
         startTS: init.StartTS,
         restoreTS: init.RestoreTS,
@@ -201,7 +201,7 @@ pub fn CreateLogFileManager(_ctx: &Context, init: LogFileManagerInit) -> Result<
         Stats: None,
         injected_metas: Vec::new(),
     };
-    fm.loadShiftTS()?;
+    fm.loadShiftTS(ctx)?;
     Ok(fm)
 }
 
@@ -222,10 +222,48 @@ impl LogFileManager {
             .ValidateRetainLatestMVCCCompactionCoverage(migs)
     }
 
-    fn loadShiftTS(&mut self) -> Result<()> {
-        // Without object-store walk, default shiftStartTS = startTS (Go fallback when not found).
-        // 无对象存储 walk 时与 Go “找不到则回退”一致。
-        self.shiftStartTS = self.startTS;
+    fn loadShiftTS(&mut self, ctx: &Context) -> Result<()> {
+        use astersql_br_pkg_stream::stream_metas::{
+            TryParseTaggedBackupMetaFileNameWrapper, UpdateShiftTS,
+        };
+        let mut shift = None::<u64>;
+        for path in self.storage.WalkDir(ctx, "v1/backupmeta")? {
+            if !path.ends_with(".meta") {
+                continue;
+            }
+            if let Ok(parsed) = TryParseTaggedBackupMetaFileNameWrapper(&path) {
+                if parsed.IsEmpty() {
+                    continue;
+                }
+                let (ts, status) = parsed.CalculateShiftTS(self.startTS, self.restoreTS);
+                // Found=0, NotFound=1, InvalidStats=2, matching Go's enum.
+                match status as u8 {
+                    0 => {
+                        shift = Some(shift.map_or(ts, |old| old.min(ts)));
+                        continue;
+                    }
+                    1 => continue,
+                    _ => {}
+                }
+            }
+            if astersql_br_pkg_stream::stream_mgr::FilterPathByTs(
+                &path,
+                self.startTS,
+                self.restoreTS,
+            )
+            .is_empty()
+            {
+                continue;
+            }
+            let raw = self.storage.ReadFile(ctx, &path)?;
+            let meta = astersql_br_pkg_stream::stream_mgr::MetadataHelper::ParseToMetadata(&raw)
+                .map_err(|err| Error::new(err.to_string()))?;
+            let (ts, found) = UpdateShiftTS(&path, &meta, self.startTS, self.restoreTS);
+            if found {
+                shift = Some(shift.map_or(ts, |old| old.min(ts)));
+            }
+        }
+        self.shiftStartTS = shift.map_or(self.startTS, |ts| self.startTS.min(ts));
         self.withMigrationBuilder.SetShiftStartTS(self.shiftStartTS);
         Ok(())
     }
@@ -235,11 +273,38 @@ impl LogFileManager {
         self.injected_metas = metas;
     }
 
-    /// 按 TS 窗口过滤 injected_metas：restore < MinTs 或 MaxTs < shift 则剔除。
-    pub fn streamingMeta(&self, _ctx: &Context) -> Result<MetaNameIter> {
+    /// 读取窗口内非 empty 元数据，再按内容 TS 过滤。
+    pub fn streamingMeta(&self, ctx: &Context) -> Result<MetaNameIter> {
+        let mut metas = self.injected_metas.clone();
+        for path in self.storage.WalkDir(ctx, "v1/backupmeta")? {
+            if !path.ends_with(".meta") {
+                continue;
+            }
+            if astersql_br_pkg_stream::stream_metas::TryParseTaggedBackupMetaFileNameWrapper(&path)
+                .is_ok_and(|parsed| parsed.IsEmpty())
+            {
+                continue;
+            }
+            if astersql_br_pkg_stream::stream_mgr::FilterPathByTs(
+                &path,
+                self.shiftStartTS,
+                self.restoreTS,
+            )
+            .is_empty()
+            {
+                continue;
+            }
+            let raw = self.storage.ReadFile(ctx, &path).map_err(|err| {
+                Error::Annotatef(err, format!("failed during reading file {path}"))
+            })?;
+            let meta = self.helper.ParseToMetadata(&raw).map_err(|err| {
+                Error::Annotatef(err, format!("failed to parse metadata of file {path}"))
+            })?;
+            metas.push(MetaName { name: path, meta });
+        }
         let shift = self.shiftStartTS;
         let restore = self.restoreTS;
-        let it = FromSlice(self.injected_metas.clone());
+        let it = FromSlice(metas);
         Ok(FilterOut(it, move |metaname: &MetaName| {
             // FilterOut 谓词为 true 表示丢弃。
             restore < metaname.meta.MinTs || metaname.meta.MaxTs < shift

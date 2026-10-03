@@ -37,6 +37,7 @@ pub const NAME_FLAGS_TAG: u8 = b'p';
 
 /// flags 位：置位表示该 meta 不含 DDL 文件。
 const FLAG_NO_DDL_FILES: u64 = 1 << 0;
+const FLAG_EMPTY: u64 = 1 << 1;
 // 以下 LazyLock 正则在首次 Parse 时编译，失败则进程启动期 panic（与 Go MustCompile 同意图）。
 
 /// 旧文件名：四段 16 位 hex，以 `-` 连接。
@@ -101,6 +102,11 @@ impl ParsedName {
             return (0, ShiftTSStatus::ShiftTSInvalidStats);
         }
         (self.MinBeginTsInDefaultCf, ShiftTSStatus::ShiftTSFound)
+    }
+
+    /// Empty metadata is identified only by an explicitly present flags tag.
+    pub fn IsEmpty(&self) -> bool {
+        self.HasFlags && self.Flags & FLAG_EMPTY != 0
     }
 
     /// 无 flags 标签时默认认为含 DDL；有 flags 则看 FLAG_NO_DDL_FILES。

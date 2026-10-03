@@ -693,3 +693,41 @@ fn test_read_meta_between_ts_and_file_manager() {
 fn test_read_from_metadata_and_file_manger() {
     test_read_meta_between_ts_and_file_manager();
 }
+
+#[test]
+fn test_log_file_manager_skips_empty_meta_by_name() {
+    let ctx = Context::Background();
+    let storage = Arc::new(MemStorage::new());
+    let normal = "v1/backupmeta/000000000000001E0000000000000001-d0000000000000005l000000000000000Au0000000000000014p0000000000000000.meta";
+    let empty = "v1/backupmeta/000000000000002800000000000003E7-d0000000000000000l0000000000000000u0000000000000000p0000000000000002.meta";
+    storage.WriteFile(&ctx, normal, br#"{"MetaVersion":"V2","StoreId":1,"MinTs":10,"MaxTs":20,"FileGroups":[{"Path":"log","MinTs":10,"MaxTs":20,"DataFilesInfo":[{"Path":"log","Cf":"write","MinTs":10,"MaxTs":20,"MinBeginTsInDefaultCf":5}]}]}"#).unwrap();
+    storage
+        .WriteFile(&ctx, empty, b"invalid empty meta payload")
+        .unwrap();
+    let fm = CreateLogFileManager(
+        &ctx,
+        LogFileManagerInit {
+            StartTS: 10,
+            RestoreTS: 100,
+            Storage: storage,
+            MigrationsBuilder: NewMigrationBuilder(0, 1, 100),
+            Migrations: WithMigrations {
+                skipmap: Default::default(),
+                compactionDirs: vec![],
+                fullBackups: vec![],
+                shiftStartTS: 0,
+                startTS: 1,
+                restoredTS: 100,
+            },
+            MetadataDownloadBatchSize: 32,
+            EncryptionManager: None,
+        },
+    )
+    .unwrap();
+    let metas = fm.ReadStreamMeta(&ctx).unwrap();
+    assert_eq!(metas.len(), 1);
+    assert_eq!(metas[0].meta.StoreId, 1);
+    assert_eq!(metas[0].name, normal);
+    assert_eq!(metas[0].meta.FileGroups[0].DataFilesInfo[0].Cf, "write");
+    assert_eq!(fm.ShiftTS(), 5);
+}

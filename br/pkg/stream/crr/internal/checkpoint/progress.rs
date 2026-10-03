@@ -53,12 +53,14 @@ fn new_round_plan() -> roundPlan {
 }
 
 impl roundPlan {
-    /// 将已解析 meta 记入计划：meta 路径必入 pending；data file 去重新增才计入预估同步日志数。
+    /// 非 empty meta 路径入 pending；empty 仅提供 store flush 进度。
     /// 同时更新该 store 的 max flush_ts，供本轮结束后推进水位。
     fn record_loaded_meta(&mut self, loaded_meta: crate::storage::loadedMetaFile) {
         // 每成功解析一份 meta 计一次读次数，与是否跳过 data 去重无关。
-        self.statistic.UpstreamReadMetaFileCount += 1;
-        self.record_pending_path(loaded_meta.path.clone());
+        if !loaded_meta.empty {
+            self.statistic.UpstreamReadMetaFileCount += 1;
+            self.record_pending_path(loaded_meta.path.clone());
+        }
         for log_path in loaded_meta.data_file_paths {
             // 路径已存在则不计 EstimatedSyncLogFileCount，避免重复引用夸大待同步量。
             if self.record_pending_path(log_path) {
@@ -259,8 +261,10 @@ impl Calculator {
                     let _guard = guard;
                     // 闭包内再包一层 Result，统一把 load/parse 错误写入首错槽。
                     if let Err(err) = (|| {
-                        let loaded = load_meta_file(&ctx, upstream, meta_file)?;
-                        plan.lock().unwrap().record_loaded_meta(loaded);
+                        let (loaded, ignored) = load_meta_file(&ctx, upstream, meta_file)?;
+                        if !ignored {
+                            plan.lock().unwrap().record_loaded_meta(loaded);
+                        }
                         Ok::<(), Error>(())
                     })() {
                         let mut slot = load_err.lock().unwrap();

@@ -44,6 +44,7 @@ pub(crate) struct parsedMetaFile {
     pub flush_ts: u64,
     /// 文件名中的 StoreID；可能为 0，最终以内容为准。
     pub store_id: u64,
+    pub empty: bool,
 }
 
 /// 已读 JSON 并解析出 data file 列表的 meta。
@@ -52,6 +53,7 @@ pub(crate) struct loadedMetaFile {
     pub flush_ts: u64,
     /// 经 resolve_store_id 校验后的权威 store id。
     pub store_id: u64,
+    pub empty: bool,
     /// 下游需确认同步的日志/数据对象路径。
     pub data_file_paths: Vec<String>,
 }
@@ -189,6 +191,7 @@ fn collect_meta_files(calc: &Calculator, ctx: &Context) -> Vec<Result<parsedMeta
             path: entry.path,
             flush_ts: parsed.FlushTS,
             store_id: parsed.StoreID,
+            empty: parsed.IsEmpty(),
         }));
         true
     });
@@ -204,7 +207,35 @@ pub(crate) fn load_meta_file(
     ctx: &Context,
     storage: &dyn UpstreamStorageReader,
     meta_file: parsedMetaFile,
-) -> Result<loadedMetaFile, Error> {
+) -> Result<(loadedMetaFile, bool), Error> {
+    if meta_file.empty {
+        if meta_file.store_id == 0 {
+            eprintln!(
+                "ignore empty backupmeta with no store id in file name: path={}, flush-ts={}",
+                meta_file.path, meta_file.flush_ts
+            );
+            return Ok((
+                loadedMetaFile {
+                    path: meta_file.path,
+                    flush_ts: meta_file.flush_ts,
+                    store_id: 0,
+                    empty: true,
+                    data_file_paths: Vec::new(),
+                },
+                true,
+            ));
+        }
+        return Ok((
+            loadedMetaFile {
+                path: meta_file.path,
+                flush_ts: meta_file.flush_ts,
+                store_id: meta_file.store_id,
+                empty: true,
+                data_file_paths: Vec::new(),
+            },
+            false,
+        ));
+    }
     // 读失败包装路径信息，便于运维定位缺失对象。
     let meta_bytes = storage.ReadFile(ctx, &meta_file.path).map_err(|err| {
         Error::new(format!(
@@ -219,12 +250,16 @@ pub(crate) fn load_meta_file(
     // 以内容 StoreId 为准，文件名仅作交叉校验。
     let store_id = resolve_store_id(meta_file.store_id, meta.GetStoreId(), &meta_file.path)?;
 
-    Ok(loadedMetaFile {
-        path: meta_file.path,
-        flush_ts: meta_file.flush_ts,
-        store_id,
-        data_file_paths: extract_data_file_paths(&meta),
-    })
+    Ok((
+        loadedMetaFile {
+            path: meta_file.path,
+            flush_ts: meta_file.flush_ts,
+            store_id,
+            empty: false,
+            data_file_paths: extract_data_file_paths(&meta),
+        },
+        false,
+    ))
 }
 
 /// JSON 反序列化；字段缺省走 Default，兼容精简落盘。
