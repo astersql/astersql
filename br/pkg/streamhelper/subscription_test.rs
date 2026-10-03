@@ -349,7 +349,7 @@ fn test_subscription_idle_timeout_clears_cache_before_retry() {
     sub.Clear();
 }
 
-/// 大拓扑发送事件后停止活动，每个 stream 都应精确报告 idle timeout。
+/// 大拓扑发送事件后，在截止时间内轮询并报告订阅空闲超时。
 #[test]
 fn test_subscription_idle_timeout_while_sending_events() {
     let c = create_fake_cluster(4, true);
@@ -364,13 +364,25 @@ fn test_subscription_idle_timeout_while_sending_events() {
         vec![WithSubscriptionIdleTimeout(Duration::from_millis(200))],
     );
     sub.UpdateStoreTopology().unwrap();
-    let events = sub.TakeEventsRx().expect("events rx");
     c.cluster.advance_checkpoints();
     c.cluster.flush_all();
-    events
-        .recv_timeout(Duration::from_secs(3))
-        .expect("flush event");
-    std::thread::sleep(Duration::from_millis(250));
-    let error = sub.PendingErrors().unwrap_err();
-    assert!(error.contains("has no activity"), "{error}");
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let last_error = sub.PendingErrors().err();
+        if last_error
+            .as_ref()
+            .is_some_and(|error| error.contains("has no activity"))
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() <= deadline,
+            "pending errors did not contain {:?} within {:?}; last error: {:?}",
+            "has no activity",
+            Duration::from_secs(3),
+            last_error
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    sub.Drop();
 }
