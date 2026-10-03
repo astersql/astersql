@@ -677,3 +677,306 @@ fn test_batch_download_sst_parallelizes_file_groups_per_peer() {
     drop(ingests);
     importer.Close().unwrap();
 }
+
+struct RetryDownloadClient {
+    inner: MemImporterClient,
+    supported: bool,
+    probe_error: bool,
+    error: crate::stubs::Error,
+    uuids: std::sync::Mutex<Vec<Vec<u8>>>,
+    probed: std::sync::Mutex<Vec<u64>>,
+    cancel_parent: std::sync::Mutex<Option<Context>>,
+    contexts: std::sync::Mutex<Vec<Context>>,
+}
+impl ImporterClient for RetryDownloadClient {
+    fn DownloadSST(
+        &self,
+        ctx: &Context,
+        _: u64,
+        req: &import_sstpb::DownloadRequest,
+    ) -> crate::stubs::Result<import_sstpb::DownloadResponse> {
+        self.contexts.lock().unwrap().push(ctx.clone());
+        let mut uuids = self.uuids.lock().unwrap();
+        uuids.push(req.Sst.Uuid.clone());
+        if uuids.len() == 1 {
+            if let Some(ctx) = self.cancel_parent.lock().unwrap().as_ref() {
+                ctx.cancel(crate::stubs::Error::with_code(
+                    "context.Canceled",
+                    "context canceled",
+                ));
+            }
+            return Err(self.error.clone());
+        }
+        Ok(import_sstpb::DownloadResponse::default())
+    }
+    fn MultiIngest(
+        &self,
+        ctx: &Context,
+        id: u64,
+        req: &import_sstpb::MultiIngestRequest,
+    ) -> crate::stubs::Result<import_sstpb::IngestResponse> {
+        self.inner.MultiIngest(ctx, id, req)
+    }
+    fn CheckMultiIngestSupport(&self, _: &Context, _: &[u64]) -> crate::stubs::Result<()> {
+        Ok(())
+    }
+    fn CheckBatchDownloadSupport(&self, _: &Context, _: &[u64]) -> crate::stubs::Result<bool> {
+        Ok(false)
+    }
+    fn CheckBatchDownloadLatestMVCCSupport(
+        &self,
+        _: &Context,
+        ids: &[u64],
+    ) -> crate::stubs::Result<()> {
+        *self.probed.lock().unwrap() = ids.to_vec();
+        if !self.supported || self.probe_error {
+            Err(crate::stubs::Error::new("strict probe failed"))
+        } else {
+            Ok(())
+        }
+    }
+    fn IsBatchDownloadLatestMVCCSupported(
+        &self,
+        _: &Context,
+        ids: &[u64],
+    ) -> crate::stubs::Result<bool> {
+        *self.probed.lock().unwrap() = ids.to_vec();
+        if self.probe_error {
+            Err(crate::stubs::Error::new("probe unavailable"))
+        } else {
+            Ok(self.supported)
+        }
+    }
+    fn SetDownloadSpeedLimit(
+        &self,
+        _: &Context,
+        _: u64,
+        _: &import_sstpb::SetDownloadSpeedLimitRequest,
+    ) -> crate::stubs::Result<()> {
+        Ok(())
+    }
+    fn AddForcePartitionRange(
+        &self,
+        _: &Context,
+        _: u64,
+        _: &import_sstpb::AddPartitionRangeRequest,
+    ) -> crate::stubs::Result<()> {
+        Ok(())
+    }
+    fn RemoveForcePartitionRange(
+        &self,
+        _: &Context,
+        _: u64,
+        _: &import_sstpb::RemovePartitionRangeRequest,
+    ) -> crate::stubs::Result<()> {
+        Ok(())
+    }
+    fn CloseGrpcClient(&self) -> crate::stubs::Result<()> {
+        Ok(())
+    }
+}
+
+fn retry_importer(
+    supported: bool,
+    probe_error: bool,
+    code: &'static str,
+    retain: bool,
+) -> (crate::import::SnapFileImporter, Arc<RetryDownloadClient>) {
+    let split = Arc::new(MemSplitClient::default());
+    *split.regions.lock().unwrap() = vec![RegionInfo {
+        Region: metapb::Region {
+            Id: 1,
+            StartKey: codec::EncodeBytes(Vec::new(), &tablecodec::EncodeTablePrefix(1)),
+            EndKey: codec::EncodeBytes(Vec::new(), &tablecodec::EncodeTablePrefix(2)),
+            Peers: vec![metapb::Peer { Id: 1, StoreId: 1 }],
+            ..Default::default()
+        },
+        Leader: Some(metapb::Peer { Id: 1, StoreId: 1 }),
+    }];
+    let rpc = Arc::new(RetryDownloadClient {
+        inner: MemImporterClient::default(),
+        supported,
+        probe_error,
+        error: crate::stubs::Error::with_code(
+            code,
+            if code == "Unavailable" {
+                "transport is closing"
+            } else if code == "Canceled" || code == "context.Canceled" {
+                "context canceled"
+            } else {
+                "download sst failed"
+            },
+        ),
+        uuids: Default::default(),
+        probed: Default::default(),
+        cancel_parent: Default::default(),
+        contexts: Default::default(),
+    });
+    let opt = NewSnapFileImporterOptions(
+        None,
+        split,
+        rpc.clone(),
+        None,
+        RewriteMode::RewriteModeKeyspace,
+        vec![metapb::Store {
+            Id: 1,
+            ..Default::default()
+        }],
+        1,
+        0,
+        retain,
+        vec![],
+        vec![],
+    );
+    (
+        NewSnapFileImporter(&Context::Background(), 1, KvMode::TiDBCompacted, opt).unwrap(),
+        rpc,
+    )
+}
+
+#[test]
+fn test_download_retry_preserves_uuid_for_all_rpc_modes() {
+    for mode in 0..3 {
+        for (support, error) in [
+            (true, "Canceled"),
+            (false, "Unavailable"),
+            (false, "BR:KV:ErrKVDownloadFailed"),
+        ] {
+            let (mut importer, rpc) = retry_importer(support, false, error, mode == 2);
+            importer.SetMergeSst(mode == 1);
+            importer
+                .CheckPeerDownloadRetrySupport(
+                    &Context::Background(),
+                    &[metapb::Store {
+                        Id: 1,
+                        ..Default::default()
+                    }],
+                )
+                .unwrap();
+            importer
+                .Import(&Context::Background(), &make_compacted_file_sets(1, 1))
+                .unwrap();
+            let uuids = rpc.uuids.lock().unwrap();
+            assert_eq!(uuids.len(), 2);
+            assert!(!uuids[0].is_empty());
+            assert_eq!(uuids[0], uuids[1]);
+            assert!(rpc.contexts.lock().unwrap().iter().all(Context::Done));
+        }
+    }
+}
+
+#[test]
+fn test_probe_error_falls_back_and_real_context_cancel_stops() {
+    for (probe_error, code) in [(true, "Canceled"), (false, "context.Canceled")] {
+        let (mut importer, rpc) = retry_importer(true, probe_error, code, false);
+        importer
+            .CheckPeerDownloadRetrySupport(
+                &Context::Background(),
+                &[
+                    metapb::Store {
+                        Id: 1,
+                        ..Default::default()
+                    },
+                    metapb::Store {
+                        Id: 2,
+                        State: metapb::StoreState::Offline,
+                        ..Default::default()
+                    },
+                ],
+            )
+            .unwrap();
+        assert_eq!(*rpc.probed.lock().unwrap(), vec![1]);
+        assert!(
+            importer
+                .Import(&Context::Background(), &make_compacted_file_sets(1, 1))
+                .is_err()
+        );
+        assert_eq!(rpc.uuids.lock().unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn test_sst_restorer_adapter_probes_before_import_and_retain_probe_is_strict() {
+    use astersql_br_pkg_restore::FileImporter;
+    for retain in [false, true] {
+        let (importer, rpc) = retry_importer(true, false, "Canceled", retain);
+        let adapter = crate::import::SnapshotFileImporter(std::sync::Mutex::new(importer));
+        let ctx = astersql_br_pkg_restore::stubs::Context::Background();
+        adapter.ConfigureDownloadRetry(&ctx, &[1]).unwrap();
+        assert_eq!(*rpc.probed.lock().unwrap(), vec![1]);
+        let mut set = astersql_br_pkg_restore::BackupFileSet::default();
+        set.TableID = 100;
+        set.SSTFiles.resize_with(1, Default::default);
+        let file = &mut set.SSTFiles[0];
+        file.Name = "nonempty_write.sst".into();
+        file.StartKey = tablecodec::EncodeTablePrefix(100);
+        file.EndKey = [tablecodec::EncodeTablePrefix(100), vec![b'z']].concat();
+        set.RewriteRules = Some(Default::default());
+        let rules = set.RewriteRules.as_mut().unwrap();
+        rules.Data.resize_with(1, Default::default);
+        rules.Data[0].OldKeyPrefix = tablecodec::EncodeTablePrefix(100);
+        rules.Data[0].NewKeyPrefix = tablecodec::EncodeTablePrefix(1);
+        let sets = vec![set];
+        adapter.Import(&ctx, &sets).unwrap();
+        assert_eq!(rpc.uuids.lock().unwrap().len(), 2);
+        let (importer, _) = retry_importer(false, false, "Canceled", retain);
+        let adapter = crate::import::SnapshotFileImporter(std::sync::Mutex::new(importer));
+        assert_eq!(adapter.ConfigureDownloadRetry(&ctx, &[1]).is_err(), retain);
+    }
+}
+
+#[test]
+fn test_snapshot_client_factory_probes_peer_retry_and_falls_back_on_probe_error() {
+    for probe_error in [false, true] {
+        let (fixture, rpc) = retry_importer(true, probe_error, "Canceled", false);
+        let mut client = crate::client::NewRestoreClientForTest();
+        client
+            .initClients(
+                &Context::Background(),
+                None,
+                false,
+                false,
+                fixture.metaClient.clone(),
+                rpc.clone(),
+                vec![metapb::Store {
+                    Id: 1,
+                    ..Default::default()
+                }],
+                vec![],
+                vec![],
+            )
+            .unwrap();
+        assert_eq!(*rpc.probed.lock().unwrap(), vec![1]);
+        let result = client
+            .importer
+            .as_mut()
+            .unwrap()
+            .Import(&Context::Background(), &make_compacted_file_sets(1, 1));
+        assert_eq!(result.is_err(), probe_error);
+        assert_eq!(
+            rpc.uuids.lock().unwrap().len(),
+            if probe_error { 1 } else { 2 }
+        );
+    }
+}
+
+#[test]
+fn test_parent_cancellation_interrupts_peer_backoff_without_another_rpc() {
+    let ctx = Context::Background();
+    let (mut importer, rpc) = retry_importer(true, false, "Canceled", false);
+    *rpc.cancel_parent.lock().unwrap() = Some(ctx.clone());
+    importer
+        .CheckPeerDownloadRetrySupport(
+            &ctx,
+            &[metapb::Store {
+                Id: 1,
+                ..Default::default()
+            }],
+        )
+        .unwrap();
+    let error = importer
+        .Import(&ctx, &make_compacted_file_sets(1, 1))
+        .unwrap_err();
+    assert_eq!(error.code, Some("context.Canceled"));
+    assert_eq!(rpc.uuids.lock().unwrap().len(), 1);
+}

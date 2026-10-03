@@ -15,6 +15,10 @@ lane = 1
 
 # arm64 darwin: no kv/domain/kvproto/grpcio. Local traits/stubs only.
 [dependencies]
+astersql-br-pkg-utils = { path = "../../utils" }
+astersql-errors = { path = "../../../../pkg/errors" }
+astersql-br-pkg-errors = { path = "../../errors" }
+astersql-br-pkg-restore = { path = ".." }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

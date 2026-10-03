@@ -169,6 +169,8 @@ pub mod berrors {
 /// `Context`：承载状态/配置；关注谁填充、谁消费、何时需要回写。
 pub struct Context {
     cancelled: Arc<Mutex<Option<Error>>>,
+    source: Option<Arc<dyn Fn() -> Option<Error> + Send + Sync>>,
+    deadline: Option<std::time::Instant>,
 }
 
 impl Context {
@@ -187,7 +189,34 @@ impl Context {
     /// `Err`：承担本模块局部职责，输入输出与错误语义需与 Go 对齐。
     /// 留意空集合、取消上下文与默认值是否保持一致。
     pub fn Err(&self) -> Option<Error> {
-        self.cancelled.lock().unwrap().clone()
+        self.cancelled
+            .lock()
+            .unwrap()
+            .clone()
+            .or_else(|| self.source.as_ref().and_then(|source| source()))
+            .or_else(|| {
+                self.deadline
+                    .filter(|d| std::time::Instant::now() >= *d)
+                    .map(|_| Error::with_code("DeadlineExceeded", "context deadline exceeded"))
+            })
+    }
+
+    pub fn WithCancellationSource(
+        source: impl Fn() -> Option<Error> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            source: Some(Arc::new(source)),
+            ..Self::default()
+        }
+    }
+
+    pub fn WithTimeout(&self, duration: std::time::Duration) -> Self {
+        let parent = self.clone();
+        Self {
+            source: Some(Arc::new(move || parent.Err())),
+            deadline: Some(std::time::Instant::now() + duration),
+            ..Self::default()
+        }
     }
 
     /// `Done`：承担本模块局部职责，输入输出与错误语义需与 Go 对齐。
@@ -1722,6 +1751,21 @@ pub trait ImporterClient: Send + Sync {
     /// `CheckBatchDownloadLatestMVCCSupport`：承担本模块局部职责，输入输出与错误语义需与 Go 对齐。
     /// 留意空集合、取消上下文与默认值是否保持一致。
     fn CheckBatchDownloadLatestMVCCSupport(&self, _ctx: &Context, _stores: &[u64]) -> Result<()>;
+    fn IsBatchDownloadLatestMVCCSupported(&self, ctx: &Context, stores: &[u64]) -> Result<bool> {
+        for &id in stores {
+            match self.BatchDownloadLatestMVCC(ctx, id, &import_sstpb::DownloadRequest::default()) {
+                Ok(_) => {}
+                Err(err) if err.code == Some("Unimplemented") => return Ok(false),
+                Err(err) => {
+                    return Err(Error::Annotatef(
+                        err,
+                        format!("failed to check BatchDownloadLatestMVCC support. (store id {id})"),
+                    ));
+                }
+            }
+        }
+        Ok(true)
+    }
     /// `AddForcePartitionRange`：承担本模块局部职责，输入输出与错误语义需与 Go 对齐。
     /// 留意空集合、取消上下文与默认值是否保持一致。
     fn AddForcePartitionRange(

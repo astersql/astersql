@@ -183,6 +183,13 @@ pub trait SstRestorer: Send {
 
 /// FileImporter uploads/imports backup file sets.
 pub trait FileImporter: Send + Sync {
+    /// Configure same-UUID retries before installing a compacted-SST importer.
+    /// Implementations must probe TiKV; absence is an error rather than assumed support.
+    fn ConfigureDownloadRetry(&self, _ctx: &Context, _stores: &[u64]) -> Result<()> {
+        Err(Error::new(
+            "SST importer does not expose download retry capability probing",
+        ))
+    }
     fn Import(&self, ctx: &Context, file_sets: &[BackupFileSet]) -> Result<()>;
     fn Close(&self) -> Result<()>;
 }

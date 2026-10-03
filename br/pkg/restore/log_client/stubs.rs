@@ -219,6 +219,7 @@ pub mod berrors {
 /// 上下文桩：支持 WithCancel/WithTimeout 的最小可取消语义。
 pub struct Context {
     cancelled: Arc<Mutex<Option<Error>>>,
+    source: Option<Arc<dyn Fn() -> Option<Error> + Send + Sync>>,
 }
 
 /// `Context` 的 impl：方法语义、错误传播与并发约束对齐 Go。
@@ -232,6 +233,15 @@ impl Context {
         Self::default()
     }
 
+    pub fn WithCancellationSource(
+        source: impl Fn() -> Option<Error> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            source: Some(Arc::new(source)),
+            ..Self::default()
+        }
+    }
+
     /// `cancel`：承担本模块局部职责，输入输出与错误语义需与 Go 对齐。
     /// 留意空集合、取消上下文与默认值是否保持一致。
     /// `cancel` 数据流：调用方准备输入，本函数产出可断言结果或错误。
@@ -243,7 +253,11 @@ impl Context {
     /// 留意空集合、取消上下文与默认值是否保持一致。
     /// `Err` 数据流：调用方准备输入，本函数产出可断言结果或错误。
     pub fn Err(&self) -> Option<Error> {
-        self.cancelled.lock().unwrap().clone()
+        self.cancelled
+            .lock()
+            .unwrap()
+            .clone()
+            .or_else(|| self.source.as_ref().and_then(|source| source()))
     }
 
     /// `Done`：承担本模块局部职责，输入输出与错误语义需与 Go 对齐。

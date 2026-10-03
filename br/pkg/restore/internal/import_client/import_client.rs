@@ -467,6 +467,32 @@ pub trait ImporterClient: Send + Sync {
     /// Returns an error if any store returns Unimplemented for BatchDownloadLatestMVCC.
     fn CheckBatchDownloadLatestMVCCSupport(&self, ctx: &Context, stores: &[u64]) -> Result<()>;
 
+    fn IsBatchDownloadLatestMVCCSupported(&self, ctx: &Context, stores: &[u64]) -> Result<bool> {
+        for &storeID in stores {
+            match self.BatchDownloadLatestMVCC(
+                ctx,
+                storeID,
+                &import_sstpb::DownloadRequest::default(),
+            ) {
+                Ok(_) => {}
+                Err(err)
+                    if status_FromError(&err).is_some_and(|s| s.Code() == Code::Unimplemented) =>
+                {
+                    return Ok(false);
+                }
+                Err(err) => {
+                    return Err(Error::Annotatef(
+                        err,
+                        format!(
+                            "failed to check BatchDownloadLatestMVCC support. (store id {storeID})"
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(true)
+    }
+
     fn CheckMultiIngestSupport(&self, ctx: &Context, stores: &[u64]) -> Result<()>;
 
     fn AddForcePartitionRange(

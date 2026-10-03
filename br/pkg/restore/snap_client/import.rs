@@ -204,6 +204,7 @@ pub struct SnapFileImporter {
     cond: Arc<(Mutex<()>, Condvar)>,
     pub mergeSst: bool,
     pub retainLatestMVCCVersion: bool,
+    peerDownloadRetry: bool,
 }
 
 pub struct SnapFileImporterOptions {
@@ -298,6 +299,7 @@ pub fn NewSnapFileImporter(
         rawEndKey: Vec::new(),
         mergeSst: false,
         retainLatestMVCCVersion: options.retainLatestMVCCVersion,
+        peerDownloadRetry: false,
     };
     for f in options.createCallbacks {
         f(&mut file_importer)?;
@@ -417,7 +419,7 @@ impl SnapFileImporter {
     }
 
     pub fn CheckBatchDownloadLatestMVCCSupport(
-        &self,
+        &mut self,
         ctx: &Context,
         tikv_stores: &[metapb::Store],
     ) -> Result<()> {
@@ -427,7 +429,125 @@ impl SnapFileImporter {
             .map(|store| store.Id)
             .collect();
         self.importClient
-            .CheckBatchDownloadLatestMVCCSupport(ctx, &ids)
+            .CheckBatchDownloadLatestMVCCSupport(ctx, &ids)?;
+        self.peerDownloadRetry = true;
+        Ok(())
+    }
+
+    pub fn CheckPeerDownloadRetrySupport(
+        &mut self,
+        ctx: &Context,
+        stores: &[metapb::Store],
+    ) -> Result<()> {
+        let ids: Vec<_> = stores
+            .iter()
+            .filter(|s| s.State == metapb::StoreState::Up)
+            .map(|s| s.Id)
+            .collect();
+        self.peerDownloadRetry = match self
+            .importClient
+            .IsBatchDownloadLatestMVCCSupported(ctx, &ids)
+        {
+            Ok(supported) => supported,
+            Err(_) => {
+                log::Warn(
+                    "failed to check peer download retry support, fallback to legacy download retry",
+                );
+                false
+            }
+        };
+        Ok(())
+    }
+
+    fn downloadWithOptionalPeerRetry(
+        &self,
+        ctx: &Context,
+        mut rpc: impl FnMut(&Context) -> Result<import_sstpb::DownloadResponse>,
+    ) -> Result<import_sstpb::DownloadResponse> {
+        use astersql_br_pkg_utils::backoff::{
+            NewDownloadSSTBackoffStrategy, NewPeerDownloadSSTBackoffStrategy,
+        };
+        let mut backoff = if self.peerDownloadRetry {
+            NewPeerDownloadSSTBackoffStrategy()
+        } else {
+            NewDownloadSSTBackoffStrategy()
+        };
+        let mut errors = Vec::new();
+        loop {
+            if let Some(error) = ctx.Err() {
+                return Err(error);
+            }
+            let request_ctx = ctx.WithTimeout(std::time::Duration::from_secs(200 * 60));
+            let result = rpc(&request_ctx);
+            request_ctx.cancel(Error::with_code("context.Canceled", "context canceled"));
+            match result {
+                Ok(response) => return Ok(response),
+                Err(error) => {
+                    let normalized = match error.code {
+                        Some("BR:KV:ErrKVEpochNotMatch") => {
+                            Some(&*astersql_br_pkg_errors::ErrKVEpochNotMatch)
+                        }
+                        Some("BR:KV:ErrKVDownloadFailed") => {
+                            Some(&*astersql_br_pkg_errors::ErrKVDownloadFailed)
+                        }
+                        Some("BR:KV:ErrKVIngestFailed") => {
+                            Some(&*astersql_br_pkg_errors::ErrKVIngestFailed)
+                        }
+                        Some("BR:PD:ErrPDLeaderNotFound") => {
+                            Some(&*astersql_br_pkg_errors::ErrPDLeaderNotFound)
+                        }
+                        Some("BR:KV:ErrKVRangeIsEmpty") => {
+                            Some(&*astersql_br_pkg_errors::ErrKVRangeIsEmpty)
+                        }
+                        Some("BR:KV:ErrKVRewriteRuleNotFound") => {
+                            Some(&*astersql_br_pkg_errors::ErrKVRewriteRuleNotFound)
+                        }
+                        _ => None,
+                    };
+                    let classified = if error.code == Some("context.Canceled")
+                        || (error.code.is_none() && error.msg == "context canceled")
+                    {
+                        astersql_errors::SharedError::new(astersql_br_pkg_errors::Canceled)
+                    } else if let Some(normalized) = normalized {
+                        astersql_errors::Annotate(
+                            Some(astersql_errors::SharedError::new(normalized.clone())),
+                            &error.msg,
+                        )
+                        .unwrap()
+                    } else if let Some(code) = error.code {
+                        astersql_errors::SharedError::new(DownloadRPCStatus {
+                            code,
+                            message: error.msg.clone(),
+                        })
+                    } else {
+                        astersql_errors::SharedError::new(error.clone())
+                    };
+                    errors.push(error.clone());
+                    let delay = backoff.NextBackoff(&classified);
+                    if backoff.RemainingAttempts() == 0 {
+                        return Err(Error {
+                            code: error.code,
+                            msg: errors
+                                .iter()
+                                .map(|e| e.msg.as_str())
+                                .collect::<Vec<_>>()
+                                .join("; "),
+                        });
+                    }
+                    let until = std::time::Instant::now() + delay;
+                    while std::time::Instant::now() < until {
+                        if let Some(error) = ctx.Err() {
+                            return Err(error);
+                        }
+                        std::thread::sleep(
+                            until
+                                .saturating_duration_since(std::time::Instant::now())
+                                .min(std::time::Duration::from_millis(10)),
+                        );
+                    }
+                }
+            }
+        }
     }
 
     // 任一 store 不支持则整集群回退单文件 ingest。
@@ -580,14 +700,16 @@ impl SnapFileImporter {
                         .downloadTokensMap
                         .acquireTokenCh(peer.StoreId, self.concurrencyPerStore);
                     acquire_token(&token);
-                    let result = if self.retainLatestMVCCVersion {
-                        self.importClient
-                            .BatchDownloadLatestMVCC(ctx, peer.StoreId, &req)
-                    } else if self.mergeSst {
-                        self.importClient.BatchDownloadSST(ctx, peer.StoreId, &req)
-                    } else {
-                        self.importClient.DownloadSST(ctx, peer.StoreId, &req)
-                    };
+                    let result = self.downloadWithOptionalPeerRetry(ctx, |ctx| {
+                        if self.retainLatestMVCCVersion {
+                            self.importClient
+                                .BatchDownloadLatestMVCC(ctx, peer.StoreId, &req)
+                        } else if self.mergeSst {
+                            self.importClient.BatchDownloadSST(ctx, peer.StoreId, &req)
+                        } else {
+                            self.importClient.DownloadSST(ctx, peer.StoreId, &req)
+                        }
+                    });
                     self.releaseToken(&token);
                     let response = result?;
                     if let Some(err) = response.Error {
@@ -727,4 +849,132 @@ pub fn GetSSTMetaFromFile(
     rewrite_mode: RewriteMode,
 ) -> Result<import_sstpb::SSTMeta> {
     getSSTMetaFromFile(file, region, region_rule, rewrite_mode)
+}
+
+#[derive(Debug)]
+struct DownloadRPCStatus {
+    code: &'static str,
+    message: String,
+}
+impl std::fmt::Display for DownloadRPCStatus {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            fmt,
+            "rpc error: code = {} desc = {}",
+            self.code, self.message
+        )
+    }
+}
+impl std::error::Error for DownloadRPCStatus {}
+
+/// Adapts the existing snapshot importer to the shared SST restorer boundary.
+/// The mutex follows the importer's existing mutable Import/Close contract.
+pub struct SnapshotFileImporter(pub std::sync::Mutex<SnapFileImporter>);
+
+fn snapshot_context(ctx: &astersql_br_pkg_restore::stubs::Context) -> Context {
+    let parent = ctx.clone();
+    Context::WithCancellationSource(move || {
+        parent.Err().map(|e| Error {
+            msg: e.msg,
+            code: e.code,
+        })
+    })
+}
+
+impl astersql_br_pkg_restore::FileImporter for SnapshotFileImporter {
+    fn ConfigureDownloadRetry(
+        &self,
+        ctx: &astersql_br_pkg_restore::stubs::Context,
+        stores: &[u64],
+    ) -> astersql_br_pkg_restore::stubs::Result<()> {
+        let ctx = snapshot_context(ctx);
+        let stores: Vec<_> = stores
+            .iter()
+            .map(|&Id| metapb::Store {
+                Id,
+                State: metapb::StoreState::Up,
+                ..Default::default()
+            })
+            .collect();
+        let mut importer = self.0.lock().unwrap();
+        let result = if importer.retainLatestMVCCVersion {
+            importer.CheckBatchDownloadLatestMVCCSupport(&ctx, &stores)
+        } else {
+            importer.CheckPeerDownloadRetrySupport(&ctx, &stores)
+        };
+        result.map_err(|e| astersql_br_pkg_restore::stubs::Error {
+            msg: e.msg,
+            code: e.code,
+        })
+    }
+
+    fn Import(
+        &self,
+        ctx: &astersql_br_pkg_restore::stubs::Context,
+        sets: &[astersql_br_pkg_restore::BackupFileSet],
+    ) -> astersql_br_pkg_restore::stubs::Result<()> {
+        let sets: Vec<_> = sets
+            .iter()
+            .map(|set| BackupFileSet {
+                TableID: set.TableID,
+                SSTFiles: set
+                    .SSTFiles
+                    .iter()
+                    .map(|file| backuppb::File {
+                        Name: file.Name.clone(),
+                        StartKey: file.StartKey.clone(),
+                        EndKey: file.EndKey.clone(),
+                        TotalBytes: file.TotalBytes,
+                        Size_: file.Size_,
+                        TotalKvs: file.TotalKvs,
+                        Cf: file.Cf.clone(),
+                        Crc64Xor: file.Crc64Xor,
+                        ..Default::default()
+                    })
+                    .collect(),
+                RewriteRules: set.RewriteRules.as_ref().map(|rules| RewriteRules {
+                    Data: rules
+                        .Data
+                        .iter()
+                        .map(|rule| import_sstpb::RewriteRule {
+                            OldKeyPrefix: rule.OldKeyPrefix.clone(),
+                            NewKeyPrefix: rule.NewKeyPrefix.clone(),
+                            NewTimestamp: rule.NewTimestamp,
+                            IgnoreAfterTimestamp: rule.IgnoreAfterTimestamp,
+                            IgnoreBeforeTimestamp: rule.IgnoreBeforeTimestamp,
+                        })
+                        .collect(),
+                    NewTableID: rules.NewTableID,
+                    NewKeyspace: rules.NewKeyspace.clone(),
+                    TableIDRemapHint: rules
+                        .TableIDRemapHint
+                        .iter()
+                        .map(|hint| crate::stubs::TableIDRemap {
+                            Origin: hint.Origin,
+                            Rewritten: hint.Rewritten,
+                        })
+                        .collect(),
+                }),
+            })
+            .collect();
+        self.0
+            .lock()
+            .unwrap()
+            .Import(&snapshot_context(ctx), &sets)
+            .map_err(|e| astersql_br_pkg_restore::stubs::Error {
+                msg: e.msg,
+                code: e.code,
+            })
+    }
+
+    fn Close(&self) -> astersql_br_pkg_restore::stubs::Result<()> {
+        self.0
+            .lock()
+            .unwrap()
+            .Close()
+            .map_err(|e| astersql_br_pkg_restore::stubs::Error {
+                msg: e.msg,
+                code: e.code,
+            })
+    }
 }

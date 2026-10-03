@@ -639,6 +639,11 @@ impl SnapClient {
         create_cbs.push(Box::new(move |importer| {
             importer.CheckMultiIngestSupport(&callback_ctx, &callback_stores)
         }));
+        let retry_ctx = ctx.clone();
+        let retry_stores = stores.clone();
+        create_cbs.push(Box::new(move |importer| {
+            importer.CheckPeerDownloadRetrySupport(&retry_ctx, &retry_stores)
+        }));
         if self.rateLimit != 0 {
             let (speed_create, speed_close) = SetSpeedLimitCallbacks(
                 ctx,

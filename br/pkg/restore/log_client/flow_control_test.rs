@@ -310,6 +310,13 @@ struct RecordingSSTImporter {
     imported: Arc<Mutex<Vec<BackupFileSet>>>,
 }
 impl astersql_br_pkg_restore::FileImporter for RecordingSSTImporter {
+    fn ConfigureDownloadRetry(
+        &self,
+        _ctx: &astersql_br_pkg_restore::stubs::Context,
+        _stores: &[u64],
+    ) -> astersql_br_pkg_restore::stubs::Result<()> {
+        Ok(())
+    }
     fn Import(
         &self,
         _: &astersql_br_pkg_restore::stubs::Context,
@@ -550,4 +557,117 @@ fn byte_size_config_preserves_docker_units_numeric_and_spacing_rules() {
     assert!(crate::flow_control::parseByteSizeConfig(" 1MiB").is_err());
     assert!(crate::flow_control::parseByteSizeConfig("1MiB ").is_err());
     assert!(crate::flow_control::parseByteSizeConfig("1  MiB").is_err());
+}
+
+#[test]
+fn sst_restorer_probes_download_retry_before_installing_importer() {
+    struct ProbedImporter(std::sync::atomic::AtomicBool, Mutex<Vec<u64>>);
+    impl astersql_br_pkg_restore::FileImporter for ProbedImporter {
+        fn ConfigureDownloadRetry(
+            &self,
+            _: &astersql_br_pkg_restore::stubs::Context,
+            ids: &[u64],
+        ) -> astersql_br_pkg_restore::stubs::Result<()> {
+            *self.1.lock().unwrap() = ids.to_vec();
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        fn Import(
+            &self,
+            _: &astersql_br_pkg_restore::stubs::Context,
+            _: &[BackupFileSet],
+        ) -> astersql_br_pkg_restore::stubs::Result<()> {
+            unreachable!()
+        }
+        fn Close(&self) -> astersql_br_pkg_restore::stubs::Result<()> {
+            Ok(())
+        }
+    }
+    let (mut client, _) = restore_client(&["1GB"], &["2GB"]);
+    client.pdClient = Arc::new(crate::stubs::pd::MemPdClient {
+        cluster_id: 1,
+        stores: vec![
+            crate::stubs::metapb::Store {
+                Id: 1,
+                ..Default::default()
+            },
+            crate::stubs::metapb::Store {
+                Id: 2,
+                State: crate::stubs::metapb::StoreState::Offline,
+                ..Default::default()
+            },
+            crate::stubs::metapb::Store {
+                Id: 3,
+                Labels: vec![crate::stubs::metapb::StoreLabel {
+                    Key: "engine".into(),
+                    Value: "tiflash".into(),
+                }],
+                ..Default::default()
+            },
+        ],
+    });
+    let ctx = astersql_br_pkg_restore::stubs::Context::Background();
+    let importer = Arc::new(ProbedImporter(
+        std::sync::atomic::AtomicBool::new(false),
+        Mutex::new(Vec::new()),
+    ));
+    client
+        .InitSSTFileRestorer(&ctx, importer.clone(), None)
+        .unwrap();
+    assert!(
+        client
+            .sstRestoreManager
+            .as_ref()
+            .unwrap()
+            .restorer
+            .is_some()
+    );
+    assert!(importer.0.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(*importer.1.lock().unwrap(), vec![1]);
+}
+
+#[test]
+fn sst_restorer_probe_pd_lookup_preserves_parent_cancellation() {
+    struct CancelPd(astersql_br_pkg_restore::stubs::Context);
+    impl crate::stubs::pd::Client for CancelPd {
+        fn GetClusterID(&self, _: &Context) -> u64 {
+            1
+        }
+        fn GetAllStores(
+            &self,
+            ctx: &Context,
+        ) -> crate::stubs::Result<Vec<crate::stubs::metapb::Store>> {
+            self.0
+                .cancel(astersql_br_pkg_restore::stubs::Error::with_code(
+                    "context.Canceled",
+                    "cancelled while probing stores",
+                ));
+            Err(ctx
+                .Err()
+                .expect("lookup context must observe live parent cancellation"))
+        }
+    }
+    let (mut client, state) = restore_client(&["1GB"], &["2GB"]);
+    let ctx = astersql_br_pkg_restore::stubs::Context::Background();
+    client.pdClient = Arc::new(CancelPd(ctx.clone()));
+    let error = client
+        .InitSSTFileRestorer(
+            &ctx,
+            Arc::new(RecordingSSTImporter {
+                state,
+                imported: Arc::new(Mutex::new(Vec::new())),
+            }),
+            None,
+        )
+        .unwrap_err();
+    assert_eq!(error.code, Some("context.Canceled"));
+    assert_eq!(error.msg, "cancelled while probing stores");
+    assert!(
+        client
+            .sstRestoreManager
+            .as_ref()
+            .unwrap()
+            .restorer
+            .is_none()
+    );
 }

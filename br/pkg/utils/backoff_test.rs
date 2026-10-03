@@ -461,3 +461,47 @@ fn test_constant_backoff() {
         assert!(err.is_ok());
     }
 }
+
+#[test]
+fn test_peer_download_grpc_cancel_retries_but_context_cancel_stops() {
+    let grpc = grpc_status("Canceled", "context canceled");
+    let mut peer = crate::backoff::NewPeerDownloadSSTBackoffStrategy();
+    assert_eq!(peer.NextBackoff(&grpc), Duration::from_secs(2));
+    assert_eq!(peer.RemainingAttempts(), 7);
+    let mut legacy = NewDownloadSSTBackoffStrategy();
+    assert_eq!(legacy.NextBackoff(&grpc), Duration::ZERO);
+    assert_eq!(legacy.RemainingAttempts(), 0);
+    let mut peer = crate::backoff::NewPeerDownloadSSTBackoffStrategy();
+    let canceled = astersql_errors::Annotate(Some(SharedError::new(Canceled)), "download").unwrap();
+    assert_eq!(peer.NextBackoff(&canceled), Duration::ZERO);
+    assert_eq!(peer.RemainingAttempts(), 0);
+}
+
+#[test]
+fn test_peer_download_retry_call_counts_match_context_error_identity() {
+    for real_cancel in [false, true] {
+        let mut calls = 0;
+        let error = if real_cancel {
+            SharedError::new(Canceled)
+        } else {
+            grpc_status("Canceled", "context canceled")
+        };
+        let result = WithRetry(
+            &Context::new(),
+            Box::new(|| {
+                calls += 1;
+                if calls == 1 {
+                    Err(error.clone())
+                } else {
+                    Ok(())
+                }
+            }),
+            crate::backoff::NewPeerDownloadSSTBackoffStrategy(),
+        );
+        assert_eq!(calls, if real_cancel { 1 } else { 2 });
+        assert_eq!(result.is_err(), real_cancel);
+        if real_cancel {
+            assert_eq!(err_msgs(&result.unwrap_err()), vec!["context canceled"]);
+        }
+    }
+}

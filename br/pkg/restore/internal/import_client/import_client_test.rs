@@ -96,12 +96,16 @@ impl SplitClient for StoreClient {
 /// 故障注入：耗尽后 MultiIngest 返回 "test"。
 struct MockImportServer {
     err_count: Mutex<i32>,
+    latest_error: Mutex<Option<Error>>,
+    probes: AtomicUsize,
 }
 
 impl MockImportServer {
     fn new(err_count: i32) -> Arc<Self> {
         Arc::new(Self {
             err_count: Mutex::new(err_count),
+            latest_error: Mutex::new(None),
+            probes: AtomicUsize::new(0),
         })
     }
 }
@@ -156,9 +160,14 @@ impl import_sstpb::ImportSSTClient for MockImportServer {
     fn BatchDownloadLatestMVCC(
         &self,
         _ctx: &Context,
-        _req: &import_sstpb::DownloadRequest,
+        req: &import_sstpb::DownloadRequest,
     ) -> Result<import_sstpb::DownloadResponse> {
-        Ok(import_sstpb::DownloadResponse::default())
+        assert_eq!(req, &import_sstpb::DownloadRequest::default());
+        self.probes.fetch_add(1, Ordering::SeqCst);
+        match self.latest_error.lock().unwrap().clone() {
+            Some(error) => Err(error),
+            None => Ok(import_sstpb::DownloadResponse::default()),
+        }
     }
 
     fn SetDownloadSpeedLimit(
@@ -393,4 +402,57 @@ fn test_import_client() {
     // 释放监听。
     // Go: s.Stop(); lis.Close()
     drop(lis);
+}
+
+#[test]
+fn test_latest_mvcc_boolean_probe_and_strict_probe() {
+    let server = MockImportServer::new(0);
+    let rpc = server.clone();
+    let client = NewImportClientWithDialer(
+        Arc::new(StoreClient {
+            addr: "test".into(),
+        }),
+        None,
+        keepalive::ClientParameters::default(),
+        Arc::new(move |_, _| {
+            Ok(Box::new(MockConn {
+                closed: Arc::new(AtomicUsize::new(0)),
+                client: rpc.clone(),
+            }) as Box<dyn ClientConn>)
+        }),
+    );
+    let ctx = Context::Background();
+    assert!(
+        client
+            .IsBatchDownloadLatestMVCCSupported(&ctx, &[])
+            .unwrap()
+    );
+    assert_eq!(server.probes.load(Ordering::SeqCst), 0);
+    assert!(
+        client
+            .IsBatchDownloadLatestMVCCSupported(&ctx, &[1, 2])
+            .unwrap()
+    );
+    assert_eq!(server.probes.load(Ordering::SeqCst), 2);
+    *server.latest_error.lock().unwrap() =
+        Some(Error::with_code(crate::Code::Unimplemented, "unsupported"));
+    assert!(
+        !client
+            .IsBatchDownloadLatestMVCCSupported(&ctx, &[1, 2])
+            .unwrap()
+    );
+    assert_eq!(server.probes.load(Ordering::SeqCst), 3);
+    assert!(
+        client
+            .CheckBatchDownloadLatestMVCCSupport(&ctx, &[1])
+            .unwrap_err()
+            .to_string()
+            .contains("upgrade TiKV")
+    );
+    *server.latest_error.lock().unwrap() = Some(Error::new("probe unavailable"));
+    let error = client
+        .IsBatchDownloadLatestMVCCSupported(&ctx, &[7, 8])
+        .unwrap_err();
+    assert!(error.to_string().contains("store id 7"));
+    assert!(error.to_string().contains("probe unavailable"));
 }

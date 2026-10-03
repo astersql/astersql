@@ -215,16 +215,17 @@ impl BackoffStrategy for RetryState {
 }
 
 type RetryErrFn = fn(&SharedError) -> bool;
-type BackoffOption = Box<dyn FnMut(&mut BackoffStrategyImpl)>;
+pub type BackoffOption = Box<dyn FnMut(&mut BackoffStrategyImpl)>;
 
 // 通用退避实现：剩余次数、延迟、错误上下文与可/不可重试判定函数。
-struct BackoffStrategyImpl {
+pub struct BackoffStrategyImpl {
     remainingAttempts: i32,
     delayTime: Duration,
     maxDelayTime: Duration,
     errContext: ErrorContext,
     isRetryErr: RetryErrFn,
     isNonRetryErr: RetryErrFn,
+    retryGRPCCanceled: bool,
 }
 
 // 选项构造器：设置最大剩余重试次数。
@@ -257,6 +258,11 @@ pub fn WithNonRetryErrorFunc(isNonRetryErr: RetryErrFn) -> BackoffOption {
     Box::new(move |b: &mut BackoffStrategyImpl| b.isNonRetryErr = isNonRetryErr)
 }
 
+/// Retry transport cancellation while preserving actual context cancellation.
+pub fn WithRetryableGRPCCanceled() -> BackoffOption {
+    Box::new(|b| b.retryGRPCCanceled = true)
+}
+
 // 按 opts 组装默认 BackoffStrategyImpl 并返回 trait object。
 pub fn NewBackoffStrategy(mut opts: Vec<BackoffOption>) -> Box<dyn BackoffStrategy> {
     let mut bs = BackoffStrategyImpl {
@@ -266,6 +272,7 @@ pub fn NewBackoffStrategy(mut opts: Vec<BackoffOption>) -> Box<dyn BackoffStrate
         errContext: NewZeroRetryContext("default"),
         isRetryErr: always_true,
         isNonRetryErr: always_false,
+        retryGRPCCanceled: false,
     };
     for opt in &mut opts {
         opt(&mut bs);
@@ -315,14 +322,32 @@ pub fn NewTiKVStoreBackoffStrategy(
     maxDelayTime: Duration,
     errContext: ErrorContext,
 ) -> Box<dyn BackoffStrategy> {
-    NewBackoffStrategy(vec![
+    NewTiKVStoreBackoffStrategyWithOptions(
+        maxRetry,
+        delayTime,
+        maxDelayTime,
+        errContext,
+        Vec::new(),
+    )
+}
+
+pub fn NewTiKVStoreBackoffStrategyWithOptions(
+    maxRetry: i32,
+    delayTime: Duration,
+    maxDelayTime: Duration,
+    errContext: ErrorContext,
+    opts: Vec<BackoffOption>,
+) -> Box<dyn BackoffStrategy> {
+    let mut options = vec![
         WithRemainingAttempts(maxRetry),
         WithDelayTime(delayTime),
         WithMaxDelayTime(maxDelayTime),
         WithErrorContext(errContext),
         WithRetryErrorFunc(is_tikv_retry_err),
         WithNonRetryErrorFunc(is_tikv_non_retry_err),
-    ])
+    ];
+    options.extend(opts);
+    NewBackoffStrategy(options)
 }
 
 // import SST 预置参数 + ErrorContext("import sst", 3)。
@@ -344,6 +369,16 @@ pub fn NewDownloadSSTBackoffStrategy() -> Box<dyn BackoffStrategy> {
         downloadSSTWaitInterval,
         downloadSSTMaxWaitInterval,
         errContext,
+    )
+}
+
+pub fn NewPeerDownloadSSTBackoffStrategy() -> Box<dyn BackoffStrategy> {
+    NewTiKVStoreBackoffStrategyWithOptions(
+        downloadSSTRetryTimes,
+        downloadSSTWaitInterval,
+        downloadSSTMaxWaitInterval,
+        NewErrorContext("peer download sst", 3),
+        vec![WithRetryableGRPCCanceled()],
     )
 }
 
@@ -462,8 +497,15 @@ impl BackoffStrategy for BackoffStrategyImpl {
             // 未知错误策略允许重试 → 指数退避。
             self.doBackoff();
         } else if res.Reason == contextCancelledMsg {
-            // 上下文取消 → 立即停止。
-            self.stopBackoff();
+            let cause = astersql_errors::Cause(Some(last_err)).unwrap_or_else(|| last_err.clone());
+            if self.retryGRPCCanceled
+                && !IsContextCanceled(Some(&cause))
+                && grpc_code_is_retryable(&cause, &["Canceled"])
+            {
+                self.doBackoff();
+            } else {
+                self.stopBackoff();
+            }
         } else if (self.isNonRetryErr)(last_err) {
             // 命中不可重试列表 → 停止。
             self.stopBackoff();

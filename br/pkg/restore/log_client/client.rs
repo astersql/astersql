@@ -987,6 +987,32 @@ impl LogClient {
             .sstRestoreManager
             .as_mut()
             .ok_or_else(|| Error::new("SST restore manager is not initialized"))?;
+        let parent = ctx.clone();
+        let lookup_context = Context::WithCancellationSource(move || {
+            parent.Err().map(|error| Error {
+                msg: error.msg,
+                code: error.code,
+            })
+        });
+        let stores: Vec<_> = self
+            .pdClient
+            .GetAllStores(&lookup_context)?
+            .into_iter()
+            .filter(|s| {
+                s.State == crate::stubs::metapb::StoreState::Up
+                    && !s.Labels.iter().any(|label| {
+                        label.Key == "engine"
+                            && (label.Value == "tiflash" || label.Value == "tiflash_compute")
+                    })
+            })
+            .map(|s| s.Id)
+            .collect();
+        importer
+            .ConfigureDownloadRetry(ctx, &stores)
+            .map_err(|error| Error {
+                msg: error.msg,
+                code: error.code,
+            })?;
         manager.restorer = Some(Arc::new(astersql_br_pkg_restore::NewSimpleSstRestorer(
             ctx,
             importer,
