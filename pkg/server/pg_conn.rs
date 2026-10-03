@@ -425,9 +425,17 @@ impl PgService {
                         } else if catalog.as_ref().is_ok_and(|query| query.is_some()) {
                             Ok((std::borrow::Cow::Borrowed(sql), Some("SELECT")))
                         } else {
-                            crate::pg_result::adapt_session_query(sql, self.startup_epoch_micros)
+                            crate::pg_name::adapt(sql, context.as_ref(), &extended.session)
                                 .and_then(|sql| {
-                                    crate::pg_result::command(&sql).map(|command| (sql, command))
+                                    crate::pg_result::adapt_session_query(
+                                        &sql,
+                                        self.startup_epoch_micros,
+                                    )
+                                    .map(|s| s.into_owned())
+                                })
+                                .and_then(|sql| {
+                                    crate::pg_result::command(&sql)
+                                        .map(|command| (std::borrow::Cow::Owned(sql), command))
                                 })
                         };
                         match parsed {

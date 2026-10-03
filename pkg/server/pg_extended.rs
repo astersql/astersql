@@ -412,6 +412,7 @@ impl Extended {
                 let (sql, mapping) = if catalog.is_some() || session_query.is_some() {
                     (sql, Vec::new())
                 } else {
+                    let sql = crate::pg_name::adapt(&sql, context.as_ref(), &self.session)?;
                     markers(&sql)?
                 };
                 let sql = if catalog.is_some() || session_query.is_some() {

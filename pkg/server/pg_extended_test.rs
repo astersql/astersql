@@ -107,17 +107,13 @@ fn parse_bind_execute_sync() {
     // Fixed table-column metadata keeps Describe independent of parameter values.
     assert_eq!(query(&mut socket, "CREATE DATABASE pg_extended")[0].0, b'C');
     assert_eq!(
-        query(
-            &mut socket,
-            "CREATE TABLE pg_extended.t (id INT, v VARCHAR(30))"
-        )[0]
-        .0,
+        query(&mut socket, "CREATE TABLE public.t (id INT, v VARCHAR(30))")[0].0,
         b'C'
     );
     assert_eq!(
         query(
             &mut socket,
-            "INSERT INTO pg_extended.t VALUES (1, 'one'), (2, 'two')"
+            "INSERT INTO public.t VALUES (1, 'one'), (2, 'two')"
         )[0]
         .0,
         b'C'
@@ -199,11 +195,8 @@ fn parse_bind_execute_sync() {
     send(&mut socket, b'D', b"Pnamespace_live\0");
     assert_eq!(read(&mut socket), namespace_description);
     execute(&mut socket, "namespace_live", 0);
-    assert_eq!(
-        read(&mut socket),
-        (b'D', row(&[Some("pg_namespace_after_parse"), None]))
-    );
-    assert_eq!(read(&mut socket), (b'C', b"SELECT 1\0".to_vec()));
+    // A new native database does not create a PG schema in this connection.
+    assert_eq!(read(&mut socket), (b'C', b"SELECT 0\0".to_vec()));
     send(&mut socket, b'S', &[]);
     assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
     parse(
@@ -228,7 +221,7 @@ fn parse_bind_execute_sync() {
     parse(
         &mut socket,
         "s",
-        "SELECT id, v FROM pg_extended.t WHERE id = $1",
+        "SELECT id, v FROM public.t WHERE id = $1",
         &[23],
     );
     assert_eq!(read(&mut socket), (b'1', vec![]));
@@ -262,12 +255,7 @@ fn parse_bind_execute_sync() {
         assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
     }
     // An unnamed statement uses the same binding and object lifecycle.
-    parse(
-        &mut socket,
-        "",
-        "SELECT id FROM pg_extended.t ORDER BY id",
-        &[],
-    );
+    parse(&mut socket, "", "SELECT id FROM public.t ORDER BY id", &[]);
     assert_eq!(read(&mut socket).0, b'1');
     bind(&mut socket, "pages", "", &[]);
     assert_eq!(read(&mut socket).0, b'2');
@@ -316,7 +304,7 @@ fn parse_bind_execute_sync() {
     parse(
         &mut socket,
         "repeat",
-        "SELECT id FROM pg_extended.t WHERE id = $2 OR id = $1 OR id = $2",
+        "SELECT id FROM public.t WHERE id = $2 OR id = $1 OR id = $2",
         &[23, 23],
     );
     assert_eq!(read(&mut socket).0, b'1');
@@ -332,7 +320,7 @@ fn parse_bind_execute_sync() {
     parse(
         &mut socket,
         "update",
-        "UPDATE pg_extended.t SET v = $2 WHERE id = $1",
+        "UPDATE public.t SET v = $2 WHERE id = $1",
         &[23, 25],
     );
     assert_eq!(read(&mut socket).0, b'1');
@@ -344,25 +332,25 @@ fn parse_bind_execute_sync() {
         send(&mut socket, b'S', b"");
         assert_eq!(read(&mut socket).0, b'Z');
         assert_eq!(
-            query(&mut socket, "SELECT v FROM pg_extended.t WHERE id = 1")[1],
+            query(&mut socket, "SELECT v FROM public.t WHERE id = 1")[1],
             (b'D', row(&[value]))
         );
     }
     parse(
         &mut socket,
         "inferred",
-        "SELECT id FROM pg_extended.t WHERE id = $1",
+        "SELECT id FROM public.t WHERE id = $1",
         &[],
     );
     let unsupported = read(&mut socket);
     assert_eq!(unsupported.0, b'E');
     assert!(unsupported.1.windows(5).any(|w| w == b"0A000"));
     // Simple Query is also discarded until Sync after an extended error.
-    send(&mut socket, b'Q', b"DELETE FROM pg_extended.t\0");
+    send(&mut socket, b'Q', b"DELETE FROM public.t\0");
     send(&mut socket, b'S', b"");
     assert_eq!(read(&mut socket).0, b'Z');
     assert_eq!(
-        query(&mut socket, "SELECT id FROM pg_extended.t")
+        query(&mut socket, "SELECT id FROM public.t")
             .iter()
             .filter(|m| m.0 == b'D')
             .count(),

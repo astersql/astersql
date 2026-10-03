@@ -139,18 +139,15 @@ fn simple_query_roundtrip() {
     for (sql, completion) in [
         ("CREATE DATABASE pg_query_roundtrip", "CREATE DATABASE"),
         (
-            "CREATE TABLE pg_query_roundtrip.t (id INT, value VARCHAR(20))",
+            "CREATE TABLE public.t (id INT, value VARCHAR(20))",
             "CREATE TABLE",
         ),
         (
-            "INSERT INTO pg_query_roundtrip.t VALUES (1, 'a'), (2, '')",
+            "INSERT INTO public.t VALUES (1, 'a'), (2, '')",
             "INSERT 0 2",
         ),
-        (
-            "UPDATE pg_query_roundtrip.t SET value = 'b' WHERE id = 1",
-            "UPDATE 1",
-        ),
-        ("DELETE FROM pg_query_roundtrip.t WHERE id = 2", "DELETE 1"),
+        ("UPDATE public.t SET value = 'b' WHERE id = 1", "UPDATE 1"),
+        ("DELETE FROM public.t WHERE id = 2", "DELETE 1"),
     ] {
         assert_eq!(
             query(&mut socket, sql),
@@ -161,17 +158,17 @@ fn simple_query_roundtrip() {
             "{sql}"
         );
     }
-    let selected = query(&mut socket, "SELECT id, value FROM pg_query_roundtrip.t");
+    let selected = query(&mut socket, "SELECT id, value FROM public.t");
     assert_eq!(selected[1], (b'D', row(&[Some("1"), Some("b")])));
     assert_eq!(
         query(&mut socket, "  ; "),
         vec![(b'I', vec![]), (b'Z', b"I".to_vec())]
     );
-    let multiple = query(&mut socket, "DELETE FROM pg_query_roundtrip.t; SELECT 1");
+    let multiple = query(&mut socket, "DELETE FROM public.t; SELECT 1");
     assert_eq!(multiple.iter().map(|m| m.0).collect::<Vec<_>>(), b"EZ");
     assert!(multiple[0].1.windows(5).any(|w| w == b"0A000"));
     assert_eq!(
-        query(&mut socket, "SELECT id FROM pg_query_roundtrip.t")[1],
+        query(&mut socket, "SELECT id FROM public.t")[1],
         (b'D', row(&[Some("1")]))
     );
     let semicolon = query(&mut socket, "/* query */ SELECT ';'");
@@ -184,7 +181,7 @@ fn simple_query_roundtrip() {
         b"EZ"
     );
     assert_eq!(
-        query(&mut socket, "SELECT * FROM pg_query_roundtrip.missing")
+        query(&mut socket, "SELECT * FROM public.missing")
             .iter()
             .map(|m| m.0)
             .collect::<Vec<_>>(),
@@ -816,5 +813,166 @@ fn pg_introspection_namespace_session_state() {
     );
     send(&mut first, b'X', &[]);
     send(&mut second, b'X', &[]);
+    service.close();
+}
+
+#[test]
+fn pg_introspection_names_live_tables() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let connect = |database: &str| {
+        let mut socket = TcpStream::connect(addr).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            format!("user\0root\0database\0{database}\0\0").as_bytes(),
+        ]
+        .concat();
+        socket
+            .write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        socket.write_all(&body).unwrap();
+        assert_eq!(read(&mut socket).0, b'R');
+        while read(&mut socket).0 != b'Z' {}
+        socket
+    };
+    let mut socket = connect("test");
+    let ok = |socket: &mut TcpStream, sql: &str| {
+        let messages = query(socket, sql);
+        assert!(messages.iter().any(|m| m.0 == b'C'), "{sql}: {messages:?}");
+        assert!(!messages.iter().any(|m| m.0 == b'E'), "{sql}: {messages:?}");
+        messages
+    };
+    ok(
+        &mut socket,
+        "CREATE TABLE names_live (id INT, note VARCHAR(80))",
+    );
+    ok(
+        &mut socket,
+        "INSERT INTO names_live VALUES (1, 'public.names_live')",
+    );
+    let result = ok(&mut socket, "SELECT id, note FROM public.names_live");
+    assert_eq!(
+        catalog_rows(&result),
+        vec![vec![Some("1".into()), Some("public.names_live".into())]]
+    );
+    assert_eq!(
+        catalog_rows(&ok(
+            &mut socket,
+            "WITH names_live AS (SELECT 9 AS id) SELECT id FROM names_live"
+        )),
+        vec![vec![Some("9".into())]]
+    );
+    native
+        .execute("CREATE VIEW test.names_view AS SELECT id FROM test.names_live")
+        .unwrap();
+    ok(&mut socket, "DROP VIEW public.names_view");
+    ok(&mut socket, "CREATE DATABASE names_other");
+    let mut other = connect("names_other");
+    ok(
+        &mut other,
+        "CREATE TABLE public.names_live (id INT, note VARCHAR(80))",
+    );
+    ok(&mut other, "INSERT INTO public.names_live VALUES (2, NULL)");
+    for sql in [
+        "SELECT id FROM names_live",
+        "SELECT id FROM public.names_live",
+        "SELECT id FROM test.public.names_live",
+        "SELECT \"id\" FROM \"public\".\"names_live\" /* public.fake */",
+    ] {
+        assert_eq!(
+            catalog_rows(&ok(&mut socket, sql)),
+            vec![vec![Some("1".into())]],
+            "{sql}"
+        );
+    }
+    assert_eq!(
+        catalog_rows(&ok(&mut other, "SELECT id, note FROM public.names_live")),
+        vec![vec![Some("2".into()), None]]
+    );
+    ok(
+        &mut socket,
+        "UPDATE public.names_live SET note = 'FROM public.fake' WHERE id = 1",
+    );
+    assert_eq!(
+        catalog_rows(&ok(
+            &mut socket,
+            "SELECT a.id FROM public.names_live AS a JOIN public.names_live AS b ON a.id = b.id"
+        )),
+        vec![vec![Some("1".into())]]
+    );
+    ok(
+        &mut socket,
+        "ALTER TABLE public.names_live ADD COLUMN extra INT",
+    );
+    ok(&mut socket, "DELETE FROM public.names_live WHERE id = 1");
+    assert!(catalog_rows(&ok(&mut socket, "SELECT id FROM public.names_live")).is_empty());
+    ok(
+        &mut socket,
+        "INSERT INTO test.public.names_live VALUES (3, NULL, NULL)",
+    );
+    // Both protocol entrypoints must use the same name mapping.
+    send(
+        &mut socket,
+        b'P',
+        b"names\0SELECT id FROM public.names_live WHERE id = $1\0\0\x01\0\0\0\x17",
+    );
+    assert_eq!(read(&mut socket).0, b'1');
+    send(&mut socket, b'B', b"\0names\0\0\0\0\x01\0\0\0\x013\0\0");
+    send(&mut socket, b'D', b"P\0");
+    send(&mut socket, b'E', &[0, 0, 0, 0, 0]);
+    send(&mut socket, b'S', &[]);
+    assert_eq!(read(&mut socket).0, b'2');
+    assert_eq!(read(&mut socket).0, b'T');
+    assert_eq!(read(&mut socket), (b'D', row(&[Some("3")])));
+    assert_eq!(read(&mut socket).0, b'C');
+    assert_eq!(read(&mut socket).0, b'Z');
+    for (sql, state) in [
+        ("SELECT id FROM names_other.public.names_live", "0A000"),
+        ("SELECT id FROM names_other.names_live", "0A000"),
+        (
+            "ALTER TABLE public.names_live EXCHANGE PARTITION p WITH TABLE names_other.names_live",
+            "0A000",
+        ),
+        ("SELECT id FROM \"PUBLIC\".names_live", "0A000"),
+        ("SELECT id FROM public.\"\"", "42601"),
+    ] {
+        let messages = query(&mut socket, sql);
+        assert_eq!(messages[0].0, b'E', "{sql}");
+        assert!(
+            messages[0]
+                .1
+                .windows(7)
+                .any(|part| part == [b"C", state.as_bytes(), b"\0"].concat()),
+            "{sql}: {messages:?}"
+        );
+        ok(&mut socket, "SELECT 1");
+    }
+    ok(&mut socket, "SET search_path TO pg_catalog");
+    let hidden = query(&mut socket, "SELECT id FROM names_live");
+    assert_eq!(hidden[0].0, b'E');
+    assert!(hidden[0].1.windows(7).any(|part| part == b"C42P01\0"));
+    assert_eq!(
+        catalog_rows(&ok(&mut socket, "SELECT id FROM public.names_live")),
+        vec![vec![Some("3".into())]]
+    );
+    ok(&mut socket, "RESET search_path");
+    ok(&mut socket, "TRUNCATE TABLE public.names_live");
+    ok(&mut socket, "DROP TABLE public.names_live");
+    send(&mut socket, b'X', &[]);
+    send(&mut other, b'X', &[]);
     service.close();
 }

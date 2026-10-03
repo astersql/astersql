@@ -33,6 +33,10 @@ pub mod pg_conn;
 #[cfg(test)]
 #[path = "pg_conn_test.rs"]
 mod pg_conn_test;
+mod pg_name;
+#[cfg(test)]
+#[path = "pg_name_test.rs"]
+mod pg_name_test;
 mod pg_oid;
 #[cfg(test)]
 #[path = "pg_oid_test.rs"]

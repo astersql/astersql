@@ -23,6 +23,9 @@ impl Default for PgSession {
     }
 }
 impl PgSession {
+    pub(crate) fn has_public(&self) -> bool {
+        self.path.iter().any(|name| name == "public")
+    }
     pub(crate) fn schema(&self) -> Option<&str> {
         self.path.first().map(String::as_str)
     }
