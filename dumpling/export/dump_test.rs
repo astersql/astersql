@@ -411,3 +411,46 @@ fn test_set_session_params() {
         Some("ON")
     );
 }
+
+#[test]
+fn test_manual_gc_lifetime_warning_initialization() {
+    for (server_type, has_pd, expected) in [
+        (ServerType::ServerTypeTiDB, false, true),
+        (ServerType::ServerTypeTiDB, true, false),
+        (ServerType::ServerTypeMySQL, false, false),
+        (ServerType::ServerTypeMariaDB, false, false),
+        (ServerType::ServerTypeUnknown, false, false),
+    ] {
+        let mut conf = default_config_for_test();
+        conf.ServerInfo.ServerType = server_type;
+        let logger = Logger {
+            Logger: astersql_dumpling_log::ZapLogger::capture(astersql_dumpling_log::Level::Warn),
+        };
+        let mut d = make_dumper(conf);
+        d.tctx = d.tctx.WithLogger(logger.clone());
+        if has_pd {
+            d.pd_client = Some(PdClient::new_mock());
+        }
+        // Exercise the real initialization step used by NewDumper.
+        runSteps(&mut d, &[setSessionParam]).unwrap();
+        let entries = logger.entries();
+        assert_eq!(
+            entries.len(),
+            usize::from(expected),
+            "{server_type:?}, PD={has_pd}"
+        );
+        if expected {
+            let message = concat!(
+                "If the amount of data to dump is large (more than 60 GB or expected to take more than 10 minutes),\n",
+                "consider increasing tidb_gc_life_time to prevent historical data from being collected during the dump.\n",
+                "Before dumping, record the current value with `SELECT @@GLOBAL.tidb_gc_life_time;`,\n",
+                "then run `SET GLOBAL tidb_gc_life_time = '720h';`.\n",
+                "After dumping, restore tidb_gc_life_time to the recorded value.\n",
+            );
+            assert_eq!(entries[0], format!("[WARN] {message}"));
+            assert!(!entries[0].contains("mysql.tidb"));
+            assert!(!entries[0].contains("'10m'"));
+        }
+        d.Close().unwrap();
+    }
+}

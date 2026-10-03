@@ -475,6 +475,21 @@ pub fn validateResolveAutoConsistency(d: &mut Dumper) -> Result<()> {
 }
 
 pub fn setSessionParam(d: &mut Dumper) -> Result<()> {
+    // Match the manual-GC branch of Go tidbStartGCSavepointUpdateService.
+    // Run before session parameters, as in Go's initialization sequence.
+    if d.pd_client.is_none() && d.conf.ServerInfo.ServerType == ServerType::ServerTypeTiDB {
+        // Since TiDB v5.0.0, GC lifetime is a system variable instead of a mysql.tidb row.
+        d.tctx.L().Warn(
+            concat!(
+                "If the amount of data to dump is large (more than 60 GB or expected to take more than 10 minutes),\n",
+                "consider increasing tidb_gc_life_time to prevent historical data from being collected during the dump.\n",
+                "Before dumping, record the current value with `SELECT @@GLOBAL.tidb_gc_life_time;`,\n",
+                "then run `SET GLOBAL tidb_gc_life_time = '720h';`.\n",
+                "After dumping, restore tidb_gc_life_time to the recorded value.\n",
+            ),
+            [],
+        );
+    }
     // 默认 session 参数同样通过克隆配置再整体替换，避免直接修改 Arc 内部。
     let mut conf = (*d.conf).clone_for_mutate();
     // 这样后续真实连接在执行 SQL 前，可以统一读取这份最终参数集。
