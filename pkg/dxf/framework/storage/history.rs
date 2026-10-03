@@ -62,7 +62,7 @@ impl TaskManager {
     }
 
     // TransferTasks2History transfer the selected tasks into tidb_global_task_history table by taskIDs.
-    /// 事务内：刷新 meta → 插入任务 history → 删除原任务 → 逐个搬迁子任务。
+    /// 事务内批量刷新 meta、迁移任务，再按字符串 task_key 批量迁移子任务。
     pub fn TransferTasks2History(
         &self,
         ctx: Context,
@@ -72,40 +72,28 @@ impl TaskManager {
             return Ok(());
         }
 
-        let taskIDStrs: Vec<String> = tasks.iter().map(|task| task.ID.to_string()).collect();
+        let ids = tasks.iter().map(|task| task.ID.to_string()).collect::<Vec<_>>().join(", ");
+        // task_key is VARCHAR: quoted IDs preserve exact comparison above 2^53.
+        let keys = tasks.iter().map(|task| format!("'{}'", task.ID)).collect::<Vec<_>>().join(", ");
+        let mut update = String::from("update mysql.tidb_global_task set meta = case id");
+        let mut args = Vec::with_capacity(tasks.len() * 2);
+        for task in &tasks {
+            update.push_str(" when %? then %?");
+            args.push(task.ID.into());
+            args.push(task.Meta.clone().into());
+        }
+        update.push_str(&format!(" end, state_update_time = CURRENT_TIMESTAMP() where id in({ids})"));
         injectfailpoint::DXFRandomErrorWithOnePercent()?;
-
         self.WithNewTxn(ctx.clone(), |se| {
-            // Go 在转入历史表前先刷新 meta，避免 history 中留下已被脱敏的 meta。
             let exec = se.GetSQLExecutor();
-            for t in &tasks {
-                sqlexec::ExecSQL(
-                    ctx.clone(),
-                    exec.clone(),
-                    "update mysql.tidb_global_task set meta= %?, state_update_time = CURRENT_TIMESTAMP() where id = %?",
-                    vec![t.Meta.clone().into(), t.ID.into()],
-                )?;
-            }
-
-            let ids = taskIDStrs.join(", ");
-            sqlexec::ExecSQL(
-                ctx.clone(),
-                exec.clone(),
-                format!(
-                    "insert into mysql.tidb_global_task_history select * from mysql.tidb_global_task where id in({})",
-                    ids
-                ),
-                vec![],
-            )?;
-            sqlexec::ExecSQL(
-                ctx.clone(),
-                exec.clone(),
-                format!("delete from mysql.tidb_global_task where id in({})", ids),
-                vec![],
-            )?;
-
-            for t in &tasks {
-                self.TransferSubtasks2HistoryWithSession(ctx.clone(), se.clone(), t.ID)?;
+            sqlexec::ExecSQL(ctx.clone(), exec.clone(), update, args)?;
+            for sql in [
+                format!("insert into mysql.tidb_global_task_history select * from mysql.tidb_global_task where id in({ids})"),
+                format!("delete from mysql.tidb_global_task where id in({ids})"),
+                format!("insert into mysql.tidb_background_subtask_history select * from mysql.tidb_background_subtask where task_key in({keys})"),
+                format!("delete from mysql.tidb_background_subtask where task_key in({keys})"),
+            ] {
+                sqlexec::ExecSQL(ctx.clone(), exec.clone(), sql, vec![])?;
             }
             Ok(())
         })

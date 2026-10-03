@@ -2090,3 +2090,44 @@ fn saved_options_precede_changed_globals() {
     assert_eq!(saved.Next().unwrap(), Some(vec!["0".into()]));
     assert_eq!(saved.Next().unwrap(), None);
 }
+
+#[test]
+fn dxf_metadata_case_update_preserves_exact_ids_and_lazy_branches() {
+    use crate::dml_runtime::{EvalExpr, ParseGeneratedExpr};
+    let id = "9007199254740993";
+    let row = HashMap::from([("id".to_owned(), Some(id.to_owned()))]);
+    let expr = ParseGeneratedExpr("case id when 9007199254740992 then 'wrong' when 9007199254740993 then 'redacted' when 9007199254740993 then 1/0 else 'unmatched' end").unwrap();
+    assert_eq!(
+        EvalExpr(&expr, &row, None).unwrap(),
+        Some("redacted".into())
+    );
+    let expr = ParseGeneratedExpr("case id when 1 then 'wrong' else 'unchanged' end").unwrap();
+    assert_eq!(
+        EvalExpr(&expr, &row, None).unwrap(),
+        Some("unchanged".into())
+    );
+    let expr = ParseGeneratedExpr("case id when 1 then 'wrong' end").unwrap();
+    assert_eq!(EvalExpr(&expr, &row, None).unwrap(), None);
+    let null_row = HashMap::from([("id".to_owned(), None)]);
+    let expr = ParseGeneratedExpr("case id when null then 'wrong' else 'null-id' end").unwrap();
+    assert_eq!(
+        EvalExpr(&expr, &null_row, None).unwrap(),
+        Some("null-id".into())
+    );
+}
+
+#[test]
+fn dxf_metadata_case_selects_binary_literal_without_utf8_conversion() {
+    let row = HashMap::from([("id".to_owned(), Some("42".to_owned()))]);
+    let expression =
+        crate::dml_runtime::ParseGeneratedExpr("case id when 42 then x'00FF7B7D' end").unwrap();
+    let result = crate::dml_runtime::CaseResult(&expression, &row, None, &[])
+        .unwrap()
+        .unwrap();
+    let astersql_parser_ast::ExprKind::Value(value) = &result.Kind else {
+        panic!("typed CASE result")
+    };
+    assert!(
+        matches!(&value.Datum, astersql_parser_ast::ValueDatum::HexLiteral(bytes) if bytes == &[0, 255, 123, 125])
+    );
+}

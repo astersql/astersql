@@ -199,6 +199,12 @@ impl TaskManager for StorageTaskManagerAdapter {
             .map(|items| items.into_iter().map(from_task).collect())
             .map_err(error)
     }
+    fn cleanup_tasks(&self) -> Result<Vec<Task>> {
+        self.manager
+            .GetCleanupTasks(context())
+            .map(|items| items.into_iter().map(from_task).collect())
+            .map_err(error)
+    }
     fn task_by_id(&self, task_id: i64) -> Result<Task> {
         self.manager
             .GetTaskByID(context(), task_id)

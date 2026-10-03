@@ -179,6 +179,30 @@ pub fn SetMaxConcurrentTaskForTest(value: i32) -> impl FnOnce() {
     }
 }
 
+/// Owner-local, memory-only cleanup query bound; reset on process restart.
+pub const DefaultTaskCleanupBatchSize: i64 = 20;
+pub const TaskCleanupBatchSizeUpperBound: i64 = 1000;
+static taskCleanupBatchSize: AtomicI64 = AtomicI64::new(DefaultTaskCleanupBatchSize);
+
+pub fn GetTaskCleanupBatchSize() -> i64 {
+    taskCleanupBatchSize.load(Ordering::SeqCst)
+}
+pub fn SetTaskCleanupBatchSize(value: i64) -> Result<(), String> {
+    if !(1..=TaskCleanupBatchSizeUpperBound).contains(&value) {
+        return Err(format!(
+            "task_cleanup_batch_size {value} is out of range [1, {TaskCleanupBatchSizeUpperBound}]"
+        ));
+    }
+    taskCleanupBatchSize.store(value, Ordering::SeqCst);
+    Ok(())
+}
+pub fn SetTaskCleanupBatchSizeForTest(value: i64) -> impl FnOnce() {
+    let old = taskCleanupBatchSize.swap(value, Ordering::SeqCst);
+    move || {
+        taskCleanupBatchSize.store(old, Ordering::SeqCst);
+    }
+}
+
 // ExtraParams is the extra params of task.
 // Note: only store params that's not used for filter or sort in this struct.
 #[derive(Default, Deserialize, Serialize)]

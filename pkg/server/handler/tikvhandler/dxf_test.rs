@@ -292,3 +292,42 @@ fn dxf_response_values_flatten_go_embedded_ttl_fields() {
         ])
     );
 }
+
+#[test]
+fn cleanup_batch_handler_rejects_unsupported_methods_without_changing_value() {
+    use crate::dxf::{NewDXFTaskCleanupBatchSizeHandler, ResponseWriter};
+    #[derive(Default)]
+    struct Writer {
+        error: Option<DxfError>,
+    }
+    impl ResponseWriter for Writer {
+        fn write_data(&mut self, _: JsonValue) {
+            panic!("unexpected success");
+        }
+        fn write_error(&mut self, error: DxfError) {
+            self.error = Some(error);
+        }
+        fn write_error_with_code(&mut self, _: u16, error: DxfError) {
+            self.error = Some(error);
+        }
+    }
+    let before = astersql_dxf_framework_proto::GetTaskCleanupBatchSize();
+    for method in ["PUT", "DELETE"] {
+        let mut writer = Writer::default();
+        NewDXFTaskCleanupBatchSizeHandler().ServeHTTP(
+            &mut writer,
+            &Request {
+                method: method.into(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            writer.error.unwrap().message,
+            "This api only support GET and POST method"
+        );
+        assert_eq!(
+            astersql_dxf_framework_proto::GetTaskCleanupBatchSize(),
+            before
+        );
+    }
+}

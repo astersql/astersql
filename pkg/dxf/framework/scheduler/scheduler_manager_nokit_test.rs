@@ -271,3 +271,32 @@ fn test_fast_respond_no_need_resource_task_when_schedulers_reach_limit() {
     }
     assert_eq!(manager.scheduler_count(), DEFAULT_MAX_CONCURRENT_TASKS + 4);
 }
+
+#[test]
+fn test_cleanup_drains_bounded_batches_and_keeps_pending_tasks() {
+    let restore = crate::proto::SetTaskCleanupBatchSizeForTest(2);
+    let task_manager = Arc::new(TestTaskManager::default());
+    for (index, state) in [
+        TASK_STATE_FAILED,
+        TASK_STATE_SUCCEED,
+        TASK_STATE_REVERTED,
+        TASK_STATE_FAILED,
+        TASK_STATE_SUCCEED,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        task_manager.insert_task(manager_task(index as i64 + 1, "bounded-cleanup", state));
+    }
+    task_manager.insert_task(manager_task(6, "bounded-cleanup", TASK_STATE_PENDING));
+    let manager = Manager::new(task_manager.clone(), "server", None);
+    for expected in [2, 2, 1, 0] {
+        assert_eq!(manager.cleanup_finished_tasks().unwrap(), expected);
+    }
+    assert_eq!(task_manager.transferred_tasks.lock().unwrap().len(), 5);
+    assert_eq!(
+        task_manager.task_by_id(6).unwrap().base.state,
+        TASK_STATE_PENDING
+    );
+    restore();
+}

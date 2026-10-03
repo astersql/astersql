@@ -694,6 +694,55 @@ pub fn writeMaxConcurrentTask(writer: &mut dyn ResponseWriter, runtime: &dyn Dxf
     ]));
 }
 
+/// Owner-local cleanup batch size, shared with the production scheduler/storage.
+pub struct DXFTaskCleanupBatchSizeHandler;
+pub fn NewDXFTaskCleanupBatchSizeHandler() -> DXFTaskCleanupBatchSizeHandler {
+    DXFTaskCleanupBatchSizeHandler
+}
+impl DXFTaskCleanupBatchSizeHandler {
+    pub fn ServeHTTP(&self, writer: &mut dyn ResponseWriter, request: &Request) {
+        match request.method.as_str() {
+            "GET" => writeTaskCleanupBatchSize(writer),
+            "POST" => {
+                let text = request.form_value("value");
+                let value = match text.parse::<i64>() {
+                    Ok(value) => value,
+                    Err(error) => {
+                        writer.write_error(DxfError::new(format!(
+                            "invalid value {text}, error {error}"
+                        )));
+                        return;
+                    }
+                };
+                if let Err(error) = astersql_dxf_framework_proto::SetTaskCleanupBatchSize(value) {
+                    writer.write_error(DxfError::new(error));
+                    return;
+                }
+                astersql_util_logutil::log::background_logger()
+                    .with_fields([astersql_util_logutil::log::LogField::I64(
+                        "taskCleanupBatchSize".into(),
+                        value,
+                    )])
+                    .info("set in-memory DXF task cleanup batch size");
+                writeTaskCleanupBatchSize(writer);
+            }
+            _ => writer.write_error(DxfError::new("This api only support GET and POST method")),
+        }
+    }
+}
+pub fn writeTaskCleanupBatchSize(writer: &mut dyn ResponseWriter) {
+    writer.write_data(JsonValue::Object(vec![
+        (
+            "task_cleanup_batch_size".into(),
+            JsonValue::Integer(astersql_dxf_framework_proto::GetTaskCleanupBatchSize()),
+        ),
+        (
+            "persistence".into(),
+            JsonValue::String("memory_only".into()),
+        ),
+    ]));
+}
+
 /// 设置指定任务的最大运行时槽位与目标步骤（仅 POST）。
 impl DXFTaskMaxRuntimeSlotsHandler {
     pub fn ServeHTTP(&self, writer: &mut dyn ResponseWriter, request: &Request) {

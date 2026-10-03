@@ -145,6 +145,10 @@ impl TaskManager for TestTaskManager {
             .lock()
             .expect("transferred-tasks lock poisoned")
             .extend_from_slice(tasks);
+        self.tasks
+            .lock()
+            .unwrap()
+            .retain(|id, _| !tasks.iter().any(|task| task.base.id == *id));
         Ok(())
     }
 

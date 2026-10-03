@@ -398,3 +398,52 @@ fn status_listener_downloads_plan_replayer_from_ext_storage() {
     storage.Close();
     std::fs::remove_dir_all(&root).expect("remove storage root");
 }
+
+#[test]
+fn maintenance_routes_reject_user_keyspace_before_runtime_access() {
+    struct UserDomain;
+    impl Domain for UserDomain {
+        fn server_id(&self) -> u64 {
+            1
+        }
+        fn start_timestamp(&self) -> i64 {
+            0
+        }
+        fn dxf_history_available(&self) -> bool {
+            false
+        }
+    }
+    let server = Server::new_test(
+        ServerConfig {
+            host: "127.0.0.1".into(),
+            port: 0,
+            status: StatusConfig {
+                report_status: true,
+                host: "127.0.0.1".into(),
+                port: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        Arc::new(Driver),
+    );
+    server.run(Arc::new(UserDomain)).unwrap();
+    let router = crate::http_status::build_status_router(server.clone());
+    for path in [
+        "/dxf/schedule/task_cleanup_batch_size",
+        "/dxf/schedule/max_concurrent_task",
+    ] {
+        for method in [Method::Get, Method::Post] {
+            let request = Request {
+                method,
+                path: path.into(),
+                query: HashMap::new(),
+                raw_query: String::new(),
+                headers: HashMap::new(),
+                body: vec![],
+            };
+            assert_eq!(router.handle(&request).status, 404);
+        }
+    }
+    server.close();
+}

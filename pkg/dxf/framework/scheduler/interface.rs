@@ -355,6 +355,13 @@ pub trait TaskManager: Send + Sync {
     fn all_tasks(&self) -> Result<Vec<TaskBase>>;
     fn all_subtasks(&self) -> Result<Vec<SubtaskBase>>;
     fn tasks_in_states(&self, states: &[TaskState]) -> Result<Vec<Task>>;
+    /// Finished tasks bounded by the owner-local cleanup setting.
+    fn cleanup_tasks(&self) -> Result<Vec<Task>> {
+        let mut tasks =
+            self.tasks_in_states(&[TASK_STATE_FAILED, TASK_STATE_REVERTED, TASK_STATE_SUCCEED])?;
+        tasks.truncate(crate::proto::GetTaskCleanupBatchSize() as usize);
+        Ok(tasks)
+    }
     fn task_by_id(&self, task_id: i64) -> Result<Task>;
     fn task_base_by_id(&self, task_id: i64) -> Result<TaskBase>;
     fn all_nodes(&self) -> Result<Vec<ManagedNode>>;

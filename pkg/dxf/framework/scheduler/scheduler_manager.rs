@@ -333,11 +333,10 @@ impl Manager {
 
     /// 对终态任务执行类型相关清理，再批量迁入历史表。
     pub fn cleanup_finished_tasks(&self) -> Result<usize> {
-        let mut tasks = self.task_manager.tasks_in_states(&[
-            TASK_STATE_FAILED,
-            TASK_STATE_REVERTED,
-            TASK_STATE_SUCCEED,
-        ])?;
+        let mut tasks = self.task_manager.cleanup_tasks()?;
+        if tasks.is_empty() {
+            return Ok(0);
+        }
         let mut cleaned = Vec::new();
         for task in &mut tasks {
             if let Some(factory) = get_scheduler_cleanup_factory(&task.base.task_type) {

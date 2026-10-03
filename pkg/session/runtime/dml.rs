@@ -3180,6 +3180,14 @@ impl ConcreteSession {
             }
             let original = row.clone();
             for (column, expression) in &plan.Assignments {
+                // Keep a selected CASE literal typed so batch DXF BLOB metadata
+                // follows the same conversion as a direct literal assignment.
+                let Some(expression) =
+                    crate::dml_runtime::CaseResult(expression, &row, None, &bit_columns)?
+                else {
+                    row.insert(column.clone(), None);
+                    continue;
+                };
                 let column_info = table.Columns.iter().find(|info| info.Name.L == *column);
                 let mut value = if let Some(column_info) =
                     column_info.filter(|_| is_typed_literal(expression))

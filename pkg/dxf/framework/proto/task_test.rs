@@ -195,3 +195,28 @@ fn test_task_base_get_runtime_slots() {
     assert_eq!(small.TotalCPU, 1);
     assert_eq!(small.TotalMem, 100);
 }
+
+#[test]
+fn test_task_cleanup_batch_size() {
+    assert_eq!(DefaultTaskCleanupBatchSize, 20);
+    assert_eq!(GetTaskCleanupBatchSize(), DefaultTaskCleanupBatchSize);
+    assert_eq!(TaskCleanupBatchSizeUpperBound, 1000);
+    let restore = SetTaskCleanupBatchSizeForTest(20);
+    for value in [0, 1001, i64::MIN, i64::MAX] {
+        assert!(
+            SetTaskCleanupBatchSize(value)
+                .unwrap_err()
+                .contains("task_cleanup_batch_size")
+        );
+        assert_eq!(GetTaskCleanupBatchSize(), 20);
+    }
+    for value in [1, 1000] {
+        SetTaskCleanupBatchSize(value).unwrap();
+        assert_eq!(GetTaskCleanupBatchSize(), value);
+    }
+    let restore_upper = SetTaskCleanupBatchSizeForTest(32);
+    assert_eq!(GetTaskCleanupBatchSize(), 32);
+    restore_upper();
+    assert_eq!(GetTaskCleanupBatchSize(), 1000);
+    restore();
+}

@@ -740,7 +740,25 @@ fn dxf_schedule_response(server: &Server, request: &Request) -> Response {
     dxf_response(writer)
 }
 
+fn dxf_maintenance_available(server: &Server) -> bool {
+    server
+        .domain()
+        .is_some_and(|domain| domain.dxf_history_available())
+}
+fn dxf_cleanup_batch_response(server: &Server, request: &Request) -> Response {
+    if !dxf_maintenance_available(server) {
+        return Response::text(404, "not found");
+    }
+    let handler = astersql_server_handler_tikvhandler::NewDXFTaskCleanupBatchSizeHandler();
+    let mut writer = DxfHttpResponseWriter::default();
+    handler.ServeHTTP(&mut writer, &dxf_request(request, HashMap::new()));
+    dxf_response(writer)
+}
+
 fn dxf_max_concurrent_response(server: &Server, request: &Request) -> Response {
+    if !dxf_maintenance_available(server) {
+        return Response::text(404, "not found");
+    }
     use astersql_server_handler_tikvhandler::NewDXFTaskMaxConcurrentHandler;
 
     let Some(runtime) = server.domain().and_then(|domain| domain.dxf_runtime()) else {
@@ -1963,6 +1981,11 @@ pub fn build_status_router(server: Arc<Server>) -> Router {
     router.add(
         "/dxf/schedule",
         Arc::new(move |request| dxf_schedule_response(&dxf_server, request)),
+    );
+    let dxf_server = Arc::clone(&server);
+    router.add(
+        "/dxf/schedule/task_cleanup_batch_size",
+        Arc::new(move |request| dxf_cleanup_batch_response(&dxf_server, request)),
     );
     let dxf_server = Arc::clone(&server);
     router.add(

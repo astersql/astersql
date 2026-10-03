@@ -1777,3 +1777,252 @@ fn canonical_history_http_preserves_failed_tasks() {
     let defaults = fetch("");
     assert_eq!(defaults["Items"].as_array().unwrap().len(), 5);
 }
+
+// Both tests change the process-wide owner-local cleanup setting.
+static CLEANUP_BATCH_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[test]
+fn cleanup_batch_http_validates_values_and_preserves_memory_setting() {
+    let _guard = CLEANUP_BATCH_TEST_LOCK.lock().unwrap();
+    use astersql_dxf_framework_proto as proto;
+    let restore = proto::SetTaskCleanupBatchSizeForTest(20);
+    let suite = super::http_handler_test::create_basic_http_handler_test_suite();
+    let path = "/dxf/schedule/task_cleanup_batch_size";
+    let get = suite.client.fetch_status(path).unwrap();
+    assert_eq!(get.status, 200);
+    assert_eq!(
+        get.text().unwrap(),
+        r#"{"task_cleanup_batch_size":20,"persistence":"memory_only"}"#
+    );
+    for value in ["", "aa", "0", "1001", "9223372036854775808"] {
+        let response = suite
+            .client
+            .post_status(
+                &format!("{path}?value={value}"),
+                "application/x-www-form-urlencoded",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(response.status, 400, "{value}");
+        assert_eq!(proto::GetTaskCleanupBatchSize(), 20);
+    }
+    for value in [1, 1000, 128] {
+        let response = suite
+            .client
+            .post_status(
+                &format!("{path}?value={value}"),
+                "application/x-www-form-urlencoded",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(response.status, 200);
+        assert!(
+            response
+                .text()
+                .unwrap()
+                .contains(&format!("\"task_cleanup_batch_size\":{value}"))
+        );
+        assert_eq!(proto::GetTaskCleanupBatchSize(), value);
+    }
+    let response = suite
+        .client
+        .post_status(
+            &format!("{path}?value=128"),
+            "application/x-www-form-urlencoded",
+            b"value=32",
+        )
+        .unwrap();
+    assert_eq!(response.status, 200);
+    assert_eq!(proto::GetTaskCleanupBatchSize(), 32);
+    restore();
+}
+
+#[test]
+fn batch_history_transfer_redacts_meta_and_keeps_adjacent_large_ids() {
+    let (domain, session) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let manager = session.ImportTaskManager().unwrap();
+    // Seed nonempty task/subtask rows in the real canonical SQL/KV backend.
+    let ids = [9007199254740992_i64, 9007199254740993, 9007199254740994];
+    for (index, id) in ids.iter().enumerate() {
+        session.execute(&format!("insert into mysql.tidb_global_task(id,task_key,type,state,step,priority,concurrency,create_time,target_scope,max_node_count,extra_params,keyspace,meta) values({id},'batch-{id}','Example','succeed',1,512,1,CURRENT_TIMESTAMP(),' ',0,'{{}}','SYSTEM','original-{index}')")).unwrap();
+        session.execute(&format!("insert into mysql.tidb_background_subtask(id,step,task_key,exec_id,meta,state,type,concurrency,ordinal,create_time,checkpoint,summary) values({},1,'{id}','tidb1','subtask-{index}','running',0,1,1,CURRENT_TIMESTAMP(),'{{}}','{{}}')",index+1)).unwrap();
+    }
+    let mut first = manager.GetTaskByID((), ids[0]).unwrap();
+    let mut third = manager.GetTaskByID((), ids[2]).unwrap();
+    first.Meta = b"redacted-first".to_vec();
+    third.Meta = vec![0, 255, 123, 125];
+    // Failure after the CASE update must roll back redaction on both tasks.
+    session.execute(&format!("insert into mysql.tidb_global_task_history select * from mysql.tidb_global_task where id={}",ids[0])).unwrap();
+    assert!(
+        manager
+            .TransferTasks2History((), vec![first.clone(), third.clone()])
+            .is_err()
+    );
+    assert_eq!(manager.GetTaskByID((), ids[0]).unwrap().Meta, b"original-0");
+    assert_eq!(manager.GetTaskByID((), ids[2]).unwrap().Meta, b"original-2");
+    assert_eq!(
+        manager
+            .ExecuteSQLWithNewSession(
+                (),
+                "select task_key from mysql.tidb_background_subtask",
+                vec![]
+            )
+            .unwrap()
+            .len(),
+        3
+    );
+    session
+        .execute("delete from mysql.tidb_global_task_history")
+        .unwrap();
+    manager
+        .TransferTasks2History((), vec![first, third])
+        .unwrap();
+    assert_eq!(
+        manager.GetTaskByIDWithHistory((), ids[0]).unwrap().Meta,
+        b"redacted-first"
+    );
+    assert_eq!(
+        manager.GetTaskByIDWithHistory((), ids[2]).unwrap().Meta,
+        vec![0, 255, 123, 125]
+    );
+    assert_eq!(manager.GetTaskByID((), ids[1]).unwrap().Meta, b"original-1");
+    assert!(manager.GetTaskByID((), ids[0]).is_err());
+    let rows = manager
+        .ExecuteSQLWithNewSession(
+            (),
+            "select task_key from mysql.tidb_background_subtask",
+            vec![],
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].GetString(0), ids[1].to_string());
+    let rows = manager
+        .ExecuteSQLWithNewSession(
+            (),
+            "select task_key from mysql.tidb_background_subtask_history order by id",
+            vec![],
+        )
+        .unwrap();
+    assert_eq!(
+        rows.iter().map(|row| row.GetString(0)).collect::<Vec<_>>(),
+        vec![ids[0].to_string(), ids[2].to_string()]
+    );
+    domain.close();
+}
+
+#[test]
+fn cleanup_query_drains_real_finished_tasks_in_batches() {
+    let _guard = CLEANUP_BATCH_TEST_LOCK.lock().unwrap();
+    use astersql_dxf_framework_proto as limits;
+    use astersql_dxf_framework_storage::proto;
+    let restore = limits::SetTaskCleanupBatchSizeForTest(2);
+    let (domain, session) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let manager = session.ImportTaskManager().unwrap();
+    for (index, state) in [
+        "failed", "succeed", "reverted", "failed", "succeed", "pending",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        session.execute(&format!("insert into mysql.tidb_global_task(id,task_key,type,state,step,priority,concurrency,create_time,target_scope,max_node_count,extra_params,keyspace,meta) values({},'cleanup-{index}','Example','{state}',1,512,1,CURRENT_TIMESTAMP(),' ',0,'{{}}','SYSTEM','nonempty')",index+1)).unwrap();
+    }
+    let mut states = Vec::new();
+    for count in [2, 2, 1, 0] {
+        let tasks = manager.GetCleanupTasks(()).unwrap();
+        assert_eq!(tasks.len(), count);
+        states.extend(tasks.iter().map(|task| task.State));
+        manager.TransferTasks2History((), tasks).unwrap();
+    }
+    states.sort();
+    assert_eq!(
+        states,
+        vec!["failed", "failed", "reverted", "succeed", "succeed"]
+    );
+    assert_eq!(
+        manager.GetTaskByID((), 6).unwrap().State,
+        proto::TaskStatePending
+    );
+    restore();
+    domain.close();
+}
+
+#[test]
+fn cleanup_maintenance_http_rejects_actual_user_keyspace() {
+    // Go skips this keyspace-specific case in the Classic kernel.
+    if !astersql_config_kerneltype::IsNextGen() {
+        return;
+    }
+    use astersql_server::server::{Server, ServerConfig, ServerDriver, StatusConfig};
+    use astersql_store_mockstore_mockstorage::{KVStore, KeyspaceMeta, NewMockStorage};
+    use std::sync::Arc;
+    struct Driver;
+    impl ServerDriver for Driver {
+        fn name(&self) -> &str {
+            "user-keyspace"
+        }
+    }
+    let store = Arc::try_unwrap(
+        NewMockStorage(
+            KVStore::NewMemoryWithWallClockTSO(),
+            Some(KeyspaceMeta {
+                Name: "user-keyspace".into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap(),
+    )
+    .ok()
+    .unwrap();
+    let domain = Arc::new(astersql_domain::Domain::new(
+        store,
+        Arc::new(astersql_domain::canonical_domain::KvInfoSchemaLoader::new()),
+        astersql_domain::DomainConfig {
+            schema_lease: std::time::Duration::ZERO,
+            stats_lease: std::time::Duration::ZERO,
+            ..Default::default()
+        },
+    ));
+    domain.init().unwrap();
+    let server = Server::new(
+        ServerConfig {
+            host: "127.0.0.1".into(),
+            port: 0,
+            status: StatusConfig {
+                report_status: true,
+                host: "127.0.0.1".into(),
+                port: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        Arc::new(Driver),
+    )
+    .unwrap();
+    server
+        .run(Arc::new(
+            astersql_server::runtime::CanonicalServerDomain::new(domain.clone()),
+        ))
+        .unwrap();
+    let router = astersql_server::http_status::build_status_router(server.clone());
+    for path in [
+        "/dxf/schedule/task_cleanup_batch_size",
+        "/dxf/schedule/max_concurrent_task",
+    ] {
+        for method in [
+            astersql_server::http_status::Method::Get,
+            astersql_server::http_status::Method::Post,
+        ] {
+            let request = astersql_server::http_status::Request {
+                method,
+                path: path.into(),
+                query: Default::default(),
+                raw_query: String::new(),
+                headers: Default::default(),
+                body: vec![],
+            };
+            assert_eq!(router.handle(&request).status, 404);
+        }
+    }
+    server.close();
+    domain.close();
+}

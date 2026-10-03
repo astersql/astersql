@@ -236,43 +236,39 @@ fn history_transfer_keeps_go_update_insert_delete_and_subtask_order() {
         )
         .unwrap();
     let calls = manager.calls();
-    assert_eq!(calls.len(), 8);
+    assert_eq!(calls.len(), 5);
     assert!(
         calls[0]
             .sql
-            .contains("update mysql.tidb_global_task set meta")
+            .contains("set meta = case id when %? then %? when %? then %? end")
     );
-    assert!(
-        calls[1]
-            .sql
-            .contains("update mysql.tidb_global_task set meta")
+    assert_eq!(
+        calls[0].args,
+        vec![
+            Value::Int(3),
+            Value::Bytes(vec![3]),
+            Value::Int(5),
+            Value::Bytes(vec![5])
+        ]
     );
-    assert!(calls[2].sql.contains("where id in(3, 5)"));
+    assert!(calls[1].sql.contains("where id in(3, 5)"));
     assert!(
-        calls[3]
+        calls[2]
             .sql
             .contains("delete from mysql.tidb_global_task where id in(3, 5)")
     );
     assert!(
+        calls[3]
+            .sql
+            .contains("insert into mysql.tidb_background_subtask_history")
+    );
+    assert!(calls[3].sql.contains("task_key in('3', '5')"));
+    assert!(
         calls[4]
             .sql
-            .contains("insert into mysql.tidb_background_subtask_history")
-    );
-    assert!(
-        calls[5]
-            .sql
             .contains("delete from mysql.tidb_background_subtask")
     );
-    assert!(
-        calls[6]
-            .sql
-            .contains("insert into mysql.tidb_background_subtask_history")
-    );
-    assert!(
-        calls[7]
-            .sql
-            .contains("delete from mysql.tidb_background_subtask")
-    );
+    assert!(calls[4].sql.contains("task_key in('3', '5')"));
 }
 
 #[test]
@@ -400,4 +396,28 @@ fn modify_task_validates_previous_state_and_updates_active_subtasks() {
     assert_eq!(calls.len(), 3);
     assert!(calls[2].sql.contains("state in (%?, %?, %?)"));
     assert_eq!(calls[2].args[0], Value::Int(6));
+}
+
+#[test]
+fn cleanup_query_binds_finished_states_and_batch_size() {
+    let manager = TaskManager::new();
+    manager.push_result(vec![task_row("{}", Cell::Null, "{}")]);
+    let rows = manager.GetCleanupTasks(()).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].ID, 42);
+    let call = &manager.calls()[0];
+    assert!(call.sql.ends_with("where state in (%?, %?, %?) limit %?"));
+    assert!(!call.sql.contains("order by"));
+    assert_eq!(
+        call.args,
+        vec![
+            Value::String("failed".into()),
+            Value::String("reverted".into()),
+            Value::String("succeed".into()),
+            Value::Int(20)
+        ]
+    );
+    let empty = TaskManager::new();
+    empty.TransferTasks2History((), vec![]).unwrap();
+    assert!(empty.calls().is_empty());
 }

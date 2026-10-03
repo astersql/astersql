@@ -604,6 +604,51 @@ fn eval_arithmetic_operand(
     Ok(value)
 }
 
+/// Select the first CASE result without converting its typed literal to text.
+/// DXF batch metadata updates must preserve bytes and exact integer task IDs.
+pub(crate) fn CaseResult<'a>(
+    expression: &'a ast::ExprNode,
+    row: &HashMap<String, Option<String>>,
+    incoming: Option<&HashMap<String, Option<String>>>,
+    bit_columns: &[String],
+) -> SessionResult<Option<&'a ast::ExprNode>> {
+    let ast::ExprKind::Case {
+        Value,
+        WhenClauses,
+        ElseClause,
+    } = &expression.Kind
+    else {
+        return Ok(Some(expression));
+    };
+    let case_value = Value
+        .as_ref()
+        .map(|value| EvalExprWithBitColumns(value, row, incoming, bit_columns))
+        .transpose()?;
+    for clause in WhenClauses {
+        let when_value = EvalExprWithBitColumns(&clause.Expr, row, incoming, bit_columns)?;
+        let matched = match case_value.as_ref() {
+            Some(case_value) => case_value
+                .as_deref()
+                .zip(when_value.as_deref())
+                .is_some_and(|(left, right)| {
+                    match (Decimal::from_str(left), Decimal::from_str(right)) {
+                        (Ok(left), Ok(right)) => left == right,
+                        _ => left == right,
+                    }
+                }),
+            None => when_value
+                .as_deref()
+                .map(|value| eval_decimal(value, "CASE condition").map(|value| !value.is_zero()))
+                .transpose()?
+                .unwrap_or(false),
+        };
+        if matched {
+            return Ok(Some(&clause.Result));
+        }
+    }
+    Ok(ElseClause.as_deref())
+}
+
 /// Evaluate a typed table-row expression without changing its string-valued uses.
 /// Callers provide BIT column names from table metadata, never inferred from text.
 pub fn EvalExprWithBitColumns(
@@ -633,6 +678,9 @@ pub fn EvalExprWithBitColumns(
             };
             Ok(Some(decimal_text(value)))
         }
+        ast::ExprKind::Case { .. } => CaseResult(expression, row, incoming, bit_columns)?
+            .map(|result| EvalExprWithBitColumns(result, row, incoming, bit_columns))
+            .unwrap_or(Ok(None)),
         ast::ExprKind::Column(column) => eval_column(column, row),
         ast::ExprKind::Parentheses(inner) => {
             EvalExprWithBitColumns(inner, row, incoming, bit_columns)

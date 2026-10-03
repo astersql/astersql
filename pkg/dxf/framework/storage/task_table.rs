@@ -968,6 +968,15 @@ impl TaskManager {
         Ok(res)
     }
 
+    /// Fetch finished tasks with the owner-local cleanup bound, without sorting.
+    pub fn GetCleanupTasks(&self, ctx: Context) -> Result<Vec<proto::Task>, Error> {
+        injectfailpoint::DXFRandomErrorWithOnePercent()?;
+        let rows = self.ExecuteSQLWithNewSession(ctx,
+            format!("select {} from mysql.tidb_global_task t where state in (%?, %?, %?) limit %?", TaskColumns),
+            vec![proto::TaskStateFailed.into(), proto::TaskStateReverted.into(), proto::TaskStateSucceed.into(), proto_crate::GetTaskCleanupBatchSize().into()])?;
+        Ok(rows.into_iter().map(Row2Task).collect())
+    }
+
     /// 按状态集合查询完整任务行。
     // GetTasksInStates gets the tasks in the states(order by priority asc, create_time acs, id asc).
     pub fn GetTasksInStates(
