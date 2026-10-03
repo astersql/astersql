@@ -1512,9 +1512,7 @@ impl ClientConn {
                     Err(ConnError::ServerShutdown)
                 }
             }
-            Command::ChangeUser => context
-                .change_user(payload, &cancel)
-                .and_then(|_| self.writeOK()),
+            Command::ChangeUser => self.handleChangeUser(payload),
             Command::ResetConnection => context
                 .reset_connection(&cancel)
                 .and_then(|_| self.writeOK()),
@@ -1897,6 +1895,141 @@ impl ClientConn {
     /// 无列则写 OK，否则写完整结果集。
     fn handleStmtResult(&self, result: QueryResult) -> ConnResult<()> {
         self.writeResultSet(&result)
+    }
+
+    /// Keep the old session alive until replacement authentication succeeds.
+    pub fn handleChangeUser(&self, mut data: &[u8]) -> ConnResult<()> {
+        fn take_string<'a>(data: &mut &'a [u8]) -> String {
+            let (value, remaining) = astersql_server_internal_util::ParseNullTermString(data);
+            *data = remaining;
+            String::from_utf8_lossy(value.unwrap_or_default()).into_owned()
+        }
+        let old_group = self.currentResourceGroupName();
+        let old_context = self.getCtx()?;
+        let old_user = self
+            .user
+            .read()
+            .map_err(|_| ConnError::Poisoned("user"))?
+            .clone();
+        let old_database = self
+            .database
+            .read()
+            .map_err(|_| ConnError::Poisoned("database"))?
+            .clone();
+        let old_plugin = self
+            .auth_plugin
+            .read()
+            .map_err(|_| ConnError::Poisoned("auth_plugin"))?
+            .clone();
+        let user = take_string(&mut data);
+        let pass_len = *data.first().ok_or(ConnError::MalformedPacket(
+            "change user password length missing",
+        ))? as usize;
+        data = &data[1..];
+        let auth = data
+            .get(..pass_len)
+            .ok_or(ConnError::MalformedPacket("change user password overflow"))?
+            .to_vec();
+        data = &data[pass_len..];
+        let database = take_string(&mut data);
+        let capability = self.capability.load(Ordering::Acquire);
+        if capability & CLIENT_PROTOCOL_41 != 0 && data.len() >= 2 {
+            data = &data[2..];
+        }
+        let plugin = if capability & CLIENT_PLUGIN_AUTH != 0 && !data.is_empty() {
+            take_string(&mut data)
+        } else {
+            String::new()
+        };
+        let mut response = HandshakeResponse {
+            capability,
+            auth,
+            auth_plugin: plugin,
+            database: database.clone(),
+            ..HandshakeResponse::default()
+        };
+        *self.user.write().map_err(|_| ConnError::Poisoned("user"))? = user;
+        *self
+            .database
+            .write()
+            .map_err(|_| ConnError::Poisoned("database"))? = database;
+        // Rust openSession is lazy: detach without closing to force a new context.
+        self.SetCtx(None)?;
+        let outcome = (|| {
+            // ConcreteSessionDriver selects its initial database during open_ctx.
+            // Delay that selection until authentication, as Go does in DoAuth.
+            let tls_state = self.getTLSState()?;
+            let new_context = self.server.driver().open_ctx(
+                self.connection_id.load(Ordering::Acquire),
+                capability,
+                self.collation.load(Ordering::Acquire) as u8,
+                "",
+                tls_state.as_ref(),
+            )?;
+            self.SetCtx(Some(new_context))?;
+            if !response.auth_plugin.is_empty() {
+                let original_auth = response.auth.clone();
+                self.handleAuthPlugin(&mut response)?;
+                if response.auth.is_empty() {
+                    response.auth = original_auth;
+                }
+            } else {
+                // The concrete driver uses the default plugin for legacy packets.
+                response.auth_plugin = AUTH_NATIVE_PASSWORD.to_owned();
+            }
+            self.openSessionAndDoAuth(&response)
+        })();
+        if let Err(error) = outcome {
+            if let Some(new_context) = self.getCtx()? {
+                if !old_context
+                    .as_ref()
+                    .is_some_and(|old| Arc::ptr_eq(old, &new_context))
+                {
+                    if let Err(close_error) = new_context.close() {
+                        astersql_util_logutil::log::background_logger()
+                            .debug(format!("close new context failed: {close_error}"));
+                    }
+                }
+            }
+            self.SetCtx(old_context)?;
+            *self.user.write().map_err(|_| ConnError::Poisoned("user"))? = old_user;
+            *self
+                .database
+                .write()
+                .map_err(|_| ConnError::Poisoned("database"))? = old_database;
+            *self
+                .auth_plugin
+                .write()
+                .map_err(|_| ConnError::Poisoned("auth_plugin"))? = old_plugin;
+            return Err(error);
+        }
+        if let Some(old_context) = old_context {
+            if let Err(error) = old_context.close() {
+                astersql_util_logutil::log::background_logger()
+                    .debug(format!("close old context failed: {error}"));
+            }
+        }
+        let new_group = self.currentResourceGroupName();
+        if old_group != new_group {
+            // Metrics are initialized once before serving connections.
+            unsafe {
+                if let Some(gauge) =
+                    (&*std::ptr::addr_of!(astersql_metrics::server::ConnGauge)).as_ref()
+                {
+                    gauge.with_label_values(&[&old_group]).dec();
+                    gauge.with_label_values(&[&new_group]).inc();
+                }
+            }
+        }
+        self.prepared_statements
+            .lock()
+            .map_err(|_| ConnError::Poisoned("prepared statements"))?
+            .clear();
+        self.prepared_columns
+            .lock()
+            .map_err(|_| ConnError::Poisoned("prepared columns"))?
+            .clear();
+        self.writeOK()
     }
 
     /// 切换当前数据库并更新本地缓存名。

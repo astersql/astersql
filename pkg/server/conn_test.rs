@@ -144,3 +144,143 @@ fn go_merge_139_cursor_consumer_only_synchronizes_response_bytes() {
     assert_eq!(metrics.TiKVCoprocessorResponseBytes(), 20);
     result.Close();
 }
+
+fn change_user_connection() -> (std::sync::Arc<ClientConn>, std::net::TcpStream) {
+    use std::io::{Read, Write};
+    use std::sync::Arc;
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(crate::runtime::ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        crate::runtime::BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let server = crate::server::Server::new_test(
+        crate::server::ServerConfig::default(),
+        Arc::new(crate::runtime::CanonicalServerDriver),
+    );
+    server
+        .set_connection_runtime(
+            driver,
+            Arc::new(crate::runtime::CanonicalConnectionDomain::new(domain)),
+        )
+        .unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut peer = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let (socket, _) = listener.accept().unwrap();
+    let connection = newClientConn(
+        server,
+        Box::new(crate::runtime::TcpPacketIo::new(socket, 32 << 20).unwrap()),
+        vec![7; 20],
+        false,
+    );
+    let handshake = std::thread::spawn(move || {
+        let mut header = [0; 4];
+        peer.read_exact(&mut header).unwrap();
+        let size =
+            usize::from(header[0]) | (usize::from(header[1]) << 8) | (usize::from(header[2]) << 16);
+        peer.read_exact(&mut vec![0; size]).unwrap();
+        let capability = (1_u32 << 9) | (1 << 15) | (1 << 19);
+        let mut response = capability.to_le_bytes().to_vec();
+        response.extend_from_slice(&(64_u32 << 20).to_le_bytes());
+        response.push(45);
+        response.extend_from_slice(&[0; 23]);
+        response.extend_from_slice(b"root\0\0mysql_native_password\0");
+        peer.write_all(&[response.len() as u8, 0, 0, 1]).unwrap();
+        peer.write_all(&response).unwrap();
+        peer
+    });
+    connection.handshake().unwrap();
+    let peer = handshake.join().unwrap();
+    let old = connection.getCtx().unwrap().unwrap();
+    let cancel = CancellationToken::new();
+    old.execute_query("CREATE DATABASE old_db", false, &cancel)
+        .unwrap();
+    connection.useDB("old_db", &cancel).unwrap();
+    old.execute_query("CREATE TABLE preserved (id INT)", false, &cancel)
+        .unwrap();
+    old.execute_query("INSERT INTO preserved VALUES (37)", false, &cancel)
+        .unwrap();
+    (connection, peer)
+}
+
+#[test]
+fn change_user_auth_failure_restores_old_session() {
+    let (connection, _peer) = change_user_connection();
+    let old = connection.getCtx().unwrap().unwrap();
+    let result = connection.dispatch(b"\x11missing_user\0\0new_db\0\0\0");
+    assert!(
+        matches!(result, Err(ConnError::AccessDenied { user, .. }) if user == "missing_user"),
+        "authentication must run before selecting the new database"
+    );
+    assert!(std::sync::Arc::ptr_eq(
+        &old,
+        &connection.getCtx().unwrap().unwrap()
+    ));
+    assert_eq!(old.user_identity().unwrap(), "root@%");
+    let (user, database, _) = connection.identity_snapshot();
+    assert_eq!(user, "root");
+    assert_eq!(database, "old_db");
+    let results = old
+        .execute_query("SELECT id FROM preserved", false, &CancellationToken::new())
+        .unwrap();
+    assert_eq!(results[0].rows[0][0].encode_text(), Some(b"37".to_vec()));
+    connection.Close().unwrap();
+}
+
+#[test]
+fn change_user_malformed_packet_preserves_identity() {
+    let (connection, _peer) = change_user_connection();
+    let old = connection.getCtx().unwrap().unwrap();
+    for packet in [
+        b"\x11new_user\0".as_slice(),
+        b"\x11new_user\0\x05x".as_slice(),
+    ] {
+        assert!(matches!(
+            connection.dispatch(packet),
+            Err(ConnError::MalformedPacket(_))
+        ));
+        assert!(std::sync::Arc::ptr_eq(
+            &old,
+            &connection.getCtx().unwrap().unwrap()
+        ));
+        assert_eq!(connection.identity_snapshot().0, "root");
+        assert_eq!(connection.identity_snapshot().1, "old_db");
+    }
+    connection.Close().unwrap();
+}
+
+#[test]
+fn change_user_plugin_exchange_failure_preserves_old_session() {
+    let (connection, peer) = change_user_connection();
+    let old = connection.getCtx().unwrap().unwrap();
+    peer.shutdown(std::net::Shutdown::Both).unwrap();
+    assert!(matches!(
+        connection.dispatch(b"\x11root\0\0old_db\0\0\0unknown\0"),
+        Err(ConnError::Io(_))
+    ));
+    assert!(std::sync::Arc::ptr_eq(
+        &old,
+        &connection.getCtx().unwrap().unwrap()
+    ));
+    assert_eq!(connection.identity_snapshot().0, "root");
+    old.execute_query("SELECT id FROM preserved", false, &CancellationToken::new())
+        .unwrap();
+    connection.Close().unwrap();
+}
+
+#[test]
+fn change_user_success_replaces_and_closes_old_session() {
+    let (connection, _peer) = change_user_connection();
+    let old = connection.getCtx().unwrap().unwrap();
+    connection.dispatch(b"\x11root\0\0old_db\0\0\0").unwrap();
+    let new = connection.getCtx().unwrap().unwrap();
+    assert!(!std::sync::Arc::ptr_eq(&old, &new));
+    assert!(
+        old.execute_query("SELECT 1", false, &CancellationToken::new())
+            .is_err()
+    );
+    let result = new
+        .execute_query("SELECT id FROM preserved", false, &CancellationToken::new())
+        .unwrap();
+    assert_eq!(result[0].rows[0][0].encode_text(), Some(b"37".to_vec()));
+    connection.Close().unwrap();
+}
