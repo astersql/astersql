@@ -1510,3 +1510,272 @@ fn importer_preserves_partition_and_common_handle_identity() {
     set.Add(&kb);
     assert_eq!(2, set.Len());
 }
+
+#[test]
+fn data_handler_reencodes_visible_columns_after_functional_index() {
+    use astersql_dxf_importinto_conflictedkv::{
+        ConflictKVPair, EncodedRowHandler, KVHandler, NewBaseHandler, NewDataKVHandler,
+    };
+    use astersql_executor_importer::{
+        CanonicalImportDatumConverter, NewTableDefinitionFromMeta, NewTableKVEncoderFromMeta,
+    };
+    use astersql_lightning_backend_encode::{Datum as InputDatum, EncodingConfig};
+    use astersql_meta_model::{ColumnInfo, IndexColumn, IndexInfo, StatePublic, ast};
+    use astersql_parser_mysql::r#type::{PriKeyFlag, TypeLonglong};
+    let mut columns = Vec::new();
+    for (offset, name) in ["id", "a", "_V$_uk_expr_0", "tail"].iter().enumerate() {
+        let mut column = ColumnInfo {
+            ID: offset as i64 + 1,
+            Offset: offset as isize,
+            Name: ast::NewCIStr(name),
+            State: StatePublic,
+            ..Default::default()
+        };
+        column.SetType(TypeLonglong);
+        if offset == 0 {
+            column.SetFlag(PriKeyFlag);
+        }
+        if offset == 2 {
+            column.Hidden = true;
+            column.GeneratedExprString = "a + 1".into();
+        }
+        columns.push(column);
+    }
+    let indices = [(2, "uk_expr", 2usize), (3, "uk_tail", 3usize)]
+        .into_iter()
+        .map(|(id, name, offset)| IndexInfo {
+            ID: id,
+            Name: ast::NewCIStr(name),
+            Unique: true,
+            State: StatePublic,
+            Columns: vec![IndexColumn {
+                Name: columns[offset].Name.clone(),
+                Offset: offset as isize,
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+        .collect();
+    let table = Arc::new(TableInfo {
+        ID: 70372,
+        Name: ast::NewCIStr("tf"),
+        PKIsHandle: true,
+        Columns: columns,
+        Indices: indices,
+        ..Default::default()
+    });
+    let config = EncodingConfig {
+        Table: Some(Arc::new(NewTableDefinitionFromMeta(&table).unwrap())),
+        UseIdentityAutoRowID: true,
+        ..Default::default()
+    };
+    let converter = Arc::new(CanonicalImportDatumConverter(
+        astersql_types::StrictContext.Flags(),
+    ));
+    let make_encoder = || {
+        let mut encoder = NewTableKVEncoderFromMeta(&config, &table, converter.clone()).unwrap();
+        // Use the existing generated-column execution program for a + 1.
+        // The hidden column is scratch space for its constant, then the sum.
+        // No result is hard-coded: a=10 yields 11 and a=30 yields 31.
+        use astersql_lightning_backend_kv::{GeneratedCol, GeneratedExpression};
+        encoder.BaseKVEncoder.GenCols = vec![
+            GeneratedCol {
+                Index: 2,
+                Expr: GeneratedExpression::Constant(1),
+            },
+            GeneratedCol {
+                Index: 2,
+                Expr: GeneratedExpression::Add(1, 2),
+            },
+        ];
+        encoder
+    };
+    let expression_value = |pairs: &Pairs| {
+        let pair = pairs
+            .Pairs
+            .iter()
+            .find(|pair| {
+                !astersql_tablecodec::IsRecordKey(&pair.key)
+                    && astersql_tablecodec::DecodeIndexID(astersql_tablecodec::kv::Key(
+                        pair.key.clone(),
+                    ))
+                    .unwrap()
+                        == 2
+            })
+            .unwrap();
+        astersql_tablecodec::DecodeIndexKey(astersql_tablecodec::kv::Key(pair.key.clone()))
+            .unwrap()
+            .2
+    };
+    for tail in [InputDatum::Int(100), InputDatum::Null] {
+        let input = vec![InputDatum::Int(1), InputDatum::Int(10), tail.clone()];
+        let mut fixture = make_encoder();
+        let expected = fixture.Encode(&input, 1).unwrap();
+        assert_eq!(expression_value(&expected), vec!["11".to_owned()]);
+        assert_eq!(
+            expected.Pairs.len(),
+            3,
+            "record, functional index and tail index"
+        );
+        let record = expected
+            .Pairs
+            .iter()
+            .find(|pair| astersql_tablecodec::IsRecordKey(&pair.key))
+            .unwrap();
+        struct Verify {
+            expected: Pairs,
+            tail: InputDatum,
+            handled: bool,
+        }
+        impl EncodedRowHandler for Verify {
+            fn HandleEncodedRow(
+                &mut self,
+                _: &ConflictContext,
+                _: &Key,
+                row: &[Datum],
+                pairs: &Pairs,
+            ) -> Result<(), String> {
+                assert_eq!(row.len(), 3);
+                assert_eq!(row[0].GetInt64(), 1);
+                assert_eq!(row[1].GetInt64(), 10);
+                assert_eq!(
+                    astersql_lightning_backend_kv::fromCanonicalDatum(&row[2], None).unwrap(),
+                    self.tail
+                );
+                let map = |pairs: &Pairs| {
+                    pairs
+                        .Pairs
+                        .iter()
+                        .map(|pair| (pair.key.clone(), pair.val.clone()))
+                        .collect::<std::collections::BTreeMap<_, _>>()
+                };
+                assert_eq!(map(pairs), map(&self.expected));
+                self.handled = true;
+                Ok(())
+            }
+        }
+        let pair = ConflictKVPair {
+            Key: Key(record.key.clone()),
+            Value: record.val.clone(),
+        };
+        let encoder = make_encoder();
+        let codec = crate::conflict_resolution::NewImporterConflictCodec(encoder, &table).unwrap();
+        let mut handler =
+            NewDataKVHandler(NewBaseHandler(table.clone(), "data", Box::new(codec), None));
+        let mut verify = Verify {
+            expected,
+            tail: tail.clone(),
+            handled: false,
+        };
+        handler
+            .Handle(&ConflictContext::default(), pair, &mut verify)
+            .unwrap();
+        assert!(verify.handled);
+        astersql_dxf_importinto_conflictedkv::Handler::Close(
+            &mut handler,
+            &ConflictContext::default(),
+            &mut verify,
+        )
+        .unwrap();
+        let second = fixture
+            .Encode(
+                &[
+                    InputDatum::Int(2),
+                    InputDatum::Int(10),
+                    match tail {
+                        InputDatum::Null => InputDatum::Null,
+                        _ => InputDatum::Int(200),
+                    },
+                ],
+                2,
+            )
+            .unwrap();
+        // At the ingest boundary global sort has captured both duplicate
+        // expression-index KVs. Record and tail-index KVs remain in TiKV.
+        // Supply those captured KVs at the production mpsc boundary and keep
+        // the real handler, snapshot, row codec and transactional deleter.
+        let mut ingested = HashMap::new();
+        let mut conflicts = Vec::new();
+        for pairs in [&verify.expected, &second] {
+            for pair in &pairs.Pairs {
+                if !astersql_tablecodec::IsRecordKey(&pair.key)
+                    && astersql_tablecodec::DecodeIndexID(astersql_tablecodec::kv::Key(
+                        pair.key.clone(),
+                    ))
+                    .unwrap()
+                        == 2
+                {
+                    conflicts.push(SortKvPair {
+                        key: pair.key.clone(),
+                        value: pair.val.clone(),
+                    });
+                } else {
+                    ingested.insert(
+                        pair.key.clone(),
+                        ValueEntry {
+                            Value: pair.val.clone(),
+                            CommitTs: 0,
+                        },
+                    );
+                }
+            }
+        }
+        assert_eq!(conflicts.len(), 2);
+        assert_eq!(conflicts[0].key, conflicts[1].key);
+        let rows = Arc::new(Mutex::new(ingested));
+        let codec =
+            crate::conflict_resolution::NewImporterConflictCodec(make_encoder(), &table).unwrap();
+        let progress = Arc::new(ResolutionCounter::default());
+        let mut deleter = astersql_dxf_importinto_conflictedkv::NewDeleter(
+            table.clone(),
+            Arc::new(ResolutionStore(rows.clone())),
+            "2",
+            Box::new(codec),
+            Some(progress.clone()),
+            None,
+        );
+        let (sender, receiver) = std::sync::mpsc::channel();
+        for pair in conflicts {
+            sender
+                .send(ConflictKVPair {
+                    Key: Key(pair.key),
+                    Value: pair.value,
+                })
+                .unwrap();
+        }
+        drop(sender);
+        deleter.Run(&ConflictContext::default(), &receiver).unwrap();
+        assert_eq!(progress.0.load(Ordering::SeqCst), 2);
+        assert!(
+            rows.lock().unwrap().is_empty(),
+            "all record and tail index keys must be removed"
+        );
+        let replacement = fixture
+            .Encode(
+                &[
+                    InputDatum::Int(3),
+                    InputDatum::Int(30),
+                    InputDatum::Int(100),
+                ],
+                3,
+            )
+            .unwrap();
+        assert_eq!(expression_value(&replacement), vec!["31".to_owned()]);
+        let mut inserted = rows.lock().unwrap();
+        for pair in replacement.Pairs {
+            assert!(
+                inserted
+                    .insert(
+                        pair.key,
+                        ValueEntry {
+                            Value: pair.val,
+                            CommitTs: 0
+                        }
+                    )
+                    .is_none()
+            );
+        }
+        assert_eq!(inserted.len(), 3);
+        fixture.Close().unwrap();
+    }
+}

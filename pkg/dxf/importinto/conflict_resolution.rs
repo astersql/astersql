@@ -527,6 +527,7 @@ pub struct ImporterConflictCodec {
     keyspace: Vec<u8>,
     encoder: TableKVEncoder,
     decoder: backend_kv::TableKVDecoder,
+    visible_column_offsets: Vec<usize>,
 }
 
 #[allow(non_snake_case)]
@@ -561,6 +562,12 @@ pub fn NewImporterConflictCodecWithOptions(
         encoder,
         decoder,
         keyspace: Vec::new(),
+        visible_column_offsets: table
+            .Columns
+            .iter()
+            .enumerate()
+            .filter_map(|(offset, column)| (!column.Hidden).then_some(offset))
+            .collect(),
     })
 }
 
@@ -626,7 +633,13 @@ impl ConflictRowCodec for ImporterConflictCodec {
             backend_kv::Handle::Common(keys)
         };
         let (row, _) = self.decoder.DecodeRawRowData(&decoded_handle, value)?;
-        row.iter().map(backend_kv::toCanonicalDatum).collect()
+        // The importer encoder accepts VisibleCols(), while the decoder keeps
+        // physical offsets for hidden functional-index columns. Project only
+        // after decoding so a later visible column retains its value (or NULL).
+        self.visible_column_offsets
+            .iter()
+            .map(|&offset| backend_kv::toCanonicalDatum(&row[offset]))
+            .collect()
     }
 
     fn DecodeTableID(&self, key: &Key) -> i64 {
