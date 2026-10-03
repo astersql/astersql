@@ -331,3 +331,69 @@ mod statistics;
 mod storage;
 #[path = "runtime_test/typed_adapter_bridge.rs"]
 mod typed_adapter_bridge;
+
+#[test]
+fn alter_database_emits_crucial_operation_without_general_log() {
+    use astersql_util_logutil::log::{LogField, background_logger};
+    let (_domain, mut session) = crate::runtime::CreateAnalyzeSession().unwrap();
+    session.configure_connection(190019, 0, 46).unwrap();
+    session.execute("CREATE DATABASE lifecycle_audit").unwrap();
+    session.execute("USE lifecycle_audit").unwrap();
+    let logger = background_logger();
+    use astersql_sessionctx_vardef::ProcessGeneralLog;
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            ProcessGeneralLog.Store(self.0);
+        }
+    }
+    let _restore = Restore(ProcessGeneralLog.Load());
+    ProcessGeneralLog.Store(false);
+    for sql in [
+        "ALTER DATABASE lifecycle_audit CHARACTER SET utf8mb4",
+        "ALTER DATABASE nonexistent_lifecycle_audit CHARACTER SET utf8mb4",
+    ] {
+        ProcessGeneralLog.Store(sql.contains("nonexistent_lifecycle_audit"));
+        let general = astersql_util_logutil::log::general_logger();
+        let result = session.execute(sql);
+        assert!(!general.entries().iter().any(|entry| {
+            entry.message == "GENERAL_LOG"
+                && entry
+                    .fields
+                    .contains(&LogField::String("sql".into(), sql.into()))
+        }));
+        if sql.contains("nonexistent_lifecycle_audit") {
+            assert!(result.is_err());
+        } else {
+            result.unwrap();
+        }
+        let entries = logger.entries();
+        let entry = entries
+            .iter()
+            .find(|entry| {
+                entry.message == "CRUCIAL OPERATION"
+                    && entry
+                        .fields
+                        .contains(&LogField::String("sql".into(), sql.into()))
+            })
+            .expect("ALTER DATABASE audit on success and failure");
+        assert_eq!(entry.level, LogLevel::Info);
+        assert!(entry.fields.contains(&LogField::U64("conn".into(), 190019)));
+        assert!(
+            entry
+                .fields
+                .contains(&LogField::String("cur_db".into(), "lifecycle_audit".into()))
+        );
+        assert!(
+            entry
+                .fields
+                .iter()
+                .any(|field| matches!(field, LogField::I64(key, _) if key == "schemaVersion"))
+        );
+        assert!(
+            entry
+                .fields
+                .contains(&LogField::String("user".into(), String::new()))
+        );
+    }
+}

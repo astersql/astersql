@@ -981,3 +981,117 @@ fn local_infile_deadlock_returns_original_error_and_keeps_tcp_sequence() {
     client.join().unwrap();
     context.close().unwrap();
 }
+
+#[test]
+fn connection_lifecycle_logs_current_user_and_remote_address() {
+    use astersql_sessionctx_vardef::EnableConnectionEventLog;
+    use astersql_util_logutil::log::{LogField, background_logger};
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            EnableConnectionEventLog.Store(self.0);
+        }
+    }
+    let _restore = Restore(EnableConnectionEventLog.Load());
+    let (mut peer, socket) = tcp_pair();
+    let remote = peer.local_addr().unwrap().to_string();
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let server = crate::server::Server::new_test(
+        crate::server::ServerConfig::default(),
+        Arc::new(crate::runtime::CanonicalServerDriver),
+    );
+    server
+        .set_connection_runtime(driver, Arc::new(CanonicalConnectionDomain::new(domain)))
+        .unwrap();
+    let connection = crate::conn::newClientConn(
+        server,
+        Box::new(TcpPacketIo::new(socket, 32 * 1024 * 1024).unwrap()),
+        vec![7; 20],
+        false,
+    );
+    let handshake = thread::spawn(move || {
+        let mut header = [0; 4];
+        peer.read_exact(&mut header).unwrap();
+        let mut greeting = vec![
+            0;
+            usize::from(header[0])
+                | (usize::from(header[1]) << 8)
+                | (usize::from(header[2]) << 16)
+        ];
+        peer.read_exact(&mut greeting).unwrap();
+        let capability = (1_u32 << 7) | (1 << 9) | (1 << 15) | (1 << 19);
+        let mut response = capability.to_le_bytes().to_vec();
+        response.extend_from_slice(&(64_u32 << 20).to_le_bytes());
+        response.push(45);
+        response.extend_from_slice(&[0; 23]);
+        response.extend_from_slice(b"root\0\0mysql_native_password\0");
+        peer.write_all(&[response.len() as u8, 0, 0, 1]).unwrap();
+        peer.write_all(&response).unwrap();
+        peer
+    });
+    connection.handshake().unwrap();
+    let _peer = handshake.join().unwrap();
+    let logger = background_logger();
+    EnableConnectionEventLog.Store(true);
+    assert!(matches!(
+        connection.dispatch(&[Command::Quit as u8]),
+        Err(ConnError::ClientQuit)
+    ));
+    let matching = || {
+        logger
+            .entries()
+            .into_iter()
+            .filter(|entry| {
+                entry.message == "connection event"
+                    && entry
+                        .fields
+                        .contains(&LogField::String("remoteAddr".into(), remote.clone()))
+            })
+            .collect::<Vec<_>>()
+    };
+    let entries = matching();
+    assert_eq!(entries.len(), 1);
+    assert!(
+        entries[0]
+            .fields
+            .contains(&LogField::U64("conn".into(), connection.connection_id()))
+    );
+    assert!(
+        entries[0]
+            .fields
+            .contains(&LogField::String("event".into(), "logout".into()))
+    );
+    assert!(
+        entries[0]
+            .fields
+            .contains(&LogField::String("user".into(), "root@%".into()))
+    );
+    EnableConnectionEventLog.Store(false);
+    assert!(matches!(
+        connection.dispatch(&[Command::Quit as u8]),
+        Err(ConnError::ClientQuit)
+    ));
+    assert_eq!(matching().len(), 1);
+
+    connection.Close().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn connection_event_remote_address_preserves_unix_socket_address() {
+    let (socket, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+    let expected = socket
+        .peer_addr()
+        .unwrap()
+        .as_pathname()
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let packet = crate::runtime::UnixPacketIo::new(socket, 1024).unwrap();
+    assert_eq!(packet.peer_addr().unwrap().0, "localhost");
+    assert_eq!(packet.remote_addr().unwrap(), expected);
+    assert_ne!(packet.remote_addr().unwrap(), "localhost");
+}

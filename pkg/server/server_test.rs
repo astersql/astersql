@@ -486,3 +486,96 @@ fn postgres_listener_lifecycle() {
     assert!(blocked.listener_addr().is_none());
     assert!(blocked.postgres_listener_addr().is_none());
 }
+
+#[test]
+fn connection_events_log_success_and_quit_but_not_rejected_handshakes() {
+    use astersql_sessionctx_vardef::EnableConnectionEventLog;
+    use astersql_util_logutil::log::{LogField, LogLevel, background_logger};
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            EnableConnectionEventLog.Store(self.0);
+        }
+    }
+    let _restore = Restore(EnableConnectionEventLog.Load());
+    EnableConnectionEventLog.Store(true);
+    let server = start_real_server();
+    let logger = background_logger();
+    let mut stream = TcpStream::connect(server.listener_addr().unwrap()).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let remote = stream.local_addr().unwrap().to_string();
+    root_handshake(&mut stream);
+    write_packet(&mut stream, 0, &[1]);
+    // EOF proves the worker logged QUIT and closed the connection.
+    assert_eq!(stream.read(&mut [0; 1]).unwrap(), 0);
+    let entries = logger.entries();
+    let events = entries
+        .iter()
+        .filter(|entry| {
+            entry.message == "connection event"
+                && entry
+                    .fields
+                    .contains(&LogField::String("remoteAddr".into(), remote.clone()))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(events.len(), 2);
+    for (entry, event) in events.iter().zip(["login_success", "logout"]) {
+        assert_eq!(entry.level, LogLevel::Info);
+        assert!(
+            entry
+                .fields
+                .contains(&LogField::String("event".into(), event.into()))
+        );
+        assert!(
+            entry
+                .fields
+                .contains(&LogField::String("user".into(), "root@%".into()))
+        );
+    }
+    let mut rejected = TcpStream::connect(server.listener_addr().unwrap()).unwrap();
+    rejected
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let rejected_remote = rejected.local_addr().unwrap().to_string();
+    assert_eq!(read_packet(&mut rejected)[0], 10);
+    let capability = (1_u32 << 9) | (1 << 15) | (1 << 19);
+    let mut response = capability.to_le_bytes().to_vec();
+    response.extend_from_slice(&(64_u32 << 20).to_le_bytes());
+    response.push(45);
+    response.extend_from_slice(&[0; 23]);
+    response.extend_from_slice(b"denied\0\0mysql_native_password\0");
+    write_packet(&mut rejected, 1, &response);
+    assert_eq!(rejected.read(&mut [0; 1]).unwrap(), 0);
+    assert!(
+        !logger
+            .entries()
+            .iter()
+            .any(|entry| entry.message == "connection event"
+                && entry.fields.contains(&LogField::String(
+                    "remoteAddr".into(),
+                    rejected_remote.clone()
+                )))
+    );
+    EnableConnectionEventLog.Store(false);
+    let mut disabled = TcpStream::connect(server.listener_addr().unwrap()).unwrap();
+    disabled
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let disabled_remote = disabled.local_addr().unwrap().to_string();
+    root_handshake(&mut disabled);
+    write_packet(&mut disabled, 0, &[1]);
+    assert_eq!(disabled.read(&mut [0; 1]).unwrap(), 0);
+    assert!(
+        !logger
+            .entries()
+            .iter()
+            .any(|entry| entry.message == "connection event"
+                && entry.fields.contains(&LogField::String(
+                    "remoteAddr".into(),
+                    disabled_remote.clone()
+                )))
+    );
+    server.close();
+}

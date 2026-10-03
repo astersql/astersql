@@ -658,7 +658,25 @@ impl ConcreteSession {
 
     /// Emit the Go `logGeneralQuery` field contract after execution, when the
     /// statement transaction has acquired its real StartTS.
-    fn log_general_query(&self, _statement: &dyn ast::Node, sql: &str) {
+    fn log_general_query(&self, statement: &dyn ast::Node, sql: &str) {
+        if statement.as_any().is::<ast::AlterDatabaseStmt>() {
+            use astersql_util_logutil::log::{LogField, LogLevel, background_logger};
+            background_logger().log(
+                LogLevel::Info,
+                "CRUCIAL OPERATION",
+                vec![
+                    LogField::U64("conn".into(), self.connection_id()),
+                    LogField::I64(
+                        "schemaVersion".into(),
+                        self.domain.info_schema().SchemaMetaVersion(),
+                    ),
+                    LogField::String("cur_db".into(), self.current_database()),
+                    LogField::String("sql".into(), statement.Text()),
+                    LogField::String("user".into(), self.authenticated_user_string()),
+                ],
+            );
+            return;
+        }
         if !astersql_sessionctx_vardef::ProcessGeneralLog.Load()
             || self.state.borrow().in_restricted_sql
         {
@@ -834,6 +852,19 @@ impl ConcreteSession {
                 .set_schema_coordinator(Arc::downgrade(&coordinator));
         }
         self.session_manager = Some(manager);
+    }
+
+    /// Go UserIdentity.String uses the matched account host for audit logging.
+    pub fn authenticated_user_string(&self) -> String {
+        self.login_user
+            .as_ref()
+            .map(|user| {
+                format!(
+                    "{user}@{}",
+                    self.authenticated_host.as_deref().unwrap_or("%")
+                )
+            })
+            .unwrap_or_default()
     }
 
     /// 鉴权完成后写入 Go `SessionVars.User` 及 PROCESS 权限判断结果。

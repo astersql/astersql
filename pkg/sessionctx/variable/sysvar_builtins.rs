@@ -1479,6 +1479,20 @@ fn register_getters_and_defaults() {
     }));
     RegisterSysVar(general_log);
 
+    let mut connection_log = bool_var(
+        vardef::TiDBEnableConnectionEventLog,
+        vardef::DefTiDBEnableConnectionEventLog,
+        vardef::ScopeGlobal,
+    );
+    connection_log.SetGlobal = Some(Arc::new(|_, _, value| {
+        vardef::EnableConnectionEventLog.Store(TiDBOptOn(value));
+        Ok(())
+    }));
+    connection_log.GetGlobal = Some(Arc::new(|_, _| {
+        Ok(BoolToOnOff(vardef::EnableConnectionEventLog.Load()))
+    }));
+    RegisterSysVar(connection_log);
+
     for (name, value) in [
         ("tidb_pprof_sql_cpu", "0"),
         ("tidb_expensive_query_time_threshold", "60"),

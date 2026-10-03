@@ -726,6 +726,17 @@ pub trait PacketIo: Send {
     fn set_compression(&mut self, algorithm: CompressionAlgorithm, zstd_level: i32);
     fn upgrade_to_tls(&mut self) -> ConnResult<TlsState>;
     fn peer_addr(&self) -> ConnResult<(String, String)>;
+    /// Wire address for logs; Unix sockets retain their actual path, not the authentication host.
+    fn remote_addr(&self) -> ConnResult<String> {
+        let (host, port) = self.peer_addr()?;
+        Ok(if port.is_empty() {
+            host
+        } else if host.contains(':') {
+            format!("[{host}]:{port}")
+        } else {
+            format!("{host}:{port}")
+        })
+    }
     fn local_addr(&self) -> ConnResult<(String, String)>;
     fn connection_alive(&self) -> bool;
     /// 返回无需获取 PacketIo 写锁即可关闭底层传输的控制句柄。
@@ -744,6 +755,9 @@ pub struct SessionProcessSnapshot {
 }
 
 pub trait TiDBContext: Send + Sync {
+    fn user_identity(&self) -> ConnResult<String> {
+        Ok(String::new())
+    }
     /// Read-only canonical schema metadata, independent of client protocol.
     fn schema_snapshot(&self) -> Option<astersql_infoschema::SchemaRef> {
         None
@@ -1422,6 +1436,36 @@ impl ClientConn {
         }
     }
 
+    /// Emit connection events only when the global switch is enabled.
+    pub(crate) fn log_connection_event(&self, event: &str) {
+        if !astersql_sessionctx_vardef::EnableConnectionEventLog.Load() {
+            return;
+        }
+        use astersql_util_logutil::log::{LogField, LogLevel, background_logger};
+        let user = self
+            .getCtx()
+            .ok()
+            .flatten()
+            .and_then(|ctx| ctx.user_identity().ok())
+            .unwrap_or_default();
+        let remote = self
+            .packet
+            .lock()
+            .ok()
+            .and_then(|packet| packet.remote_addr().ok())
+            .unwrap_or_default();
+        background_logger().log(
+            LogLevel::Info,
+            "connection event",
+            vec![
+                LogField::U64("conn".into(), self.connection_id()),
+                LogField::String("event".into(), event.into()),
+                LogField::String("user".into(), user),
+                LogField::String("remoteAddr".into(), remote),
+            ],
+        );
+    }
+
     /// 按 COM_* 命令分发到查询、预处理语句或管理命令处理函数。
     pub fn dispatch(&self, data: &[u8]) -> ConnResult<()> {
         let (&opcode, payload) = data
@@ -1451,7 +1495,10 @@ impl ClientConn {
         context.set_process_info(&process_info, opcode);
 
         let result = match command {
-            Command::Quit => Err(ConnError::ClientQuit),
+            Command::Quit => {
+                self.log_connection_event("logout");
+                Err(ConnError::ClientQuit)
+            }
             Command::InitDb => self.useDB(&sql, &cancel).and_then(|_| self.writeOK()),
             Command::Query => self.handleQuery(&sql, &cancel),
             Command::FieldList => self.handleFieldList(payload),

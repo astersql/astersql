@@ -261,3 +261,29 @@ fn ddl_fast_and_dist_reorg_flags_use_go_defaults_and_global_hooks() {
         }
     }
 }
+
+#[test]
+fn connection_event_log_global_hooks() {
+    crate::register_builtin_sysvars();
+    let var =
+        GetSysVar("tidb_enable_connection_event_log").expect("connection event global variable");
+    assert_eq!(var.Value, "OFF");
+    assert_eq!(var.Scope, vardef::ScopeGlobal);
+    let mut vars = SessionVars::new(Box::new(NoopAccessor));
+    let original = var.GetGlobal.as_ref().unwrap()(&Context, &mut vars).unwrap();
+    for value in ["ON", "OFF"] {
+        var.SetGlobalFromHook(&Context, &mut vars, value, false)
+            .unwrap();
+        assert_eq!(vardef::EnableConnectionEventLog.Load(), value == "ON");
+        assert_eq!(
+            var.GetGlobal.as_ref().unwrap()(&Context, &mut vars).unwrap(),
+            value
+        );
+    }
+    assert!(
+        var.Validate(&mut vars, "invalid", vardef::ScopeGlobal)
+            .is_err()
+    );
+    var.SetGlobalFromHook(&Context, &mut vars, &original, false)
+        .unwrap();
+}

@@ -1256,6 +1256,7 @@ impl Server {
                         .expect("pending clients lock poisoned")
                         .remove(&connection_id);
                 } else {
+                    connection.log_connection_event("login_success");
                     server
                         .pending_clients
                         .write()

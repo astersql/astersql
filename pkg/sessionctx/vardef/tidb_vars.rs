@@ -2580,3 +2580,9 @@ pub fn GetDefaultTxnAssertionLevel() -> &'static str {
     }
     AssertionOffStr
 }
+
+/// Controls Info-level connection login and logout events.
+pub const TiDBEnableConnectionEventLog: &str = "tidb_enable_connection_event_log";
+pub const DefTiDBEnableConnectionEventLog: bool = false;
+pub static EnableConnectionEventLog: AtomicBoolValue =
+    AtomicBoolValue::new(DefTiDBEnableConnectionEventLog);

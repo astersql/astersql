@@ -368,6 +368,18 @@ impl PacketIo for UnixPacketIo {
         Ok(("localhost".to_owned(), String::new()))
     }
 
+    fn remote_addr(&self) -> ConnResult<String> {
+        self.stream
+            .peer_addr()
+            .map(|address| {
+                address
+                    .as_pathname()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            })
+            .map_err(packet_error)
+    }
+
     fn local_addr(&self) -> ConnResult<(String, String)> {
         Ok(("localhost".to_owned(), String::new()))
     }
@@ -726,6 +738,9 @@ struct ConcreteTiDBContext {
 }
 
 pub(crate) enum SessionRequest {
+    UserIdentity {
+        response: mpsc::SyncSender<String>,
+    },
     SetAuthenticatedUser {
         username: String,
         has_process_privilege: bool,
@@ -846,6 +861,9 @@ fn run_session_worker(
     let mut results = super::protocol_result::WorkerResults::new(result_sender);
     while let Ok(request) = requests.recv() {
         match request {
+            SessionRequest::UserIdentity { response } => {
+                let _ = response.send(session.authenticated_user_string());
+            }
             #[cfg(test)]
             SessionRequest::WriteDuration { response } => {
                 let _ = response.send(session.LastWriteSQLRespDurationForTest());
@@ -1462,6 +1480,12 @@ impl ConcreteTiDBContext {
 }
 
 impl TiDBContext for ConcreteTiDBContext {
+    fn user_identity(&self) -> ConnResult<String> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::UserIdentity { response: tx })?;
+        rx.recv().map_err(packet_error)
+    }
+
     fn schema_snapshot(&self) -> Option<astersql_infoschema::SchemaRef> {
         Some(self.domain.info_schema())
     }
