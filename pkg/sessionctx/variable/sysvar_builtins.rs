@@ -1434,6 +1434,13 @@ fn register_getters_and_defaults() {
     );
     enable_paging.Hidden = true;
     RegisterSysVar(enable_paging);
+    RegisterSysVar(unsigned_var(
+        vardef::TiDBPagingSizeBytes,
+        vardef::DefPagingSizeBytes as u64,
+        vardef::ScopeGlobal,
+        0,
+        i64::MAX as u64,
+    ));
     RegisterSysVar(string_var(
         "tidb_memory_debug_mode_min_heap_inuse",
         "0",

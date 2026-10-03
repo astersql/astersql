@@ -2531,3 +2531,26 @@ fn paging_runtime_grants_are_consumed_by_sql_select_requests() {
     );
     session.Execute("rollback").unwrap();
 }
+
+#[test]
+fn paging_byte_budget_default_reset_through_sql() {
+    use crate::testutil::TestSession;
+    let session = canonical_dml_session();
+    for (set_sql, expected) in [
+        (None, "0"),
+        (Some("set global tidb_paging_size_bytes=4194304"), "4194304"),
+        (Some("set global tidb_paging_size_bytes=default"), "0"),
+        (Some("set global tidb_paging_size_bytes=0"), "0"),
+        (Some("set global tidb_paging_size_bytes=4194304"), "4194304"),
+        (Some("set global tidb_paging_size_bytes=default"), "0"),
+    ] {
+        if let Some(sql) = set_sql {
+            session.Execute(sql).unwrap();
+        }
+        let mut rows = session
+            .Execute("select @@global.tidb_paging_size_bytes")
+            .unwrap();
+        assert_eq!(rows[0].Next().unwrap(), Some(vec![expected.to_owned()]));
+        assert!(rows[0].Next().unwrap().is_none());
+    }
+}

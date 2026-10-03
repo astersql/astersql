@@ -287,3 +287,37 @@ fn connection_event_log_global_hooks() {
     var.SetGlobalFromHook(&Context, &mut vars, &original, false)
         .unwrap();
 }
+
+#[test]
+fn paging_byte_budget_defaults_to_disabled() {
+    crate::register_builtin_sysvars();
+    let variable = GetSysVar(vardef::TiDBPagingSizeBytes)
+        .expect("paging DEFAULT must resolve through the production registry");
+    assert_eq!(variable.Value, "0");
+    assert_eq!(variable.Scope, vardef::ScopeGlobal);
+    assert_eq!(variable.Type, vardef::TypeUnsigned);
+    let vars = crate::session::SessionVars::default();
+    assert_eq!(
+        vars.GetHintSystemVar(vardef::TiDBPagingSizeBytes).unwrap(),
+        "0"
+    );
+    for value in ["4194304", "0"] {
+        let (normalized, warnings) = vars
+            .ValidateAndSetGlobalSystemVar(vardef::TiDBPagingSizeBytes, value, vardef::ScopeGlobal)
+            .unwrap();
+        assert_eq!(normalized, value);
+        assert!(warnings.is_empty());
+    }
+    let default = crate::sysvar::GlobalSystemVariableInitialValue(&variable.Name, &variable.Value);
+    assert_eq!(default, "0");
+    assert_eq!(
+        vars.ValidateAndSetGlobalSystemVar(
+            vardef::TiDBPagingSizeBytes,
+            &default,
+            vardef::ScopeGlobal,
+        )
+        .unwrap()
+        .0,
+        "0"
+    );
+}
