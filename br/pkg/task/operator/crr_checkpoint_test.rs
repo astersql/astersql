@@ -35,8 +35,8 @@ use crate::config::{
 };
 use crate::crr_checkpoint::{
     NewCRRCheckpointService, buildObjectSyncChecker, buildResumeStateStore,
-    checkCRRExternalStorage, etcdGRPCBackoffConfig, etcdKeepaliveParams, newEtcdClientConfig,
-    storageResumeStateStore,
+    checkCRRExternalStorage, dialEtcdWithCfgAndFactory, etcdGRPCBackoffConfig, etcdKeepaliveParams,
+    newEtcdClientConfig, storageResumeStateStore,
 };
 use crate::stubs::{
     Config, ExternalReader, ExternalStorage, ExternalWriter, FixedSyncChecker, FlagSet, LockFile,
@@ -281,4 +281,86 @@ fn test_build_object_sync_checker() {
         "err={}",
         err.msg
     );
+}
+
+#[test]
+#[ignore = "requires ASTER_ETCD_TEST_ENDPOINT for a real etcd server"]
+fn crr_dial_writes_to_keyspace_metadata_group() {
+    use astersql_metaservice::{
+        Context, DialKeyspaceMeta, MetaServiceError, MetadataPdClient, PdClient, PdClientFactory,
+        PdMember,
+    };
+    struct Pd(String);
+    impl PdClient for Pd {
+        fn get_all_members(
+            &self,
+            _: &Context,
+        ) -> std::result::Result<Vec<PdMember>, MetaServiceError> {
+            panic!("dedicated group")
+        }
+    }
+    impl MetadataPdClient for Pd {
+        fn load_keyspace(
+            &self,
+            _: &Context,
+            name: &str,
+        ) -> std::result::Result<Option<DialKeyspaceMeta>, MetaServiceError> {
+            assert_eq!(name, "ks5");
+            Ok(Some(DialKeyspaceMeta {
+                id: 46,
+                name: name.into(),
+                config: [
+                    (astersql_metaservice::GROUP_ID_KEY.into(), "group5".into()),
+                    (astersql_metaservice::GROUP_ADDRS_KEY.into(), self.0.clone()),
+                    (
+                        astersql_metaservice::GC_MANAGEMENT_TYPE_KEY.into(),
+                        "keyspace_level".into(),
+                    ),
+                ]
+                .into(),
+            }))
+        }
+        fn close(&self) {}
+    }
+    let endpoint = std::env::var("ASTER_ETCD_TEST_ENDPOINT").unwrap();
+    let pd = Arc::new(Pd(endpoint.clone()));
+    let captured = pd.clone();
+    let factory: PdClientFactory = Arc::new(move |_, _, _| Ok(captured.clone()));
+    let client = dialEtcdWithCfgAndFactory(
+        &Default::default(),
+        &Config {
+            KeyspaceName: "ks5".into(),
+            PD: vec!["invalid-pd:2379".into()],
+            ..Default::default()
+        },
+        Some(&factory),
+    )
+    .unwrap();
+    client
+        .metadata
+        .as_ref()
+        .unwrap()
+        .put("/crr-key", b"1".to_vec(), None)
+        .unwrap();
+    let raw = astersql_metaservice::NewEtcdClientFromPDClient(
+        &Default::default(),
+        pd.as_ref(),
+        None,
+        &[endpoint],
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        raw.get("/keyspaces/tidb/46/crr-key", false).unwrap()[0].1,
+        b"1"
+    );
+    client
+        .metadata
+        .as_ref()
+        .unwrap()
+        .delete("/crr-key")
+        .unwrap();
+    client.Close().unwrap();
+    assert!(client.is_closed());
+    raw.close().unwrap();
 }

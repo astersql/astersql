@@ -15,6 +15,7 @@ lane = 0
 
 # arm64 darwin: no kv/domain/kvproto/grpcio. Local traits/stubs only.
 [dependencies]
+astersql-metaservice = { path = "../../../../pkg/metaservice" }
 astersql-objstore = { package = "astersql-objstore", path = "../../../../pkg/objstore" }
 base64 = "0.22"
 regex = "1"

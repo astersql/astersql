@@ -240,3 +240,9 @@ mod schema_test;
 #[cfg(test)]
 #[path = "store_manager_test.rs"]
 mod store_manager_test;
+
+pub mod metadata_register;
+pub use metadata_register::*;
+#[cfg(test)]
+#[path = "metadata_register_test.rs"]
+mod metadata_register_test;

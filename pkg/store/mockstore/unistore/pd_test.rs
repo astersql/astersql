@@ -424,3 +424,57 @@ fn mock_pd_loads_keyspace_by_id() {
     discovery.remove_client_conn("127.0.0.1:2379");
     assert_eq!(discovery.service_urls(), urls);
 }
+
+#[test]
+fn service_discovery_normalizes_injected_unix_and_http_addresses() {
+    let discovery = NewMockPDServiceDiscovery(vec![
+        "invalid_pd_address".into(),
+        "127.0.0.1:2379".into(),
+        "https://pd.example:2379".into(),
+        "unix://localhost:m0".into(),
+    ]);
+    let expected = [
+        "http://127.0.0.1:2379",
+        "https://pd.example:2379",
+        "unix://localhost:m0",
+    ];
+    assert_eq!(discovery.service_urls(), expected);
+    assert_eq!(
+        discovery
+            .all_service_clients()
+            .iter()
+            .map(|c| c.address())
+            .collect::<Vec<_>>(),
+        expected
+    );
+}
+
+#[test]
+fn member_listing_uses_injected_addresses_and_first_member_as_leader() {
+    let (rpc, client, cluster) = New(
+        "",
+        vec!["127.0.0.1:2379".into(), "unix://localhost:m0".into()],
+        NULL_KEYSPACE_ID,
+        vec![],
+    )
+    .unwrap();
+    let response = client.get_all_members();
+    assert_eq!(response.members.len(), 2);
+    assert_eq!(response.members[0].member_id, 1);
+    assert_eq!(response.members[1].member_id, 2);
+    assert_eq!(response.members[0].client_urls, ["http://127.0.0.1:2379"]);
+    assert_eq!(response.members[1].client_urls, ["unix://localhost:m0"]);
+    assert_eq!(response.leader, Some(response.members[0].clone()));
+    assert_eq!(
+        client.service_discovery().service_urls(),
+        response
+            .members
+            .iter()
+            .map(|member| member.client_urls[0].clone())
+            .collect::<Vec<_>>()
+    );
+    drop((rpc, cluster));
+    let (_, empty, _) = New("", vec![], NULL_KEYSPACE_ID, vec![]).unwrap();
+    assert_eq!(empty.get_all_members().members, []);
+    assert!(empty.get_all_members().leader.is_none());
+}

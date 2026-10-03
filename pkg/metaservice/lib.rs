@@ -22,3 +22,10 @@ pub use metamanager::*;
 #[cfg(test)]
 #[path = "migration_aster_unit_test.rs"]
 mod migration_aster_unit_test;
+
+pub mod dial;
+pub use dial::*;
+
+#[cfg(test)]
+#[path = "dial_test.rs"]
+mod dial_test;

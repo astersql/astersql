@@ -12,6 +12,7 @@ go-package = "pkg/store/mockstore/unistore"
 legacy-tasks = ["task-845", "task-849", "task-850"]
 
 [dependencies]
+astersql-util = { path = "../../../util" }
 "astersql-store-mockstore-unistore-config" = { package = "astersql-store-mockstore-unistore-config", path = "config" }
 "astersql-store-mockstore-unistore-server" = { package = "astersql-store-mockstore-unistore-server", path = "server" }
 "astersql-store-mockstore-unistore-tikv" = { package = "astersql-store-mockstore-unistore-tikv", path = "tikv" }

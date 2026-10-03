@@ -225,3 +225,43 @@ pub const KeyOpDefaultRetryCnt: usize = KEY_OP_DEFAULT_RETRY_COUNT;
 #[allow(non_upper_case_globals)]
 /// Go 风格常量别名：重试间隔。
 pub const KeyOpRetryInterval: Duration = KEY_OP_RETRY_INTERVAL;
+
+/// Namespaced KV operations used by the store's existing etcd client.
+impl NamespacedClient<etcd_client::Client> {
+    pub async fn put(
+        &mut self,
+        key: Vec<u8>,
+        value: Vec<u8>,
+        options: Option<etcd_client::PutOptions>,
+    ) -> Result<etcd_client::PutResponse, etcd_client::Error> {
+        let key = self.prefixed_key(key);
+        self.inner.put(key, value, options).await
+    }
+    pub async fn get(
+        &mut self,
+        key: Vec<u8>,
+        prefix: bool,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, etcd_client::Error> {
+        let key = self.prefixed_key(key);
+        let response = self
+            .inner
+            .get(
+                key,
+                prefix.then(|| etcd_client::GetOptions::new().with_prefix()),
+            )
+            .await?;
+        Ok(response
+            .kvs()
+            .iter()
+            .map(|kv| {
+                (
+                    kv.key()
+                        .strip_prefix(self.namespace_prefix.as_slice())
+                        .unwrap_or(kv.key())
+                        .to_vec(),
+                    kv.value().to_vec(),
+                )
+            })
+            .collect())
+    }
+}

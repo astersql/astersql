@@ -143,6 +143,8 @@ pub trait KvClient: Send + Sync {
 #[derive(Debug, thiserror::Error)]
 pub enum CdcError {
     #[error("etcd request failed: {0}")]
+    KvRequest(String),
+    #[error("etcd request failed: {0}")]
     Http(#[from] reqwest::Error),
     #[error("invalid base64 in etcd response: {0}")]
     Base64(#[from] base64::DecodeError),

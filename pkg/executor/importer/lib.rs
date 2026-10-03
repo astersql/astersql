@@ -76,3 +76,7 @@ mod sampler_test;
 mod table_import_test;
 #[cfg(test)]
 mod table_import_testkit_test;
+
+#[cfg(test)]
+#[path = "meta_service_group_test.rs"]
+mod meta_service_group_test;

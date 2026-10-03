@@ -85,8 +85,6 @@ fn migration_parse_url_matches_go_table() {
 
     for raw in [
         "ftp://example.com",
-        "unix://localhost:m0",
-        "unix://localhost",
         "http://example.com:8080:extra",
         "https://:8080",
         "http://",
@@ -249,4 +247,67 @@ fn migration_get_info_and_combined_lookup_match_go() {
         get_info_and_group_addrs(&Context::default(), pd.as_ref(), Some(&meta)).unwrap();
     assert_eq!(info.pd_addrs, ["127.0.0.1:2379"]);
     assert_eq!(group_addrs, ["127.0.0.1:2388", "127.0.0.1:2389"]);
+}
+
+#[test]
+fn member_discovery_skips_invalid_urls_and_preserves_unix_schemes() {
+    for (with_scheme, expected) in [
+        (
+            false,
+            vec![
+                "pd.example:2379",
+                "unix:///tmp/pd.sock",
+                "unixs://localhost:m0",
+            ],
+        ),
+        (
+            true,
+            vec![
+                "https://pd.example:2379",
+                "unix:///tmp/pd.sock",
+                "unixs://localhost:m0",
+            ],
+        ),
+    ] {
+        let pd = MockPdClient::with_responses(vec![Ok(vec![
+            member(&[
+                "http://invalid",
+                "https://pd.example:2379",
+                "unix:///tmp/pd.sock",
+            ]),
+            member(&["ftp://invalid:2379", "unixs://localhost:m0"]),
+        ])]);
+        assert_eq!(
+            super::get_pd_addrs(&Context::default(), &pd, with_scheme).unwrap(),
+            expected
+        );
+    }
+    let pd = MockPdClient::with_responses(vec![Ok(vec![member(&[
+        "http://invalid",
+        "ftp://invalid:2379",
+    ])])]);
+    assert!(matches!(
+        super::get_pd_addrs(&Context::default(), &pd, false),
+        Err(MetaServiceError::NoUsablePdUrl)
+    ));
+}
+
+#[test]
+fn service_url_alias_supports_unix_and_rejects_paths() {
+    for (raw, scheme, address) in [
+        ("unix://localhost:m0", "unix://", "localhost:m0"),
+        ("unix:///tmp/pd.sock", "unix://", "/tmp/pd.sock"),
+        ("unixs:///tmp/pd.sock", "unixs://", "/tmp/pd.sock"),
+    ] {
+        assert_eq!(parse_url(raw).unwrap(), (scheme.into(), address.into()));
+        let pd = Arc::new(MockPdClient::with_responses(vec![Ok(vec![member(&[raw])])]));
+        assert_eq!(
+            new_client(None, Some(pd))
+                .unwrap()
+                .GetPDServiceURLs(&Context::default())
+                .unwrap(),
+            [raw]
+        );
+    }
+    assert!(parse_url("http://localhost:2379/path").is_err());
 }

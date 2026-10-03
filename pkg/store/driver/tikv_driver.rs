@@ -664,6 +664,7 @@ impl TiKVDriver {
             backend,
             client_runtime,
             coprocessor_store,
+            metadata_snapshot: None,
         }));
         cache.insert(uuid, Arc::downgrade(&store));
         Ok(TikvStore { inner: store })
@@ -711,6 +712,11 @@ impl fmt::Debug for TikvStore {
 }
 
 /// Store 内部可变状态。
+struct MetadataSnapshot {
+    pd: Arc<dyn astersql_metaservice::MetadataPdClient>,
+    meta: Option<astersql_metaservice::DialKeyspaceMeta>,
+}
+
 struct TikvStoreInner {
     /// 缓存键 / 唯一标识。
     uuid: String,
@@ -740,6 +746,7 @@ struct TikvStoreInner {
     client_runtime: Option<Arc<RwLock<ClientRuntime>>>,
     /// 标准 DAG transport 与 AsterSQL 既有 RegionCache 的唯一组装实例。
     coprocessor_store: Option<Arc<astersql_store_copr::Store>>,
+    metadata_snapshot: Option<Arc<MetadataSnapshot>>,
 }
 
 /// MVCC 版本号包装（通常为时间戳）。
@@ -893,6 +900,9 @@ impl TikvStore {
                 return Ok(());
             }
             inner.closed = true;
+            if let Some(metadata) = inner.metadata_snapshot.take() {
+                metadata.pd.close();
+            }
             (
                 inner.uuid.clone(),
                 inner.cluster_id,
@@ -988,31 +998,80 @@ impl TikvStore {
         self.inner.lock().unwrap().keyspace.clone()
     }
 
-    /// Resolve the numeric PD keyspace ID used by etcd's TiDB namespace.
-    pub fn etcd_namespace(&self) -> Result<String, DriverError> {
-        let keyspace = self.GetKeyspace();
-        if keyspace.is_empty() {
-            return Ok(String::new());
+    /// Resolve and retain complete PD metadata for the store's transaction keyspace.
+    fn metadata_snapshot(
+        &self,
+    ) -> Result<Arc<MetadataSnapshot>, astersql_metaservice::MetaServiceError> {
+        use astersql_metaservice::{ConnectMetadataPD, Context, MetaServiceError, PdSecurity};
+        {
+            let inner = self.inner.lock().unwrap();
+            if inner.closed {
+                return Err(MetaServiceError::Pd("TiKV store is closed".into()));
+            }
+            if let Some(snapshot) = &inner.metadata_snapshot {
+                return Ok(snapshot.clone());
+            }
         }
         let tls = self.TLSConfig();
         let security = tls
-            .as_ref()
-            .map(|tls| astersql_store_copr::NetworkSecurity {
-                ca_path: tls.ca_path.clone(),
-                cert_path: tls.cert_path.clone(),
-                key_path: tls.key_path.clone(),
-            });
-        let client = astersql_store_copr::NetworkPdKeyspaceClient::connect(
-            &self.GetPDAddrs()?,
-            security.as_ref(),
-            Duration::from_secs(5),
-            "astersql-server-info",
-        )
-        .map_err(|error| DriverError::Backend(error.to_string()))?;
-        let id = client
-            .load_keyspace(&keyspace)
+            .map(|tls| PdSecurity {
+                ca: tls.ca_path,
+                cert: tls.cert_path,
+                key: tls.key_path,
+            })
+            .unwrap_or_default();
+        let pd = ConnectMetadataPD(
+            &Context::default(),
+            &self
+                .GetPDAddrs()
+                .map_err(|error| MetaServiceError::Pd(error.to_string()))?,
+            &security,
+        )?;
+        let name = self.GetKeyspace();
+        let meta = if name.is_empty() {
+            None
+        } else {
+            match pd.load_keyspace(&Context::default(), &name) {
+                Ok(Some(meta)) => Some(meta),
+                Ok(None) => {
+                    pd.close();
+                    return Err(MetaServiceError::Pd(format!(
+                        "keyspace meta not found for keyspace {name:?}"
+                    )));
+                }
+                Err(error) => {
+                    pd.close();
+                    return Err(error);
+                }
+            }
+        };
+        let snapshot = Arc::new(MetadataSnapshot { pd, meta });
+        let mut inner = self.inner.lock().unwrap();
+        if inner.closed {
+            snapshot.pd.close();
+            return Err(MetaServiceError::Pd("TiKV store is closed".into()));
+        }
+        if let Some(existing) = &inner.metadata_snapshot {
+            snapshot.pd.close();
+            return Ok(existing.clone());
+        }
+        inner.metadata_snapshot = Some(snapshot.clone());
+        Ok(snapshot)
+    }
+
+    /// Resolve the numeric PD keyspace ID used by etcd's TiDB namespace.
+    pub fn etcd_namespace(&self) -> Result<String, DriverError> {
+        if self.GetKeyspace().is_empty() {
+            return Ok(String::new());
+        }
+        let metadata = self
+            .metadata_snapshot()
             .map_err(|error| DriverError::Backend(error.to_string()))?;
-        Ok(format!("/keyspaces/tidb/{id}"))
+        Ok(metadata
+            .meta
+            .as_ref()
+            .map(|meta| format!("/keyspaces/tidb/{}", meta.id))
+            .unwrap_or_default())
     }
 
     /// 本地锁存容量（未启用则为 `None`）。
@@ -1186,4 +1245,23 @@ pub fn newSafePointKV(
     tls_config: Option<&TlsConfig>,
 ) -> Result<SafePointKvSetup, DriverError> {
     backend.new_safe_point_kv(cluster_id, keyspace, tls_config)
+}
+
+impl astersql_metaservice::EtcdMetadataStore for TikvStore {
+    fn pd_client(
+        &self,
+    ) -> Result<
+        Arc<dyn astersql_metaservice::MetadataPdClient>,
+        astersql_metaservice::MetaServiceError,
+    > {
+        Ok(self.metadata_snapshot()?.pd.clone())
+    }
+    fn keyspace_meta(
+        &self,
+    ) -> Result<
+        Option<astersql_metaservice::DialKeyspaceMeta>,
+        astersql_metaservice::MetaServiceError,
+    > {
+        Ok(self.metadata_snapshot()?.meta.clone())
+    }
 }

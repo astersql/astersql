@@ -161,7 +161,25 @@ impl TableImporterService for HostTableImporterService {
         maximum_ids: &HashMap<AllocatorType, i64>,
         plan: &Plan,
     ) -> Result<(), String> {
-        self.Host.RebaseAllocatorBases(maximum_ids, plan)
+        let store = self
+            .Host
+            .AllocatorMetadataStore()
+            .ok_or_else(|| "TiKV store does not expose PD client".to_owned())?;
+        let endpoints = self
+            .Host
+            .RuntimeConfig()
+            .PDAddress
+            .split(',')
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        RebaseAllocatorsWithMetadata(
+            store.as_ref(),
+            &endpoints,
+            self.Host.AllocatorEtcdConfig()?,
+            maximum_ids,
+            plan,
+            |client| self.Host.NewAllocatorRebaseBindings(client),
+        )
     }
     fn RemoteChecksumTableBySQL(
         &self,
@@ -178,4 +196,75 @@ impl TableImporterService for HostTableImporterService {
     fn AllocatorMaximums(&self) -> HashMap<AllocatorType, i64> {
         self.Host.AllocatorMaximums()
     }
+}
+
+/// Run the existing allocator implementation with discovery scoped to the store's metadata group.
+pub fn RebaseAllocatorsWithMetadata(
+    store: &dyn astersql_metaservice::EtcdMetadataStore,
+    caller_endpoints: &[String],
+    config: astersql_metaservice::EtcdDialConfig,
+    maximum_ids: &HashMap<AllocatorType, i64>,
+    plan: &Plan,
+    bindings: impl FnOnce(
+        &astersql_metaservice::NamespacedEtcdClient,
+    ) -> Result<crate::AllocatorRebaseBindings, String>,
+) -> Result<(), String> {
+    use astersql_lightning_common as common;
+    let table = plan
+        .DesiredTableInfo
+        .as_ref()
+        .ok_or_else(|| "import plan has no target table metadata".to_owned())?;
+    let client = crate::newEtcdClientForAllocatorRebase(
+        &Default::default(),
+        Some(store),
+        caller_endpoints,
+        config,
+    )?;
+    let bindings = bindings(&client);
+    let result = match &bindings {
+        Err(error) => Err(error.clone()),
+        Ok(bindings) => {
+            let table = common::TableInfo {
+                ID: table.ID,
+                Name: table.Name.O.clone(),
+                Version: table.Version as u16,
+                HasAutoRowID: !table.PKIsHandle && !table.IsCommonHandle,
+                HasAutoIncrement: table.GetAutoIncrementColInfo().is_some(),
+                HasAutoRandom: table.ContainsAutoRandomBits(),
+                SeparateAutoIncrement: table.SepAutoInc(),
+                AutoIncrementUnsigned: table.IsAutoIncColUnsigned(),
+                AutoRandomUnsigned: table.IsAutoRandomBitColUnsigned(),
+            };
+            let bases = maximum_ids
+                .iter()
+                .map(|(kind, base)| {
+                    (
+                        match kind {
+                            AllocatorType::RowIDAllocType => common::AllocatorType::RowID,
+                            AllocatorType::AutoIncrementType => {
+                                common::AllocatorType::AutoIncrement
+                            }
+                            AllocatorType::AutoRandomType => common::AllocatorType::AutoRandom,
+                        },
+                        *base,
+                    )
+                })
+                .collect();
+            common::RebaseTableAllocators(
+                &common::Context::Background(),
+                &bases,
+                Some(bindings.Requirement.as_ref()),
+                plan.DBID,
+                &table,
+            )
+            .map_err(|error| error.to_string())
+        }
+    };
+    if let Err(error) = client.close() {
+        eprintln!("close allocator metadata client: {error}");
+    }
+    if let Ok(bindings) = bindings {
+        (bindings.ResetConnection)();
+    }
+    result
 }

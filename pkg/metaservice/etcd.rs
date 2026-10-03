@@ -16,7 +16,7 @@
 // etcd / PD 元数据服务客户端：解析 PD 成员 URL 并带回退重试。
 //
 // PD（Placement Driver）是集群调度与成员发现中心；本模块持有调用方传入的 etcd 客户端
-// 与 PD 客户端，提供 GetPDAddrs / GetPDHttpAddrs，并在拉取成员失败时指数退避重试。
+// 与 PD 客户端，提供 GetPDAddrs / GetPDServiceURLs，并在拉取成员失败时指数退避重试。
 
 use super::{MetaServiceError, ServiceClient};
 use std::any::Any;
@@ -33,9 +33,17 @@ const REGION_MISS_BACKOFF_CAP_MS: u64 = 500;
 pub struct Context {
     /// 取消标志；`cancel` 写入后查询循环应尽快退出。
     cancelled: Arc<(Mutex<bool>, Condvar)>,
+    cancellation_checker: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
 }
 
 impl Context {
+    /// Retain cancellation from an owning component without a polling thread.
+    pub fn with_cancellation_checker(checker: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+        Self {
+            cancellation_checker: Some(Arc::new(checker)),
+            ..Default::default()
+        }
+    }
     /// 标记上下文已取消。
     pub fn cancel(&self) {
         let (cancelled, wake) = &*self.cancelled;
@@ -48,6 +56,13 @@ impl Context {
 
     /// 是否已被取消。
     pub fn is_cancelled(&self) -> bool {
+        if self
+            .cancellation_checker
+            .as_ref()
+            .is_some_and(|checker| checker())
+        {
+            return true;
+        }
         let (cancelled, _) = &*self.cancelled;
         *cancelled
             .lock()
@@ -56,6 +71,17 @@ impl Context {
 
     /// 等待一次退避；取消时立即唤醒并返回 false。
     fn wait_backoff(&self, duration: Duration) -> bool {
+        if self.cancellation_checker.is_some() {
+            let deadline = std::time::Instant::now() + duration;
+            while !self.is_cancelled() {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    return true;
+                }
+                std::thread::sleep(remaining.min(Duration::from_millis(10)));
+            }
+            return false;
+        }
         let (cancelled, wake) = &*self.cancelled;
         let cancelled = cancelled
             .lock()
@@ -144,6 +170,11 @@ impl Client {
         self.get_pd_addrs(ctx)
     }
 
+    /// Return service URLs, including HTTP and Unix-family schemes.
+    pub fn GetPDServiceURLs(&self, ctx: &Context) -> Result<Vec<String>, MetaServiceError> {
+        self.get_pd_service_urls(ctx)
+    }
+
     /// Go 兼容名：返回带 http/https scheme 的 PD 地址列表。
     #[allow(non_snake_case)]
     pub fn GetPDHttpAddrs(&self, ctx: &Context) -> Result<Vec<String>, MetaServiceError> {
@@ -187,22 +218,14 @@ pub fn get_pd_addrs(
 
         match pd_client.get_all_members(ctx) {
             Ok(members) => {
-                // 每个成员取首个 client_url，解析后按需拼接 scheme。
                 let mut addresses = Vec::new();
                 for member in members {
-                    let Some(raw_url) = member.client_urls.first() else {
-                        continue;
-                    };
-                    let (prefix, host_port) =
-                        parse_url(raw_url).map_err(|source| MetaServiceError::PdMemberUrl {
-                            url: raw_url.clone(),
-                            source: Box::new(source),
-                        })?;
-                    addresses.push(if with_scheme {
-                        format!("{prefix}{host_port}")
-                    } else {
-                        host_port
-                    });
+                    for raw_url in member.client_urls {
+                        if let Ok(endpoint) = astersql_util::service_url::ParseServiceURL(&raw_url)
+                        {
+                            addresses.push(endpoint.Endpoint(with_scheme));
+                        }
+                    }
                 }
                 if addresses.is_empty() {
                     return Err(MetaServiceError::NoUsablePdUrl);
@@ -228,98 +251,11 @@ pub fn get_pd_addrs(
     }
 }
 
-/// 解析 PD client URL：仅接受 http/https，且必须含显式端口；返回 (scheme 前缀, authority)。
+/// Parse a dialable service URL, retaining Unix socket addresses verbatim.
 pub fn parse_url(raw_url: &str) -> Result<(String, String), MetaServiceError> {
-    let parsed = match url::Url::parse(raw_url) {
-        Ok(parsed) => parsed,
-        // Go net/url accepts an all-decimal port of any magnitude, while the
-        // url crate rejects values above u16::MAX. Replace only that port for
-        // structural validation, then return the caller's original authority.
-        Err(url::ParseError::InvalidPort) => {
-            let scheme_end = raw_url
-                .find("://")
-                .ok_or(MetaServiceError::InvalidUrlFormat)?;
-            let authority_start = scheme_end + 3;
-            let authority_end = raw_url[authority_start..]
-                .find(['/', '?', '#'])
-                .map_or(raw_url.len(), |offset| authority_start + offset);
-            let authority = &raw_url[authority_start..authority_end];
-            let host_port_offset = authority.rfind('@').map_or(0, |offset| offset + 1);
-            let host_port = &authority[host_port_offset..];
-            let port_offset = if host_port.starts_with('[') {
-                host_port
-                    .find(']')
-                    .and_then(|closing| {
-                        host_port
-                            .get(closing + 1..)?
-                            .strip_prefix(':')
-                            .map(|_| closing + 2)
-                    })
-                    .ok_or(MetaServiceError::InvalidUrlFormat)?
-            } else {
-                host_port
-                    .rfind(':')
-                    .map(|offset| offset + 1)
-                    .ok_or(MetaServiceError::InvalidUrlFormat)?
-            };
-            let port = &host_port[port_offset..];
-            if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
-                return Err(MetaServiceError::InvalidUrlFormat);
-            }
-
-            let port_start = authority_start + host_port_offset + port_offset;
-            let mut validation_url = String::with_capacity(raw_url.len() - port.len() + 1);
-            validation_url.push_str(&raw_url[..port_start]);
-            validation_url.push('1');
-            validation_url.push_str(&raw_url[authority_end..]);
-            url::Url::parse(&validation_url).map_err(|_| MetaServiceError::InvalidUrlFormat)?
-        }
-        Err(_) => return Err(MetaServiceError::InvalidUrlFormat),
-    };
-    let prefix = match parsed.scheme() {
-        "http" => "http://",
-        "https" => "https://",
-        _ => return Err(MetaServiceError::InvalidUrlPrefix),
-    };
-
-    // 从原始字符串截取 authority（host[:port] 或 [ipv6]:port），去掉 userinfo。
-    let authority = raw_url
-        .split_once("://")
-        .map(|(_, remainder)| remainder)
-        .and_then(|remainder| remainder.split(['/', '?', '#']).next())
-        .ok_or(MetaServiceError::InvalidUrlFormat)?;
-    let authority = authority
-        .rsplit_once('@')
-        .map_or(authority, |(_, host)| host);
-    let _host = parsed
-        .host_str()
-        .filter(|host| !host.is_empty())
-        .ok_or(MetaServiceError::InvalidUrlFormat)?;
-
-    // IPv6 用方括号包裹，端口紧跟 `]`；IPv4/域名用最后一个 `:` 分隔端口。
-    let port = if authority.starts_with('[') {
-        let closing = authority
-            .find(']')
-            .ok_or(MetaServiceError::InvalidUrlFormat)?;
-        authority
-            .get(closing + 1..)
-            .and_then(|suffix| suffix.strip_prefix(':'))
-    } else {
-        let (authority_host, port) = authority
-            .rsplit_once(':')
-            .ok_or(MetaServiceError::InvalidUrlFormat)?;
-        if authority_host.contains(':') {
-            return Err(MetaServiceError::InvalidUrlFormat);
-        }
-        Some(port)
-    }
-    .filter(|port| !port.is_empty())
-    .ok_or(MetaServiceError::InvalidUrlFormat)?;
-    if !port.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(MetaServiceError::InvalidUrlFormat);
-    }
-
-    Ok((prefix.to_owned(), authority.to_owned()))
+    let endpoint = astersql_util::service_url::ParseServiceURL(raw_url)
+        .map_err(|error| MetaServiceError::ServiceUrl(error.to_string()))?;
+    Ok((endpoint.SchemePrefix(), endpoint.Address().to_owned()))
 }
 
 /// Go 兼容构造函数名。

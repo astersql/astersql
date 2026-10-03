@@ -85,3 +85,32 @@ async fn test_new_etcd_cli_get_etcd_addrs() {
     // 无存储时客户端构造应短路为 None，避免发起实际连接。
     assert!(NewEtcdCli(None).await.unwrap().is_none());
 }
+
+#[tokio::test]
+#[ignore = "requires ASTER_ETCD_TEST_ENDPOINT for a real etcd server"]
+async fn new_etcd_cli_uses_metadata_group_and_codec_namespace_for_kv() {
+    let endpoint = std::env::var("ASTER_ETCD_TEST_ENDPOINT").unwrap();
+    let store = MockEtcdBackend {
+        pd_addrs: vec!["invalid-pd:2379".into()],
+        meta_addrs: vec![endpoint.clone()],
+        codec: BasicCodec {
+            api_version: ApiVersion::V2,
+            keyspace_id: 42,
+        },
+    };
+    let mut client = NewEtcdCli(Some(&store)).await.unwrap().unwrap();
+    client.Put("direct-key", b"meta-group").await.unwrap();
+    assert_eq!(
+        client.Get("direct-key", false).await.unwrap(),
+        vec![(b"direct-key".to_vec(), b"meta-group".to_vec())]
+    );
+    let mut raw = etcd_client::Client::connect([endpoint], None)
+        .await
+        .unwrap();
+    let entries = raw.get("/keyspaces/tidb/42direct-key", None).await.unwrap();
+    assert_eq!(entries.kvs().len(), 1);
+    assert_eq!(entries.kvs()[0].value(), b"meta-group");
+    raw.delete("/keyspaces/tidb/42direct-key", None)
+        .await
+        .unwrap();
+}

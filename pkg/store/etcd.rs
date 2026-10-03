@@ -67,6 +67,24 @@ pub struct EtcdClient {
 }
 
 impl EtcdClient {
+    /// Keep writes and reads inside the store codec's namespace.
+    pub async fn Put(&mut self, key: &str, value: &[u8]) -> Result<(), StoreError> {
+        self.inner
+            .put(key.as_bytes().to_vec(), value.to_vec(), None)
+            .await
+            .map(|_| ())
+            .map_err(|error| StoreError::other(format!("put etcd key: {error}")))
+    }
+    pub async fn Get(
+        &mut self,
+        key: &str,
+        prefix: bool,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, StoreError> {
+        self.inner
+            .get(key.as_bytes().to_vec(), prefix)
+            .await
+            .map_err(|error| StoreError::other(format!("get etcd key: {error}")))
+    }
     /// 只读访问底层 etcd `Client`。
     pub fn inner(&self) -> &Client {
         self.inner.inner()

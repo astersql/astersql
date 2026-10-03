@@ -54,6 +54,8 @@ pub enum MetaServiceError {
     PdClientNotFound,
     #[error("no usable PD client URL found in PD members")]
     NoUsablePdUrl,
+    #[error("{0}")]
+    ServiceUrl(String),
     #[error("invalid URL prefix")]
     InvalidUrlPrefix,
     #[error("invalid URL format, expect host:port")]
@@ -63,6 +65,10 @@ pub enum MetaServiceError {
         url: String,
         source: Box<MetaServiceError>,
     },
+    #[error("keyspace meta not found for keyspace {0:?}")]
+    MissingKeyspaceMeta(String),
+    #[error("etcd request failed: {0}")]
+    Etcd(#[from] etcd_client::Error),
     #[error("PD request failed: {0}")]
     Pd(String),
     #[error("request context cancelled")]
@@ -100,7 +106,11 @@ pub struct Group {
 pub trait ServiceClient {
     /// 返回不带协议前缀的 PD 地址（`host:port`）。
     fn get_pd_addrs(&self, ctx: &Context) -> Result<Vec<String>, MetaServiceError>;
-    /// 返回带协议前缀的 PD HTTP 地址。
+    /// Return service URLs while preserving Unix-family schemes.
+    fn get_pd_service_urls(&self, ctx: &Context) -> Result<Vec<String>, MetaServiceError> {
+        self.get_pd_http_addrs(ctx)
+    }
+    /// Compatibility alias retained for existing Rust callers.
     fn get_pd_http_addrs(&self, ctx: &Context) -> Result<Vec<String>, MetaServiceError>;
 }
 

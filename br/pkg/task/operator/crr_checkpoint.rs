@@ -248,18 +248,24 @@ impl ResumeStateStore for storageResumeStateStore {
     }
 }
 
-/// 本地 etcd 客户端占位：记录 endpoints 与 closed 标志，真实 dial 在网络边界之外。
+/// CRR owns the real namespaced metadata connection until cleanup.
 #[derive(Clone, Debug, Default)]
 // TLS 启用时先验证 ToTLSConfig 可成功。
 pub struct EtcdClient {
     pub endpoints: Vec<String>,
     pub closed: Arc<std::sync::atomic::AtomicBool>,
+    pub metadata: Option<astersql_metaservice::NamespacedEtcdClient>,
 }
 
 // cleanup 闭包捕获所有客户端，调用方负责执行。
 impl EtcdClient {
     // DialOptionsLen 等于四以对齐 Go DialOptions 长度。
     pub fn Close(&self) -> Result<()> {
+        if let Some(client) = &self.metadata {
+            client
+                .close()
+                .map_err(|error| Error::new(error.to_string()))?;
+        }
         self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
@@ -333,17 +339,44 @@ pub fn newEtcdClientConfig(cfg: &Config) -> Result<EtcdClientConfig> {
     })
 }
 
-/// dialEtcdWithCfg builds etcd client config; real dial is a network boundary.
-/// Without endpoints it fails; with endpoints it returns a local stand-in client.
-/// 空 endpoints 立即失败；有 endpoints 返回占位客户端供 cleanup/测试使用。
+/// CRR uses the same keyspace-aware metadata resolution as other BR tasks.
 pub fn dialEtcdWithCfg(cfg: &Config) -> Result<EtcdClient> {
-    let etcdCfg = newEtcdClientConfig(cfg)?;
-    if etcdCfg.Endpoints.is_empty() {
-        // 装配失败必须逆序释放已打开资源。
-        return Err(Error::new("empty etcd endpoints"));
-    }
+    dialEtcdWithCfgAndFactory(&astersql_metaservice::Context::default(), cfg, None)
+}
+
+pub fn dialEtcdWithCfgAndFactory(
+    context: &astersql_metaservice::Context,
+    cfg: &Config,
+    factory: Option<&astersql_metaservice::PdClientFactory>,
+) -> Result<EtcdClient> {
+    use astersql_metaservice::{DialEtcdClient, EtcdDialConfig, PdSecurity};
+    let config = newEtcdClientConfig(cfg)?;
+    let security = PdSecurity {
+        ca: cfg.TLS.CA.clone(),
+        cert: cfg.TLS.Cert.clone(),
+        key: cfg.TLS.Key.clone(),
+    };
+    let metadata = DialEtcdClient(
+        context,
+        &cfg.KeyspaceName,
+        &cfg.PD,
+        &security,
+        factory,
+        EtcdDialConfig {
+            tls: security
+                .etcd_tls()
+                .map_err(|error| Error::new(error.to_string()))?,
+            dial_timeout: config.DialTimeout,
+            keepalive_time: config.Keepalive.Time,
+            keepalive_timeout: config.Keepalive.Timeout,
+            permit_without_stream: config.Keepalive.PermitWithoutStream,
+            ..Default::default()
+        },
+    )
+    .map_err(|error| Error::new(error.to_string()))?;
     Ok(EtcdClient {
-        endpoints: etcdCfg.Endpoints,
+        endpoints: metadata.endpoints().to_vec(),
         closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        metadata: Some(metadata),
     })
 }

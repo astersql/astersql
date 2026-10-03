@@ -576,6 +576,7 @@ impl precheck::Checker for checkpointCheckItem {
 // 语义说明：这里真正需要稳定的是调用方可观察到的输入输出、跳过条件和错误形状。
 // 语义说明：因此注释重点放在职责边界，而不是重复 Rust 语法本身。
 pub struct CDCPITRCheckItem {
+    pub keyspaceName: String,
     pub cfg: Config,
     pub pdAddrsGetter: Arc<dyn Fn(crate::context::Context) -> Vec<String> + Send + Sync>,
 }
@@ -586,7 +587,15 @@ pub fn NewCDCPITRCheckItem(
     cfg: &Config,
     pdAddrsGetter: Arc<dyn Fn(crate::context::Context) -> Vec<String> + Send + Sync>,
 ) -> Box<dyn precheck::Checker> {
+    NewCDCPITRCheckItemWithKeyspaceName(cfg, pdAddrsGetter, &cfg.TikvImporter.KeyspaceName)
+}
+pub fn NewCDCPITRCheckItemWithKeyspaceName(
+    cfg: &Config,
+    pdAddrsGetter: Arc<dyn Fn(crate::context::Context) -> Vec<String> + Send + Sync>,
+    keyspaceName: &str,
+) -> Box<dyn precheck::Checker> {
     Box::new(CDCPITRCheckItem {
+        keyspaceName: keyspaceName.into(),
         cfg: cfg.clone(),
         pdAddrsGetter,
     })
@@ -606,9 +615,13 @@ impl precheck::Checker for CDCPITRCheckItem {
             return Ok(None);
         }
         let addrs = (self.pdAddrsGetter)(Context::default());
-        let cli = etcd::NewClient(&addrs).map_err(map_err)?;
-        let active = streamhelper::GetCDCPiTRStatus(&cli).map_err(map_err)?;
+        let cli = etcd::Client(
+            dialEtcdWithCfg(Context::default(), &self.cfg, &addrs, &self.keyspaceName)
+                .map_err(map_err)?,
+        );
+        let active = streamhelper::GetCDCPiTRStatus(&cli);
         cli.Close();
+        let active = active.map_err(map_err)?;
         Ok(ok_result(
             precheck::CheckTargetUsingCDCPITR,
             precheck::Critical,
@@ -851,4 +864,35 @@ impl precheck::Checker for pdTiDBFromSameClusterCheckItem {
             },
         ))
     }
+}
+
+/// One explicit V1 PD metadata lookup followed by the keyspace-selected etcd dial.
+pub fn dialEtcdWithCfg(
+    ctx: Context,
+    cfg: &Config,
+    addrs: &[String],
+    keyspaceName: &str,
+) -> crate::Result<astersql_metaservice::NamespacedEtcdClient> {
+    let security = astersql_metaservice::PdSecurity {
+        ca: cfg.Security.ClusterSSLCA.clone(),
+        cert: cfg.Security.ClusterSSLCert.clone(),
+        key: cfg.Security.ClusterSSLKey.clone(),
+    };
+    let config = astersql_metaservice::EtcdDialConfig {
+        tls: security
+            .etcd_tls()
+            .map_err(|error| crate::Error::new(error.to_string()))?,
+        ..Default::default()
+    };
+    let context =
+        astersql_metaservice::Context::with_cancellation_checker(move || ctx.Err().is_some());
+    astersql_metaservice::DialEtcdClient(
+        &context,
+        keyspaceName,
+        addrs,
+        &security,
+        cfg.MetadataRuntime.pd_factory.as_ref(),
+        config,
+    )
+    .map_err(|error| crate::Error::new(error.to_string()))
 }

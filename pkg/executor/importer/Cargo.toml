@@ -12,6 +12,7 @@ go-package = "pkg/executor/importer"
 legacy-tasks = ["task-1190", "task-1191", "task-1192", "task-1193", "task-1196", "task-1594", "task-1595"]
 
 [dependencies]
+astersql-metaservice = { path = "../../metaservice" }
 chrono = "0.4"
 flate2 = "1"
 snap = "1"

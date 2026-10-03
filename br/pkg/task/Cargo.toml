@@ -15,6 +15,7 @@ lane = 1
 
 # arm64 darwin: no kv/domain/kvproto/grpcio. Local traits/stubs + slim BR crates only.
 [dependencies]
+astersql-metaservice = { path = "../../../pkg/metaservice" }
 astersql-br-pkg-restore = { path = "../restore" }
 astersql-br-pkg-gc = { path = "../gc" }
 astersql-br-pkg-aws = { package = "astersql-br-pkg-aws", path = "../aws" }

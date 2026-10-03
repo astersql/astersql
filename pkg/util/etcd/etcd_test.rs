@@ -74,3 +74,29 @@ fn test_set_etcd_cli_by_namespace() {
     );
     assert_eq!(unprefixed_kv.len(), 1);
 }
+
+#[tokio::test]
+#[ignore = "requires ASTER_ETCD_TEST_ENDPOINT for a real etcd server"]
+async fn namespaced_real_kv_roundtrip_keeps_binary_keys_and_values() {
+    let endpoint = std::env::var("ASTER_ETCD_TEST_ENDPOINT").unwrap();
+    let mut raw = etcd_client::Client::connect([endpoint], None)
+        .await
+        .unwrap();
+    let mut client = crate::NamespacedClient::new(raw.clone());
+    crate::SetEtcdCliByNamespace(&mut client, "/keyspaces/tidb/48");
+    client
+        .put(vec![b'/', 0, 255], vec![0, 255], None)
+        .await
+        .unwrap();
+    assert_eq!(
+        client.get(vec![b'/', 0, 255], false).await.unwrap(),
+        vec![(vec![b'/', 0, 255], vec![0, 255])]
+    );
+    let mut key = b"/keyspaces/tidb/48/".to_vec();
+    key.extend([0, 255]);
+    assert_eq!(
+        raw.get(key.clone(), None).await.unwrap().kvs()[0].value(),
+        [0, 255]
+    );
+    raw.delete(key, None).await.unwrap();
+}

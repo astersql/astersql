@@ -443,6 +443,7 @@ pub mod config {
     #[derive(Clone, Debug, Default)]
     // 语义说明：`TikvImporter` 保留 Go 侧同名数据形状，让上层测试和接线代码继续复用字段语义。
     pub struct TikvImporter {
+        pub KeyspaceName: String,
         pub Backend: String,
         pub Addr: String,
         pub SortedKVDir: String,
@@ -577,9 +578,25 @@ pub mod config {
         pub CheckDiskQuota: DurationSecs,
     }
 
+    #[derive(Clone, Default)]
+    pub struct MetadataRuntime {
+        pub store: Option<std::sync::Arc<dyn astersql_metaservice::EtcdMetadataStore>>,
+        pub pd_factory: Option<astersql_metaservice::PdClientFactory>,
+    }
+    impl std::fmt::Debug for MetadataRuntime {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter
+                .debug_struct("MetadataRuntime")
+                .field("has_store", &self.store.is_some())
+                .field("has_factory", &self.pd_factory.is_some())
+                .finish()
+        }
+    }
+
     #[derive(Clone, Debug, Default)]
     // 语义说明：`Config` 保留 Go 侧同名数据形状，让上层测试和接线代码继续复用字段语义。
     pub struct Config {
+        pub MetadataRuntime: MetadataRuntime,
         pub TaskID: i64,
         pub App: Lightning,
         pub TikvImporter: TikvImporter,
@@ -3353,36 +3370,65 @@ pub mod failpoint {
     pub fn Inject(_name: &str, _f: impl FnOnce()) {}
 }
 
-// 语义说明：`etcd` 模块提供 importer 迁移路径所需的最小外观，重点保留调用契约而不是完整底层能力。
+/// Real metadata reads used by the CDC/PiTR precheck.
 pub mod etcd {
     use super::context::Context;
     use super::{Error, Result};
-
-    #[derive(Clone, Debug, Default)]
-    // 语义说明：`Client` 保留 Go 侧同名数据形状，让上层测试和接线代码继续复用字段语义。
-    pub struct Client;
-
-    // 语义说明：这个 impl 块补齐 `Client` 的 Go 风格方法集合，使调用点能继续按原协议取值和分支。
+    #[derive(Clone, Debug)]
+    pub struct Client(pub astersql_metaservice::NamespacedEtcdClient);
     impl Client {
-        // 语义说明：`Get` 提供读取型辅助逻辑，让 importer 上层仍能按 Go 习惯取得所需信息。
-        pub fn Get(&self, _ctx: Context, _key: &str) -> Result<Vec<u8>> {
-            Ok(vec![])
+        pub fn Get(&self, ctx: Context, key: &str) -> Result<Vec<u8>> {
+            let ctx = astersql_metaservice::Context::with_cancellation_checker(move || {
+                ctx.Err().is_some()
+            });
+            self.0
+                .with_context(ctx)
+                .get(key, false)
+                .map(|entries| {
+                    entries
+                        .first()
+                        .map(|entry| entry.1.clone())
+                        .unwrap_or_default()
+                })
+                .map_err(|error| Error::new(error.to_string()))
         }
-        // 语义说明：`Close` 保留 Go 对应入口的最小返回约定，让 importer 迁移代码继续走同一路径。
-        pub fn Close(&self) {}
+        pub fn Close(&self) {
+            let _ = self.0.close();
+        }
     }
-
-    // 语义说明：`NewClient` 按 Go 构造入口返回最小可用对象，减少调用侧对桩实现细节的感知。
-    pub fn NewClient(_addrs: &[String]) -> Result<Client> {
-        Ok(Client)
+    #[async_trait::async_trait]
+    impl astersql_util_cdcutil::KvClient for Client {
+        async fn get(
+            &self,
+            key: &str,
+            options: astersql_util_cdcutil::GetOptions,
+        ) -> std::result::Result<Vec<astersql_util_cdcutil::KvPair>, astersql_util_cdcutil::CdcError>
+        {
+            self.0
+                .get(key, options.prefix)
+                .map(|entries| {
+                    entries
+                        .into_iter()
+                        .map(|(key, value)| astersql_util_cdcutil::KvPair { key, value })
+                        .collect()
+                })
+                .map_err(|error| astersql_util_cdcutil::CdcError::KvRequest(error.to_string()))
+        }
     }
 }
-
-// 语义说明：`streamhelper` 模块提供 importer 迁移路径所需的最小外观，重点保留调用契约而不是完整底层能力。
 pub mod streamhelper {
-    // 语义说明：`GetCDCPiTRStatus` 提供读取型辅助逻辑，让 importer 上层仍能按 Go 习惯取得所需信息。
-    pub fn GetCDCPiTRStatus(_cli: &super::etcd::Client) -> super::Result<bool> {
-        Ok(false)
+    pub fn GetCDCPiTRStatus(cli: &super::etcd::Client) -> super::Result<bool> {
+        if !cli
+            .0
+            .get("/tidb/br-stream/info/", true)
+            .map_err(|error| super::Error::new(error.to_string()))?
+            .is_empty()
+        {
+            return Ok(true);
+        }
+        futures::executor::block_on(astersql_util_cdcutil::GetRunningChangefeeds(cli))
+            .map(|names| !names.Empty())
+            .map_err(|error| super::Error::new(error.to_string()))
     }
 }
 

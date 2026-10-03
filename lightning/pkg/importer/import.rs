@@ -197,6 +197,29 @@ impl errorSummaries {
 // 阅读字段时优先关注它对配额、开关和资源句柄的影响。
 // 这样能更快看出 Rust 端为什么要与 Go 保持相同的布局。
 // 很多方法的行为都会绕这些字段展开。
+struct MetadataCleanup(Box<dyn Fn()>);
+impl Drop for MetadataCleanup {
+    fn drop(&mut self) {
+        (self.0)();
+    }
+}
+struct LocalMetadataResources {
+    client: astersql_metaservice::NamespacedEtcdClient,
+    store: Option<astersql_store_driver::TikvStore>,
+}
+impl Drop for LocalMetadataResources {
+    fn drop(&mut self) {
+        if let Err(error) = self.client.close() {
+            eprintln!("close metadata client: {error}");
+        }
+        if let Some(store) = &self.store {
+            if let Err(error) = store.Close() {
+                eprintln!("close local backend store: {error}");
+            }
+        }
+    }
+}
+
 pub struct Controller {
     pub taskCtx: Context,
     pub cfg: Config,
@@ -576,6 +599,71 @@ impl Controller {
     // 排查问题时要同时关注参数意义、副作用和调用顺序。
     // 保持这个入口的观测结果与 Go 一致是本次注释的核心目标。
     pub fn importTables(&mut self, ctx: Context) -> Result<()> {
+        let _local_metadata = if isLocalBackend(&self.cfg) {
+            let owned_store = if self.cfg.MetadataRuntime.store.is_none() {
+                let pd_addrs = self
+                    .cfg
+                    .TiDB
+                    .PdAddr
+                    .split(',')
+                    .filter(|address| !address.is_empty())
+                    .map(|address| {
+                        astersql_metaservice::parse_url(address)
+                            .map(|(_, address)| address)
+                            .map_err(|error| crate::Error::new(error.to_string()))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let security = astersql_store_driver::Security {
+                    cluster_ssl_ca: self.cfg.Security.ClusterSSLCA.clone(),
+                    cluster_ssl_cert: self.cfg.Security.ClusterSSLCert.clone(),
+                    cluster_ssl_key: self.cfg.Security.ClusterSSLKey.clone(),
+                };
+                Some(
+                    astersql_store_driver::TiKVDriver::default()
+                        .OpenWithOptions(
+                            &format!(
+                                "tikv://{}?disableGC=true&keyspaceName={}",
+                                pd_addrs.join(","),
+                                self.keyspaceName
+                            ),
+                            vec![astersql_store_driver::WithSecurity(security)],
+                        )
+                        .map_err(|error| crate::Error::new(error.to_string()))?,
+                )
+            } else {
+                None
+            };
+            let store = self
+                .cfg
+                .MetadataRuntime
+                .store
+                .as_deref()
+                .or_else(|| {
+                    owned_store
+                        .as_ref()
+                        .map(|store| store as &dyn astersql_metaservice::EtcdMetadataStore)
+                })
+                .expect("local metadata store was opened");
+            match self.newEtcdClientForLocalBackend(ctx.clone(), store) {
+                Ok(client) => Some(LocalMetadataResources {
+                    client,
+                    store: owned_store,
+                }),
+                Err(error) => {
+                    if let Some(store) = &owned_store {
+                        let _ = store.Close();
+                    }
+                    return Err(error);
+                }
+            }
+        } else {
+            None
+        };
+        let _registration = if isLocalBackend(&self.cfg) {
+            Some(MetadataCleanup(self.registerTaskToPD(ctx.clone())?))
+        } else {
+            None
+        };
         let dbMetas = self.dbMetas.clone();
         for dbMeta in dbMetas {
             self.dbInfos
@@ -623,8 +711,73 @@ impl Controller {
     // 返回值不仅代表成功或失败，也会影响上层是否继续下一步。
     // 排查问题时要同时关注参数意义、副作用和调用顺序。
     // 保持这个入口的观测结果与 Go 一致是本次注释的核心目标。
-    pub fn registerTaskToPD(&self, _ctx: Context) -> Result<Box<dyn Fn()>> {
-        Ok(Box::new(|| {}))
+    /// The local backend borrows its storage's PD client and complete codec metadata.
+    pub fn newEtcdClientForLocalBackend(
+        &self,
+        ctx: Context,
+        store: &dyn astersql_metaservice::EtcdMetadataStore,
+    ) -> Result<astersql_metaservice::NamespacedEtcdClient> {
+        let security = astersql_metaservice::PdSecurity {
+            ca: self.cfg.Security.ClusterSSLCA.clone(),
+            cert: self.cfg.Security.ClusterSSLCert.clone(),
+            key: self.cfg.Security.ClusterSSLKey.clone(),
+        };
+        let config = astersql_metaservice::EtcdDialConfig {
+            tls: security
+                .etcd_tls()
+                .map_err(|error| crate::Error::new(error.to_string()))?,
+            ..Default::default()
+        };
+        let context =
+            astersql_metaservice::Context::with_cancellation_checker(move || ctx.Err().is_some());
+        astersql_metaservice::NewEtcdClientFromStore(
+            &context,
+            store,
+            &self
+                .cfg
+                .TiDB
+                .PdAddr
+                .split(',')
+                .map(str::to_owned)
+                .collect::<Vec<_>>(),
+            config,
+        )
+        .map_err(|error| crate::Error::new(error.to_string()))
+    }
+
+    pub fn registerTaskToPD(&self, ctx: Context) -> Result<Box<dyn Fn()>> {
+        use astersql_br_pkg_utils::MetadataRegisterClient;
+        use astersql_br_pkg_utils::register::{NewTaskRegister, RegisterTaskType};
+        let addrs = self
+            .cfg
+            .TiDB
+            .PdAddr
+            .split(',')
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let client = crate::dialEtcdWithCfg(ctx, &self.cfg, &addrs, &self.keyspaceName)?;
+        let mut register = NewTaskRegister(
+            Arc::new(MetadataRegisterClient(client.clone())),
+            RegisterTaskType::RegisterLightning,
+            &format!("lightning-{}", uuid::Uuid::new_v4()),
+        );
+        let registration_context = astersql_br_pkg_utils::stubs::context::Context::default();
+        if let Err(error) = register.RegisterTask(registration_context) {
+            let _ = register.Close(&Default::default());
+            let _ = client.close();
+            return Err(crate::Error::new(error.to_string()));
+        }
+        let register = Mutex::new(Some(register));
+        Ok(Box::new(move || {
+            if let Some(mut register) = register.lock().unwrap().take() {
+                if let Err(error) = register.Close(&Default::default()) {
+                    eprintln!("unregister lightning task: {error}");
+                }
+                if let Err(error) = client.close() {
+                    eprintln!("close lightning metadata: {error}");
+                }
+            }
+        }))
     }
 
     // 自动补充的`outputErrorSummary` 对应一段独立的流程入口或内部步骤。

@@ -923,3 +923,38 @@ pub fn progressFileWriterRoutine(
 pub fn WriteStringToConsole(g: &dyn Glue, msg: &str) -> Result<()> {
     g.ConsoleOutWrite(msg.as_bytes())
 }
+
+/// Dial the metadata service selected by BR's keyspace, preserving proxy endpoints.
+pub fn dialEtcdWithCfg(
+    ctx: &astersql_metaservice::Context,
+    cfg: &Config,
+) -> Result<astersql_metaservice::NamespacedEtcdClient> {
+    dialEtcdWithCfgAndFactory(ctx, cfg, None)
+}
+
+pub fn dialEtcdWithCfgAndFactory(
+    ctx: &astersql_metaservice::Context,
+    cfg: &Config,
+    factory: Option<&astersql_metaservice::PdClientFactory>,
+) -> Result<astersql_metaservice::NamespacedEtcdClient> {
+    use astersql_metaservice::{DialEtcdClient, EtcdDialConfig, PdSecurity};
+    let security = PdSecurity {
+        ca: cfg.TLS.CA.clone(),
+        cert: cfg.TLS.Cert.clone(),
+        key: cfg.TLS.Key.clone(),
+    };
+    let config = EtcdDialConfig {
+        tls: security
+            .etcd_tls()
+            .map_err(|error| Error::new(error.to_string()))?,
+        keepalive_time: cfg.GRPCKeepaliveTime,
+        keepalive_timeout: cfg.GRPCKeepaliveTimeout,
+        ..Default::default()
+    };
+    DialEtcdClient(ctx, &cfg.KeyspaceName, &cfg.PD, &security, factory, config)
+        .map_err(|error| Error::new(error.to_string()))
+}
+
+#[cfg(test)]
+#[path = "meta_service_group_test.rs"]
+mod meta_service_group_test;

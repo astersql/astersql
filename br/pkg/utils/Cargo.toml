@@ -16,6 +16,7 @@ lane = 2
 # Slimmed for darwin arm64: no kv/domain/kvproto/grpcio/tablecodec/sqlexec.
 # Proto/KV/SQL boundaries use local stubs; meta/parser/util peers stay.
 [dependencies]
+astersql-metaservice = { path = "../../../pkg/metaservice" }
 "astersql-br-pkg-errors" = { package = "astersql-br-pkg-errors", path = "../errors" }
 "astersql-br-pkg-logutil" = { package = "astersql-br-pkg-logutil", path = "../logutil" }
 "astersql-br-pkg-summary" = { package = "astersql-br-pkg-summary", path = "../summary" }

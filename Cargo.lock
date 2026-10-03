@@ -1562,6 +1562,7 @@ dependencies = [
  "astersql-br-pkg-stream",
  "astersql-br-pkg-utils",
  "astersql-br-pkg-utils-consts",
+ "astersql-metaservice",
  "hex 0.4.3",
  "regex",
  "serde",
@@ -1575,6 +1576,7 @@ dependencies = [
 name = "astersql-br-pkg-task-operator"
 version = "0.1.0"
 dependencies = [
+ "astersql-metaservice",
  "astersql-objstore",
  "base64 0.22.1",
  "regex",
@@ -1603,6 +1605,7 @@ dependencies = [
  "astersql-errors",
  "astersql-meta",
  "astersql-meta-model",
+ "astersql-metaservice",
  "astersql-parser-ast",
  "astersql-parser-mysql",
  "astersql-parser-terror",
@@ -3692,6 +3695,7 @@ dependencies = [
  "astersql-lightning-verification",
  "astersql-meta-autoid",
  "astersql-meta-model",
+ "astersql-metaservice",
  "astersql-metrics",
  "astersql-objstore",
  "astersql-objstore-compressedio",
@@ -5671,6 +5675,7 @@ version = "0.1.0"
 name = "astersql-lightning-pkg-importer"
 version = "0.1.0"
 dependencies = [
+ "astersql-br-pkg-utils",
  "astersql-dumpformat-parquetfile",
  "astersql-lightning-mydump",
  "astersql-lightning-pkg-checkpoints",
@@ -5678,13 +5683,19 @@ dependencies = [
  "astersql-lightning-pkg-importer-opts",
  "astersql-lightning-pkg-precheck",
  "astersql-lightning-pkg-progress",
+ "astersql-metaservice",
+ "astersql-store-driver",
+ "astersql-util-cdcutil",
  "astersql-util-regexpr-router",
  "astersql-util-table-router",
+ "async-trait",
  "bytes",
  "flate2",
+ "futures",
  "parquet",
  "serde",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]
@@ -5893,8 +5904,12 @@ version = "0.1.0"
 name = "astersql-metaservice"
 version = "0.1.0"
 dependencies = [
+ "astersql-util",
+ "etcd-client",
  "log",
  "thiserror 2.0.19",
+ "tikv-client",
+ "tokio",
  "url",
 ]
 
@@ -10022,6 +10037,7 @@ version = "0.1.0"
 dependencies = [
  "astersql-config-configtypes",
  "astersql-kv",
+ "astersql-metaservice",
  "astersql-store-copr",
  "astersql-store-driver-txn",
  "astersql-testkit-testfailpoint",
@@ -10195,6 +10211,7 @@ dependencies = [
  "astersql-store-mockstore-unistore-server",
  "astersql-store-mockstore-unistore-tikv",
  "astersql-testkit-testsetup",
+ "astersql-util",
  "fail 0.5.1",
 ]
 
@@ -20077,7 +20094,7 @@ dependencies = [
 [[package]]
 name = "tikv-client"
 version = "0.4.2"
-source = "git+ssh://git@github.com/astersql/client-rust.git?tag=v0.4.2-aster.7#7af332cab58b0ac6185e4a87442439ec10a60363"
+source = "git+ssh://git@github.com/astersql/client-rust.git?tag=v0.4.2-aster.9#d9180ed8c28d29260390fd12d066d7d0e1d48d5c"
 dependencies = [
  "async-recursion",
  "async-trait",

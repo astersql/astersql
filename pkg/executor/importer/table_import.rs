@@ -152,8 +152,27 @@ pub struct DiskQuotaState {
 }
 
 /// 表导入对外部系统的依赖边界：后端、解析器、Region 划分、配额与远程校验和。
+pub struct AllocatorRebaseBindings {
+    pub Requirement: Arc<dyn astersql_lightning_common::AutoIDRequirement>,
+    /// Release the host's AutoID discovery connection after etcd is closed.
+    pub ResetConnection: Box<dyn FnOnce() + Send>,
+}
+
 pub trait TableImporterService: Send + Sync {
     fn RuntimeConfig(&self) -> ImportRuntimeConfig;
+    fn AllocatorMetadataStore(&self) -> Option<Arc<dyn astersql_metaservice::EtcdMetadataStore>> {
+        None
+    }
+    fn AllocatorEtcdConfig(&self) -> Result<astersql_metaservice::EtcdDialConfig, String> {
+        Ok(Default::default())
+    }
+    fn NewAllocatorRebaseBindings(
+        &self,
+        _client: &astersql_metaservice::NamespacedEtcdClient,
+    ) -> Result<AllocatorRebaseBindings, String> {
+        Err("import host does not expose allocator discovery bindings".into())
+    }
+
     fn NewEncodingTable(
         &self,
         controller: &LoadDataController,
@@ -972,4 +991,16 @@ fn unix_timestamp() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs() as i64)
+}
+
+/// Existing-store allocator discovery preserves proxy endpoints for global groups.
+pub fn newEtcdClientForAllocatorRebase(
+    context: &astersql_metaservice::Context,
+    store: Option<&dyn astersql_metaservice::EtcdMetadataStore>,
+    caller_endpoints: &[String],
+    config: astersql_metaservice::EtcdDialConfig,
+) -> Result<astersql_metaservice::NamespacedEtcdClient, String> {
+    let store = store.ok_or_else(|| "TiKV store does not expose PD client".to_owned())?;
+    astersql_metaservice::NewEtcdClientFromStore(context, store, caller_endpoints, config)
+        .map_err(|error| error.to_string())
 }

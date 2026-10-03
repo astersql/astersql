@@ -134,3 +134,7 @@ mod table_import_test;
 #[cfg(test)]
 #[path = "tidb_test.rs"]
 mod tidb_test;
+
+#[cfg(test)]
+#[path = "meta_service_group_test.rs"]
+mod meta_service_group_test;

@@ -82,3 +82,7 @@ pub use tikv_client::{proto::resource_manager as resource_manager_proto, resourc
 
 mod read_pool_task_details;
 pub use read_pool_task_details::read_pool_task_details;
+
+#[cfg(test)]
+#[path = "meta_service_group_test.rs"]
+mod meta_service_group_test;

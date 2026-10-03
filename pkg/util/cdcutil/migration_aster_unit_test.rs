@@ -189,3 +189,21 @@ async fn migration_propagates_json_errors_with_changefeed_context() {
     assert!(error.contains("failed to check changefeed"));
     assert!(error.contains("broken"));
 }
+
+#[tokio::test]
+async fn real_kv_request_errors_retain_context() {
+    struct Unavailable;
+    #[async_trait::async_trait]
+    impl KvClient for Unavailable {
+        async fn get(&self, _: &str, _: GetOptions) -> Result<Vec<crate::KvPair>, CdcError> {
+            Err(CdcError::KvRequest("metadata connection closed".into()))
+        }
+    }
+    assert_eq!(
+        GetRunningChangefeeds(&Unavailable)
+            .await
+            .unwrap_err()
+            .to_string(),
+        "etcd request failed: metadata connection closed"
+    );
+}

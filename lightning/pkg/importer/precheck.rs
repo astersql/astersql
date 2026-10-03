@@ -53,6 +53,7 @@ pub fn WithPrecheckKey(
 }
 
 pub struct PrecheckItemBuilder {
+    pub keyspaceName: String,
     /// 导入配置决定启用哪些 checker 以及部分阈值。
     pub cfg: Config,
     /// 源数据的 mydump 元数据视图，供多个检查项共享读取。
@@ -170,6 +171,26 @@ pub fn NewPrecheckItemBuilder(
     pdHTTPCli: Option<pdhttp::Client>,
     targetDB: Option<DB>,
 ) -> PrecheckItemBuilder {
+    NewPrecheckItemBuilderWithKeyspaceName(
+        cfg,
+        dbMetas,
+        preInfoGetter,
+        checkpointsDB,
+        pdHTTPCli,
+        targetDB,
+        &cfg.TikvImporter.KeyspaceName,
+    )
+}
+
+pub fn NewPrecheckItemBuilderWithKeyspaceName(
+    cfg: &Config,
+    dbMetas: Vec<mydump::MDDatabaseMeta>,
+    preInfoGetter: Arc<dyn PreImportInfoGetter>,
+    checkpointsDB: Option<Arc<dyn checkpoints::DB>>,
+    pdHTTPCli: Option<pdhttp::Client>,
+    targetDB: Option<DB>,
+    keyspaceName: &str,
+) -> PrecheckItemBuilder {
     let fallback = cfg.TiDB.PdAddr.clone();
     let pdAddrsGetter: Arc<dyn Fn(Context) -> Vec<String> + Send + Sync> =
         if let Some(cli) = pdHTTPCli {
@@ -183,6 +204,7 @@ pub fn NewPrecheckItemBuilder(
             Arc::new(move |_| vec![fallback.clone()])
         };
     PrecheckItemBuilder {
+        keyspaceName: keyspaceName.into(),
         cfg: cfg.clone(),
         dbMetas,
         preInfoGetter,
@@ -254,7 +276,11 @@ impl PrecheckItemBuilder {
                 &self.dbMetas,
             )),
             id if id == precheck::CheckTargetUsingCDCPITR => {
-                Ok(NewCDCPITRCheckItem(&self.cfg, self.pdAddrsGetter.clone()))
+                Ok(NewCDCPITRCheckItemWithKeyspaceName(
+                    &self.cfg,
+                    self.pdAddrsGetter.clone(),
+                    &self.keyspaceName,
+                ))
             }
             id if id == precheck::CheckPDTiDBFromSameCluster => {
                 // 这类检查需要同时触达目标 DB 与 PD 地址源。

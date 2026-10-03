@@ -80,6 +80,28 @@ impl std::error::Error for PdError {}
 /// 本模块统一 Result 别名。
 pub type Result<T> = std::result::Result<T, PdError>;
 
+/// Member listing returned by the mock PD, in injected endpoint order.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PdMember {
+    pub member_id: u64,
+    pub client_urls: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PdMembersResponse {
+    pub members: Vec<PdMember>,
+    pub leader: Option<PdMember>,
+}
+
+fn normalize_mock_pd_addrs(addresses: Vec<String>) -> Vec<String> {
+    addresses
+        .into_iter()
+        .filter_map(|address| {
+            astersql_util::service_url::NormalizeServiceURL(&address, "http").ok()
+        })
+        .collect()
+}
+
 /// 进程内 PD 门面：转发 TSO、管理全局配置与 Keyspace。
 pub struct PdClient {
     pd: Arc<MockPd>,
@@ -103,9 +125,23 @@ impl PdClient {
             keyspaces: MockKeyspaceManager::new(keyspaces)?,
             global_config: RwLock::new(HashMap::new()),
             external_timestamp: AtomicU64::new(0),
-            addresses,
+            addresses: normalize_mock_pd_addrs(addresses),
             current_keyspace_id,
         })
+    }
+
+    pub fn get_all_members(&self) -> PdMembersResponse {
+        let members: Vec<_> = self
+            .addresses
+            .iter()
+            .enumerate()
+            .map(|(index, address)| PdMember {
+                member_id: index as u64 + 1,
+                client_urls: vec![address.clone()],
+            })
+            .collect();
+        let leader = members.first().cloned();
+        PdMembersResponse { members, leader }
     }
 
     /// 按名称列表加载全局配置；返回项列表与 revision（mock 固定为 0）。
@@ -309,11 +345,9 @@ pub struct MockPdServiceClient {
 impl MockPdServiceClient {
     /// 若地址无 scheme 则补上 `http://`。
     pub fn new(address: impl Into<String>) -> Self {
-        let mut address = address.into();
-        if !address.starts_with("http://") && !address.starts_with("https://") {
-            address = format!("http://{address}");
+        Self {
+            address: address.into(),
         }
-        Self { address }
     }
 
     /// 规范化后的服务地址。
@@ -344,10 +378,7 @@ pub struct MockPdServiceDiscovery {
 impl MockPdServiceDiscovery {
     /// 过滤非法地址后构建发现视图。
     pub fn new(addresses: Vec<String>) -> Self {
-        let addresses = addresses
-            .into_iter()
-            .filter(|address| valid_url(address))
-            .collect::<Vec<_>>();
+        let addresses = normalize_mock_pd_addrs(addresses);
         let clients = addresses
             .iter()
             .cloned()
@@ -387,18 +418,7 @@ pub fn is_url(address: &str) -> bool {
 
 /// 接受 `http(s)://...` 或无 scheme 的 `host:port`。
 fn valid_url(address: &str) -> bool {
-    if let Some((scheme, rest)) = address.split_once("://") {
-        return matches!(scheme, "http" | "https") && !rest.is_empty() && !rest.starts_with('/');
-    }
-    // govalidator.IsURL accepts host:port without a scheme.
-    // 无 scheme 时要求恰好 host:port，且 port 为纯数字。
-    let mut parts = address.split(':');
-    match (parts.next(), parts.next(), parts.next()) {
-        (Some(host), Some(port), None) if !host.is_empty() && !port.is_empty() => {
-            !host.contains('/') && port.chars().all(|c| c.is_ascii_digit())
-        }
-        _ => false,
-    }
+    astersql_util::service_url::NormalizeServiceURL(address, "http").is_ok()
 }
 
 /// 内存 Keyspace 管理器：按 ID 排序存储，并维护名称索引。

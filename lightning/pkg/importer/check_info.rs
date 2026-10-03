@@ -70,6 +70,11 @@ impl Controller {
     ) -> Result<()> {
         // 这里统一封装“构造检查器 -> 执行 -> 收集结果”的公共骨架，
         // 避免每个上层方法各自重复拼装 builder 和 template 回写逻辑。
+        let builder = self
+            .precheckItemBuilder
+            .as_mut()
+            .ok_or_else(|| errors::New("precheckItemBuilder is nil"))?;
+        builder.keyspaceName = self.keyspaceName.clone();
         let mut theChecker = self
             .precheckItemBuilder
             .as_ref()
