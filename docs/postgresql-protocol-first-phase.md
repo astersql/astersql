@@ -84,3 +84,341 @@ from pg_catalog.pg_tablespace T
 ```
 
 该完整查询需要尚不支持的 tablespace xmin/location，当前明确返回 0A000，随后连接仍能查询。原始模板还有按 `pg_catalog.age(T.xmin)` 过滤的增量分支，同样不属于基础范围。上述 SQL 证据来自安装资源及 JDBC 执行，未捕获 DataGrip UI 发出的流量；UI 元数据树和完整 tablespace 内省未验证。
+
+
+## 2026-10-03 内省来源与验收清单
+
+本节冻结来源，不承诺这些查询已可执行。DataGrip 2025.1.3（build 251.26094.87）的 DatabaseTools `database-plugin.jar` 包含 `com/intellij/database/dialects/postgres/introspector/PgIntroQueries.sql`；模板 SHA-256 为 `d5c90888f1ecd79e6badaf75ab5428998b01090c77067fd89975a49d5fa196d1`。本机安装 PostgreSQL JDBC 42.7.13、42.7.3；错误日志没有记录选用版本，不从安装列表推断实际驱动。
+
+原始用户证据来自“分析 PostgreSQL 兼容问题”聊天（01a0ff3d-745f-7dc0-96fc-bfc103996367）。其首条仅有尾部；DataGrip 缓存 `database-log/database.0.log` 在 2026-10-03 08:45:58、会话 1533977248 中补齐同一 statement 1869279758，确认是 **RetrieveViewSources**。1869279759 是 **RetrieveFunctionSources**，1869279760 是 **RetrieveRelations**。三条日志全文（保留空白、注释和 JDBC 展示的问号）冻结为 `pkg/server/pg_client_integration_test.rs` 的三个 `DATAGRIP_*_SQL` 常量；原始错误分别是关系不存在、only catalog SELECT is supported、regclass 语法错误。
+
+日志 `?::oid` 是 JDBC 展示形式，安装模板中是 `:schema_id::oid`。PG Parse 验收使用 `$1::oid` 和类型 OID 26。libpq 测试从真实当前目录读取 namespace ID，Query 用其整数文本替换唯一问号，PQexecParams 则用 $1 和显式 OID 26。未捕获原 DataGrip 连接的线包或参数值，不宣称此转换证明了原 JDBC 绑定值。
+
+以下完整模板选择 PG18、非增量、非名称片段分支：选择全部 #V 当前版本分支，排除 #INC、#INCSRC、#FRAG 控制的增量或名称过滤片段。保留投影中的 xmin 不表示已经支持；没有 PG XID 不得伪造状态号，age(xmin) 增量内省仍为范围外。三条原始查询另有错误日志证据，其余模板仅冻结后续字段需求，不能声称全部实际执行过。
+
+### 字段及验收边界
+
+完整 SQL 的每一项投影和谓词是逐字段来源清单，以下说明对象语义、边界及重点验证。
+
+| 对象 / 模板 | 必需字段、函数与验收 |
+| --- | --- |
+| 视图源码 | pg_class.relkind/oid/relnamespace、pg_namespace.oid；输出 view_kind/view_id/source_text；pg_get_viewdef(oid,true)，m/v 过滤，真实视图定义。 |
+| 函数源码 | pg_language.oid/lanname、pg_proc.oid/pronamespace/prokind/prolang/prosrc；id/arguments_def/result_def/sqlbody_def/source_text；pg_get_function_arguments/result/sqlbody；WITH、IN/NOT IN 子查询、NOT、IS NOT NULL。只有确认原生函数集合不存在才可返回类型正确空目录。 |
+| 序列依赖 | pg_depend.objid/refobjid/refobjsubid/classid/refclassid/deptype；pg_class.oid/relkind/relnamespace；dependent_id/owner_id/owner_subobject_id；两次 INNER JOIN、regclass→oid、<>、OR、排序；真实序列及依赖，不能把自增列伪装为序列。 |
+| 表 | RetrieveTables 的 kind/name/id、owner、persistence、分区、访问方法、tablespace 等投影；真实对象 OID，创建/重命名/删除后可见，当前库 public 隔离。无法映射属性须明确报告，不能以空目录隐藏已有表。 |
+| 列 / 类型 / 默认值 | pg_attribute.attrelid/attnum/attname/xmin/atttypmod/attndims/atttypid/attnotnull/attislocal/attfdwoptions/attisdropped/attidentity/attgenerated；pg_attrdef.adrelid/adnum/adbin；format_type、pg_get_expr；真实列编号、NULL、删除列、identity/generated、ALTER 后变化。pg_type 字段以 RetrieveDataTypes 完整 SQL 为准，读取完整 ModelMeta，不凭精简结构猜类型。 |
+| 索引 | pg_index.indexrelid/indrelid/indnkeyatts/indisunique/indisprimary/indnullsnotdistinct/indkey/indoption/indcollation/indclass/indexprs/indpred；复合键、unique、include 列、表达式、谓词、排序、collation/opclass；pg_get_indexdef、pg_get_expr；索引 OID 与表内局部 ID 区别，数组保留元素类型。 |
+| 约束 | pg_constraint.oid/xmin/conname/contype/condeferrable/condeferred/connoinherit/conbin/conkey/conindid/confkey/confrelid/confupdtype/confdeltype/connamespace/conexclop；表/引用表 OID 与列号一致；主键、唯一、检查、外键及删除后的清理。 |
+| 函数 / 语言描述 | RetrieveRoutines 与 ListLanguages 的真实签名、参数数组、结果、kind、语言、owner、cost、volatility、security、strict、parallel、handler/inline/validator 与 namespace；全字段见模板投影，无法映射时明确说明。 |
+| 序列描述 | PG18 使用 RetrieveSequences10：pg_sequence.seqrelid/seqtypid/seqstart/seqmin/seqmax/seqincrement/seqcache/seqcycle、关系及 owner；实际核查原生序列集合和 OID，与 RetrieveRelations 引用一致。 |
+
+三条日志查询是本轮必须保留的验收入口。辅助模板不能自动扩大为完整 DataGrip 兼容：RetrieveIndexColumns 还要求数组下标、WITH ORDINALITY、unnest、CROSS JOIN、collation/opclass 和访问方法属性；RetrieveRoutines 涉及 NATURAL JOIN、星号投影和更多 CTE/函数，RetrieveConstraints 还使用元组连接、数组子查询和 regoper 转换，RetrieveIndices 使用 ANY 与继承聚合。未获相邻任务明确授权的部分须单列缺口，不能用只支持核心字段宣称整条辅助模板已通过。UI 元数据树、foreign/aggregate/operator/extension/trigger/policy、任意多 schema、增量 xmin 仍为范围外。
+
+### 当前失败证据
+
+libpq >=18 在临时真实双 listener 上以协议 3.0、3.2 复现三个来源夹具，每次错误后 SELECT 1 通过，原 MySQL COM_PING 继续通过。Query SQLSTATE 分别为 42P01、0A000、42601；显式 oid 参数的 Parse 分别为 42P01、0A000、0A000。第三条扩展查询因不支持 OID 26 提前失败，不证明 regclass、JOIN 或 Bind 已执行。后续实现需把相应错误断言升级为真实结果断言，不能长期把预期报错当成兼容验收。
+
+### PG18 非增量完整模板（参数为 $1::oid）
+
+#### RetrieveTables
+
+```sql
+select T.relkind as table_kind,
+       T.relname as table_name,
+       T.oid as table_id,
+       T.xmin as table_state_number,
+       false as table_with_oids,
+       T.reltablespace as tablespace_id,
+       T.reloptions as options,
+       T.relpersistence as persistence,
+       (select pg_catalog.array_agg(inhparent::bigint order by inhseqno)::varchar from pg_catalog.pg_inherits where T.oid = inhrelid) as ancestors,
+       (select pg_catalog.array_agg(inhrelid::bigint order by inhrelid)::varchar from pg_catalog.pg_inherits where T.oid = inhparent) as successors,
+       T.relispartition as is_partition,
+       pg_catalog.pg_get_partkeydef(T.oid) as partition_key,
+       pg_catalog.pg_get_expr(T.relpartbound, T.oid) as partition_expression,
+       T.relam am_id,
+       pg_catalog.pg_get_userbyid(T.relowner) as "owner"
+from pg_catalog.pg_class T
+where relnamespace = $1::oid
+       and relkind in ('r', 'm', 'v', 'f', 'p')
+order by table_kind, table_id
+;
+```
+
+#### RetrieveDataTypes
+
+```sql
+select T.oid as type_id,
+       T.xmin as type_state_number,
+       T.typname as type_name,
+       T.typtype as type_sub_kind,
+       T.typcategory as type_category,
+       T.typrelid as class_id,
+       T.typbasetype as base_type_id,
+       case when T.typtype in ('c','e') then null
+            else pg_catalog.format_type(T.typbasetype, T.typtypmod) end as type_def,
+       T.typndims as dimensions_number,
+       T.typdefault as default_expression,
+       T.typnotnull as mandatory,
+       pg_catalog.pg_get_userbyid(T.typowner) as "owner"
+from pg_catalog.pg_type T
+         left outer join pg_catalog.pg_class C
+             on T.typrelid = C.oid
+where T.typnamespace = $1::oid
+  and (T.typtype in ('d','e') or
+       C.relkind = 'c'::"char" or
+       (T.typtype = 'b' and (T.typelem = 0 OR T.typcategory <> 'A')) or
+       T.typtype = 'p' and not T.typisdefined)
+order by 1
+;
+```
+
+#### RetrieveColumns
+
+```sql
+with T as ( select
+                  T.oid as table_id, T.relname as table_name
+            from pg_catalog.pg_class T
+            where T.relnamespace = $1::oid
+              and T.relkind in ('r', 'm', 'v', 'f', 'p')
+            )
+select T.table_id,
+       C.attnum as column_position,
+       C.attname as column_name,
+       C.xmin as column_state_number,
+       C.atttypmod as type_mod,
+       C.attndims as dimensions_number,
+       pg_catalog.format_type(C.atttypid, C.atttypmod) as type_spec,
+       C.atttypid as type_id,
+       C.attnotnull as mandatory,
+       pg_catalog.pg_get_expr(D.adbin, T.table_id) as column_default_expression,
+       not C.attislocal as column_is_inherited,
+        C.attfdwoptions as options,
+       C.attisdropped as column_is_dropped,
+       C.attidentity as identity_kind,
+       C.attgenerated as generated
+from T
+  join pg_catalog.pg_attribute C on T.table_id = C.attrelid
+  left join pg_catalog.pg_attrdef D on (C.attrelid, C.attnum) = (D.adrelid, D.adnum)
+where attnum > 0
+order by table_id, attnum
+;
+```
+
+#### RetrieveIndices
+
+```sql
+select tab.oid               table_id,
+       tab.relkind           table_kind,
+       ind_stor.relname      index_name,
+       ind_head.indexrelid   index_id,
+       ind_stor.xmin         state_number,
+       ind_head.indisunique  is_unique,
+       ind_head.indisprimary is_primary,
+       ind_head.indnullsnotdistinct nulls_not_distinct,
+       pg_catalog.pg_get_expr(ind_head.indpred, ind_head.indrelid) as condition,
+       (select pg_catalog.array_agg(inhparent::bigint order by inhseqno)::varchar from pg_catalog.pg_inherits where ind_stor.oid = inhrelid) as ancestors,
+       ind_stor.reltablespace tablespace_id,
+       opcmethod as access_method_id
+from pg_catalog.pg_class tab
+         join pg_catalog.pg_index ind_head
+              on ind_head.indrelid = tab.oid
+         join pg_catalog.pg_class ind_stor
+              on tab.relnamespace = ind_stor.relnamespace and ind_stor.oid = ind_head.indexrelid
+         left join pg_catalog.pg_opclass on pg_opclass.oid = ANY(indclass)
+where tab.relnamespace = $1::oid
+        and tab.relkind in ('r', 'm', 'v', 'p')
+        and ind_stor.relkind in ('i', 'I')
+```
+
+#### RetrieveIndexColumns
+
+```sql
+select ind_head.indexrelid index_id,
+       k col_idx,
+       k <= indnkeyatts in_key,
+       ind_head.indkey[k-1] column_position,
+       ind_head.indoption[k-1] column_options,
+       ind_head.indcollation[k-1] as collation,
+       colln.nspname as collation_schema,
+       collname as collation_str,
+       ind_head.indclass[k-1] as opclass,
+       case when opcdefault then null else opcn.nspname end as opclass_schema,
+       case when opcdefault then null else opcname end as opclass_str,
+       case
+           when indexprs is null then null
+           when ind_head.indkey[k-1] = 0 then chr(27) || pg_catalog.pg_get_indexdef(ind_head.indexrelid, k::int, true)
+           else pg_catalog.pg_get_indexdef(ind_head.indexrelid, k::int, true)
+       end as expression,
+       amcanorder can_order
+from pg_catalog.pg_index ind_head
+         join pg_catalog.pg_class ind_stor
+              on ind_stor.oid = ind_head.indexrelid
+    cross join unnest(ind_head.indkey) with ordinality u(u, k)
+         left join pg_catalog.pg_collation
+                   on pg_collation.oid = ind_head.indcollation[k-1]
+         left join pg_catalog.pg_namespace colln on collnamespace = colln.oid
+cross join pg_catalog.pg_indexam_has_property(ind_stor.relam, 'can_order') amcanorder
+         left join pg_catalog.pg_opclass
+                   on pg_opclass.oid = ind_head.indclass[k-1]
+         left join pg_catalog.pg_namespace opcn on opcnamespace = opcn.oid
+where ind_stor.relnamespace = $1::oid
+  and ind_stor.relkind in ('i', 'I')
+order by index_id, k
+```
+
+#### RetrieveConstraints
+
+```sql
+select T.oid table_id,
+       relkind table_kind,
+       C.oid::bigint con_id,
+       C.xmin::varchar::bigint con_state_id,
+       conname con_name,
+       contype con_kind,
+       conkey con_columns,
+       conindid index_id,
+       confrelid ref_table_id,
+       condeferrable is_deferrable,
+       condeferred is_init_deferred,
+       confupdtype on_update,
+       confdeltype on_delete,
+       connoinherit no_inherit,
+      pg_catalog.pg_get_expr(conbin, T.oid) con_expression,
+       confkey ref_columns,
+       conexclop::int[] excl_operators,
+       array(select unnest::regoper::varchar from unnest(conexclop)) excl_operators_str
+from pg_catalog.pg_constraint C
+         join pg_catalog.pg_class T
+              on C.conrelid = T.oid
+   where relkind in ('r', 'v', 'f', 'p')
+     and relnamespace = $1::oid
+     and contype in ('p', 'u', 'f', 'c', 'x')
+     and connamespace = $1::oid
+;
+```
+
+#### ListLanguages
+
+```sql
+select l.oid as id, l.xmin state_number, lanname as name, lanpltrusted as trusted,
+       h.proname as handler, hs.nspname as handlerSchema,
+       i.proname as inline, isc.nspname as inlineSchema,
+       v.proname as validator, vs.nspname as validatorSchema
+from pg_catalog.pg_language l
+    left join pg_catalog.pg_proc h on h.oid = lanplcallfoid
+    left join pg_catalog.pg_namespace hs on hs.oid = h.pronamespace
+    left join pg_catalog.pg_proc i on i.oid = laninline
+    left join pg_catalog.pg_namespace isc on isc.oid = i.pronamespace
+    left join pg_catalog.pg_proc v on v.oid = lanvalidator
+    left join pg_catalog.pg_namespace vs on vs.oid = v.pronamespace
+order by lanname
+;
+```
+
+#### RetrieveRoutines
+
+```sql
+with languages as (select oid as lang_oid, lanname as lang
+                   from pg_catalog.pg_language),
+     routines as (select proname as r_name,
+                         prolang as lang_oid,
+                         oid as r_id,
+                         xmin as r_state_number,
+                         proargnames as arg_names,
+                         proargmodes as arg_modes,
+                         proargtypes::int[] as in_arg_types,
+                         proallargtypes::int[] as all_arg_types,
+                         pg_catalog.pg_get_expr(proargdefaults, 0) as arg_defaults,
+                         provariadic as arg_variadic_id,
+                         prorettype as ret_type_id,
+                         proretset as ret_set,
+                         prokind as kind,
+                         provolatile as volatile_kind,
+                         proisstrict as is_strict,
+                         prosecdef as is_security_definer,
+                         proconfig as configuration_parameters,
+                         procost as cost,
+                         pg_catalog.pg_get_userbyid(proowner) as "owner",
+                         prorows as rows ,
+                         proleakproof as is_leakproof ,
+                         proparallel as concurrency_kind
+                  from pg_catalog.pg_proc
+                  where pronamespace = $1::oid
+                    and not (prokind = 'a')
+                    )
+select *
+from routines natural join languages
+;
+```
+
+#### RetrieveSequences10
+
+```sql
+select cls.xmin as sequence_state_number,
+       sq.seqrelid as sequence_id,
+       cls.relname as sequence_name,
+       pg_catalog.format_type(sq.seqtypid, null) as data_type,
+       sq.seqstart as start_value,
+       sq.seqincrement as inc_value,
+       sq.seqmin as min_value,
+       sq.seqmax as max_value,
+       sq.seqcache as cache_size,
+       sq.seqcycle as cycle_option,
+       pg_catalog.pg_get_userbyid(cls.relowner) as "owner"
+from pg_catalog.pg_sequence sq
+    join pg_class cls on sq.seqrelid = cls.oid
+    where cls.relnamespace = $1::oid
+;
+```
+
+#### RetrieveViewSources
+
+```sql
+select
+       T.relkind as view_kind,
+       T.oid as view_id,
+       pg_catalog.pg_get_viewdef(T.oid, true) as source_text
+from pg_catalog.pg_class T
+  join pg_catalog.pg_namespace N on T.relnamespace = N.oid
+where N.oid = $1::oid
+  and T.relkind in ('m','v')
+;
+```
+
+#### RetrieveFunctionSources
+
+```sql
+with system_languages as ( select oid as lang
+                           from pg_catalog.pg_language
+                           where lanname in ('c','internal') )
+select oid as id,
+       pg_catalog.pg_get_function_arguments(oid) as arguments_def,
+       pg_catalog.pg_get_function_result(oid) as result_def,
+       pg_catalog.pg_get_function_sqlbody(oid) as sqlbody_def,
+       prosrc as source_text
+from pg_catalog.pg_proc
+where pronamespace = $1::oid
+  and not (prokind = 'a')
+  and prolang not in (select lang from system_languages)
+  and prosrc is not null
+;
+```
+
+#### RetrieveRelations
+
+```sql
+select D.objid as dependent_id,
+       D.refobjid as owner_id,
+       D.refobjsubid as owner_subobject_id
+from pg_depend D
+  join pg_class C_SEQ on D.objid    = C_SEQ.oid and D.classid    = 'pg_class'::regclass::oid
+  join pg_class C_TAB on D.refobjid = C_TAB.oid and D.refclassid = 'pg_class'::regclass::oid
+where C_SEQ.relkind = 'S'
+  and C_TAB.relkind = 'r'
+  and D.refobjsubid <> 0
+  and (D.deptype = 'a' or D.deptype = 'i')
+  and C_TAB.relnamespace = $1::oid
+order by owner_id
+;
+```

@@ -54,6 +54,11 @@ fn postgres_client_protocol_versions() {
         .arg(LIBPQ_WORKFLOW)
         .arg(address.port().to_string())
         .arg(crate::pg_catalog::DATABASES_SQL)
+        .args([
+            DATAGRIP_VIEW_SOURCES_SQL,
+            DATAGRIP_FUNCTION_SOURCES_SQL,
+            DATAGRIP_RELATIONS_SQL,
+        ])
         .output();
     // The authenticated MySQL connection stays usable after the PG workload.
     mysql_packet(&mut mysql, 0, &[0x0e]); // COM_PING
@@ -61,6 +66,7 @@ fn postgres_client_protocol_versions() {
     mysql_packet(&mut mysql, 0, &[0x01]); // COM_QUIT
     server.close();
     let output = result.expect("Python 3 is required to call the external libpq client");
+    println!("{}", String::from_utf8_lossy(&output.stdout));
     assert!(
         output.status.success(),
         "external libpq workflow failed:\n{}\n{}",
@@ -102,6 +108,56 @@ fn mysql_handshake(socket: &mut TcpStream) {
     mysql_packet(socket, 1, &response);
     assert_eq!(mysql_read(socket).first(), Some(&0));
 }
+
+// DataGrip 2025.1.3 database log, 2026-10-03 08:45:58, session 1533977248.
+// Keep JDBC display SQL verbatim; the client workflow converts the sole ?
+// to a literal for Query or $1 for Parse, without changing inactive comments.
+// Statement 1869279758.
+const DATAGRIP_VIEW_SOURCES_SQL: &str = r#"select
+       T.relkind as view_kind,
+       T.oid as view_id,
+       pg_catalog.pg_get_viewdef(T.oid, true) as source_text
+from pg_catalog.pg_class T
+  join pg_catalog.pg_namespace N on T.relnamespace = N.oid
+where N.oid = ?::oid
+  and T.relkind in ('m','v')
+  --  and T.relname in ( :[*f_names] )
+  --  and (pg_catalog.age(T.xmin) <= #SRCTXAGE or exists(
+  --  select A.attrelid from pg_catalog.pg_attribute A where A.attrelid = T.oid and pg_catalog.age(A.xmin) <= #SRCTXAGE))
+"#;
+
+// Statement 1869279759.
+const DATAGRIP_FUNCTION_SOURCES_SQL: &str = r#"with system_languages as ( select oid as lang
+                           from pg_catalog.pg_language
+                           where lanname in ('c','internal') )
+select oid as id,
+       pg_catalog.pg_get_function_arguments(oid) as arguments_def,
+       pg_catalog.pg_get_function_result(oid) as result_def,
+       pg_catalog.pg_get_function_sqlbody(oid) /* null */ as sqlbody_def,
+       prosrc as source_text
+from pg_catalog.pg_proc
+where pronamespace = ?::oid
+  --  and pg_proc.proname in ( :[*f_names] )
+  --  and pg_catalog.age(xmin) <= #SRCTXAGE
+  and not (prokind = 'a') /* proisagg */
+  and prolang not in (select lang from system_languages)
+  and prosrc is not null
+"#;
+
+// Statement 1869279760.
+const DATAGRIP_RELATIONS_SQL: &str = r#"select D.objid as dependent_id,
+       D.refobjid as owner_id,
+       D.refobjsubid as owner_subobject_id
+from pg_depend D
+  join pg_class C_SEQ on D.objid    = C_SEQ.oid and D.classid    = 'pg_class'::regclass::oid
+  join pg_class C_TAB on D.refobjid = C_TAB.oid and D.refclassid = 'pg_class'::regclass::oid
+where C_SEQ.relkind = 'S'
+  and C_TAB.relkind = 'r'
+  and D.refobjsubid <> 0
+  and (D.deptype = 'a' or D.deptype = 'i')
+  and C_TAB.relnamespace = ?::oid
+order by owner_id
+"#;
 
 const LIBPQ_WORKFLOW: &str = r#"
 import ctypes as c, ctypes.util, os, sys
@@ -151,13 +207,13 @@ for options, expected_protocol in [('', 30000), (' min_protocol_version=3.2 max_
         assert protocol(conn) == expected_protocol, protocol(conn)
         assert parameter_status(conn, b'server_version') == b'18.0 (AsterSQL)'
         assert server_version(conn) == 180000, server_version(conn)
-        def query(sql, expected=None, parameter=None, metadata=None, extended=False, sqlstate=None):
+        def query(sql, expected=None, parameter=None, metadata=None, extended=False, sqlstate=None, parameter_oid=23):
             if extended:
                 result = params(conn, sql.encode(), 0, None, None, None, None, 0)
             elif parameter is None:
                 result = execute(conn, sql.encode())
             else:
-                oids = (c.c_uint * 1)(23)
+                oids = (c.c_uint * 1)(parameter_oid)
                 values = (text * 1)(str(parameter).encode())
                 result = params(conn, sql.encode(), 1, oids, values, None, None, 0)
             assert result
@@ -183,6 +239,19 @@ for options, expected_protocol in [('', 30000), (' min_protocol_version=3.2 max_
             finally:
                 finish(invalid)
         query('SELECT 1', [['1']])
+        # Current failures are source evidence, not a claim of PG compatibility.
+        # Use the real current namespace ID; no catalog rows are mocked.
+        namespace_id = int(query("select oid from pg_catalog.pg_namespace where nspname = 'test'")[0][0])
+        for label, displayed, simple_state, parse_state in zip(
+                ['RetrieveViewSources', 'RetrieveFunctionSources', 'RetrieveRelations'],
+                sys.argv[3:6], ['42P01', '0A000', '42601'], ['42P01', '0A000', '0A000']):
+            assert displayed.count('?') == 1, label
+            query(displayed.replace('?', str(namespace_id)), sqlstate=simple_state)
+            query('SELECT 1', [['1']])
+            query(displayed.replace('?', '$1'), parameter=namespace_id,
+                  parameter_oid=26, sqlstate=parse_state)
+            query('SELECT 1', [['1']])
+            print(f'{expected_protocol}: {label}: Query={simple_state}, Parse(oid 26)={parse_state}; recovery passed', flush=True)
         namespace_sql = """select N.oid::bigint as id, N.xmin as state_number, nspname as name,
             D.description, pg_catalog.pg_get_userbyid(N.nspowner) as "owner"
             from pg_catalog.pg_namespace N left join pg_catalog.pg_description D on N.oid = D.objoid
