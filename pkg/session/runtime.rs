@@ -79,6 +79,9 @@ pub use paging::SetResourceGroupRuntimeStates;
 pub(crate) use relational_scan::scan_mlog_record_commit_ts;
 mod relational_value;
 pub(crate) use relational_value::{relational_compare, relational_window_value};
+mod bootstrap_wait;
+#[cfg(test)]
+mod bootstrap_wait_test;
 #[cfg(test)]
 mod durable_scheduler_test;
 #[cfg(test)]

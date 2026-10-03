@@ -763,6 +763,7 @@ impl CanonicalSessionFactory {
         let mut config = DomainConfig::default();
         config.keyspace = store.GetKeyspace();
         let keyspace_name = config.keyspace.clone();
+        check_user_keyspace_bootstrap(&store);
         let factory = Self::from_storage(store, config)?;
         let workload_config = astersql_config::get_global_config()
             .external_workload
@@ -1849,6 +1850,22 @@ pub(super) fn build_bootstrap_view_table(
     })
 }
 
+/// Wait on the registered SYSTEM store before constructing a user Domain.
+pub(super) fn check_user_keyspace_bootstrap(store: &dyn kv::Storage) {
+    if !kv::IsUserKS(store) {
+        return;
+    }
+    let current = super::bootstrap_wait::must_get_store_bootstrap_version(store);
+    let system = astersql_store::GetSystemStorage()
+        .unwrap_or_else(|| panic!("SYSTEM storage is not initialized"));
+    let system = system
+        .CanonicalTiKVStore()
+        .unwrap_or_else(|error| panic!("get SYSTEM storage failed: {error}"));
+    let target = unsafe { crate::upgrade_def::currentBootstrapVersion };
+    let mut clock = super::bootstrap_wait::SystemBootstrapClock::new();
+    super::bootstrap_wait::check_system_bootstrap_version(&system, target, current, &mut clock);
+}
+
 fn canonical_bootstrap_version(
     session: &ConcreteSession,
     domain: &Domain,
@@ -2424,6 +2441,11 @@ pub fn BootstrapCanonicalDomain(domain: Arc<Domain>) -> SessionResult<ConcreteSe
             domain.set_global_system_variable(name, value);
         }
     }
+    domain.storage_handle().with_storage(|store| {
+        super::bootstrap_wait::finish_store_bootstrap_version(store, unsafe {
+            crate::upgrade_def::currentBootstrapVersion
+        });
+    });
     Ok(session)
 }
 
