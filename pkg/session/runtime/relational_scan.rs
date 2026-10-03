@@ -73,6 +73,8 @@ impl ConcreteSession {
             dag.set_executors(vec![executor].into());
             dag.set_output_offsets((0..table.Columns.len() as u32).collect());
             let mut request = relational_coprocessor_request(table, version.Ver)?;
+            request.ResourceGroupName = self.cop_resource_group_name();
+            request.Paging.PagingSizeBytes = self.cop_paging_size_bytes(&request.ResourceGroupName);
             request.Data = protobuf::Message::write_to_bytes(&dag)
                 .map_err(|error| session_error("encode ANN DAG", error))?;
             request.StoreType = kv::StoreType::TiFlash;
@@ -579,6 +581,8 @@ fn scan_relational_rows_with_coprocessor(
     replica_read: kv::ReplicaReadType,
     txn_scope: &str,
     connection_id: u64,
+    resource_group_name: &str,
+    paging_size_bytes: u64,
 ) -> SessionResult<Option<Vec<RelationalRow>>> {
     if table.GetPartitionInfo().is_some() {
         return Ok(None);
@@ -587,7 +591,7 @@ fn scan_relational_rows_with_coprocessor(
     if !client.IsRequestTypeSupported(kv::ReqTypeDAG, kv::ReqSubTypeBasic) {
         return Ok(None);
     }
-    let request = relational_analyze_select_request(
+    let mut request = relational_analyze_select_request(
         table,
         start_ts,
         concurrency,
@@ -596,6 +600,8 @@ fn scan_relational_rows_with_coprocessor(
         false,
         connection_id,
     )?;
+    request.ResourceGroupName = resource_group_name.to_owned();
+    request.Paging.PagingSizeBytes = paging_size_bytes;
     let context = kv::Context::todo();
     let option = kv::ClientSendOption {
         SessionMemTracker: None,
@@ -816,6 +822,7 @@ pub(super) fn count_relational_rows_with_coprocessor(
     start_ts: u64,
     checker: Option<kv::resourcegroup::SharedRunawayChecker>,
     resource_group_name: &str,
+    paging_size_bytes: u64,
 ) -> SessionResult<Option<usize>> {
     if table.GetPartitionInfo().is_some() {
         return Ok(None);
@@ -840,12 +847,14 @@ pub(super) fn count_relational_rows_with_coprocessor(
     let mut checksum_request = relational_checksum_request(table, start_ts)?;
     checksum_request.RunawayChecker = checker.clone();
     checksum_request.ResourceGroupName = resource_group_name.to_owned();
+    checksum_request.Paging.PagingSizeBytes = paging_size_bytes;
     match execute_relational_count_request(client, &context, &checksum_request, &option, true) {
         Ok(count) => Ok(Some(count)),
         Err(_) => {
             let mut dag_request = relational_coprocessor_request(table, start_ts)?;
             dag_request.RunawayChecker = checker;
             dag_request.ResourceGroupName = resource_group_name.to_owned();
+            dag_request.Paging.PagingSizeBytes = paging_size_bytes;
             execute_relational_count_request(client, &context, &dag_request, &option, false)
                 .map(Some)
         }
@@ -864,6 +873,7 @@ pub(super) fn count_relational_key_range_with_coprocessor(
     end_key: kv::Key,
     checker: Option<kv::resourcegroup::SharedRunawayChecker>,
     resource_group_name: &str,
+    paging_size_bytes: u64,
 ) -> SessionResult<Option<usize>> {
     if start_key.Cmp(&end_key) >= 0 {
         return Ok(Some(0));
@@ -886,6 +896,7 @@ pub(super) fn count_relational_key_range_with_coprocessor(
         relational_checksum_range_request(start_ts, start_key.clone(), end_key.clone())?;
     checksum_request.RunawayChecker = checker.clone();
     checksum_request.ResourceGroupName = resource_group_name.to_owned();
+    checksum_request.Paging.PagingSizeBytes = paging_size_bytes;
     match execute_relational_count_request(client, &context, &checksum_request, &option, true) {
         Ok(count) => Ok(Some(count)),
         Err(_) => {
@@ -893,6 +904,7 @@ pub(super) fn count_relational_key_range_with_coprocessor(
                 relational_coprocessor_range_request(table, start_ts, start_key, end_key)?;
             dag_request.RunawayChecker = checker;
             dag_request.ResourceGroupName = resource_group_name.to_owned();
+            dag_request.Paging.PagingSizeBytes = paging_size_bytes;
             execute_relational_count_request(client, &context, &dag_request, &option, false)
                 .map(Some)
         }
@@ -906,6 +918,7 @@ pub(super) fn count_relational_rows_with_planned_filter_coprocessor(
     data: Vec<u8>,
     checker: Option<kv::resourcegroup::SharedRunawayChecker>,
     resource_group_name: &str,
+    paging_size_bytes: u64,
 ) -> SessionResult<Option<usize>> {
     let client = store.GetClient();
     if !client.IsRequestTypeSupported(kv::ReqTypeDAG, kv::ReqSubTypeBasic) {
@@ -915,6 +928,7 @@ pub(super) fn count_relational_rows_with_planned_filter_coprocessor(
     request.Data = data;
     request.RunawayChecker = checker;
     request.ResourceGroupName = resource_group_name.to_owned();
+    request.Paging.PagingSizeBytes = paging_size_bytes;
     let context = kv::Context::todo();
     let option = kv::ClientSendOption {
         SessionMemTracker: None,
@@ -2079,6 +2093,8 @@ impl ConcreteSession {
                     replica_read,
                     kv::GlobalTxnScope,
                     connection_id,
+                    &self.cop_resource_group_name(),
+                    self.cop_paging_size_bytes(&self.cop_resource_group_name()),
                 )? {
                     return Ok(rows);
                 }
@@ -2207,6 +2223,7 @@ impl ConcreteSession {
                     candidate.clone(),
                     runaway_checker.clone(),
                     &resource_group_name,
+                    self.cop_paging_size_bytes(&resource_group_name),
                 )? && skipped <= window.offset
                 {
                     remaining_offset = window.offset - skipped;
@@ -2494,6 +2511,7 @@ impl ConcreteSession {
                 data,
                 runaway_checker,
                 &resource_group_name,
+                self.cop_paging_size_bytes(&resource_group_name),
             )
         })
     }
@@ -2514,6 +2532,7 @@ impl ConcreteSession {
                     read_ts,
                     runaway_checker.clone(),
                     &resource_group_name,
+                    self.cop_paging_size_bytes(&resource_group_name),
                 )? {
                     return Ok(count);
                 }
@@ -2538,6 +2557,7 @@ impl ConcreteSession {
                     read_ts,
                     runaway_checker.clone(),
                     &resource_group_name,
+                    self.cop_paging_size_bytes(&resource_group_name),
                 )? {
                     return Ok(count);
                 }
@@ -2566,6 +2586,7 @@ impl ConcreteSession {
                     version.Ver,
                     runaway_checker,
                     &resource_group_name,
+                    self.cop_paging_size_bytes(&resource_group_name),
                 )? {
                     return Ok(count);
                 }

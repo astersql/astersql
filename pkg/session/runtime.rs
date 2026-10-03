@@ -68,12 +68,14 @@ pub(crate) use mlog_purge::purge_mlog_snapshot_batch;
 pub(crate) use mlog_purge::run_mlog_purge_tick;
 mod mview_ddl;
 pub use import_file::{ImportFileSubtask, ImportFileTask};
+mod paging;
 mod planning;
 mod query;
 #[cfg(test)]
 mod query_binary_test;
 mod recovery;
 mod relational_scan;
+pub use paging::SetResourceGroupRuntimeStates;
 pub(crate) use relational_scan::scan_mlog_record_commit_ts;
 mod relational_value;
 pub(crate) use relational_value::{relational_compare, relational_window_value};
@@ -653,6 +655,7 @@ pub fn SetShowClusterConfigForTest(domain: &Arc<Domain>, rows: Result<Vec<Vec<St
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct RuntimeResourceGroup {
     ru_per_sec: u64,
+    burst_limit: i64,
     priority: ArbitrationPriority,
 }
 static RUNTIME_RESOURCE_GROUPS: LazyLock<

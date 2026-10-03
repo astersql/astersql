@@ -368,3 +368,19 @@ fn full_reset_clears_statement_state_and_preserves_reused_maps() {
     assert_eq!(0, sc.LogicalPlanViewDepth());
     assert!(!sc.HasLogicalPlanColumnReference(5));
 }
+
+#[test]
+fn dist_sql_cache_reset_preserves_statement_counters_and_warnings() {
+    let sc = NewStmtCtx();
+    sc.AddFoundRows(9);
+    sc.AddAffectedRows(3);
+    sc.AppendWarning(errors::NewNoStackError("keep current warning"));
+    let first = sc.GetOrInitDistSQLFromCache(|| cache_value(1_u64));
+    sc.ResetDistSQLFromCache();
+    let second = sc.GetOrInitDistSQLFromCache(|| cache_value(2_u64));
+    assert_eq!(*cache_downcast_ref::<u64>(&first).unwrap(), 1);
+    assert_eq!(*cache_downcast_ref::<u64>(&second).unwrap(), 2);
+    assert_eq!(sc.FoundRows(), 9);
+    assert_eq!(sc.AffectedRows(), 3);
+    assert_eq!(sc.GetWarnings().len(), 1);
+}

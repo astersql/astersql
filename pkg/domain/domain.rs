@@ -807,6 +807,8 @@ pub struct Domain {
     stats_updating: AtomicBool,
     stats_owner: AtomicBool,
     resource_group_version: AtomicU64,
+    resource_group_runtime_states:
+        RwLock<Option<Arc<dyn crate::resource_group_runtime::ResourceGroupRuntimeStateProvider>>>,
     ru_version: AtomicU64,
     plan_cache: RwLock<Option<Arc<Mutex<PlanCache>>>>,
     ruv2_consumption_reporter:
@@ -1457,6 +1459,7 @@ impl Domain {
             stats_updating: AtomicBool::new(false),
             stats_owner: AtomicBool::new(false),
             resource_group_version: AtomicU64::new(0),
+            resource_group_runtime_states: RwLock::new(None),
             ru_version: AtomicU64::new(1),
             plan_cache: RwLock::new(None),
             ruv2_consumption_reporter: RwLock::new(None),
@@ -5982,6 +5985,27 @@ impl Domain {
     /// 卸任统计 Owner。
     pub fn disable_stats_owner(&self) -> bool {
         self.stats_owner.swap(false, Ordering::AcqRel)
+    }
+
+    /// Install the controller's local runtime-state view. Metadata alone must
+    /// not be presented as a completed token response.
+    pub fn set_resource_group_runtime_states(
+        &self,
+        provider: Option<Arc<dyn crate::resource_group_runtime::ResourceGroupRuntimeStateProvider>>,
+    ) {
+        *self
+            .resource_group_runtime_states
+            .write()
+            .expect("resource group runtime state lock poisoned") = provider;
+    }
+
+    /// A known false state is authoritative; only None permits metadata fallback.
+    pub fn resource_group_has_limited_burst(&self, name: &str) -> Option<bool> {
+        self.resource_group_runtime_states
+            .read()
+            .expect("resource group runtime state lock poisoned")
+            .as_ref()?
+            .has_limited_burst(name)
     }
 
     /// 设置资源组版本号。

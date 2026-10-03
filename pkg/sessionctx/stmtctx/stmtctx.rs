@@ -1764,6 +1764,14 @@ impl StatementContext {
             .expect("DistSQL cache lock poisoned");
         cached.get_or_insert_with(create).clone()
     }
+    /// Clear DistSQL capture at a new statement boundary without changing
+    /// warnings, row counters, or other statement state.
+    pub fn ResetDistSQLFromCache(&self) {
+        *self
+            .distSQLCtxCache
+            .lock()
+            .expect("DistSQL cache lock poisoned") = None;
+    }
     /// 惰性初始化并缓存 Ranger（范围推导）上下文。
     pub fn GetOrInitRangerCtxFromCache<F>(&self, create: F) -> CacheValue
     where

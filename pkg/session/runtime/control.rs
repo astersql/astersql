@@ -3617,11 +3617,25 @@ impl ConcreteSession {
     ) -> SessionResult<()> {
         let mut group = RuntimeResourceGroup {
             ru_per_sec: 0,
+            burst_limit: 0,
             priority: ArbitrationPriorityMedium,
         };
         for option in &statement.ResourceGroupOptionList {
             match option.Tp {
-                ast::ResourceGroupOptionType::RURate => group.ru_per_sec = option.UintValue,
+                ast::ResourceGroupOptionType::RURate => {
+                    group.ru_per_sec = if option.Burstable == ast::BurstableType::Unlimited {
+                        astersql_meta_model::group_3::unlimitedRURate
+                    } else {
+                        option.UintValue
+                    };
+                }
+                ast::ResourceGroupOptionType::Burstable => {
+                    group.burst_limit = match option.Burstable {
+                        ast::BurstableType::Disable => 0,
+                        ast::BurstableType::Moderated => -2,
+                        ast::BurstableType::Unlimited => -1,
+                    };
+                }
                 ast::ResourceGroupOptionType::Priority => {
                     group.priority = match option.UintValue {
                         16 => ArbitrationPriorityHigh,
@@ -3667,6 +3681,13 @@ impl ConcreteSession {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let groups = groups.entry(domain_id).or_default();
         let name = statement.ResourceGroupName.L.clone();
+        if name == astersql_resourcegroup::DEFAULT_RESOURCE_GROUP_NAME {
+            groups.entry(name.clone()).or_insert(RuntimeResourceGroup {
+                ru_per_sec: i32::MAX as u64,
+                burst_limit: -1,
+                priority: ArbitrationPriorityMedium,
+            });
+        }
         let Some(group) = groups.get_mut(&name) else {
             if statement.IfExists {
                 self.state
@@ -3684,7 +3705,20 @@ impl ConcreteSession {
         };
         for option in &statement.ResourceGroupOptionList {
             match option.Tp {
-                ast::ResourceGroupOptionType::RURate => group.ru_per_sec = option.UintValue,
+                ast::ResourceGroupOptionType::RURate => {
+                    group.ru_per_sec = if option.Burstable == ast::BurstableType::Unlimited {
+                        astersql_meta_model::group_3::unlimitedRURate
+                    } else {
+                        option.UintValue
+                    };
+                }
+                ast::ResourceGroupOptionType::Burstable => {
+                    group.burst_limit = match option.Burstable {
+                        ast::BurstableType::Disable => 0,
+                        ast::BurstableType::Moderated => -2,
+                        ast::BurstableType::Unlimited => -1,
+                    };
+                }
                 ast::ResourceGroupOptionType::Priority => {
                     group.priority = match option.UintValue {
                         16 => ArbitrationPriorityHigh,

@@ -1216,6 +1216,8 @@ impl ConcreteSession {
                     request.NotFillCache = not_fill_cache;
                     request.RunawayChecker = runaway_checker.clone();
                     request.ResourceGroupName = resource_group_name.clone();
+                    request.Paging.PagingSizeBytes =
+                        self.cop_paging_size_bytes(&resource_group_name);
                     Arc::new(request)
                 })
             })
@@ -3727,6 +3729,7 @@ impl ConcreteSession {
         let statement_sql = split_statement_sql(sql);
         let mut record_sets = Vec::new();
         for (index, statement) in statements.into_iter().enumerate() {
+            self.session_vars.StmtCtx.ResetDistSQLFromCache();
             self.state.borrow_mut().statement_txn_start_ts = 0;
             let full_rollback = statement
                 .as_any()

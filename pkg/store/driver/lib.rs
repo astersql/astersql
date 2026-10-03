@@ -76,3 +76,6 @@ mod txn_test;
 
 mod read_request;
 pub use tikv_client::{PointResponseStats, ReadAttempt, ReadOptions, ReadStats};
+
+/// PD token-response runtime state used by session paging decisions.
+pub use tikv_client::{proto::resource_manager as resource_manager_proto, resource_group_runtime};

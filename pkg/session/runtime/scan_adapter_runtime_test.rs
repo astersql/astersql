@@ -2308,3 +2308,226 @@ fn client_load_data_deadlock_stops_before_retry_count_and_executor_rebuild() {
     assert!(statement.retryStartTime.is_some());
     owner.session.Execute("rollback").unwrap();
 }
+
+#[test]
+fn paging_budget_reaches_real_sql_select_request() {
+    use crate::testutil::TestSession;
+    let session = canonical_dml_session();
+    session
+        .Execute("create resource group `default` ru_per_sec=1000 burstable=off")
+        .unwrap();
+    session
+        .Execute("set global tidb_paging_size_bytes = 4194304")
+        .unwrap();
+    session
+        .Execute("set global tidb_enable_resource_control = on")
+        .unwrap();
+    session.Execute("begin").unwrap();
+    session
+        .Execute("insert into t values (1,10),(2,20)")
+        .unwrap();
+    session.Execute("select * from t").unwrap();
+    let request = session
+        .LastSelectRequestForTest()
+        .expect("SQL must construct a cop request");
+    assert_eq!(request.request.Paging.PagingSizeBytes, 4_194_304);
+}
+
+fn paging_grant(
+    name: &str,
+    burst: i64,
+) -> astersql_store_driver::resource_manager_proto::TokenBucketResponse {
+    use astersql_store_driver::resource_manager_proto::*;
+    TokenBucketResponse {
+        resource_group_name: name.into(),
+        granted_r_u_tokens: vec![GrantedRuTokenBucket {
+            granted_tokens: Some(TokenBucket {
+                settings: Some(TokenLimitSettings {
+                    fill_rate: 1000,
+                    burst_limit: burst,
+                    ..Default::default()
+                }),
+                tokens: 1000.0,
+            }),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
+}
+
+fn paging_controller(
+    names: &[&str],
+) -> Arc<astersql_store_driver::resource_group_runtime::ResourceGroupRuntimeStates> {
+    use astersql_store_driver::resource_manager_proto::*;
+    let controller = Arc::new(
+        astersql_store_driver::resource_group_runtime::ResourceGroupRuntimeStates::default(),
+    );
+    for name in names {
+        controller.register_group(&ResourceGroup {
+            name: (*name).into(),
+            r_u_settings: Some(GroupRequestUnitSettings {
+                r_u: Some(TokenBucket {
+                    settings: Some(TokenLimitSettings {
+                        fill_rate: 1000,
+                        burst_limit: -1,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+            }),
+            ..Default::default()
+        });
+    }
+    controller
+}
+
+#[test]
+fn paging_runtime_grants_override_real_resource_group_metadata() {
+    use super::paging::{effective_paging_size_bytes, resource_group_allows_paging_size_bytes};
+    use crate::testutil::TestSession;
+    let session = canonical_dml_session();
+    session
+        .Execute("create resource group capped ru_per_sec=1000 burstable=off")
+        .unwrap();
+    session
+        .Execute("create resource group unlimited ru_per_sec=1000 burstable=unlimited")
+        .unwrap();
+    session
+        .Execute("create resource group moderated ru_per_sec=1000 burstable=moderated")
+        .unwrap();
+    let domain = Some(&session.domain);
+    let budget = 4_194_304;
+    let check = |name, enabled, expected| {
+        assert_eq!(
+            effective_paging_size_bytes(domain, name, budget, enabled),
+            expected,
+            "resource group {name}, resource control {enabled}"
+        );
+    };
+    check("default", true, 0);
+    session
+        .Execute("alter resource group `default` ru_per_sec=1000 burstable=off")
+        .unwrap();
+    check("default", true, budget);
+    check("capped", true, budget);
+    check("CAPPED", true, budget);
+    check("unlimited", true, 0);
+    check("moderated", true, 0);
+    session
+        .Execute("create resource group infinite_rate ru_per_sec=unlimited burstable=off")
+        .unwrap();
+    check("infinite_rate", true, 0);
+    check("capped", false, 0);
+    check("missing", true, 0);
+    check("", true, 0);
+    assert!(!resource_group_allows_paging_size_bytes(None, "capped"));
+    for nonpositive in [0, -1] {
+        assert_eq!(
+            effective_paging_size_bytes(None, "", nonpositive, false),
+            nonpositive
+        );
+    }
+
+    let controller = paging_controller(&["capped", "unlimited", "moderated"]);
+    super::SetResourceGroupRuntimeStates(&session.domain, Some(controller.clone()));
+    // Registered but no response yet: schema remains authoritative.
+    check("capped", true, budget);
+    check("unlimited", true, 0);
+    controller.handle_token_bucket_responses(&[
+        paging_grant("capped", -1),
+        paging_grant("unlimited", 100),
+        paging_grant("moderated", 0),
+    ]);
+    check("capped", true, 0);
+    check("unlimited", true, budget);
+    check("moderated", true, budget);
+    check("unlimited", false, 0);
+    check("missing", true, 0);
+    check("", true, 0);
+    controller.tombstone_group("capped");
+    check("capped", true, budget);
+    super::SetResourceGroupRuntimeStates(&session.domain, None);
+    check("unlimited", true, 0);
+    session.Execute("drop resource group capped").unwrap();
+    check("capped", true, 0);
+}
+
+#[test]
+fn paging_context_caches_grants_and_budget_until_statement_retry_reset() {
+    use crate::testutil::TestSession;
+    let session = canonical_dml_session();
+    session
+        .Execute("create resource group capped ru_per_sec=1000 burstable=off")
+        .unwrap();
+    session
+        .Execute("set global tidb_paging_size_bytes=4194304")
+        .unwrap();
+    session
+        .Execute("set global tidb_enable_resource_control=on")
+        .unwrap();
+    let controller = paging_controller(&["capped"]);
+    super::SetResourceGroupRuntimeStates(&session.domain, Some(controller.clone()));
+    controller.handle_token_bucket_responses(&[paging_grant("capped", -1)]);
+    assert_eq!(session.cop_paging_size_bytes("capped"), 0);
+    controller.handle_token_bucket_responses(&[paging_grant("capped", 100)]);
+    assert_eq!(session.cop_paging_size_bytes("capped"), 0);
+    session.WithSessionVars(|vars| vars.StmtCtx.ResetForRetry());
+    let captured = session.cop_paging_size_bytes("capped");
+    assert_eq!(captured, 4_194_304);
+    session
+        .domain
+        .set_global_system_variable("tidb_paging_size_bytes", "2097152");
+    assert_eq!(session.cop_paging_size_bytes("capped"), 4_194_304);
+    session.WithSessionVars(|vars| vars.StmtCtx.ResetForRetry());
+    assert_eq!(session.cop_paging_size_bytes("capped"), 2_097_152);
+    assert_eq!(captured, 4_194_304);
+}
+
+#[test]
+fn paging_runtime_grants_are_consumed_by_sql_select_requests() {
+    use crate::testutil::TestSession;
+    let session = canonical_dml_session();
+    session
+        .Execute("create resource group `default` ru_per_sec=1000 burstable=off")
+        .unwrap();
+    session
+        .Execute("set global tidb_paging_size_bytes=4194304")
+        .unwrap();
+    session
+        .Execute("set global tidb_enable_resource_control=on")
+        .unwrap();
+    session.Execute("begin").unwrap();
+    session
+        .Execute("insert into t values (1,10),(2,20)")
+        .unwrap();
+    let controller = paging_controller(&["default"]);
+    super::SetResourceGroupRuntimeStates(&session.domain, Some(controller.clone()));
+    let mut captured_positive = None;
+    for (burst, expected) in [(-1, 0), (100, 4_194_304), (0, 4_194_304), (-1, 0)] {
+        controller.handle_token_bucket_responses(&[paging_grant("default", burst)]);
+        session.Execute("select * from t").unwrap();
+        let request = session
+            .LastSelectRequestForTest()
+            .expect("real SQL request");
+        assert_eq!(request.request.Paging.PagingSizeBytes, expected);
+        if expected > 0 && captured_positive.is_none() {
+            captured_positive = Some(request.request.clone());
+        }
+    }
+    assert_eq!(captured_positive.unwrap().Paging.PagingSizeBytes, 4_194_304);
+    session
+        .Execute("set global tidb_enable_resource_control=off")
+        .unwrap();
+    controller.handle_token_bucket_responses(&[paging_grant("default", 100)]);
+    session.Execute("select * from t").unwrap();
+    assert_eq!(
+        session
+            .LastSelectRequestForTest()
+            .unwrap()
+            .request
+            .Paging
+            .PagingSizeBytes,
+        0
+    );
+    session.Execute("rollback").unwrap();
+}
