@@ -182,7 +182,7 @@ astersql-util-metricsutil = { path = "../util/metricsutil" }
 "astersql-util-intest" = { package = "astersql-util-intest", path = "../util/intest" }
 "astersql-util-logutil" = { package = "astersql-util-logutil", path = "../util/logutil" }
 "astersql-util-logutil-consistency" = { package = "astersql-util-logutil-consistency", path = "../util/logutil/consistency" }
-"astersql-util-memory" = { package = "astersql-util-memory", path = "../util/memory" }
+"astersql-util-memory" = { package = "astersql-util-memory", path = "../util/memory", features = ["mem-arbitrator"] }
 "astersql-util-parser" = { package = "astersql-util-parser", path = "../util/parser" }
 "astersql-util-ranger-context" = { package = "astersql-util-ranger-context", path = "../util/ranger/context" }
 "astersql-util-redact" = { package = "astersql-util-redact", path = "../util/redact" }

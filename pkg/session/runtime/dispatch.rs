@@ -3939,13 +3939,16 @@ impl ConcreteSession {
                     "github.com/pingcap/tidb/pkg/session/mockStmtSlow",
                 );
             }
-            let mut execution = match self
-                .begin_statement_memory_arbitration(statement.as_ref(), guard.EffectiveHints())
-            {
-                Ok(arbitration) => {
-                    let execution = self.execute_statement(statement.as_ref(), Some(current_sql));
-                    drop(arbitration);
-                    execution
+            let mut arbitration = None;
+            let mut execution = match self.begin_statement_memory_arbitration(
+                statement.as_ref(),
+                guard.EffectiveHints(),
+                current_sql,
+                &mut stmt_tracker,
+            ) {
+                Ok(memory_guard) => {
+                    arbitration = memory_guard;
+                    self.execute_statement(statement.as_ref(), Some(current_sql))
                 }
                 Err(error) => Err(error),
             };
@@ -4118,6 +4121,7 @@ impl ConcreteSession {
             // Retaining only the last detached tracker keeps the action
             // lifecycle inspectable without leaking a session-root child.
             *self.last_statement_tracker.borrow_mut() = Some(stmt_tracker);
+            drop(arbitration);
             match (execution, restore, observation) {
                 (Ok(mut record_set), Ok(()), Ok(())) => {
                     if let Some(show) = statement.as_any().downcast_ref::<ast::ShowStmt>()

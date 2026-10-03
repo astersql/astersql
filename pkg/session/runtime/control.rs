@@ -4715,75 +4715,163 @@ impl ConcreteSession {
             .map_or(ArbitrationPriorityMedium, |group| group.priority)
     }
 
+    #[cfg(test)]
+    pub(crate) fn compiler_quota_at_executor_build_for_test(&self) -> i64 {
+        self.compiler_quota_at_executor_build
+            .load(Ordering::Acquire)
+    }
+
+    pub(crate) fn begin_compile_memory_arbitration(
+        &self,
+        normalized_sql: &str,
+        has_select: bool,
+    ) -> SessionResult<Option<RuntimeCompileMemoryQuota>> {
+        let Some(arbitrator) = GlobalMemArbitrator() else {
+            return Ok(None);
+        };
+        if self.connection_id() == 0 || self.state.borrow().mem_arbitrator_wait_averse == "nolimit"
+        {
+            return Ok(None);
+        }
+        let reserved =
+            super::approx_compile_plan_token_count(normalized_sql, has_select) * (63091 * 12 / 10);
+        if reserved <= 0 {
+            return Ok(None);
+        }
+        if arbitrator.AtMemRisk() {
+            self.clear_memory_sensitive_plan_cache();
+            let mut delay = Duration::from_millis(100);
+            while arbitrator.AtMemRisk() {
+                if arbitrator.AtOOMRisk() {
+                    unsafe {
+                        let tasks = &*std::ptr::addr_of!(
+                            astersql_metrics::memory::GlobalMemArbitratorSubTasks
+                        );
+                        if let Some(counter) = &tasks.ForceKillPlan {
+                            counter.inc();
+                        }
+                    }
+                    return Err(SessionError::new(format!(
+                        "[executor:8180]Query execution was stopped by the global memory arbitrator [reason={}, path=CompilePlan] [conn={}]",
+                        astersql_util_memory::ArbitratorOOMRiskKill.String(),
+                        self.connection_id()
+                    )));
+                }
+                self.sql_killer
+                    .HandleSignal()
+                    .map_err(|error| SessionError::new(error.to_string()))?;
+                std::thread::sleep(delay);
+                delay = (delay * 2).min(Duration::from_secs(1));
+            }
+        }
+        let ok = arbitrator.ConsumeQuotaFromAwaitFreePool(self.connection_id(), reserved);
+        let quota = RuntimeCompileMemoryQuota {
+            arbitrator,
+            uid: self.connection_id(),
+            reserved,
+        };
+        if !ok {
+            self.clear_memory_sensitive_plan_cache();
+        }
+        // A false allocation result still charges the await-free budget. The
+        // guard releases exactly that charge, including compiler errors/panic.
+        Ok(Some(quota))
+    }
+
+    fn clear_memory_sensitive_plan_cache(&self) {
+        self.instance_plan_cache.Evict(true);
+        let mut state = self.state.borrow_mut();
+        state.non_prepared_plan_cache_keys.clear();
+        for prepared in state.prepared_by_name.values_mut() {
+            prepared.planned = false;
+            prepared.cached_transaction_contexts.clear();
+            prepared.typed_plan_id = None;
+            prepared.typed_plan_catalog_version = None;
+        }
+    }
+
+    pub(super) fn init_statement_memory_tracker(
+        &self,
+        tracker: &mut Tracker,
+        normalized_sql: &str,
+        hints: &astersql_util_hint::StmtHints,
+    ) -> SessionResult<()> {
+        let Some(arbitrator) = GlobalMemArbitrator() else {
+            return Ok(());
+        };
+        let state = self.state.borrow();
+        if self.connection_id() == 0 || state.mem_arbitrator_wait_averse == "nolimit" {
+            return Ok(());
+        }
+        let reserved = hints
+            .SetVars
+            .get(astersql_sessionctx_vardef::TiDBMemArbitratorQueryReserved)
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(state.mem_arbitrator_query_reserved)
+            .min(astersql_util_memory::DefMaxLimit);
+        let wait_averse = arbitrator.WorkMode() == astersql_util_memory::ArbitratorModePriority
+            && state.mem_arbitrator_wait_averse == "1";
+        drop(state);
+        let group = if hints.HasResourceGroup {
+            hints.ResourceGroup.as_str()
+        } else {
+            "default"
+        };
+        tracker.SessionID.Store(self.connection_id());
+        if !tracker.InitMemArbitratorWithSharedKiller(
+            Some(arbitrator),
+            Some(self.sql_killer.clone()),
+            super::build_mem_arbitrator_digest_id(normalized_sql, &self.current_database()),
+            self.resource_group_priority(group),
+            wait_averse,
+            reserved,
+            self.session_vars.InRestrictedSQL,
+        ) {
+            return Err(SessionError::new("failed to init mem-arbitrator"));
+        }
+        self.sql_killer
+            .HandleSignal()
+            .map_err(|error| SessionError::new(error.to_string()))
+    }
+
     pub(super) fn begin_statement_memory_arbitration(
         &self,
         statement: &dyn ast::Node,
         hints: &astersql_util_hint::StmtHints,
+        sql: &str,
+        tracker: &mut Tracker,
     ) -> SessionResult<Option<RuntimeMemoryArbitrationGuard>> {
-        let Some(select) = statement.as_any().downcast_ref::<ast::SelectStmt>() else {
+        let sensitive = statement.as_any().is::<ast::SelectStmt>()
+            || statement.as_any().is::<ast::InsertStmt>()
+            || statement.as_any().is::<ast::UpdateStmt>()
+            || statement.as_any().is::<ast::DeleteStmt>();
+        if !sensitive {
             return Ok(None);
-        };
-        if select.From.is_none() {
+        }
+        let has_select = statement.as_any().is::<ast::SelectStmt>();
+        let normalized_sql = astersql_parser::NormalizeDigest(sql).0;
+        if super::approx_compile_plan_token_count(&normalized_sql, has_select) == 0 {
             return Ok(None);
         }
         let reserved = hints
             .SetVars
             .get(astersql_sessionctx_vardef::TiDBMemArbitratorQueryReserved)
             .and_then(|value| value.parse::<i64>().ok())
-            .unwrap_or_else(|| self.state.borrow().mem_arbitrator_query_reserved);
+            .unwrap_or(self.state.borrow().mem_arbitrator_query_reserved);
         self.state
             .borrow_mut()
             .statement_mem_arbitrator_query_reserved = Some(reserved);
-        if reserved <= 0 {
-            return Ok(None);
-        }
-        let Some(arbitrator) = GlobalMemArbitrator() else {
-            return Ok(None);
-        };
-
+        // Start a fresh statement kill event, as the previous arbitrator helper
+        // did before constructing its context. A completed cancellation must
+        // not suppress the next statement's arbitration request.
         self.sql_killer.Reset();
-        let helper = Arc::new(RuntimeMemArbitrationHelper {
-            killer: Arc::clone(&self.sql_killer),
-            stop_reason: Mutex::new(None),
-        });
-        let cancel = CancelReceiver::from_kill_event(self.sql_killer.GetKillEventChan());
-        let resource_group = if hints.HasResourceGroup {
-            hints.ResourceGroup.to_ascii_lowercase()
-        } else {
-            "default".to_owned()
-        };
-        let priority = self.resource_group_priority(&resource_group);
-        let wait_averse = arbitrator.WorkMode() == astersql_util_memory::ArbitratorModePriority
-            && self.state.borrow().mem_arbitrator_wait_averse == "1";
-        let context =
-            NewArbitrationContext(cancel, Some(helper.clone()), priority, wait_averse, true);
-        let uid = NEXT_MEMORY_ROOT_UID.fetch_add(1, Ordering::Relaxed);
-        let root = arbitrator.EmplaceRootPool(uid).map_err(SessionError::new)?;
-        if !arbitrator.RestartEntryByContext(root, context) {
-            let _ = arbitrator.RemoveRootPoolByID(uid);
-            return Err(SessionError::new("failed to start memory root pool"));
-        }
-        if arbitrator.RequestQuota(root, reserved) != ArbitrateOk {
-            let reason = helper
-                .stop_reason
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .unwrap_or(astersql_util_memory::ArbitratorStandardCancel);
-            let _ = arbitrator.ResetRootPoolByID(uid, 0, false);
-            let _ = arbitrator.RemoveRootPoolByID(uid);
-            self.sql_killer.Reset();
-            return Err(SessionError::new(format!(
-                "[executor:8180]Query execution was stopped by the global memory arbitrator \
-                 [reason={}] [conn={}]",
-                reason.String(),
-                self.connection_id()
-            )));
-        }
-        Ok(Some(RuntimeMemoryArbitrationGuard {
-            arbitrator,
-            uid,
-            reserved,
-        }))
+        self.init_statement_memory_tracker(tracker, &normalized_sql, hints)?;
+        Ok(GlobalMemArbitrator()
+            .filter(|_| tracker.MemArbitrator.is_some())
+            .map(|arbitrator| RuntimeMemoryArbitrationGuard {
+                arbitrator,
+                uid: tracker.SessionID.Load(),
+            }))
     }
 
     /// 执行 SET 语句（系统/用户变量）。

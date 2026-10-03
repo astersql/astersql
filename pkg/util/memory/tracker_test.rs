@@ -573,3 +573,43 @@ fn TestGlobalMemArbitrator() {
     );
     CleanupGlobalMemArbitratorForTest();
 }
+
+#[cfg(feature = "mem-arbitrator")]
+#[test]
+fn shared_session_killer_cancels_tracker_arbitration() {
+    use super::arbitrator::{ArbitrationPriorityMedium, NewMemArbitrator};
+    use std::sync::Arc;
+    let killer = Arc::new(super::sqlkiller::SQLKiller::new());
+    let mut tracker = NewTracker(1, -1);
+    tracker.SessionID.Store(900);
+    let core = Arc::new(NewMemArbitrator(10_000));
+    assert!(tracker.InitMemArbitratorWithSharedKiller(
+        Some(core.clone()),
+        Some(killer.clone()),
+        17,
+        ArbitrationPriorityMedium,
+        false,
+        100,
+        false
+    ));
+    assert!(
+        !tracker
+            .MemArbitrator
+            .as_ref()
+            .unwrap()
+            .Done()
+            .is_cancelled()
+    );
+    killer.SendKillSignal(1);
+    assert!(
+        tracker
+            .MemArbitrator
+            .as_ref()
+            .unwrap()
+            .Done()
+            .is_cancelled()
+    );
+    assert!(tracker.DetachMemArbitrator(true));
+    assert_eq!(core.GetDigestProfileCache(17, 1), None);
+    core.RemoveRootPoolByID(900);
+}

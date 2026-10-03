@@ -272,3 +272,22 @@ fn setup_removes_stale_runtime_memory_state_like_go() {
     assert_eq!(recorder.load().unwrap(), None);
     CleanupGlobalMemArbitratorForTest();
 }
+
+#[test]
+fn server_default_initializes_priority_without_overriding_explicit_disable() {
+    use super::global_arbitrator::*;
+    let _lock = GLOBAL_TEST_LOCK.lock().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    SetupGlobalMemArbitratorForTest(directory.path().display().to_string());
+    InitializeGlobalMemArbitratorMode(DefaultGlobalMemArbitratorModeName.to_owned());
+    let core = GlobalMemArbitrator().expect("default priority arbitrator");
+    assert_eq!(core.WorkMode(), WorkMode::Priority);
+    assert!(
+        core.Limit() > 0,
+        "zero configured limit falls back to host memory"
+    );
+    assert!(SetGlobalMemArbitratorWorkMode("disable".to_owned()));
+    InitializeGlobalMemArbitratorMode(DefaultGlobalMemArbitratorModeName.to_owned());
+    assert!(GlobalMemArbitrator().is_none());
+    CleanupGlobalMemArbitratorForTest();
+}

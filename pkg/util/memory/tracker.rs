@@ -1690,6 +1690,28 @@ impl Tracker {
         explicit_reserve_size: i64,
         is_internal: bool,
     ) -> bool {
+        self.InitMemArbitratorWithSharedKiller(
+            core,
+            killer.map(Arc::from),
+            digest_id,
+            mem_priority,
+            wait_averse,
+            explicit_reserve_size,
+            is_internal,
+        )
+    }
+
+    /// Attach a tracker to the session's existing kill event rather than a new killer.
+    pub fn InitMemArbitratorWithSharedKiller(
+        &mut self,
+        core: Option<Arc<MemArbitrator>>,
+        killer: Option<Arc<sqlkiller::SQLKiller>>,
+        digest_id: u64,
+        mem_priority: ArbitrationPriority,
+        wait_averse: bool,
+        explicit_reserve_size: i64,
+        is_internal: bool,
+    ) -> bool {
         let Some(core) = core else {
             return false;
         };
@@ -1697,7 +1719,6 @@ impl Tracker {
             previous.reset(true, 0);
         }
 
-        let killer: Option<Arc<sqlkiller::SQLKiller>> = killer.map(Arc::from);
         let cancel = killer
             .as_ref()
             .map(|killer| CancelReceiver::from_kill_event(killer.GetKillEventChan()))

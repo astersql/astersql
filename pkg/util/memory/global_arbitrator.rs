@@ -97,6 +97,8 @@ struct GlobalState {
     soft_limit_text: RwLock<String>,
     work_mode_text: RwLock<String>,
     enabled: AtomicBool,
+    mode_configured: AtomicBool,
+    mode_initialization: Mutex<()>,
     server_limit: AtomicI64,
     runtime_sampler: RwLock<fn() -> ArbitratorRuntimeStats>,
     recorder: RwLock<Option<RuntimeMemStateRecorder>>,
@@ -116,6 +118,8 @@ fn state() -> &'static GlobalState {
         soft_limit_text: RwLock::new("0".to_owned()),
         work_mode_text: RwLock::new("disable".to_owned()),
         enabled: AtomicBool::new(false),
+        mode_configured: AtomicBool::new(false),
+        mode_initialization: Mutex::new(()),
         server_limit: AtomicI64::new(0),
         runtime_sampler: RwLock::new(sample_runtime_mem_stats),
         recorder: RwLock::new(None),
@@ -168,7 +172,19 @@ pub fn GetGlobalMemArbitratorWorkModeText() -> String {
 }
 
 /// 切换全局工作模式；从 Disable 启用时刷新限制。
+/// Apply the server default once without overriding an explicitly selected mode.
+pub fn InitializeGlobalMemArbitratorMode(value: String) {
+    let _guard = state()
+        .mode_initialization
+        .lock()
+        .expect("mode initialization lock poisoned");
+    if !state().mode_configured.load(Ordering::Acquire) {
+        SetGlobalMemArbitratorWorkMode(value);
+    }
+}
+
 pub fn SetGlobalMemArbitratorWorkMode(value: String) -> bool {
+    state().mode_configured.store(true, Ordering::Release);
     if GetGlobalMemArbitratorWorkModeText() == value {
         return false;
     }
@@ -228,7 +244,12 @@ pub fn SetGlobalMemArbitratorWorkMode(value: String) -> bool {
     state().enabled.store(true, Ordering::SeqCst);
     // 从 Disable 启用时同步 limit/soft limit。
     if arbitrator.WorkMode() == WorkMode::Disable {
-        arbitrator.SetLimit(state().server_limit.load(Ordering::SeqCst).max(0) as u64);
+        let limit = state().server_limit.load(Ordering::SeqCst);
+        arbitrator.SetLimit(if limit == 0 {
+            GetMemTotalIgnoreErr()
+        } else {
+            limit.max(0) as u64
+        });
         let parsed = parse_soft_limit(&GetGlobalMemArbitratorSoftLimitText());
         arbitrator.SetSoftLimit(parsed.0, parsed.1, parsed.2);
         arbitrator.StartAutoRun(Duration::from_millis(10));
@@ -277,6 +298,7 @@ pub fn RemovePoolFromGlobalMemArbitrator(uid: u64) -> bool {
 
 /// 测试前重置全局仲裁状态。
 pub fn SetupGlobalMemArbitratorForTest(base_dir: String) {
+    state().mode_configured.store(false, Ordering::Release);
     if let Some(arbitrator) = state()
         .arbitrator
         .read()

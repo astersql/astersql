@@ -604,6 +604,8 @@ pub struct ConcreteSessionInner {
     pub(super) active_roles: RefCell<Vec<astersql_privilege_privileges::RoleIdentity>>,
     pub(super) has_process_privilege: bool,
     pub(super) connection_id: AtomicU64,
+    #[cfg(test)]
+    pub(super) compiler_quota_at_executor_build: AtomicI64,
     pub(super) sql_killer: Arc<SQLKiller>,
     pub(super) mem_tracker: RefCell<Box<Tracker>>,
     /// 最近一条语句的 tracker；TestKit 用它校验 OOM action 收尾后的 fallback。
@@ -1450,6 +1452,8 @@ impl ConcreteSession {
                 active_roles: RefCell::new(Vec::new()),
                 has_process_privilege: false,
                 connection_id: AtomicU64::new(0),
+                #[cfg(test)]
+                compiler_quota_at_executor_build: AtomicI64::new(i64::MIN),
                 sql_killer: Arc::new(SQLKiller::default()),
                 mem_tracker: RefCell::new(mem_tracker),
                 last_statement_tracker: RefCell::new(None),
@@ -1459,6 +1463,14 @@ impl ConcreteSession {
             }),
         };
         session.load_persisted_global_variables();
+        astersql_util_memory::global_arbitrator::InitializeGlobalMemArbitratorMode(
+            session
+                .session_vars
+                .GetSystemVar(astersql_sessionctx_vardef::TiDBMemArbitratorMode)
+                .unwrap_or_else(|| {
+                    astersql_sessionctx_vardef::DefTiDBMemArbitratorModeText.to_owned()
+                }),
+        );
         session
     }
 

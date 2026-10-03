@@ -122,3 +122,8 @@ fn test_run_concurrent_test_matches_go_floor_division() {
     assert_eq!(benchmark_rate_limiter_simple(17), 17);
     assert_eq!(run_concurrent_test(103, 10), 100);
 }
+
+#[test]
+fn global_memory_arbitration_defaults_to_priority() {
+    assert_eq!(DefTiDBMemArbitratorModeText, "priority");
+}

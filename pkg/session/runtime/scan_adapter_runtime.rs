@@ -269,6 +269,14 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
         telemetry: Option<&TelemetryInfo>,
     ) -> AdapterResult<Box<dyn ExecExecutor>> {
         self.point_read_stats_active.set(false);
+        #[cfg(test)]
+        if let Some(core) = astersql_util_memory::global_arbitrator::GlobalMemArbitrator() {
+            self.session.compiler_quota_at_executor_build.store(
+                core.GetAwaitFreeBudgets(self.session.connection_id())
+                    .used(),
+                std::sync::atomic::Ordering::Release,
+            );
+        }
         if plan.kind == PlanKind::Analyze {
             let sql =
                 self.analyze_sql.borrow().clone().ok_or_else(|| {

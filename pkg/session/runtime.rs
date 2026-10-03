@@ -844,40 +844,89 @@ pub(crate) fn PrepareImportPathForKernelForTest(
     prepare_import_path_for_kernel(path, is_nextgen)
 }
 
-struct RuntimeMemArbitrationHelper {
-    killer: Arc<SQLKiller>,
-    stop_reason: Mutex<Option<ArbitratorStopReason>>,
+/// Session profile identity follows the retained Go DB + normalized SQL contract.
+pub(crate) fn build_mem_arbitrator_digest_id(normalized_sql: &str, current_db: &str) -> u64 {
+    use astersql_util_memory::utils::{InvalidDigestID, NewDigestIDBuilder};
+    if normalized_sql.is_empty() {
+        return InvalidDigestID;
+    }
+    let mut builder = NewDigestIDBuilder();
+    builder.AddString("db");
+    builder.AddString(&current_db.to_lowercase());
+    builder.AddString(normalized_sql);
+    builder.Sum64()
 }
 
-impl ArbitrateHelper for RuntimeMemArbitrationHelper {
-    fn Stop(&self, reason: ArbitratorStopReason) -> bool {
-        *self
-            .stop_reason
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reason);
-        self.killer
-            .SendKillSignalWithKillEventReason(KilledByMemArbitrator, reason.String());
-        true
+pub(crate) fn approx_compile_plan_token_count(sql: &str, has_select: bool) -> i64 {
+    let mut count = 0;
+    let mut start = None;
+    let mut has_from = false;
+    for (i, c) in sql.char_indices() {
+        if c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '`' | '.') {
+            start.get_or_insert(i);
+            continue;
+        }
+        if let Some(begin) = start.take() {
+            count += 1;
+            if &sql[begin..i] == "from" {
+                has_from = true;
+            }
+        }
+        if c == '?' {
+            count += 1;
+        }
     }
-
-    fn HeapInuse(&self) -> i64 {
-        0
+    if start.is_some() {
+        count += 1;
     }
-
-    fn Finish(&self) {}
+    if has_select && !has_from { 0 } else { count }
 }
 
-struct RuntimeMemoryArbitrationGuard {
+pub(crate) struct RuntimeCompileMemoryQuota {
     arbitrator: Arc<MemArbitrator>,
     uid: u64,
     reserved: i64,
 }
 
-impl Drop for RuntimeMemoryArbitrationGuard {
+impl RuntimeCompileMemoryQuota {
+    pub(crate) fn release(&mut self) {
+        if self.reserved > 0 {
+            let _ = self
+                .arbitrator
+                .ConsumeQuotaFromAwaitFreePool(self.uid, -self.reserved);
+            self.reserved = 0;
+        }
+    }
+}
+
+impl Drop for RuntimeCompileMemoryQuota {
     fn drop(&mut self) {
+        self.release();
+    }
+}
+
+struct RuntimeStatementMemoryTracker {
+    tracker: Box<Tracker>,
+    arbitrator: Arc<MemArbitrator>,
+    exception: bool,
+}
+
+impl Drop for RuntimeStatementMemoryTracker {
+    fn drop(&mut self) {
+        self.tracker.DetachMemArbitrator(self.exception);
         let _ = self
             .arbitrator
-            .ResetRootPoolByID(self.uid, self.reserved, true);
+            .RemoveRootPoolByID(self.tracker.SessionID.Load());
+    }
+}
+
+struct RuntimeMemoryArbitrationGuard {
+    arbitrator: Arc<MemArbitrator>,
+    uid: u64,
+}
+
+impl Drop for RuntimeMemoryArbitrationGuard {
+    fn drop(&mut self) {
         let _ = self.arbitrator.RemoveRootPoolByID(self.uid);
     }
 }

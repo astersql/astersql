@@ -938,3 +938,143 @@ fn prepared_compound_in_range_fallback_skips_cache_admission() {
         second.Warnings
     );
 }
+
+static MEMORY_ARBITRATION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[test]
+fn memory_arbitration_compilation_releases_quota_before_prepared_execution() {
+    use astersql_util_memory::global_arbitrator::*;
+    let _lock = MEMORY_ARBITRATION_TEST_LOCK.lock().unwrap();
+    let directory = std::env::temp_dir().join(format!(
+        "astersql-memory-arbitration-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    SetupGlobalMemArbitratorForTest(directory.display().to_string());
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            CleanupGlobalMemArbitratorForTest();
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(directory);
+    SetGlobalMemArbitratorLimit(10 << 20);
+    let schema = cache_info_schema();
+    let domain = Arc::new(Domain::new_mock(
+        Arc::try_unwrap(NewMockStorage(KVStore::NewMemory(), None).unwrap())
+            .ok()
+            .unwrap(),
+        Arc::new(CacheSchemaLoader {
+            schema: schema.clone(),
+        }),
+    ));
+    domain.init().unwrap();
+    let session = ConcreteSession::new(domain.clone());
+    session.SetConnectionID(7002);
+    let core = GlobalMemArbitrator().expect("serving session applies priority default");
+    core.StopAutoRun();
+    assert_eq!(core.WorkMode(), WorkMode::Priority);
+    let sql = "select a, b from t use index(idx_a_b) where a = ?";
+    let normalized = astersql_parser::NormalizeDigest(sql).0;
+    let quota = session
+        .begin_compile_memory_arbitration(&normalized, true)
+        .unwrap()
+        .unwrap();
+    let budget = core.GetAwaitFreeBudgets(7002);
+    assert_eq!(
+        budget.used(),
+        crate::runtime::approx_compile_plan_token_count(&normalized, true) * (63091 * 12 / 10)
+    );
+    drop(quota);
+    assert_eq!(budget.used(), 0);
+
+    // Compiler quota allocation failure cannot cancel wait-averse or standard
+    // admission, and must release the charged amount rather than capacity.
+    session
+        .Execute("set tidb_mem_arbitrator_wait_averse = 1")
+        .unwrap();
+    core.SetLimit(64 << 10);
+    let failed_allocation = session
+        .begin_compile_memory_arbitration(&normalized, true)
+        .unwrap()
+        .unwrap();
+    assert!(budget.used() > core.Limit());
+    drop(failed_allocation);
+    assert_eq!(budget.used(), 0);
+    core.SetLimit(10 << 20);
+    session
+        .Execute("set tidb_mem_arbitrator_wait_averse = default")
+        .unwrap();
+
+    let mut seed = domain
+        .storage()
+        .with_storage(|storage| storage.Begin(&[]))
+        .unwrap();
+    let value = "b".repeat(16 * 1024);
+    let mut suffix = astersql_util_codec::EncodeKey(
+        astersql_tablecodec::time::UTC,
+        Vec::new(),
+        vec![
+            astersql_types::datum::NewStringDatum("aa".into()),
+            astersql_types::datum::NewStringDatum(value.clone()),
+        ],
+    )
+    .unwrap();
+    suffix.push(astersql_util_codec::IntHandleFlag);
+    suffix = astersql_util_codec::EncodeInt(suffix, 1);
+    let key = astersql_tablecodec::EncodeIndexSeekKey(101, 201, Some(suffix));
+    seed.Set(kv::Key(key.0), vec![0]).unwrap();
+    seed.Commit(&kv::Context::default()).unwrap();
+    let id = session.PreparePlannedKVSelect(sql, schema).unwrap();
+    // A real optimizer error after quota reservation must also unwind the charge.
+    assert!(
+        session
+            .ExecutePreparedPlannedKVSelectThroughAdapter(id, &[])
+            .is_err()
+    );
+    assert_eq!(budget.used(), 0);
+    let parameters = [astersql_types::datum::NewStringDatum("aa".into())];
+    let result = session
+        .ExecutePreparedPlannedKVSelectThroughAdapter(id, &parameters)
+        .unwrap();
+    assert_eq!(result.Rows.len(), 1);
+    assert_eq!(
+        session.compiler_quota_at_executor_build_for_test(),
+        0,
+        "actual BuildExecutor observes compiler quota released before execution"
+    );
+    assert_eq!(
+        budget.used(),
+        0,
+        "compiler and execution quota are both released"
+    );
+    let digest = crate::runtime::build_mem_arbitrator_digest_id(&normalized, "test");
+    assert!(
+        core.GetDigestProfileCache(digest, core.approxUnixTimeSec())
+            .unwrap()
+            > 0,
+        "real chunk memory feeds the tracker profile"
+    );
+    assert_eq!(
+        core.GetDigestProfileCache(
+            crate::runtime::build_mem_arbitrator_digest_id(&normalized, "other"),
+            core.approxUnixTimeSec()
+        ),
+        None
+    );
+    assert_eq!(core.RootPoolNum(), 0);
+
+    core.set_runtime_heap(core.oomRisk());
+    let error = match session.begin_compile_memory_arbitration(&normalized, true) {
+        Err(error) => error,
+        Ok(_) => panic!("OOM-risk compiler admission must fail"),
+    };
+    assert!(error.to_string().contains("path=CompilePlan"));
+    assert_eq!(
+        budget.used(),
+        0,
+        "unreserved OOM path must not release phantom quota"
+    );
+    core.set_runtime_heap(0);
+}

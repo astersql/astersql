@@ -93,7 +93,15 @@ fn TestGlobalMemArbitrator() {
             .message(),
         ERR_ARBITRATOR_MODE
     );
-    assert!(GlobalMemArbitrator().is_none());
+    assert_eq!(
+        GlobalMemArbitrator()
+            .expect("default arbitrator")
+            .WorkMode(),
+        WorkMode::Priority
+    );
+    tk.MustExec("set global tidb_mem_arbitrator_mode = default", Vec::new());
+    tk.MustQuery("select @@tidb_mem_arbitrator_mode", Vec::new())
+        .Check(Rows(&["priority"]));
 
     tk.MustExec("set global tidb_mem_arbitrator_mode = standard", Vec::new());
     tk.MustQuery("select @@tidb_mem_arbitrator_mode", Vec::new())
@@ -117,7 +125,12 @@ fn TestGlobalMemArbitrator() {
 
     tk.MustExec("set global tidb_mem_arbitrator_mode = default", Vec::new());
     tk.MustQuery("select @@tidb_mem_arbitrator_mode", Vec::new())
-        .Check(Rows(&["disable"]));
+        .Check(Rows(&["priority"]));
+    assert_eq!(
+        GlobalMemArbitrator().unwrap().WorkMode(),
+        WorkMode::Priority
+    );
+    tk.MustExec("set global tidb_mem_arbitrator_mode = disable", Vec::new());
     assert!(GlobalMemArbitrator().is_none());
 
     tk.MustExec(

@@ -2153,6 +2153,18 @@ impl ConcreteSession {
         statement_id: u64,
         parameters: &[astersql_types::datum::Datum],
     ) -> SessionResult<PreparedPlannedKVResult> {
+        let sql = self
+            .state
+            .borrow()
+            .prepared_planned
+            .get(&statement_id)
+            .map(|prepared| prepared.Statement.StmtText.clone())
+            .ok_or_else(|| {
+                SessionError::new(format!("unknown prepared statement {statement_id}"))
+            })?;
+        self.sql_killer.Reset();
+        let normalized_sql = astersql_parser::NormalizeDigest(&sql).0;
+        let mut compile_quota = self.begin_compile_memory_arbitration(&normalized_sql, true)?;
         let owner = Arc::new(super::SessionBoundAdapterOwner::new(self.clone()));
         owner
             .BindPreparedPlannedKVSelect(statement_id, parameters, 32, 1024)
@@ -2174,6 +2186,18 @@ impl ConcreteSession {
             .iter()
             .map(|name| name.column_name.clone())
             .collect();
+        // Physical optimization and ExecStmt construction have completed;
+        // release compiler quota before any executor opens or reads KV.
+        if let Some(quota) = &mut compile_quota {
+            quota.release();
+        }
+        let mut tracker = NewTracker(LabelForSQLText, -1);
+        self.init_statement_memory_tracker(&mut tracker, &normalized_sql, &Default::default())?;
+        let mut memory = GlobalMemArbitrator().map(|arbitrator| RuntimeStatementMemoryTracker {
+            tracker,
+            arbitrator,
+            exception: true,
+        });
         let mut record_set = statement
             .Exec()
             .map_err(|error| session_error("execute prepared ExecStmt", error))?
@@ -2185,6 +2209,14 @@ impl ConcreteSession {
                 record_set
                     .Next(&mut chunk)
                     .map_err(|error| session_error("read prepared result", error))?;
+                if let Some(memory) = &mut memory {
+                    memory
+                        .tracker
+                        .Consume(chunk.MemoryUsage() - memory.tracker.BytesConsumed());
+                    self.sql_killer
+                        .HandleSignal()
+                        .map_err(|error| SessionError::new(error.to_string()))?;
+                }
                 if chunk.NumRows() == 0 {
                     break;
                 }
@@ -2209,6 +2241,9 @@ impl ConcreteSession {
         let close = record_set
             .Close()
             .map_err(|error| session_error("close prepared result", error));
+        if let Some(memory) = &mut memory {
+            memory.exception = read.is_err() || close.is_err();
+        }
         read?;
         close?;
         Ok(PreparedPlannedKVResult {

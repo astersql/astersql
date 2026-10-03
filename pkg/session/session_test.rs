@@ -545,3 +545,31 @@ mod session_parity {
         assert_eq!(runtime.vars_closes, 1);
     }
 }
+
+#[test]
+fn memory_profile_identity_uses_database_and_normalized_sql() {
+    use crate::runtime::build_mem_arbitrator_digest_id as digest;
+    let sql = "select * from `t` where `a` = ?";
+    assert_ne!(digest(sql, "db1"), digest(sql, "db2"));
+    assert_eq!(digest(sql, "DB1"), digest(sql, "db1"));
+    assert_eq!(digest("", "db1"), 0);
+    let explicit = "select * from `db3`.`t` where `a` = ?";
+    // The retained later Go implementation conservatively includes current DB
+    // even when SQL contains an explicitly qualified table.
+    assert_ne!(digest(explicit, "db1"), digest(explicit, "db2"));
+    assert_ne!(
+        digest(sql, "db1"),
+        digest("select * from `other` where `a` = ?", "db1")
+    );
+}
+
+#[test]
+fn compile_memory_tokens_follow_normalized_sql() {
+    use crate::runtime::approx_compile_plan_token_count as count;
+    assert_eq!(
+        count("select * from `a_1`.`b_2` where c1 = ? and c2 = ?", true),
+        9
+    );
+    assert_eq!(count("select @@version @a", true), 0);
+    assert_eq!(count("select @@version @a", false), 3);
+}
