@@ -18,6 +18,7 @@ use std::time::Duration;
 pub struct Error {
     pub msg: String,
     pub mysql: Option<MySQLError>,
+    pub exceed_upload_parts: bool,
 }
 
 // Error 构造与 MySQL 错误挂载。
@@ -27,6 +28,7 @@ impl Error {
         Self {
             msg: msg.into(),
             mysql: None,
+            exceed_upload_parts: false,
         }
     }
     // 附带 MySQL 错误码以便 IsRetryableError 使用。
@@ -34,6 +36,7 @@ impl Error {
         Self {
             msg: e.to_string(),
             mysql: Some(e),
+            exceed_upload_parts: false,
         }
     }
     // 兼容 Go Error() 方法名。
@@ -49,7 +52,15 @@ impl fmt::Display for Error {
     }
 }
 // 实现 std::error::Error 以便 ? 与日志格式化。
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        if self.exceed_upload_parts {
+            Some(&astersql_objstore_storeapi::ErrExceedMaxUploadParts)
+        } else {
+            None
+        }
+    }
+}
 // PartialEq 仅比较 msg，忽略 mysql 子错误。
 impl PartialEq for Error {
     fn eq(&self, other: &Self) -> bool {
@@ -77,6 +88,7 @@ pub fn errors_annotate(err: Error, msg: impl Into<String>) -> Error {
     Error {
         msg: format!("{}: {}", msg.into(), err.msg),
         mysql: err.mysql,
+        exceed_upload_parts: err.exceed_upload_parts,
     }
 }
 // 带 Display 格式的前缀 annotate。
@@ -84,6 +96,7 @@ pub fn errors_annotatef(err: Error, fmt_msg: impl fmt::Display) -> Error {
     Error {
         msg: format!("{}: {}", fmt_msg, err.msg),
         mysql: err.mysql,
+        exceed_upload_parts: err.exceed_upload_parts,
     }
 }
 // 返回根因 Error（桩无链式 cause）。
@@ -759,6 +772,13 @@ pub trait Storage: Send + Sync {
     fn ReadFile(&self, name: &str) -> Result<Vec<u8>>;
     // 创建 MemWriter，Close 时写入 map。
     fn Create(&self, name: &str) -> Result<Box<dyn ObjectWriter>>;
+    fn CreateWithOptions(
+        &self,
+        name: &str,
+        _option: Option<&astersql_objstore_storeapi::WriterOption>,
+    ) -> Result<Box<dyn ObjectWriter>> {
+        self.Create(name)
+    }
     // 本地或逻辑根路径。
     fn FilePath(&self) -> String;
     // 生成 file:// URI，供日志与 manifest 使用。
@@ -1480,5 +1500,15 @@ pub fn multierr_combine(errs: Vec<Error>) -> Option<Error> {
                 .collect::<Vec<_>>()
                 .join("; "),
         ))
+    }
+}
+
+impl From<astersql_objstore_storeapi::ExceedMaxUploadParts> for Error {
+    fn from(error: astersql_objstore_storeapi::ExceedMaxUploadParts) -> Self {
+        Self {
+            msg: error.to_string(),
+            mysql: None,
+            exceed_upload_parts: true,
+        }
     }
 }

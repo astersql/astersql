@@ -223,3 +223,99 @@ fn test_handle_task_runs_table_callback_only_for_last_chunk() {
     assert_eq!(writer.received_task_count, 2);
     assert_eq!(callbacks.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn csv_file_size_rotation_preserves_all_rows() {
+    let dump = |limit| {
+        let mut conf = default_config_for_test();
+        conf.FileType = FileFormatCSVString.into();
+        conf.NoHeader = true;
+        conf.FileSize = limit;
+        conf.CsvDelimiter = "\"".into();
+        conf.CsvSeparator = ",".into();
+        conf.CsvLineTerminator = "\n".into();
+        let (mut writer, store) = new_test_writer(conf);
+        let meta = mockTableIR::new("test", "employee", vec![], &[], &["INT", "VARCHAR"]);
+        let mut ir = mockTableIR::new(
+            "test",
+            "employee",
+            vec![
+                vec![bytes_cell("1"), bytes_cell("bob@mail.com")],
+                vec![bytes_cell("2"), bytes_cell("sarah@mail.com")],
+                vec![bytes_cell("3"), bytes_cell("john@mail.com")],
+                vec![bytes_cell("4"), bytes_cell("sarah@mail.com")],
+            ],
+            &[],
+            &["INT", "VARCHAR"],
+        );
+        writer.WriteTableData(&meta, &mut ir, 0).unwrap();
+        let mut files = Vec::new();
+        for i in 0..10 {
+            match store.ReadFile(&format!("test.employee.{i:09}.csv")) {
+                Ok(bytes) => files.push(bytes),
+                Err(_) => break,
+            }
+        }
+        files
+    };
+    let split = dump(40);
+    let whole = dump(UnspecifiedSize);
+    assert_eq!(whole.len(), 1);
+    assert!(split.len() > 1, "small FileSize must rotate CSV output");
+    assert_eq!(split.concat(), whole[0]);
+}
+
+#[test]
+fn data_files_forward_multipart_options_to_lazy_create() {
+    struct RecordingStore {
+        inner: MemStorage,
+        options: std::sync::Mutex<Vec<Option<astersql_objstore_storeapi::WriterOption>>>,
+    }
+    impl Storage for RecordingStore {
+        fn WriteFile(&self, n: &str, d: &[u8]) -> Result<()> {
+            self.inner.WriteFile(n, d)
+        }
+        fn ReadFile(&self, n: &str) -> Result<Vec<u8>> {
+            self.inner.ReadFile(n)
+        }
+        fn Create(&self, n: &str) -> Result<Box<dyn ObjectWriter>> {
+            self.inner.Create(n)
+        }
+        fn CreateWithOptions(
+            &self,
+            n: &str,
+            o: Option<&astersql_objstore_storeapi::WriterOption>,
+        ) -> Result<Box<dyn ObjectWriter>> {
+            self.options.lock().unwrap().push(o.cloned());
+            self.inner.Create(n)
+        }
+        fn FilePath(&self) -> String {
+            self.inner.FilePath()
+        }
+    }
+    for format in [FileFormatCSVString, FileFormatSQLTextString] {
+        let mut conf = default_config_for_test();
+        conf.FileType = format.into();
+        conf.NoHeader = true;
+        let store = Arc::new(RecordingStore {
+            inner: MemStorage::new("memory"),
+            options: std::sync::Mutex::new(vec![]),
+        });
+        let mut writer = NewWriter(
+            tcontext::Background(),
+            0,
+            Arc::new(conf),
+            DB::new().Conn().unwrap(),
+            store.clone(),
+            None,
+        );
+        let meta = mockTableIR::new("db", "t", vec![], &[], &["INT"]);
+        let mut ir = mockTableIR::new("db", "t", vec![vec![bytes_cell("1")]], &[], &["INT"]);
+        writer.WriteTableData(&meta, &mut ir, 0).unwrap();
+        let options = store.options.lock().unwrap();
+        assert_eq!(options.len(), 1);
+        let opt = options[0].as_ref().unwrap();
+        assert_eq!(opt.Concurrency, 4);
+        assert_eq!(opt.PartSize, 5 * 1024 * 1024);
+    }
+}

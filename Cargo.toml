@@ -147,6 +147,7 @@ members = [
     "pkg/domain/serverinfo",
     "pkg/domain/sqlsvrapi",
     "pkg/domain/sqlsvrapi/mock",
+    "pkg/dumpformat/csvfile",
     "pkg/dumpformat/parquetfile",
     "pkg/dumpformat/parsedef",
     "pkg/dumpformat/testutils",

@@ -626,3 +626,27 @@ fn test_gcs_writer_cancelled_context_still_aborts() {
     drop(writer);
     assert_eq!(*events.lock().unwrap(), vec!["abort"]);
 }
+
+#[test]
+fn gcs_writer_rejects_part_10001_and_retains_error() {
+    use objstore::gcs_extra::{GCS_MINIMUM_CHUNK_SIZE, GCSWriter};
+    use objstore::objectio::Writer;
+    let ctx = Context::default();
+    let store = Arc::new(InMemory::new());
+    let mut writer =
+        GCSWriter::new(ctx.clone(), store, "object", GCS_MINIMUM_CHUNK_SIZE, 1).unwrap();
+    for _ in 0..10000 {
+        assert_eq!(writer.write(&ctx, b"x").unwrap(), 1);
+    }
+    let first = writer.write(&ctx, b"overflow").unwrap_err();
+    assert!(
+        first
+            .to_string()
+            .contains(&objstore::storeapi::ErrExceedMaxUploadParts.to_string())
+    );
+    assert_eq!(
+        writer.write(&ctx, b"again").unwrap_err().to_string(),
+        first.to_string()
+    );
+    assert!(writer.close(&ctx).is_err());
+}

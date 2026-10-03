@@ -49,7 +49,6 @@ pub trait SQLRowIter: Send {
 // 一个实现通常同时知道自己的原始字节和文本转义规则。
 pub trait Stringer {
     fn WriteToBuffer(&self, bf: &mut Vec<u8>, escape_backslash: bool);
-    fn WriteToBufferInCsv(&self, bf: &mut Vec<u8>, escape_backslash: bool, opt: &crate::csvOption);
     fn GetRawBytes(&self) -> Vec<RawBytes>;
 }
 

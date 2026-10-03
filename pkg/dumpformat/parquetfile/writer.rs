@@ -1,3 +1,4 @@
+// Copyright 2026 AsterSQL.
 // Parquet 文件写入器：把 SQL 行（`Option<Vec<u8>>` / RawBytes）按列缓冲，
 // 在内存阈值或 `Close` 时通过 parquet-rs 刷成标准 row group 与页脚。
 //
@@ -5,7 +6,6 @@
 // Row group：Parquet 中一批行的列式存储单元，写满或达内存上限后 flush。
 // Definition level：可空列用 0/1 标记该行该列是否为 NULL。
 
-// Copyright 2026 AsterSQL.
 // Copyright 2026 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -639,3 +639,6 @@ pub fn NewWriter<W: Write + Send>(
 ) -> Result<ParquetWriter<W>> {
     ParquetWriter::new(output, columns, options)
 }
+
+/// Go renamed ParquetWriter to Writer; preserve the old Rust name for consumers.
+pub type Writer<W> = ParquetWriter<W>;

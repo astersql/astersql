@@ -1,9 +1,9 @@
 // Copyright 2026 AsterSQL.
 // Copyright 2020 PingCAP, Inc. Licensed under Apache-2.0.
 
-// 列类型 → RowReceiver 映射与 SQL/CSV 字面量转义，对应 Go `sql_type.go`。
+// 列类型 → RowReceiver 映射与 SQL 字面量转义，对应 Go `sql_type.go`。
 //
-// 扫描结果经 `RowReceiverStringer` 格式化为 INSERT 行或 CSV 字段；数值/字符串/二进制
+// 扫描结果经 `RowReceiverStringer` 格式化为 INSERT 行；数值/字符串/二进制
 // 三类 receiver 与 MySQL SHOW COLUMNS 类型名对齐。转义规则遵循 mysqldump 的
 // NO_BACKSLASH_ESCAPES 开关语义。
 
@@ -13,6 +13,7 @@ static COL_TYPE_MAP: OnceLock<HashMap<&'static str, fn() -> Box<dyn crate::RowRe
 /// 纯字符串类型集合，供 `pickupPossibleField` 等排除非数值索引。
 static DATA_TYPE_STRING: OnceLock<HashSet<&'static str>> = OnceLock::new();
 // 整数类型集合，不单独映射 receiver。
+static DATA_TYPE_NUM: OnceLock<HashSet<&'static str>> = OnceLock::new();
 static DATA_TYPE_INT: OnceLock<HashSet<&'static str>> = OnceLock::new();
 // 二进制/几何类型集合。
 static DATA_TYPE_BIN: OnceLock<HashSet<&'static str>> = OnceLock::new();
@@ -28,6 +29,7 @@ pub fn initColTypeRowReceiverMap() {
         let mut ds = HashSet::new();
         let mut di = HashSet::new();
         let mut db = HashSet::new();
+        let mut dn = HashSet::new();
 
         // 与 Go dataTypeStringArr 一致：引号包裹、日期时间、JSON/ENUM 等走字符串 receiver。
         let data_type_string_arr = [
@@ -117,6 +119,7 @@ pub fn initColTypeRowReceiverMap() {
         }
         // 数值（含浮点/布尔）走 SQLTypeNumberMaker。
         for s in data_type_num_arr {
+            dn.insert(s);
             map.insert(s, SQLTypeNumberMaker);
         }
         // BLOB/BIT 等走十六进制 SQLTypeBytesMaker。
@@ -128,6 +131,7 @@ pub fn initColTypeRowReceiverMap() {
         let _ = DATA_TYPE_STRING.set(ds);
         let _ = DATA_TYPE_INT.set(di);
         let _ = DATA_TYPE_BIN.set(db);
+        let _ = DATA_TYPE_NUM.set(dn);
         map
     });
 }
@@ -146,6 +150,11 @@ pub fn dataTypeIntContains(s: &str) -> bool {
     initColTypeRowReceiverMap();
     DATA_TYPE_INT.get().map(|m| m.contains(s)).unwrap_or(false)
 }
+pub fn dataTypeNumContains(s: &str) -> bool {
+    initColTypeRowReceiverMap();
+    DATA_TYPE_NUM.get().is_some_and(|m| m.contains(s))
+}
+
 /// 判断是否为二进制/几何类型；Go `dataTypeBinContains`。
 pub fn dataTypeBinContains(s: &str) -> bool {
     initColTypeRowReceiverMap();
@@ -190,39 +199,6 @@ pub fn escapeBackslashSQL(s: &[u8], bf: &mut Vec<u8>) {
     bf.extend_from_slice(&s[last..]);
 }
 
-/// CSV 反斜杠转义；Go `escapeBackslashCSV`。
-///
-/// 除 SQL 同类字符外，还转义 delimiter/separator 首字节以免破坏列边界。
-pub fn escapeBackslashCSV(s: &[u8], bf: &mut Vec<u8>, opt: &csvOption) {
-    let mut last = 0usize;
-    // CSV 优先转义 delimiter 首字节。
-    let spec_cmt = if !opt.delimiter.is_empty() {
-        opt.delimiter[0]
-    } else if !opt.separator.is_empty() {
-        opt.separator[0]
-    } else {
-        0
-    };
-    for (i, &b) in s.iter().enumerate() {
-        let escape = match b {
-            0 => Some(b'0'),
-            b'\r' => Some(b'r'),
-            b'\n' => Some(b'n'),
-            b'\\' => Some(b'\\'),
-            // 分隔符本身需转义。
-            x if x == spec_cmt && spec_cmt != 0 => Some(spec_cmt),
-            _ => None,
-        };
-        if let Some(esc) = escape {
-            bf.extend_from_slice(&s[last..i]);
-            bf.push(b'\\');
-            bf.push(esc);
-            last = i + 1;
-        }
-    }
-    bf.extend_from_slice(&s[last..]);
-}
-
 /// SQL 字面量转义入口；`escape_backslash` 对应会话 NO_BACKSLASH_ESCAPES 取反。
 pub fn escapeSQL(s: &[u8], bf: &mut Vec<u8>, escape_backslash: bool) {
     if escape_backslash {
@@ -239,31 +215,6 @@ pub fn escapeSQL(s: &[u8], bf: &mut Vec<u8>, escape_backslash: bool) {
                 bf.push(b);
             }
         }
-    }
-}
-
-/// CSV 字段转义；无 backslash 且设 delimiter 时将 delimiter 加倍。
-pub fn escapeCSV(s: &[u8], bf: &mut Vec<u8>, escape_backslash: bool, opt: &csvOption) {
-    if escape_backslash {
-        escapeBackslashCSV(s, bf, opt);
-    } else if !opt.delimiter.is_empty() {
-        // replace delimiter with doubled delimiter
-        let d = &opt.delimiter;
-        let mut i = 0;
-        while i < s.len() {
-            // delimiter 重叠时写双倍 delimiter。
-            if s[i..].starts_with(d) {
-                bf.extend_from_slice(d);
-                bf.extend_from_slice(d);
-                // 跳过已加倍 delimiter 长度。
-                i += d.len();
-            } else {
-                bf.push(s[i]);
-                i += 1;
-            }
-        }
-    } else {
-        bf.extend_from_slice(s);
     }
 }
 
@@ -342,21 +293,11 @@ impl crate::Stringer for RowReceiverArr {
         // SQL 行尾括号。
         bf.push(b')');
     }
-    /// CSV 行：列间用 opt.separator 连接。
-    fn WriteToBufferInCsv(&self, bf: &mut Vec<u8>, escape_backslash: bool, opt: &csvOption) {
-        for (i, receiver) in self.receivers.iter().enumerate() {
-            receiver.WriteToBufferInCsv(bf, escape_backslash, opt);
-            if i != self.receivers.len() - 1 {
-                // CSV 列间 separator。
-                bf.extend_from_slice(&opt.separator);
-            }
-        }
-    }
+
     fn GetRawBytes(&self) -> Vec<RawBytes> {
-        self.receivers
-            .iter()
-            .map(|r| r.GetRawBytes().into_iter().next().unwrap_or_default())
-            .collect()
+        let mut dst = Vec::with_capacity(self.receivers.len());
+        self.appendRawBytes(&mut dst);
+        dst
     }
 }
 impl crate::RowReceiverStringer for RowReceiverArr {}
@@ -385,16 +326,7 @@ impl crate::Stringer for SQLTypeString {
             bf.extend_from_slice(NULL_VALUE.as_bytes());
         }
     }
-    fn WriteToBufferInCsv(&self, bf: &mut Vec<u8>, escape_backslash: bool, opt: &csvOption) {
-        if let Some(bytes) = self.raw.as_opt() {
-            bf.extend_from_slice(&opt.delimiter);
-            escapeCSV(bytes, bf, escape_backslash, opt);
-            bf.extend_from_slice(&opt.delimiter);
-        } else {
-            // CSV 可配置 null 占位。
-            bf.extend_from_slice(opt.nullValue.as_bytes());
-        }
-    }
+
     fn GetRawBytes(&self) -> Vec<RawBytes> {
         vec![self.raw.clone()]
     }
@@ -419,20 +351,14 @@ impl crate::Stringer for SQLTypeNumber {
             bf.extend_from_slice(NULL_VALUE.as_bytes());
         }
     }
-    fn WriteToBufferInCsv(&self, bf: &mut Vec<u8>, _escape_backslash: bool, opt: &csvOption) {
-        if let Some(bytes) = self.inner.raw.as_opt() {
-            bf.extend_from_slice(bytes);
-        } else {
-            bf.extend_from_slice(opt.nullValue.as_bytes());
-        }
-    }
+
     fn GetRawBytes(&self) -> Vec<RawBytes> {
         vec![self.inner.raw.clone()]
     }
 }
 impl crate::RowReceiverStringer for SQLTypeNumber {}
 
-/// 二进制列：SQL 用 `x'hex'`；CSV 按 BinaryFormat 选 hex/base64/转义。
+/// 二进制列：SQL 用 `x'hex'`。
 pub struct SQLTypeBytes {
     pub raw: RawBytes,
 }
@@ -455,28 +381,7 @@ impl crate::Stringer for SQLTypeBytes {
             bf.extend_from_slice(NULL_VALUE.as_bytes());
         }
     }
-    fn WriteToBufferInCsv(&self, bf: &mut Vec<u8>, escape_backslash: bool, opt: &csvOption) {
-        if let Some(bytes) = self.raw.as_opt() {
-            bf.extend_from_slice(&opt.delimiter);
-            match opt.binaryFormat {
-                // CSV binary-format=hex。
-                BinaryFormat::BinaryFormatHEX => {
-                    write_hex_bytes(bf, bytes);
-                }
-                // CSV binary-format=base64。
-                BinaryFormat::BinaryFormatBase64 => {
-                    bf.extend_from_slice(base64_encode(bytes).as_bytes());
-                }
-                // 默认按 CSV 转义原始字节。
-                _ => {
-                    escapeCSV(bytes, bf, escape_backslash, opt);
-                }
-            }
-            bf.extend_from_slice(&opt.delimiter);
-        } else {
-            bf.extend_from_slice(opt.nullValue.as_bytes());
-        }
-    }
+
     fn GetRawBytes(&self) -> Vec<RawBytes> {
         vec![self.raw.clone()]
     }
@@ -493,47 +398,9 @@ impl std::fmt::LowerHex for HexBytes<'_> {
     }
 }
 
-/// 标准 Base64 编码；Go 使用 encoding/base64，此处内联避免额外依赖。
-fn base64_encode(data: &[u8]) -> String {
-    // Base64 字母表。
-    const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    let mut i = 0;
-    while i < data.len() {
-        let b0 = data[i] as u32;
-        let b1 = if i + 1 < data.len() {
-            data[i + 1] as u32
-        } else {
-            0
-        };
-        let b2 = if i + 2 < data.len() {
-            data[i + 2] as u32
-        } else {
-            0
-        };
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(T[((n >> 18) & 63) as usize] as char);
-        out.push(T[((n >> 12) & 63) as usize] as char);
-        if i + 1 < data.len() {
-            out.push(T[((n >> 6) & 63) as usize] as char);
-        } else {
-            // Base64 padding。
-            out.push('=');
-        }
-        if i + 2 < data.len() {
-            out.push(T[(n & 63) as usize] as char);
-        } else {
-            out.push('=');
-        }
-        // 每 3 字节一组编码。
-        i += 3;
-    }
-    out
-}
-
 // Fix WriteToBuffer for SQLTypeBytes - can't write! into Vec<u8> with fmt::Write the same way for hex via write! macro targeting Vec
 // Provide helper:
-/// 小写十六进制写入 Vec；供 SQL `x'...'` 与 CSV HEX 格式共用。
+/// 小写十六进制写入 Vec，供 SQL `x'...'` 使用。
 pub fn write_hex_bytes(bf: &mut Vec<u8>, bytes: &[u8]) {
     // 小写 hex 查表。
     const HEX: &[u8] = b"0123456789abcdef";
@@ -542,5 +409,15 @@ pub fn write_hex_bytes(bf: &mut Vec<u8>, bytes: &[u8]) {
         bf.push(HEX[(b >> 4) as usize]);
         // 低半字节。
         bf.push(HEX[(b & 0xf) as usize]);
+    }
+}
+
+impl RowReceiverArr {
+    pub fn appendRawBytes(&self, dst: &mut Vec<RawBytes>) {
+        dst.extend(
+            self.receivers
+                .iter()
+                .map(|r| r.GetRawBytes().into_iter().next().unwrap_or_default()),
+        );
     }
 }

@@ -1,5 +1,5 @@
-// Copyright 2026 PingCAP, Inc.
 // Copyright 2026 AsterSQL.
+// Copyright 2026 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -432,4 +432,78 @@ fn test_client_copy_object() {
     assert_eq!(calls.copies[0].0.key, "prefix/dir/dest-object");
     drop(calls);
     suite.MockS3.assert_drained();
+}
+
+#[test]
+fn multipart_writer_rejects_part_10001_before_network() {
+    let mock = Arc::new(MockS3::default());
+    let client = client_with_compat(mock.clone(), false);
+    let ctx = storeapi::Context::default();
+    let mut writer = client.MultipartWriter(&ctx, "object").unwrap();
+    for _ in 0..storeapi::MaxUploadParts {
+        assert_eq!(writer.write(&ctx, b"x").unwrap(), 1);
+    }
+    let error = writer.write(&ctx, b"overflow").unwrap_err();
+    assert!(
+        error
+            .get_ref()
+            .unwrap()
+            .is::<storeapi::ExceedMaxUploadParts>()
+    );
+    assert_eq!(mock.calls.lock().unwrap().uploads.len(), 10000);
+}
+#[test]
+fn multipart_uploader_normalizes_sdk_part_limit_error() {
+    let mock = Arc::new(MockS3::default());
+    mock.push_upload(Err(anyhow!("exceeded MaxUploadParts")));
+    let client = client_with_compat(mock.clone(), false);
+    let ctx = storeapi::Context::default();
+    let error = client
+        .MultipartUploader("object", 1, 1)
+        .Upload(&ctx, &mut Cursor::new(b"ab".to_vec()))
+        .unwrap_err();
+    assert!(error.is::<storeapi::ExceedMaxUploadParts>());
+    assert_eq!(mock.calls.lock().unwrap().uploads.len(), 1);
+}
+#[test]
+fn multipart_uploader_enforces_object_part_limit() {
+    let mock = Arc::new(MockS3::default());
+    let client = client_with_compat(mock.clone(), false);
+    let error = client
+        .MultipartUploader("object", 1, 1)
+        .Upload(
+            &storeapi::Context::default(),
+            &mut Cursor::new(vec![b'x'; 10001]),
+        )
+        .unwrap_err();
+    assert!(error.is::<storeapi::ExceedMaxUploadParts>());
+    assert!(mock.calls.lock().unwrap().uploads.is_empty());
+}
+
+#[test]
+fn multipart_uploader_normalizes_part_limit_at_all_sdk_stages() {
+    for stage in ["put", "create", "complete"] {
+        let mock = Arc::new(MockS3::default());
+        let error = anyhow!("SDK MaxUploadParts limit");
+        match stage {
+            "put" => mock.push_put(Err(error)),
+            "create" => mock.push_create(Err(error)),
+            _ => mock.push_complete(Err(error)),
+        }
+        let client = client_with_compat(mock.clone(), false);
+        let data = if stage == "put" {
+            b"a".to_vec()
+        } else {
+            b"ab".to_vec()
+        };
+        let error = client
+            .MultipartUploader("object", 1, 1)
+            .Upload(&storeapi::Context::default(), &mut Cursor::new(data))
+            .unwrap_err();
+        assert!(
+            error.is::<storeapi::ExceedMaxUploadParts>(),
+            "{stage}: {error}"
+        );
+        mock.assert_drained();
+    }
 }

@@ -186,9 +186,35 @@ impl Writer {
             self.conf.Rows != 0,
             self.conf.FileSize != 0,
         );
+        if self.file_fmt == FileFormat::FileFormatCSV {
+            let mut iter = ir.Rows();
+            let result = (|| -> Result<()> {
+                while iter.HasNext() {
+                    let (name, _) =
+                        namer.NextName(&self.conf.OutputFileTemplate, FileFormatCSVString)?;
+                    let mut lazy = LazyStringWriter::new(self.ext_storage.clone(), name);
+                    lazy.option = Some(astersql_objstore_storeapi::WriterOption {
+                        Concurrency: uploadConcurrency,
+                        PartSize: uploadPartSize,
+                    });
+                    let result = writeCSVFile(&self.conf, meta, iter.as_mut(), &mut lazy, None);
+                    let closed = lazy.Close();
+                    result?;
+                    closed?;
+                    if self.conf.FileSize == UnspecifiedSize {
+                        break;
+                    }
+                }
+                iter.Error().map_or(Ok(()), Err)
+            })();
+            let closed_iter = iter.Close();
+            let closed_ir = ir.Close();
+            result?;
+            closed_iter?;
+            return closed_ir;
+        }
         if self.file_fmt == FileFormat::FileFormatSQLText
-            && (self.conf.FileSize != UnspecifiedSize
-                || self.conf.StatementSize != UnspecifiedSize)
+            && (self.conf.FileSize != UnspecifiedSize || self.conf.StatementSize != UnspecifiedSize)
         {
             let result = self.writeSplitSql(meta, ir, &mut namer);
             let close_ir_result = ir.Close();
@@ -208,6 +234,12 @@ impl Writer {
         };
         let (file_name, _) = namer.NextName(&self.conf.OutputFileTemplate, extension)?;
         let mut lazy = LazyStringWriter::new(self.ext_storage.clone(), file_name);
+        if self.file_fmt == FileFormat::FileFormatSQLText {
+            lazy.option = Some(astersql_objstore_storeapi::WriterOption {
+                Concurrency: uploadConcurrency,
+                PartSize: uploadPartSize,
+            });
+        }
         let write_result = self
             .file_fmt
             .WriteInsert(&self.tctx, &self.conf, meta, ir, &mut lazy, None);
@@ -247,9 +279,14 @@ impl Writer {
             if file.is_empty() {
                 return Ok(());
             }
-            let (name, _) = namer.NextName(&self.conf.OutputFileTemplate, FileFormatSQLTextString)?;
+            let (name, _) =
+                namer.NextName(&self.conf.OutputFileTemplate, FileFormatSQLTextString)?;
             let mut writer = LazyStringWriter::new(self.ext_storage.clone(), name);
-            writer.Write(file)?;
+            writer.option = Some(astersql_objstore_storeapi::WriterOption {
+                Concurrency: uploadConcurrency,
+                PartSize: uploadPartSize,
+            });
+            writer.Write(file).map_err(annotatePartLimit)?;
             writer.Close()?;
             file.clear();
             Ok(())
@@ -265,7 +302,11 @@ impl Writer {
             let mut row = Vec::new();
             iter.Decode(&mut receiver)?;
             receiver.WriteToBuffer(&mut row, self.conf.EscapeBackslash);
-            let separator = if statement.is_empty() { header.as_bytes() } else { b",\n" };
+            let separator = if statement.is_empty() {
+                header.as_bytes()
+            } else {
+                b",\n"
+            };
             let projected_statement = statement.len() + separator.len() + row.len() + 2;
             if !statement.is_empty()
                 && self.conf.StatementSize != UnspecifiedSize
@@ -287,8 +328,7 @@ impl Writer {
                 return Err(err);
             }
             let projected_file = file.len() + statement.len() + 2;
-            if self.conf.FileSize != UnspecifiedSize
-                && projected_file as u64 >= self.conf.FileSize
+            if self.conf.FileSize != UnspecifiedSize && projected_file as u64 >= self.conf.FileSize
             {
                 statement.extend_from_slice(b";\n");
                 file.extend_from_slice(&statement);

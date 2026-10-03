@@ -142,7 +142,50 @@ fn test_write_insert_in_csv_returns_error() {
     let c = csv_conf();
     let meta = mockTableIR::new("test", "employee", vec![], &[], TYPES);
     let mut ir = mockTableIR::new("test", "employee", data(), &[], TYPES);
-    ir.row_err = Some(errors_new("mock row error"));
+    // Go sqlmock.RowError on the fourth row: the first three rows are decoded.
+    struct LastRowError {
+        inner: Box<dyn SQLRowIter>,
+        advanced: usize,
+    }
+    impl SQLRowIter for LastRowError {
+        fn Decode(&mut self, row: &mut dyn RowReceiver) -> Result<()> {
+            self.inner.Decode(row)
+        }
+        fn Next(&mut self) {
+            self.advanced += 1;
+            if self.advanced < 3 {
+                self.inner.Next();
+            }
+        }
+        fn Error(&self) -> Option<Error> {
+            (self.advanced >= 3).then(|| errors_new("mock row error"))
+        }
+        fn HasNext(&self) -> bool {
+            self.advanced < 3 && self.inner.HasNext()
+        }
+        fn Close(&mut self) -> Result<()> {
+            self.inner.Close()
+        }
+    }
+    struct ErrorIR(Option<Box<dyn SQLRowIter>>);
+    impl TableDataIR for ErrorIR {
+        fn Start(&mut self, _: &tcontext::Context, _: &Conn) -> Result<()> {
+            Ok(())
+        }
+        fn Rows(&mut self) -> Box<dyn SQLRowIter> {
+            self.0.take().unwrap()
+        }
+        fn Close(&mut self) -> Result<()> {
+            Ok(())
+        }
+        fn RawRows(&mut self) -> Option<&mut Rows> {
+            None
+        }
+    }
+    let mut ir = ErrorIR(Some(Box::new(LastRowError {
+        inner: ir.Rows(),
+        advanced: 0,
+    })));
     let mut w = MemBufWriter::new();
     let m = newMetrics(c.PromFactory.as_ref(), &c.Labels);
     assert_eq!(
@@ -151,7 +194,7 @@ fn test_write_insert_in_csv_returns_error() {
             .to_string(),
         "mock row error"
     );
-    let expected = "1,\"male\",\"bob@mail.com\",\"020-1234\",\\N\r\n";
+    let expected = "1,\"male\",\"bob@mail.com\",\"020-1234\",\\N\r\n2,\"female\",\"sarah@mail.com\",\"020-1253\",\"healthy\"\r\n3,\"male\",\"john@mail.com\",\"020-1256\",\"healthy\"\r\n";
     assert_eq!(w.string(), expected);
     gauges(&m, 0.0, 0);
 }

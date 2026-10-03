@@ -1,5 +1,5 @@
-// Copyright 2026 PingCAP, Inc.
 // Copyright 2026 AsterSQL.
+// Copyright 2026 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -322,3 +322,16 @@ pub fn GetHTTPRange(startOffset: i64, endOffset: i64) -> (bool, String) {
 pub fn GenPermCheckObjectKey() -> String {
     format!("perm-check/{}", Uuid::new_v4())
 }
+
+/// Shared per-object S3/GCS/OSS multipart limit.
+pub const MaxUploadParts: usize = 10_000;
+/// Typed sentinel retained through IO/anyhow wrappers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExceedMaxUploadParts;
+impl std::fmt::Display for ExceedMaxUploadParts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("data exceeds the object store's per-object multipart upload part limit")
+    }
+}
+impl std::error::Error for ExceedMaxUploadParts {}
+pub const ErrExceedMaxUploadParts: ExceedMaxUploadParts = ExceedMaxUploadParts;

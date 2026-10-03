@@ -206,3 +206,107 @@ fn parquet_output_is_readable_and_preserves_rows() {
     assert!(rows[1].get_string(1).is_err());
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn csv_generated_columns_count_line_terminators_and_rows() {
+    let ctx = tcontext::Background();
+    let mut conf = default_config_for_test();
+    conf.CsvLineTerminator = "\r\n".into();
+    let mut meta = mockTableIR::new("db", "generated", vec![], &[], &["INT"]);
+    meta.selected_field.clear();
+    let mut ir = mockTableIR::new(
+        "db",
+        "generated",
+        vec![
+            vec![bytes_cell("1")],
+            vec![bytes_cell("2")],
+            vec![bytes_cell("3")],
+        ],
+        &[],
+        &["INT"],
+    );
+    let mut sink = BufferWriter(vec![]);
+    let metrics = newMetrics(conf.PromFactory.as_ref(), &conf.Labels);
+    WriteInsertInCsv(&ctx, &conf, &meta, &mut ir, &mut sink, Some(&metrics)).unwrap();
+    assert_eq!(sink.0, b"\r\n\r\n\r\n");
+    assert_eq!(ReadGauge(Some(&metrics.finishedRowsGauge)), 3.0);
+    assert_eq!(ReadGauge(Some(&metrics.finishedSizeGauge)), 6.0);
+}
+
+#[test]
+fn csv_failure_rolls_back_periodic_metrics() {
+    struct FailAfter {
+        calls: usize,
+    }
+    impl ObjectWriter for FailAfter {
+        fn Write(&mut self, data: &[u8]) -> Result<usize> {
+            self.calls += 1;
+            if self.calls == 1001 {
+                Err(errors_new("write failed"))
+            } else {
+                Ok(data.len())
+            }
+        }
+        fn Close(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+    let mut conf = default_config_for_test();
+    conf.NoHeader = true;
+    let metrics = newMetrics(conf.PromFactory.as_ref(), &conf.Labels);
+    let meta = mockTableIR::new("db", "t", vec![], &[], &["INT"]);
+    let mut ir = mockTableIR::new("db", "t", vec![vec![bytes_cell("1")]; 1002], &[], &["INT"]);
+    let err = WriteInsertInCsv(
+        &tcontext::Background(),
+        &conf,
+        &meta,
+        &mut ir,
+        &mut FailAfter { calls: 0 },
+        Some(&metrics),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("write failed"));
+    assert_eq!(ReadGauge(Some(&metrics.finishedRowsGauge)), 0.0);
+    assert_eq!(ReadGauge(Some(&metrics.finishedSizeGauge)), 0.0);
+}
+
+#[test]
+fn multipart_limit_annotation_preserves_sentinel_only() {
+    let annotated = annotatePartLimit(astersql_objstore_storeapi::ErrExceedMaxUploadParts.into());
+    assert!(annotated.exceed_upload_parts);
+    assert!(annotated.to_string().contains("specify --filesize (-F)"));
+    let ordinary = errors_new(astersql_objstore_storeapi::ErrExceedMaxUploadParts.to_string());
+    assert!(
+        !annotatePartLimit(ordinary)
+            .to_string()
+            .contains("specify --filesize")
+    );
+}
+
+#[test]
+fn csv_upload_limit_error_retains_identity_through_io_adapter() {
+    struct LimitWriter;
+    impl ObjectWriter for LimitWriter {
+        fn Write(&mut self, _: &[u8]) -> Result<usize> {
+            Err(astersql_objstore_storeapi::ErrExceedMaxUploadParts.into())
+        }
+        fn Close(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+    let mut conf = default_config_for_test();
+    conf.NoHeader = true;
+    let meta = mockTableIR::new("db", "t", vec![], &[], &["INT"]);
+    let mut ir = mockTableIR::new("db", "t", vec![vec![bytes_cell("1")]], &[], &["INT"]);
+    let error = WriteInsertInCsv(
+        &tcontext::Background(),
+        &conf,
+        &meta,
+        &mut ir,
+        &mut LimitWriter,
+        None,
+    )
+    .unwrap_err();
+    assert!(error.exceed_upload_parts);
+    assert!(error.to_string().contains("specify --filesize (-F)"));
+}

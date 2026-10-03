@@ -69,35 +69,6 @@ impl FileFormat {
     }
 }
 
-// CSV 转义与分隔选项，binaryFormat 由 dialect 映射决定二进制列编码。
-#[derive(Clone, Debug)]
-pub struct csvOption {
-    // 列分隔符字节（默认逗号）。
-    pub separator: Vec<u8>,
-    // 字段引号字节（默认双引号）。
-    pub delimiter: Vec<u8>,
-    // NULL 字面量，MySQL 传统为 \N。
-    pub nullValue: String,
-    // 行结束符，默认 CRLF。
-    pub lineTerminator: Vec<u8>,
-    // 二进制列编码方式，随 CsvOutputDialect 变化。
-    pub binaryFormat: BinaryFormat,
-}
-
-impl Default for csvOption {
-    fn default() -> Self {
-        // 默认 MySQL 兼容 CSV：逗号分隔、双引号、\\N NULL、CRLF。
-        Self {
-            separator: b",".to_vec(),
-            delimiter: b"\"".to_vec(),
-            // MySQL LOAD DATA 传统 NULL 表示。
-            nullValue: "\\N".into(),
-            lineTerminator: b"\r\n".to_vec(),
-            binaryFormat: BinaryFormat::BinaryFormatUTF8,
-        }
-    }
-}
-
 // MySQL 反引号标识符转义：内部反引号加倍。
 pub fn wrapBackTicks(identifier: &str) -> String {
     format!("`{}`", identifier.replace('`', "``"))
@@ -172,7 +143,7 @@ pub fn WriteInsertSQL(
         rows_written += 1.0;
         // 缓冲达上限则 flush 并累计 metrics。
         if bf.len() >= lengthLimit {
-            writer.Write(&bf)?;
+            writer.Write(&bf).map_err(annotatePartLimit)?;
             if let Some(m) = metrics {
                 AddGauge(Some(&m.finishedSizeGauge), bf.len() as f64);
                 AddGauge(Some(&m.finishedRowsGauge), rows_written);
@@ -186,7 +157,7 @@ pub fn WriteInsertSQL(
             // INSERT statement, but does not count it as finished metrics.
             if !bf.is_empty() {
                 bf.extend_from_slice(b";\n");
-                writer.Write(&bf)?;
+                writer.Write(&bf).map_err(annotatePartLimit)?;
             }
             let _ = iter.Close();
             return Err(err);
@@ -196,7 +167,7 @@ pub fn WriteInsertSQL(
         // 语句收尾分号，与 MySQL 客户端习惯一致。
         bf.push(b';');
         bf.push(b'\n');
-        writer.Write(&bf)?;
+        writer.Write(&bf).map_err(annotatePartLimit)?;
         if let Some(m) = metrics {
             AddGauge(Some(&m.finishedSizeGauge), bf.len() as f64);
             AddGauge(Some(&m.finishedRowsGauge), rows_written);
@@ -205,7 +176,153 @@ pub fn WriteInsertSQL(
     iter.Close()
 }
 
-// CSV 行输出：可选 header、按 dialect 写 NULL/二进制，同样按 lengthLimit 分块 flush。
+const uploadConcurrency: i32 = 4;
+const uploadPartSize: i64 = 5 * 1024 * 1024;
+
+fn annotatePartLimit(error: Error) -> Error {
+    if error.exceed_upload_parts {
+        errors_annotate(
+            error,
+            "a single output file exceeds the object store's per-object limit of ~48.83GiB; specify --filesize (-F) to split the output into multiple files",
+        )
+    } else {
+        error
+    }
+}
+
+fn csv_io_error(error: std::io::Error) -> Error {
+    if let Some(original) = error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<Error>())
+    {
+        original.clone()
+    } else {
+        errors_new(error.to_string())
+    }
+}
+
+struct CSVObjectWriter<'a>(&'a mut dyn ObjectWriter);
+impl std::io::Write for CSVObjectWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .Write(bytes)
+            .map_err(|e| std::io::Error::other(annotatePartLimit(e)))
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn columnKinds(types: &[String]) -> Vec<astersql_dumpformat_csvfile::FieldKind> {
+    use astersql_dumpformat_csvfile::FieldKind;
+    types
+        .iter()
+        .map(|t| {
+            if dataTypeBinContains(t) {
+                FieldKind::Bytes
+            } else if dataTypeNumContains(t) {
+                FieldKind::Number
+            } else {
+                FieldKind::String
+            }
+        })
+        .collect()
+}
+
+// Consume one file from the caller-owned iterator; rotation resumes at the next row.
+fn writeCSVFile(
+    conf: &Config,
+    meta: &dyn TableMeta,
+    iter: &mut dyn SQLRowIter,
+    writer: &mut dyn ObjectWriter,
+    metrics: Option<&metrics>,
+) -> Result<u64> {
+    use astersql_dumpformat_csvfile::{BinaryFormat as BF, Config as CF, Writer as CW};
+    if !iter.HasNext() {
+        return iter.Error().map_or(Ok(0), Err);
+    }
+    let selected = !meta.SelectedField().is_empty();
+    let cfg = CF {
+        fields_terminated_by: conf.CsvSeparator.as_bytes().to_vec(),
+        fields_enclosed_by: conf.CsvDelimiter.as_bytes().to_vec(),
+        fields_escaped_by: if conf.EscapeBackslash {
+            b"\\".to_vec()
+        } else {
+            vec![]
+        },
+        lines_terminated_by: conf.CsvLineTerminator.as_bytes().to_vec(),
+        null_value: conf.CsvNullValue.as_bytes().to_vec(),
+        binary_format: match DialectBinaryFormatMap(conf.CsvOutputDialect) {
+            BinaryFormat::BinaryFormatHEX => BF::HEX,
+            BinaryFormat::BinaryFormatBase64 => BF::Base64,
+            _ => BF::UTF8,
+        },
+    };
+    let kinds = if selected {
+        columnKinds(&meta.ColumnTypes())
+    } else {
+        vec![]
+    };
+    let mut cw = CW::new(CSVObjectWriter(writer), kinds, cfg);
+    let mut row = MakeRowReceiver(&meta.ColumnTypes());
+    let mut raw = Vec::with_capacity(row.receivers.len());
+    let mut count = 0;
+    let mut counted = 0;
+    let mut finished_size = 0;
+    let result = (|| -> Result<u64> {
+        if !conf.NoHeader && selected && !meta.ColumnNames().is_empty() {
+            cw.write_header(
+                &meta
+                    .ColumnNames()
+                    .iter()
+                    .map(|s| s.as_bytes().to_vec())
+                    .collect::<Vec<_>>(),
+            )
+            .map_err(csv_io_error)?;
+        }
+        while iter.HasNext() {
+            raw.clear();
+            if selected {
+                iter.Decode(&mut row)?;
+                row.appendRawBytes(&mut raw);
+            }
+            cw.write_borrowed(raw.iter().map(|r| r.as_opt()))
+                .map_err(csv_io_error)?;
+            count += 1;
+            if count % 1000 == 0 {
+                if let Some(m) = metrics {
+                    AddGauge(Some(&m.finishedRowsGauge), (count - counted) as f64);
+                }
+                counted = count;
+            }
+            iter.Next();
+            if conf.FileSize != UnspecifiedSize && cw.estimate_file_size() >= conf.FileSize {
+                break;
+            }
+        }
+        if let Some(m) = metrics {
+            AddGauge(Some(&m.finishedRowsGauge), (count - counted) as f64);
+        }
+        counted = count;
+        cw.close().map_err(csv_io_error)?;
+        finished_size = cw.estimate_file_size();
+        if let Some(m) = metrics {
+            AddGauge(Some(&m.finishedSizeGauge), finished_size as f64);
+        }
+        if let Some(error) = iter.Error() {
+            return Err(error);
+        }
+        Ok(count)
+    })();
+    if result.is_err() {
+        if let Some(m) = metrics {
+            SubGauge(Some(&m.finishedRowsGauge), counted as f64);
+            SubGauge(Some(&m.finishedSizeGauge), finished_size as f64);
+        }
+    }
+    result
+}
+
 pub fn WriteInsertInCsv(
     _tctx: &tcontext::Context,
     conf: &Config,
@@ -215,76 +332,10 @@ pub fn WriteInsertInCsv(
     metrics: Option<&metrics>,
 ) -> Result<()> {
     let mut iter = ir.Rows();
-    // Go 在空结果上返回迭代器错误，并且不会单独写 header。
-    if !iter.HasNext() {
-        if let Some(err) = iter.Error() {
-            let _ = iter.Close();
-            return Err(err);
-        }
-        return iter.Close();
-    }
-    let opt = csvOption {
-        separator: conf.CsvSeparator.as_bytes().to_vec(),
-        delimiter: conf.CsvDelimiter.as_bytes().to_vec(),
-        nullValue: conf.CsvNullValue.clone(),
-        lineTerminator: conf.CsvLineTerminator.as_bytes().to_vec(),
-        binaryFormat: DialectBinaryFormatMap(conf.CsvOutputDialect),
-    };
-    let mut bf = Vec::with_capacity(lengthLimit);
-    let selected_field = meta.SelectedField();
-    if !conf.NoHeader && !meta.ColumnNames().is_empty() && !selected_field.is_empty() {
-        // 首行写列名，字段用 delimiter 包裹。
-        let names = meta.ColumnNames();
-        for (i, n) in names.iter().enumerate() {
-            if i > 0 {
-                bf.extend_from_slice(&opt.separator);
-            }
-            bf.extend_from_slice(&opt.delimiter);
-            escapeCSV(n.as_bytes(), &mut bf, conf.EscapeBackslash, &opt);
-            bf.extend_from_slice(&opt.delimiter);
-        }
-        bf.extend_from_slice(&opt.lineTerminator);
-    }
-    let mut row_receiver = MakeRowReceiver(&meta.ColumnTypes());
-    let mut rows_written = 0.0_f64;
-    while iter.HasNext() {
-        if !selected_field.is_empty() {
-            iter.Decode(&mut row_receiver)?;
-            // CSV 转义规则与 SQL 不同，由 WriteToBufferInCsv 处理。
-            row_receiver.WriteToBufferInCsv(&mut bf, conf.EscapeBackslash, &opt);
-        }
-        bf.extend_from_slice(&opt.lineTerminator);
-        rows_written += 1.0;
-        if bf.len() >= lengthLimit {
-            writer.Write(&bf)?;
-            if let Some(m) = metrics {
-                AddGauge(Some(&m.finishedSizeGauge), bf.len() as f64);
-                AddGauge(Some(&m.finishedRowsGauge), rows_written);
-            }
-            rows_written = 0.0;
-            bf.clear();
-        }
-        iter.Next();
-        // 与 SQL writer 及 Go writerPipe 对齐：行迭代错误必须在已成功
-        // 解码的行之后立刻传播，不能被最终 Close 吞掉。
-        if let Some(err) = iter.Error() {
-            // Preserve the successfully decoded CSV prefix. Metrics are only
-            // committed on successful completion, matching Go's rollback.
-            if !bf.is_empty() {
-                writer.Write(&bf)?;
-            }
-            let _ = iter.Close();
-            return Err(err);
-        }
-    }
-    if !bf.is_empty() {
-        writer.Write(&bf)?;
-        if let Some(m) = metrics {
-            AddGauge(Some(&m.finishedSizeGauge), bf.len() as f64);
-            AddGauge(Some(&m.finishedRowsGauge), rows_written);
-        }
-    }
-    iter.Close()
+    let result = writeCSVFile(conf, meta, iter.as_mut(), writer, metrics);
+    let closed = iter.Close();
+    result?;
+    closed
 }
 
 struct ParquetObjectWriter<'a> {
@@ -297,7 +348,7 @@ impl std::io::Write for ParquetObjectWriter<'_> {
         let size = self
             .inner
             .Write(buf)
-            .map_err(|error| std::io::Error::other(error.to_string()))?;
+            .map_err(|error| std::io::Error::other(annotatePartLimit(error)))?;
         self.written.fetch_add(size as u64, Ordering::Relaxed);
         Ok(size)
     }
@@ -636,6 +687,7 @@ pub struct LazyStringWriter {
     pub path: String,
     // w 在 ensure 前为 None，避免空文件被创建。
     pub w: Option<Box<dyn ObjectWriter>>,
+    pub option: Option<astersql_objstore_storeapi::WriterOption>,
 }
 
 impl LazyStringWriter {
@@ -644,12 +696,16 @@ impl LazyStringWriter {
             storage,
             path: path.into(),
             w: None,
+            option: None,
         }
     }
     // 懒创建底层 ObjectWriter，失败则向上传播。
     fn ensure(&mut self) -> Result<()> {
         if self.w.is_none() {
-            self.w = Some(self.storage.Create(&self.path)?);
+            self.w = Some(
+                self.storage
+                    .CreateWithOptions(&self.path, self.option.as_ref())?,
+            );
         }
         Ok(())
     }

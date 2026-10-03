@@ -1,5 +1,5 @@
-// Copyright 2026 PingCAP, Inc.
 // Copyright 2026 AsterSQL.
+// Copyright 2026 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -441,6 +441,9 @@ struct MultipartWriter {
 /// 每次 write 上传一个 part；close 时 CompleteMultipartUpload。
 impl objectio::Writer for MultipartWriter {
     fn write(&mut self, ctx: &objectio::Context, data: &[u8]) -> io::Result<usize> {
+        if self.complete_parts.len() + 1 > storeapi::MaxUploadParts {
+            return Err(io::Error::other(storeapi::ErrExceedMaxUploadParts));
+        }
         ctx.check()?;
         // PartNumber 从 1 起递增；上传成功后记入 complete_parts。
         let part_number = i32::try_from(self.complete_parts.len() + 1)
@@ -499,6 +502,12 @@ struct MultipartUploader {
 /// 读尽 reader 后：单块走 Put，多块走并行分片上传。
 impl s3like::Uploader for MultipartUploader {
     fn Upload(&self, ctx: &storeapi::Context, reader: &mut dyn Read) -> Result<()> {
+        self.upload(ctx, reader).map_err(normalize_upload_error)
+    }
+}
+
+impl MultipartUploader {
+    fn upload(&self, ctx: &storeapi::Context, reader: &mut dyn Read) -> Result<()> {
         if self.part_size < 0 || self.concurrency <= 0 {
             return Err(anyhow!(
                 "multipart part size must be non-negative and concurrency must be positive"
@@ -533,6 +542,9 @@ impl s3like::Uploader for MultipartUploader {
                 break;
             }
             chunks.push(chunk);
+            if chunks.len() > storeapi::MaxUploadParts {
+                return Err(storeapi::ErrExceedMaxUploadParts.into());
+            }
             if filled < chunk_size {
                 break;
             }
@@ -718,5 +730,13 @@ impl s3like::PrefixClient for S3Client {
         expire: Duration,
     ) -> Result<String> {
         S3Client::PresignObject(self, ctx, name, expire)
+    }
+}
+
+fn normalize_upload_error(error: anyhow::Error) -> anyhow::Error {
+    if error.to_string().contains("MaxUploadParts") {
+        storeapi::ErrExceedMaxUploadParts.into()
+    } else {
+        error
     }
 }

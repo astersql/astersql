@@ -2736,6 +2736,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "astersql-dumpformat-csvfile"
+version = "0.1.0"
+
+[[package]]
 name = "astersql-dumpformat-parquetfile"
 version = "0.1.0"
 dependencies = [
@@ -2806,10 +2810,12 @@ dependencies = [
 name = "astersql-dumpling-export"
 version = "0.1.0"
 dependencies = [
+ "astersql-dumpformat-csvfile",
  "astersql-dumpformat-parquetfile",
  "astersql-dumpling-cli",
  "astersql-dumpling-context",
  "astersql-dumpling-log",
+ "astersql-objstore-storeapi",
  "parquet",
 ]
 

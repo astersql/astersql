@@ -1,13 +1,13 @@
 // Copyright 2026 AsterSQL.
 // Copyright 2020 PingCAP, Inc. Licensed under Apache-2.0.
 
-//! Go `sql_type_test.go`：覆盖 SQL/CSV 转义路径，与 MySQL dump 转义规则对齐。
+//! SQL escaping remains here; CSV framing tests live in csvfile.
 
 use crate::*;
 
-/// 同一输入字节串在 escapeSQL/escapeCSV 四种模式下的期望输出；Go `TestEscape`。
+/// Go TestEscapeSQL verifies both SQL escape modes.
 #[test]
-fn test_escape() {
+fn test_escape_sql() {
     let mut bf = Vec::new();
     // 混合引号、反斜杠与 \r 的字节样本。
     let s = br#"MWQeWw""'\rNmtGxzGp"#;
@@ -26,31 +26,24 @@ fn test_escape() {
     escapeSQL(s, &mut bf, false);
     // 标准 SQL 单引号加倍路径。
     assert_eq!(expect_without, String::from_utf8_lossy(&bf));
+}
 
-    bf.clear();
-    let mut opt = csvOption::default();
-    opt.delimiter = b"\"".to_vec();
-    opt.separator = b",".to_vec();
-    escapeCSV(s, &mut bf, true, &opt);
-    assert_eq!(expect_csv_bs, String::from_utf8_lossy(&bf));
-
-    bf.clear();
-    escapeCSV(s, &mut bf, false, &opt);
-    assert_eq!(expect_csv_no, String::from_utf8_lossy(&bf));
-
-    bf.clear();
-    let s2 = b"a|*|b\"cd";
-    escapeCSV(s2, &mut bf, false, &opt);
-    assert_eq!(r#"a|*|b""cd"#, String::from_utf8_lossy(&bf));
-
-    bf.clear();
-    opt.delimiter = b"".to_vec();
-    opt.separator = b"|*|".to_vec();
-    escapeCSV(s2, &mut bf, true, &opt);
-    // separator 作 delimiter 时 backslash 转义分隔符。
-    assert_eq!(r#"a\|*\|b"cd"#, String::from_utf8_lossy(&bf));
-
-    bf.clear();
-    escapeCSV(s2, &mut bf, false, &opt);
-    assert_eq!(r#"a|*|b"cd"#, String::from_utf8_lossy(&bf));
+#[test]
+fn numeric_classification_and_raw_append_preserve_null() {
+    for ty in ["DOUBLE PRECISION", "DECIMAL", "BOOL", "INT"] {
+        assert!(dataTypeNumContains(ty));
+    }
+    assert!(!dataTypeNumContains("UNKNOWN"));
+    let mut row = MakeRowReceiver(&["INT".into(), "BLOB".into(), "UNKNOWN".into()]);
+    row.BindAddress(&mut [
+        RawBytes(Some(b"1".to_vec())),
+        RawBytes(None),
+        RawBytes(Some(vec![])),
+    ]);
+    let mut raw = vec![RawBytes(Some(b"prefix".to_vec()))];
+    row.appendRawBytes(&mut raw);
+    assert_eq!(raw.len(), 4);
+    assert_eq!(raw[1].as_opt(), Some(b"1".as_slice()));
+    assert!(raw[2].as_opt().is_none());
+    assert_eq!(raw[3].as_opt(), Some(b"".as_slice()));
 }

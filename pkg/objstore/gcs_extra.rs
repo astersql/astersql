@@ -32,7 +32,7 @@ pub const GCS_MINIMUM_CHUNK_SIZE: i64 = 5 * 1024 * 1024;
 /// GCS 分片最大大小（5 GiB）。
 pub const GCS_MAXIMUM_CHUNK_SIZE: i64 = 5 * 1024 * 1024 * 1024;
 /// 单次 multipart 允许的最大分片数。
-pub const GCS_MAXIMUM_PARTS: usize = 10_000;
+pub const GCS_MAXIMUM_PARTS: usize = crate::storeapi::MaxUploadParts;
 /// 默认重试次数。
 pub const DEFAULT_RETRY: usize = 3;
 /// 预签名 URL 默认有效期（6 小时）。
@@ -138,7 +138,7 @@ impl GCSWriter {
     /// 上传一个分片并递增 part 编号。
     fn upload_part(&mut self, data: &[u8]) -> Result<()> {
         if self.current_part > GCS_MAXIMUM_PARTS {
-            bail!("exceed maximum parts {GCS_MAXIMUM_PARTS}");
+            return Err(crate::storeapi::ErrExceedMaxUploadParts.into());
         }
         self.context.check()?;
         let upload = self
