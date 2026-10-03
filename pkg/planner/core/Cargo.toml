@@ -10,6 +10,7 @@ path = "lib.rs"
 doctest = false
 
 [dependencies]
+astersql-bindinfo = { path = "../../bindinfo" }
 sha2 = "0.10"
 aggregation-dependency = { package = "astersql-expression-aggregation", path = "../../expression/aggregation" }
 asyncload-dependency = { package = "astersql-statistics-asyncload", path = "../../statistics/asyncload" }

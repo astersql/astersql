@@ -144,6 +144,7 @@ pub struct PlanCacheDigest(pub Vec<u8>);
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 /// Binding（执行计划绑定）的归一化 SQL 与 digest。
 pub struct PlanCacheBindingInfo {
+    pub match_info: astersql_bindinfo::BindingMatchInfo,
     pub normalized_sql: String,
     pub digest: Option<PlanCacheDigest>,
 }
@@ -643,6 +644,26 @@ pub fn GeneratePlanCacheStmtWithAST(
         }
     }
     let parameter_count = input.markers.len();
+    // Capture the original binding key before the plan builder resolves aliases.
+    let binding_info = if input.is_prepared_statement {
+        let original = astersql_bindinfo::Statement {
+            SQL: input.prepared_ast.stmt.clone(),
+            ..Default::default()
+        };
+        let (normalized_sql, no_db_digest) =
+            astersql_bindinfo::NormalizeStmtForBinding(&original, "", true);
+        PlanCacheBindingInfo {
+            digest: (!no_db_digest.is_empty())
+                .then(|| PlanCacheDigest(no_db_digest.as_bytes().to_vec())),
+            normalized_sql,
+            match_info: astersql_bindinfo::BindingMatchInfo {
+                NoDBDigest: no_db_digest,
+                TableNames: astersql_bindinfo::CollectTableNames(&original),
+            },
+        }
+    } else {
+        PlanCacheBindingInfo::default()
+    };
     let plan = runtime.Build(&input)?;
 
     // 按 Prepared/Non-Prepared 开关与 AST 可缓存性决定是否入缓存；可强制覆盖并告警。
@@ -673,6 +694,7 @@ pub fn GeneratePlanCacheStmtWithAST(
     }
 
     let mut statement = PlanCacheStmt::new(input.prepared_ast, input.parameterized_sql);
+    statement.BindingInfo = binding_info;
     statement.ResolveCtx = input.resolve_context;
     statement.StmtDB = input.current_database;
     statement.VisitInfos = input.visit_infos;

@@ -6446,6 +6446,7 @@ version = "0.1.0"
 name = "astersql-planner-core"
 version = "0.1.0"
 dependencies = [
+ "astersql-bindinfo",
  "astersql-expression",
  "astersql-expression-aggregation",
  "astersql-expression-expropt",
