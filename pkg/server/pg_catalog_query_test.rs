@@ -435,3 +435,55 @@ fn pg_introspection_joins_parameter_rejection() {
             .is_some()
     );
 }
+
+#[test]
+fn pg_introspection_cte_in_subquery_gate() {
+    assert!(
+        crate::pg_catalog::CatalogQuery::parse(
+            "SELECT oid FROM pg_catalog.pg_class WHERE oid IN (SELECT oid FROM pg_catalog.pg_class)"
+        )
+        .unwrap()
+        .is_some()
+    );
+}
+
+#[test]
+fn pg_introspection_cte_nesting_limits() {
+    let mut nested = "SELECT oid FROM pg_class".to_owned();
+    for _ in 0..10 {
+        nested = format!("SELECT oid FROM pg_class WHERE oid IN ({nested})");
+    }
+    assert_eq!(parse(&nested).unwrap_err().0, "0A000");
+    let definitions = (0..17)
+        .map(|i| format!("x{i} AS (SELECT oid FROM pg_class)"))
+        .collect::<Vec<_>>()
+        .join(",");
+    assert_eq!(
+        parse(&format!("WITH {definitions} SELECT oid FROM x0"))
+            .unwrap_err()
+            .0,
+        "0A000"
+    );
+}
+
+#[test]
+fn pg_introspection_cte_column_bound() {
+    let projections = (0..12)
+        .map(|i| format!("oid AS c{i}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    assert_eq!(
+        crate::pg_catalog::CatalogQuery::parse(&format!(
+            "WITH x AS (SELECT {projections} FROM pg_class) SELECT c0 FROM x"
+        ))
+        .unwrap_err()
+        .0,
+        "0A000"
+    );
+    // Ordinary catalog projection counts retain their existing behavior.
+    assert!(
+        crate::pg_catalog::CatalogQuery::parse(&format!("SELECT {projections} FROM pg_class"))
+            .unwrap()
+            .is_some()
+    );
+}

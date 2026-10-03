@@ -10,6 +10,40 @@ use crate::conn::{
 const CATALOG_ROW_WIDTH: usize = 11;
 const MAX_CATALOG_ROWS: usize = 16_384;
 const MAX_CATALOG_JOIN_WORK: usize = 100_000;
+type CteColumns = std::collections::HashMap<usize, Vec<(String, u8, usize)>>;
+type CatalogRows = std::sync::Arc<Vec<Vec<Value>>>;
+
+// Shared across every CTE and subquery in one Execute. Provider rows, native
+// identity resolution and regclass conversions all use this single snapshot.
+struct Execution<'a> {
+    context: &'a dyn TiDBContext,
+    cancel: &'a CancellationToken,
+    snapshot: Option<astersql_infoschema::SchemaRef>,
+    database: String,
+    providers: std::collections::HashMap<String, CatalogRows>,
+    ctes: std::collections::HashMap<usize, CatalogRows>,
+    materialized: usize,
+    work: std::cell::Cell<usize>,
+}
+impl Execution<'_> {
+    fn comparison(&self) -> ConnResult<()> {
+        check_catalog_cancel(self.cancel)?;
+        let work = self.work.get() + 1;
+        if work > MAX_CATALOG_JOIN_WORK {
+            return Err(catalog_work_limit());
+        }
+        self.work.set(work);
+        Ok(())
+    }
+    fn materialize(&mut self, rows: Vec<Vec<Value>>) -> ConnResult<CatalogRows> {
+        check_catalog_cancel(self.cancel)?;
+        self.materialized += rows.len();
+        if self.materialized > MAX_CATALOG_ROWS {
+            return Err(catalog_row_limit());
+        }
+        Ok(std::sync::Arc::new(rows))
+    }
+}
 fn catalog_row_limit() -> ConnError {
     ConnError::Session("PG catalog row limit exceeded (16384 rows)".into())
 }
@@ -40,18 +74,20 @@ pub(crate) struct CatalogQuery {
     pub(crate) select: Select,
     pub(crate) current_schema: Option<String>,
     pub(crate) public_first: bool,
+    cte_columns: CteColumns,
 }
 impl CatalogQuery {
     pub(crate) fn parse(sql: &str) -> ParseResult<Option<Self>> {
         let Some(select) = pg_catalog_query::parse(sql)? else {
             return Ok(None);
         };
-        let query = Self {
+        let mut query = Self {
             select,
             current_schema: Some("public".into()),
             public_first: false,
+            cte_columns: CteColumns::new(),
         };
-        query.validate()?;
+        query.bind()?;
         Ok(Some(query))
     }
     pub(crate) fn parse_session(
@@ -88,30 +124,76 @@ impl CatalogQuery {
         let Some(select) = pg_catalog_query::parse_shadowed(sql, &shadowed)? else {
             return Ok(None);
         };
-        let query = Self {
+        let mut query = Self {
             select,
             current_schema: session.schema().map(str::to_owned),
             public_first,
+            cte_columns: CteColumns::new(),
         };
-        query.validate()?;
+        query.bind()?;
         Ok(Some(query))
     }
     pub(crate) fn classify(sql: &str) -> Option<Self> {
         Self::parse(sql).ok().flatten()
     }
+    fn nested(&self, select: Select) -> Self {
+        Self {
+            select,
+            current_schema: self.current_schema.clone(),
+            public_first: self.public_first,
+            cte_columns: self.cte_columns.clone(),
+        }
+    }
+    fn bind(&mut self) -> ParseResult<()> {
+        for cte in self.select.ctes.clone() {
+            if cte.query.projections.len() > CATALOG_ROW_WIDTH {
+                return Err((
+                    "0A000",
+                    "catalog CTEs support at most eleven columns".into(),
+                ));
+            }
+            let mut query = self.nested(cte.query);
+            query.bind()?;
+            self.cte_columns.extend(query.cte_columns.clone());
+            let fields = query
+                .select
+                .projections
+                .iter()
+                .map(|p| {
+                    query
+                        .expr_type(&p.expr)
+                        .map(|(code, flags)| (p.name.clone(), code, flags))
+                })
+                .collect::<ParseResult<Vec<_>>>()?;
+            self.cte_columns.insert(cte.id, fields);
+        }
+        // Bind subqueries independently: outer relation aliases never leak in.
+        let mut select = self.select.clone();
+        visit_select_exprs(&mut select, &mut |expr| {
+            if let Expr::InSubquery(_, select) = expr {
+                let mut query = self.nested((**select).clone());
+                query.bind()?;
+                self.cte_columns.extend(query.cte_columns);
+            }
+            Ok(())
+        })?;
+        self.validate()
+    }
     fn validate(&self) -> ParseResult<()> {
         let mut aliases = std::collections::HashSet::new();
         for relation in self.relations() {
-            if !matches!(
-                relation.name.as_str(),
-                "pg_class"
-                    | "pg_database"
-                    | "pg_locks"
-                    | "pg_namespace"
-                    | "pg_tablespace"
-                    | "pg_description"
-                    | "pg_shdescription"
-            ) {
+            if relation.cte_id.is_none()
+                && !matches!(
+                    relation.name.as_str(),
+                    "pg_class"
+                        | "pg_database"
+                        | "pg_locks"
+                        | "pg_namespace"
+                        | "pg_tablespace"
+                        | "pg_description"
+                        | "pg_shdescription"
+                )
+            {
                 return Err(("0A000", "catalog provider is not implemented yet".into()));
             }
             if !aliases.insert(&relation.alias) {
@@ -183,36 +265,50 @@ impl CatalogQuery {
         };
         let mut found = None;
         for (index, relation) in self.relations().enumerate() {
-            if qualifier.is_some_and(|q| q != relation.alias) {
+            if (path.len() == 3 && relation.cte_id.is_some())
+                || qualifier.is_some_and(|q| q != relation.alias)
+            {
                 continue;
             }
             let boolean = astersql_parser_mysql::r#type::IsBooleanFlag;
-            let field = match (relation.name.as_str(), name) {
-                ("pg_class", "oid") => Some((0, crate::pg_oid::OID_TYPE, 0)),
-                ("pg_class", "relname") => Some((1, 253, 0)),
-                ("pg_class", "relnamespace") => Some((2, crate::pg_oid::OID_TYPE, 0)),
-                ("pg_class", "relkind") => Some((3, 253, 0)),
-                ("pg_database", "oid") => Some((0, crate::pg_oid::OID_TYPE, 0)),
-                ("pg_database", "datname") => Some((1, 253, 0)),
-                ("pg_database", "datistemplate") => Some((3, 1, boolean)),
-                ("pg_database", "datallowconn") => Some((4, 1, boolean)),
-                ("pg_database", "datdba") => Some((5, 8, 0)),
-                ("pg_namespace", "oid") => Some((0, crate::pg_oid::OID_TYPE, 0)),
-                ("pg_namespace", "nspname") => Some((1, 253, 0)),
-                ("pg_namespace", "nspowner") => Some((5, 8, 0)),
-                ("pg_namespace", "xmin") => Some((8, 8, 0)),
-                ("pg_tablespace", "oid") => Some((0, crate::pg_oid::OID_TYPE, 0)),
-                ("pg_tablespace", "spcname") => Some((1, 253, 0)),
-                ("pg_tablespace", "spcowner") => Some((5, 8, 0)),
-                // Optional ACL/options use the bounded catalog's nullable text
-                // representation; no native tablespace rows currently exist.
-                ("pg_tablespace", "spcacl") => Some((8, 253, 0)),
-                ("pg_tablespace", "spcoptions") => Some((10, 253, 0)),
-                ("pg_locks", "transactionid") => Some((0, 8, 0)),
-                ("pg_description" | "pg_shdescription", _) => {
-                    description_column(&relation.name, name)
+            let field = if let Some(id) = relation.cte_id {
+                let fields = &self.cte_columns[&id];
+                let mut matches = fields.iter().enumerate().filter(|(_, (n, _, _))| n == name);
+                let field = matches
+                    .next()
+                    .map(|(slot, (_, code, flags))| (slot, *code, *flags));
+                if matches.next().is_some() {
+                    return Err(("42702", "ambiguous CTE column".into()));
                 }
-                _ => None,
+                field
+            } else {
+                match (relation.name.as_str(), name) {
+                    ("pg_class", "oid") => Some((0, crate::pg_oid::OID_TYPE, 0)),
+                    ("pg_class", "relname") => Some((1, 253, 0)),
+                    ("pg_class", "relnamespace") => Some((2, crate::pg_oid::OID_TYPE, 0)),
+                    ("pg_class", "relkind") => Some((3, 253, 0)),
+                    ("pg_database", "oid") => Some((0, crate::pg_oid::OID_TYPE, 0)),
+                    ("pg_database", "datname") => Some((1, 253, 0)),
+                    ("pg_database", "datistemplate") => Some((3, 1, boolean)),
+                    ("pg_database", "datallowconn") => Some((4, 1, boolean)),
+                    ("pg_database", "datdba") => Some((5, 8, 0)),
+                    ("pg_namespace", "oid") => Some((0, crate::pg_oid::OID_TYPE, 0)),
+                    ("pg_namespace", "nspname") => Some((1, 253, 0)),
+                    ("pg_namespace", "nspowner") => Some((5, 8, 0)),
+                    ("pg_namespace", "xmin") => Some((8, 8, 0)),
+                    ("pg_tablespace", "oid") => Some((0, crate::pg_oid::OID_TYPE, 0)),
+                    ("pg_tablespace", "spcname") => Some((1, 253, 0)),
+                    ("pg_tablespace", "spcowner") => Some((5, 8, 0)),
+                    // Optional ACL/options use the bounded catalog's nullable text
+                    // representation; no native tablespace rows currently exist.
+                    ("pg_tablespace", "spcacl") => Some((8, 253, 0)),
+                    ("pg_tablespace", "spcoptions") => Some((10, 253, 0)),
+                    ("pg_locks", "transactionid") => Some((0, 8, 0)),
+                    ("pg_description" | "pg_shdescription", _) => {
+                        description_column(&relation.name, name)
+                    }
+                    _ => None,
+                }
             };
             if let Some((slot, code, flags)) = field {
                 if found.is_some() {
@@ -313,6 +409,27 @@ impl CatalogQuery {
                 }
                 Ok((1, astersql_parser_mysql::r#type::IsBooleanFlag))
             }
+            Expr::InSubquery(inner, select) => {
+                if select.projections.len() != 1 {
+                    return Err((
+                        "0A000",
+                        "catalog IN subqueries require exactly one column".into(),
+                    ));
+                }
+                let query = self.nested((**select).clone());
+                query.validate()?;
+                let left = self.expr_type(inner)?.0;
+                let projection = &select.projections[0].expr;
+                let right = query.expr_type(projection)?.0;
+                if !matches!(**inner, Expr::Null)
+                    && !matches!(projection, Expr::Null)
+                    && left != right
+                    && !(numeric_type(left) && numeric_type(right))
+                {
+                    return Err(("0A000", "incompatible catalog IN subquery types".into()));
+                }
+                Ok((1, astersql_parser_mysql::r#type::IsBooleanFlag))
+            }
             Expr::In(inner, values) => {
                 for value in values {
                     self.expr_type(&Expr::Equal(inner.clone(), Box::new(value.clone())))?;
@@ -397,62 +514,125 @@ impl CatalogQuery {
         check_catalog_cancel(cancel)?;
         let metadata = self.metadata();
         let snapshot = context.schema_snapshot();
-        let database = if self
-            .relations()
-            .any(|r| matches!(r.name.as_str(), "pg_class" | "pg_database" | "pg_namespace"))
+        let current = context.execute_query("SELECT DATABASE()", false, cancel)?;
+        let database = match current
+            .first()
+            .and_then(|r| r.rows.first())
+            .and_then(|r| r.first())
         {
-            let current = context.execute_query("SELECT DATABASE()", false, cancel)?;
-            match current
-                .first()
-                .and_then(|r| r.rows.first())
-                .and_then(|r| r.first())
-            {
-                Some(Value::Text(name)) => name.clone(),
-                _ => String::new(),
-            }
-        } else {
-            String::new()
+            Some(Value::Text(name)) => name.clone(),
+            _ => String::new(),
         };
-        // Cache each provider once per execution, with one metadata snapshot.
-        let mut providers = std::collections::HashMap::new();
-        for relation in self.relations() {
-            check_catalog_cancel(cancel)?;
-            if !providers.contains_key(&relation.name) {
-                let mut rows = self.provider_rows(
-                    &relation.name,
-                    context,
-                    snapshot.as_ref(),
-                    &database,
-                    cancel,
-                )?;
-                if rows.len() > MAX_CATALOG_ROWS {
-                    return Err(catalog_row_limit());
-                }
+        let mut execution = Execution {
+            context,
+            cancel,
+            snapshot,
+            database,
+            providers: Default::default(),
+            ctes: Default::default(),
+            materialized: 0,
+            work: std::cell::Cell::new(0),
+        };
+        let rows = self.execute_select(&mut execution, true)?;
+        Ok(QueryResult {
+            columns: metadata.columns,
+            native_types: metadata.native_types,
+            rows,
+            state: context.state(),
+            response_lifecycle: None,
+            result_set: None,
+        })
+    }
+    fn execute_select(
+        &self,
+        execution: &mut Execution<'_>,
+        display: bool,
+    ) -> ConnResult<Vec<Vec<Value>>> {
+        check_catalog_cancel(execution.cancel)?;
+        for cte in &self.select.ctes {
+            if !execution.ctes.contains_key(&cte.id) {
+                let rows = self
+                    .nested(cte.query.clone())
+                    .execute_select(execution, false)?;
+                let mut rows = rows;
                 for row in &mut rows {
                     row.resize(CATALOG_ROW_WIDTH, Value::Null);
                 }
-                providers.insert(relation.name.clone(), rows);
+                let rows = execution.materialize(rows)?;
+                execution.ctes.insert(cte.id, rows);
             }
         }
-        let mut rows = providers[&self.select.from.name].clone();
-        let mut work = 0usize;
+        let mut query = self.clone();
+        visit_select_exprs(&mut query.select, &mut |expr| {
+            if let Expr::InSubquery(inner, select) = expr {
+                let rows = self
+                    .nested((**select).clone())
+                    .execute_select(execution, false)?;
+                let rows = execution.materialize(rows)?;
+                let code = self
+                    .nested((**select).clone())
+                    .expr_type(&select.projections[0].expr)
+                    .expect("validated subquery")
+                    .0;
+                let values = rows
+                    .iter()
+                    .map(|row| match &row[0] {
+                        Value::Null => Expr::Null,
+                        Value::Signed(n) => Expr::Integer(*n),
+                        Value::Text(s) if code == 1 => Expr::Boolean(s == "true"),
+                        Value::Text(s) => Expr::Text(s.clone()),
+                        _ => unreachable!("catalog scalar type"),
+                    })
+                    .collect();
+                *expr = Expr::In(inner.clone(), values);
+            }
+            Ok(())
+        })?;
+        query.execute_rows(execution, display)
+    }
+    fn execute_rows(
+        &self,
+        execution: &mut Execution<'_>,
+        display: bool,
+    ) -> ConnResult<Vec<Vec<Value>>> {
+        // CTE rows have the same fixed slots as providers, but distinct IDs.
+        let mut providers = Vec::new();
+        for relation in self.relations() {
+            check_catalog_cancel(execution.cancel)?;
+            if let Some(id) = relation.cte_id {
+                providers.push(execution.ctes[&id].clone());
+            } else {
+                if !execution.providers.contains_key(&relation.name) {
+                    let mut rows = self.provider_rows(
+                        &relation.name,
+                        execution.context,
+                        execution.snapshot.as_ref(),
+                        &execution.database,
+                        execution.cancel,
+                    )?;
+                    for row in &mut rows {
+                        row.resize(CATALOG_ROW_WIDTH, Value::Null);
+                    }
+                    let rows = execution.materialize(rows)?;
+                    execution.providers.insert(relation.name.clone(), rows);
+                }
+                providers.push(execution.providers[&relation.name].clone());
+            }
+        }
+        let mut rows = (*providers[0]).clone();
         for (index, join) in self.select.joins.iter().enumerate() {
             let mut scope = self.clone();
             scope.select.joins.truncate(index + 1);
-            let right = &providers[&join.relation.name];
+            let right = providers[index + 1].as_ref();
             let mut joined = Vec::new();
             for left in rows {
-                check_catalog_cancel(cancel)?;
+                check_catalog_cancel(execution.cancel)?;
                 let mut matched = false;
                 for right in right {
-                    check_catalog_cancel(cancel)?;
-                    work += 1;
-                    if work > MAX_CATALOG_JOIN_WORK {
-                        return Err(catalog_work_limit());
-                    }
+                    execution.comparison()?;
                     let mut candidate = left.clone();
                     candidate.extend_from_slice(right);
-                    if matches!(scope.evaluate(&join.on, &candidate, &database, snapshot.as_deref())?, Value::Text(s) if s == "true")
+                    if matches!(scope.evaluate(&join.on, &candidate, execution)?, Value::Text(s) if s == "true")
                     {
                         matched = true;
                         joined.push(candidate);
@@ -472,15 +652,7 @@ impl CatalogQuery {
             }
             rows = joined;
         }
-        let rows = self.project(rows, &database, snapshot.as_deref(), cancel)?;
-        Ok(QueryResult {
-            columns: metadata.columns,
-            native_types: metadata.native_types,
-            rows,
-            state: context.state(),
-            response_lifecycle: None,
-            result_set: None,
-        })
+        self.project(rows, execution, display)
     }
     fn provider_rows(
         &self,
@@ -582,14 +754,10 @@ impl CatalogQuery {
         };
         Ok(rows)
     }
-    fn evaluate(
-        &self,
-        expr: &Expr,
-        row: &[Value],
-        database: &str,
-        snapshot: Option<&dyn astersql_infoschema::InfoSchema>,
-    ) -> ConnResult<Value> {
-        let evaluate = |expr: &Expr| self.evaluate(expr, row, database, snapshot);
+    fn evaluate(&self, expr: &Expr, row: &[Value], execution: &Execution<'_>) -> ConnResult<Value> {
+        let database = execution.database.as_str();
+        let snapshot = execution.snapshot.as_deref();
+        let evaluate = |expr: &Expr| self.evaluate(expr, row, execution);
         Ok(match expr {
             Expr::Column(path) => row[self.column(path).expect("validated column").0].clone(),
             Expr::Null => Value::Null,
@@ -698,9 +866,10 @@ impl CatalogQuery {
             },
             Expr::In(inner, values) => {
                 let value = evaluate(inner)?;
-                let mut unknown = matches!(value, Value::Null);
+                let mut unknown = !values.is_empty() && matches!(value, Value::Null);
                 let mut found = false;
                 for item in values {
+                    execution.comparison()?;
                     let item = evaluate(item)?;
                     if matches!(item, Value::Null) {
                         unknown = true;
@@ -717,6 +886,7 @@ impl CatalogQuery {
                     Value::Text("false".into())
                 }
             }
+            Expr::InSubquery(_, _) => unreachable!("materialized subquery"),
             Expr::Not(inner) => match evaluate(inner)? {
                 Value::Null => Value::Null,
                 Value::Text(value) => Value::Text((value != "true").to_string()),
@@ -750,15 +920,16 @@ impl CatalogQuery {
     fn project(
         &self,
         rows: Vec<Vec<Value>>,
-        database: &str,
-        snapshot: Option<&dyn astersql_infoschema::InfoSchema>,
-        cancel: &CancellationToken,
+        execution: &Execution<'_>,
+        display: bool,
     ) -> ConnResult<Vec<Vec<Value>>> {
+        let database = execution.database.as_str();
+        let snapshot = execution.snapshot.as_deref();
         let mut selected = Vec::new();
         for row in rows {
-            check_catalog_cancel(cancel)?;
+            check_catalog_cancel(execution.cancel)?;
             if let Some(filter) = &self.select.filter {
-                if !matches!(self.evaluate(filter, &row, database, snapshot)?, Value::Text(s) if s == "true")
+                if !matches!(self.evaluate(filter, &row, execution)?, Value::Text(s) if s == "true")
                 {
                     continue;
                 }
@@ -772,8 +943,7 @@ impl CatalogQuery {
                         self.order_expr(&order.expr)
                             .expect("validated order expression"),
                         &row,
-                        database,
-                        snapshot,
+                        execution,
                     )
                 })
                 .collect::<ConnResult<Vec<_>>>()?;
@@ -800,22 +970,23 @@ impl CatalogQuery {
             }
             std::cmp::Ordering::Equal
         });
-        check_catalog_cancel(cancel)?;
+        check_catalog_cancel(execution.cancel)?;
         selected
             .into_iter()
             .take(self.select.limit.unwrap_or(usize::MAX))
             .map(|(row, _)| {
-                check_catalog_cancel(cancel)?;
+                check_catalog_cancel(execution.cancel)?;
                 self.select
                     .projections
                     .iter()
                     .map(|projection| {
-                        let value = self.evaluate(&projection.expr, &row, database, snapshot)?;
-                        if self
-                            .expr_type(&projection.expr)
-                            .expect("validated expression")
-                            .0
-                            == crate::pg_oid::REGCLASS_TYPE
+                        let value = self.evaluate(&projection.expr, &row, execution)?;
+                        if display
+                            && self
+                                .expr_type(&projection.expr)
+                                .expect("validated expression")
+                                .0
+                                == crate::pg_oid::REGCLASS_TYPE
                         {
                             if let Value::Signed(oid) = value {
                                 let snapshot = snapshot.ok_or_else(|| {
@@ -836,6 +1007,65 @@ impl CatalogQuery {
             })
             .collect()
     }
+}
+
+fn numeric_type(code: u8) -> bool {
+    matches!(
+        code,
+        3 | 8 | crate::pg_oid::OID_TYPE | crate::pg_oid::REGCLASS_TYPE
+    )
+}
+fn visit_select_exprs<E>(
+    select: &mut Select,
+    visitor: &mut impl FnMut(&mut Expr) -> Result<(), E>,
+) -> Result<(), E> {
+    for p in &mut select.projections {
+        visit_expr(&mut p.expr, visitor)?;
+    }
+    for j in &mut select.joins {
+        visit_expr(&mut j.on, visitor)?;
+    }
+    if let Some(f) = &mut select.filter {
+        visit_expr(f, visitor)?;
+    }
+    for o in &mut select.order {
+        visit_expr(&mut o.expr, visitor)?;
+    }
+    Ok(())
+}
+fn visit_expr<E>(
+    expr: &mut Expr,
+    visitor: &mut impl FnMut(&mut Expr) -> Result<(), E>,
+) -> Result<(), E> {
+    match expr {
+        Expr::Cast(e, _)
+        | Expr::Not(e)
+        | Expr::IsNull(e)
+        | Expr::NotNull(e)
+        | Expr::InSubquery(e, _) => visit_expr(e, visitor)?,
+        Expr::Call(_, values) => {
+            for v in values {
+                visit_expr(v, visitor)?;
+            }
+        }
+        Expr::In(e, values) => {
+            visit_expr(e, visitor)?;
+            for v in values {
+                visit_expr(v, visitor)?;
+            }
+        }
+        Expr::Equal(a, b) | Expr::Compare(a, _, b) | Expr::And(a, b) | Expr::Or(a, b) => {
+            visit_expr(a, visitor)?;
+            visit_expr(b, visitor)?;
+        }
+        Expr::Case { condition, yes, no } => {
+            visit_expr(condition, visitor)?;
+            visit_expr(yes, visitor)?;
+            visit_expr(no, visitor)?;
+        }
+        _ => {}
+    }
+    visitor(expr)
 }
 
 // All description fields are NULL-extended for an unmatched LEFT JOIN.
@@ -859,6 +1089,7 @@ fn contains_age(expr: &Expr) -> bool {
             contains_age(inner)
         }
         Expr::In(inner, values) => contains_age(inner) || values.iter().any(contains_age),
+        Expr::InSubquery(inner, _) => contains_age(inner),
         Expr::Equal(left, right)
         | Expr::Compare(left, _, right)
         | Expr::And(left, right)

@@ -31,6 +31,7 @@ pub(crate) enum Expr {
     Equal(Box<Expr>, Box<Expr>),
     Compare(Box<Expr>, CompareOp, Box<Expr>),
     In(Box<Expr>, Vec<Expr>),
+    InSubquery(Box<Expr>, Box<Select>),
     Not(Box<Expr>),
     IsNull(Box<Expr>),
     Or(Box<Expr>, Box<Expr>),
@@ -65,6 +66,7 @@ pub(crate) struct Projection {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Relation {
+    pub(crate) cte_id: Option<usize>,
     pub(crate) name: String,
     pub(crate) alias: String,
 }
@@ -80,7 +82,13 @@ pub(crate) struct Ordering {
     pub(crate) descending: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Cte {
+    pub(crate) id: usize,
+    pub(crate) query: Select,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Select {
+    pub(crate) ctes: Vec<Cte>,
     pub(crate) projections: Vec<Projection>,
     pub(crate) from: Relation,
     pub(crate) joins: Vec<Join>,
@@ -197,6 +205,10 @@ struct Parser {
     depth: usize,
     casts: usize,
     predicates: usize,
+    query_depth: usize,
+    next_cte: usize,
+    cte_scope: Vec<(String, usize)>,
+    shadowed: Vec<String>,
 }
 impl Parser {
     fn peek(&self) -> Option<&Token> {
@@ -332,25 +344,28 @@ impl Parser {
                 if self.symbol(')') {
                     return Err(syntax("IN requires a nonempty constant list"));
                 }
-                let mut values = Vec::new();
-                loop {
-                    if self.peek() == Some(&Token::Word("select".into())) {
-                        return Err(unsupported("catalog IN subqueries are unsupported"));
+                if matches!(self.peek(), Some(Token::Word(w)) if w == "select" || w == "with") {
+                    let query = self.query()?;
+                    self.require_symbol(')')?;
+                    expr = Expr::InSubquery(Box::new(expr), Box::new(query));
+                } else {
+                    let mut values = Vec::new();
+                    loop {
+                        let value = self.atom()?;
+                        if !constant(&value) {
+                            return Err(unsupported("catalog IN requires constants"));
+                        }
+                        values.push(value);
+                        if values.len() > 128 {
+                            return Err(unsupported("too many catalog IN values"));
+                        }
+                        if !self.symbol(',') {
+                            break;
+                        }
                     }
-                    let value = self.atom()?;
-                    if !constant(&value) {
-                        return Err(unsupported("catalog IN requires constants"));
-                    }
-                    values.push(value);
-                    if values.len() > 128 {
-                        return Err(unsupported("too many catalog IN values"));
-                    }
-                    if !self.symbol(',') {
-                        break;
-                    }
+                    self.require_symbol(')')?;
+                    expr = Expr::In(Box::new(expr), values);
                 }
-                self.require_symbol(')')?;
-                expr = Expr::In(Box::new(expr), values);
                 if not {
                     expr = Expr::Not(Box::new(expr));
                 }
@@ -478,7 +493,21 @@ impl Parser {
             [catalog, name] if catalog == "pg_catalog" => name.clone(),
             _ => return Err(unsupported("unsupported catalog relation qualification")),
         };
-        if !is_catalog_relation(&name) {
+        let cte_id = if path.len() == 1 {
+            self.cte_scope
+                .iter()
+                .rev()
+                .find(|(n, _)| n == &name)
+                .map(|(_, id)| *id)
+        } else {
+            None
+        };
+        if cte_id.is_none() && path.len() == 1 && self.shadowed.contains(&name) {
+            return Err(unsupported(
+                "mixed public and catalog relations are unsupported",
+            ));
+        }
+        if cte_id.is_none() && !is_catalog_relation(&name) {
             return Err((
                 "42P01",
                 format!("relation pg_catalog.{name} does not exist"),
@@ -489,7 +518,11 @@ impl Parser {
         } else {
             name.clone()
         };
-        Ok(Relation { name, alias })
+        Ok(Relation {
+            name,
+            alias,
+            cte_id,
+        })
     }
     fn is_alias(&self) -> bool {
         match self.peek() {
@@ -519,6 +552,74 @@ impl Parser {
             ),
             _ => false,
         }
+    }
+    // Query nesting and total definitions are bounded independently of scalar depth.
+    // Unique IDs keep a nested name shadow distinct from its outer materialization.
+    fn query(&mut self) -> ParseResult<Select> {
+        if self.query_depth >= 8 {
+            return Err(unsupported("catalog query nesting exceeds eight levels"));
+        }
+        self.query_depth += 1;
+        let scope = self.cte_scope.len();
+        let result = self.query_inner();
+        self.cte_scope.truncate(scope);
+        self.query_depth -= 1;
+        result
+    }
+    fn query_inner(&mut self) -> ParseResult<Select> {
+        let mut ctes = Vec::new();
+        let mut names = std::collections::HashSet::new();
+        if self.word("with") {
+            if self.word("recursive") {
+                return Err(unsupported("recursive catalog CTEs are unsupported"));
+            }
+            loop {
+                let name = self.identifier()?;
+                if !names.insert(name.clone()) {
+                    return Err(("42712", "duplicate catalog CTE name".into()));
+                }
+                if self.next_cte >= 16 {
+                    return Err(unsupported("catalog queries support at most sixteen CTEs"));
+                }
+                let id = self.next_cte;
+                self.next_cte += 1;
+                let mut columns = Vec::new();
+                if self.symbol('(') {
+                    loop {
+                        columns.push(self.identifier()?);
+                        if !self.symbol(',') {
+                            break;
+                        }
+                    }
+                    self.require_symbol(')')?;
+                }
+                self.require_word("as")?;
+                self.require_symbol('(')?;
+                if !matches!(self.peek(), Some(Token::Word(w)) if w == "select" || w == "with") {
+                    return Err(unsupported("only read-only catalog CTEs are supported"));
+                }
+                // Nonrecursive definitions see earlier CTEs and outer scopes only.
+                let mut query = self.query()?;
+                self.require_symbol(')')?;
+                if columns.len() > query.projections.len() {
+                    return Err(syntax("too many CTE column aliases"));
+                }
+                for (projection, alias) in query.projections.iter_mut().zip(columns) {
+                    projection.name = alias;
+                }
+                self.cte_scope.push((name, id));
+                ctes.push(Cte { id, query });
+                if !self.symbol(',') {
+                    break;
+                }
+            }
+        }
+        if !matches!(self.peek(), Some(Token::Word(w)) if w == "select") {
+            return Err(unsupported("only read-only catalog SELECT is supported"));
+        }
+        let mut select = self.select()?;
+        select.ctes = ctes;
+        Ok(select)
     }
     fn select(&mut self) -> ParseResult<Select> {
         self.require_word("select")?;
@@ -593,13 +694,8 @@ impl Parser {
         } else {
             None
         };
-        self.symbol(';');
-        if self.peek().is_some() {
-            return Err(unsupported(
-                "unsupported catalog clause or multiple statements",
-            ));
-        }
         Ok(Select {
+            ctes: Vec::new(),
             projections,
             from,
             joins,
@@ -686,7 +782,7 @@ pub(crate) fn implicit_relations(sql: &str) -> Vec<String> {
 }
 
 pub(crate) fn parse_shadowed(sql: &str, shadowed: &[String]) -> ParseResult<Option<Select>> {
-    let mut tokens = match lex(sql) {
+    let tokens = match lex(sql) {
         Ok(tokens) => tokens,
         Err(error) => {
             // Preserve engine ownership for lexical errors outside catalog SQL.
@@ -696,13 +792,8 @@ pub(crate) fn parse_shadowed(sql: &str, shadowed: &[String]) -> ParseResult<Opti
             return Ok(None);
         }
     };
-    // Qualify only real public collisions for ownership; the original SQL is
-    // passed to the native resolver when no catalog relation remains.
-    for (i, name) in implicit_positions(&tokens).into_iter().rev() {
-        if shadowed.contains(&name) {
-            tokens.splice(i..i, [Token::Word("public".into()), Token::Symbol('.')]);
-        }
-    }
+    // Determine ownership without rewriting tokens: lexical CTE scope must
+    // take precedence over a same-named public relation during parsing.
     let catalog = tokens.windows(4).any(|w| {
         matches!(&w[0], Token::Word(s) if matches!(s.as_str(), "from" | "join"))
             && matches!(&w[1], Token::Word(s) | Token::Quoted(s) if s == "pg_catalog")
@@ -712,22 +803,34 @@ pub(crate) fn parse_shadowed(sql: &str, shadowed: &[String]) -> ParseResult<Opti
             && w[1] == Token::Symbol('.')
             && matches!(&w[2], Token::Word(s) | Token::Quoted(s) if is_catalog_relation(s))
     });
-    let implicit_catalog = !implicit_positions(&tokens).is_empty();
+    let implicit_catalog = implicit_positions(&tokens)
+        .iter()
+        .any(|(_, name)| !shadowed.contains(name));
     if !catalog && !implicit_catalog {
         return Ok(None);
     }
-    if !matches!(tokens.first(), Some(Token::Word(s)) if s == "select") {
+    if !matches!(tokens.first(), Some(Token::Word(s)) if s == "select" || s == "with") {
         return Err(unsupported("only catalog SELECT is supported"));
     }
-    Parser {
+    let mut parser = Parser {
         tokens,
         pos: 0,
         depth: 0,
         casts: 0,
         predicates: 0,
+        query_depth: 0,
+        next_cte: 0,
+        cte_scope: Vec::new(),
+        shadowed: shadowed.to_vec(),
+    };
+    let query = parser.query()?;
+    parser.symbol(';');
+    if parser.peek().is_some() {
+        return Err(unsupported(
+            "unsupported catalog clause or multiple statements",
+        ));
     }
-    .select()
-    .map(Some)
+    Ok(Some(query))
 }
 
 fn constant(expr: &Expr) -> bool {

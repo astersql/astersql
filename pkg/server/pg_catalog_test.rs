@@ -1002,7 +1002,7 @@ fn pg_introspection_predicates_live() {
         ("relkind IN ()".to_string(), "42601"),
         ("relkind IN (relname)".to_string(), "0A000"),
         (
-            "relkind IN (SELECT relkind FROM pg_catalog.pg_class)".to_string(),
+            "relkind IN (SELECT relkind, oid FROM pg_catalog.pg_class)".to_string(),
             "0A000",
         ),
         ("oid LIKE 'x'".to_string(), "0A000"),
@@ -1246,6 +1246,294 @@ fn pg_introspection_joins_live() {
     let driver =
         ConcreteSessionDriver::new_for_test(domain.clone(), BootstrapAuthMode::InsecureRootOnly);
     let context = driver.open_ctx(97007, 0, 45, "", None).unwrap();
+    let token = CancellationToken::new();
+    token.cancel();
+    let catalog = crate::pg_catalog::CatalogQuery::parse(sql)
+        .unwrap()
+        .unwrap();
+    let error = catalog.execute(context.as_ref(), &token).unwrap_err();
+    assert_eq!(crate::pg_conn::sqlstate(&error), "57014");
+    context.close().unwrap();
+    assert_eq!(query(&mut socket, "SELECT 1")[1], (b'D', row(&[Some("1")])));
+    send(&mut socket, b'X', b"");
+    service.close();
+    domain.close();
+}
+
+#[test]
+fn pg_introspection_cte_live() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native
+        .execute("CREATE TABLE test.cte_live (id INT)")
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+
+    let sql = "WITH names AS (SELECT oid AS id, relname AS name FROM pg_catalog.pg_class WHERE relname = 'cte_live'), selected AS (SELECT id, name FROM names) SELECT C.relname FROM pg_catalog.pg_class C WHERE C.oid IN (SELECT id FROM selected) ORDER BY C.relname";
+    let result = query(&mut socket, sql);
+    assert_eq!(result[0].0, b'T', "WITH/IN: {result:?}");
+    assert_eq!(result[1], (b'D', row(&[Some("cte_live")])));
+    assert_eq!(result.iter().filter(|m| m.0 == b'D').count(), 1);
+    for (sql, expected) in [
+        (
+            "WITH names AS (SELECT oid AS id, relname AS name FROM pg_class WHERE relname = 'cte_live') SELECT A.name, B.name FROM names A JOIN names B ON A.id = B.id",
+            vec![Some("cte_live"), Some("cte_live")],
+        ),
+        (
+            "WITH pg_class AS (SELECT relname AS name FROM pg_catalog.pg_class WHERE relname = 'cte_live') SELECT name FROM pg_class",
+            vec![Some("cte_live")],
+        ),
+        (
+            "WITH spaces AS (SELECT oid AS id FROM pg_namespace WHERE nspname = 'public') SELECT C.relname FROM pg_class C WHERE C.relname = 'cte_live' AND C.relnamespace IN (SELECT id FROM spaces)",
+            vec![Some("cte_live")],
+        ),
+        (
+            "WITH names(id) AS (SELECT oid FROM pg_class WHERE relname = 'cte_live') SELECT C.relname FROM pg_class C WHERE C.oid IN (SELECT id FROM names)",
+            vec![Some("cte_live")],
+        ),
+        (
+            "SELECT relname FROM pg_class WHERE relname = 'cte_live' AND oid NOT IN (SELECT oid FROM pg_class WHERE false)",
+            vec![Some("cte_live")],
+        ),
+        (
+            "SELECT NULL IN (SELECT oid FROM pg_class WHERE false), NULL NOT IN (SELECT oid FROM pg_class WHERE false), oid IN (SELECT NULL FROM pg_class WHERE relname = 'cte_live'), oid NOT IN (SELECT NULL FROM pg_class WHERE relname = 'cte_live') FROM pg_class WHERE relname = 'cte_live'",
+            vec![Some("f"), Some("t"), None, None],
+        ),
+        (
+            "SELECT oid IN (SELECT oid FROM pg_class WHERE relname = 'cte_live'), oid NOT IN (SELECT oid FROM pg_class WHERE relname = 'cte_live') FROM pg_class WHERE relname = 'cte_live'",
+            vec![Some("t"), Some("f")],
+        ),
+        (
+            "WITH x AS (SELECT oid AS id FROM pg_class WHERE relname = 'cte_live') SELECT id IN (WITH x AS (SELECT id FROM x) SELECT id FROM x) FROM x",
+            vec![Some("t")],
+        ),
+        (
+            "SELECT true IN (SELECT true FROM pg_class WHERE relname = 'cte_live'), 'cte_live' IN (SELECT relname FROM pg_class WHERE relname = 'cte_live') FROM pg_class WHERE relname = 'cte_live'",
+            vec![Some("t"), Some("t")],
+        ),
+        (
+            "WITH nulls AS (SELECT NULL::oid AS id FROM pg_class WHERE relname = 'cte_live') SELECT C.relname, N.id FROM pg_class C LEFT JOIN nulls N ON C.oid IN (SELECT id FROM nulls) WHERE C.relname = 'cte_live'",
+            vec![Some("cte_live"), None],
+        ),
+        (
+            "WITH x AS (SELECT oid AS id FROM pg_class WHERE relname = 'cte_live') SELECT id IN (WITH x AS (SELECT NULL::oid AS id FROM pg_class WHERE relname = 'cte_live') SELECT id FROM x) FROM x",
+            vec![None],
+        ),
+    ] {
+        let result = query(&mut socket, sql);
+        assert_eq!(result[0].0, b'T', "{sql}: {result:?}");
+        assert_eq!(result[1], (b'D', row(&expected)), "{sql}");
+        assert_eq!(result.iter().filter(|m| m.0 == b'D').count(), 1, "{sql}");
+    }
+    for (sql, state) in [
+        (
+            "WITH RECURSIVE x AS (SELECT oid FROM pg_class) SELECT oid FROM x",
+            "0A000",
+        ),
+        (
+            "WITH x AS (DELETE FROM pg_class RETURNING oid) SELECT oid FROM x",
+            "0A000",
+        ),
+        (
+            "WITH x AS (SELECT oid FROM x) SELECT oid FROM pg_class",
+            "42P01",
+        ),
+        (
+            "WITH x AS (SELECT oid FROM y), y AS (SELECT oid FROM pg_class) SELECT oid FROM x",
+            "42P01",
+        ),
+        (
+            "WITH x AS (SELECT oid FROM pg_class), x AS (SELECT oid FROM pg_class) SELECT oid FROM x",
+            "42712",
+        ),
+        (
+            "SELECT oid FROM pg_class WHERE oid IN (SELECT oid, relname FROM pg_class)",
+            "0A000",
+        ),
+        (
+            "SELECT C.oid FROM pg_class C WHERE C.oid IN (SELECT B.oid FROM pg_class B WHERE B.oid = C.oid)",
+            "0A000",
+        ),
+        (
+            "SELECT oid FROM pg_class WHERE oid IN (SELECT relname FROM pg_class)",
+            "0A000",
+        ),
+        (
+            "WITH x AS (SELECT oid AS id, oid AS id FROM pg_class) SELECT id FROM x",
+            "42702",
+        ),
+        (
+            "WITH x(id, extra) AS (SELECT oid FROM pg_class) SELECT id FROM x",
+            "42601",
+        ),
+        (
+            "WITH pg_class AS (SELECT oid FROM pg_catalog.pg_class) SELECT pg_catalog.pg_class.oid FROM pg_class",
+            "0A000",
+        ),
+        (
+            "WITH x AS (SELECT oid FROM pg_class) SELECT oid FROM public.cte_live",
+            "0A000",
+        ),
+    ] {
+        let result = query(&mut socket, sql);
+        assert_eq!(result[0].0, b'E', "{sql}: {result:?}");
+        assert!(
+            result[0]
+                .1
+                .windows(7)
+                .any(|w| w == format!("C{state}\0").as_bytes()),
+            "{sql}: {result:?}"
+        );
+    }
+    // CTE lookup precedes public/catalog search_path collisions; explicit
+    // pg_catalog qualification still addresses the provider, never the CTE.
+    native
+        .execute("CREATE TABLE test.pg_class (id INT)")
+        .unwrap();
+    assert_eq!(
+        query(&mut socket, "SET search_path TO public, pg_catalog")[0].0,
+        b'C'
+    );
+    let result = query(
+        &mut socket,
+        "WITH pg_class AS (SELECT relname AS name FROM pg_catalog.pg_class WHERE relname = 'cte_live') SELECT name FROM pg_class",
+    );
+    assert_eq!(result[1], (b'D', row(&[Some("cte_live")])));
+    assert_eq!(query(&mut socket, "RESET search_path")[0].0, b'C');
+    let result = query(
+        &mut socket,
+        "WITH pg_class AS (SELECT NULL::oid AS oid FROM pg_catalog.pg_class WHERE relname = 'cte_live') SELECT oid IN (SELECT oid FROM pg_class) FROM pg_catalog.pg_class WHERE relname = 'cte_live'",
+    );
+    assert_eq!(result[1], (b'D', row(&[None])));
+    let result = query(
+        &mut socket,
+        "WITH objects AS (SELECT oid::regclass AS id FROM pg_class WHERE relname = 'cte_live') SELECT id::varchar, id FROM objects",
+    );
+    assert_eq!(
+        columns(&result[0].1),
+        vec![("id".into(), 25), ("id".into(), 2205)]
+    );
+    assert_eq!(
+        result[1],
+        (b'D', row(&[Some("cte_live"), Some("cte_live")]))
+    );
+    for i in 0..7 {
+        native
+            .execute(&format!("CREATE TABLE test.cte_budget_{i} (id INT)"))
+            .unwrap();
+    }
+    // Materialization is bounded across the entire query; unused definitions
+    // and LIMIT 0 cannot bypass the budget. IN shares the join work budget.
+    for sql in [
+        "WITH x AS (SELECT A.oid FROM pg_class A JOIN pg_class B ON true JOIN pg_class C ON true JOIN pg_class D ON true) SELECT oid FROM x LIMIT 0",
+        "WITH x AS (SELECT A.oid FROM pg_class A JOIN pg_class B ON true JOIN pg_class C ON true) SELECT oid IN (SELECT oid FROM x) FROM pg_class WHERE oid = 0 LIMIT 0",
+        "SELECT oid FROM pg_class WHERE 0 IN (SELECT A.oid FROM pg_class A JOIN pg_class B ON true JOIN pg_class C ON true) LIMIT 0",
+    ] {
+        let result = query(&mut socket, sql);
+        assert_eq!(result[0].0, b'E', "{sql}: {result:?}");
+        assert!(
+            result[0].1.windows(7).any(|w| w == b"C54000\0"),
+            "{sql}: {result:?}"
+        );
+        assert!(result.iter().all(|m| m.0 != b'D'));
+    }
+    send(
+        &mut socket,
+        b'P',
+        &[
+            b"cte_stmt\0".as_slice(),
+            sql.as_bytes(),
+            b"\0",
+            &0u16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut socket, b'D', b"Scte_stmt\0");
+    send(&mut socket, b'S', b"");
+    let described = until_ready(&mut socket);
+    assert!(described.iter().any(|m| m.0 == b'T'));
+    send(
+        &mut socket,
+        b'B',
+        &[
+            b"cte_before\0cte_stmt\0".as_slice(),
+            &0u16.to_be_bytes(),
+            &0u16.to_be_bytes(),
+            &0u16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(
+        &mut socket,
+        b'E',
+        &[b"cte_before\0".as_slice(), &0u32.to_be_bytes()].concat(),
+    );
+    send(&mut socket, b'S', b"");
+    let before = until_ready(&mut socket);
+    assert!(before.iter().all(|m| m.0 != b'E'), "{before:?}");
+    assert_eq!(
+        before
+            .iter()
+            .filter(|m| m.0 == b'D')
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec![(b'D', row(&[Some("cte_live")]))]
+    );
+    native
+        .execute("RENAME TABLE test.cte_live TO test.cte_changed")
+        .unwrap();
+    send(
+        &mut socket,
+        b'B',
+        &[
+            b"cte_portal\0cte_stmt\0".as_slice(),
+            &0u16.to_be_bytes(),
+            &0u16.to_be_bytes(),
+            &0u16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(
+        &mut socket,
+        b'E',
+        &[b"cte_portal\0".as_slice(), &0u32.to_be_bytes()].concat(),
+    );
+    send(&mut socket, b'S', b"");
+    let extended = until_ready(&mut socket);
+    assert!(extended.iter().all(|m| m.0 != b'E'), "{extended:?}");
+    assert_eq!(
+        extended.iter().filter(|m| m.0 == b'D').count(),
+        0,
+        "Execute must reread metadata"
+    );
+    use crate::conn::{CancellationToken, SessionDriver};
+    let driver =
+        ConcreteSessionDriver::new_for_test(domain.clone(), BootstrapAuthMode::InsecureRootOnly);
+    let context = driver.open_ctx(97008, 0, 45, "", None).unwrap();
     let token = CancellationToken::new();
     token.cancel();
     let catalog = crate::pg_catalog::CatalogQuery::parse(sql)
