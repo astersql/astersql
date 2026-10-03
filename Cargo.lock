@@ -20014,7 +20014,7 @@ dependencies = [
 [[package]]
 name = "tikv-client"
 version = "0.4.2"
-source = "git+ssh://git@github.com/astersql/client-rust.git?tag=v0.4.2-aster.5#0962983d37fab2a3e8839651230d9abf3ffd48a1"
+source = "git+ssh://git@github.com/astersql/client-rust.git?tag=v0.4.2-aster.6#cf433f207671a41f810bb181334e35cbedd8971a"
 dependencies = [
  "async-recursion",
  "async-trait",
