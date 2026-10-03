@@ -22,6 +22,9 @@ struct Runtime {
 }
 
 impl TiDBSessionRuntime for Runtime {
+    fn max_allowed_packet(&self) -> u64 {
+        1024
+    }
     fn configure(&self, _: u64, _: u32, _: u8) -> Result<(), Error> {
         Ok(())
     }
@@ -253,4 +256,30 @@ fn canonical_convert_column_info_preserves_mysql_display_width_rules() {
     // utf8mb4 最大 4 字节/字符：12 * 4 = 48。
     assert_eq!(converted.ColumnLength, 48);
     assert_eq!(converted.Decimal, mysql::NotFixedDec as u8);
+}
+
+#[test]
+fn statement_long_data_enforces_packet_limit_and_clears_deferred_error() {
+    let context = context(Arc::new(Runtime::default()));
+    let (statement, _, _) = context.Prepare("select ?").unwrap();
+    let mut statement = statement.lock().unwrap();
+    statement.AppendParam(0, &vec![b'a'; 1024]).unwrap();
+    statement.CheckLongDataSize().unwrap();
+    statement.AppendParam(0, b"b").unwrap();
+    assert_eq!(statement.BoundParams()[0].as_ref().unwrap().len(), 1024);
+    assert!(
+        statement
+            .CheckLongDataSize()
+            .unwrap_err()
+            .to_string()
+            .contains("max_allowed_packet")
+    );
+    statement.AppendParam(0, &[]).unwrap();
+    assert_eq!(statement.BoundParams()[0], Some(Vec::new()));
+    assert!(statement.CheckLongDataSize().is_err());
+    statement.Reset().unwrap();
+    statement.CheckLongDataSize().unwrap();
+    statement.AppendParam(0, b"c").unwrap();
+    assert_eq!(statement.BoundParams()[0], Some(b"c".to_vec()));
+    assert!(statement.AppendParam(1, b"bad").is_err());
 }

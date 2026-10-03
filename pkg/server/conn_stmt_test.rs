@@ -17,9 +17,13 @@ use super::conn_stmt::*;
 struct Runtime {
     /// 被 close_statement 记录的语句 ID 序列。
     closed: Mutex<Vec<u32>>,
+    max_packet: Mutex<Option<u64>>,
 }
 
 impl StatementRuntime for Runtime {
+    fn max_allowed_packet(&self) -> u64 {
+        self.max_packet.lock().unwrap().unwrap_or(1024)
+    }
     fn prepare(&self, sql: &str) -> Result<(u32, usize, Vec<ColumnInfo>), Error> {
         assert_eq!(sql, "select ?, ?");
         Ok((
@@ -227,6 +231,8 @@ fn install_statement(cc: &mut clientConn, id: u32) {
             num_params: 0,
             columns: Vec::new(),
             bound_params: Vec::new(),
+            bound_params_too_large: false,
+            max_allowed_packet: 64 << 20,
             params_type: Vec::new(),
             last_params: Vec::new(),
             cursor: None,
@@ -1027,4 +1033,67 @@ fn worker_releases_domain_when_context_is_dropped() {
         before,
         "session worker retains Domain after all response/context owners are gone"
     );
+}
+
+#[test]
+fn long_data_packet_limit_defers_error_and_resets_on_execute() {
+    let runtime = Arc::new(Runtime::default());
+    let mut cc = connection(runtime);
+    HandleStmtPrepare(&mut cc, "select ?, ?").unwrap();
+    let limit = 1024;
+    for parameter in [0u16, 1] {
+        let mut packet = 7u32.to_le_bytes().to_vec();
+        packet.extend_from_slice(&parameter.to_le_bytes());
+        packet.resize(6 + limit, b'a');
+        handleStmtSendLongData(&mut cc, &packet).unwrap();
+    }
+    assert!(!cc.statements[&7].bound_params_too_large);
+    assert_eq!(
+        cc.statements[&7].bound_params[1].as_ref().unwrap().len(),
+        limit
+    );
+    handleStmtSendLongData(&mut cc, &[7, 0, 0, 0, 0, 0, b'c']).unwrap();
+    assert_eq!(
+        cc.statements[&7].bound_params[0].as_ref().unwrap().len(),
+        limit
+    );
+    let error = handleStmtExecute(&mut cc, &[7, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]).unwrap_err();
+    assert!(error.to_string().contains("max_allowed_packet"));
+    assert_eq!(cc.statements[&7].bound_params, vec![None, None]);
+}
+
+#[test]
+fn empty_long_data_replaces_previous_bytes() {
+    let mut cc = connection(Arc::new(Runtime::default()));
+    HandleStmtPrepare(&mut cc, "select ?, ?").unwrap();
+    handleStmtSendLongData(&mut cc, &[7, 0, 0, 0, 0, 0, b'a']).unwrap();
+    handleStmtSendLongData(&mut cc, &[7, 0, 0, 0, 0, 0]).unwrap();
+    assert_eq!(cc.statements[&7].bound_params[0], Some(Vec::new()));
+}
+
+#[test]
+fn long_data_rechecks_current_limit_and_reset_clears_rejection() {
+    let runtime = Arc::new(Runtime::default());
+    let mut cc = connection(runtime.clone());
+    HandleStmtPrepare(&mut cc, "select ?, ?").unwrap();
+    let mut packet = vec![7, 0, 0, 0, 0, 0];
+    packet.resize(1030, b'a');
+    handleStmtSendLongData(&mut cc, &packet).unwrap();
+    *runtime.max_packet.lock().unwrap() = Some(512);
+    assert_eq!(
+        handleStmtExecute(&mut cc, &[7, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]),
+        Err(Error::NetPacketTooLarge)
+    );
+    assert_eq!(cc.statements[&7].bound_params, vec![None, None]);
+    handleStmtSendLongData(&mut cc, &[7, 0, 0, 0, 0, 0, b'a']).unwrap();
+    assert!(!cc.statements[&7].bound_params_too_large);
+    assert_eq!(
+        handleStmtSendLongData(&mut cc, &[7, 0, 0, 0, 2, 0]),
+        Err(Error::WrongArguments("stmt_send_longdata"))
+    );
+    packet.resize(519, b'a');
+    handleStmtSendLongData(&mut cc, &packet).unwrap();
+    assert!(cc.statements[&7].bound_params_too_large);
+    handleStmtReset(&mut cc, &[7, 0, 0, 0]).unwrap();
+    assert!(!cc.statements[&7].bound_params_too_large);
 }

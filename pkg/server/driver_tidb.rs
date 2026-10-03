@@ -109,6 +109,9 @@ pub trait RowContainer: Send {
 
 /// TiDB 会话运行时：配置连接、Prepare/Execute、警告与库切换等。
 pub trait TiDBSessionRuntime: Send + Sync {
+    fn max_allowed_packet(&self) -> u64 {
+        astersql_sessionctx_vardef::DefMaxAllowedPacket
+    }
     fn configure(&self, connection_id: u64, capability: u32, collation: u8) -> Result<(), Error>;
     fn prepare(&self, sql: &str) -> Result<PrepareResult, Error>;
     fn execute_prepared(
@@ -163,6 +166,7 @@ pub struct TiDBStatement {
     id: u32,
     num_params: usize,
     bound_params: Vec<Option<Vec<u8>>>,
+    bound_params_too_large: bool,
     params_type: Vec<u8>,
     runtime: Arc<dyn TiDBSessionRuntime>,
     result_set: Option<Box<dyn CursorResultSet>>,
@@ -182,14 +186,23 @@ impl TiDBStatement {
     }
     /// COM_STMT_SEND_LONG_DATA：向指定参数槽追加字节。
     pub fn AppendParam(&mut self, param_id: usize, data: &[u8]) -> Result<(), Error> {
-        let slot = self
-            .bound_params
-            .get_mut(param_id)
-            .ok_or_else(|| Error("wrong arguments to stmt_send_longdata".into()))?;
-        // 首次绑定时分配缓冲区，后续 SEND_LONG_DATA 追加。
-        let value = slot.get_or_insert_with(Vec::new);
-        value.extend_from_slice(data);
-        Ok(())
+        crate::conn_stmt::append_long_data(
+            &mut self.bound_params,
+            &mut self.bound_params_too_large,
+            self.runtime.max_allowed_packet(),
+            param_id,
+            data,
+        )
+        .map_err(|error| Error(error.to_string()))
+    }
+    /// Check deferred SEND_LONG_DATA errors and the current session limit.
+    pub fn CheckLongDataSize(&self) -> Result<(), Error> {
+        crate::conn_stmt::check_long_data_size(
+            &self.bound_params,
+            self.bound_params_too_large,
+            self.runtime.max_allowed_packet(),
+        )
+        .map_err(|error| Error(error.to_string()))
     }
     /// 参数个数。
     pub fn NumParams(&self) -> usize {
@@ -222,6 +235,7 @@ impl TiDBStatement {
     pub fn Reset(&mut self) -> Result<(), Error> {
         // 清空长数据绑定并关闭游标/行容器。
         self.bound_params.fill(None);
+        self.bound_params_too_large = false;
         self.has_active_cursor = false;
         if let Some(mut result_set) = self.result_set.take() {
             result_set.report_ru_delta();
@@ -372,6 +386,7 @@ impl TiDBContext {
             id: prepared.id,
             num_params: prepared.param_count,
             bound_params: vec![None; prepared.param_count],
+            bound_params_too_large: false,
             params_type: Vec::new(),
             runtime: self.session.clone(),
             result_set: None,

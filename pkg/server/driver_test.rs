@@ -45,6 +45,9 @@ impl PreparedStatement for TestStatement {
         Ok(())
     }
 
+    fn CheckLongDataSize(&self) -> Result<(), Error> {
+        Ok(())
+    }
     fn NumParams(&self) -> usize {
         0
     }

@@ -738,6 +738,9 @@ struct ConcreteTiDBContext {
 }
 
 pub(crate) enum SessionRequest {
+    MaxAllowedPacket {
+        response: mpsc::SyncSender<u64>,
+    },
     UserIdentity {
         response: mpsc::SyncSender<String>,
     },
@@ -861,6 +864,14 @@ fn run_session_worker(
     let mut results = super::protocol_result::WorkerResults::new(result_sender);
     while let Ok(request) = requests.recv() {
         match request {
+            SessionRequest::MaxAllowedPacket { response } => {
+                let max = session.WithSessionVars(|vars| {
+                    vars.GetSystemVar("max_allowed_packet")
+                        .and_then(|value| value.parse().ok())
+                        .unwrap_or(astersql_sessionctx_vardef::DefMaxAllowedPacket)
+                });
+                let _ = response.send(max);
+            }
             SessionRequest::UserIdentity { response } => {
                 let _ = response.send(session.authenticated_user_string());
             }
@@ -1480,6 +1491,11 @@ impl ConcreteTiDBContext {
 }
 
 impl TiDBContext for ConcreteTiDBContext {
+    fn max_allowed_packet(&self) -> ConnResult<u64> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::MaxAllowedPacket { response: tx })?;
+        rx.recv().map_err(packet_error)
+    }
     fn user_identity(&self) -> ConnResult<String> {
         let (tx, rx) = mpsc::sync_channel(1);
         self.send_request(SessionRequest::UserIdentity { response: tx })?;

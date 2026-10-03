@@ -235,6 +235,8 @@ fn statement(id: u32, num_params: usize) -> PreparedStatement {
         num_params,
         columns: column(),
         bound_params: vec![None; num_params],
+        bound_params_too_large: false,
+        max_allowed_packet: 64 << 20,
         params_type: Vec::new(),
         last_params: Vec::new(),
         cursor: None,

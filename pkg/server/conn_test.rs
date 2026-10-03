@@ -146,9 +146,16 @@ fn go_merge_139_cursor_consumer_only_synchronizes_response_bytes() {
 }
 
 fn change_user_connection() -> (std::sync::Arc<ClientConn>, std::net::TcpStream) {
+    change_user_connection_with_packet_limit(64 << 20)
+}
+
+fn change_user_connection_with_packet_limit(
+    max_packet: u64,
+) -> (std::sync::Arc<ClientConn>, std::net::TcpStream) {
     use std::io::{Read, Write};
     use std::sync::Arc;
     let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    domain.set_global_system_variable("max_allowed_packet", &max_packet.to_string());
     let driver = Arc::new(crate::runtime::ConcreteSessionDriver::new_for_test(
         domain.clone(),
         crate::runtime::BootstrapAuthMode::InsecureRootOnly,
@@ -282,5 +289,77 @@ fn change_user_success_replaces_and_closes_old_session() {
         .execute_query("SELECT id FROM preserved", false, &CancellationToken::new())
         .unwrap();
     assert_eq!(result[0].rows[0][0].encode_text(), Some(b"37".to_vec()));
+    connection.Close().unwrap();
+}
+
+#[test]
+fn canonical_long_data_limit_is_deferred_to_execute_and_encoded_as_1153() {
+    use std::io::Read;
+    fn packet(peer: &mut std::net::TcpStream) -> Vec<u8> {
+        let mut header = [0; 4];
+        peer.read_exact(&mut header).unwrap();
+        let len = header[0] as usize | (header[1] as usize) << 8 | (header[2] as usize) << 16;
+        let mut data = vec![0; len];
+        peer.read_exact(&mut data).unwrap();
+        data
+    }
+    let (connection, mut peer) = change_user_connection_with_packet_limit(1024);
+    peer.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .unwrap();
+    let context = connection.getCtx().unwrap().unwrap();
+    let cancel = CancellationToken::new();
+    assert_eq!(context.max_allowed_packet().unwrap(), 1024);
+    connection
+        .handleStmt(Command::StmtPrepare, b"select ?, ?", &cancel)
+        .unwrap();
+    let id = loop {
+        let data = packet(&mut peer);
+        if data.len() == 12 && data[0] == 0 {
+            break u32::from_le_bytes(data[1..5].try_into().unwrap());
+        }
+    };
+    for parameter in [0u16, 1] {
+        let mut data = id.to_le_bytes().to_vec();
+        data.extend_from_slice(&parameter.to_le_bytes());
+        data.resize(1030, b'a');
+        connection
+            .handleStmt(Command::StmtSendLongData, &data, &cancel)
+            .unwrap();
+    }
+    let mut data = id.to_le_bytes().to_vec();
+    data.extend_from_slice(&[0, 0, b'c']);
+    connection
+        .handleStmt(Command::StmtSendLongData, &data, &cancel)
+        .unwrap();
+    let mut execute = id.to_le_bytes().to_vec();
+    execute.extend_from_slice(&[0, 1, 0, 0, 0, 0, 0]);
+    let error = connection
+        .handleStmt(Command::StmtExecute, &execute, &cancel)
+        .unwrap_err();
+    assert_eq!(error, ConnError::NetPacketTooLarge);
+    connection.writeError(&error).unwrap();
+    connection.flush().unwrap();
+    let error_packet = loop {
+        let data = packet(&mut peer);
+        if data[0] == 0xff {
+            break data;
+        }
+    };
+    assert_eq!(
+        u16::from_le_bytes(error_packet[1..3].try_into().unwrap()),
+        1153
+    );
+    assert_eq!(&error_packet[4..9], b"08S01");
+    // Both buffers and the flag were reset: a following EXECUTE returns fresh values.
+    execute.truncate(4);
+    execute.extend_from_slice(&[0, 1, 0, 0, 0, 0, 1, 253, 0, 253, 0, 1, b'x', 1, b'y']);
+    connection
+        .handleStmt(Command::StmtExecute, &execute, &cancel)
+        .unwrap();
+    // Column count, two column definitions, metadata EOF, then a binary row.
+    for _ in 0..4 {
+        packet(&mut peer);
+    }
+    assert_eq!(packet(&mut peer), vec![0, 0, 1, b'x', 1, b'y']);
     connection.Close().unwrap();
 }

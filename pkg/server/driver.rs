@@ -114,6 +114,7 @@ pub trait PreparedStatement: Send {
         args: &[Expression],
     ) -> Result<Box<dyn ResultSet>, Error>;
     fn AppendParam(&mut self, param_id: usize, data: &[u8]) -> Result<(), Error>;
+    fn CheckLongDataSize(&self) -> Result<(), Error>;
     fn NumParams(&self) -> usize;
     fn BoundParams(&self) -> &[Option<Vec<u8>>];
     fn SetParamsType(&mut self, params_type: Vec<u8>);

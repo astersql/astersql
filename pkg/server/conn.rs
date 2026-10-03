@@ -115,6 +115,7 @@ pub enum ConnError {
     UnknownAuthPlugin(String),
     UnsupportedCommand(u8),
     ServerShutdown,
+    NetPacketTooLarge,
     ResultUndetermined(String),
     ClientQuit,
     Session(String),
@@ -127,6 +128,11 @@ impl fmt::Display for ConnError {
             Self::Io(message) | Self::ResultUndetermined(message) | Self::Session(message) => {
                 f.write_str(message)
             }
+            Self::NetPacketTooLarge => write!(
+                f,
+                "{}",
+                *astersql_server_err::server_err::ErrNetPacketTooLarge
+            ),
             Self::MalformedPacket(message) => write!(f, "malformed packet: {message}"),
             Self::UnsupportedProtocol => f.write_str("CLIENT_PROTOCOL_41 is required"),
             Self::SecureTransportRequired => f.write_str("secure transport is required"),
@@ -148,6 +154,7 @@ pub type ConnResult<T> = Result<T, ConnError>;
 fn mysql_error_code_and_state(error: &ConnError) -> (u16, &'static [u8; 5]) {
     match error {
         ConnError::AccessDenied { .. } => (1045, b"28000"),
+        ConnError::NetPacketTooLarge => (1153, b"08S01"),
         ConnError::ServerShutdown => (1053, b"08S01"),
         ConnError::UnsupportedCommand(_) => (1047, b"08S01"),
         ConnError::MalformedPacket(_) => (1835, b"HY000"),
@@ -767,6 +774,9 @@ pub trait TiDBContext: Send + Sync {
         None
     }
 
+    fn max_allowed_packet(&self) -> ConnResult<u64> {
+        Ok(astersql_sessionctx_vardef::DefMaxAllowedPacket)
+    }
     fn state(&self) -> SessionState;
     fn set_connection_status(&self, status: i32);
     fn wait_timeout(&self) -> Duration;
@@ -1604,6 +1614,8 @@ impl ClientConn {
                         })
                         .collect(),
                     bound_params: vec![None; metadata.parameter_count],
+                    bound_params_too_large: false,
+                    max_allowed_packet: context.max_allowed_packet()?,
                     params_type: Vec::new(),
                     last_params: Vec::new(),
                     cursor: None,
@@ -1631,8 +1643,15 @@ impl ClientConn {
                     let statement = statements.get_mut(&statement_id).ok_or_else(|| {
                         ConnError::Session(format!("prepared statement {statement_id} not found"))
                     })?;
-                    crate::conn_stmt::ParseExecuteParams(statement, payload)
-                        .map_err(|error| ConnError::Session(error.to_string()))?
+                    statement.max_allowed_packet = context.max_allowed_packet()?;
+                    crate::conn_stmt::ParseExecuteParams(statement, payload).map_err(|error| {
+                        match error {
+                            crate::conn_stmt::Error::NetPacketTooLarge => {
+                                ConnError::NetPacketTooLarge
+                            }
+                            other => ConnError::Session(other.to_string()),
+                        }
+                    })?
                 };
                 let mut result =
                     context.execute_prepared_streaming(statement_id, &arguments, cancel)?;
@@ -1674,12 +1693,15 @@ impl ClientConn {
                 let statement = statements.get_mut(&statement_id).ok_or_else(|| {
                     ConnError::Session(format!("prepared statement {statement_id} not found"))
                 })?;
-                statement
-                    .bound_params
-                    .get_mut(parameter)
-                    .ok_or(ConnError::MalformedPacket("long-data parameter index"))?
-                    .get_or_insert_with(Vec::new)
-                    .extend_from_slice(&payload[6..]);
+                statement.max_allowed_packet = context.max_allowed_packet()?;
+                crate::conn_stmt::append_long_data(
+                    &mut statement.bound_params,
+                    &mut statement.bound_params_too_large,
+                    statement.max_allowed_packet,
+                    parameter,
+                    &payload[6..],
+                )
+                .map_err(|_| ConnError::MalformedPacket("long-data parameter index"))?;
                 Ok(())
             }
             Command::StmtReset => {

@@ -34,6 +34,7 @@ const CLIENT_MULTI_STATEMENTS: u32 = 1 << 16;
 /// 预处理语句协议与运行时错误。
 pub enum Error {
     MalformedPacket,
+    NetPacketTooLarge,
     StatementNotFound(u32),
     WrongArguments(&'static str),
     Runtime(String),
@@ -41,6 +42,11 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::NetPacketTooLarge => write!(
+                f,
+                "{}",
+                *astersql_server_err::server_err::ErrNetPacketTooLarge
+            ),
             Self::MalformedPacket => f.write_str("malformed packet"),
             Self::StatementNotFound(id) => write!(f, "prepared statement {id} not found"),
             Self::WrongArguments(command) => write!(f, "wrong arguments to {command}"),
@@ -85,6 +91,8 @@ pub struct PreparedStatement {
     pub num_params: usize,
     pub columns: Vec<ColumnInfo>,
     pub bound_params: Vec<Option<Vec<u8>>>,
+    pub bound_params_too_large: bool,
+    pub max_allowed_packet: u64,
     pub params_type: Vec<u8>,
     pub last_params: Vec<BinaryParam>,
     pub cursor: Option<Box<dyn ResultSet>>,
@@ -96,6 +104,7 @@ impl PreparedStatement {
     /// 清空绑定参数并关闭活动游标。
     pub(crate) fn reset(&mut self) -> Result<(), Error> {
         self.bound_params.fill(None);
+        self.bound_params_too_large = false;
         self.cursor_active = false;
         if let Some(cursor) = self.protocol_cursor.take() {
             if let Some(source) = &cursor.result_set {
@@ -134,6 +143,9 @@ pub enum ProtocolEvent {
 /// 预处理执行运行时：准备、执行、缓存文本、RU 统计与 TiFlash 回退。
 /// TiFlash 为列存引擎，出错时可回退到行存重试。
 pub trait StatementRuntime: Send + Sync {
+    fn max_allowed_packet(&self) -> u64 {
+        astersql_sessionctx_vardef::DefMaxAllowedPacket
+    }
     fn prepare(&self, sql: &str) -> Result<(u32, usize, Vec<ColumnInfo>), Error>;
     fn execute(
         &self,
@@ -171,6 +183,8 @@ pub fn HandleStmtPrepare(cc: &mut clientConn, sql: &str) -> Result<(), Error> {
         num_params,
         columns: columns.clone(),
         bound_params: vec![None; num_params],
+        bound_params_too_large: false,
+        max_allowed_packet: cc.runtime.max_allowed_packet(),
         params_type: Vec::new(),
         last_params: Vec::new(),
         cursor: None,
@@ -198,6 +212,7 @@ pub fn handleStmtExecute(cc: &mut clientConn, data: &[u8]) -> Result<(), Error> 
         .statements
         .get_mut(&statement_id)
         .ok_or(Error::StatementNotFound(statement_id))?;
+    statement.max_allowed_packet = cc.runtime.max_allowed_packet();
     let (args, use_cursor) = ParseExecuteParams(statement, data)?;
     executePlanCacheStmt(cc, statement_id, args, use_cursor)
 }
@@ -240,11 +255,19 @@ pub(crate) fn ParseExecuteParams(
                 .to_vec();
             statement.params_type = param_types.clone();
             pos += size;
-        } else if param_types.len() != statement.num_params * 2 {
-            return Err(Error::MalformedPacket);
         }
     }
-    let parsed = parse_params(statement, null_bitmap, &param_types, &data[pos..]);
+    let parsed = check_long_data_size(
+        &statement.bound_params,
+        statement.bound_params_too_large,
+        statement.max_allowed_packet,
+    )
+    .and_then(|()| {
+        if param_types.len() != statement.num_params * 2 {
+            return Err(Error::MalformedPacket);
+        }
+        parse_params(statement, null_bitmap, &param_types, &data[pos..])
+    });
     // EXECUTE 会消费 long-data 参数并关闭旧游标；保留 param_types 供后续包省略类型。
     // EXECUTE consumes long-data arguments and closes a previous cursor. Keep
     // param_types because later packets may omit them. Go performs this reset
@@ -516,13 +539,14 @@ pub fn handleStmtSendLongData(cc: &mut clientConn, data: &[u8]) -> Result<(), Er
         .statements
         .get_mut(&statement_id)
         .ok_or(Error::StatementNotFound(statement_id))?;
-    let slot = statement
-        .bound_params
-        .get_mut(param_id)
-        .ok_or(Error::WrongArguments("stmt_send_longdata"))?;
-    slot.get_or_insert_with(Vec::new)
-        .extend_from_slice(&data[6..]);
-    Ok(())
+    statement.max_allowed_packet = cc.runtime.max_allowed_packet();
+    append_long_data(
+        &mut statement.bound_params,
+        &mut statement.bound_params_too_large,
+        statement.max_allowed_packet,
+        param_id,
+        &data[6..],
+    )
 }
 
 /// COM_STMT_RESET：重置语句绑定状态并写 Ok。
@@ -739,5 +763,45 @@ impl ResultSet for MaterializedResultSet {
     }
     fn exhausted(&self) -> bool {
         self.closed || self.offset >= self.rows.len()
+    }
+}
+
+// Shared by the protocol statement and TiDB driver: SEND_LONG_DATA has no
+// response, so reject growth silently and defer the standard error to EXECUTE.
+pub(crate) fn append_long_data(
+    params: &mut [Option<Vec<u8>>],
+    too_large: &mut bool,
+    max: u64,
+    parameter: usize,
+    data: &[u8],
+) -> Result<(), Error> {
+    let slot = params
+        .get_mut(parameter)
+        .ok_or(Error::WrongArguments("stmt_send_longdata"))?;
+    if data.is_empty() {
+        *slot = Some(Vec::new());
+    } else if *too_large
+        || (slot.as_ref().map_or(0, Vec::len) as u64).saturating_add(data.len() as u64) > max
+    {
+        *too_large = true;
+    } else {
+        slot.get_or_insert_with(Vec::new).extend_from_slice(data);
+    }
+    Ok(())
+}
+
+pub(crate) fn check_long_data_size(
+    params: &[Option<Vec<u8>>],
+    too_large: bool,
+    max: u64,
+) -> Result<(), Error> {
+    if too_large
+        || params
+            .iter()
+            .any(|value| value.as_ref().map_or(0, Vec::len) as u64 > max)
+    {
+        Err(Error::NetPacketTooLarge)
+    } else {
+        Ok(())
     }
 }
