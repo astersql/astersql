@@ -255,3 +255,142 @@ fn catalog_char_and_acl_wire_types() {
     assert_eq!(oids(&messages[0].1), vec![1042, 1034]);
     assert_eq!(messages[1].1, row(&[Some("x"), None]));
 }
+
+#[test]
+fn pg_binary_native_results() {
+    use crate::conn::{ColumnInfo, NativeType, QueryResult, Value};
+    let mut result = QueryResult {
+        columns: vec![ColumnInfo {
+            schema: String::new(),
+            table: String::new(),
+            org_table: String::new(),
+            name: "v".into(),
+            org_name: String::new(),
+            charset: 45,
+            column_length: 0,
+            column_type: 8,
+            flags: 0,
+            decimals: 0,
+            default_value: None,
+        }],
+        native_types: vec![NativeType {
+            code: 8,
+            flags: 0,
+            length: 0,
+            decimal: 0,
+        }],
+        ..QueryResult::default()
+    };
+    for (code, flags, value, expected) in [
+        (
+            8,
+            0,
+            Value::Signed(i64::MIN),
+            i64::MIN.to_be_bytes().to_vec(),
+        ),
+        (2, 0, Value::Signed(-2), (-2i16).to_be_bytes().to_vec()),
+        (
+            3,
+            0,
+            Value::Signed(i32::MAX as i64),
+            i32::MAX.to_be_bytes().to_vec(),
+        ),
+        (
+            1,
+            astersql_parser_mysql::r#type::IsBooleanFlag,
+            Value::Signed(0),
+            vec![0],
+        ),
+        (4, 0, Value::Float(1.5), 1.5f32.to_be_bytes().to_vec()),
+        (
+            5,
+            0,
+            Value::Float(f64::INFINITY),
+            f64::INFINITY.to_be_bytes().to_vec(),
+        ),
+        (
+            10,
+            0,
+            Value::Text("1999-12-31".into()),
+            (-1i32).to_be_bytes().to_vec(),
+        ),
+        (
+            11,
+            0,
+            Value::Text("00:00:00.000001".into()),
+            1i64.to_be_bytes().to_vec(),
+        ),
+        (
+            12,
+            0,
+            Value::Text("1999-12-31 23:59:59.999999".into()),
+            (-1i64).to_be_bytes().to_vec(),
+        ),
+        (
+            crate::pg_result::CatalogColumnType::Int2Array as u8,
+            0,
+            Value::Text("{}".into()),
+            [
+                0i32.to_be_bytes().as_slice(),
+                &0i32.to_be_bytes(),
+                &21u32.to_be_bytes(),
+            ]
+            .concat(),
+        ),
+        (
+            crate::pg_result::CatalogColumnType::Int2Vector as u8,
+            0,
+            Value::Text("1 -2".into()),
+            [
+                1i32.to_be_bytes().as_slice(),
+                &0i32.to_be_bytes(),
+                &21u32.to_be_bytes(),
+                &2i32.to_be_bytes(),
+                &0i32.to_be_bytes(),
+                &2i32.to_be_bytes(),
+                &1i16.to_be_bytes(),
+                &2i32.to_be_bytes(),
+                &(-2i16).to_be_bytes(),
+            ]
+            .concat(),
+        ),
+    ] {
+        result.native_types[0].code = code;
+        result.native_types[0].flags = flags;
+        result.rows = vec![vec![value]];
+        let messages = crate::pg_result::encode_formats(&result, "SELECT", &[1]).unwrap();
+        assert_eq!(&messages[0].1[messages[0].1.len() - 2..], &[0, 1]);
+        assert_eq!(
+            messages[1].1,
+            [
+                1i16.to_be_bytes().as_slice(),
+                &(expected.len() as i32).to_be_bytes(),
+                &expected
+            ]
+            .concat()
+        );
+        result.rows = vec![vec![Value::Null]];
+        assert_eq!(
+            crate::pg_result::encode_formats(&result, "SELECT", &[1]).unwrap()[1].1,
+            [1i16.to_be_bytes().as_slice(), &(-1i32).to_be_bytes()].concat()
+        );
+    }
+    result.native_types[0].code = 252;
+    result.columns[0].charset = 63;
+    result.rows = vec![vec![Value::Bytes(vec![0, 255])]];
+    assert_eq!(
+        crate::pg_result::encode_formats(&result, "SELECT", &[1]).unwrap()[1].1,
+        [
+            1i16.to_be_bytes().as_slice(),
+            &2i32.to_be_bytes(),
+            &[0, 255]
+        ]
+        .concat()
+    );
+    assert!(crate::pg_result::encode_formats(&result, "SELECT", &[2]).is_err());
+    assert!(crate::pg_result::encode_formats(&result, "SELECT", &[1, 0]).is_err());
+    result.native_types[0].code = 2;
+    result.columns[0].charset = 45;
+    result.rows = vec![vec![Value::Signed(i64::MAX)]];
+    assert!(crate::pg_result::encode_formats(&result, "SELECT", &[1]).is_err());
+}

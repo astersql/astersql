@@ -240,7 +240,6 @@ class PgIntrospection {
         String options = "sslmode=disable&gssEncMode=disable&prepareThreshold=1&connectTimeout=5&socketTimeout=10";
         try (Connection c = DriverManager.getConnection("jdbc:postgresql://127.0.0.1:"+args[0]+"/"+args[4]+"?"+options, "root", ""); Statement s = c.createStatement()) {
             // Preserve the installed driver defaults for binary parameters/results.
-
             System.out.println("installed PostgreSQL JDBC " + c.getMetaData().getDriverVersion() + "; " + options);
             long namespace;
             try (ResultSet r = s.executeQuery("select oid from pg_namespace where nspname='public'")) { check(r.next(), "public missing"); namespace = r.getLong(1); }
@@ -266,6 +265,14 @@ class PgIntrospection {
             }
             s.execute("CREATE TABLE public.jdbc_client_live (id INT PRIMARY KEY, note VARCHAR(30))");
             try {
+                try (PreparedStatement p=c.prepareStatement("SELECT c.oid, c.relname='jdbc_client_live' AS matched, i.indkey, i.indclass, i.indoption FROM pg_class c JOIN pg_index i ON i.indrelid=c.oid WHERE c.relname='jdbc_client_live'")) {
+                    for (int repeat=0;repeat<3;repeat++) { try (ResultSet r=p.executeQuery()) {
+                        check(r.next() && r.getLong(1)>0 && r.getBoolean(2), "default binary catalog identity");
+                        check(r.getString(3).equals("1"), "int2vector contents");
+                        check(r.getString(4)!=null && r.getArray(5)!=null, "catalog vector/array contents");
+                        check(!r.next(), "single primary index");
+                    } }
+                }
                 try (PreparedStatement p=c.prepareStatement("INSERT INTO public.jdbc_client_live VALUES (?, ?)")) { p.setInt(1, 7); p.setString(2, "jdbc"); check(p.executeUpdate()==1, "insert count"); }
                 try (PreparedStatement p=c.prepareStatement("SELECT note FROM public.jdbc_client_live WHERE id=?")) { p.setInt(1,7); try(ResultSet r=p.executeQuery()) { check(r.next() && r.getString(1).equals("jdbc") && !r.next(), "public CRUD row"); } }
                 s.execute("UPDATE public.jdbc_client_live SET note='updated' WHERE id=7");

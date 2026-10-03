@@ -1,5 +1,5 @@
 // Copyright 2026 AsterSQL.
-//! PostgreSQL simple-query adaptation and engine-derived text result encoding.
+//! PostgreSQL query adaptation and engine-derived text/binary result encoding.
 use crate::conn::{ColumnInfo, NativeType, QueryResult, Value};
 use crate::pg_conn::write_message;
 use astersql_parser_ast as ast;
@@ -364,6 +364,187 @@ fn value_text(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
     }
     Ok(Some(text.into_bytes()))
 }
+fn value_binary(value: &Value, oid: u32) -> io::Result<Option<Vec<u8>>> {
+    if matches!(value, Value::Null) {
+        return Ok(None);
+    }
+    if oid == 17 {
+        return Ok(Some(match value {
+            Value::Bytes(bytes) => bytes.clone(),
+            Value::Text(s) => s.as_bytes().to_vec(),
+            _ => return Err(invalid("invalid bytea value")),
+        }));
+    }
+    let text = value_text(value, oid)?.unwrap();
+    let text = std::str::from_utf8(&text).map_err(|_| invalid("invalid binary value"))?;
+    let bad = |_| invalid("invalid binary integer value");
+    let bytes = match oid {
+        16 => vec![u8::from(text == "t")],
+        18 => {
+            if text.len() != 1 {
+                return Err(invalid("invalid internal char"));
+            }
+            text.as_bytes().to_vec()
+        }
+        21 => text.parse::<i16>().map_err(bad)?.to_be_bytes().to_vec(),
+        23 => text.parse::<i32>().map_err(bad)?.to_be_bytes().to_vec(),
+        20 => text.parse::<i64>().map_err(bad)?.to_be_bytes().to_vec(),
+        26 | 2205 => text.parse::<u32>().map_err(bad)?.to_be_bytes().to_vec(),
+        700 => text
+            .parse::<f32>()
+            .map_err(|_| invalid("invalid float4"))?
+            .to_be_bytes()
+            .to_vec(),
+        701 => text
+            .parse::<f64>()
+            .map_err(|_| invalid("invalid float8"))?
+            .to_be_bytes()
+            .to_vec(),
+        19 | 25 | 1042 | 1043 => text.as_bytes().to_vec(),
+        22 | 30 | 1005 | 1007 | 1009 | 1016 | 1028 => binary_array(text, oid)?,
+        1082 | 1083 | 1114 => {
+            use chrono::Timelike;
+            let epoch = chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
+            let invalid_time = |_| invalid("invalid binary temporal value");
+            match oid {
+                1082 => i32::try_from(
+                    chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d")
+                        .map_err(invalid_time)?
+                        .signed_duration_since(epoch)
+                        .num_days(),
+                )
+                .map_err(|_| invalid("date out of range"))?
+                .to_be_bytes()
+                .to_vec(),
+                1083 => {
+                    let time = chrono::NaiveTime::parse_from_str(text, "%H:%M:%S%.f")
+                        .map_err(invalid_time)?;
+                    if time.nanosecond() >= 1_000_000_000 || time.nanosecond() % 1000 != 0 {
+                        return Err(invalid("time exceeds engine microsecond precision"));
+                    }
+                    (i64::from(time.num_seconds_from_midnight()) * 1_000_000
+                        + i64::from(time.nanosecond() / 1000))
+                    .to_be_bytes()
+                    .to_vec()
+                }
+                _ => {
+                    let datetime =
+                        chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S%.f")
+                            .map_err(invalid_time)?;
+                    if datetime.nanosecond() >= 1_000_000_000 || datetime.nanosecond() % 1000 != 0 {
+                        return Err(invalid("timestamp exceeds engine microsecond precision"));
+                    }
+                    datetime
+                        .signed_duration_since(epoch.and_hms_opt(0, 0, 0).unwrap())
+                        .num_microseconds()
+                        .ok_or_else(|| invalid("timestamp out of range"))?
+                        .to_be_bytes()
+                        .to_vec()
+                }
+            }
+        }
+        _ => return Err(invalid("unsupported binary result type")),
+    };
+    Ok(Some(bytes))
+}
+
+/// Catalog providers emit bounded, one-dimensional arrays and vectors.
+fn binary_array(text: &str, oid: u32) -> io::Result<Vec<u8>> {
+    let vector = matches!(oid, 22 | 30);
+    let element_oid: u32 = match oid {
+        22 | 1005 => 21,
+        30 | 1028 => 26,
+        1007 => 23,
+        1016 => 20,
+        1009 => 25,
+        _ => unreachable!(),
+    };
+    let values = if vector {
+        text.split_ascii_whitespace()
+            .map(|s| Some(s.to_owned()))
+            .collect::<Vec<_>>()
+    } else {
+        let inner = text
+            .strip_prefix('{')
+            .and_then(|s| s.strip_suffix('}'))
+            .ok_or_else(|| invalid("invalid catalog array"))?;
+        let mut values = Vec::new();
+        let mut chars = inner.chars().peekable();
+        while chars.peek().is_some() {
+            let quoted = chars.peek() == Some(&'"');
+            if quoted {
+                chars.next();
+            }
+            let mut item = String::new();
+            let mut closed = !quoted;
+            let mut escaped = false;
+            let mut delimiter = false;
+            while let Some(c) = chars.next() {
+                match c {
+                    '\\' => {
+                        escaped = true;
+                        item.push(
+                            chars
+                                .next()
+                                .ok_or_else(|| invalid("invalid array escape"))?,
+                        );
+                    }
+                    '"' if quoted => {
+                        closed = true;
+                        break;
+                    }
+                    ',' if !quoted => {
+                        delimiter = true;
+                        break;
+                    }
+                    '{' | '}' if !quoted => {
+                        return Err(invalid("nested catalog array unsupported"));
+                    }
+                    _ => item.push(c),
+                }
+            }
+            if !closed {
+                return Err(invalid("unterminated catalog array item"));
+            }
+            if quoted && chars.peek().is_some() {
+                if chars.next() != Some(',') {
+                    return Err(invalid("invalid catalog array delimiter"));
+                }
+                delimiter = true;
+            }
+            if (!quoted && item.is_empty()) || (delimiter && chars.peek().is_none()) {
+                return Err(invalid("empty unquoted catalog array item"));
+            }
+            values.push(if !quoted && !escaped && item == "NULL" {
+                None
+            } else {
+                Some(item)
+            });
+        }
+        values
+    };
+    let mut output = (i32::from(vector || !values.is_empty()))
+        .to_be_bytes()
+        .to_vec();
+    output.extend_from_slice(&i32::from(values.iter().any(Option::is_none)).to_be_bytes());
+    output.extend_from_slice(&element_oid.to_be_bytes());
+    if vector || !values.is_empty() {
+        output.extend_from_slice(&length(values.len())?.to_be_bytes());
+        output.extend_from_slice(&(if vector { 0i32 } else { 1i32 }).to_be_bytes());
+    }
+    for value in values {
+        let bytes = match value {
+            Some(text) => value_binary(&Value::Text(text), element_oid)?.unwrap(),
+            None => {
+                output.extend_from_slice(&(-1i32).to_be_bytes());
+                continue;
+            }
+        };
+        output.extend_from_slice(&length(bytes.len())?.to_be_bytes());
+        output.extend_from_slice(&bytes);
+    }
+    Ok(output)
+}
 fn bytea(bytes: &[u8]) -> Vec<u8> {
     let mut result = String::from("\\x");
     for byte in bytes {
@@ -376,6 +557,20 @@ fn bytea(bytes: &[u8]) -> Vec<u8> {
 /// Encode a complete result before writing any metadata so unsupported values
 /// cannot leave the client in a partially described result stream.
 pub(crate) fn encode(result: &QueryResult, command: &str) -> io::Result<Vec<(u8, Vec<u8>)>> {
+    encode_formats(result, command, &[])
+}
+
+/// Formats are local to a bound portal; simple Query and statement Describe use text.
+pub(crate) fn encode_formats(
+    result: &QueryResult,
+    command: &str,
+    formats: &[usize],
+) -> io::Result<Vec<(u8, Vec<u8>)>> {
+    if !formats.is_empty()
+        && (formats.len() != result.columns.len() || formats.iter().any(|f| *f > 1))
+    {
+        return Err(invalid("invalid result formats"));
+    }
     let mut messages = Vec::new();
     if !result.columns.is_empty() {
         let mut body = count(result.columns.len())?.to_be_bytes().to_vec();
@@ -388,7 +583,7 @@ pub(crate) fn encode(result: &QueryResult, command: &str) -> io::Result<Vec<(u8,
             .enumerate()
             .map(|(i, c)| pg_type(c, result.native_types.get(i)))
             .collect::<io::Result<Vec<_>>>()?;
-        for (column, (oid, size)) in result.columns.iter().zip(&types) {
+        for (index, (column, (oid, size))) in result.columns.iter().zip(&types).enumerate() {
             if column.name.contains('\0') {
                 return Err(invalid("result name contains NUL"));
             }
@@ -399,7 +594,9 @@ pub(crate) fn encode(result: &QueryResult, command: &str) -> io::Result<Vec<(u8,
             body.extend_from_slice(&oid.to_be_bytes());
             body.extend_from_slice(&size.to_be_bytes());
             body.extend_from_slice(&(-1i32).to_be_bytes());
-            body.extend_from_slice(&0i16.to_be_bytes()); // text format
+            body.extend_from_slice(
+                &(formats.get(index).copied().unwrap_or(0) as i16).to_be_bytes(),
+            );
         }
         messages.push((b'T', body));
         for row in &result.rows {
@@ -407,10 +604,15 @@ pub(crate) fn encode(result: &QueryResult, command: &str) -> io::Result<Vec<(u8,
                 return Err(invalid("result column count mismatch"));
             }
             let mut body = count(row.len())?.to_be_bytes().to_vec();
-            for (value, (oid, _)) in row.iter().zip(&types) {
-                let text = value_text(value, *oid)?;
+            for (index, (value, (oid, _))) in row.iter().zip(&types).enumerate() {
+                let binary = formats.get(index) == Some(&1);
+                let text = if binary {
+                    value_binary(value, *oid)?
+                } else {
+                    value_text(value, *oid)?
+                };
                 if let Some(text) = text {
-                    if text.contains(&0) {
+                    if !binary && text.contains(&0) {
                         return Err(invalid("PostgreSQL text cannot contain NUL"));
                     }
                     body.extend_from_slice(&length(text.len())?.to_be_bytes());

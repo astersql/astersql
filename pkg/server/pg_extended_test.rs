@@ -987,6 +987,62 @@ fn pg_introspection_parameters_array_metadata() {
         )
     );
 
+    let binary = crate::pg_result::encode_formats(&result, "SELECT", &[1; 4]).unwrap();
+    let mut fields = &binary[1].1[2..];
+    for (element, count, nulls, elements) in [
+        (
+            21u32,
+            3i32,
+            1i32,
+            vec![
+                Some(1i16.to_be_bytes().to_vec()),
+                None,
+                Some(2i16.to_be_bytes().to_vec()),
+            ],
+        ),
+        (
+            23,
+            2,
+            0,
+            vec![
+                Some(1i32.to_be_bytes().to_vec()),
+                Some(2i32.to_be_bytes().to_vec()),
+            ],
+        ),
+        (
+            26,
+            2,
+            0,
+            vec![
+                Some(0u32.to_be_bytes().to_vec()),
+                Some(u32::MAX.to_be_bytes().to_vec()),
+            ],
+        ),
+        (25, 2, 1, vec![Some(b"a,b".to_vec()), None]),
+    ] {
+        let mut expected = [
+            1i32.to_be_bytes().as_slice(),
+            &nulls.to_be_bytes(),
+            &element.to_be_bytes(),
+            &count.to_be_bytes(),
+            &1i32.to_be_bytes(),
+        ]
+        .concat();
+        for item in elements {
+            match item {
+                Some(bytes) => {
+                    expected.extend_from_slice(&(bytes.len() as i32).to_be_bytes());
+                    expected.extend_from_slice(&bytes);
+                }
+                None => expected.extend_from_slice(&(-1i32).to_be_bytes()),
+            }
+        }
+        let length = i32::from_be_bytes(fields[..4].try_into().unwrap()) as usize;
+        assert_eq!(&fields[4..4 + length], expected);
+        fields = &fields[4 + length..];
+    }
+    assert!(fields.is_empty());
+
     let empty = QueryResult {
         rows: vec![],
         ..result
@@ -995,4 +1051,139 @@ fn pg_introspection_parameters_array_metadata() {
         crate::pg_result::encode(&empty, "SELECT").unwrap()[0],
         encoded[0]
     );
+}
+
+#[test]
+fn pg_introspection_binary_results_and_recovery() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native
+        .execute("CREATE TABLE test.binary_live (id INT PRIMARY KEY)")
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    parse(
+        &mut socket,
+        "binary",
+        "SELECT $1::oid AS id, relname, relname='binary_live' AS matched FROM pg_class WHERE relname='binary_live'",
+        &[26],
+    );
+    assert_eq!(read(&mut socket), (b'1', vec![]));
+    send(&mut socket, b'D', b"Sbinary\0");
+    assert_eq!(read(&mut socket).0, b't');
+    let statement_description = read(&mut socket);
+    assert_eq!(statement_description.0, b'T');
+    for formats in [vec![1i16], vec![1, 0, 1], vec![]] {
+        let mut body = [
+            b"\0binary\0".as_slice(),
+            &1i16.to_be_bytes(),
+            &1i16.to_be_bytes(),
+            &1i16.to_be_bytes(),
+            &4i32.to_be_bytes(),
+            &u32::MAX.to_be_bytes(),
+            &(formats.len() as i16).to_be_bytes(),
+        ]
+        .concat();
+        for format in &formats {
+            body.extend_from_slice(&format.to_be_bytes());
+        }
+        send(&mut socket, b'B', &body);
+        assert_eq!(read(&mut socket), (b'2', vec![]));
+        send(&mut socket, b'D', b"P\0");
+        let portal_description = read(&mut socket);
+        assert_eq!(portal_description.0, b'T');
+        let mut offset = 2;
+        for index in 0..3 {
+            offset += portal_description.1[offset..]
+                .iter()
+                .position(|b| *b == 0)
+                .unwrap()
+                + 1;
+            let format = if formats.is_empty() {
+                0
+            } else if formats.len() == 1 {
+                formats[0]
+            } else {
+                formats[index]
+            };
+            assert_eq!(
+                &portal_description.1[offset + 16..offset + 18],
+                &format.to_be_bytes()
+            );
+            assert_eq!(&statement_description.1[offset + 16..offset + 18], &[0, 0]);
+            offset += 18;
+        }
+        execute(&mut socket, "", 1);
+        let message = read(&mut socket);
+        assert_eq!(message.0, b'D');
+        let expected = if formats.is_empty() {
+            row(&[Some("4294967295"), Some("binary_live"), Some("t")])
+        } else {
+            [
+                3i16.to_be_bytes().as_slice(),
+                &4i32.to_be_bytes(),
+                &u32::MAX.to_be_bytes(),
+                &11i32.to_be_bytes(),
+                b"binary_live",
+                &1i32.to_be_bytes(),
+                &[1],
+            ]
+            .concat()
+        };
+        assert_eq!(message.1, expected);
+        assert_eq!(read(&mut socket).0, b'C');
+        send(&mut socket, b'S', &[]);
+        assert_eq!(read(&mut socket).0, b'Z');
+    }
+    // An invalid format is a protocol error; Sync restores the same connection.
+    send(
+        &mut socket,
+        b'B',
+        &[
+            b"\0binary\0".as_slice(),
+            &0i16.to_be_bytes(),
+            &1i16.to_be_bytes(),
+            &(-1i32).to_be_bytes(),
+            &1i16.to_be_bytes(),
+            &2i16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    let failure = read(&mut socket);
+    assert_eq!(failure.0, b'E');
+    assert!(failure.1.windows(6).any(|w| w == b"08P01\0"));
+    send(&mut socket, b'S', &[]);
+    assert_eq!(read(&mut socket).0, b'Z');
+    assert_eq!(
+        query(&mut socket, "SELECT 1")
+            .iter()
+            .map(|m| m.0)
+            .collect::<Vec<_>>(),
+        b"TDCZ"
+    );
+    send(&mut socket, b'X', &[]);
+    service.close();
 }

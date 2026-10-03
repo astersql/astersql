@@ -1,5 +1,5 @@
 // Copyright 2026 AsterSQL.
-//! PostgreSQL text parameters and extended-query connection state.
+//! PostgreSQL parameters, portal result formats and extended-query connection state.
 use crate::conn::{CancellationToken, PreparedMetadata, QueryResult, TiDBContext};
 use crate::conn_stmt::BinaryParam;
 use crate::pg_conn::{sqlstate, write_error, write_message};
@@ -235,6 +235,58 @@ pub(crate) fn parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
         ..BinaryParam::default()
     })
 }
+/// Convert PG network order to the shared engine's existing parameter encoding.
+fn binary_parameter(oid: u32, value: Option<&[u8]>) -> Result<BinaryParam> {
+    let Some(value) = value else {
+        return parameter(oid, None);
+    };
+    let invalid = || error("22P03", "invalid binary parameter");
+    let (tp, bytes) = match oid {
+        16 => match value {
+            [0] | [1] => (1, value.to_vec()),
+            _ => return Err(invalid()),
+        },
+        21 => (
+            2,
+            i16::from_be_bytes(value.try_into().map_err(|_| invalid())?)
+                .to_le_bytes()
+                .to_vec(),
+        ),
+        23 => (
+            3,
+            i32::from_be_bytes(value.try_into().map_err(|_| invalid())?)
+                .to_le_bytes()
+                .to_vec(),
+        ),
+        20 => (
+            8,
+            i64::from_be_bytes(value.try_into().map_err(|_| invalid())?)
+                .to_le_bytes()
+                .to_vec(),
+        ),
+        700 => (
+            4,
+            f32::from_be_bytes(value.try_into().map_err(|_| invalid())?)
+                .to_le_bytes()
+                .to_vec(),
+        ),
+        701 => (
+            5,
+            f64::from_be_bytes(value.try_into().map_err(|_| invalid())?)
+                .to_le_bytes()
+                .to_vec(),
+        ),
+        17 => (252, value.to_vec()),
+        25 | 1042 | 1043 => return parameter(oid, Some(value)),
+        _ => return Err(error("0A000", "unsupported binary parameter OID")),
+    };
+    Ok(BinaryParam {
+        tp,
+        value: bytes,
+        ..BinaryParam::default()
+    })
+}
+
 fn catalog_parameter(oid: u32, value: Option<&[u8]>) -> Result<crate::pg_catalog_query::Expr> {
     use crate::pg_catalog_query::Expr;
     let Some(value) = value else {
@@ -365,6 +417,7 @@ struct Portal {
     statement: u32,
     args: Vec<BinaryParam>,
     description: Option<Vec<u8>>,
+    formats: Vec<usize>,
     command: Option<&'static str>,
     messages: Option<Vec<(u8, Vec<u8>)>>,
     offset: usize,
@@ -638,23 +691,32 @@ impl Extended {
                             catalog_parameter(*oid, value)?
                         });
                     } else {
-                        if format == 1 {
-                            return Err(error("0A000", "binary parameters are unsupported"));
-                        }
-                        args.push(parameter(*oid, value)?);
+                        args.push(if format == 1 {
+                            binary_parameter(*oid, value)?
+                        } else {
+                            parameter(*oid, value)?
+                        });
                     }
                 }
                 let formats = reader.count()?;
                 if !(formats == 0 || formats == 1 || formats == statement.metadata.columns.len()) {
                     return Err(error("08P01", "result format count mismatch"));
                 }
+                let mut result_formats = Vec::with_capacity(formats);
                 for _ in 0..formats {
-                    if reader.count()? != 0 {
-                        return Err(error("0A000", "binary results are unsupported"));
+                    let format = reader.count()?;
+                    if format > 1 {
+                        return Err(error("08P01", "invalid result format code"));
                     }
+                    result_formats.push(format);
                 }
+                let result_formats = match result_formats.as_slice() {
+                    [] => vec![0; statement.metadata.columns.len()],
+                    [format] => vec![*format; statement.metadata.columns.len()],
+                    _ => result_formats,
+                };
                 reader.end()?;
-                let description = description(&statement.metadata)?;
+                let description = description_formats(&statement.metadata, &result_formats)?;
                 let mut catalog = statement.catalog.clone();
                 if let Some(query) = &mut catalog {
                     query.bind_values(catalog_values)?;
@@ -670,6 +732,7 @@ impl Extended {
                         statement: statement.metadata.statement_id,
                         args: statement.mapping.iter().map(|i| args[*i].clone()).collect(),
                         description,
+                        formats: result_formats,
                         command: statement.command,
                         messages: None,
                         offset: 0,
@@ -756,8 +819,9 @@ impl Extended {
                         result.native_types = portal.native_types.clone();
                         result.columns = portal.columns.clone();
                     }
-                    let encoded = crate::pg_result::encode(&result, command)
-                        .map_err(|e| error("0A000", &e.to_string()));
+                    let encoded =
+                        crate::pg_result::encode_formats(&result, command, &portal.formats)
+                            .map_err(|e| error("0A000", &e.to_string()));
                     if let Some(lifecycle) = &result.response_lifecycle {
                         lifecycle.finish();
                     }
@@ -830,6 +894,9 @@ impl Extended {
     }
 }
 fn description(metadata: &PreparedMetadata) -> Result<Option<Vec<u8>>> {
+    description_formats(metadata, &[])
+}
+fn description_formats(metadata: &PreparedMetadata, formats: &[usize]) -> Result<Option<Vec<u8>>> {
     if metadata.columns.is_empty() {
         return Ok(None);
     }
@@ -838,7 +905,7 @@ fn description(metadata: &PreparedMetadata) -> Result<Option<Vec<u8>>> {
         native_types: metadata.native_types.clone(),
         ..QueryResult::default()
     };
-    let messages =
-        crate::pg_result::encode(&result, "SELECT").map_err(|e| error("0A000", &e.to_string()))?;
+    let messages = crate::pg_result::encode_formats(&result, "SELECT", formats)
+        .map_err(|e| error("0A000", &e.to_string()))?;
     Ok(Some(messages[0].1.clone()))
 }
