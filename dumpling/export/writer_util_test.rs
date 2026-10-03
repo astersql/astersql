@@ -310,3 +310,61 @@ fn csv_upload_limit_error_retains_identity_through_io_adapter() {
     assert!(error.exceed_upload_parts);
     assert!(error.to_string().contains("specify --filesize (-F)"));
 }
+
+#[test]
+fn sql_statement_limit_splits_before_next_row() {
+    let tctx = tcontext::Background().WithLogger(app_logger());
+    let mut conf = default_config_for_test();
+    conf.StatementSize = 1;
+    let meta = mockTableIR::new("test", "t", vec![], &[], &["INT"]);
+    let mut ir = mockTableIR::new(
+        "test",
+        "t",
+        vec![vec![bytes_cell("1")], vec![bytes_cell("2")]],
+        &[],
+        &["INT"],
+    );
+    let mut writer = BufferWriter(vec![]);
+    WriteInsertSQL(&tctx, &conf, &meta, &mut ir, &mut writer, None).unwrap();
+    assert_eq!(
+        writer.0,
+        b"INSERT INTO `t` VALUES\n(1);\nINSERT INTO `t` VALUES\n(2);\n"
+    );
+}
+
+#[test]
+fn sql_failure_rolls_back_periodic_metrics() {
+    struct FailAfter {
+        calls: usize,
+    }
+    impl ObjectWriter for FailAfter {
+        fn Write(&mut self, data: &[u8]) -> Result<usize> {
+            self.calls += 1;
+            if self.calls == 1001 {
+                Err(errors_new("write failed"))
+            } else {
+                Ok(data.len())
+            }
+        }
+        fn Close(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+    let mut conf = default_config_for_test();
+    conf.NoHeader = true;
+    let metrics = newMetrics(conf.PromFactory.as_ref(), &conf.Labels);
+    let meta = mockTableIR::new("db", "t", vec![], &[], &["INT"]);
+    let mut ir = mockTableIR::new("db", "t", vec![vec![bytes_cell("1")]; 1002], &[], &["INT"]);
+    let err = WriteInsertSQL(
+        &tcontext::Background(),
+        &conf,
+        &meta,
+        &mut ir,
+        &mut FailAfter { calls: 0 },
+        Some(&metrics),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("write failed"));
+    assert_eq!(ReadGauge(Some(&metrics.finishedRowsGauge)), 0.0);
+    assert_eq!(ReadGauge(Some(&metrics.finishedSizeGauge)), 0.0);
+}

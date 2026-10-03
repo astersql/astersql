@@ -3,7 +3,6 @@
 
 //
 // 写入格式与缓冲工具，对应 Go `export/writer_util.go`。
-// 负责 SQL/CSV/Parquet INSERT 生成、LazyStringWriter、writerPipe 切分逻辑及 WriteMeta。
 // Writer 与 FileFormat 均依赖本模块完成“行 IR → 字节流”的转换。
 // MakeRowReceiver/RowReceiver 在 ir 包定义，本模块只负责缓冲与 flush。
 
@@ -89,91 +88,113 @@ pub fn WriteInsertSQL(
     metrics: Option<&metrics>,
 ) -> Result<()> {
     let mut iter = ir.Rows();
-    // Go 在空结果上返回迭代器错误，不写 INSERT 头。
+    let result = writeSQLFile(conf, meta, iter.as_mut(), writer, metrics);
+    let closed = iter.Close();
+    result?;
+    closed
+}
+
+fn writeSQLFile(
+    conf: &Config,
+    meta: &dyn TableMeta,
+    iter: &mut dyn SQLRowIter,
+    writer: &mut dyn ObjectWriter,
+    metrics: Option<&metrics>,
+) -> Result<u64> {
+    use astersql_dumpformat_sqlfile::{Config as SQLConfig, Writer as SQLWriter};
     if !iter.HasNext() {
-        if let Some(err) = iter.Error() {
-            let _ = iter.Close();
-            return Err(err);
+        return iter.Error().map_or(Ok(0), Err);
+    }
+    let selected = meta.SelectedField();
+    let prefix = if !selected.is_empty() && selected != "*" {
+        format!(
+            "INSERT INTO {} ({}) VALUES\n",
+            wrapBackTicks(&escapeString(meta.TableName())),
+            selected
+        )
+    } else {
+        format!(
+            "INSERT INTO {} VALUES\n",
+            wrapBackTicks(&escapeString(meta.TableName()))
+        )
+    };
+    let kinds = if selected.is_empty() {
+        vec![]
+    } else {
+        columnKinds(&meta.ColumnTypes())
+    };
+    let mut sink = CSVObjectWriter(writer);
+    let mut preamble = 0u64;
+    let mut count = 0u64;
+    let mut last_count = 0u64;
+    let mut finished_size = 0u64;
+    let result = (|| -> Result<u64> {
+        use std::io::Write;
+        let mut comments = meta.SpecialComments();
+        while comments.HasNext() {
+            let comment = comments.Next();
+            sink.write(comment.as_bytes()).map_err(csv_io_error)?;
+            sink.write(b"\n").map_err(csv_io_error)?;
+            preamble += comment.len() as u64 + 1;
         }
-        return iter.Close();
-    }
-    let selected_field = meta.SelectedField();
-    let mut bf = Vec::with_capacity(lengthLimit);
-    let mut comments = meta.SpecialComments();
-    while comments.HasNext() {
-        bf.extend_from_slice(comments.Next().as_bytes());
-        bf.push(b'\n');
-    }
-    let mut row_receiver = MakeRowReceiver(&meta.ColumnTypes());
-    let mut rows_written = 0.0_f64;
-    while iter.HasNext() {
-        if bf.is_empty() || rows_written == 0.0 {
-            // 新语句块：写 INSERT INTO ... VALUES 头。
-            if !selected_field.is_empty() && selected_field != "*" {
-                bf.extend_from_slice(
-                    format!(
-                        "INSERT INTO {} ({}) VALUES\n",
-                        wrapBackTicks(&escapeString(meta.TableName())),
-                        selected_field
-                    )
-                    .as_bytes(),
-                );
+        let mut sw = SQLWriter::new(
+            sink,
+            prefix.into_bytes(),
+            kinds,
+            SQLConfig {
+                statement_size: conf.StatementSize,
+                escape_backslash: conf.EscapeBackslash,
+            },
+        );
+        let mut receiver = MakeRowReceiver(&meta.ColumnTypes());
+        while iter.HasNext() {
+            if !selected.is_empty() {
+                iter.Decode(&mut receiver)?;
+            }
+            let row = if selected.is_empty() {
+                &[][..]
             } else {
-                bf.extend_from_slice(
-                    format!(
-                        "INSERT INTO {} VALUES\n",
-                        wrapBackTicks(&escapeString(meta.TableName()))
-                    )
-                    .as_bytes(),
-                );
+                receiver.rawValues()
+            };
+            sw.write(row).map_err(csv_io_error)?;
+            count += 1;
+            if count % 1000 == 0 {
+                if let Some(m) = metrics {
+                    AddGauge(Some(&m.finishedRowsGauge), (count - last_count) as f64);
+                    AddGauge(
+                        Some(&m.finishedSizeGauge),
+                        (preamble + sw.estimate_file_size() - finished_size) as f64,
+                    );
+                }
+                last_count = count;
+                finished_size = preamble + sw.estimate_file_size();
             }
-        } else {
-            // 同语句内下一行 VALUES 前加逗号换行。
-            bf.push(b',');
-            bf.push(b'\n');
-        }
-        if !selected_field.is_empty() {
-            iter.Decode(&mut row_receiver)?;
-            // EscapeBackslash 控制 \0 \n 等 C 转义。
-            row_receiver.WriteToBuffer(&mut bf, conf.EscapeBackslash);
-        } else {
-            // 全部列均为生成列时 Go 仍按 SELECT '' 推进行数，但输出空 tuple。
-            bf.extend_from_slice(b"()");
-        }
-        rows_written += 1.0;
-        // 缓冲达上限则 flush 并累计 metrics。
-        if bf.len() >= lengthLimit {
-            writer.Write(&bf).map_err(annotatePartLimit)?;
-            if let Some(m) = metrics {
-                AddGauge(Some(&m.finishedSizeGauge), bf.len() as f64);
-                AddGauge(Some(&m.finishedRowsGauge), rows_written);
+            iter.Next();
+            if conf.FileSize != UnspecifiedSize
+                && preamble + sw.estimate_file_size() >= conf.FileSize
+            {
+                break;
             }
-            rows_written = 0.0;
-            bf.clear();
         }
-        iter.Next();
-        if let Some(err) = iter.Error() {
-            // Go writerPipe preserves the successfully decoded prefix as a valid
-            // INSERT statement, but does not count it as finished metrics.
-            if !bf.is_empty() {
-                bf.extend_from_slice(b";\n");
-                writer.Write(&bf).map_err(annotatePartLimit)?;
-            }
-            let _ = iter.Close();
-            return Err(err);
-        }
-    }
-    if !bf.is_empty() {
-        // 语句收尾分号，与 MySQL 客户端习惯一致。
-        bf.push(b';');
-        bf.push(b'\n');
-        writer.Write(&bf).map_err(annotatePartLimit)?;
         if let Some(m) = metrics {
-            AddGauge(Some(&m.finishedSizeGauge), bf.len() as f64);
-            AddGauge(Some(&m.finishedRowsGauge), rows_written);
+            AddGauge(Some(&m.finishedRowsGauge), (count - last_count) as f64);
+        }
+        last_count = count;
+        sw.close().map_err(csv_io_error)?;
+        let size = preamble + sw.estimate_file_size();
+        if let Some(m) = metrics {
+            AddGauge(Some(&m.finishedSizeGauge), (size - finished_size) as f64);
+        }
+        finished_size = size;
+        iter.Error().map_or(Ok(count), Err)
+    })();
+    if result.is_err() {
+        if let Some(m) = metrics {
+            SubGauge(Some(&m.finishedRowsGauge), last_count as f64);
+            SubGauge(Some(&m.finishedSizeGauge), finished_size as f64);
         }
     }
-    iter.Close()
+    result
 }
 
 const uploadConcurrency: i32 = 4;
@@ -265,7 +286,7 @@ fn writeCSVFile(
     };
     let mut cw = CW::new(CSVObjectWriter(writer), kinds, cfg);
     let mut row = MakeRowReceiver(&meta.ColumnTypes());
-    let mut raw = Vec::with_capacity(row.receivers.len());
+    let mut raw = Vec::with_capacity(meta.ColumnTypes().len());
     let mut count = 0;
     let mut counted = 0;
     let mut finished_size = 0;
@@ -671,7 +692,6 @@ pub fn WriteInsertInParquet(
     if let Some(m) = metrics {
         AddGauge(Some(&m.finishedSizeGauge), finished_size as f64);
         AddGauge(Some(&m.finishedRowsGauge), count as f64);
-        ObserveHistogram(Some(&m.writeTimeHistogram), 0.0);
     }
     tctx.L().Debug(
         "finish dumping parquet data",
@@ -723,57 +743,6 @@ impl ObjectWriter for LazyStringWriter {
             w.Close()?;
         }
         Ok(())
-    }
-}
-
-// 跟踪当前文件/语句累计字节，供 FileSize/StatementSize/Rows 切分决策。
-pub struct writerPipe {
-    // 当前输出文件已写字节数。
-    pub currentFileSize: u64,
-    // 当前 INSERT 语句已写字节数（可与文件计数不同步切分）。
-    pub currentStatementSize: u64,
-    // fileSizeLimit 为 UnspecifiedSize 时不切文件。
-    pub fileSizeLimit: u64,
-    // statementSizeLimit 为 UnspecifiedSize 时不切语句。
-    pub statementSizeLimit: u64,
-    // metrics 原始指针占位，与 Go writerPipe 字段对齐。
-    pub metrics: Option<*const metrics>,
-}
-
-pub fn newWriterPipe(
-    _w: Option<&mut dyn ObjectWriter>,
-    file_size_limit: u64,
-    statement_size_limit: u64,
-    _metrics: Option<&metrics>,
-    _labels: Option<&Labels>,
-) -> writerPipe {
-    // 计数器从 0 开始，limit 来自 conf.FileSize/StatementSize。
-    writerPipe {
-        currentFileSize: 0,
-        currentStatementSize: 0,
-        fileSizeLimit: file_size_limit,
-        statementSizeLimit: statement_size_limit,
-        metrics: None,
-    }
-}
-
-impl writerPipe {
-    // 写入 nbytes 后同时累加文件级与语句级计数。
-    pub fn AddFileSize(&mut self, file_size: u64) {
-        self.currentFileSize += file_size;
-        self.currentStatementSize += file_size;
-    }
-    // 仅文件字节达限时切新文件。
-    pub fn ShouldSwitchFile(&self) -> bool {
-        // UnspecifiedSize 表示该维度不切分。
-        self.fileSizeLimit != UnspecifiedSize && self.currentFileSize >= self.fileSizeLimit
-    }
-    // 语句切分条件宽于文件：file limit 也会触发 statement switch。
-    pub fn ShouldSwitchStatement(&self) -> bool {
-        // Go: file-size limit also forces a statement switch.
-        (self.fileSizeLimit != UnspecifiedSize && self.currentFileSize >= self.fileSizeLimit)
-            || (self.statementSizeLimit != UnspecifiedSize
-                && self.currentStatementSize >= self.statementSizeLimit)
     }
 }
 

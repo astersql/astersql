@@ -111,3 +111,21 @@ pub trait Writer {
         self.close(ctx)
     }
 }
+
+/// Bind the caller's cancellation context once for standard streaming encoders.
+pub struct IOWriter<'a> {
+    context: Context,
+    writer: &'a mut dyn Writer,
+}
+#[allow(non_snake_case)]
+pub fn NewIOWriter(context: Context, writer: &mut dyn Writer) -> IOWriter<'_> {
+    IOWriter { context, writer }
+}
+impl io::Write for IOWriter<'_> {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        self.writer.write(&self.context, data)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}

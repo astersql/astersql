@@ -25,7 +25,7 @@ pub mod recording {
 mod interface;
 mod writer;
 /// 取消上下文与 Reader/Writer trait。
-pub use interface::{Context, Reader, Writer};
+pub use interface::{Context, IOWriter, NewIOWriter, Reader, Writer};
 /// 缓冲写入器与工厂函数。
 pub use writer::*;
 

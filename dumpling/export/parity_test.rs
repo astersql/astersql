@@ -27,7 +27,7 @@ fn go_rust_public_contract_matches() {
 fn contract_normal() {
     // 正常路径契约：
     // 这里集中校验“默认配置 + 常见 helper + 轻量状态对象”在理想输入下的行为。
-    initColTypeRowReceiverMap();
+    initColumnTypeSets();
 
     // 先锁住 DefaultConfig 的关键默认值，避免配置迁移时无意偏离 Go 习惯。
     // DefaultConfig matches Go defaults
@@ -73,8 +73,14 @@ fn contract_normal() {
     // 转义 helper 既影响 SQL writer，也影响 CSV/文本路径中的转义兼容性。
     // escape SQL / CSV
     let mut bf = Vec::new();
-    escapeBackslashSQL(b"a'b\\c\n", &mut bf);
-    assert_eq!(String::from_utf8_lossy(&bf), "a\\'b\\\\c\\n");
+    astersql_dumpformat_sqlfile::append_value(
+        &mut bf,
+        b"a'b\\c\n",
+        false,
+        astersql_dumpformat_csvfile::FieldKind::String,
+        true,
+    );
+    assert_eq!(String::from_utf8_lossy(&bf), "'a\\'b\\\\c\\n'");
 
     // MySQL 错误文本解析要能还原出 schema/table，供重试和提示逻辑复用。
     // getTableFromMySQLError
@@ -153,7 +159,20 @@ fn contract_normal() {
     let mut args = [RawBytes(Some(b"42".to_vec()))];
     rec.BindAddress(&mut args);
     let mut out = Vec::new();
-    rec.WriteToBuffer(&mut out, true);
+    let mut sw = astersql_dumpformat_sqlfile::Writer::new(
+        &mut out,
+        vec![],
+        columnKinds(&["INT".into()]),
+        astersql_dumpformat_sqlfile::Config::default(),
+    );
+    sw.write(
+        &rec.GetRawBytes()
+            .into_iter()
+            .map(|r| r.0)
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    drop(sw);
     assert_eq!(String::from_utf8_lossy(&out), "(42)");
 }
 

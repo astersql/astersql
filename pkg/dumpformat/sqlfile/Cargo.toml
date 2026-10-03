@@ -1,11 +1,9 @@
 [package]
-name = "astersql-dumpformat-csvfile"
+name = "astersql-dumpformat-sqlfile"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
-
 [lib]
 path = "lib.rs"
-
 [dependencies]
 astersql-dumpformat = { path = ".." }

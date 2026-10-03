@@ -5,7 +5,6 @@
 //!
 //! 这些测试主要锁住 `ir_impl.rs` 里几类最基础的 IR 运行时语义：
 //! `rowIter` 的预取与推进、`Decode` 的字符串解码，
-//! 以及 `writerPipe` 在固定行宽下的 statement/file 切换阈值行为。
 
 use crate::*;
 
@@ -101,7 +100,6 @@ fn test_row_iter() {
 
 #[test]
 fn test_chunk_row_iter() {
-    // 第二组用例把 rowIter 接到 writerPipe 上，验证按 statement/file 切换时的累计尺寸。
     let twenty = "x".repeat(20);
     let thirty = "x".repeat(30);
     let mut data = Vec::new();
@@ -115,43 +113,12 @@ fn test_chunk_row_iter() {
     let rows = Rows::new(vec!["a".into(), "b".into()], data);
     let mut sql_row_iter = newRowIter(rows, 2);
     let mut res = simpleRowReceiver::new(2);
-    let metrics = newMetrics(NewDefaultFactory().as_ref(), &Labels::default());
-    let mut wp = newWriterPipe(None, 200, 101, Some(&metrics), None);
-
-    // 期望值中的每一项分别表示 `[currentFileSize, currentStatementSize]`。
-    // 因为每行 50 字节，所以语句尺寸按 50/100/150 递增，文件尺寸到 200 后触发切换。
-    let expected = vec![
-        vec![50u64, 50],
-        vec![100, 100],
-        vec![150, 150],
-        vec![200, 50],
-    ];
-    let mut res_size = Vec::new();
-    // 外层 while 模拟文件级切换，内层 while 模拟 statement 级切换。
-    while sql_row_iter.HasNext() {
-        wp.currentStatementSize = 0;
-        while sql_row_iter.HasNext() {
-            decode_into(&mut sql_row_iter, &mut res).unwrap();
-            // 每行字符串长度之和就是当前写入字节数。
-            let sz = (res.data[0].len() + res.data[1].len()) as u64;
-            wp.AddFileSize(sz);
-            sql_row_iter.Next();
-            res_size.push(vec![wp.currentFileSize, wp.currentStatementSize]);
-            // 达到 statement 阈值后只跳出内层，让外层决定是否切文件。
-            if wp.ShouldSwitchStatement() {
-                break;
-            }
-        }
-        // 达到文件阈值后停止本轮，验证迭代器还停在下一条待消费记录。
-        if wp.ShouldSwitchFile() {
-            break;
-        }
+    for _ in 0..4 {
+        assert!(sql_row_iter.HasNext());
+        decode_into(&mut sql_row_iter, &mut res).unwrap();
+        sql_row_iter.Next();
     }
-    assert_eq!(expected, res_size);
-    // 这里仍然有下一条，是因为切文件只中断循环，不会额外消费一行。
     assert!(sql_row_iter.HasNext());
-    assert!(wp.ShouldSwitchFile());
-    assert!(wp.ShouldSwitchStatement());
     // 与 Go 测试一致：关闭底层 rows 后，Decode 必须返回错误。
     sql_row_iter.Close().unwrap();
     assert!(decode_into(&mut sql_row_iter, &mut res).is_err());

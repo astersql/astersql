@@ -399,3 +399,26 @@ fn walk_names(store: &impl Storage, ctx: &Context, option: Option<&WalkOption>) 
         .unwrap();
     names
 }
+
+#[test]
+fn local_writer_honors_part_size_buffer() {
+    use storeapi::{Storage as ApiStorage, WriterOption as ApiWriterOption};
+    let dir = tempfile::tempdir().unwrap();
+    let store = NewLocalStorage(dir.path()).unwrap();
+    let context = storeapi::Context::default();
+    let mut writer = ApiStorage::Create(
+        &store,
+        &context,
+        "buffered",
+        Some(&ApiWriterOption {
+            PartSize: 16384,
+            Concurrency: 1,
+        }),
+    )
+    .unwrap();
+    let data = vec![b'x'; 9000];
+    writer.write(&context, &data).unwrap();
+    assert_eq!(fs::metadata(dir.path().join("buffered")).unwrap().len(), 0);
+    writer.close(&context).unwrap();
+    assert_eq!(fs::read(dir.path().join("buffered")).unwrap(), data);
+}

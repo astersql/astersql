@@ -5,29 +5,6 @@
 
 use crate::*;
 
-/// Go TestEscapeSQL verifies both SQL escape modes.
-#[test]
-fn test_escape_sql() {
-    let mut bf = Vec::new();
-    // 混合引号、反斜杠与 \r 的字节样本。
-    let s = br#"MWQeWw""'\rNmtGxzGp"#;
-    // escape_backslash=true 时 SQL 反斜杠转义期望。
-    let expect_backslash = r#"MWQeWw\"\"\'\\rNmtGxzGp"#;
-    let expect_without = r#"MWQeWw""''\rNmtGxzGp"#;
-    let expect_csv_bs = r#"MWQeWw\"\"'\\rNmtGxzGp"#;
-    let expect_csv_no = r#"MWQeWw""""'\rNmtGxzGp"#;
-    // 四种 escape 模式期望串与 Go TestEscape 断言一致。
-
-    escapeSQL(s, &mut bf, true);
-    // NO_BACKSLASH_ESCAPES 关闭路径。
-    assert_eq!(expect_backslash, String::from_utf8_lossy(&bf));
-
-    bf.clear();
-    escapeSQL(s, &mut bf, false);
-    // 标准 SQL 单引号加倍路径。
-    assert_eq!(expect_without, String::from_utf8_lossy(&bf));
-}
-
 #[test]
 fn numeric_classification_and_raw_append_preserve_null() {
     for ty in ["DOUBLE PRECISION", "DECIMAL", "BOOL", "INT"] {
@@ -46,4 +23,13 @@ fn numeric_classification_and_raw_append_preserve_null() {
     assert_eq!(raw[1].as_opt(), Some(b"1".as_slice()));
     assert!(raw[2].as_opt().is_none());
     assert_eq!(raw[3].as_opt(), Some(b"".as_slice()));
+}
+
+#[test]
+fn raw_receiver_refreshes_rows_and_preserves_unknown_types() {
+    let mut receiver = MakeRowReceiver(&["UNKNOWN".into()]);
+    receiver.BindAddress(&mut [RawBytes(Some(vec![255, 0]))]);
+    assert_eq!(receiver.GetRawBytes()[0].0, Some(vec![255, 0]));
+    receiver.BindAddress(&mut [RawBytes(None)]);
+    assert!(receiver.GetRawBytes()[0].0.is_none());
 }

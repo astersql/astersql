@@ -20,7 +20,7 @@ pub fn app_logger() -> log::Logger {
     APP_LOGGER
         .get_or_init(|| {
             // logger 初始化前先把列类型接收器映射建好，避免测试顺序依赖。
-            initColTypeRowReceiverMap();
+            initColumnTypeSets();
             let conf = log::Config {
                 Level: "debug".into(),
                 File: String::new(),
@@ -47,7 +47,7 @@ pub fn default_config_for_test() -> Config {
 fn test_main_initializes_logger_and_col_types() {
     // 这一条烟雾测试锁住共享初始化 helper 的最基本契约。
     let _ = app_logger();
-    initColTypeRowReceiverMap();
+    initColumnTypeSets();
     let conf = default_config_for_test();
     // 默认测试配置最终应落到 SQL 文本导出格式。
     assert_eq!(conf.FileType, FileFormatSQLTextString);

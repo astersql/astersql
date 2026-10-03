@@ -73,6 +73,22 @@ impl LocalStorage {
     }
 }
 
+impl LocalStorage {
+    fn create_buffered(&self, name: &str, part_size: Option<i64>) -> Result<Box<dyn ObjectWriter>> {
+        let path = self.object_path(name);
+        fs::create_dir_all(path.parent().unwrap_or_else(|| Path::new(".")))?;
+        let file = File::create(path)?;
+        let writer = match part_size.filter(|size| *size > 0) {
+            Some(size) => BufWriter::with_capacity((size as usize).max(16), file),
+            None => BufWriter::new(file),
+        };
+        Ok(Box::new(LocalWriter {
+            writer,
+            closed: false,
+        }))
+    }
+}
+
 impl Storage for LocalStorage {
     fn as_any(&self) -> &dyn Any {
         self
@@ -243,13 +259,7 @@ impl Storage for LocalStorage {
         name: &str,
         _option: Option<&WriterOption>,
     ) -> Result<Box<dyn ObjectWriter>> {
-        let path = self.object_path(name);
-        fs::create_dir_all(path.parent().unwrap_or_else(|| Path::new(".")))?;
-        let file = File::create(path)?;
-        Ok(Box::new(LocalWriter {
-            writer: BufWriter::new(file),
-            closed: false,
-        }))
+        self.create_buffered(name, None)
     }
 
     /// 重命名对象。
@@ -388,10 +398,10 @@ impl storeapi_api::Storage for LocalStorage {
         &self,
         context: &storeapi_api::Context,
         name: &str,
-        _option: Option<&storeapi_api::WriterOption>,
+        option: Option<&storeapi_api::WriterOption>,
     ) -> Result<Box<dyn objectio_api::Writer>> {
         context.check()?;
-        Storage::Create(self, &Context::default(), name, None)
+        self.create_buffered(name, option.map(|option| option.PartSize))
             .map(|writer| Box::new(StoreapiLocalWriter(writer)) as Box<dyn objectio_api::Writer>)
     }
     fn Rename(

@@ -27,3 +27,5 @@ parquet = { git = "https://github.com/astersql/arrow-rs.git", tag = "astersql-pa
 
 toml = { version = "0.8.23", features = ["preserve_order"] }
 "astersql-util-table-filter" = { path = "../../pkg/util/table-filter" }
+
+astersql-dumpformat-sqlfile = { path = "../../pkg/dumpformat/sqlfile" }

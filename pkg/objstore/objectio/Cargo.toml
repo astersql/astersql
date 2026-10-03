@@ -42,3 +42,7 @@ zstd = "0.13"
 [package.metadata.porting]
 go-package = "pkg/objstore/objectio"
 legacy-tasks = ["task-171", "task-234"]
+
+[[test]]
+name = "interface"
+path = "interface_test.rs"

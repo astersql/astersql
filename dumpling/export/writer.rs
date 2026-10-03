@@ -257,91 +257,28 @@ impl Writer {
         namer: &mut outputFileNamer,
     ) -> Result<()> {
         let mut iter = ir.Rows();
-        if !iter.HasNext() {
-            return iter.Close();
-        }
-        let header = if !meta.SelectedField().is_empty() && self.conf.CompleteInsert {
-            format!(
-                "INSERT INTO {} ({}) VALUES\n",
-                wrapBackTicks(&escapeString(meta.TableName())),
-                meta.SelectedField()
-            )
-        } else {
-            format!(
-                "INSERT INTO {} VALUES\n",
-                wrapBackTicks(&escapeString(meta.TableName()))
-            )
-        };
-        let mut receiver = MakeRowReceiver(&meta.ColumnTypes());
-        let mut file = Vec::new();
-        let mut statement = Vec::new();
-        let flush_file = |file: &mut Vec<u8>, namer: &mut outputFileNamer| -> Result<()> {
-            if file.is_empty() {
-                return Ok(());
-            }
-            let (name, _) =
-                namer.NextName(&self.conf.OutputFileTemplate, FileFormatSQLTextString)?;
-            let mut writer = LazyStringWriter::new(self.ext_storage.clone(), name);
-            writer.option = Some(astersql_objstore_storeapi::WriterOption {
-                Concurrency: uploadConcurrency,
-                PartSize: uploadPartSize,
-            });
-            writer.Write(file).map_err(annotatePartLimit)?;
-            writer.Close()?;
-            file.clear();
-            Ok(())
-        };
-        while iter.HasNext() {
-            if file.is_empty() && statement.is_empty() {
-                let mut comments = meta.SpecialComments();
-                while comments.HasNext() {
-                    file.extend_from_slice(comments.Next().as_bytes());
-                    file.push(b'\n');
+        let result = (|| -> Result<()> {
+            while iter.HasNext() {
+                let (name, _) =
+                    namer.NextName(&self.conf.OutputFileTemplate, FileFormatSQLTextString)?;
+                let mut lazy = LazyStringWriter::new(self.ext_storage.clone(), name);
+                lazy.option = Some(astersql_objstore_storeapi::WriterOption {
+                    Concurrency: uploadConcurrency,
+                    PartSize: uploadPartSize,
+                });
+                let result = writeSQLFile(&self.conf, meta, iter.as_mut(), &mut lazy, None);
+                let closed = lazy.Close();
+                result?;
+                closed?;
+                if self.conf.FileSize == UnspecifiedSize {
+                    break;
                 }
             }
-            let mut row = Vec::new();
-            iter.Decode(&mut receiver)?;
-            receiver.WriteToBuffer(&mut row, self.conf.EscapeBackslash);
-            let separator = if statement.is_empty() {
-                header.as_bytes()
-            } else {
-                b",\n"
-            };
-            let projected_statement = statement.len() + separator.len() + row.len() + 2;
-            if !statement.is_empty()
-                && self.conf.StatementSize != UnspecifiedSize
-                && projected_statement as u64 > self.conf.StatementSize
-            {
-                statement.extend_from_slice(b";\n");
-                file.extend_from_slice(&statement);
-                statement.clear();
-            }
-            if statement.is_empty() {
-                statement.extend_from_slice(header.as_bytes());
-            } else {
-                statement.extend_from_slice(b",\n");
-            }
-            statement.extend_from_slice(&row);
-            iter.Next();
-            if let Some(err) = iter.Error() {
-                let _ = iter.Close();
-                return Err(err);
-            }
-            let projected_file = file.len() + statement.len() + 2;
-            if self.conf.FileSize != UnspecifiedSize && projected_file as u64 >= self.conf.FileSize
-            {
-                statement.extend_from_slice(b";\n");
-                file.extend_from_slice(&statement);
-                statement.clear();
-                flush_file(&mut file, namer)?;
-            }
-        }
-        if !statement.is_empty() {
-            statement.extend_from_slice(b";\n");
-            file.extend_from_slice(&statement);
-        }
-        flush_file(&mut file, namer)?;
-        iter.Close()
+            iter.Error().map_or(Ok(()), Err)
+        })();
+        let closed = iter.Close();
+        result?;
+        closed
     }
 
     // 元数据写入：special comments 逐行 + MetaSQL 正文，经 LazyStringWriter 落盘。

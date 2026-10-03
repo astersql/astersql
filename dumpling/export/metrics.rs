@@ -14,11 +14,8 @@ pub struct metrics {
     pub finishedRowsGauge: GaugeVec,
     // estimate_total_rows 用于给进度估算提供总量参考。
     pub finishedTablesCounter: CounterVec,
-    // 两个 histogram 分别统计真正写盘耗时和 chunk 交接耗时。
     pub estimateTotalRowsCounter: CounterVec,
-    pub writeTimeHistogram: HistogramVec,
     // errorCount 和 taskChannelCapacity 用于观测错误与任务堆积情况。
-    pub receiveWriteChunkTimeHistogram: HistogramVec,
     pub errorCount: CounterVec,
     // 下面三个原子字段服务于进度条，而不是 Prometheus registry 本身。
     pub taskChannelCapacity: GaugeVec,
@@ -34,8 +31,6 @@ pub fn newMetrics(f: &dyn Factory, _const_labels: &Labels) -> metrics {
         estimateTotalRowsCounter: f.NewCounterVec("estimate_total_rows"),
         finishedRowsGauge: f.NewGaugeVec("finished_rows"),
         finishedTablesCounter: f.NewCounterVec("finished_tables"),
-        writeTimeHistogram: f.NewHistogramVec("write_duration_time"),
-        receiveWriteChunkTimeHistogram: f.NewHistogramVec("receive_chunk_duration_time"),
         errorCount: f.NewCounterVec("error_count"),
         taskChannelCapacity: f.NewGaugeVec("channel_capacity"),
         totalChunks: AtomicI64::new(0),
@@ -51,8 +46,6 @@ impl metrics {
         registry.MustRegister("finished_rows");
         registry.MustRegister("estimate_total_rows");
         registry.MustRegister("finished_tables");
-        registry.MustRegister("write_duration_time");
-        registry.MustRegister("receive_chunk_duration_time");
         registry.MustRegister("error_count");
         registry.MustRegister("channel_capacity");
     }
@@ -62,8 +55,6 @@ impl metrics {
         registry.Unregister("finished_rows");
         registry.Unregister("estimate_total_rows");
         registry.Unregister("finished_tables");
-        registry.Unregister("write_duration_time");
-        registry.Unregister("receive_chunk_duration_time");
         registry.Unregister("error_count");
         registry.Unregister("channel_capacity");
     }
@@ -85,11 +76,6 @@ pub fn AddCounter(counter_vec: Option<&CounterVec>, v: f64) {
 pub fn IncCounter(counter_vec: Option<&CounterVec>) {
     if let Some(c) = counter_vec {
         c.With(None).Inc();
-    }
-}
-pub fn ObserveHistogram(histogram_vec: Option<&HistogramVec>, v: f64) {
-    if let Some(h) = histogram_vec {
-        h.With(None).Observe(v);
     }
 }
 pub fn ReadGauge(gauge_vec: Option<&GaugeVec>) -> f64 {

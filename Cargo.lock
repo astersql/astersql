@@ -2736,8 +2736,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "astersql-dumpformat"
+version = "0.1.0"
+
+[[package]]
 name = "astersql-dumpformat-csvfile"
 version = "0.1.0"
+dependencies = [
+ "astersql-dumpformat",
+]
 
 [[package]]
 name = "astersql-dumpformat-parquetfile"
@@ -2770,6 +2777,13 @@ name = "astersql-dumpformat-parsedef"
 version = "0.1.0"
 dependencies = [
  "astersql-types",
+]
+
+[[package]]
+name = "astersql-dumpformat-sqlfile"
+version = "0.1.0"
+dependencies = [
+ "astersql-dumpformat",
 ]
 
 [[package]]
@@ -2812,6 +2826,7 @@ version = "0.1.0"
 dependencies = [
  "astersql-dumpformat-csvfile",
  "astersql-dumpformat-parquetfile",
+ "astersql-dumpformat-sqlfile",
  "astersql-dumpling-cli",
  "astersql-dumpling-context",
  "astersql-dumpling-log",

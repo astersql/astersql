@@ -51,21 +51,10 @@ pub trait SQLRowIter: Send {
     fn Close(&mut self) -> Result<()>;
 }
 
-// Stringer 负责把单行或单值写入输出缓冲区，兼容 SQL/CSV 两条路径。
-// 一个实现通常同时知道自己的原始字节和文本转义规则。
-pub trait Stringer {
-    fn WriteToBuffer(&self, bf: &mut Vec<u8>, escape_backslash: bool);
-    fn GetRawBytes(&self) -> Vec<RawBytes>;
-}
-
 // RowReceiver 接收 decode 后的列值绑定结果，类似 Go 中传入的扫描目标。
-// 它与 Stringer 拆开定义，是为了允许“只接收、不序列化”的中间对象存在。
 pub trait RowReceiver {
     fn BindAddress(&mut self, args: &mut [RawBytes]);
 }
-
-// 组合 trait，表示“既能接收绑定，也能序列化自己”。
-pub trait RowReceiverStringer: RowReceiver + Stringer {}
 
 // StringIter 用于顺序产出 special comments 等文本片段。
 // 这里故意用迭代器协议，而不是直接暴露 `Vec<String>`，方便惰性生成。
