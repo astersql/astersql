@@ -2136,6 +2136,72 @@ fn bootstrap_canonical_nextgen_schemas(domain: &Arc<Domain>) -> SessionResult<()
     Ok(())
 }
 
+/// Create the masking table through KV metadata before classic upgrade DDL can
+/// consult it. The caller has re-read the version while holding the owner lock.
+pub(super) fn init_bootstrap_dependent_tables(
+    domain: &Arc<Domain>,
+    version: Option<i64>,
+) -> SessionResult<()> {
+    if astersql_config_kerneltype::IsNextGen()
+        || !version.is_some_and(|v| v > 0 && v < crate::upgrade_def::version260)
+        || unsafe { crate::upgrade_def::currentBootstrapVersion } < crate::upgrade_def::version260
+    {
+        return Ok(());
+    }
+    let mut created = false;
+    domain.storage_handle().with_storage(|store| {
+        let context = kv::WithInternalSourceType(kv::Context::default(), kv::InternalTxnDDL);
+        kv::RunInNewTxn(&context, store, true, |_, txn| {
+            created = false;
+            let databases = astersql_meta::TransactionMutator::new(txn)
+                .list_databases().map_err(kv::errors::New)?;
+            let database_id = databases.iter().find(|db| db.Name.L == "mysql")
+                .map_or(astersql_meta_metadef::SystemDatabaseID, |db| db.ID);
+            let mut runtime = CanonicalBootstrapSchemaRuntime { txn, changed: false };
+            if !databases.iter().any(|db| db.Name.L == "mysql") {
+                crate::bootstrap::BootstrapSchemaRuntime::create_system_database(
+                    &mut runtime,
+                    crate::bootstrap::DatabaseBasicInfo { id: database_id, name: "mysql", tables: &[] },
+                ).map_err(kv::errors::New)?;
+            }
+            let tables = astersql_meta::TransactionMutator::new(runtime.txn)
+                .list_tables(database_id).map_err(kv::errors::New)?;
+            if tables.iter().any(|table| table.Name.L == "tidb_masking_policy") {
+                return Ok(());
+            }
+            let id = kv::IncInt64(runtime.txn, &astersql_meta::transaction_meta_string_key(b"NextGlobalID"), 1)?;
+            crate::bootstrap::BootstrapSchemaRuntime::create_and_split_system_table(
+                &mut runtime, database_id,
+                crate::bootstrap::TableBasicInfo {
+                    id, name: "tidb_masking_policy",
+                    create_sql: astersql_meta_metadef::CreateTiDBMaskingPolicyTable,
+                },
+            ).map_err(kv::errors::New)?;
+            // Publish the directly created metadata through the canonical schema
+            // bridge so subsequent upgrade SQL sees it without running CREATE DDL.
+            let version = astersql_meta::TransactionMutator::new(runtime.txn)
+                .gen_schema_version().map_err(kv::errors::New)?;
+            runtime.txn.Set(astersql_meta::transaction_meta_string_key(format!("Diff:{version}").as_bytes()),
+                serde_json::to_vec(&serde_json::json!({"version":version,"type":0,"regenerate_schema_map":true}))
+                    .map_err(|e| kv::errors::New(e.to_string()))?)?;
+            created = true;
+            Ok(())
+        })
+    }).map_err(|e| session_error("initialize bootstrap-dependent masking table", e))?;
+    if created {
+        domain
+            .reload()
+            .map_err(|e| session_error("reload bootstrap-dependent table", e))?;
+        let table = domain
+            .table_by_name("mysql", "tidb_masking_policy")
+            .map_err(|e| session_error("load bootstrap-dependent table", e))?;
+        domain
+            .register_stats_table("mysql", table.as_ref().clone())
+            .map_err(|e| session_error("publish bootstrap-dependent table", e))?;
+    }
+    Ok(())
+}
+
 /// Persist mysql/sys bootstrap metadata into an initialized canonical Domain.
 ///
 /// Virtual INFORMATION_SCHEMA, PERFORMANCE_SCHEMA and METRICS_SCHEMA tables are
@@ -2172,10 +2238,18 @@ pub fn BootstrapCanonicalDomain(domain: Arc<Domain>) -> SessionResult<ConcreteSe
         }
     }
 
+    init_bootstrap_dependent_tables(&domain, previous_bootstrap_version)?;
     for database in ["mysql", "sys", "test"] {
         session.execute(&format!("CREATE DATABASE IF NOT EXISTS {database}"))?;
     }
     for definition in astersql_meta_metadef::BootstrapSystemTableDefinitions {
+        // Fresh bootstrap owns creation; classic upgrades below v260 were
+        // initialized directly above. A later restart must preserve user renames.
+        if definition.name == "tidb_masking_policy"
+            && previous_bootstrap_version.is_some_and(|v| v > 0)
+        {
+            continue;
+        }
         if domain.stats_table("mysql", definition.name).is_none() {
             session.execute(definition.create_sql).map_err(|error| {
                 SessionError::new(format!(

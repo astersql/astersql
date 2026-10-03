@@ -92,7 +92,9 @@ impl ConcreteSession {
             "tidb_softdelete_table_status" => {
                 Some(astersql_meta_metadef::TiDBSoftDeleteTableStatusTableID)
             }
-            "tidb_masking_policy" => Some(astersql_meta_metadef::TiDBMaskingPolicyTableID),
+            "tidb_masking_policy" if astersql_config_kerneltype::IsNextGen() => {
+                Some(astersql_meta_metadef::TiDBMaskingPolicyTableID)
+            }
             _ => None,
         }
     }

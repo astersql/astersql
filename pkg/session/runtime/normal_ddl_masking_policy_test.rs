@@ -351,6 +351,9 @@ fn masking_policy_upgrade_189_254_recreates_missing_masking_table_after_restart(
         let table = restarted
             .table_by_name("mysql", "tidb_masking_policy")
             .unwrap();
+        assert!(!astersql_meta_metadef::IsReservedID(policy.ID));
+        assert!(!astersql_meta_metadef::IsReservedID(table.ID));
+        assert_ne!(policy.ID, table.ID);
         let expected = [
             "policy_id",
             "policy_name",
@@ -3173,5 +3176,129 @@ impl Drop for CloudSortConfiguration {
         if let Some(path) = &self.directory {
             std::fs::remove_dir_all(path).unwrap();
         }
+    }
+}
+
+#[test]
+fn masking_policy_restart_preserves_renamed_system_table() {
+    if astersql_config_kerneltype::IsNextGen() {
+        return;
+    }
+    for concurrent_upgrade in [false, true] {
+        let f = Fixture::new();
+        seed_policy(&f, 9606);
+        f.pool
+            .acquire()
+            .unwrap()
+            .query("RENAME TABLE mysql.tidb_masking_policy TO mysql.tidb_masking_policy_bak")
+            .unwrap();
+        let backup = f
+            .domain
+            .table_by_name("mysql", "tidb_masking_policy_bak")
+            .unwrap();
+        let current = unsafe { crate::upgrade_def::currentBootstrapVersion };
+        if concurrent_upgrade {
+            f.pool.acquire().unwrap().query("UPDATE mysql.tidb SET variable_value='189' WHERE variable_name='tidb_server_version'").unwrap();
+        }
+        let lock = super::session::acquire_bootstrap_upgrade_lock(&f.domain, || {
+            f.pool.acquire().unwrap().query(format!("UPDATE mysql.tidb SET variable_value='{current}' WHERE variable_name='tidb_server_version'")).unwrap();
+            Ok(())
+        }).unwrap();
+        assert_eq!(lock.is_some(), concurrent_upgrade);
+        super::BootstrapCanonicalDomain(f.domain.clone()).unwrap();
+        assert!(
+            f.domain
+                .table_by_name("mysql", "tidb_masking_policy")
+                .is_err()
+        );
+        assert_eq!(
+            f.domain
+                .table_by_name("mysql", "tidb_masking_policy_bak")
+                .unwrap()
+                .ID,
+            backup.ID
+        );
+        assert_eq!(
+            f.pool
+                .acquire()
+                .unwrap()
+                .query("SELECT policy_id FROM mysql.tidb_masking_policy_bak")
+                .unwrap(),
+            vec![vec!["9606".to_string()]]
+        );
+    }
+}
+
+#[test]
+fn masking_policy_dependent_table_initialization_is_versioned_and_idempotent() {
+    let f = Fixture::new();
+    seed_policy(&f, 9606);
+    let original = f
+        .domain
+        .table_by_name("mysql", "tidb_masking_policy")
+        .unwrap();
+    let handle = f.domain.storage_handle();
+    let read_id = || {
+        let txn = handle.with_storage(|s| s.Begin(&[])).unwrap();
+        txn.Get(
+            &astersql_kv::Context::default(),
+            astersql_meta::transaction_meta_string_key(b"NextGlobalID"),
+            &[],
+        )
+        .unwrap()
+        .Value
+    };
+    let before = read_id();
+    for version in [Some(189), Some(254), Some(189)] {
+        super::session::init_bootstrap_dependent_tables(&f.domain, version).unwrap();
+    }
+    assert_eq!(read_id(), before);
+    assert_eq!(
+        f.domain
+            .table_by_name("mysql", "tidb_masking_policy")
+            .unwrap()
+            .ID,
+        original.ID
+    );
+    assert_eq!(
+        f.pool
+            .acquire()
+            .unwrap()
+            .query("SELECT policy_id FROM mysql.tidb_masking_policy")
+            .unwrap(),
+        vec![vec!["9606".to_string()]]
+    );
+    f.pool
+        .acquire()
+        .unwrap()
+        .query("RENAME TABLE mysql.tidb_masking_policy TO mysql.tidb_masking_policy_bak")
+        .unwrap();
+    for version in [None, Some(0), Some(260), Some(261)] {
+        super::session::init_bootstrap_dependent_tables(&f.domain, version).unwrap();
+        assert!(
+            f.domain
+                .table_by_name("mysql", "tidb_masking_policy")
+                .is_err()
+        );
+        assert_eq!(read_id(), before);
+    }
+    super::session::init_bootstrap_dependent_tables(&f.domain, Some(189)).unwrap();
+    if astersql_config_kerneltype::IsNextGen() {
+        assert!(
+            f.domain
+                .table_by_name("mysql", "tidb_masking_policy")
+                .is_err()
+        );
+    } else {
+        let created = f
+            .domain
+            .table_by_name("mysql", "tidb_masking_policy")
+            .unwrap();
+        assert!(!astersql_meta_metadef::IsReservedID(created.ID));
+        assert_ne!(created.ID, original.ID);
+        assert_eq!(created.Columns.len(), 14);
+        let after = read_id();
+        super::session::init_bootstrap_dependent_tables(&f.domain, Some(189)).unwrap();
+        assert_eq!(read_id(), after);
     }
 }
