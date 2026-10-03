@@ -790,3 +790,82 @@ fn datagrip_native_introspection_supports_boolean_projection_and_positional_orde
     assert!(!minor_names.is_empty());
     assert!(minor_names.iter().all(|row| row[3].parse::<u64>().is_ok()));
 }
+
+#[test]
+fn information_schema_table_ids_keep_pairs_when_schema_is_dropped() {
+    let (domain, session) = CreateAnalyzeSession().expect("metadata session");
+    for sql in [
+        "create database metadata_drop",
+        "create database metadata_keep",
+        "create table metadata_drop.z_removed (id int)",
+        "create table metadata_drop.a_removed (id int)",
+        "create table metadata_keep.b_retained (id int)",
+        "create table metadata_keep.a_retained (id int)",
+    ] {
+        session
+            .execute(sql)
+            .expect("create nonempty schema fixtures");
+    }
+    let before = execute_rows(
+        &session,
+        "select table_schema, table_name, tidb_table_id from information_schema.tables \
+         where table_schema in ('metadata_drop', 'metadata_keep') \
+         order by table_schema, table_name",
+    );
+    assert_eq!(before.len(), 4);
+    assert_eq!(
+        before
+            .iter()
+            .map(|row| (row[0].as_str(), row[1].as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("metadata_drop", "a_removed"),
+            ("metadata_drop", "z_removed"),
+            ("metadata_keep", "a_retained"),
+            ("metadata_keep", "b_retained"),
+        ],
+    );
+    let ids = before
+        .iter()
+        .map(|row| row[2].as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "select table_schema, table_name, tidb_table_id from information_schema.tables \
+         where tidb_table_id in ({ids}) order by table_schema, table_name"
+    );
+    // The real consumer owns paired catalog data before DDL. Drop the schema
+    // from another thread before reading any rows: no later SchemaByID lookup
+    // may panic or detach a surviving table from its schema.
+    let pending = execute_record_set(&session, &sql);
+    let ddl_domain = domain.clone();
+    std::thread::spawn(move || {
+        ddl_domain
+            .ddl_drop_database("metadata_drop", false)
+            .expect("drop schema");
+    })
+    .join()
+    .expect("DDL thread must not panic");
+    assert!(
+        !domain
+            .ddl_database_names()
+            .expect("read canonical schema names")
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case("metadata_drop"))
+    );
+    assert_eq!(collect(pending), before);
+    let retained = before
+        .into_iter()
+        .filter(|row| row[0] == "metadata_keep")
+        .collect::<Vec<_>>();
+    assert_eq!(retained.len(), 2);
+    assert_eq!(execute_rows(&session, &sql), retained);
+    assert!(
+        execute_rows(
+            &session,
+            "select table_schema, table_name from information_schema.tables \
+         where table_schema = 'metadata_drop'",
+        )
+        .is_empty()
+    );
+}
