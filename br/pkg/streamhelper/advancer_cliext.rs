@@ -246,8 +246,23 @@ impl AdvancerExt {
         std::thread::spawn(move || {
             let mut last_progress = Instant::now();
             let mut last_progress_request = Instant::now();
+            let collect_remaining = || {
+                // The Rust transport does not close watches on context cancellation;
+                // drain responses already delivered by both watches before the terminal error.
+                for receiver in [&task_watch, &pause_watch] {
+                    for event in receiver.try_iter() {
+                        if event.Type != WatchEventType::Progress {
+                            let event = this.toTaskEvent(event).unwrap_or_else(errorEvent);
+                            if ch.send(event).is_err() {
+                                return;
+                            }
+                        }
+                    }
+                }
+            };
             loop {
                 if ctx.is_canceled() {
+                    collect_remaining();
                     let _ = ch.send(errorEvent("watch canceled".into()));
                     return;
                 }
@@ -267,7 +282,13 @@ impl AdvancerExt {
                             }
                             Err(mpsc::TryRecvError::Empty) => break,
                             Err(mpsc::TryRecvError::Disconnected) => {
-                                let _ = ch.send(errorEvent("watch channel closed".into()));
+                                let error = if ctx.is_canceled() {
+                                    collect_remaining();
+                                    "watch canceled"
+                                } else {
+                                    "EOF"
+                                };
+                                let _ = ch.send(errorEvent(error.into()));
                                 return;
                             }
                         }

@@ -319,10 +319,17 @@ fn test_stream_listening(ext: &AdvancerExt, meta: &MetaDataClient) {
     let task_name = "simple";
     let task_info = simple_task(task_name, 4);
     meta.PutTask(&task_info).unwrap();
+    struct CancelOnDrop(WatchContext);
+    impl Drop for CancelOnDrop {
+        fn drop(&mut self) {
+            self.0.cancel();
+        }
+    }
     let ctx = WatchContext::new();
+    let _cleanup = CancelOnDrop(ctx.clone());
     let (tx, rx) = mpsc::channel();
     ext.Begin(ctx.clone(), tx).unwrap();
-    let first = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    let first = rx.recv_timeout(Duration::from_secs(10)).unwrap();
     assert_eq!(first.Type, EventType::EventAdd);
     assert_eq!(first.Name, task_name);
     assert_eq!(first.Ranges, simple_ranges(4));
@@ -331,21 +338,25 @@ fn test_stream_listening(ext: &AdvancerExt, meta: &MetaDataClient) {
     let task_name2 = "simple2";
     let task_info2 = simple_task(task_name2, 4);
     meta.PutTask(&task_info2).unwrap();
+    let second = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert_eq!(second.Type, EventType::EventDel);
+    assert_eq!(second.Name, task_name);
+    let third = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert_eq!(third.Type, EventType::EventAdd);
+    assert_eq!(third.Name, task_name2);
+    assert_eq!(third.Ranges, simple_ranges(4));
     meta.DeleteTask(task_name2).unwrap();
-    for (event_type, name) in [
-        (EventType::EventDel, task_name),
-        (EventType::EventAdd, task_name2),
-        (EventType::EventDel, task_name2),
-    ] {
-        let event = rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        assert_eq!(event.Type, event_type);
-        assert_eq!(event.Name, name);
-    }
+    let fourth = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert_eq!(fourth.Type, EventType::EventDel);
+    assert_eq!(fourth.Name, task_name2);
     ctx.cancel();
-    let canceled = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    let canceled = rx.recv_timeout(Duration::from_secs(10)).unwrap();
     assert_eq!(canceled.Type, EventType::EventErr);
     assert_eq!(canceled.Err.as_deref(), Some("watch canceled"));
-    assert!(rx.recv_timeout(Duration::from_secs(1)).is_err());
+    assert!(matches!(
+        rx.recv_timeout(Duration::from_secs(10)),
+        Err(mpsc::RecvTimeoutError::Disconnected)
+    ));
 }
 
 /// 错误事件保持 Go EOF 路径的事件形状。

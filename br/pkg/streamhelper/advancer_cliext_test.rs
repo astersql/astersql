@@ -378,3 +378,143 @@ fn metadata_deadlines_and_parent_cancellation_join_workers() {
     assert_eq!(attempts.load(SeqCst), 4);
     assert_eq!(active.load(SeqCst), 0);
 }
+
+// Only the watch transport is replaced: snapshot and event conversion use the real client.
+struct ClosingWatchKV {
+    inner: MemEtcd,
+    ctx: WatchContext,
+    cancel_on_watch: bool,
+    cancel_on_conversion: bool,
+    closed_prefix: String,
+}
+impl EtcdKV for ClosingWatchKV {
+    fn Put(&self, k: &str, v: &[u8]) -> Result<(), String> {
+        self.inner.Put(k, v)
+    }
+    fn Get(&self, k: &str) -> Result<Vec<u8>, String> {
+        self.inner.Get(k)
+    }
+    fn Delete(&self, k: &str) -> Result<(), String> {
+        self.inner.Delete(k)
+    }
+    fn GetPrefix(&self, p: &str) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
+        if self.cancel_on_conversion && p == crate::RangesOf("buffered") {
+            self.ctx.cancel();
+        }
+        self.inner.GetPrefix(p)
+    }
+    fn DeletePrefix(&self, p: &str) -> Result<(), String> {
+        self.inner.DeletePrefix(p)
+    }
+    fn GetWithRevision(&self, k: &str) -> Result<crate::stubs::RevisionedValue, String> {
+        self.inner.GetWithRevision(k)
+    }
+    fn GetPrefixWithRevision(&self, p: &str) -> Result<(Vec<(Vec<u8>, Vec<u8>)>, i64), String> {
+        self.inner.GetPrefixWithRevision(p)
+    }
+    fn RequestWatchProgress(&self) -> Result<(), String> {
+        Ok(())
+    }
+    fn WatchPrefix(&self, p: &str, r: i64) -> Result<mpsc::Receiver<crate::WatchEvent>, String> {
+        let (tx, rx) = mpsc::channel();
+        if self.cancel_on_conversion && p == crate::PrefixOfTask() {
+            tx.send(crate::WatchEvent {
+                Type: crate::WatchEventType::Put,
+                Key: TaskOf("buffered").into_bytes(),
+                Value: serde_json::to_vec(&task("buffered").PBInfo).unwrap(),
+                ModRevision: r,
+            })
+            .unwrap();
+        }
+        if self.cancel_on_watch || self.cancel_on_conversion {
+            tx.send(crate::WatchEvent {
+                Type: crate::WatchEventType::Delete,
+                Key: format!("{p}buffered").into_bytes(),
+                Value: Vec::new(),
+                ModRevision: r,
+            })
+            .unwrap();
+            if self.cancel_on_watch {
+                self.ctx.cancel();
+            }
+        } else if p != self.closed_prefix {
+            return self.inner.WatchPrefix(p, r);
+        }
+        Ok(rx)
+    }
+}
+
+#[test]
+fn canceled_listener_drains_both_closed_watches_before_cancel_error() {
+    let ctx = WatchContext::new();
+    let kv = Arc::new(ClosingWatchKV {
+        inner: MemEtcd::new(),
+        ctx: ctx.clone(),
+        cancel_on_watch: true,
+        cancel_on_conversion: false,
+        closed_prefix: String::new(),
+    });
+    let meta = NewMetaDataClient(kv);
+    meta.PutTask(&task("snapshot")).unwrap();
+    let (tx, rx) = mpsc::channel();
+    AdvancerExt { meta }.Begin(ctx, tx).unwrap();
+    assert_eq!(recv(&rx).Name, "snapshot");
+    for expected in [EventType::EventDel, EventType::EventResume] {
+        let event = recv(&rx);
+        assert_eq!(event.Type, expected);
+        assert_eq!(event.Name, "buffered");
+    }
+    let error = recv(&rx);
+    assert_eq!(error.Type, EventType::EventErr);
+    assert_eq!(error.Err.as_deref(), Some("watch canceled"));
+    assert!(matches!(
+        rx.recv_timeout(Duration::from_secs(2)),
+        Err(mpsc::RecvTimeoutError::Disconnected)
+    ));
+}
+
+#[test]
+fn closed_task_or_pause_watch_without_cancellation_reports_eof() {
+    for prefix in [crate::PrefixOfTask(), crate::PrefixOfPause()] {
+        let ctx = WatchContext::new();
+        let meta = NewMetaDataClient(Arc::new(ClosingWatchKV {
+            inner: MemEtcd::new(),
+            ctx: ctx.clone(),
+            cancel_on_watch: false,
+            cancel_on_conversion: false,
+            closed_prefix: prefix,
+        }));
+        let (tx, rx) = mpsc::channel();
+        AdvancerExt { meta }.Begin(ctx, tx).unwrap();
+        let error = recv(&rx);
+        assert_eq!(error.Type, EventType::EventErr);
+        assert_eq!(error.Err.as_deref(), Some("EOF"));
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_secs(2)),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        ));
+    }
+}
+
+#[test]
+fn cancellation_when_task_watch_closes_drains_pause_watch() {
+    let ctx = WatchContext::new();
+    let meta = NewMetaDataClient(Arc::new(ClosingWatchKV {
+        inner: MemEtcd::new(),
+        ctx: ctx.clone(),
+        cancel_on_watch: false,
+        cancel_on_conversion: true,
+        closed_prefix: String::new(),
+    }));
+    let (tx, rx) = mpsc::channel();
+    AdvancerExt { meta }.Begin(ctx, tx).unwrap();
+    assert_eq!(recv(&rx).Type, EventType::EventAdd);
+    assert_eq!(recv(&rx).Type, EventType::EventDel);
+    assert_eq!(recv(&rx).Type, EventType::EventResume);
+    let error = recv(&rx);
+    assert_eq!(error.Err.as_deref(), Some("watch canceled"));
+    assert!(matches!(
+        rx.recv_timeout(Duration::from_secs(2)),
+        Err(mpsc::RecvTimeoutError::Disconnected)
+    ));
+}
