@@ -459,3 +459,50 @@ fn common_handle_suffix_respects_physical_key_layout_guards() {
         );
     }
 }
+
+#[test]
+fn appended_handle_point_estimate_aligns_to_table_selectivity() {
+    let mut source = DataSource::default();
+    source.TableStats.RowCount = 2.0;
+    source.PossibleAccessPaths = vec![planner_util::AccessPath {
+        Index: Some(model::IndexInfo {
+            Columns: vec![model::IndexColumn::default()],
+            ..Default::default()
+        }),
+        IdxCols: vec![planner_column(1, 101), planner_column(2, 102)],
+        Ranges: vec![ranger::Range {
+            LowVal: vec![
+                expression::types::NewIntDatum(5),
+                expression::types::NewIntDatum(7),
+            ],
+            HighVal: vec![
+                expression::types::NewIntDatum(5),
+                expression::types::NewIntDatum(7),
+            ],
+            Collators: expression::collate::GetBinaryCollatorSlice(2),
+            ..Default::default()
+        }],
+        CountAfterAccess: 1.0,
+        MinCountAfterAccess: 0.5,
+        MaxCountAfterAccess: 1.0,
+        ..Default::default()
+    }];
+    source.DeriveStats(true).unwrap();
+    let path = &source.PossibleAccessPaths[0];
+    assert_eq!(path.CountAfterAccess, 2.0);
+    assert_eq!(path.MinCountAfterAccess, 0.5);
+    assert_eq!(path.MaxCountAfterAccess, 2.0);
+
+    source.TableStats.RowCount = 2.0 + cost::factors_thresholds::ToleranceFactor / 2.0;
+    source.DeriveStats(true).unwrap();
+    assert_eq!(source.PossibleAccessPaths[0].CountAfterAccess, 2.0);
+
+    source.TableStats.RowCount = 3.0;
+    source.PossibleAccessPaths[0].MinCountAfterAccess = 0.0;
+    source.PossibleAccessPaths[0].MaxCountAfterAccess = 5.0;
+    source.DeriveStats(true).unwrap();
+    let path = &source.PossibleAccessPaths[0];
+    assert_eq!(path.CountAfterAccess, 3.0);
+    assert_eq!(path.MinCountAfterAccess, 2.0);
+    assert_eq!(path.MaxCountAfterAccess, 5.0);
+}

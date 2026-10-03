@@ -918,9 +918,12 @@ fn integration_multi_info_schema(
                 } else {
                     *expression::types::NewFieldType(expression::mysql::TypeLonglong)
                 };
-                if *table_name == "t3" && *column_name == "a" {
+                if matches!(*table_name, "t3" | "t3_unsigned") && *column_name == "a" {
                     field_type
                         .AddFlag(expression::mysql::PriKeyFlag | expression::mysql::NotNullFlag);
+                }
+                if *table_name == "t3_unsigned" && *column_name == "a" {
+                    field_type.AddFlag(expression::mysql::UnsignedFlag);
                 }
                 expression::model::ColumnInfo {
                     ID: table_id * 100 + column_offset as i64 + 1,
@@ -965,7 +968,7 @@ fn integration_multi_info_schema(
                     Available: true,
                     ..Default::default()
                 }),
-                PKIsHandle: *table_name == "t3",
+                PKIsHandle: matches!(*table_name, "t3" | "t3_unsigned"),
                 ..Default::default()
             });
             infoschema_dependency::infoschema::TableInfo {
@@ -1017,13 +1020,14 @@ fn go_merge_46_sql_mpp_null_eq_hash_join_is_selected() {
 }
 
 #[test]
-fn go_merge_46_sql_signed_handle_ranges_keep_full_bounds() {
+fn signed_handle_ranges_keep_bounds_and_credit_point_predicates() {
     let context = integration_plan_context(&[kv_dependency::StoreType::TiKV], "tikv", false, false);
     let schema = integration_multi_info_schema(&["t3"], false, Some(("ib", &["b"])), &[]);
-    for (predicate, point) in [
-        ("b = 5 and a > 10", false),
-        ("b = 5 and a < 10", false),
-        ("b = 5 and a = 7", true),
+    for (predicate, expected_rows) in [
+        ("b = 5 and a > 10", 10.0),
+        ("b = 5 and a < 10", 10.0),
+        ("b = 5 and a in (11, 22)", 2.0),
+        ("b = 5 and a = 7", 1.0),
     ] {
         let sql = format!("select * from t3 use index(ib) where {predicate}");
         let plan = optimize_go_merge_46_with_provider(
@@ -1040,7 +1044,7 @@ fn go_merge_46_sql_signed_handle_ranges_keep_full_bounds() {
                 .or_else(|| plan.children().iter().find_map(|child| find_scan(*child)))
         }
         let scan = find_scan(plan.as_ref()).expect("index range scan");
-        let expected_rows = if point { 1.0 } else { 10.0 };
+        let point = expected_rows < 10.0;
         assert!(
             (scan.stats_count() - expected_rows).abs() < 1e-9,
             "{sql}: estimated {} rows, expected {expected_rows}",
@@ -1055,6 +1059,40 @@ fn go_merge_46_sql_signed_handle_ranges_keep_full_bounds() {
             "{sql}: {} ranges",
             scan.Ranges.0.len()
         );
+        for range in &scan.Ranges.0 {
+            assert_eq!(range.LowVal[0].GetInt64(), 5, "{sql}");
+            assert_eq!(range.HighVal[0].GetInt64(), 5, "{sql}");
+        }
+        if predicate.ends_with("> 10") {
+            assert!(scan.Ranges.0[0].LowExclude);
+            assert_eq!(scan.Ranges.0[0].LowVal[1].GetInt64(), 10);
+            assert_eq!(
+                scan.Ranges.0[0].HighVal[1].Kind(),
+                expression::types::KindMaxValue
+            );
+        } else if predicate.ends_with("< 10") {
+            assert!(scan.Ranges.0[0].HighExclude);
+            assert_eq!(scan.Ranges.0[0].HighVal[1].GetInt64(), 10);
+            assert_eq!(
+                scan.Ranges.0[0].LowVal[1].Kind(),
+                expression::types::KindMinNotNull
+            );
+        } else {
+            let handles = scan
+                .Ranges
+                .0
+                .iter()
+                .map(|range| range.LowVal[1].GetInt64())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                handles,
+                if expected_rows == 2.0 {
+                    vec![11, 22]
+                } else {
+                    vec![7]
+                }
+            );
+        }
         if point {
             assert!(
                 scan.Ranges
@@ -4578,5 +4616,37 @@ fn common_handle_secondary_index_range_planning() {
                 scan.Index.as_ref().unwrap().Columns.len() + if composite { 2 } else { 1 }
             );
         }
+    }
+}
+
+#[test]
+fn unsigned_handle_predicates_keep_declared_index_ranges_and_counts() {
+    let context = integration_plan_context(&[kv_dependency::StoreType::TiKV], "tikv", false, false);
+    let schema = integration_multi_info_schema(&["t3_unsigned"], false, Some(("ib", &["b"])), &[]);
+    for predicate in ["b = 5 and a in (11, 22)", "b = 5 and a > 10"] {
+        let sql = format!("select * from t3_unsigned use index(ib) where {predicate}");
+        let plan = optimize_go_merge_46_with_provider(
+            &sql,
+            &context,
+            schema.clone(),
+            Arc::new(GoMerge46SignedHandleStatsProvider),
+        );
+        fn find_scan(
+            plan: &dyn base::PhysicalPlan,
+        ) -> Option<&physicalop_dependency::PhysicalIndexScan> {
+            plan.as_any()
+                .downcast_ref::<physicalop_dependency::PhysicalIndexScan>()
+                .or_else(|| plan.children().iter().find_map(|child| find_scan(*child)))
+        }
+        let scan = find_scan(plan.as_ref()).expect("index range scan");
+        assert_eq!(scan.IdxCols.len(), 1, "{sql}");
+        assert_eq!(scan.stats_count(), 10.0, "{sql}");
+        assert_eq!(scan.Ranges.0.len(), 1, "{sql}");
+        let range = &scan.Ranges.0[0];
+        assert_eq!(range.LowVal.len(), 1);
+        assert_eq!(range.HighVal.len(), 1);
+        assert_eq!(range.LowVal[0].GetInt64(), 5);
+        assert_eq!(range.HighVal[0].GetInt64(), 5);
+        assert!(!range.LowExclude && !range.HighExclude);
     }
 }

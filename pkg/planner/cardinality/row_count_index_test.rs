@@ -150,7 +150,7 @@ fn go_merge_46_zero_repeat_index_upper_uses_uniform_estimate() {
 }
 
 #[test]
-fn go_merge_46_appended_handle_damps_and_caps_full_point() {
+fn appended_handle_selectivity_merges_bounds_damps_and_caps_points() {
     let context = TestContext::default();
     let field_type = types::NewFieldType(mysql::TypeLonglong);
     let mut histogram = statistics::NewHistogram(2, 100, 0, 0, &field_type, 1, 0);
@@ -205,6 +205,78 @@ fn go_merge_46_appended_handle_damps_and_caps_full_point() {
     );
     assert!(result.Est > 1.0 && result.Est < 10.0, "{result:?}");
     assert_eq!(result.MaxEst, 10.0);
+    let single_estimate = result;
+    let mut repeated = range.clone();
+    repeated.LowVal[0] = types::NewIntDatum(6);
+    repeated.HighVal[0] = types::NewIntDatum(6);
+    let merged = AdjustRowCountForAppendedHandleColumns(
+        &context,
+        &coll,
+        &[&range, &repeated],
+        &[&index_col, &handle_col],
+        1,
+        statistics::DefaultRowEst(10.0),
+    );
+    assert_eq!(
+        merged, single_estimate,
+        "same handle bound is counted once across prefixes"
+    );
+    let mut exclusive = range.clone();
+    exclusive.LowExclude = true;
+    let exclusive_count = GetRowCountByColumnRanges(
+        &context,
+        &coll,
+        2,
+        &[&ranger::Range {
+            LowVal: vec![types::NewIntDatum(10)],
+            HighVal: vec![types::NewIntDatum(20)],
+            Collators: collate::GetBinaryCollatorSlice(1),
+            LowExclude: true,
+            ..Default::default()
+        }],
+        false,
+    )
+    .unwrap();
+    let exclusive_estimate = AdjustRowCountForAppendedHandleColumns(
+        &context,
+        &coll,
+        &[&exclusive],
+        &[&index_col, &handle_col],
+        1,
+        statistics::DefaultRowEst(10.0),
+    );
+    assert_eq!(
+        exclusive_estimate.Est,
+        10.0 * (exclusive_count.Est / 100.0).sqrt()
+    );
+    assert_eq!(
+        exclusive_estimate.MinEst,
+        10.0 * exclusive_count.Est / 100.0
+    );
+    let prefix_only = ranger::Range {
+        LowVal: vec![types::NewIntDatum(5)],
+        HighVal: vec![types::NewIntDatum(5)],
+        Collators: collate::GetBinaryCollatorSlice(1),
+        ..Default::default()
+    };
+    let unbound = AdjustRowCountForAppendedHandleColumns(
+        &context,
+        &coll,
+        &[&range, &prefix_only],
+        &[&index_col, &handle_col],
+        1,
+        statistics::DefaultRowEst(10.0),
+    );
+    assert_eq!(unbound, statistics::DefaultRowEst(10.0));
+    let small_prefix = AdjustRowCountForAppendedHandleColumns(
+        &context,
+        &coll,
+        &[&range],
+        &[&index_col, &handle_col],
+        1,
+        statistics::DefaultRowEst(0.5),
+    );
+    assert_eq!(small_prefix.Est, 0.5, "sub-row prefixes retain their floor");
 }
 
 #[test]
@@ -265,4 +337,33 @@ fn go_merge_46_virtual_column_recursive_index_error_uses_next_candidate() {
     .expect("second index must recover recursive estimation");
     assert!(found);
     assert!((estimate - 0.1).abs() < 1e-9, "estimate={estimate}");
+}
+
+#[test]
+fn appended_handle_missing_stats_keeps_prefix_and_point_cap() {
+    let context = TestContext::default();
+    let mut coll = statistics::NewHistColl(1, 100, 0, 0, 0);
+    let field_type = types::NewFieldType(mysql::TypeLonglong);
+    let index_col = expression::Column::new(*field_type.clone(), 1, 1, 0);
+    let handle_col = expression::Column::new(*field_type, 2, 2, 1);
+    let point = ranger::Range {
+        LowVal: vec![types::NewIntDatum(5), types::NewIntDatum(7)],
+        HighVal: vec![types::NewIntDatum(5), types::NewIntDatum(7)],
+        Collators: collate::GetBinaryCollatorSlice(2),
+        ..Default::default()
+    };
+    let prefix = statistics::DefaultRowEst(10.0);
+    let adjust = |coll: &statistics::HistColl,
+                  ranges: &[&ranger::Range],
+                  columns: &[&expression::Column]| {
+        AdjustRowCountForAppendedHandleColumns(&context, coll, ranges, columns, 1, prefix)
+    };
+    assert_eq!(adjust(&coll, &[], &[&index_col, &handle_col]), prefix);
+    assert_eq!(adjust(&coll, &[&point], &[&index_col]), prefix);
+    assert_eq!(
+        adjust(&coll, &[&point], &[&index_col, &handle_col]),
+        statistics::DefaultRowEst(1.0)
+    );
+    coll.RealtimeCount = 0;
+    assert_eq!(adjust(&coll, &[&point], &[&index_col, &handle_col]), prefix);
 }

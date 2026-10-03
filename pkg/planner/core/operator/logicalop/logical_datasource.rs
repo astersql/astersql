@@ -586,7 +586,7 @@ impl DataSource {
             .map(|handle| handle.IterColumns().cloned().collect::<Vec<_>>())
             .unwrap_or_default();
 
-        let mut appended_common_handles = Vec::new();
+        let mut appended_handles = Vec::new();
         for path in &mut self.PossibleAccessPaths {
             if path.IsTablePath() {
                 let Some(handle) = handle_column.as_ref() else {
@@ -757,7 +757,7 @@ impl DataSource {
                             .any(|column| column.UniqueID == handle.UniqueID)
                     });
                 if append_common_handle {
-                    appended_common_handles.push((
+                    appended_handles.push((
                         index.ID,
                         index.Columns.len(),
                         self.CommonHandleCols
@@ -777,6 +777,13 @@ impl DataSource {
                         .iter()
                         .any(|column| column.UniqueID == handle_columns[0].UniqueID)
                 {
+                    // Selectivity's index backoff must see the appended handle
+                    // in the same column mapping as the execution range.
+                    appended_handles.push((
+                        index.ID,
+                        index.Columns.len(),
+                        vec![handle_columns[0].UniqueID],
+                    ));
                     index_columns.push(handle_columns[0].Clone());
                     index_lengths.push(expression::types::UnspecifiedLength);
                 }
@@ -1134,24 +1141,24 @@ impl DataSource {
             }
             self.PossibleAccessPaths.extend(index_merge_paths);
         }
-        if !appended_common_handles.is_empty()
+        if !appended_handles.is_empty()
             && let Some(histogram) = self
                 .TableStats
                 .HistColl
                 .as_deref()
                 .and_then(|histogram| histogram.downcast_ref::<statistics::HistColl>())
         {
-            appended_common_handles.retain(|(id, count, _)| {
+            appended_handles.retain(|(id, count, _)| {
                 histogram
                     .Idx2ColUniqueIDs
                     .get(id)
                     .is_some_and(|mapped| mapped.len() == *count)
             });
-            if !appended_common_handles.is_empty() {
+            if !appended_handles.is_empty() {
                 // The histogram is shared as an opaque Arc; publish a new
                 // snapshot rather than mutate another plan's statistics.
                 let mut updated = histogram.Copy();
-                for (index_id, _, handle_ids) in appended_common_handles {
+                for (index_id, _, handle_ids) in appended_handles {
                     updated
                         .Idx2ColUniqueIDs
                         .get_mut(&index_id)
@@ -1461,14 +1468,11 @@ impl DataSource {
                             || range.HighVal.len() > index.Columns.len()
                     })
             });
-            let complete_handle_point_cap = path.MaxCountAfterAccess <= path.Ranges.len() as f64
-                && path.Ranges.iter().all(|range| {
-                    range.LowVal.len() == path.IdxCols.len()
-                        && range.HighVal.len() == path.IdxCols.len()
-                });
+            // Handle selectivity is deliberately damped. Align every appended
+            // handle path, including points, without the SelectionFactor penalty.
             if appended_handle_range
-                && !complete_handle_point_cap
-                && path.CountAfterAccess + 1e-9 < stats.RowCount
+                && path.CountAfterAccess + cost::factors_thresholds::ToleranceFactor
+                    < stats.RowCount
             {
                 path.MinCountAfterAccess = if path.MinCountAfterAccess > 0.0 {
                     path.MinCountAfterAccess.min(path.CountAfterAccess)
