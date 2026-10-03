@@ -18,9 +18,15 @@ struct Runtime {
     /// 被 close_statement 记录的语句 ID 序列。
     closed: Mutex<Vec<u32>>,
     max_packet: Mutex<Option<u64>>,
+    memory: Option<Arc<TestLongDataMemory>>,
 }
 
 impl StatementRuntime for Runtime {
+    fn long_data_memory(&self) -> Option<Arc<dyn LongDataMemory>> {
+        self.memory
+            .clone()
+            .map(|memory| memory as Arc<dyn LongDataMemory>)
+    }
     fn max_allowed_packet(&self) -> u64 {
         self.max_packet.lock().unwrap().unwrap_or(1024)
     }
@@ -232,6 +238,7 @@ fn install_statement(cc: &mut clientConn, id: u32) {
             columns: Vec::new(),
             bound_params: Vec::new(),
             bound_params_too_large: false,
+            long_data: Default::default(),
             max_allowed_packet: 64 << 20,
             params_type: Vec::new(),
             last_params: Vec::new(),
@@ -1096,4 +1103,123 @@ fn long_data_rechecks_current_limit_and_reset_clears_rejection() {
     assert!(cc.statements[&7].bound_params_too_large);
     handleStmtReset(&mut cc, &[7, 0, 0, 0]).unwrap();
     assert!(!cc.statements[&7].bound_params_too_large);
+}
+
+pub(crate) struct TestLongDataMemory {
+    pub tracker: Box<astersql_util_memory::tracker::Tracker>,
+    pub quota: std::sync::atomic::AtomicI64,
+}
+impl TestLongDataMemory {
+    pub fn new(quota: i64) -> Arc<Self> {
+        Arc::new(Self {
+            tracker: astersql_util_memory::tracker::NewTracker(
+                astersql_util_memory::tracker::LabelForSession,
+                quota,
+            ),
+            quota: std::sync::atomic::AtomicI64::new(quota),
+        })
+    }
+}
+impl LongDataMemory for TestLongDataMemory {
+    fn charge(&self, bytes: i64) -> Result<(bool, u64), Error> {
+        let quota = self.quota.load(Ordering::SeqCst);
+        self.tracker.SetBytesLimit(quota);
+        if bytes > 0 && quota > 0 && self.tracker.BytesConsumed() + bytes >= quota {
+            return Ok((false, 42));
+        }
+        self.tracker.Consume(bytes);
+        Ok((true, 42))
+    }
+}
+
+#[test]
+fn long_data_mem_quota_accounts_and_recovers_after_execute_and_close() {
+    let memory = TestLongDataMemory::new(1024);
+    let runtime = Arc::new(Runtime {
+        memory: Some(memory.clone()),
+        max_packet: Mutex::new(Some(64 << 20)),
+        ..Default::default()
+    });
+    let mut cc = connection(runtime.clone());
+    HandleStmtPrepare(&mut cc, "select ?, ?").unwrap();
+    let send = |cc: &mut clientConn, size: usize, byte: u8| {
+        let mut packet = vec![7, 0, 0, 0, 0, 0];
+        packet.resize(6 + size, byte);
+        handleStmtSendLongData(cc, &packet).unwrap();
+    };
+    send(&mut cc, 600, b'a');
+    assert_eq!(memory.tracker.BytesConsumed(), 600);
+    assert_eq!(memory.tracker.GetBytesLimit(), 1024);
+    cc.statements[&7]
+        .long_data
+        .check(&cc.statements[&7].bound_params, false, 64 << 20)
+        .unwrap();
+    send(&mut cc, 500, b'b');
+    assert_eq!(
+        cc.statements[&7].bound_params[0].as_ref().unwrap().len(),
+        600
+    );
+    assert_eq!(memory.tracker.BytesConsumed(), 600);
+    assert_eq!(memory.tracker.GetBytesLimit(), 1024);
+    send(&mut cc, 1, b'x');
+    assert_eq!(memory.tracker.BytesConsumed(), 600);
+    *runtime.max_packet.lock().unwrap() = Some(1); // memory error takes precedence over a newly lowered packet limit
+    let err = handleStmtExecute(&mut cc, &[7, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]).unwrap_err();
+    assert_eq!(err, Error::MemoryQuotaExceeded(42));
+    assert!(err.to_string().contains("[conn=42]"));
+    assert_eq!(memory.tracker.BytesConsumed(), 0);
+    assert_eq!(cc.statements[&7].bound_params, vec![None, None]);
+    *runtime.max_packet.lock().unwrap() = Some(64 << 20);
+    send(&mut cc, 1023, b'c');
+    assert_eq!(memory.tracker.BytesConsumed(), 1023);
+    handleStmtClose(&mut cc, &[7, 0, 0, 0]).unwrap();
+    assert_eq!(memory.tracker.BytesConsumed(), 0);
+}
+
+#[test]
+fn long_data_quota_boundaries_share_session_consumption_and_preserve_packet_priority() {
+    let memory = TestLongDataMemory::new(1024);
+    memory.tracker.Consume(20);
+    let runtime = Arc::new(Runtime {
+        memory: Some(memory.clone()),
+        ..Default::default()
+    });
+    let mut cc = connection(runtime);
+    HandleStmtPrepare(&mut cc, "select ?, ?").unwrap();
+    let send = |cc: &mut clientConn, param: u16, size: usize| {
+        let mut packet = 7u32.to_le_bytes().to_vec();
+        packet.extend_from_slice(&param.to_le_bytes());
+        packet.resize(6 + size, b'a');
+        handleStmtSendLongData(cc, &packet).unwrap();
+    };
+    send(&mut cc, 0, 600);
+    send(&mut cc, 1, 403);
+    assert_eq!(memory.tracker.BytesConsumed(), 1023);
+    send(&mut cc, 1, 1); // exact quota is refused
+    assert_eq!(memory.tracker.BytesConsumed(), 1023);
+    send(&mut cc, 0, 0); // release even after rejection; error remains sticky
+    assert_eq!(memory.tracker.BytesConsumed(), 423);
+    send(&mut cc, 0, 1);
+    assert_eq!(cc.statements[&7].bound_params[0], Some(Vec::new()));
+    handleStmtReset(&mut cc, &[7, 0, 0, 0]).unwrap();
+    assert_eq!(memory.tracker.BytesConsumed(), 20);
+    send(&mut cc, 0, 1025); // packet limit checked before quota
+    let statement = &cc.statements[&7];
+    assert_eq!(
+        statement.long_data.check(
+            &statement.bound_params,
+            statement.bound_params_too_large,
+            1024
+        ),
+        Err(Error::NetPacketTooLarge)
+    );
+    handleStmtReset(&mut cc, &[7, 0, 0, 0]).unwrap();
+    memory.quota.store(-1, Ordering::SeqCst);
+    send(&mut cc, 0, 1024);
+    send(&mut cc, 1, 1024);
+    assert_eq!(memory.tracker.BytesConsumed(), 2068);
+    send(&mut cc, 0, 0);
+    assert_eq!(memory.tracker.BytesConsumed(), 1044);
+    handleStmtClose(&mut cc, &[7, 0, 0, 0]).unwrap();
+    assert_eq!(memory.tracker.BytesConsumed(), 20);
 }

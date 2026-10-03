@@ -1095,3 +1095,93 @@ fn connection_event_remote_address_preserves_unix_socket_address() {
     assert_eq!(packet.remote_addr().unwrap(), expected);
     assert_ne!(packet.remote_addr().unwrap(), "localhost");
 }
+
+#[test]
+fn long_data_mem_quota_is_deferred_on_real_connection() {
+    use crate::server::{Server, ServerConfig};
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let server = Server::new_test(
+        ServerConfig::default(),
+        Arc::new(crate::runtime::CanonicalServerDriver),
+    );
+    server
+        .set_connection_runtime(driver, Arc::new(CanonicalConnectionDomain::new(domain)))
+        .unwrap();
+    let (mut peer, socket) = tcp_pair();
+    peer.set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let connection = crate::conn::newClientConn(
+        server,
+        Box::new(TcpPacketIo::new(socket, 64 << 20).unwrap()),
+        vec![7; 20],
+        false,
+    );
+    let context = connection.openSession().unwrap();
+    let cancel = CancellationToken::new();
+    context
+        .execute_query("set tidb_mem_quota_query=1024", false, &cancel)
+        .unwrap();
+    connection
+        .handleStmt(Command::StmtPrepare, b"select ?", &cancel)
+        .unwrap();
+    let mut header = [0; 4];
+    peer.read_exact(&mut header).unwrap();
+    let len =
+        usize::from(header[0]) | (usize::from(header[1]) << 8) | (usize::from(header[2]) << 16);
+    let mut prepare = vec![0; len];
+    peer.read_exact(&mut prepare).unwrap();
+    let id = u32::from_le_bytes(prepare[1..5].try_into().unwrap());
+    let send = |size: usize, byte: u8| {
+        let mut packet = id.to_le_bytes().to_vec();
+        packet.extend_from_slice(&0u16.to_le_bytes());
+        packet.resize(6 + size, byte);
+        connection
+            .handleStmt(Command::StmtSendLongData, &packet, &cancel)
+            .unwrap();
+    };
+    let base = context.long_data_memory_snapshot().unwrap().0;
+    assert_eq!(context.long_data_memory_snapshot().unwrap().1, 1024);
+    send(600, b'a');
+    assert_eq!(
+        context.long_data_memory_snapshot().unwrap(),
+        (base + 600, 1024)
+    );
+    send(500, b'b');
+    assert_eq!(
+        context.long_data_memory_snapshot().unwrap(),
+        (base + 600, 1024)
+    );
+    let mut execute = id.to_le_bytes().to_vec();
+    execute.extend_from_slice(&[0, 1, 0, 0, 0, 0, 0]);
+    let error = connection
+        .handleStmt(Command::StmtExecute, &execute, &cancel)
+        .unwrap_err();
+    assert!(error.to_string().contains("8175"), "{error}");
+    assert_eq!(context.long_data_memory_snapshot().unwrap(), (base, 1024));
+    connection.writeError(&error).unwrap();
+    loop {
+        peer.read_exact(&mut header).unwrap();
+        let len =
+            usize::from(header[0]) | (usize::from(header[1]) << 8) | (usize::from(header[2]) << 16);
+        let mut packet = vec![0; len];
+        peer.read_exact(&mut packet).unwrap();
+        if packet[0] == 0xff {
+            assert_eq!(u16::from_le_bytes(packet[1..3].try_into().unwrap()), 8175);
+            break;
+        }
+    }
+    send(1023, b'c');
+    assert_eq!(
+        context.long_data_memory_snapshot().unwrap(),
+        (base + 1023, 1024)
+    );
+    connection
+        .handleStmt(Command::StmtClose, &id.to_le_bytes(), &cancel)
+        .unwrap();
+    assert_eq!(context.long_data_memory_snapshot().unwrap(), (base, 1024));
+    connection.Close().unwrap();
+}

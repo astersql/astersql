@@ -109,6 +109,9 @@ pub trait RowContainer: Send {
 
 /// TiDB 会话运行时：配置连接、Prepare/Execute、警告与库切换等。
 pub trait TiDBSessionRuntime: Send + Sync {
+    fn long_data_memory(&self) -> Option<Arc<dyn crate::conn_stmt::LongDataMemory>> {
+        None
+    }
     fn max_allowed_packet(&self) -> u64 {
         astersql_sessionctx_vardef::DefMaxAllowedPacket
     }
@@ -167,6 +170,7 @@ pub struct TiDBStatement {
     num_params: usize,
     bound_params: Vec<Option<Vec<u8>>>,
     bound_params_too_large: bool,
+    long_data: crate::conn_stmt::LongDataState,
     params_type: Vec<u8>,
     runtime: Arc<dyn TiDBSessionRuntime>,
     result_set: Option<Box<dyn CursorResultSet>>,
@@ -186,23 +190,25 @@ impl TiDBStatement {
     }
     /// COM_STMT_SEND_LONG_DATA：向指定参数槽追加字节。
     pub fn AppendParam(&mut self, param_id: usize, data: &[u8]) -> Result<(), Error> {
-        crate::conn_stmt::append_long_data(
-            &mut self.bound_params,
-            &mut self.bound_params_too_large,
-            self.runtime.max_allowed_packet(),
-            param_id,
-            data,
-        )
-        .map_err(|error| Error(error.to_string()))
+        self.long_data
+            .append(
+                &mut self.bound_params,
+                &mut self.bound_params_too_large,
+                self.runtime.max_allowed_packet(),
+                param_id,
+                data,
+            )
+            .map_err(|error| Error(error.to_string()))
     }
     /// Check deferred SEND_LONG_DATA errors and the current session limit.
     pub fn CheckLongDataSize(&self) -> Result<(), Error> {
-        crate::conn_stmt::check_long_data_size(
-            &self.bound_params,
-            self.bound_params_too_large,
-            self.runtime.max_allowed_packet(),
-        )
-        .map_err(|error| Error(error.to_string()))
+        self.long_data
+            .check(
+                &self.bound_params,
+                self.bound_params_too_large,
+                self.runtime.max_allowed_packet(),
+            )
+            .map_err(|error| Error(error.to_string()))
     }
     /// 参数个数。
     pub fn NumParams(&self) -> usize {
@@ -234,8 +240,9 @@ impl TiDBStatement {
     /// 重置绑定参数与游标，并关闭行容器。
     pub fn Reset(&mut self) -> Result<(), Error> {
         // 清空长数据绑定并关闭游标/行容器。
-        self.bound_params.fill(None);
-        self.bound_params_too_large = false;
+        self.long_data
+            .release(&mut self.bound_params, &mut self.bound_params_too_large)
+            .map_err(|error| Error(error.to_string()))?;
         self.has_active_cursor = false;
         if let Some(mut result_set) = self.result_set.take() {
             result_set.report_ru_delta();
@@ -247,8 +254,11 @@ impl TiDBStatement {
         }
         Ok(())
     }
-    /// 关闭游标与行容器后从会话侧 drop；不施加 Reset 的绑定参数/游标状态副作用。
+    /// 释放长参数、关闭游标与行容器，再从会话侧 drop；保留游标状态。
     pub fn Close(&mut self) -> Result<(), Error> {
+        self.long_data
+            .release(&mut self.bound_params, &mut self.bound_params_too_large)
+            .map_err(|error| Error(error.to_string()))?;
         if let Some(result_set) = self.result_set.as_mut() {
             result_set.report_ru_delta();
             result_set.close_iterator();
@@ -387,6 +397,7 @@ impl TiDBContext {
             num_params: prepared.param_count,
             bound_params: vec![None; prepared.param_count],
             bound_params_too_large: false,
+            long_data: crate::conn_stmt::LongDataState::new(self.session.long_data_memory()),
             params_type: Vec::new(),
             runtime: self.session.clone(),
             result_set: None,

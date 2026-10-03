@@ -160,7 +160,9 @@ fn mysql_error_code_and_state(error: &ConnError) -> (u16, &'static [u8; 5]) {
         ConnError::MalformedPacket(_) => (1835, b"HY000"),
         ConnError::Session(message) => {
             let lower = message.to_ascii_lowercase();
-            if lower.contains("[tikv:1213]") {
+            if lower.contains("[executor:8175]") {
+                (8175, b"HY000")
+            } else if lower.contains("[tikv:1213]") {
                 (1213, b"40001")
             } else if lower.contains("[kv:1062]") || lower.contains("duplicate entry") {
                 (1062, b"23000")
@@ -774,6 +776,12 @@ pub trait TiDBContext: Send + Sync {
         None
     }
 
+    fn charge_long_data(&self, _bytes: i64) -> ConnResult<(bool, u64)> {
+        Ok((true, 0))
+    }
+    fn long_data_memory_snapshot(&self) -> ConnResult<(i64, i64)> {
+        Ok((0, -1))
+    }
     fn max_allowed_packet(&self) -> ConnResult<u64> {
         Ok(astersql_sessionctx_vardef::DefMaxAllowedPacket)
     }
@@ -1006,6 +1014,15 @@ impl fmt::Debug for ClientConn {
             .field("status", &self.getStatus())
             .field("closed", &self.closed.load(Ordering::Acquire))
             .finish_non_exhaustive()
+    }
+}
+
+struct ConnectionLongDataMemory(Arc<dyn TiDBContext>);
+impl crate::conn_stmt::LongDataMemory for ConnectionLongDataMemory {
+    fn charge(&self, bytes: i64) -> Result<(bool, u64), crate::conn_stmt::Error> {
+        self.0
+            .charge_long_data(bytes)
+            .map_err(|error| crate::conn_stmt::Error::Runtime(error.to_string()))
     }
 }
 
@@ -1615,6 +1632,9 @@ impl ClientConn {
                         .collect(),
                     bound_params: vec![None; metadata.parameter_count],
                     bound_params_too_large: false,
+                    long_data: crate::conn_stmt::LongDataState::new(Some(Arc::new(
+                        ConnectionLongDataMemory(context.clone()),
+                    ))),
                     max_allowed_packet: context.max_allowed_packet()?,
                     params_type: Vec::new(),
                     last_params: Vec::new(),
@@ -1694,14 +1714,21 @@ impl ClientConn {
                     ConnError::Session(format!("prepared statement {statement_id} not found"))
                 })?;
                 statement.max_allowed_packet = context.max_allowed_packet()?;
-                crate::conn_stmt::append_long_data(
-                    &mut statement.bound_params,
-                    &mut statement.bound_params_too_large,
-                    statement.max_allowed_packet,
-                    parameter,
-                    &payload[6..],
-                )
-                .map_err(|_| ConnError::MalformedPacket("long-data parameter index"))?;
+                statement
+                    .long_data
+                    .append(
+                        &mut statement.bound_params,
+                        &mut statement.bound_params_too_large,
+                        statement.max_allowed_packet,
+                        parameter,
+                        &payload[6..],
+                    )
+                    .map_err(|error| match error {
+                        crate::conn_stmt::Error::WrongArguments(_) => {
+                            ConnError::MalformedPacket("long-data parameter index")
+                        }
+                        other => ConnError::Session(other.to_string()),
+                    })?;
                 Ok(())
             }
             Command::StmtReset => {
@@ -1719,10 +1746,20 @@ impl ClientConn {
             }
             Command::StmtClose => {
                 let statement_id = read_u32_le(payload, 0)?;
-                self.prepared_statements
+                if let Some(mut statement) = self
+                    .prepared_statements
                     .lock()
                     .map_err(|_| ConnError::Poisoned("prepared statements"))?
-                    .remove(&statement_id);
+                    .remove(&statement_id)
+                {
+                    statement
+                        .long_data
+                        .release(
+                            &mut statement.bound_params,
+                            &mut statement.bound_params_too_large,
+                        )
+                        .map_err(|error| ConnError::Session(error.to_string()))?;
+                }
                 self.prepared_columns
                     .lock()
                     .map_err(|_| ConnError::Poisoned("prepared columns"))?
@@ -2472,6 +2509,20 @@ impl ClientConn {
             .lock()
             .map_err(|_| ConnError::Poisoned("packet"))?
             .close();
+        for statement in self
+            .prepared_statements
+            .lock()
+            .map_err(|_| ConnError::Poisoned("prepared statements"))?
+            .values_mut()
+        {
+            statement
+                .long_data
+                .release(
+                    &mut statement.bound_params,
+                    &mut statement.bound_params_too_large,
+                )
+                .map_err(|error| ConnError::Session(error.to_string()))?;
+        }
         let session_result = match self.getCtx()? {
             Some(context) => context.close(),
             None => Ok(()),

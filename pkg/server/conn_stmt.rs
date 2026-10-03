@@ -35,6 +35,7 @@ const CLIENT_MULTI_STATEMENTS: u32 = 1 << 16;
 pub enum Error {
     MalformedPacket,
     NetPacketTooLarge,
+    MemoryQuotaExceeded(u64),
     StatementNotFound(u32),
     WrongArguments(&'static str),
     Runtime(String),
@@ -46,6 +47,12 @@ impl fmt::Display for Error {
                 f,
                 "{}",
                 *astersql_server_err::server_err::ErrNetPacketTooLarge
+            ),
+            Self::MemoryQuotaExceeded(id) => write!(
+                f,
+                "{}",
+                astersql_util_dbterror_exeerrors::exeerrors::ErrMemoryExceedForQuery
+                    .GenWithStackByArgs(&[(*id).into()])
             ),
             Self::MalformedPacket => f.write_str("malformed packet"),
             Self::StatementNotFound(id) => write!(f, "prepared statement {id} not found"),
@@ -84,6 +91,99 @@ pub trait ResultSet: Send {
     }
 }
 
+/// Session-owned accounting boundary. Positive charges are refused before
+/// Consume when the session quota would be reached; negative charges release.
+pub trait LongDataMemory: Send + Sync {
+    fn charge(&self, bytes: i64) -> Result<(bool, u64), Error>;
+}
+
+/// Long-data bytes charged by one statement and its deferred quota error.
+#[derive(Default)]
+pub struct LongDataState {
+    memory: Option<Arc<dyn LongDataMemory>>,
+    bytes: i64,
+    rejected: Option<u64>,
+}
+
+impl LongDataState {
+    pub fn new(memory: Option<Arc<dyn LongDataMemory>>) -> Self {
+        Self {
+            memory,
+            ..Default::default()
+        }
+    }
+    pub fn append(
+        &mut self,
+        params: &mut [Option<Vec<u8>>],
+        too_large: &mut bool,
+        max_packet: u64,
+        param_id: usize,
+        data: &[u8],
+    ) -> Result<(), Error> {
+        let param = params
+            .get_mut(param_id)
+            .ok_or(Error::WrongArguments("stmt_send_longdata"))?;
+        if data.is_empty() {
+            let released = param.as_ref().map_or(0, Vec::len) as i64;
+            if released > 0 {
+                if let Some(memory) = &self.memory {
+                    memory.charge(-released)?;
+                }
+                self.bytes -= released;
+            }
+            *param = Some(Vec::new());
+            return Ok(());
+        }
+        if *too_large || self.rejected.is_some() {
+            return Ok(());
+        }
+        if param.as_ref().map_or(0, Vec::len) as u64 + data.len() as u64 > max_packet {
+            *too_large = true;
+            return Ok(());
+        }
+        let chunk = data.len() as i64;
+        if let Some(memory) = &self.memory {
+            let (accepted, connection_id) = memory.charge(chunk)?;
+            if !accepted {
+                self.rejected = Some(connection_id);
+                return Ok(());
+            }
+        }
+        param.get_or_insert_with(Vec::new).extend_from_slice(data);
+        self.bytes += chunk;
+        Ok(())
+    }
+
+    pub fn check(
+        &self,
+        params: &[Option<Vec<u8>>],
+        too_large: bool,
+        max_packet: u64,
+    ) -> Result<(), Error> {
+        if let Some(id) = self.rejected {
+            return Err(Error::MemoryQuotaExceeded(id));
+        }
+        check_long_data_size(params, too_large, max_packet)
+    }
+
+    pub fn release(
+        &mut self,
+        params: &mut [Option<Vec<u8>>],
+        too_large: &mut bool,
+    ) -> Result<(), Error> {
+        if self.bytes > 0 {
+            if let Some(memory) = &self.memory {
+                memory.charge(-self.bytes)?;
+            }
+            self.bytes = 0;
+        }
+        params.fill(None);
+        *too_large = false;
+        self.rejected = None;
+        Ok(())
+    }
+}
+
 /// 连接上缓存的一条预处理语句及其绑定参数与游标状态。
 pub struct PreparedStatement {
     pub id: u32,
@@ -92,6 +192,7 @@ pub struct PreparedStatement {
     pub columns: Vec<ColumnInfo>,
     pub bound_params: Vec<Option<Vec<u8>>>,
     pub bound_params_too_large: bool,
+    pub long_data: LongDataState,
     pub max_allowed_packet: u64,
     pub params_type: Vec<u8>,
     pub last_params: Vec<BinaryParam>,
@@ -103,8 +204,8 @@ pub struct PreparedStatement {
 impl PreparedStatement {
     /// 清空绑定参数并关闭活动游标。
     pub(crate) fn reset(&mut self) -> Result<(), Error> {
-        self.bound_params.fill(None);
-        self.bound_params_too_large = false;
+        self.long_data
+            .release(&mut self.bound_params, &mut self.bound_params_too_large)?;
         self.cursor_active = false;
         if let Some(cursor) = self.protocol_cursor.take() {
             if let Some(source) = &cursor.result_set {
@@ -143,6 +244,9 @@ pub enum ProtocolEvent {
 /// 预处理执行运行时：准备、执行、缓存文本、RU 统计与 TiFlash 回退。
 /// TiFlash 为列存引擎，出错时可回退到行存重试。
 pub trait StatementRuntime: Send + Sync {
+    fn long_data_memory(&self) -> Option<Arc<dyn LongDataMemory>> {
+        None
+    }
     fn max_allowed_packet(&self) -> u64 {
         astersql_sessionctx_vardef::DefMaxAllowedPacket
     }
@@ -184,6 +288,7 @@ pub fn HandleStmtPrepare(cc: &mut clientConn, sql: &str) -> Result<(), Error> {
         columns: columns.clone(),
         bound_params: vec![None; num_params],
         bound_params_too_large: false,
+        long_data: LongDataState::new(cc.runtime.long_data_memory()),
         max_allowed_packet: cc.runtime.max_allowed_packet(),
         params_type: Vec::new(),
         last_params: Vec::new(),
@@ -257,17 +362,19 @@ pub(crate) fn ParseExecuteParams(
             pos += size;
         }
     }
-    let parsed = check_long_data_size(
-        &statement.bound_params,
-        statement.bound_params_too_large,
-        statement.max_allowed_packet,
-    )
-    .and_then(|()| {
-        if param_types.len() != statement.num_params * 2 {
-            return Err(Error::MalformedPacket);
-        }
-        parse_params(statement, null_bitmap, &param_types, &data[pos..])
-    });
+    let parsed = statement
+        .long_data
+        .check(
+            &statement.bound_params,
+            statement.bound_params_too_large,
+            statement.max_allowed_packet,
+        )
+        .and_then(|()| {
+            if param_types.len() != statement.num_params * 2 {
+                return Err(Error::MalformedPacket);
+            }
+            parse_params(statement, null_bitmap, &param_types, &data[pos..])
+        });
     // EXECUTE 会消费 long-data 参数并关闭旧游标；保留 param_types 供后续包省略类型。
     // EXECUTE consumes long-data arguments and closes a previous cursor. Keep
     // param_types because later packets may omit them. Go performs this reset
@@ -540,7 +647,7 @@ pub fn handleStmtSendLongData(cc: &mut clientConn, data: &[u8]) -> Result<(), Er
         .get_mut(&statement_id)
         .ok_or(Error::StatementNotFound(statement_id))?;
     statement.max_allowed_packet = cc.runtime.max_allowed_packet();
-    append_long_data(
+    statement.long_data.append(
         &mut statement.bound_params,
         &mut statement.bound_params_too_large,
         statement.max_allowed_packet,
@@ -764,30 +871,6 @@ impl ResultSet for MaterializedResultSet {
     fn exhausted(&self) -> bool {
         self.closed || self.offset >= self.rows.len()
     }
-}
-
-// Shared by the protocol statement and TiDB driver: SEND_LONG_DATA has no
-// response, so reject growth silently and defer the standard error to EXECUTE.
-pub(crate) fn append_long_data(
-    params: &mut [Option<Vec<u8>>],
-    too_large: &mut bool,
-    max: u64,
-    parameter: usize,
-    data: &[u8],
-) -> Result<(), Error> {
-    let slot = params
-        .get_mut(parameter)
-        .ok_or(Error::WrongArguments("stmt_send_longdata"))?;
-    if data.is_empty() {
-        *slot = Some(Vec::new());
-    } else if *too_large
-        || (slot.as_ref().map_or(0, Vec::len) as u64).saturating_add(data.len() as u64) > max
-    {
-        *too_large = true;
-    } else {
-        slot.get_or_insert_with(Vec::new).extend_from_slice(data);
-    }
-    Ok(())
 }
 
 pub(crate) fn check_long_data_size(

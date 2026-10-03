@@ -744,6 +744,13 @@ struct ConcreteTiDBContext {
 }
 
 pub(crate) enum SessionRequest {
+    ChargeLongData {
+        bytes: i64,
+        response: mpsc::SyncSender<(bool, u64)>,
+    },
+    LongDataMemorySnapshot {
+        response: mpsc::SyncSender<(i64, i64)>,
+    },
     MaxAllowedPacket {
         response: mpsc::SyncSender<u64>,
     },
@@ -870,6 +877,12 @@ fn run_session_worker(
     let mut results = super::protocol_result::WorkerResults::new(result_sender);
     while let Ok(request) = requests.recv() {
         match request {
+            SessionRequest::ChargeLongData { bytes, response } => {
+                let _ = response.send(session.ChargeBoundLongData(bytes));
+            }
+            SessionRequest::LongDataMemorySnapshot { response } => {
+                let _ = response.send(session.BoundLongDataMemorySnapshot());
+            }
             SessionRequest::MaxAllowedPacket { response } => {
                 let max = session.WithSessionVars(|vars| {
                     vars.GetSystemVar("max_allowed_packet")
@@ -1497,6 +1510,19 @@ impl ConcreteTiDBContext {
 }
 
 impl TiDBContext for ConcreteTiDBContext {
+    fn charge_long_data(&self, bytes: i64) -> ConnResult<(bool, u64)> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::ChargeLongData {
+            bytes,
+            response: tx,
+        })?;
+        rx.recv().map_err(packet_error)
+    }
+    fn long_data_memory_snapshot(&self) -> ConnResult<(i64, i64)> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.send_request(SessionRequest::LongDataMemorySnapshot { response: tx })?;
+        rx.recv().map_err(packet_error)
+    }
     fn max_allowed_packet(&self) -> ConnResult<u64> {
         let (tx, rx) = mpsc::sync_channel(1);
         self.send_request(SessionRequest::MaxAllowedPacket { response: tx })?;

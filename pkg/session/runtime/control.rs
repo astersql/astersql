@@ -1671,6 +1671,29 @@ impl ConcreteSession {
         self.transaction_mdl.set_restricted(restricted);
     }
 
+    /// COM_STMT_SEND_LONG_DATA uses the existing session root tracker, including
+    /// consumption from other statements. Refuse before Consume to keep this
+    /// response-free protocol command from running an OOM action.
+    pub fn ChargeBoundLongData(&self, bytes: i64) -> (bool, u64) {
+        let (consumed, quota) = self.BoundLongDataMemorySnapshot();
+        if bytes > 0 && quota > 0 && consumed + bytes >= quota {
+            return (false, self.connection_id());
+        }
+        self.mem_tracker.borrow().Consume(bytes);
+        (true, self.connection_id())
+    }
+
+    pub fn BoundLongDataMemorySnapshot(&self) -> (i64, i64) {
+        let quota = self
+            .session_vars
+            .GetSystemVar(astersql_sessionctx_vardef::TiDBMemQuotaQuery)
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(astersql_sessionctx_vardef::DefTiDBMemQuotaQuery);
+        let tracker = self.mem_tracker.borrow();
+        tracker.SetBytesLimit(quota);
+        (tracker.BytesConsumed(), tracker.GetBytesLimit())
+    }
+
     /// Returns the number of statement MemTracker children currently attached to
     /// the session root tracker. Mirrors Go `MemTracker.GetChildrenForTest()`.
     /// 返回挂到会话根 MemTracker 下的语句级子跟踪器数量。

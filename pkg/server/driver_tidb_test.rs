@@ -19,9 +19,15 @@ struct Runtime {
     set_next_ids: Mutex<Vec<u32>>,
     dropped: Mutex<Vec<u32>>,
     close_error: Mutex<Option<Error>>,
+    memory: Option<Arc<crate::conn_stmt_test::TestLongDataMemory>>,
 }
 
 impl TiDBSessionRuntime for Runtime {
+    fn long_data_memory(&self) -> Option<Arc<dyn crate::conn_stmt::LongDataMemory>> {
+        self.memory
+            .clone()
+            .map(|memory| memory as Arc<dyn crate::conn_stmt::LongDataMemory>)
+    }
     fn max_allowed_packet(&self) -> u64 {
         1024
     }
@@ -125,7 +131,7 @@ fn context_close_ignores_cleanup_errors_like_go_terror_call() {
 }
 
 #[test]
-fn statement_close_does_not_apply_reset_side_effects() {
+fn statement_close_releases_long_data_without_resetting_cursor() {
     let runtime = Arc::new(Runtime::default());
     let context = context(runtime.clone());
     let (statement, _, _) = context.Prepare("select ?").unwrap();
@@ -135,7 +141,7 @@ fn statement_close_does_not_apply_reset_side_effects() {
 
     statement.Close().unwrap();
 
-    assert_eq!(statement.BoundParams(), &[Some(b"value".to_vec())]);
+    assert_eq!(statement.BoundParams(), &[None]);
     assert!(statement.GetCursorActive());
     assert_eq!(*runtime.dropped.lock().unwrap(), vec![7]);
 }
@@ -282,4 +288,38 @@ fn statement_long_data_enforces_packet_limit_and_clears_deferred_error() {
     statement.AppendParam(0, b"c").unwrap();
     assert_eq!(statement.BoundParams()[0], Some(b"c".to_vec()));
     assert!(statement.AppendParam(1, b"bad").is_err());
+}
+
+#[test]
+fn statement_long_data_mem_quota_releases_on_reset_empty_and_close() {
+    let memory = crate::conn_stmt_test::TestLongDataMemory::new(1024);
+    let context = context(Arc::new(Runtime {
+        memory: Some(memory.clone()),
+        ..Default::default()
+    }));
+    let (statement, _, _) = context.Prepare("select ?").unwrap();
+    let mut statement = statement.lock().unwrap();
+    statement.AppendParam(0, &vec![b'a'; 600]).unwrap();
+    assert_eq!(memory.tracker.BytesConsumed(), 600);
+    statement.CheckLongDataSize().unwrap();
+    statement.AppendParam(0, &vec![b'b'; 424]).unwrap();
+    assert_eq!(statement.BoundParams()[0].as_ref().unwrap().len(), 600);
+    assert!(
+        statement
+            .CheckLongDataSize()
+            .unwrap_err()
+            .to_string()
+            .contains("8175")
+    );
+    statement.AppendParam(0, &[]).unwrap();
+    assert_eq!(memory.tracker.BytesConsumed(), 0);
+    statement.AppendParam(0, b"x").unwrap();
+    assert_eq!(statement.BoundParams()[0], Some(Vec::new()));
+    assert!(statement.CheckLongDataSize().is_err());
+    statement.Reset().unwrap();
+    statement.AppendParam(0, &vec![b'c'; 1023]).unwrap();
+    assert_eq!(memory.tracker.BytesConsumed(), 1023);
+    statement.Close().unwrap();
+    assert_eq!(memory.tracker.BytesConsumed(), 0);
+    statement.CheckLongDataSize().unwrap();
 }
