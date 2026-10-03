@@ -14,6 +14,8 @@ pub(crate) const SYSTEM_RELATIONS: &[(&str, u32)] = &[
     ("pg_type", 1247),
     ("pg_attribute", 1249),
     ("pg_proc", 1255),
+    ("pg_operator", 2617),
+    ("pg_aggregate", 2600),
     ("pg_class", 1259),
     ("pg_constraint", 2606),
     ("pg_attrdef", 2604),

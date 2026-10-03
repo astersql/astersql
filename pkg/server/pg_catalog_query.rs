@@ -86,6 +86,7 @@ pub(crate) struct Relation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Join {
     pub(crate) left: bool,
+    pub(crate) natural: bool,
     pub(crate) relation: Relation,
     pub(crate) on: Expr,
 }
@@ -102,6 +103,8 @@ pub(crate) struct Cte {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Select {
     pub(crate) ctes: Vec<Cte>,
+    pub(crate) distinct: bool,
+    pub(crate) unions: Vec<(bool, Select)>,
     pub(crate) projections: Vec<Projection>,
     pub(crate) from: Relation,
     pub(crate) joins: Vec<Join>,
@@ -697,6 +700,7 @@ impl Parser {
             Some(Token::Word(s)) => !matches!(
                 s.as_str(),
                 "from"
+                    | "natural"
                     | "left"
                     | "join"
                     | "on"
@@ -785,17 +789,37 @@ impl Parser {
             return Err(unsupported("only read-only catalog SELECT is supported"));
         }
         let mut select = self.select()?;
+        while self.word("union") {
+            if select.unions.len() >= 16 {
+                return Err(unsupported(
+                    "catalog queries support at most sixteen UNION arms",
+                ));
+            }
+            let all = self.word("all");
+            if !all {
+                self.word("distinct");
+            }
+            if !select.order.is_empty() || select.limit.is_some() {
+                return Err(syntax("ORDER BY/LIMIT must follow the UNION"));
+            }
+            let mut arm = self.select()?;
+            select.order = std::mem::take(&mut arm.order);
+            select.limit = arm.limit.take();
+            select.unions.push((all, arm));
+        }
         select.ctes = ctes;
         Ok(select)
     }
     fn select(&mut self) -> ParseResult<Select> {
         self.require_word("select")?;
-        if self.word("distinct") {
-            return Err(unsupported("DISTINCT catalog queries are unsupported"));
-        }
+        let distinct = self.word("distinct");
         let mut projections = Vec::new();
         loop {
-            let expr = self.expr()?;
+            let expr = if self.symbol('*') {
+                Expr::Column(vec!["*".into()])
+            } else {
+                self.expr()?
+            };
             let name = if self.word("as") || self.is_alias() {
                 self.identifier()?
             } else {
@@ -810,6 +834,7 @@ impl Parser {
         let from = self.relation()?;
         let mut joins = Vec::new();
         loop {
+            let natural = self.word("natural");
             let left = if self.word("left") {
                 self.word("outer");
                 self.require_word("join")?;
@@ -826,9 +851,18 @@ impl Parser {
                 return Err(unsupported("catalog queries support at most eight joins"));
             }
             let relation = self.relation()?;
-            self.require_word("on")?;
-            let on = self.expr()?;
-            joins.push(Join { left, relation, on });
+            let on = if natural {
+                Expr::Boolean(true)
+            } else {
+                self.require_word("on")?;
+                self.expr()?
+            };
+            joins.push(Join {
+                left,
+                natural,
+                relation,
+                on,
+            });
         }
         let filter = if self.word("where") {
             Some(self.expr()?)
@@ -863,6 +897,8 @@ impl Parser {
         };
         Ok(Select {
             ctes: Vec::new(),
+            distinct,
+            unions: Vec::new(),
             projections,
             from,
             joins,

@@ -251,3 +251,118 @@ fn pg_datagrip_structure() {
     }
     context.close().unwrap();
 }
+
+#[test]
+fn pg_datagrip_templates_sets() {
+    let context = context();
+    context
+        .execute_query(
+            "CREATE TABLE test.dg_sets (id INT PRIMARY KEY)",
+            false,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+    let types = include_str!("testdata/pg_datagrip/1869280144.sql").replace('?', "11");
+    let rows = execute(context.as_ref(), &types);
+    assert!(rows.iter().any(|r| r[0] == Value::Signed(26)));
+    assert!(rows.iter().any(|r| r[0] == Value::Signed(25)));
+    let routines = include_str!("testdata/pg_datagrip/1869280145.sql").replace('?', "11");
+    let rows = execute(context.as_ref(), &routines);
+    assert_eq!(rows.len(), 3);
+    assert!(
+        rows.iter()
+            .all(|r| r.last() == Some(&Value::Text("internal".into())))
+    );
+    assert_eq!(execute(context.as_ref(), "SELECT oid FROM pg_class WHERE relname='dg_sets' UNION SELECT oid FROM pg_class WHERE relname='dg_sets'").len(), 1);
+    assert_eq!(execute(context.as_ref(), "SELECT oid FROM pg_class WHERE relname='dg_sets' UNION ALL SELECT oid FROM pg_class WHERE relname='dg_sets'").len(), 2);
+    assert_eq!(
+        execute(
+            context.as_ref(),
+            "SELECT DISTINCT relkind FROM pg_class WHERE relname='dg_sets'"
+        ),
+        vec![vec![Value::Text("r".into())]]
+    );
+    let query = CatalogQuery::parse(&routines).unwrap().unwrap();
+    assert_eq!(query.metadata().columns[0].name, "lang_oid");
+    assert_eq!(query.metadata().columns.len(), 23);
+    assert!(execute(context.as_ref(), &types.replace("11", "0")).is_empty());
+    assert_eq!(
+        execute(
+            context.as_ref(),
+            "SELECT prorettype AS type_id FROM pg_proc UNION SELECT DISTINCT unnest(proargtypes) AS type_id FROM pg_proc ORDER BY type_id DESC LIMIT 1"
+        ),
+        vec![vec![Value::Signed(26)]]
+    );
+    assert_eq!(
+        execute(context.as_ref(), "SELECT DISTINCT NULL FROM pg_proc"),
+        vec![vec![Value::Null]]
+    );
+    assert_eq!(
+        execute(
+            context.as_ref(),
+            "SELECT NULL FROM pg_proc UNION SELECT NULL FROM pg_proc"
+        ),
+        vec![vec![Value::Null]]
+    );
+    let zipped = execute(
+        context.as_ref(),
+        "SELECT oid, unnest(proargtypes), unnest(proallargtypes) FROM pg_proc ORDER BY oid",
+    );
+    assert_eq!(zipped.len(), 3);
+    assert!(
+        zipped
+            .iter()
+            .all(|r| r[1] == Value::Signed(26) && r[2] == Value::Null)
+    );
+    assert!(
+        execute(
+            context.as_ref(),
+            "SELECT unnest(proallargtypes) FROM pg_proc"
+        )
+        .is_empty()
+    );
+    let mismatched = "WITH a AS (SELECT oid AS id, proname AS name FROM pg_proc), b AS (SELECT oid AS id, 'different' AS name FROM pg_proc) SELECT * FROM a NATURAL JOIN b";
+    assert!(execute(context.as_ref(), mismatched).is_empty());
+    let matched = "WITH a AS (SELECT oid AS id, proname AS name FROM pg_proc), b AS (SELECT oid AS id, proname AS name FROM pg_proc) SELECT id, name FROM a NATURAL JOIN b";
+    assert_eq!(execute(context.as_ref(), matched).len(), 3);
+    assert_eq!(execute(context.as_ref(), "WITH a AS (SELECT oid AS id FROM pg_proc), b AS (SELECT oid AS other FROM pg_proc) SELECT * FROM a NATURAL JOIN b").len(), 9);
+    assert!(execute(context.as_ref(), "SELECT aggtranstype FROM pg_aggregate").is_empty());
+    assert!(execute(context.as_ref(), "SELECT oprresult FROM pg_operator").is_empty());
+    for sql in [
+        "SELECT oid FROM pg_proc WHERE unnest(proargtypes)=26",
+        "SELECT unnest(proargtypes)::bigint FROM pg_proc",
+        "SELECT oid FROM pg_proc UNION SELECT proname FROM pg_proc",
+        "SELECT oid FROM pg_proc UNION SELECT oid, proname FROM pg_proc",
+        "SELECT unnest(proname) FROM pg_proc",
+        "SELECT oid FROM pg_proc UNION SELECT oid FROM pg_proc ORDER BY proname",
+    ] {
+        assert!(CatalogQuery::parse(sql).is_err(), "{sql}");
+    }
+    let arms = std::iter::repeat_n("SELECT oid FROM pg_proc", 18)
+        .collect::<Vec<_>>()
+        .join(" UNION ALL ");
+    assert!(CatalogQuery::parse(&arms).is_err());
+    let promoted =
+        CatalogQuery::parse("SELECT oid FROM pg_proc UNION ALL SELECT oid::bigint FROM pg_proc")
+            .unwrap()
+            .unwrap();
+    assert_eq!(promoted.metadata().native_types[0].code, 8);
+    assert_eq!(
+        promoted
+            .execute(context.as_ref(), &CancellationToken::new())
+            .unwrap()
+            .rows
+            .len(),
+        6
+    );
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    assert!(
+        CatalogQuery::parse(&types)
+            .unwrap()
+            .unwrap()
+            .execute(context.as_ref(), &cancel)
+            .is_err()
+    );
+    context.close().unwrap();
+}

@@ -43,14 +43,26 @@ fn catalog_projection_syntax_and_boundaries() {
     );
     for sql in [
         "select oid from pg_catalog.pg_database; select 1",
-        "select * from pg_catalog.pg_database",
-        "select distinct oid from pg_catalog.pg_database",
         "select oid::numeric from pg_catalog.pg_database",
         "select oid + 1 from pg_catalog.pg_database",
-        "select oid from pg_catalog.pg_database union select 1",
     ] {
         assert_eq!(parse(sql).unwrap_err().0, "0A000", "{sql}");
     }
+    assert!(
+        parse("select distinct oid from pg_catalog.pg_database")
+            .unwrap()
+            .unwrap()
+            .distinct
+    );
+    assert!(
+        parse("select * from pg_catalog.pg_database")
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        crate::pg_catalog::CatalogQuery::parse("select * from pg_catalog.pg_database").is_err()
+    );
+    assert!(parse("select oid from pg_catalog.pg_database union select 1").is_err());
     for sql in [
         "select from pg_catalog.pg_database",
         "select oid, from pg_catalog.pg_database",
@@ -472,7 +484,7 @@ fn pg_introspection_cte_nesting_limits() {
 
 #[test]
 fn pg_introspection_cte_column_bound() {
-    let projections = (0..12)
+    let projections = (0..25)
         .map(|i| format!("oid AS c{i}"))
         .collect::<Vec<_>>()
         .join(",");
@@ -483,6 +495,17 @@ fn pg_introspection_cte_column_bound() {
         .unwrap_err()
         .0,
         "0A000"
+    );
+    let at_bound = (0..24)
+        .map(|i| format!("oid AS c{i}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    assert!(
+        crate::pg_catalog::CatalogQuery::parse(&format!(
+            "WITH x AS (SELECT {at_bound} FROM pg_class) SELECT c23 FROM x"
+        ))
+        .unwrap()
+        .is_some()
     );
     // Ordinary catalog projection counts retain their existing behavior.
     assert!(

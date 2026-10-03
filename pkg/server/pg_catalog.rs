@@ -232,15 +232,12 @@ impl CatalogQuery {
         Ok(())
     }
     fn bind(&mut self) -> ParseResult<()> {
-        for cte in self.select.ctes.clone() {
-            if cte.query.projections.len() > 11 {
-                return Err((
-                    "0A000",
-                    "catalog CTEs support at most eleven columns".into(),
-                ));
-            }
+        for (cte_index, cte) in self.select.ctes.clone().into_iter().enumerate() {
             let mut query = self.nested(cte.query);
             query.bind()?;
+            if query.select.projections.len() > CATALOG_ROW_WIDTH {
+                return Err(("0A000", "catalog CTEs exceed the provider row width".into()));
+            }
             self.cte_columns.extend(query.cte_columns.clone());
             let fields = query
                 .select
@@ -253,6 +250,111 @@ impl CatalogQuery {
                 })
                 .collect::<ParseResult<Vec<_>>>()?;
             self.cte_columns.insert(cte.id, fields);
+            self.select.ctes[cte_index].query = query.select;
+        }
+        // NATURAL joins compare every shared name and expose it once in
+        // unqualified references and SELECT *. Qualified columns retain slots.
+        for index in 0..self.select.joins.len() {
+            if !self.select.joins[index].natural {
+                continue;
+            }
+            let right = self.select.joins[index].relation.clone();
+            let right_names = self.relation_names(&right)?;
+            let mut scope = self.clone();
+            scope.select.joins.truncate(index);
+            let mut on = Expr::Boolean(true);
+            let mut seen = std::collections::HashSet::new();
+            for name in right_names {
+                if !seen.insert(name.clone()) {
+                    return Err(("42702", "ambiguous NATURAL JOIN column".into()));
+                }
+                let field = scope.column(&[name.clone()]);
+                if field.as_ref().is_err_and(|(code, _)| *code == "42702") {
+                    return Err(field.unwrap_err());
+                }
+                if field.is_ok() {
+                    let left = scope
+                        .relations()
+                        .find(|r| scope.column(&[r.alias.clone(), name.clone()]).is_ok())
+                        .unwrap();
+                    on = Expr::And(
+                        Box::new(on),
+                        Box::new(Expr::Equal(
+                            Box::new(Expr::Column(vec![left.alias.clone(), name.clone()])),
+                            Box::new(Expr::Column(vec![right.alias.clone(), name])),
+                        )),
+                    );
+                }
+            }
+            self.select.joins[index].on = on;
+        }
+        let mut expanded = Vec::new();
+        for projection in &self.select.projections {
+            if projection.expr == Expr::Column(vec!["*".into()]) {
+                let mut seen = std::collections::HashSet::new();
+                let mut wildcard = Vec::new();
+                for (index, relation) in self.relations().enumerate() {
+                    let names = self.relation_names(relation)?;
+                    let natural = index > 0 && self.select.joins[index - 1].natural;
+                    if natural {
+                        // SQL orders merged columns first, preserving their left order.
+                        let (mut common, remaining): (Vec<pg_catalog_query::Projection>, Vec<_>) =
+                            wildcard
+                                .into_iter()
+                                .partition(|p: &pg_catalog_query::Projection| {
+                                    names.contains(&p.name)
+                                });
+                        common.extend(remaining);
+                        wildcard = common;
+                    }
+                    for name in names {
+                        if natural && seen.contains(&name) {
+                            continue;
+                        }
+                        seen.insert(name.clone());
+                        wildcard.push(pg_catalog_query::Projection {
+                            expr: Expr::Column(vec![relation.alias.clone(), name.clone()]),
+                            name,
+                        });
+                    }
+                }
+                expanded.extend(wildcard);
+            } else {
+                expanded.push(projection.clone());
+            }
+        }
+        self.select.projections = expanded;
+        for index in 0..self.select.unions.len() {
+            let mut query = self.nested(self.select.unions[index].1.clone());
+            query.bind()?;
+            self.cte_columns.extend(query.cte_columns.clone());
+            if query.select.projections.len() != self.select.projections.len() {
+                return Err(("42601", "UNION requires matching column counts".into()));
+            }
+            for column in 0..self.select.projections.len() {
+                let left = self.select.projections[column].expr.clone();
+                let right = query.select.projections[column].expr.clone();
+                let a = self.expr_type(&left)?.0;
+                let b = query.expr_type(&right)?.0;
+                if a != b {
+                    if numeric_type(a) && numeric_type(b) {
+                        // All arms share the promoted type announced in RowDescription.
+                        self.select.projections[column].expr =
+                            Expr::Cast(Box::new(left), CastType::Bigint);
+                        for (_, previous) in &mut self.select.unions[..index] {
+                            previous.projections[column].expr = Expr::Cast(
+                                Box::new(previous.projections[column].expr.clone()),
+                                CastType::Bigint,
+                            );
+                        }
+                        query.select.projections[column].expr =
+                            Expr::Cast(Box::new(right), CastType::Bigint);
+                    } else {
+                        return Err(("42804", "UNION catalog types do not match".into()));
+                    }
+                }
+            }
+            self.select.unions[index].1 = query.select;
         }
         // Bind subqueries independently: outer relation aliases never leak in.
         let mut select = self.select.clone();
@@ -264,6 +366,9 @@ impl CatalogQuery {
             }
             Ok(())
         })?;
+        for (_, arm) in &self.select.unions {
+            self.nested(arm.clone()).validate()?;
+        }
         self.validate()
     }
     fn validate(&self) -> ParseResult<()> {
@@ -280,6 +385,8 @@ impl CatalogQuery {
                         | "pg_constraint"
                         | "pg_proc"
                         | "pg_language"
+                        | "pg_operator"
+                        | "pg_aggregate"
                         | "pg_depend"
                         | "pg_database"
                         | "pg_locks"
@@ -298,6 +405,7 @@ impl CatalogQuery {
             }
         }
         for (index, join) in self.select.joins.iter().enumerate() {
+            reject_projection_unnest(&join.on)?;
             // ON binds only to the accumulated left side and this right side.
             // Later aliases must not accidentally read uninitialized row slots.
             let mut scope = self.clone();
@@ -316,9 +424,21 @@ impl CatalogQuery {
                     "native transaction age is only available for ordering".into(),
                 ));
             }
+            if let Expr::Call(path, args) = &projection.expr {
+                if path.last().is_some_and(|name| name == "unnest") {
+                    for arg in args {
+                        reject_projection_unnest(arg)?;
+                    }
+                } else {
+                    reject_projection_unnest(&projection.expr)?;
+                }
+            } else {
+                reject_projection_unnest(&projection.expr)?;
+            }
             self.expr_type(&projection.expr)?;
         }
         if let Some(filter) = &self.select.filter {
+            reject_projection_unnest(filter)?;
             if contains_age(filter) {
                 return Err((
                     "0A000",
@@ -330,7 +450,17 @@ impl CatalogQuery {
             }
         }
         for order in &self.select.order {
-            self.expr_type(self.order_expr(&order.expr)?)?;
+            let expr = self.order_expr(&order.expr)?;
+            reject_projection_unnest(expr)?;
+            self.expr_type(expr)?;
+            if (self.select.distinct || !self.select.unions.is_empty())
+                && !self.select.projections.iter().any(|p| &p.expr == expr)
+            {
+                return Err((
+                    "0A000",
+                    "DISTINCT/UNION ORDER BY requires an output column".into(),
+                ));
+            }
         }
         if self
             .select
@@ -379,6 +509,19 @@ impl CatalogQuery {
             }
         }
         Ok(expr)
+    }
+    fn relation_names(&self, relation: &pg_catalog_query::Relation) -> ParseResult<Vec<String>> {
+        if let Some(id) = relation.cte_id {
+            Ok(self.cte_columns[&id]
+                .iter()
+                .map(|(name, _, _)| name.clone())
+                .collect())
+        } else {
+            Err((
+                "0A000",
+                "catalog wildcard expansion requires a CTE source".into(),
+            ))
+        }
     }
     fn column(&self, path: &[String]) -> ParseResult<(usize, u8, usize)> {
         let name = path.last().unwrap().as_str();
@@ -437,6 +580,9 @@ impl CatalogQuery {
             };
             if let Some((slot, code, flags)) = field {
                 if found.is_some() {
+                    if qualifier.is_none() && index > 0 && self.select.joins[index - 1].natural {
+                        continue;
+                    }
                     return Err(("42702", "ambiguous catalog column".into()));
                 }
                 found = Some((index * CATALOG_ROW_WIDTH + slot, code, flags));
@@ -555,6 +701,9 @@ impl CatalogQuery {
                     self.expr_type(arg)?;
                 }
                 match (name, args.as_slice()) {
+                    ("unnest", [input]) => numeric_array_element(self.expr_type(input)?.0)
+                        .map(|code| (code, 0))
+                        .ok_or_else(|| ("0A000", "unnest requires a numeric catalog array".into())),
                     ("current_database" | "current_catalog", [])
                         if self.select.from.name == "pg_database" =>
                     {
@@ -830,7 +979,48 @@ impl CatalogQuery {
             }
             Ok(())
         })?;
-        query.execute_rows(execution, display)
+        if query.select.unions.is_empty() {
+            return query.execute_rows(execution, display);
+        }
+        let unions = std::mem::take(&mut query.select.unions);
+        let order = std::mem::take(&mut query.select.order);
+        let limit = query.select.limit.take();
+        let mut rows = query.execute_rows(execution, display)?;
+        for (all, arm) in unions {
+            let arm_rows = self.nested(arm).execute_select(execution, display)?;
+            rows.extend(arm_rows);
+            if rows.len() > MAX_CATALOG_ROWS {
+                return Err(catalog_row_limit());
+            }
+            if !all {
+                rows = distinct_rows(rows, execution)?;
+            }
+        }
+        let mut keys = Vec::new();
+        for ordering in &order {
+            let expression = self
+                .order_expr(&ordering.expr)
+                .expect("validated UNION order");
+            let index = self
+                .select
+                .projections
+                .iter()
+                .position(|p| &p.expr == expression)
+                .ok_or_else(|| {
+                    ConnError::Session("UNION ORDER BY requires an output column".into())
+                })?;
+            keys.push(index);
+        }
+        rows.sort_by(|a, b| {
+            compare_keys(
+                &keys.iter().map(|i| a[*i].clone()).collect::<Vec<_>>(),
+                &keys.iter().map(|i| b[*i].clone()).collect::<Vec<_>>(),
+                &order,
+            )
+        });
+        check_catalog_cancel(execution.cancel)?;
+        rows.truncate(limit.unwrap_or(usize::MAX));
+        Ok(rows)
     }
     fn execute_rows(
         &self,
@@ -918,7 +1108,7 @@ impl CatalogQuery {
             "pg_proc" => function_rows(),
             // Native physical partitions are not independent SQL relations in
             // this adapter. There are no PG inheritance edges to those objects.
-            "pg_inherits" | "pg_opclass" => Vec::new(),
+            "pg_inherits" | "pg_opclass" | "pg_operator" | "pg_aggregate" => Vec::new(),
             "pg_language" => vec![vec![
                 Value::Signed(INTERNAL_LANGUAGE_OID),
                 Value::Text("internal".into()),
@@ -1458,6 +1648,9 @@ impl CatalogQuery {
         execution: &Execution<'_>,
         display: bool,
     ) -> ConnResult<Vec<Vec<Value>>> {
+        if self.select.limit == Some(0) {
+            return Ok(Vec::new());
+        }
         let database = execution.database.as_str();
         let snapshot = execution.snapshot.as_deref();
         let mut selected = Vec::new();
@@ -1549,16 +1742,60 @@ impl CatalogQuery {
             std::cmp::Ordering::Equal
         });
         check_catalog_cancel(execution.cancel)?;
-        selected
-            .into_iter()
-            .take(self.select.limit.unwrap_or(usize::MAX))
-            .map(|(row, _)| {
-                check_catalog_cancel(execution.cancel)?;
-                self.select
+        let mut projected = Vec::new();
+        'projection: for (row, _) in selected {
+            // PostgreSQL zips multiple projection SRFs, padding shorter arrays
+            // with NULL. NULL/empty arrays emit no rows when all SRFs are empty.
+            let mut arrays = Vec::new();
+            let mut count = 1;
+            for projection in &self.select.projections {
+                if let Expr::Call(path, args) = &projection.expr {
+                    if path.last().is_some_and(|name| name == "unnest") {
+                        let values =
+                            numeric_array_values(&self.evaluate(&args[0], &row, execution)?)?;
+                        arrays.push(Some(values));
+                        continue;
+                    }
+                }
+                arrays.push(None);
+            }
+            if arrays.iter().any(Option::is_some) {
+                count = arrays.iter().flatten().map(Vec::len).max().unwrap_or(0);
+            }
+            for index in 0..count {
+                execution.comparison()?;
+                let output = self
+                    .select
                     .projections
                     .iter()
-                    .map(|projection| {
-                        let value = self.evaluate(&projection.expr, &row, execution)?;
+                    .zip(&arrays)
+                    .map(|(projection, array)| {
+                        if let Some(values) = array {
+                            Ok(values.get(index).unwrap_or(&Value::Null).clone())
+                        } else {
+                            self.evaluate(&projection.expr, &row, execution)
+                        }
+                    })
+                    .collect::<ConnResult<Vec<_>>>()?;
+                projected.push(output);
+                if projected.len() > MAX_CATALOG_ROWS {
+                    return Err(catalog_row_limit());
+                }
+                if !self.select.distinct && self.select.limit == Some(projected.len()) {
+                    break 'projection;
+                }
+            }
+        }
+        if self.select.distinct {
+            projected = distinct_rows(projected, execution)?;
+        }
+        projected.truncate(self.select.limit.unwrap_or(usize::MAX));
+        projected
+            .into_iter()
+            .map(|row| {
+                row.into_iter()
+                    .zip(&self.select.projections)
+                    .map(|(value, projection)| {
                         if display
                             && self
                                 .expr_type(&projection.expr)
@@ -1567,15 +1804,14 @@ impl CatalogQuery {
                                 == crate::pg_oid::REGCLASS_TYPE
                         {
                             if let Value::Signed(oid) = value {
-                                let snapshot = snapshot.ok_or_else(|| {
-                                    ConnError::Session("schema snapshot is unavailable".into())
-                                })?;
                                 return Ok(Value::Text(crate::pg_oid::display(
                                     u32::try_from(oid).map_err(|_| {
                                         ConnError::Session("PG oid conversion out of range".into())
                                     })?,
                                     database,
-                                    snapshot,
+                                    snapshot.ok_or_else(|| {
+                                        ConnError::Session("schema snapshot is unavailable".into())
+                                    })?,
                                 )?));
                             }
                         }
@@ -1585,6 +1821,36 @@ impl CatalogQuery {
             })
             .collect()
     }
+}
+
+fn reject_projection_unnest(expr: &Expr) -> ParseResult<()> {
+    visit_expr(&mut expr.clone(), &mut |expr| {
+        if matches!(expr, Expr::Call(path, _) if path.last().is_some_and(|name| name == "unnest")) {
+            return Err((
+                "0A000",
+                "unnest is only supported as a direct catalog projection".into(),
+            ));
+        }
+        Ok(())
+    })
+}
+
+fn distinct_rows(rows: Vec<Vec<Value>>, execution: &Execution<'_>) -> ConnResult<Vec<Vec<Value>>> {
+    let mut result = Vec::new();
+    for row in rows {
+        let mut duplicate = false;
+        for previous in &result {
+            execution.comparison()?;
+            if previous == &row {
+                duplicate = true;
+                break;
+            }
+        }
+        if !duplicate {
+            result.push(row);
+        }
+    }
+    Ok(result)
 }
 
 fn textual_type(code: u8) -> bool {
@@ -1745,6 +2011,9 @@ fn visit_all_select_exprs<E>(
 ) -> Result<(), E> {
     for cte in &mut select.ctes {
         visit_all_select_exprs(&mut cte.query, visitor)?;
+    }
+    for (_, arm) in &mut select.unions {
+        visit_all_select_exprs(arm, visitor)?;
     }
     visit_select_exprs(select, &mut |expr| {
         if let Expr::InSubquery(_, query) | Expr::ScalarSubquery(query) = expr {
@@ -2060,6 +2329,24 @@ fn function_rows() -> Vec<Vec<Value>> {
                 Value::Text("f".into()),
                 Value::Signed(INTERNAL_LANGUAGE_OID),
                 Value::Text(function.name.into()),
+                Value::Text("{function_oid}".into()), // argument names
+                Value::Null,                          // all arguments are IN
+                Value::Text("26".into()),             // one oid input
+                Value::Null,                          // no OUT arguments
+                Value::Null,                          // no default arguments
+                Value::Signed(0),                     // not variadic
+                Value::Signed(25),                    // text return type
+                Value::Text("false".into()),          // scalar
+                Value::Text("s".into()),              // snapshot-stable introspection
+                Value::Text("false".into()),          // handles unknown/NULL OIDs
+                Value::Text("false".into()),          // invoker security
+                Value::Null,                          // no per-function configuration
+                Value::Null,                          // no native PostgreSQL cost model
+                Value::Null,                          // no PostgreSQL owner
+                Value::Signed(0),                     // not set-returning
+                Value::Text("false".into()),          // not leakproof
+                Value::Text("u".into()),              // no parallel execution contract
+                Value::Null,                          // no PostgreSQL transaction xmin
             ]
         })
         .collect()
@@ -2090,6 +2377,31 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
         ("pg_depend", "refobjid") => (3, oid),
         ("pg_depend", "refobjsubid") => (4, 3),
         ("pg_depend", "deptype") => (5, internal_char),
+        ("pg_operator", "oprleft") => (0, oid),
+        ("pg_operator", "oprright") => (1, oid),
+        ("pg_operator", "oprresult") => (2, oid),
+        ("pg_operator", "oprnamespace") => (3, oid),
+        ("pg_aggregate", "aggfnoid") => (0, oid),
+        ("pg_aggregate", "aggtranstype") => (1, oid),
+        ("pg_aggregate", "aggmtranstype") => (2, oid),
+        ("pg_proc", "proargnames") => (6, crate::pg_result::CatalogColumnType::TextArray as u8),
+        ("pg_proc", "proargmodes") => (7, crate::pg_result::CatalogColumnType::TextArray as u8),
+        ("pg_proc", "proargtypes") => (8, crate::pg_result::CatalogColumnType::OidVector as u8),
+        ("pg_proc", "proallargtypes") => (9, crate::pg_result::CatalogColumnType::OidArray as u8),
+        ("pg_proc", "proargdefaults") => (10, 253),
+        ("pg_proc", "provariadic") => (11, oid),
+        ("pg_proc", "prorettype") => (12, oid),
+        ("pg_proc", "proretset") => (13, 1),
+        ("pg_proc", "provolatile") => (14, internal_char),
+        ("pg_proc", "proisstrict") => (15, 1),
+        ("pg_proc", "prosecdef") => (16, 1),
+        ("pg_proc", "proconfig") => (17, crate::pg_result::CatalogColumnType::TextArray as u8),
+        ("pg_proc", "procost") => (18, 8),
+        ("pg_proc", "proowner") => (19, 8),
+        ("pg_proc", "prorows") => (20, 8),
+        ("pg_proc", "proleakproof") => (21, 1),
+        ("pg_proc", "proparallel") => (22, internal_char),
+        ("pg_proc", "xmin") => (23, 8),
         ("pg_proc", "oid") => (0, oid),
         ("pg_proc", "proname") => (1, 253),
         ("pg_proc", "pronamespace") => (2, oid),
