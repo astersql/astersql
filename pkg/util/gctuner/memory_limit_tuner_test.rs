@@ -17,7 +17,7 @@
 
 use std::sync::atomic::Ordering;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::memory_limit_tuner::{
     MemoryLimitTuner, WaitMemoryLimitTunerExitInTest, currentMemoryLimit, fallbackPercentage,
@@ -28,7 +28,9 @@ use task_memory::global_arbitrator::{
     CleanupGlobalMemArbitratorForTest, SetGlobalMemArbitratorWorkMode,
     SetupGlobalMemArbitratorForTest,
 };
-use task_memory::tracker::{MemoryLimitGCTotal, ServerMemoryLimit, TriggerMemoryLimitGC};
+use task_memory::tracker::{
+    MemoryLimitGCLast, MemoryLimitGCTotal, ServerMemoryLimit, TriggerMemoryLimitGC,
+};
 
 /// 在超时内轮询直到条件为真，否则断言失败。
 fn eventually(timeout: Duration, mut condition: impl FnMut() -> bool) {
@@ -239,4 +241,41 @@ fn memory_limit_tuner_runs_without_manual_finalizer() {
     });
     tuner.Stop();
     WaitMemoryLimitTunerExitInTest();
+}
+
+/// The memory-table test must wait for asynchronous GC bookkeeping before
+/// reading GC_LAST; an older collection cannot satisfy the wait.
+#[test]
+#[serial]
+fn memory_usage_read_waits_for_current_gc_timestamp() {
+    initGOMemoryLimitValue.store(i64::MAX, Ordering::SeqCst);
+    let tuner = MemoryLimitTuner::withResetInterval(Duration::from_millis(10));
+    ServerMemoryLimit.Store(1);
+    tuner.SetPercentage(1.0);
+    tuner.UpdateMemoryLimit();
+
+    let begin = SystemTime::now();
+    let previous_gc = MemoryLimitGCLast.Load();
+    assert!(previous_gc < begin, "a stale GC must not satisfy the wait");
+    let previous_total = MemoryLimitGCTotal.Load();
+    // Drive the real two-stage finalizer; its worker publishes the timestamp.
+    assert!(tuner.runFinalizer());
+    assert!(tuner.runFinalizer());
+    tuner.Stop();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while MemoryLimitGCLast.Load() < begin {
+        assert!(Instant::now() < deadline, "GC bookkeeping did not complete");
+        thread::sleep(Duration::from_millis(50));
+    }
+    let read_time = SystemTime::now();
+    let gc_last = MemoryLimitGCLast.Load();
+    assert!(gc_last >= begin);
+    assert!(gc_last <= read_time);
+    // GC_LAST is published before GC_TOTAL; wait for the worker to finish
+    // before inspecting the latter or releasing the tuner.
+    eventually(Duration::from_secs(1), || {
+        !tuner.adjustPercentageInProgress()
+    });
+    assert_eq!(MemoryLimitGCTotal.Load(), previous_total + 1);
+    TriggerMemoryLimitGC.Store(false);
 }
