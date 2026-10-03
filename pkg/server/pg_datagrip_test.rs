@@ -30,7 +30,7 @@ fn pg_datagrip_tables() {
     let namespace = execute(
         context.as_ref(),
         "SELECT oid FROM pg_namespace WHERE nspname='public'",
-    )[1 - 1][0]
+    )[0][0]
         .clone();
     let Value::Signed(namespace) = namespace else {
         panic!("namespace OID")
@@ -73,6 +73,26 @@ fn pg_datagrip_tables() {
         }
     );
     assert_eq!(aggregate, vec![vec![Value::Text(expected)]]);
+    // Empty pg_inherits alone cannot prove the outer table identity is bound.
+    // Exercise the same correlated scalar/aggregate shape with real pg_class rows.
+    let correlated = execute(
+        context.as_ref(),
+        "SELECT T.oid, (SELECT C.oid FROM pg_class C WHERE C.oid=T.oid), (SELECT array_agg(C.oid::bigint ORDER BY C.oid)::varchar FROM pg_class C WHERE C.oid=T.oid) FROM pg_class T WHERE T.relname IN ('dg_tables','dg_tables_second') ORDER BY T.relname DESC",
+    );
+    assert_eq!(correlated.len(), 2);
+    for (row, id) in correlated.iter().zip(&ids) {
+        assert_eq!(row[0], id[0]);
+        assert_eq!(row[1], id[0]);
+        let Value::Signed(oid) = id[0] else {
+            panic!("table OID")
+        };
+        assert_eq!(row[2], Value::Text(format!("{{{oid}}}")));
+    }
+    let empty = execute(
+        context.as_ref(),
+        "SELECT (SELECT C.oid FROM pg_class C WHERE C.oid=0), (SELECT array_agg(C.oid::bigint ORDER BY C.oid)::varchar FROM pg_class C WHERE C.oid=0) FROM pg_namespace WHERE nspname='public'",
+    );
+    assert_eq!(empty, vec![vec![Value::Null, Value::Null]]);
     context
         .execute_query(
             "RENAME TABLE test.dg_tables TO test.dg_tables_renamed",

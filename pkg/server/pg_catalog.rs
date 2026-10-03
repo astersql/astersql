@@ -1161,7 +1161,8 @@ impl CatalogQuery {
                         "pg_constraint"
                     };
                     let fallback;
-                    let rows = if let Some(rows) = execution.providers.get(provider) {
+                    let providers = execution.providers.borrow();
+                    let rows = if let Some(rows) = providers.get(provider) {
                         rows.as_slice()
                     } else {
                         fallback = index_constraint_rows(
