@@ -377,3 +377,99 @@ fn history_error_classification_follows_replacement() {
         );
     }
 }
+
+#[test]
+fn history_error_metadata_preserves_go_error_code_variants() {
+    for (key, state, error, code, category) in [
+        (
+            "named-failure",
+            "failed",
+            r#"{"message":"sensitive named failure","rfccode":"DXF:History:Named","code":0}"#,
+            "DXF:History:Named",
+            "failed",
+        ),
+        (
+            "two-part-code",
+            "failed",
+            r#"{"message":"sensitive two-part failure","rfccode":"kv:1062","code":0}"#,
+            "kv:1062",
+            "failed",
+        ),
+        (
+            "code-less-normalized",
+            "failed",
+            r#"{"message":"sensitive code-less failure","rfccode":"","code":0}"#,
+            "",
+            "failed",
+        ),
+        (
+            "plain-failure",
+            "failed",
+            r#"{"message":"sensitive plain failure","rfccode":"","code":0}"#,
+            "",
+            "failed",
+        ),
+        (
+            "legacy-kv-code",
+            "failed",
+            r#"{"class":8,"code":1062,"message":"sensitive legacy kv failure","rfccode":""}"#,
+            "kv:1062",
+            "failed",
+        ),
+        (
+            "numeric-code-only",
+            "failed",
+            r#"{"class":0,"code":1062,"message":"sensitive legacy numeric failure","rfccode":""}"#,
+            "1062",
+            "failed",
+        ),
+        (
+            "cancelled",
+            "reverted",
+            r#"{"message":"cancelled by user","rfccode":"","code":0}"#,
+            "",
+            "cancelled",
+        ),
+        (
+            "data-error",
+            "reverted",
+            r#"{"message":"[Lightning:Restore:ErrEncodeKV]Value conversion failed for column 'a'","rfccode":"","code":0}"#,
+            "",
+            "data-error",
+        ),
+        (
+            "ordinary-revert",
+            "reverted",
+            r#"{"message":"sensitive ordinary failure","rfccode":"","code":0}"#,
+            "",
+            "failed",
+        ),
+    ] {
+        let row = chunk::Row::new(vec![
+            Cell::Int(42),
+            Cell::String(key.into()),
+            Cell::String("ImportInto".into()),
+            Cell::String(state.into()),
+            Cell::Int(1),
+            Cell::Int(512),
+            Cell::Int(8),
+            Cell::Time(UNIX_EPOCH),
+            Cell::String("".into()),
+            Cell::Int(0),
+            Cell::Json("{}".into()),
+            Cell::String("ks1".into()),
+            Cell::Bytes(error.as_bytes().to_vec()),
+            Cell::Null,
+            Cell::Null,
+            Cell::Null,
+        ]);
+        let manager = TaskManager::new();
+        manager.push_result(vec![row]);
+        manager.push_result(vec![chunk::Row::new(vec![Cell::Int(1)])]);
+        let page = manager.ListHistoryTasks((), 20, 0, "ks1".into()).unwrap();
+        assert_eq!(page.Items.len(), 1);
+        assert_eq!(page.Items[0].TaskBase.Key, key);
+        assert_eq!(page.Items[0].ErrorCode, code, "{key}");
+        assert_eq!(page.Items[0].ErrorCategory, category, "{key}");
+    }
+}

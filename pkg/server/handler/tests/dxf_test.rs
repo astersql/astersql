@@ -1658,7 +1658,7 @@ fn canonical_history_http_preserves_failed_tasks() {
                     (),
                     id,
                     proto::TaskStateRunning,
-                    storage::Error::new("history task failed: secret"),
+                    storage::Error::pingcap("history task failed: secret", "DXF:History:Named", 0),
                 )
                 .unwrap();
         } else {
@@ -1744,7 +1744,7 @@ fn canonical_history_http_preserves_failed_tasks() {
     assert_eq!(first["Items"][0]["ID"], ids[4]);
     assert_eq!(first["Items"][0]["State"], "failed");
     assert_eq!(first["Items"][0]["ErrorCategory"], "failed");
-    assert_eq!(first["Items"][0]["ErrorCode"], "");
+    assert_eq!(first["Items"][0]["ErrorCode"], "DXF:History:Named");
     assert_eq!(first["Items"][1]["ErrorCategory"], "");
     assert!(first["Items"][0].get("Error").is_none());
     for field in ["StartTime", "StateUpdateTime", "EndTime"] {

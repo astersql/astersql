@@ -21,6 +21,14 @@
 // 从 pkg/dxf/framework/storage/task_state.go 迁移，保持任务状态流转与事务检查一致。
 //
 
+/// Cancellation marker shared by storage, schedulers and import completion.
+pub const TaskCancelMessage: &str = "cancelled by user";
+
+/// Recognize user cancellation even when the message is wrapped or annotated.
+pub fn IsCancelledErr(error: Option<&dyn std::fmt::Display>) -> bool {
+    error.is_some_and(|error| error.to_string().contains(TaskCancelMessage))
+}
+
 impl TaskManager {
     /// 将 pending/running/awaiting_resolution 任务标记为 cancelling（取消中）。
     // CancelTask cancels task.

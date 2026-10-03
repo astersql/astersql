@@ -203,3 +203,16 @@ fn TestPauseAndResume() {
         Value::String(proto::TaskStateRunning.into())
     );
 }
+
+#[test]
+fn cancellation_error_recognizes_only_user_marker() {
+    assert!(!IsCancelledErr(None));
+    for (message, expected) in [
+        ("some err", false),
+        ("context canceled", false),
+        ("cancelled by user", true),
+        ("wrapped: cancelled by user: details", true),
+    ] {
+        assert_eq!(IsCancelledErr(Some(&Error::new(message))), expected);
+    }
+}

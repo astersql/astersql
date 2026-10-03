@@ -266,21 +266,28 @@ fn row2HistoryTaskSummary(r: chunk::Row) -> HistoryTaskSummary {
 
 /// Safe terminal error categories from Go commit 57b5f2268096ba75eee34c930d6464339460ced7.
 pub fn ClassifyTaskError(state: proto::TaskState, error: Option<&Error>) -> String {
-    let Some(error) = error else {
+    // Storage errors carry the code separately until serialized/deserialized.
+    let message = error.map(|error| format!("[{}]{}", taskErrorCode(error), error));
+    ClassifyTaskErrorMessage(state, message.as_deref())
+}
+
+/// Classify an already formatted task error without constructing a storage error.
+/// Scheduler errors retain their formatted Go message as a borrowed string.
+pub fn ClassifyTaskErrorMessage(state: proto::TaskState, message: Option<&str>) -> String {
+    let Some(message) = message else {
         return String::new();
     };
     match state {
         proto::TaskStateFailed => "failed",
-        proto::TaskStateReverted if error.to_string().contains("cancelled by user") => "cancelled",
-        proto::TaskStateReverted if isDataError(error) => "data-error",
+        proto::TaskStateReverted if IsCancelledErr(Some(&message)) => "cancelled",
+        proto::TaskStateReverted if isDataError(message) => "data-error",
         proto::TaskStateReverted => "failed",
         _ => "",
     }
     .to_owned()
 }
 
-fn isDataError(error: &Error) -> bool {
-    let message = format!("[{}]{}", taskErrorCode(error), error);
+fn isDataError(message: &str) -> bool {
     let import_data = message.contains("ErrEncodeKV")
         && (message.contains("Value conversion failed for column")
             || (message.contains("Check constraint '") && message.contains("' is violated"))

@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// 用户取消任务时写入的错误文案。
-pub const TASK_CANCEL_MESSAGE: &str = "cancelled by user";
+pub const TASK_CANCEL_MESSAGE: &str = astersql_dxf_framework_storage::TaskCancelMessage;
 /// 持久化子任务时的 SQL 重试次数上限。
 pub const RETRY_SQL_TIMES: usize = 30;
 /// 默认事务总大小上限；子任务元数据总和接近该值的 80% 时改走批量写入。
@@ -425,13 +425,17 @@ impl BaseScheduler {
 pub(crate) fn on_task_finished(state: TaskState, error: Option<&SchedulerError>) {
     let metric_state = match state {
         TASK_STATE_SUCCEED | TASK_STATE_FAILED => state.to_owned(),
-        TASK_STATE_REVERTED if error.is_some_and(|error| error.0.contains(TASK_CANCEL_MESSAGE)) => {
-            "cancelled".to_owned()
+        TASK_STATE_REVERTED => {
+            let category = astersql_dxf_framework_storage::ClassifyTaskErrorMessage(
+                state,
+                error.map(|error| error.0.as_str()),
+            );
+            if category.is_empty() {
+                TASK_STATE_FAILED.to_owned()
+            } else {
+                category
+            }
         }
-        TASK_STATE_REVERTED if error.is_some_and(|error| is_data_error_for_metric(&error.0)) => {
-            "data-error".to_owned()
-        }
-        TASK_STATE_REVERTED => TASK_STATE_FAILED.to_owned(),
         _ => String::new(),
     };
     if metric_state.is_empty() {
@@ -440,24 +444,6 @@ pub(crate) fn on_task_finished(state: TaskState, error: Option<&SchedulerError>)
     let counter = &InitDistTaskMetrics().FinishedTaskCounter;
     counter.with_label_values(&["all"]).inc();
     counter.with_label_values(&[&metric_state]).inc();
-}
-
-// Keep the metric's borrowed-string classification in step with Go's
-// storage.ClassifyTaskError, which replaced the original scheduler helper.
-fn is_data_error_for_metric(message: &str) -> bool {
-    let import_data = message.contains("ErrEncodeKV")
-        && (message.contains("Value conversion failed for column")
-            || (message.contains("Check constraint '") && message.contains("' is violated"))
-            || message.contains("Table has no partition for value"));
-    let import_conflict = (message.contains("[executor:8167]")
-        && message.contains("Duplicate key conflict found"))
-        || (message.contains("ErrFoundDataConflictRecords")
-            && message.contains("found data conflict records"))
-        || (message.contains("ErrFoundIndexConflictRecords")
-            && message.contains("found index conflict records"));
-    import_data
-        || import_conflict
-        || (message.contains("[kv:1062]") && message.contains("Duplicate entry"))
 }
 
 /// 向扩展点暴露历史子任务元数据/摘要查询。
@@ -555,5 +541,5 @@ fn should_pause_on_kv_disk_full(
 
 /// 判断错误是否为用户取消（文案含 [`TASK_CANCEL_MESSAGE`]）。
 pub fn IsCancelledErr(error: &SchedulerError) -> bool {
-    error.0.contains(TASK_CANCEL_MESSAGE)
+    astersql_dxf_framework_storage::IsCancelledErr(Some(error))
 }
