@@ -1637,6 +1637,20 @@ impl ConcreteSession {
                 database, statement.Table.Name.O
             )));
         }
+        // COMPRESSION='NONE' has no DDL job or metadata side effect.
+        // Keep the existing option validation and table lookup in the inner path.
+        if !statement.Specs.is_empty()
+            && statement.Specs.iter().all(|spec| {
+                spec.Tp == ast::AlterTableType::Option
+                    && !spec.Options.is_empty()
+                    && spec
+                        .Options
+                        .iter()
+                        .all(|option| option.Tp == ast::TableOptionType::Compression)
+            })
+        {
+            return self.execute_alter_table_inner(statement, 0);
+        }
         if statement
             .Specs
             .iter()
@@ -1795,6 +1809,18 @@ impl ConcreteSession {
                 &spec.Options,
             )
             .map_err(SessionError::new)?;
+            // Reject every invalid value before applying any preceding option.
+            for option in &spec.Options {
+                if option.Tp == ast::TableOptionType::Compression
+                    && option.StrValue.to_uppercase() != ast::TableOptionCompressionNone
+                {
+                    return Err(SessionError::new(
+                        astersql_util_dbterror::ErrUnsupportedAlterTableOption
+                            .GenWithStackByArgs(&[])
+                            .to_string(),
+                    ));
+                }
+            }
         }
         let contains_add_index = statement.Specs.iter().any(|spec| {
             spec.Tp == ast::AlterTableType::AddConstraint
@@ -3455,6 +3481,7 @@ impl ConcreteSession {
                             option.Tp,
                             ast::TableOptionType::EngineAttribute
                                 | ast::TableOptionType::StorageClass
+                                | ast::TableOptionType::Compression
                         ) {
                             continue;
                         }

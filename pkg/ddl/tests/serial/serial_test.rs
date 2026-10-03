@@ -5405,3 +5405,54 @@ pub fn test_forbidden_ddl_in_next_gen() {
         assert!(error.message().starts_with("[ddl:8267]"), "{error:?}");
     }
 }
+
+#[test]
+fn test_alter_table_compression() {
+    let _serial = serial_parity_guard();
+    let (store, _) = astersql_testkit::mockstore::CreateMockStoreAndDomain();
+    let mut tk = astersql_testkit::TestKit::new(store);
+    tk.MustExec("use test", Vec::new());
+    tk.MustExec("create table t (a int)", Vec::new());
+    tk.MustExec("insert into t values (1), (2)", Vec::new());
+    let original = tk.MustQuery("show create table t", Vec::new()).Rows();
+    let jobs = tk.MustQuery("admin show ddl jobs", Vec::new()).Rows();
+    for value in ["NONE", "none", "NoNe"] {
+        tk.MustExec(&format!("alter table t compression='{value}'"), Vec::new());
+        assert_eq!(
+            tk.MustQuery("show create table t", Vec::new()).Rows(),
+            original
+        );
+    }
+    assert_eq!(tk.MustQuery("admin show ddl jobs", Vec::new()).Rows(), jobs);
+    for options in [
+        "compression='ZLIB'",
+        "compression='LZ4'",
+        "compression=''",
+        "compression=' NONE '",
+        "comment='should not apply', compression='ZLIB'",
+        "shard_row_id_bits=4, compression='ZLIB'",
+        "compression='NONE', compression='LZ4'",
+        "compression='ZLIB', comment='should not apply'",
+    ] {
+        let error = tk.ExecToErr(&format!("alter table t {options}"));
+        assert!(
+            error.to_string().contains("[ddl:8200]"),
+            "{options}: {error}"
+        );
+        assert!(
+            error.to_string().contains("unsupported"),
+            "{options}: {error}"
+        );
+        assert_eq!(
+            tk.MustQuery("show create table t", Vec::new()).Rows(),
+            original,
+            "{options}"
+        );
+    }
+    assert_eq!(
+        tk.MustQuery("select a from t order by a", Vec::new())
+            .Rows(),
+        vec![vec!["1".to_owned()], vec!["2".to_owned()]]
+    );
+    tk.MustExec("drop table t", Vec::new());
+}
