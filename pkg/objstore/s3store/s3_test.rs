@@ -1767,3 +1767,116 @@ fn test_open_range_mismatch_error_msg() {
         .expect("empty range");
     assert!(error.to_string().contains("ContentRange is empty"));
 }
+
+#[derive(Debug, Default)]
+struct AssumeRoleHttpClient {
+    assume_role_calls: AtomicUsize,
+    s3_calls: AtomicUsize,
+    assumed_credential_uses: AtomicUsize,
+}
+
+#[derive(Debug, Clone)]
+struct AssumeRoleHttpTransport(Arc<AssumeRoleHttpClient>);
+
+impl storeapi::aws_smithy_runtime_api::client::http::HttpConnector for AssumeRoleHttpTransport {
+    fn call(
+        &self,
+        request: storeapi::aws_smithy_runtime_api::client::orchestrator::HttpRequest,
+    ) -> storeapi::aws_smithy_runtime_api::client::http::HttpConnectorFuture {
+        use storeapi::aws_smithy_runtime_api::client::orchestrator::HttpResponse;
+        let mut response = if request.method() == "POST" {
+            assert!(request.uri().contains("sts."));
+            let body = std::str::from_utf8(request.body().bytes().unwrap()).unwrap();
+            assert!(body.contains("Action=AssumeRole"));
+            assert!(body.contains("RoleArn=arn%3Aaws%3Aiam%3A%3A123456789012%3Arole%2Ftest-role"));
+            self.0.assume_role_calls.fetch_add(1, Ordering::SeqCst);
+            let mut response = HttpResponse::new(
+                200.try_into().unwrap(),
+                aws_sdk_s3::primitives::SdkBody::from(
+                    r#"<?xml version="1.0" encoding="UTF-8"?>
+<AssumeRoleResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
+  <AssumeRoleResult>
+    <AssumedRoleUser><Arn>arn:aws:sts::123456789012:assumed-role/test-role/test-session</Arn><AssumedRoleId>AROAEXAMPLE:test-session</AssumedRoleId></AssumedRoleUser>
+    <Credentials>
+      <AccessKeyId>assumed-access-key</AccessKeyId>
+      <SecretAccessKey>assumed-secret-access-key</SecretAccessKey>
+      <SessionToken>assumed-session-token</SessionToken>
+      <Expiration>2099-01-01T00:00:00Z</Expiration>
+    </Credentials>
+  </AssumeRoleResult>
+  <ResponseMetadata><RequestId>00000000-0000-0000-0000-000000000000</RequestId></ResponseMetadata>
+</AssumeRoleResponse>"#,
+                ),
+            );
+            response.headers_mut().insert("content-type", "text/xml");
+            response
+        } else {
+            self.0.s3_calls.fetch_add(1, Ordering::SeqCst);
+            if request
+                .headers()
+                .get("authorization")
+                .unwrap_or_default()
+                .contains("Credential=assumed-access-key/")
+                && request.headers().get("x-amz-security-token") == Some("assumed-session-token")
+            {
+                self.0
+                    .assumed_credential_uses
+                    .fetch_add(1, Ordering::SeqCst);
+            }
+            assert_eq!(request.method(), "HEAD");
+            HttpResponse::new(
+                200.try_into().unwrap(),
+                aws_sdk_s3::primitives::SdkBody::empty(),
+            )
+        };
+        response
+            .headers_mut()
+            .insert("x-amz-bucket-region", "us-west-2");
+        storeapi::aws_smithy_runtime_api::client::http::HttpConnectorFuture::ready(Ok(response))
+    }
+}
+
+impl storeapi::aws_smithy_runtime_api::client::http::HttpClient for AssumeRoleHttpTransport {
+    fn http_connector(
+        &self,
+        _: &storeapi::aws_smithy_runtime_api::client::http::HttpConnectorSettings,
+        _: &storeapi::aws_smithy_runtime_api::client::runtime_components::RuntimeComponents,
+    ) -> storeapi::aws_smithy_runtime_api::client::http::SharedHttpConnector {
+        storeapi::aws_smithy_runtime_api::client::http::SharedHttpConnector::new(self.clone())
+    }
+}
+
+#[test]
+fn test_s3_storage_caches_assumed_role_credentials() {
+    let transport = Arc::new(AssumeRoleHttpClient::default());
+    let ctx = storeapi::Context::default();
+    let mut backend = backuppb::S3 {
+        Region: "us-west-2".into(),
+        Endpoint: "http://s3.example.test".into(),
+        Provider: "aws".into(),
+        Bucket: "bucket".into(),
+        ForcePathStyle: true,
+        RoleArn: "arn:aws:iam::123456789012:role/test-role".into(),
+        // Deterministic source credentials avoid the ambient AWS credential chain.
+        AccessKey: "source-access-key".into(),
+        SecretAccessKey: "source-secret-access-key".into(),
+        ..Default::default()
+    };
+    let options = storeapi::Options {
+        HTTPClient: Some(aws_sdk_s3::config::SharedHttpClient::new(
+            AssumeRoleHttpTransport(transport.clone()),
+        )),
+        ..Default::default()
+    };
+    let storage = NewS3Storage(&ctx, &mut backend, &options).unwrap();
+    for _ in 0..2 {
+        assert!(storage.FileExists(&ctx, "object").unwrap());
+    }
+    let s3_calls = transport.s3_calls.load(Ordering::SeqCst);
+    assert!(s3_calls >= 2);
+    assert_eq!(
+        s3_calls,
+        transport.assumed_credential_uses.load(Ordering::SeqCst)
+    );
+    assert_eq!(transport.assume_role_calls.load(Ordering::SeqCst), 1);
+}
