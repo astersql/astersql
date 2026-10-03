@@ -185,7 +185,10 @@ fn real_decoder_keeps_null_decimal_and_adjusted_timestamp_semantics() {
         ImportParser::new(FileParser::new_with_location(source, "Asia/Shanghai").unwrap());
     adapter.ReadRow().unwrap();
     assert_eq!(adapter.LastRow().length, 16);
-    assert_eq!(adapter.ScannedPos().unwrap(), 16);
+    assert_eq!(
+        adapter.ScannedPos().unwrap(),
+        ((1.0 / 3.0) * size as f64) as i64
+    );
     adapter.RecycleRow(adapter.LastRow());
     assert_eq!(
         adapter.LastRow().row[1],

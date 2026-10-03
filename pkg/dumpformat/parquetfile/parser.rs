@@ -933,7 +933,7 @@ pub struct Parser {
     current_group: usize,
     current_row: usize,
     total_read_rows: i64,
-    total_read_bytes: usize,
+    total_rows: i64,
     last_row: ParsedRow,
     closed: bool,
 }
@@ -970,13 +970,14 @@ impl Parser {
             .iter()
             .map(|c| c.name.to_ascii_lowercase())
             .collect();
+        let total_rows = file.num_rows();
         Ok(Self {
             file,
             column_names: names,
             current_group: 0,
             current_row: 0,
             total_read_rows: 0,
-            total_read_bytes: 0,
+            total_rows,
             last_row: ParsedRow::default(),
             closed: false,
         })
@@ -1009,7 +1010,6 @@ impl Parser {
         self.current_row += 1;
         self.total_read_rows += 1;
         let length = estimate_row_size(&row);
-        self.total_read_bytes += length;
         Ok(ParsedRow {
             row,
             row_id: 0,
@@ -1039,9 +1039,13 @@ impl Parser {
     pub fn pos(&self) -> (i64, i64) {
         (self.total_read_rows, self.last_row.row_id)
     }
-    /// 已扫描字节估算（累加 estimate_row_size）。
+    /// 按消费行数比例估算源字节进度，避免预读影响进度。
     pub fn scanned_pos(&self) -> i64 {
-        self.total_read_bytes as i64
+        if self.total_rows <= 0 || self.total_read_rows == self.total_rows {
+            return self.file.source_size;
+        }
+        let progress = self.total_read_rows as f64 / self.total_rows as f64;
+        (progress * self.file.source_size as f64) as i64
     }
     /// 按 Go 的整数 range 语义跳过正数行；负数差值不移动物理游标。
     pub fn set_pos(&mut self, pos: i64, row_id: i64) -> Result<()> {

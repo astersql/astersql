@@ -80,7 +80,7 @@ fn parquet_parser_reads_rows_columns_and_positions() {
     parser.read_row().unwrap();
     assert_eq!(parser.last_row().row_id, 1);
     assert_eq!(parser.pos(), (1, 1));
-    assert_eq!(parser.scanned_pos(), 13);
+    assert_eq!(parser.scanned_pos(), 64);
     parser.read_row().unwrap();
     assert_eq!(parser.last_row().row_id, 2);
     assert!(parser.read_row().unwrap_err().to_string().contains("EOF"));
@@ -418,4 +418,136 @@ fn reader_memory_estimate_includes_preload_values_and_level_buffers() {
         + account_column_value_memory_bytes(&ColumnValue::Bytes(b"abc".to_vec()))
         + (crate::parser::READ_BATCH_SIZE * 4) as i64;
     assert_eq!(EstimateParquetReaderMemory(&file).unwrap(), expected);
+}
+
+#[test]
+fn parquet_scanned_pos_by_read_rows() {
+    for (rows, size) in [(10, 101), (0, 101), (97, 10_i64 << 30)] {
+        let mut file = two_column_file(vec![RowGroup {
+            rows: (0..rows)
+                .map(|i| vec![Some(ColumnValue::Int32(i)), None])
+                .collect(),
+            compressed_bytes: 0,
+        }]);
+        file.source_size = size;
+        let mut parser = NewParser(file).unwrap();
+        let mut previous = 0;
+        for consumed in 0..=rows {
+            let pos = parser.ScannedPos();
+            let expected = if rows == 0 || consumed == rows {
+                size
+            } else {
+                ((consumed as f64 / rows as f64) * size as f64) as i64
+            };
+            assert_eq!(pos, expected);
+            assert!(pos >= previous && pos <= size);
+            previous = pos;
+            if consumed < rows {
+                parser.ReadRow().unwrap();
+            }
+        }
+    }
+}
+
+fn progress_parquet_source(
+    rows: i64,
+    strategy: usize,
+) -> (crate::source_reader::SourceReader, i64) {
+    use crate::source_reader::{RangeOpener, SourceReader};
+    use parquet::data_type::Int64Type;
+    use parquet::file::{properties::WriterProperties, writer::SerializedFileWriter};
+    use std::io::Cursor;
+    let schema = Arc::new(
+        parquet::schema::parser::parse_message_type(
+            "message schema { REQUIRED INT64 v; REQUIRED INT64 late_v; }",
+        )
+        .unwrap(),
+    );
+    let properties = Arc::new(WriterProperties::builder().build());
+    let mut bytes = Vec::new();
+    let mut writer = SerializedFileWriter::new(&mut bytes, schema, properties).unwrap();
+    for start in (0..rows).step_by(9) {
+        let mut group = writer.next_row_group().unwrap();
+        for factor in [1, 2] {
+            let mut column = group.next_column().unwrap().unwrap();
+            let values = (start..(start + 9).min(rows))
+                .map(|i| i * factor)
+                .collect::<Vec<_>>();
+            column
+                .typed::<Int64Type>()
+                .write_batch(&values, None, None)
+                .unwrap();
+            column.close().unwrap();
+        }
+        group.close().unwrap();
+    }
+    writer.close().unwrap();
+    let data = Arc::new(bytes);
+    let size = data.len() as u64;
+    let open: RangeOpener = Arc::new(move |start, end| {
+        Ok(Box::new(Cursor::new(
+            data[start as usize..end as usize].to_vec(),
+        )))
+    });
+    let (whole, group) = match strategy {
+        0 => (0, 128 << 20),
+        1 => (size, 128 << 20),
+        _ => (0, 1),
+    };
+    let source =
+        SourceReader::prepare_with_thresholds(size as i64, || Ok(size), open, whole, group)
+            .unwrap();
+    assert_eq!(source.whole_file_preloaded(), strategy == 1);
+    (source, size as i64)
+}
+
+#[test]
+fn parquet_import_scanned_pos_tracks_rows_across_reader_strategies() {
+    use crate::file_parser::{FileParser, ImportParser};
+    use astersql_lightning_mydump::{Datum as D, MydumpError, Parser as _};
+    for strategy in 0..3 {
+        let (source, size) = progress_parquet_source(50, strategy);
+        let mut parser = ImportParser::new(FileParser::new(source).unwrap());
+        assert_eq!(parser.inner.total_rows(), 50);
+        assert_eq!(parser.ScannedPos().unwrap(), 0);
+        let mut previous = 0;
+        for i in 0..50 {
+            parser.ReadRow().unwrap();
+            let row = parser.LastRow();
+            assert_eq!(row.row, vec![D::I64(i), D::I64(i * 2)]);
+            assert_eq!(row.length, 16);
+            let pos = parser.ScannedPos().unwrap();
+            assert_eq!(pos, size * (i + 1) / 50);
+            assert!(pos >= previous && pos <= size);
+            previous = pos;
+            parser.RecycleRow(row);
+        }
+        assert_eq!(parser.ScannedPos().unwrap(), size);
+        assert!(matches!(parser.ReadRow(), Err(MydumpError::Eof)));
+        assert_eq!(parser.ScannedPos().unwrap(), size);
+    }
+}
+
+#[test]
+fn parquet_import_scanned_pos_set_pos_and_empty_file() {
+    use crate::file_parser::{FileParser, ImportParser};
+    use astersql_lightning_mydump::{MydumpError, Parser as _};
+    let (source, size) = progress_parquet_source(10, 1);
+    let mut parser = ImportParser::new(FileParser::new(source).unwrap());
+    parser.SetPos(4, 40).unwrap();
+    assert_eq!(parser.Pos(), (4, 40));
+    assert_eq!(
+        parser.ScannedPos().unwrap(),
+        ((4.0 / 10.0) * size as f64) as i64
+    );
+    parser.SetPos(1, 4).unwrap();
+    assert_eq!(parser.Pos(), (4, 4));
+    assert!(matches!(parser.SetPos(11, 99), Err(MydumpError::Eof)));
+    assert_eq!(parser.Pos(), (10, 4));
+    assert_eq!(parser.ScannedPos().unwrap(), size);
+    let (source, size) = progress_parquet_source(0, 0);
+    let mut parser = ImportParser::new(FileParser::new(source).unwrap());
+    assert_eq!(parser.ScannedPos().unwrap(), size);
+    assert!(matches!(parser.ReadRow(), Err(MydumpError::Eof)));
+    assert_eq!(parser.ScannedPos().unwrap(), size);
 }

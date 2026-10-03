@@ -207,6 +207,8 @@ impl BlockParser {
 pub trait Parser {
     fn Pos(&self) -> (i64, i64);
     fn SetPos(&mut self, pos: i64, row: i64) -> Result<(), Error>;
+    /// Monotonic source-byte progress; parsers may estimate it when physical
+    /// reads do not correspond directly to consumed rows.
     fn ScannedPos(&mut self) -> Result<i64, Error>;
     fn Close(&mut self) -> Result<(), Error>;
     fn ReadRow(&mut self) -> Result<(), Error>;

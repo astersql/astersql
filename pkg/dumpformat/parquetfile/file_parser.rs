@@ -125,7 +125,6 @@ pub struct FileParser {
     group_rows: i64,
     group_read: i64,
     pub read_rows: i64,
-    pub read_bytes: u64,
     first_group_preload_bytes: i64,
     batch_size: usize,
     pub row_id: i64,
@@ -227,7 +226,6 @@ impl FileParser {
             group_rows: 0,
             group_read: 0,
             read_rows: 0,
-            read_bytes: 0,
             first_group_preload_bytes,
             batch_size: crate::parser::READ_BATCH_SIZE,
             row_id: 0,
@@ -388,7 +386,6 @@ impl FileParser {
             .iter_mut()
             .map(Column::next)
             .collect::<Result<Vec<_>>>()?;
-        self.read_bytes += datum_row_size(&row);
         self.group_read += 1;
         self.read_rows += 1;
         self.row_id += 1;
@@ -473,7 +470,14 @@ impl astersql_lightning_mydump::Parser for ImportParser {
         Ok(())
     }
     fn ScannedPos(&mut self) -> std::result::Result<i64, astersql_lightning_mydump::MydumpError> {
-        Ok(self.inner.read_bytes as i64)
+        use parquet::file::reader::Length;
+        let file_size = self.inner.source.len() as i64;
+        let total_rows = self.inner.total_rows();
+        if total_rows <= 0 || self.inner.read_rows == total_rows {
+            return Ok(file_size);
+        }
+        let progress = self.inner.read_rows as f64 / total_rows as f64;
+        Ok((progress * file_size as f64) as i64)
     }
     fn Close(&mut self) -> std::result::Result<(), astersql_lightning_mydump::MydumpError> {
         self.inner.close();
