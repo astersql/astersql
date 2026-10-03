@@ -239,6 +239,7 @@ pub(crate) enum CatalogColumnType {
     TextArray = 236,
     Int2Vector = 237,
     Int8Array = 238,
+    OidVector = 239,
 }
 impl CatalogColumnType {
     fn from_code(code: u8) -> Option<Self> {
@@ -252,6 +253,7 @@ impl CatalogColumnType {
             236 => Self::TextArray,
             237 => Self::Int2Vector,
             238 => Self::Int8Array,
+            239 => Self::OidVector,
             _ => return None,
         })
     }
@@ -266,6 +268,7 @@ impl CatalogColumnType {
             Self::TextArray => (1009, -1),
             Self::Int2Vector => (22, -1),
             Self::Int8Array => (1016, -1),
+            Self::OidVector => (30, -1),
         }
     }
 }

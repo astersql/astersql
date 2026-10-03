@@ -33,6 +33,11 @@ pub(crate) enum Expr {
     Equal(Box<Expr>, Box<Expr>),
     Compare(Box<Expr>, CompareOp, Box<Expr>),
     In(Box<Expr>, Vec<Expr>),
+    Any(Box<Expr>, Box<Expr>),
+    ArrayUnnest {
+        input: Box<Expr>,
+        projection: Box<Expr>,
+    },
     InSubquery(Box<Expr>, Box<Select>),
     ScalarSubquery(Box<Select>),
     ArrayAgg(Box<Expr>, Vec<Ordering>),
@@ -64,6 +69,8 @@ pub(crate) enum CastType {
     Varchar,
     Oid,
     Regclass,
+    OperatorName,
+    IntArray,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Projection {
@@ -389,7 +396,14 @@ impl Parser {
         let mut expr = self.atom()?;
         if self.symbol('=') {
             self.predicate_budget()?;
-            expr = Expr::Equal(Box::new(expr), Box::new(self.atom()?));
+            expr = if self.word("any") {
+                self.require_symbol('(')?;
+                let input = self.expr()?;
+                self.require_symbol(')')?;
+                Expr::Any(Box::new(expr), Box::new(input))
+            } else {
+                Expr::Equal(Box::new(expr), Box::new(self.atom()?))
+            };
         } else if self.symbol('<') {
             self.predicate_budget()?;
             let op = if self.symbol('>') {
@@ -488,6 +502,25 @@ impl Parser {
             Expr::Boolean(false)
         } else if self.word("current_catalog") {
             Expr::Call(vec!["current_catalog".into()], vec![])
+        } else if self.word("array") {
+            self.require_symbol('(')?;
+            self.require_word("select")?;
+            let projection = self.expr()?;
+            self.require_word("from")?;
+            let function = self.path()?;
+            if !matches!(function.as_slice(), [name] if name == "unnest")
+                && !matches!(function.as_slice(), [catalog, name] if catalog == "pg_catalog" && name == "unnest")
+            {
+                return Err(unsupported("catalog ARRAY requires an unnest source"));
+            }
+            self.require_symbol('(')?;
+            let input = self.expr()?;
+            self.require_symbol(')')?;
+            self.require_symbol(')')?;
+            Expr::ArrayUnnest {
+                input: Box::new(input),
+                projection: Box::new(projection),
+            }
         } else if self.word("case") {
             self.require_word("when")?;
             let condition = self.expr()?;
@@ -593,6 +626,27 @@ impl Parser {
                 "varchar" => CastType::Varchar,
                 "oid" => CastType::Oid,
                 "regclass" => CastType::Regclass,
+                // Keep the supported name conversion atomic: a standalone
+                // regoper result would require an operator catalog and wire type.
+                "regoper" => {
+                    if self.peek() != Some(&Token::Cast) {
+                        return Err(unsupported("regoper requires a varchar name conversion"));
+                    }
+                    self.pos += 1;
+                    if self.identifier()? != "varchar" {
+                        return Err(unsupported("unsupported regoper conversion"));
+                    }
+                    self.casts += 1;
+                    if self.casts > 128 {
+                        return Err(unsupported("too many catalog casts"));
+                    }
+                    CastType::OperatorName
+                }
+                "int" | "integer" => {
+                    self.require_symbol('[')?;
+                    self.require_symbol(']')?;
+                    CastType::IntArray
+                }
                 _ => return Err(unsupported("unsupported catalog cast")),
             };
             expr = Expr::Cast(Box::new(expr), target);
@@ -833,7 +887,8 @@ pub(crate) fn parse(sql: &str) -> ParseResult<Option<Select>> {
 }
 
 pub(crate) fn is_catalog_relation(name: &str) -> bool {
-    name == "pg_locks"
+    name == "pg_opclass"
+        || name == "pg_locks"
         || crate::pg_oid::SYSTEM_RELATIONS
             .iter()
             .any(|(n, _)| *n == name)

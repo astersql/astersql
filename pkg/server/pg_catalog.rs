@@ -288,6 +288,7 @@ impl CatalogQuery {
                         | "pg_description"
                         | "pg_shdescription"
                         | "pg_inherits"
+                        | "pg_opclass"
                 )
             {
                 return Err(("0A000", "catalog provider is not implemented yet".into()));
@@ -463,6 +464,33 @@ impl CatalogQuery {
                 }
                 query.expr_type(&query.select.projections[0].expr)
             }
+            Expr::Any(value, input) => {
+                let element = numeric_array_element(self.expr_type(input)?.0)
+                    .ok_or_else(|| ("0A000", "ANY requires a numeric catalog array".into()))?;
+                self.expr_type(&Expr::Equal(
+                    value.clone(),
+                    Box::new(Expr::TypedLiteral(Box::new(Expr::Null), element, 0)),
+                ))?;
+                Ok((1, astersql_parser_mysql::r#type::IsBooleanFlag))
+            }
+            Expr::ArrayUnnest { input, projection } => {
+                let element = numeric_array_element(self.expr_type(input)?.0)
+                    .ok_or_else(|| ("0A000", "unnest requires a numeric catalog array".into()))?;
+                let projection = unnest_projection(
+                    projection,
+                    &Expr::TypedLiteral(Box::new(Expr::Null), element, 0),
+                )?;
+                let code = self.expr_type(&projection)?.0;
+                let array = match code {
+                    2 => crate::pg_result::CatalogColumnType::Int2Array,
+                    3 => crate::pg_result::CatalogColumnType::Int4Array,
+                    8 => crate::pg_result::CatalogColumnType::Int8Array,
+                    crate::pg_oid::OID_TYPE => crate::pg_result::CatalogColumnType::OidArray,
+                    253 => crate::pg_result::CatalogColumnType::TextArray,
+                    _ => return Err(("0A000", "unsupported unnest projection type".into())),
+                };
+                Ok((array as u8, 0))
+            }
             Expr::ArrayAgg(inner, order) => {
                 for key in order {
                     self.expr_type(&key.expr)?;
@@ -488,6 +516,18 @@ impl CatalogQuery {
                         "boolean to bigint catalog casts are unsupported".into(),
                     ));
                 }
+                if *target == CastType::IntArray
+                    && !matches!(**inner, Expr::Null)
+                    && numeric_array_element(code).is_none()
+                {
+                    return Err(("0A000", "int[] requires a numeric catalog array".into()));
+                }
+                if *target == CastType::OperatorName
+                    && !matches!(**inner, Expr::Null)
+                    && !numeric_type(code)
+                {
+                    return Err(("0A000", "regoper requires an operator OID".into()));
+                }
                 Ok((
                     match target {
                         CastType::InternalChar => {
@@ -497,6 +537,10 @@ impl CatalogQuery {
                         CastType::Varchar => 253,
                         CastType::Oid => crate::pg_oid::OID_TYPE,
                         CastType::Regclass => crate::pg_oid::REGCLASS_TYPE,
+                        // No native exclusion operators have a PG name mapping.
+                        // The only supported regoper value is zero, displayed as '-'.
+                        CastType::OperatorName => 253,
+                        CastType::IntArray => crate::pg_result::CatalogColumnType::Int4Array as u8,
                     },
                     0,
                 ))
@@ -874,7 +918,7 @@ impl CatalogQuery {
             "pg_proc" => function_rows(),
             // Native physical partitions are not independent SQL relations in
             // this adapter. There are no PG inheritance edges to those objects.
-            "pg_inherits" => Vec::new(),
+            "pg_inherits" | "pg_opclass" => Vec::new(),
             "pg_language" => vec![vec![
                 Value::Signed(INTERNAL_LANGUAGE_OID),
                 Value::Text("internal".into()),
@@ -995,6 +1039,43 @@ impl CatalogQuery {
             Expr::Null => Value::Null,
             Expr::TypedLiteral(inner, _, _) => evaluate(inner)?,
             Expr::ArrayAgg(_, _) => return Err(ConnError::UnsupportedCommand(0)),
+            Expr::Any(value, input) => {
+                let value = evaluate(value)?;
+                let input = evaluate(input)?;
+                if input == Value::Null {
+                    return Ok(Value::Null);
+                }
+                let values = numeric_array_values(&input)?;
+                let mut unknown = false;
+                for element in values {
+                    execution.comparison()?;
+                    if value == Value::Null || element == Value::Null {
+                        unknown = true;
+                    } else if value == element {
+                        return Ok(Value::Text("true".into()));
+                    }
+                }
+                if unknown {
+                    Value::Null
+                } else {
+                    Value::Text("false".into())
+                }
+            }
+            Expr::ArrayUnnest { input, projection } => {
+                let element_code = self.expr_type(input).expect("validated array").0;
+                let input = evaluate(input)?;
+                let element = numeric_array_element(element_code).unwrap();
+                let mut values = Vec::new();
+                for value in numeric_array_values(&input)? {
+                    execution.comparison()?;
+                    let literal =
+                        Expr::TypedLiteral(Box::new(literal(&value, element)), element, 0);
+                    let projection = unnest_projection(projection, &literal)
+                        .map_err(|(_, message)| ConnError::Session(message))?;
+                    values.push(evaluate(&projection)?);
+                }
+                Value::Text(array_text(values.into_iter()))
+            }
             Expr::ScalarSubquery(select) => {
                 let query = self
                     .correlated(select, Some(row))
@@ -1016,6 +1097,21 @@ impl CatalogQuery {
             Expr::Text(s) => Value::Text(s.clone()),
             Expr::Cast(inner, target) => match (evaluate(inner)?, target) {
                 (Value::Null, _) => Value::Null,
+                (Value::Text(s), CastType::IntArray) => {
+                    let values = numeric_array_values(&Value::Text(s))?;
+                    for value in &values {
+                        if let Value::Signed(n) = value {
+                            i32::try_from(*n).map_err(|_| {
+                                ConnError::Session("PG int[] conversion out of range".into())
+                            })?;
+                        }
+                    }
+                    Value::Text(array_text(values.into_iter()))
+                }
+                (Value::Signed(0), CastType::OperatorName) => Value::Text("-".into()),
+                (Value::Signed(_), CastType::OperatorName) => {
+                    return Err(ConnError::UnsupportedCommand(0));
+                }
                 (Value::Signed(n), CastType::Bigint) => Value::Signed(n),
                 (Value::Signed(n), CastType::Oid | CastType::Regclass) => {
                     Value::Signed(i64::from(u32::try_from(n).map_err(|_| {
@@ -1506,7 +1602,9 @@ fn literal(value: &Value, code: u8) -> Expr {
 fn has_aggregate(expr: &Expr) -> bool {
     match expr {
         Expr::ArrayAgg(_, _) => true,
-        Expr::Cast(e, _) | Expr::TypedLiteral(e, _, _) => has_aggregate(e),
+        Expr::Cast(e, _) | Expr::TypedLiteral(e, _, _) | Expr::ArrayUnnest { input: e, .. } => {
+            has_aggregate(e)
+        }
         Expr::Call(_, args) => args.iter().any(has_aggregate),
         _ => false,
     }
@@ -1515,6 +1613,7 @@ fn ungrouped_column(expr: &Expr) -> bool {
     match expr {
         Expr::Column(_) => true,
         Expr::ArrayAgg(_, _) | Expr::ScalarSubquery(_) => false,
+        Expr::ArrayUnnest { input, .. } => ungrouped_column(input),
         Expr::Cast(e, _) | Expr::TypedLiteral(e, _, _) => ungrouped_column(e),
         Expr::Call(_, args) => args.iter().any(ungrouped_column),
         _ => false,
@@ -1540,6 +1639,75 @@ fn compare_keys(
         }
     }
     std::cmp::Ordering::Equal
+}
+fn numeric_array_element(code: u8) -> Option<u8> {
+    use crate::pg_result::CatalogColumnType as T;
+    if code == T::Int2Array as u8 || code == T::Int2Vector as u8 {
+        Some(2)
+    } else if code == T::Int4Array as u8 {
+        Some(3)
+    } else if code == T::Int8Array as u8 {
+        Some(8)
+    } else if code == T::OidArray as u8 || code == T::OidVector as u8 {
+        Some(crate::pg_oid::OID_TYPE)
+    } else {
+        None
+    }
+}
+// Providers produce one-dimensional numeric arrays/vectors, never arbitrary PG text arrays.
+fn numeric_array_values(value: &Value) -> ConnResult<Vec<Value>> {
+    let Value::Text(text) = value else {
+        return if *value == Value::Null {
+            Ok(Vec::new())
+        } else {
+            Err(ConnError::UnsupportedCommand(0))
+        };
+    };
+    let mut values = Vec::new();
+    let array = text.starts_with('{') && text.ends_with('}');
+    let text = if array {
+        &text[1..text.len() - 1]
+    } else {
+        text.as_str()
+    };
+    for item in text
+        .split(|c: char| {
+            if array {
+                c == ','
+            } else {
+                c.is_ascii_whitespace()
+            }
+        })
+        .filter(|s| !s.is_empty())
+    {
+        if values.len() >= MAX_CATALOG_ROWS {
+            return Err(catalog_row_limit());
+        }
+        values.push(if item.trim() == "NULL" {
+            Value::Null
+        } else {
+            Value::Signed(
+                item.trim()
+                    .parse()
+                    .map_err(|_| ConnError::Session("invalid numeric catalog array".into()))?,
+            )
+        });
+    }
+    Ok(values)
+}
+fn unnest_projection(projection: &Expr, element: &Expr) -> ParseResult<Expr> {
+    // The bounded ARRAY subquery admits scalar casts of its single unnest column.
+    // This keeps the local name out of outer catalog binding and correlation.
+    match projection {
+        Expr::Column(path) if matches!(path.as_slice(), [name] if name == "unnest") => {
+            Ok(element.clone())
+        }
+        Expr::Cast(inner, target) => Ok(Expr::Cast(
+            Box::new(unnest_projection(inner, element)?),
+            *target,
+        )),
+        _ => Err(("0A000", "unsupported catalog unnest projection".into())),
+    }
 }
 fn array_text(values: impl Iterator<Item = Value>) -> String {
     let values = values
@@ -1632,7 +1800,15 @@ fn visit_expr<E>(
                 visit_expr(v, visitor)?;
             }
         }
-        Expr::Equal(a, b) | Expr::Compare(a, _, b) | Expr::And(a, b) | Expr::Or(a, b) => {
+        Expr::ArrayUnnest {
+            input,
+            projection: _,
+        } => visit_expr(input, visitor)?,
+        Expr::Any(a, b)
+        | Expr::Equal(a, b)
+        | Expr::Compare(a, _, b)
+        | Expr::And(a, b)
+        | Expr::Or(a, b) => {
             visit_expr(a, visitor)?;
             visit_expr(b, visitor)?;
         }
@@ -1668,7 +1844,12 @@ fn contains_age(expr: &Expr) -> bool {
         }
         Expr::In(inner, values) => contains_age(inner) || values.iter().any(contains_age),
         Expr::InSubquery(inner, _) => contains_age(inner),
-        Expr::Equal(left, right)
+        Expr::ArrayUnnest {
+            input: left,
+            projection: right,
+        }
+        | Expr::Any(left, right)
+        | Expr::Equal(left, right)
         | Expr::Compare(left, _, right)
         | Expr::And(left, right)
         | Expr::Or(left, right) => contains_age(left) || contains_age(right),
@@ -1889,6 +2070,8 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
     let oid = crate::pg_oid::OID_TYPE;
     let internal_char = crate::pg_result::CatalogColumnType::InternalChar as u8;
     let (slot, code) = match (relation, name) {
+        ("pg_opclass", "oid") => (0, oid),
+        ("pg_opclass", "opcmethod") => (1, oid),
         ("pg_inherits", "inhrelid") => (0, oid),
         ("pg_inherits", "inhparent") => (1, oid),
         ("pg_inherits", "inhseqno") => (2, 3),
@@ -1924,7 +2107,8 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
         ("pg_index", "indnullsnotdistinct") => (6, 1),
         ("pg_index", "indkey") => (7, crate::pg_result::CatalogColumnType::Int2Vector as u8),
         ("pg_index", "indoption") => (8, crate::pg_result::CatalogColumnType::Int2Vector as u8),
-        ("pg_index", "indcollation") | ("pg_index", "indclass") => return None,
+        ("pg_index", "indclass") => (9, crate::pg_result::CatalogColumnType::OidVector as u8),
+        ("pg_index", "indcollation") => return None,
         ("pg_index", "indexprs") => (11, 253),
         ("pg_index", "indpred") => (12, 253),
         ("pg_index", "indisvalid") => (13, 1),
@@ -2513,6 +2697,8 @@ fn index_constraint_rows(
                         .join(" "),
                 );
                 row[8] = Value::Text(vec!["0"; columns.len()].join(" "));
+                // Native indexes do not select PostgreSQL operator classes.
+                row[9] = Value::Text(String::new());
                 row[13] = Value::Text("true".into());
                 row[14] = Value::Text("true".into());
                 row[21] = Value::Text(definition);
