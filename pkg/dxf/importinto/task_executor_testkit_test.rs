@@ -36,7 +36,7 @@ fn import_step_run_subtask_cleans_real_local_engines_before_retry() {
         calls: Arc<Mutex<Vec<&'static str>>>,
     }
     impl EncodeSortImporterHost for Host {
-        fn EstimateParquetReaderMemory(&self, _: &str) -> Result<i64, String> {
+        fn EstimateParquetReaderMemory(&self, _: &str, _: i64) -> Result<i64, String> {
             Ok(0)
         }
         fn OpenDataEngine(&self, context: &EncodeContext, id: i32) -> Result<OpenedEngine, String> {

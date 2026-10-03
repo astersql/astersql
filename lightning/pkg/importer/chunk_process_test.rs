@@ -746,3 +746,59 @@ fn test_get_columns_names() {
         vec!["_tidb_rowid", "b"]
     );
 }
+
+#[test]
+fn parquet_chunk_reads_real_rows_and_restores_checkpoint_across_groups() {
+    use parquet::{
+        data_type::Int64Type,
+        file::{properties::WriterProperties, writer::SerializedFileWriter},
+        schema::parser::parse_message_type,
+    };
+    let schema = Arc::new(parse_message_type("message schema { OPTIONAL INT64 v; }").unwrap());
+    let mut writer = SerializedFileWriter::new(
+        Vec::new(),
+        schema,
+        Arc::new(WriterProperties::builder().build()),
+    )
+    .unwrap();
+    for base in [0, 32] {
+        let mut group = writer.next_row_group().unwrap();
+        let mut column = group.next_column().unwrap().unwrap();
+        column
+            .typed::<Int64Type>()
+            .write_batch(&(base..base + 32).collect::<Vec<_>>(), Some(&[1; 32]), None)
+            .unwrap();
+        column.close().unwrap();
+        group.close().unwrap();
+    }
+    let bytes = writer.into_inner().unwrap();
+    let size = bytes.len() as i64;
+    let store = storeapi::Storage::new("memory://parquet-chunk");
+    store.Put("rows.parquet", bytes);
+    for file_size in [0, size] {
+        let mut chunk = sample_chunk();
+        chunk.Key.Path = "rows.parquet".into();
+        chunk.FileMeta.Path = "rows.parquet".into();
+        chunk.FileMeta.Type = checkpoints::mydump::SourceType(mydump::SourceTypeParquet);
+        chunk.FileMeta.FileSize = file_size;
+        chunk.Chunk.Offset = 30;
+        chunk.Chunk.PrevRowIDMax = 130;
+        chunk.ColumnPermutation.clear();
+        let mut parser = openParser(
+            context::Background(),
+            &config::Config::NewConfig(),
+            &chunk,
+            None,
+            &store,
+            &sample_core(),
+        )
+        .unwrap();
+        for value in 30..64 {
+            parser.ReadRow().unwrap();
+            assert_eq!(parser.LastRow().RowID, value + 101);
+            assert!(matches!(&parser.LastRow().Row[0],types::Datum::Int(v) if *v==value));
+        }
+        assert_eq!(parser.ReadRow().unwrap_err().class, Some("EOF"));
+        parser.Close().unwrap();
+    }
+}

@@ -65,7 +65,7 @@ pub struct EncodeSortStepExecutor {
 /// engine backend. Keep the same boundary injectable while production uses
 /// the complete TableImporter implementation.
 pub trait EncodeSortImporterHost {
-    fn EstimateParquetReaderMemory(&self, path: &str) -> Result<i64, String>;
+    fn EstimateParquetReaderMemory(&self, path: &str, file_size: i64) -> Result<i64, String>;
     fn OpenDataEngine(
         &self,
         context: &EncodeContext,
@@ -86,8 +86,8 @@ pub trait EncodeSortImporterHost {
 }
 
 impl EncodeSortImporterHost for importer::TableImporter {
-    fn EstimateParquetReaderMemory(&self, path: &str) -> Result<i64, String> {
-        self.EstimateParquetReaderMemory(path)
+    fn EstimateParquetReaderMemory(&self, path: &str, file_size: i64) -> Result<i64, String> {
+        self.EstimateParquetReaderMemory(path, file_size)
     }
     fn OpenDataEngine(
         &self,
@@ -279,20 +279,13 @@ impl EncodeSortStepExecutor {
         if !self.parquet_estimated {
             self.parquet_estimated = true;
             self.concurrency = resource.CPU.Capacity().max(1) as usize;
-            if step_meta.Chunks.first().map(|chunk| chunk.Type) == Some(SourceType::Parquet) {
-                if let (Some(parent), Some(largest)) = (
-                    self.parent_importer.as_ref(),
-                    step_meta.Chunks.iter().max_by_key(|chunk| chunk.FileSize),
-                ) {
-                    if let Ok(peak) = parent.EstimateParquetReaderMemory(&largest.Path) {
-                        if peak > 0 {
-                            let budget =
-                                (resource.Mem.Capacity() as f64 * readerMemBudgetRatio) as i64;
-                            self.concurrency =
-                                self.concurrency.min((budget / peak).max(1) as usize);
-                        }
-                    }
-                }
+            if let Some(parent) = self.parent_importer.as_ref() {
+                self.concurrency = parquet_reader_concurrency(
+                    &step_meta.Chunks,
+                    self.concurrency,
+                    resource.Mem.Capacity(),
+                    |path, size| parent.EstimateParquetReaderMemory(path, size),
+                );
             }
         }
         let concurrency = self.concurrency;
@@ -1975,24 +1968,12 @@ impl importStepExecutor {
         chunks: &[importer::Chunk],
         resource: &StepResource,
     ) {
-        // 非 parquet 源不调整并发。
-        if chunks.first().map(|chunk| chunk.Type) != Some(SourceType::Parquet) {
-            return;
-        }
-        // 取最大文件估计峰值内存，再按 reader 预算推导可并行数。
-        let target = chunks
-            .iter()
-            .max_by_key(|chunk| chunk.FileSize)
-            .expect("non-empty parquet chunk list");
-        let Ok(peak_memory) = self.tableImporter.EstimateParquetReaderMemory(&target.Path) else {
-            return;
-        };
-        if peak_memory <= 0 {
-            return;
-        }
-        let budget = (resource.Mem.Capacity() as f64 * readerMemBudgetRatio) as i64;
-        let memory_concurrency = (budget / peak_memory).max(1) as i32;
-        self.concurrency = self.concurrency.min(memory_concurrency);
+        self.concurrency = parquet_reader_concurrency(
+            chunks,
+            self.concurrency as usize,
+            resource.Mem.Capacity(),
+            |path, size| self.tableImporter.EstimateParquetReaderMemory(path, size),
+        ) as i32;
     }
 
     /// 刷新并返回实时子任务进度摘要。
@@ -2121,4 +2102,26 @@ impl execute::Collector for ingestCollector {
         }
         self.meterRec.IncClusterWriteBytes(bytes.max(0) as u64);
     }
+}
+
+/// Both framework entrypoints estimate the largest Parquet file with its exact
+/// source size. Estimation failures retain CPU-based concurrency.
+pub(crate) fn parquet_reader_concurrency(
+    chunks: &[importer::Chunk],
+    cpu: usize,
+    memory: i64,
+    estimate: impl FnOnce(&str, i64) -> Result<i64, String>,
+) -> usize {
+    if chunks.first().map(|chunk| chunk.Type) != Some(SourceType::Parquet) {
+        return cpu;
+    }
+    let target = chunks.iter().max_by_key(|chunk| chunk.FileSize).unwrap();
+    let Ok(peak) = estimate(&target.Path, target.FileSize) else {
+        return cpu;
+    };
+    if peak <= 0 {
+        return cpu;
+    }
+    let budget = (memory as f64 * readerMemBudgetRatio) as i64;
+    cpu.min((budget / peak).max(1) as usize)
 }

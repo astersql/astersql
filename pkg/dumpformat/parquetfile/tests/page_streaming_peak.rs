@@ -31,6 +31,7 @@ struct Allocator;
 static CURRENT: AtomicUsize = AtomicUsize::new(0);
 static PEAK: AtomicUsize = AtomicUsize::new(0);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
+static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 unsafe impl GlobalAlloc for Allocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let ptr = unsafe { System.alloc(layout) };
@@ -52,6 +53,7 @@ static ALLOCATOR: Allocator = Allocator;
 
 #[test]
 fn large_plain_page_reads_values_and_eof_with_bounded_peak() {
+    let _guard = TEST_LOCK.lock().unwrap();
     let mut file = tempfile::tempfile().unwrap();
     let schema = Arc::new(
         parse_message_type("message schema { OPTIONAL BYTE_ARRAY data (UTF8); }").unwrap(),
@@ -129,4 +131,66 @@ fn large_plain_page_reads_values_and_eof_with_bounded_peak() {
         peak < 4 << 20,
         "reader peak {peak} exceeds streaming budget"
     );
+}
+
+#[test]
+fn importer_decoder_streams_large_pages_with_one_row_batches_and_bounded_peak() {
+    use astersql_dumpformat_parquetfile::{
+        file_parser::FileParser,
+        source_reader::{RangeOpener, SourceReader},
+        type_converter::Datum,
+    };
+    use std::io::{Read, Seek, SeekFrom};
+    let _guard = TEST_LOCK.lock().unwrap();
+    let mut file = tempfile::tempfile().unwrap();
+    let schema = Arc::new(
+        parse_message_type("message schema { OPTIONAL BYTE_ARRAY data (UTF8); }").unwrap(),
+    );
+    let props = Arc::new(
+        WriterProperties::builder()
+            .set_dictionary_enabled(false)
+            .set_compression(Compression::UNCOMPRESSED)
+            .set_data_page_size_limit(64 << 20)
+            .build(),
+    );
+    let mut writer = SerializedFileWriter::new(&mut file, schema, props).unwrap();
+    let mut group = writer.next_row_group().unwrap();
+    let mut column = group.next_column().unwrap().unwrap();
+    let values: Vec<ByteArray> = (0..64)
+        .map(|row| ByteArray::from(vec![row as u8; 512 * 1024]))
+        .collect();
+    column
+        .typed::<ByteArrayType>()
+        .write_batch(&values, Some(&[1; 64]), None)
+        .unwrap();
+    column.close().unwrap();
+    group.close().unwrap();
+    writer.close().unwrap();
+    drop(values);
+    let size = file.metadata().unwrap().len();
+    let file = Arc::new(file);
+    let input = file.clone();
+    let open: RangeOpener = Arc::new(move |start, end| {
+        let mut file = input.try_clone()?;
+        file.seek(SeekFrom::Start(start))?;
+        Ok(Box::new(file.take(end - start)))
+    });
+    let baseline = CURRENT.load(Ordering::Relaxed);
+    PEAK.store(baseline, Ordering::Relaxed);
+    ACTIVE.store(true, Ordering::Relaxed);
+    let source =
+        SourceReader::prepare_with_thresholds(size as i64, || Ok(size), open, 0, 1).unwrap();
+    let mut parser = FileParser::new(source).unwrap();
+    parser.set_batch_size(1).unwrap();
+    for row in 0..64 {
+        let values = parser.read_row().unwrap();
+        assert!(
+            matches!(&values[0],Datum::Bytes(value) if value.len()==512*1024 && value.iter().all(|&byte|byte==row as u8))
+        );
+    }
+    assert_eq!(parser.read_row().unwrap_err().0, "EOF");
+    ACTIVE.store(false, Ordering::Relaxed);
+    let peak = PEAK.load(Ordering::Relaxed).saturating_sub(baseline);
+    println!("real importer decoder peak: {peak}");
+    assert!(peak < 4 << 20, "importer decoder peak {peak}");
 }

@@ -2768,6 +2768,7 @@ dependencies = [
  "astersql-ingestor-simplesst",
  "astersql-lightning-common",
  "astersql-lightning-log",
+ "astersql-lightning-mydump",
  "astersql-objstore",
  "astersql-objstore-compressedio",
  "astersql-objstore-objectio",
@@ -2781,6 +2782,8 @@ dependencies = [
  "astersql-util-timeutil",
  "astersql-util-zeropool",
  "bytes",
+ "chrono",
+ "chrono-tz",
  "parquet",
  "tempfile",
 ]

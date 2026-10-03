@@ -8,6 +8,9 @@ publish.workspace = true
 path = "lib.rs"
 
 [dependencies]
+chrono = "0.4"
+chrono-tz = "0.10"
+astersql-lightning-mydump = { path = "../../lightning/mydump" }
 bytes = "1"
 parquet = { git = "https://github.com/astersql/arrow-rs.git", tag = "astersql-parquet-v60.0.0-streaming-pages.1" }
 

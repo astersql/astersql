@@ -883,3 +883,60 @@ fn duplicate_key_policy_distinguishes_data_unique_and_non_unique_groups() {
     );
     assert!(getOnDupForKVGroup(&indices, "missing", OnDupKeyModeCapture).is_err());
 }
+
+#[test]
+fn parquet_concurrency_estimate_receives_largest_file_exact_size_and_keeps_fallbacks() {
+    use crate::task_executor::parquet_reader_concurrency;
+    use astersql_executor_importer::Chunk;
+    use astersql_lightning_mydump::SourceType;
+    let chunks = [
+        Chunk {
+            Path: "small.parquet".into(),
+            FileSize: 64,
+            Type: SourceType::Parquet,
+            ..Default::default()
+        },
+        Chunk {
+            Path: "large.parquet".into(),
+            FileSize: 256,
+            Type: SourceType::Parquet,
+            ..Default::default()
+        },
+    ];
+    assert_eq!(
+        parquet_reader_concurrency(&chunks, 8, 1000, |path, size| {
+            assert_eq!(path, "large.parquet");
+            assert_eq!(size, 256);
+            Ok(100)
+        }),
+        3
+    );
+    assert_eq!(
+        parquet_reader_concurrency(&chunks, 8, 1000, |_, _| Err("cannot read source".into())),
+        8
+    );
+    assert_eq!(
+        parquet_reader_concurrency(&chunks, 8, 1000, |_, _| Ok(0)),
+        8
+    );
+    assert_eq!(
+        parquet_reader_concurrency(&chunks, 8, 10, |_, _| Ok(100)),
+        1
+    );
+    assert_eq!(
+        parquet_reader_concurrency(&[], 8, 1000, |_, _| panic!("no parquet")),
+        8
+    );
+    assert_eq!(
+        parquet_reader_concurrency(
+            &[Chunk {
+                Type: SourceType::Csv,
+                ..Default::default()
+            }],
+            8,
+            1000,
+            |_, _| panic!("no parquet")
+        ),
+        8
+    );
+}

@@ -2457,6 +2457,58 @@ pub mod storeapi {
             }
         }
 
+        /// Open an independent bounded stream without loading the whole file.
+        pub fn OpenRange(
+            &self,
+            path: &str,
+            start: u64,
+            end: u64,
+        ) -> Result<Box<dyn std::io::Read>> {
+            use std::io::{Read, Seek, SeekFrom};
+            if end < start {
+                return Err(Error::new("invalid source range"));
+            }
+            if let Some(content) = self.data.lock().unwrap().get(path) {
+                if end > content.len() as u64 {
+                    return Err(Error::new("source range beyond file"));
+                }
+                return Ok(Box::new(std::io::Cursor::new(
+                    content[start as usize..end as usize].to_vec(),
+                )));
+            }
+            if self.uri.starts_with(LocalURIPrefix) {
+                let root = self.uri.trim_start_matches(LocalURIPrefix);
+                let candidate = if std::path::Path::new(path).is_absolute() {
+                    std::path::PathBuf::from(path)
+                } else {
+                    std::path::Path::new(root).join(path)
+                };
+                let mut file =
+                    std::fs::File::open(candidate).map_err(|e| Error::new(e.to_string()))?;
+                file.seek(SeekFrom::Start(start))
+                    .map_err(|e| Error::new(e.to_string()))?;
+                return Ok(Box::new(file.take(end - start)));
+            }
+            Err(Error::new(format!("source object not found: {path}")))
+        }
+        pub fn FileSize(&self, path: &str) -> Result<u64> {
+            if let Some(content) = self.data.lock().unwrap().get(path) {
+                return Ok(content.len() as u64);
+            }
+            if self.uri.starts_with(LocalURIPrefix) {
+                let root = self.uri.trim_start_matches(LocalURIPrefix);
+                let candidate = if std::path::Path::new(path).is_absolute() {
+                    std::path::PathBuf::from(path)
+                } else {
+                    std::path::Path::new(root).join(path)
+                };
+                return std::fs::metadata(candidate)
+                    .map(|m| m.len())
+                    .map_err(|e| Error::new(e.to_string()));
+            }
+            Err(Error::new(format!("source object not found: {path}")))
+        }
+
         pub fn Read(&self, path: &str) -> Result<Vec<u8>> {
             if let Some(content) = self.data.lock().unwrap().get(path).cloned() {
                 return Ok(content);

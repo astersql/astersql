@@ -109,3 +109,9 @@ mod writer_test;
 #[path = "writer_test_helpers_test.rs"]
 /// Writer 测试辅助。
 mod writer_test_helpers_test;
+
+/// Object-store reader strategies shared by real Parquet column decoders.
+pub mod source_reader;
+
+/// Real column decoder for importer and sampling consumers.
+pub mod file_parser;

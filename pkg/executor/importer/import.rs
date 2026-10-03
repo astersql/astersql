@@ -982,12 +982,57 @@ impl LoadDataController {
                     .is_some_and(|remote| remote.path == file.path)
             })
             .ok_or_else(|| format!("data file {} is not initialized", file.path))?;
+        if self.Plan.Format == DataFormatParquet {
+            return self
+                .OpenParquetParser(context, file)
+                .map(|parser| parser as Box<dyn MydumpParser>);
+        }
         let reader = (info.Opener)(context)?;
         let mut parser =
             self.parser_factory
                 .NewParser(&self.Plan.Format, reader, file, &self.Plan)?;
         HandleSkipNRows(parser.as_mut(), self.Plan.IgnoreLines)?;
         Ok(parser)
+    }
+
+    /// Open Parquet from bounded streams; exact small files bypass the footer opener.
+    pub fn OpenParquetParser(
+        &self,
+        context: &StorageContext,
+        file: &SourceFileMeta,
+    ) -> Result<Box<dyn MydumpParser + Send>, String> {
+        let parser = self.OpenParquetFile(context, file)?;
+        Ok(Box::new(
+            astersql_dumpformat_parquetfile::file_parser::ImportParser::new(parser),
+        ))
+    }
+    pub(crate) fn OpenParquetFile(
+        &self,
+        context: &StorageContext,
+        file: &SourceFileMeta,
+    ) -> Result<astersql_dumpformat_parquetfile::file_parser::FileParser, String> {
+        let storage = self
+            .data_store
+            .as_ref()
+            .ok_or_else(|| "data storage is not initialized".to_string())?
+            .clone();
+        open_parquet_file(storage, context, file, self.ParquetLocation())
+    }
+    pub fn OpenParquetParserWithLocation(
+        &self,
+        context: &StorageContext,
+        file: &SourceFileMeta,
+        location: &str,
+    ) -> Result<Box<dyn MydumpParser + Send>, String> {
+        let storage = self
+            .data_store
+            .as_ref()
+            .ok_or_else(|| "data storage is not initialized".to_string())?
+            .clone();
+        let parser = open_parquet_file(storage, context, file, location)?;
+        Ok(Box::new(
+            astersql_dumpformat_parquetfile::file_parser::ImportParser::new(parser),
+        ))
     }
 
     /// 返回已初始化的数据文件列表。
@@ -2099,4 +2144,76 @@ fn strip_compression_suffix(path: &str) -> &str {
         .iter()
         .find_map(|suffix| path.strip_suffix(suffix))
         .unwrap_or(path)
+}
+
+struct ClosingObjectReader(Box<dyn astersql_objstore_objectio::Reader>);
+impl std::io::Read for ClosingObjectReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.0.read(buf)
+    }
+}
+impl Drop for ClosingObjectReader {
+    fn drop(&mut self) {
+        let _ = self.0.close();
+    }
+}
+mod parquet_error_bridge {
+    pub fn as_parquet(
+        e: impl std::fmt::Display,
+    ) -> astersql_dumpformat_parquetfile::source_reader::SourceError {
+        astersql_dumpformat_parquetfile::source_reader::SourceError::General(e.to_string())
+    }
+}
+
+pub(crate) fn open_parquet_file(
+    storage: SharedStorage,
+    context: &StorageContext,
+    file: &SourceFileMeta,
+    location: &str,
+) -> Result<astersql_dumpformat_parquetfile::file_parser::FileParser, String> {
+    use astersql_dumpformat_parquetfile::{
+        file_parser::FileParser,
+        source_reader::{RangeOpener, SourceReader},
+    };
+    use parquet_error_bridge::as_parquet;
+
+    let range_storage = storage.clone();
+    let path = file.path.clone();
+    let range_path = path.clone();
+    let range_context = context.clone();
+    let open: RangeOpener = Arc::new(move |start, end| {
+        range_context.check()?;
+        let guard = range_storage
+            .lock()
+            .map_err(|_| as_parquet("data storage lock is poisoned"))?;
+        let options = astersql_objstore_storeapi::ReaderOption {
+            StartOffset: Some(start as i64),
+            EndOffset: Some(end as i64),
+            ..Default::default()
+        };
+        let reader = guard
+            .Open(&range_context, &range_path, Some(&options))
+            .map_err(as_parquet)?;
+        Ok(Box::new(ClosingObjectReader(reader)))
+    });
+    let size_context = context.clone();
+    let source = SourceReader::prepare(
+        file.file_size,
+        move || {
+            size_context.check()?;
+            let guard = storage
+                .lock()
+                .map_err(|_| as_parquet("data storage lock is poisoned"))?;
+            let mut reader = guard.Open(&size_context, &path, None).map_err(as_parquet)?;
+            let size = reader.file_size();
+            let close = reader.close();
+            let size = size.map_err(as_parquet)?;
+            close.map_err(as_parquet)?;
+            u64::try_from(size).map_err(as_parquet)
+        },
+        open,
+    )
+    .map_err(|e| e.to_string())?;
+    let parser = FileParser::new_with_location(source, location).map_err(|e| e.to_string())?;
+    Ok(parser)
 }

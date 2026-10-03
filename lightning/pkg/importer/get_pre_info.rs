@@ -604,6 +604,54 @@ impl PreImportInfoGetter for PreImportInfoGetterImpl {
             return Ok((Vec::new(), Vec::new()));
         }
 
+        if dataFileMeta.Type == mydump::SourceTypeParquet
+            && dataFileMeta.Compression == mydump::CompressionNone
+        {
+            let source = crate::chunk_process::parquet_source(
+                ctx.clone(),
+                self.srcStorage.clone(),
+                dataFileMeta.Path.clone(),
+                0,
+            )?;
+            let parser = astersql_dumpformat_parquetfile::file_parser::FileParser::new(source)
+                .map_err(|e| errors::New(e.to_string()))?;
+            let columns = parser.columns().to_vec();
+            let string_columns: Vec<bool> = (0..columns.len())
+                .map(|i| parser.column_is_utf8(i))
+                .collect();
+            let mut parser =
+                astersql_dumpformat_parquetfile::file_parser::ImportParser::new(parser);
+            use parser_impl::Parser;
+            let mut rows = Vec::new();
+            for _ in 0..n {
+                if let Some(e) = ctx.Err() {
+                    return Err(e);
+                }
+                match parser.ReadRow() {
+                    Ok(()) => rows.push(
+                        parser
+                            .LastRow()
+                            .row
+                            .into_iter()
+                            .enumerate()
+                            .map(|(index, v)| match v {
+                                parser_impl::Datum::Null => Datum::Bytes(b"\\N".to_vec()),
+                                parser_impl::Datum::I64(v) => Datum::Int(v),
+                                parser_impl::Datum::Bytes(v) if string_columns[index] => {
+                                    Datum::String(String::from_utf8_lossy(&v).into_owned())
+                                }
+                                parser_impl::Datum::Bytes(v) | parser_impl::Datum::Binary(v) => {
+                                    Datum::Bytes(v)
+                                }
+                            })
+                            .collect(),
+                    ),
+                    Err(parser_impl::MydumpError::Eof) => break,
+                    Err(e) => return Err(errors::New(e.to_string())),
+                }
+            }
+            return Ok((columns, rows));
+        }
         let raw = self.srcStorage.Read(&dataFileMeta.Path)?;
         let raw = match dataFileMeta.Compression {
             mydump::CompressionNone => raw,

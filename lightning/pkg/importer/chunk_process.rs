@@ -228,6 +228,28 @@ pub fn openParser(
     store: &Storage,
     tableInfo: &model::TableInfo,
 ) -> Result<Box<dyn DataParser>> {
+    if chunk.FileMeta.Type.0 == mydump::SourceTypeParquet {
+        let source = parquet_source(
+            _ctx.clone(),
+            store.clone(),
+            chunk.FileMeta.Path.clone(),
+            chunk.FileMeta.FileSize,
+        )?;
+        let file_parser = astersql_dumpformat_parquetfile::file_parser::FileParser::new(source)
+            .map_err(|e| errors::New(e.to_string()))?;
+        let mut parser =
+            astersql_dumpformat_parquetfile::file_parser::ImportParser::new(file_parser);
+        use parser_impl::Parser;
+        parser
+            .SetPos(chunk.Chunk.Offset, chunk.Chunk.PrevRowIDMax)
+            .map_err(parser_error)?;
+        return Ok(Box::new(MydumpParser {
+            inner: Box::new(parser),
+            configured_columns: (!chunk.ColumnPermutation.is_empty())
+                .then(|| getColumnNames(tableInfo, &chunk.ColumnPermutation)),
+            last_row: Mutex::new(None),
+        }));
+    }
     let data = store.Read(&chunk.FileMeta.Path)?;
     let data = match chunk.FileMeta.Compression.0 {
         mydump::CompressionNone => data,
@@ -450,4 +472,38 @@ impl chunkProcessor {
     pub fn close(&mut self) {
         let _ = self.parser.Close();
     }
+}
+
+pub(crate) fn parquet_source(
+    ctx: Context,
+    store: Storage,
+    path: String,
+    file_size: i64,
+) -> Result<astersql_dumpformat_parquetfile::source_reader::SourceReader> {
+    use astersql_dumpformat_parquetfile::source_reader::{RangeOpener, SourceReader};
+    use parquet::errors::ParquetError;
+    let range_store = store.clone();
+    let range_path = path.clone();
+    let range_ctx = ctx.clone();
+    let open: RangeOpener = Arc::new(move |start, end| {
+        if let Some(e) = range_ctx.Err() {
+            return Err(ParquetError::General(e.to_string()));
+        }
+        range_store
+            .OpenRange(&range_path, start, end)
+            .map_err(|e| ParquetError::General(e.to_string()))
+    });
+    SourceReader::prepare(
+        file_size,
+        move || {
+            if let Some(e) = ctx.Err() {
+                return Err(ParquetError::General(e.to_string()));
+            }
+            store
+                .FileSize(&path)
+                .map_err(|e| ParquetError::General(e.to_string()))
+        },
+        open,
+    )
+    .map_err(|e| errors::New(e.to_string()))
 }

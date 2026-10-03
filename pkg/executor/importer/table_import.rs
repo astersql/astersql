@@ -387,9 +387,29 @@ impl TableImporter {
     }
 
     /// 估算读取指定 Parquet 文件所需内存。
-    pub fn EstimateParquetReaderMemory(&self, path: &str) -> Result<i64, String> {
-        self.service
-            .EstimateParquetReaderMemory(&self.LoadDataController, path)
+    pub fn EstimateParquetReaderMemory(&self, path: &str, file_size: i64) -> Result<i64, String> {
+        let peak = self
+            .service
+            .EstimateParquetReaderMemory(&self.LoadDataController, path)?;
+        if peak <= 0
+            || file_size <= 0
+            || file_size as u64
+                > astersql_dumpformat_parquetfile::source_reader::WHOLE_FILE_THRESHOLD
+        {
+            return Ok(peak);
+        }
+        let file = SourceFileMeta {
+            path: path.into(),
+            file_size,
+            source_type: SourceType::Parquet,
+            ..Default::default()
+        };
+        let parser = self
+            .LoadDataController
+            .OpenParquetFile(&Default::default(), &file)?;
+        parser
+            .adjust_memory_estimate(peak)
+            .map_err(|e| e.to_string())
     }
 
     /// 按 chunk 会话选项（SQL mode、时间戳、自增种子）构建行编码器。
@@ -660,11 +680,23 @@ impl TableImporterRuntime for TableImporter {
             Timestamp: chunk.Timestamp(),
             ..Chunk::default()
         };
-        let mut parser = self.service.NewParserWithParquetLocation(
-            &self.LoadDataController,
-            &chunk,
-            location,
-        )?;
+        let mut parser = if chunk.Type == SourceType::Parquet {
+            let file = SourceFileMeta {
+                path: chunk.Path.clone(),
+                file_size: chunk.FileSize,
+                source_type: SourceType::Parquet,
+                compression: chunk.Compression,
+                ..Default::default()
+            };
+            self.LoadDataController.OpenParquetParserWithLocation(
+                &Default::default(),
+                &file,
+                location,
+            )?
+        } else {
+            self.service
+                .NewParserWithParquetLocation(&self.LoadDataController, &chunk, location)?
+        };
         // 文件起点：跳过 IgnoreLines 并设置起始 RowID；中间 chunk 直接 Seek。
         if chunk.Offset == 0 {
             crate::HandleSkipNRows(parser.as_mut(), self.LoadDataController.Plan.IgnoreLines)?;
