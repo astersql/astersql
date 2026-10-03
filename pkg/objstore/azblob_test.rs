@@ -361,3 +361,324 @@ fn test_copy_object() {
     assert_eq!(target_bytes.len(), SIZE);
     assert_eq!(Sha256::digest(&target_bytes), source_hash);
 }
+
+/// Observe the real Azure HTTP boundary, including concurrent stage requests.
+struct BlockServer {
+    endpoint: String,
+    stages: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+    commits: Arc<AtomicUsize>,
+    commit_headers: Arc<std::sync::Mutex<Vec<String>>>,
+    peak: Arc<AtomicUsize>,
+    stop: Arc<AtomicBool>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl BlockServer {
+    fn start(fail: bool) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let stages = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let commits = Arc::new(AtomicUsize::new(0));
+        let commit_headers = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let saved_headers = commit_headers.clone();
+        let peak = Arc::new(AtomicUsize::new(0));
+        let active = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (s, c, p, a, stopping) = (
+            stages.clone(),
+            commits.clone(),
+            peak.clone(),
+            active,
+            stop.clone(),
+        );
+        let thread = thread::spawn(move || {
+            let mut handlers = Vec::new();
+            for stream in listener.incoming() {
+                if stopping.load(Ordering::Acquire) {
+                    break;
+                }
+                let mut stream = stream.unwrap();
+                let (s, c, p, a, saved_headers) = (
+                    s.clone(),
+                    c.clone(),
+                    p.clone(),
+                    a.clone(),
+                    saved_headers.clone(),
+                );
+                handlers.push(thread::spawn(move || {
+                    stream.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
+                    let mut request = Vec::new();
+                    let mut byte = [0];
+                    while !request.ends_with(b"\r\n\r\n") {
+                        if stream.read_exact(&mut byte).is_err() { return; }
+                        request.push(byte[0]);
+                    }
+                    let headers = String::from_utf8_lossy(&request).to_ascii_lowercase();
+                    let len: usize = headers.lines().find_map(|line| line.strip_prefix("content-length: ")).unwrap_or("0").trim().parse().unwrap();
+                    let mut body = vec![0; len];
+                    stream.read_exact(&mut body).unwrap();
+                    let stage = headers.lines().next().unwrap().contains("comp=block&");
+                    if stage {
+                        let count = a.fetch_add(1, Ordering::AcqRel) + 1;
+                        p.fetch_max(count, Ordering::AcqRel);
+                        s.lock().unwrap().push(body);
+                        thread::sleep(std::time::Duration::from_millis(60));
+                        a.fetch_sub(1, Ordering::AcqRel);
+                    } else {
+                        assert_eq!(a.load(Ordering::Acquire), 0, "commit before stages finished");
+                        saved_headers.lock().unwrap().push(headers);
+                        c.fetch_add(1, Ordering::AcqRel);
+                    }
+                    let status = if fail && stage { "400 Bad Request" } else { "201 Created" };
+                    let response = format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nETag: \"test\"\r\nLast-Modified: Wed, 21 Oct 2015 07:28:00 GMT\r\nConnection: close\r\n\r\n");
+                    let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
+                }));
+            }
+            for handler in handlers {
+                handler.join().unwrap();
+            }
+        });
+        Self {
+            endpoint,
+            stages,
+            commits,
+            commit_headers,
+            peak,
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    fn storage(&self) -> AzureBlobStorage {
+        new_azure_blob_storage(AzureBlobStorageConfig {
+            endpoint: self.endpoint.clone(), bucket: "test".into(), prefix: "concurrent/".into(),
+            account_name: "devstoreaccount1".into(), shared_key: "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==".into(),
+            ..Default::default()
+        }, &StorageOptions::default()).unwrap()
+    }
+}
+
+impl Drop for BlockServer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        let _ = TcpStream::connect(self.endpoint.trim_start_matches("http://"));
+        self.thread.take().unwrap().join().unwrap();
+    }
+}
+
+#[test]
+fn azure_writer_options_stage_bounded_concurrent_blocks() {
+    let server = BlockServer::start(false);
+    let storage = server.storage();
+    let ctx = Context::default();
+    let data: Vec<u8> = (0..20 * 1024 * 1024)
+        .map(|i| (i / (4 * 1024 * 1024)) as u8)
+        .collect();
+    let mut writer = storage
+        .Create(
+            &ctx,
+            "concurrent.bin",
+            Some(&WriterOption {
+                Concurrency: 4,
+                PartSize: 4 * 1024 * 1024,
+            }),
+        )
+        .unwrap();
+    writer.write(&ctx, &data).unwrap();
+    writer.close(&ctx).unwrap();
+    let stages = server.stages.lock().unwrap();
+    assert_eq!(stages.len(), 5);
+    assert!(stages.iter().all(|part| part.len() == 4 * 1024 * 1024));
+    let mut values: Vec<_> = stages.iter().map(|part| part[0]).collect();
+    values.sort();
+    assert_eq!(values, vec![0, 1, 2, 3, 4]);
+    assert!((2..=4).contains(&server.peak.load(Ordering::Acquire)));
+    assert_eq!(server.commits.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn azure_stage_failure_never_commits_blocks() {
+    for concurrency in [1, 4] {
+        let server = BlockServer::start(true);
+        let storage = server.storage();
+        let ctx = Context::default();
+        let mut writer = storage
+            .Create(
+                &ctx,
+                "failure.bin",
+                Some(&WriterOption {
+                    Concurrency: concurrency,
+                    PartSize: 4,
+                }),
+            )
+            .unwrap();
+        let write = writer.write(&ctx, b"abcd");
+        assert!(write.is_ok()); // Exactly one buffered block is flushed by Close.
+        assert!(writer.close(&ctx).is_err());
+        assert_eq!(server.commits.load(Ordering::Acquire), 0);
+        assert_eq!(server.stages.lock().unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn azure_concurrent_upload_round_trips_ordered_owned_data() {
+    let storage = in_memory_azure("test", "concurrent/", Arc::new(InMemory::new()));
+    let ctx = Context::default();
+    let mut data = vec![0; 20 * 1024 * 1024];
+    rand::thread_rng().fill_bytes(&mut data);
+    let expected = data.clone();
+    let mut writer = storage
+        .Create(
+            &ctx,
+            "concurrent.bin",
+            Some(&WriterOption {
+                Concurrency: 4,
+                PartSize: 4 * 1024 * 1024,
+            }),
+        )
+        .unwrap();
+    writer.write(&ctx, &data).unwrap();
+    data.fill(0);
+    writer.close(&ctx).unwrap();
+    assert_eq!(storage.ReadFile(&ctx, "concurrent.bin").unwrap(), expected);
+}
+
+#[test]
+fn azure_synchronous_write_failure_is_retained_by_close() {
+    let server = BlockServer::start(true);
+    let storage = server.storage();
+    let ctx = Context::default();
+    let mut writer = storage
+        .Create(
+            &ctx,
+            "failure.bin",
+            Some(&WriterOption {
+                Concurrency: 1,
+                PartSize: 4,
+            }),
+        )
+        .unwrap();
+    let error = writer.write(&ctx, b"abcdefgh").unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Failed to upload block to azure blob")
+    );
+    assert_eq!(
+        writer.close(&ctx).unwrap_err().to_string(),
+        error.to_string()
+    );
+    assert_eq!(server.commits.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn azure_upload_uses_creation_context_only_for_concurrent_stages() {
+    for concurrency in [1, 4] {
+        let server = BlockServer::start(false);
+        let storage = server.storage();
+        let parent = Context::default();
+        parent.cancel();
+        // Go Create just captures the parent; it does not perform an upload.
+        let mut writer = storage
+            .Create(
+                &parent,
+                "cancel.bin",
+                Some(&WriterOption {
+                    Concurrency: concurrency,
+                    PartSize: 4,
+                }),
+            )
+            .unwrap();
+        let caller = Context::default();
+        let result = writer.write(&caller, b"abcdefgh");
+        if concurrency == 1 {
+            assert_eq!(result.unwrap(), 8);
+            writer.close(&caller).unwrap();
+            assert_eq!(server.commits.load(Ordering::Acquire), 1);
+        } else {
+            assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::Interrupted);
+            assert_eq!(server.stages.lock().unwrap().len(), 0);
+            assert_eq!(server.commits.load(Ordering::Acquire), 0);
+        }
+    }
+}
+
+#[test]
+fn azure_default_and_nonpositive_options_keep_synchronous_uploads() {
+    for option in [
+        None,
+        Some(WriterOption::default()),
+        Some(WriterOption {
+            Concurrency: -1,
+            PartSize: -1,
+        }),
+    ] {
+        let server = BlockServer::start(false);
+        let storage = server.storage();
+        let ctx = Context::default();
+        let mut writer = storage
+            .Create(&ctx, "default.bin", option.as_ref())
+            .unwrap();
+        writer.write(&ctx, b"abc").unwrap();
+        assert!(server.stages.lock().unwrap().is_empty());
+        writer.close(&ctx).unwrap();
+        assert_eq!(*server.stages.lock().unwrap(), vec![b"abc".to_vec()]);
+        assert_eq!(server.peak.load(Ordering::Acquire), 1);
+        assert_eq!(server.commits.load(Ordering::Acquire), 1);
+    }
+}
+
+#[test]
+fn azure_commit_retains_tier_and_wait_cancels_derived_context() {
+    let server = BlockServer::start(false);
+    let mut config = server.storage().options().clone();
+    config.storage_class = "Cool".into();
+    let storage = new_azure_blob_storage(config, &StorageOptions::default()).unwrap();
+    let ctx = Context::default();
+    let mut writer = storage
+        .Create(
+            &ctx,
+            "tier.bin",
+            Some(&WriterOption {
+                Concurrency: 4,
+                PartSize: 4,
+            }),
+        )
+        .unwrap();
+    writer.write(&ctx, b"abcdefgh").unwrap();
+    writer.close(&ctx).unwrap();
+    assert!(server.commit_headers.lock().unwrap()[0].contains("x-ms-access-tier: cool"));
+    // BufferedWriter still accepts a tail; the next full block sees the
+    // cancelled errgroup context, matching Go after a successful Wait.
+    assert_eq!(
+        writer.write(&ctx, b"abcdefgh").unwrap_err().kind(),
+        std::io::ErrorKind::Interrupted
+    );
+    assert!(!ctx.is_cancelled());
+}
+
+#[test]
+fn azure_parent_cancellation_interrupts_inflight_staging_without_commit() {
+    let server = BlockServer::start(false);
+    let storage = server.storage();
+    let parent = Context::default();
+    let mut writer = storage
+        .Create(
+            &parent,
+            "cancel.bin",
+            Some(&WriterOption {
+                Concurrency: 4,
+                PartSize: 4,
+            }),
+        )
+        .unwrap();
+    writer.write(&Context::default(), b"abcdefgh").unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while server.stages.lock().unwrap().is_empty() {
+        assert!(std::time::Instant::now() < deadline);
+        thread::sleep(std::time::Duration::from_millis(1));
+    }
+    parent.cancel();
+    assert!(writer.close(&Context::default()).is_err());
+    assert_eq!(server.commits.load(Ordering::Acquire), 0);
+}

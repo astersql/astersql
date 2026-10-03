@@ -30,7 +30,10 @@ use bytes::Bytes;
 use futures::TryStreamExt;
 use object_store::azure::MicrosoftAzureBuilder;
 use object_store::path::Path;
-use object_store::{Attribute, Attributes, ObjectStore, ObjectStoreExt, PutOptions};
+use object_store::{
+    Attribute, Attributes, MultipartUpload, ObjectStore, ObjectStoreExt, PutMultipartOptions,
+    PutOptions,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::runtime::{Builder, Runtime};
@@ -597,12 +600,22 @@ impl storeapi::Storage for AzureBlobStorage {
         &self,
         ctx: &objectio::Context,
         path: &str,
-        _option: Option<&storeapi::WriterOption>,
+        option: Option<&storeapi::WriterOption>,
     ) -> Result<Box<dyn objectio::Writer>> {
-        ctx.check()?;
-        Ok(Box::new(
-            ObjectStoreWriter::new(self.core.clone(), self.object_path(path))
-                .with_attributes(self.put_attributes()),
+        let chunk_size = option
+            .filter(|o| o.PartSize > 0)
+            .map_or(AZBLOB_CHUNK_SIZE, |o| o.PartSize as usize);
+        let concurrency = option.map_or(1, |o| o.Concurrency.max(1) as usize);
+        Ok(objectio::new_uploader_writer(
+            Box::new(AzureBlockUploader::new(
+                self.core.clone(),
+                self.object_path(path),
+                self.put_attributes(),
+                ctx.clone(),
+                concurrency,
+            )),
+            chunk_size,
+            objectio::CompressType::NoCompression,
         ))
     }
 
@@ -746,6 +759,147 @@ impl objectio::Reader for ObjectStoreReader {
 
     fn file_size(&self) -> io::Result<i64> {
         Ok(self.total)
+    }
+}
+
+/// Stages ordered Azure blocks, retaining the first failure so Close cannot
+/// commit a partial object. MultipartUpload assigns block IDs in call order.
+struct AzureBlockUploader {
+    core: ObjectStorageCore,
+    path: Path,
+    attributes: Attributes,
+    upload: Option<Box<dyn MultipartUpload>>,
+    parent: objectio::Context,
+    group: objectio::Context,
+    concurrency: usize,
+    tasks: tokio::task::JoinSet<()>,
+    error: Arc<Mutex<Option<Arc<io::Error>>>>,
+}
+
+impl AzureBlockUploader {
+    fn new(
+        core: ObjectStorageCore,
+        path: Path,
+        attributes: Attributes,
+        parent: objectio::Context,
+        concurrency: usize,
+    ) -> Self {
+        Self {
+            core,
+            path,
+            attributes,
+            upload: None,
+            parent,
+            group: objectio::Context::default(),
+            concurrency,
+            tasks: tokio::task::JoinSet::new(),
+            error: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn remember_error(&self, error: io::Error) -> io::Error {
+        let error = Arc::new(error);
+        let mut stored = self.error.lock().unwrap();
+        if self.concurrency == 1 {
+            // Go's synchronous path retains the most recent failed stage.
+            *stored = Some(error.clone());
+        } else {
+            stored.get_or_insert_with(|| error.clone());
+        }
+        io::Error::other(error)
+    }
+
+    fn initialize(&mut self) -> io::Result<()> {
+        if self.upload.is_none() {
+            let upload = self
+                .core
+                .runtime
+                .block_on(self.core.store.put_multipart_opts(
+                    &self.path,
+                    PutMultipartOptions {
+                        attributes: self.attributes.clone(),
+                        ..Default::default()
+                    },
+                ))
+                .map_err(|error| self.remember_error(io::Error::other(error)))?;
+            self.upload = Some(upload);
+        }
+        Ok(())
+    }
+
+    fn join_one(&mut self) {
+        if let Some(Err(error)) = self.core.runtime.block_on(self.tasks.join_next()) {
+            self.remember_error(io::Error::other(error));
+            self.group.cancel();
+        }
+    }
+}
+
+impl objectio::Writer for AzureBlockUploader {
+    fn write(&mut self, ctx: &objectio::Context, data: &[u8]) -> io::Result<usize> {
+        if self.concurrency > 1 {
+            self.parent.check()?;
+            self.group.check()?;
+        }
+        self.initialize()?;
+        // put_part owns the copied bytes and registers the block before staging,
+        // preserving order even when requests finish out of order.
+        let future = self
+            .upload
+            .as_mut()
+            .unwrap()
+            .put_part(Bytes::copy_from_slice(data).into());
+        if self.concurrency > 1 {
+            while self.tasks.len() >= self.concurrency {
+                self.join_one();
+            }
+            let (parent, group, error) =
+                (self.parent.clone(), self.group.clone(), self.error.clone());
+            self.tasks.spawn_on(async move {
+                let result = tokio::select! {
+                    result = future => result.map_err(|e| io::Error::other(anyhow::Error::new(e).context("Failed to upload block to azure blob"))),
+                    _ = parent.wait_cancelled() => parent.check(),
+                    _ = group.wait_cancelled() => group.check(),
+                };
+                if let Err(failure) = result {
+                    error.lock().unwrap().get_or_insert_with(|| Arc::new(failure));
+                    group.cancel();
+                }
+            }, self.core.runtime.handle());
+        } else {
+            ctx.check().map_err(|error| self.remember_error(error))?;
+            let result = self.core.runtime.block_on(async {
+                tokio::select! {
+                    result = future => result.map_err(|e| io::Error::other(anyhow::Error::new(e).context("Failed to upload block to azure blob"))),
+                    _ = ctx.wait_cancelled() => ctx.check(),
+                }
+            });
+            result.map_err(|error| self.remember_error(error))?;
+        }
+        Ok(data.len())
+    }
+
+    fn close(&mut self, ctx: &objectio::Context) -> io::Result<()> {
+        while !self.tasks.is_empty() {
+            self.join_one();
+        }
+        if self.concurrency > 1 {
+            // errgroup.Wait cancels its derived context even on success.
+            self.group.cancel();
+        }
+        if let Some(error) = self.error.lock().unwrap().clone() {
+            // Azure garbage-collects uncommitted blocks; do not commit or issue
+            // an unrelated abort request when a stage failed.
+            return Err(io::Error::other(error));
+        }
+        self.initialize()?;
+        ctx.check()?;
+        self.core.runtime.block_on(async {
+            tokio::select! {
+                result = self.upload.as_mut().unwrap().complete() => result.map(|_| ()).map_err(io::Error::other),
+                _ = ctx.wait_cancelled() => ctx.check(),
+            }
+        })
     }
 }
 

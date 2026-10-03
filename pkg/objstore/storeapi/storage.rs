@@ -186,7 +186,7 @@ pub trait Storage: Send + Sync {
     /// 返回存储基路径的 URI。
     fn URI(&self) -> String;
 
-    /// 创建覆盖式文件 writer；Go 当前只有 S3 实现 WriterOption。
+    /// 创建覆盖式文件 writer；各后端对 WriterOption 的支持见其 Create 实现。
     fn Create(
         &self,
         ctx: &Context,
