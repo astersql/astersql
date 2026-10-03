@@ -613,3 +613,150 @@ fn shared_session_killer_cancels_tracker_arbitration() {
     assert_eq!(core.GetDigestProfileCache(17, 1), None);
     core.RemoveRootPoolByID(900);
 }
+
+#[cfg(feature = "mem-arbitrator")]
+#[test]
+fn detached_tracker_keeps_accounting_without_reopening_budgets() {
+    for reserve in [0, 100] {
+        let core = Arc::new(NewMemArbitrator(1_000_000_000));
+        let mut parent = NewTracker(0, -1);
+        let mut tracker = NewTracker(1, -1);
+        tracker.AttachTo(ptr(&mut parent));
+        tracker.SessionID.Store(941);
+        assert!(tracker.InitMemArbitrator(
+            Some(core.clone()),
+            None,
+            0,
+            ArbitrationPriorityMedium,
+            false,
+            reserve,
+            false
+        ));
+        tracker.Consume(1);
+        tracker.Detach();
+        assert_eq!(parent.BytesConsumed(), 0);
+        assert!(!tracker.DetachMemArbitrator(true));
+        let m = tracker.MemArbitrator.as_ref().unwrap();
+        let used = m.bigBudgetUsed();
+        assert_eq!(m.smallBudgetUsed(), 0);
+        assert_eq!(m.bigBudgetCap(), 0);
+        assert_eq!(m.bigBudgetGrowThreshold(), 0);
+        assert!(!m.intoBigBudget());
+        let delta = core.PoolAllocProfile().SmallPoolLimit + 1;
+        tracker.Consume(delta);
+        tracker.Consume(-1);
+        assert_eq!(tracker.BytesConsumed(), delta);
+        assert_eq!(m.smallBudgetUsed(), 0);
+        assert_eq!(core.GetAwaitFreeBudgets(941).used(), 0);
+        assert_eq!(core.GetAwaitFreeBudgets(941).heap_inuse(), 0);
+        assert_eq!(m.bigBudgetUsed(), used);
+        assert_eq!(m.bigBudgetCap(), 0);
+        assert_eq!(m.bigBudgetGrowThreshold(), 0);
+        if reserve == 0 {
+            assert!(core.FindRootPool(941).is_none());
+        }
+    }
+}
+
+#[cfg(feature = "mem-arbitrator")]
+#[test]
+fn consume_racing_with_detachment_cleans_signed_small_budget() {
+    use std::sync::Barrier;
+    for delta in [1, -1] {
+        let core = Arc::new(NewMemArbitrator(1_000_000_000));
+        let mut tracker = NewTracker(1, -1);
+        tracker.SessionID.Store(951);
+        assert!(tracker.InitMemArbitrator(
+            Some(core.clone()),
+            None,
+            0,
+            ArbitrationPriorityMedium,
+            false,
+            0,
+            false
+        ));
+        let tracker: Arc<Tracker> = Arc::from(tracker);
+        let checked = Arc::new(Barrier::new(2));
+        let resume = Arc::new(Barrier::new(2));
+        let m = tracker.MemArbitrator.as_ref().unwrap();
+        *m.consume_after_state_check.lock().unwrap() = Some(Arc::new({
+            let checked = checked.clone();
+            let resume = resume.clone();
+            move || {
+                checked.wait();
+                resume.wait();
+            }
+        }));
+        std::thread::scope(|scope| {
+            let consume = scope.spawn(|| tracker.Consume(delta));
+            checked.wait();
+            assert!(tracker.DetachMemArbitrator(true));
+            resume.wait();
+            consume.join().unwrap();
+        });
+        assert_eq!(tracker.BytesConsumed(), delta);
+        assert_eq!(m.smallBudgetUsed(), 0);
+        assert_eq!(core.GetAwaitFreeBudgets(951).used(), 0);
+        assert_eq!(core.GetAwaitFreeBudgets(951).heap_inuse(), 0);
+        assert!(core.FindRootPool(951).is_none());
+        assert!(!tracker.DetachMemArbitrator(true));
+    }
+}
+
+#[cfg(feature = "mem-arbitrator")]
+#[test]
+fn detachment_waits_for_budget_transition_and_releases_resources() {
+    use std::sync::{Barrier, mpsc};
+    let core = Arc::new(NewMemArbitrator(1_000_000_000));
+    let mut tracker = NewTracker(1, -1);
+    tracker.SessionID.Store(961);
+    assert!(tracker.InitMemArbitrator(
+        Some(core.clone()),
+        None,
+        0,
+        ArbitrationPriorityMedium,
+        false,
+        0,
+        true
+    ));
+    tracker.Consume(100_000);
+    let tracker: Arc<Tracker> = Arc::from(tracker);
+    let entered = Arc::new(Barrier::new(2));
+    let resume = Arc::new(Barrier::new(2));
+    let m = tracker.MemArbitrator.as_ref().unwrap();
+    *m.into_big_budget_hook.lock().unwrap() = Some(Arc::new({
+        let entered = entered.clone();
+        let resume = resume.clone();
+        move || {
+            entered.wait();
+            resume.wait();
+        }
+    }));
+    std::thread::scope(|scope| {
+        let consume = scope.spawn(|| tracker.Consume(core.PoolAllocProfile().SmallPoolLimit + 1));
+        entered.wait();
+        // The transition owns the same state lock that reset must acquire.
+        assert!(m.state_lock.try_lock().is_err());
+        let (started_tx, started_rx) = mpsc::channel();
+        let tracker_ref = &tracker;
+        let detach = scope.spawn(move || {
+            started_tx.send(()).unwrap();
+            tracker_ref.DetachMemArbitrator(true)
+        });
+        started_rx.recv().unwrap();
+        resume.wait();
+        consume.join().unwrap();
+        assert!(detach.join().unwrap());
+    });
+    assert!(!tracker.DetachMemArbitrator(true));
+    assert_eq!(m.smallBudgetUsed(), 0);
+    assert_eq!(core.GetAwaitFreeBudgets(961).used(), 0);
+    assert_eq!(m.bigBudgetCap(), 0);
+    assert_eq!(m.bigBudgetGrowThreshold(), 0);
+    assert!(m.useBigBudget());
+    let used = m.bigBudgetUsed();
+    tracker.Consume(100_000_000);
+    assert_eq!(m.bigBudgetUsed(), used);
+    assert_eq!(m.bigBudgetCap(), 0);
+    assert!(core.RemoveRootPoolByID(961));
+}

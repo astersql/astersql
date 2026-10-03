@@ -713,8 +713,12 @@ impl Tracker {
                     sessionRootTracker = tracker;
                 }
                 #[cfg(feature = "mem-arbitrator")]
-                if let Some(m) = (*tracker).MemArbitrator.as_mut() {
+                if let Some(m) = (*tracker).MemArbitrator.as_ref() {
                     if m.state.load(Ordering::Acquire) != memArbitratorStateDown {
+                        #[cfg(test)]
+                        if let Some(hook) = m.consume_after_state_check.lock().unwrap().clone() {
+                            hook();
+                        }
                         // Budget fast path: prefer small budget on positive consumption, fall back to big budget.
                         if bs > 0 {
                             if m.useBigBudget() {
@@ -1354,8 +1358,8 @@ impl ArbitrateHelper for TrackerArbitrateHelper {
 #[cfg(feature = "mem-arbitrator")]
 pub struct awaitAlloc {
     pub TotalDur: atomicutil::Int64,
-    pub StartUtime: i64,
-    pub Size: i64,
+    pub StartUtime: AtomicI64,
+    pub Size: AtomicI64,
 }
 
 #[cfg(feature = "mem-arbitrator")]
@@ -1370,7 +1374,8 @@ pub struct memArbitrator {
     big_used: AtomicI64,
     reversal: Arc<AtomicI64>,
     big_grow_threshold: AtomicI64,
-    root: Option<RootPoolHandle>,
+    root: Mutex<Option<RootPoolHandle>>,
+    big_budget_lock: Mutex<()>,
     use_big: AtomicBool,
     uid: u64,
     digest_id: u64,
@@ -1378,7 +1383,11 @@ pub struct memArbitrator {
     previous_max: i64,
     is_internal: bool,
     state: AtomicI32,
-    state_lock: Arc<Mutex<()>>,
+    pub(super) state_lock: Arc<Mutex<()>>,
+    #[cfg(test)]
+    pub(super) consume_after_state_check: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    pub(super) into_big_budget_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     pub AwaitAlloc: awaitAlloc,
 }
 
@@ -1408,7 +1417,7 @@ impl Drop for ReversalRes {
 
 #[cfg(feature = "mem-arbitrator")]
 impl memArbitrator {
-    fn useBigBudget(&self) -> bool {
+    pub(super) fn useBigBudget(&self) -> bool {
         self.use_big.load(Ordering::Acquire)
     }
 
@@ -1416,7 +1425,7 @@ impl memArbitrator {
         Arc::as_ptr(&self.small_budget) as *mut TrackedConcurrentBudget
     }
 
-    fn smallBudgetUsed(&self) -> i64 {
+    pub(super) fn smallBudgetUsed(&self) -> i64 {
         self.small_used.load(Ordering::Acquire)
     }
 
@@ -1442,15 +1451,15 @@ impl memArbitrator {
         used
     }
 
-    fn bigBudgetGrowThreshold(&self) -> i64 {
+    pub(super) fn bigBudgetGrowThreshold(&self) -> i64 {
         self.big_grow_threshold.load(Ordering::Acquire)
     }
 
-    fn bigBudgetCap(&self) -> i64 {
+    pub(super) fn bigBudgetCap(&self) -> i64 {
         self.big_budget.capacity()
     }
 
-    fn bigBudgetUsed(&self) -> i64 {
+    pub(super) fn bigBudgetUsed(&self) -> i64 {
         self.big_used.load(Ordering::Acquire)
     }
 
@@ -1466,7 +1475,7 @@ impl memArbitrator {
         self.MemArbitrator.approxUnixTimeSec()
     }
 
-    fn intoBigBudget(&mut self) -> bool {
+    pub(super) fn intoBigBudget(&self) -> bool {
         let state_lock = self.state_lock.clone();
         let _state_guard = state_lock.lock().unwrap();
         if self.state.load(Ordering::Acquire) == memArbitratorStateDown {
@@ -1487,6 +1496,10 @@ impl memArbitrator {
         self.state
             .store(memArbitratorStateIntoBigBudget, Ordering::Release);
 
+        #[cfg(test)]
+        if let Some(hook) = self.into_big_budget_hook.lock().unwrap().clone() {
+            hook();
+        }
         let small_used = self.smallBudgetUsed().max(0);
         let max_mem_hint = self.previous_max.max(small_used);
         if max_mem_hint > self.MemArbitrator.PoolAllocProfile().SmallPoolLimit {
@@ -1527,14 +1540,19 @@ impl memArbitrator {
         self.big_grow_threshold
             .store((initial * 90 / 100).max(small_used), Ordering::Release);
         self.cleanSmallBudget();
-        self.root = Some(root);
+        *self.root.lock().unwrap() = Some(root);
         self.use_big.store(true, Ordering::Release);
         self.state
             .store(memArbitratorStateBigBudget, Ordering::Release);
         true
     }
 
-    fn growBigBudget(&mut self) {
+    fn growBigBudget(&self) {
+        // Reset stops the budget under the same lock; a late grow must not reopen it.
+        let _budget_guard = self.big_budget_lock.lock().unwrap();
+        if self.state.load(Ordering::Acquire) == memArbitratorStateDown {
+            return;
+        }
         if self
             .helper
             .killer
@@ -1543,7 +1561,7 @@ impl memArbitrator {
         {
             return;
         }
-        let Some(root) = self.root else {
+        let Some(root) = *self.root.lock().unwrap() else {
             return;
         };
         let used = self.bigBudgetUsed();
@@ -1561,8 +1579,10 @@ impl memArbitrator {
             return;
         }
 
-        self.AwaitAlloc.StartUtime = now_unix_nano();
-        self.AwaitAlloc.Size = extra;
+        self.AwaitAlloc
+            .StartUtime
+            .store(now_unix_nano(), Ordering::Release);
+        self.AwaitAlloc.Size.store(extra, Ordering::Release);
         if self.MemArbitrator.RequestQuota(root, extra) == ArbitrateOk {
             self.big_budget.Reserve(extra);
             self.big_grow_threshold.store(
@@ -1570,13 +1590,13 @@ impl memArbitrator {
                 Ordering::Release,
             );
         }
-        let duration = now_unix_nano() - self.AwaitAlloc.StartUtime;
+        let duration = now_unix_nano() - self.AwaitAlloc.StartUtime.load(Ordering::Acquire);
         self.AwaitAlloc.TotalDur.Add(duration.max(0));
-        self.AwaitAlloc.StartUtime = 0;
-        self.AwaitAlloc.Size = 0;
+        self.AwaitAlloc.StartUtime.store(0, Ordering::Release);
+        self.AwaitAlloc.Size.store(0, Ordering::Release);
     }
 
-    fn reset(&mut self, exception: bool, max_consumed: i64) -> bool {
+    fn reset(&self, exception: bool, max_consumed: i64) -> bool {
         let state_lock = self.state_lock.clone();
         let _state_guard = state_lock.lock().unwrap();
         if self.state.swap(memArbitratorStateDown, Ordering::AcqRel) == memArbitratorStateDown {
@@ -1592,7 +1612,10 @@ impl memArbitrator {
                 self.approxUnixTimeSec(),
             );
         }
-        if self.root.is_some() {
+        let _budget_guard = self.big_budget_lock.lock().unwrap();
+        if self.useBigBudget() {
+            self.big_budget.Stop();
+            self.big_grow_threshold.store(0, Ordering::Release);
             self.MemArbitrator
                 .ResetRootPoolByID(self.uid, max_consumed, !exception);
         }
@@ -1654,15 +1677,15 @@ impl Tracker {
             .as_ref()
             .map_or((SystemTime::UNIX_EPOCH, 0), |m| {
                 (
-                    unix_nano_to_time(m.AwaitAlloc.StartUtime),
-                    m.AwaitAlloc.Size,
+                    unix_nano_to_time(m.AwaitAlloc.StartUtime.load(Ordering::Acquire)),
+                    m.AwaitAlloc.Size.load(Ordering::Acquire),
                 )
             })
     }
 
-    pub fn DetachMemArbitrator(&mut self, exception: bool) -> bool {
+    pub fn DetachMemArbitrator(&self, exception: bool) -> bool {
         let max_consumed = self.MaxConsumed();
-        let Some(m) = self.MemArbitrator.as_mut() else {
+        let Some(m) = self.MemArbitrator.as_ref() else {
             return false;
         };
         m.reset(exception, max_consumed)
@@ -1715,7 +1738,7 @@ impl Tracker {
         let Some(core) = core else {
             return false;
         };
-        if let Some(mut previous) = self.MemArbitrator.take() {
+        if let Some(previous) = self.MemArbitrator.take() {
             previous.reset(true, 0);
         }
 
@@ -1747,7 +1770,7 @@ impl Tracker {
         };
         let small_limit = core.PoolAllocProfile().SmallPoolLimit;
         let small_budget = core.GetAwaitFreeBudgets(uid);
-        let mut session = Box::new(memArbitrator {
+        let session = Box::new(memArbitrator {
             MemArbitrator: core,
             ctx: context,
             helper,
@@ -1758,7 +1781,8 @@ impl Tracker {
             big_used: AtomicI64::new(0),
             reversal,
             big_grow_threshold: AtomicI64::new(0),
-            root: None,
+            root: Mutex::new(None),
+            big_budget_lock: Mutex::new(()),
             use_big: AtomicBool::new(false),
             uid,
             digest_id,
@@ -1767,10 +1791,14 @@ impl Tracker {
             is_internal,
             state: AtomicI32::new(memArbitratorStateSmallBudget),
             state_lock: Arc::new(Mutex::new(())),
+            #[cfg(test)]
+            consume_after_state_check: Mutex::new(None),
+            #[cfg(test)]
+            into_big_budget_hook: Mutex::new(None),
             AwaitAlloc: awaitAlloc {
                 TotalDur: atomicutil::Int64::new(0),
-                StartUtime: 0,
-                Size: 0,
+                StartUtime: AtomicI64::new(0),
+                Size: AtomicI64::new(0),
             },
         });
         if explicit_reserve_size > 0 || previous_max > small_limit {
