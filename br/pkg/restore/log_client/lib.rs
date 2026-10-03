@@ -132,3 +132,9 @@ mod log_split_strategy_test;
 #[cfg(test)]
 #[path = "ssts_test.rs"]
 mod ssts_test;
+
+#[path = "flow_control.rs"]
+pub mod flow_control;
+#[cfg(test)]
+#[path = "flow_control_test.rs"]
+mod flow_control_test;

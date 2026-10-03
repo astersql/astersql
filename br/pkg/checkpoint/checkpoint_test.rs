@@ -679,6 +679,8 @@ fn test_checkpoint_meta_for_restore(snapshot: &dyn SnapshotMetaManager, log: &dy
         StartTS: 111,
         RewriteTS: 333,
         GcRatio: "1.0".into(),
+        RocksDBMaxBackgroundJobs: "8".into(),
+        SnapshotRestoreDataSize: 1024,
         TiFlashItems: HashMap::from([(1, TiFlashReplicaInfo { Count: 1 })]),
         ..Default::default()
     };
@@ -689,6 +691,14 @@ fn test_checkpoint_meta_for_restore(snapshot: &dyn SnapshotMetaManager, log: &dy
     assert_eq!(log_meta.StartTS, log_meta2.StartTS);
     assert_eq!(log_meta.RewriteTS, log_meta2.RewriteTS);
     assert_eq!(log_meta.GcRatio, log_meta2.GcRatio);
+    assert_eq!(
+        log_meta.RocksDBMaxBackgroundJobs,
+        log_meta2.RocksDBMaxBackgroundJobs
+    );
+    assert_eq!(
+        log_meta.SnapshotRestoreDataSize,
+        log_meta2.SnapshotRestoreDataSize
+    );
     assert_eq!(log_meta.TiFlashItems, log_meta2.TiFlashItems);
 
     // progress Save 前不存在。
@@ -1270,4 +1280,22 @@ fn test_checkpoint_runner_lock() {
 fn _mapping_anchors() {
     let _: &str = checkpointMetaTableName;
     let _: fn(Error) -> Error = |e| e;
+}
+
+#[test]
+fn test_log_restore_metadata_preserves_tikv_config_and_snapshot_size_json() {
+    let input = serde_json::json!({
+        "upstream-cluster-id": 123, "gc-ratio": "1.0",
+        "rocksdb-max-background-jobs": "8", "snapshot-restore-data-size": 987654321,
+        "tiflash-recorder": {"1": {"count": 1}}
+    });
+    let metadata: CheckpointMetadataForLogRestore = serde_json::from_value(input).unwrap();
+    let serialized = serde_json::to_value(metadata).unwrap();
+    assert_eq!(serialized["rocksdb-max-background-jobs"], "8");
+    assert_eq!(serialized["snapshot-restore-data-size"], 987654321u64);
+    let legacy: CheckpointMetadataForLogRestore =
+        serde_json::from_str(r#"{"gc-ratio":"1.0"}"#).unwrap();
+    let serialized = serde_json::to_value(legacy).unwrap();
+    assert!(serialized.get("rocksdb-max-background-jobs").is_none());
+    assert!(serialized.get("snapshot-restore-data-size").is_none());
 }

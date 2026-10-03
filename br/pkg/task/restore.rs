@@ -85,7 +85,7 @@ pub const FlagRetainLatestMVCCVersion: &str = "retain-latest-mvcc-version";
 /// 粗粒度恢复粒度字面量。
 pub const CoarseGrained: &str = "coarse-grained";
 /// 默认导入协程数。
-pub const DefaultImportNumGoroutines: u32 = 128;
+pub const DefaultImportNumGoroutines: u32 = astersql_br_pkg_conn::DefaultImportNumGoroutines;
 /// 默认恢复并发。
 pub const defaultRestoreConcurrency: u32 = 128;
 /// 默认 PD 并发。
@@ -252,6 +252,10 @@ pub struct RestoreConfig {
     pub PiTRTableTracker: PiTRIdTracker,
     pub RestoreStorage: Option<MemStorage>,
     pub CheckpointMetaManagers: CheckpointMetaManagers,
+    pub snapshotRestoreDataSize: u64,
+    pub RestoreStartTS: u64,
+    pub RestoreID: u64,
+    pub TiKVConfigControl: Option<Arc<crate::stream::RestoreTiKVConfigControl>>,
 }
 
 pub trait CheckpointMetaManager: Send + Sync {
@@ -1219,6 +1223,7 @@ pub fn RunRestore(g: &dyn Glue, cmdName: &str, cfg: &mut RestoreConfig) -> Resul
             ));
         }
         let archive = crate::stubs::ArchiveSize(&backupMeta.Files);
+        cfg.snapshotRestoreDataSize = archive;
         g.Record(crate::stubs::RestoreDataSize, archive);
         let needed = EstimateTikvUsage(archive, 3, 3);
         CheckStoreSpace(needed, (needed + 1) as i64, 1)?;

@@ -211,6 +211,53 @@ pub fn SetGcRatio(ctx: &mut dyn RestrictedSQLExecutor, ratio: &str) -> Result<()
     Ok(())
 }
 
+/// Restore temporarily limits RocksDB compaction concurrency to one job.
+pub const RocksDBMaxBackgroundJobsForRestore: &str = "1";
+
+pub fn GetRocksDBMaxBackgroundJobs(
+    ctx: &mut dyn RestrictedSQLExecutor,
+) -> Result<String, SharedError> {
+    let (rows, fields) = ctx
+        .ExecRestrictedSQL(
+            &Default::default(),
+            Vec::new(),
+            "show config where name = 'rocksdb.max-background-jobs' and type = 'tikv'",
+            Vec::new(),
+        )
+        .map_err(|err| SharedError::new(std::io::Error::other(err.to_string())))?;
+    if rows.is_empty() {
+        return Ok(String::new());
+    }
+    rows[0]
+        .GetDatum(3, field_type_at(&fields, 3))
+        .ToString()
+        .map_err(SharedError::new)
+}
+
+pub fn SetRocksDBMaxBackgroundJobs(
+    ctx: &mut dyn RestrictedSQLExecutor,
+    jobs: &str,
+) -> Result<(), SharedError> {
+    ctx.ExecRestrictedSQL(
+        &Default::default(),
+        Vec::new(),
+        "set config tikv `rocksdb.max-background-jobs`=?",
+        vec![Box::new(jobs.to_string()) as Box<dyn Any>],
+    )
+    .map_err(|err| {
+        Annotate(
+            Some(SharedError::new(std::io::Error::other(err.to_string()))),
+            format!("failed to set config `rocksdb.max-background-jobs`={jobs}"),
+        )
+        .unwrap()
+    })?;
+    log::Warn(
+        "set config tikv rocksdb.max-background-jobs",
+        [Field::string("jobs", jobs)],
+    );
+    Ok(())
+}
+
 /// 日志备份任务开始时 +1；计数为进程全局，多任务可叠加。
 /// Relaxed 序足够：仅用于“是否存在任务”的粗粒度探测。
 pub fn LogBackupTaskCountInc() {

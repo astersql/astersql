@@ -1083,7 +1083,7 @@ fn test_load_schema_initializes_raw_and_txn_clients() {
     assert_eq!(importer.apiVersion, 2);
     assert_eq!(importer.rawStartKey, b"a");
     assert_eq!(importer.rawEndKey, b"z");
-    assert_eq!(raw_client.workerPoolSize, 32);
+    assert_eq!(raw_client.workerPoolSize, 7186);
     assert!(raw_client.IsFullClusterRestore());
 
     let mut txn_client = NewRestoreClient(pd.clone(), pd);
@@ -1603,4 +1603,36 @@ fn test_get_files_in_raw_range_matches_go_coverage_and_boundaries() {
         .GetFilesInRawRange(b"0", b"d", "default")
         .unwrap_err();
     assert_eq!(err.code, Some("BR:Restore:ErrRestoreRangeMismatch"));
+}
+
+#[test]
+fn test_download_worker_pool_scales_with_stores_independently_of_import_concurrency() {
+    for store_count in [0, 1, 3] {
+        for concurrency in [1, 36, 128] {
+            let mut client = NewRestoreClientForTest();
+            client.SetConcurrencyPerStore(concurrency);
+            let stores = (0..store_count)
+                .map(|id| metapb::Store {
+                    Id: id as u64 + 1,
+                    State: metapb::StoreState::Up,
+                    ..Default::default()
+                })
+                .collect();
+            client
+                .initClients(
+                    &Context::Background(),
+                    None,
+                    true,
+                    false,
+                    Arc::new(MemSplitClient::default()),
+                    Arc::new(MemImporterClient::default()),
+                    stores,
+                    Vec::new(),
+                    Vec::new(),
+                )
+                .unwrap();
+            assert_eq!(client.workerPoolSize, store_count * 7186);
+            assert_eq!(client.concurrencyPerStore, concurrency);
+        }
+    }
 }

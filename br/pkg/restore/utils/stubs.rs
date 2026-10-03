@@ -21,6 +21,8 @@ pub mod backuppb {
         pub StartKey: Vec<u8>,
         pub EndKey: Vec<u8>,
         pub TotalBytes: u64,
+        /// Physical SST size; flow control falls back to TotalBytes for old backups.
+        pub Size_: u64,
         pub TotalKvs: u64,
         pub Cf: String,
         pub Crc64Xor: u64,

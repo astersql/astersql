@@ -647,3 +647,389 @@ fn test_build_key_ranges_from_schemas_replace() {
     // 末尾 Arc 占位与 Go 测试结构对齐，无额外断言。
     let _ = Arc::new(MemStorage::new());
 }
+
+#[derive(Default)]
+struct ConfigSQLState {
+    values: HashMap<String, String>,
+    calls: Vec<String>,
+    fail: Option<usize>,
+}
+struct ConfigSQL(std::sync::Arc<std::sync::Mutex<ConfigSQLState>>);
+impl RestoreSQLSessionFactory for ConfigSQL {
+    fn CreateSession(
+        &self,
+    ) -> crate::stubs::Result<Box<dyn astersql_br_pkg_utils::stubs::RestrictedSQLExecutor + Send>>
+    {
+        Ok(Box::new(ConfigSQL(self.0.clone())))
+    }
+}
+impl astersql_br_pkg_utils::stubs::RestrictedSQLExecutor for ConfigSQL {
+    fn ExecRestrictedSQL(
+        &mut self,
+        _: &astersql_br_pkg_utils::stubs::context::Context,
+        _: Vec<()>,
+        sql: &str,
+        args: Vec<Box<dyn std::any::Any>>,
+    ) -> std::result::Result<
+        (
+            Vec<astersql_br_pkg_utils::stubs::Row>,
+            Vec<astersql_br_pkg_utils::stubs::ResultField>,
+        ),
+        astersql_br_pkg_utils::stubs::GoError,
+    > {
+        let mut state = self.0.lock().unwrap();
+        let name = if sql.contains("gc.ratio-threshold") {
+            "gc"
+        } else {
+            "jobs"
+        };
+        let value = args
+            .first()
+            .and_then(|v| v.downcast_ref::<String>())
+            .cloned();
+        let call = format!(
+            "{}:{name}:{}",
+            if sql.starts_with("show") {
+                "get"
+            } else {
+                "set"
+            },
+            value.clone().unwrap_or_default()
+        );
+        let index = state.calls.len();
+        state.calls.push(call);
+        if state.fail == Some(index) {
+            return Err(Box::new(std::io::Error::other(
+                "injected config SQL failure",
+            )));
+        }
+        if let Some(value) = value {
+            state.values.insert(name.into(), value);
+            return Ok((vec![], vec![]));
+        }
+        let rows = state
+            .values
+            .get(name)
+            .map(|v| {
+                vec![astersql_br_pkg_utils::stubs::Row::from_cells(vec![
+                    "tikv".into(),
+                    "store".into(),
+                    name.into(),
+                    v.clone(),
+                ])]
+            })
+            .unwrap_or_default();
+        Ok((
+            rows,
+            vec![
+                astersql_br_pkg_utils::stubs::ResultField {
+                    column: Some(Default::default())
+                };
+                4
+            ],
+        ))
+    }
+}
+struct RegistrySQL {
+    unfinished: bool,
+    calls: Arc<std::sync::Mutex<Vec<String>>>,
+}
+impl astersql_br_pkg_registry::RestrictedSQLExecutor for RegistrySQL {
+    fn ExecRestrictedSQL(
+        &mut self,
+        _: &astersql_br_pkg_registry::Context,
+        _: &[astersql_br_pkg_registry::OptionFuncAlias],
+        sql: &str,
+        _: &[astersql_br_pkg_registry::SqlValue],
+    ) -> astersql_br_pkg_registry::Result<Vec<astersql_br_pkg_registry::Row>> {
+        self.calls.lock().unwrap().push(sql.into());
+        Ok(if self.unfinished {
+            vec![astersql_br_pkg_registry::Row::default()]
+        } else {
+            vec![]
+        })
+    }
+}
+impl astersql_br_pkg_registry::Session for RegistrySQL {
+    fn ExecuteInternal(
+        &mut self,
+        _: &astersql_br_pkg_registry::Context,
+        sql: &str,
+        _: &[astersql_br_pkg_registry::SqlValue],
+    ) -> astersql_br_pkg_registry::Result<()> {
+        self.calls.lock().unwrap().push(sql.into());
+        Ok(())
+    }
+    fn Close(&mut self) {}
+}
+struct ConfigPD;
+impl astersql_br_pkg_conn::StoreMeta for ConfigPD {
+    fn GetAllStores(
+        &self,
+        _: bool,
+    ) -> std::result::Result<Vec<astersql_br_pkg_conn::Store>, astersql_br_pkg_conn::SharedError>
+    {
+        Ok(vec![])
+    }
+}
+impl astersql_br_pkg_conn::PdControllerHandle for ConfigPD {
+    fn GetPDClient(&self) -> Arc<dyn astersql_br_pkg_conn::StoreMeta> {
+        Arc::new(ConfigPD)
+    }
+}
+impl astersql_br_pkg_conn::HttpClient for ConfigPD {
+    fn Get(
+        &self,
+        _: &str,
+    ) -> std::result::Result<astersql_br_pkg_conn::HttpResponse, astersql_br_pkg_conn::SharedError>
+    {
+        panic!("empty PD stores must not issue HTTP")
+    }
+}
+fn config_control(
+    unfinished: bool,
+) -> (
+    RestoreTiKVConfigControl,
+    Arc<std::sync::Mutex<ConfigSQLState>>,
+    Arc<std::sync::Mutex<Vec<String>>>,
+) {
+    let state = Arc::new(std::sync::Mutex::new(ConfigSQLState {
+        values: HashMap::from([("gc".into(), "1.8".into()), ("jobs".into(), "8".into())]),
+        ..Default::default()
+    }));
+    let registry_calls = Arc::new(std::sync::Mutex::new(vec![]));
+    let registry = astersql_br_pkg_registry::Registry::from_sessions(
+        Box::new(RegistrySQL {
+            unfinished,
+            calls: registry_calls.clone(),
+        }),
+        Box::new(RegistrySQL {
+            unfinished,
+            calls: registry_calls.clone(),
+        }),
+        true,
+    );
+    let manager = astersql_br_pkg_checkpoint::NewLogStorageMetaManager(
+        Arc::new(astersql_br_pkg_checkpoint::MemStorage::new()),
+        None,
+        1,
+        "config",
+        42,
+    );
+    (
+        RestoreTiKVConfigControl {
+            sessions: Arc::new(ConfigSQL(state.clone())),
+            registry: Arc::new(registry),
+            manager: Arc::new(astersql_br_pkg_conn::Mgr::new_with_pd(Arc::new(ConfigPD))),
+            http: Arc::new(ConfigPD),
+            createLogClient: Arc::new(|cfg| {
+                assert!(cfg.RestoreCommonConfig.ConcurrencyPerStore.Modified);
+                Ok(astersql_br_pkg_restore_log_client::TEST_NewLogClient(
+                    1,
+                    cfg.RestoreTS,
+                ))
+            }),
+            metadata: Some(Arc::from(manager)),
+            tiFlashItems: HashMap::new(),
+        },
+        state,
+        registry_calls,
+    )
+}
+
+#[test]
+fn stream_tikv_config_checkpoint_retry_and_cleanup_match_go() {
+    use astersql_br_pkg_checkpoint::LogMetaManager;
+    for (checkpoint, fails, unfinished) in [
+        (false, false, false),
+        (false, true, false),
+        (true, false, false),
+        (true, true, false),
+        (true, false, true),
+    ] {
+        let (control, state, registry_calls) = config_control(unfinished);
+        let mut cfg = RestoreConfig {
+            UseCheckpoint: checkpoint,
+            RestoreID: 42,
+            snapshotRestoreDataSize: 512,
+            RestoreTS: 100,
+            ..Default::default()
+        };
+        cfg.RestoreCommonConfig.ConcurrencyPerStore.Value = 132;
+        let result = restoreStreamWithTiKVConfigControl(&mut cfg, &control, |cfg, _| {
+            assert_eq!(cfg.snapshotRestoreDataSize, 512);
+            let values = &state.lock().unwrap().values;
+            assert_eq!(values["gc"], "-1.0");
+            assert_eq!(values["jobs"], "1");
+            if fails {
+                Err(crate::stubs::Error::new("restore failed"))
+            } else {
+                Ok(())
+            }
+        });
+        let retain = (checkpoint && fails) || unfinished;
+        assert_eq!(
+            state.lock().unwrap().values["jobs"],
+            if retain { "1" } else { "8" }
+        );
+        assert_eq!(
+            state.lock().unwrap().values["gc"],
+            if retain { "-1.0" } else { "1.8" }
+        );
+        assert_eq!(result.is_err(), checkpoint && fails);
+        assert_eq!(cfg.RestoreCommonConfig.ConcurrencyPerStore.Value, 132);
+        if checkpoint {
+            let stored = control
+                .metadata
+                .as_ref()
+                .unwrap()
+                .LoadCheckpointMetadata(&astersql_br_pkg_checkpoint::Context::Background())
+                .unwrap();
+            assert_eq!(stored.RocksDBMaxBackgroundJobs, "8");
+            assert_eq!(stored.SnapshotRestoreDataSize, 512);
+        }
+        if !retain {
+            assert!(
+                registry_calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|s| s.contains("UPDATE"))
+            );
+        }
+    }
+}
+
+#[test]
+fn stream_tikv_config_metadata_failure_restores_and_legacy_values_fall_back() {
+    let (mut control, state, _) = config_control(false);
+    control.metadata = None;
+    let mut cfg = RestoreConfig {
+        UseCheckpoint: true,
+        ..Default::default()
+    };
+    // Go deferred global cleanup replaces the named metadata error with its result.
+    assert!(
+        restoreStreamWithTiKVConfigControl(&mut cfg, &control, |_, _| panic!(
+            "metadata failed before restore"
+        ))
+        .is_ok()
+    );
+    assert_eq!(state.lock().unwrap().values["jobs"], "8");
+    let (control, state, _) = config_control(false);
+    let manager = control.metadata.as_ref().unwrap();
+    manager
+        .SaveCheckpointMetadata(
+            &astersql_br_pkg_checkpoint::Context::Background(),
+            &astersql_br_pkg_checkpoint::CheckpointMetadataForLogRestore {
+                GcRatio: "-1".into(),
+                SnapshotRestoreDataSize: 1024,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(
+        restoreStreamWithTiKVConfigControl(&mut cfg, &control, |cfg, _| {
+            assert_eq!(cfg.snapshotRestoreDataSize, 1024);
+            Ok(())
+        })
+        .is_ok()
+    );
+    assert_eq!(state.lock().unwrap().values["gc"], "1.1");
+    assert_eq!(state.lock().unwrap().values["jobs"], "8");
+}
+
+#[test]
+fn stream_tikv_jobs_missing_and_sql_errors_preserve_go_branches() {
+    for failure in 0..4 {
+        let (_, state, _) = config_control(false);
+        state.lock().unwrap().fail = Some(failure);
+        let factory = ConfigSQL(state.clone());
+        let result = if failure < 2 {
+            DisableGC(&factory).map(|_| ())
+        } else {
+            state.lock().unwrap().fail = Some(failure - 2);
+            KeepRocksDBMaxBackgroundJobsLow(&factory).map(|_| ())
+        };
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("injected config SQL failure")
+        );
+    }
+    let (_, state, _) = config_control(false);
+    state.lock().unwrap().values.remove("jobs");
+    let (mut restore, old) = KeepRocksDBMaxBackgroundJobsLow(&ConfigSQL(state.clone())).unwrap();
+    assert!(old.is_empty());
+    restore("8").unwrap();
+    assert_eq!(state.lock().unwrap().calls.len(), 1);
+    let mut value = markRestoreConcurrencyPerStoreAdjusted(crate::stubs::ModifiedU64 {
+        Value: 132,
+        Modified: false,
+    });
+    assert_eq!(value.Value, 132);
+    assert!(value.Modified);
+    value = markRestoreConcurrencyPerStoreAdjusted(value);
+    assert!(value.Modified);
+}
+
+#[test]
+fn stream_tikv_config_always_closes_the_created_log_client() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct CloseSession(Arc<AtomicUsize>);
+    impl astersql_br_pkg_restore_log_client::stubs::glue::Session for CloseSession {
+        fn Close(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+        fn ExecuteInternal(
+            &self,
+            _: &astersql_br_pkg_restore_log_client::stubs::Context,
+            _: &str,
+            _: &[astersql_br_pkg_restore_log_client::stubs::glue::SqlArg],
+        ) -> astersql_br_pkg_restore_log_client::stubs::Result<()> {
+            panic!("close-only session must not execute SQL")
+        }
+        fn GetSessionCtx(&self) -> &astersql_br_pkg_restore_log_client::stubs::glue::SessionCtx {
+            panic!("close-only session must not access SQL context")
+        }
+    }
+    for (checkpoint, fail_at_setup) in [(false, false), (true, false), (true, true)] {
+        let (mut control, state, _) = config_control(false);
+        let closed = Arc::new(AtomicUsize::new(0));
+        let observed = closed.clone();
+        control.createLogClient = Arc::new(move |_| {
+            let mut client = astersql_br_pkg_restore_log_client::TEST_NewLogClient(1, 100);
+            client.unsafeSession = Some(Box::new(CloseSession(observed.clone())));
+            Ok(client)
+        });
+        if fail_at_setup {
+            state.lock().unwrap().fail = Some(0);
+        }
+        let mut cfg = RestoreConfig {
+            UseCheckpoint: checkpoint,
+            ..Default::default()
+        };
+        let _ = restoreStreamWithTiKVConfigControl(&mut cfg, &control, |_, _| {
+            Err(crate::stubs::Error::new("restore failed"))
+        });
+        assert_eq!(closed.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[test]
+fn stream_restore_initializes_target_ts_before_checkpoint_metadata() {
+    let (control, _, _) = config_control(false);
+    let metadata = control.metadata.as_ref().unwrap().clone();
+    let mut cfg = RestoreConfig {
+        UseCheckpoint: true,
+        TiKVConfigControl: Some(Arc::new(control)),
+        ..Default::default()
+    };
+    restoreStream(&crate::stubs::MemGlue::default(), &mut cfg).unwrap();
+    let stored = metadata
+        .LoadCheckpointMetadata(&astersql_br_pkg_checkpoint::Context::Background())
+        .unwrap();
+    assert_eq!(cfg.RestoreTS, 100);
+    assert_eq!(stored.RestoredTS, 100);
+}

@@ -25,6 +25,7 @@ fn test_restore_go_defaults_and_command_names() {
     assert_eq!(DBRestoreCmd, "DataBase Restore");
 
     let cfg = DefaultRestoreConfig(crate::common::Config::default());
+    assert_eq!(cfg.RestoreCommonConfig.ConcurrencyPerStore.Value, 36);
     assert_eq!(cfg.RegionScanConcurrency, 256);
     assert_eq!(cfg.PDConcurrency, 1);
     assert_eq!(cfg.SplitRegionIndexStep, DefaultRegionIndexStep);
@@ -777,5 +778,37 @@ fn test_hash() {
     assert_ne!(
         secret_a.Hash(FullRestoreCmd).unwrap(),
         secret_b.Hash(FullRestoreCmd).unwrap()
+    );
+}
+
+#[test]
+fn test_restore_records_snapshot_archive_size_for_compacted_ssts() {
+    let storage = crate::stubs::MemStorage::new();
+    let meta = crate::stubs::backuppb::BackupMeta {
+        Files: vec![
+            File {
+                Size_: 1024,
+                ..Default::default()
+            },
+            File {
+                Size_: 2048,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    storage.put(crate::stubs::MetaFile, serde_json::to_vec(&meta).unwrap());
+    let mut cfg = RestoreConfig {
+        RestoreStorage: Some(storage),
+        ..Default::default()
+    };
+    cfg.Config.PD = vec!["127.0.0.1:2379".into()];
+    cfg.Config.Storage = "local:///task40-snapshot".into();
+    let glue = crate::stubs::MemGlue::default();
+    RunRestore(&glue, DBRestoreCmd, &mut cfg).unwrap();
+    assert_eq!(cfg.snapshotRestoreDataSize, 3072);
+    assert_eq!(
+        glue.records.lock().unwrap()[crate::stubs::RestoreDataSize],
+        3072
     );
 }

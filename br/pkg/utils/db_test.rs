@@ -51,7 +51,9 @@ impl RestrictedSQLExecutor for MockRestrictedSQLExecutor {
             return Ok((self.rows.clone(), self.fields.clone()));
         }
         // SET CONFIG gc.ratio-threshold：把绑定参数写回 value 列，便于后续 Get。
-        if sql.contains("set config") && sql.contains("gc.ratio-threshold") {
+        if sql.contains("set config")
+            && (sql.contains("gc.ratio-threshold") || sql.contains("rocksdb.max-background-jobs"))
+        {
             let value = args[0]
                 .downcast_ref::<String>()
                 .cloned()
@@ -243,4 +245,39 @@ fn empty_config_and_public_helpers_match_go() {
     assert_eq!(DisabledGcRatioVal, "-1.0");
     assert_eq!(TidbNewCollationEnabled, "new_collation_enabled");
     assert_eq!(GetTidbNewCollationEnabled(), TidbNewCollationEnabled);
+}
+
+#[test]
+fn test_rocksdb_max_background_jobs() {
+    use crate::db::{
+        GetRocksDBMaxBackgroundJobs, RocksDBMaxBackgroundJobsForRestore,
+        SetRocksDBMaxBackgroundJobs,
+    };
+    let mut executor = MockRestrictedSQLExecutor {
+        rows: vec![Row::from_cells(vec![
+            "tikv".into(),
+            "127.0.0.1:20161".into(),
+            "rocksdb.max-background-jobs".into(),
+            "8".into(),
+        ])],
+        fields: string_fields(),
+        err_happen: false,
+    };
+    assert_eq!(GetRocksDBMaxBackgroundJobs(&mut executor).unwrap(), "8");
+    SetRocksDBMaxBackgroundJobs(&mut executor, RocksDBMaxBackgroundJobsForRestore).unwrap();
+    assert_eq!(GetRocksDBMaxBackgroundJobs(&mut executor).unwrap(), "1");
+    executor.rows.clear();
+    assert_eq!(GetRocksDBMaxBackgroundJobs(&mut executor).unwrap(), "");
+    executor.err_happen = true;
+    assert!(
+        GetRocksDBMaxBackgroundJobs(&mut executor)
+            .unwrap_err()
+            .to_string()
+            .contains("injected error")
+    );
+    let error = SetRocksDBMaxBackgroundJobs(&mut executor, "8")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("failed to set config `rocksdb.max-background-jobs`=8"));
+    assert!(error.contains("injected error"));
 }

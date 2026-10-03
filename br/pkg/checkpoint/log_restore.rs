@@ -155,6 +155,18 @@ pub struct CheckpointMetadataForLogRestore {
     pub RewriteTS: u64,
     #[serde(rename = "gc-ratio", default)]
     pub GcRatio: String,
+    #[serde(
+        rename = "rocksdb-max-background-jobs",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub RocksDBMaxBackgroundJobs: String,
+    #[serde(
+        rename = "snapshot-restore-data-size",
+        default,
+        skip_serializing_if = "is_zero"
+    )]
+    pub SnapshotRestoreDataSize: u64,
     /// 快照恢复阶段记录的 TiFlash 副本信息；空 map 时省略序列化（对齐 omitempty）
     #[serde(
         rename = "tiflash-recorder",
@@ -162,6 +174,10 @@ pub struct CheckpointMetadataForLogRestore {
         skip_serializing_if = "HashMap::is_empty"
     )]
     pub TiFlashItems: HashMap<i64, TiFlashReplicaInfo>,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 /// snapshot + log 联合恢复的进度相位。

@@ -1918,6 +1918,12 @@ pub mod glue {
         /// 留意空集合、取消上下文与默认值是否保持一致。
         /// `GetSessionCtx` 数据流：调用方准备输入，本函数产出可断言结果或错误。
         fn GetSessionCtx(&self) -> &SessionCtx;
+        /// SQL transport boundary used by flow-control configuration queries and writes.
+        fn ExecRestrictedSQL(&self, ctx: &Context, sql: &str, args: &[SqlArg]) -> Result<Vec<Row>> {
+            self.GetSessionCtx()
+                .GetRestrictedSQLExecutor()
+                .ExecRestrictedSQL(ctx, None, sql, args)
+        }
     }
 
     #[derive(Clone, Debug)]
@@ -2315,11 +2321,20 @@ pub mod pd {
 
 // PD 客户端桩：TS/store 列表等。
 pub mod pdhttp {
+    use super::Context;
+    use astersql_errors::SharedError;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    pub trait ReplicateConfigClient: Send + Sync {
+        fn GetReplicateConfig(
+            &self,
+            ctx: &Context,
+        ) -> std::result::Result<HashMap<String, serde_json::Value>, SharedError>;
+    }
     #[derive(Clone, Default)]
-    /// `Client`：承载状态/配置；关注谁填充、谁消费、何时需要回写。
-    /// 字段语义与 Go 对照，避免测试桩字段被误读为协议扩展。
-    /// `Client` 生命周期：构造后是否可变、是否跨线程共享需明确。
-    pub struct Client;
+    pub struct Client {
+        pub backend: Option<Arc<dyn ReplicateConfigClient>>,
+    }
 }
 
 // TiDB 工具函数桩。

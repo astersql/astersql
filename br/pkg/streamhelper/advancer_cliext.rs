@@ -6,11 +6,86 @@
 
 use crate::client::MetaDataClient;
 use crate::models::{GlobalCheckpointOf, PrefixOfPause, PrefixOfTask, encodeUint64};
-use crate::stubs::{KeyRange, StreamBackupTaskInfo, WatchContext, WatchEvent, WatchEventType};
+use crate::stubs::{
+    KeyRange, MetadataRequestContext, MetadataRequestError, StreamBackupTaskInfo, WatchContext,
+    WatchEvent, WatchEventType,
+};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
+
+const METADATA_REQUEST_TIMEOUTS: [Duration; 3] = [
+    Duration::from_secs(5),
+    Duration::from_secs(10),
+    Duration::from_secs(15),
+];
+
+pub(crate) fn runMetadataRequestWithRetry<T: Send + 'static>(
+    ctx: &WatchContext,
+    timeouts: &[Duration],
+    on_timeout: Option<std::sync::Arc<dyn Fn() -> Result<(), String> + Send + Sync>>,
+    request: impl Fn(MetadataRequestContext) -> Result<T, MetadataRequestError> + Send + Sync + 'static,
+) -> Result<T, String> {
+    let request = std::sync::Arc::new(request);
+    let mut last_error = "context deadline exceeded".to_string();
+    for (attempt, timeout) in timeouts.iter().enumerate() {
+        if ctx.is_canceled() {
+            return Err("watch canceled".into());
+        }
+        let request_ctx = MetadataRequestContext::new(ctx.clone(), *timeout);
+        let worker_ctx = request_ctx.clone();
+        let request = request.clone();
+        let (tx, rx) = mpsc::sync_channel(1);
+        let worker = std::thread::spawn(move || {
+            let _ = tx.send(request(worker_ctx));
+        });
+        let result = loop {
+            match rx.recv_timeout(request_ctx.remaining().min(Duration::from_millis(10))) {
+                Ok(value) => break value,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    break Err(MetadataRequestError::Other(
+                        "metadata request worker disconnected".into(),
+                    ));
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if let Err(error) = request_ctx.check() {
+                        request_ctx.cancel();
+                        if matches!(error, MetadataRequestError::DeadlineExceeded) {
+                            if let Some(reset) = &on_timeout {
+                                if let Err(error) = reset() {
+                                    break Err(MetadataRequestError::Other(error));
+                                }
+                            }
+                        }
+                        break Err(error);
+                    }
+                }
+            }
+        };
+        request_ctx.cancel();
+        worker
+            .join()
+            .map_err(|_| "metadata request worker panicked".to_string())?;
+        match result {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                let retryable = matches!(
+                    error,
+                    MetadataRequestError::DeadlineExceeded | MetadataRequestError::Unavailable(_)
+                );
+                last_error = error.to_string();
+                if ctx.is_canceled() {
+                    return Err("watch canceled".into());
+                }
+                if !retryable || attempt + 1 == timeouts.len() {
+                    return Err(last_error);
+                }
+            }
+        }
+    }
+    Err(last_error)
+}
 
 static METADATA_WATCH_PROGRESS_INTERVAL_MILLIS: AtomicU64 = AtomicU64::new(30_000);
 static METADATA_WATCH_IDLE_TIMEOUT_MILLIS: AtomicU64 = AtomicU64::new(90_000);
@@ -282,7 +357,14 @@ impl AdvancerExt {
         if checkpoint < old {
             return Ok(());
         }
-        self.meta.KV.Put(&key, &encodeUint64(checkpoint))?;
+        let kv = self.meta.KV.clone();
+        let encoded = encodeUint64(checkpoint);
+        runMetadataRequestWithRetry(
+            &WatchContext::new(),
+            &METADATA_REQUEST_TIMEOUTS,
+            None,
+            move |ctx| kv.PutWithRequestContext(&ctx, &key, &encoded),
+        )?;
         LAST_CHECKPOINT_METRIC
             .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
@@ -298,12 +380,21 @@ impl AdvancerExt {
 }
 
 impl MetaDataClient {
-    fn getGlobalCheckpointWithRevision(&self, taskName: &str) -> Result<(u64, i64), String> {
-        let value = self.KV.GetWithRevision(&GlobalCheckpointOf(taskName))?;
+    fn getGlobalCheckpointWithRevision(
+        &self,
+        ctx: &WatchContext,
+        taskName: &str,
+    ) -> Result<(u64, i64), String> {
+        let kv = self.KV.clone();
+        let key = GlobalCheckpointOf(taskName);
+        let value =
+            runMetadataRequestWithRetry(ctx, &METADATA_REQUEST_TIMEOUTS, None, move |ctx| {
+                kv.GetWithRequestContext(&ctx, &key)
+            })?;
         let Some(bytes) = value.Value else {
             return Ok((0, value.Revision));
         };
-        Ok((parseGlobalCheckpointValue(&bytes)?, value.ModRevision))
+        Ok((parseGlobalCheckpointValue(&bytes)?, value.Revision))
     }
 
     /// 等待任务全局检查点严格推进；从读取 revision+1 watch，避免读/监听竞态。
@@ -315,11 +406,35 @@ impl MetaDataClient {
     ) -> Result<(), String> {
         let key = GlobalCheckpointOf(taskName);
         loop {
-            let (checkpoint, revision) = self.getGlobalCheckpointWithRevision(taskName)?;
+            let (checkpoint, revision) = self.getGlobalCheckpointWithRevision(&ctx, taskName)?;
             if checkpoint > current {
                 return Ok(());
             }
-            let watch = self.KV.WatchPrefix(&key, revision + 1)?;
+            let kv = self.KV.clone();
+            let watch_key = key.clone();
+            let reset_kv = kv.clone();
+            let watch = runMetadataRequestWithRetry(
+                &ctx,
+                &METADATA_REQUEST_TIMEOUTS,
+                Some(std::sync::Arc::new(move || reset_kv.ResetWatcher())),
+                move |request_ctx| {
+                    let result =
+                        kv.WatchPrefixWithRequestContext(&request_ctx, &watch_key, revision + 1);
+                    if matches!(result, Err(MetadataRequestError::DeadlineExceeded))
+                        && !request_ctx.was_cancelled()
+                    {
+                        kv.ResetWatcher().map_err(MetadataRequestError::Other)?;
+                    }
+                    result
+                },
+            )
+            .map_err(|error| {
+                if error == "context deadline exceeded" && !ctx.is_canceled() {
+                    "PiTR checkpoint watch restart required".into()
+                } else {
+                    error
+                }
+            })?;
             let mut last_progress = Instant::now();
             let mut last_progress_request = Instant::now();
             loop {

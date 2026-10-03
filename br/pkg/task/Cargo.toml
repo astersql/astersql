@@ -20,6 +20,11 @@ astersql-br-pkg-aws = { package = "astersql-br-pkg-aws", path = "../aws" }
 astersql-br-pkg-common = { package = "astersql-br-pkg-common", path = "../common" }
 astersql-br-pkg-stream = { package = "astersql-br-pkg-stream", path = "../stream" }
 astersql-br-pkg-utils-consts = { package = "astersql-br-pkg-utils-consts", path = "../utils/consts" }
+astersql-br-pkg-conn = { path = "../conn" }
+astersql-br-pkg-utils = { path = "../utils" }
+astersql-br-pkg-registry = { path = "../registry" }
+astersql-br-pkg-checkpoint = { path = "../checkpoint" }
+astersql-br-pkg-restore-log-client = { path = "../restore/log_client" }
 hex = "0.4"
 regex = "1"
 serde = { version = "1", features = ["derive"] }

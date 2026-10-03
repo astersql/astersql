@@ -111,14 +111,23 @@ impl LogRestoreManager {
     }
 }
 
-/// 压缩 SST 还原管理器占位：Rust 侧仅跟踪 closed 标志。
+/// Compacted-SST restore state and the existing restorer interface.
 pub struct SstRestoreManager {
     pub closed: bool,
+    pub storeCount: u32,
+    pub replicaCount: u32,
+    pub workerPoolSize: u32,
+    pub restorer: Option<Arc<dyn astersql_br_pkg_restore::SstRestorer>>,
 }
 
 impl SstRestoreManager {
     /// 标记已关闭；完整 SST 管线尚未在此文件展开。
     pub fn Close(&mut self, _ctx: &Context) {
+        if let Some(restorer) = &self.restorer {
+            if restorer.Close().is_err() {
+                log::Warn("failed to close SST restorer");
+            }
+        }
         self.closed = true;
     }
 }
@@ -388,10 +397,27 @@ impl LogClient {
         importClient: Arc<dyn ImporterClient>,
         poolSize: u32,
     ) -> Result<()> {
+        let stores: Vec<_> = self
+            .pdClient
+            .GetAllStores(_ctx)?
+            .into_iter()
+            .filter(|store| {
+                !store.Labels.iter().any(|label| {
+                    label.Key == "engine"
+                        && (label.Value == "tiflash" || label.Value == "tiflash_compute")
+                })
+            })
+            .collect();
         // poolSize 决定日志还原工作池并行度。
         let importer = NewLogFileImporter(splitClient, importClient, backend);
         self.logRestoreManager = Some(NewLogRestoreManager(_ctx, importer, poolSize, None)?);
-        self.sstRestoreManager = Some(SstRestoreManager { closed: false });
+        self.sstRestoreManager = Some(SstRestoreManager {
+            closed: false,
+            storeCount: liveTiKVStoreCount(&stores),
+            replicaCount: self.getMaxReplica(_ctx),
+            workerPoolSize: 7186 * stores.len() as u32,
+            restorer: None,
+        });
         Ok(())
     }
 
@@ -836,7 +862,7 @@ pub fn TEST_NewLogClient(clusterID: u64, restoreTS: u64) -> LogClient {
             cluster_id: clusterID,
             stores: vec![],
         }),
-        pdhttp::Client,
+        pdhttp::Client::default(),
     );
     rc.clusterID = clusterID;
     rc.restoreTS = restoreTS;
@@ -852,4 +878,182 @@ pub fn TEST_NewLogClientWithStorage(
     let mut rc = TEST_NewLogClient(clusterID, restoreTS);
     rc.storage = Some(storage);
     rc
+}
+
+pub fn liveTiKVStoreCount(stores: &[crate::stubs::metapb::Store]) -> u32 {
+    stores
+        .iter()
+        .filter(|store| store.State == crate::stubs::metapb::StoreState::Up)
+        .count() as u32
+}
+pub fn maxReplicaFromReplicateConfig(
+    response: Option<&HashMap<String, serde_json::Value>>,
+    error: bool,
+) -> u32 {
+    if error {
+        return 3;
+    }
+    // serde's JSON numbers stand in for Go map[string]any's float64 values.
+    response
+        .and_then(|r| r.get("max-replicas"))
+        .and_then(|v| v.as_f64())
+        .filter(|v| *v > 0.0)
+        .map(|v| v as u32)
+        .unwrap_or(3)
+}
+impl LogClient {
+    fn getMaxReplica(&self, ctx: &Context) -> u32 {
+        let Some(http) = self.pdHTTPClient.backend.as_ref() else {
+            return 3;
+        };
+        let mut strategy = astersql_br_pkg_utils::backoff::NewAggressivePDBackoffStrategy();
+        while strategy.RemainingAttempts() > 0 {
+            if ctx.Err().is_some() {
+                return 3;
+            }
+            match http.GetReplicateConfig(ctx) {
+                Ok(response) => return maxReplicaFromReplicateConfig(Some(&response), false),
+                Err(error) => {
+                    let delay = strategy.NextBackoff(&error);
+                    let end = std::time::Instant::now() + delay;
+                    while std::time::Instant::now() < end {
+                        if ctx.Err().is_some() {
+                            return 3;
+                        }
+                        std::thread::sleep(
+                            end.saturating_duration_since(std::time::Instant::now())
+                                .min(std::time::Duration::from_millis(10)),
+                        );
+                    }
+                }
+            }
+        }
+        3
+    }
+    pub fn LoadOrCreateCheckpointMetadataForLogRestore(
+        &mut self,
+        ctx: &astersql_br_pkg_checkpoint::Context,
+        restoreStartTS: u64,
+        startTS: u64,
+        restoredTS: u64,
+        gcRatio: String,
+        mut jobs: String,
+        items: HashMap<i64, astersql_br_pkg_checkpoint::TiFlashReplicaInfo>,
+        manager: &dyn astersql_br_pkg_checkpoint::LogMetaManager,
+        snapshotBytes: u64,
+    ) -> Result<(String, String, u64)> {
+        self.useCheckpoint = true;
+        if manager
+            .ExistsCheckpointMetadata(ctx)
+            .map_err(|e| Error::new(e.to_string()))?
+        {
+            let metadata = manager
+                .LoadCheckpointMetadata(ctx)
+                .map_err(|e| Error::new(e.to_string()))?;
+            if !metadata.RocksDBMaxBackgroundJobs.is_empty() {
+                jobs = metadata.RocksDBMaxBackgroundJobs;
+            }
+            return Ok((metadata.GcRatio, jobs, metadata.SnapshotRestoreDataSize));
+        }
+        manager
+            .SaveCheckpointMetadata(
+                ctx,
+                &astersql_br_pkg_checkpoint::CheckpointMetadataForLogRestore {
+                    UpstreamClusterID: self.upstreamClusterID,
+                    RestoreStartTS: restoreStartTS,
+                    StartTS: startTS,
+                    RestoredTS: restoredTS,
+                    RewriteTS: self.currentTS,
+                    GcRatio: gcRatio.clone(),
+                    RocksDBMaxBackgroundJobs: jobs.clone(),
+                    SnapshotRestoreDataSize: snapshotBytes,
+                    TiFlashItems: items,
+                },
+            )
+            .map_err(|e| Error::new(e.to_string()))?;
+        Ok((gcRatio, jobs, snapshotBytes))
+    }
+}
+
+impl LogClient {
+    /// Reuse the existing simple SST engine and its real worker pool.
+    pub fn InitSSTFileRestorer(
+        &mut self,
+        ctx: &astersql_br_pkg_restore::stubs::Context,
+        importer: Arc<dyn astersql_br_pkg_restore::FileImporter>,
+        checkpoint: Option<Arc<dyn astersql_br_pkg_restore::stubs::RestoreCheckpoint>>,
+    ) -> Result<()> {
+        let manager = self
+            .sstRestoreManager
+            .as_mut()
+            .ok_or_else(|| Error::new("SST restore manager is not initialized"))?;
+        manager.restorer = Some(Arc::new(astersql_br_pkg_restore::NewSimpleSstRestorer(
+            ctx,
+            importer,
+            astersql_br_pkg_restore::stubs::NewWorkerPool(
+                manager.workerPoolSize as u64,
+                "sst file",
+            ),
+            checkpoint,
+        )));
+        Ok(())
+    }
+    /// The restore and log crates currently expose distinct context types; the caller
+    /// supplies both contexts for the same operation so neither transport loses cancellation.
+    pub fn RestoreSSTFileSets(
+        &self,
+        ctx: &Context,
+        restoreCtx: &astersql_br_pkg_restore::stubs::Context,
+        sets: astersql_br_pkg_restore::BatchBackupFileSet,
+        mode: &mut astersql_br_pkg_restore::import_mode_switcher::ImportModeSwitcher,
+        online: bool,
+        snapshotBytes: u64,
+        checkpointBytes: u64,
+        progress: Arc<dyn Fn(i64) + Send + Sync>,
+    ) -> Result<()> {
+        let begin = std::time::Instant::now();
+        if sets.is_empty() {
+            return Ok(());
+        }
+        if let Some(error) = ctx.Err() {
+            return Err(error);
+        }
+        self.adjustTiKVFlowControlForCompactedSSTRestore(
+            ctx,
+            &sets,
+            snapshotBytes,
+            checkpointBytes,
+        )?;
+        // Preserves 02f5e23fb6b3e0f2bc544953a8b433a830abed5d's online replacement.
+        if !online {
+            mode.GoSwitchToImportMode(restoreCtx)
+                .map_err(|e| Error::new(e.to_string()))?;
+        }
+        let restorer = self
+            .sstRestoreManager
+            .as_ref()
+            .and_then(|m| m.restorer.as_ref())
+            .ok_or_else(|| Error::new("SST restorer is not initialized"))?;
+        restorer
+            .GoRestore(progress, vec![sets.clone()])
+            .map_err(|e| Error::new(e.to_string()))?;
+        let result = restorer
+            .WaitUntilFinish()
+            .map_err(|e| Error::new(e.to_string()));
+        for file in sets.iter().flat_map(|set| &set.SSTFiles) {
+            self.restoreStat
+                .restoreSSTKVCount
+                .fetch_add(file.TotalKvs, AtomicOrdering::Relaxed);
+            self.restoreStat
+                .restoreSSTKVSize
+                .fetch_add(file.TotalBytes, AtomicOrdering::Relaxed);
+            self.restoreStat
+                .restoreSSTPhySize
+                .fetch_add(file.Size_, AtomicOrdering::Relaxed);
+        }
+        self.restoreStat
+            .restoreSSTTakes
+            .fetch_add(begin.elapsed().as_nanos() as u64, AtomicOrdering::Relaxed);
+        result
+    }
 }

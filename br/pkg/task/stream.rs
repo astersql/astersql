@@ -488,7 +488,7 @@ pub fn shouldOpenPiTRAddIndexSQLStorage(cfg: &RestoreConfig) -> bool {
 
 /// 流式日志恢复核心：读 log 范围、默认 RestoreTS 为 logMaxTS、校验区间、上报进度。
 /// Rust 桩用 MemStorage 占位；Go 侧走完整 log_client 导入流水线。
-pub fn restoreStream(g: &dyn Glue, cfg: &mut RestoreConfig) -> Result<()> {
+fn prepareStreamRestore(cfg: &mut RestoreConfig) -> Result<()> {
     let storage = MemStorage::new();
     let info =
         getLogInfoFromStorage(&storage, cfg.Config.CheckRequirements).unwrap_or(BackupLogInfo {
@@ -500,6 +500,10 @@ pub fn restoreStream(g: &dyn Glue, cfg: &mut RestoreConfig) -> Result<()> {
         cfg.RestoreTS = info.logMaxTS;
     }
     checkLogRange(info.logMinTS, cfg.RestoreTS, info.logMinTS, info.logMaxTS)?;
+    Ok(())
+}
+
+fn restoreStreamBody(g: &dyn Glue, cfg: &mut RestoreConfig) -> Result<()> {
     let updateCh = g.StartProgress("log restore", 1, !cfg.Config.LogProgress);
     updateCh.Inc();
     updateCh.Close();
@@ -816,4 +820,211 @@ pub fn RegisterRestoreIfNeeded(cfg: &mut RestoreConfig, cmdName: &str) -> Result
 /// parity 测试专用：注册 stream restore 旗标，避免 DefineStreamRestoreFlags 被 lint 为未使用。
 pub fn define_stream_restore_flags_for_tests(flags: &mut FlagSet) {
     DefineStreamRestoreFlags(flags);
+}
+
+/// SQL sessions are supplied by the TiDB transport; an absent transport is an error.
+pub trait RestoreSQLSessionFactory: Send + Sync {
+    fn CreateSession(
+        &self,
+    ) -> Result<Box<dyn astersql_br_pkg_utils::stubs::RestrictedSQLExecutor + Send>>;
+}
+
+/// The existing task glue has no SQL/domain API. Inject the existing BR components
+/// at that boundary, keeping configuration control on the real registry/checkpoint paths.
+pub struct RestoreTiKVConfigControl {
+    pub sessions: Arc<dyn RestoreSQLSessionFactory>,
+    pub registry: Arc<astersql_br_pkg_registry::Registry>,
+    pub manager: Arc<astersql_br_pkg_conn::Mgr>,
+    pub http: Arc<dyn astersql_br_pkg_conn::HttpClient>,
+    pub createLogClient: Arc<
+        dyn Fn(&RestoreConfig) -> Result<astersql_br_pkg_restore_log_client::LogClient>
+            + Send
+            + Sync,
+    >,
+    pub metadata: Option<Arc<dyn astersql_br_pkg_checkpoint::LogMetaManager>>,
+    pub tiFlashItems: HashMap<i64, astersql_br_pkg_checkpoint::TiFlashReplicaInfo>,
+}
+impl std::fmt::Debug for RestoreTiKVConfigControl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RestoreTiKVConfigControl")
+            .finish_non_exhaustive()
+    }
+}
+
+pub fn markRestoreConcurrencyPerStoreAdjusted(
+    mut value: crate::stubs::ModifiedU64,
+) -> crate::stubs::ModifiedU64 {
+    value.Modified = true;
+    value
+}
+
+// Mirrors Go's deferred client.Close, including errors before configuration cleanup is installed.
+struct RestoreLogClientGuard(astersql_br_pkg_restore_log_client::LogClient);
+impl Drop for RestoreLogClientGuard {
+    fn drop(&mut self) {
+        self.0
+            .Close(&astersql_br_pkg_restore_log_client::stubs::Context::Background());
+    }
+}
+
+pub type RestoreConfigFunc = Box<dyn FnMut(&str) -> Result<()>>;
+
+pub fn DisableGC(factory: &dyn RestoreSQLSessionFactory) -> Result<(RestoreConfigFunc, String)> {
+    let mut session = factory.CreateSession()?;
+    let old = astersql_br_pkg_utils::db::GetGcRatio(session.as_mut())
+        .map_err(|e| Error::new(e.to_string()))?
+        .unwrap_or_default();
+    astersql_br_pkg_utils::db::SetGcRatio(
+        session.as_mut(),
+        astersql_br_pkg_utils::db::DisabledGcRatioVal,
+    )
+    .map_err(|e| Error::new(e.to_string()))?;
+    Ok((
+        Box::new(move |value| {
+            astersql_br_pkg_utils::db::SetGcRatio(session.as_mut(), value)
+                .map_err(|e| Error::new(e.to_string()))
+        }),
+        old,
+    ))
+}
+
+pub fn KeepRocksDBMaxBackgroundJobsLow(
+    factory: &dyn RestoreSQLSessionFactory,
+) -> Result<(RestoreConfigFunc, String)> {
+    let mut session = factory.CreateSession()?;
+    let old = astersql_br_pkg_utils::db::GetRocksDBMaxBackgroundJobs(session.as_mut())
+        .map_err(|e| Error::new(e.to_string()))?;
+    if old.is_empty() {
+        return Ok((Box::new(|_| Ok(())), old));
+    }
+    astersql_br_pkg_utils::db::SetRocksDBMaxBackgroundJobs(
+        session.as_mut(),
+        astersql_br_pkg_utils::db::RocksDBMaxBackgroundJobsForRestore,
+    )
+    .map_err(|e| Error::new(e.to_string()))?;
+    Ok((
+        Box::new(move |value| {
+            if value.is_empty() {
+                return Ok(());
+            }
+            astersql_br_pkg_utils::db::SetRocksDBMaxBackgroundJobs(session.as_mut(), value)
+                .map_err(|e| Error::new(e.to_string()))
+        }),
+        old,
+    ))
+}
+
+pub fn restoreStream(g: &dyn Glue, cfg: &mut RestoreConfig) -> Result<()> {
+    prepareStreamRestore(cfg)?;
+    let control = cfg
+        .TiKVConfigControl
+        .clone()
+        .ok_or_else(|| Error::new("stream restore SQL/domain transport is not configured"))?;
+    restoreStreamWithTiKVConfigControl(cfg, &control, |cfg, _client| restoreStreamBody(g, cfg))
+}
+
+/// The callback is the existing restore operation, after concurrency adjustment,
+/// TiKV configuration changes, and checkpoint metadata persistence.
+pub fn restoreStreamWithTiKVConfigControl<F>(
+    cfg: &mut RestoreConfig,
+    control: &RestoreTiKVConfigControl,
+    operation: F,
+) -> Result<()>
+where
+    F: FnOnce(&mut RestoreConfig, &mut astersql_br_pkg_restore_log_client::LogClient) -> Result<()>,
+{
+    use astersql_br_pkg_conn::{ConfigTerm, KVConfig};
+    let mut kv = KVConfig {
+        ImportGoroutines: ConfigTerm {
+            Value: cfg.RestoreCommonConfig.ConcurrencyPerStore.Value as u32,
+            Modified: cfg.RestoreCommonConfig.ConcurrencyPerStore.Modified,
+        },
+        MergeRegionSize: ConfigTerm {
+            Modified: true,
+            ..Default::default()
+        },
+        MergeRegionKeyCount: ConfigTerm {
+            Modified: true,
+            ..Default::default()
+        },
+    };
+    control.manager.ProcessTiKVConfigs(
+        &astersql_br_pkg_conn::BackgroundContext,
+        &mut kv,
+        control.http.as_ref(),
+    );
+    cfg.RestoreCommonConfig.ConcurrencyPerStore =
+        markRestoreConcurrencyPerStoreAdjusted(crate::stubs::ModifiedU64 {
+            Value: kv.ImportGoroutines.Value as u64,
+            Modified: kv.ImportGoroutines.Modified,
+        });
+    let mut ownedClient = RestoreLogClientGuard((control.createLogClient)(cfg)?);
+    let client = &mut ownedClient.0;
+    let ctx = astersql_br_pkg_registry::Context::Background();
+    let mut gc = None;
+    let mut jobs = None;
+    control
+        .registry
+        .OperationAfterWaitIDs(&ctx, || {
+            gc = Some(
+                DisableGC(control.sessions.as_ref())
+                    .map_err(|e| astersql_br_pkg_registry::Error::new(e.to_string()))?,
+            );
+            jobs = Some(
+                KeepRocksDBMaxBackgroundJobsLow(control.sessions.as_ref())
+                    .map_err(|e| astersql_br_pkg_registry::Error::new(e.to_string()))?,
+            );
+            Ok(())
+        })
+        .map_err(|e| Error::new(e.to_string()))?;
+    let (mut restoreGC, mut oldGC) =
+        gc.ok_or_else(|| Error::new("registry did not run configuration operation"))?;
+    let (mut restoreJobs, mut oldJobs) =
+        jobs.ok_or_else(|| Error::new("registry did not run configuration operation"))?;
+    let mut persisted = !cfg.UseCheckpoint;
+    let mut restorable = false;
+    let result = (|| {
+        if cfg.UseCheckpoint {
+            let metadata = control
+                .metadata
+                .as_ref()
+                .ok_or_else(|| Error::new("log checkpoint metadata manager is not configured"))?;
+            let (ratio, backgroundJobs, size) = client
+                .LoadOrCreateCheckpointMetadataForLogRestore(
+                    &astersql_br_pkg_checkpoint::Context::Background(),
+                    cfg.RestoreStartTS,
+                    cfg.StartTS,
+                    cfg.RestoreTS,
+                    oldGC.clone(),
+                    oldJobs.clone(),
+                    control.tiFlashItems.clone(),
+                    metadata.as_ref(),
+                    cfg.snapshotRestoreDataSize,
+                )
+                .map_err(|e| Error::new(e.to_string()))?;
+            persisted = true;
+            oldGC = ratio;
+            oldJobs = backgroundJobs;
+            if size > 0 {
+                cfg.snapshotRestoreDataSize = size;
+            }
+        }
+        operation(cfg, client)?;
+        restorable = cfg.RestorePhase != 1;
+        Ok(())
+    })();
+    if cfg.UseCheckpoint && !restorable && persisted {
+        return result;
+    }
+    if oldGC.starts_with('-') {
+        oldGC = astersql_br_pkg_utils::db::DefaultGcRatioVal.to_string();
+    }
+    // Matches the Go named-return defer: the global cleanup result replaces err.
+    control
+        .registry
+        .GlobalOperationAfterSetResettingStatus(&ctx, cfg.RestoreID, || {
+            restoreGC(&oldGC).map_err(|e| astersql_br_pkg_registry::Error::new(e.to_string()))?;
+            restoreJobs(&oldJobs).map_err(|e| astersql_br_pkg_registry::Error::new(e.to_string()))
+        })
+        .map_err(|e| Error::new(e.to_string()))
 }

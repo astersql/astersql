@@ -825,7 +825,7 @@ fn test_get_merge_region_size_and_count() {
             content: vec![
                 "{\"log-level\": \"debug\", \"coprocessor\": {\"region-split-keys\": 1, \"region-split-size\": \"1MiB\"}, \"import\": {\"num-threads\": 6}}",
             ],
-            import_num_goroutines: 48,
+            import_num_goroutines: DefaultImportNumGoroutines,
             region_split_size: units::MiB,
             region_split_keys: 1,
         },
@@ -834,7 +834,7 @@ fn test_get_merge_region_size_and_count() {
             content: vec![
                 "{\"log-level\": \"debug\", \"coprocessor\": {\"region-split-keys\": 10000000, \"region-split-size\": \"1GiB\"}, \"import\": {\"num-threads\": 128}}",
             ],
-            import_num_goroutines: 1024,
+            import_num_goroutines: 132,
             region_split_size: units::GiB,
             region_split_keys: 10_000_000,
         },
@@ -847,7 +847,7 @@ fn test_get_merge_region_size_and_count() {
                 "{\"log-level\": \"debug\", \"coprocessor\": {\"region-split-keys\": 10000000, \"region-split-size\": \"1GiB\"}, \"import\": {\"num-threads\": 128}}",
                 "{\"log-level\": \"debug\", \"coprocessor\": {\"region-split-keys\": 12000000, \"region-split-size\": \"900MiB\"}, \"import\": {\"num-threads\": 12}}",
             ],
-            import_num_goroutines: 96,
+            import_num_goroutines: 132,
             region_split_size: units::GiB,
             region_split_keys: 10_000_000,
         },

@@ -15,6 +15,9 @@ lane = 0
 
 # arm64 darwin: no kv/domain/kvproto/grpcio. Prefer slim path deps + local stubs.
 [dependencies]
+astersql-br-pkg-utils = { path = "../../utils" }
+astersql-br-pkg-restore = { path = ".." }
+astersql-br-pkg-checkpoint = { path = "../../checkpoint" }
 astersql-br-pkg-restore-split = { package = "astersql-br-pkg-restore-split", path = "../split" }
 astersql-br-pkg-restore-utils = { package = "astersql-br-pkg-restore-utils", path = "../utils" }
 astersql-br-pkg-utils-iter = { package = "astersql-br-pkg-utils-iter", path = "../../utils/iter" }

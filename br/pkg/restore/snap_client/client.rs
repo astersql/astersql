@@ -339,7 +339,8 @@ impl SnapClient {
     }
 
     fn updateConcurrency(&mut self) {
-        self.workerPoolSize = self.storeCount * self.concurrencyPerStore as usize * 32;
+        const downloadWorkerPoolSizePerStore: usize = 7186;
+        self.workerPoolSize = self.storeCount * downloadWorkerPoolSizePerStore;
     }
 
     pub fn SetRegionScanConcurrency(&mut self, c: u32) {

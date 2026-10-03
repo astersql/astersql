@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
+use std::time::Duration;
 
 /// 半开键区间替身，对应 kvproto / metapb 侧 KeyRange 用法。
 /// 供 collector / flush 事件在无 protobuf 依赖时传递区间。
@@ -219,6 +220,60 @@ pub trait LogBackupService: Send + Sync {
     fn ClearCache(&self, storeID: u64) -> Result<(), String>;
 }
 
+/// Request error identity from the etcd transport; retry only deadline/unavailable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MetadataRequestError {
+    DeadlineExceeded,
+    Unavailable(String),
+    Other(String),
+}
+impl std::fmt::Display for MetadataRequestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DeadlineExceeded => f.write_str("context deadline exceeded"),
+            Self::Unavailable(message) | Self::Other(message) => f.write_str(message),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct MetadataRequestContext {
+    parent: WatchContext,
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+    deadline: std::time::Instant,
+}
+impl MetadataRequestContext {
+    pub fn new(parent: WatchContext, timeout: Duration) -> Self {
+        Self {
+            parent,
+            cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            deadline: std::time::Instant::now() + timeout,
+        }
+    }
+    pub fn cancel(&self) {
+        self.cancelled
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+    pub fn check(&self) -> Result<(), MetadataRequestError> {
+        if self.parent.is_canceled() {
+            return Err(MetadataRequestError::Other("watch canceled".into()));
+        }
+        if self.cancelled.load(std::sync::atomic::Ordering::Acquire)
+            || std::time::Instant::now() >= self.deadline
+        {
+            return Err(MetadataRequestError::DeadlineExceeded);
+        }
+        Ok(())
+    }
+    pub fn was_cancelled(&self) -> bool {
+        self.cancelled.load(std::sync::atomic::Ordering::Acquire)
+    }
+    pub fn remaining(&self) -> Duration {
+        self.deadline
+            .saturating_duration_since(std::time::Instant::now())
+    }
+}
+
 /// MetaDataClient / AdvancerExt 使用的最小 etcd KV 面；非完整 etcd API。
 /// 不含 watch / lease / txn；需要那些能力时应接真实客户端而非本桩。
 pub trait EtcdKV: Send + Sync {
@@ -241,6 +296,46 @@ pub trait EtcdKV: Send + Sync {
         revision: i64,
     ) -> Result<mpsc::Receiver<WatchEvent>, String>;
     fn RequestWatchProgress(&self) -> Result<(), String>;
+    /// Transports must honor request cancellation, including while establishing a watch.
+    /// The immediate in-process backend can use these defaults; network adapters override them.
+    fn GetWithRequestContext(
+        &self,
+        ctx: &MetadataRequestContext,
+        key: &str,
+    ) -> Result<RevisionedValue, MetadataRequestError> {
+        ctx.check()?;
+        let value = self
+            .GetWithRevision(key)
+            .map_err(MetadataRequestError::Other)?;
+        ctx.check()?;
+        Ok(value)
+    }
+    fn PutWithRequestContext(
+        &self,
+        ctx: &MetadataRequestContext,
+        key: &str,
+        value: &[u8],
+    ) -> Result<(), MetadataRequestError> {
+        ctx.check()?;
+        self.Put(key, value).map_err(MetadataRequestError::Other)?;
+        ctx.check()
+    }
+    fn WatchPrefixWithRequestContext(
+        &self,
+        ctx: &MetadataRequestContext,
+        key: &str,
+        revision: i64,
+    ) -> Result<mpsc::Receiver<WatchEvent>, MetadataRequestError> {
+        ctx.check()?;
+        let watch = self
+            .WatchPrefix(key, revision)
+            .map_err(MetadataRequestError::Other)?;
+        ctx.check()?;
+        Ok(watch)
+    }
+    fn ResetWatcher(&self) -> Result<(), String> {
+        Err("metadata watcher reset is not supported by this transport".into())
+    }
 }
 
 /// 进程内 HashMap 实现的 etcd 替身，供单测与 slim 集成路径使用。
@@ -265,6 +360,11 @@ impl MemEtcd {
 }
 
 impl EtcdKV for MemEtcd {
+    fn ResetWatcher(&self) -> Result<(), String> {
+        self.inner.lock().unwrap().watchers.clear();
+        Ok(())
+    }
+
     fn Put(&self, key: &str, value: &[u8]) -> Result<(), String> {
         self.PutBytes(key.as_bytes(), value)
     }

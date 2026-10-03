@@ -1393,8 +1393,11 @@ version = "0.1.0"
 name = "astersql-br-pkg-restore-log-client"
 version = "0.1.0"
 dependencies = [
+ "astersql-br-pkg-checkpoint",
+ "astersql-br-pkg-restore",
  "astersql-br-pkg-restore-split",
  "astersql-br-pkg-restore-utils",
+ "astersql-br-pkg-utils",
  "astersql-br-pkg-utils-iter",
  "astersql-errors",
  "hex 0.4.3",
@@ -1542,9 +1545,14 @@ name = "astersql-br-pkg-task"
 version = "0.1.0"
 dependencies = [
  "astersql-br-pkg-aws",
+ "astersql-br-pkg-checkpoint",
  "astersql-br-pkg-common",
+ "astersql-br-pkg-conn",
  "astersql-br-pkg-gc",
+ "astersql-br-pkg-registry",
+ "astersql-br-pkg-restore-log-client",
  "astersql-br-pkg-stream",
+ "astersql-br-pkg-utils",
  "astersql-br-pkg-utils-consts",
  "hex 0.4.3",
  "regex",

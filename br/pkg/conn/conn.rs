@@ -37,14 +37,17 @@ use astersql_br_pkg_version::{
     CheckClusterVersion, CheckVersionForBR, CheckVersionForBRPiTR, CheckVersionForDDL,
     PdClient as VersionPdClient, Store as VerStore, StoreLabel as VerLabel,
 };
-use astersql_errors::{Annotate, Annotatef, ErrorArg, Errorf, Errors, Join, SharedError, Trace};
+pub use astersql_errors::SharedError;
+use astersql_errors::{Annotate, Annotatef, ErrorArg, Errorf, Errors, Join, Trace};
 
 /// 默认 region 分裂/合并尺寸 96MiB，与 TiKV raftstore 默认对齐。
 pub const DefaultMergeRegionSizeBytes: u64 = 96 * 1024 * 1024;
 /// 默认 region 键数阈值 960000。
 pub const DefaultMergeRegionKeyCount: u64 = 960_000;
-/// 默认导入并发；约为 TiDB 默认的 8 倍，面向 IO 密集恢复。
-pub const DefaultImportNumGoroutines: u32 = 128;
+/// 默认恢复导入并发，与 Go 的默认线程池大小一致。
+pub const DefaultImportNumGoroutines: u32 = 36;
+
+const minRestoreConcurrencyOverImportThreads: u32 = 4;
 /// 空 keyspace 哨兵 ID（全 F），用于未绑定 keyspace 的 GC 管理。
 pub const NullspaceID: u32 = 0xffff_ffff;
 
@@ -784,7 +787,7 @@ impl Mgr {
     /// ProcessTiKVConfigs retrieves TiKV config and keeps the minimum values.
     /// 遍历存活 TiKV 配置，取更保守（更小）的 merge 尺寸/键数，以及导入并发。
     /// 若三项均已被 Modified 标记，则跳过远程拉取。
-    /// 导入线程按 TiKV num-threads * 8 换算，与 Go 注释中的默认倍率一致。
+    /// 未显式指定时，恢复并发至少为各 TiKV 导入线程数加 4。
     /// 拉取失败时静默回退默认值（Go 侧打日志后同样继续）。
     pub fn ProcessTiKVConfigs(
         &self,
@@ -816,11 +819,10 @@ impl Mgr {
             }
             if !import_goroutines.Modified {
                 let threads = parse_import_threads_from_config(&resp.body)?;
-                // 默认值或更小的 8*threads 时更新导入并发。
-                if import_goroutines.Value == DefaultImportNumGoroutines
-                    || (threads > 0 && threads.saturating_mul(8) < import_goroutines.Value)
-                {
-                    import_goroutines.Value = threads.saturating_mul(8);
+                if threads > 0 {
+                    import_goroutines.Value = import_goroutines
+                        .Value
+                        .max(threads + minRestoreConcurrencyOverImportThreads);
                 }
             }
             cfg.MergeRegionSize = merge_region_size.clone();
