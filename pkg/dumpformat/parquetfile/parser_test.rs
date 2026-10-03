@@ -38,6 +38,119 @@ use crate::{LogicalType, PhysicalType, TimeUnit};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+#[test]
+fn dictionary_encoded_decimal_values_remain_stable_across_batches() {
+    use crate::file_parser::{FileParser, ImportParser};
+    use crate::source_reader::{RangeOpener, SourceReader};
+    use astersql_lightning_mydump::{Datum as ImportDatum, MydumpError, Parser as _};
+    use parquet::data_type::{ByteArray, ByteArrayType, FixedLenByteArray, FixedLenByteArrayType};
+    use parquet::file::{
+        properties::{WriterProperties, WriterVersion},
+        reader::FileReader,
+        writer::SerializedFileWriter,
+    };
+    use std::io::Cursor;
+
+    const ROWS: usize = 256;
+    let schema = Arc::new(parquet::schema::parser::parse_message_type(
+        "message schema { OPTIONAL BYTE_ARRAY positive (DECIMAL(9,2)); OPTIONAL BYTE_ARRAY negative (DECIMAL(9,2)); OPTIONAL FIXED_LEN_BYTE_ARRAY(4) fixed_len (DECIMAL(9,2)); OPTIONAL BYTE_ARRAY oversized (DECIMAL(75,2)); }",
+    ).unwrap());
+    let mut writer = SerializedFileWriter::new(
+        Vec::new(),
+        schema,
+        Arc::new(
+            WriterProperties::builder()
+                .set_writer_version(WriterVersion::PARQUET_2_0)
+                .set_dictionary_enabled(true)
+                .build(),
+        ),
+    )
+    .unwrap();
+    let mut oversized = vec![0; 33];
+    oversized[1] = 1;
+    let inputs = [
+        vec![0x30, 0x39],
+        vec![0xcf, 0xc7],
+        vec![0, 0, 0x30, 0x39],
+        oversized,
+    ];
+    let expected = [
+        "123.45",
+        "-123.45",
+        "123.45",
+        "4523128485832663883733241601901871400518358776001584532791311875309106626.56",
+    ];
+    let info = ConvertedInfo {
+        converted: ConvertedType::Decimal,
+        scale: 2,
+        adjusted_to_utc: false,
+        timezone_offset_seconds: 0,
+        spark_rebase: None,
+    };
+    let mut group = writer.next_row_group().unwrap();
+    for (index, input) in inputs.iter().enumerate() {
+        let original = input.clone();
+        for _ in 0..ROWS {
+            assert_eq!(
+                convert_bytes(input, &info).unwrap(),
+                Datum::Decimal(expected[index].into())
+            );
+            assert_eq!(input, &original, "conversion mutated dictionary bytes");
+        }
+        let mut column = group.next_column().unwrap().unwrap();
+        if index == 2 {
+            let values = vec![FixedLenByteArray::from(ByteArray::from(input.clone())); ROWS];
+            column
+                .typed::<FixedLenByteArrayType>()
+                .write_batch(&values, Some(&[1; ROWS]), None)
+                .unwrap();
+        } else {
+            let values = vec![ByteArray::from(input.clone()); ROWS];
+            column
+                .typed::<ByteArrayType>()
+                .write_batch(&values, Some(&[1; ROWS]), None)
+                .unwrap();
+        }
+        column.close().unwrap();
+    }
+    group.close().unwrap();
+    let bytes = writer.into_inner().unwrap();
+    let reader = crate::parser::open_file_reader(bytes::Bytes::copy_from_slice(&bytes)).unwrap();
+    for column in reader.metadata().row_group(0).columns() {
+        assert!(
+            column.dictionary_page_offset().is_some(),
+            "{} is not dictionary encoded",
+            column.column_path()
+        );
+    }
+    let data = Arc::new(bytes);
+    let size = data.len() as u64;
+    let open: RangeOpener = Arc::new(move |start, end| {
+        Ok(Box::new(Cursor::new(
+            data[start as usize..end as usize].to_vec(),
+        )))
+    });
+    let source = SourceReader::prepare(size as i64, || Ok(size), open).unwrap();
+    let mut decoder = FileParser::new(source).unwrap();
+    // Reuse the dictionary across many decoder batches as well as parser rows.
+    decoder.set_batch_size(7).unwrap();
+    let mut parser = ImportParser::new(decoder);
+    for row in 0..ROWS {
+        parser.ReadRow().unwrap();
+        let actual = parser.LastRow();
+        assert_eq!(actual.row.len(), expected.len());
+        for (value, text) in actual.row.iter().zip(expected) {
+            assert_eq!(
+                value,
+                &ImportDatum::Bytes(text.as_bytes().to_vec()),
+                "row {row}"
+            );
+        }
+        parser.RecycleRow(actual);
+    }
+    assert!(matches!(parser.ReadRow(), Err(MydumpError::Eof)));
+}
+
 // 构造最小列描述；各用例只覆盖显式指定的物理类型与逻辑类型。
 fn descriptor(name: &str, physical: PhysicalType, logical: LogicalType) -> ColumnDescriptor {
     ColumnDescriptor {
