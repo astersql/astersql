@@ -40,26 +40,14 @@ pub fn CleanUpFilesInDirectories(store: &dyn Storage, non_partitioned_dirs: &[&s
     if non_partitioned_dirs.is_empty() {
         return Ok(());
     }
-    let dirs: std::collections::HashSet<_> = non_partitioned_dirs
+    // Preserve the existing Rust single-directory API's slash normalization.
+    let dirs: Vec<_> = non_partitioned_dirs
         .iter()
         .map(|dir| dir.trim_matches('/'))
         .collect();
-    let mut names = Vec::new();
-    for path in store.list_prefix("")? {
-        let mut parts = path.trim_start_matches('/').split('/');
-        let Some(first) = parts.next() else { continue };
-        let matches = if dirs.contains(first) {
-            parts.next().is_some()
-        } else if astersql_ingestor_simplesst::writer::IsValidPartition(first.as_bytes()) {
-            parts.next().is_some_and(|second| dirs.contains(second)) && parts.next().is_some()
-        } else {
-            false
-        };
-        if matches {
-            names.push(path);
-        }
-    }
-    names.sort();
+    let names = astersql_ingestor_simplesst::util::GetAllFileNamesFromScan(&dirs, || {
+        store.list_prefix("")
+    })?;
     store.delete_files(&names)
 }
 

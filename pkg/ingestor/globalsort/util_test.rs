@@ -414,3 +414,95 @@ fn test_read_write_json() {
         "external storage only restores the external field"
     );
 }
+
+#[derive(Default)]
+struct CountingCleanupStorage {
+    inner: MemoryStorage,
+    scans: std::sync::atomic::AtomicUsize,
+    deletes: std::sync::atomic::AtomicUsize,
+    fail_scan: bool,
+    fail_delete: bool,
+}
+impl Storage for CountingCleanupStorage {
+    fn read(&self, path: &str) -> crate::Result<Vec<u8>> {
+        self.inner.read(path)
+    }
+    fn write(&self, path: &str, bytes: Vec<u8>) -> crate::Result<()> {
+        self.inner.write(path, bytes)
+    }
+    fn list_prefix(&self, prefix: &str) -> crate::Result<Vec<String>> {
+        self.scans.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.fail_scan {
+            return Err(crate::Error::InvalidData("scan failed".into()));
+        }
+        self.inner.list_prefix(prefix)
+    }
+    fn delete_files(&self, paths: &[String]) -> crate::Result<()> {
+        self.deletes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.fail_delete {
+            return Err(crate::Error::InvalidData("delete failed".into()));
+        }
+        self.inner.delete_files(paths)
+    }
+}
+impl astersql_ingestor_simplesst::writer::WriterSink for CountingCleanupStorage {
+    fn write_file(&self, path: &str, data: &[u8]) -> Result<(), String> {
+        self.write(path, data.to_vec())
+            .map_err(|error| error.to_string())
+    }
+}
+#[test]
+fn batched_cleanup_scans_writer_files_once_and_preserves_other_tasks() {
+    use std::sync::atomic::Ordering;
+    let store = std::sync::Arc::new(CountingCleanupStorage::default());
+    for dir in ["subtask", "subtask2", "kept"] {
+        let mut builder = astersql_ingestor_simplesst::writer::WriterBuilder::new();
+        builder.set_memory_size_limit(100).set_prop_keys_distance(3);
+        let mut writer = builder.build_with_sink(store.clone(), dir, "0");
+        for key in 0..30u8 {
+            writer.write_row(&[key], &[key]).unwrap();
+        }
+        writer.close().unwrap();
+    }
+    let kept = store
+        .inner
+        .list_prefix("")
+        .unwrap()
+        .into_iter()
+        .filter(|path| path.contains("/kept/"))
+        .collect::<Vec<_>>();
+    assert!(!kept.is_empty());
+    crate::CleanUpFilesInDirectories(store.as_ref(), &[]).unwrap();
+    assert_eq!(store.scans.load(Ordering::SeqCst), 0);
+    assert_eq!(store.deletes.load(Ordering::SeqCst), 0);
+    crate::CleanUpFilesInDirectories(store.as_ref(), &["subtask", "subtask2", "subtask"]).unwrap();
+    assert_eq!(store.scans.load(Ordering::SeqCst), 1);
+    assert_eq!(store.deletes.load(Ordering::SeqCst), 1);
+    assert_eq!(store.inner.list_prefix("").unwrap(), kept);
+    crate::CleanUpFilesInDirectories(store.as_ref(), &["subtask", "subtask2"]).unwrap();
+    assert_eq!(store.inner.list_prefix("").unwrap(), kept);
+}
+#[test]
+fn batched_cleanup_propagates_scan_and_delete_errors() {
+    use std::sync::atomic::Ordering;
+    for (fail_scan, fail_delete, expected, deletes) in [
+        (true, false, "scan failed", 0),
+        (false, true, "delete failed", 1),
+    ] {
+        let store = CountingCleanupStorage {
+            fail_scan,
+            fail_delete,
+            ..Default::default()
+        };
+        store.write("42/data", vec![1]).unwrap();
+        assert_eq!(
+            crate::CleanUpFilesInDirectories(&store, &["42"])
+                .unwrap_err()
+                .to_string(),
+            expected
+        );
+        assert_eq!(store.deletes.load(Ordering::SeqCst), deletes);
+        assert_eq!(store.read("42/data").unwrap(), vec![1]);
+    }
+}

@@ -29,6 +29,7 @@ pub(super) struct TestTaskManager {
     pub persisted_subtasks: Mutex<Vec<Subtask>>,
     pub deleted_nodes: Mutex<Vec<String>>,
     pub transferred_tasks: Mutex<Vec<Task>>,
+    pub transfer_error: Mutex<Option<SchedulerError>>,
     pub failed_tasks: Mutex<Vec<(i64, TaskState, SchedulerError)>>,
     /// 规划下一批子任务时返回的上一阶段结果。
     pub previous_metas: Mutex<Vec<Vec<u8>>>,
@@ -101,14 +102,16 @@ impl TaskManager for TestTaskManager {
     }
 
     fn tasks_in_states(&self, states: &[TaskState]) -> Result<Vec<Task>> {
-        Ok(self
+        let mut tasks: Vec<_> = self
             .tasks
             .lock()
             .expect("tasks lock poisoned")
             .values()
             .filter(|task| states.contains(&task.base.state))
             .cloned()
-            .collect())
+            .collect();
+        tasks.sort_by_key(|task| task.base.id);
+        Ok(tasks)
     }
 
     fn task_by_id(&self, task_id: i64) -> Result<Task> {
@@ -141,6 +144,9 @@ impl TaskManager for TestTaskManager {
     }
 
     fn transfer_tasks_to_history(&self, tasks: &[Task]) -> Result<()> {
+        if let Some(error) = self.transfer_error.lock().unwrap().clone() {
+            return Err(error);
+        }
         self.transferred_tasks
             .lock()
             .expect("transferred-tasks lock poisoned")

@@ -210,30 +210,44 @@ pub fn get_all_file_names(
     storage: &MemoryStorage,
     non_partitioned_dir: &str,
 ) -> Result<Vec<String>> {
-    let mut result = Vec::new();
-    for path in storage.list()? {
-        let mut parts = path.split('/');
-        let Some(first) = parts.next() else { continue };
-        if first == non_partitioned_dir {
-            // 直接挂在目标目录下的对象。
-            if parts.next().is_some() {
-                result.push(path);
-            }
-            continue;
-        }
-        // 第一段须为合法 `p[01]{8}` 分区前缀。
-        if !IsValidPartition(first.as_bytes()) {
-            continue;
-        }
-        if parts.next() == Some(non_partitioned_dir) && parts.next().is_some() {
-            result.push(path);
-        }
-    }
-    // 列表顺序不稳定，显式排序以提供确定性结果。
-    result.sort();
-    Ok(result)
+    GetAllFileNamesInDirectories(storage, &[non_partitioned_dir])
 }
 /// Go 风格别名：等同 `get_all_file_names`。
 pub fn GetAllFileNames(storage: &MemoryStorage, dir: &str) -> Result<Vec<String>> {
     get_all_file_names(storage, dir)
+}
+
+/// Batched counterpart of GetAllFileNames: one scan and one set of directories.
+pub fn GetAllFileNamesInDirectories(storage: &MemoryStorage, dirs: &[&str]) -> Result<Vec<String>> {
+    GetAllFileNamesFromScan(dirs, || storage.list())
+}
+
+/// Share the Go directory matching algorithm with production object stores.
+/// The callback is never invoked for empty input, and scan errors are preserved.
+pub fn GetAllFileNamesFromScan<E>(
+    dirs: &[&str],
+    scan: impl FnOnce() -> std::result::Result<Vec<String>, E>,
+) -> std::result::Result<Vec<String>, E> {
+    if dirs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let dirs: std::collections::HashSet<_> = dirs.iter().copied().collect();
+    let mut result = Vec::new();
+    for path in scan()? {
+        // Memory fixtures retain leading slashes that object stores normalize.
+        let mut parts = path.trim_start_matches('/').split('/');
+        let Some(first) = parts.next() else { continue };
+        let matches = if dirs.contains(first) {
+            parts.next().is_some()
+        } else if IsValidPartition(first.as_bytes()) {
+            parts.next().is_some_and(|second| dirs.contains(second)) && parts.next().is_some()
+        } else {
+            false
+        };
+        if matches {
+            result.push(path);
+        }
+    }
+    result.sort();
+    Ok(result)
 }

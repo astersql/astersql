@@ -21,6 +21,7 @@
 
 #![allow(non_snake_case)]
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use astersql_dxf_framework_proto::{Task, TaskStateSucceed};
@@ -56,12 +57,11 @@ pub trait ImportCleanUpRuntime: Send + Sync {
         database_id: i64,
         table_id: i64,
     ) -> Result<(), RestoreTableModeError>;
-    /// 删除云存储上该任务前缀下的全局排序临时文件。
-    fn clean_global_sort_files(
+    /// Open one store with the original URI, including live credentials.
+    fn open_global_sort_store(
         &self,
         cloud_storage_uri: &str,
-        task_prefix: &str,
-    ) -> Result<(), errors::SharedError>;
+    ) -> Result<Box<dyn ImportCleanUpStorage>, errors::SharedError>;
     /// 读取后处理步骤元数据（含 checksum 等）。
     fn post_process_meta(
         &self,
@@ -75,6 +75,17 @@ pub trait ImportCleanUpRuntime: Send + Sync {
         data_kv_size: i64,
         index_kv_size: i64,
     ) -> Result<(), errors::SharedError>;
+}
+
+/// Object-store boundary; cleanup always closes an opened store, even on error.
+pub trait ImportCleanUpStorage: astersql_ingestor_globalsort::Storage {
+    fn close(&self);
+}
+struct CleanupStoreGuard(Box<dyn ImportCleanUpStorage>);
+impl Drop for CleanupStoreGuard {
+    fn drop(&mut self) {
+        self.0.close();
+    }
 }
 
 /// Import Into 清理入口，持有运行时适配器。
@@ -95,42 +106,50 @@ impl ImportCleanUp {
     /// Cleanup only runs after all write-and-ingest subtasks finish, because
     /// those subtasks can share sorted files.
     pub fn CleanUp(&self, task: &mut Task) -> Result<(), errors::SharedError> {
-        // 先反序列化任务元数据，清理后再脱敏敏感字段写回。
-        let mut task_meta = TaskMeta::Unmarshal(&task.Meta)?;
-        let result = self.cleanUpInner(task, &task_meta);
-        redactSensitiveInfo(task, &mut task_meta);
-        result
+        self.CleanUpBatch(std::slice::from_mut(task))
     }
 
-    /// 实际清理：classic 恢复表模式 → 删云端排序文件 → next-gen 成功时上报计量。
-    fn cleanUpInner(&self, task: &Task, task_meta: &TaskMeta) -> Result<(), errors::SharedError> {
-        // classic 内核需把导入期间的表模式改回普通模式；表已删则可忽略。
-        if self.runtime.is_classic() {
-            let table_id = task_meta
-                .Plan
-                .TableInfo
-                .as_ref()
-                .map(|table| table.ID)
-                .unwrap_or_default();
-            match self
-                .runtime
-                .restore_table_mode(task_meta.Plan.DBID, table_id)
-            {
-                Ok(()) | Err(RestoreTableModeError::TableNotFound) => {}
-                Err(RestoreTableModeError::Other(error)) => return Err(error),
+    /// Restore all table modes, delete each URI group with one scan, then meter.
+    /// Cleanup and history transfer are not atomic; retries must be safe.
+    pub fn CleanUpBatch(&self, tasks: &mut [Task]) -> Result<(), errors::SharedError> {
+        let mut groups: HashMap<String, Vec<String>> = HashMap::new();
+        let mut meter_tasks = Vec::new();
+        for (index, task) in tasks.iter_mut().enumerate() {
+            let mut task_meta = TaskMeta::Unmarshal(&task.Meta)?;
+            // Capture both values before redaction so construction uses live credentials.
+            let uri = task_meta.Plan.CloudStorageURI.clone();
+            let global_sort = task_meta.Plan.IsGlobalSort();
+            redactSensitiveInfo(task, &mut task_meta);
+            if self.runtime.is_classic() {
+                let table_id = task_meta
+                    .Plan
+                    .TableInfo
+                    .as_ref()
+                    .map(|table| table.ID)
+                    .unwrap_or_default();
+                match self
+                    .runtime
+                    .restore_table_mode(task_meta.Plan.DBID, table_id)
+                {
+                    Ok(()) | Err(RestoreTableModeError::TableNotFound) => {}
+                    Err(RestoreTableModeError::Other(error)) => return Err(error),
+                }
+            }
+            if global_sort {
+                groups.entry(uri).or_default().push(task.ID.to_string());
+                if self.runtime.is_nextgen() && task.State == TaskStateSucceed {
+                    meter_tasks.push(index);
+                }
             }
         }
-
-        // 未配置云存储则无需清理全局排序文件，直接结束。
-        if task_meta.Plan.CloudStorageURI.is_empty() {
-            return Ok(());
+        for (uri, dirs) in groups {
+            let store = CleanupStoreGuard(self.runtime.open_global_sort_store(&uri)?);
+            let dirs: Vec<_> = dirs.iter().map(String::as_str).collect();
+            astersql_ingestor_globalsort::CleanUpFilesInDirectories(store.0.as_ref(), &dirs)
+                .map_err(|error| errors::New(error.to_string()))?;
         }
-        self.runtime
-            .clean_global_sort_files(&task_meta.Plan.CloudStorageURI, &task.ID.to_string())?;
-
-        // next-gen 且任务成功时，从后处理元数据汇总计量并上报。
-        if self.runtime.is_nextgen() && task.State == TaskStateSucceed {
-            self.sendMeterOnCleanUp(task)?;
+        for index in meter_tasks {
+            self.sendMeterOnCleanUp(&tasks[index])?;
         }
         Ok(())
     }
@@ -168,4 +187,49 @@ pub fn meterDataFromPostProcess(meta: &PostProcessStepMeta) -> (u64, u64, u64) {
         }
     }
     (row_count, data_kv_size, index_kv_size)
+}
+
+impl astersql_dxf_framework_scheduler::CleanUpRoutine for ImportCleanUp {
+    fn clean_up(
+        &self,
+        task: &mut astersql_dxf_framework_scheduler::Task,
+    ) -> astersql_dxf_framework_scheduler::Result<()> {
+        astersql_dxf_framework_scheduler::BatchCleanUpRoutine::clean_up_batch(
+            self,
+            std::slice::from_mut(task),
+        )
+    }
+    fn batch_cleanup(&self) -> Option<&dyn astersql_dxf_framework_scheduler::BatchCleanUpRoutine> {
+        Some(self)
+    }
+}
+impl astersql_dxf_framework_scheduler::BatchCleanUpRoutine for ImportCleanUp {
+    fn clean_up_batch(
+        &self,
+        tasks: &mut [astersql_dxf_framework_scheduler::Task],
+    ) -> astersql_dxf_framework_scheduler::Result<()> {
+        let mut import_tasks = tasks
+            .iter()
+            .map(crate::scheduler::frameworkTaskToImportTask)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
+                astersql_dxf_framework_scheduler::SchedulerError::new(error.to_string())
+            })?;
+        let result = self.CleanUpBatch(&mut import_tasks);
+        // Redaction persists even when a later cleanup side effect fails.
+        for (task, import_task) in tasks.iter_mut().zip(import_tasks) {
+            task.meta = import_task.Meta;
+        }
+        result.map_err(|error| {
+            astersql_dxf_framework_scheduler::SchedulerError::new(error.to_string())
+        })
+    }
+}
+
+/// Register the import cleaner on the owner's actual cleanup capability path.
+pub fn RegisterImportCleanUpFactory(runtime: Arc<dyn ImportCleanUpRuntime>) {
+    astersql_dxf_framework_scheduler::RegisterSchedulerCleanUpFactory(
+        astersql_dxf_framework_proto::ImportInto,
+        Arc::new(move || Arc::new(ImportCleanUp::new(runtime.clone()))),
+    );
 }

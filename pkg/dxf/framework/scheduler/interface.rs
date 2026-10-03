@@ -559,6 +559,17 @@ pub fn ClearSchedulerFactory() {
 pub trait CleanUpRoutine: Send + Sync {
     /// 执行清理。
     fn clean_up(&self, task: &mut Task) -> Result<()>;
+    /// Optional batched capability; the owner invokes one instance per task type.
+    fn batch_cleanup(&self) -> Option<&dyn BatchCleanUpRoutine> {
+        None
+    }
+}
+
+/// A successful group is transferred together; failures transfer none of that
+/// group. Side effects and history transfer have no atomicity or rollback, so
+/// implementations must be idempotent after partial failure and retry.
+pub trait BatchCleanUpRoutine: CleanUpRoutine {
+    fn clean_up_batch(&self, tasks: &mut [Task]) -> Result<()>;
 }
 
 /// 注册任务类型对应的清理工厂。

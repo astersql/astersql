@@ -261,3 +261,79 @@ fn test_get_read_range_from_props_stops_after_all_keys_are_resolved() {
         vec![vec![0]],
     );
 }
+
+#[test]
+fn batched_file_discovery_deduplicates_directories_and_keeps_writer_files_sorted() {
+    let storage = crate::MemoryStorage::default();
+    for dir in ["subtask", "subtask2", "kept"] {
+        let mut builder = crate::writer::WriterBuilder::new();
+        builder.set_memory_size_limit(100).set_prop_keys_distance(3);
+        let mut writer = builder.build(storage.clone(), dir, "0");
+        for key in 0..30u8 {
+            writer.write_row(&[key], &[key]).unwrap();
+        }
+        writer.close().unwrap();
+    }
+    let mut expected = crate::util::GetAllFileNames(&storage, "subtask").unwrap();
+    expected.extend(crate::util::GetAllFileNames(&storage, "subtask2").unwrap());
+    expected.sort();
+    assert!(!expected.is_empty());
+    assert_eq!(
+        crate::util::GetAllFileNamesInDirectories(&storage, &["subtask", "subtask2", "subtask"])
+            .unwrap(),
+        expected
+    );
+    assert!(
+        crate::util::GetAllFileNamesInDirectories(&storage, &[])
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        !crate::util::GetAllFileNames(&storage, "kept")
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn batched_file_discovery_scans_once_matches_segments_and_propagates_errors() {
+    let calls = std::cell::Cell::new(0);
+    let scan = || -> Result<Vec<String>, &'static str> {
+        calls.set(calls.get() + 1);
+        Ok([
+            "43/meta.json",
+            "42/plan/ingest/meta.json",
+            "p00110000/42/data",
+            "p11111111/43/stat",
+            "420/data",
+            "p0011000x/42/data",
+            "p00110000/42",
+            "42",
+            "other/43/data",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect())
+    };
+    assert!(
+        crate::util::GetAllFileNamesFromScan(&[], scan)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(calls.get(), 0);
+    assert_eq!(
+        crate::util::GetAllFileNamesFromScan(&["42", "43", "42"], scan).unwrap(),
+        vec![
+            "42/plan/ingest/meta.json",
+            "43/meta.json",
+            "p00110000/42/data",
+            "p11111111/43/stat"
+        ]
+    );
+    assert_eq!(calls.get(), 1);
+    assert_eq!(
+        crate::util::GetAllFileNamesFromScan(&["42"], || Err::<Vec<String>, _>("scan failed"))
+            .unwrap_err(),
+        "scan failed"
+    );
+}

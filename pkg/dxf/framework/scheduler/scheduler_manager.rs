@@ -337,17 +337,52 @@ impl Manager {
         if tasks.is_empty() {
             return Ok(0);
         }
-        let mut cleaned = Vec::new();
-        for task in &mut tasks {
-            if let Some(factory) = get_scheduler_cleanup_factory(&task.base.task_type) {
-                // Stop on the first cleanup failure. Already-cleaned tasks are
-                // still transferred, which is Go's retry-safe prefix behavior.
-                // 遇第一个清理失败即停止；已清理前缀仍迁历史，便于重试。
-                if factory().clean_up(task).is_err() {
+        let mut cleaned = Vec::with_capacity(tasks.len());
+        let mut singles = Vec::new();
+        let mut groups: HashMap<String, (Arc<dyn CleanUpRoutine>, Vec<Task>)> = HashMap::new();
+        for task in tasks.drain(..) {
+            if let Some((_, group)) = groups.get_mut(&task.base.task_type) {
+                group.push(task);
+                continue;
+            }
+            let Some(factory) = get_scheduler_cleanup_factory(&task.base.task_type) else {
+                cleaned.push(task);
+                continue;
+            };
+            let cleanup = factory();
+            if cleanup.batch_cleanup().is_some() {
+                groups.insert(task.base.task_type.clone(), (cleanup, vec![task]));
+            } else {
+                singles.push((cleanup, task));
+            }
+        }
+        let mut failed = false;
+        for (cleanup, mut task) in singles {
+            if cleanup.clean_up(&mut task).is_err() {
+                failed = true;
+                break;
+            }
+            cleaned.push(task);
+        }
+        if !failed {
+            for (_, (cleanup, mut group)) in groups {
+                if cleanup
+                    .batch_cleanup()
+                    .expect("batch capability established")
+                    .clean_up_batch(&mut group)
+                    .is_err()
+                {
+                    failed = true;
                     break;
                 }
+                cleaned.extend(group);
             }
-            cleaned.push(task.clone());
+        }
+        if failed {
+            astersql_dxf_framework_dxfmetric::InitDistTaskMetrics()
+                .ScheduleEventCounter
+                .with_label_values(&["-", astersql_dxf_framework_dxfmetric::EventCleanupFailed])
+                .inc();
         }
         self.task_manager.transfer_tasks_to_history(&cleaned)?;
         Ok(cleaned.len())

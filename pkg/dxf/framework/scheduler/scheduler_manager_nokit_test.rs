@@ -300,3 +300,214 @@ fn test_cleanup_drains_bounded_batches_and_keeps_pending_tasks() {
     );
     restore();
 }
+
+struct FailingSingleCleanup;
+impl CleanUpRoutine for FailingSingleCleanup {
+    fn clean_up(&self, task: &mut Task) -> Result<()> {
+        if task.base.id == 4 {
+            return Err(SchedulerError::new("single cleanup failed"));
+        }
+        task.meta = b"redacted".to_vec();
+        Ok(())
+    }
+}
+
+#[test]
+fn cleanup_single_failure_still_transfers_all_tasks_without_cleanup() {
+    let task_type = "single-cleanup-failure-retains-unregistered";
+    RegisterSchedulerCleanUpFactory(task_type, Arc::new(|| Arc::new(FailingSingleCleanup)));
+    let batch = Arc::new(BatchCleanupRecorder::default());
+    let batch_factory = batch.clone();
+    RegisterSchedulerCleanUpFactory(
+        "single-error-batch",
+        Arc::new(move || batch_factory.clone()),
+    );
+    let task_manager = Arc::new(TestTaskManager::default());
+    for (id, kind) in [
+        (1, "no-cleanup"),
+        (2, task_type),
+        (3, "single-error-batch"),
+        (4, task_type),
+        (5, "single-error-batch"),
+        (6, "no-cleanup"),
+    ] {
+        task_manager.insert_task(manager_task(id, kind, TASK_STATE_REVERTED));
+    }
+    let manager = Manager::new(task_manager.clone(), "server", None);
+    assert_eq!(manager.cleanup_finished_tasks().unwrap(), 3);
+    assert!(batch.batches.lock().unwrap().is_empty());
+    let transferred = task_manager.transferred_tasks.lock().unwrap();
+    let mut ids: Vec<_> = transferred.iter().map(|task| task.base.id).collect();
+    ids.sort();
+    assert_eq!(ids, vec![1, 2, 6]);
+    assert_eq!(
+        transferred
+            .iter()
+            .find(|task| task.base.id == 2)
+            .unwrap()
+            .meta,
+        b"redacted"
+    );
+}
+
+#[derive(Default)]
+struct BatchCleanupRecorder {
+    batches: Mutex<Vec<Vec<i64>>>,
+    fail: bool,
+}
+impl CleanUpRoutine for BatchCleanupRecorder {
+    fn clean_up(&self, _: &mut Task) -> Result<()> {
+        panic!("batch capability must bypass single cleanup")
+    }
+    fn batch_cleanup(&self) -> Option<&dyn BatchCleanUpRoutine> {
+        Some(self)
+    }
+}
+impl BatchCleanUpRoutine for BatchCleanupRecorder {
+    fn clean_up_batch(&self, tasks: &mut [Task]) -> Result<()> {
+        self.batches
+            .lock()
+            .unwrap()
+            .push(tasks.iter().map(|task| task.base.id).collect());
+        for task in tasks {
+            task.meta = b"batch-redacted".to_vec();
+        }
+        if self.fail {
+            Err(SchedulerError::new("batch cleanup failed"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[test]
+fn cleanup_batches_by_capability_and_creates_one_instance_per_type() {
+    let task_manager = Arc::new(TestTaskManager::default());
+    let a = Arc::new(BatchCleanupRecorder::default());
+    let b = Arc::new(BatchCleanupRecorder::default());
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    for (kind, recorder) in [
+        ("batch-capability-a", a.clone()),
+        ("batch-capability-b", b.clone()),
+    ] {
+        let calls = calls.clone();
+        RegisterSchedulerCleanUpFactory(
+            kind,
+            Arc::new(move || {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                recorder.clone()
+            }),
+        );
+    }
+    RegisterSchedulerCleanUpFactory(
+        "batch-capability-single",
+        Arc::new(|| Arc::new(FailingSingleCleanup)),
+    );
+    for (id, kind) in [
+        (1, "batch-capability-a"),
+        (2, "batch-capability-b"),
+        (3, "batch-capability-single"),
+        (4, "batch-capability-a"),
+        (5, "batch-capability-b"),
+        (6, "no-cleanup"),
+    ] {
+        task_manager.insert_task(manager_task(id, kind, TASK_STATE_REVERTED));
+    }
+    assert_eq!(
+        Manager::new(task_manager.clone(), "server", None)
+            .cleanup_finished_tasks()
+            .unwrap(),
+        6
+    );
+    assert_eq!(*a.batches.lock().unwrap(), vec![vec![1, 4]]);
+    assert_eq!(*b.batches.lock().unwrap(), vec![vec![2, 5]]);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    let transferred = task_manager.transferred_tasks.lock().unwrap();
+    assert_eq!(
+        transferred
+            .iter()
+            .find(|task| task.base.id == 1)
+            .unwrap()
+            .meta,
+        b"batch-redacted"
+    );
+    assert_eq!(
+        transferred
+            .iter()
+            .find(|task| task.base.id == 3)
+            .unwrap()
+            .meta,
+        b"redacted"
+    );
+}
+
+#[test]
+fn cleanup_batch_failure_keeps_entire_group_and_stops_other_batches() {
+    let task_manager = Arc::new(TestTaskManager::default());
+    let a = Arc::new(BatchCleanupRecorder {
+        fail: true,
+        ..Default::default()
+    });
+    let b = Arc::new(BatchCleanupRecorder {
+        fail: true,
+        ..Default::default()
+    });
+    for (kind, recorder) in [
+        ("batch-failure-a", a.clone()),
+        ("batch-failure-b", b.clone()),
+    ] {
+        RegisterSchedulerCleanUpFactory(kind, Arc::new(move || recorder.clone()));
+    }
+    RegisterSchedulerCleanUpFactory(
+        "batch-failure-single",
+        Arc::new(|| Arc::new(FailingSingleCleanup)),
+    );
+    for (id, kind) in [
+        (1, "batch-failure-a"),
+        (2, "batch-failure-b"),
+        (3, "batch-failure-single"),
+        (4, "batch-failure-a"),
+        (5, "batch-failure-b"),
+        (6, "no-cleanup"),
+    ] {
+        task_manager.insert_task(manager_task(id, kind, TASK_STATE_REVERTED));
+    }
+    assert_eq!(
+        Manager::new(task_manager.clone(), "server", None)
+            .cleanup_finished_tasks()
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        a.batches.lock().unwrap().len() + b.batches.lock().unwrap().len(),
+        1
+    );
+    assert_eq!(task_manager.transferred_tasks.lock().unwrap()[0].base.id, 6);
+    assert_eq!(task_manager.tasks.lock().unwrap().len(), 4);
+    assert_eq!(
+        task_manager
+            .transferred_tasks
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|task| task.base.id == 3)
+            .unwrap()
+            .meta,
+        b"redacted"
+    );
+}
+
+#[test]
+fn cleanup_history_transfer_failure_propagates_and_is_retryable() {
+    let task_manager = Arc::new(TestTaskManager::default());
+    task_manager.insert_task(manager_task(1, "no-cleanup", TASK_STATE_REVERTED));
+    *task_manager.transfer_error.lock().unwrap() = Some(SchedulerError::new("transfer failed"));
+    let manager = Manager::new(task_manager.clone(), "server", None);
+    assert_eq!(
+        manager.cleanup_finished_tasks().unwrap_err().to_string(),
+        "transfer failed"
+    );
+    assert!(task_manager.transferred_tasks.lock().unwrap().is_empty());
+    *task_manager.transfer_error.lock().unwrap() = None;
+    assert_eq!(manager.cleanup_finished_tasks().unwrap(), 1);
+}
