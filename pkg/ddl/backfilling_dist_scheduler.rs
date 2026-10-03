@@ -109,9 +109,14 @@ impl LitBackfillScheduler {
         }
     }
 
-    /// 回填任务的错误是否可重试；当前一律视为可重试。
-    pub const fn is_retryable_error(&self) -> bool {
-        true
+    /// Only the permanent merge-file limit is non-retryable, including wrapped errors.
+    pub fn is_retryable_error(&self, error: &(dyn std::error::Error + 'static)) -> bool {
+        !astersql_ingestor_errdef::IsTooManyDataFilesError(error)
+    }
+
+    /// DXF persists errors as text, retaining the normalized RFC prefix.
+    pub fn is_retryable_scheduler_message(message: &str) -> bool {
+        !message.contains("[GlobalSort:TooManyDataFiles]")
     }
 }
 
@@ -120,6 +125,8 @@ impl LitBackfillScheduler {
 pub enum PlanError {
     /// 可用执行节点数为 0。
     NoNodes,
+    /// The global-sort planner rejected the merge output file count.
+    MergeSort(astersql_ingestor_globalsort::Error),
     /// Timestamp allocation failed; the entire region scan must be retried.
     TimestampAllocation(String),
     /// Region scan failed; unlike discontinuity this is not retried.
@@ -134,6 +141,24 @@ pub enum PlanError {
     EmptyMetaGroup(usize),
     /// 请求的索引 ID 在可用索引列表中不存在。
     IndexNotFound(i64),
+}
+
+impl std::fmt::Display for PlanError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MergeSort(error) => write!(f, "generate merge-sort plan failed: {error}"),
+            _ => write!(f, "{self:?}"),
+        }
+    }
+}
+
+impl std::error::Error for PlanError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::MergeSort(error) => Some(error),
+            _ => None,
+        }
+    }
 }
 
 /// Region 的元信息：一段左闭右开的连续 key 范围 `[start_key, end_key)`。
@@ -315,14 +340,12 @@ pub fn generate_merge_sort_plan(
             .iter()
             .flat_map(|stat| stat.data_files.iter().cloned())
             .collect();
-        // 目标是让 节点数 x 并发度 个归并任务均分所有文件，每组至少 1 个文件。
-        let group_size = files
-            .len()
-            .div_ceil(node_count.saturating_mul(concurrency.max(1)))
-            .max(1);
-        for group in files.chunks(group_size) {
+        let groups =
+            astersql_ingestor_globalsort::DivideMergeSortDataFiles(&files, node_count, concurrency)
+                .map_err(PlanError::MergeSort)?;
+        for group in groups {
             plan.push(BackfillSubTaskMeta {
-                data_files: group.to_vec(),
+                data_files: group,
                 element_ids: element_ids.get(index).copied().into_iter().collect(),
                 ..BackfillSubTaskMeta::default()
             });

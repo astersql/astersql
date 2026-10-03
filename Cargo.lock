@@ -5313,6 +5313,7 @@ dependencies = [
  "astersql-dxf-framework-taskexecutor-execute",
  "astersql-dxf-operator",
  "astersql-ingestor-engineapi",
+ "astersql-ingestor-errdef",
  "astersql-ingestor-simplesst",
  "astersql-ingestor-testutils",
  "astersql-kv",

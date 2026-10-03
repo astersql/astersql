@@ -72,3 +72,34 @@ fn normalized_error_generation_and_identity_match_go() {
     assert_eq!(ErrKVDiskFull, same_class);
     assert!(!ErrKVDiskFull.Is(&ErrKVServerIsBusy));
 }
+
+#[test]
+fn too_many_data_files_keeps_identity_through_wrappers() {
+    use super::*;
+    #[derive(Debug)]
+    struct Wrapped(NormalizedError);
+    impl std::fmt::Display for Wrapped {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "generate merge-sort plan failed: {}", self.0)
+        }
+    }
+    impl std::error::Error for Wrapped {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&self.0)
+        }
+    }
+    let error = TooManyDataFiles(1000, 1, 250);
+    assert_eq!(error.RFCCode(), "GlobalSort:TooManyDataFiles");
+    assert_eq!(
+        error.GetMsg(),
+        "cannot merge 1000 data files with concurrency 1 into at most 250 target files"
+    );
+    assert!(error.Is(&ErrTooManyDataFiles));
+    assert!(IsTooManyDataFilesError(&Wrapped(error)));
+    assert!(!IsTooManyDataFilesError(&std::io::Error::other(
+        "temporary scheduler error"
+    )));
+    assert!(!IsTooManyDataFilesError(&std::io::Error::other(
+        "GlobalSort:TooManyDataFiles"
+    )));
+}

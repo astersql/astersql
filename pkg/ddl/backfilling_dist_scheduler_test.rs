@@ -456,3 +456,59 @@ fn test_region_plan_does_not_retry_scan_or_permanent_plan_errors() {
     .unwrap_err();
     assert_eq!(error, PlanError::NoNodes);
 }
+
+#[test]
+fn merge_plan_preserves_exact_target_limits() {
+    let scheduler = LitBackfillScheduler::new(Default::default());
+    let meta = SortedKvMeta::default();
+    let stats = vec![vec![MultipleFilesStat {
+        max_overlap: 251,
+        data_files: (0..4580).map(|i| i.to_string()).collect(),
+    }]];
+    let plan = generate_merge_sort_plan(&[meta], &stats, &[10], 8, 1).unwrap();
+    assert_eq!(plan.len(), 24);
+    assert!(plan.iter().all(|p| p.element_ids == vec![10]));
+    assert_eq!(
+        plan.iter()
+            .flat_map(|p| p.data_files.iter().cloned())
+            .collect::<Vec<_>>(),
+        stats[0][0].data_files
+    );
+    let stats = vec![vec![MultipleFilesStat {
+        max_overlap: 251,
+        data_files: vec![String::new(); 62501],
+    }]];
+    let error =
+        generate_merge_sort_plan(&[SortedKvMeta::default()], &stats, &[10], 10, 1).unwrap_err();
+    assert!(!scheduler.is_retryable_error(&error));
+    assert_eq!(
+        error.to_string(),
+        "generate merge-sort plan failed: [GlobalSort:TooManyDataFiles]cannot merge 62501 data files with concurrency 1 into at most 250 target files"
+    );
+}
+
+#[test]
+fn merge_limit_error_is_not_retryable() {
+    let scheduler = LitBackfillScheduler::new(Default::default());
+    #[derive(Debug)]
+    struct Wrapped(astersql_ingestor_errdef::NormalizedError);
+    impl std::fmt::Display for Wrapped {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "generate merge-sort plan failed: {}", self.0.Error())
+        }
+    }
+    impl std::error::Error for Wrapped {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&self.0)
+        }
+    }
+    let error = Wrapped(astersql_ingestor_errdef::TooManyDataFiles(1000, 1, 250));
+    assert!(!scheduler.is_retryable_error(&error));
+    assert!(scheduler.is_retryable_error(&std::io::Error::other("temporary scheduler error")));
+    assert!(!LitBackfillScheduler::is_retryable_scheduler_message(
+        &error.to_string()
+    ));
+    assert!(LitBackfillScheduler::is_retryable_scheduler_message(
+        "temporary scheduler error"
+    ));
+}

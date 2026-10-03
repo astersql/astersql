@@ -506,3 +506,70 @@ fn batched_cleanup_propagates_scan_and_delete_errors() {
         assert_eq!(store.read("42/data").unwrap(), vec![1]);
     }
 }
+
+#[test]
+fn divide_merge_sort_exact_targets_and_limits() {
+    let files: Vec<String> = (0..4580).map(|i| i.to_string()).collect();
+    let groups = DivideMergeSortDataFiles(&files, 8, 1).unwrap();
+    let mut expected = vec![250; 16];
+    expected.extend([73, 73, 73, 73, 72, 72, 72, 72]);
+    assert_eq!(groups.iter().map(Vec::len).collect::<Vec<_>>(), expected);
+    assert_eq!(groups.concat(), files);
+    for (count, nodes, concurrency, succeeds) in [
+        (62500, 10, 1, true),
+        (62501, 10, 1, false),
+        (62750, 1, 1, false),
+        (62751, 1, 1, false),
+        (248128, 62, 64, false),
+        (940000, 2, 17, true),
+        (940001, 2, 17, false),
+        (32000, 32000, 16, true),
+        (1000000, 1000000, 16, true),
+    ] {
+        let input = vec![String::new(); count];
+        let result = DivideMergeSortDataFiles(&input, nodes, concurrency);
+        assert_eq!(
+            result.is_ok(),
+            succeeds,
+            "count={count} nodes={nodes} concurrency={concurrency}"
+        );
+        if let Err(error) = &result {
+            assert!(astersql_ingestor_errdef::IsTooManyDataFilesError(error));
+            assert_eq!(
+                error.to_string(),
+                astersql_ingestor_errdef::TooManyDataFiles(
+                    count,
+                    concurrency,
+                    (250 * concurrency).min(4000)
+                )
+                .Error()
+            );
+        }
+        if let Ok(groups) = result {
+            assert_eq!(groups.iter().map(Vec::len).sum::<usize>(), count);
+            assert!(
+                groups
+                    .iter()
+                    .all(|g| g.len() <= (250 * concurrency).min(4000))
+            );
+            let target_count: usize = groups
+                .iter()
+                .map(|g| splitDataFiles(g, concurrency).len())
+                .sum();
+            assert!(target_count <= (250 * concurrency).min(4000));
+            if count == 62500 {
+                assert_eq!(target_count, 250);
+            }
+            if nodes >= 32000 {
+                // Unlike the node count, this capacity is bounded by the accepted plan.
+                assert!(groups.capacity() <= groups.len().next_power_of_two());
+            }
+            if count == 1000000 {
+                assert_eq!(groups.len(), 250);
+                assert_eq!(target_count, 4000);
+            }
+        }
+    }
+    assert!(DivideMergeSortDataFiles(&[], 0, 1).is_err());
+    assert!(DivideMergeSortDataFiles(&[], 1, 1).unwrap().is_empty());
+}

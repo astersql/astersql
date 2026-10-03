@@ -61,6 +61,7 @@ pub enum Error {
         key: Vec<u8>,
         value: Vec<u8>,
     },
+    TooManyDataFiles(astersql_ingestor_errdef::NormalizedError),
     InvalidArgument(String),
     InvalidData(String),
     NotFound(String),
@@ -76,6 +77,7 @@ pub enum Error {
 impl Display for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::TooManyDataFiles(error) => f.write_str(&error.Error()),
             Self::Cancelled => f.write_str("operation cancelled"),
             Self::Closed => f.write_str("resource is closed"),
             Self::DuplicateKey { key, .. } => write!(f, "duplicate key found: {}", hex(key)),
@@ -93,7 +95,14 @@ impl Display for Error {
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::TooManyDataFiles(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 /// 本 crate 的 `Result` 别名。
 pub type Result<T> = std::result::Result<T, Error>;
 

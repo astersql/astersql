@@ -227,3 +227,37 @@ impl HTTPStatusError {
         self.to_string()
     }
 }
+
+/// The merge plan cannot fit its output within the ingest file limit.
+pub static ErrTooManyDataFiles: NormalizedError = NormalizedError {
+    message: Cow::Borrowed(
+        "cannot merge %d data files with concurrency %d into at most %d target files",
+    ),
+    rfc_code: "GlobalSort:TooManyDataFiles",
+    rendered_message: None,
+};
+
+/// Generate the three-argument merge error while preserving its RFC identity.
+pub fn TooManyDataFiles(file_count: usize, concurrency: usize, limit: usize) -> NormalizedError {
+    let mut generated = ErrTooManyDataFiles.clone();
+    generated.rendered_message = Some(format!(
+        "cannot merge {file_count} data files with concurrency {concurrency} into at most {limit} target files"
+    ));
+    generated
+}
+
+/// Follow wrappers just as Go errors.Is follows the cause chain.
+pub fn IsTooManyDataFilesError(mut error: &(dyn std::error::Error + 'static)) -> bool {
+    loop {
+        if error
+            .downcast_ref::<NormalizedError>()
+            .is_some_and(|e| e.Is(&ErrTooManyDataFiles))
+        {
+            return true;
+        }
+        match error.source() {
+            Some(source) => error = source,
+            None => return false,
+        }
+    }
+}

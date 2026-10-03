@@ -12,6 +12,7 @@ go-package = "pkg/ingestor/globalsort"
 legacy-tasks = ["task-958", "task-959", "task-962", "task-966", "task-967"]
 
 [dependencies]
+astersql-ingestor-errdef = { path = "../errdef" }
 "astersql-resourcemanager-pool-workerpool" = { package = "astersql-resourcemanager-pool-workerpool", path = "../../resourcemanager/pool/workerpool" }
 "astersql-ingestor-engineapi" = { package = "astersql-ingestor-engineapi", path = "../engineapi" }
 "astersql-lightning-membuf" = { package = "astersql-lightning-membuf", path = "../../lightning/membuf" }

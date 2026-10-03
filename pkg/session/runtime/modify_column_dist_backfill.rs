@@ -1331,9 +1331,9 @@ impl scheduler::Extension for Planner {
         Ok(Vec::new())
     }
     fn is_retryable_error(&self, failure: &scheduler::SchedulerError) -> bool {
-        failure.0.contains("write conflict")
-            || failure.0.contains("region")
-            || failure.0.contains("not leader")
+        astersql_ddl::backfilling_dist_scheduler::LitBackfillScheduler::is_retryable_scheduler_message(
+            &failure.0,
+        )
     }
     fn next_step(&self, task: &scheduler::TaskBase) -> i64 {
         match task.step {

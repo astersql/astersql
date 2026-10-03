@@ -27,8 +27,6 @@ use crate::{
 const META_NAME: &str = "meta.json";
 /// 合并排序单批文件数步长上限。
 const MAX_MERGE_SORT_FILE_COUNT_STEP: usize = 4000;
-/// 单个合并子任务目标文件数上限（与并发度取较大者参与负载调整）。
-const MERGE_SORT_MAX_SUBTASK_TARGET_FILES: usize = 16;
 
 /// Delete task files from both ordinary and randomly partitioned directories.
 pub fn CleanUpFiles(store: &dyn Storage, non_partitioned_dir: &str) -> Result<()> {
@@ -269,7 +267,9 @@ fn adjusted_overlap_threshold(merge_concurrency: usize) -> usize {
         .min(MAX_MERGE_SORT_FILE_COUNT_STEP)
 }
 
-/// 按节点数与合并并发，把 data 文件列表切成多轮/多节点子任务批次。
+/// Balance complete node rounds and cap the exact merge output file count.
+/// The execution concurrency must match the planning concurrency; resource
+/// changes between these steps still require pinning or replanning upstream.
 pub fn DivideMergeSortDataFiles(
     data_files: &[String],
     node_count: usize,
@@ -282,44 +282,51 @@ pub fn DivideMergeSortDataFiles(
     if data_files.is_empty() {
         return Ok(Vec::new());
     }
-    // 先按 step 均分完整轮次，再把余数摊到调整后的节点数上。
-    let step = adjusted_file_count_step(merge_concurrency);
+    let max_files = adjusted_file_count_step(merge_concurrency);
     let file_count = data_files.len();
-    let batches = file_count / step;
-    let rounds = batches / node_count;
-    let mut result = Vec::with_capacity(node_count);
+    let full_group_count = file_count / max_files / node_count * node_count;
+    // Bound capacity by actual input rather than the potentially enormous node count.
+    let mut groups = Vec::new();
     let mut cursor = 0;
-    for _ in 0..rounds.saturating_mul(node_count) {
-        result.push(data_files[cursor..cursor + step].to_vec());
-        cursor += step;
+    for _ in 0..full_group_count {
+        groups.push(data_files[cursor..cursor + max_files].to_vec());
+        cursor += max_files;
     }
-    let remainder = file_count - node_count * rounds * step;
-    if remainder == 0 {
-        return Ok(result);
-    }
-    let mut adjusted_node_count = node_count;
-    let max_target_files = MERGE_SORT_MAX_SUBTASK_TARGET_FILES.max(merge_concurrency);
-    // 若总目标文件数超过重叠阈值，则减少参与余数分配的节点数。
-    while (rounds * node_count + adjusted_node_count).saturating_mul(max_target_files)
-        > adjusted_overlap_threshold(merge_concurrency)
-    {
-        adjusted_node_count -= 1;
-        if adjusted_node_count == 0 {
-            return Err(Error::InvalidData(format!(
-                "unexpected zero node count, dataFiles={file_count}, nodeCnt={node_count}"
-            )));
+    let target_count =
+        full_group_count * crate::merge::getTargetFileCount(max_files, merge_concurrency);
+    let target_limit = adjusted_overlap_threshold(merge_concurrency);
+    let remaining = file_count - cursor;
+    let too_many = || {
+        Error::TooManyDataFiles(astersql_ingestor_errdef::TooManyDataFiles(
+            file_count,
+            merge_concurrency,
+            target_limit,
+        ))
+    };
+    if remaining == 0 {
+        if target_count > target_limit {
+            return Err(too_many());
         }
+        return Ok(groups);
     }
-    adjusted_node_count = (remainder / 32).min(adjusted_node_count).max(1);
-    let base = remainder / adjusted_node_count;
-    let mut extra = remainder % adjusted_node_count;
-    for _ in 0..adjusted_node_count {
-        let size = base + usize::from(extra > 0);
-        extra = extra.saturating_sub(1);
-        result.push(data_files[cursor..cursor + size].to_vec());
+    let max_groups = (remaining / 32).min(node_count).max(1);
+    let min_groups = remaining.div_ceil(max_files);
+    let group_count = (min_groups..=max_groups)
+        .rev()
+        .find(|&candidate| {
+            target_count
+                + crate::merge::getGroupedTargetFileCount(remaining, candidate, merge_concurrency)
+                <= target_limit
+        })
+        .ok_or_else(too_many)?;
+    let base = remaining / group_count;
+    let extra = remaining % group_count;
+    for index in 0..group_count {
+        let size = base + usize::from(index < extra);
+        groups.push(data_files[cursor..cursor + size].to_vec());
         cursor += size;
     }
-    Ok(result)
+    Ok(groups)
 }
 
 /// 由写出的 KV 与文件路径构造 `WriterSummary`（含粗粒度 RangeProperty）。

@@ -361,20 +361,35 @@ fn groups_len(paths: &[String], concurrency: usize) -> usize {
     splitDataFiles(paths, concurrency).len()
 }
 
-/// 将文件路径列表切成约 `concurrency` 份，并受 `MaxMergingFilesPerThread` 约束。
-pub fn splitDataFiles(paths: &[String], concurrency: usize) -> Vec<Vec<String>> {
-    if paths.is_empty() {
-        return Vec::new();
+/// Exact number of outputs produced by splitDataFiles.
+pub fn getTargetFileCount(file_count: usize, concurrency: usize) -> usize {
+    if file_count == 0 {
+        return 0;
     }
     let concurrency = concurrency.max(1);
     let maximum = MaxMergingFilesPerThread.load(Ordering::Relaxed).max(1);
-    // 先按每线程文件上限估算份额，再与并发度取较大者。
-    let mut shares = paths.len().div_ceil(maximum).max(concurrency);
-    // 文件很少时避免过度切分：份额约为路径数的一半。
-    if paths.len() < 2 * concurrency {
-        shares = (paths.len() / 2).max(1);
+    let shares = file_count.div_ceil(maximum).max(concurrency);
+    if file_count < 2 * concurrency {
+        (file_count / 2).max(1)
+    } else {
+        shares
     }
-    shares = shares.min(paths.len());
+}
+
+/// Outputs for groups whose input sizes differ by at most one file.
+pub fn getGroupedTargetFileCount(total: usize, groups: usize, concurrency: usize) -> usize {
+    let quotient = total / groups;
+    let remainder = total % groups;
+    remainder * getTargetFileCount(quotient + 1, concurrency)
+        + (groups - remainder) * getTargetFileCount(quotient, concurrency)
+}
+
+/// 将文件路径列表切成约 `concurrency` 份，并受 `MaxMergingFilesPerThread` 约束。
+pub fn splitDataFiles(paths: &[String], concurrency: usize) -> Vec<Vec<String>> {
+    let shares = getTargetFileCount(paths.len(), concurrency);
+    if shares == 0 {
+        return Vec::new();
+    }
     let batch_count = paths.len() / shares;
     let mut remainder = paths.len() % shares;
     let mut start = 0;

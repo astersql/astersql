@@ -56,6 +56,7 @@ fn test_split_data_files() {
 
     // (路径列表, 并发度, 期望分片) 用例，覆盖少文件、均分与余数场景。
     let cases: Vec<(Vec<String>, usize, Vec<Vec<String>>)> = vec![
+        (Vec::new(), 1, Vec::new()),
         (slice(0..1), 1, vec![slice(0..1)]),
         (slice(0..2), 1, vec![slice(0..2)]),
         (slice(0..2), 4, vec![slice(0..2)]),
@@ -96,6 +97,10 @@ fn test_split_data_files() {
     ];
     for (index, (paths, concurrency, expected)) in cases.into_iter().enumerate() {
         let result = splitDataFiles(&paths, concurrency);
+        assert_eq!(
+            result.len(),
+            crate::merge::getTargetFileCount(paths.len(), concurrency)
+        );
         assert_eq!(expected, result, "case-{index}");
     }
 
