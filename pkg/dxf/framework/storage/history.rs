@@ -49,14 +49,14 @@ impl TaskManager {
             ctx.clone(),
             exec.clone(),
             "insert into mysql.tidb_background_subtask_history select * from mysql.tidb_background_subtask where task_key = %?",
-            vec![taskID.into()],
+            vec![TaskIDToKey(taskID).into()],
         )?;
         // 删除 taskID 对应的活跃 subtask；Go 中若删除失败直接返回该错误。
         sqlexec::ExecSQL(
             ctx,
             exec,
             "delete from mysql.tidb_background_subtask where task_key = %?",
-            vec![taskID.into()],
+            vec![TaskIDToKey(taskID).into()],
         )?;
         Ok(())
     }

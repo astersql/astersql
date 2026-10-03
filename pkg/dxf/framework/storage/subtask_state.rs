@@ -80,7 +80,7 @@ impl TaskManager {
                 proto::SubtaskStateFailed.into(),
                 serializeErr(err.unwrap()).into(),
                 execID.into(),
-                taskID.into(),
+                TaskIDToKey(taskID).into(),
                 proto::SubtaskStatePending.into(),
                 proto::SubtaskStateRunning.into(),
             ],
@@ -98,7 +98,7 @@ impl TaskManager {
             vec![
                 proto::SubtaskStateCanceled.into(),
                 execID.into(),
-                taskID.into(),
+                TaskIDToKey(taskID).into(),
                 proto::SubtaskStatePending.into(),
                 proto::SubtaskStateRunning.into(),
             ],
@@ -113,7 +113,7 @@ impl TaskManager {
         self.ExecuteSQLWithNewSession(
             ctx,
             "update mysql.tidb_background_subtask set state = \"paused\" where task_key = %? and state in (\"running\", \"pending\") and exec_id = %?",
-            vec![taskID.into(), execID.into()],
+            vec![TaskIDToKey(taskID).into(), execID.into()],
         )?;
         Ok(())
     }
@@ -125,7 +125,7 @@ impl TaskManager {
         self.ExecuteSQLWithNewSession(
             ctx,
             "update mysql.tidb_background_subtask set state = \"pending\", error = null where task_key = %? and state = \"paused\"",
-            vec![taskID.into()],
+            vec![TaskIDToKey(taskID).into()],
         )?;
         Ok(())
     }

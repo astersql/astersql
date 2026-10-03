@@ -363,7 +363,7 @@ impl TaskManager {
         let rs = self.ExecuteSQLWithNewSession(
             ctx,
             "select state, count(*) from mysql.tidb_background_subtask where task_key = %? and step = %? group by state",
-            vec![taskID.into(), step.into()],
+            vec![TaskIDToKey(taskID).into(), step.into()],
         )?;
         let mut res = HashMap::with_capacity(rs.len());
         for row in rs {
@@ -384,7 +384,7 @@ impl TaskManager {
         let rs = self.ExecuteSQLWithNewSession(
             ctx,
             "select state, error from mysql.tidb_background_subtask where task_key = %? and step = %?",
-            vec![taskID.into(), step.into()],
+            vec![TaskIDToKey(taskID).into(), step.into()],
         )?;
         let mut cntByStates = HashMap::with_capacity(rs.len());
         let mut subTaskErrors = Vec::new();
@@ -409,7 +409,7 @@ impl TaskManager {
         let rs = self.ExecuteSQLWithNewSession(
             ctx,
             "select error from mysql.tidb_background_subtask where task_key = %? AND state in (%?, %?)",
-            vec![taskID.into(), proto::SubtaskStateFailed.into(), proto::SubtaskStateCanceled.into()],
+            vec![TaskIDToKey(taskID).into(), proto::SubtaskStateFailed.into(), proto::SubtaskStateCanceled.into()],
         )?;
         let mut subTaskErrors = Vec::with_capacity(rs.len());
         for row in rs {
@@ -607,7 +607,7 @@ impl TaskManager {
                 ctx.clone(),
                 se.GetSQLExecutor(),
                 "select count(1) from mysql.tidb_background_subtask where task_key = %? and step = %?",
-                vec![task.ID.into(), nextStep.clone().into()],
+                vec![TaskIDToKey(task.ID).into(), nextStep.clone().into()],
             )?;
             let existingTaskCnt = rs[0].GetInt64(0) as usize;
             if existingTaskCnt > subtasks.len() {
@@ -663,14 +663,14 @@ impl TaskManager {
                 ctx.clone(),
                 se.GetSQLExecutor(),
                 format!("select {} from mysql.tidb_background_subtask where task_key = %? and step = %?", SubtaskColumns),
-                vec![taskID.into(), step.clone().into()],
+                vec![TaskIDToKey(taskID).into(), step.clone().into()],
             )?;
             // 避免 show import jobs 时任务刚被 TransferTasks2History 搬走，Go 会再读 history 表并合并。
             let mut rsFromHistory = sqlexec::ExecSQL(
                 ctx.clone(),
                 se.GetSQLExecutor(),
                 format!("select {} from mysql.tidb_background_subtask_history where task_key = %? and step = %?", SubtaskColumns),
-                vec![taskID.into(), step.clone().into()],
+                vec![TaskIDToKey(taskID).into(), step.clone().into()],
             )?;
             rs.append(&mut rsFromHistory);
             Ok(())
@@ -1179,7 +1179,7 @@ impl TaskManager {
         states: Vec<proto::SubtaskState>,
     ) -> Result<Vec<proto::Subtask>, Error> {
         injectfailpoint::DXFRandomErrorWithOnePercent()?;
-        let mut args = vec![execID.into(), taskID.into(), step.into()];
+        let mut args = vec![execID.into(), TaskIDToKey(taskID).into(), step.into()];
         args.extend(states.iter().cloned().map(Value::from));
         let rs = self.ExecuteSQLWithNewSession(
             ctx,
@@ -1204,7 +1204,7 @@ impl TaskManager {
         states: Vec<proto::SubtaskState>,
     ) -> Result<Option<proto::Subtask>, Error> {
         injectfailpoint::DXFRandomErrorWithOnePercent()?;
-        let mut args = vec![tidbID.into(), taskID.into(), step.into()];
+        let mut args = vec![tidbID.into(), TaskIDToKey(taskID).into(), step.into()];
         args.extend(states.iter().cloned().map(Value::from));
         let rs = self.ExecuteSQLWithNewSession(
             ctx,
@@ -1232,7 +1232,7 @@ impl TaskManager {
                 "select {} from mysql.tidb_background_subtask where task_key = %? and state in (%?, %?)",
                 basicSubtaskColumns
             ),
-            vec![taskID.into(), proto::SubtaskStatePending.into(), proto::SubtaskStateRunning.into()],
+            vec![TaskIDToKey(taskID).into(), proto::SubtaskStatePending.into(), proto::SubtaskStateRunning.into()],
         )?;
         Ok(rs.into_iter().map(row2BasicSubTask).collect())
     }
@@ -1253,7 +1253,7 @@ impl TaskManager {
                 "select {} from mysql.tidb_background_subtask where task_key = %? and state = %? and step = %?",
                 SubtaskColumns
             ),
-            vec![taskID.into(), state.into(), step.into()],
+            vec![TaskIDToKey(taskID).into(), state.into(), step.into()],
         )?;
         if rs.is_empty() {
             return Ok(None);
@@ -1274,7 +1274,7 @@ impl TaskManager {
         let rs = self.ExecuteSQLWithNewSession(
             ctx,
             "select summary from mysql.tidb_background_subtask where task_key = %? and step = %?",
-            vec![taskID.into(), step.into()],
+            vec![TaskIDToKey(taskID).into(), step.into()],
         )?;
         if rs.is_empty() {
             return Ok(None);
@@ -1301,7 +1301,7 @@ impl TaskManager {
         let rs = self.ExecuteSQLWithNewSession(
             ctx,
             "select cast(sum(json_extract(summary, '$.row_count')) as signed) as row_count from (select summary from mysql.tidb_background_subtask where task_key = %? and step = %? union all select summary from mysql.tidb_background_subtask_history where task_key = %? and step = %?) as combined",
-            vec![taskID.into(), step.into(), taskID.into(), step.into()],
+            vec![TaskIDToKey(taskID).into(), step.into(), TaskIDToKey(taskID).into(), step.into()],
         )?;
         if rs.is_empty() {
             return Ok(0);

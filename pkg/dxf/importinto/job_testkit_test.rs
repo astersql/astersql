@@ -843,3 +843,190 @@ fn import_progress_time_format_matches_go_boundaries() {
     assert_eq!(FormatSecondAsTime(3_599), "00:59:59");
     assert_eq!(FormatSecondAsTime(28_800), "08:00:00");
 }
+
+#[test]
+fn large_task_ids_isolate_active_subtasks_and_last_update_time() {
+    use crate::job::{RuntimeInfoProvider, StorageRuntimeInfoProvider};
+    use astersql_dxf_framework_storage as storage;
+    let (_store, domain) = astersql_testkit::mockstore::CreateMockStoreAndDomain();
+    let session = astersql_session::runtime::ConcreteSession::new(domain);
+    let manager = session.ImportTaskManager().unwrap();
+    const ADJACENT: i64 = 9_007_199_254_740_992;
+    const TARGET: i64 = ADJACENT + 1;
+    // Explicit IDs avoid depending on allocator implementation, while using the real tables.
+    for (id, job) in [(ADJACENT, 9528), (TARGET, 9527)] {
+        manager.ExecuteSQLWithNewSession((), "insert into mysql.tidb_global_task(id, task_key, type, state, step, concurrency, meta, extra_params) values (%?, %?, 'ImportInto', 'running', 1, 8, '{}', '{}')", vec![id.into(), crate::job::TaskKey(job).into()]).unwrap();
+        manager.ExecuteSQLWithNewSession((), "insert into mysql.tidb_background_subtask(task_key, step, exec_id, state, type, concurrency, state_update_time, meta, summary, checkpoint) values (%?, 1, 'large-id-exec', 'succeed', 1, 8, %?, '{}', '{}', '{}')", vec![id.to_string().into(), if id == TARGET {1000_i64} else {2000_i64}.into()]).unwrap();
+    }
+    let tasks = [TARGET, ADJACENT]
+        .into_iter()
+        .map(|id| manager.GetTaskByID((), id).unwrap())
+        .collect();
+    manager.TransferTasks2History((), tasks).unwrap();
+    for id in [ADJACENT, TARGET] {
+        manager.ExecuteSQLWithNewSession((), "insert into mysql.tidb_background_subtask(task_key, step, exec_id, state, type, concurrency, state_update_time, meta, summary, checkpoint) values (%?, 1, 'large-id-exec', 'pending', 1, 8, %?, '{}', '{}', '{}')", vec![id.to_string().into(), if id == TARGET {1500_i64} else {2500_i64}.into()]).unwrap();
+    }
+    let active = manager.GetActiveSubtasks((), TARGET).unwrap();
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].TaskID, TARGET);
+    let filtered = manager
+        .GetSubtasksByExecIDAndStepAndStates((), "large-id-exec".into(), TARGET, 1, vec!["pending"])
+        .unwrap();
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].TaskID, TARGET);
+    let provider = StorageRuntimeInfoProvider::WithManager(manager.clone());
+    let runtime = provider.GetTaskRuntime(&crate::job::TaskKey(9527)).unwrap();
+    assert_eq!(
+        runtime.Subtasks.len(),
+        1,
+        "runtime summary must exclude adjacent task"
+    );
+
+    // ConcreteSession cannot yet evaluate FROM_UNIXTIME around an aggregate.
+    // Keep the real query's tables, both bound keys, UNION/MAX and transaction;
+    // adapt only its timestamp projection at the time conversion boundary.
+    struct UnixTimestampProjection(storage::SQLExecutor);
+    impl storage::SQLBackend for UnixTimestampProjection {
+        fn execute(
+            &self,
+            sql: &str,
+            args: Vec<storage::Value>,
+        ) -> Result<storage::SQLResult, storage::Error> {
+            let timestamp = sql.contains("FROM_UNIXTIME(max(state_update_time))");
+            let query = sql.replace(
+                "FROM_UNIXTIME(max(state_update_time))",
+                "max(state_update_time)",
+            );
+            let mut rows = self.0.execute(query, args)?;
+            if timestamp {
+                rows = rows
+                    .into_iter()
+                    .map(|row| {
+                        storage::chunk::Row::new(vec![if row.IsNull(0) {
+                            storage::Value::Null
+                        } else {
+                            storage::Value::Time(storage::time::Unix(row.GetInt64(0), 0))
+                        }])
+                    })
+                    .collect();
+            }
+            Ok(storage::SQLResult {
+                rows,
+                affected_rows: 0,
+            })
+        }
+    }
+    manager
+        .WithNewSession(|session| {
+            let projection = std::sync::Arc::new(UnixTimestampProjection(session.GetSQLExecutor()));
+            let projected_manager = storage::NewTaskManager(storage::util::SessionPool::new(
+                storage::sessionctx::Context::with_backend(projection),
+            ));
+            let provider = StorageRuntimeInfoProvider::WithManager(projected_manager);
+            assert_eq!(
+                provider
+                    .GetJobLastUpdateTime(&crate::job::TaskKey(9527))
+                    .unwrap(),
+                Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1500))
+            );
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn large_task_ids_isolate_history_aggregation() {
+    use astersql_dxf_importinto_jobhistory::{GetFromHistory, taskkey};
+    let (_store, domain) = astersql_testkit::mockstore::CreateMockStoreAndDomain();
+    let session = astersql_session::runtime::ConcreteSession::new(domain);
+    let manager = session.ImportTaskManager().unwrap();
+    const ADJACENT: i64 = 9_007_199_254_740_992;
+    const TARGET: i64 = ADJACENT + 1;
+    let meta = r#"{"Plan":{"DistSQLScanConcurrency":16,"DesiredTableInfo":{"index_info":[{},{}],"cols":[{},{},{}]},"TotalFileSize":2147483648},"Summary":{"row-count":1024}}"#;
+    for (id, job) in [(ADJACENT, 9528), (TARGET, 9527)] {
+        manager.ExecuteSQLWithNewSession((), "insert into mysql.tidb_global_task(id, task_key, type, state, step, concurrency, max_node_count, meta, extra_params) values (%?, %?, 'ImportInto', 'pending', 0, 8, 4, %?, '{}')", vec![id.into(), taskkey::ForJobInKeyspace("ks1".into(), job).into(), meta.as_bytes().to_vec().into()]).unwrap();
+    }
+    use astersql_dxf_framework_proto as proto;
+    for (id, step, group, bytes, start, end) in [
+        (
+            TARGET,
+            proto::ImportStepEncodeAndSort,
+            "data",
+            1_073_741_824_i64,
+            100_i64,
+            700_i64,
+        ),
+        (
+            TARGET,
+            proto::ImportStepWriteAndIngest,
+            "data",
+            1_073_741_824,
+            700,
+            2500,
+        ),
+        (
+            TARGET,
+            proto::ImportStepWriteAndIngest,
+            "index-1",
+            536_870_912,
+            900,
+            2100,
+        ),
+        (TARGET, proto::ImportStepPostProcess, "data", 0, 0, 0),
+        (
+            ADJACENT,
+            proto::ImportStepWriteAndIngest,
+            "data",
+            4_294_967_296,
+            50,
+            4000,
+        ),
+    ] {
+        manager.ExecuteSQLWithNewSession((), "insert into mysql.tidb_background_subtask(task_key, step, exec_id, state, type, concurrency, start_time, state_update_time, meta, summary, checkpoint) values (%?, %?, 'tidb-1', 'succeed', 1, 8, %?, %?, %?, %?, '{}')", vec![id.to_string().into(), step.into(), start.into(), end.into(), format!("{{\"kv-group\":\"{group}\"}}").into(), format!("{{\"bytes\":{bytes}}}").into()]).unwrap();
+    }
+    let tasks = [TARGET, ADJACENT]
+        .into_iter()
+        .map(|id| manager.GetTaskByID((), id).unwrap())
+        .collect();
+    manager.TransferTasks2History((), tasks).unwrap();
+    // JSON_LENGTH/JSON_UNQUOTE dispatch in ConcreteSession is a pre-existing gap.
+    // Capture the production history query and exercise its changed task_key binding
+    // against the real persisted rows. The jobhistory unit suite verifies the unchanged
+    // aggregation/formatting separately; this boundary test never fabricates stored rows.
+    use astersql_dxf_framework_storage::{TaskManager, Value, chunk::Row};
+    let query_manager = TaskManager::new();
+    query_manager.push_result(vec![Row::new(vec![
+        TARGET.into(),
+        "pending".into(),
+        8_i64.into(),
+        4_i64.into(),
+        16_i64.into(),
+        2_i64.into(),
+        3_i64.into(),
+        2_147_483_648_i64.into(),
+        1024_i64.into(),
+    ])]);
+    GetFromHistory((), &query_manager, "ks1", 9527).unwrap();
+    let calls = query_manager.calls();
+    let history_call = &calls[1];
+    assert!(history_call.sql.contains("where task_key = %?"));
+    let rows = manager.ExecuteSQLWithNewSession((), "select task_key, step, meta, summary, start_time, state_update_time from mysql.tidb_background_subtask_history where task_key = %?", history_call.args.clone()).unwrap();
+    assert_eq!(
+        rows.len(),
+        4,
+        "the neighboring task must not enter history aggregation"
+    );
+    for row in &rows {
+        assert_eq!(row.GetString(0), TARGET.to_string());
+        assert!(row.GetInt64(5) <= 2500);
+    }
+    let bytes: i64 = rows
+        .iter()
+        .map(|row| {
+            let summary: serde_json::Value = serde_json::from_slice(&row.GetBytes(3)).unwrap();
+            summary["bytes"].as_i64().unwrap()
+        })
+        .sum();
+    assert_eq!(bytes, 2_684_354_560);
+    assert_eq!(history_call.args, vec![Value::String(TARGET.to_string())]);
+}

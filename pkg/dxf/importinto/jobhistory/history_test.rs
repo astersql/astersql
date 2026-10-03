@@ -127,7 +127,7 @@ use crate::{GetFromHistory, Row, Value, proto, storage};
 fn history_aggregates_task_and_subtask_rows_via_canonical_store() {
     let manager = storage::TaskManager::new();
     manager.push_result(vec![Row::new(vec![
-        Value::Int(42),
+        Value::Int(9_007_199_254_740_993),
         Value::String(proto::TaskStatePending.to_string()),
         Value::Int(8),
         Value::Int(4),
@@ -171,7 +171,7 @@ fn history_aggregates_task_and_subtask_rows_via_canonical_store() {
     let info = GetFromHistory((), &manager, "ks1", 9527).unwrap();
     assert_eq!(info.JobID, 9527);
     assert_eq!(info.Keyspace, "ks1");
-    assert_eq!(info.TaskID, 42);
+    assert_eq!(info.TaskID, 9_007_199_254_740_993);
     assert_eq!(info.State, proto::TaskStatePending.to_string());
     assert_eq!(info.Concurrency, 8);
     assert_eq!(info.MaxNodeCount, 4);
@@ -192,6 +192,11 @@ fn history_aggregates_task_and_subtask_rows_via_canonical_store() {
     assert!(info.Duration.CollectConflicts.is_empty());
     assert!(info.Duration.ResolveConflicts.is_empty());
     assert!(info.Duration.PostProcess.is_empty());
+
+    assert_eq!(
+        manager.calls()[1].args,
+        vec![Value::String("9007199254740993".into())]
+    );
 
     let missing = storage::TaskManager::new();
     missing.push_result(Vec::new());

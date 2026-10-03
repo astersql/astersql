@@ -124,7 +124,7 @@ fn migration_get_from_history_matches_go_aggregation_and_sql_order() {
             .sql
             .contains("from mysql.tidb_background_subtask_history")
     );
-    assert_eq!(vec![Value::Int(42)], calls[1].args);
+    assert_eq!(vec![Value::String("42".into())], calls[1].args);
 }
 
 /// 同一步骤多条子任务应合并时间边界；覆盖 merge/collect/resolve/post-process 各步骤映射。

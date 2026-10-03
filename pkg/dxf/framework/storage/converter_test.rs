@@ -64,3 +64,17 @@ fn task_error_null_normalized_and_fallback() {
         assert_eq!(Row2Task(task_row(cell)).Error.as_deref(), expected);
     }
 }
+
+#[test]
+fn task_id_to_key_preserves_the_full_signed_decimal_range() {
+    for (id, key) in [
+        (0, "0"),
+        (-1, "-1"),
+        (i64::MIN, "-9223372036854775808"),
+        (i64::MAX, "9223372036854775807"),
+        (9_007_199_254_740_992, "9007199254740992"),
+        (9_007_199_254_740_993, "9007199254740993"),
+    ] {
+        assert_eq!(TaskIDToKey(id), key);
+    }
+}

@@ -283,6 +283,12 @@ pub fn Row2Task(r: chunk::Row) -> proto::Task {
     task
 }
 
+/// Canonical decimal key for the VARCHAR task_key in background-subtask tables.
+/// Bind it as a string so adjacent task IDs above 2^53 remain distinct in SQL.
+pub fn TaskIDToKey(taskID: i64) -> String {
+    taskID.to_string()
+}
+
 // row2BasicSubTask converts a row to a subtask with basic info
 // row2BasicSubTask 对应 Go 的内部转换函数，把 subtask 表基础列转换成 proto.SubtaskBase。
 /// 将 subtask 表基础列转为 proto::SubtaskBase（含 bigint 秒级 start_time）。

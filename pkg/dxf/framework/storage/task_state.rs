@@ -155,7 +155,7 @@ impl TaskManager {
                 ctx.clone(),
                 se.GetSQLExecutor(),
                 "update mysql.tidb_background_subtask set state = %?, state_update_time = unix_timestamp(), end_time = null where task_key = %? and step = %? and state = %?",
-                vec![proto::SubtaskStatePaused.into(), taskID.into(), step.into(), proto::SubtaskStateFailed.into()],
+                vec![proto::SubtaskStatePaused.into(), TaskIDToKey(taskID).into(), step.into(), proto::SubtaskStateFailed.into()],
             )?;
             Ok(())
         })
@@ -311,7 +311,7 @@ impl TaskManager {
                 "update mysql.tidb_background_subtask set concurrency = %?, state_update_time = unix_timestamp() where task_key = %? and state in (%?, %?, %?)",
                 vec![
                     task.RequiredSlots.into(),
-                    task.ID.into(),
+                    TaskIDToKey(task.ID).into(),
                     proto::SubtaskStatePending.into(),
                     proto::SubtaskStateRunning.into(),
                     proto::SubtaskStatePaused.into(),

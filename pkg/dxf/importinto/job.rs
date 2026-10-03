@@ -523,7 +523,7 @@ impl RuntimeInfoProvider for StorageRuntimeInfoProvider {
             let rows = self.manager.ExecuteSQLWithNewSession(
                 (),
                 "select summary from mysql.tidb_background_subtask where task_key = %? and step = %?",
-                vec![task.ID.into(), task.Step.into()],
+                vec![storage::TaskIDToKey(task.ID).into(), task.Step.into()],
             ).map_err(|error| errors::New(error.to_string()))?;
             let now = SystemTime::now();
             for row in rows {
@@ -579,7 +579,7 @@ impl RuntimeInfoProvider for StorageRuntimeInfoProvider {
             let rows = storage::sqlexec::ExecSQL(
                 (), session.GetSQLExecutor(),
                 "select FROM_UNIXTIME(max(state_update_time)) from\n                    (select state_update_time from mysql.tidb_background_subtask where task_key = %?\n                        union\n                        select state_update_time from mysql.tidb_background_subtask_history where task_key = %?\n                    ) t",
-                vec![task.ID.into(), task.ID.into()],
+                vec![storage::TaskIDToKey(task.ID).into(), storage::TaskIDToKey(task.ID).into()],
             )?;
             let row = rows.first().ok_or_else(|| storage::Error::new("last update query returned no row"))?;
             if !row.IsNull(0) {

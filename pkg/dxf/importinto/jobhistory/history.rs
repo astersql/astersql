@@ -199,7 +199,7 @@ pub fn GetFromHistory(
             from mysql.tidb_background_subtask_history
             where task_key = %?
             group by step, kv_group"#,
-        vec![info.TaskID.into()],
+        vec![storage_crate::TaskIDToKey(info.TaskID).into()],
     )?;
 
     let mut dataKVSizeBytes: i64 = 0;

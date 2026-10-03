@@ -3183,6 +3183,7 @@ dependencies = [
  "astersql-dxf-framework-taskexecutor-execute",
  "astersql-dxf-framework-testutil",
  "astersql-dxf-importinto-conflictedkv",
+ "astersql-dxf-importinto-jobhistory",
  "astersql-dxf-importinto-mock",
  "astersql-dxf-importinto-taskkey",
  "astersql-dxf-operator",

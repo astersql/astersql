@@ -473,3 +473,74 @@ fn history_error_metadata_preserves_go_error_code_variants() {
         assert_eq!(page.Items[0].ErrorCategory, category, "{key}");
     }
 }
+
+#[test]
+fn subtask_sql_binds_large_task_ids_as_decimal_strings() {
+    const ID: i64 = 9_007_199_254_740_993;
+    let manager = TaskManager::new();
+    manager.set_affected_rows(1);
+    manager.GetActiveSubtasks((), ID).unwrap();
+    manager
+        .GetSubtasksByExecIDAndStepAndStates((), "exec".into(), ID, 1, vec!["pending"])
+        .unwrap();
+    manager
+        .GetFirstSubtaskInStates((), "exec".into(), ID, 1, vec!["pending"])
+        .unwrap();
+    manager
+        .GetAllSubtasksByStepAndState((), ID, 1, "pending")
+        .unwrap();
+    manager.GetAllSubtaskSummaryByStep((), ID, 1).unwrap();
+    manager.GetSubtaskRowCount((), ID, 1).unwrap();
+    manager.GetSubtaskCntGroupByStates((), ID, 1).unwrap();
+    manager
+        .GetSubtaskStateCntAndErrorsByStep((), ID, 1)
+        .unwrap();
+    manager.GetSubtaskErrors((), ID).unwrap();
+    manager.GetSubtasksWithHistory((), ID, 1).unwrap();
+    manager
+        .FailSubtask((), "exec".into(), ID, Some(Error::new("failed")))
+        .unwrap();
+    manager.CancelSubtask((), "exec".into(), ID).unwrap();
+    manager.PauseSubtasks((), "exec".into(), ID).unwrap();
+    manager.ResumeSubtasks((), ID).unwrap();
+    manager
+        .PauseTaskOnError((), ID, "running", 1, Error::new("failed"))
+        .unwrap();
+    manager.ModifiedTask((), task(ID, "modifying", 1)).unwrap();
+    manager
+        .WithNewSession(|session| manager.TransferSubtasks2HistoryWithSession((), session, ID))
+        .unwrap();
+    manager.push_result(vec![chunk::Row::new(vec![Cell::Int(0)])]);
+    manager
+        .SwitchTaskStepInBatch((), task(ID, "running", 1), "running", 2, vec![])
+        .unwrap();
+    let calls = manager.calls();
+    let subtask_calls = calls
+        .iter()
+        .filter(|call| {
+            call.sql.contains("tidb_background_subtask") && call.sql.contains("task_key = %?")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(subtask_calls.len(), 20);
+    for call in subtask_calls {
+        assert!(
+            call.args.contains(&Value::String(ID.to_string())),
+            "{}: {:?}",
+            call.sql,
+            call.args
+        );
+        assert!(
+            !call.args.contains(&Value::Int(ID)),
+            "{}: {:?}",
+            call.sql,
+            call.args
+        );
+    }
+    // Global task IDs are BIGINT and retain integer binding.
+    for call in calls
+        .iter()
+        .filter(|call| call.sql.contains("tidb_global_task") && call.sql.contains("where id = %?"))
+    {
+        assert!(call.args.contains(&Value::Int(ID)));
+    }
+}
