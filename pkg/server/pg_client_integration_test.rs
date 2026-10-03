@@ -187,6 +187,7 @@ fn run_jdbc(port: u16, database: &str, view_source: &str) -> Result<(), String> 
     if libraries.is_empty() {
         return Err("PG_JDBC_LIBRARIES must include a real installed JDBC driver".into());
     }
+    let mut failures = Vec::new();
     for library in libraries {
         if !library.is_file() {
             return Err(format!(
@@ -205,22 +206,28 @@ fn run_jdbc(port: u16, database: &str, view_source: &str) -> Result<(), String> 
                 DATAGRIP_RELATIONS_SQL,
             ])
             .args([database, view_source])
+            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/pg_datagrip"))
             .output()
             .map_err(|e| format!("start installed Java runtime: {e}"))?;
         println!("{}", String::from_utf8_lossy(&output.stdout));
         if !output.status.success() {
-            return Err(format!(
+            failures.push(format!(
                 "JDBC workflow failed: {}\n{}",
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             ));
         }
     }
-    Ok(())
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("\n"))
+    }
 }
 
 const JDBC_WORKFLOW: &str = r#"
 import java.sql.*;
+import java.nio.file.*;
 import org.postgresql.util.PGobject;
 class PgIntrospection {
     static void check(boolean ok, String message) { if (!ok) throw new AssertionError(message); }
@@ -273,6 +280,43 @@ class PgIntrospection {
                         check(!r.next(), "single primary index");
                     } }
                 }
+                long liveTable, liveIndex;
+                try (ResultSet r=s.executeQuery("SELECT c.oid, i.indexrelid FROM pg_class c JOIN pg_index i ON i.indrelid=c.oid WHERE c.relname='jdbc_client_live'")) {
+                    check(r.next(), "live structure identity"); liveTable=r.getLong(1); liveIndex=r.getLong(2);
+                }
+                boolean fullFailed=false;
+                try (var files=Files.list(Path.of(args[6]))) {
+                    var queries=files.filter(f -> f.toString().endsWith(".sql")).sorted().toList();
+                    check(queries.size()==27, "frozen DataGrip query count: "+queries.size());
+                    for (Path file : queries) {
+                        try {
+                            String sql=Files.readString(file);
+                            for (int mode=0;mode<2;mode++) {
+                                try (PreparedStatement p=c.prepareStatement(mode==0?sql.replace("?", Long.toString(namespace)):sql)) {
+                                    if (mode==1) for (int parameter=1;parameter<=p.getParameterMetaData().getParameterCount();parameter++) p.setLong(parameter, namespace);
+                                    for (int repeat=0;repeat<2;repeat++) { try (ResultSet r=p.executeQuery()) {
+                                        int count=r.getMetaData().getColumnCount(); check(count>0, "empty Describe: "+file);
+                                        boolean found=false;
+                                        while (r.next()) {
+                                            for (int col=1;col<=count;col++) r.getObject(col);
+                                            String name=file.getFileName().toString();
+                                            if (name.equals("1869280142.sql") && "jdbc_client_live".equals(r.getString("table_name"))) { check(r.getLong("table_id")>0, "real table OID"); found=true; }
+                                            if (name.equals("1869280153.sql") && "PRIMARY".equals(r.getString("index_name"))) { check(r.getBoolean("is_primary") && r.getLong("index_id")>0, "real primary index"); found=true; }
+                                            if (name.equals("1869280154.sql") && r.getLong("table_id")==liveTable && "p".equals(r.getString("con_kind"))) { check(r.getArray("con_columns")!=null && r.getLong("index_id")==liveIndex, "primary constraint columns/identity"); found=true; }
+                                            if (name.equals("RetrieveColumns.sql") && r.getLong("table_id")==liveTable && "note".equals(r.getString("column_name"))) { check(r.getInt("column_position")==2 && "character varying(30)".equals(r.getString("type_spec")), "real column structure"); found=true; }
+                                            if (name.equals("RetrieveIndexColumns.sql") && r.getLong("index_id")==liveIndex) { check(r.getInt("column_position")==1 && r.getBoolean("in_key"), "real index column"); found=true; }
+                                        }
+                                        String name=file.getFileName().toString();
+                                        if (name.equals("1869280142.sql") || name.equals("1869280153.sql") || name.equals("1869280154.sql") || name.equals("RetrieveColumns.sql") || name.equals("RetrieveIndexColumns.sql")) check(found, "real structure missing: "+file);
+                                    } }
+                                }
+                            }
+                            System.out.println("full DataGrip SQL passed: "+file.getFileName());
+                        } catch (SQLException | AssertionError e) {
+                            fullFailed=true; System.out.println("full DataGrip SQL FAILED: "+file.getFileName()+": "+e);
+                        }
+                    }
+                }
                 try (PreparedStatement p=c.prepareStatement("INSERT INTO public.jdbc_client_live VALUES (?, ?)")) { p.setInt(1, 7); p.setString(2, "jdbc"); check(p.executeUpdate()==1, "insert count"); }
                 try (PreparedStatement p=c.prepareStatement("SELECT note FROM public.jdbc_client_live WHERE id=?")) { p.setInt(1,7); try(ResultSet r=p.executeQuery()) { check(r.next() && r.getString(1).equals("jdbc") && !r.next(), "public CRUD row"); } }
                 s.execute("UPDATE public.jdbc_client_live SET note='updated' WHERE id=7");
@@ -281,6 +325,7 @@ class PgIntrospection {
                 try (ResultSet r=s.executeQuery("SELECT id FROM public.jdbc_client_live")) { check(!r.next(), "delete row"); }
                 try { s.executeQuery("SELECT oid FROM pg_catalog.pg_missing"); throw new AssertionError("missing catalog accepted"); } catch (SQLException e) { check("42P01".equals(e.getSQLState()), e.toString()); }
                 try (ResultSet r=s.executeQuery("SELECT 1")) { check(r.next() && r.getInt(1)==1, "error recovery"); }
+                check(!fullFailed, "full DataGrip SQL acceptance failed; see per-query evidence");
             } finally { s.execute("DROP TABLE public.jdbc_client_live"); }
             System.out.println("JDBC original introspection Statement/PreparedStatement, oid/NULL/boundary, Describe/Parse-before-DDL, public CRUD, SQLSTATE 42P01 and recovery passed");
         }

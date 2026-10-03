@@ -514,3 +514,45 @@ fn pg_introspection_cte_column_bound() {
             .is_some()
     );
 }
+
+#[test]
+fn catalog_datagrip_scalar_and_lateral_bounds() {
+    let source = include_str!("testdata/pg_datagrip/RetrieveIndexColumns.sql").replace('?', "$1");
+    let query = parse(&source).unwrap().unwrap();
+    let function = query.joins[1].relation.function.as_ref().unwrap();
+    assert!(function.ordinality);
+    assert_eq!(function.columns, ["u", "k"]);
+    assert_eq!(query.joins.len(), 7);
+    assert_eq!(
+        parse(include_str!("testdata/pg_datagrip/1869280137.sql"))
+            .unwrap()
+            .unwrap()
+            .from
+            .name,
+        "__pg_scalar"
+    );
+    assert!(
+        parse("SELECT 'pg_catalog.txid_current()'")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        crate::pg_catalog_query::parse_shadowed(
+            "SELECT usesuper FROM pg_user",
+            &["pg_user".into()]
+        )
+        .unwrap()
+        .is_none()
+    );
+    for sql in [
+        format!("SELECT oid{} FROM pg_namespace", " % 1".repeat(129)),
+        format!(
+            "SELECT CASE {} ELSE 0 END FROM pg_namespace",
+            "WHEN true THEN 1 ".repeat(33)
+        ),
+        "SELECT oid FROM pg_namespace CROSS JOIN generate_series(1,2) g".into(),
+        "SELECT oid FROM pg_namespace UNION SELECT 1".into(),
+    ] {
+        assert_eq!(parse(&sql).unwrap_err().0, "0A000", "{sql}");
+    }
+}

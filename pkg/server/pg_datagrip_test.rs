@@ -641,3 +641,148 @@ fn pg_datagrip_metadata_templates() {
     );
     context.close().unwrap();
 }
+
+#[test]
+fn pg_datagrip_ui_metadata_core() {
+    let context = context();
+    context.execute_query("CREATE TABLE test.dg_ui_structure (id INT PRIMARY KEY, note VARCHAR(30), UNIQUE KEY note_unique (note,id))",false,&CancellationToken::new()).unwrap();
+    let namespace = match execute(
+        context.as_ref(),
+        "SELECT oid FROM pg_namespace WHERE nspname='public'",
+    )[0][0]
+    {
+        Value::Signed(n) => n,
+        _ => panic!("namespace"),
+    };
+    let sql = include_str!("testdata/pg_datagrip/RetrieveIndexColumns.sql")
+        .replace('?', &namespace.to_string());
+    let rows = execute(context.as_ref(), &sql);
+    assert_eq!(rows.len(), 3);
+    let index = execute(
+        context.as_ref(),
+        "SELECT indexrelid FROM pg_index WHERE indnatts=2",
+    )[0][0]
+        .clone();
+    let composite = rows.iter().filter(|r| r[0] == index).collect::<Vec<_>>();
+    assert_eq!(composite.len(), 2);
+    assert_eq!(
+        (composite[0][1].clone(), composite[0][3].clone()),
+        (Value::Signed(1), Value::Signed(2))
+    );
+    assert_eq!(
+        (composite[1][1].clone(), composite[1][3].clone()),
+        (Value::Signed(2), Value::Signed(1))
+    );
+    for row in rows {
+        assert_eq!(row[2], Value::Text("true".into()));
+        assert_eq!(row[4], Value::Signed(0));
+        assert_eq!(row[5], Value::Signed(0));
+        assert_eq!(row[6], Value::Null);
+        assert_eq!(row[8], Value::Null);
+        assert_eq!(row[12], Value::Null);
+        assert_eq!(row[11], Value::Null);
+    }
+    assert_eq!(
+        execute(
+            context.as_ref(),
+            "SELECT indkey[0], indkey[1], indkey[-1], indkey[2], indclass[0] FROM pg_index WHERE indnatts=2"
+        ),
+        vec![vec![
+            Value::Signed(2),
+            Value::Signed(1),
+            Value::Null,
+            Value::Null,
+            Value::Null
+        ]]
+    );
+    assert_eq!(
+        execute(
+            context.as_ref(),
+            "SELECT conkey[1], conkey[0], conkey[2] FROM pg_constraint WHERE conname='note_unique'"
+        ),
+        vec![vec![Value::Signed(2), Value::Null, Value::Signed(1)]]
+    );
+    assert_eq!(
+        execute(
+            context.as_ref(),
+            include_str!("testdata/pg_datagrip/1869280137.sql")
+        ),
+        vec![vec![Value::Signed(0)]]
+    );
+    assert_eq!(
+        execute(
+            context.as_ref(),
+            "SELECT 7 - 5 % 2, CASE WHEN false THEN 1 WHEN true THEN 2 ELSE 3 END, pg_catalog.pg_is_in_recovery(), NULL::int FROM pg_catalog.pg_namespace WHERE nspname='public'"
+        ),
+        vec![vec![
+            Value::Signed(6),
+            Value::Signed(2),
+            Value::Text("false".into()),
+            Value::Null
+        ]]
+    );
+    let native = context
+        .execute_query(
+            "SELECT Super_priv FROM mysql.user WHERE User='root'",
+            false,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+    let Value::Text(privilege) = &native[0].rows[0][0] else {
+        panic!("native privilege");
+    };
+    assert_eq!(
+        execute(
+            context.as_ref(),
+            "SELECT usesuper FROM pg_user WHERE usename='root'"
+        ),
+        vec![vec![Value::Text((privilege == "Y").to_string())]]
+    );
+    context
+        .execute_query(
+            "UPDATE mysql.user SET Super_priv='Y' WHERE User='root'",
+            false,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+    assert_eq!(
+        execute(
+            context.as_ref(),
+            "SELECT usesuper FROM pg_user WHERE usename='root'"
+        ),
+        vec![vec![Value::Text("true".into())]]
+    );
+    for sql in [
+        "SELECT 1 % 0 FROM pg_namespace",
+        "SELECT 2147483648::int FROM pg_namespace",
+        "SELECT chr(0) FROM pg_namespace",
+    ] {
+        assert!(
+            CatalogQuery::parse(sql)
+                .unwrap()
+                .unwrap()
+                .execute(context.as_ref(), &CancellationToken::new())
+                .is_err(),
+            "{sql}"
+        );
+    }
+    for sql in [
+        "SELECT indkey[true] FROM pg_index",
+        "SELECT oid FROM pg_namespace CROSS JOIN unnest(oid) u",
+        "SELECT oid FROM pg_namespace CROSS JOIN unnest(nspname) u",
+        "SELECT oid FROM pg_namespace CROSS JOIN unnest(oid) WITH ORDINALITY u(u,k,extra)",
+        "SELECT oid FROM pg_namespace CROSS JOIN pg_catalog.pg_indexam_has_property(0,'bogus') p",
+        "SELECT oid FROM pg_namespace JOIN pg_class c ON later.u=1 CROSS JOIN unnest(c.relacl) later",
+    ] {
+        assert!(CatalogQuery::parse(sql).is_err(), "{sql}");
+    }
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    assert!(
+        CatalogQuery::parse(&sql)
+            .unwrap()
+            .unwrap()
+            .execute(context.as_ref(), &cancel)
+            .is_err()
+    );
+}

@@ -30,6 +30,8 @@ pub(crate) enum Expr {
     Text(String),
     Call(Vec<String>, Vec<Expr>),
     Cast(Box<Expr>, CastType),
+    Arithmetic(Box<Expr>, char, Box<Expr>),
+    Subscript(Box<Expr>, Box<Expr>),
     Equal(Box<Expr>, Box<Expr>),
     Compare(Box<Expr>, CompareOp, Box<Expr>),
     In(Box<Expr>, Vec<Expr>),
@@ -67,6 +69,7 @@ pub(crate) enum CastType {
     InternalChar,
     Char,
     Bigint,
+    Integer,
     Varchar,
     Oid,
     Regclass,
@@ -83,9 +86,16 @@ pub(crate) struct Projection {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Relation {
+    pub(crate) function: Option<TableFunction>,
     pub(crate) cte_id: Option<usize>,
     pub(crate) name: String,
     pub(crate) alias: String,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TableFunction {
+    pub(crate) expr: Expr,
+    pub(crate) columns: Vec<String>,
+    pub(crate) ordinality: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Join {
@@ -400,7 +410,7 @@ impl Parser {
         if self.tuple_start() {
             return self.tuple_equality();
         }
-        let mut expr = self.atom()?;
+        let mut expr = self.scalar()?;
         if self.symbol('=') {
             self.predicate_budget()?;
             expr = if self.word("any") {
@@ -409,7 +419,7 @@ impl Parser {
                 self.require_symbol(')')?;
                 Expr::Any(Box::new(expr), Box::new(input))
             } else {
-                Expr::Equal(Box::new(expr), Box::new(self.atom()?))
+                Expr::Equal(Box::new(expr), Box::new(self.scalar()?))
             };
         } else if self.symbol('<') {
             self.predicate_budget()?;
@@ -420,7 +430,7 @@ impl Parser {
             } else {
                 CompareOp::Less
             };
-            expr = Expr::Compare(Box::new(expr), op, Box::new(self.atom()?));
+            expr = Expr::Compare(Box::new(expr), op, Box::new(self.scalar()?));
         } else if self.symbol('>') {
             self.predicate_budget()?;
             let op = if self.symbol('=') {
@@ -428,11 +438,15 @@ impl Parser {
             } else {
                 CompareOp::Greater
             };
-            expr = Expr::Compare(Box::new(expr), op, Box::new(self.atom()?));
+            expr = Expr::Compare(Box::new(expr), op, Box::new(self.scalar()?));
         } else if self.symbol('!') {
             self.require_symbol('=')?;
             self.predicate_budget()?;
-            expr = Expr::Compare(Box::new(expr), CompareOp::NotEqual, Box::new(self.atom()?));
+            expr = Expr::Compare(
+                Box::new(expr),
+                CompareOp::NotEqual,
+                Box::new(self.scalar()?),
+            );
         } else if self.word("is") {
             self.predicate_budget()?;
             let not = self.word("not");
@@ -460,7 +474,7 @@ impl Parser {
                 } else {
                     let mut values = Vec::new();
                     loop {
-                        let value = self.atom()?;
+                        let value = self.scalar()?;
                         if !constant(&value) {
                             return Err(unsupported("catalog IN requires constants"));
                         }
@@ -491,6 +505,31 @@ impl Parser {
         }
         Ok(expr)
     }
+    fn scalar(&mut self) -> ParseResult<Expr> {
+        let mut expr = self.subtract()?;
+        while self.symbol('|') {
+            self.require_symbol('|')?;
+            self.predicate_budget()?;
+            expr = Expr::Arithmetic(Box::new(expr), '|', Box::new(self.subtract()?));
+        }
+        Ok(expr)
+    }
+    fn subtract(&mut self) -> ParseResult<Expr> {
+        let mut expr = self.remainder()?;
+        while self.symbol('-') {
+            self.predicate_budget()?;
+            expr = Expr::Arithmetic(Box::new(expr), '-', Box::new(self.remainder()?));
+        }
+        Ok(expr)
+    }
+    fn remainder(&mut self) -> ParseResult<Expr> {
+        let mut expr = self.atom()?;
+        while self.symbol('%') {
+            self.predicate_budget()?;
+            expr = Expr::Arithmetic(Box::new(expr), '%', Box::new(self.atom()?));
+        }
+        Ok(expr)
+    }
     fn atom(&mut self) -> ParseResult<Expr> {
         if self.depth == 64 {
             return Err(unsupported("catalog expression nesting is too deep"));
@@ -507,6 +546,8 @@ impl Parser {
             Expr::Boolean(true)
         } else if self.word("false") {
             Expr::Boolean(false)
+        } else if self.word("current_user") {
+            Expr::Call(vec!["current_user".into()], vec![])
         } else if self.word("current_catalog") {
             Expr::Call(vec!["current_catalog".into()], vec![])
         } else if self.word("array") {
@@ -529,18 +570,32 @@ impl Parser {
                 projection: Box::new(projection),
             }
         } else if self.word("case") {
+            let mut branches = Vec::new();
             self.require_word("when")?;
-            let condition = self.expr()?;
-            self.require_word("then")?;
-            let yes = self.expr()?;
-            self.require_word("else")?;
-            let no = self.expr()?;
-            self.require_word("end")?;
-            Expr::Case {
-                condition: Box::new(condition),
-                yes: Box::new(yes),
-                no: Box::new(no),
+            loop {
+                self.predicate_budget()?;
+                if branches.len() >= 32 {
+                    return Err(unsupported("too many catalog CASE branches"));
+                }
+                let condition = self.expr()?;
+                self.require_word("then")?;
+                let yes = self.expr()?;
+                branches.push((condition, yes));
+                if !self.word("when") {
+                    break;
+                }
             }
+            self.require_word("else")?;
+            let mut no = self.expr()?;
+            self.require_word("end")?;
+            for (condition, yes) in branches.into_iter().rev() {
+                no = Expr::Case {
+                    condition: Box::new(condition),
+                    yes: Box::new(yes),
+                    no: Box::new(no),
+                };
+            }
+            no
         } else if self.symbol('(') {
             let expr = if matches!(self.peek(), Some(Token::Word(w)) if w == "select" || w == "with")
             {
@@ -618,7 +673,17 @@ impl Parser {
             }
         };
         let mut casts = 0;
-        while self.peek() == Some(&Token::Cast) {
+        loop {
+            if self.symbol('[') {
+                self.predicate_budget()?;
+                let index = self.expr()?;
+                self.require_symbol(']')?;
+                expr = Expr::Subscript(Box::new(expr), Box::new(index));
+                continue;
+            }
+            if self.peek() != Some(&Token::Cast) {
+                break;
+            }
             casts += 1;
             self.casts += 1;
             if casts > 64 || self.casts > 128 {
@@ -658,9 +723,12 @@ impl Parser {
                     }
                 }
                 "int" | "integer" => {
-                    self.require_symbol('[')?;
-                    self.require_symbol(']')?;
-                    CastType::IntArray
+                    if self.symbol('[') {
+                        self.require_symbol(']')?;
+                        CastType::IntArray
+                    } else {
+                        CastType::Integer
+                    }
                 }
                 _ => return Err(unsupported("unsupported catalog cast")),
             };
@@ -670,6 +738,61 @@ impl Parser {
     }
     fn relation(&mut self) -> ParseResult<Relation> {
         let path = self.path()?;
+        if self.symbol('(') {
+            if !matches!(
+                path.last().map(String::as_str),
+                Some("unnest" | "pg_indexam_has_property")
+            ) || (path.len() != 1 && !(path.len() == 2 && path[0] == "pg_catalog"))
+            {
+                return Err(unsupported("unsupported catalog table function"));
+            }
+            let mut args = vec![self.expr()?];
+            while self.symbol(',') {
+                args.push(self.expr()?);
+            }
+            self.require_symbol(')')?;
+            let ordinality = self.word("with");
+            if ordinality {
+                self.require_word("ordinality")?;
+            }
+            let name = path.last().unwrap().clone();
+            let alias = if self.word("as") || self.is_alias() {
+                self.identifier()?
+            } else {
+                name.clone()
+            };
+            let mut columns = if name == "unnest" {
+                vec![name.clone()]
+            } else {
+                vec![alias.clone()]
+            };
+            if ordinality {
+                columns.push("ordinality".into());
+            }
+            if self.symbol('(') {
+                let mut aliases = vec![self.identifier()?];
+                while self.symbol(',') {
+                    aliases.push(self.identifier()?);
+                }
+                self.require_symbol(')')?;
+                if aliases.len() > columns.len() {
+                    return Err(syntax("too many table function column aliases"));
+                }
+                for (column, alias) in columns.iter_mut().zip(aliases) {
+                    *column = alias;
+                }
+            }
+            return Ok(Relation {
+                function: Some(TableFunction {
+                    expr: Expr::Call(path, args),
+                    columns,
+                    ordinality,
+                }),
+                cte_id: None,
+                name,
+                alias,
+            });
+        }
         let name = match path.as_slice() {
             [name] => name.clone(),
             [catalog, name] if catalog == "pg_catalog" => name.clone(),
@@ -701,6 +824,7 @@ impl Parser {
             name.clone()
         };
         Ok(Relation {
+            function: None,
             name,
             alias,
             cte_id,
@@ -825,8 +949,12 @@ impl Parser {
     fn select(&mut self) -> ParseResult<Select> {
         self.require_word("select")?;
         let distinct = self.word("distinct");
+        let projection_start = self.pos;
         let mut projections = Vec::new();
         loop {
+            if self.peek() == Some(&Token::Word("from".into())) {
+                return Err(syntax("expected expression"));
+            }
             let expr = if self.symbol('*') {
                 Expr::Column(vec!["*".into()])
             } else {
@@ -842,12 +970,29 @@ impl Parser {
                 break;
             }
         }
-        self.require_word("from")?;
-        let from = self.relation()?;
+        let from = if self.word("from") {
+            self.relation()?
+        } else {
+            if !self.tokens[projection_start..self.pos].windows(4).any(|w| {
+                matches!(&w[0],Token::Word(s) if s=="pg_catalog") && w[1]==Token::Symbol('.')
+                && matches!(&w[2],Token::Word(s) if matches!(s.as_str(),"pg_is_in_recovery" | "txid_current"))
+                && w[3]==Token::Symbol('(')
+            }) { return Err(unsupported("catalog scalar SELECT requires a native PG probe")); }
+            Relation {
+                function: None,
+                cte_id: None,
+                name: "__pg_scalar".into(),
+                alias: "__pg_scalar".into(),
+            }
+        };
         let mut joins = Vec::new();
         loop {
             let natural = self.word("natural");
-            let left = if self.word("left") {
+            let cross = self.word("cross");
+            let left = if cross {
+                self.require_word("join")?;
+                false
+            } else if self.word("left") {
                 self.word("outer");
                 self.require_word("join")?;
                 true
@@ -863,7 +1008,7 @@ impl Parser {
                 return Err(unsupported("catalog queries support at most eight joins"));
             }
             let relation = self.relation()?;
-            let on = if natural {
+            let on = if natural || cross {
                 Expr::Boolean(true)
             } else {
                 self.require_word("on")?;
@@ -935,7 +1080,8 @@ pub(crate) fn parse(sql: &str) -> ParseResult<Option<Select>> {
 }
 
 pub(crate) fn is_catalog_relation(name: &str) -> bool {
-    name == "pg_opclass"
+    name == "pg_user"
+        || name == "pg_opclass"
         || name == "pg_locks"
         || crate::pg_oid::SYSTEM_RELATIONS
             .iter()
@@ -1019,10 +1165,15 @@ pub(crate) fn parse_shadowed(sql: &str, shadowed: &[String]) -> ParseResult<Opti
             && w[1] == Token::Symbol('.')
             && matches!(&w[2], Token::Word(s) | Token::Quoted(s) if is_catalog_relation(s))
     });
+    let scalar_catalog = tokens.windows(4).any(|w| {
+        matches!(&w[0], Token::Word(s) if s=="pg_catalog") && w[1]==Token::Symbol('.')
+        && matches!(&w[2], Token::Word(s) if matches!(s.as_str(), "pg_is_in_recovery" | "txid_current"))
+        && w[3]==Token::Symbol('(')
+    });
     let implicit_catalog = implicit_positions(&tokens)
         .iter()
         .any(|(_, name)| !shadowed.contains(name));
-    if !catalog && !implicit_catalog {
+    if !catalog && !implicit_catalog && !scalar_catalog {
         return Ok(None);
     }
     if !matches!(tokens.first(), Some(Token::Word(s)) if s == "select" || s == "with") {

@@ -373,11 +373,28 @@ impl CatalogQuery {
     }
     fn validate(&self) -> ParseResult<()> {
         let mut aliases = std::collections::HashSet::new();
-        for relation in self.relations() {
-            if relation.cte_id.is_none()
+        for (index, relation) in self.relations().enumerate() {
+            if let Some(function) = &relation.function {
+                if index == 0 {
+                    return Err((
+                        "0A000",
+                        "catalog table functions require a left source".into(),
+                    ));
+                }
+                let mut scope = self.clone();
+                scope.select.joins.truncate(index - 1);
+                scope.expr_type(&function.expr)?;
+                if function.ordinality && relation.name != "unnest" {
+                    return Err(("0A000", "ordinality requires unnest".into()));
+                }
+            }
+            if relation.function.is_none()
+                && relation.cte_id.is_none()
                 && !matches!(
                     relation.name.as_str(),
-                    "pg_class"
+                    "__pg_scalar"
+                        | "pg_user"
+                        | "pg_class"
                         | "pg_attribute"
                         | "pg_type"
                         | "pg_attrdef"
@@ -549,7 +566,31 @@ impl CatalogQuery {
                 continue;
             }
             let boolean = astersql_parser_mysql::r#type::IsBooleanFlag;
-            let field = if let Some(id) = relation.cte_id {
+            let field = if let Some(function) = &relation.function {
+                let mut scope = self.clone();
+                scope.select.joins.truncate(index.saturating_sub(1));
+                let mut matches = function
+                    .columns
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, n)| n.as_str() == name);
+                let field = matches
+                    .next()
+                    .map(|(slot, _)| {
+                        if slot == 1 {
+                            Ok((slot, 8, 0))
+                        } else {
+                            scope
+                                .expr_type(&function.expr)
+                                .map(|(code, flags)| (slot, code, flags))
+                        }
+                    })
+                    .transpose()?;
+                if matches.next().is_some() {
+                    return Err(("42702", "ambiguous table function column".into()));
+                }
+                field
+            } else if let Some(id) = relation.cte_id {
                 let fields = &self.cte_columns[&id];
                 let mut matches = fields.iter().enumerate().filter(|(_, (n, _, _))| n == name);
                 let field = matches
@@ -581,6 +622,8 @@ impl CatalogQuery {
                     // representation; no native tablespace rows currently exist.
                     ("pg_tablespace", "spcacl") => Some((8, 253, 0)),
                     ("pg_tablespace", "spcoptions") => Some((10, 253, 0)),
+                    ("pg_user", "usename") => Some((0, 253, 0)),
+                    ("pg_user", "usesuper") => Some((1, 1, boolean)),
                     ("pg_locks", "transactionid") => Some((0, 8, 0)),
                     ("pg_description" | "pg_shdescription", _) => {
                         description_column(&relation.name, name)
@@ -656,6 +699,32 @@ impl CatalogQuery {
                 }
                 Ok((crate::pg_result::CatalogColumnType::Int8Array as u8, 0))
             }
+            Expr::Arithmetic(left, op, right) => {
+                let a = self.expr_type(left)?.0;
+                let b = self.expr_type(right)?.0;
+                if *op == '|'
+                    && (textual_type(a) || matches!(**left, Expr::Null))
+                    && (textual_type(b) || matches!(**right, Expr::Null))
+                {
+                    return Ok((253, 0));
+                }
+                if matches!(op, '-' | '%')
+                    && (numeric_type(a) || matches!(**left, Expr::Null))
+                    && (numeric_type(b) || matches!(**right, Expr::Null))
+                {
+                    return Ok((8, 0));
+                }
+                Err(("0A000", "unsupported catalog arithmetic types".into()))
+            }
+            Expr::Subscript(input, index) => {
+                let element = numeric_array_element(self.expr_type(input)?.0).ok_or_else(|| {
+                    ("0A000", "subscript requires a numeric catalog array".into())
+                })?;
+                if !numeric_type(self.expr_type(index)?.0) && !matches!(**index, Expr::Null) {
+                    return Err(("0A000", "array subscript requires an integer".into()));
+                }
+                Ok((element, 0))
+            }
             Expr::Integer(_) => Ok((8, 0)),
             Expr::Boolean(_) => Ok((1, astersql_parser_mysql::r#type::IsBooleanFlag)),
             Expr::Cast(inner, target) => {
@@ -666,7 +735,7 @@ impl CatalogQuery {
                 {
                     return Err(("0A000", "catalog internal char casts require text".into()));
                 }
-                if *target == CastType::Bigint && code == 1 {
+                if matches!(target, CastType::Bigint | CastType::Integer) && code == 1 {
                     return Err((
                         "0A000",
                         "boolean to bigint catalog casts are unsupported".into(),
@@ -699,6 +768,7 @@ impl CatalogQuery {
                         }
                         CastType::Char => crate::pg_result::CatalogColumnType::Char as u8,
                         CastType::Bigint => 8,
+                        CastType::Integer => 3,
                         CastType::Varchar => 253,
                         CastType::Oid => crate::pg_oid::OID_TYPE,
                         CastType::Regclass => crate::pg_oid::REGCLASS_TYPE,
@@ -723,6 +793,22 @@ impl CatalogQuery {
                     self.expr_type(arg)?;
                 }
                 match (name, args.as_slice()) {
+                    ("current_user", []) => Ok((253, 0)),
+                    ("pg_is_in_recovery", []) => {
+                        Ok((1, astersql_parser_mysql::r#type::IsBooleanFlag))
+                    }
+                    ("txid_current", []) => Ok((8, 0)),
+                    ("chr", [arg])
+                        if numeric_type(self.expr_type(arg)?.0) || matches!(arg, Expr::Null) =>
+                    {
+                        Ok((253, 0))
+                    }
+                    ("pg_indexam_has_property", [oid, property])
+                        if (numeric_type(self.expr_type(oid)?.0) || matches!(oid, Expr::Null))
+                            && matches!(property,Expr::Text(s) if s=="can_order") =>
+                    {
+                        Ok((1, astersql_parser_mysql::r#type::IsBooleanFlag))
+                    }
                     ("unnest", [input]) => numeric_array_element(self.expr_type(input)?.0)
                         .map(|code| (code, 0))
                         .ok_or_else(|| ("0A000", "unnest requires a numeric catalog array".into())),
@@ -870,8 +956,16 @@ impl CatalogQuery {
                 if self.expr_type(condition)?.0 != 1 {
                     return Err(("0A000", "unsupported CASE condition".into()));
                 }
-                let yes = self.expr_type(yes)?;
-                let no = self.expr_type(no)?;
+                let yes_type = self.expr_type(yes)?;
+                let no_type = self.expr_type(no)?;
+                if matches!(**yes, Expr::Null) {
+                    return Ok(no_type);
+                }
+                if matches!(**no, Expr::Null) {
+                    return Ok(yes_type);
+                }
+                let yes = yes_type;
+                let no = no_type;
                 if yes == no {
                     Ok(yes)
                 } else if numeric_type(yes.0) && numeric_type(no.0) {
@@ -1071,7 +1165,9 @@ impl CatalogQuery {
         let mut providers = Vec::new();
         for relation in self.relations() {
             check_catalog_cancel(execution.cancel)?;
-            if let Some(id) = relation.cte_id {
+            if relation.function.is_some() {
+                providers.push(std::sync::Arc::new(Vec::new()));
+            } else if let Some(id) = relation.cte_id {
                 providers.push(execution.ctes.borrow()[&id].clone());
             } else {
                 if !execution.providers.borrow().contains_key(&relation.name) {
@@ -1103,6 +1199,33 @@ impl CatalogQuery {
             for left in rows {
                 check_catalog_cancel(execution.cancel)?;
                 let mut matched = false;
+                let lateral;
+                let right = if let Some(function) = &join.relation.function {
+                    let mut input_scope = self.clone();
+                    input_scope.select.joins.truncate(index);
+                    let values = match &function.expr {
+                        Expr::Call(path, args) if path.last().is_some_and(|n| n == "unnest") => {
+                            numeric_array_values(
+                                &input_scope.evaluate(&args[0], &left, execution)?,
+                            )?
+                        }
+                        expr => vec![input_scope.evaluate(expr, &left, execution)?],
+                    };
+                    let mut generated = Vec::new();
+                    for (position, value) in values.into_iter().enumerate() {
+                        execution.comparison()?;
+                        let mut row = vec![Value::Null; CATALOG_ROW_WIDTH];
+                        row[0] = value;
+                        if function.ordinality {
+                            row[1] = Value::Signed((position + 1) as i64);
+                        }
+                        generated.push(row);
+                    }
+                    lateral = execution.materialize(generated)?;
+                    lateral.as_ref()
+                } else {
+                    right
+                };
                 for right in right {
                     execution.comparison()?;
                     let mut candidate = left.clone();
@@ -1138,6 +1261,34 @@ impl CatalogQuery {
         cancel: &CancellationToken,
     ) -> ConnResult<Vec<Vec<Value>>> {
         let rows = match name {
+            "__pg_scalar" => vec![vec![Value::Null; CATALOG_ROW_WIDTH]],
+            "pg_user" => {
+                let results = context.execute_query(
+                    "SELECT User, Super_priv FROM mysql.user",
+                    false,
+                    cancel,
+                )?;
+                let mut rows = Vec::new();
+                for result in results {
+                    for row in result.rows {
+                        check_catalog_cancel(cancel)?;
+                        if let [Value::Text(user), Value::Text(privilege)] = row.as_slice() {
+                            let candidate = vec![
+                                Value::Text(user.clone()),
+                                Value::Text((privilege == "Y").to_string()),
+                            ];
+                            if !rows.contains(&candidate) {
+                                rows.push(candidate);
+                            }
+                        } else {
+                            return Err(ConnError::Session(
+                                "invalid native user privilege metadata".into(),
+                            ));
+                        }
+                    }
+                }
+                rows
+            }
             "pg_depend" => sequence_dependency_rows(
                 snapshot
                     .ok_or_else(|| ConnError::Session("schema snapshot is unavailable".into()))?
@@ -1280,6 +1431,43 @@ impl CatalogQuery {
             Expr::Column(path) => row[self.column(path).expect("validated column").0].clone(),
             Expr::Null => Value::Null,
             Expr::TypedLiteral(inner, _, _) => evaluate(inner)?,
+            Expr::Arithmetic(left, op, right) => match (evaluate(left)?, evaluate(right)?) {
+                (Value::Null, _) | (_, Value::Null) => Value::Null,
+                (Value::Text(a), Value::Text(b)) if *op == '|' => Value::Text(a + &b),
+                (Value::Signed(a), Value::Signed(b)) => Value::Signed(
+                    match op {
+                        '-' => a.checked_sub(b),
+                        '%' => a.checked_rem(b),
+                        _ => None,
+                    }
+                    .ok_or_else(|| {
+                        ConnError::Session("catalog arithmetic overflow or division by zero".into())
+                    })?,
+                ),
+                _ => unreachable!("validated catalog arithmetic"),
+            },
+            Expr::Subscript(input, index) => {
+                let code = self.expr_type(input).expect("validated array").0;
+                match (evaluate(input)?, evaluate(index)?) {
+                    (Value::Null, _) | (_, Value::Null) => Value::Null,
+                    (array, Value::Signed(index)) => {
+                        let lower = if matches!(code, c if c==crate::pg_result::CatalogColumnType::Int2Vector as u8 || c==crate::pg_result::CatalogColumnType::OidVector as u8)
+                        {
+                            0
+                        } else {
+                            1
+                        };
+                        let values = numeric_array_values(&array)?;
+                        index
+                            .checked_sub(lower)
+                            .and_then(|i| usize::try_from(i).ok())
+                            .and_then(|i| values.get(i))
+                            .cloned()
+                            .unwrap_or(Value::Null)
+                    }
+                    _ => unreachable!("validated subscript"),
+                }
+            }
             Expr::ArrayAgg(_, _) => return Err(ConnError::UnsupportedCommand(0)),
             Expr::Any(value, input) => {
                 let value = evaluate(value)?;
@@ -1375,6 +1563,15 @@ impl CatalogQuery {
                 (Value::Signed(_), CastType::OperatorName) => {
                     return Err(ConnError::UnsupportedCommand(0));
                 }
+                (Value::Signed(n), CastType::Integer) => {
+                    Value::Signed(i64::from(i32::try_from(n).map_err(|_| {
+                        ConnError::Session("PG integer conversion out of range".into())
+                    })?))
+                }
+                (Value::Text(s), CastType::Integer) => Value::Signed(i64::from(
+                    s.parse::<i32>()
+                        .map_err(|_| ConnError::Session("invalid PG integer value".into()))?,
+                )),
                 (Value::Signed(n), CastType::Bigint) => Value::Signed(n),
                 (Value::Signed(n), CastType::Oid | CastType::Regclass) => {
                     Value::Signed(i64::from(u32::try_from(n).map_err(|_| {
@@ -1461,6 +1658,65 @@ impl CatalogQuery {
                     }
                     _ => unreachable!("validated translate arguments"),
                 },
+                "current_user" => Value::Text(
+                    execution
+                        .context
+                        .user_identity()?
+                        .split('@')
+                        .next()
+                        .unwrap_or("")
+                        .into(),
+                ),
+                "pg_is_in_recovery" => Value::Text("false".into()),
+                "txid_current" => {
+                    let results = execution.context.execute_query(
+                        "SELECT @@tidb_current_ts",
+                        false,
+                        execution.cancel,
+                    )?;
+                    match results
+                        .first()
+                        .and_then(|r| r.rows.first())
+                        .and_then(|r| r.first())
+                    {
+                        Some(Value::Text(ts)) => Value::Signed(ts.parse().map_err(|_| {
+                            ConnError::Session("invalid native transaction timestamp".into())
+                        })?),
+                        Some(Value::Unsigned(ts)) => {
+                            Value::Signed(i64::try_from(*ts).map_err(|_| {
+                                ConnError::Session(
+                                    "native transaction timestamp exceeds bigint".into(),
+                                )
+                            })?)
+                        }
+                        Some(Value::Signed(ts)) => Value::Signed(*ts),
+                        _ => {
+                            return Err(ConnError::Session(
+                                "missing native transaction timestamp".into(),
+                            ));
+                        }
+                    }
+                }
+                "chr" => match evaluate(&args[0])? {
+                    Value::Null => Value::Null,
+                    Value::Signed(code) => Value::Text(
+                        u32::try_from(code)
+                            .ok()
+                            .filter(|c| *c != 0)
+                            .and_then(char::from_u32)
+                            .ok_or_else(|| ConnError::Session("invalid character code".into()))?
+                            .to_string(),
+                    ),
+                    _ => unreachable!("validated chr"),
+                },
+                // No native index publishes a PostgreSQL access-method OID.
+                // PostgreSQL returns NULL for an unknown method/property.
+                "pg_indexam_has_property" => {
+                    for arg in args {
+                        evaluate(arg)?;
+                    }
+                    Value::Null
+                }
                 "current_database" | "current_catalog" => Value::Text(database.into()),
                 "current_schema" => self
                     .current_schema
@@ -1974,6 +2230,7 @@ fn has_aggregate(expr: &Expr) -> bool {
         Expr::Cast(e, _) | Expr::TypedLiteral(e, _, _) | Expr::ArrayUnnest { input: e, .. } => {
             has_aggregate(e)
         }
+        Expr::Subscript(a, b) | Expr::Arithmetic(a, _, b) => has_aggregate(a) || has_aggregate(b),
         Expr::Call(_, args) => args.iter().any(has_aggregate),
         _ => false,
     }
@@ -1984,6 +2241,9 @@ fn ungrouped_column(expr: &Expr) -> bool {
         Expr::ArrayAgg(_, _) | Expr::ScalarSubquery(_) => false,
         Expr::ArrayUnnest { input, .. } => ungrouped_column(input),
         Expr::Cast(e, _) | Expr::TypedLiteral(e, _, _) => ungrouped_column(e),
+        Expr::Subscript(a, b) | Expr::Arithmetic(a, _, b) => {
+            ungrouped_column(a) || ungrouped_column(b)
+        }
         Expr::Call(_, args) => args.iter().any(ungrouped_column),
         _ => false,
     }
@@ -2133,7 +2393,13 @@ fn visit_select_exprs<E>(
     for p in &mut select.projections {
         visit_expr(&mut p.expr, visitor)?;
     }
+    if let Some(function) = &mut select.from.function {
+        visit_expr(&mut function.expr, visitor)?;
+    }
     for j in &mut select.joins {
+        if let Some(function) = &mut j.relation.function {
+            visit_expr(&mut function.expr, visitor)?;
+        }
         visit_expr(&mut j.on, visitor)?;
     }
     if let Some(f) = &mut select.filter {
@@ -2176,7 +2442,9 @@ fn visit_expr<E>(
             input,
             projection: _,
         } => visit_expr(input, visitor)?,
-        Expr::Any(a, b)
+        Expr::Subscript(a, b)
+        | Expr::Arithmetic(a, _, b)
+        | Expr::Any(a, b)
         | Expr::Equal(a, b)
         | Expr::Compare(a, _, b)
         | Expr::And(a, b)
@@ -2219,6 +2487,8 @@ fn contains_age(expr: &Expr) -> bool {
             input: left,
             projection: right,
         }
+        | Expr::Subscript(left, right)
+        | Expr::Arithmetic(left, _, right)
         | Expr::Any(left, right)
         | Expr::Equal(left, right)
         | Expr::Compare(left, _, right)
@@ -2699,7 +2969,7 @@ fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)
         ("pg_index", "indkey") => (7, crate::pg_result::CatalogColumnType::Int2Vector as u8),
         ("pg_index", "indoption") => (8, crate::pg_result::CatalogColumnType::Int2Vector as u8),
         ("pg_index", "indclass") => (9, crate::pg_result::CatalogColumnType::OidVector as u8),
-        ("pg_index", "indcollation") => return None,
+        ("pg_index", "indcollation") => (10, crate::pg_result::CatalogColumnType::OidVector as u8),
         ("pg_index", "indexprs") => (11, 253),
         ("pg_index", "indpred") => (12, 253),
         ("pg_index", "indisvalid") => (13, 1),
@@ -3290,6 +3560,8 @@ fn index_constraint_rows(
                 row[8] = Value::Text(vec!["0"; columns.len()].join(" "));
                 // Native indexes do not select PostgreSQL operator classes.
                 row[9] = Value::Text(String::new());
+                // No PostgreSQL collation identities; invalid OID 0 per key.
+                row[10] = Value::Text(vec!["0"; columns.len()].join(" "));
                 row[13] = Value::Text("true".into());
                 row[14] = Value::Text("true".into());
                 row[21] = Value::Text(definition);

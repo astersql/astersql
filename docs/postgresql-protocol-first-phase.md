@@ -119,9 +119,9 @@ from pg_catalog.pg_tablespace T
 | 函数 / 语言描述 | RetrieveRoutines 与 ListLanguages 的真实签名、参数数组、结果、kind、语言、owner、cost、volatility、security、strict、parallel、handler/inline/validator 与 namespace；全字段见模板投影，无法映射时明确说明。 |
 | 序列描述 | PG18 使用 RetrieveSequences10：pg_sequence.seqrelid/seqtypid/seqstart/seqmin/seqmax/seqincrement/seqcache/seqcycle、关系及 owner；实际核查原生序列集合和 OID，与 RetrieveRelations 引用一致。 |
 
-三条日志查询是本轮必须保留的验收入口。辅助模板不能自动扩大为完整 DataGrip 兼容：RetrieveIndexColumns 还要求数组下标、WITH ORDINALITY、unnest、CROSS JOIN、collation/opclass 和访问方法属性；RetrieveRoutines 涉及 NATURAL JOIN、星号投影和更多 CTE/函数，RetrieveConstraints 还使用元组连接、数组子查询和 regoper 转换，RetrieveIndices 使用 ANY 与继承聚合。未获相邻任务明确授权的部分须单列缺口，不能用只支持核心字段宣称整条辅助模板已通过。UI 元数据树、foreign/aggregate/operator/extension/trigger/policy、任意多 schema、增量 xmin 仍为范围外。
+此前阶段以三条日志查询为验收入口。以下是当时尚未覆盖的完整模板需求（批次 6 的实际结果见文末）：RetrieveIndexColumns 还要求数组下标、WITH ORDINALITY、unnest、CROSS JOIN、collation/opclass 和访问方法属性；RetrieveRoutines 涉及 NATURAL JOIN、星号投影和更多 CTE/函数，RetrieveConstraints 还使用元组连接、数组子查询和 regoper 转换，RetrieveIndices 使用 ANY 与继承聚合。未获相邻任务明确授权的部分须单列缺口，不能用只支持核心字段宣称整条辅助模板已通过。本轮已授权 UI 元数据树与表结构完整查询验收；foreign/aggregate/operator/trigger/policy 以原生缺少 PG 对象身份的类型正确空目录表达，extension、任意多 schema、增量 xmin 仍为范围外。
 
-### 当前失败证据
+### 初始失败证据（已被后续行为回归替代）
 
 libpq >=18 在临时真实双 listener 上以协议 3.0、3.2 复现三个来源夹具，每次错误后 SELECT 1 通过，原 MySQL COM_PING 继续通过。Query SQLSTATE 分别为 42P01、0A000、42601；显式 oid 参数的 Parse 分别为 42P01、0A000、0A000。第三条扩展查询因不支持 OID 26 提前失败，不证明 regclass、JOIN 或 Bind 已执行。后续实现需把相应错误断言升级为真实结果断言，不能长期把预期报错当成兼容验收。
 
@@ -447,4 +447,12 @@ order by owner_id
 
 原生类型与目录私有类型使用互不重叠的内部码，DECIMAL 结果仍为 numeric（1700）；没有借目录数组支持扩大原生 JSON/数组类型承诺。完整 DataGrip UI 元数据树、持久重启、RealTiKV、生产鉴权与大 schema 性能仍未验证。
 
-2026-10-03 DataGrip 实际 Bind 回归：会话 1533977259 的函数源、序列依赖等查询被二进制参数拒绝。现补齐目录参数解码，TCP 覆盖 OID 无符号边界、NULL、混合格式及坏数据后的 Sync 恢复；本机 JDBC 42.7.13/42.7.3 强制二进制 int8 参数且保留文本结果，对三条原始来源查询执行回归。此证据不代表默认二进制结果或完整 UI 验收；同会话 RetrieveTables 的有序 array_agg/关联标量子查询仍报 expected )，其他目录存在独立缺口。
+历史记录（2026-10-03；最新结果见下方）：DataGrip 实际 Bind 回归：会话 1533977259 的函数源、序列依赖等查询被二进制参数拒绝。现补齐目录参数解码，TCP 覆盖 OID 无符号边界、NULL、混合格式及坏数据后的 Sync 恢复；本机 JDBC 42.7.13/42.7.3 强制二进制 int8 参数且保留文本结果，对三条原始来源查询执行回归。此证据不代表默认二进制结果或完整 UI 验收；同会话 RetrieveTables 的有序 array_agg/关联标量子查询仍报 expected )，其他目录存在独立缺口。
+
+## DataGrip 完整客户端验收（批次 6）
+
+`pg_introspection_clients` 在真实临时 PG listener 上，使用 DataGrip 已安装的 JDBC 42.7.13 和 42.7.3、默认二进制参数/结果格式与 `prepareThreshold=1` 执行 `pkg/server/testdata/pg_datagrip` 中完整 SQL。每条查询使用 namespace 字面量和绑定 OID，各执行两次并读取所有结果列。两版驱动各 27/27 查询通过。回归同时要求真实表、主键索引和约束、VARCHAR(30) 列类型与索引列身份；RetrieveColumns 与 RetrieveIndexColumns 从本手册冻结，唯一参数标记从 `$1` 转换为 JDBC `?`。
+
+`txid_current` 使用原生 `@@tidb_current_ts`（未活跃事务为 0），并保留来源查询的取模；该值是原生 TSO，不承诺 PG wraparound XID 或增量 xmin。`pg_user.usesuper` 从原生 `mysql.user.Super_priv` 读取；`pg_is_in_recovery` 为 false，因为本适配器没有 PG 恢复/复制角色。原生索引不发布 PG collation、opclass 或访问方法身份，indcollation 每列为无效 OID 0，未知方法的 `can_order` 为 NULL。目录表达式增加的下标、CROSS JOIN 与逐行表函数仍受原行数、工作量、作用域和取消限制约束。
+
+真实 UI 验收需要读取 DataGrip Database Explorer，刷新 PostgreSQL 数据源并展开 public 下的表、列、索引和约束。2026-10-04 本阶段三次读取均因 Computer Use 的 Accessibility / Screen Recording 权限未授予而失败，未观察到 UI 状态；客户端测试不能替代 UI 验收。当前仍不能声称完整 DataGrip 表树验收通过。
