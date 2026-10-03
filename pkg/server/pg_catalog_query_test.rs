@@ -193,7 +193,7 @@ fn pg_introspection_oid_live_casts() {
     while read(&mut socket).0 != b'Z' {}
     let response = query(
         &mut socket,
-        "select 'pg_class'::regclass::oid as id, NULL::oid as absent, '4294967295'::oid as max from pg_catalog.pg_namespace where nspname = 'test'",
+        "select 'pg_class'::regclass::oid as id, NULL::oid as absent, '4294967295'::oid as max from pg_catalog.pg_namespace where nspname = 'public'",
     );
     assert_eq!(
         response[0].0, b'T',
@@ -206,10 +206,10 @@ fn pg_introspection_oid_live_casts() {
     assert!(response.contains(&(b'D', row(&[Some("1259"), None, Some("4294967295")]))));
     let namespace = query(
         &mut socket,
-        "select oid from pg_catalog.pg_namespace where nspname = 'test'",
+        "select oid from pg_catalog.pg_namespace where nspname = 'public'",
     );
     assert_eq!(columns(&namespace[0].1), vec![("oid".into(), 26)]);
-    let cast_sql = "select 'pg_class'::regclass::oid as id from pg_catalog.pg_namespace where nspname = 'test'";
+    let cast_sql = "select 'pg_class'::regclass::oid as id from pg_catalog.pg_namespace where nspname = 'public'";
     send(
         &mut socket,
         b'P',
@@ -239,13 +239,13 @@ fn pg_introspection_oid_live_casts() {
     assert_eq!(columns(&metadata.1), vec![("id".into(), 26)]);
     let direct = query(
         &mut socket,
-        "select 'pg_class'::regclass as relation from pg_catalog.pg_namespace where nspname = 'test'",
+        "select 'pg_class'::regclass as relation from pg_catalog.pg_namespace where nspname = 'public'",
     );
     assert_eq!(columns(&direct[0].1), vec![("relation".into(), 2205)]);
     assert!(direct.contains(&(b'D', row(&[Some("pg_class")]))));
     let text = query(
         &mut socket,
-        "select 'pg_class'::regclass::varchar as relation, '1259'::regclass::oid as id from pg_catalog.pg_namespace where nspname = 'test'",
+        "select 'pg_class'::regclass::varchar as relation, '1259'::regclass::oid as id from pg_catalog.pg_namespace where nspname = 'public'",
     );
     assert_eq!(
         columns(&text[0].1),
@@ -262,7 +262,7 @@ fn pg_introspection_oid_live_casts() {
         let response = query(
             &mut socket,
             &format!(
-                "select '{value}'::regclass::oid from pg_catalog.pg_namespace where nspname = 'test'"
+                "select '{value}'::regclass::oid from pg_catalog.pg_namespace where nspname = 'public'"
             ),
         );
         assert_eq!(response[0].0, b'E', "{response:?}");
@@ -281,7 +281,7 @@ fn pg_introspection_oid_live_casts() {
     ] {
         let response = query(
             &mut socket,
-            &format!("select '{value}'::oid from pg_catalog.pg_namespace where nspname = 'test'"),
+            &format!("select '{value}'::oid from pg_catalog.pg_namespace where nspname = 'public'"),
         );
         assert_eq!(response[0].0, b'E', "{response:?}");
         assert!(
@@ -335,7 +335,7 @@ fn pg_introspection_oid_live_casts() {
             .unwrap()
             .to_string(),
     ];
-    let sql = "select 'oid_live_one'::regclass::oid, 'public.oid_idx_one'::regclass::oid, 'oid_idx_two'::regclass::oid from pg_catalog.pg_namespace where nspname = 'test'";
+    let sql = "select 'oid_live_one'::regclass::oid, 'public.oid_idx_one'::regclass::oid, 'oid_idx_two'::regclass::oid from pg_catalog.pg_namespace where nspname = 'public'";
     let expected_row = (
         b'D',
         row(&expected

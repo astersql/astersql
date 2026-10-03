@@ -381,7 +381,45 @@ impl PgService {
                         .filter(|sql| !sql.contains(&0))
                         .and_then(|sql| std::str::from_utf8(sql).ok());
                     if let Some(sql) = sql {
-                        let catalog = crate::pg_catalog::CatalogQuery::parse(sql);
+                        let session_query = crate::pg_session::SessionQuery::parse(sql);
+                        if let Ok(Some(query)) = &session_query {
+                            match self.with_query(pid, |context| {
+                                extended.session.execute(query, context.as_ref())
+                            })? {
+                                Ok(result) => crate::pg_result::write_result(
+                                    socket,
+                                    &result,
+                                    query.command(),
+                                )?,
+                                Err(error) => write_error(
+                                    socket,
+                                    "ERROR",
+                                    sqlstate(&error),
+                                    &error.to_string(),
+                                )?,
+                            }
+                            write_message(
+                                socket,
+                                b'Z',
+                                if context.in_transaction() { b"T" } else { b"I" },
+                            )?;
+                            continue;
+                        }
+                        if let Err((state, message)) = session_query {
+                            write_error(socket, "ERROR", state, &message)?;
+                            write_message(
+                                socket,
+                                b'Z',
+                                if context.in_transaction() { b"T" } else { b"I" },
+                            )?;
+                            continue;
+                        }
+                        let catalog = crate::pg_catalog::CatalogQuery::parse(sql).map(|query| {
+                            query.map(|mut query| {
+                                query.current_schema = extended.session.schema().map(str::to_owned);
+                                query
+                            })
+                        });
                         let parsed = if let Err(error) = &catalog {
                             Err(error.clone())
                         } else if catalog.as_ref().is_ok_and(|query| query.is_some()) {

@@ -241,7 +241,7 @@ for options, expected_protocol in [('', 30000), (' min_protocol_version=3.2 max_
         query('SELECT 1', [['1']])
         # Current failures are source evidence, not a claim of PG compatibility.
         # Use the real current namespace ID; no catalog rows are mocked.
-        namespace_id = int(query("select oid from pg_catalog.pg_namespace where nspname = 'test'")[0][0])
+        namespace_id = int(query("select oid from pg_catalog.pg_namespace where nspname = 'public'")[0][0])
         for label, displayed, simple_state, parse_state in zip(
                 ['RetrieveViewSources', 'RetrieveFunctionSources', 'RetrieveRelations'],
                 sys.argv[3:6], ['42P01', '0A000', '42601'], ['42P01', '0A000', '0A000']):
@@ -265,8 +265,8 @@ for options, expected_protocol in [('', 30000), (' min_protocol_version=3.2 max_
             assert all(int(r[0]) != 0 and r[2:] == [None, 'f', 't', None] for r in databases), databases
             assert [int(r[0]) for r in databases[1:]] == sorted(int(r[0]) for r in databases[1:]), databases
             namespaces = query(namespace_sql, metadata=[('id', 20), ('state_number', 20), ('name', 25), ('description', 25), ('owner', 25)], extended=extended)
-            assert namespaces[0][2] == 'test', namespaces
-            assert any(r[2] == 'pg_client_catalog_live' for r in namespaces), namespaces
+            assert namespaces[0][2] == 'public', namespaces
+            assert {r[2] for r in namespaces} == {'public', 'pg_catalog'}, namespaces
             assert all(int(r[0]) > 0 and r[1] is None and r[3:] == [None, None] for r in namespaces), namespaces
             assert [int(r[0]) for r in namespaces[1:]] == sorted(int(r[0]) for r in namespaces[1:]), namespaces
             assert len({r[0] for r in namespaces}) == len(namespaces)

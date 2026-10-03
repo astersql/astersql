@@ -278,6 +278,7 @@ fn temporal(oid: u32, text: &str) -> Result<(u8, Vec<u8>)> {
 }
 struct Statement {
     catalog: Option<crate::pg_catalog::CatalogQuery>,
+    session_query: Option<crate::pg_session::SessionQuery>,
     metadata: PreparedMetadata,
     oids: Vec<u32>,
     mapping: Vec<usize>,
@@ -285,6 +286,7 @@ struct Statement {
 }
 struct Portal {
     catalog: Option<crate::pg_catalog::CatalogQuery>,
+    session_query: Option<crate::pg_session::SessionQuery>,
     statement_name: String,
     columns: Vec<crate::conn::ColumnInfo>,
     native_types: Vec<crate::conn::NativeType>,
@@ -298,6 +300,7 @@ struct Portal {
 #[derive(Default)]
 pub(crate) struct Extended {
     startup_epoch_micros: u128,
+    pub(crate) session: crate::pg_session::PgSession,
     statements: HashMap<String, Statement>,
     portals: HashMap<String, Portal>,
     failed: bool,
@@ -312,7 +315,7 @@ impl Extended {
 
     pub(crate) fn reset_unnamed(&mut self, context: &Arc<dyn TiDBContext>) {
         if let Some(statement) = self.statements.remove("") {
-            if statement.catalog.is_none() {
+            if statement.catalog.is_none() && statement.session_query.is_none() {
                 let _ = context.close_prepared_statement(statement.metadata.statement_id);
             }
             self.portals.retain(|_, p| !p.statement_name.is_empty());
@@ -400,13 +403,18 @@ impl Extended {
                 if !name.is_empty() && self.statements.contains_key(&name) {
                     return Err(error("42P05", "prepared statement already exists"));
                 }
-                let catalog = crate::pg_catalog::CatalogQuery::parse(&sql)?;
-                let (sql, mapping) = if catalog.is_some() {
+                let session_query = crate::pg_session::SessionQuery::parse(&sql)?;
+                let catalog = if session_query.is_some() {
+                    None
+                } else {
+                    crate::pg_catalog::CatalogQuery::parse(&sql)?
+                };
+                let (sql, mapping) = if catalog.is_some() || session_query.is_some() {
                     (sql, Vec::new())
                 } else {
                     markers(&sql)?
                 };
-                let sql = if catalog.is_some() {
+                let sql = if catalog.is_some() || session_query.is_some() {
                     std::borrow::Cow::Borrowed(sql.as_str())
                 } else {
                     crate::pg_result::adapt_session_query(&sql, self.startup_epoch_micros)?
@@ -444,7 +452,9 @@ impl Extended {
                         return Err(error("0A000", "unsupported text parameter OID"));
                     }
                 }
-                let command = if catalog.is_some() {
+                let command = if let Some(query) = &session_query {
+                    Some(query.command())
+                } else if catalog.is_some() {
                     Some("SELECT")
                 } else {
                     crate::pg_result::command(&sql)?
@@ -452,7 +462,9 @@ impl Extended {
                 if command.is_none() {
                     return Err(error("0A000", "empty prepared statements are unsupported"));
                 }
-                let metadata = if let Some(catalog) = &catalog {
+                let metadata = if let Some(query) = &session_query {
+                    query.metadata()
+                } else if let Some(catalog) = &catalog {
                     catalog.metadata()
                 } else {
                     context
@@ -460,13 +472,13 @@ impl Extended {
                         .map_err(engine)?
                 };
                 if metadata.parameter_count != mapping.len() {
-                    if catalog.is_none() {
+                    if catalog.is_none() && session_query.is_none() {
                         let _ = context.close_prepared_statement(metadata.statement_id);
                     }
                     return Err(error("0A000", "engine parameter count mismatch"));
                 }
                 if let Some(previous) = self.statements.remove(&name) {
-                    if previous.catalog.is_none() {
+                    if previous.catalog.is_none() && previous.session_query.is_none() {
                         context
                             .close_prepared_statement(previous.metadata.statement_id)
                             .map_err(engine)?;
@@ -479,6 +491,7 @@ impl Extended {
                 self.statements.insert(
                     name,
                     Statement {
+                        session_query,
                         catalog,
                         metadata,
                         oids,
@@ -540,6 +553,7 @@ impl Extended {
                     name,
                     Portal {
                         catalog: statement.catalog.clone(),
+                        session_query: statement.session_query.clone(),
                         statement_name,
                         columns: statement.metadata.columns.clone(),
                         native_types: statement.metadata.native_types.clone(),
@@ -604,8 +618,16 @@ impl Extended {
                     let Some(command) = portal.command else {
                         return Ok(vec![(b'I', vec![])]);
                     };
-                    let execution = execute(portal.statement, &portal.args, portal.catalog.clone())
-                        .map_err(|e| error("XX000", &e.to_string()))?;
+                    let execution = if let Some(query) = &portal.session_query {
+                        self.session.execute(query, context.as_ref())
+                    } else {
+                        let catalog = portal.catalog.clone().map(|mut query| {
+                            query.current_schema = self.session.schema().map(str::to_owned);
+                            query
+                        });
+                        execute(portal.statement, &portal.args, catalog)
+                            .map_err(|e| error("XX000", &e.to_string()))?
+                    };
                     let mut result = match execution {
                         Ok(result) => result,
                         Err(e) => {
@@ -674,7 +696,7 @@ impl Extended {
                         // succeeds for absent objects, allowing the next pipeline
                         // to proceed after Sync instead of starting another error.
                         if let Some(statement) = self.statements.remove(&name) {
-                            if statement.catalog.is_none() {
+                            if statement.catalog.is_none() && statement.session_query.is_none() {
                                 context
                                     .close_prepared_statement(statement.metadata.statement_id)
                                     .map_err(engine)?;

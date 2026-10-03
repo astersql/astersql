@@ -165,6 +165,9 @@ mod pg_error_test;
 mod pg_extended_test;
 
 mod pg_extended;
+mod pg_session;
+#[cfg(test)]
+mod pg_session_test;
 
 #[cfg(test)]
 #[path = "pg_client_integration_test.rs"]

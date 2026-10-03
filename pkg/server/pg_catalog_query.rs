@@ -11,7 +11,7 @@ fn unsupported(message: &str) -> (&'static str, String) {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Token {
+pub(crate) enum Token {
     Word(String),
     Quoted(String),
     String(String),
@@ -73,7 +73,7 @@ pub(crate) struct Select {
     pub(crate) limit: Option<usize>,
 }
 
-fn lex(sql: &str) -> ParseResult<Vec<Token>> {
+pub(crate) fn lex(sql: &str) -> ParseResult<Vec<Token>> {
     let b = sql.as_bytes();
     let mut i = 0;
     let mut out = Vec::new();
@@ -356,12 +356,11 @@ impl Parser {
     }
     fn relation(&mut self) -> ParseResult<Relation> {
         let path = self.path()?;
-        if path.len() != 2 || path[0] != "pg_catalog" {
-            return Err(unsupported(
-                "catalog relations must be qualified by pg_catalog",
-            ));
-        }
-        let name = path[1].clone();
+        let name = match path.as_slice() {
+            [name] => name.clone(),
+            [catalog, name] if catalog == "pg_catalog" => name.clone(),
+            _ => return Err(unsupported("unsupported catalog relation qualification")),
+        };
         if !matches!(
             name.as_str(),
             "pg_database"
@@ -525,7 +524,11 @@ pub(crate) fn parse(sql: &str) -> ParseResult<Option<Select>> {
             && matches!(&w[1], Token::Word(s) | Token::Quoted(s) if s == "pg_catalog")
             && w[2] == Token::Symbol('.')
     });
-    if !catalog {
+    let implicit_catalog = tokens.windows(2).any(|w| {
+        matches!(&w[0], Token::Word(s) if matches!(s.as_str(), "from" | "join"))
+            && matches!(&w[1], Token::Word(s) | Token::Quoted(s) if matches!(s.as_str(), "pg_database" | "pg_locks" | "pg_namespace" | "pg_tablespace" | "pg_description" | "pg_shdescription"))
+    });
+    if !catalog && !implicit_catalog {
         return Ok(None);
     }
     if !matches!(tokens.first(), Some(Token::Word(s)) if s == "select") {

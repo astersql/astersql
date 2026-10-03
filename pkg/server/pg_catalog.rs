@@ -19,13 +19,17 @@ use crate::pg_catalog_query::{self, CastType, Expr, ParseResult, Select};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CatalogQuery {
     pub(crate) select: Select,
+    pub(crate) current_schema: Option<String>,
 }
 impl CatalogQuery {
     pub(crate) fn parse(sql: &str) -> ParseResult<Option<Self>> {
         let Some(select) = pg_catalog_query::parse(sql)? else {
             return Ok(None);
         };
-        let query = Self { select };
+        let query = Self {
+            select,
+            current_schema: Some("public".into()),
+        };
         query.validate()?;
         Ok(Some(query))
     }
@@ -306,42 +310,45 @@ impl CatalogQuery {
                     _ => String::new(),
                 };
                 let schemas = snapshot.AllSchemas();
-                // PG namespaces expose each native database as one schema;
-                // the session's selected database is its current schema. No
-                // additional public schema or search_path is synthesized.
                 if self.select.from.name == "pg_namespace" {
-                    database = schemas
+                    // public is the current native database, never another database.
+                    // pg_catalog is implicit even when absent from search_path.
+                    let public = schemas
                         .iter()
-                        .find(|s| s.name.lower == database.to_lowercase())
-                        .map(|s| s.name.original.clone())
-                        .unwrap_or_default();
+                        .find(|s| s.name.lower == database.to_lowercase());
+                    let mut rows = vec![namespace_row(11, "pg_catalog")];
+                    if let Some(schema) = public {
+                        rows.push(namespace_row(namespace_oid(schema.id)?, "public"));
+                    }
+                    rows
+                } else {
+                    // Native schema metadata has no shared-description rows. A
+                    // LEFT JOIN to this empty relation keeps every schema and
+                    // gives all right-side fields NULL, regardless of its predicate.
+                    schemas
+                        .into_iter()
+                        .map(|schema| {
+                            // Both projections refer to the same native database object.
+                            let oid = namespace_oid(schema.id)?;
+                            Ok(vec![
+                                Value::Signed(oid),
+                                Value::Text(schema.name.original.clone()),
+                                // Native schemas have no PostgreSQL owner or description,
+                                // and are neither template databases nor disabled databases.
+                                Value::Null,
+                                Value::Text("false".into()),
+                                Value::Text("true".into()),
+                                Value::Null,
+                                Value::Null,
+                                Value::Null,
+                                // There is no PG XID source. Expose an explicitly
+                                // nullable bigint state_number, never a native TSO.
+                                Value::Null,
+                                Value::Null,
+                            ])
+                        })
+                        .collect::<ConnResult<Vec<_>>>()?
                 }
-                // Native schema metadata has no shared-description rows. A
-                // LEFT JOIN to this empty relation keeps every schema and
-                // gives all right-side fields NULL, regardless of its predicate.
-                schemas
-                    .into_iter()
-                    .map(|schema| {
-                        // Both projections refer to the same native database object.
-                        let oid = namespace_oid(schema.id)?;
-                        Ok(vec![
-                            Value::Signed(oid),
-                            Value::Text(schema.name.original.clone()),
-                            // Native schemas have no PostgreSQL owner or description,
-                            // and are neither template databases nor disabled databases.
-                            Value::Null,
-                            Value::Text("false".into()),
-                            Value::Text("true".into()),
-                            Value::Null,
-                            Value::Null,
-                            Value::Null,
-                            // There is no PG XID source. Expose an explicitly
-                            // nullable bigint state_number, never a native TSO.
-                            Value::Null,
-                            Value::Null,
-                        ])
-                    })
-                    .collect::<ConnResult<Vec<_>>>()?
             }
             // Native database/schema metadata has no comment source. These
             // relations are empty, not one NULL-description row per object.
@@ -459,13 +466,10 @@ impl CatalogQuery {
             },
             Expr::Call(path, args) => match path.last().unwrap().as_str() {
                 "current_database" | "current_catalog" => Value::Text(database.into()),
-                "current_schema" => {
-                    if database.is_empty() {
-                        Value::Null
-                    } else {
-                        Value::Text(database.into())
-                    }
-                }
+                "current_schema" => self
+                    .current_schema
+                    .as_ref()
+                    .map_or(Value::Null, |s| Value::Text(s.clone())),
                 "pg_get_userbyid" => {
                     evaluate(&args[0])?;
                     Value::Null
@@ -622,4 +626,20 @@ fn contains_age(expr: &Expr) -> bool {
 /// PG-only checked namespace mapping shared with all later directory providers.
 pub(crate) fn namespace_oid(id: i64) -> ConnResult<i64> {
     crate::pg_oid::namespace_oid(id).map(i64::from)
+}
+
+fn namespace_row(oid: i64, name: &str) -> Vec<Value> {
+    vec![
+        Value::Signed(oid),
+        Value::Text(name.into()),
+        Value::Null,
+        Value::Text("false".into()),
+        Value::Text("true".into()),
+        Value::Null,
+        Value::Null,
+        Value::Null,
+        Value::Null,
+        Value::Null,
+        Value::Null,
+    ]
 }

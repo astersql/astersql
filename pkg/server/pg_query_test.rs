@@ -506,12 +506,9 @@ fn namespace_catalog_live_metadata() {
     let before = query(&mut socket, sql);
     assert_eq!(before[0].0, b'T', "{before:?}");
     let before_rows = catalog_rows(&before);
-    assert_eq!(before_rows[0][2].as_deref(), Some("test"));
-    assert!(
-        !before_rows
-            .iter()
-            .any(|r| r[2].as_deref() == Some("public"))
-    );
+    assert_eq!(before_rows[0][2].as_deref(), Some("public"));
+    assert_eq!(before_rows.len(), 2); // public plus implicit pg_catalog
+
     assert_eq!(
         query(&mut socket, "CREATE DATABASE namespace_live")[0].0,
         b'C'
@@ -519,7 +516,7 @@ fn namespace_catalog_live_metadata() {
     let result = query(&mut socket, sql);
     assert_eq!(result[0].0, b'T', "{result:?}");
     let rows = catalog_rows(&result);
-    assert_eq!(rows.len(), before_rows.len() + 1);
+    assert_eq!(rows, before_rows); // Other databases never become PG schemas.
     let ids: std::collections::HashSet<_> = rows.iter().map(|r| r[0].clone()).collect();
     assert_eq!(ids.len(), rows.len());
     for r in &rows {
@@ -547,20 +544,12 @@ fn namespace_catalog_live_metadata() {
         assert_eq!(&result[0].1[offset + 6..offset + 10], &oid.to_be_bytes());
         offset += 18;
     }
-    let created = rows
-        .iter()
-        .find(|r| r[2].as_deref() == Some("namespace_live"))
-        .unwrap();
     let native = domain
         .info_schema()
         .AllSchemas()
         .into_iter()
         .find(|s| s.name.lower == "namespace_live")
         .unwrap();
-    assert_eq!(
-        created[0],
-        Some(namespace_oid(native.id).unwrap().to_string())
-    );
     let mut second = TcpStream::connect(addr).unwrap();
     second
         .set_read_timeout(Some(Duration::from_secs(5)))
@@ -576,7 +565,11 @@ fn namespace_catalog_live_metadata() {
     second.write_all(&startup).unwrap();
     while read(&mut second).0 != b'Z' {}
     let current = catalog_rows(&query(&mut second, sql));
-    assert_eq!(current[0], *created);
+    assert_eq!(current[0][2].as_deref(), Some("public"));
+    assert_eq!(
+        current[0][0],
+        Some(namespace_oid(native.id).unwrap().to_string())
+    );
     send(&mut second, b'X', b"");
     assert_eq!(
         query(&mut socket, "DROP DATABASE namespace_live")[0].0,
@@ -659,5 +652,169 @@ fn tablespace_catalog_empty_relation() {
     );
     assert_eq!(query(&mut socket, "SELECT 1")[1], (b'D', row(&[Some("1")])));
     send(&mut socket, b'X', b"");
+    service.close();
+}
+
+#[test]
+fn pg_introspection_namespace_session_state() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    let connect = || {
+        let mut socket = TcpStream::connect(addr).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .unwrap();
+        let body = [
+            196608u32.to_be_bytes().as_slice(),
+            b"user\0root\0database\0test\0\0",
+        ]
+        .concat();
+        socket
+            .write_all(&((body.len() + 4) as u32).to_be_bytes())
+            .unwrap();
+        socket.write_all(&body).unwrap();
+        assert_eq!(read(&mut socket).0, b'R');
+        while read(&mut socket).0 != b'Z' {}
+        socket
+    };
+    let mut first = connect();
+    let mut second = connect();
+    let values = |socket: &mut TcpStream, sql: &str| {
+        let result = query(socket, sql);
+        assert_eq!(result[0].0, b'T', "{sql}: {result:?}");
+        catalog_rows(&result)
+    };
+    assert_eq!(
+        values(&mut first, "SELECT current_schema()"),
+        vec![vec![Some("public".into())]]
+    );
+    assert_eq!(
+        values(&mut first, "SELECT current_database()"),
+        vec![vec![Some("test".into())]]
+    );
+    assert_eq!(
+        values(&mut first, "SHOW search_path"),
+        vec![vec![Some("public".into())]]
+    );
+    assert_eq!(
+        query(&mut first, "CREATE DATABASE namespace_hidden")[0].0,
+        b'C'
+    );
+    assert_eq!(
+        values(
+            &mut first,
+            "SELECT nspname FROM pg_catalog.pg_namespace ORDER BY nspname"
+        ),
+        vec![vec![Some("pg_catalog".into())], vec![Some("public".into())]]
+    );
+    for (path, schema) in [
+        ("pg_catalog, public", Some("pg_catalog")),
+        ("public, pg_catalog", Some("public")),
+        ("pg_catalog", Some("pg_catalog")),
+        ("''", None),
+    ] {
+        assert_eq!(
+            query(&mut first, &format!("SET search_path TO {path}"))[0].0,
+            b'C'
+        );
+        assert_eq!(
+            values(&mut first, "SELECT current_schema()"),
+            vec![vec![schema.map(str::to_owned)]]
+        );
+        assert_eq!(
+            values(&mut second, "SELECT current_schema()"),
+            vec![vec![Some("public".into())]]
+        );
+    }
+    assert_eq!(
+        values(
+            &mut first,
+            "SELECT nspname FROM pg_namespace ORDER BY nspname"
+        ),
+        vec![vec![Some("pg_catalog".into())], vec![Some("public".into())]]
+    );
+    for (sql, state) in [
+        ("SET search_path TO namespace_hidden", "0A000"),
+        ("SET search_path TO missing", "0A000"),
+        ("SET search_path TO public, missing", "0A000"),
+        ("SET search_path TO NULL", "0A000"),
+        ("SET search_path TO public; SELECT 1", "42601"),
+    ] {
+        let messages = query(&mut first, sql);
+        assert_eq!(messages[0].0, b'E', "{sql}");
+        assert!(
+            messages[0]
+                .1
+                .windows(7)
+                .any(|part| part == [b"C", state.as_bytes(), b"\0"].concat()),
+            "{sql}: {messages:?}"
+        );
+        assert_eq!(
+            values(&mut first, "SELECT current_schema()"),
+            vec![vec![None]]
+        );
+    }
+    assert_eq!(query(&mut first, "RESET search_path")[0].0, b'C');
+    assert_eq!(
+        values(&mut first, "SHOW search_path"),
+        vec![vec![Some("public".into())]]
+    );
+    assert_eq!(
+        values(
+            &mut first,
+            "SELECT current_schema() FROM pg_catalog.pg_namespace LIMIT 1"
+        ),
+        vec![vec![Some("public".into())]]
+    );
+    assert_eq!(
+        values(
+            &mut first,
+            "SELECT nspname FROM pg_namespace ORDER BY nspname"
+        ),
+        vec![vec![Some("pg_catalog".into())], vec![Some("public".into())]]
+    );
+    // Named Parse must not freeze the current schema; Execute sees later SET.
+    send(&mut first, b'P', b"schema\0SELECT current_schema()\0\0\0");
+    assert_eq!(read(&mut first).0, b'1');
+    assert_eq!(
+        query(&mut first, "SET search_path TO pg_catalog, public")[0].0,
+        b'C'
+    );
+    send(&mut first, b'B', b"\0schema\0\0\0\0\0\0\0");
+    send(&mut first, b'D', b"P\0");
+    send(&mut first, b'E', &[0, 0, 0, 0, 0]);
+    send(&mut first, b'S', &[]);
+    assert_eq!(read(&mut first).0, b'2');
+    assert_eq!(read(&mut first).0, b'T');
+    assert_eq!(read(&mut first), (b'D', row(&[Some("pg_catalog")])));
+    assert_eq!(read(&mut first).0, b'C');
+    assert_eq!(read(&mut first).0, b'Z');
+    assert_eq!(
+        values(
+            &mut first,
+            "SELECT current_schema() FROM pg_catalog.pg_namespace LIMIT 1"
+        ),
+        vec![vec![Some("pg_catalog".into())]]
+    );
+    assert!(
+        !domain
+            .info_schema()
+            .AllSchemas()
+            .iter()
+            .any(|schema| schema.name.lower == "public")
+    );
+    send(&mut first, b'X', &[]);
+    send(&mut second, b'X', &[]);
     service.close();
 }
