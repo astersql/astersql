@@ -239,12 +239,13 @@ for options, expected_protocol in [('', 30000), (' min_protocol_version=3.2 max_
             finally:
                 finish(invalid)
         query('SELECT 1', [['1']])
-        # Current failures are source evidence, not a claim of PG compatibility.
+        # Source SQL remains frozen; unsupported JOIN/CTE features now fail in
+        # the PG catalog layer, rather than leaking to native name resolution.
         # Use the real current namespace ID; no catalog rows are mocked.
         namespace_id = int(query("select oid from pg_catalog.pg_namespace where nspname = 'public'")[0][0])
         for label, displayed, simple_state, parse_state in zip(
                 ['RetrieveViewSources', 'RetrieveFunctionSources', 'RetrieveRelations'],
-                sys.argv[3:6], ['42P01', '0A000', '42601'], ['42P01', '0A000', '0A000']):
+                sys.argv[3:6], ['0A000', '0A000', '0A000'], ['0A000', '0A000', '0A000']):
             assert displayed.count('?') == 1, label
             query(displayed.replace('?', str(namespace_id)), sqlstate=simple_state)
             query('SELECT 1', [['1']])
@@ -258,7 +259,11 @@ for options, expected_protocol in [('', 30000), (' min_protocol_version=3.2 max_
             order by case when nspname = pg_catalog.current_schema() then -1::bigint else N.oid::bigint end"""
         tablespace_sql = 'SELECT oid::bigint AS id, spcname AS name, pg_catalog.pg_get_userbyid(spcowner) AS "owner", spcacl, spcoptions FROM pg_catalog.pg_tablespace ORDER BY oid'
         query('CREATE DATABASE pg_client_catalog_live')
+        query('CREATE TABLE public.pg_client_relation_live (id INT)')
         for extended in [False, True]:
+            relations = query("SELECT oid, relname, relnamespace, relkind FROM pg_class WHERE relname = 'pg_client_relation_live'", metadata=[('oid', 26), ('relname', 25), ('relnamespace', 26), ('relkind', 25)], extended=extended)
+            assert len(relations) == 1 and relations[0][1:] == ['pg_client_relation_live', str(namespace_id), 'r'], relations
+            assert int(relations[0][0]) > 0, relations
             databases = query(sys.argv[2], metadata=[('id', 20), ('name', 25), ('description', 25), ('is_template', 16), ('allow_connections', 16), ('owner', 25)], extended=extended)
             assert databases[0][1] == 'test', databases
             assert any(r[1] == 'pg_client_catalog_live' for r in databases), databases
@@ -280,6 +285,7 @@ for options, expected_protocol in [('', 30000), (' min_protocol_version=3.2 max_
             for sql, state in [('SELECT oid FROM pg_catalog.pg_missing', '42P01'), ('SELECT oid FROM pg_catalog.pg_namespace GROUP BY oid', '0A000'), ('SELECT (', '42601')]:
                 query(sql, extended=extended, sqlstate=state)
                 query('SELECT 1', [['1']], extended=extended)
+        query('DROP TABLE public.pg_client_relation_live')
         query('DROP DATABASE pg_client_catalog_live')
         assert not any(r[1] == 'pg_client_catalog_live' for r in query(sys.argv[2]))
         query('CREATE TABLE pg_real_client (id INT PRIMARY KEY, v VARCHAR(30))')

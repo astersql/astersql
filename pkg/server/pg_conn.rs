@@ -414,12 +414,11 @@ impl PgService {
                             )?;
                             continue;
                         }
-                        let catalog = crate::pg_catalog::CatalogQuery::parse(sql).map(|query| {
-                            query.map(|mut query| {
-                                query.current_schema = extended.session.schema().map(str::to_owned);
-                                query
-                            })
-                        });
+                        let catalog = crate::pg_catalog::CatalogQuery::parse_session(
+                            sql,
+                            context.as_ref(),
+                            &extended.session,
+                        );
                         let parsed = if let Err(error) = &catalog {
                             Err(error.clone())
                         } else if catalog.as_ref().is_ok_and(|query| query.is_some()) {

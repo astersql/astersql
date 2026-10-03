@@ -407,7 +407,11 @@ impl Extended {
                 let catalog = if session_query.is_some() {
                     None
                 } else {
-                    crate::pg_catalog::CatalogQuery::parse(&sql)?
+                    crate::pg_catalog::CatalogQuery::parse_session(
+                        &sql,
+                        context.as_ref(),
+                        &self.session,
+                    )?
                 };
                 let (sql, mapping) = if catalog.is_some() || session_query.is_some() {
                     (sql, Vec::new())

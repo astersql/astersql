@@ -340,7 +340,7 @@ fn catalog_rows(messages: &[(u8, Vec<u8>)]) -> Vec<Vec<Option<String>>> {
 #[test]
 fn datagrip_catalog_live_metadata() {
     use crate::pg_catalog::{CatalogQuery, DATABASES_SQL, TRANSACTIONS_SQL};
-    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let (domain, native_session) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let service = PgService::start(
@@ -367,7 +367,7 @@ fn datagrip_catalog_live_metadata() {
     for sql in [
         "CREATE DATABASE IF NOT EXISTS test",
         "CREATE DATABASE pg_catalog_live",
-        "CREATE TABLE test.pg_catalog_tx (id INT)",
+        "CREATE TABLE public.pg_catalog_tx (id INT)",
     ] {
         assert_eq!(query(&mut socket, sql)[0].0, b'C', "{sql}");
     }
@@ -400,16 +400,24 @@ fn datagrip_catalog_live_metadata() {
     assert!(catalog_rows(&query(&mut socket, TRANSACTIONS_SQL)).is_empty());
     assert_eq!(query(&mut socket, "BEGIN")[0].0, b'C');
     assert_eq!(
-        query(&mut socket, "INSERT INTO test.pg_catalog_tx VALUES (1)")[0].0,
+        query(&mut socket, "INSERT INTO public.pg_catalog_tx VALUES (1)")[0].0,
         b'C'
     );
     let live = catalog_rows(&query(&mut socket, TRANSACTIONS_SQL));
     assert_eq!(live.len(), 1);
-    let native = catalog_rows(&query(
-        &mut socket,
-        "SELECT ID FROM information_schema.tidb_trx",
-    ));
-    assert!(native.iter().any(|row| row[0] == live[0][0]));
+    // Native transaction IDs are observed through the native API; PG schemas
+    // remain public/pg_catalog rather than exposing information_schema routing.
+    let mut native_ids = Vec::new();
+    for mut result in native_session
+        .execute("SELECT ID FROM information_schema.tidb_trx")
+        .unwrap()
+    {
+        while let Some(row) = result.next_row().unwrap() {
+            native_ids.push(row[0].clone());
+        }
+        result.close().unwrap();
+    }
+    assert!(native_ids.iter().any(|id| Some(id) == live[0][0].as_ref()));
     let mut second = TcpStream::connect(addr).unwrap();
     second
         .set_read_timeout(Some(Duration::from_secs(5)))
@@ -422,7 +430,7 @@ fn datagrip_catalog_live_metadata() {
     while read(&mut second).0 != b'Z' {}
     assert_eq!(query(&mut second, "BEGIN")[0].0, b'C');
     assert_eq!(
-        query(&mut second, "INSERT INTO test.pg_catalog_tx VALUES (2)")[0].0,
+        query(&mut second, "INSERT INTO public.pg_catalog_tx VALUES (2)")[0].0,
         b'C'
     );
     assert_eq!(catalog_rows(&query(&mut second, TRANSACTIONS_SQL)), live);

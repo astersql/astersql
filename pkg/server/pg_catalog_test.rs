@@ -348,17 +348,14 @@ fn catalog_database_description_semantics() {
     );
     let namespace = query(
         &mut socket,
-        "SELECT nspname, D.description FROM pg_catalog.pg_namespace N LEFT JOIN pg_catalog.pg_description D ON N.oid = D.objoid AND D.classoid = 2615 AND D.objsubid = 0 WHERE nspname = 'catalog_description_live'",
+        "SELECT nspname, D.description FROM pg_catalog.pg_namespace N LEFT JOIN pg_catalog.pg_description D ON N.oid = D.objoid AND D.classoid = 2615 AND D.objsubid = 0 WHERE nspname = 'public'",
     );
     assert_eq!(
         namespace.iter().map(|m| m.0).collect::<Vec<_>>(),
         b"TDCZ",
         "{namespace:?}"
     );
-    assert_eq!(
-        namespace[1],
-        (b'D', row(&[Some("catalog_description_live"), None]))
-    );
+    assert_eq!(namespace[1], (b'D', row(&[Some("public"), None])));
     let description_columns = query(
         &mut socket,
         "SELECT objoid, classoid, objsubid, description FROM pg_catalog.pg_description",
@@ -490,4 +487,366 @@ fn catalog_database_description_semantics() {
     assert_eq!(query(&mut socket, "SELECT 1")[1], (b'D', row(&[Some("1")])));
     send(&mut socket, b'X', b"");
     service.close();
+}
+
+#[test]
+fn pg_introspection_relations_live() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+    for sql in [
+        "CREATE TABLE relations_live (id INT AUTO_INCREMENT PRIMARY KEY, KEY relations_idx(id))",
+        "CREATE DATABASE relations_other",
+    ] {
+        let result = query(&mut socket, sql);
+        assert_eq!(result[0].0, b'C', "{sql}: {result:?}");
+    }
+    native
+        .execute("CREATE TABLE relations_other.hidden (id INT)")
+        .unwrap();
+    native
+        .execute("CREATE VIEW test.relations_view AS SELECT id FROM test.relations_live")
+        .unwrap();
+    native
+        .execute("CREATE SEQUENCE test.relations_seq START WITH 10")
+        .unwrap();
+    native.execute("CREATE TABLE test.relations_partitioned (id INT, KEY relations_partition_idx(id)) PARTITION BY RANGE (id) (PARTITION p0 VALUES LESS THAN (10), PARTITION p1 VALUES LESS THAN MAXVALUE)").unwrap();
+    let result = query(
+        &mut socket,
+        "SELECT oid, relname, relnamespace, relkind, NULL AS absent FROM pg_catalog.pg_class ORDER BY oid",
+    );
+    assert_eq!(
+        result[0].0, b'T',
+        "pg_class must provide real relations: {result:?}"
+    );
+    assert_eq!(
+        columns(&result[0].1),
+        vec![
+            ("oid".into(), 26),
+            ("relname".into(), 25),
+            ("relnamespace".into(), 26),
+            ("relkind".into(), 25),
+            ("absent".into(), 25)
+        ]
+    );
+    let snapshot = domain.info_schema();
+    let schema = snapshot
+        .AllSchemas()
+        .into_iter()
+        .find(|s| s.name.lower == "test")
+        .unwrap();
+    let ns = crate::pg_catalog::namespace_oid(schema.id)
+        .unwrap()
+        .to_string();
+    for (name, kind) in [
+        ("relations_live", "r"),
+        ("relations_view", "v"),
+        ("relations_seq", "S"),
+        ("relations_partitioned", "p"),
+    ] {
+        let table = snapshot
+            .TableByName(
+                &astersql_infoschema::CiString::new("test"),
+                &astersql_infoschema::CiString::new(name),
+            )
+            .unwrap();
+        let id = crate::pg_oid::table_oid(table.Meta().id)
+            .unwrap()
+            .to_string();
+        assert!(
+            result.contains(&(
+                b'D',
+                row(&[Some(&id), Some(name), Some(&ns), Some(kind), None])
+            )),
+            "{name}: {result:?}"
+        );
+        if name == "relations_live" || name == "relations_partitioned" {
+            let (index_name, index_kind) = if name == "relations_live" {
+                ("relations_idx", "i")
+            } else {
+                ("relations_partition_idx", "I")
+            };
+            let index = table
+                .Meta()
+                .indices
+                .iter()
+                .find(|i| i.name.original == index_name)
+                .unwrap();
+            let index_id = crate::pg_oid::index_oid(table.Meta().id, index.id)
+                .unwrap()
+                .to_string();
+            assert!(result.contains(&(
+                b'D',
+                row(&[
+                    Some(&index_id),
+                    Some(index_name),
+                    Some(&ns),
+                    Some(index_kind),
+                    None
+                ])
+            )));
+        }
+    }
+    assert!(
+        !result
+            .iter()
+            .any(|m| m.0 == b'D' && m.1.windows(6).any(|w| w == b"hidden"))
+    );
+    assert_eq!(
+        query(
+            &mut socket,
+            "SELECT relname FROM pg_class WHERE relname = 'relations_live'"
+        )[1],
+        (b'D', row(&[Some("relations_live")]))
+    );
+    // Parse only stores the projection, not the snapshot or relation rows.
+    send(
+        &mut socket,
+        b'P',
+        &[
+            b"relations_stmt\0".as_slice(),
+            b"SELECT relname FROM pg_catalog.pg_class WHERE relname = 'relations_renamed'\0",
+            &0i16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut socket, b'S', &[]);
+    assert_eq!(until_ready(&mut socket)[0].0, b'1');
+    native
+        .execute("RENAME TABLE test.relations_live TO test.relations_renamed")
+        .unwrap();
+    send(
+        &mut socket,
+        b'B',
+        &[
+            b"relations_portal\0relations_stmt\0".as_slice(),
+            &0i16.to_be_bytes(),
+            &0i16.to_be_bytes(),
+            &0i16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(
+        &mut socket,
+        b'E',
+        &[b"relations_portal\0".as_slice(), &0i32.to_be_bytes()].concat(),
+    );
+    send(&mut socket, b'S', &[]);
+    assert!(until_ready(&mut socket).contains(&(b'D', row(&[Some("relations_renamed")]))));
+    assert_eq!(
+        query(&mut socket, "DROP TABLE relations_renamed")[0].0,
+        b'C'
+    );
+    assert_eq!(
+        query(
+            &mut socket,
+            "SELECT relname FROM pg_class WHERE relname = 'relations_renamed'"
+        )
+        .iter()
+        .filter(|m| m.0 == b'D')
+        .count(),
+        0
+    );
+    // New portals on the same statement must see both DROP and later CREATE.
+    let bind_execute = |socket: &mut TcpStream, portal: &str| {
+        send(
+            socket,
+            b'B',
+            &[
+                format!("{portal}\0relations_stmt\0").as_bytes(),
+                &0i16.to_be_bytes(),
+                &0i16.to_be_bytes(),
+                &0i16.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        send(
+            socket,
+            b'E',
+            &[format!("{portal}\0").as_bytes(), &0i32.to_be_bytes()].concat(),
+        );
+        send(socket, b'S', &[]);
+        until_ready(socket)
+    };
+    let dropped = bind_execute(&mut socket, "relations_dropped");
+    assert_eq!(dropped.iter().map(|m| m.0).collect::<Vec<_>>(), b"2CZ");
+    native
+        .execute("CREATE TABLE test.relations_renamed (id INT)")
+        .unwrap();
+    assert!(
+        bind_execute(&mut socket, "relations_created")
+            .contains(&(b'D', row(&[Some("relations_renamed")])))
+    );
+    for sql in [
+        "SELECT xmin FROM pg_catalog.pg_class",
+        "SELECT C.relname FROM pg_catalog.pg_class C JOIN public.relations_seq B ON C.oid = B.id",
+    ] {
+        let response = query(&mut socket, sql);
+        assert_eq!(response[0].0, b'E', "{response:?}");
+        assert!(
+            response[0].1.windows(5).any(|w| w == b"0A000"),
+            "{response:?}"
+        );
+    }
+    assert_eq!(
+        query(&mut socket, "CREATE TABLE public.pg_class (marker INT)")[0].0,
+        b'C'
+    );
+    assert_eq!(
+        query(&mut socket, "INSERT INTO public.pg_class VALUES (7)")[0].0,
+        b'C'
+    );
+    assert_eq!(
+        query(
+            &mut socket,
+            "SELECT relname FROM pg_class WHERE relname = 'relations_view'"
+        )[1],
+        (b'D', row(&[Some("relations_view")]))
+    );
+    assert_eq!(
+        query(&mut socket, "SET search_path = public, pg_catalog")[0].0,
+        b'C'
+    );
+    assert_eq!(
+        query(&mut socket, "SELECT marker FROM pg_class")[1],
+        (b'D', row(&[Some("7")]))
+    );
+    assert_eq!(
+        query(
+            &mut socket,
+            "SELECT relname FROM pg_catalog.pg_class WHERE relname = 'relations_view'"
+        )[1],
+        (b'D', row(&[Some("relations_view")]))
+    );
+    assert_eq!(
+        query(&mut socket, "SELECT marker FROM public.pg_class")[1],
+        (b'D', row(&[Some("7")]))
+    );
+    // Extended parsing must use the same search-path ownership as Query.
+    send(
+        &mut socket,
+        b'P',
+        &[
+            b"shadow_stmt\0".as_slice(),
+            b"SELECT marker FROM pg_class\0",
+            &0i16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(
+        &mut socket,
+        b'B',
+        &[
+            b"shadow_portal\0shadow_stmt\0".as_slice(),
+            &0i16.to_be_bytes(),
+            &0i16.to_be_bytes(),
+            &0i16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(
+        &mut socket,
+        b'E',
+        &[b"shadow_portal\0".as_slice(), &0i32.to_be_bytes()].concat(),
+    );
+    send(&mut socket, b'S', &[]);
+    assert!(until_ready(&mut socket).contains(&(b'D', row(&[Some("7")]))));
+    let shadow = domain
+        .info_schema()
+        .TableByName(
+            &astersql_infoschema::CiString::new("test"),
+            &astersql_infoschema::CiString::new("pg_class"),
+        )
+        .unwrap();
+    let shadow_id = crate::pg_oid::table_oid(shadow.Meta().id)
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        query(
+            &mut socket,
+            "SELECT 'pg_class'::regclass::oid, 'pg_class'::regclass FROM pg_catalog.pg_namespace WHERE nspname = 'public'"
+        )[1],
+        (b'D', row(&[Some(&shadow_id), Some("public.pg_class")]))
+    );
+    assert_eq!(
+        query(
+            &mut socket,
+            "SELECT 'pg_catalog.pg_class'::regclass::oid FROM pg_catalog.pg_namespace WHERE nspname = 'public'"
+        )[1],
+        (b'D', row(&[Some("1259")]))
+    );
+    assert_eq!(query(&mut socket, "DROP TABLE public.pg_class")[0].0, b'C');
+    // No public collision: explicitly later pg_catalog is still searched.
+    assert_eq!(
+        query(
+            &mut socket,
+            "SELECT relname FROM pg_class WHERE relname = 'relations_view'"
+        )[1],
+        (b'D', row(&[Some("relations_view")]))
+    );
+    assert_eq!(
+        query(
+            &mut socket,
+            "SELECT 'pg_class'::regclass::oid FROM pg_catalog.pg_namespace WHERE nspname = 'public'"
+        )[1],
+        (b'D', row(&[Some("1259")]))
+    );
+    let empty = query(&mut socket, "SELECT oid, relname FROM pg_class LIMIT 0");
+    assert_eq!(empty.iter().map(|m| m.0).collect::<Vec<_>>(), b"TCZ");
+    assert_eq!(
+        columns(&empty[0].1),
+        vec![("oid".into(), 26), ("relname".into(), 25)]
+    );
+    send(&mut socket, b'X', &[]);
+    service.close();
+    domain.close();
+}
+
+#[test]
+fn pg_introspection_relations_ownership() {
+    assert!(
+        crate::pg_catalog::CatalogQuery::parse("SELECT relname FROM pg_class")
+            .unwrap()
+            .is_some(),
+        "unqualified pg_class must be owned by the PG catalog"
+    );
+    assert!(
+        crate::pg_catalog::CatalogQuery::parse("SELECT marker FROM public.pg_class")
+            .unwrap()
+            .is_none()
+    );
+    for sql in [
+        "SELECT C.relname FROM public.business B JOIN pg_class C ON B.id = C.oid",
+        "SELECT C.relname FROM public.business B, pg_catalog.pg_class C",
+        "SELECT C.relname FROM public.business B, pg_class C",
+    ] {
+        assert_eq!(
+            crate::pg_catalog::CatalogQuery::parse(sql).unwrap_err().0,
+            "0A000"
+        );
+    }
 }

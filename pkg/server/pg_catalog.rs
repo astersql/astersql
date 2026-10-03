@@ -20,6 +20,7 @@ use crate::pg_catalog_query::{self, CastType, Expr, ParseResult, Select};
 pub(crate) struct CatalogQuery {
     pub(crate) select: Select,
     pub(crate) current_schema: Option<String>,
+    pub(crate) public_first: bool,
 }
 impl CatalogQuery {
     pub(crate) fn parse(sql: &str) -> ParseResult<Option<Self>> {
@@ -29,6 +30,49 @@ impl CatalogQuery {
         let query = Self {
             select,
             current_schema: Some("public".into()),
+            public_first: false,
+        };
+        query.validate()?;
+        Ok(Some(query))
+    }
+    pub(crate) fn parse_session(
+        sql: &str,
+        context: &dyn TiDBContext,
+        session: &crate::pg_session::PgSession,
+    ) -> ParseResult<Option<Self>> {
+        let mut shadowed = Vec::new();
+        let public_first = session.public_precedes_catalog();
+        let names = pg_catalog_query::implicit_relations(sql);
+        if public_first && !names.is_empty() {
+            let current = context
+                .execute_query("SELECT DATABASE()", false, &CancellationToken::new())
+                .map_err(|e| (crate::pg_conn::sqlstate(&e), e.to_string()))?;
+            if let Some(Value::Text(database)) = current
+                .first()
+                .and_then(|r| r.rows.first())
+                .and_then(|r| r.first())
+            {
+                let snapshot = context
+                    .schema_snapshot()
+                    .ok_or_else(|| ("0A000", "schema snapshot is unavailable".into()))?;
+                let tables = snapshot
+                    .SchemaTableInfos(&astersql_infoschema::CiString::new(database))
+                    .map_err(|e| ("0A000", e.to_string()))?;
+                shadowed.extend(
+                    tables
+                        .iter()
+                        .filter(|t| names.contains(&t.name.original))
+                        .map(|t| t.name.original.clone()),
+                );
+            }
+        }
+        let Some(select) = pg_catalog_query::parse_shadowed(sql, &shadowed)? else {
+            return Ok(None);
+        };
+        let query = Self {
+            select,
+            current_schema: session.schema().map(str::to_owned),
+            public_first,
         };
         query.validate()?;
         Ok(Some(query))
@@ -39,7 +83,8 @@ impl CatalogQuery {
     fn validate(&self) -> ParseResult<()> {
         if !matches!(
             self.select.from.name.as_str(),
-            "pg_database"
+            "pg_class"
+                | "pg_database"
                 | "pg_locks"
                 | "pg_namespace"
                 | "pg_tablespace"
@@ -118,6 +163,10 @@ impl CatalogQuery {
         if belongs_main {
             let boolean = astersql_parser_mysql::r#type::IsBooleanFlag;
             let field = match (main.name.as_str(), name) {
+                ("pg_class", "oid") => Some((0, crate::pg_oid::OID_TYPE, 0)),
+                ("pg_class", "relname") => Some((1, 253, 0)),
+                ("pg_class", "relnamespace") => Some((2, crate::pg_oid::OID_TYPE, 0)),
+                ("pg_class", "relkind") => Some((3, 253, 0)),
                 ("pg_database", "oid") => Some((0, crate::pg_oid::OID_TYPE, 0)),
                 ("pg_database", "datname") => Some((1, 253, 0)),
                 ("pg_database", "datistemplate") => Some((3, 1, boolean)),
@@ -295,7 +344,7 @@ impl CatalogQuery {
         let snapshot = context.schema_snapshot();
         let mut database = String::new();
         let rows = match self.select.from.name.as_str() {
-            "pg_database" | "pg_namespace" => {
+            "pg_class" | "pg_database" | "pg_namespace" => {
                 let snapshot = snapshot
                     .as_ref()
                     .ok_or_else(|| ConnError::Session("schema snapshot is unavailable".into()))?;
@@ -310,7 +359,9 @@ impl CatalogQuery {
                     _ => String::new(),
                 };
                 let schemas = snapshot.AllSchemas();
-                if self.select.from.name == "pg_namespace" {
+                if self.select.from.name == "pg_class" {
+                    class_rows(snapshot.as_ref(), &database)?
+                } else if self.select.from.name == "pg_namespace" {
                     // public is the current native database, never another database.
                     // pg_catalog is implicit even when absent from search_path.
                     let public = schemas
@@ -436,7 +487,12 @@ impl CatalogQuery {
                     let snapshot = snapshot.ok_or_else(|| {
                         ConnError::Session("schema snapshot is unavailable".into())
                     })?;
-                    Value::Signed(i64::from(crate::pg_oid::resolve(&s, database, snapshot)?))
+                    Value::Signed(i64::from(crate::pg_oid::resolve_with_path(
+                        &s,
+                        database,
+                        snapshot,
+                        self.public_first,
+                    )?))
                 }
                 (Value::Signed(n), CastType::Varchar) => {
                     if self.expr_type(inner).expect("validated expression").0
@@ -642,4 +698,72 @@ fn namespace_row(oid: i64, name: &str) -> Vec<Value> {
         Value::Null,
         Value::Null,
     ]
+}
+
+fn class_row(oid: u32, name: &str, namespace: u32, kind: &str) -> Vec<Value> {
+    vec![
+        Value::Signed(i64::from(oid)),
+        Value::Text(name.into()),
+        Value::Signed(i64::from(namespace)),
+        Value::Text(kind.into()),
+    ]
+}
+
+// One execution snapshot supplies identities and full model metadata. Native
+// auto-increment columns are not sequences; only actual Sequence objects are S.
+fn class_rows(
+    snapshot: &dyn astersql_infoschema::InfoSchema,
+    database: &str,
+) -> ConnResult<Vec<Vec<Value>>> {
+    let mut rows: Vec<_> = crate::pg_oid::SYSTEM_RELATIONS
+        .iter()
+        .map(|(name, oid)| class_row(*oid, name, 11, "r"))
+        .collect();
+    let Some(schema) = snapshot
+        .AllSchemas()
+        .into_iter()
+        .find(|s| s.name.lower == database.to_lowercase())
+    else {
+        return Ok(rows);
+    };
+    let namespace = crate::pg_oid::namespace_oid(schema.id)?;
+    for table in snapshot
+        .SchemaTableInfos(&schema.name)
+        .map_err(|e| ConnError::Session(e.to_string()))?
+    {
+        let model = table
+            .model_meta
+            .as_ref()
+            .ok_or(ConnError::UnsupportedCommand(0))?;
+        if model.State != astersql_meta_model::StatePublic {
+            continue;
+        }
+        let partitioned = model.GetPartitionInfo().is_some();
+        let kind = if model.View.is_some() {
+            "v"
+        } else if model.Sequence.is_some() {
+            "S"
+        } else if partitioned {
+            "p"
+        } else {
+            "r"
+        };
+        rows.push(class_row(
+            crate::pg_oid::table_oid(model.ID)?,
+            &model.Name.O,
+            namespace,
+            kind,
+        ));
+        for index in &model.Indices {
+            if index.State == astersql_meta_model::StatePublic {
+                rows.push(class_row(
+                    crate::pg_oid::index_oid(model.ID, index.ID)?,
+                    &index.Name.O,
+                    namespace,
+                    if partitioned { "I" } else { "i" },
+                ));
+            }
+        }
+    }
+    Ok(rows)
 }

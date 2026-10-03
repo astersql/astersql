@@ -114,6 +114,14 @@ fn name_parts(input: &str) -> ConnResult<Vec<String>> {
     }
 }
 pub(crate) fn resolve(input: &str, database: &str, snapshot: &dyn InfoSchema) -> ConnResult<u32> {
+    resolve_with_path(input, database, snapshot, false)
+}
+pub(crate) fn resolve_with_path(
+    input: &str,
+    database: &str,
+    snapshot: &dyn InfoSchema,
+    public_first: bool,
+) -> ConnResult<u32> {
     if !input.trim().is_empty() && input.trim().bytes().all(|b| b.is_ascii_digit()) {
         return input.trim().parse::<u32>().map_err(|_| range_error());
     }
@@ -123,6 +131,30 @@ pub(crate) fn resolve(input: &str, database: &str, snapshot: &dyn InfoSchema) ->
         [schema, name] => (Some(schema.as_str()), name),
         _ => return Err(ConnError::UnsupportedCommand(0)),
     };
+    if schema.is_none() && public_first && !database.is_empty() {
+        let tables = snapshot
+            .SchemaTableInfos(&CiString::new(database))
+            .map_err(|e| ConnError::Session(e.to_string()))?;
+        if let Some(table) = tables.iter().find(|t| t.name.original == *name) {
+            return table_oid(table.id);
+        }
+        let mut found = None;
+        for table in &tables {
+            for index in &table.indices {
+                if index.name.original == *name {
+                    let oid = index_oid(table.id, index.id)?;
+                    if found.replace(oid).is_some() {
+                        return Err(ConnError::Session(
+                            "ambiguous PG index relation name".into(),
+                        ));
+                    }
+                }
+            }
+        }
+        if let Some(oid) = found {
+            return Ok(oid);
+        }
+    }
     if schema.is_none() || schema == Some("pg_catalog") {
         if let Some((_, oid)) = SYSTEM_RELATIONS.iter().find(|(n, _)| *n == name) {
             return Ok(*oid);
@@ -173,15 +205,22 @@ pub(crate) fn display(oid: u32, database: &str, snapshot: &dyn InfoSchema) -> Co
         .map_err(|e| ConnError::Session(e.to_string()))?;
     for table in tables {
         if table_oid(table.id)? == oid {
-            return Ok(quoted(&table.name.original));
+            return Ok(native_name(&table.name.original));
         }
         for index in &table.indices {
             if index_oid(table.id, index.id)? == oid {
-                return Ok(quoted(&index.name.original));
+                return Ok(native_name(&index.name.original));
             }
         }
     }
     Ok(oid.to_string())
+}
+fn native_name(name: &str) -> String {
+    if SYSTEM_RELATIONS.iter().any(|(n, _)| *n == name) {
+        format!("public.{}", quoted(name))
+    } else {
+        quoted(name)
+    }
 }
 fn quoted(name: &str) -> String {
     if name

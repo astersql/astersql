@@ -23,6 +23,14 @@ impl Default for PgSession {
     }
 }
 impl PgSession {
+    pub(crate) fn public_precedes_catalog(&self) -> bool {
+        // An omitted pg_catalog is implicitly searched before every user schema.
+        self.path
+            .iter()
+            .position(|s| s == "public")
+            .zip(self.path.iter().position(|s| s == "pg_catalog"))
+            .is_some_and(|(public, catalog)| public < catalog)
+    }
     pub(crate) fn has_public(&self) -> bool {
         self.path.iter().any(|name| name == "public")
     }

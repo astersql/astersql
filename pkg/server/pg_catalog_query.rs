@@ -361,15 +361,7 @@ impl Parser {
             [catalog, name] if catalog == "pg_catalog" => name.clone(),
             _ => return Err(unsupported("unsupported catalog relation qualification")),
         };
-        if !matches!(
-            name.as_str(),
-            "pg_database"
-                | "pg_locks"
-                | "pg_namespace"
-                | "pg_tablespace"
-                | "pg_description"
-                | "pg_shdescription"
-        ) {
+        if !is_catalog_relation(&name) {
             return Err((
                 "42P01",
                 format!("relation pg_catalog.{name} does not exist"),
@@ -509,7 +501,73 @@ fn label(expr: &Expr) -> String {
 /// A tokenized relation reference, not catalog text inside strings/comments,
 /// determines ownership. Ordinary engine SQL is untouched.
 pub(crate) fn parse(sql: &str) -> ParseResult<Option<Select>> {
-    let tokens = match lex(sql) {
+    parse_shadowed(sql, &[])
+}
+
+pub(crate) fn is_catalog_relation(name: &str) -> bool {
+    name == "pg_locks"
+        || crate::pg_oid::SYSTEM_RELATIONS
+            .iter()
+            .any(|(n, _)| *n == name)
+}
+
+// Track FROM lists at each nesting level so a mixed comma join cannot fall
+// through to the native engine. Projection commas are not relation separators.
+fn implicit_positions(tokens: &[Token]) -> Vec<(usize, String)> {
+    let mut from = vec![false];
+    let mut found = Vec::new();
+    for (i, token) in tokens.iter().enumerate() {
+        let relation = match token {
+            Token::Word(w) if matches!(w.as_str(), "from" | "join") => {
+                *from.last_mut().unwrap() = true;
+                true
+            }
+            Token::Word(w)
+                if matches!(
+                    w.as_str(),
+                    "where" | "on" | "group" | "having" | "order" | "limit" | "union"
+                ) =>
+            {
+                *from.last_mut().unwrap() = false;
+                false
+            }
+            Token::Symbol(',') => *from.last().unwrap(),
+            Token::Symbol('(') => {
+                from.push(false);
+                false
+            }
+            Token::Symbol(')') => {
+                if from.len() > 1 {
+                    from.pop();
+                }
+                false
+            }
+            _ => false,
+        };
+        if relation && tokens.get(i + 2) != Some(&Token::Symbol('.')) {
+            if let Some(Token::Word(name) | Token::Quoted(name)) = tokens.get(i + 1) {
+                if is_catalog_relation(name) {
+                    found.push((i + 1, name.clone()));
+                }
+            }
+        }
+    }
+    found
+}
+
+pub(crate) fn implicit_relations(sql: &str) -> Vec<String> {
+    lex(sql)
+        .map(|tokens| {
+            implicit_positions(&tokens)
+                .into_iter()
+                .map(|(_, n)| n)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub(crate) fn parse_shadowed(sql: &str, shadowed: &[String]) -> ParseResult<Option<Select>> {
+    let mut tokens = match lex(sql) {
         Ok(tokens) => tokens,
         Err(error) => {
             // Preserve engine ownership for lexical errors outside catalog SQL.
@@ -519,15 +577,23 @@ pub(crate) fn parse(sql: &str) -> ParseResult<Option<Select>> {
             return Ok(None);
         }
     };
+    // Qualify only real public collisions for ownership; the original SQL is
+    // passed to the native resolver when no catalog relation remains.
+    for (i, name) in implicit_positions(&tokens).into_iter().rev() {
+        if shadowed.contains(&name) {
+            tokens.splice(i..i, [Token::Word("public".into()), Token::Symbol('.')]);
+        }
+    }
     let catalog = tokens.windows(4).any(|w| {
         matches!(&w[0], Token::Word(s) if matches!(s.as_str(), "from" | "join"))
             && matches!(&w[1], Token::Word(s) | Token::Quoted(s) if s == "pg_catalog")
             && w[2] == Token::Symbol('.')
+    }) || tokens.windows(3).any(|w| {
+        matches!(&w[0], Token::Word(s) | Token::Quoted(s) if s == "pg_catalog")
+            && w[1] == Token::Symbol('.')
+            && matches!(&w[2], Token::Word(s) | Token::Quoted(s) if is_catalog_relation(s))
     });
-    let implicit_catalog = tokens.windows(2).any(|w| {
-        matches!(&w[0], Token::Word(s) if matches!(s.as_str(), "from" | "join"))
-            && matches!(&w[1], Token::Word(s) | Token::Quoted(s) if matches!(s.as_str(), "pg_database" | "pg_locks" | "pg_namespace" | "pg_tablespace" | "pg_description" | "pg_shdescription"))
-    });
+    let implicit_catalog = !implicit_positions(&tokens).is_empty();
     if !catalog && !implicit_catalog {
         return Ok(None);
     }
