@@ -249,24 +249,68 @@ fn worker_pool_honors_single_worker_spawn_policy() {
     assert_eq!(events, vec![1, 2, 3]);
 }
 
-#[test]
-fn worker_pool_can_spawn_a_second_worker_for_pending_work() {
-    let pool = Arc::new(workerPool::new(Some(Arc::new(|workers, tasks| {
-        workers < 2 && tasks > 0
+// Exercise the Go TwoWorkers handshake through the real executor worker pool.
+// Dropping the release sender also unblocks queued work on the timeout path.
+fn run_two_worker_handshake(
+    max_workers: u32,
+    start_timeout: Duration,
+) -> (Vec<i32>, Option<&'static str>) {
+    let pool = Arc::new(workerPool::new(Some(Arc::new(move |workers, tasks| {
+        workers < max_workers && tasks > 0
     }))));
-    let (events_tx, events_rx) = mpsc::channel();
-    let (release_tx, release_rx) = mpsc::channel();
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (started_tx, started_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let (error_tx, error_rx) = mpsc::sync_channel(1);
+    let (done_tx, done_rx) = mpsc::channel();
     let nested_pool = Arc::clone(&pool);
+    let worker_events = Arc::clone(&events);
     pool.submit(move || {
-        events_tx.send(1).unwrap();
-        let nested_tx = events_tx.clone();
-        nested_pool.submit(move || nested_tx.send(2).unwrap());
-        release_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        events_tx.send(3).unwrap();
+        worker_events.lock().unwrap().push(1);
+        let nested_events = Arc::clone(&worker_events);
+        let nested_done = done_tx.clone();
+        nested_pool.submit(move || {
+            nested_events.lock().unwrap().push(3);
+            started_tx.send(()).ok();
+            let _ = release_rx.recv();
+            nested_events.lock().unwrap().push(4);
+            nested_done.send(()).unwrap();
+        });
+        if started_rx.recv_timeout(start_timeout).is_err() {
+            error_tx
+                .send("the second worker did not start the queued task")
+                .unwrap();
+            drop(release_tx);
+            done_tx.send(()).unwrap();
+            return;
+        }
+        worker_events.lock().unwrap().push(2);
+        drop(release_tx);
+        done_tx.send(()).unwrap();
     });
 
-    assert_eq!(events_rx.recv_timeout(Duration::from_secs(2)), Ok(1));
-    assert_eq!(events_rx.recv_timeout(Duration::from_secs(2)), Ok(2));
-    release_tx.send(()).unwrap();
-    assert_eq!(events_rx.recv_timeout(Duration::from_secs(2)), Ok(3));
+    // Like the Go WaitGroup, wait for both tasks before checking the error/list.
+    done_rx.recv().unwrap();
+    done_rx.recv().unwrap();
+    let error = error_rx.try_recv().ok();
+    let events = events.lock().unwrap().clone();
+    (events, error)
+}
+
+#[test]
+fn worker_pool_can_spawn_a_second_worker_for_pending_work() {
+    let (events, error) = run_two_worker_handshake(2, Duration::from_secs(5));
+    assert_eq!(error, None);
+    assert_eq!(events, vec![1, 3, 2, 4]);
+}
+
+#[test]
+fn worker_pool_reports_start_timeout_and_finishes_queued_work() {
+    // One worker forces the startup timeout without scheduler-dependent sleeps.
+    let (events, error) = run_two_worker_handshake(1, Duration::from_millis(20));
+    assert_eq!(
+        error,
+        Some("the second worker did not start the queued task")
+    );
+    assert_eq!(events, vec![1, 3, 4]);
 }
