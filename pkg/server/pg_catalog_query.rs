@@ -70,6 +70,7 @@ pub(crate) struct Relation {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Join {
+    pub(crate) left: bool,
     pub(crate) relation: Relation,
     pub(crate) on: Expr,
 }
@@ -82,7 +83,7 @@ pub(crate) struct Ordering {
 pub(crate) struct Select {
     pub(crate) projections: Vec<Projection>,
     pub(crate) from: Relation,
-    pub(crate) join: Option<Join>,
+    pub(crate) joins: Vec<Join>,
     pub(crate) filter: Option<Expr>,
     pub(crate) order: Vec<Ordering>,
     pub(crate) limit: Option<usize>,
@@ -437,6 +438,13 @@ impl Parser {
                         Expr::Column(path)
                     }
                 }
+                Some(Token::Symbol('$'))
+                    if matches!(self.tokens.get(self.pos + 1), Some(Token::Number(_))) =>
+                {
+                    // JOIN parsing can now reach parameters formerly hidden by
+                    // an unsupported clause. Binding remains a separate feature.
+                    return Err(unsupported("catalog parameters are unsupported"));
+                }
                 Some(Token::Symbol('*')) => {
                     return Err(unsupported("wildcard catalog projections are unsupported"));
                 }
@@ -532,19 +540,28 @@ impl Parser {
         }
         self.require_word("from")?;
         let from = self.relation()?;
-        let join = if self.word("left") {
-            self.word("outer");
-            self.require_word("join")?;
+        let mut joins = Vec::new();
+        loop {
+            let left = if self.word("left") {
+                self.word("outer");
+                self.require_word("join")?;
+                true
+            } else if self.word("inner") {
+                self.require_word("join")?;
+                false
+            } else if self.word("join") {
+                false
+            } else {
+                break;
+            };
+            if joins.len() >= 8 {
+                return Err(unsupported("catalog queries support at most eight joins"));
+            }
             let relation = self.relation()?;
             self.require_word("on")?;
             let on = self.expr()?;
-            if !join_predicate(&on) {
-                return Err(unsupported("only equality catalog joins are supported"));
-            }
-            Some(Join { relation, on })
-        } else {
-            None
-        };
+            joins.push(Join { left, relation, on });
+        }
         let filter = if self.word("where") {
             Some(self.expr()?)
         } else {
@@ -585,18 +602,11 @@ impl Parser {
         Ok(Select {
             projections,
             from,
-            join,
+            joins,
             filter,
             order,
             limit,
         })
-    }
-}
-fn join_predicate(expr: &Expr) -> bool {
-    match expr {
-        Expr::Equal(..) => true,
-        Expr::And(left, right) => join_predicate(left) && join_predicate(right),
-        _ => false,
     }
 }
 fn label(expr: &Expr) -> String {

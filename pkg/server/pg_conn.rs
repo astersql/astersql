@@ -39,6 +39,7 @@ struct Active {
     // Cancellation is accepted only during a command. An idle cancellation
     // must not poison the next command in the canonical context.
     executing: bool,
+    catalog_cancel: Arc<CancellationToken>,
 }
 #[derive(Default)]
 pub struct PgService {
@@ -157,6 +158,7 @@ impl PgService {
             let _ = worker.join();
         }
         for active in self.active.lock().unwrap().values() {
+            active.catalog_cancel.cancel();
             active.context.cancel();
         }
         for socket in self.sockets.lock().unwrap().values() {
@@ -324,6 +326,7 @@ impl PgService {
                     key: key.clone(),
                     context: context.clone(),
                     executing: false,
+                    catalog_cancel: Arc::new(CancellationToken::new()),
                 },
             );
             write_message(socket, b'R', &0u32.to_be_bytes())?;
@@ -363,7 +366,7 @@ impl PgService {
                 if extended.handle(tag, &body, socket, &context, |statement, args, catalog| {
                     self.with_query(pid, |context| {
                         if let Some(catalog) = catalog {
-                            return catalog.execute(context.as_ref());
+                            return catalog.execute(context.as_ref(), &self.catalog_cancel(pid));
                         }
                         context.execute_prepared_statement(
                             statement,
@@ -445,7 +448,7 @@ impl PgService {
                                         catalog.as_ref().ok().and_then(|query| query.as_ref())
                                     {
                                         return catalog
-                                            .execute(context.as_ref())
+                                            .execute(context.as_ref(), &self.catalog_cancel(pid))
                                             .map(|result| vec![result]);
                                     }
                                     context.execute_query(&sql, false, &CancellationToken::new())
@@ -544,9 +547,13 @@ impl PgService {
                     == 0
                 && entry.executing
             {
+                entry.catalog_cancel.cancel();
                 entry.context.cancel();
             }
         }
+    }
+    fn catalog_cancel(&self, pid: u32) -> Arc<CancellationToken> {
+        self.active.lock().unwrap()[&pid].catalog_cancel.clone()
     }
     /// Runs a command under the same registry lock used by cancellation, so
     /// stale/idle CancelRequests cannot be carried into the next command.
@@ -563,6 +570,7 @@ impl PgService {
             if entry.executing {
                 return Err(invalid("backend already has an active command"));
             }
+            entry.catalog_cancel = Arc::new(CancellationToken::new());
             entry.executing = true;
             entry.context.clone()
         };
@@ -644,7 +652,11 @@ pub(crate) fn sqlstate(error: &crate::conn::ConnError) -> &'static str {
         ConnError::ServerShutdown => "57P01",
         ConnError::MalformedPacket(_) | ConnError::UnsupportedProtocol => "08P01",
         ConnError::Session(message) => {
-            if message == "PG oid conversion out of range"
+            if message == "PG catalog row limit exceeded (16384 rows)"
+                || message == "PG catalog join work limit exceeded (100000 comparisons)"
+            {
+                "54000"
+            } else if message == "PG oid conversion out of range"
                 || message == "PG object ID exceeds the supported OID range"
             {
                 "22003"

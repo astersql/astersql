@@ -1035,3 +1035,227 @@ fn pg_introspection_predicates_live() {
     service.close();
     domain.close();
 }
+
+#[test]
+fn pg_introspection_joins_live() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native
+        .execute("CREATE TABLE test.joins_a (id INT)")
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+
+    native
+        .execute("CREATE TABLE test.joins_b (id INT)")
+        .unwrap();
+    let sql = "SELECT A.relname, B.relname, D.description, E.description FROM pg_class A INNER JOIN pg_class B ON A.relnamespace = B.relnamespace LEFT OUTER JOIN pg_description D ON D.objoid = A.oid LEFT JOIN pg_shdescription E ON E.objoid = B.oid WHERE A.relname IN ('joins_a','joins_b') AND B.relname IN ('joins_a','joins_b') ORDER BY A.relname, B.relname";
+    let result = query(&mut socket, sql);
+    assert_eq!(result[0].0, b'T', "multi-join: {result:?}");
+    let expected = vec![
+        (b'D', row(&[Some("joins_a"), Some("joins_a"), None, None])),
+        (b'D', row(&[Some("joins_a"), Some("joins_b"), None, None])),
+        (b'D', row(&[Some("joins_b"), Some("joins_a"), None, None])),
+        (b'D', row(&[Some("joins_b"), Some("joins_b"), None, None])),
+    ];
+    assert_eq!(result[1..5], expected);
+    for (suffix, count) in [
+        (
+            "LEFT JOIN pg_class B ON A.oid = B.oid AND B.relname = 'joins_b' WHERE A.relname IN ('joins_a','joins_b')",
+            2,
+        ),
+        (
+            "LEFT JOIN pg_class B ON A.oid = B.oid AND B.relname = 'joins_b' WHERE A.relname IN ('joins_a','joins_b') AND B.relname IS NULL",
+            1,
+        ),
+        (
+            "JOIN pg_class B ON A.oid = B.oid AND B.relname = 'joins_b' WHERE A.relname IN ('joins_a','joins_b')",
+            1,
+        ),
+        (
+            "JOIN pg_description D ON A.oid = D.objoid WHERE A.relname = 'joins_a'",
+            0,
+        ),
+        (
+            "LEFT JOIN pg_class B ON NULL = B.oid WHERE A.relname = 'joins_a'",
+            1,
+        ),
+    ] {
+        let select = if suffix.contains("pg_description") {
+            "A.relname"
+        } else {
+            "A.relname, B.relname"
+        };
+        let result = query(
+            &mut socket,
+            &format!("SELECT {select} FROM pg_class A {suffix} ORDER BY A.relname"),
+        );
+        assert_eq!(result[0].0, b'T', "{suffix}: {result:?}");
+        assert_eq!(
+            result.iter().filter(|m| m.0 == b'D').count(),
+            count,
+            "{suffix}"
+        );
+        if suffix.starts_with("LEFT JOIN") {
+            assert_eq!(result[1], (b'D', row(&[Some("joins_a"), None])));
+        }
+    }
+    // Later ON clauses see all earlier bindings, including NULL-extended rows.
+    let result = query(
+        &mut socket,
+        "SELECT A.relname, B.relname, C.relname FROM pg_class A LEFT JOIN pg_class B ON B.oid = NULL LEFT JOIN pg_class C ON C.oid = B.oid WHERE A.relname = 'joins_a'",
+    );
+    assert_eq!(result[1], (b'D', row(&[Some("joins_a"), None, None])));
+    let result = query(
+        &mut socket,
+        "SELECT A.relname, B.relname FROM pg_class A JOIN pg_namespace N ON relname = 'joins_a' AND N.oid = A.relnamespace JOIN pg_class B ON B.oid = A.oid WHERE A.relname = 'joins_a'",
+    );
+    assert_eq!(result[1], (b'D', row(&[Some("joins_a"), Some("joins_a")])));
+    for (sql, state) in [
+        (
+            "SELECT oid FROM pg_class A JOIN pg_class B ON A.oid = B.oid",
+            "42702",
+        ),
+        (
+            "SELECT A.oid FROM pg_class A JOIN pg_class A ON A.oid = A.oid",
+            "42712",
+        ),
+        (
+            "SELECT A.oid FROM pg_class A JOIN pg_class B ON C.oid = B.oid JOIN pg_class C ON C.oid = A.oid",
+            "0A000",
+        ),
+        (
+            "SELECT A.oid FROM pg_class A RIGHT JOIN pg_class B ON A.oid = B.oid",
+            "0A000",
+        ),
+        (
+            "SELECT A.oid FROM pg_class A JOIN public.joins_b B ON A.oid = B.id",
+            "0A000",
+        ),
+        (
+            "SELECT A.oid FROM pg_class A JOIN pg_class B ON A.oid",
+            "0A000",
+        ),
+    ] {
+        let result = query(&mut socket, sql);
+        assert_eq!(result[0].0, b'E', "{sql}: {result:?}");
+        assert!(
+            result[0]
+                .1
+                .windows(7)
+                .any(|w| w == format!("C{state}\0").as_bytes()),
+            "{sql}: {result:?}"
+        );
+    }
+    send(
+        &mut socket,
+        b'P',
+        &[
+            b"joins_stmt\0".as_slice(),
+            sql.as_bytes(),
+            b"\0",
+            &0u16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(
+        &mut socket,
+        b'B',
+        &[
+            b"joins_portal\0joins_stmt\0".as_slice(),
+            &0u16.to_be_bytes(),
+            &0u16.to_be_bytes(),
+            &0u16.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(
+        &mut socket,
+        b'E',
+        &[b"joins_portal\0".as_slice(), &0u32.to_be_bytes()].concat(),
+    );
+    send(&mut socket, b'S', b"");
+    let extended = until_ready(&mut socket);
+    assert_eq!(
+        extended
+            .iter()
+            .filter(|m| m.0 == b'D')
+            .cloned()
+            .collect::<Vec<_>>(),
+        expected
+    );
+    let ninth = format!(
+        "SELECT A.oid FROM pg_class A {}",
+        (0..9)
+            .map(|i| format!("JOIN pg_class J{i} ON A.oid = J{i}.oid"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    let result = query(&mut socket, &ninth);
+    assert!(result[0].1.windows(7).any(|w| w == b"C0A000\0"));
+    // Real tables exercise both bounds, including LIMIT 0: no partial success.
+    for i in 0..24 {
+        native
+            .execute(&format!("CREATE TABLE test.joins_work_{i} (id INT)"))
+            .unwrap();
+    }
+    for (sql, message) in [
+        (
+            "SELECT A.oid FROM pg_class A JOIN pg_class B ON true JOIN pg_class C ON true JOIN pg_class D ON true LIMIT 0",
+            "row limit exceeded (16384 rows)",
+        ),
+        (
+            "SELECT A.oid FROM pg_class A JOIN pg_class B ON true JOIN pg_class C ON C.oid = B.oid JOIN pg_class D ON D.oid = B.oid JOIN pg_class E ON false LIMIT 0",
+            "work limit exceeded (100000 comparisons)",
+        ),
+    ] {
+        let result = query(&mut socket, sql);
+        assert_eq!(result[0].0, b'E', "{sql}: {result:?}");
+        assert!(
+            result[0].1.windows(7).any(|w| w == b"C54000\0"),
+            "{sql}: {result:?}"
+        );
+        assert!(result.iter().all(|m| m.0 != b'D'));
+        assert!(String::from_utf8_lossy(&result[0].1).contains(message));
+    }
+    // Cancellation must be checked before native metadata or join work starts.
+    use crate::conn::{CancellationToken, SessionDriver};
+    let driver =
+        ConcreteSessionDriver::new_for_test(domain.clone(), BootstrapAuthMode::InsecureRootOnly);
+    let context = driver.open_ctx(97007, 0, 45, "", None).unwrap();
+    let token = CancellationToken::new();
+    token.cancel();
+    let catalog = crate::pg_catalog::CatalogQuery::parse(sql)
+        .unwrap()
+        .unwrap();
+    let error = catalog.execute(context.as_ref(), &token).unwrap_err();
+    assert_eq!(crate::pg_conn::sqlstate(&error), "57014");
+    context.close().unwrap();
+    assert_eq!(query(&mut socket, "SELECT 1")[1], (b'D', row(&[Some("1")])));
+    send(&mut socket, b'X', b"");
+    service.close();
+    domain.close();
+}

@@ -7,7 +7,7 @@ fn catalog_select_structure() {
     assert_eq!(select.projections.len(), 6);
     assert_eq!(select.from.name, "pg_database");
     assert_eq!(select.from.alias, "n");
-    assert_eq!(select.join.unwrap().relation.name, "pg_shdescription");
+    assert_eq!(select.joins[0].relation.name, "pg_shdescription");
     assert!(matches!(select.order[0].expr, Expr::Case { .. }));
     let transactions = parse(crate::pg_catalog::TRANSACTIONS_SQL).unwrap().unwrap();
     assert!(matches!(
@@ -418,4 +418,20 @@ fn pg_introspection_oid_live_casts() {
     );
     send(&mut socket, b'X', &[]);
     service.close();
+}
+
+#[test]
+fn pg_introspection_joins_parameter_rejection() {
+    for sql in [
+        "SELECT A.oid FROM pg_class A JOIN pg_namespace N ON N.oid = A.relnamespace WHERE N.oid = $1::oid",
+        "SELECT A.oid FROM pg_class A JOIN pg_namespace N ON N.oid = $1::oid",
+        "SELECT $1::oid FROM pg_class A JOIN pg_namespace N ON N.oid = A.relnamespace",
+    ] {
+        assert_eq!(parse(sql).unwrap_err().0, "0A000", "{sql}");
+    }
+    assert!(
+        parse("SELECT '$1' FROM pg_class A JOIN pg_namespace N ON N.oid = A.relnamespace")
+            .unwrap()
+            .is_some()
+    );
 }

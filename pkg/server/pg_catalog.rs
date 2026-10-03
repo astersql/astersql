@@ -5,6 +5,25 @@ use crate::conn::{
     QueryResult, TiDBContext, Value,
 };
 
+// Fixed provider slots preserve the existing catalog column layout. Joined
+// relations get separate slots, including empty providers after LEFT JOIN.
+const CATALOG_ROW_WIDTH: usize = 11;
+const MAX_CATALOG_ROWS: usize = 16_384;
+const MAX_CATALOG_JOIN_WORK: usize = 100_000;
+fn catalog_row_limit() -> ConnError {
+    ConnError::Session("PG catalog row limit exceeded (16384 rows)".into())
+}
+fn catalog_work_limit() -> ConnError {
+    ConnError::Session("PG catalog join work limit exceeded (100000 comparisons)".into())
+}
+fn check_catalog_cancel(cancel: &CancellationToken) -> ConnResult<()> {
+    if cancel.is_cancelled() {
+        Err(ConnError::Session("Query execution was interrupted".into()))
+    } else {
+        Ok(())
+    }
+}
+
 pub(crate) const DATABASES_SQL: &str = r#"select N.oid::bigint as id,
        datname as name, D.description, datistemplate as is_template,
        datallowconn as allow_connections,
@@ -81,30 +100,34 @@ impl CatalogQuery {
         Self::parse(sql).ok().flatten()
     }
     fn validate(&self) -> ParseResult<()> {
-        if !matches!(
-            self.select.from.name.as_str(),
-            "pg_class"
-                | "pg_database"
-                | "pg_locks"
-                | "pg_namespace"
-                | "pg_tablespace"
-                | "pg_description"
-                | "pg_shdescription"
-        ) {
-            return Err(("0A000", "catalog provider is not implemented yet".into()));
-        }
-        if let Some(join) = &self.select.join {
+        let mut aliases = std::collections::HashSet::new();
+        for relation in self.relations() {
             if !matches!(
-                (self.select.from.name.as_str(), join.relation.name.as_str()),
-                ("pg_database", "pg_shdescription")
-                    | ("pg_namespace", "pg_description")
-                    | ("pg_tablespace", "pg_shdescription")
-            ) || join.relation.alias == self.select.from.alias
-            {
-                return Err(("0A000", "unsupported catalog join".into()));
+                relation.name.as_str(),
+                "pg_class"
+                    | "pg_database"
+                    | "pg_locks"
+                    | "pg_namespace"
+                    | "pg_tablespace"
+                    | "pg_description"
+                    | "pg_shdescription"
+            ) {
+                return Err(("0A000", "catalog provider is not implemented yet".into()));
             }
-            if self.expr_type(&join.on)?.0 != 1 {
-                return Err(("0A000", "catalog JOIN must be a predicate".into()));
+            if !aliases.insert(&relation.alias) {
+                return Err(("42712", "duplicate catalog relation alias".into()));
+            }
+        }
+        for (index, join) in self.select.joins.iter().enumerate() {
+            // ON binds only to the accumulated left side and this right side.
+            // Later aliases must not accidentally read uninitialized row slots.
+            let mut scope = self.clone();
+            scope.select.joins.truncate(index + 1);
+            if contains_age(&join.on) || scope.expr_type(&join.on)?.0 != 1 {
+                return Err((
+                    "0A000",
+                    "catalog JOIN must be a predicate without age".into(),
+                ));
             }
         }
         for projection in &self.select.projections {
@@ -158,11 +181,13 @@ impl CatalogQuery {
             [catalog, relation, _] if catalog == "pg_catalog" => Some(relation.as_str()),
             _ => return Err(("0A000", "unsupported column qualification".into())),
         };
-        let main = &self.select.from;
-        let belongs_main = qualifier.is_none_or(|q| q == main.alias);
-        if belongs_main {
+        let mut found = None;
+        for (index, relation) in self.relations().enumerate() {
+            if qualifier.is_some_and(|q| q != relation.alias) {
+                continue;
+            }
             let boolean = astersql_parser_mysql::r#type::IsBooleanFlag;
-            let field = match (main.name.as_str(), name) {
+            let field = match (relation.name.as_str(), name) {
                 ("pg_class", "oid") => Some((0, crate::pg_oid::OID_TYPE, 0)),
                 ("pg_class", "relname") => Some((1, 253, 0)),
                 ("pg_class", "relnamespace") => Some((2, crate::pg_oid::OID_TYPE, 0)),
@@ -184,19 +209,20 @@ impl CatalogQuery {
                 ("pg_tablespace", "spcacl") => Some((8, 253, 0)),
                 ("pg_tablespace", "spcoptions") => Some((10, 253, 0)),
                 ("pg_locks", "transactionid") => Some((0, 8, 0)),
-                ("pg_description" | "pg_shdescription", _) => description_column(&main.name, name),
+                ("pg_description" | "pg_shdescription", _) => {
+                    description_column(&relation.name, name)
+                }
                 _ => None,
             };
-            if let Some(field) = field {
-                return Ok(field);
+            if let Some((slot, code, flags)) = field {
+                if found.is_some() {
+                    return Err(("42702", "ambiguous catalog column".into()));
+                }
+                found = Some((index * CATALOG_ROW_WIDTH + slot, code, flags));
             }
         }
-        if let Some(join) = &self.select.join {
-            if qualifier.is_none_or(|q| q == join.relation.alias) {
-                if let Some(field) = description_column(&join.relation.name, name) {
-                    return Ok(field);
-                }
-            }
+        if let Some(field) = found {
+            return Ok(field);
         }
         Err((
             "0A000",
@@ -359,29 +385,119 @@ impl CatalogQuery {
             native_types,
         }
     }
-    pub(crate) fn execute(&self, context: &dyn TiDBContext) -> ConnResult<QueryResult> {
+    fn relations(&self) -> impl Iterator<Item = &pg_catalog_query::Relation> {
+        std::iter::once(&self.select.from)
+            .chain(self.select.joins.iter().map(|join| &join.relation))
+    }
+    pub(crate) fn execute(
+        &self,
+        context: &dyn TiDBContext,
+        cancel: &CancellationToken,
+    ) -> ConnResult<QueryResult> {
+        check_catalog_cancel(cancel)?;
         let metadata = self.metadata();
         let snapshot = context.schema_snapshot();
-        let mut database = String::new();
-        let rows = match self.select.from.name.as_str() {
+        let database = if self
+            .relations()
+            .any(|r| matches!(r.name.as_str(), "pg_class" | "pg_database" | "pg_namespace"))
+        {
+            let current = context.execute_query("SELECT DATABASE()", false, cancel)?;
+            match current
+                .first()
+                .and_then(|r| r.rows.first())
+                .and_then(|r| r.first())
+            {
+                Some(Value::Text(name)) => name.clone(),
+                _ => String::new(),
+            }
+        } else {
+            String::new()
+        };
+        // Cache each provider once per execution, with one metadata snapshot.
+        let mut providers = std::collections::HashMap::new();
+        for relation in self.relations() {
+            check_catalog_cancel(cancel)?;
+            if !providers.contains_key(&relation.name) {
+                let mut rows = self.provider_rows(
+                    &relation.name,
+                    context,
+                    snapshot.as_ref(),
+                    &database,
+                    cancel,
+                )?;
+                if rows.len() > MAX_CATALOG_ROWS {
+                    return Err(catalog_row_limit());
+                }
+                for row in &mut rows {
+                    row.resize(CATALOG_ROW_WIDTH, Value::Null);
+                }
+                providers.insert(relation.name.clone(), rows);
+            }
+        }
+        let mut rows = providers[&self.select.from.name].clone();
+        let mut work = 0usize;
+        for (index, join) in self.select.joins.iter().enumerate() {
+            let mut scope = self.clone();
+            scope.select.joins.truncate(index + 1);
+            let right = &providers[&join.relation.name];
+            let mut joined = Vec::new();
+            for left in rows {
+                check_catalog_cancel(cancel)?;
+                let mut matched = false;
+                for right in right {
+                    check_catalog_cancel(cancel)?;
+                    work += 1;
+                    if work > MAX_CATALOG_JOIN_WORK {
+                        return Err(catalog_work_limit());
+                    }
+                    let mut candidate = left.clone();
+                    candidate.extend_from_slice(right);
+                    if matches!(scope.evaluate(&join.on, &candidate, &database, snapshot.as_deref())?, Value::Text(s) if s == "true")
+                    {
+                        matched = true;
+                        joined.push(candidate);
+                        if joined.len() > MAX_CATALOG_ROWS {
+                            return Err(catalog_row_limit());
+                        }
+                    }
+                }
+                if join.left && !matched {
+                    let mut candidate = left;
+                    candidate.extend(vec![Value::Null; CATALOG_ROW_WIDTH]);
+                    joined.push(candidate);
+                    if joined.len() > MAX_CATALOG_ROWS {
+                        return Err(catalog_row_limit());
+                    }
+                }
+            }
+            rows = joined;
+        }
+        let rows = self.project(rows, &database, snapshot.as_deref(), cancel)?;
+        Ok(QueryResult {
+            columns: metadata.columns,
+            native_types: metadata.native_types,
+            rows,
+            state: context.state(),
+            response_lifecycle: None,
+            result_set: None,
+        })
+    }
+    fn provider_rows(
+        &self,
+        name: &str,
+        context: &dyn TiDBContext,
+        snapshot: Option<&astersql_infoschema::SchemaRef>,
+        database: &str,
+        cancel: &CancellationToken,
+    ) -> ConnResult<Vec<Vec<Value>>> {
+        let rows = match name {
             "pg_class" | "pg_database" | "pg_namespace" => {
                 let snapshot = snapshot
-                    .as_ref()
                     .ok_or_else(|| ConnError::Session("schema snapshot is unavailable".into()))?;
-                let current =
-                    context.execute_query("SELECT DATABASE()", false, &CancellationToken::new())?;
-                let selected_database = current
-                    .first()
-                    .and_then(|r| r.rows.first())
-                    .and_then(|r| r.first());
-                database = match selected_database {
-                    Some(Value::Text(name)) => name.clone(),
-                    _ => String::new(),
-                };
                 let schemas = snapshot.AllSchemas();
-                if self.select.from.name == "pg_class" {
-                    class_rows(snapshot.as_ref(), &database)?
-                } else if self.select.from.name == "pg_namespace" {
+                if name == "pg_class" {
+                    class_rows(snapshot.as_ref(), database)?
+                } else if name == "pg_namespace" {
                     // public is the current native database, never another database.
                     // pg_catalog is implicit even when absent from search_path.
                     let public = schemas
@@ -435,7 +551,7 @@ impl CatalogQuery {
                 let results = context.execute_query(
                     "SELECT ID FROM information_schema.tidb_trx",
                     false,
-                    &CancellationToken::new(),
+                    cancel,
                 )?;
                 let mut transactions = Vec::new();
                 for result in &results {
@@ -464,15 +580,7 @@ impl CatalogQuery {
             }
             _ => unreachable!("validated catalog provider"),
         };
-        let rows = self.project(rows, &database, snapshot.as_deref())?;
-        Ok(QueryResult {
-            columns: metadata.columns,
-            native_types: metadata.native_types,
-            rows,
-            state: context.state(),
-            response_lifecycle: None,
-            result_set: None,
-        })
+        Ok(rows)
     }
     fn evaluate(
         &self,
@@ -644,9 +752,11 @@ impl CatalogQuery {
         rows: Vec<Vec<Value>>,
         database: &str,
         snapshot: Option<&dyn astersql_infoschema::InfoSchema>,
+        cancel: &CancellationToken,
     ) -> ConnResult<Vec<Vec<Value>>> {
         let mut selected = Vec::new();
         for row in rows {
+            check_catalog_cancel(cancel)?;
             if let Some(filter) = &self.select.filter {
                 if !matches!(self.evaluate(filter, &row, database, snapshot)?, Value::Text(s) if s == "true")
                 {
@@ -690,10 +800,12 @@ impl CatalogQuery {
             }
             std::cmp::Ordering::Equal
         });
+        check_catalog_cancel(cancel)?;
         selected
             .into_iter()
             .take(self.select.limit.unwrap_or(usize::MAX))
             .map(|(row, _)| {
+                check_catalog_cancel(cancel)?;
                 self.select
                     .projections
                     .iter()
