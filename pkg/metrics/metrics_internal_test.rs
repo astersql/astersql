@@ -138,6 +138,90 @@ fn test_ret_label() {
     assert_eq!(OP_FAILED, RetLabel(Some(&String::from("test error"))));
 }
 
+/// The original RU metric definitions survive the RUv3-to-RUv2 rename.
+#[test]
+fn ru_metric_definitions_preserve_labels_values_and_registration() {
+    if crate::main_test::run_in_isolated_process(
+        "metrics_internal_test::ru_metric_definitions_preserve_labels_values_and_registration",
+    ) {
+        return;
+    }
+    use crate::session::{
+        LblEngine, LblEngineTiFlash, LblEngineTiKV, LblSQLType, LblSQLTypeAnalyze, LblSQLTypeDDL,
+        LblSQLTypeOther, LblSQLTypeRead, LblSQLTypeWrite,
+    };
+    assert_eq!(
+        [
+            LblSQLTypeDDL,
+            LblSQLTypeRead,
+            LblSQLTypeWrite,
+            LblSQLTypeAnalyze,
+            LblSQLTypeOther
+        ],
+        ["ddl", "read", "write", "analyze", "other"],
+    );
+    assert_eq!([LblEngineTiKV, LblEngineTiFlash], ["tikv", "tiflash"]);
+    ensure_test_env();
+    unsafe {
+        crate::metrics::InitMetrics().unwrap();
+        RUV2Total.as_ref().unwrap().inc_by(1.0);
+        RUV2BySQLType
+            .as_ref()
+            .unwrap()
+            .with_label_values(&[LblSQLTypeRead])
+            .inc_by(2.0);
+        RUV2ByEngine
+            .as_ref()
+            .unwrap()
+            .with_label_values(&[LblEngineTiKV])
+            .inc_by(3.0);
+        crate::metrics::RegisterMetrics().unwrap();
+    }
+    let families = prometheus::gather();
+    for (name, help, label, value) in [
+        (
+            "tidb_ruv2_ru_total",
+            "Counter of resource unit consumption for RU v2.",
+            None,
+            1.0,
+        ),
+        (
+            "tidb_ruv2_ru_by_sql_type_total",
+            "Counter of resource unit consumption by SQL type for RU v2.",
+            Some((LblSQLType, LblSQLTypeRead)),
+            2.0,
+        ),
+        (
+            "tidb_ruv2_ru_by_engine_total",
+            "Counter of resource unit consumption by engine for RU v2.",
+            Some((LblEngine, LblEngineTiKV)),
+            3.0,
+        ),
+    ] {
+        let family = find_metric_family(&families, name).expect(name);
+        assert_eq!(
+            family.get_field_type(),
+            prometheus::proto::MetricType::COUNTER
+        );
+        assert_eq!(family.help(), help);
+        let metric = family
+            .get_metric()
+            .iter()
+            .find(|metric| match label {
+                Some((key, expected)) => metric_has_label_value(metric, key, expected),
+                None => metric.get_label().is_empty(),
+            })
+            .expect(name);
+        assert_eq!(metric.get_label().len(), usize::from(label.is_some()));
+        assert_eq!(metric.get_counter().value(), value);
+    }
+    assert!(
+        !families
+            .iter()
+            .any(|family| family.name().starts_with("tidb_ruv3_"))
+    );
+}
+
 /// Go RU v2 collector names and label dimensions are part of the monitoring contract.
 #[test]
 fn go_merge_6_ru_metric_definitions() {
