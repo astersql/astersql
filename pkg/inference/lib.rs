@@ -9,6 +9,7 @@ pub mod jina;
 pub mod mock;
 pub mod nvidia;
 pub mod openai;
+mod raw_http;
 pub mod tidbcloud;
 pub use embed_fn::{EmbedFn, Embedder, Options};
 pub use mock::MockEmbedder;

@@ -1,4 +1,17 @@
 // Copyright 2026 AsterSQL.
+// Copyright 2025 PingCAP, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//	http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -86,11 +99,11 @@ fn go_merge_43_openai_compatible_provider_posts_and_reorders_indexed_vectors() {
 }
 
 #[test]
-fn decoder_accepts_empty_embedding_and_real_jina_fixture() {
+fn decoder_rejects_empty_embedding_and_decodes_real_jina_fixture() {
     use crate::openai::decode_indexed_base64_embeddings as decode;
     assert_eq!(
-        decode(br#"{"data":[{"index":0,"embedding":""}]}"#, 1).unwrap(),
-        vec![Vec::<f32>::new()]
+        decode(br#"{"data":[{"index":0,"embedding":""}]}"#, 1).unwrap_err(),
+        "failed to decode embedding for index 0: embedding data is empty"
     );
     let body = br#"{"data":[{"index":0,"embedding":"AAAYPgAAEb8AACq+AAAXPgAA4b0AAP0+AACUvQAA4TwAAC67AAAVPw=="}]}"#;
     assert_eq!(
@@ -123,7 +136,7 @@ fn endpoint_normalizes_existing_suffix_and_keeps_query() {
     );
 }
 
-fn http_fixture(
+pub(super) fn http_fixture(
     status: u16,
     response: String,
     delay: std::time::Duration,
@@ -483,7 +496,10 @@ fn openai_protocol_zero_values_and_byte_arrays_follow_go_json() {
         r#"{"data":[{"index":0,"embedding":null}]}"#,
         r#"{"data":[{}]}"#,
     ] {
-        assert_eq!(decode(body.as_bytes(), 1).unwrap(), vec![Vec::<f32>::new()]);
+        assert_eq!(
+            decode(body.as_bytes(), 1).unwrap_err(),
+            "failed to decode embedding for index 0: embedding data is empty"
+        );
     }
     assert_eq!(
         decode(br#"{"data":[{"embedding":[0,0,128,63]}]}"#, 1).unwrap(),
@@ -521,5 +537,26 @@ fn openai_cancellation_aborts_inflight_http_request() {
     assert!(
         elapsed < std::time::Duration::from_millis(500),
         "cancellation waited {elapsed:?}"
+    );
+}
+
+#[test]
+fn openai_shared_contract_preserves_limits_validation_and_causes() {
+    crate::cohere_test::provider_contract(
+        |cfg| Box::new(crate::openai::OpenAIEmbedder::with_provider_config(cfg)),
+        "OpenAI",
+    );
+}
+
+#[test]
+fn openai_endpoints_validate_configuration_and_keep_default_protocol_routes() {
+    crate::cohere_test::invalid_endpoints_and_missing_keys(
+        |cfg| Box::new(crate::openai::OpenAIEmbedder::with_provider_config(cfg)),
+        "OpenAI",
+    );
+    let provider = crate::openai::OpenAIEmbedder::with_provider_config(Default::default());
+    assert_eq!(
+        provider.endpoint().unwrap().as_str(),
+        "https://api.openai.com/v1/embeddings"
     );
 }

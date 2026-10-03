@@ -24,6 +24,18 @@ pub type Options = BTreeMap<String, serde_json::Value>;
 
 /// Provider boundary used by the Domain-owned embedding function.
 pub trait Embedder: Send + Sync {
+    /// Preserve a caller cancellation cause and inspectable errors at the provider boundary.
+    fn create_embeddings_with_context(
+        &self,
+        context: &crate::base::ProviderContext<'_>,
+        model: &str,
+        texts: &[String],
+        opts: &Options,
+    ) -> Result<Vec<Vec<f32>>, crate::base::ProviderError> {
+        self.create_embeddings(context.cancel, model, texts, opts)
+            .map_err(|message| context.cause().unwrap_or_else(|| message.into()))
+    }
+
     fn create_embeddings(
         &self,
         cancel: &AtomicBool,

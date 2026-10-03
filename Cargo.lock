@@ -5088,11 +5088,17 @@ version = "0.1.0"
 dependencies = [
  "astersql-util-logutil",
  "base64 0.22.1",
+ "http-body-util",
+ "hyper 1.11.0",
+ "hyper-rustls 0.27.9",
+ "hyper-util",
  "regex",
  "reqwest 0.12.28",
+ "rustls 0.23.42",
  "serde_json",
  "sha2 0.10.9",
  "tokio",
+ "tower-service",
 ]
 
 [[package]]

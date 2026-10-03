@@ -14,16 +14,16 @@
 // limitations under the License.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use base64::Engine;
 use reqwest::Client;
 use serde_json::Value;
 
-use crate::base::{decode_float32_array_bytes, json_fields_with_options, sanitize_error_text};
+use crate::base::{ProviderContext, ProviderError};
+use crate::base::{decode_float32_array_bytes, json_fields_with_options};
 use crate::embed_fn::{Embedder, Options};
-use logutil::log::{BgLogger, LogField, LogLevel};
 
 const DEFAULT_API_BASE_URL: &str = "https://api.openai.com/v1";
 const MAX_RESPONSE_BYTES: u64 = 32 * 1024 * 1024;
@@ -35,8 +35,8 @@ pub struct OpenAIEmbedder {
     api_key: Arc<dyn Fn() -> String + Send + Sync>,
     base_url: Arc<dyn Fn() -> String + Send + Sync>,
     max_response_bytes: u64,
-    missing_key_error: Option<String>,
-    unauthorized_error: Option<String>,
+    missing_key_error: Option<ProviderError>,
+    unauthorized_error: Option<ProviderError>,
 }
 
 /// Provider foundation configuration; absent getters and non-positive limits
@@ -77,23 +77,31 @@ impl OpenAIEmbedder {
             } else {
                 MAX_RESPONSE_BYTES
             },
+            missing_key_error: config.missing_key_error.map(Into::into),
+            unauthorized_error: config.unauthorized_error.map(Into::into),
+        }
+    }
+
+    pub fn with_provider_config(config: crate::base::APIKeyProviderConfig) -> Self {
+        let config = config.with_defaults();
+        Self {
+            client: crate::base::http_client("OpenAI"),
+            api_key: config.api_key.unwrap_or_else(|| Arc::new(String::new)),
+            base_url: config.base_url.unwrap_or_else(|| Arc::new(String::new)),
+            max_response_bytes: config.max_response_bytes as u64,
             missing_key_error: config.missing_key_error,
             unauthorized_error: config.unauthorized_error,
         }
     }
 
-    pub(crate) fn endpoint(&self) -> Result<reqwest::Url, String> {
+    pub(crate) fn endpoint(&self) -> Result<reqwest::Url, ProviderError> {
         let configured = (self.base_url)();
         let base = if configured.trim().is_empty() {
             DEFAULT_API_BASE_URL
         } else {
             configured.trim()
         };
-        let mut url = reqwest::Url::parse(base)
-            .map_err(|error| format!("invalid OpenAI API base URL: {error}"))?;
-        if !matches!(url.scheme(), "http" | "https") || url.host().is_none() {
-            return Err("OpenAI API base URL must be HTTP or HTTPS".into());
-        }
+        let mut url = crate::base::parse_http_url(base, "OpenAI API base URL")?;
         let path = url.path().trim_end_matches('/');
         let path = if path.ends_with("/embeddings") {
             path.to_owned()
@@ -113,120 +121,67 @@ impl Embedder for OpenAIEmbedder {
         texts: &[String],
         opts: &Options,
     ) -> Result<Vec<Vec<f32>>, String> {
+        self.create_embeddings_with_context(&ProviderContext::new(cancel), model, texts, opts)
+            .map_err(|error| error.to_string())
+    }
+    fn create_embeddings_with_context(
+        &self,
+        context: &ProviderContext<'_>,
+        model: &str,
+        texts: &[String],
+        opts: &Options,
+    ) -> Result<Vec<Vec<f32>>, ProviderError> {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
         if model.is_empty() {
             return Err("model name is required".into());
         }
-        if cancel.load(Ordering::Acquire) {
-            return Err("request canceled".into());
-        }
-        let api_key = (self.api_key)();
-        if api_key.is_empty() {
+        let key = (self.api_key)();
+        if key.is_empty() {
             return Err(self
                 .missing_key_error
                 .clone()
-                .unwrap_or_else(|| "API key is not configured for OpenAI".into()));
+                .unwrap_or_else(|| "API key is not configured for OpenAI".into())
+                .into());
         }
-        let endpoint = self.endpoint()?;
-        let payload = json_fields_with_options(
-            Options::from([
-                ("model".into(), Value::String(model.into())),
-                ("input".into(), serde_json::json!(texts)),
-                ("encoding_format".into(), Value::String("base64".into())),
-            ]),
-            opts,
-        );
-        // Dropping the in-flight future cancels socket IO, preserving Go's
-        // request-context cancellation without detached HTTP worker threads.
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|error| format!("OpenAI request runtime failed: {error}"))?;
-        let (status, body) = runtime.block_on(async {
-            let request = async {
-                let mut response = self
-                    .client
-                    .post(endpoint)
-                    .bearer_auth(&api_key)
-                    .json(&payload)
-                    .send()
-                    .await
-                    .map_err(|error| format!("OpenAI embedding request failed: {error}"))?;
-                let status = response.status();
-                let mut body = Vec::new();
-                while let Some(chunk) = response
-                    .chunk()
-                    .await
-                    .map_err(|error| format!("OpenAI response read failed: {error}"))?
-                {
-                    // Retain only limit+1 bytes even if a server sends a large chunk.
-                    let remaining =
-                        (self.max_response_bytes + 1).saturating_sub(body.len() as u64) as usize;
-                    body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
-                    if body.len() as u64 > self.max_response_bytes {
-                        return Err(format!(
-                            "response body exceeds maximum size of {} bytes",
-                            self.max_response_bytes
-                        ));
-                    }
+        let fields = Options::from([
+            ("model".into(), Value::String(model.into())),
+            ("input".into(), serde_json::json!(texts)),
+            ("encoding_format".into(), Value::String("base64".into())),
+        ]);
+        let payload =
+            serde_json::to_value(json_fields_with_options(fields, opts)).expect("JSON fields");
+        crate::base::execute_json_embedding_call(
+            context,
+            &self.client,
+            "OpenAI",
+            self.endpoint()?,
+            &payload,
+            crate::base::provider_auth_headers(context, "OpenAI", &key, false)?,
+            self.max_response_bytes as i64,
+            &[&key],
+            texts.len(),
+            Some(|value: &serde_json::Value| {
+                crate::base::ensure_json_object(&value["error"])?;
+                crate::base::string_field(&value["error"]["message"])
+            }),
+            |status| {
+                if status == 401 {
+                    Some(
+                        self.unauthorized_error
+                            .clone()
+                            .unwrap_or_else(|| {
+                                "OpenAI returns status unauthorized, check API key".into()
+                            })
+                            .into(),
+                    )
+                } else {
+                    None
                 }
-                Ok((status, body))
-            };
-            let cancelled = async {
-                loop {
-                    if cancel.load(Ordering::Acquire) {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(5)).await;
-                }
-            };
-            use std::future::Future;
-            let mut request = std::pin::pin!(request);
-            let mut cancelled = std::pin::pin!(cancelled);
-            std::future::poll_fn(|context| {
-                if cancelled.as_mut().poll(context).is_ready() {
-                    return std::task::Poll::Ready(Err("request canceled".to_owned()));
-                }
-                request.as_mut().poll(context)
-            })
-            .await
-        })?;
-        if cancel.load(Ordering::Acquire) {
-            return Err("request canceled".into());
-        }
-        if status.as_u16() != 200 {
-            let parsed = serde_json::from_slice::<Value>(&body);
-            let message = parsed
-                .as_ref()
-                .ok()
-                .and_then(|response| response["error"]["message"].as_str())
-                .filter(|message| !message.is_empty())
-                .map(|message| sanitize_error_text(message, &[&api_key]));
-            let mut fields = vec![LogField::I64("status".into(), status.as_u16() as i64)];
-            if let Some(message) = &message {
-                fields.push(LogField::String("message".into(), message.clone()));
-            }
-            if let Err(error) = parsed {
-                fields.push(LogField::String(
-                    "parse_error".into(),
-                    sanitize_error_text(&error.to_string(), &[&api_key]),
-                ));
-            }
-            BgLogger().log(LogLevel::Error, "OpenAI API request failed", fields);
-            if status.as_u16() == 401 {
-                return Err(self.unauthorized_error.clone().unwrap_or_else(|| {
-                    "OpenAI returns status unauthorized, check API key".into()
-                }));
-            }
-            return Err(format!(
-                "OpenAI: status code {}, message: {}",
-                status.as_u16(),
-                message.unwrap_or_else(|| status.canonical_reason().unwrap_or("").into())
-            ));
-        }
-        decode_indexed_base64_embeddings(&body, texts.len())
+            },
+            Some(decode_indexed_base64_embeddings),
+        )
     }
 }
 
@@ -236,6 +191,9 @@ pub(crate) fn decode_indexed_base64_embeddings(
     expected_count: usize,
 ) -> Result<Vec<Vec<f32>>, String> {
     let response: Value = serde_json::from_slice(body)
+        .map_err(|error| format!("unexpected unmarshal response error: {error}"))?;
+    crate::base::ensure_json_object(&response)?;
+    crate::base::string_field(&response["model"])
         .map_err(|error| format!("unexpected unmarshal response error: {error}"))?;
     let empty = Vec::new();
     let items = if response["data"].is_null() {
@@ -254,6 +212,9 @@ pub(crate) fn decode_indexed_base64_embeddings(
     }
     let mut embeddings = vec![None; expected_count];
     for item in items {
+        crate::base::ensure_json_object(item)?;
+        crate::base::string_field(&item["object"])
+            .map_err(|error| format!("unexpected unmarshal response error: {error}"))?;
         let index = if item["index"].is_null() {
             0
         } else {
@@ -274,11 +235,13 @@ pub(crate) fn decode_indexed_base64_embeddings(
             Value::Null => Vec::new(),
             Value::String(encoded) => {
                 let encoded = encoded.replace(['\r', '\n'], "");
-                base64::engine::general_purpose::STANDARD
-                    .decode(encoded)
-                    .map_err(|error| {
-                        format!("failed to decode embedding for index {index}: {error}")
-                    })?
+                base64::engine::general_purpose::GeneralPurpose::new(
+                    &base64::alphabet::STANDARD,
+                    base64::engine::general_purpose::GeneralPurposeConfig::new()
+                        .with_decode_allow_trailing_bits(true),
+                )
+                .decode(encoded)
+                .map_err(|error| format!("failed to decode embedding for index {index}: {error}"))?
             }
             Value::Array(bytes) => bytes
                 .iter()

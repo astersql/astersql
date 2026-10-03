@@ -1,41 +1,61 @@
 // Copyright 2026 AsterSQL.
+// Copyright 2025 PingCAP, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//	http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
-use std::io::Read;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use crate::base::{self, APIKeyProviderConfig, ProviderContext, ProviderError};
+use crate::{Embedder, Options};
+use serde_json::Value;
+use std::sync::{Arc, atomic::AtomicBool};
 
-use reqwest::blocking::Client;
-use serde_json::{Map, Value};
-
-use crate::embed_fn::{Embedder, Options};
-use crate::openai::decode_indexed_base64_embeddings;
-
-const DEFAULT_ENDPOINT: &str = "https://integrate.api.nvidia.com/v1/embeddings";
-const MAX_RESPONSE_BYTES: u64 = 32 * 1024 * 1024;
-
+const DEFAULT_BASE_URL: &str = "https://integrate.api.nvidia.com/v1/embeddings";
 pub struct NvidiaEmbedder {
-    client: Client,
-    api_key: Arc<dyn Fn() -> String + Send + Sync>,
-    endpoint: Arc<dyn Fn() -> String + Send + Sync>,
+    pub(crate) client: reqwest::Client,
+    cfg: APIKeyProviderConfig,
 }
-
 impl NvidiaEmbedder {
     pub fn new(
         api_key: impl Fn() -> String + Send + Sync + 'static,
-        endpoint: impl Fn() -> String + Send + Sync + 'static,
+        base_url: impl Fn() -> String + Send + Sync + 'static,
     ) -> Self {
+        Self::with_config(APIKeyProviderConfig {
+            api_key: Some(Arc::new(api_key)), base_url: Some(Arc::new(base_url)),
+            missing_key_error: Some("NVIDIA NIM API key is not configured, to configure the API key: SET @@GLOBAL.TIDB_EXP_EMBED_NVIDIA_NIM_API_KEY='<API_KEY>'".into()),
+            unauthorized_error: Some("NVIDIA NIM returns status unauthorized, check your API key. To reconfigure a new API key: SET @@GLOBAL.TIDB_EXP_EMBED_NVIDIA_NIM_API_KEY='<API_KEY>'".into()),
+            ..Default::default()
+        })
+    }
+    pub fn with_config(cfg: APIKeyProviderConfig) -> Self {
         Self {
-            client: Client::builder()
-                .timeout(Duration::from_secs(30))
-                .build()
-                .expect("construct NVIDIA NIM embedding HTTP client"),
-            api_key: Arc::new(api_key),
-            endpoint: Arc::new(endpoint),
+            client: base::http_client("NVIDIA NIM"),
+            cfg: cfg.with_defaults(),
         }
     }
+    pub(crate) fn endpoint(&self, model: &str) -> Result<reqwest::Url, ProviderError> {
+        let configured = self.cfg.configured_base_url();
+        let configured = configured.trim();
+        let url = base::parse_http_url(
+            if configured.is_empty() {
+                DEFAULT_BASE_URL
+            } else {
+                configured
+            },
+            "NVIDIA NIM API base URL",
+        )?;
+        let _ = model;
+        Ok(url)
+    }
 }
-
 impl Embedder for NvidiaEmbedder {
     fn create_embeddings(
         &self,
@@ -44,6 +64,16 @@ impl Embedder for NvidiaEmbedder {
         texts: &[String],
         opts: &Options,
     ) -> Result<Vec<Vec<f32>>, String> {
+        self.create_embeddings_with_context(&ProviderContext::new(cancel), model, texts, opts)
+            .map_err(|error| error.to_string())
+    }
+    fn create_embeddings_with_context(
+        &self,
+        context: &ProviderContext<'_>,
+        model: &str,
+        texts: &[String],
+        opts: &Options,
+    ) -> Result<Vec<Vec<f32>>, ProviderError> {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
@@ -53,77 +83,61 @@ impl Embedder for NvidiaEmbedder {
         if let Some(kind) = opts.get("embedding_type")
             && kind != "float"
         {
-            return Err("NVIDIA NIM embedding_type must be \"float\"".into());
+            return Err(r#"NVIDIA NIM embedding_type must be "float""#.into());
         }
-        if cancel.load(Ordering::Acquire) {
-            return Err("request canceled".into());
-        }
-        let key = (self.api_key)();
-        if key.is_empty() {
-            return Err("NVIDIA NIM API key is not configured, to configure the API key: SET @@GLOBAL.TIDB_EXP_EMBED_NVIDIA_NIM_API_KEY='<API_KEY>'".into());
-        }
-        let configured = (self.endpoint)();
-        let endpoint = if configured.trim().is_empty() {
-            DEFAULT_ENDPOINT
-        } else {
-            configured.trim()
-        };
-        let endpoint = reqwest::Url::parse(endpoint)
-            .map_err(|error| format!("invalid NVIDIA NIM API base URL: {error}"))?;
-        if !matches!(endpoint.scheme(), "http" | "https") || endpoint.host().is_none() {
-            return Err("NVIDIA NIM API base URL must be HTTP or HTTPS".into());
-        }
-        let mut payload = Map::new();
-        payload.extend(
-            opts.iter()
-                .map(|(name, value)| (name.clone(), value.clone())),
-        );
-        payload.insert("model".into(), Value::String(model.into()));
-        payload.insert("input".into(), serde_json::json!(texts));
-        payload.insert("encoding_format".into(), Value::String("base64".into()));
-        let response = self
-            .client
-            .post(endpoint)
-            .bearer_auth(key)
-            .json(&payload)
-            .send()
-            .map_err(|error| format!("NVIDIA NIM embedding request failed: {error}"))?;
-        if cancel.load(Ordering::Acquire) {
-            return Err("request canceled".into());
-        }
-        let status = response.status();
-        let mut body = Vec::new();
-        response
-            .take(MAX_RESPONSE_BYTES + 1)
-            .read_to_end(&mut body)
-            .map_err(|error| format!("NVIDIA NIM response read failed: {error}"))?;
-        if body.len() as u64 > MAX_RESPONSE_BYTES {
-            return Err(format!(
-                "response body exceeds maximum size of {MAX_RESPONSE_BYTES} bytes"
-            ));
-        }
-        if cancel.load(Ordering::Acquire) {
-            return Err("request canceled".into());
-        }
-        match status.as_u16() {
-            401 | 403 => return Err("NVIDIA NIM returns status unauthorized, check your API key. To reconfigure a new API key: SET @@GLOBAL.TIDB_EXP_EMBED_NVIDIA_NIM_API_KEY='<API_KEY>'".into()),
-            404 => return Err(format!("NVIDIA NIM model '{model}' does not exist or is not available")),
-            _ => {}
-        }
-        if !status.is_success() {
-            let detail = serde_json::from_slice::<Value>(&body)
-                .ok()
-                .and_then(|value| {
-                    ["detail", "message", "error"]
-                        .into_iter()
-                        .find_map(|key| value[key].as_str().map(str::to_owned))
+        let key = self
+            .cfg
+            .resolve_api_key("API key is not configured for NVIDIA NIM")?;
+        let endpoint = self.endpoint(model)?;
+        let fields: Options = serde_json::from_value(
+            serde_json::json!({"model":model,"input":texts,"encoding_format":"base64"}),
+        )
+        .expect("request fields are an object");
+        let payload = serde_json::to_value(base::json_fields_with_options(fields, opts))
+            .expect("JSON fields");
+        base::execute_json_embedding_call(
+            context,
+            &self.client,
+            "NVIDIA NIM",
+            endpoint,
+            &payload,
+            base::provider_auth_headers(context, "NVIDIA NIM", &key, false)?,
+            self.cfg.max_response_bytes,
+            &[&key],
+            texts.len(),
+            Some(|value: &serde_json::Value| {
+                let detail = base::string_field(&value["detail"])?;
+                let message = base::string_field(&value["message"])?;
+                let error = base::string_field(&value["error"])?;
+                Ok(if !detail.is_empty() {
+                    detail
+                } else if !message.is_empty() {
+                    message
+                } else {
+                    error
                 })
-                .unwrap_or_default();
-            return Err(format!(
-                "NVIDIA NIM: status code {}: {detail}",
-                status.as_u16()
-            ));
-        }
-        decode_indexed_base64_embeddings(&body, texts.len())
+            }),
+            |status| match status {
+                401 | 403 => Some(self.cfg.unauthorized_error("NVIDIA NIM", status)),
+                404 => Some(
+                    format!("NVIDIA NIM model '{model}' does not exist or is not available").into(),
+                ),
+                _ => None,
+            },
+            Some(decode_embeddings),
+        )
     }
+}
+fn decode_embeddings(body: &[u8], expected: usize) -> Result<Vec<Vec<f32>>, String> {
+    let value: Value = serde_json::from_slice(body)
+        .map_err(|error| format!("unexpected unmarshal response error: {error}"))?;
+    base::ensure_json_object(&value)?;
+    base::string_field(&value["object"])?;
+    base::ensure_json_object(&value["usage"])?;
+    for key in ["prompt_tokens", "total_tokens"] {
+        if !value["usage"][key].is_null() && value["usage"][key].as_i64().is_none() {
+            return Err("unexpected unmarshal integer field error".into());
+        }
+    }
+    crate::openai::decode_indexed_base64_embeddings(body, expected)
 }

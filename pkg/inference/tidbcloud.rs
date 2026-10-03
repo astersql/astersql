@@ -1,75 +1,86 @@
 // Copyright 2026 AsterSQL.
+// Copyright 2025 PingCAP, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//	http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
-use std::io::Read;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use crate::base::{self, ProviderContext, ProviderError};
+use crate::{Embedder, Options};
+use serde_json::Value;
+use std::sync::{Arc, atomic::AtomicBool};
 
-use base64::Engine;
-use reqwest::blocking::Client;
-use serde_json::{Map, Value};
-
-use crate::embed_fn::{Embedder, Options};
-
-const MAX_RESPONSE_BYTES: u64 = 32 * 1024 * 1024;
-
-/// TiDB Cloud Starter embedding service. An empty API key is valid and leaves
-/// the Authorization header unset, matching the hosted service protocol.
-pub struct TiDBCloudFreeEmbedder {
-    client: Client,
-    billing_id: Arc<dyn Fn() -> String + Send + Sync>,
-    api_key: Arc<dyn Fn() -> String + Send + Sync>,
-    base_url: Arc<dyn Fn() -> String + Send + Sync>,
+#[derive(Default)]
+pub struct TiDBCloudConfig {
+    pub billing_id: Option<Arc<dyn Fn() -> String + Send + Sync>>,
+    pub api_key: Option<Arc<dyn Fn() -> String + Send + Sync>>,
+    pub base_url: Option<Arc<dyn Fn() -> String + Send + Sync>>,
+    pub max_response_bytes: i64,
 }
-
+pub struct TiDBCloudFreeEmbedder {
+    pub(crate) client: reqwest::Client,
+    cfg: TiDBCloudConfig,
+}
 impl TiDBCloudFreeEmbedder {
     pub fn new(
         billing_id: impl Fn() -> String + Send + Sync + 'static,
         api_key: impl Fn() -> String + Send + Sync + 'static,
         base_url: impl Fn() -> String + Send + Sync + 'static,
     ) -> Self {
+        Self::with_config(TiDBCloudConfig {
+            billing_id: Some(Arc::new(billing_id)),
+            api_key: Some(Arc::new(api_key)),
+            base_url: Some(Arc::new(base_url)),
+            ..Default::default()
+        })
+    }
+    pub fn with_config(mut cfg: TiDBCloudConfig) -> Self {
+        if cfg.max_response_bytes <= 0 {
+            cfg.max_response_bytes = base::DEFAULT_MAX_RESPONSE_BYTES;
+        }
         Self {
-            client: Client::builder()
-                .timeout(Duration::from_secs(30))
-                .build()
-                .expect("construct TiDB Cloud embedding HTTP client"),
-            billing_id: Arc::new(billing_id),
-            api_key: Arc::new(api_key),
-            base_url: Arc::new(base_url),
+            client: base::http_client("TiDB Cloud Inference"),
+            cfg,
         }
     }
-
-    fn endpoint(&self) -> Result<reqwest::Url, String> {
-        let base = (self.base_url)();
-        if base.is_empty() {
+    pub(crate) fn endpoint(&self) -> Result<base::ProviderEndpoint, ProviderError> {
+        let configured = self
+            .cfg
+            .base_url
+            .as_ref()
+            .map(|getter| getter())
+            .unwrap_or_default();
+        if configured.is_empty() {
             return Err("base URL is not configured for TiDB Cloud Inference".into());
         }
-        let mut url = reqwest::Url::parse(&base)
-            .map_err(|error| format!("invalid TiDB Cloud Inference base URL: {error}"))?;
-        if !matches!(url.scheme(), "http" | "https") || url.host().is_none() {
-            return Err("TiDB Cloud Inference base URL must be HTTP or HTTPS".into());
-        }
-        let configured = (self.billing_id)();
-        let billing_id = if configured.is_empty() {
+        let url = base::parse_http_url(&configured, "TiDB Cloud Inference base URL")?;
+        let billing = self
+            .cfg
+            .billing_id
+            .as_ref()
+            .map(|getter| getter())
+            .unwrap_or_default();
+        let billing = if billing.is_empty() {
             "default_billing_id"
         } else {
-            &configured
+            &billing
         };
-        {
-            let mut path = url
-                .path_segments_mut()
-                .map_err(|_| "TiDB Cloud Inference base URL cannot be a base".to_owned())?;
-            path.pop_if_empty()
-                .push("api")
-                .push("v1")
-                .push("inference")
-                .push("embeddings")
-                .push(billing_id);
-        }
-        Ok(url)
+        let path = format!(
+            "{}/api/v1/inference/embeddings/{}",
+            url.path().trim_end_matches('/'),
+            base::escape_url_path_segment(billing)
+        );
+        Ok(base::ProviderEndpoint::with_path(url, path))
     }
 }
-
 impl Embedder for TiDBCloudFreeEmbedder {
     fn create_embeddings(
         &self,
@@ -78,87 +89,76 @@ impl Embedder for TiDBCloudFreeEmbedder {
         texts: &[String],
         opts: &Options,
     ) -> Result<Vec<Vec<f32>>, String> {
+        self.create_embeddings_with_context(&ProviderContext::new(cancel), model, texts, opts)
+            .map_err(|error| error.to_string())
+    }
+    fn create_embeddings_with_context(
+        &self,
+        context: &ProviderContext<'_>,
+        model: &str,
+        texts: &[String],
+        opts: &Options,
+    ) -> Result<Vec<Vec<f32>>, ProviderError> {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
         if model.is_empty() {
             return Err("model name is required".into());
         }
-        if cancel.load(Ordering::Acquire) {
-            return Err("request canceled".into());
-        }
-        let endpoint = self.endpoint()?;
-        let key = (self.api_key)();
-        let mut payload = Map::new();
-        payload.extend(
-            opts.iter()
-                .map(|(name, value)| (name.clone(), value.clone())),
-        );
-        payload.insert("model".into(), Value::String(model.into()));
-        payload.insert("texts".into(), serde_json::json!(texts));
-        let mut request = self.client.post(endpoint).json(&payload);
-        if !key.is_empty() {
-            request = request.bearer_auth(key);
-        }
-        let response = request
-            .send()
-            .map_err(|error| format!("TiDB Cloud Inference embedding request failed: {error}"))?;
-        if cancel.load(Ordering::Acquire) {
-            return Err("request canceled".into());
-        }
-        let status = response.status();
-        let mut body = Vec::new();
-        response
-            .take(MAX_RESPONSE_BYTES + 1)
-            .read_to_end(&mut body)
-            .map_err(|error| format!("TiDB Cloud Inference response read failed: {error}"))?;
-        if body.len() as u64 > MAX_RESPONSE_BYTES {
-            return Err(format!(
-                "response body exceeds maximum size of {MAX_RESPONSE_BYTES} bytes"
-            ));
-        }
-        if cancel.load(Ordering::Acquire) {
-            return Err("request canceled".into());
-        }
-        let data: Value = serde_json::from_slice(&body)
-            .map_err(|error| format!("unexpected unmarshal response error: {error}"))?;
-        if !status.is_success() {
-            return Err(format!(
-                "TiDB Cloud Inference: status code {}: {}",
-                status.as_u16(),
-                data["error"].as_str().unwrap_or_default()
-            ));
-        }
-        let embeddings = data["embeddings"]
-            .as_array()
-            .ok_or_else(|| "TiDB Cloud Inference response embeddings are missing".to_owned())?;
-        if embeddings.len() != texts.len() {
-            return Err(format!(
-                "response embeddings length {} does not match input texts length {}",
-                embeddings.len(),
-                texts.len()
-            ));
-        }
-        embeddings
-            .iter()
-            .enumerate()
-            .map(|(index, embedding)| {
-                let encoded = embedding
-                    .as_str()
-                    .ok_or_else(|| format!("embedding {index} is not base64"))?;
-                let bytes = base64::engine::general_purpose::STANDARD
-                    .decode(encoded)
-                    .map_err(|error| {
-                        format!("failed to decode embedding for index {index}: {error}")
-                    })?;
-                if bytes.len() % 4 != 0 || bytes.is_empty() {
-                    return Err(format!("invalid embedding data for index {index}"));
-                }
-                Ok(bytes
-                    .chunks_exact(4)
-                    .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("four bytes")))
-                    .collect())
-            })
-            .collect()
+        let key = self
+            .cfg
+            .api_key
+            .as_ref()
+            .map(|getter| getter())
+            .unwrap_or_default();
+        let fields = Options::from([
+            ("model".into(), Value::String(model.into())),
+            ("texts".into(), serde_json::json!(texts)),
+        ]);
+        let payload = serde_json::to_value(base::json_fields_with_options(fields, opts))
+            .expect("JSON fields");
+        base::execute_json_embedding_call(
+            context,
+            &self.client,
+            "TiDB Cloud Inference",
+            self.endpoint()?,
+            &payload,
+            base::provider_auth_headers(context, "TiDB Cloud Inference", &key, false)?,
+            self.cfg.max_response_bytes,
+            &[&key],
+            texts.len(),
+            Some(|value: &serde_json::Value| base::string_field(&value["error"])),
+            |_| None,
+            Some(decode_embeddings),
+        )
     }
+}
+fn decode_embeddings(body: &[u8], expected: usize) -> Result<Vec<Vec<f32>>, String> {
+    let response: Value = serde_json::from_slice(body)
+        .map_err(|error| format!("unexpected unmarshal response error: {error}"))?;
+    base::ensure_json_object(&response)?;
+    let empty = Vec::new();
+    let items = if response["embeddings"].is_null() {
+        &empty
+    } else {
+        response["embeddings"]
+            .as_array()
+            .ok_or("unexpected unmarshal response error: embeddings must be an array")?
+    };
+    if items.len() != expected {
+        return Err(format!(
+            "response embeddings length {} does not match input texts length {expected}",
+            items.len()
+        ));
+    }
+    items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let wrapped = serde_json::json!({"data":[{"index":0,"embedding":item}]});
+            crate::openai::decode_indexed_base64_embeddings(wrapped.to_string().as_bytes(), 1)
+                .map(|mut values| values.remove(0))
+                .map_err(|error| error.replace("for index 0:", &format!("for index {index}:")))
+        })
+        .collect()
 }
