@@ -187,3 +187,116 @@ fn conflict_row_prefix_survives_task_directory_cleanup() {
         "conflicted-rows/12/34-abcd"
     );
 }
+
+fn unique_pair(
+    handle: Box<dyn astersql_tablecodec::kv::Handle>,
+    value: i64,
+    prefix: &[u8],
+) -> astersql_dxf_importinto_conflictedkv::ConflictKVPair {
+    let encoded = astersql_tablecodec::codec::EncodeInt(vec![3], value);
+    let key = astersql_tablecodec::EncodeIndexSeekKey(10, 2, Some(encoded));
+    let mut bytes = prefix.to_vec();
+    bytes.extend_from_slice(&key.0);
+    astersql_dxf_importinto_conflictedkv::ConflictKVPair {
+        Key: astersql_kv::Key(bytes),
+        Value: astersql_tablecodec::EncodeHandleInUniqueIndexValue(handle, false),
+    }
+}
+
+#[test]
+fn mv_index_routes_encoded_handles_and_closes_channels() {
+    use crate::collect_conflicts::*;
+    use astersql_meta_model::{IndexColumn, IndexInfo};
+    let index = IndexInfo {
+        ID: 2,
+        MVIndex: true,
+        Columns: vec![IndexColumn::default()],
+        ..Default::default()
+    };
+    for prefix in [Vec::new(), vec![b'x', 0, 0, 1]] {
+        let pair = unique_pair(Box::new(astersql_tablecodec::kv::IntHandle(1)), 10, &prefix);
+        let expected = conflictWorkerForPair(&pair, Some(&index), 4, 0, &prefix).unwrap();
+        // Python/zlib independently gives IEEE CRC32=0x411e6a25 for Go encoded IntHandle(1).
+        assert_eq!(1, expected);
+        let (tx, rx) = std::sync::mpsc::channel();
+        for value in [10, 20] {
+            tx.send(unique_pair(
+                Box::new(astersql_tablecodec::kv::IntHandle(1)),
+                value,
+                &prefix,
+            ))
+            .unwrap();
+        }
+        drop(tx);
+        let (outputs, receivers): (Vec<_>, Vec<_>) =
+            (0..4).map(|_| std::sync::mpsc::sync_channel(256)).unzip();
+        dispatchMVIndexKVPairs(&Default::default(), &rx, outputs, &index, &prefix).unwrap();
+        for (worker, rx) in receivers.into_iter().enumerate() {
+            assert_eq!(
+                if worker == expected { 2 } else { 0 },
+                rx.into_iter().count()
+            );
+        }
+        assert_eq!(
+            1,
+            conflictWorkerForPair(&pair, None, 4, 5, &prefix).unwrap()
+        );
+        assert_eq!(
+            0,
+            conflictWorkerForPair(&pair, Some(&index), 1, 0, &prefix).unwrap()
+        );
+    }
+}
+
+#[test]
+fn index_metadata_errors_and_dispatch_cancellation_close_outputs() {
+    use crate::collect_conflicts::*;
+    use astersql_meta_model::{IndexColumn, IndexInfo, TableInfo};
+    let index = IndexInfo {
+        ID: 2,
+        MVIndex: true,
+        Columns: vec![IndexColumn::default()],
+        ..Default::default()
+    };
+    let table = TableInfo {
+        Indices: vec![index.clone()],
+        ..Default::default()
+    };
+    assert!(getKVGroupIndexInfo(&table, "data").unwrap().is_none());
+    assert!(getKVGroupIndexInfo(&table, "bad").is_err());
+    assert!(getKVGroupIndexInfo(&table, "3").is_err());
+    assert!(getKVGroupIndexInfo(&table, "2").unwrap().unwrap().MVIndex);
+    for canceled in [false, true] {
+        let context = astersql_dxf_importinto_conflictedkv::ConflictContext::default();
+        if canceled {
+            context.Cancel();
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(Default::default()).unwrap();
+        drop(tx);
+        let (output, result) = std::sync::mpsc::sync_channel(1);
+        assert!(
+            dispatchMVIndexKVPairs(&context, &rx, vec![output], &index, &[b'x', 0, 0, 1]).is_err()
+        );
+        assert!(result.recv().is_err());
+    }
+    let context = astersql_dxf_importinto_conflictedkv::ConflictContext::default();
+    let (tx, rx) = std::sync::mpsc::channel();
+    tx.send(unique_pair(
+        Box::new(astersql_tablecodec::kv::IntHandle(1)),
+        10,
+        &[],
+    ))
+    .unwrap();
+    let (output, result) = std::sync::mpsc::sync_channel(0);
+    std::thread::scope(|scope| {
+        let worker = scope.spawn({
+            let context = context.clone();
+            move || dispatchMVIndexKVPairs(&context, &rx, vec![output], &index, &[])
+        });
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        context.Cancel();
+        assert!(worker.join().unwrap().unwrap_err().contains("cancelled"));
+    });
+    assert!(result.recv().is_err());
+}

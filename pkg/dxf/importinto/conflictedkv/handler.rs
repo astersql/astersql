@@ -17,7 +17,7 @@
 //
 // DataKVHandler 直接解码行并重编码后交给 EncodedRowHandler；
 // IndexKVHandler 从唯一索引 KV 得到 handle，批量用惰性刷新快照回查行再处理，
-// 可选 HandleFilter 跳过已处理行。LazyRefreshedSnapshot 按固定间隔刷新 MVCC 快照。
+// 可选 KeyFilter 跳过已处理行。LazyRefreshedSnapshot 按固定间隔刷新 MVCC 快照。
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -32,7 +32,7 @@ use astersql_meta_model::{IndexInfo, TableInfo};
 use astersql_objstore_objectio as objectio;
 use astersql_types::datum::Datum;
 
-use crate::HandleFilter;
+use crate::KeyFilter;
 
 /// 惰性快照最短刷新间隔。
 const snapshotRefreshInterval: Duration = Duration::from_secs(15);
@@ -98,10 +98,15 @@ pub trait ConflictStore: Send + Sync {
     fn GetSnapshot(&self, version: Version) -> Box<dyn ConflictSnapshot>;
     fn Begin(&self) -> Result<Box<dyn ConflictTransaction>, String>;
     fn IsRetryableError(&self, error: &str) -> bool;
+    /// The string boundary retains TiDB's transaction retry marker.
+    fn IsTxnRetryableError(&self, error: &str) -> bool {
+        error.contains(astersql_kv::TxnRetryableMark)
+    }
 }
 
 /// 行/索引键的编解码与重编码，供 Handler 在冲突路径上复用。
 pub trait ConflictRowCodec {
+    fn ConfigureKeyspace(&mut self, _keyspace: Vec<u8>) {}
     fn StripKeyspacePrefix(&self, key: &Key) -> Result<Key, String>;
     fn DecodeRowKey(&self, key: &Key) -> Result<Box<dyn Handle>, String>;
     fn DecodeRow(&self, handle: &dyn Handle, value: &[u8]) -> Result<Vec<Datum>, String>;
@@ -153,7 +158,7 @@ pub trait EncodedRowHandler {
     fn HandleEncodedRow(
         &mut self,
         context: &ConflictContext,
-        handle: &dyn Handle,
+        row_key: &Key,
         row: &[Datum],
         pairs: &Pairs,
     ) -> Result<(), String>;
@@ -187,6 +192,7 @@ impl BaseHandler {
     fn encodeAndHandleRow(
         &mut self,
         context: &ConflictContext,
+        row_key: &Key,
         handle: Box<dyn Handle>,
         row: Vec<Datum>,
         row_handler: &mut dyn EncodedRowHandler,
@@ -197,7 +203,7 @@ impl BaseHandler {
             handle.IntValue()
         };
         let pairs = self.codec.EncodeRow(handle.as_ref(), &row, auto_row_id)?;
-        row_handler.HandleEncodedRow(context, handle.as_ref(), &row, &pairs)
+        row_handler.HandleEncodedRow(context, row_key, &row, &pairs)
     }
 
     /// 关闭底层编解码器。
@@ -257,13 +263,13 @@ impl KVHandler for DataKVHandler {
         let handle = self.base.codec.DecodeRowKey(&key)?;
         let row = self.base.codec.DecodeRow(handle.as_ref(), &pair.Value)?;
         self.base
-            .encodeAndHandleRow(context, handle, row, row_handler)
+            .encodeAndHandleRow(context, &key, handle, row, row_handler)
     }
 }
 
 /// 缓冲的「表 ID + 行 handle」，供索引路径批量回查。
 struct HandleOfTable {
-    table_id: i64,
+    row_key: Key,
     handle: Box<dyn Handle>,
 }
 
@@ -271,7 +277,7 @@ struct HandleOfTable {
 pub struct IndexKVHandler {
     base: BaseHandler,
     snapshot: LazyRefreshedSnapshot,
-    handle_filter: Option<HandleFilter>,
+    handle_filter: Option<KeyFilter>,
     target_index: Option<IndexInfo>,
     buffered_handles: Vec<HandleOfTable>,
 }
@@ -280,7 +286,7 @@ pub struct IndexKVHandler {
 pub fn NewIndexKVHandler(
     base: BaseHandler,
     snapshot: LazyRefreshedSnapshot,
-    filter: Option<HandleFilter>,
+    filter: Option<KeyFilter>,
 ) -> IndexKVHandler {
     IndexKVHandler {
         base,
@@ -314,15 +320,16 @@ impl IndexKVHandler {
             .base
             .codec
             .DecodeIndexHandle(&key, &pair.Value, columns)?;
+        let row_key = self.base.codec.EncodeRowKey(table_id, handle.as_ref());
         if self
             .handle_filter
             .as_ref()
-            .is_some_and(|filter| filter.needSkip(handle.as_ref()))
+            .is_some_and(|filter| filter.isHandledGlobally(&row_key))
         {
             return Ok(());
         }
         self.buffered_handles
-            .push(HandleOfTable { table_id, handle });
+            .push(HandleOfTable { row_key, handle });
         if self.buffered_handles.len() >= BufferedHandleLimit.load(Ordering::Acquire).max(1) {
             self.handleBufferedHandles(context, row_handler)?;
         }
@@ -341,21 +348,29 @@ impl IndexKVHandler {
         let mut row_keys = Vec::with_capacity(self.buffered_handles.len());
         let mut key_to_handle = HashMap::with_capacity(self.buffered_handles.len());
         for item in &self.buffered_handles {
-            let row_key = self
-                .base
-                .codec
-                .EncodeRowKey(item.table_id, item.handle.as_ref());
+            let row_key = item.row_key.clone();
             key_to_handle.insert(row_key.0.clone(), item.handle.Copy());
             row_keys.push(row_key);
         }
         let rows = self.snapshot.BatchGet(context, &row_keys)?;
         for (row_key, value) in rows {
+            let key = Key(row_key.clone());
+            if self
+                .handle_filter
+                .as_ref()
+                .is_some_and(|filter| filter.isHandledLocally(&key))
+            {
+                continue;
+            }
             let handle = key_to_handle
                 .remove(&row_key)
                 .ok_or_else(|| "snapshot returned an unrequested row key".to_owned())?;
             let row = self.base.codec.DecodeRow(handle.as_ref(), &value.Value)?;
             self.base
-                .encodeAndHandleRow(context, handle, row, row_handler)?;
+                .encodeAndHandleRow(context, &key, handle, row, row_handler)?;
+            if let Some(filter) = &self.handle_filter {
+                filter.addLocal(&key);
+            }
         }
         self.buffered_handles.clear();
         Ok(())

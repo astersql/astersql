@@ -374,3 +374,85 @@ fn propagates_commit_error_without_deleting_key() {
     assert_eq!(error, "injected commit error");
     assert!(deleted.lock().unwrap().is_empty());
 }
+
+#[test]
+fn transaction_write_conflict_retries_and_commits_deletion() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct RetryStore {
+        inner: FakeConflictStore,
+        commits: Arc<AtomicUsize>,
+    }
+    struct RetryTxn {
+        inner: Box<dyn ConflictTransaction>,
+        commits: Arc<AtomicUsize>,
+    }
+    impl ConflictTransaction for RetryTxn {
+        fn Delete(&mut self, key: &Key) -> Result<(), String> {
+            self.inner.Delete(key)
+        }
+        fn Rollback(self: Box<Self>) -> Result<(), String> {
+            self.inner.Rollback()
+        }
+        fn Commit(self: Box<Self>, context: &ConflictContext) -> Result<(), String> {
+            if self.commits.fetch_add(1, Ordering::SeqCst) == 0 {
+                self.inner.Rollback()?;
+                return Err(format!("WRITE CONFLICT {}", astersql_kv::TxnRetryableMark));
+            }
+            self.inner.Commit(context)
+        }
+    }
+    impl ConflictStore for RetryStore {
+        fn Keyspace(&self) -> Vec<u8> {
+            self.inner.Keyspace()
+        }
+        fn CurrentVersion(&self) -> Result<Version, String> {
+            self.inner.CurrentVersion()
+        }
+        fn GetSnapshot(&self, version: Version) -> Box<dyn ConflictSnapshot> {
+            self.inner.GetSnapshot(version)
+        }
+        fn Begin(&self) -> Result<Box<dyn ConflictTransaction>, String> {
+            Ok(Box::new(RetryTxn {
+                inner: self.inner.Begin()?,
+                commits: self.commits.clone(),
+            }))
+        }
+        fn IsRetryableError(&self, _: &str) -> bool {
+            false
+        }
+    }
+    let deleted = Arc::new(Mutex::new(Vec::new()));
+    let commits = Arc::new(AtomicUsize::new(0));
+    let store = Arc::new(RetryStore {
+        inner: FakeConflictStore {
+            existing: HashMap::from([(
+                b"row:1:1".to_vec(),
+                ValueEntry {
+                    Value: vec![0],
+                    CommitTs: 0,
+                },
+            )]),
+            deleted: deleted.clone(),
+            commit_error: None,
+        },
+        commits: commits.clone(),
+    });
+    let mut deleter = NewDeleter(
+        make_table(Vec::new()),
+        store,
+        DataKVGroup,
+        Box::new(FakeCodec),
+        None,
+        None,
+    );
+    let (tx, rx) = mpsc::channel();
+    tx.send(ConflictKVPair {
+        Key: Key(b"row:1".to_vec()),
+        Value: Vec::new(),
+    })
+    .unwrap();
+    drop(tx);
+    deleter.Run(&ConflictContext::default(), &rx).unwrap();
+    assert_eq!(2, commits.load(Ordering::SeqCst));
+    assert_eq!(vec![Key(b"row:1:1".to_vec())], *deleted.lock().unwrap());
+}

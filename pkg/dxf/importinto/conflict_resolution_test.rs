@@ -578,6 +578,12 @@ fn importer_codec_reencodes_a_real_table_row() {
             .err()
             .unwrap(),
     );
+    let partition = astersql_kv::NewPartitionHandle(42, Box::new(IntHandle(1)));
+    let physical_key = codec.EncodeRowKey(meta.ID, &partition);
+    assert_eq!(
+        42,
+        astersql_tablecodec::DecodeTableID(astersql_tablecodec::kv::Key(physical_key.0))
+    );
     codec.Close().unwrap();
 }
 
@@ -776,6 +782,99 @@ fn unique_index_conflict_group_deletes_three_real_rows() {
         Count: 3,
         Files: vec!["/test/index-conflicts.data".to_owned()],
     };
+    // Exercise the same non-empty SST/snapshot rows through the collector first.
+    let shared = Arc::new(AtomicI64::new(0));
+    let global = Arc::new(astersql_dxf_importinto_conflictedkv::NewBoundedKeySet(
+        shared.clone(),
+        1 << 20,
+    ));
+    let directory = std::env::temp_dir().join(format!(
+        "astersql-conflicts-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let output = Arc::new(astersql_objstore::local::NewLocalStorage(&directory).unwrap());
+    let make_codec = || {
+        let config = EncodingConfig {
+            Table: Some(Arc::new(NewTableDefinitionFromMeta(&table).unwrap())),
+            UseIdentityAutoRowID: true,
+            SessionOptions: options.clone(),
+            ..Default::default()
+        };
+        let encoder = NewTableKVEncoderFromMeta(&config, &table, converter.clone())?;
+        let codec = crate::conflict_resolution::NewImporterConflictCodecWithOptions(
+            encoder, &table, &options,
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(Box::new(codec) as Box<dyn ConflictRowCodec>)
+    };
+    let collected_progress = Arc::new(ResolutionCounter::default());
+    let (collected, local) = crate::collect_conflicts::CollectConflictGroup(
+        &ConflictContext::default(),
+        objects.clone(),
+        output.clone(),
+        cluster.clone(),
+        table.clone(),
+        "2",
+        &info,
+        2,
+        &make_codec,
+        "conflicted-rows",
+        global.clone(),
+        shared.clone(),
+        1 << 20,
+        Arc::new(AtomicI64::new(0)),
+        Some(collected_progress.clone()),
+        None,
+    )
+    .unwrap();
+    assert_eq!(3, collected.RowCount);
+    assert_eq!(3, local.Len());
+    assert_eq!(9, collected.Checksum.SumKVS());
+    let content: Vec<_> = collected
+        .Filenames
+        .iter()
+        .map(|name| std::fs::read(directory.join(name)).unwrap())
+        .collect();
+    assert_eq!(
+        3,
+        content
+            .iter()
+            .map(|bytes| bytes.iter().filter(|&&byte| byte == b'\n').count())
+            .sum::<usize>()
+    );
+    assert_eq!(3, collected_progress.0.load(Ordering::SeqCst));
+    let (repeated, _) = crate::collect_conflicts::CollectConflictGroup(
+        &ConflictContext::default(),
+        objects.clone(),
+        output.clone(),
+        cluster.clone(),
+        table.clone(),
+        "2",
+        &info,
+        2,
+        &make_codec,
+        "conflicted-rows",
+        global,
+        shared,
+        1 << 20,
+        Arc::new(AtomicI64::new(0)),
+        Some(collected_progress.clone()),
+        None,
+    )
+    .unwrap();
+    assert_eq!(3, repeated.RowCount);
+    assert_eq!(6, collected_progress.0.load(Ordering::SeqCst));
+    assert!(
+        repeated
+            .Filenames
+            .iter()
+            .all(|name| !collected.Filenames.contains(name))
+    );
+    std::fs::remove_dir_all(directory).unwrap();
     let progress = Arc::new(ResolutionCounter::default());
     crate::conflict_resolution::ResolveConflictGroupFromMeta(
         &ConflictContext::default(),
@@ -1373,4 +1472,41 @@ fn framework_conflict_resolution_lifecycle_deletes_rows_and_closes_resources() {
     astersql_dxf_framework_taskexecutor::Extension::GetStepExecutor(&extension, &non_conflict_task)
         .unwrap();
     assert_eq!(1, other_calls.load(Ordering::SeqCst));
+}
+
+#[test]
+fn importer_preserves_partition_and_common_handle_identity() {
+    use astersql_tablecodec::{self as tc, kv};
+    let partition = kv::NewPartitionHandle(42, Box::new(kv::IntHandle(1)));
+    let converted = crate::conflict_resolution::importerHandleForTest(&partition).unwrap();
+    assert_eq!(
+        42,
+        converted
+            .as_any()
+            .downcast_ref::<astersql_kv::PartitionHandle>()
+            .unwrap()
+            .PartitionID
+    );
+    let make = |a: &str, b: &str| {
+        let mut encoded = Vec::new();
+        for value in [a, b] {
+            encoded.push(1); // TiDB bytes datum flag.
+            encoded = tc::codec::EncodeBytes(encoded, value.as_bytes());
+        }
+        kv::NewCommonHandle(encoded).unwrap()
+    };
+    let a = make("x, y", "z");
+    let b = make("x", "y, z");
+    assert_eq!(a.String(), b.String());
+    let a = crate::conflict_resolution::importerHandleForTest(&a).unwrap();
+    let b = crate::conflict_resolution::importerHandleForTest(&b).unwrap();
+    assert_ne!(a.Encoded(), b.Encoded());
+    let mut set =
+        astersql_dxf_importinto_conflictedkv::NewBoundedKeySet(Arc::new(AtomicI64::new(0)), 4096);
+    let ka = Key(tc::EncodeRowKey(1, &a.Encoded()).0);
+    let kb = Key(tc::EncodeRowKey(1, &b.Encoded()).0);
+    set.Add(&ka);
+    assert!(!set.Contains(&kb));
+    set.Add(&kb);
+    assert_eq!(2, set.Len());
 }

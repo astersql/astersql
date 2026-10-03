@@ -39,9 +39,9 @@ use astersql_objstore_storeapi as storeapi;
 use astersql_types::datum::{Datum, NewStringDatum};
 
 use crate::{
-    BoundedHandleSet, CollectResult, ConflictContext, ConflictRowCodec, ConflictSnapshot,
+    BoundedKeySet, CollectResult, ConflictContext, ConflictRowCodec, ConflictSnapshot,
     ConflictStore, ConflictTransaction, DataKVGroup, EncodedRowHandler, MaxConflictRowFileSize,
-    NewBoundedHandleSet, NewCollectResult, NewCollector, SetMaxTotalConflictRowFileSizeForTest,
+    NewBoundedKeySet, NewCollectResult, NewCollector, SetMaxTotalConflictRowFileSizeForTest,
     getRowFileName,
 };
 
@@ -369,8 +369,8 @@ fn new_test_collector(
         keyspace: Vec::new(),
     });
     let shared_bound = Arc::new(AtomicI64::new(0));
-    let global_set = Arc::new(NewBoundedHandleSet(shared_bound.clone(), i64::MAX));
-    let local_set: BoundedHandleSet = NewBoundedHandleSet(shared_bound, i64::MAX);
+    let global_set = Arc::new(NewBoundedKeySet(shared_bound.clone(), i64::MAX));
+    let local_set: BoundedKeySet = NewBoundedKeySet(shared_bound, i64::MAX);
     NewCollector(
         Arc::new(TableInfo::default()),
         store,
@@ -405,7 +405,12 @@ fn do_test_handle_encoded_row(kv_group: &str, max_size: i64, out_file_cnt: usize
         ];
         let pairs = make_pairs(format!("{}", 123 * (i + 1)).into_bytes());
         collector
-            .HandleEncodedRow(&context, &IntHandle(i as i64), &row, &pairs)
+            .HandleEncodedRow(
+                &context,
+                &astersql_kv::Key(format!("row:1:{}", i as i64).into_bytes()),
+                &row,
+                &pairs,
+            )
             .expect("HandleEncodedRow should succeed");
         expected_sum.Update(&pairs.Pairs);
     }
@@ -413,13 +418,8 @@ fn do_test_handle_encoded_row(kv_group: &str, max_size: i64, out_file_cnt: usize
 
     MaxConflictRowFileSize.store(previous_limit, Ordering::Release);
 
-    // Only non-data kv groups accumulate handles for the row-skip filter.
-    // 仅非 data KV 组会把 handle 累积进行跳过过滤器。
-    if kv_group == DataKVGroup {
-        assert_eq!(0, collector.HandleSetLenForTest());
-    } else {
-        assert_eq!(row_count, collector.HandleSetLenForTest());
-    }
+    // Direct row callbacks do not populate the filter: successful index handling does.
+    assert_eq!(0, collector.RowKeySetLenForTest());
 
     let result = collector.GetCollectResult();
     assert_eq!(row_count as i64, result.RowCount);
@@ -455,7 +455,7 @@ fn test_collector_handle_encoded_row() {
 
 #[test]
 /// 非 data KV 组应把每个 handle 记入本地跳过过滤集合。
-fn test_collector_handle_encoded_row_tracks_handles_for_non_data_kv_group() {
+fn test_collector_direct_callback_leaves_index_filter_to_handler() {
     let _guard = STATIC_LIMIT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let store = TestStore::new();
     let index_kv_group = astersql_ingestor_globalsort::kvgroup::IndexID2KVGroup(7);
@@ -469,14 +469,19 @@ fn test_collector_handle_encoded_row_tracks_handles_for_non_data_kv_group() {
         ];
         let pairs = make_pairs(format!("row-{i}").into_bytes());
         collector
-            .HandleEncodedRow(&context, &IntHandle(i), &row, &pairs)
+            .HandleEncodedRow(
+                &context,
+                &astersql_kv::Key(format!("row:1:{}", i).into_bytes()),
+                &row,
+                &pairs,
+            )
             .unwrap();
     }
     collector.Close(&context).unwrap();
     // Every distinct handle should have been recorded for the skip filter.
     // 每个不同 handle 都应记入跳过过滤器。
     assert_eq!(5, collector.GetCollectResult().RowCount);
-    assert_eq!(5, collector.HandleSetLenForTest());
+    assert_eq!(0, collector.RowKeySetLenForTest());
 }
 
 #[test]
@@ -500,7 +505,12 @@ fn test_collector_handle_encoded_row_max_total_file_size() {
         ];
         let pairs = make_pairs(format!("{}", 123 * (i + 1)).into_bytes());
         collector
-            .HandleEncodedRow(&context, &IntHandle(i as i64), &row, &pairs)
+            .HandleEncodedRow(
+                &context,
+                &astersql_kv::Key(format!("row:1:{}", i as i64).into_bytes()),
+                &row,
+                &pairs,
+            )
             .unwrap();
         expected_sum.Update(&pairs.Pairs);
     }
@@ -544,12 +554,22 @@ fn test_collector_close_failure_on_total_size_limit_still_clears_writer() {
     ];
 
     collector
-        .HandleEncodedRow(&context, &IntHandle(0), &row, &make_pairs(b"k0".to_vec()))
+        .HandleEncodedRow(
+            &context,
+            &astersql_kv::Key(format!("row:1:{}", 0).into_bytes()),
+            &row,
+            &make_pairs(b"k0".to_vec()),
+        )
         .expect("first row stays under the cap and opens a real file");
     assert_eq!(1, collector.GetCollectResult().RowCount);
 
     let err = collector
-        .HandleEncodedRow(&context, &IntHandle(1), &row, &make_pairs(b"k1".to_vec()))
+        .HandleEncodedRow(
+            &context,
+            &astersql_kv::Key(format!("row:1:{}", 1).into_bytes()),
+            &row,
+            &make_pairs(b"k1".to_vec()),
+        )
         .expect_err("crossing the cap must surface the writer's close failure");
     assert!(err.contains("close failed"));
 
@@ -562,7 +582,12 @@ fn test_collector_close_failure_on_total_size_limit_still_clears_writer() {
     // `stop_recording` short-circuits `recordRowToFile` before it touches the
     // (already cleared) writer again.
     collector
-        .HandleEncodedRow(&context, &IntHandle(2), &row, &make_pairs(b"k2".to_vec()))
+        .HandleEncodedRow(
+            &context,
+            &astersql_kv::Key(format!("row:1:{}", 2).into_bytes()),
+            &row,
+            &make_pairs(b"k2".to_vec()),
+        )
         .expect("rows after the cap are still accepted, just not written to disk");
     assert_eq!(2, collector.GetCollectResult().RowCount);
 
@@ -596,10 +621,20 @@ fn test_collector_close_failure_on_switch_file_still_clears_writer() {
         NewStringDatum("value".to_owned()),
     ];
     collector
-        .HandleEncodedRow(&context, &IntHandle(0), &row, &make_pairs(b"k0".to_vec()))
+        .HandleEncodedRow(
+            &context,
+            &astersql_kv::Key(format!("row:1:{}", 0).into_bytes()),
+            &row,
+            &make_pairs(b"k0".to_vec()),
+        )
         .expect("first row opens the first file");
     let err = collector
-        .HandleEncodedRow(&context, &IntHandle(1), &row, &make_pairs(b"k1".to_vec()))
+        .HandleEncodedRow(
+            &context,
+            &astersql_kv::Key(format!("row:1:{}", 1).into_bytes()),
+            &row,
+            &make_pairs(b"k1".to_vec()),
+        )
         .expect_err("switching files must surface the close failure");
     assert!(err.contains("close failed"));
 
@@ -634,8 +669,8 @@ fn test_collector_handle_encoded_row_max_total_file_size_shared_by_collectors() 
         "test1",
         DataKVGroup,
         Box::new(FakeCodec),
-        Arc::new(NewBoundedHandleSet(shared_bound.clone(), i64::MAX)),
-        NewBoundedHandleSet(shared_bound.clone(), i64::MAX),
+        Arc::new(NewBoundedKeySet(shared_bound.clone(), i64::MAX)),
+        NewBoundedKeySet(shared_bound.clone(), i64::MAX),
         Some(shared_total_file_size.clone()),
         None,
         None,
@@ -647,8 +682,8 @@ fn test_collector_handle_encoded_row_max_total_file_size_shared_by_collectors() 
         "test2",
         DataKVGroup,
         Box::new(FakeCodec),
-        Arc::new(NewBoundedHandleSet(shared_bound.clone(), i64::MAX)),
-        NewBoundedHandleSet(shared_bound, i64::MAX),
+        Arc::new(NewBoundedKeySet(shared_bound.clone(), i64::MAX)),
+        NewBoundedKeySet(shared_bound, i64::MAX),
         Some(shared_total_file_size.clone()),
         None,
         None,
@@ -662,13 +697,23 @@ fn test_collector_handle_encoded_row_max_total_file_size_shared_by_collectors() 
     for i in 0..3_i64 {
         let pairs = make_pairs(format!("a-{i}").into_bytes());
         coll1
-            .HandleEncodedRow(&context, &IntHandle(i), &row, &pairs)
+            .HandleEncodedRow(
+                &context,
+                &astersql_kv::Key(format!("row:1:{}", i).into_bytes()),
+                &row,
+                &pairs,
+            )
             .unwrap();
     }
     for i in 0..3_i64 {
         let pairs = make_pairs(format!("b-{i}").into_bytes());
         coll2
-            .HandleEncodedRow(&context, &IntHandle(i), &row, &pairs)
+            .HandleEncodedRow(
+                &context,
+                &astersql_kv::Key(format!("row:1:{}", i).into_bytes()),
+                &row,
+                &pairs,
+            )
             .unwrap();
     }
     coll1.Close(&context).unwrap();

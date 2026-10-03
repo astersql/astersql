@@ -199,6 +199,8 @@ pub fn ResolveConflictGroup(
     collector: Option<Arc<dyn Collector + Send + Sync>>,
     traffic_recorder: Option<Arc<dyn TrafficRecorder>>,
 ) -> Result<(), errors::SharedError> {
+    let target_index = crate::collect_conflicts::getKVGroupIndexInfo(&target_table, kv_group)
+        .map_err(errors::New)?;
     let cancellation = globalsort::reader::CancellationToken::default();
     let mut reader = globalsort::reader::ReadKVFilesAsync(
         cancellation.clone(),
@@ -208,8 +210,13 @@ pub fn ResolveConflictGroup(
     std::thread::scope(|scope| {
         let mut senders = Vec::with_capacity(codecs.len());
         let mut workers = Vec::with_capacity(codecs.len());
-        for codec in codecs {
-            let (sender, receiver) = mpsc::channel::<ConflictKVPair>();
+        for mut codec in codecs {
+            codec.ConfigureKeyspace(cluster_store.Keyspace());
+            let (sender, receiver) = mpsc::sync_channel::<ConflictKVPair>(
+                astersql_dxf_importinto_conflictedkv::BufferedHandleLimit
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    .max(1),
+            );
             senders.push(sender);
             let table = target_table.clone();
             let store = cluster_store.clone();
@@ -233,13 +240,30 @@ pub fn ResolveConflictGroup(
             match pair {
                 Ok(pair) => {
                     if !senders.is_empty() {
-                        let worker = index % senders.len();
-                        if senders[worker]
-                            .send(ConflictKVPair {
-                                Key: Key(pair.key),
-                                Value: pair.value,
-                            })
-                            .is_err()
+                        let input = ConflictKVPair {
+                            Key: Key(pair.key.clone()),
+                            Value: pair.value.clone(),
+                        };
+                        let worker = match crate::collect_conflicts::conflictWorkerForPair(
+                            &input,
+                            target_index.as_ref(),
+                            senders.len(),
+                            index,
+                            &cluster_store.Keyspace(),
+                        ) {
+                            Ok(worker) => worker,
+                            Err(error) => {
+                                read_error = Some(error);
+                                cancellation.cancel();
+                                break;
+                            }
+                        };
+                        if crate::collect_conflicts::sendConflictPair(
+                            context,
+                            &senders[worker],
+                            input,
+                        )
+                        .is_err()
                         {
                             read_error = Some("conflict deleter worker stopped".to_owned());
                             cancellation.cancel();
@@ -291,12 +315,18 @@ pub fn ResolveConflictGroupFromMeta(
     collector: Option<Arc<dyn Collector + Send + Sync>>,
     traffic_recorder: Option<Arc<dyn TrafficRecorder>>,
 ) -> Result<(), errors::SharedError> {
+    let target_index = crate::collect_conflicts::getKVGroupIndexInfo(&target_table, kv_group)
+        .map_err(errors::New)?;
     std::thread::scope(|scope| {
         let (ready_sender, ready_receiver) = mpsc::channel::<Result<(), String>>();
         let mut senders = Vec::with_capacity(concurrency);
         let mut workers = Vec::with_capacity(concurrency);
         for _ in 0..concurrency {
-            let (sender, receiver) = mpsc::channel::<ConflictKVPair>();
+            let (sender, receiver) = mpsc::sync_channel::<ConflictKVPair>(
+                astersql_dxf_importinto_conflictedkv::BufferedHandleLimit
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    .max(1),
+            );
             senders.push(sender);
             let ready = ready_sender.clone();
             let table = target_table.clone();
@@ -319,7 +349,8 @@ pub fn ResolveConflictGroupFromMeta(
                         .map_err(|error| error.to_string())
                 })();
                 match codec {
-                    Ok(codec) => {
+                    Ok(mut codec) => {
+                        codec.ConfigureKeyspace(store.Keyspace());
                         let _ = ready.send(Ok(()));
                         let progress =
                             progress.map(|collector| -> Arc<dyn Collector> { collector });
@@ -367,13 +398,30 @@ pub fn ResolveConflictGroupFromMeta(
                 match pair {
                     Ok(pair) => {
                         if !senders.is_empty() {
-                            let worker = index % senders.len();
-                            if senders[worker]
-                                .send(ConflictKVPair {
-                                    Key: Key(pair.key),
-                                    Value: pair.value,
-                                })
-                                .is_err()
+                            let input = ConflictKVPair {
+                                Key: Key(pair.key.clone()),
+                                Value: pair.value.clone(),
+                            };
+                            let worker = match crate::collect_conflicts::conflictWorkerForPair(
+                                &input,
+                                target_index.as_ref(),
+                                senders.len(),
+                                index,
+                                &cluster_store.Keyspace(),
+                            ) {
+                                Ok(worker) => worker,
+                                Err(error) => {
+                                    read_error = Some(error);
+                                    cancellation.cancel();
+                                    break;
+                                }
+                            };
+                            if crate::collect_conflicts::sendConflictPair(
+                                context,
+                                &senders[worker],
+                                input,
+                            )
+                            .is_err()
                             {
                                 read_error = Some("conflict deleter worker stopped".to_owned());
                                 cancellation.cancel();
@@ -476,6 +524,7 @@ impl Storage for ConflictObjectStorage {
 /// Production bridge from an eagerly created importer encoder to the
 /// conflicted-KV handler's codec contract.
 pub struct ImporterConflictCodec {
+    keyspace: Vec<u8>,
     encoder: TableKVEncoder,
     decoder: backend_kv::TableKVDecoder,
 }
@@ -508,10 +557,23 @@ pub fn NewImporterConflictCodecWithOptions(
             return Err(errors::New(error));
         }
     };
-    Ok(ImporterConflictCodec { encoder, decoder })
+    Ok(ImporterConflictCodec {
+        encoder,
+        decoder,
+        keyspace: Vec::new(),
+    })
 }
 
 fn importerHandle(handle: &dyn tablecodec::kv::Handle) -> Result<Box<dyn Handle>, String> {
+    if let Some(partition) = handle
+        .as_any()
+        .downcast_ref::<tablecodec::kv::PartitionHandle>()
+    {
+        return Ok(Box::new(astersql_kv::NewPartitionHandle(
+            partition.PartitionID,
+            importerHandle(partition.Handle.as_ref())?,
+        )));
+    }
     if handle.IsInt() {
         Ok(Box::new(IntHandle(handle.IntValue())))
     } else {
@@ -522,10 +584,11 @@ fn importerHandle(handle: &dyn tablecodec::kv::Handle) -> Result<Box<dyn Handle>
 }
 
 impl ConflictRowCodec for ImporterConflictCodec {
+    fn ConfigureKeyspace(&mut self, keyspace: Vec<u8>) {
+        self.keyspace = keyspace;
+    }
     fn StripKeyspacePrefix(&self, key: &Key) -> Result<Key, String> {
-        Ok(Key(
-            tablecodec::rowcodec::RemoveKeyspacePrefix(&key.0).to_vec()
-        ))
+        crate::collect_conflicts::decodeConflictKey(key, &self.keyspace)
     }
 
     fn DecodeRowKey(&self, key: &Key) -> Result<Box<dyn Handle>, String> {
@@ -587,7 +650,11 @@ impl ConflictRowCodec for ImporterConflictCodec {
     }
 
     fn EncodeRowKey(&self, table_id: i64, handle: &dyn Handle) -> Key {
-        Key(tablecodec::EncodeRowKey(table_id, &handle.Encoded()).0)
+        let physical_id = handle
+            .as_any()
+            .downcast_ref::<astersql_kv::PartitionHandle>()
+            .map_or(table_id, |partition| partition.PartitionID);
+        Key(tablecodec::EncodeRowKey(physical_id, &handle.Encoded()).0)
     }
 
     fn EncodeRow(
@@ -945,4 +1012,11 @@ pub fn createEncoders(
         }
     }
     Ok(encoders)
+}
+
+#[cfg(test)]
+pub(crate) fn importerHandleForTest(
+    handle: &dyn tablecodec::kv::Handle,
+) -> Result<Box<dyn Handle>, String> {
+    importerHandle(handle)
 }

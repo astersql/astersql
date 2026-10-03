@@ -25,7 +25,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use astersql_dxf_framework_taskexecutor_execute::Collector as ProgressCollector;
-use astersql_kv::{Handle, Key};
+use astersql_kv::Key;
 use astersql_lightning_backend_kv::Pairs;
 use astersql_lightning_verification::KvPair;
 use astersql_meta_model::TableInfo;
@@ -188,7 +188,7 @@ impl EncodedRowHandler for Deleter {
     fn HandleEncodedRow(
         &mut self,
         context: &ConflictContext,
-        _handle: &dyn Handle,
+        _row_key: &Key,
         _row: &[Datum],
         pairs: &Pairs,
     ) -> Result<(), String> {
@@ -210,7 +210,7 @@ impl DeleteWorker {
         receiver: mpsc::Receiver<Vec<Key>>,
     ) -> Result<(), String> {
         while let Ok(keys) = receiver.recv() {
-            retry(context, self.store.as_ref(), || {
+            retryWithPolicy(context, self.store.as_ref(), true, || {
                 self.deleteBufferedKeys(context, &keys)
             })?;
         }
@@ -240,6 +240,15 @@ impl DeleteWorker {
 fn retry(
     context: &ConflictContext,
     store: &dyn ConflictStore,
+    operation: impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
+    retryWithPolicy(context, store, false, operation)
+}
+
+fn retryWithPolicy(
+    context: &ConflictContext,
+    store: &dyn ConflictStore,
+    retry_transactions: bool,
     mut operation: impl FnMut() -> Result<(), String>,
 ) -> Result<(), String> {
     let mut delay = storeOpMinBackoff;
@@ -250,7 +259,11 @@ fn retry(
         }
         match operation() {
             Ok(()) => return Ok(()),
-            Err(error) if store.IsRetryableError(&error) && attempt + 1 < storeOpMaxRetryCnt => {
+            Err(error)
+                if (store.IsRetryableError(&error)
+                    || (retry_transactions && store.IsTxnRetryableError(&error)))
+                    && attempt + 1 < storeOpMaxRetryCnt =>
+            {
                 last_error = Some(error);
                 std::thread::sleep(delay);
                 delay = delay.saturating_mul(2).min(storeOpMaxBackoff);

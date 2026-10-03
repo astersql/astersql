@@ -47,7 +47,7 @@ use astersql_types::datum::{Datum, NewIntDatum};
 use crate::{
     BufferedHandleLimit, ConflictContext, ConflictKVPair, ConflictRowCodec, ConflictSnapshot,
     ConflictStore, ConflictTransaction, DataKVGroup, EncodedRowHandler, Handler, KVHandler,
-    NewBaseHandler, NewBoundedHandleSet, NewDataKVHandler, NewHandleFilter, NewIndexKVHandler,
+    NewBaseHandler, NewBoundedKeySet, NewDataKVHandler, NewIndexKVHandler, NewKeyFilter,
     NewLazyRefreshedSnapshot, TrafficRecorder,
 };
 
@@ -214,13 +214,19 @@ impl EncodedRowHandler for RecordingRowHandler {
     fn HandleEncodedRow(
         &mut self,
         _context: &ConflictContext,
-        handle: &dyn Handle,
+        row_key: &Key,
         _row: &[Datum],
         pairs: &Pairs,
     ) -> Result<(), String> {
         self.row_count += 1;
         self.kv_pair_count += pairs.Pairs.len() as i64;
-        self.handled_handles.push(handle.String());
+        self.handled_handles.push(
+            String::from_utf8_lossy(&row_key.0)
+                .rsplit(':')
+                .next()
+                .unwrap()
+                .to_owned(),
+        );
         Ok(())
     }
 }
@@ -323,9 +329,9 @@ fn do_test_index_kv_handler(clustered: bool, expected_kv_pairs: i64) {
     let cluster_store: Arc<dyn ConflictStore> = Arc::new(FakeConflictStore { existing });
 
     let shared_size = Arc::new(std::sync::atomic::AtomicI64::new(0));
-    let mut already_processed = NewBoundedHandleSet(shared_size, 1 << 20);
-    already_processed.Add(&IntHandle(1));
-    already_processed.Add(&IntHandle(3));
+    let mut already_processed = NewBoundedKeySet(shared_size, 1 << 20);
+    already_processed.Add(&Key(b"row:1:1".to_vec()));
+    already_processed.Add(&Key(b"row:1:3".to_vec()));
     let already_processed = Arc::new(already_processed);
 
     let progress_collector =
@@ -341,7 +347,13 @@ fn do_test_index_kv_handler(clustered: bool, expected_kv_pairs: i64) {
     let mut index_handler = NewIndexKVHandler(
         base,
         NewLazyRefreshedSnapshot(cluster_store, Some(traffic_recorder.clone())),
-        Some(NewHandleFilter(already_processed.clone())),
+        Some(NewKeyFilter(
+            already_processed.clone(),
+            Arc::new(std::sync::Mutex::new(NewBoundedKeySet(
+                Arc::new(std::sync::atomic::AtomicI64::new(0)),
+                1 << 20,
+            ))),
+        )),
     );
     index_handler.PreRun().expect("PreRun should succeed");
 
@@ -369,6 +381,22 @@ fn do_test_index_kv_handler(clustered: bool, expected_kv_pairs: i64) {
         .Close(&context, &mut row_handler)
         .expect("Close should flush any leftover buffered handles");
 
+    // MVI entries for the same rows can arrive in later snapshot batches.
+    let (sender, receiver) = mpsc::channel();
+    for id in [2, 4, 5] {
+        sender
+            .send(ConflictKVPair {
+                Key: Key(format!("idx:{id}").into_bytes()),
+                Value: Vec::new(),
+            })
+            .unwrap();
+    }
+    drop(sender);
+    index_handler
+        .Run(&context, &receiver, &mut row_handler)
+        .unwrap();
+    index_handler.Close(&context, &mut row_handler).unwrap();
+
     BufferedHandleLimit.store(previous_limit, Ordering::Release);
 
     assert!(traffic_recorder.read_bytes.load(Ordering::Acquire) > 0);
@@ -380,7 +408,7 @@ fn do_test_index_kv_handler(clustered: bool, expected_kv_pairs: i64) {
         vec!["2".to_owned(), "4".to_owned(), "5".to_owned()],
         handled
     );
-    assert_eq!(16, progress_collector.ProcessedCnt.load(Ordering::SeqCst));
+    assert_eq!(19, progress_collector.ProcessedCnt.load(Ordering::SeqCst));
 
     // 已在过滤集合中的句柄不得进入行处理器。
     // Handles already in the filter set must never reach the row handler.
@@ -487,4 +515,76 @@ fn test_index_kv_handler_rejects_zero_table_id() {
         )
         .expect_err("a zero table ID must be rejected");
     assert!(error.contains("invalid table ID"));
+}
+
+#[test]
+fn index_key_is_registered_only_after_successful_row_callback() {
+    let _guard = BUFFERED_HANDLE_LIMIT_LOCK.lock().unwrap();
+    let previous = BufferedHandleLimit.swap(1, Ordering::AcqRel);
+    let table = make_table(
+        true,
+        vec![IndexInfo {
+            ID: 2,
+            Columns: vec![IndexColumn::default()],
+            ..Default::default()
+        }],
+    );
+    let store = Arc::new(FakeConflictStore {
+        existing: HashMap::from([(
+            b"row:1:1".to_vec(),
+            ValueEntry {
+                Value: vec![0],
+                CommitTs: 0,
+            },
+        )]),
+    });
+    let local = Arc::new(Mutex::new(NewBoundedKeySet(
+        Arc::new(std::sync::atomic::AtomicI64::new(0)),
+        1024,
+    )));
+    let filter = NewKeyFilter(
+        Arc::new(NewBoundedKeySet(
+            Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            1024,
+        )),
+        local.clone(),
+    );
+    let mut handler = NewIndexKVHandler(
+        NewBaseHandler(table, "2", Box::new(FakeCodec), None),
+        NewLazyRefreshedSnapshot(store, None),
+        Some(filter),
+    );
+    handler.PreRun().unwrap();
+    struct FailOnce(bool);
+    impl EncodedRowHandler for FailOnce {
+        fn HandleEncodedRow(
+            &mut self,
+            _: &ConflictContext,
+            _: &Key,
+            _: &[Datum],
+            _: &Pairs,
+        ) -> Result<(), String> {
+            if !self.0 {
+                self.0 = true;
+                return Err("handle row".into());
+            }
+            Ok(())
+        }
+    }
+    let context = ConflictContext::default();
+    let mut callback = FailOnce(false);
+    let pair = ConflictKVPair {
+        Key: Key(b"idx:1".to_vec()),
+        Value: Vec::new(),
+    };
+    assert_eq!(
+        handler
+            .Handle(&context, pair.clone(), &mut callback)
+            .unwrap_err(),
+        "handle row"
+    );
+    assert!(!local.lock().unwrap().Contains(&Key(b"row:1:1".to_vec())));
+    handler.Handle(&context, pair, &mut callback).unwrap();
+    assert!(local.lock().unwrap().Contains(&Key(b"row:1:1".to_vec())));
+    BufferedHandleLimit.store(previous, Ordering::Release);
 }
