@@ -94,7 +94,12 @@ fn raw_restore_reads_meta_filters_requested_range_and_tracks_go_progress() {
     let mut cfg = config_with_meta(meta);
     let glue = RecordingGlue::default();
 
-    RunRestoreRaw(&glue, "Raw Restore", &mut cfg).unwrap();
+    RunRestoreRaw(
+        &crate::restore_lifecycle_test::fixture_glue(&glue),
+        "Raw Restore",
+        &mut cfg,
+    )
+    .unwrap();
 
     // Go GetFilesInRawRange includes a file whose EndKey equals the requested StartKey.
     assert_eq!(
@@ -114,7 +119,12 @@ fn raw_restore_reads_meta_filters_requested_range_and_tracks_go_progress() {
 fn raw_restore_rejects_transactional_meta_and_uncovered_range() {
     let glue = RecordingGlue::default();
     let mut transactional = config_with_meta(BackupMeta::default());
-    let err = RunRestoreRaw(&glue, "Raw Restore", &mut transactional).unwrap_err();
+    let err = RunRestoreRaw(
+        &crate::restore_lifecycle_test::fixture_glue(&glue),
+        "Raw Restore",
+        &mut transactional,
+    )
+    .unwrap_err();
     assert!(
         err.msg
             .contains("cannot do raw restore from transactional data")
@@ -129,6 +139,11 @@ fn raw_restore_rejects_transactional_meta_and_uncovered_range() {
         }],
         ..Default::default()
     });
-    let err = RunRestoreRaw(&glue, "Raw Restore", &mut uncovered).unwrap_err();
+    let err = RunRestoreRaw(
+        &crate::restore_lifecycle_test::fixture_glue(&glue),
+        "Raw Restore",
+        &mut uncovered,
+    )
+    .unwrap_err();
     assert!(err.msg.contains("only partially covered"));
 }

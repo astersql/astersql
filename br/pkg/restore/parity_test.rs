@@ -372,7 +372,7 @@ fn go_rust_public_contract_matches() {
         assert!(!calls.iter().any(|(a, _)| a == "store-2"));
     }
     // RestorePostWork 应将所有 store 切回 Normal 模式。
-    RestorePostWork(ctx.clone(), &mut mode, undo);
+    RestorePostWork(ctx.clone(), &mut mode, undo, false);
     {
         let calls = switcher_impl.calls.lock().unwrap();
         assert!(

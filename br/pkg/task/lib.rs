@@ -150,3 +150,9 @@ pub use restore_raw::*;
 pub use restore_txn::*;
 pub use stream::*;
 pub use stubs::*;
+
+#[path = "restore_lifecycle.rs"]
+pub mod restore_lifecycle;
+#[cfg(test)]
+#[path = "restore_lifecycle_test.rs"]
+mod restore_lifecycle_test;

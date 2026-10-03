@@ -126,8 +126,20 @@ pub fn RunRestoreTxnWithStorage(
         // SplitPoints reports one unit per non-empty region end key.
         update_ch.IncBy(getEndKeys(&ranges).len() as i64);
         // GoRestore reports one unit per restored backup file.
-        update_ch.IncBy(files.len() as i64);
+        let lifecycle =
+            g.GetRestoreLifecycle(crate::restore_lifecycle::RestoreKind::Txn, &files)?;
+        lifecycle.ValidateFiles(&files)?;
+        let progress = update_ch.clone();
+        let result = lifecycle.RestoreFiles(
+            crate::restore_lifecycle::RestoreKind::Txn,
+            cfg.SwitchModeInterval,
+            cfg.Concurrency,
+            false,
+            false,
+            std::sync::Arc::new(move |n| progress.IncBy(n)),
+        );
         update_ch.Close();
+        result?;
         SetSuccessStatus(true);
         Ok(())
     })();

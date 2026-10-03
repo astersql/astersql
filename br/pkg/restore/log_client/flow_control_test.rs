@@ -308,6 +308,7 @@ fn flow_control_propagates_read_and_write_failures_without_later_writes() {
 struct RecordingSSTImporter {
     state: Arc<Mutex<ConfigState>>,
     imported: Arc<Mutex<Vec<BackupFileSet>>>,
+    fail_import: bool,
 }
 impl astersql_br_pkg_restore::FileImporter for RecordingSSTImporter {
     fn ConfigureDownloadRetry(
@@ -327,6 +328,11 @@ impl astersql_br_pkg_restore::FileImporter for RecordingSSTImporter {
             .unwrap()
             .calls
             .push(("import-sst".into(), sets[0].TableID.to_string()));
+        if self.fail_import {
+            return Err(astersql_br_pkg_restore::stubs::Error::new(
+                "SST import failure",
+            ));
+        }
         self.imported.lock().unwrap().extend_from_slice(sets);
         Ok(())
     }
@@ -382,6 +388,7 @@ fn restore_sst_pipeline_adjusts_configs_before_mode_switch_and_import() {
                 Arc::new(RecordingSSTImporter {
                     state: state.clone(),
                     imported: imported.clone(),
+                    fail_import: false,
                 }),
                 None,
             )
@@ -401,8 +408,24 @@ fn restore_sst_pipeline_adjusts_configs_before_mode_switch_and_import() {
             0,
             Arc::new(|_| {}),
         );
+        let modes_before_caller_cleanup = state
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .filter(|(operation, _)| operation == "switch-mode")
+            .map(|(_, mode)| mode.clone())
+            .collect::<Vec<_>>();
         mode.SwitchToNormalMode(&restore_ctx).unwrap();
         result.unwrap();
+        assert_eq!(
+            modes_before_caller_cleanup,
+            if online {
+                vec![]
+            } else {
+                vec!["Import".to_string(), "Normal".to_string()]
+            }
+        );
         let calls = &state.lock().unwrap().calls;
         assert_eq!(calls[2].1, "3TiB");
         assert_eq!(calls[3].1, "1536GiB");
@@ -656,6 +679,7 @@ fn sst_restorer_probe_pd_lookup_preserves_parent_cancellation() {
             Arc::new(RecordingSSTImporter {
                 state,
                 imported: Arc::new(Mutex::new(Vec::new())),
+                fail_import: false,
             }),
             None,
         )
@@ -670,4 +694,66 @@ fn sst_restorer_probe_pd_lookup_preserves_parent_cancellation() {
             .restorer
             .is_none()
     );
+}
+
+#[test]
+fn restore_sst_mode_cleanup_preserves_import_errors() {
+    for online in [false, true] {
+        let (mut client, state) = restore_client(&["192GiB"], &["256GiB"]);
+        let restore_ctx = astersql_br_pkg_restore::stubs::Context::Background();
+        client
+            .InitSSTFileRestorer(
+                &restore_ctx,
+                Arc::new(RecordingSSTImporter {
+                    state: state.clone(),
+                    imported: Arc::new(Mutex::new(Vec::new())),
+                    fail_import: true,
+                }),
+                None,
+            )
+            .unwrap();
+        let mut mode = astersql_br_pkg_restore::import_mode_switcher::NewImportModeSwitcher(
+            Arc::new(RestorePD),
+            std::time::Duration::from_secs(3600),
+            Arc::new(ModeTransport(state.clone())),
+        );
+        let error = client
+            .RestoreSSTFileSets(
+                &Context::Background(),
+                &restore_ctx,
+                compacted_sets(512 * GIB),
+                &mut mode,
+                online,
+                TIB,
+                0,
+                Arc::new(|_| {}),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("SST import failure"));
+        let modes = state
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .filter(|(op, _)| op == "switch-mode")
+            .map(|(_, mode)| mode.clone())
+            .collect::<Vec<_>>();
+        mode.SwitchToNormalMode(&restore_ctx).unwrap();
+        assert_eq!(
+            modes,
+            if online {
+                vec![]
+            } else {
+                vec!["Import".to_string(), "Normal".to_string()]
+            }
+        );
+        assert_eq!(
+            client
+                .restoreStat
+                .restoreSSTKVCount
+                .load(std::sync::atomic::Ordering::Relaxed),
+            123
+        );
+        client.Close(&Context::Background());
+    }
 }

@@ -983,18 +983,20 @@ fn test_probe_error_falls_back_and_real_context_cancel_stops() {
 
 #[test]
 fn test_sst_restorer_adapter_probes_before_import_and_retain_probe_is_strict() {
-    use astersql_br_pkg_restore::FileImporter;
+    use astersql_br_pkg_restore::{BalancedFileImporter, FileImporter};
     for retain in [false, true] {
         let (importer, rpc) = retry_importer(true, false, "Canceled", retain);
         let adapter = crate::import::SnapshotFileImporter(std::sync::Mutex::new(importer));
         let ctx = astersql_br_pkg_restore::stubs::Context::Background();
         adapter.ConfigureDownloadRetry(&ctx, &[1]).unwrap();
+        adapter.PauseForBackpressure();
         assert_eq!(*rpc.probed.lock().unwrap(), vec![1]);
         let mut set = astersql_br_pkg_restore::BackupFileSet::default();
         set.TableID = 100;
         set.SSTFiles.resize_with(1, Default::default);
         let file = &mut set.SSTFiles[0];
         file.Name = "nonempty_write.sst".into();
+        file.Cf = "write".into();
         file.StartKey = tablecodec::EncodeTablePrefix(100);
         file.EndKey = [tablecodec::EncodeTablePrefix(100), vec![b'z']].concat();
         set.RewriteRules = Some(Default::default());

@@ -503,11 +503,22 @@ fn prepareStreamRestore(cfg: &mut RestoreConfig) -> Result<()> {
     Ok(())
 }
 
-fn restoreStreamBody(g: &dyn Glue, cfg: &mut RestoreConfig) -> Result<()> {
-    let updateCh = g.StartProgress("log restore", 1, !cfg.Config.LogProgress);
-    updateCh.Inc();
-    updateCh.Close();
-    Ok(())
+pub(crate) fn restoreStreamBody(
+    g: &dyn Glue,
+    cfg: &mut RestoreConfig,
+    client: &mut astersql_br_pkg_restore_log_client::LogClient,
+) -> Result<()> {
+    let lifecycle = g.GetRestoreLifecycle(crate::restore_lifecycle::RestoreKind::Stream, &[])?;
+    let count = lifecycle
+        .file_sets
+        .iter()
+        .map(|set| set.SSTFiles.len() as i64)
+        .sum();
+    let progress = g.StartProgress("log restore", count, !cfg.Config.LogProgress);
+    let reporter = progress.clone();
+    let result = lifecycle.RestoreCompactedSST(client, cfg, Arc::new(move |n| reporter.IncBy(n)));
+    progress.Close();
+    result
 }
 
 /// 校验恢复 TS 区间是否落在现有日志 [logMinTS, logMaxTS] 内。
@@ -920,7 +931,9 @@ pub fn restoreStream(g: &dyn Glue, cfg: &mut RestoreConfig) -> Result<()> {
         .TiKVConfigControl
         .clone()
         .ok_or_else(|| Error::new("stream restore SQL/domain transport is not configured"))?;
-    restoreStreamWithTiKVConfigControl(cfg, &control, |cfg, _client| restoreStreamBody(g, cfg))
+    restoreStreamWithTiKVConfigControl(cfg, &control, |cfg, client| {
+        restoreStreamBody(g, cfg, client)
+    })
 }
 
 /// The callback is the existing restore operation, after concurrency adjustment,

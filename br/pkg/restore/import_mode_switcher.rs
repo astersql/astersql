@@ -18,7 +18,7 @@
 //! 模块职责：在离线恢复前后把 TiKV 切入/切出 import mode，并配合摘除/恢复 PD
 //! scheduler；后台按间隔刷新 Import，防止 TiKV 自动退回 Normal。
 //! 对应 Go `import_mode_switcher.go`；TiFlash store 经 SkipTiFlash 过滤不切换。
-//! 约束：SwitchMode 经 ImportSstSwitcher 抽象，本文件不直连 gRPC。
+//! 约束：SwitchMode 经 ImportSstSwitcher 抽象；GrpcImportSstSwitcher 提供真实 gRPC 传输。
 
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -79,6 +79,18 @@ pub fn NewImportModeSwitcher(
 }
 
 impl ImportModeSwitcher {
+    /// End the operation's refresh worker without restoring TiKV/PD state.
+    /// Used when snapshot checkpoint retry intentionally retains paused state.
+    pub fn StopRefreshing(&mut self) {
+        let _guard = self.mu.lock().unwrap();
+        if let Some(cancel) = self.cancel.take() {
+            cancel.call();
+        }
+        if let Some(wake) = self.refresh_wake.take() {
+            let _ = wake.send(());
+        }
+        self.wg.Wait();
+    }
     /// SwitchToNormalMode stops the import-mode refresh goroutine and switches TiKV to normal.
     /// 先停刷新协程并 Wait，再并发 SwitchMode(Normal)；已是 Normal 则直接成功。
     pub fn SwitchToNormalMode(&mut self, ctx: &Context) -> Result<()> {
@@ -244,6 +256,7 @@ pub fn RestorePostWork(
     mut ctx: Context,
     switcher: &mut ImportModeSwitcher,
     restore_schedulers: UndoFunc,
+    is_online: bool,
 ) {
     // 取消后的 ctx 无法完成 RPC，换成 Background 做尽力而为的清理。
     if ctx.Err().is_some() {
@@ -251,11 +264,79 @@ pub fn RestorePostWork(
         ctx = Context::Background();
     }
     // 切 Normal 失败只告警，仍继续尝试恢复 scheduler。
-    if let Err(_err) = switcher.SwitchToNormalMode(&ctx) {
-        log::Warn("fail to switch to normal mode");
+    if !is_online {
+        if let Err(_err) = switcher.SwitchToNormalMode(&ctx) {
+            log::Warn("fail to switch to normal mode");
+        }
     }
     // undo 失败同样不 panic，避免掩盖主流程已完成的恢复结果。
     if let Err(_err) = restore_schedulers(&ctx) {
         log::Warn("failed to restore PD schedulers");
+    }
+}
+
+/// ImportSST network boundary used by a live restore lifecycle. TLS credentials
+/// are constructed by the caller from the same restore TLS configuration.
+pub struct GrpcImportSstSwitcher {
+    pub environment: Arc<grpcio::Environment>,
+    pub credentials: Option<Arc<dyn Fn() -> grpcio::ChannelCredentials + Send + Sync>>,
+}
+impl ImportSstSwitcher for GrpcImportSstSwitcher {
+    fn SwitchMode(&self, ctx: &Context, addr: &str, mode: import_sstpb::SwitchMode) -> Result<()> {
+        if let Some(error) = ctx.Err() {
+            return Err(error);
+        }
+        let builder = grpcio::ChannelBuilder::new(self.environment.clone())
+            .max_reconnect_backoff(Duration::from_secs(3));
+        let channel = match &self.credentials {
+            Some(credentials) => builder.set_credentials(credentials()).connect(addr),
+            None => builder.connect(addr),
+        };
+        // Register a connectivity watch on the completion queue; querying the
+        // state alone does not drive this client's connection establishment.
+        {
+            let mut connected = Box::pin(channel.wait_for_connected(Duration::from_secs(5)));
+            let mut poll_context = std::task::Context::from_waker(std::task::Waker::noop());
+            loop {
+                if let Some(error) = ctx.Err() {
+                    return Err(error);
+                }
+                match std::future::Future::poll(connected.as_mut(), &mut poll_context) {
+                    std::task::Poll::Ready(true) => break,
+                    std::task::Poll::Ready(false) => {
+                        return Err(Error::new(format!("dial ImportSST at {addr}: timeout")));
+                    }
+                    std::task::Poll::Pending => thread::sleep(Duration::from_millis(10)),
+                }
+            }
+        }
+        let client = kvproto::import_sstpb_grpc::ImportSstClient::new(channel);
+        let mut request = kvproto::import_sstpb::SwitchModeRequest::default();
+        request.set_mode(match mode {
+            import_sstpb::SwitchMode::Normal => kvproto::import_sstpb::SwitchMode::Normal,
+            import_sstpb::SwitchMode::Import => kvproto::import_sstpb::SwitchMode::Import,
+        });
+        // Go bounds dialing by five seconds, but the RPC lifetime is the parent
+        // operation context. Poll the async receiver so cancellation reaches gRPC.
+        let mut response = client
+            .switch_mode_async(&request)
+            .map_err(|error| Error::new(format!("switch TiKV mode at {addr}: {error}")))?;
+        let mut poll_context = std::task::Context::from_waker(std::task::Waker::noop());
+        loop {
+            if let Some(error) = ctx.Err() {
+                response.cancel();
+                return Err(error);
+            }
+            match std::future::Future::poll(std::pin::Pin::new(&mut response), &mut poll_context) {
+                std::task::Poll::Ready(result) => {
+                    result.map_err(|error| {
+                        Error::new(format!("switch TiKV mode at {addr}: {error}"))
+                    })?;
+                    break;
+                }
+                std::task::Poll::Pending => thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        Ok(())
     }
 }

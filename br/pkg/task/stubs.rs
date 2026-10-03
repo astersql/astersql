@@ -731,6 +731,13 @@ impl Progress for MemProgress {
 
 // Glue 门面 trait；真实实现由 `br/pkg/glue` 提供 TiDB 控制台与 metrics 接入。
 pub trait Glue: Send + Sync {
+    fn GetRestoreLifecycle(
+        &self,
+        _kind: crate::restore_lifecycle::RestoreKind,
+        _files: &[backuppb::File],
+    ) -> Result<crate::restore_lifecycle::RestoreLifecycle> {
+        Err(Error::new("restore PD/import lifecycle is not configured"))
+    }
     fn GetVersion(&self) -> String;
     fn StartProgress(&self, _cmd: &str, total: i64, _log_progress: bool) -> Arc<dyn Progress>;
     fn Record(&self, key: &str, value: u64);

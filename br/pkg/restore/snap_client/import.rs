@@ -988,3 +988,9 @@ impl astersql_br_pkg_restore::FileImporter for SnapshotFileImporter {
             })
     }
 }
+
+impl astersql_br_pkg_restore::BalancedFileImporter for SnapshotFileImporter {
+    fn PauseForBackpressure(&self) {
+        self.0.lock().unwrap().PauseForBackpressure();
+    }
+}

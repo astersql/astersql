@@ -1227,6 +1227,38 @@ pub fn RunRestore(g: &dyn Glue, cmdName: &str, cfg: &mut RestoreConfig) -> Resul
         g.Record(crate::stubs::RestoreDataSize, archive);
         let needed = EstimateTikvUsage(archive, 3, 3);
         CheckStoreSpace(needed, (needed + 1) as i64, 1)?;
+        if !backupMeta.Files.is_empty() {
+            let mut lifecycle = g.GetRestoreLifecycle(
+                crate::restore_lifecycle::RestoreKind::Snapshot,
+                &backupMeta.Files,
+            )?;
+            lifecycle.ValidateFiles(&backupMeta.Files)?;
+            let incremental =
+                backupMeta.StartVersion != 0 && backupMeta.StartVersion != backupMeta.EndVersion;
+            if (isFullRestore(cmdName) && !cfg.Config.ExplicitFilter) || incremental {
+                lifecycle.key_ranges = None;
+            } else if lifecycle.key_ranges.is_none() {
+                return Err(Error::new(
+                    "partial snapshot preallocated key ranges are not configured",
+                ));
+            }
+            let progress = g.StartProgress(
+                "Snapshot Restore",
+                backupMeta.Files.len() as i64,
+                !cfg.Config.LogProgress,
+            );
+            let reporter = progress.clone();
+            let result = lifecycle.RestoreFiles(
+                crate::restore_lifecycle::RestoreKind::Snapshot,
+                cfg.Config.SwitchModeInterval,
+                cfg.Config.Concurrency,
+                cfg.RestoreCommonConfig.Online,
+                cfg.UseCheckpoint,
+                Arc::new(move |n| reporter.IncBy(n)),
+            );
+            progress.Close();
+            result?;
+        }
         SetSuccessStatus(true);
         Ok(())
     })();

@@ -1055,31 +1055,49 @@ impl LogClient {
             mode.GoSwitchToImportMode(restoreCtx)
                 .map_err(|e| Error::new(e.to_string()))?;
         }
-        let restorer = self
-            .sstRestoreManager
-            .as_ref()
-            .and_then(|m| m.restorer.as_ref())
-            .ok_or_else(|| Error::new("SST restorer is not initialized"))?;
-        restorer
-            .GoRestore(progress, vec![sets.clone()])
-            .map_err(|e| Error::new(e.to_string()))?;
-        let result = restorer
-            .WaitUntilFinish()
-            .map_err(|e| Error::new(e.to_string()));
-        for file in sets.iter().flat_map(|set| &set.SSTFiles) {
+        let result = (|| {
+            let restorer = self
+                .sstRestoreManager
+                .as_ref()
+                .and_then(|m| m.restorer.as_ref())
+                .ok_or_else(|| Error::new("SST restorer is not initialized"))?;
+            restorer
+                .GoRestore(progress, vec![sets.clone()])
+                .map_err(|e| Error::new(e.to_string()))?;
+            let result = restorer
+                .WaitUntilFinish()
+                .map_err(|e| Error::new(e.to_string()));
+            let (mut total_kvs, mut total_bytes, mut total_size) = (0_u64, 0_u64, 0_u64);
+            for file in sets.iter().flat_map(|set| &set.SSTFiles) {
+                total_kvs = total_kvs.wrapping_add(file.TotalKvs);
+                total_bytes = total_bytes.wrapping_add(file.TotalBytes);
+                total_size = total_size.wrapping_add(file.Size_);
+                self.restoreStat
+                    .restoreSSTKVCount
+                    .fetch_add(file.TotalKvs, AtomicOrdering::Relaxed);
+                self.restoreStat
+                    .restoreSSTKVSize
+                    .fetch_add(file.TotalBytes, AtomicOrdering::Relaxed);
+                self.restoreStat
+                    .restoreSSTPhySize
+                    .fetch_add(file.Size_, AtomicOrdering::Relaxed);
+            }
             self.restoreStat
-                .restoreSSTKVCount
-                .fetch_add(file.TotalKvs, AtomicOrdering::Relaxed);
-            self.restoreStat
-                .restoreSSTKVSize
-                .fetch_add(file.TotalBytes, AtomicOrdering::Relaxed);
-            self.restoreStat
-                .restoreSSTPhySize
-                .fetch_add(file.Size_, AtomicOrdering::Relaxed);
+                .restoreSSTTakes
+                .fetch_add(begin.elapsed().as_nanos() as u64, AtomicOrdering::Relaxed);
+            log::Info(&format!(
+                "Collected files total_kv={total_kvs} total_bytes={total_bytes} total_size={total_size}"
+            ));
+            result
+        })();
+        // Go defers normal mode after entering Import, including restore errors.
+        if !online {
+            if mode.SwitchToNormalMode(restoreCtx).is_err() {
+                log::Warn(
+                    "[Compacted SST Restore] Failed to switch back to normal mode after restoration.",
+                );
+            }
         }
-        self.restoreStat
-            .restoreSSTTakes
-            .fetch_add(begin.elapsed().as_nanos() as u64, AtomicOrdering::Relaxed);
         result
     }
 }

@@ -805,7 +805,12 @@ fn test_restore_records_snapshot_archive_size_for_compacted_ssts() {
     cfg.Config.PD = vec!["127.0.0.1:2379".into()];
     cfg.Config.Storage = "local:///task40-snapshot".into();
     let glue = crate::stubs::MemGlue::default();
-    RunRestore(&glue, DBRestoreCmd, &mut cfg).unwrap();
+    RunRestore(
+        &crate::restore_lifecycle_test::fixture_glue(&glue),
+        DBRestoreCmd,
+        &mut cfg,
+    )
+    .unwrap();
     assert_eq!(cfg.snapshotRestoreDataSize, 3072);
     assert_eq!(
         glue.records.lock().unwrap()[crate::stubs::RestoreDataSize],

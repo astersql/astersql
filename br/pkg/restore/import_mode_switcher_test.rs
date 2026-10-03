@@ -129,7 +129,7 @@ fn test_restore_pre_work() {
     }
 
     // 收尾：停刷新、切 Normal，并调用 undo（MemConnMgr 可为 nop）。
-    RestorePostWork(ctx.clone(), &mut switcher, undo);
+    RestorePostWork(ctx.clone(), &mut switcher, undo, false);
 
     // check the cfg done — Go asserts schedule cfg restored and delay schedulers cleared.
     // PostWork 后调用记录中必须出现 Normal；remove_called 仍为 true。
@@ -175,4 +175,99 @@ fn switch_to_normal_wakes_sleeping_refresh_immediately() {
         "cancellation should wake the refresh loop immediately; elapsed {:?}",
         started.elapsed()
     );
+}
+
+#[test]
+fn test_restore_post_work_online_skips_normal_mode() {
+    let ctx = Context::Background();
+    let pd = Arc::new(MemPdClient::new(vec![metapb::Store {
+        Id: 1,
+        Address: "store-online".into(),
+        Labels: vec![],
+    }]));
+    let transport = Arc::new(RecordingImportSstSwitcher::new());
+    let mut mode = NewImportModeSwitcher(pd, Duration::from_secs(3600), transport.clone());
+    mode.GoSwitchToImportMode(&ctx).unwrap();
+    let restored = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = restored.clone();
+    RestorePostWork(
+        ctx.clone(),
+        &mut mode,
+        Arc::new(move |ctx: &Context| {
+            assert!(ctx.Err().is_none());
+            observed.store(true, Ordering::SeqCst);
+            Ok(())
+        }),
+        true,
+    );
+    let calls = transport.calls.lock().unwrap().clone();
+    mode.SwitchToNormalMode(&ctx).unwrap();
+    assert!(restored.load(Ordering::SeqCst));
+    assert_eq!(
+        calls,
+        vec![("store-online".into(), import_sstpb::SwitchMode::Import)]
+    );
+}
+
+#[derive(Clone)]
+struct NetworkModeServer(Arc<std::sync::Mutex<Vec<kvproto::import_sstpb::SwitchMode>>>);
+impl kvproto::import_sstpb_grpc::ImportSst for NetworkModeServer {
+    fn switch_mode(
+        &mut self,
+        ctx: grpcio::RpcContext,
+        request: kvproto::import_sstpb::SwitchModeRequest,
+        sink: grpcio::UnarySink<kvproto::import_sstpb::SwitchModeResponse>,
+    ) {
+        self.0.lock().unwrap().push(request.get_mode());
+        ctx.spawn(async move {
+            sink.success(kvproto::import_sstpb::SwitchModeResponse::default())
+                .await
+                .unwrap();
+        });
+    }
+}
+
+#[test]
+fn grpc_mode_transport_sends_import_and_normal_to_real_server() {
+    use crate::import_mode_switcher::GrpcImportSstSwitcher;
+    use crate::stubs::ImportSstSwitcher;
+    let environment = Arc::new(grpcio::Environment::new(1));
+    let modes = Arc::new(std::sync::Mutex::new(vec![]));
+    let service = kvproto::import_sstpb_grpc::create_import_sst(NetworkModeServer(modes.clone()));
+    let mut server = grpcio::ServerBuilder::new(environment.clone())
+        .register_service(service)
+        .build()
+        .unwrap();
+    let port = server
+        .add_listening_port("127.0.0.1:0", grpcio::ServerCredentials::insecure())
+        .unwrap();
+    server.start();
+    let transport = GrpcImportSstSwitcher {
+        environment,
+        credentials: None,
+    };
+    let address = format!("127.0.0.1:{port}");
+    transport
+        .SwitchMode(
+            &Context::Background(),
+            &address,
+            import_sstpb::SwitchMode::Import,
+        )
+        .unwrap();
+    transport
+        .SwitchMode(
+            &Context::Background(),
+            &address,
+            import_sstpb::SwitchMode::Normal,
+        )
+        .unwrap();
+    assert_eq!(
+        *modes.lock().unwrap(),
+        vec![
+            kvproto::import_sstpb::SwitchMode::Import,
+            kvproto::import_sstpb::SwitchMode::Normal
+        ]
+    );
+    drop(transport);
+    drop(server);
 }

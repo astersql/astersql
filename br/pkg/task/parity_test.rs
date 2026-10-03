@@ -609,18 +609,33 @@ fn go_rust_public_contract_matches() {
         .unwrap(),
     );
     rcfg.RestoreStorage = Some(restore_storage);
-    RunRestore(&g, FullRestoreCmd, &mut rcfg).unwrap();
+    RunRestore(
+        &crate::restore_lifecycle_test::fixture_glue(&g),
+        FullRestoreCmd,
+        &mut rcfg,
+    )
+    .unwrap();
 
     let mut raw_restore = crate::restore_raw::RestoreRawConfig::default();
     raw_restore.RawKvConfig.Config.PD = vec!["127.0.0.1:2379".into()];
     raw_restore.RawKvConfig.Config.Storage = "local:///tmp".into();
     raw_restore.RawKvConfig.CF = "default".into();
-    RunRestoreRaw(&g, "Raw Restore", &mut raw_restore).unwrap();
+    RunRestoreRaw(
+        &crate::restore_lifecycle_test::fixture_glue(&g),
+        "Raw Restore",
+        &mut raw_restore,
+    )
+    .unwrap();
 
     let mut txn_cfg = Config::default();
     txn_cfg.PD = vec!["127.0.0.1:2379".into()];
     txn_cfg.Storage = "local:///tmp".into();
-    RunRestoreTxn(&g, "Txn Restore", &mut txn_cfg).unwrap();
+    RunRestoreTxn(
+        &crate::restore_lifecycle_test::fixture_glue(&g),
+        "Txn Restore",
+        &mut txn_cfg,
+    )
+    .unwrap();
 
     // restore_data meta validation
     let ebs_store = MemStorage::new();

@@ -75,7 +75,13 @@ fn txn_restore_reads_meta_merges_ranges_and_tracks_go_progress() {
     );
     let glue = RecordingGlue::default();
 
-    RunRestoreTxnWithStorage(&glue, "Txn Restore", &mut config(), &storage).unwrap();
+    RunRestoreTxnWithStorage(
+        &crate::restore_lifecycle_test::fixture_glue(&glue),
+        "Txn Restore",
+        &mut config(),
+        &storage,
+    )
+    .unwrap();
 
     assert_eq!(
         glue.records.lock().unwrap().as_slice(),
@@ -101,7 +107,13 @@ fn txn_restore_rejects_raw_meta_before_starting_progress() {
     );
     let glue = RecordingGlue::default();
 
-    let err = RunRestoreTxnWithStorage(&glue, "Txn Restore", &mut config(), &storage).unwrap_err();
+    let err = RunRestoreTxnWithStorage(
+        &crate::restore_lifecycle_test::fixture_glue(&glue),
+        "Txn Restore",
+        &mut config(),
+        &storage,
+    )
+    .unwrap_err();
 
     assert!(
         err.msg

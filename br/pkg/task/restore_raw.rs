@@ -244,8 +244,20 @@ pub fn RunRestoreRaw(g: &dyn Glue, cmdName: &str, cfg: &mut RestoreRawConfig) ->
             !cfg.RawKvConfig.Config.LogProgress,
         );
         update_ch.IncBy(getEndKeys(&ranges).len() as i64);
-        update_ch.IncBy(files.len() as i64);
+        let lifecycle =
+            g.GetRestoreLifecycle(crate::restore_lifecycle::RestoreKind::Raw, &files)?;
+        lifecycle.ValidateFiles(&files)?;
+        let progress = update_ch.clone();
+        let result = lifecycle.RestoreFiles(
+            crate::restore_lifecycle::RestoreKind::Raw,
+            cfg.RawKvConfig.Config.SwitchModeInterval,
+            cfg.RawKvConfig.Config.Concurrency,
+            cfg.RestoreCommonConfig.Online,
+            false,
+            Arc::new(move |n| progress.IncBy(n)),
+        );
         update_ch.Close();
+        result?;
         SetSuccessStatus(true);
         Ok(())
     })();

@@ -15,6 +15,8 @@ lane = 2
 
 # arm64 darwin: no kv/domain/kvproto/grpcio. Local traits/stubs + slim rewrite helpers.
 [dependencies]
+grpcio = { version = "=0.13.0", default-features = false, features = ["openssl-vendored", "protobuf-codec"] }
+kvproto = { git = "https://github.com/astersql/kvproto.git", tag = "v0.0.2-aster.20260929", default-features = false, features = ["protobuf-codec"] }
 astersql-br-pkg-restore-utils = { package = "astersql-br-pkg-restore-utils", path = "utils" }
 astersql-br-pkg-utils-iter = { package = "astersql-br-pkg-utils-iter", path = "../utils/iter" }
 base64 = "0.22"
