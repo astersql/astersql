@@ -1220,3 +1220,88 @@ fn test_subtask_run_logs_failure_and_no_error_on_success() {
         }
     }
 }
+
+struct CompleteSummaryStep;
+impl StepExecutor for CompleteSummaryStep {
+    fn RealtimeSummaryJSON(&self) -> Option<String> {
+        Some(r#"{"row_count":3,"bytes":14,"get_request_count":5,"put_request_count":0}"#.into())
+    }
+}
+
+struct CompleteSummaryTable {
+    fail: bool,
+    calls: Mutex<Vec<(String, String)>>,
+}
+impl TaskTable for CompleteSummaryTable {
+    fn GetTaskByID(&self, _: &Context, _: i64) -> Result<Task> {
+        Ok(task1())
+    }
+    fn UpdateSubtaskSummaryJSON(&self, _: &Context, _: i64, summary: &str) -> Result<()> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(("summary".into(), summary.into()));
+        if self.fail {
+            Err(ExecutorError("cannot persist full summary".into()))
+        } else {
+            Ok(())
+        }
+    }
+    fn FinishSubtask(&self, _: &Context, _: &str, _: i64, _: &[u8]) -> Result<()> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(("finish".into(), String::new()));
+        Ok(())
+    }
+}
+fn complete_summary_executor(table: Arc<CompleteSummaryTable>) -> Arc<crate::BaseTaskExecutor> {
+    let env = new_env();
+    let base = NewBaseTaskExecutor(
+        Context::Background(),
+        task1(),
+        NewParamForTest(
+            table,
+            Arc::new(newSlotManager(1)),
+            crate::NodeResource::default(),
+            "node",
+            env.ext.clone(),
+        ),
+    );
+    base.SetStepExecutorForTest(Arc::new(CompleteSummaryStep));
+    base
+}
+
+#[test]
+fn complete_summary_is_persisted_before_subtask_success() {
+    let table = Arc::new(CompleteSummaryTable {
+        fail: false,
+        calls: Default::default(),
+    });
+    complete_summary_executor(table.clone())
+        .finishSubtask(&Context::Background(), &pending_subtask1())
+        .unwrap();
+    let calls = table.calls.lock().unwrap();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].0, "summary");
+    assert_eq!(
+        calls[0].1,
+        CompleteSummaryStep.RealtimeSummaryJSON().unwrap()
+    );
+    assert_eq!(calls[1].0, "finish");
+}
+
+#[test]
+fn complete_summary_persistence_failure_prevents_subtask_success() {
+    let table = Arc::new(CompleteSummaryTable {
+        fail: true,
+        calls: Default::default(),
+    });
+    let error = complete_summary_executor(table.clone())
+        .finishSubtask(&Context::Background(), &pending_subtask1())
+        .unwrap_err();
+    assert_eq!(error.0, "cannot persist full summary");
+    let calls = table.calls.lock().unwrap();
+    assert_eq!(calls.len(), 3);
+    assert!(calls.iter().all(|(name, _)| name == "summary"));
+}

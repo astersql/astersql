@@ -232,6 +232,37 @@ pub(crate) fn fieldType(column: &Column) -> types::FieldType {
     *field_type
 }
 
+/// Encode the stored columns using their persistent IDs. Integer primary keys
+/// live in the row handle, as in table.AddRecord, rather than in the row value.
+pub(crate) fn encodeCanonicalRowWithMeta(
+    datums: &[Datum],
+    meta: &model::TableInfo,
+    new_format: bool,
+) -> Result<Vec<u8>, String> {
+    let mut values = Vec::new();
+    let mut column_ids = Vec::new();
+    for column in &meta.Columns {
+        if meta.PKIsHandle && mysql::HasPriKeyFlag(column.FieldType.GetFlag()) {
+            continue;
+        }
+        if !column.GeneratedExprString.is_empty() && !column.GeneratedStored {
+            continue;
+        }
+        values.push(toCanonicalDatum(&datums[column.Offset as usize])?);
+        column_ids.push(column.ID);
+    }
+    tablecodec::EncodeRow(
+        Some(tablecodec::time::UTC),
+        values,
+        column_ids,
+        Vec::new(),
+        None,
+        None,
+        rowcodec::Encoder::new(new_format),
+    )
+    .map_err(shared_error)
+}
+
 /// 使用连续的 1-based 列 ID 和 UTC 时区编码一行，并按 `new_format` 选择行格式。
 pub(crate) fn encodeCanonicalRow(
     datums: &[Datum],

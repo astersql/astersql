@@ -49,6 +49,35 @@ use crate::encode_and_sort_operator::{
 
 use crate::proto::*;
 
+struct SubtaskRequestRecorder<'a> {
+    store: StorageRef,
+    before: Option<(u64, u64)>,
+    summary: &'a execute::SubtaskSummary,
+}
+impl<'a> SubtaskRequestRecorder<'a> {
+    fn new(store: StorageRef, summary: &'a execute::SubtaskSummary) -> Self {
+        Self {
+            before: store.AccessRequestSnapshot(),
+            store,
+            summary,
+        }
+    }
+}
+impl Drop for SubtaskRequestRecorder<'_> {
+    fn drop(&mut self) {
+        if let (Some((before_get, before_put)), Some((get, put))) =
+            (self.before, self.store.AccessRequestSnapshot())
+        {
+            self.summary
+                .GetReqCnt
+                .fetch_add(get.saturating_sub(before_get), Ordering::Relaxed);
+            self.summary
+                .PutReqCnt
+                .fetch_add(put.saturating_sub(before_put), Ordering::Relaxed);
+        }
+    }
+}
+
 /// Encode-and-sort step called by the distributed task framework.
 pub struct EncodeSortStepExecutor {
     task_id: i64,
@@ -270,6 +299,11 @@ impl EncodeSortStepExecutor {
             store: object_store.clone(),
             owned: self.runtime.ObjectStoreFactory.is_some(),
         };
+        let _requests = self
+            .runtime
+            .ObjectStoreFactory
+            .as_ref()
+            .map(|_| SubtaskRequestRecorder::new(object_store.clone(), &self.summary));
         let mut step_meta = self.read_meta(&subtask.Meta, &object_store)?;
         (self.runtime.LoggerFactory)()
             .With([astersql_lightning_log::Field::int("subtask-id", subtask.ID)])
@@ -568,10 +602,30 @@ pub fn GetImportStepExecutor(
 pub(crate) struct MergeStoreAdapter(pub(crate) StorageRef);
 
 impl globalsort::Storage for MergeStoreAdapter {
+    fn open(&self, path: &str) -> globalsort::Result<Box<dyn std::io::Read>> {
+        crate::write_ingest_backend::open_object_stream(&self.0, path, 0)
+    }
+    fn open_at(&self, path: &str, offset: u64) -> globalsort::Result<Box<dyn std::io::Read>> {
+        crate::write_ingest_backend::open_object_stream(&self.0, path, offset)
+    }
+    fn record_format(&self) -> globalsort::RecordFormat {
+        globalsort::RecordFormat::GoBigEndian64
+    }
+    fn file_size(&self, path: &str) -> globalsort::Result<u64> {
+        let mut reader = self
+            .0
+            .Open(&ObjectContext::default(), path, None)
+            .map_err(|e| globalsort::Error::InvalidData(e.to_string()))?;
+        let size = std::io::Seek::seek(&mut reader, std::io::SeekFrom::End(0));
+        let close = reader.Close();
+        let size = size.map_err(|e| globalsort::Error::InvalidData(e.to_string()))?;
+        close.map_err(|e| globalsort::Error::InvalidData(e.to_string()))?;
+        Ok(size)
+    }
     fn read(&self, path: &str) -> globalsort::Result<Vec<u8>> {
         self.0
             .ReadFile(&ObjectContext::default(), path)
-            .map_err(|error| globalsort::Error::InvalidData(error.to_string()))
+            .map_err(|e| globalsort::Error::InvalidData(e.to_string()))
     }
     fn write(&self, path: &str, value: Vec<u8>) -> globalsort::Result<()> {
         self.0
@@ -597,7 +651,29 @@ impl globalsort::Storage for MergeStoreAdapter {
     }
 }
 
-fn readMergeSortMeta(bytes: &[u8], store: &StorageRef) -> anyhow::Result<MergeSortStepMeta> {
+// Planner external metadata contains only the bulky fields. Keep the inline
+// KV group, timestamp and other fields while loading those external fields.
+fn mergeExternalMeta(inline: &[u8], external: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let mut value: serde_json::Value = serde_json::from_slice(inline)?;
+    let external: serde_json::Value = serde_json::from_slice(external)?;
+    let fields = value
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("subtask meta must be an object"))?;
+    let external = external
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("external meta must be an object"))?;
+    fields.extend(
+        external
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone())),
+    );
+    Ok(serde_json::to_vec(&value)?)
+}
+
+pub(crate) fn readMergeSortMeta(
+    bytes: &[u8],
+    store: &StorageRef,
+) -> anyhow::Result<MergeSortStepMeta> {
     fn decode(bytes: &[u8]) -> anyhow::Result<MergeSortStepMeta> {
         let value: serde_json::Value = serde_json::from_slice(bytes)?;
         let mut meta = MergeSortStepMeta::default();
@@ -629,7 +705,7 @@ fn readMergeSortMeta(bytes: &[u8], store: &StorageRef) -> anyhow::Result<MergeSo
         &ObjectContext::default(),
         &inline.BaseExternalMeta.ExternalPath,
     )?;
-    let mut meta = decode(&external)?;
+    let mut meta = decode(&mergeExternalMeta(bytes, &external)?)?;
     meta.BaseExternalMeta.ExternalPath = inline.BaseExternalMeta.ExternalPath;
     Ok(meta)
 }
@@ -733,6 +809,11 @@ impl execute::StepExecutor for MergeSortStepExecutor {
                 object_store.clone(),
                 self.runtime.ObjectStoreFactory.is_some(),
             );
+            let _requests = self
+                .runtime
+                .ObjectStoreFactory
+                .as_ref()
+                .map(|_| SubtaskRequestRecorder::new(object_store.clone(), &self.summary));
             let mut meta = readMergeSortMeta(&subtask.Meta, &object_store)?;
             let resource = execute::StepExecFrameworkInfo::GetResource(self)
                 .ok_or_else(|| anyhow::anyhow!("merge sort resource is unavailable"))?;
@@ -878,6 +959,7 @@ pub struct WriteIngestRequest {
     pub JobKeys: Vec<Vec<u8>>,
     pub SplitKeys: Vec<Vec<u8>>,
     pub TotalFileSize: i64,
+    pub TotalKVCount: i64,
     pub MemCapacity: i64,
     pub OnDup: engineapi::OnDuplicateKey,
     pub FilePrefix: String,
@@ -886,6 +968,9 @@ pub struct WriteIngestRequest {
 /// The Lightning backend boundary. Implementations perform physical SST
 /// import; the executor retains metadata, error, and resource sequencing.
 pub trait WriteIngestBackend: Send + Sync {
+    /// Bind the dedicated subtask cloud handle used for request recording.
+    fn BindObjectStore(&self, _: StorageRef) {}
+
     fn SetCollector(&self, collector: Arc<dyn execute::Collector + Send + Sync>);
     fn CloseExternalEngine(&self, request: &WriteIngestRequest) -> anyhow::Result<()>;
     fn ImportEngine(&self, subtask_id: i64, split_size: i64, split_keys: i64)
@@ -895,7 +980,7 @@ pub trait WriteIngestBackend: Send + Sync {
     fn Close(&self);
 }
 
-fn readWriteIngestMeta(
+pub(crate) fn readWriteIngestMeta(
     bytes: &[u8],
     store: &StorageRef,
 ) -> anyhow::Result<(WriteIngestStepMeta, bool)> {
@@ -963,7 +1048,7 @@ fn readWriteIngestMeta(
         &ObjectContext::default(),
         &inline.BaseExternalMeta.ExternalPath,
     )?;
-    let (mut meta, has_job_keys) = decode(&external)?;
+    let (mut meta, has_job_keys) = decode(&mergeExternalMeta(bytes, &external)?)?;
     meta.BaseExternalMeta.ExternalPath = inline.BaseExternalMeta.ExternalPath;
     Ok((meta, has_job_keys))
 }
@@ -1060,6 +1145,12 @@ impl execute::StepExecutor for WriteAndIngestStepExecutor {
                 object_store.clone(),
                 self.runtime.ObjectStoreFactory.is_some(),
             );
+            let _requests = self
+                .runtime
+                .ObjectStoreFactory
+                .as_ref()
+                .map(|_| SubtaskRequestRecorder::new(object_store.clone(), &self.summary));
+            self.backend.BindObjectStore(object_store.clone());
             let (mut meta, has_job_keys) = readWriteIngestMeta(&subtask.Meta, &object_store)?;
             let resource = execute::StepExecFrameworkInfo::GetResource(self)
                 .ok_or_else(|| anyhow::anyhow!("write ingest resource is unavailable"))?;
@@ -1091,6 +1182,7 @@ impl execute::StepExecutor for WriteAndIngestStepExecutor {
                 },
                 SplitKeys: meta.RangeSplitKeys.clone(),
                 TotalFileSize: meta.SortedKVMeta.TotalKVSize as i64,
+                TotalKVCount: meta.SortedKVMeta.TotalKVCnt as i64,
                 MemCapacity: resource.Mem.Capacity(),
                 OnDup: on_dup,
                 FilePrefix: crate::encode_and_sort_operator::subtaskPrefix(
@@ -1478,9 +1570,21 @@ enum EncodeNodeCommand {
         mpsc::Sender<node_executor::Result<Vec<u8>>>,
     ),
     Summary(mpsc::Sender<u64>),
+    SummaryJSON(mpsc::Sender<Option<String>>),
     Reset,
     Cleanup(mpsc::Sender<node_executor::Result<()>>),
     Stop,
+}
+
+fn import_summary_json(summary: &execute::SubtaskSummary) -> String {
+    serde_json::json!({
+        "row_count": summary.RowCnt.load(Ordering::Relaxed),
+        "bytes": summary.Processed.load(Ordering::Relaxed),
+        "read_bytes": summary.ReadBytes.load(Ordering::Relaxed),
+        "get_request_count": summary.GetReqCnt.load(Ordering::Relaxed),
+        "put_request_count": summary.PutReqCnt.load(Ordering::Relaxed),
+    })
+    .to_string()
 }
 
 /// Bridges the node framework's Send + Sync interface to a thread-owned
@@ -1557,6 +1661,10 @@ impl EncodeSortNodeStepExecutor {
                             .map(|summary| summary.Processed.load(Ordering::Relaxed).max(0) as u64)
                             .unwrap_or(0);
                         let _ = reply.send(count);
+                    }
+                    EncodeNodeCommand::SummaryJSON(reply) => {
+                        let _ =
+                            reply.send(step_executor.RealtimeSummary().map(import_summary_json));
                     }
                     EncodeNodeCommand::Reset => step_executor.ResetSummary(),
                     EncodeNodeCommand::Cleanup(reply) => {
@@ -1642,6 +1750,12 @@ impl EncodeSortNodeStepExecutor {
                             .unwrap_or(0);
                         let _ = reply.send(count);
                     }
+                    EncodeNodeCommand::SummaryJSON(reply) => {
+                        let _ = reply.send(
+                            execute::StepExecutor::RealtimeSummary(&mut step_executor)
+                                .map(import_summary_json),
+                        );
+                    }
                     EncodeNodeCommand::Reset => {
                         execute::StepExecutor::ResetSummary(&mut step_executor)
                     }
@@ -1712,6 +1826,13 @@ impl node_executor::StepExecutor for EncodeSortNodeStepExecutor {
         Some(node_executor::SubtaskSummary {
             RowCount: response.recv().ok()?,
         })
+    }
+    fn RealtimeSummaryJSON(&self) -> Option<String> {
+        let (reply, response) = mpsc::channel();
+        self.commands
+            .send(EncodeNodeCommand::SummaryJSON(reply))
+            .ok()?;
+        response.recv().ok().flatten()
     }
     fn ResetSummary(&self) {
         let _ = self.commands.send(EncodeNodeCommand::Reset);

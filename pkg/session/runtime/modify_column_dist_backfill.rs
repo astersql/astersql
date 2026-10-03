@@ -87,6 +87,22 @@ fn subtask(value: storage::proto::Subtask) -> executor::Subtask {
 }
 struct TaskTable(storage::TaskManager, Weak<Domain>);
 impl executor::TaskTable for TaskTable {
+    fn UpdateSubtaskSummaryJSON(
+        &self,
+        _: &executor::Context,
+        id: i64,
+        summary: &str,
+    ) -> executor::Result<()> {
+        serde_json::from_str::<serde_json::Value>(summary).map_err(error)?;
+        self.0
+            .ExecuteSQLWithNewSession(
+                (),
+                "UPDATE mysql.tidb_background_subtask SET summary = %? WHERE id = %?",
+                vec![summary.to_owned().into(), id.into()],
+            )
+            .map_err(error)?;
+        Ok(())
+    }
     fn AcquireTaskRuntime(
         &self,
         _: &executor::Context,
@@ -1680,5 +1696,15 @@ impl ReadIndex {
             .unwrap()
             .as_ref()
             .map_or((0, 0), |pipeline| pipeline.closed_workers())
+    }
+}
+
+impl ConcreteSession {
+    /// The SQL-backed task table used by the normal import node executor.
+    pub fn ImportNodeTaskTable(&self) -> crate::SessionResult<Arc<dyn executor::TaskTable>> {
+        Ok(Arc::new(TaskTable(
+            self.ImportTaskManager()?,
+            Arc::downgrade(&self.inner.domain),
+        )))
     }
 }

@@ -151,6 +151,11 @@ pub struct CopySpec {
 
 /// 对应 Go 的 Storage 接口，抽象本地文件系统和各类云对象存储。
 pub trait Storage: Send + Sync {
+    /// Request counters for a dedicated recording handle, when supported.
+    fn AccessRequestSnapshot(&self) -> Option<(u64, u64)> {
+        None
+    }
+
     /// 原子写入完整文件，语义类似 os.WriteFile。
     fn WriteFile(&self, ctx: &Context, name: &str, data: &[u8]) -> Result<()>;
 

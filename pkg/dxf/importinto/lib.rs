@@ -84,3 +84,5 @@ mod task_executor_test;
 #[cfg(test)]
 #[path = "task_executor_testkit_test.rs"]
 mod task_executor_testkit_test;
+
+pub mod write_ingest_backend;

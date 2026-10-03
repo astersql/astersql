@@ -166,3 +166,73 @@ fn enum_cast_error_preserves_value_and_truncation_reason() {
     assert!(error.contains("Data truncated"), "{error}");
     encoder.Close().unwrap();
 }
+
+#[test]
+fn persistent_varchar_metadata_preserves_restored_index_values_and_primary_handle() {
+    let mut primary = column(7, "a", TypeLonglong);
+    primary.SetFlag(astersql_parser_mysql::r#type::PriKeyFlag);
+    let mut text = column(12, "b", astersql_parser_mysql::r#type::TypeVarchar);
+    text.Offset = 1;
+    text.SetCharset("utf8mb4".into());
+    text.SetCollate("utf8mb4_bin".into());
+    text.SetFlen(100);
+    let meta = TableInfo {
+        ID: 42,
+        Name: ast::NewCIStr("t"),
+        Columns: vec![primary, text],
+        Indices: vec![IndexInfo {
+            ID: 1,
+            State: StatePublic,
+            Columns: vec![IndexColumn {
+                Name: ast::NewCIStr("b"),
+                Offset: 1,
+                Length: -1,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        PKIsHandle: true,
+        ..Default::default()
+    };
+    let mut encoder = encoder_for(&meta, true);
+    let pairs = encoder
+        .Encode(&[Datum::Int(123), Datum::String("test-123 ".into())], 999)
+        .unwrap();
+    assert_eq!(pairs.Pairs.len(), 2);
+    let record = pairs.Pairs.iter().find(|p| IsRecordKey(&p.key)).unwrap();
+    let columns = meta
+        .Columns
+        .iter()
+        .map(|c| (c.ID, Box::new(c.FieldType.clone())))
+        .collect();
+    let decoded = astersql_tablecodec::DecodeRowToDatumMap(
+        Some(record.val.clone()),
+        columns,
+        Some(astersql_tablecodec::time::UTC),
+    )
+    .unwrap();
+    assert!(
+        !decoded.contains_key(&7),
+        "integer primary key belongs to the handle"
+    );
+    assert_eq!(decoded[&12].GetString(), "test-123 ");
+    assert_eq!(
+        DecodeRowKey(Key(record.key.clone())).unwrap().IntValue(),
+        123
+    );
+    let index = pairs.Pairs.iter().find(|p| !IsRecordKey(&p.key)).unwrap();
+    assert!(
+        index.val.len() > 1,
+        "VARCHAR index must retain restored values under new collation"
+    );
+    let restored = astersql_tablecodec::DecodeRowToDatumMap(
+        Some(index.val[1..].to_vec()),
+        [(12, Box::new(meta.Columns[1].FieldType.clone()))]
+            .into_iter()
+            .collect(),
+        Some(astersql_tablecodec::time::UTC),
+    )
+    .unwrap();
+    assert_eq!(restored[&12].GetString(), "test-123 ");
+    encoder.Close().unwrap();
+}

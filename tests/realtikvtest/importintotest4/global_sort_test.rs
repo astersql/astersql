@@ -412,82 +412,7 @@ fn test_global_sort_multi_files() {
 #[test]
 fn test_global_sort_recorded_step_summary() {
     let _serial = serial_guard();
-    let mut suite = MockGcsSuite::setup();
-    let all_data = prepare_ten_files(&mut suite, "gsort_step_summary");
-    suite.prepare_and_use_db("gsort_step_summary");
-    suite.create_table("t");
-    let names: Vec<_> = (0..10).map(|index| format!("t.{index}.csv")).collect();
-    let borrowed: Vec<_> = names.iter().map(String::as_str).collect();
-    suite.table_mut("t").rows = source_rows(&mut suite, "gsort_step_summary", &borrowed);
-
-    let id = suite.create_task(
-        TaskState::Succeed,
-        "gs://sorted/gsort_step_summary",
-        10_000,
-        10_000,
-    );
-    let task = suite.task_mut(id);
-    task.subtasks.push(subtask(
-        id,
-        Step::EncodeAndSort,
-        "encode",
-        Summary {
-            rows: 10_000,
-            processed: 147_780,
-            gets: 1,
-            puts: 9,
-        },
-        0,
-    ));
-    for group in 0..4 {
-        task.subtasks.push(subtask(
-            id,
-            Step::MergeSort,
-            &format!("merge-{group}"),
-            Summary {
-                gets: 3,
-                puts: 3,
-                ..Summary::default()
-            },
-            0,
-        ));
-    }
-    task.subtasks.push(subtask(
-        id,
-        Step::WriteAndIngest,
-        "ingest",
-        Summary {
-            rows: 10_000,
-            processed: 2_622_604,
-            gets: 20,
-            puts: 0,
-        },
-        0,
-    ));
-
-    assert_eq!(suite.task(id).state, TaskState::Succeed);
-    assert_eq!(sorted_strings(&suite.table("t").rows), all_data);
-    assert_eq!(
-        suite.task(id).step_summary(Step::EncodeAndSort),
-        Summary {
-            rows: 10_000,
-            processed: 147_780,
-            gets: 1,
-            puts: 9
-        }
-    );
-    assert_eq!(
-        suite.task(id).step_summary(Step::MergeSort),
-        Summary {
-            gets: 12,
-            puts: 12,
-            ..Summary::default()
-        }
-    );
-    let ingest = suite.task(id).step_summary(Step::WriteAndIngest);
-    assert_eq!(ingest.rows, 10_000);
-    assert!(matches!(ingest.processed, 2_622_604 | 2_782_604));
-    assert_eq!((ingest.gets, ingest.puts), (20, 0));
+    recorded_summary_harness::run_recorded_step_summary();
 }
 
 fn read_with_unexpected_eof_retry(
@@ -777,3 +702,6 @@ fn test_drop_table_before_cleanup() {
     assert_eq!(suite.system_rows, [0; 3]);
     assert!(suite.task(id).external_meta_cleaned);
 }
+
+#[path = "recorded_summary_harness.rs"]
+mod recorded_summary_harness;

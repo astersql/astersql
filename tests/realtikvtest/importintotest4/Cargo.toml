@@ -71,3 +71,14 @@ serde_json = "1"
 
 "astersql-domain" = { path = "../../../pkg/domain" }
 "astersql-store-driver" = { path = "../../../pkg/store/driver" }
+"astersql-objstore" = { path = "../../../pkg/objstore" }
+"astersql-objstore-storeapi" = { path = "../../../pkg/objstore/storeapi" }
+"astersql-ingestor-ingestctrl" = { path = "../../../pkg/ingestor/ingestctrl" }
+"astersql-ingestor-engineapi" = { path = "../../../pkg/ingestor/engineapi" }
+"astersql-ingestor-simplesst" = { path = "../../../pkg/ingestor/simplesst" }
+"astersql-lightning-backend-encode" = { path = "../../../pkg/lightning/backend/encode" }
+"astersql-meta-model" = { path = "../../../pkg/meta/model" }
+"astersql-types" = { path = "../../../pkg/types" }
+"astersql-dxf-framework-taskexecutor" = { path = "../../../pkg/dxf/framework/taskexecutor" }
+object_store = "0.14"
+"astersql-store-mockstore-mockstorage" = { path = "../../../pkg/store/mockstore/mockstorage" }

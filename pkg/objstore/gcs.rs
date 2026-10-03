@@ -321,6 +321,13 @@ impl storeapi::StrongConsistency for GCSStorage {
 }
 
 impl storeapi::Storage for GCSStorage {
+    fn AccessRequestSnapshot(&self) -> Option<(u64, u64)> {
+        self.access_recorder.as_ref().map(|recorder| {
+            let (gets, puts, _, _) = recorder.snapshot();
+            (gets, puts)
+        })
+    }
+
     fn WriteFile(&self, ctx: &objectio::Context, name: &str, data: &[u8]) -> Result<()> {
         ctx.check()?;
         self.core

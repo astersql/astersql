@@ -1,3 +1,4 @@
+// Copyright 2026 AsterSQL.
 // Copyright 2023 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -11,7 +12,6 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-// Copyright 2026 AsterSQL.
 
 // Lightning SQL→KV 编码的基础实现。
 //
@@ -70,6 +70,8 @@ pub struct IndexDefinition {
 /// - `shard_row_id_bits` / `auto_random_bits`：RowID / AUTO_RANDOM 分片位数，用于打散热点。
 #[derive(Clone)]
 pub struct TableDefinition {
+    /// Original persistent metadata for SQL-backed import encoding.
+    pub source_meta: Option<std::sync::Arc<tablecodec::model::TableInfo>>,
     pub name: String,
     pub id: i64,
     pub columns: Vec<Column>,
@@ -86,6 +88,7 @@ pub struct TableDefinition {
 impl Default for TableDefinition {
     fn default() -> Self {
         Self {
+            source_meta: None,
             name: "table".into(),
             id: 1,
             columns: Vec::new(),
@@ -244,18 +247,28 @@ impl BaseKVEncoder {
     pub fn AddRecord(&mut self, record: &[Datum], rowID: i64) -> Result<i64, String> {
         let handle = canonicalHandle(&self.table, record, rowID)?;
         let record_key = tablecodec::EncodeRowKeyWithHandle(self.table.id, handle.Copy()).0;
-        let record_value = encodeCanonicalRow(
-            record,
-            &self.table.columns,
-            self.SessionCtx.GetTableCtx().RowEncodingEnabled,
-        )?;
+        let new_format = self.SessionCtx.GetTableCtx().RowEncodingEnabled;
+        let record_value = if let Some(meta) = &self.table.source_meta {
+            crate::canonical::encodeCanonicalRowWithMeta(record, meta, new_format)?
+        } else {
+            encodeCanonicalRow(record, &self.table.columns, new_format)?
+        };
         self.SessionCtx.Txn().Set(&record_key, &record_value)?;
-        let table_info = canonicalTableInfo(
-            &self.table.columns,
-            &self.table.indices,
-            self.table.pk_is_handle,
-            self.table.common_handle,
-        );
+        let table_info = self
+            .table
+            .source_meta
+            .as_deref()
+            .cloned()
+            .unwrap_or_else(|| {
+                canonicalTableInfo(
+                    &self.table.columns,
+                    &self.table.indices,
+                    self.table.pk_is_handle,
+                    self.table.common_handle,
+                )
+            });
+        let use_new_collate =
+            self.table.source_meta.is_some() && tablecodec::collate::NewCollationEnabled();
         for index in &self.table.indices {
             let values = index
                 .columns
@@ -266,9 +279,20 @@ impl BaseKVEncoder {
                 .iter()
                 .map(toCanonicalDatum)
                 .collect::<Result<Vec<_>, _>>()?;
-            let index_info = canonicalIndexInfo(index);
+            let index_info = table_info
+                .Indices
+                .iter()
+                .find(|info| info.ID == index.id)
+                .cloned()
+                .unwrap_or_else(|| canonicalIndexInfo(index));
+            let need_restored_data = index_info.Columns.iter().any(|col| {
+                tablecodec::types::NeedRestoredDataWithCollate(
+                    &table_info.Columns[col.Offset as usize].FieldType,
+                    use_new_collate,
+                )
+            });
             let (key, distinct) = tablecodec::GenIndexKey(
-                tablecodec::codec::NewEncoder(false),
+                tablecodec::codec::NewEncoder(use_new_collate),
                 Some(tablecodec::time::UTC),
                 Box::new(table_info.clone()),
                 Box::new(index_info.clone()),
@@ -279,11 +303,11 @@ impl BaseKVEncoder {
             )
             .map_err(|error| error.to_string())?;
             let value = tablecodec::GenIndexValuePortal(
-                false,
+                use_new_collate,
                 Some(tablecodec::time::UTC),
                 Box::new(table_info.clone()),
                 Box::new(index_info),
-                false,
+                need_restored_data,
                 distinct,
                 false,
                 canonical_values,

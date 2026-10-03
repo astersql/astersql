@@ -2845,3 +2845,51 @@ fn read_pool_point_builder_reinitializes_diagnostics_for_cached_fast_path() {
             .any(|event| event == "point_get_cache_hit")
     );
 }
+
+#[test]
+fn imported_integer_primary_key_is_restored_from_handle() {
+    use astersql_meta_model::{ColumnInfo, TableInfo};
+    use astersql_parser_mysql::r#type as mysql;
+    for (unsigned, expected) in [(false, "-1"), (true, "18446744073709551615")] {
+        let mut primary = ColumnInfo::default();
+        primary.ID = 7;
+        primary.Name = astersql_meta_model::ast::NewCIStr("a");
+        primary.SetType(mysql::TypeLonglong);
+        primary.SetFlag(mysql::PriKeyFlag | if unsigned { mysql::UnsignedFlag } else { 0 });
+        let mut text = ColumnInfo::default();
+        text.ID = 12;
+        text.Offset = 1;
+        text.Name = astersql_meta_model::ast::NewCIStr("b");
+        text.SetType(mysql::TypeVarchar);
+        let table = TableInfo {
+            Columns: vec![primary, text],
+            PKIsHandle: true,
+            ..Default::default()
+        };
+        let fields = table
+            .Columns
+            .iter()
+            .map(|column| (column.ID, Box::new(column.FieldType.clone())))
+            .collect();
+        let value = astersql_tablecodec::EncodeRow(
+            Some(astersql_tablecodec::time::UTC),
+            vec![{
+                let mut datum = astersql_tablecodec::types::Datum::default();
+                datum.SetString("test-1".into(), "utf8mb4_bin".into());
+                datum
+            }],
+            vec![12],
+            Vec::new(),
+            None,
+            None,
+            astersql_tablecodec::rowcodec::Encoder::new(true),
+        )
+        .unwrap();
+        let handle = astersql_tablecodec::kv::IntHandle(-1);
+        let (_, row) =
+            super::relational_scan::decode_relational_row_value(&table, &fields, &handle, &value)
+                .unwrap();
+        assert_eq!(row.get("a").and_then(|v| v.as_deref()), Some(expected));
+        assert_eq!(row.get("b").and_then(|v| v.as_deref()), Some("test-1"));
+    }
+}

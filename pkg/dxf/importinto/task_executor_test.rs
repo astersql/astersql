@@ -370,11 +370,25 @@ fn merge_sort_step_persists_go_external_meta_even_without_input_files() {
     let value: serde_json::Value = serde_json::from_slice(&external).unwrap();
     assert_eq!(value["kv-group"], "data");
     assert_eq!(value["data-files"], serde_json::json!([]));
-    let adapter = crate::task_executor::MergeStoreAdapter(store.clone());
-    let keys = (0..8).map(|n| vec![n]).collect::<Vec<_>>();
-    let values = (0..8).map(|n| vec![n + 10]).collect::<Vec<_>>();
-    let (data_files, _) =
-        astersql_ingestor_globalsort::MockExternalEngine(&adapter, &keys, &values).unwrap();
+    let sink = Arc::new(crate::ObjectStoreWriterSink::new(
+        store.clone(),
+        astersql_lightning_backend_encode::Context::default(),
+    ));
+    let mut writer = astersql_ingestor_simplesst::writer::WriterBuilder::new().build_with_sink(
+        sink,
+        "merge-fixture",
+        "data",
+    );
+    for key in 0..8 {
+        writer.write_row(&[key], &[key + 10]).unwrap();
+    }
+    let data_files = writer
+        .close()
+        .unwrap()
+        .MultipleFilesStats
+        .into_iter()
+        .flat_map(|stat| stat.Filenames.into_iter().map(|paths| paths[0].clone()))
+        .collect();
     let mut nonempty = crate::MergeSortStepMeta::default();
     nonempty.KVGroup = "data".into();
     nonempty.DataFiles = data_files;
@@ -953,4 +967,43 @@ fn parquet_concurrency_estimate_receives_largest_file_exact_size_and_keeps_fallb
         ),
         8
     );
+}
+
+#[test]
+fn planner_external_meta_preserves_inline_group_and_timestamp() {
+    use astersql_objstore_storeapi::{Context, Storage};
+    let store: astersql_objstore_storeapi::StorageRef =
+        std::sync::Arc::new(astersql_objstore::azblob::MemoryStorage::default());
+    store
+        .WriteFile(
+            &Context::default(),
+            "merge.json",
+            br#"{"data-files":[],"total-kv-cnt":3}"#,
+        )
+        .unwrap();
+    let merge = crate::task_executor::readMergeSortMeta(
+        br#"{"ExternalPath":"merge.json","kv-group":"data","recorded-conflict-kv-count":2}"#,
+        &store,
+    )
+    .unwrap();
+    assert_eq!(merge.KVGroup, "data");
+    assert_eq!(merge.RecordedConflictKVCount, 2);
+    assert_eq!(merge.SortedKVMeta.TotalKVCnt, 3);
+    store
+        .WriteFile(
+            &Context::default(),
+            "ingest.json",
+            br#"{"range-job-keys":["AQ==","BA=="],"sorted-kv-meta":{"total-kv-cnt":3}}"#,
+        )
+        .unwrap();
+    let (ingest, has_keys) = crate::task_executor::readWriteIngestMeta(
+        br#"{"ExternalPath":"ingest.json","kv-group":"data","ts":42}"#,
+        &store,
+    )
+    .unwrap();
+    assert!(has_keys);
+    assert_eq!(ingest.KVGroup, "data");
+    assert_eq!(ingest.TS, 42);
+    assert_eq!(ingest.RangeJobKeys, vec![vec![1], vec![4]]);
+    assert_eq!(ingest.SortedKVMeta.TotalKVCnt, 3);
 }

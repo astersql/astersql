@@ -27,16 +27,61 @@ use std::sync::atomic::Ordering;
 // 管理器标记任务失败时必须同时保存失败状态和原始错误，供后续诊断读取。
 #[test]
 fn test_task_fail_in_manager() {
-    let manager = TestTaskManager::default();
-    manager.insert_task(task(1, TASK_STATE_PENDING));
-    manager
-        .fail_task(1, TASK_STATE_PENDING, SchedulerError::new("factory failed"))
-        .unwrap();
-    assert_eq!(manager.task(1).base.state, TASK_STATE_FAILED);
-    assert_eq!(
-        manager.task(1).error,
-        Some(SchedulerError::new("factory failed"))
+    struct InitFailure(Task);
+    impl Scheduler for InitFailure {
+        fn init(&self) -> Result<()> {
+            Err(SchedulerError::new("mock scheduler init error"))
+        }
+        fn schedule_once(&self) -> Result<bool> {
+            panic!("initialization failed")
+        }
+        fn close(&self) {}
+        fn task(&self) -> Task {
+            self.0.clone()
+        }
+        fn extension(&self) -> Arc<dyn Extension> {
+            Arc::new(TestExtension::default())
+        }
+    }
+    let table = Arc::new(TestTaskManager::default());
+    // Isolated task manager replaces the Go background-worker disable failpoint.
+    // Register the node before starting Manager, as InitMeta does in Go.
+    *table.nodes.lock().unwrap() = vec![ManagedNode {
+        id: ":4000".into(),
+        role: String::new(),
+        cpu_count: 8,
+    }];
+    RegisterSchedulerFactory(
+        "task90-init-failure",
+        Arc::new(|task, _| Arc::new(InitFailure(task))),
     );
+    let mut unknown = task(1, TASK_STATE_PENDING);
+    unknown.base.task_type = "task90-unknown".into();
+    let mut init_failed = task(2, TASK_STATE_PENDING);
+    init_failed.base.task_type = "task90-init-failure".into();
+    table.insert_task(unknown.clone());
+    table.insert_task(init_failed.clone());
+    *table.top_unfinished.lock().unwrap() = vec![unknown.base, init_failed.base];
+    let manager = Manager::new(table.clone(), ":4000", None);
+    manager.start().unwrap();
+    manager.tick().unwrap();
+    assert_eq!(manager.scheduler_count(), 0);
+    // Manager's normal cleanup has moved failed tasks into history.
+    let history = table.transferred_tasks.lock().unwrap();
+    assert_eq!(history.len(), 2);
+    let unknown = history.iter().find(|task| task.base.id == 1).unwrap();
+    let init_failed = history.iter().find(|task| task.base.id == 2).unwrap();
+    assert_eq!(unknown.base.state, TASK_STATE_FAILED);
+    assert_eq!(
+        unknown.error,
+        Some(SchedulerError::new("unknown task type"))
+    );
+    assert_eq!(init_failed.base.state, TASK_STATE_FAILED);
+    assert_eq!(
+        init_failed.error,
+        Some(SchedulerError::new("mock scheduler init error"))
+    );
+    manager.stop();
 }
 
 // 没有后续步骤时，单次调度应直接完成任务，并且只调用一次完成回调。

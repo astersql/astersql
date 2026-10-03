@@ -615,6 +615,19 @@ impl BaseTaskExecutor {
     }
     /// 完成子任务并持久化 Meta。
     pub fn finishSubtask(&self, ctx: &Context, subtask: &Subtask) -> Result<()> {
+        let summary = self
+            .stepExec
+            .lock()
+            .expect("step lock poisoned")
+            .as_ref()
+            .and_then(|step| step.RealtimeSummaryJSON());
+        if let Some(summary) = summary {
+            self.retry(|| {
+                self.Param
+                    .taskTable
+                    .UpdateSubtaskSummaryJSON(ctx, subtask.SubtaskBase.ID, &summary)
+            })?;
+        }
         self.retry(|| {
             self.Param.taskTable.FinishSubtask(
                 ctx,

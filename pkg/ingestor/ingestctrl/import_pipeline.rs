@@ -811,3 +811,14 @@ impl api::ForwardIter for DataIter {
     }
     fn ReleaseBuf(&mut self) {}
 }
+
+impl RegionJob {
+    /// Borrow the original engine batch on every physical write attempt.
+    /// Retries retain this reference until the worker pool has joined.
+    pub fn ingest_data(&self) -> Result<Arc<dyn IngestData>> {
+        self.resources
+            .as_ref()
+            .map(|resources| resources.data.clone())
+            .ok_or_else(|| Error::InvalidData("region job has no ingest data".into()))
+    }
+}

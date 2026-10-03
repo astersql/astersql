@@ -210,6 +210,7 @@ pub fn NewTableDefinitionFromMeta(meta: &TableInfo) -> Result<TableDefinition, S
         .collect::<Result<Vec<_>, String>>()?;
 
     Ok(TableDefinition {
+        source_meta: Some(Arc::new(meta.clone())),
         name: meta.Name.O.clone(),
         id: meta.ID,
         columns,

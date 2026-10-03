@@ -1005,6 +1005,24 @@ pub(super) fn decode_relational_row_value(
         Some(astersql_tablecodec::time::UTC),
     )
     .map_err(|error| session_error("decode relational row", error))?;
+    let datums = if table.PKIsHandle {
+        // Imported rows omit an integer primary key from the value. Recover
+        // its signed/unsigned datum from the record handle before defaults.
+        let ids = table
+            .GetPkColInfo()
+            .map(|column| vec![column.ID])
+            .unwrap_or_default();
+        astersql_tablecodec::DecodeHandleToDatumMap(
+            Some(handle.Copy()),
+            ids,
+            fields.clone(),
+            Some(astersql_tablecodec::time::UTC),
+            Some(datums),
+        )
+        .map_err(|error| session_error("decode relational primary handle", error))?
+    } else {
+        datums
+    };
     let mut row = HashMap::new();
     for column in &table.Columns {
         // A column added by `ALTER TABLE ADD COLUMN` is absent from the

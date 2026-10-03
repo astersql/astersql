@@ -272,6 +272,13 @@ pub struct SubtaskSummary {
 
 /// 任务/子任务持久化表抽象（对应系统表访问）。
 pub trait TaskTable: Send + Sync {
+    /// Persist the complete step summary before a successful subtask is finalized.
+    fn UpdateSubtaskSummaryJSON(&self, _: &Context, _: i64, _: &str) -> Result<()> {
+        Err(ExecutorError(
+            "task table does not support full subtask summaries".into(),
+        ))
+    }
+
     /// Acquire the target runtime before constructing an executor. Temporary
     /// acquisition errors leave durable subtasks available for the next poll.
     fn AcquireTaskRuntime(
@@ -403,6 +410,10 @@ pub trait StepExecutor: Send + Sync {
     }
     /// 实时进度；None 表示不支持。
     fn RealtimeSummary(&self) -> Option<SubtaskSummary> {
+        None
+    }
+    /// Serialized runtime counters, including retry-inclusive physical progress.
+    fn RealtimeSummaryJSON(&self) -> Option<String> {
         None
     }
     /// 重置进度统计。
