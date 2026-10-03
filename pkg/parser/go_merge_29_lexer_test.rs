@@ -64,3 +64,33 @@ fn go_merge_29_new_token_and_builtin_mappings() {
         assert_eq!(scanner.Lex(&mut yySymType::default()), expected, "{word}");
     }
 }
+
+#[test]
+fn parentheses_depth_error_stays_fatal_across_warning_conversion() {
+    let mut scanner = NewScanner("(".repeat(10_001));
+    let mut value = yySymType::default();
+    for _ in 0..10_000 {
+        assert_eq!(scanner.Lex(&mut value), '(' as i32);
+    }
+    assert_eq!(scanner.Lex(&mut value), token::invalid);
+    let depth_error = scanner.Errors().1[0].to_string();
+    scanner.lastErrorAsWarn();
+    assert_eq!(scanner.Errors().1.len(), 1);
+    assert!(scanner.Errors().0.is_empty());
+
+    scanner.AppendError(errors::New("ordinary hint error"));
+    scanner.lastErrorAsWarn();
+    assert_eq!(scanner.Errors().0.len(), 1);
+    assert_eq!(scanner.Errors().0[0].to_string(), "ordinary hint error");
+    assert_eq!(scanner.Errors().1[0].to_string(), depth_error);
+    scanner.lastErrorAsWarn();
+    assert_eq!(scanner.Errors().1.len(), 1);
+    assert_eq!(scanner.Errors().0.len(), 1);
+
+    scanner.reset("select 1".to_owned());
+    scanner.AppendError(errors::New("ordinary error after reset"));
+    scanner.lastErrorAsWarn();
+    assert!(scanner.Errors().1.is_empty());
+    assert_eq!(scanner.Errors().0.len(), 1);
+    assert_eq!(scanner.Errors().0[0].to_string(), "ordinary error after reset");
+}
