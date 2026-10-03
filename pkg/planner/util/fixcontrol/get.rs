@@ -45,8 +45,8 @@ pub const Fix44830: u64 = 44830;
 /// 控制 Plan Cache 可缓存查询的最大参数数量。
 // Fix44823：控制 Plan Cache 可缓存查询的最大参数数量。
 pub const Fix44823: u64 = 44823;
-/// 控制 inner side index join 的 index range scan 行数上界估算方式。
-// Fix44855：控制 inner side index join 的 index range scan 行数上界估算方式。
+/// 控制 IndexJoin 内侧行数估算：NDV 上界默认 OFF；只使用部分连接键的
+/// EQ-prefix 扫描行数下界默认 ON。显式 OFF 同时禁用二者（#69974）。
 pub const Fix44855: u64 = 44855;
 /// 控制 Skyline pruning 是否使用 access range 行数选择 access path。
 // Fix45132：控制 Skyline pruning 是否使用 access range 行数选择 access path。

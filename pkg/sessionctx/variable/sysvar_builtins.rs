@@ -1420,6 +1420,20 @@ fn register_getters_and_defaults() {
         0,
         i64::MAX as u64,
     ));
+    let mut fix_control = string_var(vardef::TiDBOptFixControl, "", scope_both());
+    fix_control.IsHintUpdatableVerified = true;
+    let validate_fix_control = |vars: &mut SessionVars, value: &str| {
+        let (_, warnings) = fixcontrol::ParseToMap(value).map_err(|err| error(err.to_string()))?;
+        for warning in warnings {
+            vars.StmtCtx.append_warning(error(warning));
+        }
+        Ok(())
+    };
+    fix_control.SetSession = Some(Arc::new(validate_fix_control));
+    fix_control.SetGlobal = Some(Arc::new(move |_, vars, value| {
+        validate_fix_control(vars, value)
+    }));
+    RegisterSysVar(fix_control);
     RegisterSysVar(bool_var(
         vardef::TiDBOptAdvancedJoinHint,
         vardef::DefTiDBOptAdvancedJoinHint,

@@ -1653,3 +1653,74 @@ fn truncated_handle_estimation_preserves_bounds_and_merges_prefixes() {
         assert_eq!(ranges, execution_range, "{predicate}");
     }
 }
+
+/// Inspect the real optimizer separately from compatibility EXPLAIN formatting.
+#[test]
+fn test_index_join_usable_keys_direct_optimizer_boundary() {
+    use astersql_executor::select::ResetContextOfStmt;
+    fn selected_index(plan: &dyn astersql_planner_core_base::PhysicalPlan) -> bool {
+        if let Some(scan) =
+            plan.as_any()
+                .downcast_ref::<astersql_planner_core_operator_physicalop::PhysicalIndexScan>()
+        {
+            return scan
+                .Index
+                .as_ref()
+                .is_some_and(|index| index.Name.L == "idx_k1_k2");
+        }
+        if let Some(join) =
+            astersql_planner_core_operator_physicalop::index_join_base_any(plan.as_any())
+        {
+            if join
+                .InnerPlan
+                .as_ref()
+                .is_some_and(|inner| selected_index(inner.as_ref()))
+            {
+                return true;
+            }
+        }
+        plan.children().iter().any(|child| selected_index(*child))
+    }
+    // A direct optimizer plan retains its statement context. Each configuration
+    // gets the same full fixture in a fresh session rather than resetting it.
+    for disabled in [false, true] {
+        let (_domain, mut session) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+        session
+            .execute("create table t1 (k1 int not null, k2 int not null)")
+            .unwrap();
+        session.execute("create table t2 (k1 int not null, id int not null, k2 int not null, pad varchar(100), primary key (k1, id) clustered, key idx_k1_k2 (k1, k2))").unwrap();
+        session
+            .execute("insert into t1 values (1, 1), (2, 1)")
+            .unwrap();
+        for k1 in [1, 2] {
+            let rows = (1..=1000)
+                .map(|n| format!("({k1}, {n}, {n}, repeat('x', 50))"))
+                .collect::<Vec<_>>()
+                .join(",");
+            session
+                .execute(&format!("insert into t2 values {rows}"))
+                .unwrap();
+        }
+        session.execute("analyze table t1, t2").unwrap();
+        if disabled {
+            session
+                .execute("set tidb_opt_fix_control = '44855:OFF'")
+                .unwrap();
+        }
+        let sql = "select /*+ inl_hash_join(i) */ o.k1, i.pad from t1 o join t2 i on i.k1 = o.k1 and i.k2 = o.k2";
+        let statement = astersql_parser_ast::NodeRef::new(
+            astersql_parser::Parser::default()
+                .ParseOneStmt(sql, "", "")
+                .unwrap(),
+        );
+        ResetContextOfStmt(&mut session, &statement).unwrap();
+        let plan = session
+            .OptimizeParsedSelect(&statement)
+            .expect("direct optimizer must support the original Go join");
+        assert_eq!(
+            selected_index(plan.as_ref()),
+            !disabled,
+            "secondary index selection must follow the usable key row floor; 44855:OFF={disabled}"
+        );
+    }
+}

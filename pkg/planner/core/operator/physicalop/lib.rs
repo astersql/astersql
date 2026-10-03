@@ -30,6 +30,9 @@ mod cache_snapshot_contract_test;
 #[cfg(test)]
 mod cache_snapshot_test;
 mod fragment;
+mod index_join_probe;
+#[cfg(test)]
+mod index_join_probe_test;
 mod nominal_sort;
 #[cfg(test)]
 mod nominal_sort_test;

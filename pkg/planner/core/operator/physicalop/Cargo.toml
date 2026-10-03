@@ -10,6 +10,7 @@ path = "lib.rs"
 doctest = false
 
 [dependencies]
+fixcontrol = { package = "astersql-planner-util-fixcontrol", path = "../../../util/fixcontrol" }
 base = { package = "astersql-planner-core-base", path = "../../base" }
 baseimpl = { package = "astersql-planner-core-operator-baseimpl", path = "../baseimpl" }
 costusage = { package = "astersql-planner-util-costusage", path = "../../../util/costusage" }

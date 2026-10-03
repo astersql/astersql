@@ -3635,6 +3635,47 @@ impl ConcreteSession {
         {
             return Ok(plan);
         }
+        // The usable-key floor can change a probe path only when some join
+        // keys are unused. Keep the existing single-key consumer, and route
+        // multi-key INL plans through the typed candidate/cost implementation.
+        fn has_multiple_join_keys(join: &ast::Join) -> bool {
+            fn equality_keys(condition: &ast::ExprNode) -> usize {
+                match &condition.Kind {
+                    ast::ExprKind::Binary { Op, L, R }
+                        if Op.eq_ignore_ascii_case("and") || Op == "&&" =>
+                    {
+                        equality_keys(L) + equality_keys(R)
+                    }
+                    ast::ExprKind::Binary { Op, L, R } if Op == "=" => usize::from(
+                        matches!((&L.Kind, &R.Kind), (ast::ExprKind::Column(left), ast::ExprKind::Column(right))
+                            if left.Table.L.is_empty() || right.Table.L.is_empty() || left.Table.L != right.Table.L),
+                    ),
+                    ast::ExprKind::Parentheses(inner) => equality_keys(inner),
+                    _ => 0,
+                }
+            }
+            join.Using.len() > 1 || join.On.as_ref().is_some_and(|on| equality_keys(on) > 1)
+                || [join.Left.as_deref(), join.Right.as_deref()].into_iter().flatten()
+                    .any(|child| matches!(child, ast::ResultSetNode::Join(join) if has_multiple_join_keys(join)))
+        }
+        if format.eq_ignore_ascii_case("plan_tree")
+            && statement
+                .From
+                .as_ref()
+                .is_some_and(|from| has_multiple_join_keys(&from.TableRefs))
+            && statement
+                .TableHints
+                .iter()
+                .chain(statement.SelectStmtOpts.TableHints.iter())
+                .any(|hint| {
+                    matches!(
+                        hint.HintName.L.as_str(),
+                        "inl_join" | "inl_hash_join" | "inl_merge_join"
+                    )
+                })
+        {
+            return self.explain_optimized_relational_select(statement_sql);
+        }
         // Cost-bearing formats must use the physical plan and its recursively
         // computed CostVer2 trace.  The compatibility renderer below only has
         // brief text rows, so sending these formats through it silently drops

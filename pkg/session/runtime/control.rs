@@ -5806,8 +5806,13 @@ impl ConcreteSession {
                     self.state.borrow_mut().enable_1pc = variable_is_on(&value);
                 }
                 astersql_sessionctx_vardef::TiDBOptFixControl => {
-                    self.state.borrow_mut().optimizer_fix_control =
-                        value.trim_matches(['\'', '"']).to_owned();
+                    let raw_value = value.trim_matches(['\'', '"']);
+                    if !is_global {
+                        self.session_vars
+                            .SetHintSystemVarWithOldState(&name, raw_value)
+                            .map_err(|error| session_error("set optimizer fix control", error))?;
+                    }
+                    self.state.borrow_mut().optimizer_fix_control = raw_value.to_owned();
                 }
                 "tikv_client_read_timeout" => {
                     self.state.borrow_mut().tikv_client_read_timeout_ms = value

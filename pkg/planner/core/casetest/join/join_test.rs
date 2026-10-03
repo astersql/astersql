@@ -836,3 +836,38 @@ fn test_join_regression_runs_go_contract() {
         .Check(astersql_testkit::Rows(&["-1 <nil>"]));
     }
 }
+
+/// The usable key prefix must determine probe scan rows, including Fix44855 OFF.
+#[test]
+fn test_index_join_inner_row_count_uses_usable_join_keys() {
+    let (store, _domain) = astersql_testkit::mockstore::CreateMockStoreAndDomain();
+    let mut tk = astersql_testkit::TestKit::new(store);
+    tk.MustExec("use test", Vec::new());
+    tk.MustExec(
+        "create table t1 (k1 int not null, k2 int not null)",
+        Vec::new(),
+    );
+    tk.MustExec("create table t2 (k1 int not null, id int not null, k2 int not null, pad varchar(100), primary key (k1, id) clustered, key idx_k1_k2 (k1, k2))", Vec::new());
+    tk.MustExec("insert into t1 values (1, 1), (2, 1)", Vec::new());
+    for k1 in [1, 2] {
+        let rows = (1..=1000)
+            .map(|n| format!("({k1}, {n}, {n}, repeat('x', 50))"))
+            .collect::<Vec<_>>()
+            .join(",");
+        tk.MustExec(&format!("insert into t2 values {rows}"), Vec::new());
+    }
+    tk.MustExec("analyze table t1, t2", Vec::new());
+    let sql = "explain format='plan_tree' select /*+ inl_hash_join(i) */ o.k1, i.pad from t1 o join t2 i on i.k1 = o.k1 and i.k2 = o.k2";
+    let plan = tk.MustQuery(sql, Vec::new()).String();
+    assert!(
+        plan.contains("idx_k1_k2"),
+        "usable keys should select the secondary index: {plan}"
+    );
+    tk.MustExec("set tidb_opt_fix_control = '44855:OFF'", Vec::new());
+    let plan = tk.MustQuery(sql, Vec::new()).String();
+    assert!(
+        !plan.contains("idx_k1_k2"),
+        "OFF should restore the primary-key probe: {plan}"
+    );
+    tk.MustExec("set tidb_opt_fix_control = ''", Vec::new());
+}

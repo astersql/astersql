@@ -321,3 +321,38 @@ fn paging_byte_budget_defaults_to_disabled() {
         "0"
     );
 }
+
+#[test]
+fn optimizer_fix_control_is_visible_to_canonical_session_and_hints() {
+    crate::register_builtin_sysvars();
+    let var = GetSysVar(vardef::TiDBOptFixControl).expect("Go optimizer fix-control variable");
+    assert_eq!(var.Value, "");
+    assert!(var.IsHintUpdatableVerified);
+    let vars = crate::session::SessionVars::default();
+    let old = vars
+        .SetHintSystemVarWithOldState(vardef::TiDBOptFixControl, "44855:OFF")
+        .unwrap();
+    assert_eq!(old, "");
+    assert_eq!(
+        vars.GetSystemVar(vardef::TiDBOptFixControl).as_deref(),
+        Some("44855:OFF")
+    );
+    assert!(
+        vars.SetHintSystemVarWithOldState(vardef::TiDBOptFixControl, "missing-colon")
+            .is_err()
+    );
+    assert_eq!(
+        vars.GetSystemVar(vardef::TiDBOptFixControl).as_deref(),
+        Some("44855:OFF")
+    );
+    vars.SetHintSystemVarWithOldState(vardef::TiDBOptFixControl, "")
+        .unwrap();
+    assert_eq!(
+        vars.GetSystemVar(vardef::TiDBOptFixControl).as_deref(),
+        Some("")
+    );
+    let mut generic = SessionVars::new(Box::new(NoopAccessor));
+    var.SetSessionFromHook(&mut generic, "44855:ON,44855:OFF")
+        .unwrap();
+    assert_eq!(generic.StmtCtx.warnings().len(), 1);
+}

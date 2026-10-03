@@ -37,7 +37,7 @@ use property::{PhysicalProperty, StatsInfo, TaskType};
 
 use crate::AttachedTask;
 
-struct ScanCardinalityContext<'a>(&'a dyn base::PlanContext);
+pub(crate) struct ScanCardinalityContext<'a>(pub(crate) &'a dyn base::PlanContext);
 
 impl cardinality::CardinalityContext for ScanCardinalityContext<'_> {
     fn GetSessionVars(&self) -> &cardinality::variable::SessionVars {
@@ -3192,15 +3192,34 @@ pub fn PopulateIndexJoinInnerPlans(plan: &mut dyn PhysicalPlan) -> Result<(), ex
     let Some(join) = crate::index_join_base_mut(plan) else {
         return Ok(());
     };
-    if join
-        .InnerPlan
-        .as_deref()
-        .and_then(find_index_scan_in_plan)
-        .is_some()
-    {
+    if join.InnerPlan.is_some() {
         return Ok(());
     }
     let inner_index = join.BasePhysicalJoin.InnerChildIdx;
+    // Canonical attach moves the chosen lookup Reader into children. Preserve
+    // its correlated access path rather than reconstructing a different index
+    // from the table metadata after cost selection.
+    fn has_correlated_access(plan: &dyn PhysicalPlan) -> bool {
+        let access = if let Some(scan) = plan.as_any().downcast_ref::<crate::PhysicalTableScan>() {
+            Some(&scan.AccessCondition)
+        } else if let Some(scan) = plan.as_any().downcast_ref::<crate::PhysicalIndexScan>() {
+            Some(&scan.AccessCondition)
+        } else {
+            None
+        };
+        access.is_some_and(|conditions| {
+            conditions
+                .iter()
+                .any(|condition| !expression::ExtractCorColumns(condition.as_ref()).is_empty())
+        }) || plan.children().into_iter().any(has_correlated_access)
+    }
+    if let Some(inner) = join.children().get(inner_index).copied()
+        && has_correlated_access(inner)
+    {
+        join.InnerPlan = Some(inner.clone_physical(inner.s_ctx().clone())?);
+        return Ok(());
+    }
+
     let inner_scan = join
         .children()
         .get(inner_index)
@@ -10320,33 +10339,79 @@ pub fn ExhaustPhysicalPlans(
                     if let Some(inner_scan) =
                         build_lookup_scan_from_logical(inner_logical.as_ref())?
                     {
-                        let usable_keys = inner_scan
-                            .IdxCols
-                            .iter()
-                            .map_while(|index_column| {
-                                physical
-                                    .BasePhysicalJoin
-                                    .InnerJoinKeys
-                                    .iter()
-                                    .position(|key| key.EqualColumn(index_column))
-                            })
-                            .collect::<Vec<_>>();
+                        let probe = if physical.BasePhysicalJoin.InnerJoinKeys.len() > 1 {
+                            let outer_rows = children[outer_index]
+                                .StatsInfo()
+                                .map_or(0.0, |stats| stats.RowCount);
+                            let avg_rows = if outer_rows > 0.0 {
+                                join.StatsInfo().map_or(0.0, |stats| stats.RowCount) / outer_rows
+                            } else {
+                                0.0
+                            };
+                            crate::index_join_probe::best_probe(
+                                inner_logical.as_ref(),
+                                &physical,
+                                avg_rows,
+                            )?
+                        } else {
+                            None
+                        };
+                        let inner_scan = if let Some(probe) = &probe {
+                            &probe.result.scan
+                        } else {
+                            &inner_scan
+                        };
+                        let usable_keys = if let Some(probe) = &probe {
+                            probe
+                                .result
+                                .key_offsets
+                                .iter()
+                                .enumerate()
+                                .filter_map(|(offset, key)| {
+                                    (*key >= 0).then_some((offset, *key as usize))
+                                })
+                                .collect::<Vec<_>>()
+                        } else {
+                            inner_scan
+                                .IdxCols
+                                .iter()
+                                .enumerate()
+                                .map_while(|(offset, column)| {
+                                    physical
+                                        .BasePhysicalJoin
+                                        .InnerJoinKeys
+                                        .iter()
+                                        .position(|key| key.EqualColumn(column))
+                                        .map(|key| (offset, key))
+                                })
+                                .collect::<Vec<_>>()
+                        };
                         if !usable_keys.is_empty() {
                             physical.BasePhysicalJoin.OuterJoinKeys = usable_keys
                                 .iter()
-                                .map(|index| {
-                                    physical.BasePhysicalJoin.OuterJoinKeys[*index].Clone()
+                                .map(|(_, key)| {
+                                    physical.BasePhysicalJoin.OuterJoinKeys[*key].Clone()
                                 })
                                 .collect();
                             physical.BasePhysicalJoin.InnerJoinKeys = usable_keys
                                 .iter()
-                                .map(|index| {
-                                    physical.BasePhysicalJoin.InnerJoinKeys[*index].Clone()
+                                .map(|(_, key)| {
+                                    physical.BasePhysicalJoin.InnerJoinKeys[*key].Clone()
                                 })
                                 .collect();
-                            physical.KeyOff2IdxOff = (0..usable_keys.len())
-                                .map(|offset| i32::try_from(offset).unwrap_or(i32::MAX))
+                            physical.KeyOff2IdxOff = usable_keys
+                                .iter()
+                                .map(|(offset, _)| *offset as i32)
                                 .collect();
+                            physical.Ranges = inner_scan.Ranges.clone();
+                            physical.IdxColLens = inner_scan.IdxColLens.clone();
+                            if let Some(probe) = &probe {
+                                physical.CompareFilters = probe
+                                    .result
+                                    .last_col_manager
+                                    .as_ref()
+                                    .map(|manager| manager.cloneForPlanCache());
+                            }
                         }
                         let outer_rows = if small_outer_index_join {
                             join.StatsInfo().map_or(1.0, |stats| stats.RowCount)
@@ -10356,11 +10421,11 @@ pub fn ExhaustPhysicalPlans(
                                 .and_then(|child| child.StatsInfo())
                                 .map_or(1.0, |stats| stats.RowCount)
                         };
-                        physical.InnerPlan = Some(build_index_join_lookup_scan(
-                            &physical,
-                            &inner_scan,
-                            outer_rows,
-                        )?);
+                        physical.InnerPlan = Some(if let Some(probe) = probe {
+                            probe.plan
+                        } else {
+                            build_index_join_lookup_scan(&physical, inner_scan, outer_rows)?
+                        });
                     }
                 }
                 fn contains_recursive_cte_table(plan: &dyn logicalop::LogicalPlan) -> bool {

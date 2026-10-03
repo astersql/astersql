@@ -72,6 +72,8 @@ pub struct indexJoinPathResult {
     pub chosenRanges: Vec<Range>,
     pub usedColsLen: usize,
     pub eqUsedColsNDV: f64,
+    /// The trailing non-EQ range is excluded from the EQ-prefix NDV.
+    pub lastColIsRange: bool,
     pub idxOff2KeyOff: Vec<i32>,
     pub lastColManager: Option<ColWithCmpFuncManager>,
     pub mutableRange: Option<mutableIndexJoinRange>,
@@ -331,6 +333,7 @@ pub fn indexJoinPathBuild(
 
     let mut used_condition_keys: HashSet<_> = accesses.iter().map(expression_key).collect();
     let mut manager = None;
+    let mut last_col_is_range = false;
     if !stopped_for_fallback {
         let next_offset = used_columns;
         if next_offset < columns.len() {
@@ -363,6 +366,7 @@ pub fn indexJoinPathBuild(
                         }),
                     });
                     used_columns += 1;
+                    last_col_is_range = true;
                 }
             } else {
                 let range_conditions: Vec<_> = info
@@ -384,6 +388,7 @@ pub fn indexJoinPathBuild(
                         accesses.extend(range_conditions.iter().cloned());
                         used_condition_keys.extend(range_conditions.iter().map(expression_key));
                         used_columns += 1;
+                        last_col_is_range = true;
                     }
                 } else if invalidated_join_key && accesses.is_empty() {
                     // The reduced Rust range model spells Go's open bound as a
@@ -438,6 +443,7 @@ pub fn indexJoinPathBuild(
             remained,
             ranges,
             used_columns,
+            last_col_is_range,
             build.curIdxOff2KeyOff,
             manager,
             mutable,
@@ -621,15 +627,23 @@ fn indexJoinPathConstructResult(
     remained: Vec<Expression>,
     ranges: Vec<Range>,
     used: usize,
+    last_col_is_range: bool,
     mapping: Vec<i32>,
     manager: Option<ColWithCmpFuncManager>,
     mutable: Option<mutableIndexJoinRange>,
     info: &indexJoinPathInfo,
 ) -> indexJoinPathResult {
-    let ndv = info
-        .innerJoinKeys
+    let columns = if path.index_columns.is_empty() {
+        path.index
+            .as_ref()
+            .map(|index| index.columns.clone())
+            .unwrap_or_default()
+    } else {
+        path.index_columns.clone()
+    };
+    let ndv = columns
         .iter()
-        .take(used)
+        .take(used.saturating_sub(usize::from(last_col_is_range)))
         .map(|k| info.columnNDV.get(k).copied().unwrap_or(1.0))
         .fold(1.0, f64::max);
     indexJoinPathResult {
@@ -639,6 +653,7 @@ fn indexJoinPathConstructResult(
         chosenRanges: ranges,
         usedColsLen: used,
         eqUsedColsNDV: ndv,
+        lastColIsRange: last_col_is_range,
         idxOff2KeyOff: mapping,
         lastColManager: manager,
         mutableRange: mutable,
@@ -882,6 +897,7 @@ pub fn getIndexJoinIntPKPathInfo(
         }],
         usedColsLen: 1,
         eqUsedColsNDV: ds.stats.row_count,
+        lastColIsRange: false,
         idxOff2KeyOff: vec![offset as i32],
         lastColManager: None,
         mutableRange: None,

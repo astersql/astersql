@@ -41,6 +41,7 @@ fn path_result(ndv: f64, used_columns: usize) -> indexJoinPathResult {
         chosenRanges: vec![Range::default()],
         usedColsLen: used_columns,
         eqUsedColsNDV: ndv,
+        lastColIsRange: false,
         idxOff2KeyOff: vec![0],
         lastColManager: None,
         mutableRange: None,
@@ -84,4 +85,40 @@ fn max_one_row_matches_go_unique_index_contract() {
         ..Expression::default()
     }];
     assert!(!indexJoinPathGetRangeInfoAndMaxOneRow(&info, &result).1);
+}
+
+#[test]
+fn tail_range_marks_non_equality_and_excludes_its_ndv() {
+    use super::index_join_path::{IndexJoinContext, indexJoinPathBuild};
+    let path = AccessPath {
+        index_columns: vec![7, 8],
+        ..Default::default()
+    };
+    for dynamic in [false, true] {
+        let mut info = indexJoinPathInfo {
+            innerJoinKeys: vec![7, 9],
+            outerJoinKeys: vec![1, 2],
+            innerSchema: vec![7, 8, 9],
+            columnNDV: [(7, 2.0), (8, 1000.0)].into_iter().collect(),
+            ..Default::default()
+        };
+        let range = Expression {
+            name: "gt:10".into(),
+            column: Some(8),
+            ..Default::default()
+        };
+        if dynamic {
+            info.joinOtherConditions.push(range);
+        } else {
+            info.innerPushedConditions.push(range);
+        }
+        let (result, empty) =
+            indexJoinPathBuild(&IndexJoinContext::default(), &path, &info, false).unwrap();
+        let result = result.expect("join prefix with appended tail range");
+        assert!(!empty);
+        assert_eq!(result.usedColsLen, 2);
+        assert!(result.lastColIsRange);
+        assert_eq!(result.eqUsedColsNDV, 2.0);
+        assert_eq!(result.lastColManager.is_some(), dynamic);
+    }
 }

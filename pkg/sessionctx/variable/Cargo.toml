@@ -10,6 +10,7 @@ path = "lib.rs"
 doctest = false
 
 [dependencies]
+fixcontrol = { package = "astersql-planner-util-fixcontrol", path = "../../planner/util/fixcontrol" }
 url = "2"
 chrono = "0.4"
 config = { package = "astersql-config", path = "../../config" }
