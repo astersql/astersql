@@ -54,6 +54,21 @@ pub enum GlobalSortPermission {
     PutAndDeleteObject,
 }
 
+/// Reject enabled TTL before any import side effects, even with DISABLE_PRECHECK.
+/// An asynchronous TTL job can race with import mode and invalidate the checksum.
+pub fn CheckImportTableTTL(
+    table: &astersql_meta_model::TableInfo,
+) -> Result<(), astersql_util_dbterror::errors::SharedError> {
+    if table.TTLInfo.as_ref().is_some_and(|ttl| ttl.Enable) {
+        return Err(
+            astersql_util_dbterror_exeerrors::exeerrors::ErrLoadDataPreCheckFailed.FastGenByArgs(
+                &["target table has TTL enabled, please disable TTL before IMPORT INTO".into()],
+            ),
+        );
+    }
+    Ok(())
+}
+
 impl LoadDataController {
     /// 完整前置检查：含文件总大小；用于正式提交导入前。
     pub fn CheckRequirements(&self, service: &mut dyn ImportPrecheckService) -> Result<(), String> {
@@ -74,6 +89,12 @@ impl LoadDataController {
         service: &mut dyn ImportPrecheckService,
         check_total_file_size: bool,
     ) -> Result<(), String> {
+        let table_info = self
+            .Plan
+            .TableInfo
+            .as_deref()
+            .unwrap_or_else(|| self.Table.Meta());
+        CheckImportTableTTL(table_info).map_err(|error| error.to_string())?;
         // 文件源：禁止同表已有活跃 job，并按需校验导入体量。
         if self.Plan.DataSourceType == DataSourceTypeFile {
             let table_name = self.Table.Meta().Name.L.as_str();

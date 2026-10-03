@@ -160,7 +160,9 @@ fn mysql_error_code_and_state(error: &ConnError) -> (u16, &'static [u8; 5]) {
         ConnError::MalformedPacket(_) => (1835, b"HY000"),
         ConnError::Session(message) => {
             let lower = message.to_ascii_lowercase();
-            if lower.contains("[executor:8175]") {
+            if lower.contains("[executor:8173]") {
+                (8173, b"HY000")
+            } else if lower.contains("[executor:8175]") {
                 (8175, b"HY000")
             } else if lower.contains("[tikv:1213]") {
                 (1213, b"40001")

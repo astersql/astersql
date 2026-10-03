@@ -913,3 +913,67 @@ fn normal_ddl_plan_create_materialized_view_3_cancel_dispatch_prerequisite() {
     );
     assert!(f.queue(j.id).is_some());
 }
+
+#[test]
+fn import_select_rejects_enabled_ttl_even_with_disable_precheck() {
+    let f = Fixture::new();
+    let mut session = f.pool.acquire().unwrap();
+    session
+        .query("CREATE TABLE test.ttl_import_source (id int primary key, created_at datetime)")
+        .unwrap();
+    session
+        .query("INSERT INTO test.ttl_import_source VALUES (17,'2026-10-04 01:02:03')")
+        .unwrap();
+    session.query("CREATE TABLE test.ttl_import_target (id int primary key, created_at datetime) TTL = `created_at` + INTERVAL 1 DAY").unwrap();
+    assert!(
+        f.domain
+            .table_by_name("test", "ttl_import_target")
+            .unwrap()
+            .TTLInfo
+            .as_ref()
+            .unwrap()
+            .Enable
+    );
+    let error = session.query("IMPORT INTO test.ttl_import_target FROM (SELECT * FROM test.ttl_import_source) WITH DISABLE_PRECHECK").unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "SQL error: [executor:8173]PreCheck failed: target table has TTL enabled, please disable TTL before IMPORT INTO"
+    );
+    for sql in [
+        "IMPORT INTO test.ttl_import_target FROM (SELECT * FROM test.ttl_import_source)",
+        "IMPORT INTO test.ttl_import_target FROM '/file.csv'",
+        "IMPORT INTO test.ttl_import_target FROM '/file.csv' WITH SPLIT_FILE",
+    ] {
+        let error = session.query(sql).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "SQL error: [executor:8173]PreCheck failed: target table has TTL enabled, please disable TTL before IMPORT INTO"
+        );
+    }
+    assert!(
+        session
+            .query("SELECT * FROM test.ttl_import_target")
+            .unwrap()
+            .is_empty()
+    );
+    // The current SQL runtime lacks ALTER TTL_ENABLE; create the same real
+    // target definition with TTL disabled to verify the precheck's OFF branch.
+    session.query("DROP TABLE test.ttl_import_target").unwrap();
+    session.query("CREATE TABLE test.ttl_import_target (id int primary key, created_at datetime) TTL = `created_at` + INTERVAL 1 DAY TTL_ENABLE='OFF'").unwrap();
+    assert!(
+        !f.domain
+            .table_by_name("test", "ttl_import_target")
+            .unwrap()
+            .TTLInfo
+            .as_ref()
+            .unwrap()
+            .Enable
+    );
+    session.query("IMPORT INTO test.ttl_import_target FROM (SELECT * FROM test.ttl_import_source) WITH DISABLE_PRECHECK").unwrap();
+    assert_eq!(
+        session
+            .query("SELECT id FROM test.ttl_import_target")
+            .unwrap(),
+        vec![vec!["17".to_string()]]
+    );
+}

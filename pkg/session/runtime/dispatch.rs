@@ -1746,6 +1746,16 @@ impl ConcreteSession {
             return Ok(None);
         }
         if let Some(import) = statement.as_any().downcast_ref::<ast::ImportIntoStmt>() {
+            let database = if import.Table.Schema.L.is_empty() {
+                self.current_database()
+            } else {
+                import.Table.Schema.O.clone()
+            };
+            let table = self
+                .resolve_runtime_table(&database, &import.Table.Name.L)
+                .ok_or_else(|| SessionError::new("import target table not found"))?;
+            astersql_executor_importer::CheckImportTableTTL(&table)
+                .map_err(|error| SessionError::with_source(error.to_string(), error))?;
             if import.Select.is_some() {
                 return self.execute_import_query(import).map(Some);
             }

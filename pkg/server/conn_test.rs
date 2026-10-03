@@ -363,3 +363,33 @@ fn canonical_long_data_limit_is_deferred_to_execute_and_encoded_as_1153() {
     assert_eq!(packet(&mut peer), vec![0, 0, 1, b'x', 1, b'y']);
     connection.Close().unwrap();
 }
+
+#[test]
+fn ttl_import_precheck_error_is_encoded_as_8173() {
+    use std::io::Read;
+    let (connection, mut peer) = change_user_connection_with_packet_limit(1024);
+    peer.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .unwrap();
+    let message = "[executor:8173]PreCheck failed: target table has TTL enabled, please disable TTL before IMPORT INTO";
+    connection
+        .writeError(&ConnError::Session(message.into()))
+        .unwrap();
+    let packet = loop {
+        let mut header = [0; 4];
+        peer.read_exact(&mut header).unwrap();
+        let len = header[0] as usize | (header[1] as usize) << 8 | (header[2] as usize) << 16;
+        let mut packet = vec![0; len];
+        peer.read_exact(&mut packet).unwrap();
+        if packet[0] == 0xff {
+            break packet;
+        }
+    };
+    assert_eq!(packet[0], 0xff);
+    assert_eq!(u16::from_le_bytes(packet[1..3].try_into().unwrap()), 8173);
+    assert_eq!(&packet[4..9], b"HY000");
+    assert!(
+        String::from_utf8_lossy(&packet[9..])
+            .contains("target table has TTL enabled, please disable TTL before IMPORT INTO")
+    );
+    connection.Close().unwrap();
+}
