@@ -257,6 +257,8 @@ impl CatalogQuery {
                         | "pg_attrdef"
                         | "pg_index"
                         | "pg_constraint"
+                        | "pg_proc"
+                        | "pg_language"
                         | "pg_database"
                         | "pg_locks"
                         | "pg_namespace"
@@ -463,6 +465,15 @@ impl CatalogQuery {
                     }
                     ("pg_get_userbyid", [arg])
                         if matches!(arg, Expr::Null) || self.expr_type(arg)?.0 == 8 =>
+                    {
+                        Ok((253, 0))
+                    }
+                    (name, [oid])
+                        if FUNCTION_INTROSPECTION
+                            .iter()
+                            .any(|function| function.name == name)
+                            && (matches!(oid, Expr::Null)
+                                || numeric_type(self.expr_type(oid)?.0)) =>
                     {
                         Ok((253, 0))
                     }
@@ -790,6 +801,11 @@ impl CatalogQuery {
         cancel: &CancellationToken,
     ) -> ConnResult<Vec<Vec<Value>>> {
         let rows = match name {
+            "pg_proc" => function_rows(),
+            "pg_language" => vec![vec![
+                Value::Signed(INTERNAL_LANGUAGE_OID),
+                Value::Text("internal".into()),
+            ]],
             "pg_index" | "pg_constraint" => index_constraint_rows(
                 name,
                 snapshot
@@ -976,6 +992,27 @@ impl CatalogQuery {
                 "pg_get_userbyid" => {
                     evaluate(&args[0])?;
                     Value::Null
+                }
+                "pg_get_function_arguments"
+                | "pg_get_function_result"
+                | "pg_get_function_sqlbody" => {
+                    let value = evaluate(&args[0])?;
+                    if value == Value::Null {
+                        return Ok(Value::Null);
+                    }
+                    let Value::Signed(oid) = value else {
+                        unreachable!("validated function oid");
+                    };
+                    let function = FUNCTION_INTROSPECTION
+                        .iter()
+                        .find(|function| function.oid == oid)
+                        .ok_or(ConnError::UnsupportedCommand(0))?;
+                    match path.last().unwrap().as_str() {
+                        "pg_get_function_arguments" => Value::Text(function.arguments.into()),
+                        "pg_get_function_result" => Value::Text(function.result.into()),
+                        // Native PG adapter primitives have no SQL-language body.
+                        _ => Value::Null,
+                    }
                 }
                 "pg_get_indexdef" | "pg_get_constraintdef" => {
                     let values = args.iter().map(evaluate).collect::<ConnResult<Vec<_>>>()?;
@@ -1446,11 +1483,67 @@ fn class_rows(
     Ok(rows)
 }
 
+// This bounded registry describes only the PG adapter's introspection
+// primitives, not the shared expression engine or PostgreSQL's full pg_proc.
+// Native INFORMATION_SCHEMA.ROUTINES/PARAMETERS are empty because stored
+// programs are unsupported (session/runtime/system_query.rs). No user routine
+// is invented in public. Synthetic OIDs stay below pg_oid's native range.
+const INTERNAL_LANGUAGE_OID: i64 = 12;
+struct IntrospectionFunction {
+    oid: i64,
+    name: &'static str,
+    arguments: &'static str,
+    result: &'static str,
+}
+const FUNCTION_INTROSPECTION: &[IntrospectionFunction] = &[
+    IntrospectionFunction {
+        oid: 16000,
+        name: "pg_get_function_arguments",
+        arguments: "function_oid oid",
+        result: "text",
+    },
+    IntrospectionFunction {
+        oid: 16001,
+        name: "pg_get_function_result",
+        arguments: "function_oid oid",
+        result: "text",
+    },
+    IntrospectionFunction {
+        oid: 16002,
+        name: "pg_get_function_sqlbody",
+        arguments: "function_oid oid",
+        result: "text",
+    },
+];
+fn function_rows() -> Vec<Vec<Value>> {
+    FUNCTION_INTROSPECTION
+        .iter()
+        .map(|function| {
+            vec![
+                Value::Signed(function.oid),
+                Value::Text(function.name.into()),
+                Value::Signed(11),
+                Value::Text("f".into()),
+                Value::Signed(INTERNAL_LANGUAGE_OID),
+                Value::Text(function.name.into()),
+            ]
+        })
+        .collect()
+}
+
 // Optional arrays retain their PG element type even without native FDW options.
 fn column_catalog_field(relation: &str, name: &str) -> Option<(usize, u8, usize)> {
     let oid = crate::pg_oid::OID_TYPE;
     let internal_char = crate::pg_result::CatalogColumnType::InternalChar as u8;
     let (slot, code) = match (relation, name) {
+        ("pg_proc", "oid") => (0, oid),
+        ("pg_proc", "proname") => (1, 253),
+        ("pg_proc", "pronamespace") => (2, oid),
+        ("pg_proc", "prokind") => (3, internal_char),
+        ("pg_proc", "prolang") => (4, oid),
+        ("pg_proc", "prosrc") => (5, 253),
+        ("pg_language", "oid") => (0, oid),
+        ("pg_language", "lanname") => (1, 253),
         ("pg_index", "indexrelid") => (0, oid),
         ("pg_index", "indrelid") => (1, oid),
         ("pg_index", "indnatts") => (2, 2),

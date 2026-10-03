@@ -2238,3 +2238,188 @@ fn pg_introspection_constraints_live() {
     drop(socket);
     service.close();
 }
+
+#[test]
+fn pg_introspection_functions_live() {
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    assert!(
+        native
+            .execute("SELECT ROUTINE_NAME FROM information_schema.routines")
+            .unwrap()
+            .remove(0)
+            .next_row()
+            .unwrap()
+            .is_none()
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let body = [
+        196608u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0test\0\0",
+    ]
+    .concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+
+    let source_sql = r#"with system_languages as ( select oid as lang
+                           from pg_catalog.pg_language
+                           where lanname in ('c','internal') )
+select oid as id,
+       pg_catalog.pg_get_function_arguments(oid) as arguments_def,
+       pg_catalog.pg_get_function_result(oid) as result_def,
+       pg_catalog.pg_get_function_sqlbody(oid) /* null */ as sqlbody_def,
+       prosrc as source_text
+from pg_catalog.pg_proc
+where pronamespace = ?::oid
+  --  and pg_proc.proname in ( :[*f_names] )
+  --  and pg_catalog.age(xmin) <= #SRCTXAGE
+  and not (prokind = 'a') /* proisagg */
+  and prolang not in (select lang from system_languages)
+  and prosrc is not null
+"#;
+
+    let namespace = query(
+        &mut socket,
+        "SELECT oid FROM pg_namespace WHERE nspname='public'",
+    );
+    assert_eq!(namespace[1].0, b'D', "{namespace:?}");
+    let length = i32::from_be_bytes(namespace[1].1[2..6].try_into().unwrap()) as usize;
+    let namespace = std::str::from_utf8(&namespace[1].1[6..6 + length])
+        .unwrap()
+        .to_owned();
+    for oid in [&namespace, "11"] {
+        let result = query(&mut socket, &source_sql.replace("?", oid));
+        assert_eq!(result[0].0, b'T', "complete function WITH: {result:?}");
+        assert_eq!(
+            columns(&result[0].1),
+            vec![
+                ("id".into(), 26),
+                ("arguments_def".into(), 25),
+                ("result_def".into(), 25),
+                ("sqlbody_def".into(), 25),
+                ("source_text".into(), 25)
+            ]
+        );
+        assert!(
+            result.iter().all(|m| m.0 != b'D'),
+            "no user routines; internal routines excluded: {result:?}"
+        );
+    }
+    let result = query(
+        &mut socket,
+        "SELECT p.proname,p.prokind,l.lanname,pg_get_function_arguments(p.oid),pg_get_function_result(p.oid),pg_get_function_sqlbody(p.oid),p.prosrc FROM pg_proc p JOIN pg_language l ON p.prolang=l.oid WHERE p.pronamespace=11 ORDER BY p.proname",
+    );
+    assert_eq!(result[0].0, b'T', "{result:?}");
+    let data = result
+        .iter()
+        .filter(|m| m.0 == b'D')
+        .map(|m| m.1.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        data,
+        [
+            "pg_get_function_arguments",
+            "pg_get_function_result",
+            "pg_get_function_sqlbody"
+        ]
+        .map(|name| row(&[
+            Some(name),
+            Some("f"),
+            Some("internal"),
+            Some("function_oid oid"),
+            Some("text"),
+            None,
+            Some(name)
+        ]))
+    );
+    let result = query(
+        &mut socket,
+        "SELECT pg_get_function_arguments(NULL),pg_get_function_result(NULL::oid),pg_get_function_sqlbody(NULL) FROM pg_language",
+    );
+    assert_eq!(result[1], (b'D', row(&[None, None, None])));
+    for sql in [
+        "SELECT pg_get_function_arguments(0::oid) FROM pg_language",
+        "SELECT pg_get_function_result(4294967295::oid) FROM pg_language",
+        "SELECT pg_get_function_sqlbody('bad') FROM pg_language",
+        "SELECT pg_get_function_arguments() FROM pg_language",
+        "SELECT pg_get_function_result(oid,oid) FROM pg_proc",
+        "SELECT unsupported_user_function(oid) FROM pg_proc",
+        "SELECT oid FROM pg_proc WHERE unsupported_user_function(oid) IS NOT NULL AND pronamespace=0",
+    ] {
+        let result = query(&mut socket, sql);
+        assert_eq!(result[0].0, b'E', "{sql}: {result:?}");
+        assert!(
+            result[0].1.windows(7).any(|w| w == b"C0A000\0"),
+            "{sql}: {result:?}"
+        );
+        assert_eq!(query(&mut socket, "SELECT 1")[1], (b'D', row(&[Some("1")])));
+    }
+    // The exact frozen JDBC SQL uses ?, while PG Parse binds $1 with OID 26.
+    let sql = source_sql.replace("?", "$1");
+    send(
+        &mut socket,
+        b'P',
+        &[
+            b"functions\0".as_slice(),
+            sql.as_bytes(),
+            b"\0",
+            &1u16.to_be_bytes(),
+            &26u32.to_be_bytes(),
+        ]
+        .concat(),
+    );
+    send(&mut socket, b'D', b"Sfunctions\0");
+    send(&mut socket, b'S', b"");
+    let described = until_ready(&mut socket);
+    assert!(described.iter().all(|m| m.0 != b'E'), "{described:?}");
+    assert!(described.iter().any(|m|m.0==b't' && m.1==[&1u16.to_be_bytes()[..],&26u32.to_be_bytes()].concat()),"{described:?}");
+    for value in [Some(namespace.as_str()), None, Some("11")] {
+        let parameter = match value {
+            Some(value) => [&(value.len() as i32).to_be_bytes()[..], value.as_bytes()].concat(),
+            None => (-1i32).to_be_bytes().to_vec(),
+        };
+        send(
+            &mut socket,
+            b'B',
+            &[
+                b"\0functions\0".as_slice(),
+                &0u16.to_be_bytes(),
+                &1u16.to_be_bytes(),
+                &parameter,
+                &0u16.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        send(
+            &mut socket,
+            b'E',
+            &[b"\0".as_slice(), &0u32.to_be_bytes()].concat(),
+        );
+        send(&mut socket, b'S', b"");
+        let result = until_ready(&mut socket);
+        assert!(
+            result.iter().all(|m| m.0 != b'E' && m.0 != b'D'),
+            "{result:?}"
+        );
+        assert!(result.iter().any(|m| m.0 == b'C'), "{result:?}");
+    }
+    send(&mut socket, b'X', b"");
+    service.close();
+}
