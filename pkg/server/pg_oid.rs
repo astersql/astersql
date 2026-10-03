@@ -4,8 +4,8 @@ use crate::conn::{ConnError, ConnResult};
 use astersql_infoschema::{CiString, InfoSchema};
 
 // Reserved synthetic catalog type codes; created and consumed only by PG modules.
-pub(crate) const OID_TYPE: u8 = 240;
-pub(crate) const REGCLASS_TYPE: u8 = 241;
+pub(crate) const OID_TYPE: u8 = crate::pg_result::CatalogColumnType::Oid as u8;
+pub(crate) const REGCLASS_TYPE: u8 = crate::pg_result::CatalogColumnType::Regclass as u8;
 const NATIVE_BASE: u32 = 16384;
 const TABLE_BASE: u32 = 0x4000_0000;
 const INDEX_BASE: u32 = 0x8000_0000;

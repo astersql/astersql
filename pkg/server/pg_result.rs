@@ -224,31 +224,32 @@ fn count(n: usize) -> io::Result<i16> {
 fn length(n: usize) -> io::Result<i32> {
     i32::try_from(n).map_err(|_| invalid("PostgreSQL result field exceeds maximum length"))
 }
-// Reserved codes belong exclusively to PG catalog providers. Shared engine
+// Codes 230..237 are unused by native MySQL types, including JSON (245)
+// and DECIMAL (246). They belong exclusively to PG catalog providers. Shared engine
 // NativeType inference and MySQL column/protocol mappings never use them.
 #[derive(Clone, Copy)]
 #[repr(u8)]
 pub(crate) enum CatalogColumnType {
-    InternalChar = 239,
-    Oid = 240,
-    Regclass = 241,
-    Int2Array = 242,
-    Int4Array = 243,
-    OidArray = 244,
-    TextArray = 245,
-    Int2Vector = 246,
+    InternalChar = 230,
+    Oid = 231,
+    Regclass = 232,
+    Int2Array = 233,
+    Int4Array = 234,
+    OidArray = 235,
+    TextArray = 236,
+    Int2Vector = 237,
 }
 impl CatalogColumnType {
     fn from_code(code: u8) -> Option<Self> {
         Some(match code {
-            239 => Self::InternalChar,
-            240 => Self::Oid,
-            241 => Self::Regclass,
-            242 => Self::Int2Array,
-            243 => Self::Int4Array,
-            244 => Self::OidArray,
-            245 => Self::TextArray,
-            246 => Self::Int2Vector,
+            230 => Self::InternalChar,
+            231 => Self::Oid,
+            232 => Self::Regclass,
+            233 => Self::Int2Array,
+            234 => Self::Int4Array,
+            235 => Self::OidArray,
+            236 => Self::TextArray,
+            237 => Self::Int2Vector,
             _ => return None,
         })
     }

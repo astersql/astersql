@@ -195,6 +195,10 @@ fn unsigned_binary_and_unsupported_types() {
     result.native_types[0].code = 245;
     result.columns[0].column_type = 245; // JSON is outside the first-stage type set.
     assert!(crate::pg_result::encode(&result, "SELECT").is_err());
+    // NULL must not allow an unsupported native JSON type to masquerade as
+    // a PG catalog text array before value encoding rejects its contents.
+    result.rows = vec![vec![Value::Null]];
+    assert!(crate::pg_result::encode(&result, "SELECT").is_err());
     result.native_types[0].code = 11;
     result.columns[0].column_type = 11;
     result.rows = vec![vec![Value::Text("25:00:00".into())]];

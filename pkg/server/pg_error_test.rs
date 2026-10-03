@@ -49,7 +49,8 @@ fn row(values: &[Option<&str>]) -> Vec<u8> {
 }
 #[test]
 fn sqlstate_unique_syntax_and_recovery() {
-    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    native.execute("CREATE DATABASE pg_error_types").unwrap();
     let driver = Arc::new(ConcreteSessionDriver::new_for_test(
         domain.clone(),
         BootstrapAuthMode::InsecureRootOnly,
@@ -67,7 +68,11 @@ fn sqlstate_unique_syntax_and_recovery() {
     socket
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
-    let body = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    let body = [
+        196610u32.to_be_bytes().as_slice(),
+        b"user\0root\0database\0pg_error_types\0\0",
+    ]
+    .concat();
     socket
         .write_all(&((body.len() + 4) as u32).to_be_bytes())
         .unwrap();
@@ -76,14 +81,15 @@ fn sqlstate_unique_syntax_and_recovery() {
     while read(&mut socket).0 != b'Z' {}
 
     for sql in [
-        "CREATE DATABASE pg_error_types",
-        "CREATE TABLE pg_error_types.t (id INT PRIMARY KEY)",
-        "INSERT INTO pg_error_types.t VALUES (1)",
+        "CREATE DATABASE pg_error_other",
+        "CREATE TABLE public.t (id INT PRIMARY KEY)",
+        "INSERT INTO public.t VALUES (1)",
     ] {
-        assert_eq!(query(&mut socket, sql)[0].0, b'C');
+        let response = query(&mut socket, sql);
+        assert_eq!(response[0].0, b'C', "{sql}: {response:?}");
     }
     for (sql, expected) in [
-        ("INSERT INTO pg_error_types.t VALUES (1)", "23505"),
+        ("INSERT INTO public.t VALUES (1)", "23505"),
         ("SELECT FROM", "42601"),
         ("SELECT 1; SELECT 2", "0A000"),
     ] {

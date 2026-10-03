@@ -24,7 +24,7 @@ startup 接受 user、database、application_name、UTF8/UTF-8 client_encoding�
 
 简单 Query 只接受一条现有引擎可执行的语句；空查询返回 EmptyQueryResponse，多语句返回 0A000。允许的 AST 命令还包括集合查询、CREATE/DROP DATABASE、ALTER/TRUNCATE TABLE、DROP VIEW、SET；这些命令的全部 SQL 变体没有逐一验收。REPLACE 与其他不支持命令被拒绝。DataGrip 的 `select round(extract(epoch from pg_postmaster_start_time() at time zone 'UTC')) as startup_time` 探测在 PG 适配层按 SQL token 识别，以 PG listener 本次启动时记录的微秒时间计算并四舍五入到 epoch 秒；同一 PG 服务的所有连接和预处理查询共用该值，结果 OID 为 numeric（1700），保留别名。此支持仅覆盖该 UTC 启动时间探测，不代表通用 EXTRACT、AT TIME ZONE 或 PostgreSQL 时间函数兼容。PG 适配层按 AST 投影和源码位置将未引用、未限定的直接 `current_catalog` 投影映射到 canonical 会话的数据库名，保留默认结果列名与显式别名；普通与扩展查询共用该适配。字符串、引用列名、限定列名不改写；完整 PostgreSQL 表达式及 pg_catalog 仿真不作兼容承诺。
 
-扩展查询支持 Parse、Bind、Describe、Execute、Close、Sync、Flush，具备命名 statement/portal、重复和乱序 `$n` 参数映射、分段返回 PortalSuspended、错误后丢弃消息直到 Sync。参数传给既有预处理接口，不通过字符串拼接值。参数必须提供明确类型 OID；没有参数类型推断，参数化投影的结果元数据缺失或 prepare/execute 元数据不一致时明确报错。二进制参数与结果格式被拒绝。JDBC 连接需设置 `binaryTransfer=false`，避免驱动在达到 prepareThreshold 后切换为二进制结果。美元引用、引擎可执行注释/提示注释及 `?` 参数标记不支持。
+扩展查询支持 Parse、Bind、Describe、Execute、Close、Sync、Flush，具备命名 statement/portal、重复和乱序 `$n` 参数映射、分段返回 PortalSuspended、错误后丢弃消息直到 Sync。参数传给既有预处理接口，不通过字符串拼接值。原生执行查询的参数必须提供明确类型 OID；目录查询可从显式 `$n::oid` 等转换取得参数类型，无转换时仍需客户端提供 OID。没有通用参数类型推断，参数化投影的结果元数据缺失或 prepare/execute 元数据不一致时明确报错。二进制参数与结果格式被拒绝。JDBC 连接需设置 `binaryTransfer=false`，避免驱动在达到 prepareThreshold 后切换为二进制结果。美元引用、引擎可执行注释/提示注释及 `?` 参数标记不支持。
 
 3.0 BackendKeyData 使用 4 字节随机取消密钥，3.2 使用 32 字节；CancelRequest 必须匹配当前后端和密钥。真实 libpq 验证 idle cancel 不影响下一条查询；相邻 TCP 测试验证正在执行的命令取消、错误密钥及旧/空闲取消不会污染下一命令。事务状态来自共享会话的 in_transaction；只报告 I/T，不承诺 PostgreSQL 出错事务的 E 状态及其后续语义。
 
@@ -32,11 +32,17 @@ startup 接受 user、database、application_name、UTF8/UTF-8 client_encoding�
 
 PG 独立目录查询结构支持 `pg_database`/`pg_shdescription` 数据库列表、`pg_namespace`/`pg_description` namespace 列表、`pg_tablespace` 基础投影，以及 `pg_locks` 最老事务探测。支持这些查询所需的投影、别名、bigint/varchar 转换、受限 LEFT JOIN、WHERE、CASE 排序和 LIMIT；未知目录、不支持结构与语法错误明确报错。此范围不代表完整 PostgreSQL 语法或 pg_catalog 兼容；批量 SQL 不支持。
 
-数据库名和 ID 来自当前 canonical InfoSchema，ID 是 AsterSQL 原生 schema ID，并非 PostgreSQL 32 位 OID；当前数据库排在首位，其余按 ID 排序。AsterSQL 数据库不是 PostgreSQL template，root 开发鉴权下允许连接。原生元数据没有 PostgreSQL database owner 或 shared description，因此两列返回 SQL NULL。结果明确报告 bigint、text、boolean 类型。
+数据库名来自当前 canonical InfoSchema；目录中的数据库、namespace、表与索引身份使用带范围检查的 PG 32 位 OID，并由持久原生 ID 推导，目录引用之间一致。当前数据库排在首位。AsterSQL 数据库不是 PostgreSQL template，root 开发鉴权下允许连接；没有原生 PG owner 或 shared description 来源时返回 SQL NULL。OID 列报告 OID 类型（26），名称、布尔与可空列按实际目录定义报告。
 
 事务探测读取当前 Domain 的真实 `information_schema.tidb_trx`，返回最小的原生 TSO start timestamp。没有活动事务时返回零行；事务结束后移除。这里的 transaction_id 是原生 64 位事务标识，不是 PG wraparound XID，也不代表完整 PostgreSQL 锁模式、持锁表或 `age(xid)` 语义。
 
-namespace 对应原生数据库，当前 schema 是所选数据库；不合成 public schema。namespace OID 对正 schema ID 编码为两倍、负 ID 编码为绝对值两倍减一，并检查 32 位范围。没有原生 PG XID、owner 或注释来源，xmin/state_number、owner 和 description 为 SQL NULL。原生存储没有 PG tablespace 映射，因此 pg_tablespace 返回零行，仍提供 bigint/text 列元数据；spcacl/spcoptions 在当前基础查询中定义为可空 text，不承诺 PG 数组语义。
+PG startup 的 database 选择同名原生库；该连接的 `public` 虚拟映射当前库对象，不创建原生 public 库。`pg_namespace` 提供 `public` 与 `pg_catalog`，当前 schema 默认 public，连接私有 `SHOW/SET/RESET search_path` 支持 public 与 pg_catalog（含空路径）。未引用标识符按 PG 规则折叠，引用名称保留大小写；public 限定的表名映射当前库，跨库和非 public 用户 schema 明确拒绝。未显式列出的 pg_catalog 在搜索路径前隐式搜索；显式 public,pg_catalog 顺序允许当前库同名表优先。默认 MySQL 的数据库限定、USE、SQL mode 与 prepared statement 行为保持原有语义。
+
+没有原生 PG XID、owner 或注释来源时，xmin/state_number、owner 和 description 为 SQL NULL，不用原生 TSO 伪造 xmin。没有 PG tablespace 来源，pg_tablespace 返回类型正确的零行；基础 spcacl/spcoptions 是可空 text，完整 tablespace ACL/数组模板仍明确拒绝。
+
+真实元数据投影覆盖当前库关系、列、类型、默认值、索引及约束目录：pg_class、pg_attribute、pg_type、pg_attrdef、pg_index、pg_constraint。支持来源查询所需的 INNER/LEFT JOIN、SQL 三值谓词、CASE、排序/限制、非递归只读 CTE、受限子查询和目录函数；结构深度、行数及取消仍受目录预算约束。一次 Execute 共用一个元数据快照，Parse 不冻结行，后续 Execute 可见 DDL 更新。目录 regclass 名称解析复用同一对象 OID，不按结果顺序分配身份。
+
+视图源从真实 model 元数据读取并提取 SELECT，pg_get_viewdef 支持来源模板及 NULL/未知 OID 边界。pg_proc/pg_language 仅注册有界内省 primitive；当前原生引擎不支持用户存储程序，原生 ROUTINES 与来源函数查询均返回真实类型正确的空集合，不能据此宣称完整 PG 函数系统。pg_sequence 投影真实序列对象；pg_depend 表示真实序列到当前 schema 的 n 依赖。原生元数据没有 owned-by 表/列或稳定默认值序列引用，因此原始拥有依赖查询为零行，不把 AUTO_INCREMENT 伪造为序列或猜测 a/i 关系。完整 RetrieveSequences10 描述模板尚未验收。
 
 普通 Query 和扩展 Parse/Bind/Describe/Execute 都支持这些基础探测。按 [PG18 Close 规范](https://www.postgresql.org/docs/18/protocol-flow.html)，关闭不存在的 statement/portal 也返回 CloseComplete；这使 JDBC 在 Parse 报错后清理失败对象时不再阻断下一条查询。PG 目录 statement/portal 生命周期按 PG statement 名字管理，不分配或关闭 engine prepared handle；在 Execute 时重新读取元数据，继续使用统一 portal 分页和 Sync 错误恢复。共享会话接口仅新增协议无关的只读 schema snapshot，没有加入 PG SQL 解析或目录行为。
 
@@ -46,7 +52,7 @@ namespace 对应原生数据库，当前 schema 是所选数据库；不合成 p
 
 结果 OID 由引擎原始类型和完整标志得到，不凭列名或数据值猜测。支持整数（unsigned 按范围扩大）、numeric、float4/float8、text、bytea、布尔标志、date、time、无时区 timestamp 及 NULL。BOOL 表定义仍遵循现有引擎 TINYINT 语义；布尔表达式保留 bool 标志。DATETIME/TIMESTAMP 都映射无时区 timestamp，不推测绝对时区。结果只使用文本格式，表 OID/属性编号未知为 0，typmod 为 -1。
 
-参数支持 OID 16、17、20、21、23、25、700、701、1042、1043、1082、1083、1114、1700 的文本值及 NULL；bytea 仅接受十六进制形式。日期时间参数使用明确格式，时间精度最多微秒。不支持类型、缺失元数据、零日期、负数或超出一天的 TIME duration、文本 NUL 等明确返回错误。JSON、enum/set、数组、带时区类型及全部二进制格式不作兼容承诺。
+参数支持 OID 16、17、20、21、23、25、700、701、1042、1043、1082、1083、1114、1700 的文本值及 NULL；bytea 仅接受十六进制形式。日期时间参数使用明确格式，时间精度最多微秒。不支持类型、缺失元数据、零日期、负数或超出一天的 TIME duration、文本 NUL 等明确返回错误。原生 JSON、enum/set、数组、带时区类型及全部二进制格式不作兼容承诺。目录结果另支持 OID/regclass、内部 char、int2vector 和 int2/int4/OID/text 数组的文本编码；目录参数支持 OID 26 的十进制文本及 NULL，检查 0..u32::MAX 范围，不代表原生 SQL 数组参数支持。
 
 PG 边界映射语法错误 42601、已知唯一键错误 23505、未知列 42703、未知表 42P01、未知库 3D000、取消 57014，并对不支持功能使用 0A000、错误报文使用 08P01。部分执行错误仍是共享接口字符串，仅匹配已知引擎错误形式；未知错误保留 XX000，不保证全量 PostgreSQL 错误分类。
 
@@ -55,7 +61,8 @@ PG 边界映射语法错误 42601、已知唯一键错误 23505、未知列 4270
 从仓库根目录执行：
 
 ```bash
-cargo test -p astersql-server postgres_client_protocol_versions --lib
+cargo test -p astersql-server --lib pg_introspection_clients -- --nocapture
+cargo test -p astersql-server --lib postgres_client_protocol_versions
 cargo test -p astersql-server --lib pg_
 cargo test -p astersql-server --lib postgres_listener_lifecycle
 cargo test -p astersql-server --lib real_listener_serves_handshake_ping_select_and_drains_connection
@@ -422,3 +429,20 @@ where C_SEQ.relkind = 'S'
 order by owner_id
 ;
 ```
+
+
+## PG 内省逐需求验收矩阵
+
+以下测试使用 CreateAnalyzeSession 的真实元数据与临时 TCP listener；客户端测试使用本机 libpq 18 和 JDBC 42.7.13/42.7.3，冻结原始来源 SQL，未模拟执行结果或降低版本。
+
+| 需求 | 证据入口（astersql-server --lib 测试过滤器） | 支持边界 |
+| --- | --- | --- |
+| public、连接私有搜索路径、真实关系映射 | pg_introspection_namespace、pg_introspection_names | 当前库对象，拒绝其他用户 schema/跨库 |
+| 一致 OID、regclass、参数及 Describe | pg_introspection_oid、pg_introspection_parameters | 明确类型、文本格式，NULL/边界/错误恢复 |
+| 真实关系及谓词/连接 | pg_introspection_relations、pg_introspection_predicates、pg_introspection_joins | SQL 三值逻辑及有界目录表达式 |
+| CTE/子查询与 Execute 新快照 | pg_introspection_cte | 非递归只读，拒绝越界及写入 |
+| 列/类型/默认值、索引/约束 | pg_introspection_columns、pg_introspection_constraints | 真实 model 元数据，未知字段/函数明确拒绝 |
+| 函数/语言、序列依赖、视图来源 | pg_introspection_functions、pg_introspection_dependencies、pg_introspection_clients | 原生能力来源明确，不伪造用户函数或拥有关系 |
+| 真实客户端和默认 MySQL 隔离 | pg_introspection_clients、postgres_client_protocol_versions、mysql_protocol_ | libpq 3.0/3.2、JDBC 文本结果；UI 未验收 |
+
+原生类型与目录私有类型使用互不重叠的内部码，DECIMAL 结果仍为 numeric（1700）；没有借目录数组支持扩大原生 JSON/数组类型承诺。完整 DataGrip UI 元数据树、持久重启、RealTiKV、生产鉴权与大 schema 性能仍未验证。

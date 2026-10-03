@@ -110,7 +110,7 @@ PG startup 会选择 `dbname` 对应的已有数据库。为避免 `test` 不存
 SELECT 1;
 ```
 
-预期返回一行数值 1。输入 `\q` 退出。若希望跳过本机 psqlrc 并直接完成一次查询：
+预期返回一行数值 1。PG 的 public 映射 dbname 选择的当前原生库，默认 search_path 为 public；可用 `SHOW search_path` 和 `SELECT current_schema()` 检查。访问当前库表用 `public.<表名>`，不要把原生库名当成 PG 用户 schema；跨库与其他用户 schema 被拒绝。无需创建原生 public 库。输入 `\q` 退出。若希望跳过本机 psqlrc 并直接完成一次查询：
 
 ```bash
 /opt/homebrew/opt/libpq/bin/psql \
@@ -147,4 +147,4 @@ SELECT 1;
 
 日常退出前台 Rust server 可在其启动终端按 Ctrl-C。PD/TiKV 的停止与重启仍按原手册执行，保留数据目录。
 
-基础内省边界与回归：参见 [PostgreSQL 首期协议说明](../postgresql-protocol-first-phase.md#datagrip-内省目录探测)。2026-10-01 libpq 18 的 3.0/3.2 首轮统一测试通过，覆盖数据库、namespace、空 tablespace 元数据及错误恢复。扩展协议与本机 JDBC 42.7.13/42.7.3 文本结果回归已通过；DataGrip 安装资源中的 tablespace SQL 已提取并通过 JDBC 验证支持边界。完整 tablespace 查询仍返回 0A000，错误后连接可恢复；UI 内省未验收。
+基础内省边界与回归：参见 [PostgreSQL 首期协议说明](../postgresql-protocol-first-phase.md#datagrip-内省目录探测)。2026-10-01 libpq 18 的 3.0/3.2 首轮统一测试通过，覆盖数据库、namespace、空 tablespace 元数据及错误恢复。扩展协议与本机 JDBC 42.7.13/42.7.3 文本结果回归已通过；DataGrip 安装资源中的 tablespace SQL 已提取并通过 JDBC 验证支持边界。完整 tablespace 查询仍返回 0A000，错误后连接可恢复；UI 内省未验收。2026-10-03 的真实客户端回归进一步覆盖 public/搜索路径、关系/列/索引/约束、视图源及函数/序列依赖来源查询，含 OID/NULL/边界、Describe、Parse 后 DDL 与错误恢复；能力以协议说明的逐需求矩阵为准。原生无用户存储程序或序列 owned-by 元数据时，相应来源查询为类型正确的真实空集合，不能据此宣称完整 PG 内省。
