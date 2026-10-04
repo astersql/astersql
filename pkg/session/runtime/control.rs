@@ -5537,8 +5537,9 @@ impl ConcreteSession {
                                 });
                         (Some(version), catalog_version)
                     } else {
-                        let micros = parse_datetime_micros(value.trim_matches(['\'', '"']))
-                            .map_err(|error| session_error("parse tidb_snapshot", error))?;
+                        let micros =
+                            parse_stale_datetime_micros(value.trim_matches(['\'', '"']))
+                                .map_err(|error| session_error("parse tidb_snapshot", error))?;
                         let snapshot_time = UNIX_EPOCH
                             + std::time::Duration::from_nanos(micros.max(0) as u64 * 1_000 + 999);
                         let catalog_version = self

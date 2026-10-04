@@ -1695,6 +1695,18 @@ pub(crate) fn ParseDateTimeMicrosForTest(
 fn parse_stale_datetime_micros(
     value: &str,
 ) -> Result<i64, astersql_executor::show_stats::ShowStatsError> {
+    // SQL time literals may carry millisecond precision; the statistics
+    // parser below expects either seconds or all six microsecond digits.
+    let normalized;
+    let value = if let Some((seconds, fraction)) = value.split_once('.') {
+        if !(1..=6).contains(&fraction.len()) || !fraction.bytes().all(|b| b.is_ascii_digit()) {
+            return parse_datetime_micros(value);
+        }
+        normalized = format!("{seconds}.{fraction:0<6}");
+        normalized.as_str()
+    } else {
+        value
+    };
     let micros = parse_datetime_micros(value)?;
     let offset_seconds = astersql_util_timeutil::time_zone::Zone(
         &astersql_util_timeutil::time_zone::SystemLocation(),

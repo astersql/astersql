@@ -11119,6 +11119,7 @@ dependencies = [
  "astersql-types",
  "astersql-util",
  "astersql-util-sqlexec",
+ "astersql-util-timeutil",
  "tikv-client",
  "tonic 0.12.3",
 ]

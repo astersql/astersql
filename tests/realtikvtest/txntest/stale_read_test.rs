@@ -1008,6 +1008,34 @@ fn TestStaleReadKVRequest() {
     }
 }
 
+fn wait_ts_after_ts(tk: &mut TestKit, after_ts: u64) -> u64 {
+    loop {
+        let ts = current_ts(tk);
+        // SQL timestamp literals retain only physical milliseconds. Wait for
+        // the next physical tick so parsing the literal stays after the TSO.
+        if physical_ts(ts) > physical_ts(after_ts) {
+            return physical_ts(ts) << 18;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn history_timestamp_literal(ts: u64) -> String {
+    let context = astersql_types::time::BasicTimeContext::default();
+    let epoch = astersql_types::time::ParseDatetime(&context, "1970-01-01 00:00:00")
+        .expect("valid epoch")
+        .GoTime(context.location)
+        .expect("epoch in UTC");
+    let offset_seconds = astersql_util_timeutil::time_zone::Zone(
+        &astersql_util_timeutil::time_zone::SystemLocation(),
+    )
+    .1;
+    let local_millis = i128::from(physical_ts(ts)) + i128::from(offset_seconds) * 1_000;
+    (epoch + Duration::from_millis(u64::try_from(local_millis).expect("history time after epoch")))
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string()
+}
+
 #[test]
 fn TestStalenessAndHistoryRead() {
     let _serial = serial_guard();
@@ -1015,11 +1043,23 @@ fn TestStalenessAndHistoryRead() {
     let mut tk = NewTestKit(store);
     tk.MustExec("create database `stale_history`", Vec::new());
     tk.MustExec("use `stale_history`", Vec::new());
-    let ts1 = current_ts(&mut tk);
+    let observed1 = current_ts(&mut tk);
+    let ts1 = wait_ts_after_ts(&mut tk, observed1);
+    assert!(
+        ts1 > observed1,
+        "SQL literal must be after the observed TSO"
+    );
+    let time1 = history_timestamp_literal(ts1);
     let schema_ver1 = domain.info_schema().SchemaMetaVersion();
     tk.MustExec("create table t(id int primary key)", Vec::new());
     tk.MustExec("drop table t", Vec::new());
-    let ts2 = current_ts(&mut tk);
+    let observed2 = current_ts(&mut tk);
+    let ts2 = wait_ts_after_ts(&mut tk, observed2);
+    assert!(
+        ts2 > observed2,
+        "SQL literal must be after the observed TSO"
+    );
+    let time2 = history_timestamp_literal(ts2);
     let schema_ver2 = domain.info_schema().SchemaMetaVersion();
     assert!(schema_ver1 < schema_ver2);
     assert_eq!(
@@ -1038,14 +1078,14 @@ fn TestStalenessAndHistoryRead() {
     );
 
     // SET TRANSACTION replaces the active historical snapshot.
-    tk.MustExec(&format!("set @@tidb_snapshot='{ts1}'"), Vec::new());
+    tk.MustExec(&format!("set @@tidb_snapshot='{time1}'"), Vec::new());
     let snapshot_v1 = tk.StaleReadStateForTest();
     assert_eq!(snapshot_v1.snapshot_ts, ts1);
     assert_eq!(snapshot_v1.pending_read_ts, None);
     assert_eq!(snapshot_v1.snapshot_info_schema_version, Some(schema_ver1));
     assert_eq!(snapshot_v1.session_info_schema_version, schema_ver1);
     tk.MustExec(
-        &format!("set transaction read only as of timestamp {ts2}"),
+        &format!("set transaction read only as of timestamp '{time2}'"),
         Vec::new(),
     );
     let pending_v2 = tk.StaleReadStateForTest();
@@ -1056,14 +1096,14 @@ fn TestStalenessAndHistoryRead() {
 
     // Conversely, tidb_snapshot replaces a pending transaction read TS.
     tk.MustExec(
-        &format!("set transaction read only as of timestamp {ts1}"),
+        &format!("set transaction read only as of timestamp '{time1}'"),
         Vec::new(),
     );
     let pending_v1 = tk.StaleReadStateForTest();
     assert_eq!(pending_v1.pending_read_ts, Some(ts1));
     assert_eq!(pending_v1.snapshot_info_schema_version, Some(schema_ver1));
     assert_eq!(pending_v1.session_info_schema_version, schema_ver1);
-    tk.MustExec(&format!("set @@tidb_snapshot='{ts2}'"), Vec::new());
+    tk.MustExec(&format!("set @@tidb_snapshot='{time2}'"), Vec::new());
     let snapshot_v2 = tk.StaleReadStateForTest();
     assert_eq!(snapshot_v2.pending_read_ts, None);
     assert_eq!(snapshot_v2.snapshot_ts, ts2);
@@ -1072,13 +1112,13 @@ fn TestStalenessAndHistoryRead() {
 
     // An explicit stale transaction clears snapshot mode, pins StartTS, and
     // leaves neither snapshot nor pending transaction state after COMMIT.
-    tk.MustExec(&format!("set @@tidb_snapshot='{ts1}'"), Vec::new());
+    tk.MustExec(&format!("set @@tidb_snapshot='{time1}'"), Vec::new());
     let snapshot_v1 = tk.StaleReadStateForTest();
     assert_eq!(snapshot_v1.snapshot_ts, ts1);
     assert_eq!(snapshot_v1.snapshot_info_schema_version, Some(schema_ver1));
     assert_eq!(snapshot_v1.session_info_schema_version, schema_ver1);
     tk.MustExec(
-        &format!("start transaction read only as of timestamp {ts2}"),
+        &format!("start transaction read only as of timestamp '{time2}'"),
         Vec::new(),
     );
     assert_eq!(
@@ -1109,7 +1149,7 @@ fn TestStalenessAndHistoryRead() {
     assert_eq!(committed.txn_info_schema_version, schema_ver2);
 
     tk.MustExec(
-        &format!("start transaction read only as of timestamp {ts2}"),
+        &format!("start transaction read only as of timestamp '{time2}'"),
         Vec::new(),
     );
     let snapshot_error = tk.ExecToErr("set @@tidb_snapshot='2020-10-08 16:45:26'");

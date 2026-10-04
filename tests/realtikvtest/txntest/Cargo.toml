@@ -63,3 +63,5 @@ tonic = "0.12"
 "astersql-util" = { package = "astersql-util", path = "../../../pkg/util" }
 "astersql-util-sqlexec" = { package = "astersql-util-sqlexec", path = "../../../pkg/util/sqlexec" }
 "astersql-tests-realtikvtest" = { package = "astersql-tests-realtikvtest", path = ".." }
+
+"astersql-util-timeutil" = { package = "astersql-util-timeutil", path = "../../../pkg/util/timeutil" }
