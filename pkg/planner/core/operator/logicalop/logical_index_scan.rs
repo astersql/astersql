@@ -215,7 +215,7 @@ impl LogicalIndexScan {
                 return matchIndicesPropWithConstCols(
                     &self.IdxCols[offset..],
                     &self.IdxColLens[offset..],
-                    &self.ConstCols[offset..],
+                    self.ConstCols.get(offset..).unwrap_or(&[]),
                     &prop.SortItems,
                     eval_ctx,
                 );
