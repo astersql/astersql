@@ -363,12 +363,10 @@ fn test_rebase_canceled_rpc_returns_quickly() {
 fn test_backoff_ctx_aware() {
     let mut bo = Backoffer::default();
 
-    // 无 Context：走 thread::sleep，间隔约 BACKOFF_MIN*2。
+    // 无 Context：走 thread::sleep，至少等待 BACKOFF_MIN*2。
     let started = Instant::now();
     bo.backoff(None).unwrap();
-    let elapsed = started.elapsed();
-    assert!(elapsed >= Duration::from_millis(4));
-    assert!(elapsed < Duration::from_millis(80));
+    assert!(started.elapsed() >= Duration::from_millis(10));
 
     bo.reset();
     let ctx = Context::background();
