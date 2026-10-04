@@ -629,6 +629,8 @@ impl PlannerSelectBlockNames {
 /// 会话变量与运行时状态的核心聚合结构。
 // SessionVars 汇总 session 作用域的系统变量、缓存和事务上下文；外部 TiDB 对象用字符串/映射占位。
 pub struct SessionVars {
+    /// Child-task limit for Analyze store batches; 0 disables batching.
+    pub AnalyzeStoreBatchSize: i64,
     /// Internal restricted-SQL option permitting WriteReorganization index analysis.
     pub EnableDDLAnalyzeExecOpt: bool,
     pub DMLBatchSize: i32,
@@ -861,6 +863,7 @@ impl SessionVars {
     /// 构造带 Go 侧等价默认值的会话变量实例。
     pub fn new() -> Self {
         Self {
+            AnalyzeStoreBatchSize: vardef::DefTiDBAnalyzeStoreBatchSize,
             EnableDDLAnalyzeExecOpt: false,
             DMLBatchSize: 0,
             RetryLimit: 10,
@@ -1100,7 +1103,10 @@ impl SessionVars {
         let normalized = self
             .GetHintSystemVar(name)
             .map_err(|error| error.to_string())?;
-        if name.eq_ignore_ascii_case(vardef::TiDBForeignKeyCheckInSharedLock) {
+        if name.eq_ignore_ascii_case(vardef::TiDBAnalyzeStoreBatchSize) {
+            self.AnalyzeStoreBatchSize =
+                crate::TidbOptInt64(&normalized, vardef::DefTiDBAnalyzeStoreBatchSize);
+        } else if name.eq_ignore_ascii_case(vardef::TiDBForeignKeyCheckInSharedLock) {
             self.ForeignKeyCheckInSharedLock = crate::TiDBOptOn(&normalized);
         } else if name.eq_ignore_ascii_case(vardef::TiDBIsolationReadEngines) {
             self.IsolationReadEngines = normalized

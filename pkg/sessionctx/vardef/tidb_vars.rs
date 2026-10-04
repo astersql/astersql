@@ -434,6 +434,12 @@ pub const TiDBDistSQLScanConcurrency: &str = "tidb_distsql_scan_concurrency";
 // For versions earlier than v7.6.0, the scan concurrency of regions during ANALYZE is controlled by the tidb_distsql_scan_concurrency variable.
 // Starting from v7.6.0, this variable also controls the scan concurrency of index serial scans during ANALYZE. See: https://github.com/pingcap/tidb/pull/50639
 // For versions earlier than v7.6.0, the scan concurrency of index serial scans during ANALYZE is controlled by the tidb_index_serial_scan_concurrency variable.
+// Maximum child Region tasks grouped with a main Region in an Analyze store batch; 0 disables batching.
+pub const TiDBAnalyzeStoreBatchSize: &str = "tidb_analyze_store_batch_size";
+pub const DefTiDBAnalyzeStoreBatchSize: i64 = 4;
+// Tasks run serially with buffered results; cap batches to limit latency and TiKV memory.
+pub const MaxTiDBAnalyzeStoreBatchSize: u64 = 8;
+
 pub const TiDBAnalyzeDistSQLScanConcurrency: &str = "tidb_analyze_distsql_scan_concurrency";
 
 // TiDBOptInSubqToJoinAndAgg is used to enable/disable the optimizer rule of rewriting IN subquery.

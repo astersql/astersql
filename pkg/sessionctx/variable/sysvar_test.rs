@@ -2354,3 +2354,67 @@ fn foreign_key_shared_lock_gate_preserves_reads_and_initialization() {
         VariableErrorKind::UnknownSystemVariable
     );
 }
+
+#[test]
+fn analyze_store_batch_size_registration_and_validation() {
+    let (mut vars, _) = session();
+    assert_eq!(
+        vars.AnalyzeStoreBatchSize,
+        vardef::DefTiDBAnalyzeStoreBatchSize
+    );
+    let variable =
+        GetSysVar("tidb_analyze_store_batch_size").expect("Analyze batching variable registered");
+    assert!(variable.HasGlobalScope());
+    assert!(variable.HasSessionScope());
+    assert_eq!(variable.Value, "4");
+    assert_eq!(variable.Type, vardef::TypeUnsigned);
+    for scope in [vardef::ScopeSession, vardef::ScopeGlobal] {
+        for (input, expected) in [("0", "0"), ("4", "4"), ("8", "8"), ("9", "8"), ("-1", "0")] {
+            assert_eq!(
+                variable.Validate(&mut vars, input, scope).unwrap(),
+                expected
+            );
+        }
+        assert!(variable.Validate(&mut vars, "invalid", scope).is_err());
+    }
+    vars.SetSystemVar("tidb_analyze_store_batch_size", "0")
+        .unwrap();
+    assert_eq!(vars.system("tidb_analyze_store_batch_size"), Some("0"));
+    vars.SetSystemVar("tidb_analyze_store_batch_size", "9")
+        .unwrap();
+    assert_eq!(vars.system("tidb_analyze_store_batch_size"), Some("8"));
+}
+
+#[test]
+fn analyze_store_batch_size_updates_both_session_paths() {
+    let (mut vars, _) = session();
+    let mut runtime = crate::session::SessionVars::new();
+    assert_eq!(
+        runtime.AnalyzeStoreBatchSize,
+        vardef::DefTiDBAnalyzeStoreBatchSize
+    );
+    for (input, expected) in [("0", 0), ("4", 4), ("9", 8)] {
+        vars.SetSystemVar(vardef::TiDBAnalyzeStoreBatchSize, input)
+            .unwrap();
+        runtime
+            .SetSystemVar(vardef::TiDBAnalyzeStoreBatchSize, input)
+            .unwrap();
+        assert_eq!(vars.AnalyzeStoreBatchSize, expected);
+        assert_eq!(runtime.AnalyzeStoreBatchSize, expected);
+        assert_eq!(
+            runtime.GetSystemVar(vardef::TiDBAnalyzeStoreBatchSize),
+            Some(expected.to_string())
+        );
+    }
+    assert!(
+        vars.SetSystemVar(vardef::TiDBAnalyzeStoreBatchSize, "invalid")
+            .is_err()
+    );
+    assert!(
+        runtime
+            .SetSystemVar(vardef::TiDBAnalyzeStoreBatchSize, "invalid")
+            .is_err()
+    );
+    assert_eq!(vars.AnalyzeStoreBatchSize, 8);
+    assert_eq!(runtime.AnalyzeStoreBatchSize, 8);
+}

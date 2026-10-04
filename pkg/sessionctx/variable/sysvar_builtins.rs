@@ -354,6 +354,19 @@ fn register_compatibility_vars() {
         1,
         vardef::MaxConfigurableConcurrency as u64,
     ));
+    let mut analyze_store_batch_size = unsigned_var(
+        vardef::TiDBAnalyzeStoreBatchSize,
+        vardef::DefTiDBAnalyzeStoreBatchSize as u64,
+        scope_both(),
+        0,
+        vardef::MaxTiDBAnalyzeStoreBatchSize,
+    );
+    analyze_store_batch_size.SetSession = Some(Arc::new(|vars, value| {
+        vars.AnalyzeStoreBatchSize =
+            crate::TidbOptInt64(value, vardef::DefTiDBAnalyzeStoreBatchSize);
+        Ok(())
+    }));
+    RegisterSysVar(analyze_store_batch_size);
     RegisterSysVar(int_var(
         vardef::TiDBAnalyzeDistSQLScanConcurrency,
         vardef::DefAnalyzeDistSQLScanConcurrency,

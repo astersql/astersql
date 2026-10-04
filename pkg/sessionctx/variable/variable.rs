@@ -234,6 +234,8 @@ pub struct SessionVars {
     /// Nonzero values identify CDC writes and bypass BDR DDL restrictions.
     pub CDCWriteSource: u64,
     pub ForeignKeyCheckInSharedLock: bool,
+    /// Child-task limit for Analyze store batches; 0 disables batching.
+    pub AnalyzeStoreBatchSize: i64,
     pub DMLBatchSize: i64,
     pub KVVars: SessionKVVars,
     pub StmtCtx: StatementContext,
@@ -284,6 +286,7 @@ impl SessionVars {
             SysWarningCount: 0,
             CDCWriteSource: 0,
             ForeignKeyCheckInSharedLock: vardef::DefTiDBForeignKeyCheckInSharedLock,
+            AnalyzeStoreBatchSize: vardef::DefTiDBAnalyzeStoreBatchSize,
             DMLBatchSize: vardef::DefDMLBatchSize,
             KVVars: SessionKVVars::default(),
             StmtCtx: StatementContext::default(),
