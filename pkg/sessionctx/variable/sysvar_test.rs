@@ -2211,3 +2211,146 @@ fn full_outer_join_sysvar_supports_hints_and_boolean_values() {
     );
     assert!(!vars.EnableFullOuterJoin);
 }
+
+#[test]
+fn foreign_key_shared_lock_has_runtime_registration() {
+    let (mut vars, _) = session();
+    let name = vardef::TiDBForeignKeyCheckInSharedLock;
+    assert_eq!(
+        vars.GetSessionOrGlobalSystemVar(&Context, name).unwrap(),
+        "OFF"
+    );
+    vars.SetSystemVar(name, "OFF").unwrap();
+}
+
+#[test]
+#[serial]
+fn foreign_key_shared_lock_gate_preserves_reads_and_initialization() {
+    struct Restore(Option<Box<dyn FnOnce()>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            self.0.take().unwrap()();
+        }
+    }
+    let _restore = Restore(Some(Box::new(config::restore_func())));
+    let name = vardef::TiDBForeignKeyCheckInSharedLock;
+    config::update_global(|conf| {
+        conf.experimental
+            .allow_enable_foreign_key_check_in_shared_lock = false
+    });
+    let (mut vars, global) = session();
+    let variable = sysvar(name);
+    assert!(!vars.ForeignKeyCheckInSharedLock);
+    for input in ["ON", "1"] {
+        let session_result = vars.SetSystemVar(name, input);
+        let global_result = set_global_system_var(&mut vars, name, input);
+        if kerneltype::IsNextGen() {
+            for error in [session_result.unwrap_err(), global_result.unwrap_err()] {
+                assert_eq!(error.kind(), VariableErrorKind::WrongValue);
+                assert_eq!(error, VariableError::wrong_value(name, input));
+            }
+            assert!(!vars.ForeignKeyCheckInSharedLock);
+            assert_eq!(global.get(name).unwrap(), "OFF");
+            assert_eq!(
+                vars.GetSessionOrGlobalSystemVar(&Context, name).unwrap(),
+                "OFF"
+            );
+        } else {
+            session_result.unwrap();
+            global_result.unwrap();
+            assert!(vars.ForeignKeyCheckInSharedLock);
+            assert_eq!(
+                vars.GetSessionOrGlobalSystemVar(&Context, name).unwrap(),
+                "ON"
+            );
+            assert_eq!(
+                variable.GetGlobalFromHook(&Context, &mut vars).unwrap(),
+                "ON"
+            );
+        }
+        vars.SetSystemVar(name, "OFF").unwrap();
+        set_global_system_var(&mut vars, name, "OFF").unwrap();
+        assert!(!vars.ForeignKeyCheckInSharedLock);
+    }
+    vars.GlobalVarsAccessor
+        .set_global_sys_var_only(&Context, name, "ON", true)
+        .unwrap();
+    assert_eq!(
+        variable.GetGlobalFromHook(&Context, &mut vars).unwrap(),
+        "ON"
+    );
+    // Explicit session OFF wins over persisted global ON.
+    assert_eq!(
+        vars.GetSessionOrGlobalSystemVar(&Context, name).unwrap(),
+        "OFF"
+    );
+    let mut fallback = SessionVars::new(Box::new(global.clone()));
+    assert_eq!(
+        fallback
+            .GetSessionOrGlobalSystemVar(&Context, name)
+            .unwrap(),
+        "ON"
+    );
+    assert!(!fallback.ForeignKeyCheckInSharedLock);
+    fallback
+        .SetSystemVarWithRelaxedValidation(name, "ON")
+        .unwrap();
+    assert!(fallback.ForeignKeyCheckInSharedLock);
+    assert_eq!(
+        fallback
+            .GetSessionOrGlobalSystemVar(&Context, name)
+            .unwrap(),
+        "ON"
+    );
+    config::update_global(|conf| {
+        conf.experimental
+            .allow_enable_foreign_key_check_in_shared_lock = true
+    });
+    let (mut enabled, accessor) = session();
+    for input in ["ON", "1"] {
+        enabled.SetSystemVar(name, input).unwrap();
+        assert!(enabled.ForeignKeyCheckInSharedLock);
+        assert_eq!(
+            enabled.GetSessionOrGlobalSystemVar(&Context, name).unwrap(),
+            "ON"
+        );
+        set_global_system_var(&mut enabled, name, input).unwrap();
+        assert_eq!(
+            variable.GetGlobalFromHook(&Context, &mut enabled).unwrap(),
+            "ON"
+        );
+        enabled.SetSystemVar(name, "OFF").unwrap();
+        set_global_system_var(&mut enabled, name, "OFF").unwrap();
+    }
+    enabled
+        .GlobalVarsAccessor
+        .set_global_sys_var_only(&Context, name, "ON", true)
+        .unwrap();
+    let mut initialized = SessionVars::new(Box::new(accessor));
+    let persisted = variable
+        .GetGlobalFromHook(&Context, &mut initialized)
+        .unwrap();
+    initialized
+        .SetSystemVarWithRelaxedValidation(name, &persisted)
+        .unwrap();
+    assert!(initialized.ForeignKeyCheckInSharedLock);
+    assert_eq!(
+        initialized
+            .GetSessionOrGlobalSystemVar(&Context, name)
+            .unwrap(),
+        "ON"
+    );
+    let mut unavailable = SessionVars::new(Box::new(MemoryGlobal::default()));
+    assert_eq!(
+        variable.GetGlobal.as_ref().unwrap()(&Context, &mut unavailable)
+            .unwrap_err()
+            .kind(),
+        VariableErrorKind::UnknownSystemVariable
+    );
+    assert_eq!(
+        variable.GetSession.as_ref().unwrap()(&mut unavailable)
+            .unwrap_err()
+            .kind(),
+        VariableErrorKind::UnknownSystemVariable
+    );
+}

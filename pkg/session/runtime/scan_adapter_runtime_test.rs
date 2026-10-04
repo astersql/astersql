@@ -2893,3 +2893,83 @@ fn imported_integer_primary_key_is_restored_from_handle() {
         assert_eq!(row.get("b").and_then(|v| v.as_deref()), Some("test-1"));
     }
 }
+
+#[test]
+fn foreign_key_shared_lock_sql_gate_and_persisted_initialization() {
+    struct Restore(Option<Box<dyn FnOnce()>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            self.0.take().unwrap()();
+        }
+    }
+    let _restore = Restore(Some(Box::new(astersql_config::restore_func())));
+    astersql_config::update_global(|conf| {
+        conf.experimental
+            .allow_enable_foreign_key_check_in_shared_lock = false
+    });
+    let (domain, session) = crate::runtime::CreateAnalyzeSession().unwrap();
+    for scope in ["session", "global"] {
+        for input in ["ON", "1"] {
+            let result = session.execute(&format!(
+                "SET @@{scope}.tidb_foreign_key_check_in_shared_lock = {input}"
+            ));
+            if astersql_config_kerneltype::IsNextGen() {
+                let error = match result {
+                    Ok(_) => panic!("NextGen must reject {scope} {input}"),
+                    Err(error) => error,
+                };
+                assert!(
+                    error.to_string().contains("can't be set to the value"),
+                    "{error}"
+                );
+                assert!(!session.state.borrow().foreign_key_check_in_shared_lock);
+            } else {
+                result.unwrap();
+            }
+            session
+                .execute(&format!(
+                    "SET @@{scope}.tidb_foreign_key_check_in_shared_lock = OFF"
+                ))
+                .unwrap();
+        }
+    }
+    astersql_config::update_global(|conf| {
+        conf.experimental
+            .allow_enable_foreign_key_check_in_shared_lock = true
+    });
+    for input in ["ON", "1"] {
+        session
+            .execute(&format!(
+                "SET @@global.tidb_foreign_key_check_in_shared_lock = {input}"
+            ))
+            .unwrap();
+        assert!(
+            !session.state.borrow().foreign_key_check_in_shared_lock,
+            "GLOBAL SET must not mutate current session"
+        );
+        session
+            .execute(&format!(
+                "SET @@session.tidb_foreign_key_check_in_shared_lock = {input}"
+            ))
+            .unwrap();
+        assert!(session.state.borrow().foreign_key_check_in_shared_lock);
+        session
+            .execute("SET @@session.tidb_foreign_key_check_in_shared_lock = OFF")
+            .unwrap();
+    }
+    astersql_config::update_global(|conf| {
+        conf.experimental
+            .allow_enable_foreign_key_check_in_shared_lock = false
+    });
+    let historical = crate::runtime::ConcreteSession::new(domain);
+    assert!(historical.state.borrow().foreign_key_check_in_shared_lock);
+    let mut sets = historical.execute("SELECT @@session.tidb_foreign_key_check_in_shared_lock, @@global.tidb_foreign_key_check_in_shared_lock").unwrap();
+    assert_eq!(
+        sets[0].next_row().unwrap(),
+        Some(vec!["ON".into(), "ON".into()])
+    );
+    historical
+        .execute("SET @@session.tidb_foreign_key_check_in_shared_lock = OFF")
+        .unwrap();
+    assert!(!historical.state.borrow().foreign_key_check_in_shared_lock);
+}

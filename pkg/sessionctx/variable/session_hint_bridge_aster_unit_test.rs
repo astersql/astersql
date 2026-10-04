@@ -83,3 +83,45 @@ fn binding_flag_advances_only_when_the_statement_finishes() {
         "OFF"
     );
 }
+
+#[test]
+#[serial_test::serial]
+fn foreign_key_shared_lock_session_bridge_relaxes_persisted_initialization() {
+    let restore = config::restore_func();
+    config::update_global(|conf| {
+        conf.experimental
+            .allow_enable_foreign_key_check_in_shared_lock = false
+    });
+    let mut vars = session::SessionVars::new();
+    let name = vardef::TiDBForeignKeyCheckInSharedLock;
+    assert_eq!(
+        vars.GetSessionOrGlobalSystemVar(crate::Context, name)
+            .unwrap(),
+        "OFF"
+    );
+    vars.GlobalVarsAccessor
+        .set_global_sys_var_only(&crate::Context, name, "ON", true)
+        .unwrap();
+    assert_eq!(
+        vars.GetSessionOrGlobalSystemVar(crate::Context, name)
+            .unwrap(),
+        "ON"
+    );
+    vars.SetSystemVarWithRelaxedValidation(name, "ON").unwrap();
+    assert!(vars.ForeignKeyCheckInSharedLock);
+    assert_eq!(
+        vars.GetSessionOrGlobalSystemVar(crate::Context, name)
+            .unwrap(),
+        "ON"
+    );
+    vars.SetSystemVar(name, "OFF").unwrap();
+    assert_eq!(
+        vars.GetSessionOrGlobalSystemVar(crate::Context, name)
+            .unwrap(),
+        "OFF"
+    );
+    if kerneltype::IsNextGen() {
+        assert!(vars.SetSystemVar(name, "1").is_err());
+    }
+    restore();
+}

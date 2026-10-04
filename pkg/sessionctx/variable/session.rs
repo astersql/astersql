@@ -640,6 +640,7 @@ pub struct SessionVars {
     pub PlanCacheStrategy: String,
     pub UsePlanBaselines: bool,
     pub EvolvePlanBaselines: bool,
+    pub ForeignKeyCheckInSharedLock: bool,
     pub SelectLimit: u64,
     pub UserVars: UserVars,
     systems: HashMap<String, String>,
@@ -870,6 +871,7 @@ impl SessionVars {
             PlanCacheStrategy: vardef::DefTiDBPlanCacheStrategy.to_owned(),
             UsePlanBaselines: vardef::DefTiDBUsePlanBaselines,
             EvolvePlanBaselines: vardef::DefTiDBEvolvePlanBaselines,
+            ForeignKeyCheckInSharedLock: vardef::DefTiDBForeignKeyCheckInSharedLock,
             SelectLimit: u64::MAX,
             UserVars: UserVars::new(),
             systems: HashMap::new(),
@@ -1098,7 +1100,9 @@ impl SessionVars {
         let normalized = self
             .GetHintSystemVar(name)
             .map_err(|error| error.to_string())?;
-        if name.eq_ignore_ascii_case(vardef::TiDBIsolationReadEngines) {
+        if name.eq_ignore_ascii_case(vardef::TiDBForeignKeyCheckInSharedLock) {
+            self.ForeignKeyCheckInSharedLock = crate::TiDBOptOn(&normalized);
+        } else if name.eq_ignore_ascii_case(vardef::TiDBIsolationReadEngines) {
             self.IsolationReadEngines = normalized
                 .split(',')
                 .filter_map(|engine| match engine {
@@ -1385,6 +1389,16 @@ impl SessionVars {
         ctx: C,
         name: &str,
     ) -> Result<String, String> {
+        if name.eq_ignore_ascii_case(vardef::TiDBForeignKeyCheckInSharedLock) {
+            return self
+                .systems
+                .get(vardef::TiDBForeignKeyCheckInSharedLock)
+                .cloned()
+                .map(Ok)
+                .unwrap_or_else(|| {
+                    self.GetGlobalSystemVar(ctx, vardef::TiDBForeignKeyCheckInSharedLock)
+                });
+        }
         self.GetSystemVar(name)
             .map(Ok)
             .unwrap_or_else(|| self.GetGlobalSystemVar(ctx, name))
@@ -1406,7 +1420,35 @@ impl SessionVars {
         name: &str,
         value: &str,
     ) -> Result<(), String> {
+        if name.eq_ignore_ascii_case(vardef::TiDBForeignKeyCheckInSharedLock) {
+            self.SetHintSystemVarWithRelaxedValidation(
+                vardef::TiDBForeignKeyCheckInSharedLock,
+                value,
+            )
+            .map_err(|error| error.to_string())?;
+            let normalized = self
+                .GetHintSystemVar(vardef::TiDBForeignKeyCheckInSharedLock)
+                .map_err(|error| error.to_string())?;
+            self.ForeignKeyCheckInSharedLock = crate::TiDBOptOn(&normalized);
+            self.systems.insert(
+                vardef::TiDBForeignKeyCheckInSharedLock.to_owned(),
+                normalized,
+            );
+            return Ok(());
+        }
         self.SetSystemVar(name, value)
+    }
+
+    /// Initialize persisted FK shared-lock values without applying the user SET gate.
+    pub fn SetHintSystemVarWithRelaxedValidation(
+        &self,
+        name: &str,
+        value: &str,
+    ) -> Result<(), crate::VariableError> {
+        self.hint_system_vars
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .SetSystemVarWithRelaxedValidation(name, value)
     }
     /// 记录本语句相关的优化器变量名。
     pub fn RecordRelevantOptVar(&self, name: &str) {

@@ -1580,11 +1580,23 @@ impl ConcreteSession {
 
     fn apply_persisted_global_variable(&self, name: String, value: String) {
         let name = name.to_ascii_lowercase();
-        let _ = self
-            .session_vars
-            .SetHintSystemVarWithOldState(&name, &value);
+        if name == astersql_sessionctx_vardef::TiDBForeignKeyCheckInSharedLock {
+            // Historical values are initialized with relaxed validation in Go,
+            // even when new user SET ON operations are gated on NextGen.
+            let _ = self
+                .session_vars
+                .SetHintSystemVarWithRelaxedValidation(&name, &value);
+        } else {
+            let _ = self
+                .session_vars
+                .SetHintSystemVarWithOldState(&name, &value);
+        }
         let mut state = self.state.borrow_mut();
         match name.as_str() {
+            astersql_sessionctx_vardef::TiDBForeignKeyCheckInSharedLock => {
+                state.foreign_key_check_in_shared_lock =
+                    astersql_sessionctx_variable::TiDBOptOn(&value);
+            }
             "sql_mode" => state.sql_mode = value,
             "tidb_enable_paging" => {
                 state.enable_paging =

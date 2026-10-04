@@ -233,6 +233,7 @@ pub struct SessionVars {
     pub SysWarningCount: i32,
     /// Nonzero values identify CDC writes and bypass BDR DDL restrictions.
     pub CDCWriteSource: u64,
+    pub ForeignKeyCheckInSharedLock: bool,
     pub DMLBatchSize: i64,
     pub KVVars: SessionKVVars,
     pub StmtCtx: StatementContext,
@@ -282,6 +283,7 @@ impl SessionVars {
             systems: HashMap::new(),
             SysWarningCount: 0,
             CDCWriteSource: 0,
+            ForeignKeyCheckInSharedLock: vardef::DefTiDBForeignKeyCheckInSharedLock,
             DMLBatchSize: vardef::DefDMLBatchSize,
             KVVars: SessionKVVars::default(),
             StmtCtx: StatementContext::default(),

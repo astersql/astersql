@@ -2198,6 +2198,46 @@ fn GetSysVarDefinition(name: &str) -> Option<SysVar> {
     crate::GetSysVar(name).map(|value| (*value).clone())
 }
 
+/// Gate user SET operations only; persisted values remain readable and usable at initialization.
+fn register_foreign_key_shared_lock() {
+    let name = vardef::TiDBForeignKeyCheckInSharedLock;
+    let mut variable = bool_var(
+        name,
+        vardef::DefTiDBForeignKeyCheckInSharedLock,
+        vardef::ScopeGlobal | vardef::ScopeSession,
+    );
+    variable.Validation = Some(Arc::new(|_, normalized, original, _| {
+        if TiDBOptOn(normalized)
+            && kerneltype::IsNextGen()
+            && !config::get_global_config()
+                .experimental
+                .allow_enable_foreign_key_check_in_shared_lock
+        {
+            return Err(VariableError::wrong_value(
+                vardef::TiDBForeignKeyCheckInSharedLock,
+                original,
+            ));
+        }
+        Ok(normalized.to_owned())
+    }));
+    variable.SetSession = Some(Arc::new(|vars, value| {
+        vars.ForeignKeyCheckInSharedLock = TiDBOptOn(value);
+        Ok(())
+    }));
+    variable.GetSession = Some(Arc::new(|vars| {
+        if let Some(value) = vars.system(vardef::TiDBForeignKeyCheckInSharedLock) {
+            return Ok(value.to_owned());
+        }
+        vars.GlobalVarsAccessor
+            .get_global_sys_var(vardef::TiDBForeignKeyCheckInSharedLock)
+    }));
+    variable.GetGlobal = Some(Arc::new(|_, vars| {
+        vars.GlobalVarsAccessor
+            .get_global_sys_var(vardef::TiDBForeignKeyCheckInSharedLock)
+    }));
+    RegisterSysVar(variable);
+}
+
 /// 一次性注册全部内置系统变量（幂等）。
 pub fn register_builtin_sysvars() {
     // 幂等入口：按序调用各 register_* 完成内置表填充。
@@ -2205,6 +2245,7 @@ pub fn register_builtin_sysvars() {
         register_basic_clamped_vars();
         register_planner_tuning_vars();
         register_sql_and_session_vars();
+        register_foreign_key_shared_lock();
         register_getters_and_defaults();
         register_global_vars();
         crate::embedding_vars::register_embedding_vars();

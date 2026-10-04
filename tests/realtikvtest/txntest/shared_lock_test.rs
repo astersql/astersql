@@ -142,6 +142,21 @@ const WAIT_VIEW_DEADLINE: Duration = Duration::from_secs(3);
 const SKIP_RESOLVING_LOCKS: &str =
     "github.com/pingcap/tidb/pkg/executor/dataLockWaitsSkipResolvingLocks";
 
+struct ForeignKeySharedLockConfigGuard(Option<Box<dyn FnOnce()>>);
+impl Drop for ForeignKeySharedLockConfigGuard {
+    fn drop(&mut self) {
+        self.0.take().unwrap()();
+    }
+}
+fn allow_foreign_key_check_in_shared_lock_for_test() -> ForeignKeySharedLockConfigGuard {
+    let restore = astersql_config::restore_func();
+    astersql_config::update_global(|conf| {
+        conf.experimental
+            .allow_enable_foreign_key_check_in_shared_lock = true;
+    });
+    ForeignKeySharedLockConfigGuard(Some(Box::new(restore)))
+}
+
 fn prepare(test_name: &str) -> (Arc<AnalyzeStatsStore>, TestKit, String) {
     let (store, _domain) = CreateMockStoreAndDomain();
     let database = format!("shared_lock_{}", test_name.trim_start_matches("test_"));
@@ -245,6 +260,7 @@ fn test_foreign_key_shared_lock_optimistic_reverse_reference_order() {
     if !WithRealTiKV() {
         return;
     }
+    let _config = allow_foreign_key_check_in_shared_lock_for_test();
     let (store, mut tk1, database) =
         prepare("test_foreign_key_shared_lock_optimistic_reverse_reference_order");
     let mut tk2 = session(store.clone(), &database);
@@ -282,6 +298,7 @@ fn test_foreign_key_shared_lock_pessimistic_reverse_reference_order() {
     if !WithRealTiKV() {
         return;
     }
+    let _config = allow_foreign_key_check_in_shared_lock_for_test();
     let (store, mut tk1, database) =
         prepare("test_foreign_key_shared_lock_pessimistic_reverse_reference_order");
     let mut tk2 = session(store.clone(), &database);
@@ -313,6 +330,7 @@ fn test_foreign_key_shared_lock_pessimistic_reverse_reference_order() {
 #[test]
 fn test_shared_lock_blocked_by_exclusive_lock() {
     let _serial = serial_guard();
+    let _config = allow_foreign_key_check_in_shared_lock_for_test();
     let (store, mut tk1, database) = prepare("test_shared_lock_blocked_by_exclusive_lock");
     let mut tk2 = session(store.clone(), &database);
     let mut tk3 = session(store.clone(), &database);
@@ -370,6 +388,7 @@ fn test_shared_lock_blocked_by_exclusive_lock() {
 #[test]
 fn test_shared_lock_blocks_exclusive_lock_until_every_holder_commits() {
     let _serial = serial_guard();
+    let _config = allow_foreign_key_check_in_shared_lock_for_test();
     let (store, mut tk1, database) = prepare("test_shared_lock_block_exclusive_lock");
     let mut tk2 = session(store.clone(), &database);
     let mut tk3 = session(store.clone(), &database);
@@ -418,6 +437,7 @@ fn test_shared_lock_blocks_exclusive_lock_until_every_holder_commits() {
 #[test]
 fn test_shared_lock_child_table_conflict() {
     let _serial = serial_guard();
+    let _config = allow_foreign_key_check_in_shared_lock_for_test();
     let (store, mut tk1, database) = prepare("test_shared_lock_child_table_conflict");
     let mut tk2 = session(store.clone(), &database);
     let mut tk3 = session(store.clone(), &database);
@@ -519,6 +539,7 @@ fn test_shared_lock_child_table_conflict() {
 #[test]
 fn test_shared_lock_cascade_update_explicit_pessimistic_transaction() {
     let _serial = serial_guard();
+    let _config = allow_foreign_key_check_in_shared_lock_for_test();
     for constraint_check in ["ON", "OFF"] {
         let (_store, mut tk, _database) = prepare(&format!(
             "test_shared_lock_cascade_update_explicit_pessimistic_txn_{constraint_check}"
@@ -558,6 +579,7 @@ fn test_shared_lock_cascade_update_explicit_pessimistic_transaction() {
 #[test]
 fn test_shared_lock_lock_view() {
     let _serial = serial_guard();
+    let _config = allow_foreign_key_check_in_shared_lock_for_test();
     let (store, mut tk1, database) = prepare("test_shared_lock_lock_view");
     let mut tk2 = session(store.clone(), &database);
     let observer = session(store.clone(), &database);
@@ -641,6 +663,7 @@ fn test_shared_lock_lock_view() {
 #[test]
 fn test_shared_lock_data_lock_waits_from_storage_wait_table() {
     let _serial = serial_guard();
+    let _config = allow_foreign_key_check_in_shared_lock_for_test();
     let _skip_resolving = testfailpoint::enable(SKIP_RESOLVING_LOCKS, "return(true)");
     assert!(
         testfailpoint::eval_bool(SKIP_RESOLVING_LOCKS),
@@ -701,5 +724,39 @@ fn test_shared_lock_data_lock_waits_from_storage_wait_table() {
             .Rows(),
         Vec::<Vec<String>>::new(),
         "released storage waiter must be removed"
+    );
+}
+
+#[test]
+fn shared_lock_test_config_guard_enables_and_restores_sql_gate() {
+    let _serial = serial_guard();
+    let original = astersql_config::get_global_config();
+    let restore = ForeignKeySharedLockConfigGuard(Some(Box::new(astersql_config::restore_func())));
+    astersql_config::update_global(|conf| {
+        conf.experimental
+            .allow_enable_foreign_key_check_in_shared_lock = false
+    });
+    {
+        let _allow = allow_foreign_key_check_in_shared_lock_for_test();
+        let (_, mut tk, _) = prepare("config_gate");
+        tk.MustExec(
+            "SET @@session.tidb_foreign_key_check_in_shared_lock = ON",
+            Vec::new(),
+        );
+        tk.MustQuery(
+            "SELECT @@session.tidb_foreign_key_check_in_shared_lock",
+            Vec::new(),
+        )
+        .Check(Rows(&["ON"]));
+    }
+    assert!(
+        !astersql_config::get_global_config()
+            .experimental
+            .allow_enable_foreign_key_check_in_shared_lock
+    );
+    drop(restore);
+    assert_eq!(
+        astersql_config::get_global_config().experimental,
+        original.experimental
     );
 }

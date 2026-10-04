@@ -6076,8 +6076,30 @@ impl ConcreteSession {
                     self.state.borrow_mut().foreign_key_checks = variable_is_on(&value);
                 }
                 "tidb_foreign_key_check_in_shared_lock" => {
+                    let input = value.trim_matches(['\'', '"']);
+                    if is_global {
+                        let (normalized, _) = self
+                            .session_vars
+                            .ValidateAndSetGlobalSystemVar(
+                                &name,
+                                input,
+                                astersql_sessionctx_vardef::ScopeGlobal,
+                            )
+                            .map_err(|error| {
+                                session_error("set global foreign key shared lock", error)
+                            })?;
+                        self.domain.set_global_system_variable(&name, &normalized);
+                        continue;
+                    }
+                    self.session_vars
+                        .SetHintSystemVarWithOldState(&name, input)
+                        .map_err(|error| session_error("set foreign key shared lock", error))?;
+                    let normalized = self
+                        .session_vars
+                        .GetHintSystemVar(&name)
+                        .map_err(|error| session_error("read foreign key shared lock", error))?;
                     self.state.borrow_mut().foreign_key_check_in_shared_lock =
-                        variable_is_on(&value);
+                        astersql_sessionctx_variable::TiDBOptOn(&normalized);
                 }
                 "tidb_enable_foreign_key" => {
                     // The Domain catalog always retains FK metadata. This
