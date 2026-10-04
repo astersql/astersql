@@ -299,7 +299,9 @@ impl grpcClient {
     /// 从 Option 组装每次 RPC 共用的 RequestHeader。
     fn header(&self) -> pb::RequestHeader {
         pb::RequestHeader {
-            keyspace_id: self.opt.KeyspaceID,
+            keyspace: Some(pb::request_header::Keyspace::KeyspaceId(
+                self.opt.KeyspaceID,
+            )),
             keyspace_name: self.opt.KeyspaceName.clone(),
             tidb_pool: self.opt.TiDBPool.clone(),
         }

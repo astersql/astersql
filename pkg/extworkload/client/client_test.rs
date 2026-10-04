@@ -194,7 +194,10 @@ fn new_test_context() -> Context {
 /// 断言请求头携带 stub 启动时写入的 keyspace / pool 身份。
 fn require_header(header: &Option<pb::RequestHeader>) {
     let header = header.as_ref().expect("RPC request header");
-    assert_eq!(header.keyspace_id, 42);
+    assert_eq!(
+        header.keyspace,
+        Some(pb::request_header::Keyspace::KeyspaceId(42))
+    );
     assert_eq!(header.keyspace_name, "starter-ks");
     assert_eq!(header.tidb_pool, "starter-pool");
 }

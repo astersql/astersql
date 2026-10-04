@@ -158,7 +158,10 @@ async fn start_stub() -> (
 /// 断言状态变更 RPC 携带与 Go 一致的身份请求头。
 fn assert_header(header: &Option<pb::RequestHeader>) {
     let header = header.as_ref().expect("state-changing RPC header");
-    assert_eq!(header.keyspace_id, 42);
+    assert_eq!(
+        header.keyspace,
+        Some(pb::request_header::Keyspace::KeyspaceId(42))
+    );
     assert_eq!(header.keyspace_name, "starter-ks");
     assert_eq!(header.tidb_pool, "starter-pool");
 }

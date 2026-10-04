@@ -4,7 +4,11 @@ package externalworkload;
 enum ErrorType { OK = 0; PAUSED = 1; UNKNOWN = 2; }
 message Error { ErrorType type = 1; string message = 2; }
 message Response { Error error = 1; }
-message RequestHeader { uint32 keyspace_id = 1; string keyspace_name = 2; string tidb_pool = 3; }
+message RequestHeader {
+  oneof keyspace { uint32 keyspace_id = 1; }
+  string keyspace_name = 2;
+  string tidb_pool = 3;
+}
 message PingRequest {}
 message RegisterGCV2Request { RequestHeader header = 1; uint64 safe_point = 2; int64 gc_life_time = 3; }
 message RecycleGCV2Request { RequestHeader header = 1; uint64 safe_point = 2; }
