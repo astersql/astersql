@@ -4057,9 +4057,9 @@ fn build_join_runtime(
             .GetSystemVar(vardef_dependency::TiDBEnableCascadesPlanner)
             .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "on" | "1" | "true"))
         {
-            return Err(expression::errors::New(
-                "FULL OUTER JOIN with cascades planner is not supported yet",
-            ));
+            return Err(plannererrors::ErrNotSupportedYet
+                .GenWithStackByArgs(&["FULL OUTER JOIN with cascades planner".into()])
+                .into());
         }
         if join.NaturalJoin || !join.Using.is_empty() || join.On.is_none() || has_lateral {
             return Err(plannererrors::ErrNotSupportedYet
@@ -4137,11 +4137,43 @@ fn build_join_runtime(
     logical_join.SetSchema(schema);
     logical_join.SetOutputNames(names);
     logical_join.SetChildren(vec![left, right]);
-    let (prefer, order) = builder.joinHintPreferenceFor(
+    let (mut prefer, order) = builder.joinHintPreferenceFor(
         logical_join.Children()[0].as_ref(),
         logical_join.Children()[1].as_ref(),
     );
     if join_type == base::JoinType::FullOuterJoin {
+        fn hinted_tables(plan: &dyn logicalop::LogicalPlan) -> Vec<hint::HintedTable> {
+            if let Some(source) = plan.as_any().downcast_ref::<logicalop::DataSource>() {
+                return vec![hint::HintedTable {
+                    DBName: source.DBName.clone(),
+                    TblName: source
+                        .TableAsName
+                        .as_ref()
+                        .unwrap_or(&source.TableInfo.Name)
+                        .clone(),
+                    SelectOffset: source.QueryBlockOffset(),
+                    ..Default::default()
+                }];
+            }
+            plan.Children()
+                .iter()
+                .flat_map(|child| hinted_tables(child.as_ref()))
+                .collect()
+        }
+        if let Some(hints) = builder.tableHintInfo.last_mut() {
+            for (side, build_bit, probe_bit) in [
+                (0, hint::PreferLeftAsHJBuild, hint::PreferLeftAsHJProbe),
+                (1, hint::PreferRightAsHJBuild, hint::PreferRightAsHJProbe),
+            ] {
+                let tables = hinted_tables(logical_join.Children()[side].as_ref());
+                if hints.IfPreferHJBuild(tables.clone()) {
+                    prefer |= u64::from(build_bit);
+                }
+                if hints.IfPreferHJProbe(tables) {
+                    prefer |= u64::from(probe_bit);
+                }
+            }
+        }
         for (bit, name) in [(1 << 1, "MERGE_JOIN"), (1 << 2, "INL_JOIN")] {
             if prefer & bit != 0 {
                 builder.ctx.GetSessionVars().StmtCtx.AppendWarning(
@@ -4160,6 +4192,17 @@ fn build_join_runtime(
         },
         order,
     );
+    if join_type == base::JoinType::FullOuterJoin {
+        // The shared algorithm-hint setter accepts only method bits. Preserve
+        // full-join build/probe preferences for the canonical hash enumerator.
+        logical_join.PreferJoinType |= prefer
+            & u64::from(
+                hint::PreferLeftAsHJBuild
+                    | hint::PreferRightAsHJBuild
+                    | hint::PreferLeftAsHJProbe
+                    | hint::PreferRightAsHJProbe,
+            );
+    }
     let (left_prefer, right_prefer) = builder.joinHintSidePreference(
         logical_join.Children()[0].as_ref(),
         logical_join.Children()[1].as_ref(),

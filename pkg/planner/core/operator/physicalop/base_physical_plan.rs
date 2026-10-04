@@ -10889,8 +10889,29 @@ pub fn ExhaustPhysicalPlans(
         if join.JoinType == base::JoinType::FullOuterJoin
             && property.TaskTp == property::RootTaskType
         {
-            // The root path supports only the v1 HashJoin for FULL OUTER JOIN.
-            return Ok(vec![Box::new(physical)]);
+            // FULL OUTER JOIN preserves both sides: enumerate ordinary probe
+            // candidates in Go's right-build/left-build order, or the hinted side.
+            let mut force_left = join.PreferJoinType & ((1 << 21) | (1 << 24)) != 0;
+            let mut force_right = join.PreferJoinType & ((1 << 22) | (1 << 23)) != 0;
+            if force_left && force_right {
+                context.GetSessionVars().StmtCtx.SetHintWarning(
+                    "Conflicting HASH_JOIN_BUILD and HASH_JOIN_PROBE hints detected. Both sides cannot be specified to use the same table. Please review the hints",
+                );
+                force_left = false;
+                force_right = false;
+            }
+            let forced = physical.FromHashJoinHint || force_left || force_right;
+            if hash_join_disabled && !forced {
+                return Ok(Vec::new());
+            }
+            physical.UseOuterToBuild = false;
+            physical.BasePhysicalJoin.InnerChildIdx = usize::from(!force_left);
+            if force_left || force_right {
+                return Ok(vec![Box::new(physical)]);
+            }
+            let mut left_build = physical.Clone(context.clone())?;
+            left_build.BasePhysicalJoin.InnerChildIdx = 0;
+            return Ok(vec![Box::new(physical), Box::new(left_build)]);
         }
         let broadcast_enabled = context
             .GetSessionVars()

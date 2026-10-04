@@ -2392,3 +2392,203 @@ fn parsed_merge_hint_survives_real_predicate_collection_pruning() {
             .any(|path| path.Index.as_ref().is_some_and(|index| index.Name.L == "g"))
     );
 }
+
+#[test]
+fn full_outer_join_cascades_preserves_not_supported_error_identity() {
+    crate::InstallPlannerExpressionFactory().unwrap();
+    let context = planner_test_context_with_stats_state(0, false, None, false, |vars| {
+        vars.SetSystemVar("tidb_enable_full_outer_join", "ON")
+            .unwrap();
+        vars.SetSystemVar("tidb_enable_cascades_planner", "ON")
+            .unwrap();
+    });
+    let statement = crate::ast::NodeRef::new(
+        parser_dependency::New()
+            .ParseOneStmt(
+                "select * from t t1 full outer join t t2 on t1.a = t2.a",
+                "",
+                "",
+            )
+            .unwrap(),
+    );
+    let (mut builder, _) = crate::NewPlanBuilder()
+        .withDataSourceProvider(Arc::new(PlannerTestStatsProvider))
+        .Init(
+            context,
+            planner_test_schema(),
+            hint_dependency::NewQBHintHandler(None),
+        );
+    let error = builder
+        .BuildNodeRef(crate::context::TODO(), &statement)
+        .err()
+        .unwrap();
+    assert!(
+        error.Equal(&plannererrors_dependency::ErrNotSupportedYet),
+        "{error}"
+    );
+    assert_eq!(
+        error.to_string(),
+        plannererrors_dependency::ErrNotSupportedYet
+            .GenWithStackByArgs(&["FULL OUTER JOIN with cascades planner".into()])
+            .to_string()
+    );
+}
+
+#[test]
+fn full_outer_join_preserves_on_side_filters_and_nullable_full_schema() {
+    let context = planner_test_context_with_stats_state(0, false, None, false, |vars| {
+        vars.SetSystemVar("tidb_enable_full_outer_join", "ON")
+            .unwrap();
+    });
+    let sql = "select * from t t1 full outer join t t2 on t1.a = t2.a and t1.b > 1 and t2.b > 1";
+    let (context, _, built) = build_runtime_for_test_with_context(sql, context).unwrap();
+    let crate::BuiltRuntimePlan::Logical(mut logical) = built else {
+        panic!("logical plan")
+    };
+    fn find_join(plan: &dyn logicalop::LogicalPlan) -> &logicalop::LogicalJoin {
+        if let Some(join) = plan.as_any().downcast_ref::<logicalop::LogicalJoin>() {
+            return join;
+        }
+        find_join(plan.Children()[0].as_ref())
+    }
+    let join = find_join(logical.as_ref());
+    for schema in [join.Schema(), join.FullSchema.as_ref().unwrap()] {
+        assert!(
+            schema
+                .Columns
+                .iter()
+                .all(|column| !expression::mysql::HasNotNullFlag(
+                    column.RetType.as_ref().unwrap().GetFlag()
+                ))
+        );
+    }
+    let (physical, _) = crate::DoOptimize(
+        crate::context::TODO(),
+        &context,
+        rule_dependency::FLAG_PREDICATE_PUSH_DOWN,
+        &mut logical,
+    )
+    .unwrap();
+    fn find_hash(plan: &dyn base::PhysicalPlan) -> &physicalop_dependency::PhysicalHashJoin {
+        if let Some(join) = plan
+            .as_any()
+            .downcast_ref::<physicalop_dependency::PhysicalHashJoin>()
+        {
+            return join;
+        }
+        find_hash(plan.children()[0])
+    }
+    let join = find_hash(physical.as_ref());
+    assert_eq!(
+        join.BasePhysicalJoin.JoinType,
+        base::JoinType::FullOuterJoin
+    );
+    assert_eq!(join.BasePhysicalJoin.LeftConditions.len(), 1);
+    assert_eq!(join.BasePhysicalJoin.RightConditions.len(), 1);
+    fn has_selection(plan: &dyn base::PhysicalPlan) -> bool {
+        plan.as_any()
+            .is::<physicalop_dependency::PhysicalSelection>()
+            || plan.children().iter().any(|child| has_selection(*child))
+    }
+    assert!(!has_selection(physical.as_ref()));
+}
+
+#[test]
+fn full_outer_join_enumerates_regular_probe_build_sides_and_hints() {
+    for (hint, expected) in [
+        (0, vec![1, 0]),
+        (u64::from(hint_dependency::PreferLeftAsHJBuild), vec![0]),
+        (u64::from(hint_dependency::PreferRightAsHJProbe), vec![0]),
+        (u64::from(hint_dependency::PreferRightAsHJBuild), vec![1]),
+        (u64::from(hint_dependency::PreferLeftAsHJProbe), vec![1]),
+        (
+            u64::from(hint_dependency::PreferLeftAsHJBuild | hint_dependency::PreferRightAsHJBuild),
+            vec![1, 0],
+        ),
+    ] {
+        let context = planner_test_context_with_stats_state(0, false, None, false, |vars| {
+            vars.SetSystemVar("tidb_enable_full_outer_join", "ON")
+                .unwrap();
+        });
+        let (_, _, built) = build_runtime_for_test_with_context(
+            "select * from t t1 full outer join t t2 on t1.a = t2.a",
+            context,
+        )
+        .unwrap();
+        let crate::BuiltRuntimePlan::Logical(mut logical) = built else {
+            panic!("logical plan")
+        };
+        fn find_join_mut(plan: &mut dyn logicalop::LogicalPlan) -> &mut logicalop::LogicalJoin {
+            if plan.as_any().is::<logicalop::LogicalJoin>() {
+                return plan
+                    .as_any_mut()
+                    .downcast_mut::<logicalop::LogicalJoin>()
+                    .unwrap();
+            }
+            find_join_mut(plan.Children_mut()[0].as_mut())
+        }
+        let join = find_join_mut(logical.as_mut());
+        join.PreferJoinType = hint;
+        let used = join.Schema().Columns.clone();
+        join.PruneColumns(&used).unwrap();
+        assert!(
+            join.Schema()
+                .Columns
+                .iter()
+                .all(|column| !expression::mysql::HasNotNullFlag(
+                    column.RetType.as_ref().unwrap().GetFlag()
+                ))
+        );
+        let mut prop = property_dependency::PhysicalProperty::default();
+        prop.TaskTp = property_dependency::RootTaskType;
+        let candidates = physicalop_dependency::ExhaustPhysicalPlans(join, &prop).unwrap();
+        let sides = candidates
+            .iter()
+            .map(|candidate| {
+                let hash = candidate
+                    .as_any()
+                    .downcast_ref::<physicalop_dependency::PhysicalHashJoin>()
+                    .unwrap();
+                assert!(!hash.UseOuterToBuild);
+                hash.BasePhysicalJoin.InnerChildIdx
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(sides, expected, "hint={hint}");
+    }
+}
+
+#[test]
+fn full_outer_join_sql_build_and_probe_hints_reach_physical_candidates() {
+    for (hint, expected) in [
+        ("HASH_JOIN_BUILD(t1)", 0),
+        ("HASH_JOIN_PROBE(t2)", 0),
+        ("HASH_JOIN_BUILD(t2)", 1),
+        ("HASH_JOIN_PROBE(t1)", 1),
+    ] {
+        let context = planner_test_context_with_stats_state(0, false, None, false, |vars| {
+            vars.SetSystemVar("tidb_enable_full_outer_join", "ON")
+                .unwrap();
+        });
+        let sql = format!("select /*+ {hint} */ * from t t1 full outer join t t2 on t1.a = t2.a");
+        let (context, flags, built) = build_runtime_for_test_with_context(&sql, context).unwrap();
+        let crate::BuiltRuntimePlan::Logical(mut logical) = built else {
+            panic!("logical plan")
+        };
+        let (physical, _) =
+            crate::DoOptimize(crate::context::TODO(), &context, flags, &mut logical).unwrap();
+        fn find_hash(plan: &dyn base::PhysicalPlan) -> &physicalop_dependency::PhysicalHashJoin {
+            if let Some(join) = plan
+                .as_any()
+                .downcast_ref::<physicalop_dependency::PhysicalHashJoin>()
+            {
+                return join;
+            }
+            find_hash(plan.children()[0])
+        }
+        assert_eq!(
+            find_hash(physical.as_ref()).BasePhysicalJoin.InnerChildIdx,
+            expected,
+            "{sql}"
+        );
+    }
+}

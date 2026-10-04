@@ -776,6 +776,13 @@ impl LogicalJoin {
             }
             _ => full,
         };
+        let mut schema = schema;
+        if self.JoinType == JoinType::FullOuterJoin {
+            // Column pruning rebuilds from non-null child schemas; both full
+            // join sides must remain nullable after that rebuild.
+            let len = schema.Len();
+            planner_util::ResetNotNullFlag(&mut schema, 0, len);
+        }
         self.SetSchema(schema);
     }
 
