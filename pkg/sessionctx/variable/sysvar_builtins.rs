@@ -942,6 +942,23 @@ fn register_planner_tuning_vars() {
 
 /// 注册 SQL 模式、时区、事务隔离等会话/SQL 系统变量。
 fn register_sql_and_session_vars() {
+    // TTL pooled sessions disable retries and restrict scan concurrency through
+    // these existing Go variables; retain their canonical bounds and defaults.
+    let retry_limit = int_var(
+        vardef::TiDBRetryLimit,
+        vardef::DefTiDBRetryLimit,
+        scope_both(),
+        -1,
+        i64::MAX as u64,
+    );
+    RegisterSysVar(retry_limit);
+    RegisterSysVar(unsigned_var(
+        vardef::TiDBDistSQLScanConcurrency,
+        vardef::DefDistSQLScanConcurrency as u64,
+        scope_both(),
+        1,
+        vardef::MaxConfigurableConcurrency as u64,
+    ));
     // 注册 sql_mode、时区、事务隔离、字符集等经典 MySQL/TiDB 会话变量。
     // Connector/J（DataGrip 使用）会在建连时一次读取这些 MySQL 兼容变量。
     // 保持它们位于规范 SysVar 注册表中，让所有会话按作用域读取默认值。

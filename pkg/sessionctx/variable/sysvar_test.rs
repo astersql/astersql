@@ -2418,3 +2418,37 @@ fn analyze_store_batch_size_updates_both_session_paths() {
     assert_eq!(vars.AnalyzeStoreBatchSize, 8);
     assert_eq!(runtime.AnalyzeStoreBatchSize, 8);
 }
+
+#[test]
+#[serial]
+fn ttl_required_session_variables_match_go_defaults_bounds_and_retry_hook() {
+    let (mut vars, _) = session();
+    let retry = sysvar(vardef::TiDBRetryLimit);
+    assert_eq!(retry.Value, vardef::DefTiDBRetryLimit.to_string());
+    assert_eq!(retry.Scope, vardef::ScopeGlobal | vardef::ScopeSession);
+    assert_eq!(retry.MinValue, -1);
+    assert_eq!(retry.MaxValue, i64::MAX as u64);
+    let value = retry
+        .Validate(&mut vars, "0", vardef::ScopeSession)
+        .unwrap();
+    retry.SetSessionFromHook(&mut vars, &value).unwrap();
+    assert_eq!(vars.system(vardef::TiDBRetryLimit), Some("0"));
+    assert_eq!(
+        retry
+            .Validate(&mut vars, "-2", vardef::ScopeSession)
+            .unwrap(),
+        "-1"
+    );
+    let scan = sysvar(vardef::TiDBDistSQLScanConcurrency);
+    assert_eq!(scan.Value, vardef::DefDistSQLScanConcurrency.to_string());
+    assert_eq!(scan.Type, vardef::TypeUnsigned);
+    assert_eq!(scan.MinValue, 1);
+    assert_eq!(scan.MaxValue, vardef::MaxConfigurableConcurrency as u64);
+    assert_eq!(
+        scan.Validate(&mut vars, "0", vardef::ScopeSession).unwrap(),
+        "1"
+    );
+    let value = scan.Validate(&mut vars, "1", vardef::ScopeSession).unwrap();
+    scan.SetSessionFromHook(&mut vars, &value).unwrap();
+    assert_eq!(vars.system(vardef::TiDBDistSQLScanConcurrency), Some("1"));
+}

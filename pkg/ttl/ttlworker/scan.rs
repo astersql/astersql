@@ -203,6 +203,10 @@ impl TtlScanTask {
         mut checkpoint: impl FnMut(&Row) -> Result<(), SessionError>,
         canceled: impl Fn() -> bool,
     ) -> ScanResult {
+        let expiration = match session.expiration_predicate(&self.table, self.expire_time) {
+            Ok(expiration) => expiration,
+            Err(error) => return self.result(TaskTerminateReason::Error, Some(error), 0),
+        };
         let mut scanned = 0_u64;
         loop {
             if canceled() {
@@ -212,7 +216,9 @@ impl TtlScanTask {
             if statistics.error_rate_too_high(10_000, 0.4) {
                 return self.result(TaskTerminateReason::ErrorRateExceeded, None, scanned);
             }
-            let (sql, args) = self.scan_sql(cursor.as_deref());
+            let (sql, mut args) = self.scan_sql(cursor.as_deref());
+            let sql = sql.replacen("FROM_UNIXTIME(%?)", &expiration.expression, 1);
+            args[0] = expiration.argument.clone();
             let mut rows = None;
             let mut last_error = None;
             // Go permits the initial attempt plus the configured number of

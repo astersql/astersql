@@ -386,27 +386,6 @@ fn run_in_transaction_rolls_back_and_restores_phase_on_panic() {
     assert_eq!(tracer.phase(), Phase::CommitTransaction);
 }
 
-/// TestSessionResetTimeZone: session local TZ is overwritten by global time_zone.
-/// 会话本地时区被全局 time_zone 覆盖。
-#[test]
-fn TestSessionResetTimeZone() {
-    let (se, executor) = new_mock_pair();
-    let variables = se.session_variables();
-    variables.set_global_time_zone("UTC");
-    variables.set_time_zone(Some("Asia/Shanghai".into()));
-
-    assert_eq!(
-        executor.must_query_rows("select @@time_zone"),
-        vec!["Asia/Shanghai".to_string()]
-    );
-    se.reset_with_global_time_zone(&ExecutionContext::default())
-        .expect("reset timezone");
-    assert_eq!(
-        executor.must_query_rows("select @@time_zone"),
-        vec!["UTC".to_string()]
-    );
-}
-
 /// TestSessionKill: background poll finds sleep SQL then KillStmt; sleep returns "1".
 /// 后台轮询发现 sleep SQL 后 KillStmt，sleep 返回 "1"。
 #[test]

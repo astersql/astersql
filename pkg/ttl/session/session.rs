@@ -340,7 +340,6 @@ pub trait Session: Send + Sync {
         callback: &mut dyn FnMut() -> Result<(), SessionError>,
         mode: TxnMode,
     ) -> Result<(), SessionError>;
-    fn reset_with_global_time_zone(&self, context: &ExecutionContext) -> Result<(), SessionError>;
     fn global_time_zone(&self, context: &ExecutionContext) -> Result<TimeZone, SessionError>;
     fn kill_statement(&self);
     fn now(&self) -> (SystemTime, TimeZone);
@@ -471,22 +470,6 @@ impl Session for TtlSession {
         })();
         cleanup.success = result.is_ok();
         result
-    }
-
-    fn reset_with_global_time_zone(&self, context: &ExecutionContext) -> Result<(), SessionError> {
-        let variables = self.context.session_variables();
-        // 会话时区已与全局一致时可跳过 SET。
-        if variables.time_zone.lock().unwrap().is_some() {
-            let global = variables.global_system_variable("time_zone")?;
-            if global == variables.session_or_global_time_zone() {
-                return Ok(());
-            }
-        }
-        self.execute_sql(context, "SET @@time_zone=@@global.time_zone", &[])?;
-        let global = variables.global_system_variable("time_zone")?;
-        variables.set_time_zone(Some(global.clone()));
-        variables.set_location(TimeZone::parse(&global)?);
-        Ok(())
     }
 
     fn global_time_zone(&self, _context: &ExecutionContext) -> Result<TimeZone, SessionError> {

@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[dependencies]
+chrono = "0.4"
+
 [lib]
 path = "lib.rs"
 

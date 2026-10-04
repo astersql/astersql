@@ -51,6 +51,10 @@ impl WorkerSession for FaultSession {
             }
             return Err(SessionError::Execute("fault in test".into()));
         }
+        if let Some(name) = sql.strip_prefix("select @@") {
+            let value = self.state.variables.get(name).cloned().unwrap();
+            return Ok(vec![vec![Datum::Text(value)]]);
+        }
         Ok(vec![])
     }
 
@@ -137,7 +141,10 @@ fn pooled_session_prepare_and_restore_preserve_every_setting() {
     );
     restore_session_checked(&mut session, previous).unwrap();
     assert_eq!(session.state.variables, original.variables);
-    assert_eq!(session.state.in_transaction, original.in_transaction);
+    assert!(
+        !session.state.in_transaction,
+        "ROLLBACK must not be undone by restore"
+    );
     assert_eq!(
         session.state.timezone_offset_seconds,
         original.timezone_offset_seconds
@@ -146,7 +153,7 @@ fn pooled_session_prepare_and_restore_preserve_every_setting() {
 }
 
 #[test]
-fn restore_fault_discards_session_and_stops_at_the_first_failure() {
+fn restore_fault_discards_session_and_continues_cleanup() {
     for prefix in [
         "set tidb_retry_limit=",
         "set tidb_enable_1pc=",
@@ -157,10 +164,15 @@ fn restore_fault_discards_session_and_stops_at_the_first_failure() {
         let mut session = initial_session();
         let previous = prepare_session_checked(&mut session).unwrap();
         session.fault = Some(prefix.into());
-        assert_eq!(
-            restore_session_checked(&mut session, previous),
-            Err(SessionError::Execute("fault in test".into()))
+        let before = session.executed.len();
+        assert!(
+            format!(
+                "{:?}",
+                restore_session_checked(&mut session, previous).unwrap_err()
+            )
+            .contains("fault in test")
         );
+        assert_eq!(session.executed.len() - before, 5, "all restores must run");
         assert!(
             session.unusable,
             "failed restore must discard session: {prefix}"

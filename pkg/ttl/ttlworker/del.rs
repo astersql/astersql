@@ -99,6 +99,10 @@ impl DeleteTask {
         session: &mut dyn WorkerSession,
         limiter: &mut dyn DeleteRateLimiter,
     ) -> Vec<Row> {
+        let expiration = match session.expiration_predicate(&self.table, self.expire_time) {
+            Ok(expiration) => expiration,
+            Err(_) => return self.rows.clone(),
+        };
         let mut retry_rows = Vec::new();
         for start in (0..self.rows.len()).step_by(DELETE_BATCH_SIZE) {
             let end = (start + DELETE_BATCH_SIZE).min(self.rows.len());
@@ -113,13 +117,17 @@ impl DeleteTask {
                 rows: batch.to_vec(),
                 ..self.clone()
             };
-            let sql = task.delete_sql(batch.len());
+            let sql = task.delete_sql(batch.len()).replacen(
+                "FROM_UNIXTIME(%?)",
+                &expiration.expression,
+                1,
+            );
             // 参数顺序：各行主键列值 + 过期时间，与 Go SQL 子句顺序一致。
             let mut args = Vec::new();
             for row in batch {
                 args.extend(row.iter().cloned());
             }
-            args.push(Datum::Unsigned(self.expire_time));
+            args.push(expiration.argument.clone());
             match session.execute(&sql, &args) {
                 Ok(_) => self.statistics.add_success(batch.len()),
                 Err(SessionError::NonRetryable(_)) => self.statistics.add_error(batch.len()),

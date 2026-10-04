@@ -15,7 +15,10 @@
 
 //! TTL worker boundary over the executable system SQL session.
 
-use astersql_ttl_ttlworker::session::{Datum, Row, SessionError, SessionState, WorkerSession};
+use astersql_ttl_ttlworker::session::{
+    Datum, ExpirationPredicate, PhysicalTable, Row, SessionError, SessionState, WorkerSession,
+};
+use chrono::Offset;
 
 use super::{ConcreteSession, quote_argument};
 
@@ -25,6 +28,7 @@ pub struct TtlWorkerSqlSession {
     session: ConcreteSession,
     state: SessionState,
     reusable: bool,
+    expiration: Option<(i64, u64, ExpirationPredicate)>,
 }
 
 impl TtlWorkerSqlSession {
@@ -33,7 +37,18 @@ impl TtlWorkerSqlSession {
             session,
             state: SessionState::default(),
             reusable: true,
+            expiration: None,
         }
+    }
+
+    /// Scan and delete must carry the same captured frontier even if GLOBAL changes.
+    pub(super) fn use_expiration(
+        &mut self,
+        table: &PhysicalTable,
+        unix: u64,
+        predicate: ExpirationPredicate,
+    ) {
+        self.expiration = Some((table.physical_id, unix, predicate));
     }
 
     pub fn reusable(&self) -> bool {
@@ -66,6 +81,113 @@ impl WorkerSession for TtlWorkerSqlSession {
             }
         }
         Ok(rows)
+    }
+
+    fn refresh_state(&mut self) -> Result<(), SessionError> {
+        for name in [
+            "tidb_retry_limit",
+            "tidb_enable_1pc",
+            "tidb_enable_async_commit",
+            "time_zone",
+            "tidb_isolation_read_engines",
+            "tidb_distsql_scan_concurrency",
+            "tidb_enable_paging",
+        ] {
+            let rows = self.execute(&format!("SELECT @@{name}"), &[])?;
+            let Some(Datum::Text(value)) = rows.first().and_then(|row| row.first()) else {
+                return Err(SessionError::Execute(format!(
+                    "failed to get {name} variable"
+                )));
+            };
+            self.state.variables.insert(name.into(), value.clone());
+        }
+        let on = |v: &str| v.eq_ignore_ascii_case("ON") || v == "1";
+        for name in ["tidb_enable_1pc", "tidb_enable_async_commit"] {
+            let value = if on(&self.state.variables[name]) {
+                "ON"
+            } else {
+                "OFF"
+            };
+            self.state.variables.insert(name.into(), value.into());
+        }
+        self.state.distsql_scan_concurrency = self.state.variables["tidb_distsql_scan_concurrency"]
+            .parse()
+            .map_err(|_| SessionError::Execute("invalid scan concurrency".into()))?;
+        self.state.enable_paging = on(&self.state.variables["tidb_enable_paging"]);
+        self.state.in_transaction = self.session.inner.state.borrow().transaction.is_some();
+        Ok(())
+    }
+
+    fn expiration_predicate(
+        &mut self,
+        table: &PhysicalTable,
+        unix: u64,
+    ) -> Result<ExpirationPredicate, SessionError> {
+        if let Some((id, frontier, predicate)) = &self.expiration {
+            if *id == table.physical_id && *frontier == unix {
+                return Ok(predicate.clone());
+            }
+        }
+        // Fetch through SQL so global-variable lookup errors remain observable.
+        let rows = self.execute("SELECT @@global.time_zone", &[])?;
+        let Some(Datum::Text(zone)) = rows.first().and_then(|row| row.first()) else {
+            return Err(SessionError::Execute(
+                "get global time zone for TTL expiration condition".into(),
+            ));
+        };
+        let zone = super::session::RuntimeTimeZone::parse(zone)
+            .ok_or_else(|| SessionError::Execute("invalid global TTL time zone".into()))?;
+        let (_, model) = self
+            .session
+            .inner
+            .domain
+            .stats_table(&table.schema, &table.table)
+            .ok_or(SessionError::TableChanged)?;
+        let column = model
+            .Columns
+            .iter()
+            .find(|col| col.Name.O.eq_ignore_ascii_case(&table.ttl_column))
+            .ok_or(SessionError::TableChanged)?;
+        let instant = chrono::DateTime::from_timestamp(
+            i64::try_from(unix).map_err(|_| {
+                SessionError::Execute("TTL expiry is outside Unix time range".into())
+            })?,
+            0,
+        )
+        .ok_or_else(|| SessionError::Execute("TTL expiry is outside Unix time range".into()))?;
+        let offset = match zone {
+            super::session::RuntimeTimeZone::Named(zone) => {
+                instant.with_timezone(&zone).offset().fix()
+            }
+            super::session::RuntimeTimeZone::Fixed(offset) => offset,
+        };
+        let predicate = if column.GetType() == astersql_parser_mysql::r#type::TypeTimestamp {
+            ExpirationPredicate {
+                expression: "FROM_UNIXTIME(%?)".into(),
+                argument: Datum::Unsigned(unix),
+            }
+        } else {
+            ExpirationPredicate {
+                expression: "CAST(%? AS DATETIME)".into(),
+                argument: Datum::Text({
+                    let wall_clock = instant.with_timezone(&offset);
+                    let value = wall_clock.format("%Y-%m-%d %H:%M:%S").to_string();
+                    // DATE's midnight frontier can use a date-only CAST input:
+                    // CAST still yields the identical DATETIME midnight, while
+                    // the text-based runtime preserves the strict equality bound.
+                    // Non-midnight frontiers retain the time so today's DATE can expire.
+                    if column.GetType() == astersql_parser_mysql::r#type::TypeDate
+                        && value.ends_with(" 00:00:00")
+                    {
+                        wall_clock.format("%Y-%m-%d").to_string()
+                    } else {
+                        value
+                    }
+                }),
+            }
+        };
+        self.use_expiration(table, unix, predicate.clone());
+        Ok(predicate)
     }
 
     fn execute_in_transaction(

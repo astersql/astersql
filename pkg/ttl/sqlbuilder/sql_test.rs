@@ -68,7 +68,7 @@ fn scan_generator_does_not_reuse_range_start_for_an_empty_continuation_row() {
 
     assert_eq!(
         sql,
-        "SELECT LOW_PRIORITY SQL_NO_CACHE `id` FROM `test`.`events` WHERE `id` < 100 AND `created_at` < FROM_UNIXTIME(0) ORDER BY `id` ASC LIMIT 1"
+        "SELECT LOW_PRIORITY SQL_NO_CACHE `id` FROM `test`.`events` WHERE `id` < 100 AND `created_at` < CAST('1970-01-01 00:00:00' AS DATETIME) ORDER BY `id` ASC LIMIT 1"
     );
 }
 
@@ -115,7 +115,7 @@ fn sql_builder_matches_go_state_and_delete_safety_contracts() {
     select.write_limit(128).unwrap();
     assert_eq!(
         select.build().unwrap(),
-        "SELECT LOW_PRIORITY SQL_NO_CACHE `id` FROM `test`.`t` WHERE `id` > 'a1\\';\\'' AND `time` < FROM_UNIXTIME(0) LIMIT 128"
+        "SELECT LOW_PRIORITY SQL_NO_CACHE `id` FROM `test`.`t` WHERE `id` > 'a1\\';\\'' AND `time` < CAST('1970-01-01 00:00:00' AS DATETIME) LIMIT 128"
     );
     assert!(select.write_limit(1).is_err());
 }
@@ -146,7 +146,7 @@ fn composite_scan_generator_matches_go_prefix_stack_pagination() {
 
     assert_eq!(
         generator.NextSQL(&[], 5).unwrap(),
-        "SELECT LOW_PRIORITY SQL_NO_CACHE `a`, `b`, `c` FROM `test`.`t` WHERE `a` = 1 AND `b` = 'x' AND `c` >= x'0e' AND (`a`, `b`, `c`) < (100, 'z', x'ff') AND `time` < FROM_UNIXTIME(0) ORDER BY `a`, `b`, `c` ASC LIMIT 5"
+        "SELECT LOW_PRIORITY SQL_NO_CACHE `a`, `b`, `c` FROM `test`.`t` WHERE `a` = 1 AND `b` = 'x' AND `c` >= x'0e' AND (`a`, `b`, `c`) < (100, 'z', x'ff') AND `time` < CAST('1970-01-01 00:00:00' AS DATETIME) ORDER BY `a`, `b`, `c` ASC LIMIT 5"
     );
     let mut full_page = vec![Vec::new(); 5];
     full_page[4] = vec![
@@ -156,7 +156,7 @@ fn composite_scan_generator_matches_go_prefix_stack_pagination() {
     ];
     assert_eq!(
         generator.NextSQL(&full_page, 5).unwrap(),
-        "SELECT LOW_PRIORITY SQL_NO_CACHE `a`, `b`, `c` FROM `test`.`t` WHERE `a` = 1 AND `b` = 'y' AND `c` > x'0a' AND (`a`, `b`, `c`) < (100, 'z', x'ff') AND `time` < FROM_UNIXTIME(0) ORDER BY `a`, `b`, `c` ASC LIMIT 5"
+        "SELECT LOW_PRIORITY SQL_NO_CACHE `a`, `b`, `c` FROM `test`.`t` WHERE `a` = 1 AND `b` = 'y' AND `c` > x'0a' AND (`a`, `b`, `c`) < (100, 'z', x'ff') AND `time` < CAST('1970-01-01 00:00:00' AS DATETIME) ORDER BY `a`, `b`, `c` ASC LIMIT 5"
     );
 }
 
@@ -172,10 +172,66 @@ fn build_delete_sql_matches_go_composite_key_contract() {
     ];
     assert_eq!(
         BuildDeleteSQL(&table, &rows, 0).unwrap(),
-        "DELETE LOW_PRIORITY FROM `test`.`t` WHERE (`a`, `b`) IN ((1, 'a'), (2, 'b')) AND `time` < FROM_UNIXTIME(0) LIMIT 2"
+        "DELETE LOW_PRIORITY FROM `test`.`t` WHERE (`a`, `b`) IN ((1, 'a'), (2, 'b')) AND `time` < CAST('1970-01-01 00:00:00' AS DATETIME) LIMIT 2"
     );
     assert_eq!(
         BuildDeleteSQL(&table, &[], 0).unwrap_err().to_string(),
         "Cannot build delete SQL with empty rows"
     );
+}
+
+#[test]
+fn expiration_predicate_distinguishes_timestamp_from_wall_clock_types() {
+    for kind in [FieldKind::Timestamp, FieldKind::DateTime, FieldKind::Date] {
+        let table = PhysicalTable::new(
+            "test",
+            "times",
+            vec![Column::new("id", FieldType::new(FieldKind::Int))],
+            Column::new("expires", FieldType::new(kind)),
+            None,
+        )
+        .unwrap();
+        let sql = BuildDeleteSQL(&table, &[vec![Datum::Int(1)]], 1_730_615_400).unwrap();
+        let expected = if kind == FieldKind::Timestamp {
+            "FROM_UNIXTIME(1730615400)"
+        } else {
+            "CAST('2024-11-03 06:30:00' AS DATETIME)"
+        };
+        assert!(sql.contains(expected), "{kind:?}: {sql}");
+    }
+}
+
+#[test]
+fn captured_offset_is_shared_by_select_and_delete_expiration() {
+    use crate::ExpireTime;
+    for (offset, wall) in [
+        (-14400, "2024-11-03 02:30:00"),
+        (-18000, "2024-11-03 01:30:00"),
+        (19800, "2024-11-03 12:00:00"),
+        (28800, "2024-11-03 14:30:00"),
+    ] {
+        for kind in [FieldKind::Timestamp, FieldKind::DateTime, FieldKind::Date] {
+            let table = PhysicalTable::new(
+                "test",
+                "times",
+                vec![Column::new("id", FieldType::new(FieldKind::Int))],
+                Column::new("expires", FieldType::new(kind)),
+                None,
+            )
+            .unwrap();
+            let expire = ExpireTime {
+                unix_seconds: 1730615400,
+                utc_offset_seconds: offset,
+            };
+            let expected = if kind == FieldKind::Timestamp {
+                "FROM_UNIXTIME(1730615400)".into()
+            } else {
+                format!("CAST('{wall}' AS DATETIME)")
+            };
+            let sql = BuildDeleteSQL(&table, &[vec![Datum::Int(1)]], expire).unwrap();
+            assert!(sql.contains(&expected), "{sql}");
+            let mut generator = NewScanQueryGenerator(&table, expire, vec![], vec![]).unwrap();
+            assert!(generator.NextSQL(&[], 1).unwrap().contains(&expected));
+        }
+    }
 }

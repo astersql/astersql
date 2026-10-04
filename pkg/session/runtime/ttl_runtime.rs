@@ -1254,6 +1254,15 @@ fn run_ttl_tick_inner(
             let delete_previous =
                 astersql_ttl_ttlworker::session::prepare_session_checked(&mut delete_session)
                     .map_err(|error| format!("prepare TTL delete session: {error:?}"))?;
+            let scan_settings_previous =
+                astersql_ttl_ttlworker::session::prepare_scan_session_checked(&mut scan_session)
+                    .map_err(|error| format!("prepare TTL scan settings: {error:?}"))?;
+            let expiration = scan_session
+                .expiration_predicate(&table, expire_time)
+                .map_err(|error| {
+                    format!("get global time zone for TTL expiration condition: {error:?}")
+                })?;
+            delete_session.use_expiration(&table, expire_time, expiration);
             let cancel_delete =
                 || canceled() || heartbeat.lost() || !scheduling_enabled(now).unwrap_or(false);
             let mut limiter = ConfiguredDeleteRateLimiter {
@@ -1326,6 +1335,11 @@ fn run_ttl_tick_inner(
                     scan_result.reason
                 ));
             }
+            astersql_ttl_ttlworker::session::restore_scan_session_checked(
+                &mut scan_session,
+                scan_settings_previous,
+            )
+            .map_err(|error| format!("restore TTL scan settings: {error:?}"))?;
             astersql_ttl_ttlworker::session::restore_session_checked(
                 &mut scan_session,
                 scan_previous,

@@ -89,6 +89,13 @@ pub struct SessionState {
     pub enable_paging: bool,
 }
 
+/// One captured expiration predicate, reused across scan pages and delete retries.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpirationPredicate {
+    pub expression: String,
+    pub argument: Datum,
+}
+
 /// TTL worker 使用的会话接口：读写状态并执行参数化 SQL。
 pub trait WorkerSession {
     /// 只读访问会话状态。
@@ -97,13 +104,24 @@ pub trait WorkerSession {
     fn state_mut(&mut self) -> &mut SessionState;
     /// 执行 SQL，返回结果行或会话错误。
     fn execute(&mut self, sql: &str, args: &[Datum]) -> Result<Vec<Row>, SessionError>;
+    /// Refresh the SQL-backed variable snapshot before preparing a pooled session.
+    fn refresh_state(&mut self) -> Result<(), SessionError> {
+        Ok(())
+    }
+    /// Capture the global-zone expiration value once before a scan.
+    fn expiration_predicate(
+        &mut self,
+        _table: &PhysicalTable,
+        unix: u64,
+    ) -> Result<ExpirationPredicate, SessionError> {
+        Ok(ExpirationPredicate {
+            expression: "FROM_UNIXTIME(%?)".into(),
+            argument: Datum::Unsigned(unix),
+        })
+    }
     /// 全局 TTL job 开关。默认开启，便于轻量测试会话只实现 SQL 接口。
     fn ttl_jobs_enabled(&self) -> bool {
         true
-    }
-    /// 在执行前同步全局时区；真实会话可覆盖并传播同步错误。
-    fn reset_with_global_timezone(&mut self) -> Result<(), SessionError> {
-        Ok(())
     }
     /// 在乐观事务内执行 SQL；真实会话可覆盖以暴露 begin/commit 错误。
     fn execute_in_transaction(
@@ -185,91 +203,147 @@ pub fn restore_session(session: &mut dyn WorkerSession, previous: SessionState) 
 pub fn prepare_session_checked(
     session: &mut dyn WorkerSession,
 ) -> Result<SessionState, SessionError> {
-    let previous = session.state().clone();
-    for sql in [
-        "set tidb_retry_limit=0",
-        "set tidb_enable_1pc=ON",
-        "set tidb_enable_async_commit=ON",
-        "ROLLBACK",
-        "set @@time_zone='UTC'",
-    ] {
-        if let Err(error) = execute_lifecycle_sql(session, sql) {
-            session.avoid_reuse();
-            return Err(error);
+    session.refresh_state()?;
+    let mut previous = session.state().clone();
+    let mut attempted = Vec::new();
+    let setup = (|| {
+        for (name, sql) in [
+            ("tidb_retry_limit", "set tidb_retry_limit=0"),
+            ("tidb_enable_1pc", "set tidb_enable_1pc=ON"),
+            (
+                "tidb_enable_async_commit",
+                "set tidb_enable_async_commit=ON",
+            ),
+        ] {
+            attempted.push(name);
+            execute_lifecycle_sql(session, sql)?;
         }
-    }
-    let has_all_read_engines = previous
-        .variables
-        .get("tidb_isolation_read_engines")
-        .map(|value| {
-            let engines = value
-                .split(',')
-                .map(|engine| engine.trim().to_ascii_lowercase())
-                .collect::<std::collections::BTreeSet<_>>();
-            ["tidb", "tikv", "tiflash"]
-                .iter()
-                .all(|engine| engines.contains(*engine))
-        })
-        .unwrap_or(false);
-    if !has_all_read_engines
-        && let Err(error) = execute_lifecycle_sql(
-            session,
-            "set tidb_isolation_read_engines='tikv,tiflash,tidb'",
-        )
-    {
+        previous.in_transaction = false;
+        execute_lifecycle_sql(session, "ROLLBACK")?;
+        previous.variables.insert(
+            "time_zone".into(),
+            read_lifecycle_variable(session, "time_zone")?,
+        );
+        attempted.push("time_zone");
+        execute_lifecycle_sql(session, "set @@time_zone='UTC'")?;
+        if !has_all_read_engines(&previous) {
+            previous.variables.insert(
+                "tidb_isolation_read_engines".into(),
+                read_lifecycle_variable(session, "tidb_isolation_read_engines")?,
+            );
+            attempted.push("tidb_isolation_read_engines");
+            execute_lifecycle_sql(
+                session,
+                "set tidb_isolation_read_engines='tikv,tiflash,tidb'",
+            )?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = setup {
+        let cleanup = restore_attempted_variables(session, &previous, &attempted);
         session.avoid_reuse();
-        return Err(error);
+        return Err(combine_session_errors(error, cleanup.err()));
     }
     let _ = prepare_session(session);
     Ok(previous)
 }
 
-/// Restore a pooled session through the same observable SQL steps as Go.
+fn has_all_read_engines(state: &SessionState) -> bool {
+    let engines = state
+        .variables
+        .get("tidb_isolation_read_engines")
+        .map(String::as_str)
+        .unwrap_or("");
+    ["tidb", "tikv", "tiflash"].iter().all(|required| {
+        engines
+            .split(',')
+            .any(|v| v.trim().eq_ignore_ascii_case(required))
+    })
+}
+
+fn read_lifecycle_variable(
+    session: &mut dyn WorkerSession,
+    name: &str,
+) -> Result<String, SessionError> {
+    let rows = execute_lifecycle_sql(session, &format!("select @@{name}"))?;
+    match rows.first().and_then(|row| row.first()) {
+        Some(Datum::Text(value)) => Ok(value.clone()),
+        _ => Err(SessionError::Execute(format!(
+            "failed to get {name} variable"
+        ))),
+    }
+}
+
+fn combine_session_errors(first: SessionError, second: Option<SessionError>) -> SessionError {
+    match second {
+        None => first,
+        Some(second) => SessionError::Execute(format!("{first:?}; {second:?}")),
+    }
+}
+
+fn restore_attempted_variables(
+    session: &mut dyn WorkerSession,
+    previous: &SessionState,
+    attempted: &[&str],
+) -> Result<(), SessionError> {
+    let mut error = None;
+    for name in attempted {
+        let value = previous
+            .variables
+            .get(*name)
+            .map(String::as_str)
+            .unwrap_or(match *name {
+                "tidb_retry_limit" => "0",
+                "time_zone" => "SYSTEM",
+                "tidb_isolation_read_engines" => "tikv",
+                _ => "OFF",
+            });
+        if matches!(*name, "tidb_enable_1pc" | "tidb_enable_async_commit")
+            && value.eq_ignore_ascii_case("ON")
+        {
+            continue;
+        }
+        let result = if matches!(*name, "time_zone" | "tidb_isolation_read_engines") {
+            let prefix = if *name == "time_zone" { "@@" } else { "" };
+            session.execute(
+                &format!("set {prefix}{name}=%?"),
+                &[Datum::Text(value.to_owned())],
+            )
+        } else {
+            execute_lifecycle_sql(session, &format!("set {name}={value}"))
+        };
+        if let Err(cause) = result {
+            let cause = SessionError::Execute(format!("restore {name}: {cause:?}"));
+            error = Some(match error {
+                Some(first) => combine_session_errors(first, Some(cause)),
+                None => cause,
+            });
+        }
+    }
+    if let Some(error) = error {
+        session.avoid_reuse();
+        Err(error)
+    } else {
+        restore_session(session, previous.clone());
+        Ok(())
+    }
+}
+
+/// Restore every attempted variable, accumulating errors without skipping cleanup.
 pub fn restore_session_checked(
     session: &mut dyn WorkerSession,
     previous: SessionState,
 ) -> Result<(), SessionError> {
-    let retry_limit = previous
-        .variables
-        .get("tidb_retry_limit")
-        .map(String::as_str)
-        .unwrap_or("0");
-    let mut statements = vec![format!("set tidb_retry_limit={retry_limit}")];
-    if previous
-        .variables
-        .get("tidb_enable_1pc")
-        .map(String::as_str)
-        != Some("ON")
-    {
-        statements.push("set tidb_enable_1pc=OFF".into());
+    let mut attempted = vec![
+        "tidb_retry_limit",
+        "tidb_enable_1pc",
+        "tidb_enable_async_commit",
+        "time_zone",
+    ];
+    if !has_all_read_engines(&previous) {
+        attempted.push("tidb_isolation_read_engines");
     }
-    if previous
-        .variables
-        .get("tidb_enable_async_commit")
-        .map(String::as_str)
-        != Some("ON")
-    {
-        statements.push("set tidb_enable_async_commit=OFF".into());
-    }
-    statements.push(format!(
-        "set @@time_zone={}",
-        previous
-            .variables
-            .get("time_zone")
-            .map(String::as_str)
-            .unwrap_or("SYSTEM")
-    ));
-    if let Some(engines) = previous.variables.get("tidb_isolation_read_engines") {
-        statements.push(format!("set tidb_isolation_read_engines={engines}"));
-    }
-    for sql in statements {
-        if let Err(error) = execute_lifecycle_sql(session, &sql) {
-            session.avoid_reuse();
-            return Err(error);
-        }
-    }
-    restore_session(session, previous);
-    Ok(())
+    restore_attempted_variables(session, &previous, &attempted)
 }
 
 /// `NewScanSession` 会临时修改的三项会话状态。
@@ -313,6 +387,7 @@ pub fn prepare_scan_session_checked(
     ] {
         if let Err(error) = execute_lifecycle_sql(session, sql) {
             let _ = restore_scan_session_checked(session, previous);
+            session.avoid_reuse();
             return Err(error);
         }
     }
@@ -324,7 +399,7 @@ pub fn restore_scan_session_checked(
     session: &mut dyn WorkerSession,
     previous: ScanSessionState,
 ) -> Result<(), SessionError> {
-    session.state_mut().internal_sql_scan_user_table = false;
+    session.state_mut().internal_sql_scan_user_table = previous.internal_sql_scan_user_table;
     let first = execute_lifecycle_sql(
         session,
         &format!(
@@ -338,7 +413,11 @@ pub fn restore_scan_session_checked(
     );
     if first.is_err() || second.is_err() {
         session.avoid_reuse();
-        return first.and(second).map(|_| ());
+        return Err(match (first.err(), second.err()) {
+            (Some(first), second) => combine_session_errors(first, second),
+            (None, Some(second)) => second,
+            _ => unreachable!(),
+        });
     }
     restore_scan_session(session, previous);
     Ok(())
@@ -406,7 +485,6 @@ impl TableSession<'_> {
         if !self.session.ttl_jobs_enabled() {
             return Err(SessionError::TtlDisabled);
         }
-        self.session.reset_with_global_timezone()?;
         let execution = self.session.execute_in_transaction(sql, args);
 
         // Go deliberately validates after the statement on both success and

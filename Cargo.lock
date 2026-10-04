@@ -11331,6 +11331,7 @@ dependencies = [
  "astersql-util-dbterror",
  "astersql-util-sqlescape",
  "astersql-util-sqlexec",
+ "chrono",
 ]
 
 [[package]]

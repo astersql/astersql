@@ -260,10 +260,6 @@ fn execution_checks_global_switch_timezone_and_retryable_errors() {
         fn ttl_jobs_enabled(&self) -> bool {
             self.enabled
         }
-        fn reset_with_global_timezone(&mut self) -> Result<(), SessionError> {
-            self.resets += 1;
-            Ok(())
-        }
     }
 
     let original = table();
@@ -298,7 +294,7 @@ fn execution_checks_global_switch_timezone_and_retryable_errors() {
             Err(SessionError::Execute("temporary".into()))
         );
     }
-    assert_eq!(session.resets, 1);
+    assert_eq!(session.resets, 0);
 
     let mut changed = original.clone();
     changed.ttl_enabled = false;
@@ -364,4 +360,149 @@ fn session_prepare_and_scan_state_restore_exactly() {
         original.distsql_scan_concurrency
     );
     assert_eq!(session.0.enable_paging, original.enable_paging);
+}
+
+#[derive(Default)]
+struct LifecycleSession {
+    state: crate::session::SessionState,
+    calls: Vec<String>,
+    failures: Vec<String>,
+    discarded: bool,
+}
+impl crate::session::WorkerSession for LifecycleSession {
+    fn state(&self) -> &crate::session::SessionState {
+        &self.state
+    }
+    fn state_mut(&mut self) -> &mut crate::session::SessionState {
+        &mut self.state
+    }
+    fn execute(
+        &mut self,
+        sql: &str,
+        args: &[crate::session::Datum],
+    ) -> Result<Vec<crate::session::Row>, crate::session::SessionError> {
+        self.calls.push(sql.to_owned());
+        // Apply SET before returning the injected error, as the Go regression does.
+        if let Some(assignment) = sql.strip_prefix("set ") {
+            if let Some((name, value)) = assignment.split_once('=') {
+                let name = name.trim_start_matches("@@");
+                let value = if value == "%?" {
+                    match args.first() {
+                        Some(crate::session::Datum::Text(v)) => v.clone(),
+                        _ => panic!("missing restore argument"),
+                    }
+                } else {
+                    value.trim_matches('\'').to_owned()
+                };
+                self.state.variables.insert(name.into(), value);
+            }
+        }
+        if self.failures.iter().any(|v| v == sql) {
+            return Err(crate::session::SessionError::Execute(sql.to_owned()));
+        }
+        if sql == "select @@time_zone" {
+            return Ok(vec![vec![crate::session::Datum::Text(
+                "America/New_York".into(),
+            )]]);
+        }
+        if sql == "select @@tidb_isolation_read_engines" {
+            return Ok(vec![vec![crate::session::Datum::Text("tikv".into())]]);
+        }
+        let _ = args;
+        Ok(vec![])
+    }
+    fn avoid_reuse(&mut self) {
+        self.discarded = true;
+    }
+}
+fn lifecycle_session() -> LifecycleSession {
+    let mut s = LifecycleSession::default();
+    s.state.variables = std::collections::BTreeMap::from([
+        ("tidb_retry_limit".into(), "10".into()),
+        ("tidb_enable_1pc".into(), "OFF".into()),
+        ("tidb_enable_async_commit".into(), "OFF".into()),
+        ("time_zone".into(), "America/New_York".into()),
+        ("tidb_isolation_read_engines".into(), "tikv".into()),
+    ]);
+    s.state.internal_sql_scan_user_table = true;
+    s.state.distsql_scan_concurrency = 16;
+    s.state.enable_paging = true;
+    s
+}
+#[test]
+fn prepare_failure_restores_attempted_variables_and_discards_session() {
+    use crate::session::prepare_session_checked;
+    for failed in [
+        "set tidb_retry_limit=0",
+        "set tidb_enable_1pc=ON",
+        "set tidb_enable_async_commit=ON",
+        "ROLLBACK",
+        "select @@time_zone",
+        "set @@time_zone='UTC'",
+        "select @@tidb_isolation_read_engines",
+        "set tidb_isolation_read_engines='tikv,tiflash,tidb'",
+    ] {
+        let mut s = lifecycle_session();
+        s.failures.push(failed.into());
+        assert!(prepare_session_checked(&mut s).is_err(), "{failed}");
+        assert!(s.discarded, "{failed}");
+        assert!(
+            s.calls.iter().any(|sql| sql == "set tidb_retry_limit=10"),
+            "{failed}: {:?}",
+            s.calls
+        );
+        assert_eq!(s.state.variables["time_zone"], "America/New_York");
+    }
+}
+#[test]
+fn restore_failure_continues_all_cleanup_and_preserves_errors() {
+    use crate::session::{prepare_session_checked, restore_session_checked};
+    let mut s = lifecycle_session();
+    let previous = prepare_session_checked(&mut s).unwrap();
+    s.calls.clear();
+    s.failures = vec![
+        "set tidb_retry_limit=10".into(),
+        "set tidb_enable_1pc=OFF".into(),
+    ];
+    let error = restore_session_checked(&mut s, previous).unwrap_err();
+    assert!(s.discarded);
+    assert!(
+        s.calls
+            .iter()
+            .any(|sql| sql.starts_with("set tidb_isolation_read_engines=")),
+        "{:?}",
+        s.calls
+    );
+    let error = format!("{error:?}");
+    assert!(
+        error.contains("tidb_retry_limit") && error.contains("tidb_enable_1pc"),
+        "{error}"
+    );
+}
+#[test]
+fn scan_setup_failure_discards_and_preserves_original_internal_flag() {
+    use crate::session::{prepare_scan_session_checked, restore_scan_session_checked};
+    let mut s = lifecycle_session();
+    let previous = prepare_scan_session_checked(&mut s).unwrap();
+    s.failures
+        .push("set @@tidb_distsql_scan_concurrency=16".into());
+    assert!(restore_scan_session_checked(&mut s, previous).is_err());
+    assert!(s.state.internal_sql_scan_user_table);
+    assert!(
+        s.calls
+            .iter()
+            .any(|sql| sql == "set @@tidb_enable_paging=true")
+    );
+    for failed in [
+        "set @@tidb_distsql_scan_concurrency=1",
+        "set @@tidb_enable_paging=OFF",
+    ] {
+        let mut s = lifecycle_session();
+        s.failures.push(failed.into());
+        assert!(prepare_scan_session_checked(&mut s).is_err());
+        assert!(s.discarded, "{failed}");
+        assert!(s.state.internal_sql_scan_user_table);
+        assert_eq!(s.state.distsql_scan_concurrency, 16);
+        assert!(s.state.enable_paging);
+    }
 }

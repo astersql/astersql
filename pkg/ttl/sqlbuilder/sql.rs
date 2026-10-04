@@ -765,6 +765,33 @@ pub enum sqlBuilderState {
     writeLimit,
     writeDone,
 }
+/// An expiration instant with the global-zone offset captured by the scan worker.
+/// TIMESTAMP uses the instant; DATE/DATETIME use its captured wall clock.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExpireTime {
+    pub unix_seconds: i64,
+    pub utc_offset_seconds: i32,
+}
+impl From<i64> for ExpireTime {
+    fn from(unix_seconds: i64) -> Self {
+        Self {
+            unix_seconds,
+            utc_offset_seconds: 0,
+        }
+    }
+}
+impl ExpireTime {
+    fn wall_clock(self) -> Result<String> {
+        let seconds = self
+            .unix_seconds
+            .checked_add(i64::from(self.utc_offset_seconds))
+            .ok_or_else(|| SqlError("expiration time out of range".into()))?;
+        let time = chrono::DateTime::from_timestamp(seconds, 0)
+            .ok_or_else(|| SqlError("expiration time out of range".into()))?;
+        Ok(time.format("%Y-%m-%d %H:%M:%S").to_string())
+    }
+}
+
 /// 按固定顺序拼接 TTL 用 SELECT/DELETE SQL 的构建器。
 pub struct SQLBuilder<'a> {
     table: &'a PhysicalTable,
@@ -905,13 +932,20 @@ impl<'a> SQLBuilder<'a> {
         self.write_data_point(columns, values)
     }
     /// 写入 TTL 过期条件：`time_column < FROM_UNIXTIME(expire_unix)`。
-    pub fn write_expire_condition(&mut self, expire_unix: i64) -> Result<()> {
+    pub fn write_expire_condition(&mut self, expire: impl Into<ExpireTime>) -> Result<()> {
         self.expect_condition_state()?;
         let column = self.table.time_column.clone();
         self.write_column_names(std::slice::from_ref(&column), false);
-        self.sql.push_str(" < FROM_UNIXTIME(");
-        self.sql.push_str(&expire_unix.to_string());
-        self.sql.push(')');
+        let expire = expire.into();
+        if column.field_type.kind == FieldKind::Timestamp {
+            self.sql.push_str(" < FROM_UNIXTIME(");
+            self.sql.push_str(&expire.unix_seconds.to_string());
+            self.sql.push(')');
+        } else {
+            self.sql.push_str(" < CAST('");
+            self.sql.push_str(&expire.wall_clock()?);
+            self.sql.push_str("' AS DATETIME)");
+        }
         self.has_expire_condition = true;
         Ok(())
     }
@@ -975,7 +1009,7 @@ impl<'a> SQLBuilder<'a> {
         self.write_common_condition(c, o, v)
     }
     /// Go 风格别名：同 `write_expire_condition`。
-    pub fn WriteExpireCondition(&mut self, e: i64) -> Result<()> {
+    pub fn WriteExpireCondition(&mut self, e: impl Into<ExpireTime>) -> Result<()> {
         self.write_expire_condition(e)
     }
     /// Go 风格别名：同 `write_in_condition`。
@@ -1001,7 +1035,7 @@ pub fn NewSQLBuilder(table: &PhysicalTable) -> SQLBuilder<'_> {
 /// 用前缀栈推进半开区间 `[start, end)`；首批用 `>=` 包含起点，后续用 `>` 排除上一批末行。
 pub struct ScanQueryGenerator<'a> {
     table: &'a PhysicalTable,
-    expire_unix: i64,
+    expire_unix: ExpireTime,
     key_range_start: Vec<Datum>,
     key_range_end: Vec<Datum>,
     stack: Option<Vec<Vec<Datum>>>,
@@ -1013,7 +1047,7 @@ impl<'a> ScanQueryGenerator<'a> {
     /// 校验起止键前缀后创建生成器。
     pub fn new(
         table: &'a PhysicalTable,
-        expire_unix: i64,
+        expire_unix: impl Into<ExpireTime>,
         range_start: Vec<Datum>,
         range_end: Vec<Datum>,
     ) -> Result<Self> {
@@ -1021,7 +1055,7 @@ impl<'a> ScanQueryGenerator<'a> {
         table.validate_key_prefix(&range_end)?;
         Ok(Self {
             table,
-            expire_unix,
+            expire_unix: expire_unix.into(),
             key_range_start: range_start,
             key_range_end: range_end,
             stack: None,
@@ -1133,7 +1167,7 @@ impl<'a> ScanQueryGenerator<'a> {
 /// 创建扫描查询生成器。
 pub fn NewScanQueryGenerator(
     table: &PhysicalTable,
-    expire_unix: i64,
+    expire_unix: impl Into<ExpireTime>,
     range_start: Vec<Datum>,
     range_end: Vec<Datum>,
 ) -> Result<ScanQueryGenerator<'_>> {
@@ -1143,7 +1177,7 @@ pub fn NewScanQueryGenerator(
 pub fn BuildDeleteSQL(
     table: &PhysicalTable,
     rows: &[Vec<Datum>],
-    expire_unix: i64,
+    expire_unix: impl Into<ExpireTime>,
 ) -> Result<String> {
     if rows.is_empty() {
         return Err(SqlError("Cannot build delete SQL with empty rows".into()));

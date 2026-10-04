@@ -5680,6 +5680,14 @@ impl ConcreteSession {
                         SessionError::new(format!("Unknown or incorrect time zone: {requested}"))
                     })?;
                     *self.time_zone.borrow_mut() = time_zone;
+                    if !is_global {
+                        // The runtime parser already validated named and fixed zones.
+                        self.session_vars
+                            .SetHintSystemVarWithRelaxedValidation(&name, requested)
+                            .map_err(|error| {
+                                session_error("set time zone system variable", error)
+                            })?;
+                    }
                 }
                 "auto_increment_increment" | "auto_increment_offset" => {
                     let parsed = value
@@ -6230,6 +6238,27 @@ impl ConcreteSession {
                     self.session_vars
                         .SetHintSystemVarWithOldState(&name, value.trim_matches(['\'', '"']))
                         .map_err(|error| session_error("set DDL reorg system variable", error))?;
+                }
+                astersql_sessionctx_vardef::TiDBRetryLimit
+                | astersql_sessionctx_vardef::TiDBDistSQLScanConcurrency => {
+                    if is_global {
+                        let (normalized, warnings) = self
+                            .session_vars
+                            .ValidateAndSetGlobalSystemVar(
+                                &name,
+                                value.trim_matches(['\'', '"']),
+                                astersql_sessionctx_vardef::ScopeGlobal,
+                            )
+                            .map_err(|error| session_error("set TTL session variable", error))?;
+                        for warning in warnings {
+                            self.set_warning(warning.to_string());
+                        }
+                        self.domain.set_global_system_variable(&name, &normalized);
+                        continue;
+                    }
+                    self.session_vars
+                        .SetHintSystemVarWithOldState(&name, value.trim_matches(['\'', '"']))
+                        .map_err(|error| session_error("set TTL session variable", error))?;
                 }
                 astersql_sessionctx_vardef::TiDBMLogPurgeBatchSize
                 | astersql_sessionctx_vardef::TiDBMLogPurgeMinRate

@@ -382,3 +382,327 @@ fn go_merge_43_ttl_scan_and_delete_expired_rows_through_real_sql() {
         .expect("read remaining rows");
     assert_eq!(rows, vec![vec![Datum::Text("2".into())]]);
 }
+
+#[test]
+fn ttl_datetime_cutoff_uses_captured_global_wall_clock_in_utc() {
+    let (_, session) = CreateAnalyzeSession().unwrap();
+    session
+        .execute("SET @@global.time_zone='America/New_York'")
+        .unwrap();
+    session.execute("SET @@time_zone='UTC'").unwrap();
+    session.execute("CREATE TABLE ttl_wall_clock (id BIGINT PRIMARY KEY, expire_at DATETIME(6)) TTL=expire_at + INTERVAL 1 HOUR").unwrap();
+    session.execute("INSERT INTO ttl_wall_clock VALUES (1, '2024-11-03 01:29:59'), (2, '2024-11-03 01:30:00'), (3, '2024-11-03 01:30:01')").unwrap();
+    let mut worker = TtlWorkerSqlSession::new(session);
+    let table = PhysicalTable {
+        partition_name: None,
+        table_id: 1,
+        physical_id: 1,
+        schema: "test".into(),
+        table: "ttl_wall_clock".into(),
+        key_columns: vec!["id".into()],
+        ttl_column: "expire_at".into(),
+        ttl_enabled: true,
+        definition_version: 1,
+        expire_after_seconds: 3600,
+    };
+    let task = TtlScanTask {
+        job_id: "wall-clock".into(),
+        scan_id: 0,
+        table,
+        expire_time: 1_730_615_400,
+        range_start: None,
+        range_end: None,
+        batch_size: 1,
+    };
+    let mut scanned = Vec::new();
+    let result = task.execute(
+        &mut worker,
+        &TtlStatistics::default(),
+        |rows| {
+            scanned.extend(rows);
+            Ok(())
+        },
+        || false,
+    );
+    assert_eq!(result.reason, TaskTerminateReason::Finished, "{result:?}");
+    assert_eq!(scanned, vec![vec![Datum::Text("1".into())]]);
+}
+
+fn temporal_table(name: &str, keys: Vec<String>) -> PhysicalTable {
+    PhysicalTable {
+        partition_name: None,
+        table_id: 1,
+        physical_id: 1,
+        schema: "test".into(),
+        table: name.into(),
+        key_columns: keys,
+        ttl_column: "expire_at".into(),
+        ttl_enabled: true,
+        definition_version: 1,
+        expire_after_seconds: 3600,
+    }
+}
+
+#[test]
+fn ttl_timestamp_pagination_preserves_instants_across_time_zones() {
+    for (zone, instants) in [
+        (
+            "America/New_York",
+            [
+                "2024-11-03 05:30:00.123456",
+                "2024-11-03 06:30:00.123456",
+                "2024-11-03 07:30:00.123456",
+            ],
+        ),
+        (
+            "America/New_York",
+            [
+                "2024-03-10 06:30:00.123456",
+                "2024-03-10 07:30:00.123456",
+                "2024-03-10 08:30:00.123456",
+            ],
+        ),
+        (
+            "+05:30",
+            [
+                "2024-01-01 00:00:00.123456",
+                "2024-01-01 01:00:00.123456",
+                "2024-01-01 02:00:00.123456",
+            ],
+        ),
+        (
+            "Asia/Shanghai",
+            [
+                "2024-01-01 00:00:00.123456",
+                "2024-01-01 01:00:00.123456",
+                "2024-01-01 02:00:00.123456",
+            ],
+        ),
+    ] {
+        let (_, session) = CreateAnalyzeSession().unwrap();
+        session
+            .execute(&format!("SET @@global.time_zone='{zone}'"))
+            .unwrap();
+        session.execute("SET @@time_zone='UTC'").unwrap();
+        session.execute("CREATE TABLE ttl_instants (expire_at TIMESTAMP(6) NOT NULL, id BIGINT NOT NULL, PRIMARY KEY(expire_at, id) CLUSTERED) TTL=expire_at + INTERVAL 1 HOUR").unwrap();
+        for (i, instant) in instants.iter().enumerate() {
+            session
+                .execute(&format!(
+                    "INSERT INTO ttl_instants VALUES ('{instant}', {})",
+                    i + 1
+                ))
+                .unwrap();
+        }
+        let mut worker = TtlWorkerSqlSession::new(session);
+        let task = TtlScanTask {
+            job_id: "instants".into(),
+            scan_id: 0,
+            table: temporal_table("ttl_instants", vec!["expire_at".into(), "id".into()]),
+            expire_time: 1735689600,
+            range_start: None,
+            range_end: None,
+            batch_size: 1,
+        };
+        let mut scanned = Vec::new();
+        let result = task.execute(
+            &mut worker,
+            &TtlStatistics::default(),
+            |rows| {
+                scanned.extend(rows);
+                Ok(())
+            },
+            || false,
+        );
+        assert_eq!(
+            result.reason,
+            TaskTerminateReason::Finished,
+            "{zone}: {result:?}"
+        );
+        assert_eq!(scanned.len(), 3, "{zone}: {scanned:?}");
+        for (i, row) in scanned.iter().enumerate() {
+            assert_eq!(
+                row,
+                &vec![
+                    Datum::Text(instants[i].into()),
+                    Datum::Text((i + 1).to_string())
+                ]
+            );
+        }
+    }
+}
+
+#[test]
+fn ttl_delete_rechecks_strict_temporal_boundary_after_global_timezone_changes() {
+    struct NoLimit;
+    impl DeleteRateLimiter for NoLimit {
+        fn wait_delete_token(&mut self, _: usize) -> Result<(), SessionError> {
+            Ok(())
+        }
+    }
+    for (kind, frontier, values, updated) in [
+        (
+            "TIMESTAMP",
+            1730615400,
+            [
+                "2024-11-03 05:30:00",
+                "2024-11-03 06:30:00",
+                "2024-11-03 07:30:00",
+                "2024-11-03 05:45:00",
+            ],
+            "2024-11-03 07:45:00",
+        ),
+        (
+            "DATETIME",
+            1730615400,
+            [
+                "2024-11-03 01:29:59",
+                "2024-11-03 01:30:00",
+                "2024-11-03 01:30:01",
+                "2024-11-03 01:00:00",
+            ],
+            "2024-11-03 02:00:00",
+        ),
+        (
+            "DATE",
+            1730606400,
+            ["2024-11-02", "2024-11-03", "2024-11-04", "2024-11-01"],
+            "2024-11-05",
+        ),
+        (
+            "DATE",
+            1730653200,
+            ["2024-11-02", "2024-11-03", "2024-11-04", "2024-11-01"],
+            "2024-11-05",
+        ),
+    ] {
+        let (domain, session) = CreateAnalyzeSession().unwrap();
+        session
+            .execute("SET @@global.time_zone='America/New_York'")
+            .unwrap();
+        session.execute("SET @@time_zone='UTC'").unwrap();
+        session.execute(&format!("CREATE TABLE ttl_delete_boundary (id BIGINT PRIMARY KEY CLUSTERED, expire_at {kind} NOT NULL) TTL=expire_at + INTERVAL 1 HOUR")).unwrap();
+        for (i, value) in values.iter().enumerate() {
+            session
+                .execute(&format!(
+                    "INSERT INTO ttl_delete_boundary VALUES ({}, '{value}')",
+                    i + 1
+                ))
+                .unwrap();
+        }
+        let table = temporal_table("ttl_delete_boundary", vec!["id".into()]);
+        let mut scan_session = TtlWorkerSqlSession::new(session);
+        let captured = scan_session.expiration_predicate(&table, frontier).unwrap();
+        let mut delete_session = TtlWorkerSqlSession::new(ConcreteSession::new(domain));
+        delete_session
+            .execute("SET @@time_zone='UTC'", &[])
+            .unwrap();
+        delete_session.use_expiration(&table, frontier, captured);
+        scan_session
+            .execute("SET @@global.time_zone='+08:00'", &[])
+            .unwrap();
+        scan_session
+            .execute(
+                "UPDATE ttl_delete_boundary SET expire_at=%? WHERE id=4",
+                &[Datum::Text(updated.into())],
+            )
+            .unwrap();
+        let statistics = Arc::new(TtlStatistics::default());
+        let task = DeleteTask {
+            job_id: "boundary".into(),
+            table,
+            rows: (1..=4).map(|id| vec![Datum::Integer(id)]).collect(),
+            expire_time: frontier,
+            statistics,
+        };
+        assert!(
+            task.do_delete(&mut delete_session, &mut NoLimit).is_empty(),
+            "{kind}"
+        );
+        let rows = delete_session
+            .execute("SELECT id FROM ttl_delete_boundary ORDER BY id", &[])
+            .unwrap();
+        let remaining = if kind == "DATE" && frontier == 1730653200 {
+            vec!["3", "4"]
+        } else {
+            vec!["2", "3", "4"]
+        };
+        assert_eq!(
+            rows,
+            remaining
+                .into_iter()
+                .map(|id| vec![Datum::Text(id.into())])
+                .collect::<Vec<_>>(),
+            "{kind} frontier={frontier}"
+        );
+    }
+}
+
+#[test]
+fn ttl_sql_session_preparation_restores_real_variables() {
+    use astersql_ttl_ttlworker::session::{prepare_session_checked, restore_session_checked};
+    let (_, session) = CreateAnalyzeSession().unwrap();
+    session
+        .execute("SET SESSION time_zone='America/New_York'")
+        .unwrap();
+    let mut compatibility_session = TtlWorkerSqlSession::new(session);
+    assert_eq!(
+        compatibility_session
+            .execute("SELECT @@time_zone", &[])
+            .unwrap(),
+        vec![vec![Datum::Text("America/New_York".into())]]
+    );
+    for zone in ["SYSTEM", "+08:00", "Asia/Shanghai"] {
+        let (_, session) = CreateAnalyzeSession().unwrap();
+        for sql in [
+            format!("SET @@time_zone='{zone}'"),
+            "SET tidb_retry_limit=7".into(),
+            "SET tidb_enable_1pc=OFF".into(),
+            "SET tidb_enable_async_commit=OFF".into(),
+            "SET tidb_isolation_read_engines='tikv'".into(),
+        ] {
+            session.execute(&sql).unwrap();
+        }
+        let mut worker = TtlWorkerSqlSession::new(session);
+        let previous = prepare_session_checked(&mut worker).unwrap();
+        assert_eq!(
+            worker.execute("SELECT @@tidb_retry_limit", &[]).unwrap(),
+            vec![vec![Datum::Text("0".into())]]
+        );
+        assert_eq!(
+            worker.execute("SELECT @@time_zone", &[]).unwrap(),
+            vec![vec![Datum::Text("UTC".into())]]
+        );
+        let scan_previous =
+            astersql_ttl_ttlworker::session::prepare_scan_session_checked(&mut worker).unwrap();
+        assert_eq!(
+            worker
+                .execute("SELECT @@tidb_distsql_scan_concurrency", &[])
+                .unwrap(),
+            vec![vec![Datum::Text("1".into())]]
+        );
+        astersql_ttl_ttlworker::session::restore_scan_session_checked(&mut worker, scan_previous)
+            .unwrap();
+        assert_eq!(
+            worker
+                .execute("SELECT @@tidb_distsql_scan_concurrency", &[])
+                .unwrap(),
+            vec![vec![Datum::Text("15".into())]]
+        );
+        restore_session_checked(&mut worker, previous).unwrap();
+        assert!(worker.reusable());
+        assert_eq!(
+            worker.execute("SELECT @@time_zone", &[]).unwrap(),
+            vec![vec![Datum::Text(zone.into())]]
+        );
+        assert_eq!(
+            worker.execute("SELECT @@tidb_retry_limit", &[]).unwrap(),
+            vec![vec![Datum::Text("7".into())]]
+        );
+        assert_eq!(
+            worker
+                .execute("SELECT @@tidb_isolation_read_engines", &[])
+                .unwrap(),
+            vec![vec![Datum::Text("tikv".into())]]
+        );
+    }
+}
