@@ -15,6 +15,7 @@ chunk = { package = "astersql-util-chunk", path = "../util/chunk" }
 codec = { package = "astersql-util-codec", path = "../util/codec" }
 collate = { package = "astersql-util-collate", path = "../util/collate" }
 protobuf = "=2.8.0"
+sqlkiller = { package = "astersql-util-sqlkiller", path = "../util/sqlkiller" }
 stmtctx = { package = "astersql-sessionctx-stmtctx", path = "../sessionctx/stmtctx" }
 tablecodec = { package = "astersql-tablecodec", path = "../tablecodec" }
 tipb = { git = "https://github.com/pingcap/tipb.git", rev = "07f0ea6b6bffa9d8ac100d81ee51dbbfe4dda3bf", default-features = false, features = ["protobuf-codec"] }

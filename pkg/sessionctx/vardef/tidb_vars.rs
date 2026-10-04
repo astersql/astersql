@@ -1147,7 +1147,7 @@ pub const TiDBOptAdvancedJoinHint: &str = "tidb_opt_advanced_join_hint";
 pub const TiDBOptUseInvisibleIndexes: &str = "tidb_opt_use_invisible_indexes";
 // TiDBAnalyzePartitionConcurrency is the number of concurrent workers to save statistics to the system tables.
 pub const TiDBAnalyzePartitionConcurrency: &str = "tidb_analyze_partition_concurrency";
-// TiDBMergePartitionStatsConcurrency indicates the concurrency when merge partition stats into global stats
+// TiDBMergePartitionStatsConcurrency is deprecated and always returns 1.
 pub const TiDBMergePartitionStatsConcurrency: &str = "tidb_merge_partition_stats_concurrency";
 // TiDBEnableAsyncMergeGlobalStats indicates whether to enable async merge global stats
 pub const TiDBEnableAsyncMergeGlobalStats: &str = "tidb_enable_async_merge_global_stats";
@@ -1873,7 +1873,6 @@ pub const DefTiDBAnalyzePartitionConcurrency: i64 = 2;
 pub const DefTiDBOptRangeMaxSize: i64 = 64 * 1024 * 1024; // 64 MB
 pub const DefTiDBCostModelVer: i64 = 2;
 pub const DefTiDBServerMemoryLimitSessMinSize: i64 = 128 << 20;
-pub const DefTiDBMergePartitionStatsConcurrency: i64 = 1;
 pub const DefTiDBServerMemoryLimitGCTrigger: f64 = 0.7;
 pub const DefTiDBEnableGOGCTuner: bool = true;
 // DefTiDBGOGCTunerThreshold is to limit TiDBGOGCTunerThreshold.

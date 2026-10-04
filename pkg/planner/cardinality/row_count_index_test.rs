@@ -1,4 +1,17 @@
 // Copyright 2026 AsterSQL.
+// Copyright 2026 PingCAP, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 use crate::*;
 use std::collections::HashMap;
@@ -403,4 +416,228 @@ fn appended_handle_missing_stats_keeps_prefix_and_point_cap() {
     );
     coll.RealtimeCount = 0;
     assert_eq!(adjust(&coll, &[&point], &[&index_col, &handle_col]), prefix);
+}
+
+#[test]
+fn combined_merge_optimizer_callbacks_use_merged_histogram_and_topn() {
+    let context = TestContext::default();
+    let ft = types::NewFieldType(mysql::TypeLonglong);
+    let hist = |specs: &[(i64, i64, i64, i64)]| {
+        let mut h = statistics::NewHistogram(1, 0, 0, 0, &ft, specs.len(), 0);
+        let mut count = 0;
+        for &(lo, up, mass, repeat) in specs {
+            count += mass;
+            h.AppendBucket(
+                &types::NewIntDatum(lo),
+                &types::NewIntDatum(up),
+                count,
+                repeat,
+            );
+        }
+        Some(h)
+    };
+    let encode =
+        |v| codec::EncodeKey(chrono_tz::UTC, Vec::new(), vec![types::NewIntDatum(v)]).unwrap();
+    for (specs, ndv, n, cap, value, want) in [
+        (
+            vec![vec![(0, 10, 100, 20)], vec![(10, 20, 100, 1)]],
+            50,
+            0,
+            2,
+            10,
+            20.0,
+        ),
+        (
+            vec![vec![(1, 100, 100, 1)], vec![(90, 110, 100, 1)]],
+            100,
+            0,
+            2,
+            90,
+            2.0,
+        ),
+        (
+            vec![{
+                let mut s = (0..10)
+                    .map(|i| (i * 10 + 1, i * 10 + 10, 100, 1))
+                    .collect::<Vec<_>>();
+                s.push((200, 200, 1000, 1000));
+                s
+            }],
+            11,
+            1,
+            10,
+            200,
+            1000.0,
+        ),
+        (
+            vec![
+                vec![(1, 10, 2, 1)],
+                vec![(5, 100, 100, 50)],
+                vec![(5, 100, 100, 50)],
+            ],
+            4,
+            0,
+            2,
+            0,
+            0.0,
+        ),
+    ] {
+        let hists = specs.iter().map(|s| hist(s)).collect::<Vec<_>>();
+        let (top, mut histogram) = statistics::MergePartTopNAndHistToGlobal(
+            &stmtctx_dependency::NewStmtCtx(),
+            &Default::default(),
+            &[],
+            &hists,
+            n,
+            cap,
+            false,
+        )
+        .unwrap();
+        histogram.NDV = ndv;
+        let total =
+            histogram.NotNullCount() + top.as_ref().map_or(0, statistics::TopN::TotalCount) as f64;
+        let column = statistics::Column {
+            CMSketch: None,
+            TopN: top,
+            FMSketch: None,
+            Info: None,
+            Histogram: histogram,
+            StatsLoadedStatus: statistics::NewStatsFullLoadStatus(),
+            PhysicalID: 0,
+            StatsVer: 2,
+            IsHandle: false,
+        };
+        if value != 0 {
+            assert_eq!(
+                equalRowCountOnColumn(
+                    &context,
+                    &column,
+                    types::NewIntDatum(value),
+                    encode(value),
+                    total as i64,
+                    0
+                )
+                .unwrap()
+                .Est,
+                want
+            );
+        }
+        let between = |lo, hi| {
+            betweenRowCountOnColumn(
+                &context,
+                &column,
+                types::NewIntDatum(lo),
+                types::NewIntDatum(hi),
+                encode(lo),
+                encode(hi),
+            )
+            .Est
+        };
+        if value == 10 {
+            assert!(between(0, 20) >= 20.0);
+        }
+        if value == 0 {
+            assert!(between(1, 5) >= 0.0);
+            assert!(between(1, 100) <= 202.0);
+        }
+    }
+    let index_ft = types::NewFieldType(mysql::TypeBlob);
+    let empty = Some(statistics::NewHistogram(1, 6, 0, 0, &index_ft, 0, 0));
+    let tops = [vec![1, 2, 3], vec![15], vec![25], vec![35]]
+        .into_iter()
+        .map(|values| {
+            let mut t = statistics::NewTopN(values.len());
+            for value in values {
+                t.AppendTopN(encode(value), 1);
+            }
+            t.Sort();
+            Some(t)
+        })
+        .collect::<Vec<_>>();
+    let (top, mut histogram) = statistics::MergePartTopNAndHistToGlobal(
+        &stmtctx_dependency::NewStmtCtx(),
+        &Default::default(),
+        &tops,
+        &vec![empty; 4],
+        100,
+        256,
+        true,
+    )
+    .unwrap();
+    histogram.NDV = 6;
+    let idx = statistics::Index {
+        CMSketch: None,
+        TopN: top,
+        FMSketch: None,
+        Info: Some(statistics::IndexInfo {
+            Columns: vec![statistics::IndexColumnInfo::default()],
+            ..Default::default()
+        }),
+        Histogram: histogram,
+        StatsLoadedStatus: statistics::NewStatsFullLoadStatus(),
+        PhysicalID: 0,
+        StatsVer: 2,
+    };
+    let mut encoded_hist = statistics::NewHistogram(1, 10, 0, 0, &index_ft, 4, 0);
+    for i in 0..4 {
+        encoded_hist.AppendBucket(
+            &types::NewBytesDatum(encode(i * 5 + 1)),
+            &types::NewBytesDatum(encode(i * 5 + 5)),
+            (i + 1) * 25,
+            1,
+        );
+    }
+    let tops = [vec![(1, 50), (2, 30)], vec![(1, 40), (3, 20)]]
+        .into_iter()
+        .map(|entries| {
+            let mut top = statistics::NewTopN(2);
+            for (value, count) in entries {
+                top.AppendTopN(encode(value), count);
+            }
+            top.Sort();
+            Some(top)
+        })
+        .collect::<Vec<_>>();
+    let (top, mut histogram) = statistics::MergePartTopNAndHistToGlobal(
+        &stmtctx_dependency::NewStmtCtx(),
+        &Default::default(),
+        &tops,
+        &[Some(encoded_hist.clone()), Some(encoded_hist)],
+        2,
+        4,
+        true,
+    )
+    .unwrap();
+    histogram.NDV = 10;
+    let encoded_index = statistics::Index {
+        TopN: top,
+        Histogram: histogram,
+        ..idx.clone()
+    };
+    assert_eq!(
+        equalRowCountOnIndex(&context, &encoded_index, encode(1), 340, 0).Est,
+        90.0
+    );
+    assert!(
+        betweenRowCountOnIndex(
+            &context,
+            &encoded_index,
+            types::NewBytesDatum(encode(1)),
+            types::NewBytesDatum(encode(200))
+        )
+        .Est > 0.0
+    );
+    let range = ranger::Range {
+        LowVal: vec![types::NewIntDatum(0)],
+        HighVal: vec![types::NewIntDatum(16)],
+        Collators: vec![collate::GetBinaryCollator()],
+        HighExclude: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        getIndexRowCountForStatsV2(&context, &idx, None, &[&range], &[], 6, 0)
+            .unwrap()
+            .Est,
+        4.0
+    );
 }

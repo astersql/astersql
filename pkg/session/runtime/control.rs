@@ -2944,6 +2944,9 @@ impl ConcreteSession {
             .or_else(|| name.strip_prefix("global."))
             .unwrap_or(&name)
             .to_owned();
+        if name == astersql_sessionctx_vardef::TiDBMergePartitionStatsConcurrency {
+            return Ok("1".into());
+        }
         if astersql_sessionctx_variable::is_embedding_api_key(&name) {
             return Ok(astersql_sessionctx_variable::mask_embedding_api_key(
                 &self
@@ -5358,6 +5361,39 @@ impl ConcreteSession {
                     .set_stats_global_variable(&name, &normalized)
                     .map_err(|error| session_error("set global statistics variable", error))?;
                 astersql_sessionctx_vardef::InstancePlanCacheReservedPercentage.Store(percentage);
+                continue;
+            }
+            if name == astersql_sessionctx_vardef::TiDBMergePartitionStatsConcurrency {
+                let (normalized, warnings) = self
+                    .session_vars
+                    .ValidateAndSetGlobalSystemVar(
+                        &name,
+                        value.trim_matches(['\'', '"']),
+                        if is_global {
+                            astersql_sessionctx_vardef::ScopeGlobal
+                        } else {
+                            astersql_sessionctx_vardef::ScopeSession
+                        },
+                    )
+                    .map_err(|error| SessionError::new(error.to_string()))?;
+                for warning in warnings {
+                    let code = if warning.kind()
+                        == astersql_sessionctx_variable::VariableErrorKind::TruncatedWrongValue
+                    {
+                        1292
+                    } else {
+                        1287
+                    };
+                    self.state
+                        .borrow_mut()
+                        .current_warnings
+                        .push(SessionWarning::warning_with_code(code, warning.to_string()));
+                }
+                if is_global {
+                    self.domain
+                        .set_stats_global_variable(&name, &normalized)
+                        .map_err(|error| session_error("set deprecated merge variable", error))?;
+                }
                 continue;
             }
             if variable.IsGlobal {

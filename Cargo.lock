@@ -9342,6 +9342,7 @@ dependencies = [
  "astersql-util-chunk",
  "astersql-util-codec",
  "astersql-util-collate",
+ "astersql-util-sqlkiller",
  "chrono-tz",
  "protobuf 2.8.0 (git+https://github.com/pingcap/rust-protobuf?rev=de31a47f395c2f46dbfea2545517ea1b27ad0096)",
  "tipb",
@@ -9370,6 +9371,7 @@ dependencies = [
  "astersql-parser-terror",
  "astersql-session-syssession",
  "astersql-sessionctx",
+ "astersql-sessionctx-stmtctx",
  "astersql-sessionctx-sysproctrack",
  "astersql-sessionctx-vardef",
  "astersql-statistics",
@@ -9389,6 +9391,7 @@ dependencies = [
  "astersql-table",
  "astersql-testkit-testsetup",
  "astersql-types",
+ "astersql-types-datum",
  "astersql-util-chunk",
  "astersql-util-filter",
  "astersql-util-intest",
@@ -9396,6 +9399,7 @@ dependencies = [
  "astersql-util-memory",
  "astersql-util-slice",
  "astersql-util-sqlexec",
+ "astersql-util-sqlkiller",
 ]
 
 [[package]]

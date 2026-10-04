@@ -71,8 +71,6 @@ pub const TIDB_ENABLE_ANALYZE_SNAPSHOT: &str = "tidb_enable_analyze_snapshot";
 pub const TIDB_ANALYZE_SKIP_COLUMN_TYPES: &str = "tidb_analyze_skip_column_types";
 /// 全局变量名：合并时是否跳过缺失分区统计。
 pub const TIDB_SKIP_MISSING_PARTITION_STATS: &str = "tidb_skip_missing_partition_stats";
-/// 全局变量名：合并分区统计并发度。
-pub const TIDB_MERGE_PARTITION_STATS_CONCURRENCY: &str = "tidb_merge_partition_stats_concurrency";
 /// 全局变量名：锁等待超时（秒），内部会换算为毫秒。
 pub const INNODB_LOCK_WAIT_TIMEOUT: &str = "innodb_lock_wait_timeout";
 /// 全局变量名：会话时区。
@@ -214,7 +212,6 @@ pub struct SessionVariables {
     enable_analyze_snapshot: AtomicBool,
     analyze_skip_column_types: RwLock<Vec<String>>,
     skip_missing_partition_stats: AtomicBool,
-    analyze_partition_merge_concurrency: AtomicI64,
     lock_wait_timeout_millis: AtomicI64,
     time_zone: RwLock<String>,
     statement_time_zone: RwLock<String>,
@@ -233,7 +230,6 @@ impl SessionVariables {
             enable_analyze_snapshot: AtomicBool::new(false),
             analyze_skip_column_types: RwLock::new(Vec::new()),
             skip_missing_partition_stats: AtomicBool::new(false),
-            analyze_partition_merge_concurrency: AtomicI64::new(0),
             lock_wait_timeout_millis: AtomicI64::new(0),
             time_zone: RwLock::new(String::new()),
             statement_time_zone: RwLock::new(String::new()),
@@ -278,12 +274,6 @@ impl SessionVariables {
     /// 合并时是否跳过缺失分区统计。
     pub fn skip_missing_partition_stats(&self) -> bool {
         self.skip_missing_partition_stats.load(Ordering::Acquire)
-    }
-
-    /// 分区统计合并并发度。
-    pub fn analyze_partition_merge_concurrency(&self) -> i64 {
-        self.analyze_partition_merge_concurrency
-            .load(Ordering::Acquire)
     }
 
     /// 锁等待超时（毫秒）。
@@ -389,12 +379,6 @@ pub fn update_sctx_vars_for_stats(context: &dyn SessionContext) -> Result<(), St
     variables
         .skip_missing_partition_stats
         .store(option_on(&value), Ordering::Release);
-
-    let value = global(&variables, TIDB_MERGE_PARTITION_STATS_CONCURRENCY)?;
-    variables.analyze_partition_merge_concurrency.store(
-        parse_i64(TIDB_MERGE_PARTITION_STATS_CONCURRENCY, &value)?,
-        Ordering::Release,
-    );
 
     let value = global(&variables, INNODB_LOCK_WAIT_TIMEOUT)?;
     variables.lock_wait_timeout_millis.store(

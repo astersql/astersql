@@ -151,7 +151,6 @@ fn default_global_vars(time_zone: &str) -> HashMap<&'static str, String> {
         (TIDB_ENABLE_ANALYZE_SNAPSHOT, "0".to_owned()),
         (TIDB_ANALYZE_SKIP_COLUMN_TYPES, String::new()),
         (TIDB_SKIP_MISSING_PARTITION_STATS, "0".to_owned()),
-        (TIDB_MERGE_PARTITION_STATS_CONCURRENCY, "1".to_owned()),
         (INNODB_LOCK_WAIT_TIMEOUT, "50".to_owned()),
         (TIME_ZONE, time_zone.to_owned()),
     ])
@@ -394,7 +393,6 @@ fn test_update_sctx_vars_filters_analyze_skip_column_types() {
                 "JSON,text,int,mediumblob,invalid".to_owned(),
             ),
             (TIDB_SKIP_MISSING_PARTITION_STATS, "0".to_owned()),
-            (TIDB_MERGE_PARTITION_STATS_CONCURRENCY, "1".to_owned()),
             (INNODB_LOCK_WAIT_TIMEOUT, "50".to_owned()),
             (TIME_ZONE, values[TIME_ZONE].clone()),
         ])),
@@ -508,4 +506,15 @@ fn test_table_item_by_id_for_init_stats_avoids_v1_partition_scan() {
             .table_item_by_id_for_init_stats(&is, 1_i64 << 60)
             .is_none()
     );
+}
+
+#[test]
+fn stats_refresh_ignores_deprecated_merge_concurrency() {
+    let mut values = default_global_vars("UTC");
+    values.remove("tidb_merge_partition_stats_concurrency");
+    let global_vars = Arc::new(FakeGlobalVars {
+        values: Mutex::new(values),
+    });
+    let context = FakeSessionContext::new(global_vars);
+    update_sctx_vars_for_stats(&context).expect("refresh must not read the obsolete concurrency");
 }

@@ -356,3 +356,32 @@ fn optimizer_fix_control_is_visible_to_canonical_session_and_hints() {
         .unwrap();
     assert_eq!(generic.StmtCtx.warnings().len(), 1);
 }
+
+#[test]
+fn deprecated_merge_concurrency_always_reads_one() {
+    crate::register_builtin_sysvars();
+    let var = GetSysVar(vardef::TiDBMergePartitionStatsConcurrency).expect("compatibility sysvar");
+    let mut vars = SessionVars::new(Box::new(NoopAccessor));
+    assert_eq!(var.Value, "1");
+    assert_eq!((var.MinValue, var.MaxValue), (1, 256));
+    assert_eq!(
+        var.Validate(&mut vars, "1", vardef::ScopeSession).unwrap(),
+        "1"
+    );
+    assert!(vars.StmtCtx.warnings().is_empty());
+    for scope in [vardef::ScopeSession, vardef::ScopeGlobal] {
+        assert_eq!(var.Validate(&mut vars, "4", scope).unwrap(), "1");
+    }
+    assert_eq!(vars.StmtCtx.warnings().len(), 2);
+    assert_eq!(
+        vars.StmtCtx.warnings()[0].to_string(),
+        "tidb_merge_partition_stats_concurrency is deprecated: the merge no longer runs concurrently, so this setting has no effect. Kept for backward compatibility."
+    );
+    vars.set_system(&var.Name, "4");
+    assert_eq!(var.GetSessionFromHook(&mut vars).unwrap(), "1");
+    assert_eq!(var.GetGlobalFromHook(&Context, &mut vars).unwrap(), "1");
+    assert!(
+        var.Validate(&mut vars, "abc", vardef::ScopeSession)
+            .is_err()
+    );
+}

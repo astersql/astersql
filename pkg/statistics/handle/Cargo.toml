@@ -12,6 +12,9 @@ go-package = "pkg/statistics/handle"
 legacy-tasks = ["task-978", "task-981"]
 
 [dependencies]
+datum = { package = "astersql-types-datum", path = "../../types/internal/datum" }
+stmtctx = { package = "astersql-sessionctx-stmtctx", path = "../../sessionctx/stmtctx" }
+sqlkiller = { package = "astersql-util-sqlkiller", path = "../../util/sqlkiller" }
 "astersql-kv" = { package = "astersql-kv", path = "../../kv" }
 "astersql-statistics-handle-history" = { package = "astersql-statistics-handle-history", path = "history" }
 "astersql-statistics-handle-lockstats" = { package = "astersql-statistics-handle-lockstats", path = "lockstats" }

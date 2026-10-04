@@ -32,6 +32,7 @@ mod estimate;
 mod fmsketch;
 mod histogram;
 mod index;
+mod merge_global;
 mod row_sampler;
 mod runtime_stats_builder;
 mod sample;
@@ -50,6 +51,7 @@ pub use estimate::*;
 pub use fmsketch::*;
 pub use histogram::*;
 pub use index::*;
+pub use merge_global::*;
 pub use row_sampler::*;
 pub use runtime_stats_builder::*;
 pub use sample::*;
@@ -114,3 +116,7 @@ mod statistics_test;
 #[cfg(test)]
 #[path = "table_test.rs"]
 mod table_test;
+
+#[cfg(test)]
+#[path = "merge_global_test.rs"]
+mod merge_global_test;

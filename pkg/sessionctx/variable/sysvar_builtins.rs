@@ -1545,6 +1545,24 @@ fn register_getters_and_defaults() {
 
 /// 注册仅全局作用域的系统变量。
 fn register_global_vars() {
+    // Preserve the obsolete knob for SQL compatibility without merge state.
+    let mut merge = int_var(
+        vardef::TiDBMergePartitionStatsConcurrency,
+        1,
+        scope_both(),
+        1,
+        vardef::MaxConfigurableConcurrency as u64,
+    );
+    merge.SetSession = Some(Arc::new(|_, _| Ok(())));
+    merge.GetSession = Some(Arc::new(|_| Ok("1".into())));
+    merge.GetGlobal = Some(Arc::new(|_, _| Ok("1".into())));
+    merge.Validation = Some(Arc::new(|vars, normalized, _, _| {
+        if normalized != "1" {
+            vars.StmtCtx.append_warning(error("tidb_merge_partition_stats_concurrency is deprecated: the merge no longer runs concurrently, so this setting has no effect. Kept for backward compatibility."));
+        }
+        Ok("1".into())
+    }));
+    RegisterSysVar(merge);
     let mut stats_load_pseudo_timeout = bool_var(
         vardef::TiDBStatsLoadPseudoTimeout,
         vardef::DefTiDBStatsLoadPseudoTimeout,

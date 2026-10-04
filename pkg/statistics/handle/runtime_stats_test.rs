@@ -117,6 +117,109 @@ fn merged_column_histogram_keeps_stats_associated_with_their_partition() {
         .sum::<i64>();
     assert_eq!(
         column_histogram_rows(&global, 1) + top_n_rows,
-        all_rows.len() as i64
+        // The missing first partition contributes no histogram or TopN
+        // snapshot; preserve only the second partition's available mass.
+        partition_rows[1].len() as i64
     );
+}
+
+#[test]
+fn global_merge_selects_topn_from_partition_statistics_instead_of_prior_global_stats() {
+    let table = indexed_table();
+    let partition = BuildRuntimeTableStats(11, &table, &rows(&["2"; 5]), 1, 1).unwrap();
+    // A prior global profile may name a different popular value. The Go
+    // combined merge derives its output exclusively from partition inputs.
+    let mut global = BuildRuntimeTableStats(10, &table, &rows(&["1"; 5]), 1, 1).unwrap();
+    MergeRuntimePartitionHistograms(
+        &astersql_statistics::RuntimeStatsBuilder::default(),
+        &table,
+        &mut global,
+        std::slice::from_ref(&partition),
+        256,
+    )
+    .unwrap();
+    assert_eq!(global.columns[&1].top_n, partition.columns[&1].top_n);
+    assert_eq!(global.indexes[&2].top_n, partition.indexes[&2].top_n);
+}
+
+#[test]
+fn global_combined_merge_rebuilds_typed_persisted_bounds() {
+    for (tp, values) in [
+        (16_u8, ["1", "2", "256"]),
+        (247, ["a", "z", "a"]),
+        (248, ["a", "z", "a"]),
+        (
+            7,
+            [
+                "2001-01-01 00:00:00",
+                "2001-01-02 00:00:00",
+                "2001-01-01 00:00:00",
+            ],
+        ),
+    ] {
+        let mut table = indexed_table();
+        table.Columns[0].FieldType.SetType(tp);
+        if tp == 16 {
+            table.Columns[0].FieldType.SetFlen(16);
+        }
+        if tp == 247 || tp == 248 {
+            table.Columns[0]
+                .FieldType
+                .SetElems(vec!["z".into(), "a".into()]);
+        }
+        let source = rows(&values);
+        let partition = if tp == 16 {
+            let builder = astersql_statistics::RuntimeStatsBuilder::default();
+            let mut h =
+                astersql_statistics::NewHistogram(1, 3, 0, 1, &table.Columns[0].FieldType, 3, 0);
+            for (i, v) in [1, 256, 2].into_iter().enumerate() {
+                let mut d = datum::Datum::default();
+                d.SetMysqlBit(datum::NewBinaryLiteralFromUint(v, 2));
+                h.AppendBucket(&d, &d, i as i64 + 1, 1);
+            }
+            let mut p = TableStats::default();
+            p.columns.insert(
+                1,
+                crate::ColumnStats {
+                    analyzed_or_synthesized: true,
+                    ndv: 3,
+                    buckets: h
+                        .Buckets
+                        .iter()
+                        .enumerate()
+                        .map(|(i, b)| crate::Bucket {
+                            count: b.Count,
+                            repeats: b.Repeat,
+                            ndv: 0,
+                            lower: builder.encode_histogram_bound(&h, i * 2, false).unwrap(),
+                            upper: builder
+                                .encode_histogram_bound(&h, i * 2 + 1, false)
+                                .unwrap(),
+                        })
+                        .collect(),
+                    ..Default::default()
+                },
+            );
+            p
+        } else {
+            BuildRuntimeTableStats(11, &table, &source, 1, 0).unwrap()
+        };
+        let mut global = partition.clone();
+        crate::MergeRuntimePartitionStats(
+            &astersql_statistics::RuntimeStatsBuilder::default(),
+            &table,
+            &mut global,
+            &[partition],
+            1,
+            2,
+            &sqlkiller::sqlkiller::SQLKiller::default(),
+        )
+        .unwrap();
+        let top = global.columns[&1]
+            .top_n
+            .iter()
+            .map(|e| e.1 as i64)
+            .sum::<i64>();
+        assert_eq!(column_histogram_rows(&global, 1) + top, 3, "type {tp}");
+    }
 }

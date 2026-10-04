@@ -860,12 +860,14 @@ impl astersql_executor::analyze::CanonicalAnalyzeRuntime for SessionAnalyzeRunti
                 else {
                     continue;
                 };
-                astersql_statistics_handle::MergeRuntimePartitionHistograms(
+                astersql_statistics_handle::MergeRuntimePartitionStats(
                     &merge_builder,
                     &input.info,
                     global,
                     &partition_profiles,
+                    self.option_counts(input.key.table_id).0,
                     self.option_counts(input.key.table_id).1,
+                    &self.killer,
                 )
                 .map_err(astersql_executor::analyze::AnalyzeError)?;
             }

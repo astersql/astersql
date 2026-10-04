@@ -19,7 +19,7 @@
 // 包；本模块负责按表元信息筛选列/索引、组装 `ColumnStats`/`IndexStats`，
 // 并输出与 Go 侧 runtime stats 对齐的缓存结构。
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 
 use astersql_meta_model::{TableInfo, mysql, types};
 
@@ -136,20 +136,37 @@ fn canonical_histogram(
         buckets.len(),
         total_column_size,
     );
+    let decode = |encoded: &[u8]| -> Result<datum::Datum, String> {
+        if is_index {
+            return builder
+                .decode_histogram_bound(encoded, true)
+                .map_err(|e| e.to_string());
+        }
+        if field_type.GetType() == mysql::TypeBit {
+            let value = std::str::from_utf8(encoded)
+                .map_err(|e| e.to_string())?
+                .parse::<u64>()
+                .map_err(|e| e.to_string())?;
+            let mut d = datum::Datum::default();
+            d.SetMysqlBit(datum::NewBinaryLiteralFromUint(
+                value,
+                (field_type.GetFlen() + 7) / 8,
+            ));
+            return Ok(d);
+        }
+        astersql_statistics::DecodeColumnTopNValue(encoded, field_type, builder.TimeZone())
+            .map_err(|e| e.to_string())
+    };
     for bucket in buckets {
-        let lower = builder
-            .decode_histogram_bound(&bucket.lower, is_index)
-            .map_err(|error| error.to_string())?;
-        let upper = builder
-            .decode_histogram_bound(&bucket.upper, is_index)
-            .map_err(|error| error.to_string())?;
+        let lower = decode(&bucket.lower)?;
+        let upper = decode(&bucket.upper)?;
         histogram.AppendBucketWithNDV(&lower, &upper, bucket.count, bucket.repeats, bucket.ndv);
     }
     Ok(histogram)
 }
 
-/// Replace the directly-built logical histogram shapes with Go's partition
-/// merge result while retaining the already aggregated global TopN and NDV.
+/// Merge partition TopN and histograms while retaining the caller's FM NDV.
+/// Kept for callers that already express the TopN budget in the global profile.
 pub fn MergeRuntimePartitionHistograms(
     builder: &astersql_statistics::RuntimeStatsBuilder,
     table: &TableInfo,
@@ -157,94 +174,93 @@ pub fn MergeRuntimePartitionHistograms(
     partitions: &[TableStats],
     bucket_count: usize,
 ) -> Result<(), String> {
-    for column in table.Columns.iter().filter(|column| !column.Hidden) {
+    let top_n_count = global
+        .columns
+        .values()
+        .map(|stats| stats.top_n.len())
+        .chain(global.indexes.values().map(|stats| stats.top_n.len()))
+        .max()
+        .unwrap_or(0);
+    MergeRuntimePartitionStats(
+        builder,
+        table,
+        global,
+        partitions,
+        top_n_count,
+        bucket_count,
+        &sqlkiller::sqlkiller::SQLKiller::default(),
+    )
+}
+
+/// ANALYZE's combined merge boundary. Both streams come from the same
+/// partition snapshots; a prior global TopN never controls the selection.
+pub fn MergeRuntimePartitionStats(
+    builder: &astersql_statistics::RuntimeStatsBuilder,
+    table: &TableInfo,
+    global: &mut TableStats,
+    partitions: &[TableStats],
+    top_n_count: usize,
+    bucket_count: usize,
+    killer: &sqlkiller::sqlkiller::SQLKiller,
+) -> Result<(), String> {
+    let sc = stmtctx::NewStmtCtxWithTimeZone(builder.TimeZone());
+    let top_n_count =
+        u32::try_from(top_n_count).map_err(|_| "TopN budget exceeds uint32".to_owned())?;
+    let bucket_count =
+        i64::try_from(bucket_count).map_err(|_| "bucket budget exceeds int64".to_owned())?;
+    for column in table
+        .Columns
+        .iter()
+        .filter(|column| !column.Hidden && !column.IsVirtualGenerated())
+    {
         let Some(global_column) = global.columns.get_mut(&column.ID) else {
             continue;
         };
         if !global_column.analyzed_or_synthesized {
             continue;
         }
-        let mut histograms = Vec::new();
+        let mut hists = Vec::new();
+        let mut tops = Vec::new();
         for stats in partitions
             .iter()
-            .filter_map(|partition| partition.columns.get(&column.ID))
+            .filter_map(|p| p.columns.get(&column.ID))
             .filter(|stats| stats.analyzed_or_synthesized)
         {
-            histograms.push((
-                canonical_histogram(
-                    builder,
-                    column.ID,
-                    &column.FieldType,
-                    stats.ndv,
-                    stats.null_count,
-                    stats.total_column_size,
-                    stats.version,
-                    &stats.buckets,
-                    false,
-                )?,
-                stats,
-            ));
+            hists.push(Some(canonical_histogram(
+                builder,
+                column.ID,
+                &column.FieldType,
+                stats.ndv,
+                stats.null_count,
+                stats.total_column_size,
+                stats.version,
+                &stats.buckets,
+                false,
+            )?));
+            tops.push(Some(canonical_top_n(&stats.top_n)));
         }
-        if histograms.is_empty() {
+        if hists.is_empty() {
             continue;
         }
-        let selected = global_column
-            .top_n
-            .iter()
-            .map(|(encoded, _)| encoded.clone())
-            .collect::<BTreeSet<_>>();
-        let mut popped = BTreeMap::<Vec<u8>, u64>::new();
-        for partition in partitions {
-            let Some(stats) = partition.columns.get(&column.ID) else {
-                continue;
-            };
-            for (encoded, count) in &stats.top_n {
-                if !selected.contains(encoded) {
-                    *popped.entry(encoded.clone()).or_default() += *count;
-                }
-            }
-        }
-        for encoded in &selected {
-            let value = builder
-                .decode_histogram_bound(encoded, false)
-                .map_err(|error| error.to_string())?;
-            for (histogram, stats) in &mut histograms {
-                let locally_top_n = stats.top_n.iter().any(|(value, _)| value == encoded);
-                if !locally_top_n {
-                    let count = histogram.EqualRowCount(&value, false).0 as i64;
-                    if count > 0 {
-                        histogram.BinarySearchRemoveVal(&value, count);
-                    }
-                }
-            }
-        }
-        let popped = popped
-            .into_iter()
-            .map(|(Encoded, Count)| astersql_statistics::TopNMeta { Encoded, Count })
-            .collect::<Vec<_>>();
-        let histograms = histograms
-            .into_iter()
-            .map(|(histogram, _)| histogram)
-            .collect::<Vec<_>>();
-        let Some(merged) = astersql_statistics::MergePartitionHist2GlobalHistWithLocation(
-            &histograms,
-            &popped,
+        let (top, merged) = astersql_statistics::MergePartTopNAndHistToGlobal(
+            &sc,
+            killer,
+            &tops,
+            &hists,
+            top_n_count,
             bucket_count,
             false,
-            astersql_statistics::Version2,
-            builder.TimeZone(),
         )
-        .map_err(|error| error.to_string())?
-        else {
-            continue;
-        };
+        .map_err(|e| e.to_string())?;
+        global_column.top_n = top.map_or_else(Vec::new, |top| {
+            top.TopN.into_iter().map(|e| (e.Encoded, e.Count)).collect()
+        });
         global_column.buckets = convert_buckets(builder, &merged, false)?;
         global_column.null_count = merged.NullCount;
         global_column.total_column_size = merged.TotColSize;
         global_column.correlation = merged.Correlation;
     }
-
-    let index_field_type = types::NewFieldType(mysql::TypeBlob);
+    let index_type = types::NewFieldType(mysql::TypeBlob);
     for index in &table.Indices {
         let Some(global_index) = global.indexes.get_mut(&index.ID) else {
             continue;
@@ -252,87 +268,56 @@ pub fn MergeRuntimePartitionHistograms(
         if !global_index.analyzed {
             continue;
         }
-        let mut histograms = Vec::new();
+        let mut hists = Vec::new();
+        let mut tops = Vec::new();
         for stats in partitions
             .iter()
-            .filter_map(|partition| partition.indexes.get(&index.ID))
+            .filter_map(|p| p.indexes.get(&index.ID))
             .filter(|stats| stats.analyzed)
         {
-            histograms.push((
-                canonical_histogram(
-                    builder,
-                    index.ID,
-                    &index_field_type,
-                    stats.ndv,
-                    stats.null_count,
-                    stats.total_column_size,
-                    stats.version,
-                    &stats.buckets,
-                    true,
-                )?,
-                stats,
-            ));
+            hists.push(Some(canonical_histogram(
+                builder,
+                index.ID,
+                &index_type,
+                stats.ndv,
+                stats.null_count,
+                stats.total_column_size,
+                stats.version,
+                &stats.buckets,
+                true,
+            )?));
+            tops.push(Some(canonical_top_n(&stats.top_n)));
         }
-        if histograms.is_empty() {
+        if hists.is_empty() {
             continue;
         }
-        let mut popped = BTreeMap::<Vec<u8>, u64>::new();
-        let selected = global_index
-            .top_n
-            .iter()
-            .map(|(encoded, _)| encoded.clone())
-            .collect::<BTreeSet<_>>();
-        for partition in partitions {
-            let Some(stats) = partition.indexes.get(&index.ID) else {
-                continue;
-            };
-            for (encoded, count) in &stats.top_n {
-                if !selected.contains(encoded) {
-                    *popped.entry(encoded.clone()).or_default() += *count;
-                }
-            }
-        }
-        for encoded in &selected {
-            let value = builder
-                .decode_histogram_bound(encoded, true)
-                .map_err(|error| error.to_string())?;
-            for (histogram, stats) in &mut histograms {
-                let locally_top_n = stats.top_n.iter().any(|(value, _)| value == encoded);
-                if !locally_top_n {
-                    let count = histogram.EqualRowCount(&value, true).0 as i64;
-                    if count > 0 {
-                        histogram.BinarySearchRemoveVal(&value, count);
-                    }
-                }
-            }
-        }
-        let popped = popped
-            .into_iter()
-            .map(|(Encoded, Count)| astersql_statistics::TopNMeta { Encoded, Count })
-            .collect::<Vec<_>>();
-        let histograms = histograms
-            .into_iter()
-            .map(|(histogram, _)| histogram)
-            .collect::<Vec<_>>();
-        let Some(merged) = astersql_statistics::MergePartitionHist2GlobalHistWithLocation(
-            &histograms,
-            &popped,
+        let (top, merged) = astersql_statistics::MergePartTopNAndHistToGlobal(
+            &sc,
+            killer,
+            &tops,
+            &hists,
+            top_n_count,
             bucket_count,
             true,
-            astersql_statistics::Version2,
-            builder.TimeZone(),
         )
-        .map_err(|error| error.to_string())?
-        else {
-            continue;
-        };
+        .map_err(|e| e.to_string())?;
+        global_index.top_n = top.map_or_else(Vec::new, |top| {
+            top.TopN.into_iter().map(|e| (e.Encoded, e.Count)).collect()
+        });
         global_index.buckets = convert_buckets(builder, &merged, true)?;
         global_index.null_count = merged.NullCount;
-        // Go does not persist tot_col_size for merged global indexes.
         global_index.total_column_size = 0;
         global_index.correlation = merged.Correlation;
     }
     Ok(())
+}
+fn canonical_top_n(entries: &[(Vec<u8>, u64)]) -> astersql_statistics::TopN {
+    let mut top = astersql_statistics::NewTopN(entries.len());
+    for (key, count) in entries {
+        top.AppendTopN(key.clone(), *count);
+    }
+    top.Sort();
+    top
 }
 
 /// Produces the existing `TableStats` cache value from decoded KV rows.
