@@ -20,6 +20,7 @@
 
 use std::io::{self, Read};
 use std::sync::{Arc, Mutex, mpsc};
+use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 
@@ -41,6 +42,7 @@ const DEFAULT_MULTIPART_CONCURRENCY: i32 = 3;
 #[derive(Clone)]
 pub struct Client {
     svc: Arc<dyn API>,
+    presign_svc: Arc<dyn API>,
     bucket_prefix: storeapi::BucketPrefix,
     options: s3like::backuppb::S3,
 }
@@ -55,8 +57,10 @@ impl Client {
     where
         T: API + 'static,
     {
+        let presign_svc = svc.clone();
         Self {
             svc,
+            presign_svc,
             bucket_prefix,
             options,
         }
@@ -68,8 +72,25 @@ impl Client {
         bucket_prefix: storeapi::BucketPrefix,
         options: s3like::backuppb::S3,
     ) -> Self {
+        let presign_svc = svc.clone();
         Self {
             svc,
+            presign_svc,
+            bucket_prefix,
+            options,
+        }
+    }
+
+    /// 由独立的数据 API 与公网预签名 API 构造 Client。
+    pub fn with_presign_api(
+        svc: Arc<dyn API>,
+        presign_svc: Arc<dyn API>,
+        bucket_prefix: storeapi::BucketPrefix,
+        options: s3like::backuppb::S3,
+    ) -> Self {
+        Self {
+            svc,
+            presign_svc,
             bucket_prefix,
             options,
         }
@@ -195,6 +216,24 @@ impl Client {
                 bucket: self.bucket_prefix.Bucket.clone(),
                 key: self.bucket_prefix.ObjectKey(name),
             },
+        )
+    }
+
+    /// 为对象生成预签名 GET URL。
+    pub fn PresignObject(
+        &self,
+        ctx: &storeapi::Context,
+        name: &str,
+        expire: Duration,
+    ) -> Result<String> {
+        self.presign_svc.presign_get_object(
+            ctx,
+            &GetObjectInput {
+                bucket: self.bucket_prefix.Bucket.clone(),
+                key: self.bucket_prefix.ObjectKey(name),
+                range: None,
+            },
+            expire,
         )
     }
 
@@ -372,6 +411,14 @@ impl s3like::PrefixClient for Client {
     }
     fn DeleteObjects(&self, ctx: &storeapi::Context, names: &[String]) -> Result<()> {
         Client::DeleteObjects(self, ctx, names)
+    }
+    fn PresignObject(
+        &self,
+        ctx: &storeapi::Context,
+        name: &str,
+        expire: Duration,
+    ) -> Result<String> {
+        Client::PresignObject(self, ctx, name, expire)
     }
     fn HeadObject(
         &self,

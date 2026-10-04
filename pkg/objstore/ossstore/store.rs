@@ -204,13 +204,22 @@ pub fn NewOSSStorage(
     qs.Prefix = storeapi::NewPrefix(&qs.Prefix).String();
     let bucket_prefix = storeapi::NewBucketPrefix(&qs.Bucket, &qs.Prefix);
     let api = build_api(
-        credentials,
+        credentials.clone(),
         &qs,
         &detected_region,
         use_internal_endpoint,
         opts.AccessRecording.clone(),
     )?;
-    let client = Client::new(api, bucket_prefix.clone(), qs.clone());
+    // 预签名 URL 可能在阿里云 VPC 外消费，因此始终使用公网 endpoint；显式
+    // 自定义 endpoint 仍由 build_api 保留。
+    let presign_api = build_api(
+        credentials,
+        &qs,
+        &detected_region,
+        false,
+        opts.AccessRecording.clone(),
+    )?;
+    let client = Client::with_presign_api(api, presign_api, bucket_prefix.clone(), qs.clone());
     s3like::CheckPermissions(ctx, &client, &opts.CheckPermissions)
         .map_err(|error| anyhow!("check permission failed due to {error}"))?;
 

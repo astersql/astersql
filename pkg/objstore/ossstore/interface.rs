@@ -21,11 +21,12 @@
 use std::fmt;
 use std::io::{self, Cursor, Read};
 use std::sync::Arc;
+use std::time::Duration;
 
 use ali_oss_rs::blocking::bucket::BucketOperations;
 use ali_oss_rs::blocking::multipart::MultipartUploadsOperations;
 use ali_oss_rs::blocking::object::ObjectOperations;
-use anyhow::{Result, anyhow};
+use anyhow::{Context as _, Result, anyhow};
 
 use crate::{CredentialsProvider, OssRetryer};
 
@@ -311,6 +312,15 @@ pub trait API: Send + Sync {
     /// 服务端拷贝对象。
     fn copy_object(&self, _: &storeapi::Context, _: &CopyObjectInput) -> Result<()> {
         Err(anyhow!("OSS operation CopyObject is not implemented"))
+    }
+    /// 为 GET 对象生成带过期时间的预签名 URL。
+    fn presign_get_object(
+        &self,
+        _: &storeapi::Context,
+        _: &GetObjectInput,
+        _: Duration,
+    ) -> Result<String> {
+        Err(anyhow!("OSS operation Presign is not implemented"))
     }
     /// 删除单个对象。
     fn delete_object(&self, _: &storeapi::Context, _: &DeleteObjectInput) -> Result<()> {
@@ -664,6 +674,22 @@ impl API for AliyunOssApi {
                 .map(|_| ())
                 .map_err(|e| sdk_error("CopyObject", e))
         })
+    }
+
+    fn presign_get_object(
+        &self,
+        ctx: &storeapi::Context,
+        input: &GetObjectInput,
+        expire: Duration,
+    ) -> Result<String> {
+        ctx.check()?;
+        let expire_seconds = u32::try_from(expire.as_secs())
+            .context("OSS presign expiration exceeds supported range")?;
+        let options =
+            ali_oss_rs::presign_common::PresignGetOptionsBuilder::new(expire_seconds).build();
+        Ok(self
+            .client()?
+            .presign_url(&input.bucket, &input.key, options))
     }
 
     fn delete_object(&self, ctx: &storeapi::Context, input: &DeleteObjectInput) -> Result<()> {

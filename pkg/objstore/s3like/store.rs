@@ -438,6 +438,9 @@ impl Storage {
         fileName: &str,
         expire: Duration,
     ) -> Result<String> {
+        if expire.is_zero() {
+            return Err(anyhow!("presign expiration must be positive"));
+        }
         self.s3Cli.PresignObject(ctx, fileName, expire)
     }
 

@@ -38,6 +38,7 @@ impl ReadCloser for FailingBody {
 }
 
 struct ReopenFailClient;
+static PRESIGN_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 impl PrefixClient for ReopenFailClient {
     fn CheckBucketExistence(&self, _: &storeapi::Context) -> anyhow::Result<()> {
@@ -100,8 +101,22 @@ impl PrefixClient for ReopenFailClient {
         unreachable!()
     }
     fn PresignObject(&self, _: &storeapi::Context, _: &str, _: Duration) -> anyhow::Result<String> {
-        unreachable!()
+        PRESIGN_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok("https://example.com/object".to_owned())
     }
+}
+
+#[test]
+fn presign_file_rejects_non_positive_expiration_before_calling_client() {
+    PRESIGN_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
+    let storage = storage();
+    let ctx = storeapi::Context::default();
+
+    for expire in [Duration::ZERO] {
+        let error = storage.PresignFile(&ctx, "object", expire).unwrap_err();
+        assert!(error.to_string().contains("expiration must be positive"));
+    }
+    assert_eq!(PRESIGN_CALLS.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 
 fn storage() -> Storage {

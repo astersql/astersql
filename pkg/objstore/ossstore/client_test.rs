@@ -21,6 +21,7 @@
 use std::io::{self, Read};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use task_ossstore::*;
@@ -41,6 +42,8 @@ struct MockApi {
     delete_requests: Mutex<Vec<DeleteObjectsInput>>,
     list_requests: Mutex<Vec<ListObjectsV2Input>>,
     copy_requests: Mutex<Vec<CopyObjectInput>>,
+    presign_mode: AtomicUsize,
+    presign_requests: Mutex<Vec<(GetObjectInput, Duration)>>,
     upload_mode: AtomicUsize,
     complete_mode: AtomicUsize,
     upload_requests: Mutex<Vec<UploadPartInput>>,
@@ -179,6 +182,23 @@ impl API for MockApi {
         }
     }
 
+    fn presign_get_object(
+        &self,
+        _: &storeapi::Context,
+        input: &GetObjectInput,
+        expire: Duration,
+    ) -> Result<String> {
+        self.presign_requests
+            .lock()
+            .unwrap()
+            .push((input.clone(), expire));
+        if self.presign_mode.load(Ordering::SeqCst) == 1 {
+            Err(anyhow!("mock presign error"))
+        } else {
+            Ok("https://bucket.example.com/prefix/object?signature=test".to_owned())
+        }
+    }
+
     fn initiate_multipart_upload(
         &self,
         _: &storeapi::Context,
@@ -248,6 +268,72 @@ fn assert_error_contains<T>(result: Result<T>, needle: &str) {
         Ok(_) => panic!("expected error containing {needle:?}"),
         Err(error) => assert!(error.to_string().contains(needle)),
     }
+}
+
+#[test]
+fn presign_object_forwards_prefixed_get_request_and_expiration() {
+    let api = Arc::new(MockApi::default());
+    let client = new_test_client(api.clone());
+    let ctx = storeapi::Context::default();
+
+    let url = client
+        .PresignObject(&ctx, "object", Duration::from_secs(3600))
+        .unwrap();
+
+    assert_eq!(
+        url,
+        "https://bucket.example.com/prefix/object?signature=test"
+    );
+    assert_eq!(
+        *api.presign_requests.lock().unwrap(),
+        vec![(
+            GetObjectInput {
+                bucket: "bucket".to_owned(),
+                key: "prefix/object".to_owned(),
+                range: None,
+            },
+            Duration::from_secs(3600),
+        )]
+    );
+
+    api.presign_mode.store(1, Ordering::SeqCst);
+    assert_error_contains(
+        client.PresignObject(&ctx, "object", Duration::from_secs(3600)),
+        "mock presign error",
+    );
+}
+
+#[test]
+fn aliyun_presign_uses_public_endpoint_and_signs_temporary_credentials() {
+    let api = Arc::new(
+        AliyunOssApi::new(
+            Arc::new(StaticCredentialsProvider::new(
+                "access-key-id".to_owned(),
+                "access-key-secret".to_owned(),
+                "recognizable-security-token".to_owned(),
+            )),
+            "https://oss-cn-hangzhou.aliyuncs.com".to_owned(),
+            "cn-hangzhou".to_owned(),
+            None,
+        )
+        .unwrap(),
+    );
+    let client = Client::new(
+        api,
+        storeapi::NewBucketPrefix("bucket", "prefix/"),
+        s3like::backuppb::S3::default(),
+    );
+
+    let signed = client
+        .PresignObject(
+            &storeapi::Context::default(),
+            "object",
+            Duration::from_secs(3600),
+        )
+        .unwrap();
+    assert!(signed.starts_with("https://bucket.oss-cn-hangzhou.aliyuncs.com/prefix/object?"));
+    assert!(signed.contains("x-oss-security-token=recognizable-security-token"));
+    assert!(signed.contains("x-oss-signature="));
 }
 
 /// 覆盖 CheckBucket/List/Get/PutAndDelete 各权限探测的成功与失败分支。
