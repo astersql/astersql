@@ -539,8 +539,11 @@ fn TestTxnScopeAndValidateReadTs() {
     tk.MustExec("create table t1 (id int primary key)", Vec::new());
     std::thread::sleep(Duration::from_secs(1));
 
+    tk.MustExec("begin", Vec::new());
+    tk.MustExec("set @txn_scope_read_ts = @@tidb_current_ts", Vec::new());
+    tk.MustExec("commit", Vec::new());
     tk.MustQuery(
-        "select * from t1 as of timestamp now() where id=1",
+        "select * from t1 as of timestamp @txn_scope_read_ts where id=1",
         Vec::new(),
     )
     .Check(Rows(&[]));
