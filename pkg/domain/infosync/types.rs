@@ -266,6 +266,21 @@ impl ResourceGroupWatchReceiver {
 
 /// 资源管理客户端：资源组 CRUD、watch 与令牌桶相关接口。
 pub trait ResourceManagerClient: Send + Sync {
+    fn Get(
+        &self,
+        key: &[u8],
+    ) -> std::result::Result<
+        tikv_client::proto::meta_storagepb::GetResponse,
+        tikv_client::resource_group_lookup::LookupError,
+    >;
+    fn Put(
+        &self,
+        key: &[u8],
+        value: &[u8],
+    ) -> std::result::Result<
+        tikv_client::proto::meta_storagepb::PutResponse,
+        tikv_client::resource_group_lookup::LookupError,
+    >;
     /// 列出全部资源组。
     fn list_resource_groups(&self) -> Vec<ResourceGroup>;
     /// 按名称获取资源组。

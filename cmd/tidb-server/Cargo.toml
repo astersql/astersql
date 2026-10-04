@@ -23,6 +23,8 @@ nextgen = ["astersql-session/nextgen", "astersql-store/nextgen"]
 # Local stubs continue to cover server/session/domain/config/signal/metrics.
 # The production TiKV storage path is linked to the canonical store registry.
 [dependencies]
+astersql-metaservice = { path = "../../pkg/metaservice" }
+tikv-client = { version = "=0.4.2", git = "ssh://git@github.com/astersql/client-rust.git", tag = "v0.4.2-aster.10", default-features = false }
 astersql-config = { path = "../../pkg/config" }
 astersql-domain = { path = "../../pkg/domain" }
 astersql-server = { path = "../../pkg/server" }

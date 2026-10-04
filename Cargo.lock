@@ -1795,12 +1795,14 @@ version = "0.1.0"
 dependencies = [
  "astersql-config",
  "astersql-domain",
+ "astersql-metaservice",
  "astersql-server",
  "astersql-session",
  "astersql-store",
  "astersql-store-driver",
  "astersql-util-signal",
  "rpprof",
+ "tikv-client",
 ]
 
 [[package]]
@@ -2668,6 +2670,9 @@ dependencies = [
  "astersql-util-syncutil",
  "astersql-util-tiflashcompute",
  "astersql-workloadlearning",
+ "serde_json",
+ "tikv-client",
+ "tonic 0.12.3",
  "zip",
 ]
 
@@ -2716,6 +2721,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.19",
+ "tikv-client",
 ]
 
 [[package]]
@@ -20106,7 +20112,7 @@ dependencies = [
 [[package]]
 name = "tikv-client"
 version = "0.4.2"
-source = "git+ssh://git@github.com/astersql/client-rust.git?tag=v0.4.2-aster.9#d9180ed8c28d29260390fd12d066d7d0e1d48d5c"
+source = "git+ssh://git@github.com/astersql/client-rust.git?tag=v0.4.2-aster.10#710d2187e79e1a3d22035b0e68d35a8f267ee835"
 dependencies = [
  "async-recursion",
  "async-trait",

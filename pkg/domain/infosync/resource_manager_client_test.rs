@@ -194,3 +194,18 @@ fn watch_capacity_and_shared_consumer_semantics() {
         );
     }
 }
+
+#[test]
+fn mock_provider_metadata_returns_non_nil_empty_headers() {
+    let client = NewMockResourceManagerClient(42);
+    let response = client.Get(b"resource_group/controller").unwrap();
+    assert!(response.header.is_some());
+    assert!(response.kvs.is_empty());
+    let response = client.Put(b"key", b"value").unwrap();
+    assert!(response.header.is_some());
+    let provider = NewMockResourceGroupProvider(42);
+    let response = provider.get(b"resource_group/controller").unwrap();
+    assert!(response.header.is_some());
+    let group = provider.get_resource_group("default").unwrap().unwrap();
+    assert_eq!(group.name, "default");
+}

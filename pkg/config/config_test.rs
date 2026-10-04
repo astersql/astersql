@@ -1050,3 +1050,22 @@ fn starter_import_size_limit_requires_starter_mode_and_round_trips() {
     let restored_toml: crate::Config = toml::from_str(&toml).unwrap();
     assert_eq!(restored_toml.starter_params.max_import_data_size, 1024);
 }
+
+#[test]
+fn starter_rg_fallback_is_cli_only_and_defaults_to_disabled() {
+    let mut params = super::config::StarterParams::default();
+    assert!(!params.enable_rg_fallback);
+    params.enable_rg_fallback = true;
+    let value = serde_json::to_value(&params).unwrap();
+    assert!(value.get("enable-rg-fallback").is_none());
+    let decoded: super::config::StarterParams =
+        serde_json::from_str("{\"enable-rg-fallback\":true}").unwrap();
+    assert!(!decoded.enable_rg_fallback);
+    let decoded: super::config::StarterParams = toml::from_str("enable-rg-fallback=true").unwrap();
+    assert!(!decoded.enable_rg_fallback);
+    assert!(
+        !toml::to_string(&params)
+            .unwrap()
+            .contains("enable-rg-fallback")
+    );
+}

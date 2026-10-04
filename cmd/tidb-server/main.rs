@@ -1175,6 +1175,11 @@ pub fn overrideConfig(cfg: &mut config::Config, fset: &flag::FlagSet) {
         actualFlags.insert(f.Name.clone(), true);
     });
     let fv = flags();
+    if actualFlags.contains_key(nmStarterParams) && cfg.DeployMode == deploymode::Starter {
+        if let Err(error) = applyStarterAdditionalParams(cfg, &getStarterAdditionalParams()) {
+            stubs::must_nil(Some(error));
+        }
+    }
 
     // 网络地址优先由 CLI 显式覆盖；advertise-address 为空时需要推导一个可对外通告的值。
     if actualFlags.contains_key(nmHost) {
@@ -1786,6 +1791,9 @@ pub fn setGlobalVars() {
         vardef::ServiceScope_Store(cfg.Instance.TiDBServiceScope.to_lowercase());
     }
 
+    astersql_config::update_global(|canonical| {
+        canonical.starter_params.enable_rg_fallback = cfg.StarterParams.EnableRGFallback;
+    });
     // Persist mutated socket back to global config.
     // `cfg.Socket` 经过 `{Port}` 展开后已经不再是原始配置，需要回写供后续读取。
     config::UpdateGlobal(|g| {
@@ -1847,13 +1855,21 @@ pub fn createServer(storage: &kv::Storage, dom: &domain::Domain) -> server::Serv
     };
     let (canonical_domain, session_driver) = match storage.CanonicalTiKVStore() {
         Ok(tikv_store) => {
-            let factory = match CanonicalSessionFactory::from_tikv_store(tikv_store) {
+            let factory = match CanonicalSessionFactory::from_tikv_store(tikv_store.clone()) {
                 Ok(factory) => Arc::new(factory),
                 Err(err) => {
                     closeDDLOwnerMgrDomainAndStorage(storage, dom);
                     log::Fatal(&format!("failed to initialize canonical Domain: {err}"));
                 }
             };
+            if let Err(error) =
+                startStarterResourceGroupController(&cfg, &tikv_store, factory.domain())
+            {
+                closeDDLOwnerMgrDomainAndStorage(storage, dom);
+                log::Fatal(&format!(
+                    "failed to initialize Starter resource controller: {error}"
+                ));
+            }
             (
                 Arc::clone(factory.domain()),
                 Arc::new(ConcreteSessionDriver::new(factory, auth_mode)),
@@ -2166,6 +2182,7 @@ pub struct starterParams {
     pub podName: String,
     pub podIP: String,
     pub podNamespace: String,
+    pub enableRGFallback: bool,
 }
 
 /// 解析 `k=v,k=v` 形式的 starter 额外参数。
@@ -2222,6 +2239,17 @@ pub fn parseStarterAdditionalParams(raw: &str) -> Result<starterParams> {
             "pod-name" => params.podName = value.into(),
             "pod-ip" => params.podIP = value.into(),
             "pod-namespace" => params.podNamespace = value.into(),
+            "enable-rg-fallback" => {
+                params.enableRGFallback = match value {
+                    "1" | "t" | "T" | "TRUE" | "true" | "True" => true,
+                    "0" | "f" | "F" | "FALSE" | "false" | "False" => false,
+                    _ => {
+                        return Err(Error::new(format!(
+                            "starter additional param {key:?} must be a bool: invalid syntax"
+                        )));
+                    }
+                };
+            }
             _ => {
                 return Err(Error::new(format!(
                     "unknown starter additional param {key:?}"
@@ -2230,6 +2258,13 @@ pub fn parseStarterAdditionalParams(raw: &str) -> Result<starterParams> {
         }
     }
     Ok(params)
+}
+
+/// Applies the CLI-only fallback flag after validating all Starter params.
+pub fn applyStarterAdditionalParams(cfg: &mut config::Config, raw: &str) -> Result<()> {
+    let params = parseStarterAdditionalParams(raw)?;
+    cfg.StarterParams.EnableRGFallback = params.enableRGFallback;
+    Ok(())
 }
 
 /// 读取 starter 额外参数的当前全局值。
@@ -2312,4 +2347,49 @@ pub fn setupSEM() {
             sem::Enable();
         }
     }
+}
+
+/// Wire the CLI opt-in to the shared Domain controller using the store's keyspace.
+pub fn startStarterResourceGroupController(
+    cfg: &config::Config,
+    store: &astersql_store::TikvStore,
+    domain: &Arc<astersql_domain::Domain>,
+) -> Result<()> {
+    if !kerneltype::IsNextGen()
+        || cfg.DeployMode != deploymode::Starter
+        || !cfg.StarterParams.EnableRGFallback
+    {
+        return Ok(());
+    }
+    let keyspace_id = astersql_metaservice::EtcdMetadataStore::keyspace_meta(store)
+        .map_err(|error| Error::new(error.to_string()))?
+        .map_or(u32::MAX, |meta| meta.id);
+    let security = if cfg.Security.ClusterSSLCA.is_empty() {
+        tikv_client::SecurityManager::default()
+    } else {
+        tikv_client::SecurityManager::load(
+            &cfg.Security.ClusterSSLCA,
+            &cfg.Security.ClusterSSLCert,
+            &cfg.Security.ClusterSSLKey,
+        )
+        .map_err(|error| Error::new(error.to_string()))?
+    };
+    let endpoints = cfg
+        .Path
+        .trim_start_matches("tikv://")
+        .split(',')
+        .map(str::trim)
+        .filter(|endpoint| !endpoint.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let provider = tikv_client::resource_group_provider::GrpcResourceGroupProvider::connect_pd(
+        endpoints,
+        keyspace_id,
+        Arc::new(security),
+        Duration::from_secs(3),
+    )
+    .map_err(|error| Error::new(error.to_string()))?;
+    domain
+        .init_resource_groups_controller(Some(Arc::new(provider)), keyspace_id, true, true)
+        .map_err(|error| Error::new(error.to_string()))
 }

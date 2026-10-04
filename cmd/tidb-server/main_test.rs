@@ -582,14 +582,16 @@ fn test_override_config_keyspace_activate_mode() {
     let fset = initFlagSetWithArgs(&[
         "tidb-server".into(),
         "--keyspace-activate=true".into(),
-        "--starter-additional-params=pod-name=pod-1,pod-ip=10.0.0.1,pod-namespace=ns-1".into(),
+        "--starter-additional-params=pod-name=pod-1,pod-ip=10.0.0.1,pod-namespace=ns-1,enable-rg-fallback=true".into(),
     ]);
     let mut cfg = config::NewConfig();
+    cfg.DeployMode = deploymode::Starter;
     overrideConfig(&mut cfg, &fset);
     assert!(cfg.KeyspaceActivateMode);
+    assert!(cfg.StarterParams.EnableRGFallback);
     assert_eq!(
         starter_additional_params(),
-        "pod-name=pod-1,pod-ip=10.0.0.1,pod-namespace=ns-1"
+        "pod-name=pod-1,pod-ip=10.0.0.1,pod-namespace=ns-1,enable-rg-fallback=true"
     );
 
     set_starter_additional_params(original);
@@ -787,6 +789,14 @@ fn test_create_mgr_client_requires_pod_identity_in_starter() {
             .contains("unknown starter additional param \"unknown\""),
         "got: {}",
         err.msg
+    );
+
+    set_starter_additional_params("enable-rg-fallback=definitely");
+    assert!(
+        createMgrClientForStarter()
+            .unwrap_err()
+            .to_string()
+            .contains("starter additional param \"enable-rg-fallback\" must be a bool")
     );
 
     // 即使 pod 身份齐全，若既没有配置 manager-addr，
@@ -1052,4 +1062,57 @@ fn postgres_listener_config_projection() {
     std::fs::write(&path, "postgres-port = 65536\n").unwrap();
     assert!(astersql_config::config::load_postgres_port(&path).is_err());
     std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn starter_fallback_bool_parser_accepts_go_forms_and_rejects_invalid_values() {
+    for value in [
+        "1", "t", "T", "TRUE", "true", "True", "0", "f", "F", "FALSE", "false", "False",
+    ] {
+        assert!(
+            crate::entry::parseStarterAdditionalParams(&format!("enable-rg-fallback={value}"))
+                .is_ok(),
+            "{value}"
+        );
+    }
+    let error =
+        crate::entry::parseStarterAdditionalParams("enable-rg-fallback=definitely").unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("starter additional param \"enable-rg-fallback\" must be a bool")
+    );
+}
+
+#[test]
+fn starter_fallback_override_requires_explicit_flag_and_starter_mode() {
+    let _guard = stubs::test_guard();
+    stubs::reset_all_for_test();
+    for (mode, raw, expected) in [
+        (deploymode::Starter, "true", true),
+        (deploymode::Starter, "false", false),
+        (deploymode::Premium, "true", false),
+        (deploymode::Premium, "definitely", false),
+    ] {
+        let fset = initFlagSetWithArgs(&[
+            "tidb-server".into(),
+            format!("--starter-additional-params=enable-rg-fallback={raw}"),
+        ]);
+        let mut cfg = config::NewConfig();
+        cfg.DeployMode = mode;
+        overrideConfig(&mut cfg, &fset);
+        assert_eq!(cfg.StarterParams.EnableRGFallback, expected);
+    }
+    let fset = initFlagSetWithArgs(&["tidb-server".into()]);
+    let mut cfg = config::NewConfig();
+    cfg.DeployMode = deploymode::Starter;
+    cfg.StarterParams.EnableRGFallback = true;
+    overrideConfig(&mut cfg, &fset);
+    assert!(cfg.StarterParams.EnableRGFallback);
+    assert!(
+        crate::entry::applyStarterAdditionalParams(&mut cfg, "enable-rg-fallback=definitely")
+            .is_err()
+    );
+    assert!(cfg.StarterParams.EnableRGFallback);
+    stubs::reset_all_for_test();
 }

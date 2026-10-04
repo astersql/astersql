@@ -481,7 +481,7 @@ pub mod signal {
 // 因此看到 no-op、固定常量或事件记录时，应理解为启动编排占位，而不是完整子系统实现。
 pub mod kerneltype {
     use super::*;
-    static NEXTGEN: AtomicBool = AtomicBool::new(false);
+    static NEXTGEN: AtomicBool = AtomicBool::new(cfg!(feature = "nextgen"));
     pub fn set_nextgen_for_test(v: bool) {
         NEXTGEN.store(v, Ordering::SeqCst);
     }
@@ -852,6 +852,7 @@ pub mod config {
     }
     #[derive(Clone, Debug, Default)]
     pub struct StarterParams {
+        pub EnableRGFallback: bool,
         pub EnableManagerNotifier: bool,
         pub ManagerAddr: String,
     }

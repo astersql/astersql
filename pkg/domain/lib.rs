@@ -28,6 +28,7 @@ pub mod optimize_trace;
 pub mod plan_replayer;
 /// Plan Replayer dump 文件处理。
 pub mod plan_replayer_dump;
+pub mod resource_group_controller_options;
 pub mod resource_group_runtime;
 /// RU（Request Unit）统计。
 pub mod ru_stats;

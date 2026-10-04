@@ -15,7 +15,7 @@ legacy-tasks = ["task-753", "task-754", "task-756", "task-759"]
 astersql-kv = { package = "astersql-kv", path = "../../../kv" }
 astersql-tablecodec = { package = "astersql-tablecodec", path = "../../../tablecodec" }
 errors = { package = "astersql-errors", path = "../../../errors" }
-tikv-client = { version = "=0.4.2", git = "ssh://git@github.com/astersql/client-rust.git", tag = "v0.4.2-aster.9", default-features = false }
+tikv-client = { version = "=0.4.2", git = "ssh://git@github.com/astersql/client-rust.git", tag = "v0.4.2-aster.10", default-features = false }
 
 [dev-dependencies]
 astersql-testkit-testsetup = { package = "astersql-testkit-testsetup", path = "../../../testkit/testsetup" }

@@ -12,6 +12,7 @@ go-package = "pkg/domain"
 legacy-tasks = ["task-1046", "task-1047", "task-1048", "task-1049", "task-1051", "task-1309"]
 
 [dependencies]
+tikv-client = { version = "=0.4.2", git = "ssh://git@github.com/astersql/client-rust.git", tag = "v0.4.2-aster.10", default-features = false }
 "astersql-ddl" = { package = "astersql-ddl", path = "../ddl" }
 "astersql-session-sessmgr" = { package = "astersql-session-sessmgr", path = "../session/sessmgr" }
 "astersql-infoschema-issyncer" = { path = "../infoschema/issyncer" }
@@ -46,6 +47,8 @@ legacy-tasks = ["task-1046", "task-1047", "task-1048", "task-1049", "task-1051",
 zip = { version = "0.6.6", default-features = false }
 
 [dev-dependencies]
+serde_json = "1"
+tonic = { version = "0.12", default-features = false }
 "astersql-store-mockstore-mockstorage" = { package = "astersql-store-mockstore-mockstorage", path = "../store/mockstore/mockstorage" }
 
 [target.'cfg(windows)'.dependencies]

@@ -813,6 +813,8 @@ pub struct Domain {
     resource_group_version: AtomicU64,
     resource_group_runtime_states:
         RwLock<Option<Arc<dyn crate::resource_group_runtime::ResourceGroupRuntimeStateProvider>>>,
+    resource_group_lookup_controller:
+        RwLock<Option<Arc<tikv_client::resource_group_lookup::ResourceGroupLookupController>>>,
     ru_version: AtomicU64,
     plan_cache: RwLock<Option<Arc<Mutex<PlanCache>>>>,
     ruv2_consumption_reporter:
@@ -1464,6 +1466,7 @@ impl Domain {
             stats_owner: AtomicBool::new(false),
             resource_group_version: AtomicU64::new(0),
             resource_group_runtime_states: RwLock::new(None),
+            resource_group_lookup_controller: RwLock::new(None),
             ru_version: AtomicU64::new(1),
             plan_cache: RwLock::new(None),
             ruv2_consumption_reporter: RwLock::new(None),
@@ -1779,6 +1782,24 @@ impl Domain {
     /// Update the RU version when the resource-group controller changes policy.
     pub fn set_ru_version(&self, version: u64) {
         self.ru_version.store(version, Ordering::Release);
+    }
+
+    pub fn bind_resource_group_lookup_controller(
+        &self,
+        controller: Option<Arc<tikv_client::resource_group_lookup::ResourceGroupLookupController>>,
+    ) {
+        *self
+            .resource_group_lookup_controller
+            .write()
+            .expect("resource controller lock poisoned") = controller;
+    }
+    pub fn resource_group_lookup_controller(
+        &self,
+    ) -> Option<Arc<tikv_client::resource_group_lookup::ResourceGroupLookupController>> {
+        self.resource_group_lookup_controller
+            .read()
+            .expect("resource controller lock poisoned")
+            .clone()
     }
 
     pub fn bind_runaway_manager(
@@ -6210,6 +6231,7 @@ impl Domain {
                 .expect("external workload manager lock poisoned")
                 .Close();
         }
+        self.bind_resource_group_lookup_controller(None);
         self.release_server_id();
         self.close_inference_providers();
         self.started.store(false, Ordering::Release);

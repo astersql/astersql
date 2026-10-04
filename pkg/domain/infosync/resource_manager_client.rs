@@ -66,6 +66,31 @@ impl mockResourceManagerClient {
 }
 
 impl ResourceManagerClient for mockResourceManagerClient {
+    fn Get(
+        &self,
+        _key: &[u8],
+    ) -> std::result::Result<
+        tikv_client::proto::meta_storagepb::GetResponse,
+        tikv_client::resource_group_lookup::LookupError,
+    > {
+        Ok(tikv_client::proto::meta_storagepb::GetResponse {
+            header: Some(tikv_client::proto::meta_storagepb::ResponseHeader::default()),
+            ..Default::default()
+        })
+    }
+    fn Put(
+        &self,
+        _key: &[u8],
+        _value: &[u8],
+    ) -> std::result::Result<
+        tikv_client::proto::meta_storagepb::PutResponse,
+        tikv_client::resource_group_lookup::LookupError,
+    > {
+        Ok(tikv_client::proto::meta_storagepb::PutResponse {
+            header: Some(tikv_client::proto::meta_storagepb::ResponseHeader::default()),
+            ..Default::default()
+        })
+    }
     /// 列出当前全部资源组（无序）。
     fn list_resource_groups(&self) -> Vec<ResourceGroup> {
         self.groups.lock().unwrap().values().cloned().collect()
@@ -115,4 +140,66 @@ impl ResourceManagerClient for mockResourceManagerClient {
         }
         Some(self.event_receiver.clone())
     }
+}
+
+/// Explicit provider conversion for the Go composite mock interface.
+pub struct ResourceManagerProviderAdapter(pub Arc<dyn ResourceManagerClient>);
+impl tikv_client::resource_group_lookup::ResourceGroupProvider for ResourceManagerProviderAdapter {
+    fn get(
+        &self,
+        key: &[u8],
+    ) -> std::result::Result<
+        tikv_client::proto::meta_storagepb::GetResponse,
+        tikv_client::resource_group_lookup::LookupError,
+    > {
+        self.0.Get(key)
+    }
+    fn put(
+        &self,
+        key: &[u8],
+        value: &[u8],
+    ) -> std::result::Result<
+        tikv_client::proto::meta_storagepb::PutResponse,
+        tikv_client::resource_group_lookup::LookupError,
+    > {
+        self.0.Put(key, value)
+    }
+    fn get_resource_group(
+        &self,
+        name: &str,
+    ) -> std::result::Result<
+        Option<tikv_client::proto::resource_manager::ResourceGroup>,
+        tikv_client::resource_group_lookup::LookupError,
+    > {
+        use tikv_client::{proto::resource_manager as rm, resource_group_lookup::LookupError};
+        let group = self
+            .0
+            .get_resource_group(name)
+            .map_err(|error| LookupError::Other(error.to_string()))?;
+        let fill_rate = u64::try_from(group.RUSettings.FillRate)
+            .map_err(|_| LookupError::Other("negative resource group fill rate".into()))?;
+        Ok(Some(rm::ResourceGroup {
+            name: group.Name,
+            mode: rm::GroupMode::RuMode as i32,
+            priority: group.Priority,
+            r_u_settings: Some(rm::GroupRequestUnitSettings {
+                r_u: Some(rm::TokenBucket {
+                    settings: Some(rm::TokenLimitSettings {
+                        fill_rate,
+                        burst_limit: group.RUSettings.BurstLimit,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+            }),
+            ..Default::default()
+        }))
+    }
+}
+pub fn NewMockResourceGroupProvider(
+    keyspace_id: u32,
+) -> Arc<dyn tikv_client::resource_group_lookup::ResourceGroupProvider> {
+    Arc::new(ResourceManagerProviderAdapter(Arc::from(
+        NewMockResourceManagerClient(keyspace_id),
+    )))
 }

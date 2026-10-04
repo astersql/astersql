@@ -8,6 +8,7 @@ publish.workspace = true
 path = "lib.rs"
 
 [dependencies]
+tikv-client = { version = "=0.4.2", git = "ssh://git@github.com/astersql/client-rust.git", tag = "v0.4.2-aster.10", default-features = false }
 astersql-config = { path = "../../config" }
 ddl-label = { package = "astersql-ddl-label", path = "../../ddl/label" }
 ddl-placement = { package = "astersql-ddl-placement", path = "../../ddl/placement" }

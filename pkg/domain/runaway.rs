@@ -111,3 +111,79 @@ impl ResourceGroupRuntime {
         self
     }
 }
+
+use astersql_resourcegroup_runaway as runaway;
+pub use tikv_client::resource_group_lookup::{
+    LookupError, ResourceGroupLookupController, ResourceGroupProvider,
+};
+
+impl crate::Domain {
+    /// Initialize only when a PD provider exists, then publish the controller.
+    pub fn init_resource_groups_controller(
+        &self,
+        provider: Option<Arc<dyn ResourceGroupProvider>>,
+        keyspace_id: u32,
+        is_starter: bool,
+        enable_fallback: bool,
+    ) -> Result<(), LookupError> {
+        let Some(provider) = provider else {
+            return Ok(());
+        };
+        let options =
+            crate::resource_group_controller_options::new_resource_groups_controller_options(
+                is_starter,
+                enable_fallback,
+            );
+        let controller = Arc::new(ResourceGroupLookupController::new(
+            provider,
+            keyspace_id,
+            &options,
+        )?);
+        self.set_ru_version(u64::from(controller.ru_version()));
+        self.bind_resource_group_lookup_controller(Some(controller));
+        Ok(())
+    }
+}
+
+/// Adapts the same runtime controller to runaway's existing lookup interface.
+pub struct ControllerResourceGroupCatalog(pub Arc<ResourceGroupLookupController>);
+impl runaway::ResourceGroupCatalog for ControllerResourceGroupCatalog {
+    fn GetResourceGroup(&self, name: &str) -> runaway::Result<Option<runaway::ResourceGroup>> {
+        use tikv_client::proto::resource_manager as rm;
+        let group = self
+            .0
+            .get_resource_group(name)
+            .map_err(|error| runaway::Error::Storage(error.to_string()))?;
+        let settings = group.runaway_settings.map(|settings| {
+            let rule = settings.rule.unwrap_or_default();
+            runaway::RunawaySettings {
+                rule: runaway::RunawayRule {
+                    exec_elapsed_time_ms: rule.exec_elapsed_time_ms.min(i64::MAX as u64) as i64,
+                    request_unit: rule.request_unit,
+                    processed_keys: rule.processed_keys,
+                },
+                action: match rm::RunawayAction::try_from(settings.action) {
+                    Ok(rm::RunawayAction::DryRun) => runaway::RunawayAction::DryRun,
+                    Ok(rm::RunawayAction::CoolDown) => runaway::RunawayAction::CoolDown,
+                    Ok(rm::RunawayAction::Kill) => runaway::RunawayAction::Kill,
+                    Ok(rm::RunawayAction::SwitchGroup) => runaway::RunawayAction::SwitchGroup,
+                    _ => runaway::RunawayAction::NoneAction,
+                },
+                switch_group_name: settings.switch_group_name,
+                watch: settings.watch.map(|watch| runaway::RunawayWatch {
+                    lasting_duration_ms: watch.lasting_duration_ms,
+                    kind: match rm::RunawayWatchType::try_from(watch.r#type) {
+                        Ok(rm::RunawayWatchType::Exact) => runaway::RunawayWatchType::Exact,
+                        Ok(rm::RunawayWatchType::Similar) => runaway::RunawayWatchType::Similar,
+                        Ok(rm::RunawayWatchType::Plan) => runaway::RunawayWatchType::Plan,
+                        _ => runaway::RunawayWatchType::None,
+                    },
+                }),
+            }
+        });
+        Ok(Some(runaway::ResourceGroup {
+            name: group.name,
+            runaway_settings: settings,
+        }))
+    }
+}
