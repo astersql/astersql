@@ -78,3 +78,31 @@ fn canonical_typed_projection_reorders_typed_columns_and_preserves_row_lock_keys
     assert!(executor.Detach().is_none());
     executor.Close().expect("close projection child");
 }
+
+#[test]
+fn typed_dual_emits_zero_or_one_row_and_reopens() {
+    use crate::adapter::ExecExecutor;
+    for rows in [0, 1] {
+        for fields in [
+            Vec::new(),
+            vec![crate::adapter::SchemaColumn {
+                field_type: Default::default(),
+            }],
+        ] {
+            let mut dual =
+                super::typed_projection::TypedTableDual::new(rows, fields.clone(), 1, 32);
+            for _ in 0..2 {
+                dual.Open().unwrap();
+                let mut output = dual.NewChunk();
+                dual.Next(&mut output).unwrap();
+                assert_eq!(output.NumRows(), rows);
+                if rows == 1 && !fields.is_empty() {
+                    assert!(output.GetRow(0).IsNull(0));
+                }
+                dual.Next(&mut output).unwrap();
+                assert_eq!(output.NumRows(), 0);
+                dual.Close().unwrap();
+            }
+        }
+    }
+}

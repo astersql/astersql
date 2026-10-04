@@ -17,6 +17,7 @@
 
 use super::transaction::RuntimeSavepoint;
 use super::*;
+use std::cell::Cell;
 
 /// ConcreteSession 可变状态：事务、预编译、变量与 DML 报告等。
 
@@ -566,6 +567,11 @@ pub struct ConcreteSession {
 }
 
 pub struct ConcreteSessionInner {
+    pub(super) statement_ru_scope_depth: Cell<usize>,
+    pub(super) statement_ru_pending:
+        RefCell<Option<super::typed_adapter_bridge::PendingStatementRU>>,
+    pub(super) statement_ru_delayed:
+        RefCell<Option<super::typed_adapter_bridge::PendingStatementRU>>,
     pub(super) import_files: RefCell<super::import_file::ImportFiles>,
     pub(super) domain: Arc<Domain>,
     /// 同一 Domain 内所有会话共享的线程安全实例计划缓存。
@@ -1513,6 +1519,9 @@ impl ConcreteSession {
         let instance_plan_cache = runtime_instance_plan_cache(&domain);
         let session = Self {
             inner: Rc::new(ConcreteSessionInner {
+                statement_ru_scope_depth: Cell::new(0),
+                statement_ru_pending: RefCell::new(None),
+                statement_ru_delayed: RefCell::new(None),
                 stats_sync_load: SessionStatsSyncLoadAdapter::new_with_domain(Arc::clone(&domain)),
                 domain,
                 instance_plan_cache,

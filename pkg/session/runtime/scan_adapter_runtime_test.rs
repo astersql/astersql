@@ -2973,3 +2973,195 @@ fn foreign_key_shared_lock_sql_gate_and_persisted_initialization() {
         .unwrap();
     assert!(!historical.state.borrow().foreign_key_check_in_shared_lock);
 }
+
+thread_local! {
+    static STATEMENT_RU_POST_COMPILE: std::cell::RefCell<Option<Box<dyn Fn(&astersql_executor::adapter::ExecStmt) -> crate::SessionResult<()>>>> = const { std::cell::RefCell::new(None) };
+}
+
+thread_local! {
+    static STATEMENT_RU_POST_RUN: std::cell::RefCell<Option<Box<dyn Fn() -> crate::SessionResult<()>>>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(super) fn statement_ru_post_run() -> crate::SessionResult<()> {
+    STATEMENT_RU_POST_RUN.with(|hook| match hook.borrow().as_ref() {
+        Some(hook) => hook(),
+        None => Ok(()),
+    })
+}
+
+pub(super) fn statement_ru_post_compile(
+    stmt: &astersql_executor::adapter::ExecStmt,
+) -> crate::SessionResult<()> {
+    STATEMENT_RU_POST_COMPILE.with(|hook| match hook.borrow().as_ref() {
+        Some(hook) => hook(stmt),
+        None => Ok(()),
+    })
+}
+
+fn statement_ru_post_compile_cases(mode: u8) {
+    use astersql_executor::statement_ru_plan_walk::StatementRUFinalOutcome;
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            STATEMENT_RU_POST_COMPILE.with(|hook| *hook.borrow_mut() = None);
+            STATEMENT_RU_POST_RUN.with(|hook| *hook.borrow_mut() = None);
+        }
+    }
+    for fault in 0..if mode != 0 { 5 } else { 3 } {
+        let (domain, session) = crate::runtime::CreateAnalyzeSession().unwrap();
+        session
+            .execute("create table ru_terminal (id int primary key)")
+            .unwrap();
+        session
+            .execute("insert into ru_terminal values (11), (22)")
+            .unwrap();
+        let prepared = session
+            .PreparePlannedKVSelect(
+                "select id from ru_terminal order by id",
+                domain.info_schema(),
+            )
+            .unwrap();
+        if mode == 2 || mode == 4 {
+            session
+                .execute("prepare ru_stmt from 'select id from ru_terminal limit 2'")
+                .unwrap();
+        }
+        let captured = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let saved = captured.clone();
+        let _reset = Reset;
+        STATEMENT_RU_POST_COMPILE.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move |stmt| {
+                *saved.borrow_mut() = Some(
+                    stmt.StatementCtx
+                        .statement_ru_owner
+                        .clone()
+                        .expect("real compiled statement installs owner"),
+                );
+                match fault {
+                    1 => Err(crate::SessionError::new("post compile failure")),
+                    2 => panic!("post compile panic"),
+                    _ => Ok(()),
+                }
+            }))
+        });
+        STATEMENT_RU_POST_RUN.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || match fault {
+                3 => Err(crate::SessionError::new("session finish failure")),
+                4 => panic!("session post run panic"),
+                _ => Ok(()),
+            }))
+        });
+        let execution = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if mode == 3 {
+                session
+                    .execute_with_load_data_reader(
+                        "do 1",
+                        std::io::Cursor::new(b"transfer payload".to_vec()),
+                    )
+                    .map(|results| {
+                        assert!(results.iter().all(|result| result.columns().is_empty()));
+                    })
+            } else if mode != 0 {
+                let sql = if mode == 1 {
+                    "explain analyze select id from ru_terminal limit 2"
+                } else {
+                    "execute ru_stmt"
+                };
+                let execution = if mode == 4 {
+                    session
+                        .execute_with_load_data_reader(sql, std::io::Cursor::new(Vec::<u8>::new()))
+                } else {
+                    session.execute(sql)
+                };
+                execution.map(|mut results| {
+                    let result = results.first_mut().expect("EXPLAIN rows");
+                    let mut rows = Vec::new();
+                    while let Some(row) = result.next_row().unwrap() {
+                        rows.push(row);
+                    }
+                    if mode == 1 {
+                        assert!(
+                            rows.iter().any(|row| row[2] == "2"),
+                            "actual rows include the nonempty KV scan"
+                        );
+                    } else {
+                        assert_eq!(rows, vec![vec!["11".to_string()], vec!["22".to_string()]]);
+                    }
+                    result.close().unwrap();
+                })
+            } else {
+                session
+                    .ExecutePreparedPlannedKVSelectThroughAdapter(prepared, &[])
+                    .map(|result| {
+                        assert_eq!(
+                            result
+                                .Rows
+                                .iter()
+                                .map(|row| row.0.clone())
+                                .collect::<Vec<_>>(),
+                            vec![
+                                vec![astersql_executor_sortexec::SortValue::Int(11)],
+                                vec![astersql_executor_sortexec::SortValue::Int(22)],
+                            ]
+                        );
+                    })
+            }
+        }));
+        let owner = captured.borrow().clone().expect("compiled owner captured");
+        match fault {
+            0 => {
+                execution.unwrap().unwrap();
+                assert_eq!(owner.final_outcome(), StatementRUFinalOutcome::Success);
+            }
+            1 | 3 => {
+                assert_eq!(
+                    execution.unwrap().unwrap_err().to_string(),
+                    if fault == 1 {
+                        "post compile failure"
+                    } else {
+                        "session finish failure"
+                    }
+                );
+                assert_eq!(owner.final_outcome(), StatementRUFinalOutcome::Failure);
+            }
+            _ => {
+                assert!(execution.is_err());
+                assert_eq!(owner.final_outcome(), StatementRUFinalOutcome::Failure);
+            }
+        }
+        assert!(
+            owner.take_terminal_setup().is_none(),
+            "every outcome consumes terminal responsibility"
+        );
+        assert_eq!(session.inner.statement_ru_scope_depth.get(), 0);
+        assert!(session.inner.statement_ru_pending.borrow().is_none());
+        assert!(session.inner.statement_ru_delayed.borrow().is_none());
+        assert!(!session.has_file_transfer_reader());
+        domain.close();
+    }
+}
+
+#[test]
+fn prepared_statement_ru_post_compile_outcome_and_terminal() {
+    statement_ru_post_compile_cases(0);
+}
+
+#[test]
+fn explain_statement_ru_post_compile_outcome_and_terminal() {
+    statement_ru_post_compile_cases(1);
+}
+
+#[test]
+fn execute_statement_ru_post_compile_outcome_and_terminal() {
+    statement_ru_post_compile_cases(2);
+}
+
+#[test]
+fn file_transfer_statement_ru_post_compile_outcome_and_terminal() {
+    statement_ru_post_compile_cases(3);
+}
+
+#[test]
+fn file_transfer_result_set_statement_ru_post_compile_outcome_and_terminal() {
+    statement_ru_post_compile_cases(4);
+}

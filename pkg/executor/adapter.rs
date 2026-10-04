@@ -304,6 +304,11 @@ pub trait ExecExecutor {
 
 /// 结果集接口：向客户端分批返回行。原结果集绑定会话；Detach 后的执行器独立持有快照。
 pub trait RecordSet {
+    /// Optional executor cleanup before the session publishes its final outcome.
+    /// Buffered result sets without an active executor need no separate cleanup.
+    fn Finish(&mut self) -> AdapterResult {
+        Ok(())
+    }
     fn Fields(&mut self) -> &[ResultField];
     fn Next(&mut self, output: &mut chunk::Chunk) -> AdapterResult;
     fn NewChunk(&mut self) -> chunk::Chunk;
@@ -341,6 +346,10 @@ impl detachedRecordSet {
 }
 
 impl RecordSet for detachedRecordSet {
+    fn Finish(&mut self) -> AdapterResult {
+        self.Close()
+    }
+
     fn Fields(&mut self) -> &[ResultField] {
         &self.fields
     }
@@ -747,6 +756,10 @@ pub(crate) fn joinRecordSetErrors(
 }
 
 impl RecordSet for recordSet {
+    fn Finish(&mut self) -> AdapterResult {
+        recordSet::Finish(self)
+    }
+
     fn Fields(&mut self) -> &[ResultField] {
         recordSet::Fields(self)
     }
@@ -886,7 +899,41 @@ pub struct ExecStmt {
     pub StatementCtx: StatementContext,
 }
 
+/// Keeps the published statement's RU owner alive through session cleanup.
+/// Early errors and unwinding consume an unknown outcome without running an
+/// executor terminal; a previously recorded result retains first-record priority.
+#[must_use = "keep the guard alive until session cleanup completes"]
+pub struct StatementRUFailureGuard {
+    owner: Option<Arc<crate::statement_ru_plan_walk::StatementRUOwner>>,
+    context: Arc<dyn AdapterRuntime>,
+}
+
+impl Drop for StatementRUFailureGuard {
+    fn drop(&mut self) {
+        if let Some(owner) = &self.owner {
+            let (_, setup) = owner.record_final_outcome_with_setup(false);
+            if setup.is_some_and(|setup| setup.full_report) {
+                crate::statement_ru_result::publish_statement_ru_failure_safely(
+                    &crate::statement_ru_result::StatementRUContextSink {
+                        context: self.context.as_ref(),
+                        ttl_job: false,
+                    },
+                    crate::statement_ru_reporting::StatementRUFailureReason::StatementError,
+                );
+            }
+        }
+    }
+}
+
 impl ExecStmt {
+    /// Install immediately after compilation, before any fallible session cleanup.
+    pub fn StatementRUFailureGuard(&self) -> StatementRUFailureGuard {
+        StatementRUFailureGuard {
+            owner: self.StatementCtx.statement_ru_owner.clone(),
+            context: self.Ctx.clone(),
+        }
+    }
+
     /// Session completion is independent from executor EOF; the first outcome wins.
     pub fn RecordStatementRUFinalOutcome(&self, success: bool) {
         if let Some(owner) = &self.StatementCtx.statement_ru_owner {

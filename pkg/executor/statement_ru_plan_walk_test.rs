@@ -3215,3 +3215,62 @@ fn go_merge_20_187_195_197_production_ru_unbridged_sql_has_no_estimated_publicat
     domain.bind_ruv2_consumption_reporter(None);
     domain.close();
 }
+
+#[test]
+fn statement_ru_concurrent_terminal_has_one_consumer() {
+    let owner = Arc::new(StatementRUOwner::new(
+        Default::default(),
+        false,
+        false,
+        false,
+    ));
+    assert!(owner.record_final_outcome(true));
+    let start = std::sync::Barrier::new(32);
+    let consumed = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..32 {
+            let owner = &owner;
+            let start = &start;
+            let consumed = &consumed;
+            scope.spawn(move || {
+                start.wait();
+                if owner.take_terminal_setup().is_some() {
+                    consumed.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+        }
+    });
+    assert_eq!(consumed.load(Ordering::Relaxed), 1);
+    assert_eq!(owner.final_outcome(), StatementRUFinalOutcome::Success);
+    assert!(owner.take_terminal_setup().is_none());
+}
+
+#[test]
+fn statement_ru_concurrent_outcomes_keep_the_first_record() {
+    let owner = StatementRUOwner::new(Default::default(), false, false, false);
+    let start = std::sync::Barrier::new(32);
+    let recorded = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for index in 0..32 {
+            let owner = &owner;
+            let start = &start;
+            let recorded = &recorded;
+            scope.spawn(move || {
+                start.wait();
+                if owner.record_final_outcome(index % 2 == 0) {
+                    recorded.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+        }
+    });
+    assert_eq!(recorded.load(Ordering::Relaxed), 1);
+    let outcome = owner.final_outcome();
+    assert_ne!(outcome, StatementRUFinalOutcome::Unknown);
+    assert!(!owner.record_final_outcome(outcome != StatementRUFinalOutcome::Success));
+    assert_eq!(owner.final_outcome(), outcome);
+    assert_eq!(
+        owner.take_terminal_setup().is_some(),
+        outcome == StatementRUFinalOutcome::Success
+    );
+    assert!(owner.take_terminal_setup().is_none());
+}

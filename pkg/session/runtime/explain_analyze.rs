@@ -171,6 +171,9 @@ impl ConcreteSession {
             let mut exec_stmt = owner.BuildPreparedExecStmt().map_err(|error| {
                 session_error("build EXPLAIN ANALYZE physical statement", error)
             })?;
+            let _ru_failure = exec_stmt.StatementRUFailureGuard();
+            #[cfg(test)]
+            super::scan_adapter_runtime_test::statement_ru_post_compile(&exec_stmt)?;
             let flat = exec_stmt
                 .TypedFlatPlan()
                 .ok_or_else(|| SessionError::new("EXPLAIN ANALYZE lost its physical plan"))?;
@@ -219,9 +222,11 @@ impl ConcreteSession {
                 }
                 Ok(())
             })();
-            exec_stmt.RecordStatementRUFinalOutcome(read.is_ok());
+            if read.is_err() {
+                exec_stmt.RecordStatementRUFinalOutcome(false);
+            }
             let close = record_set
-                .Close()
+                .Finish()
                 .map_err(|error| session_error("close EXPLAIN ANALYZE result", error));
             read?;
             close?;
@@ -280,7 +285,7 @@ impl ConcreteSession {
                     ]
                 })
                 .collect();
-            Ok(Some(ConcreteRecordSet::new(
+            let result = ConcreteRecordSet::new(
                 [
                     "id",
                     "estRows",
@@ -296,7 +301,14 @@ impl ConcreteSession {
                 .map(str::to_owned)
                 .collect(),
                 rows,
-            )))
+            );
+            *self.statement_ru_pending.borrow_mut() =
+                Some(super::typed_adapter_bridge::PendingStatementRU {
+                    statement: exec_stmt,
+                    record_set: Some(record_set),
+                    _failure: _ru_failure,
+                });
+            Ok(Some(result))
         })();
         self.state
             .borrow_mut()

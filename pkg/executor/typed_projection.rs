@@ -1,4 +1,17 @@
 // Copyright 2026 AsterSQL.
+// Copyright 2015 PingCAP, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 use std::time::Duration;
 
@@ -183,6 +196,97 @@ impl ExecExecutor for TypedProjection {
     fn ScannedRows(&self) -> usize {
         self.child.ScannedRows()
     }
+    fn Detach(&mut self) -> Option<Box<dyn ExecExecutor>> {
+        None
+    }
+}
+
+/// The physical dual leaf used by constant projections and DO. Like Go's
+/// TableDualExec it emits its zero or one row once, then EOF until reopened.
+pub(crate) struct TypedTableDual {
+    rows: usize,
+    returned: bool,
+    schema: Vec<SchemaColumn>,
+    config: ChunkConfig,
+}
+
+impl TypedTableDual {
+    pub(crate) fn new(
+        rows: usize,
+        schema: Vec<SchemaColumn>,
+        initial_capacity: usize,
+        maximum_chunk_size: usize,
+    ) -> Self {
+        let config = ChunkConfig {
+            fields: schema
+                .iter()
+                .map(|column| column.field_type.clone())
+                .collect(),
+            initial_capacity,
+            maximum_chunk_size,
+        };
+        Self {
+            rows,
+            returned: false,
+            schema,
+            config,
+        }
+    }
+}
+
+impl ExecExecutor for TypedTableDual {
+    fn Open(&mut self) -> AdapterResult {
+        self.returned = false;
+        Ok(())
+    }
+    fn Close(&mut self) -> AdapterResult {
+        Ok(())
+    }
+    fn Next(&mut self, output: &mut chunk::Chunk) -> AdapterResult {
+        output.Reset();
+        if self.returned || self.rows == 0 {
+            return Ok(());
+        }
+        if self.schema.is_empty() {
+            output.SetNumVirtualRows(self.rows);
+        } else {
+            for column in 0..self.schema.len() {
+                output.AppendNull(column);
+            }
+        }
+        self.returned = true;
+        Ok(())
+    }
+    fn ChunkConfig(&self) -> ChunkConfig {
+        self.config.clone()
+    }
+    fn NewChunk(&self) -> chunk::Chunk {
+        *chunk::New(
+            self.config.fields.clone(),
+            self.config.initial_capacity,
+            self.config.maximum_chunk_size,
+        )
+    }
+    fn Schema(&self) -> &[SchemaColumn] {
+        &self.schema
+    }
+    fn CalculateNoDelay(&self) -> bool {
+        false
+    }
+    fn IsWriteExecutor(&self) -> bool {
+        false
+    }
+    fn CheckForeignKeys(&mut self) -> AdapterResult {
+        Ok(())
+    }
+    fn TakeForeignKeyCascades(&mut self) -> Vec<Box<dyn CascadeBatch>> {
+        Vec::new()
+    }
+    fn HasForeignKeyCascades(&self) -> bool {
+        false
+    }
+    fn PrepareFKCascadeContext(&mut self) {}
+    fn AddFKCheckLockDuration(&mut self, _duration: Duration) {}
     fn Detach(&mut self) -> Option<Box<dyn ExecExecutor>> {
         None
     }

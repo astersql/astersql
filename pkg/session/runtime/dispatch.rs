@@ -3069,6 +3069,7 @@ impl ConcreteSession {
             return Ok(Some(self.execute_constant_set_operation(set_operation)?));
         }
         if statement.as_any().is::<ast::DoStmt>() {
+            self.execute_do_terminal(statement_sql.unwrap_or_default())?;
             return Ok(Some(ConcreteRecordSet::new(Vec::new(), Vec::new())));
         }
         if let Some(select) = statement.as_any().downcast_ref::<ast::SelectStmt>() {
@@ -3806,6 +3807,7 @@ impl ConcreteSession {
         let statement_sql = split_statement_sql(sql);
         let mut record_sets = Vec::new();
         for (index, statement) in statements.into_iter().enumerate() {
+            let ru_scope = super::typed_adapter_bridge::SessionStatementRUScope::new(self);
             let explain = statement.as_any().downcast_ref::<ast::ExplainStmt>();
             self.session_vars.StmtCtx.SetExplainContext(
                 explain.is_some(),
@@ -4004,6 +4006,12 @@ impl ConcreteSession {
                 }
                 Err(error) => Err(error),
             };
+            #[cfg(test)]
+            if execution.is_ok() {
+                if let Err(error) = super::scan_adapter_runtime_test::statement_ru_post_run() {
+                    execution = Err(error);
+                }
+            }
             if execution.is_ok() {
                 let lowered_sql = current_sql.to_ascii_lowercase();
                 let injected_error = if lowered_sql.contains("inl_hash_join(t2)")
@@ -4229,6 +4237,7 @@ impl ConcreteSession {
                         let warnings = self.state.borrow().current_warnings.clone();
                         self.state.borrow_mut().last_warnings = warnings;
                     }
+                    ru_scope.finish()?;
                 }
                 (Err(error), _, _) => {
                     let warnings = self.state.borrow().current_warnings.clone();

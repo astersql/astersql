@@ -800,6 +800,17 @@ impl SessionBoundAdapterOwner {
         }
         let mut scans = Vec::new();
         collect_table_scans(plan.as_plan(), &mut scans);
+        if is_constant_terminal_plan(plan.as_plan()) {
+            *self.physical_scan.borrow_mut() = Some(PhysicalScanBinding {
+                plan,
+                ranges: Vec::new(),
+                leaf_ranges: Vec::new(),
+                version,
+                initial_capacity,
+                maximum_chunk_size,
+            });
+            return Ok(());
+        }
         if scans.is_empty() && find_index_reader(plan.as_plan()).is_none() {
             return Err(BuildError::new(format!(
                 "typed physical builder requires at least one table scan, got {}",
@@ -1121,5 +1132,201 @@ impl ConcreteSession {
             initial_capacity,
             maximum_chunk_size,
         ))
+    }
+}
+
+/// Carry a real executed statement to the session result-set terminal. The
+/// executor has closed, but session cleanup can still fail before publication.
+pub(super) struct PendingStatementRU {
+    pub(super) statement: astersql_executor::adapter::ExecStmt,
+    pub(super) record_set: Option<Box<dyn astersql_executor::adapter::RecordSet>>,
+    pub(super) _failure: astersql_executor::adapter::StatementRUFailureGuard,
+}
+
+impl PendingStatementRU {
+    pub(super) fn finish(mut self) -> crate::SessionResult<()> {
+        self.statement.RecordStatementRUFinalOutcome(true);
+        if let Some(mut record_set) = self.record_set.take() {
+            record_set
+                .Close()
+                .map_err(|error| crate::SessionError::with_source("close session result", error))?;
+        } else {
+            let timestamp = self.statement.Ctx.TransactionStartTS();
+            self.statement.FinishExecuteStmt(timestamp, None, false);
+        }
+        Ok(())
+    }
+}
+
+/// Session-local scope: keep non-Send plans on their owning worker while eager
+/// results pass through hint restoration and transaction/memory bookkeeping.
+/// Nested statements restore the previous pending terminal on scope exit.
+pub(super) struct SessionStatementRUScope {
+    session: Rc<super::session::ConcreteSessionInner>,
+    previous: Option<PendingStatementRU>,
+}
+
+impl SessionStatementRUScope {
+    pub(super) fn new(session: &ConcreteSession) -> Self {
+        let previous = session.statement_ru_pending.borrow_mut().take();
+        session
+            .statement_ru_scope_depth
+            .set(session.statement_ru_scope_depth.get() + 1);
+        Self {
+            session: session.inner.clone(),
+            previous,
+        }
+    }
+
+    pub(super) fn finish(&self) -> crate::SessionResult<()> {
+        let pending = self.session.statement_ru_pending.borrow_mut().take();
+        if let Some(pending) = pending {
+            let session = ConcreteSession {
+                inner: self.session.clone(),
+            };
+            if pending.record_set.is_none() && session.has_file_transfer_reader() {
+                *self.session.statement_ru_delayed.borrow_mut() = Some(pending);
+            } else {
+                pending.finish()?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for SessionStatementRUScope {
+    fn drop(&mut self) {
+        let pending = self.session.statement_ru_pending.borrow_mut().take();
+        drop(pending);
+        *self.session.statement_ru_pending.borrow_mut() = self.previous.take();
+        self.session
+            .statement_ru_scope_depth
+            .set(self.session.statement_ru_scope_depth.get() - 1);
+    }
+}
+
+pub(super) fn is_constant_terminal_plan(plan: &dyn PhysicalPlan) -> bool {
+    if plan
+        .as_any()
+        .is::<astersql_planner_core_operator_physicalop::PhysicalTableDual>()
+    {
+        return true;
+    }
+    plan.as_any()
+        .is::<astersql_planner_core_operator_physicalop::PhysicalProjection>()
+        && plan.children().len() == 1
+        && plan.children().into_iter().all(is_constant_terminal_plan)
+}
+
+impl ConcreteSession {
+    /// Use the existing DO logical/physical builder and executor. This is the
+    /// no-result statement needed by the file-transfer outcome handoff.
+    pub(super) fn execute_do_terminal(&self, sql: &str) -> crate::SessionResult<()> {
+        use astersql_planner_core_base::Plan as _;
+        let mut nodes = super::parse(sql)?;
+        let node = astersql_parser_ast::NodeRef::new(nodes.remove(0));
+        let context = self.AdapterPlanContext();
+        let (mut builder, _) = astersql_planner_core::NewPlanBuilder().Init(
+            context.clone(),
+            self.domain.info_schema(),
+            astersql_util_hint::NewQBHintHandler(None),
+        );
+        let mut logical = builder
+            .buildResultSetNode(astersql_planner_core::context::TODO(), &node, false)
+            .map_err(|e| super::session_error("build DO logical plan", e))?;
+        let (mut physical, _) = astersql_planner_core::DoOptimize(
+            astersql_planner_core::context::TODO(),
+            &context,
+            builder.GetOptFlag(),
+            &mut logical,
+        )
+        .map_err(|e| super::session_error("optimize DO", e))?;
+        // DO evaluates the projection but exposes no rows, as Go buildDo's
+        // CalculateNoDelay flag requires.
+        if let Some(projection) = physical
+            .as_any_mut()
+            .downcast_mut::<astersql_planner_core_operator_physicalop::PhysicalProjection>(
+        ) {
+            projection.CalculateNoDelay = true;
+        }
+        let id = physical.id();
+        let owner = Arc::new(SessionBoundAdapterOwner::new(self.clone()));
+        let version = self
+            .domain
+            .storage()
+            .with_storage(|store| store.CurrentVersion("global"))
+            .map_err(|e| super::session_error("pin DO statement version", e))?;
+        owner
+            .BindTypedPhysicalPlan(physical, Vec::new(), version, 32, 1024)
+            .map_err(|e| super::session_error("bind DO plan", e))?;
+        let mut statement = owner
+            .BuildExecStmt(
+                astersql_executor::adapter::PlanInfo {
+                    id,
+                    kind: astersql_executor::adapter::PlanKind::Projection,
+                    schema: Vec::new(),
+                    calculate_no_delay: true,
+                    projection_child: None,
+                    encoded: String::new(),
+                    binary: String::new(),
+                    hints: String::new(),
+                },
+                astersql_executor::adapter::StatementNode {
+                    kind: astersql_executor::adapter::StatementKind::Other,
+                    original_text: sql.into(),
+                    text: sql.into(),
+                    secure_text: sql.into(),
+                    prepared_text: None,
+                },
+                Vec::new(),
+                false,
+            )
+            .map_err(|e| super::session_error("compile DO statement", e))?;
+        let failure = statement.StatementRUFailureGuard();
+        #[cfg(test)]
+        super::scan_adapter_runtime_test::statement_ru_post_compile(&statement)?;
+        let result = statement
+            .Exec()
+            .map_err(|e| super::session_error("execute DO statement", e))?;
+        if result.is_some() {
+            return Err(crate::SessionError::new(
+                "DO unexpectedly returned a result set",
+            ));
+        }
+        *self.statement_ru_pending.borrow_mut() = Some(PendingStatementRU {
+            statement,
+            record_set: None,
+            _failure: failure,
+        });
+        Ok(())
+    }
+}
+
+pub(super) struct FileTransferStatementRUScope {
+    session: Rc<super::session::ConcreteSessionInner>,
+    previous: Option<PendingStatementRU>,
+}
+
+impl FileTransferStatementRUScope {
+    pub(super) fn new(session: &ConcreteSession) -> Self {
+        let previous = session.statement_ru_delayed.borrow_mut().take();
+        Self {
+            session: session.inner.clone(),
+            previous,
+        }
+    }
+    pub(super) fn finish(&self) -> crate::SessionResult<()> {
+        let pending = self.session.statement_ru_delayed.borrow_mut().take();
+        if let Some(pending) = pending {
+            pending.finish()?;
+        }
+        Ok(())
+    }
+}
+impl Drop for FileTransferStatementRUScope {
+    fn drop(&mut self) {
+        let pending = self.session.statement_ru_delayed.borrow_mut().take();
+        drop(pending);
+        *self.session.statement_ru_delayed.borrow_mut() = self.previous.take();
     }
 }

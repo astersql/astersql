@@ -305,6 +305,21 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
                 ),
             ));
         }
+        if let Some(binding) = self.physical_scan.borrow().as_ref()
+            && super::typed_adapter_bridge::is_constant_terminal_plan(binding.plan.as_plan())
+        {
+            let executor = self
+                .session
+                .OpenTypedPhysicalPlanWithBindings(
+                    binding.plan.as_plan(),
+                    &[],
+                    binding.version,
+                    binding.initial_capacity,
+                    binding.maximum_chunk_size,
+                )
+                .map_err(|error| errors::New(error.to_string()))?;
+            return Ok(executor);
+        }
         let spec = self
             .scan
             .borrow()

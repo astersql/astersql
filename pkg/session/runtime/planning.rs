@@ -2175,6 +2175,9 @@ impl ConcreteSession {
         let mut statement = owner
             .BuildPreparedExecStmt()
             .map_err(|error| session_error("build prepared ExecStmt", error))?;
+        let _ru_failure = statement.StatementRUFailureGuard();
+        #[cfg(test)]
+        super::scan_adapter_runtime_test::statement_ru_post_compile(&statement)?;
         let field_types = statement
             .Plan
             .schema
@@ -2237,15 +2240,29 @@ impl ConcreteSession {
             }
             Ok(())
         })();
-        statement.RecordStatementRUFinalOutcome(read.is_ok());
-        let close = record_set
-            .Close()
-            .map_err(|error| session_error("close prepared result", error));
+        let session_terminal = self.statement_ru_scope_depth.get() != 0;
+        if read.is_err() || !session_terminal {
+            statement.RecordStatementRUFinalOutcome(read.is_ok());
+        }
+        let close = if session_terminal {
+            record_set.Finish()
+        } else {
+            record_set.Close()
+        }
+        .map_err(|error| session_error("close prepared result", error));
         if let Some(memory) = &mut memory {
             memory.exception = read.is_err() || close.is_err();
         }
         read?;
         close?;
+        if session_terminal {
+            *self.statement_ru_pending.borrow_mut() =
+                Some(super::typed_adapter_bridge::PendingStatementRU {
+                    statement,
+                    record_set: Some(record_set),
+                    _failure: _ru_failure,
+                });
+        }
         Ok(PreparedPlannedKVResult {
             Rows: rows,
             Columns: columns,

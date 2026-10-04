@@ -216,6 +216,7 @@ impl ConcreteSession {
         sql: &str,
         reader: R,
     ) -> SessionResult<Vec<ConcreteRecordSet>> {
+        let ru_scope = super::typed_adapter_bridge::FileTransferStatementRUScope::new(self);
         struct Restore(usize, Option<LocalLoadDataReader>);
         impl Drop for Restore {
             fn drop(&mut self) {
@@ -228,11 +229,24 @@ impl ConcreteSession {
                 });
             }
         }
-        let id = self as *const Self as usize;
+        let id = std::rc::Rc::as_ptr(&self.inner) as usize;
         let previous = LOCAL_LOAD_DATA_READERS
             .with(|readers| readers.borrow_mut().insert(id, Box::new(reader)));
-        let _restore = Restore(id, previous);
-        self.execute(sql)
+        let restore = Restore(id, previous);
+        let execution = self.execute(sql);
+        drop(restore);
+        if execution.is_ok() {
+            ru_scope.finish()?;
+        }
+        execution
+    }
+
+    pub(super) fn has_file_transfer_reader(&self) -> bool {
+        LOCAL_LOAD_DATA_READERS.with(|readers| {
+            readers
+                .borrow()
+                .contains_key(&(std::rc::Rc::as_ptr(&self.inner) as usize))
+        })
     }
 
     /// Return the latest MySQL OK-packet message.
@@ -351,8 +365,11 @@ impl ConcreteSession {
         }
 
         // Keep a supplied reader alive through the transaction, including errors.
-        let mut supplied_reader = LOCAL_LOAD_DATA_READERS
-            .with(|readers| readers.borrow_mut().remove(&(self as *const Self as usize)));
+        let mut supplied_reader = LOCAL_LOAD_DATA_READERS.with(|readers| {
+            readers
+                .borrow_mut()
+                .remove(&(std::rc::Rc::as_ptr(&self.inner) as usize))
+        });
         let source_files = if matches!(statement.FileLocRef, ast::FileLocRef::Client) {
             if let Some(reader) = supplied_reader.as_mut() {
                 let mut bytes = Vec::new();

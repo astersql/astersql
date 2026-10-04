@@ -312,9 +312,26 @@ fn build_typed_physical_plan(
     use astersql_planner_core_operator_physicalop::{
         LegacyPhysicalLock, PhysicalHashAgg, PhysicalHashJoin, PhysicalIndexLookUpReader,
         PhysicalIndexReader, PhysicalIndexScan, PhysicalLimit, PhysicalProjection,
-        PhysicalSelection, PhysicalTableReader, PhysicalTableScan, PointGetPlan,
+        PhysicalSelection, PhysicalTableDual, PhysicalTableReader, PhysicalTableScan, PointGetPlan,
     };
 
+    if let Some(dual) = plan.as_any().downcast_ref::<PhysicalTableDual>() {
+        if !(0..=1).contains(&dual.RowCount) {
+            return Err(BuildError::new("invalid row count for dual table"));
+        }
+        return Ok(Box::new(crate::typed_projection::TypedTableDual::new(
+            dual.RowCount as usize,
+            plan.schema()
+                .Columns
+                .iter()
+                .map(|column| crate::adapter::SchemaColumn {
+                    field_type: column.RetType.clone().unwrap_or_default(),
+                })
+                .collect(),
+            initial_capacity,
+            maximum_chunk_size,
+        )));
+    }
     if let Some(point) = plan.as_any().downcast_ref::<PointGetPlan>() {
         if locking {
             return Err(BuildError::new(
