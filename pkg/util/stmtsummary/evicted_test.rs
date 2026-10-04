@@ -473,3 +473,32 @@ fn test_add_info() {
     );
     assert_eq!(stats.resourceGroupName, "rg-b");
 }
+
+#[test]
+fn evicted_count_rows_are_safe_during_concurrent_statement_adds() {
+    let mut summaries = newStmtSummaryByDigestMap();
+    summaries.SetMaxStmtCount(1).unwrap();
+    summaries.set_now_for_test(Some(120));
+    let summaries = std::sync::Arc::new(std::sync::Mutex::new(summaries));
+    std::thread::scope(|scope| {
+        let writer = summaries.clone();
+        scope.spawn(move || {
+            for index in 0..200 {
+                let mut info = exec_info("digest", "user", 120);
+                info.SchemaName = format!("schema_{index}");
+                writer.lock().unwrap().AddStatement(&info);
+            }
+        });
+        scope.spawn(|| {
+            for _ in 0..200 {
+                for row in summaries.lock().unwrap().ToEvictedCountDatum() {
+                    assert_eq!(row.len(), 3);
+                    assert!((1..=199).contains(&row[2].GetInt64()));
+                }
+            }
+        });
+    });
+    let rows = summaries.lock().unwrap().ToEvictedCountDatum();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0][2].GetInt64(), 199);
+}

@@ -188,16 +188,20 @@ fn go_merge_38_failed_setup_keeps_previous_instance_and_falls_back() {
 }
 
 #[test]
-fn go_merge_38_evicted_is_safe_during_rotation() {
+fn evicted_rows_are_safe_during_concurrent_window_rotation() {
     let summary = NewStmtSummary4Test(2);
     summary.SetRefreshInterval(1).unwrap();
+    summary.SetMaxStmtCount(2).unwrap();
     for digest in ["digest_1", "digest_2", "digest_3"] {
         summary.Add(&GenerateStmtExecInfo4Test(digest));
     }
     let reader = std::sync::Arc::clone(&summary);
     let worker = thread::spawn(move || {
         for _ in 0..100 {
-            let _ = reader.Evicted();
+            if let Some(row) = reader.Evicted() {
+                assert_eq!(row.len(), 3);
+                assert!(row[2].GetInt64() > 0);
+            }
         }
     });
     for i in 0..50 {
@@ -211,6 +215,7 @@ fn go_merge_38_evicted_is_safe_during_rotation() {
         }
     }
     worker.join().unwrap();
+    assert_eq!(summary.Evicted().unwrap()[2].GetInt64(), 1);
     summary.Close();
 }
 

@@ -39,6 +39,7 @@ struct TestRuntime {
     persistent: bool,
     process_privilege: bool,
     memory_rows: Vec<i32>,
+    memory_reads: usize,
     evicted_row: Option<i32>,
     pull_state: Arc<Mutex<PullState>>,
 }
@@ -49,6 +50,7 @@ impl TestRuntime {
             persistent: true,
             process_privilege: true,
             memory_rows,
+            memory_reads: 0,
             evicted_row: None,
             pull_state: Arc::new(Mutex::new(PullState {
                 batches,
@@ -76,6 +78,10 @@ impl StatementSummaryRuntime for TestRuntime {
     }
     fn process_privilege_denied(&self) -> Self::Error {
         "PROCESS denied".to_owned()
+    }
+    fn statement_summary_error(&self, error: astersql_errors::SharedError) -> Self::Error {
+        assert!(astersql_util_dbterror_plannererrors::ErrNotSupportedYet.Equal(Some(&error)));
+        error.to_string()
     }
     fn instance_address(&self, _context: &Self::Context) -> Result<String, Self::Error> {
         Ok("127.0.0.1:4000".to_owned())
@@ -121,6 +127,7 @@ impl StatementSummaryRuntime for TestRuntime {
         _instance_address: String,
         _process_privilege: bool,
     ) -> Result<Vec<Self::Row>, Self::Error> {
+        self.memory_reads += 1;
         Ok(self.memory_rows.clone())
     }
     fn persistent_history_puller(
@@ -232,4 +239,30 @@ fn builder_and_evicted_privilege_match_go_contract() {
         crate::stmtsummary::CLUSTER_TABLE_STATEMENTS_SUMMARY_EVICTED,
     );
     assert_eq!(cluster.retrieve(&mut ()).unwrap(), vec![1001]);
+}
+
+#[test]
+fn persistent_cumulative_tables_return_unsupported_without_initializing_reader() {
+    for table in [
+        crate::stmtsummary::TABLE_TIDB_STATEMENTS_STATS,
+        crate::stmtsummary::CLUSTER_TABLE_TIDB_STATEMENTS_STATS,
+    ] {
+        let mut reader = retriever(TestRuntime::persistent(vec![1], vec![]), table);
+        reader.close().unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                reader.retrieve(&mut ()).unwrap_err(),
+                "[planner:1235]This version of TiDB doesn't yet support 'cumulative statement summary table with persistent mode (v2)'"
+            );
+            assert!(reader.rows_reader.is_none());
+            assert_eq!(reader.runtime.memory_reads, 0);
+        }
+        reader.close().unwrap();
+        let mut runtime = TestRuntime::persistent(vec![1], vec![]);
+        runtime.persistent = false;
+        assert_eq!(
+            retriever(runtime, table).retrieve(&mut ()).unwrap(),
+            vec![1]
+        );
+    }
 }

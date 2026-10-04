@@ -151,6 +151,8 @@ pub trait StatementSummaryRuntime {
     fn digests_empty(&self, digests: &Self::Digests) -> bool;
     fn has_process_privilege(&self, context: &Self::Context) -> bool;
     fn process_privilege_denied(&self) -> Self::Error;
+    /// Preserve the planner error when adapting it to the runtime error type.
+    fn statement_summary_error(&self, error: astersql_errors::SharedError) -> Self::Error;
     fn instance_address(&self, context: &Self::Context) -> Result<String, Self::Error>;
     fn append_host_info(
         &mut self,
@@ -308,6 +310,13 @@ impl<R: StatementSummaryRuntime> StmtSummaryRetriever<R> {
         &mut self,
         context: &mut R::Context,
     ) -> Result<RowsReader<R::Row, R::Error>, R::Error> {
+        if self.mode == RetrieverMode::Persistent && isCumulativeTable(&self.table_name) {
+            let error = astersql_util_dbterror_plannererrors::ErrNotSupportedYet
+                .GenWithStackByArgs(&[
+                    "cumulative statement summary table with persistent mode (v2)".into(),
+                ]);
+            return Err(self.runtime.statement_summary_error(error));
+        }
         let process_privilege = self.runtime.has_process_privilege(context);
         let instance_address = clusterTableInstanceAddr(&self.runtime, context, &self.table_name)?;
         if self.mode == RetrieverMode::Legacy {

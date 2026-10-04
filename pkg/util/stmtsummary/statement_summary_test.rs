@@ -92,16 +92,30 @@ fn go_merge_36_history_clear_keeps_latest_interval() {
 }
 
 #[test]
-fn go_merge_36_plan_error_keeps_statement() {
+fn plan_encoding_error_retains_statement_statistics() {
     let mut map = newStmtSummaryByDigestMap();
     let mut info = generate_any_exec_info();
     info.LazyInfo = Box::new(MockLazyInfo {
+        original_sql: "select 1".into(),
+        encoded_plan: "partial plan".into(),
         error: Some("plan encoding failed".into()),
         ..Default::default()
     });
     map.AddStatement(&info);
     let summary = map.summaryMap.iter().next().expect("statement retained").1;
-    assert_eq!(summary.cumulative.samplePlan, "[discard]");
+    assert_eq!(
+        summary.cumulative.samplePlan,
+        plancodec_dependency::PlanDiscardedEncoded
+    );
+    assert!(summary.cumulative.planHint.is_empty());
+    assert_eq!(summary.cumulative.sampleSQL, "select 1");
+    let element = summary.history.front().unwrap();
+    assert_eq!(
+        element.stmtSummaryStats.samplePlan,
+        plancodec_dependency::PlanDiscardedEncoded
+    );
+    assert!(element.stmtSummaryStats.planHint.is_empty());
+    assert_eq!(element.stmtSummaryStats.execCount, 1);
     assert_eq!(summary.cumulative.execCount, 1);
 }
 
