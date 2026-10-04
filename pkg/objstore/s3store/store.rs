@@ -19,13 +19,15 @@
 // 元数据或 AWS 默认凭证链，创建 SDK 客户端，探测桶区域（bucket region），
 // 校验权限，并可选查询对象锁（Object Lock）是否开启，最终包装为 `s3like::Storage`。
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::fmt;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
 use aws_config::BehaviorVersion;
 use aws_credential_types::Credentials;
-use aws_credential_types::provider::{ProvideCredentials, SharedCredentialsProvider};
+use aws_credential_types::provider::error::CredentialsError;
+use aws_credential_types::provider::{ProvideCredentials, SharedCredentialsProvider, future};
 use aws_types::region::Region;
 use serde::Deserialize;
 use tokio::runtime::Runtime;
@@ -37,8 +39,16 @@ use crate::{AwsS3Api, GetObjectLockConfigurationInput, RequestOptions, S3API, S3
 pub const DEFAULT_REGION: &str = "us-east-1";
 /// 阿里云 OSS/S3 兼容 endpoint 域名片段，用于识别走阿里云元数据凭证。
 pub const DOMAIN_ALIYUN: &str = "aliyuncs.com";
+/// Tencent COS legacy endpoint domain.
+pub const DOMAIN_TENCENTCLOUD_LEGACY: &str = "myqcloud.com";
+/// Tencent COS current endpoint domain.
+pub const DOMAIN_TENCENTCLOUD: &str = "tencentcos.cn";
 /// 阿里云 ECS RAM 角色凭证的元数据 URL 前缀。
 const ALIYUN_METADATA: &str = "http://100.100.100.200/latest/meta-data/ram/security-credentials/";
+const TENCENT_ROLE_METADATA: &str =
+    "http://metadata.tencentyun.com/latest/meta-data/cam/security-credentials/";
+const TENCENT_CREDENTIAL_SOURCE: &str = "TencentCVMRole";
+const TENCENT_REFRESH_WINDOW_SECS: u64 = 300;
 
 /// 凭证来源：静态密钥、阿里云元数据，或 AWS 默认凭证链。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -47,6 +57,8 @@ pub enum CredentialSource {
     Static,
     /// Endpoint 指向阿里云，从 ECS 元数据拉取 RAM 临时凭证。
     AliyunMetadata,
+    /// Endpoint 指向腾讯 COS，从 CVM 元数据拉取 CAM 角色临时凭证。
+    TencentCvmRole,
     /// 交给 AWS SDK 默认链（环境变量、共享配置、IMDS 等）。
     DefaultChain,
 }
@@ -63,6 +75,8 @@ pub fn credential_source(options: &backuppb::S3) -> CredentialSource {
         CredentialSource::Static
     } else if options.Endpoint.contains(DOMAIN_ALIYUN) {
         CredentialSource::AliyunMetadata
+    } else if is_tencent_cos_endpoint(&options.Endpoint) {
+        CredentialSource::TencentCvmRole
     } else {
         CredentialSource::DefaultChain
     }
@@ -321,18 +335,180 @@ where
     )
 }
 
-/// 按 `credential_source` 自动生成 SDK `Credentials`；默认链返回 `None`。
-pub fn autoNewCred(options: &backuppb::S3) -> Result<Option<Credentials>> {
+/// 按 `credential_source` 自动生成 SDK 凭证 provider；默认链返回 `None`。
+pub fn autoNewCred(options: &backuppb::S3) -> Result<Option<SharedCredentialsProvider>> {
     match credential_source(options) {
-        CredentialSource::Static => Ok(Some(Credentials::new(
+        CredentialSource::Static => Ok(Some(SharedCredentialsProvider::new(Credentials::new(
             options.AccessKey.clone(),
             options.SecretAccessKey.clone(),
             (!options.SessionToken.is_empty()).then(|| options.SessionToken.clone()),
             None,
             "tidb-s3-static",
-        ))),
-        CredentialSource::AliyunMetadata => createOssRAMCred(),
+        )))),
+        CredentialSource::AliyunMetadata => {
+            Ok(createOssRAMCred()?.map(SharedCredentialsProvider::new))
+        }
+        CredentialSource::TencentCvmRole => createTencentCOSCred(),
         CredentialSource::DefaultChain => Ok(None),
+    }
+}
+
+/// Match the Go endpoint check exactly: either Tencent COS domain substring is accepted.
+pub fn is_tencent_cos_endpoint(endpoint: &str) -> bool {
+    endpoint.contains(DOMAIN_TENCENTCLOUD_LEGACY) || endpoint.contains(DOMAIN_TENCENTCLOUD)
+}
+
+pub(crate) trait TencentCredential: fmt::Debug + Send + Sync {
+    fn get_credential(&self) -> Result<(String, String, String)>;
+}
+
+#[derive(Debug)]
+pub(crate) struct TencentCvmRoleCredentialsProvider {
+    pub(crate) credential: Arc<dyn TencentCredential>,
+}
+
+impl TencentCvmRoleCredentialsProvider {
+    async fn credentials(&self) -> aws_credential_types::provider::Result {
+        let (access_key_id, secret_access_key, session_token) = self
+            .credential
+            .get_credential()
+            .map_err(CredentialsError::provider_error)?;
+        if access_key_id.is_empty() || secret_access_key.is_empty() || session_token.is_empty() {
+            return Err(CredentialsError::provider_error(anyhow!(
+                "tencent CVM role returned incomplete credentials"
+            )));
+        }
+        // The Tencent credential refreshes its own state five minutes before expiry. Mark the
+        // converted AWS value expired so the outer AWS cache calls us again and observes refreshes.
+        Ok(Credentials::new(
+            access_key_id,
+            secret_access_key,
+            Some(session_token),
+            Some(SystemTime::now()),
+            TENCENT_CREDENTIAL_SOURCE,
+        ))
+    }
+}
+
+impl ProvideCredentials for TencentCvmRoleCredentialsProvider {
+    fn provide_credentials<'a>(&'a self) -> future::ProvideCredentials<'a>
+    where
+        Self: 'a,
+    {
+        future::ProvideCredentials::new(self.credentials())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(non_snake_case)]
+struct TencentRoleResponse {
+    TmpSecretId: String,
+    TmpSecretKey: String,
+    ExpiredTime: u64,
+    Token: String,
+    Code: String,
+}
+
+#[derive(Debug)]
+struct TencentRoleState {
+    role_name: String,
+    response: TencentRoleResponse,
+}
+
+#[derive(Debug)]
+struct TencentCvmRoleCredential {
+    client: reqwest::blocking::Client,
+    state: Mutex<TencentRoleState>,
+}
+
+impl TencentCvmRoleCredential {
+    fn load(client: reqwest::blocking::Client) -> Result<Self> {
+        let role_response = client.get(TENCENT_ROLE_METADATA).send()?;
+        if role_response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(anyhow!("Tencent CVM role is not bound"));
+        }
+        let role_name = role_response.text()?;
+        if role_name.is_empty() {
+            return Err(anyhow!("Tencent CVM role is not bound"));
+        }
+        let response = load_tencent_role(&client, &role_name)?;
+        Ok(Self {
+            client,
+            state: Mutex::new(TencentRoleState {
+                role_name,
+                response,
+            }),
+        })
+    }
+}
+
+impl TencentCredential for TencentCvmRoleCredential {
+    fn get_credential(&self) -> Result<(String, String, String)> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("Tencent CVM credential lock poisoned"))?;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let needs_refresh = state.response.TmpSecretId.is_empty()
+            || state.response.TmpSecretKey.is_empty()
+            || state.response.Token.is_empty()
+            || state
+                .response
+                .ExpiredTime
+                .saturating_sub(TENCENT_REFRESH_WINDOW_SECS)
+                <= now;
+        if needs_refresh {
+            match load_tencent_role(&self.client, &state.role_name) {
+                Ok(response) => state.response = response,
+                Err(error) => {
+                    tracing::warn!(%error, "failed to refresh Tencent CVM role credential")
+                }
+            }
+        }
+        Ok((
+            state.response.TmpSecretId.clone(),
+            state.response.TmpSecretKey.clone(),
+            state.response.Token.clone(),
+        ))
+    }
+}
+
+fn load_tencent_role(
+    client: &reqwest::blocking::Client,
+    role_name: &str,
+) -> Result<TencentRoleResponse> {
+    let response = client
+        .get(format!("{TENCENT_ROLE_METADATA}{role_name}"))
+        .send()?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err(anyhow!("Tencent CVM role is not bound"));
+    }
+    let response: TencentRoleResponse = response.json()?;
+    if response.Code != "Success" {
+        return Err(anyhow!(
+            "get credential from Tencent metadata failed, code={}",
+            response.Code
+        ));
+    }
+    Ok(response)
+}
+
+/// Build a Tencent CVM role provider. Metadata errors intentionally fall back to the AWS chain.
+pub fn createTencentCOSCred() -> Result<Option<SharedCredentialsProvider>> {
+    let client = reqwest::blocking::Client::new();
+    match TencentCvmRoleCredential::load(client) {
+        Ok(credential) => Ok(Some(SharedCredentialsProvider::new(
+            TencentCvmRoleCredentialsProvider {
+                credential: Arc::new(credential),
+            },
+        ))),
+        Err(error) => {
+            tracing::warn!(%error, "failed to get Tencent CVM role credential");
+            Ok(None)
+        }
     }
 }
 

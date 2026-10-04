@@ -80,3 +80,7 @@ mod gcs_s3_test;
 
 #[path = "gcs_s3_signer.rs"]
 mod gcs_s3_signer;
+
+#[cfg(test)]
+#[path = "tencent_cos_test.rs"]
+mod tencent_cos_test;
