@@ -18,6 +18,9 @@
     dead_code
 )]
 
+mod user_attributes_filter;
+pub use user_attributes_filter::*;
+
 mod errors;
 pub use errors::*;
 mod cache;
@@ -35,3 +38,6 @@ mod cache_test;
 mod privileges_test;
 #[cfg(test)]
 mod tidb_auth_token_test;
+
+#[cfg(test)]
+mod user_attributes_filter_test;

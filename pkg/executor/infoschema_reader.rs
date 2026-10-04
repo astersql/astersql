@@ -320,6 +320,17 @@ pub trait MemoryTracker: Send + Sync {
 
 /// Information Schema 数据源：会话、快照、行加载与权限等。
 pub trait InfoSchemaDataSource: Send + Sync {
+    /// The concrete MySQL manager and active roles bound to this session.
+    /// None also represents a foreign manager, for which Go leaves rows visible.
+    fn user_attributes_privileges(
+        &self,
+    ) -> Option<(
+        astersql_privilege_privileges::UserPrivileges,
+        Vec<astersql_privilege_privileges::RoleIdentity>,
+    )> {
+        None
+    }
+
     fn session_state(&self) -> InfoResult<SessionState>;
     fn snapshot_info_schema(&self, timestamp: u64) -> InfoResult<InfoSchemaSnapshot>;
     fn latest_info_schema(&self) -> InfoResult<InfoSchemaSnapshot>;
@@ -529,7 +540,45 @@ impl memtableRetriever {
     }
     /// 加载 USER_ATTRIBUTES 行。
     pub fn setDataForUserAttributes(&mut self) -> InfoResult {
-        self.replace_rows(DataRequest::UserAttributes)
+        let rows = self.source.load_rows(
+            DataRequest::UserAttributes,
+            self.info_schema.as_ref(),
+            Some(&self.extractor),
+        )?;
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let viewer = self.source.session_state()?;
+        let privileges = self.source.user_attributes_privileges();
+        let (manager, roles) = match privileges.as_ref() {
+            Some((manager, roles)) => (Some(manager), roles.as_slice()),
+            None => (None, &[][..]),
+        };
+        let filter = astersql_privilege_privileges::NewUserAttrFilter(
+            roles,
+            &viewer.current_user,
+            &viewer.current_host,
+            manager,
+        );
+        let mut visible_rows = Vec::with_capacity(rows.len());
+        for mut row in rows {
+            if row.len() != 3 {
+                continue;
+            }
+            let (Datum::Text(user), Datum::Text(host)) = (&row[0], &row[1]) else {
+                continue;
+            };
+            if !filter.Visible(user, host) {
+                continue;
+            }
+            if matches!(&row[2], Datum::Text(attribute) if attribute.is_empty()) {
+                row[2] = Datum::Null;
+            }
+            self.recordMemoryConsume(&row);
+            visible_rows.push(row);
+        }
+        self.rows = visible_rows;
+        Ok(())
     }
     /// 加载 SCHEMATA 行。
     pub fn setDataFromSchemata(&mut self) -> InfoResult {

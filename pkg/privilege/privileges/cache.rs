@@ -1016,9 +1016,7 @@ impl MySQLPrivilege {
         );
         identities.into_iter().any(|identity| {
             self.dynamic_priv.iter().any(|record| {
-                record
-                    .base
-                    .fullyMatch(&identity.Username, &identity.Hostname)
+                record.base.r#match(&identity.Username, &identity.Hostname)
                     && record.PrivilegeName.eq_ignore_ascii_case(privilege)
                     && (!with_grant || record.GrantOption)
             })
