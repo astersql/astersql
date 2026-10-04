@@ -3274,3 +3274,93 @@ fn statement_ru_concurrent_outcomes_keep_the_first_record() {
     );
     assert!(owner.take_terminal_setup().is_none());
 }
+
+#[test]
+fn statement_ru_reader_terminal_freezes_scan_and_transport_once() {
+    let total = {
+        let _guard = astersql_metrics::metrics::PACKAGE_INIT_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        unsafe {
+            if (&*std::ptr::addr_of!(astersql_metrics::ru_v2::RUV2Total)).is_none() {
+                astersql_metrics::ru_v2::InitRUV2Metrics();
+            }
+            (&*std::ptr::addr_of!(astersql_metrics::ru_v2::RUV2Total))
+                .clone()
+                .unwrap()
+        }
+    };
+    let before_total = total.get();
+
+    use crate::statement_ru_plan_walk::snapshot_statement_ru_runtime_evidence;
+    use astersql_util_execdetails::execdetails as exec;
+
+    let context = ru_join_context();
+    let scan = physicalop::PhysicalTableScan::New(context.clone());
+    let scan_id = base::Plan::id(&scan);
+    let mut reader = physicalop::PhysicalTableReader::New(context);
+    reader.TablePlan = Some(Box::new(scan));
+    let reader_id = base::Plan::id(&reader);
+    let mut collector = exec::NewRuntimeStatsColl(None);
+    collector.RecordCopStats(
+        scan_id,
+        exec::kv::TiKV,
+        Some(&exec::util::ScanDetail {
+            TotalKeys: 1,
+            ProcessedKeys: 1,
+            ProcessedKeysSize: 10,
+            ..Default::default()
+        }),
+        Default::default(),
+        None,
+        None,
+    );
+    let metrics = NewRUV2Metrics();
+    metrics.AddTiKVCoprocessorResponseBytes(20);
+    let frozen = snapshot_statement_ru_runtime_evidence(
+        Some(&collector),
+        &[reader_id, scan_id],
+        None,
+        None,
+        Some(&metrics),
+    );
+    // Changing the producer after the snapshot must not change terminal units.
+    collector.RecordCopStats(
+        scan_id,
+        exec::kv::TiKV,
+        Some(&exec::util::ScanDetail {
+            ProcessedKeysSize: 99,
+            ..Default::default()
+        }),
+        Default::default(),
+        None,
+        None,
+    );
+    metrics.AddTiKVCoprocessorResponseBytes(99);
+    let runtime = Arc::new(RUTerminalRuntime::default());
+    let mut stmt = ru_terminal_stmt();
+    stmt.Ctx = runtime.clone();
+    stmt.TypedPlan = Some(Arc::new(reader));
+    stmt.StatementCtx.statement_ru_evidence = Some(Arc::new(frozen));
+    stmt.RecordStatementRUFinalOutcome(true);
+    stmt.recordStatementRURootEOF();
+    stmt.FinishExecuteStmt(0, None, false);
+    let snapshot = stmt.StatementCtx.statement_ru_finalized.clone().unwrap();
+    assert_eq!(snapshot.units.scan_bytes, 10.0);
+    assert_eq!(snapshot.units.net_bytes, 20.0);
+    assert_eq!(snapshot.units.frontend_compile_bytes, 13.0);
+    assert_eq!(snapshot.units.operator_num, 2.0);
+    assert_eq!(runtime.published.borrow().len(), 1);
+    assert_eq!(runtime.published.borrow()[0].1, snapshot.engine_ru.tikv);
+    assert_eq!(snapshot.engine_ru.tikv, 31.0);
+    assert_eq!(snapshot.engine_ru.tidb, 14.0);
+    assert_eq!(snapshot.result.total_ru, 45.0);
+    assert_eq!(total.get() - before_total, 45.0);
+    stmt.FinishExecuteStmt(0, None, false);
+    assert_eq!(runtime.published.borrow().len(), 1);
+    assert_eq!(total.get() - before_total, 45.0);
+    assert!(Arc::ptr_eq(
+        &snapshot,
+        stmt.StatementCtx.statement_ru_finalized.as_ref().unwrap()
+    ));
+}

@@ -55,6 +55,8 @@ pub struct SessionBoundAdapterOwner {
     pub(super) point_read_pool_merged: Cell<bool>,
     pub(super) point_read_pool_runtime_registered: Cell<bool>,
     pub(super) point_read_stats: Arc<std::sync::Mutex<Arc<astersql_store_driver::ReadStats>>>,
+    pub(super) table_reader_ru_evidence:
+        Arc<std::sync::Mutex<Option<(i32, kv::CopRuntimeEvidence)>>>,
     pub(super) point_cache: RefCell<
         HashMap<String, Arc<std::sync::Mutex<astersql_executor::typed_point_get::TypedPointGet>>>,
     >,
@@ -506,6 +508,7 @@ impl SessionBoundAdapterOwner {
             point_read_stats: Arc::new(std::sync::Mutex::new(Arc::new(
                 astersql_store_driver::ReadStats::default(),
             ))),
+            table_reader_ru_evidence: Arc::new(std::sync::Mutex::new(None)),
             point_cache: RefCell::new(HashMap::new()),
         }
     }

@@ -1582,6 +1582,7 @@ struct CopResultSubset {
     start_key: kv::Key,
     memory_size: i64,
     response_time: Duration,
+    evidence: Option<kv::CopRuntimeEvidence>,
 }
 
 impl From<copr::CopResponse> for CopResultSubset {
@@ -1599,12 +1600,22 @@ impl From<copr::CopResponse> for CopResultSubset {
                     .and_then(|response| response.read_pool_task_details.as_ref())
             });
         let read_pool = pool.and_then(crate::read_pool_task_details::cop_read_pool_task_details);
+        let evidence = response
+            .response
+            .as_ref()
+            .map(|response| kv::CopRuntimeEvidence {
+                total_keys: response.total_keys,
+                processed_keys: response.processed_keys,
+                processed_bytes: response.processed_bytes,
+                tikv_response_bytes: response.tikv_response_bytes,
+            });
         Self {
             read_pool,
             data,
             start_key: kv::Key(response.start_key),
             memory_size,
             response_time: response.response_time,
+            evidence,
         }
     }
 }
@@ -1618,6 +1629,7 @@ impl From<copr::batch_request_sender::BatchResponse> for CopResultSubset {
             start_key: kv::Key(Vec::new()),
             memory_size,
             response_time: Duration::ZERO,
+            evidence: None,
         }
     }
 }
@@ -1625,6 +1637,9 @@ impl From<copr::batch_request_sender::BatchResponse> for CopResultSubset {
 impl kv::ResultSubset for CopResultSubset {
     fn ReadPoolTaskDetails(&self) -> Option<kv::PoolTaskDetails> {
         self.read_pool.clone()
+    }
+    fn CopRuntimeEvidence(&self) -> Option<kv::CopRuntimeEvidence> {
+        self.evidence
     }
     fn GetData(&self) -> &[u8] {
         &self.data

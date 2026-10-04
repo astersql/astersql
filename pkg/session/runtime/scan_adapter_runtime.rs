@@ -8,6 +8,7 @@ use astersql_errors as errors;
 use astersql_executor::adapter::*;
 use astersql_executor::typed_point_get::PointLockRuntime;
 use astersql_kv::Getter;
+use astersql_planner_core_base::Plan;
 use astersql_plugin as plugin;
 use astersql_util_chunk as chunk;
 
@@ -271,6 +272,7 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
         self.point_read_stats_active.set(false);
         self.point_read_pool_merged.set(false);
         self.point_read_pool_runtime_registered.set(false);
+        *self.table_reader_ru_evidence.lock().unwrap() = None;
         #[cfg(test)]
         if let Some(core) = astersql_util_memory::global_arbitrator::GlobalMemArbitrator() {
             self.session.compiler_quota_at_executor_build.store(
@@ -332,6 +334,43 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
             ));
         }
         if let Some(physical) = self.physical_scan.borrow().as_ref() {
+            let supports_coprocessor = self.session.domain.storage().with_storage(|storage| {
+                storage
+                    .GetClient()
+                    .IsRequestTypeSupported(astersql_kv::ReqTypeDAG, astersql_kv::ReqSubTypeBasic)
+            });
+            if supports_coprocessor
+                && physical.plan.is_prepared()
+                && physical.leaf_ranges.len() <= 1
+            {
+                let mut scans = Vec::new();
+                super::typed_adapter_bridge::collect_table_scans(
+                    physical.plan.as_plan(),
+                    &mut scans,
+                );
+                if let (Some(reader), [scan]) = (
+                    super::relational_scan::physical_table_reader(physical.plan.as_plan()),
+                    scans.as_slice(),
+                ) {
+                    let table = scan.Table.as_ref().ok_or_else(|| {
+                        errors::New("canonical TableReader scan has no TableInfo")
+                    })?;
+                    return super::canonical_table_reader::CanonicalTableReaderExecutor::new(
+                        &self.session,
+                        reader,
+                        table,
+                        &scan.Columns,
+                        &physical.ranges,
+                        physical.version.Ver,
+                        scan.id(),
+                        Arc::clone(&self.table_reader_ru_evidence),
+                        physical.initial_capacity,
+                        physical.maximum_chunk_size,
+                    )
+                    .map(|executor| Box::new(executor) as Box<dyn ExecExecutor>)
+                    .map_err(|error| errors::New(error.to_string()));
+                }
+            }
             let executor = if physical.leaf_ranges.len() > 1 {
                 self.session.OpenTypedPhysicalPlanWithBindings(
                     physical.plan.as_plan(),
@@ -1626,7 +1665,7 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
             payload_complete: point.payload_complete(),
             scan_detail_complete: point.scan_detail_complete(),
         };
-        self.session.WithSessionVars(|vars| {
+        let mut evidence = self.session.WithSessionVars(|vars| {
             let details = vars.StmtCtx.GetExecDetails();
             snapshot_statement_ru_runtime_evidence(
                 vars.StmtCtx.RuntimeStatsColl.as_deref(),
@@ -1640,7 +1679,39 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
                 }),
                 self.statement_context.borrow().ru_metrics.as_deref(),
             )
-        })
+        });
+        if let Some((plan_id, reader)) = *self.table_reader_ru_evidence.lock().unwrap() {
+            let scan = astersql_util_execdetails::execdetails::util::ScanDetail {
+                TotalKeys: i64::try_from(reader.total_keys).unwrap_or(i64::MAX),
+                ProcessedKeys: i64::try_from(reader.processed_keys).unwrap_or(i64::MAX),
+                ProcessedKeysSize: i64::try_from(reader.processed_bytes).unwrap_or(i64::MAX),
+                ..Default::default()
+            };
+            if let Some(plan) = evidence
+                .plans
+                .iter_mut()
+                .find(|plan| plan.plan_id == plan_id)
+            {
+                plan.scan = Some(scan);
+            } else {
+                evidence.plans.push(
+                    astersql_executor::statement_ru_plan_walk::StatementRUPlanEvidence {
+                        plan_id,
+                        root_rows: Default::default(),
+                        write_cpu_work: None,
+                        analyze_scan_bytes: None,
+                        hash_state_rows: None,
+                        cop_rows: Default::default(),
+                        scan: Some(scan),
+                        tiflash: None,
+                    },
+                );
+            }
+            if let Some(bytes) = reader.tikv_response_bytes {
+                evidence.tikv_response_bytes = Some(i64::try_from(bytes).unwrap_or(i64::MAX));
+            }
+        }
+        evidence
     }
     fn StatementRUScalarSubqueries(&self) -> Vec<std::rc::Rc<dyn std::any::Any>> {
         self.session.session_vars.SnapshotScalarSubQueries()

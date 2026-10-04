@@ -642,9 +642,20 @@ pub const GlobalReplicaScope: &str = oracle::GlobalTxnScope;
 pub use execdetails_group1::util::PoolTaskDetails;
 
 // ResultSubset 表示单个存储单元返回的一段结果及其内存/耗时元数据。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CopRuntimeEvidence {
+    pub total_keys: u64,
+    pub processed_keys: u64,
+    pub processed_bytes: u64,
+    pub tikv_response_bytes: Option<u64>,
+}
+
 pub trait ResultSubset {
     /// Read-pool diagnostics retained by this completed response.
     fn ReadPoolTaskDetails(&self) -> Option<PoolTaskDetails> {
+        None
+    }
+    fn CopRuntimeEvidence(&self) -> Option<CopRuntimeEvidence> {
         None
     }
     fn GetData(&self) -> &[u8];

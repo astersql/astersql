@@ -398,6 +398,52 @@ pub(super) fn planned_table_reader_dag(
         .map_err(|error| session_error("encode planned relational COUNT DAG", error))
 }
 
+/// Encode the pushed TableReader subtree without adding the COUNT aggregation
+/// used by the scalar-count helpers above. The returned rows are the exact
+/// input expected by the root executor.
+pub(super) fn planned_table_reader_select_dag(
+    plan_context: &astersql_planner_core_base::ContextRef,
+    reader: &astersql_planner_core_operator_physicalop::PhysicalTableReader,
+) -> SessionResult<Vec<u8>> {
+    let table_plan = reader
+        .TablePlan
+        .as_deref()
+        .ok_or_else(|| SessionError::new("planned TableReader has no table plan"))?;
+    let mut build_context = plan_context.GetBuildPBCtx().clone();
+    let mut executors = Vec::new();
+    for operator in astersql_planner_core_operator_physicalop::FlattenListPushDownPlan(table_plan) {
+        executors.push(
+            *operator
+                .to_pb(&mut build_context, kv::StoreType::TiKV)
+                .map_err(|error| {
+                    SessionError::new(format!("encode planned TiKV executor: {error}"))
+                })?,
+        );
+    }
+    // TiKV decodes an integer row handle as signed 64-bit regardless of the
+    // SQL display width of the primary-key column.
+    if let Some(scan) = executors.first_mut().map(tipb::Executor::mut_tbl_scan) {
+        for column in scan.mut_columns().iter_mut() {
+            if column.get_pk_handle() {
+                column.set_tp(astersql_parser_mysql::r#type::TypeLonglong as i32);
+            }
+        }
+    }
+    if !matches!(
+        executors.first().map(tipb::Executor::get_tp),
+        Some(tipb::ExecType::TypeTableScan)
+    ) {
+        return Err(SessionError::new(
+            "planned TableReader DAG must start with TableScan",
+        ));
+    }
+    let mut dag = tipb::DagRequest::new();
+    dag.set_executors(executors.into());
+    dag.set_output_offsets((0..reader.schema().Columns.len() as u32).collect());
+    protobuf::Message::write_to_bytes(&dag)
+        .map_err(|error| session_error("encode planned TableReader DAG", error))
+}
+
 /// 构造只扫描表记录范围的 TiKV Checksum 请求载荷。
 ///
 /// 聚簇表的每条可见记录对应 record prefix 下一个 KV；Checksum 直接在 MVCC

@@ -3165,3 +3165,137 @@ fn file_transfer_statement_ru_post_compile_outcome_and_terminal() {
 fn file_transfer_result_set_statement_ru_post_compile_outcome_and_terminal() {
     statement_ru_post_compile_cases(4);
 }
+
+#[test]
+#[ignore = "requires REAL_TIKV_PD and a TiKV build that publishes ExecDetailsV2.RuV2"]
+fn statement_ru_simple_select_real_tikv_terminal_publication() {
+    use astersql_executor::adapter::AdapterRuntime;
+    let pd = std::env::var("REAL_TIKV_PD").expect("REAL_TIKV_PD must name the test PD endpoint");
+    let store = astersql_store_driver::TiKVDriver::default()
+        .Open(&format!("tikv://{pd}?disableGC=true"))
+        .unwrap();
+    let factory = super::CanonicalSessionFactory::from_tikv_store(store).unwrap();
+    let domain = factory.domain().clone();
+    let session = factory.create_session();
+    let table = format!("ru_terminal_{}", std::process::id());
+    session
+        .execute(&format!("create table {table} (a int primary key, b int)"))
+        .unwrap();
+    struct Cleanup {
+        session: std::rc::Rc<super::ConcreteSession>,
+        domain: Arc<astersql_domain::Domain>,
+        table: String,
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            if let Err(error) = self
+                .session
+                .execute(&format!("drop table if exists {}", self.table))
+            {
+                eprintln!("clean up RealTiKV RU test table {}: {error}", self.table);
+            }
+            self.domain.close();
+        }
+    }
+    let sql = format!("select * from {table} where a = 1");
+    let owner = Arc::new(SessionBoundAdapterOwner::new(session));
+    let _cleanup = Cleanup {
+        session: owner.session.clone(),
+        domain: domain.clone(),
+        table: table.clone(),
+    };
+    let prepared = owner
+        .session
+        .PreparePlannedKVSelect(&sql, domain.info_schema())
+        .unwrap();
+    owner
+        .BindPreparedPlannedKVSelect(prepared, &[], 32, 1024)
+        .unwrap();
+    let table_id = {
+        let binding = owner.physical_scan.borrow();
+        let binding = binding.as_ref().unwrap();
+        let mut scans = Vec::new();
+        super::typed_adapter_bridge::collect_table_scans(binding.plan.as_plan(), &mut scans);
+        scans[0].Table.as_ref().unwrap().ID
+    };
+    let key =
+        astersql_tablecodec::EncodeRowKeyWithHandle(table_id, Box::new(astersql_kv::IntHandle(1)));
+    let value = astersql_tablecodec::EncodeRow(
+        Some(astersql_tablecodec::time::UTC),
+        vec![
+            astersql_types::datum::NewIntDatum(1),
+            astersql_types::datum::NewIntDatum(10),
+        ],
+        vec![1, 2],
+        Vec::new(),
+        None,
+        None,
+        astersql_tablecodec::rowcodec::Encoder::new(false),
+    )
+    .unwrap();
+    let mut seed = domain
+        .storage()
+        .with_storage(|storage| storage.Begin(&[]))
+        .unwrap();
+    astersql_kv::Mutator::Set(seed.as_mut(), astersql_kv::Key(key.0), value).unwrap();
+    seed.Commit(&astersql_kv::Context::todo()).unwrap();
+    {
+        let _guard = astersql_metrics::metrics::PACKAGE_INIT_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        unsafe {
+            if (&*std::ptr::addr_of!(astersql_metrics::ru_v2::RUV2Total)).is_none() {
+                astersql_metrics::ru_v2::InitRUV2Metrics();
+            }
+        }
+    }
+    owner
+        .BindPreparedPlannedKVSelect(prepared, &[], 32, 1024)
+        .unwrap();
+    let mut stmt = owner.BuildPreparedExecStmt().unwrap();
+    let ru_owner = stmt
+        .StatementCtx
+        .statement_ru_owner
+        .clone()
+        .expect("read statement installs production RU owner");
+    let mut result = stmt.Exec().unwrap().unwrap();
+    let mut chunk = result.NewChunk();
+    result.Next(&mut chunk).unwrap();
+    assert_eq!(chunk.NumRows(), 1);
+    assert_eq!(chunk.GetRow(0).GetInt64(0), 1);
+    assert_eq!(chunk.GetRow(0).GetInt64(1), 10);
+    result.Next(&mut chunk).unwrap();
+    assert_eq!(chunk.NumRows(), 0);
+    assert!(ru_owner.root_eof());
+    stmt.RecordStatementRUFinalOutcome(true);
+    result.Finish().unwrap();
+    result.Finish().unwrap();
+    assert!(owner.StatementContext().statement_ru_finalized.is_none());
+    result.Close().unwrap();
+    let snapshot = owner
+        .StatementContext()
+        .statement_ru_finalized
+        .expect("Close publishes a real statement snapshot");
+    let evidence = owner.StatementRURuntimeEvidence(&[]);
+    assert!(
+        snapshot.units.scan_bytes > 0.0,
+        "real Reader must supply scan bytes: {:?}",
+        snapshot.units
+    );
+    assert!(
+        snapshot.units.net_bytes > 0.0,
+        "TiKV must publish ExecDetailsV2.RuV2 transport bytes: {:?}, evidence={:?}",
+        snapshot.units,
+        evidence.tikv_response_bytes,
+    );
+    assert_eq!(
+        snapshot.units.net_bytes,
+        evidence.tikv_response_bytes.unwrap() as f64
+    );
+    assert!(snapshot.units.frontend_compile_bytes > 0.0);
+    result.Close().unwrap();
+    assert!(Arc::ptr_eq(
+        &snapshot,
+        &owner.StatementContext().statement_ru_finalized.unwrap()
+    ));
+}

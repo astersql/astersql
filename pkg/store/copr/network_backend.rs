@@ -1852,6 +1852,24 @@ fn response_read_bytes_v2(details: &kvrpcpb::ExecDetailsV2) -> u64 {
     }
 }
 
+fn response_scan_evidence_v2(details: &kvrpcpb::ExecDetailsV2) -> (u64, u64, u64) {
+    if !details.has_scan_detail_v2() {
+        return (0, 0, 0);
+    }
+    let scan = details.get_scan_detail_v2();
+    (
+        scan.get_total_versions(),
+        scan.get_processed_versions(),
+        scan.get_processed_versions_size(),
+    )
+}
+
+fn response_tikv_response_bytes_v2(details: &kvrpcpb::ExecDetailsV2) -> Option<u64> {
+    details
+        .has_ru_v2()
+        .then(|| details.get_ru_v2().get_coprocessor_response_bytes())
+}
+
 fn response_kv_cpu_ms_v2(details: &kvrpcpb::ExecDetailsV2) -> f64 {
     if details.has_time_detail_v2() {
         details.get_time_detail_v2().get_process_wall_time_ns() as f64 / 1_000_000.0
@@ -1906,6 +1924,10 @@ fn pb_response(
         } else {
             None
         };
+        let (total_keys, processed_keys, processed_bytes) = batch
+            .has_exec_details_v2()
+            .then(|| response_scan_evidence_v2(batch.get_exec_details_v2()))
+            .unwrap_or_default();
         let protocol = CopProtocolResponse {
             data: batch.take_data(),
             data_merged_into_response: batch.get_data_merged_into_response(),
@@ -1922,6 +1944,13 @@ fn pb_response(
                 .has_exec_details_v2()
                 .then(|| response_read_bytes_v2(batch.get_exec_details_v2()))
                 .unwrap_or_default(),
+            total_keys,
+            processed_keys,
+            processed_bytes,
+            tikv_response_bytes: batch
+                .has_exec_details_v2()
+                .then(|| response_tikv_response_bytes_v2(batch.get_exec_details_v2()))
+                .flatten(),
             kv_cpu_ms: batch
                 .has_exec_details_v2()
                 .then(|| response_kv_cpu_ms_v2(batch.get_exec_details_v2()))
@@ -1953,6 +1982,10 @@ fn pb_response(
         .has_exec_details_v2()
         .then(|| response_kv_cpu_ms_v2(response.get_exec_details_v2()))
         .unwrap_or_default();
+    let (total_keys, processed_keys, processed_bytes) = response
+        .has_exec_details_v2()
+        .then(|| response_scan_evidence_v2(response.get_exec_details_v2()))
+        .unwrap_or_default();
     Ok(CopProtocolResponse {
         data: response.take_data(),
         region_error: response
@@ -1966,6 +1999,13 @@ fn pb_response(
         can_be_cached: response.get_can_be_cached(),
         scanned_keys,
         read_bytes,
+        total_keys,
+        processed_keys,
+        processed_bytes,
+        tikv_response_bytes: response
+            .has_exec_details_v2()
+            .then(|| response_tikv_response_bytes_v2(response.get_exec_details_v2()))
+            .flatten(),
         kv_cpu_ms,
         read_pool_task_details: response
             .has_exec_details_v2()
