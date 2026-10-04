@@ -7,7 +7,10 @@ use crate::conn::{
 
 // Fixed provider slots preserve the existing catalog column layout. Joined
 // relations get separate slots, including empty providers after LEFT JOIN.
-const CATALOG_ROW_WIDTH: usize = 24;
+// Includes pg_proc.proacl at slot 24; every provider and JOIN uses this stride.
+const CATALOG_ROW_WIDTH: usize = 25;
+// Preserve the existing public CTE projection bound independently of provider slots.
+const MAX_CATALOG_CTE_COLUMNS: usize = 24;
 const MAX_CATALOG_ROWS: usize = 16_384;
 const MAX_CATALOG_JOIN_WORK: usize = 100_000;
 type CteColumns = std::collections::HashMap<usize, Vec<(String, u8, usize)>>;
@@ -235,8 +238,8 @@ impl CatalogQuery {
         for (cte_index, cte) in self.select.ctes.clone().into_iter().enumerate() {
             let mut query = self.nested(cte.query);
             query.bind()?;
-            if query.select.projections.len() > CATALOG_ROW_WIDTH {
-                return Err(("0A000", "catalog CTEs exceed the provider row width".into()));
+            if query.select.projections.len() > MAX_CATALOG_CTE_COLUMNS {
+                return Err(("0A000", "catalog CTEs exceed the column limit".into()));
             }
             self.cte_columns.extend(query.cte_columns.clone());
             let fields = query

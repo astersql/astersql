@@ -786,3 +786,21 @@ fn pg_datagrip_ui_metadata_core() {
             .is_err()
     );
 }
+
+#[test]
+fn pg_datagrip_function_acl_row_width() {
+    let context = context();
+    let acls = execute(context.as_ref(), "SELECT proacl FROM pg_proc");
+    assert!(!acls.is_empty());
+    assert!(acls.iter().all(|row| row == &[Value::Null]));
+    let rows = execute(
+        context.as_ref(),
+        "SELECT p.oid, p.proacl, n.nspname FROM pg_proc p JOIN pg_namespace n ON p.pronamespace=n.oid ORDER BY p.oid",
+    );
+    assert!(!rows.is_empty(), "built-in function rows are real metadata");
+    for row in rows {
+        assert!(matches!(row[0], Value::Signed(_)));
+        assert_eq!(row[1], Value::Null);
+        assert_eq!(row[2], Value::Text("pg_catalog".into()));
+    }
+}

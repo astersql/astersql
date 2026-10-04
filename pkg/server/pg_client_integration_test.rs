@@ -55,7 +55,15 @@ fn pg_introspection_clients_stored_view_source() {
 
 fn run_clients(pg_enabled: bool) {
     let (domain, native) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
-    let database = format!("pg_clients_{}_{}", std::process::id(), u8::from(pg_enabled));
+    let ui_port = std::env::var("PG_DATAGRIP_UI_PORT").ok().map(|port| {
+        port.parse::<u16>()
+            .expect("PG_DATAGRIP_UI_PORT must be a port")
+    });
+    let database = if ui_port.is_some() {
+        "pg_datagrip_ui".into()
+    } else {
+        format!("pg_clients_{}_{}", std::process::id(), u8::from(pg_enabled))
+    };
     native
         .execute(&format!("CREATE DATABASE {database}"))
         .unwrap();
@@ -68,6 +76,9 @@ fn run_clients(pg_enabled: bool) {
         format!("INSERT INTO {database}.client_isolation VALUES (17)"),
     ] {
         native.execute(&sql).unwrap();
+    }
+    if ui_port.is_some() {
+        native.execute(&format!("CREATE TABLE {database}.dg_ui_structure (id INT PRIMARY KEY, note VARCHAR(30) NOT NULL DEFAULT 'ready', UNIQUE KEY note_unique (note, id))")).unwrap();
     }
     let view_source = format!("SELECT id FROM `{database}`.`client_view_base`");
     let driver = Arc::new(ConcreteSessionDriver::new_for_test(
@@ -84,7 +95,7 @@ fn run_clients(pg_enabled: bool) {
         crate::server::ServerConfig {
             host: "127.0.0.1".into(),
             port: 0,
-            postgres_port: pg_enabled.then_some(0),
+            postgres_port: pg_enabled.then_some(ui_port.unwrap_or(0)),
             status: crate::server::StatusConfig {
                 report_status: false,
                 ..Default::default()
@@ -125,6 +136,25 @@ fn run_clients(pg_enabled: bool) {
             .unwrap();
         return;
     };
+    if ui_port.is_some() {
+        let control = std::path::PathBuf::from(
+            std::env::var("PG_DATAGRIP_UI_CONTROL")
+                .expect("PG_DATAGRIP_UI_CONTROL must name a temporary control file"),
+        );
+        assert!(!control.exists(), "UI control file must be fresh");
+        println!(
+            "DATAGRIP_UI_READY pid={} port={} database={} table=dg_ui_structure",
+            std::process::id(),
+            address.port(),
+            database
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(1200);
+        while !control.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        assert!(control.exists(), "DataGrip UI session timed out");
+        std::fs::remove_file(control).unwrap();
+    }
     let result = Command::new("python3")
         .arg("-c")
         .arg(LIBPQ_WORKFLOW)

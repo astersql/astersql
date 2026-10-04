@@ -443,9 +443,9 @@ order by owner_id
 | CTE/子查询与 Execute 新快照 | pg_introspection_cte | 非递归只读，拒绝越界及写入 |
 | 列/类型/默认值、索引/约束 | pg_introspection_columns、pg_introspection_constraints | 真实 model 元数据，未知字段/函数明确拒绝 |
 | 函数/语言、序列依赖、视图来源 | pg_introspection_functions、pg_introspection_dependencies、pg_introspection_clients | 原生能力来源明确，不伪造用户函数或拥有关系 |
-| 真实客户端和默认 MySQL 隔离 | pg_introspection_clients、postgres_client_protocol_versions、mysql_protocol_ | libpq 3.0/3.2、JDBC 文本结果；UI 未验收 |
+| 真实客户端和默认 MySQL 隔离 | pg_introspection_clients、postgres_client_protocol_versions、mysql_protocol_ | libpq 3.0/3.2、JDBC 结果；批次 6 UI 表结构结果见文末 |
 
-原生类型与目录私有类型使用互不重叠的内部码，DECIMAL 结果仍为 numeric（1700）；没有借目录数组支持扩大原生 JSON/数组类型承诺。完整 DataGrip UI 元数据树、持久重启、RealTiKV、生产鉴权与大 schema 性能仍未验证。
+原生类型与目录私有类型使用互不重叠的内部码，DECIMAL 结果仍为 numeric（1700）；没有借目录数组支持扩大原生 JSON/数组类型承诺。批次 6 已验证 DataGrip 表/列/键/索引树；其他完整 UI 系统对象、持久重启、RealTiKV、生产鉴权与大 schema 性能仍未验证。
 
 历史记录（2026-10-03；最新结果见下方）：DataGrip 实际 Bind 回归：会话 1533977259 的函数源、序列依赖等查询被二进制参数拒绝。现补齐目录参数解码，TCP 覆盖 OID 无符号边界、NULL、混合格式及坏数据后的 Sync 恢复；本机 JDBC 42.7.13/42.7.3 强制二进制 int8 参数且保留文本结果，对三条原始来源查询执行回归。此证据不代表默认二进制结果或完整 UI 验收；同会话 RetrieveTables 的有序 array_agg/关联标量子查询仍报 expected )，其他目录存在独立缺口。
 
@@ -455,4 +455,33 @@ order by owner_id
 
 `txid_current` 使用原生 `@@tidb_current_ts`（未活跃事务为 0），并保留来源查询的取模；该值是原生 TSO，不承诺 PG wraparound XID 或增量 xmin。`pg_user.usesuper` 从原生 `mysql.user.Super_priv` 读取；`pg_is_in_recovery` 为 false，因为本适配器没有 PG 恢复/复制角色。原生索引不发布 PG collation、opclass 或访问方法身份，indcollation 每列为无效 OID 0，未知方法的 `can_order` 为 NULL。目录表达式增加的下标、CROSS JOIN 与逐行表函数仍受原行数、工作量、作用域和取消限制约束。
 
-真实 UI 验收需要读取 DataGrip Database Explorer，刷新 PostgreSQL 数据源并展开 public 下的表、列、索引和约束。2026-10-04 本阶段三次读取均因 Computer Use 的 Accessibility / Screen Recording 权限未授予而失败，未观察到 UI 状态；客户端测试不能替代 UI 验收。当前仍不能声称完整 DataGrip 表树验收通过。
+2026-10-04 Computer Use 权限恢复后，已使用真实 DataGrip 2025.1.3 窗口完成本阶段表结构 UI 验收。连接测试显示 PostgreSQL 18.0 (AsterSQL)、JDBC 42.7.13；隔离 MockTiKV listener 为 127.0.0.1:15436，专用数据库为 pg_datagrip_ui。Database Explorer 实际刷新并展开 public → 表 → dg_ui_structure，AX 树与截图确认：
+
+- 列：id integer；note varchar(30)，默认值 'ready'（UI 显示 PG cast）。
+- 键：PRIMARY (id)；note_unique (note, id)。
+- 索引：PRIMARY (id) UNIQUE；note_unique (note, id) UNIQUE。
+- 同一 public 树还显示 client_isolation、client_view_base 和视图 client_view_live。
+
+这不是仅由 JDBC 结果推断的 UI 通过。首次真实自动内省的 session 1533977261 / statement 1869280229 查询 pg_proc.proacl，暴露固定行宽 24 不覆盖槽位 24 的问题：单表越界 panic，JOIN 则误读右侧 namespace OID。修复固定 stride 为 25，独立保留既有 CTE 24 列上限；同目录真实函数 ACL 单表与 JOIN 回归覆盖 NULL ACL 和 pg_catalog schema 身份。修复前 JOIN 回归 1 failed（实际 ACL=Signed(11)），修复后通过。此次生产修改仅修复该真实 UI 必需的局部接线。
+
+自动内省仍会报告 DateStyle、timezone、roles、数据库权限、foreign wrapper、扩展以及部分 server object 模板的范围外错误；表/列/键/索引树已实际加载。这次通过不代表所有 PostgreSQL 系统对象查询兼容，也不代表生产鉴权、RealTiKV、持久重启或大 schema 性能已验证。建议后续按实际 SQL 分别跟踪这些缺口，不能以 typed empty 目录伪造对象。验收结束后已恢复本地数据源原端口 5432 / 数据库 test，临时 listener 正常退出并清理测试数据库；未停止占用 5432 的其他任务服务。
+
+手动复验接线位于 pg_client_integration_test.rs，仅设置 PG_DATAGRIP_UI_PORT 时启用。它创建专用测试表，保持 listener 最多 20 分钟；真实 UI 核对结束后创建 PG_DATAGRIP_UI_CONTROL 指定的全新临时文件，测试随即继续原有 libpq/JDBC 回归并清理资源。文件 marker 本身不构成 UI 成功证据。
+
+本轮 Ready 验证使用独立 HEAD 快照 /tmp/astersql-dg6-ui、自有原子锁 rust-slot-8。最终源码先在快照运行 cargo fmt --all，再逐字节同步到工作区。未修改 Go/Bazel 元数据，无 bazel_prepare 触发项。验证命令：
+
+```bash
+cargo fmt --all --manifest-path /tmp/astersql-dg6-ui/Cargo.toml
+CARGO_TARGET_DIR=$PWD/target/rust-slot-8 PROTOC=/opt/homebrew/opt/protobuf@21/bin/protoc cargo test --manifest-path /tmp/astersql-dg6-ui/Cargo.toml -p astersql-server pg_datagrip_test::pg_datagrip_function_acl_row_width --lib -- --exact --test-threads=1
+CARGO_TARGET_DIR=$PWD/target/rust-slot-8 PROTOC=/opt/homebrew/opt/protobuf@21/bin/protoc PG_DATAGRIP_UI_PORT=5432 PG_DATAGRIP_UI_CONTROL=/tmp/datagrip6-ui-finish cargo test --manifest-path /tmp/astersql-dg6-ui/Cargo.toml -p astersql-server --lib -- pg_datagrip pg_catalog_query_test:: pg_client_integration_test::pg_introspection_clients --test-threads=1 --nocapture
+PG_DATAGRIP_UI_PORT=15436 PG_DATAGRIP_UI_CONTROL=/tmp/datagrip6-ui-finish target/rust-slot-8/debug/deps/astersql_server-45acd377007af833 pg_client_integration_test::pg_introspection_clients --exact --test-threads=1 --nocapture
+# 仅在真实 UI 核对结束后运行，释放测试等待：
+touch /tmp/datagrip6-ui-finish
+make lint
+git diff --check
+git diff --cached --check
+```
+
+最终聚焦运行 19 passed / 1 failed，唯一失败是 5432 被另一任务服务占用；相同构建产物在 15436 单独复验该真实客户端测试 1 passed，两版 JDBC 再次各 27/27。合计 20 个聚焦测试均有通过证据，没有 ignored 或以零测试代替验收。中间修复曾触发 CTE 边界失败，保留 24 列上限后最终边界通过。测试日志分别为 /tmp/datagrip6-ui-acl-red.log、/tmp/datagrip6-ui-final.log 和 /tmp/datagrip6-ui-retry.log；格式化、lint 日志为 /tmp/datagrip6-ui-fmt.log、/tmp/datagrip6-ui-ready-lint.log。未运行全工作区 Rust suite；共享工作区其他任务变更不属于此次隔离验证。
+
+此次 stride 增加一个 Value 槽位，目录 provider 每行存储约增加 1/24，JOIN 工作量、行数和 CTE 列数上限保持不变。未做性能基准测试。make lint 与差异检查均通过；Ready 按仓库交付规则执行，当前仓库缺少 .agents/skills/tidb-verify-profile/SKILL.md，未声称已读取该缺失 skill。
