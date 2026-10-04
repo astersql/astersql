@@ -324,6 +324,112 @@ fn bootstrap_enables_statement_summary_by_default() {
     assert_eq!(rows.Rows(), vec![vec!["ON".to_owned()]]);
 }
 
+/// 对齐 Go `TestDefaultAnalyzeBackgroundOnlyAffectsFreshBootstrap`：首次
+/// bootstrap 给 default 组启用 stats；升级不覆盖已有的后台任务配置。
+#[test]
+fn default_analyze_background_only_affects_fresh_bootstrap() {
+    let (store, domain) = astersql_testkit::mockstore::CreateMockStoreAndDomain();
+    let mut tk = NewTestKit(store.clone() as Arc<dyn Database>);
+    tk.MustExec("set global tidb_enable_resource_control = 'on'", Vec::new());
+    let read_background = || {
+        domain.storage_handle().with_storage(|storage| {
+            let version = storage
+                .CurrentVersion("global")
+                .expect("read default group metadata version");
+            let reader = astersql_meta::SnapshotReader::new(storage.GetSnapshot(version));
+            reader
+                .get_resource_group(1)
+                .expect("read default resource group metadata")
+                .and_then(|group| group.ResourceGroupSettings.Background)
+                .map(|background| background.JobTypes.clone())
+        })
+    };
+    assert_eq!(
+        read_background(),
+        Some(vec!["stats".to_owned()]),
+        "fresh bootstrap must enable stats background jobs for default",
+    );
+
+    if astersql_config_kerneltype::IsNextGen() {
+        return;
+    }
+
+    tk.MustExec(
+        "alter resource group default BACKGROUND=(TASK_TYPES='lightning')",
+        Vec::new(),
+    );
+    let upgrade_from = unsafe { astersql_session::upgrade_def::currentBootstrapVersion } - 1;
+    set_bootstrap_version(&mut tk, upgrade_from);
+    drop(tk);
+
+    astersql_session::runtime::BootstrapCanonicalDomain(domain.clone())
+        .expect("existing store must take the upgrade path");
+    assert_eq!(
+        read_background(),
+        Some(vec!["lightning".to_owned()]),
+        "upgrade must preserve the existing background task configuration",
+    );
+}
+
+/// 对齐 Go `TestResourceGroupBasic`：default 组的后台任务配置在 priority、RU
+/// 和 burst 属性变更后仍保存在 ResourceGroups 元数据中。
+#[test]
+fn default_stats_background_survives_other_resource_group_alters() {
+    let (store, domain) = astersql_testkit::mockstore::CreateMockStoreAndDomain();
+    let mut tk = NewTestKit(store as Arc<dyn Database>);
+    tk.MustExec("set global tidb_enable_resource_control = 'on'", Vec::new());
+    let query = "select * from information_schema.resource_groups where name = 'default'";
+    let read_background = || {
+        domain.storage_handle().with_storage(|storage| {
+            let version = storage
+                .CurrentVersion("global")
+                .expect("read default group metadata version");
+            let reader = astersql_meta::SnapshotReader::new(storage.GetSnapshot(version));
+            reader
+                .get_resource_group(1)
+                .expect("read default resource group metadata")
+                .and_then(|group| group.ResourceGroupSettings.Background)
+                .map(|background| background.JobTypes.clone())
+        })
+    };
+    assert_eq!(read_background(), Some(vec!["stats".to_owned()]));
+    let expected_before_alter = "default UNLIMITED MEDIUM UNLIMITED <nil> TASK_TYPES='stats'";
+    tk.MustQuery(query, Vec::new())
+        .Check(astersql_testkit::Rows(&[expected_before_alter]));
+
+    for (sql, expected) in [
+        (
+            "alter resource group `default` PRIORITY=LOW",
+            "default UNLIMITED LOW UNLIMITED <nil> TASK_TYPES='stats'",
+        ),
+        (
+            "alter resource group `default` ru_per_sec=1000",
+            "default 1000 LOW UNLIMITED <nil> TASK_TYPES='stats'",
+        ),
+        (
+            "alter resource group `default` BURSTABLE",
+            "default 1000 LOW MODERATED <nil> TASK_TYPES='stats'",
+        ),
+        (
+            "alter resource group `default` BURSTABLE=OFF",
+            "default 1000 LOW OFF <nil> TASK_TYPES='stats'",
+        ),
+        (
+            "alter resource group `default` BURSTABLE=MODERATED",
+            "default 1000 LOW MODERATED <nil> TASK_TYPES='stats'",
+        ),
+        (
+            "alter resource group `default` BURSTABLE=UNLIMITED",
+            "default 1000 LOW UNLIMITED <nil> TASK_TYPES='stats'",
+        ),
+    ] {
+        tk.MustExec(sql, Vec::new());
+        tk.MustQuery(query, Vec::new())
+            .Check(astersql_testkit::Rows(&[expected]));
+        assert_eq!(read_background(), Some(vec!["stats".to_owned()]), "{sql}");
+    }
+}
+
 /// 对应 Go `TestReferencesPrivilegeOnColumn`：bootstrap 后权限表必须支持列级
 /// REFERENCES 与 SELECT/UPDATE/INSERT 权限写入。
 #[test]

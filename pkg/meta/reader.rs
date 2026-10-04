@@ -386,6 +386,24 @@ impl SnapshotReader {
         .map(|raw| astersql_meta_model::DecodeTableInfo(&raw).map_err(errors::new))
         .transpose()
     }
+    /// Read one ResourceGroupInfo from the Go-compatible `ResourceGroups` hash.
+    pub fn get_resource_group(
+        &self,
+        id: i64,
+    ) -> Result<Option<astersql_meta_model::group_3::ResourceGroupInfo>, errors::Error> {
+        let field = format!("ResourceGroup:{id}");
+        let Some(raw) = self.hash_get(b"ResourceGroups", field.as_bytes())? else {
+            return Ok(None);
+        };
+        let payload = if raw.first() == Some(&0) {
+            &raw[1..]
+        } else {
+            raw.as_slice()
+        };
+        serde_json::from_slice(payload)
+            .map(Some)
+            .map_err(errors::new)
+    }
     /// Read Go DDLJobHistory, keyed by the big-endian job ID.
     pub fn get_history_ddl_job(
         &self,

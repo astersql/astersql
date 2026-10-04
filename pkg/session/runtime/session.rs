@@ -1968,6 +1968,21 @@ fn canonical_bootstrap_version(
         .map_err(|_| SessionError::new(format!("invalid bootstrap version {value:?}")))
 }
 
+fn canonical_bootstrapped(session: &ConcreteSession, domain: &Domain) -> SessionResult<bool> {
+    if domain.stats_table("mysql", "tidb").is_none() {
+        return Ok(false);
+    }
+    let mut record_sets = session
+        .execute("SELECT VARIABLE_VALUE FROM mysql.tidb WHERE VARIABLE_NAME='bootstrapped'")?;
+    let Some(record_set) = record_sets.first_mut() else {
+        return Ok(false);
+    };
+    let Some(row) = record_set.next_row()? else {
+        return Ok(false);
+    };
+    Ok(row.first().is_some_and(|value| value == "True"))
+}
+
 fn ensure_canonical_ddl_system_tables(
     session: &ConcreteSession,
     domain: &Domain,
@@ -2369,6 +2384,7 @@ pub fn BootstrapCanonicalDomain(domain: Arc<Domain>) -> SessionResult<ConcreteSe
         bootstrap_canonical_nextgen_schemas(&domain)?;
     }
     let session = ConcreteSession::new(Arc::clone(&domain));
+    let was_bootstrapped = canonical_bootstrapped(&session, &domain)?;
     let previous_bootstrap_version = canonical_bootstrap_version(&session, &domain)?;
     // The serving factory holds the owner lock; this read observes upgrades by other nodes.
     if previous_bootstrap_version.is_some_and(|version| {
@@ -2417,6 +2433,9 @@ pub fn BootstrapCanonicalDomain(domain: Arc<Domain>) -> SessionResult<ConcreteSe
         }
     }
     ensure_canonical_ddl_system_tables(&session, &domain)?;
+    if !was_bootstrapped {
+        session.execute("ALTER RESOURCE GROUP default BACKGROUND=(TASK_TYPES='stats')")?;
+    }
     upgrade_canonical_domain(&session, previous_bootstrap_version)?;
     session
         .execute(astersql_meta_metadef::CreateSysConfigTable)

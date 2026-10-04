@@ -1471,6 +1471,8 @@ impl ConcreteSession {
             return Ok(Some(project_virtual_rows(statement, columns, rows)?));
         }
         if table_name.eq_ignore_ascii_case("resource_groups") {
+            let default_background =
+                super::control::load_default_resource_group_background(&self.domain)?;
             let groups = RUNTIME_RESOURCE_GROUPS
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1480,16 +1482,54 @@ impl ConcreteSession {
             let rows = groups
                 .into_iter()
                 .map(|(name, group)| {
+                    let is_default = name == astersql_resourcegroup::DEFAULT_RESOURCE_GROUP_NAME;
                     HashMap::from([
                         ("name".to_owned(), Some(name)),
-                        ("ru_per_sec".to_owned(), Some(group.ru_per_sec.to_string())),
+                        (
+                            "ru_per_sec".to_owned(),
+                            Some(
+                                if group.ru_per_sec == astersql_meta_model::group_3::unlimitedRURate
+                                {
+                                    "UNLIMITED".to_owned()
+                                } else {
+                                    group.ru_per_sec.to_string()
+                                },
+                            ),
+                        ),
                         ("priority".to_owned(), Some(group.priority.String())),
+                        (
+                            "burstable".to_owned(),
+                            Some(
+                                match group.burst_limit {
+                                    -1 => "UNLIMITED",
+                                    -2 => "MODERATED",
+                                    _ => "OFF",
+                                }
+                                .to_owned(),
+                            ),
+                        ),
+                        ("query_limit".to_owned(), None),
+                        (
+                            "background".to_owned(),
+                            if is_default {
+                                default_background.clone()
+                            } else {
+                                None
+                            },
+                        ),
                     ])
                 })
                 .collect();
             return Ok(Some(project_virtual_rows(
                 statement,
-                &["NAME", "RU_PER_SEC", "PRIORITY"],
+                &[
+                    "NAME",
+                    "RU_PER_SEC",
+                    "PRIORITY",
+                    "BURSTABLE",
+                    "QUERY_LIMIT",
+                    "BACKGROUND",
+                ],
                 rows,
             )?));
         }

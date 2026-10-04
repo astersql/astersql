@@ -16,6 +16,124 @@
 use super::session::RuntimeTimeZone;
 use super::*;
 
+fn default_resource_group_background(
+    options: &[ast::ResourceGroupBackgroundOption],
+) -> Option<astersql_meta_model::group_3::ResourceGroupBackgroundSettings> {
+    use astersql_meta_model::group_3::ResourceGroupBackgroundSettings;
+
+    let mut background = ResourceGroupBackgroundSettings::default();
+    let mut has_option = false;
+    for option in options {
+        match option.Type {
+            ast::BackgroundOptionType::TaskNames => {
+                has_option = true;
+                background.JobTypes = option
+                    .StrValue
+                    .split(',')
+                    .map(|task_type| task_type.trim().to_ascii_lowercase())
+                    .filter(|task_type| !task_type.is_empty())
+                    .collect();
+            }
+            ast::BackgroundOptionType::UtilizationLimit => {
+                has_option = true;
+                background.ResourceUtilLimit = option.UintValue;
+            }
+        }
+    }
+    has_option.then_some(background)
+}
+
+fn persist_default_resource_group_background(
+    domain: &Arc<Domain>,
+    background: astersql_meta_model::group_3::ResourceGroupBackgroundSettings,
+) -> SessionResult<()> {
+    use astersql_meta_model::group_3::{ResourceGroupInfo, SchemaState, ast, unlimitedRURate};
+
+    let context = kv::WithInternalSourceType(kv::Context::default(), kv::InternalTxnDDL);
+    domain
+        .storage_handle()
+        .with_storage(|store| {
+            kv::RunInNewTxn(&context, store, true, |_, transaction| {
+                let key =
+                    astersql_meta::transaction_meta_hash_key(b"ResourceGroups", b"ResourceGroup:1");
+                let mut group = match transaction.Get(&context, key.clone(), &[]) {
+                    Ok(value) => {
+                        let payload = match value.Value.first() {
+                            Some(0) => &value.Value[1..],
+                            Some(b'{') => value.Value.as_slice(),
+                            _ => {
+                                return Err(kv::errors::New(
+                                    "invalid default resource group metadata",
+                                ));
+                            }
+                        };
+                        serde_json::from_slice::<ResourceGroupInfo>(payload)
+                            .map_err(|error| kv::errors::New(error.to_string()))?
+                    }
+                    Err(error) if kv::IsErrNotFound(&error) => {
+                        let mut settings = astersql_meta_model::group_3::NewResourceGroupSettings();
+                        settings.RURate = unlimitedRURate;
+                        settings.BurstLimit = -1;
+                        ResourceGroupInfo {
+                            ResourceGroupSettings: settings,
+                            ID: 1,
+                            Name: ast::NewCIStr("default"),
+                            State: SchemaState::Public,
+                        }
+                    }
+                    Err(error) => return Err(error),
+                };
+                group.ResourceGroupSettings.Background = Some(Arc::new(background.clone()));
+                let mut encoded = vec![0];
+                encoded.extend(
+                    serde_json::to_vec(&group)
+                        .map_err(|error| kv::errors::New(error.to_string()))?,
+                );
+                transaction.Set(key, encoded)
+            })
+        })
+        .map_err(|error| {
+            SessionError::new(format!(
+                "persist default resource group background: {error}"
+            ))
+        })
+}
+
+pub(super) fn load_default_resource_group_background(
+    domain: &Arc<Domain>,
+) -> SessionResult<Option<String>> {
+    let background_result: Result<
+        Option<Arc<astersql_meta_model::group_3::ResourceGroupBackgroundSettings>>,
+        kv::errors::SharedError,
+    > = domain.storage_handle().with_storage(|store| {
+        let version = store
+            .CurrentVersion("global")
+            .map_err(|error| kv::errors::New(error.to_string()))?;
+        let reader = astersql_meta::SnapshotReader::new(store.GetSnapshot(version));
+        let group = reader
+            .get_resource_group(1)
+            .map_err(|error| kv::errors::New(error.to_string()))?;
+        Ok(group.and_then(|group| group.ResourceGroupSettings.Background.clone()))
+    });
+    let background = background_result.map_err(|error| {
+        SessionError::new(format!("load default resource group background: {error}"))
+    })?;
+    let Some(background) = background else {
+        return Ok(None);
+    };
+    let mut settings = Vec::new();
+    if !background.JobTypes.is_empty() {
+        settings.push(format!("TASK_TYPES='{}'", background.JobTypes.join(",")));
+    }
+    if background.ResourceUtilLimit > 0 {
+        settings.push(format!(
+            "UTILIZATION_LIMIT={}",
+            background.ResourceUtilLimit
+        ));
+    }
+    Ok((!settings.is_empty()).then(|| settings.join(", ")))
+}
+
 impl ConcreteSession {
     /// Number of cached point reads in the active transaction snapshot.
     pub fn SnapCacheSizeForTest(&self) -> usize {
@@ -3718,11 +3836,21 @@ impl ConcreteSession {
         statement: &ast::AlterResourceGroupStmt,
     ) -> SessionResult<()> {
         let domain_id = runtime_domain_id(&self.domain);
+        let name = statement.ResourceGroupName.L.clone();
+        if name == astersql_resourcegroup::DEFAULT_RESOURCE_GROUP_NAME {
+            if let Some(background) = statement
+                .ResourceGroupOptionList
+                .iter()
+                .find(|option| option.Tp == ast::ResourceGroupOptionType::Background)
+                .and_then(|option| default_resource_group_background(&option.BackgroundOptions))
+            {
+                persist_default_resource_group_background(&self.domain, background)?;
+            }
+        }
         let mut groups = RUNTIME_RESOURCE_GROUPS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let groups = groups.entry(domain_id).or_default();
-        let name = statement.ResourceGroupName.L.clone();
         if name == astersql_resourcegroup::DEFAULT_RESOURCE_GROUP_NAME {
             groups.entry(name.clone()).or_insert(RuntimeResourceGroup {
                 ru_per_sec: i32::MAX as u64,
