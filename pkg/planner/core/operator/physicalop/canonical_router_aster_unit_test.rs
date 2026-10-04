@@ -816,3 +816,101 @@ fn count_extrema_mpp_candidates_preserve_one_phase() {
     assert_eq!(aggregates, 1);
     assert!(gathers >= 1);
 }
+
+#[test]
+fn apply_cache_uses_rows_reaching_the_outer_child() {
+    // Unique keys, repeated keys, and keys duplicated by an upstream join.
+    for (case, (outer_rows, ndv, quota, expected)) in [
+        (50.0, 50.0, 1024, false),
+        (500.0, 50.0, 1024, true),
+        (500.0, 50.0, 1024, true),
+        (0.0, 0.0, 1024, false),
+        (500.0, 50.0, 0, false),
+        (100.0, 90.0, 1024, false),
+        (100.0, 89.0, 1024, true),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut vars = planctx::variable::SessionVars::default();
+        vars.SetSystemVar(vardef::TiDBMemQuotaApplyCache, &quota.to_string())
+            .unwrap();
+        let ctx: base::ContextRef = Arc::new(TestPlanContext {
+            plan_id: AtomicI32::new(0),
+            session_vars: vars,
+            builtin_function_usage: Default::default(),
+            expr_ctx: exprstatic::NewExprContext(Vec::new()),
+            ranger_ctx: planctx::rangerctx::RangerContext {
+                TypeCtx: expression::types::DefaultStmtNoWarningContext.clone(),
+                ErrCtx: expression::errctx::StrictNoWarningContext.clone(),
+                ExprCtx: Arc::new(exprstatic::NewExprContext(Vec::new())),
+                RangeFallbackHandler: None,
+                PlanCacheTracker: None,
+                OptimizerFixControl: Default::default(),
+                UseCache: false,
+                RegardNULLAsPoint: true,
+                OptPrefixIndexSingleScan: false,
+            },
+        });
+        let mut key = expression::Column::default();
+        key.UniqueID = 700;
+        let mut outer = logicalop::DataSource::default().Init(ctx.clone(), 0);
+        outer.SetSchema(expression::NewSchema(vec![key.clone()]));
+        let mut stats = property::StatsInfo {
+            RowCount: outer_rows,
+            ..Default::default()
+        };
+        stats.ColNDVs.insert(key.UniqueID, ndv);
+        outer.SetStats(stats.clone());
+        let outer: logicalop::LogicalPlanRef = if case == 2 {
+            // The unique source key is duplicated ten times by the upstream join.
+            outer.SetStats(property::StatsInfo {
+                RowCount: 50.0,
+                ColNDVs: [(700, 50.0)].into(),
+                ..Default::default()
+            });
+            let mut fan = logicalop::DataSource::default().Init(ctx.clone(), 0);
+            fan.SetStats(property::StatsInfo {
+                RowCount: 500.0,
+                ..Default::default()
+            });
+            let mut join = logicalop::LogicalJoin::default().Init(ctx.clone(), 0);
+            join.SetSchema(outer.Schema().Clone());
+            join.SetChildren(vec![Box::new(outer), Box::new(fan)]);
+            join.SetStats(stats);
+            Box::new(join)
+        } else {
+            Box::new(outer)
+        };
+        let mut inner = logicalop::DataSource::default().Init(ctx.clone(), 0);
+        inner.SetStats(property::StatsInfo {
+            RowCount: 40.0,
+            ..Default::default()
+        });
+        let mut apply = logicalop::LogicalApply {
+            CorCols: vec![expression::CorrelatedColumn {
+                column: key.clone(),
+                data: None,
+            }],
+            IsLateral: true,
+            ..Default::default()
+        }
+        .Init(ctx, 0);
+        apply.SetSchema(expression::NewSchema(vec![key]));
+        apply.SetChildren(vec![outer, Box::new(inner)]);
+        apply.SetStats(property::StatsInfo {
+            RowCount: outer_rows * 40.0,
+            ..Default::default()
+        });
+        let candidates =
+            crate::ExhaustPhysicalPlans(&apply, &property::PhysicalProperty::default()).unwrap();
+        let physical = candidates[0]
+            .as_any()
+            .downcast_ref::<crate::PhysicalApply>()
+            .unwrap();
+        assert_eq!(
+            physical.CanUseCache, expected,
+            "outer={outer_rows}, ndv={ndv}, quota={quota}"
+        );
+    }
+}

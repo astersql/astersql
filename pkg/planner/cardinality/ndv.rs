@@ -92,6 +92,21 @@ pub fn EstimateColsNDVWithMatchedLen(
     schema: &expression::Schema,
     profile: &property::StatsInfo,
 ) -> (f64, usize) {
+    EstimateColsNDVWithSessionVars(
+        sctx.map(|context| context.GetSessionVars()),
+        cols,
+        schema,
+        profile,
+    )
+}
+
+/// Reuse the full NDV estimate with object-safe planner contexts exposing SessionVars.
+pub fn EstimateColsNDVWithSessionVars(
+    vars: Option<&variable::SessionVars>,
+    cols: &[expression::Column],
+    schema: &expression::Schema,
+    profile: &property::StatsInfo,
+) -> (f64, usize) {
     if cols.is_empty() {
         // 空连接键按一个 distinct group 处理，matched length 沿用 Go 返回 1。
         return (1.0, 1);
@@ -109,8 +124,7 @@ pub fn EstimateColsNDVWithMatchedLen(
     }
 
     let exponentialNDV = estimateNDVWithExponentialBackoff(cols, schema, profile);
-    if let Some(sctx) = sctx {
-        let vars = sctx.GetSessionVars();
+    if let Some(vars) = vars {
         let skewRatio = vars.RiskGroupNDVSkewRatio;
         vars.RecordRelevantOptVar(vardef::TiDBOptRiskGroupNDVSkewRatio);
         return estimateColsNDVBySkewRatio(conservativeNDV, exponentialNDV, skewRatio);

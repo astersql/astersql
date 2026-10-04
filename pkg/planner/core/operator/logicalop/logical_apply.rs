@@ -245,7 +245,7 @@ impl LogicalApply {
         };
         let outer_stats = outer.DeriveStats(reload)?.0;
         let inner_stats = inner.DeriveStats(reload)?.0;
-        // Lateral 内/左连接：外×内 / 关联 NDV；左连接再与外行数取 max。
+        // The inner statistics already include correlated predicate selectivity.
         let row_count = if self.IsLateral
             && matches!(
                 self.LogicalJoin.JoinType,
@@ -272,19 +272,9 @@ impl LogicalApply {
                 self.LogicalJoin.EqualCondOutCnt = estimated;
                 estimated
             } else {
-                let correlated_ndv = self
-                    .CorCols
-                    .iter()
-                    .map(|column| {
-                        outer_stats
-                            .ColNDVs
-                            .get(&column.column.UniqueID)
-                            .copied()
-                            .unwrap_or(1.0)
-                    })
-                    .product::<f64>()
-                    .max(1.0);
-                outer_stats.RowCount * inner_stats.RowCount / correlated_ndv
+                // Each outer row runs the inner plan once. Dividing by outer NDV
+                // here would apply the correlated selectivity a second time.
+                outer_stats.RowCount * inner_stats.RowCount
             };
             if self.LogicalJoin.JoinType == JoinType::LeftOuterJoin {
                 count.max(outer_stats.RowCount)

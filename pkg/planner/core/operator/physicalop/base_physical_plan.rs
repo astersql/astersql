@@ -9803,6 +9803,31 @@ pub fn ExhaustPhysicalPlans(
             .iter()
             .map(expression::CorrelatedColumn::Clone)
             .collect();
+        // Cache lookups happen once per outer row, regardless of Apply output multiplicity.
+        let cache_hit_ratio = apply.Children()[0]
+            .StatsInfo()
+            .filter(|stats| stats.RowCount != 0.0)
+            .map_or(0.0, |stats| {
+                let columns = apply
+                    .CorCols
+                    .iter()
+                    .map(|column| column.column.Clone())
+                    .collect::<Vec<_>>();
+                let (ndv, _) = cardinality::EstimateColsNDVWithSessionVars(
+                    Some(physical.s_ctx().GetSessionVars()),
+                    &columns,
+                    apply.Children()[0].Schema(),
+                    stats,
+                );
+                1.0 - ndv / stats.RowCount
+            });
+        let cache_quota = physical
+            .s_ctx()
+            .GetSessionVars()
+            .GetSystemVar(vardef::TiDBMemQuotaApplyCache)
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(vardef::DefTiDBMemQuotaApplyCache);
+        physical.CanUseCache = cache_hit_ratio > 0.1 && cache_quota > 0;
         physical.NoDecorrelate = apply.NoDecorrelate;
         return Ok(vec![Box::new(physical)]);
     }

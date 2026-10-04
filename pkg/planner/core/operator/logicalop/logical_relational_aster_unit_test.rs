@@ -457,35 +457,62 @@ fn aggregation_preserves_known_group_ndv_above_pseudo_cap() {
     assert_eq!(stats.ColNDVs[&output.UniqueID], 99_360.0);
 }
 
-/// Lateral Apply：内表行数按相关外表 NDV 缩放。
+/// Correlated inner estimates are per execution: scalar aggregate, LIMIT, and GROUP BY.
 #[test]
-fn lateral_apply_scales_inner_rows_by_correlated_outer_ndv() {
-    let outer_column = column(70);
-    let inner_column = column(71);
+fn lateral_apply_preserves_per_execution_inner_cardinality() {
+    for (inner_rows, expected) in [(1.0, 600.0), (3.0, 1800.0), (50.0, 30000.0)] {
+        for join_type in [JoinType::InnerJoin, JoinType::LeftOuterJoin] {
+            let outer_column = column(70);
+            let inner_column = column(71);
+            let mut apply = LogicalApply {
+                LogicalJoin: LogicalJoin {
+                    JoinType: join_type,
+                    ..LogicalJoin::default()
+                },
+                CorCols: vec![CorrelatedColumn {
+                    column: outer_column.clone(),
+                    data: None,
+                }],
+                IsLateral: true,
+                ..LogicalApply::default()
+            };
+            apply.SetSchema(expression::NewSchema(vec![
+                outer_column.clone(),
+                inner_column.clone(),
+            ]));
+            apply.SetChildren(vec![
+                Box::new(RecordingPlan::new(vec![outer_column], 600.0, &[(70, 30.0)])),
+                Box::new(RecordingPlan::new(
+                    vec![inner_column],
+                    inner_rows,
+                    &[(71, inner_rows)],
+                )),
+            ]);
+            let (stats, changed) = apply
+                .DeriveStats(false)
+                .expect("derive lateral apply statistics");
+            assert!(changed);
+            assert_eq!(stats.RowCount, expected);
+            assert_eq!(stats.ColNDVs[&70], 30.0);
+            assert_eq!(stats.ColNDVs[&71], expected);
+        }
+    }
+}
+
+#[test]
+fn lateral_left_apply_retains_outer_rows_when_inner_is_empty() {
     let mut apply = LogicalApply {
         LogicalJoin: LogicalJoin {
-            JoinType: JoinType::InnerJoin,
-            ..LogicalJoin::default()
+            JoinType: JoinType::LeftOuterJoin,
+            ..Default::default()
         },
-        CorCols: vec![CorrelatedColumn {
-            column: outer_column.clone(),
-            data: None,
-        }],
         IsLateral: true,
-        ..LogicalApply::default()
+        ..Default::default()
     };
-    apply.SetSchema(expression::NewSchema(vec![
-        outer_column.clone(),
-        inner_column.clone(),
-    ]));
     apply.SetChildren(vec![
-        Box::new(RecordingPlan::new(vec![outer_column], 100.0, &[(70, 10.0)])),
-        Box::new(RecordingPlan::new(vec![inner_column], 20.0, &[(71, 20.0)])),
+        Box::new(RecordingPlan::new(vec![column(70)], 600.0, &[(70, 30.0)])),
+        Box::new(RecordingPlan::new(vec![column(71)], 0.0, &[(71, 0.0)])),
     ]);
-
-    let (stats, changed) = apply
-        .DeriveStats(false)
-        .expect("derive lateral apply statistics");
-    assert!(changed);
-    assert_eq!(stats.RowCount, 200.0);
+    apply.SetSchema(expression::NewSchema(vec![column(70), column(71)]));
+    assert_eq!(apply.DeriveStats(false).unwrap().0.RowCount, 600.0);
 }
