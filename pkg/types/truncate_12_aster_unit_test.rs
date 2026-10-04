@@ -305,3 +305,44 @@ fn vector_clone_is_independent() {
     assert_eq!(original.Elements(), &[1.0, 2.0]);
     assert_eq!(cloned.Elements(), &[9.0, 2.0]);
 }
+
+/// Length arithmetic must widen before multiplication and addition, including the Go overflow input.
+#[test]
+fn vector_deserialize_rejects_overflowing_lengths() {
+    for elements in [0x3fff_ffff_u32, 0x4000_0000, u32::MAX] {
+        let bytes = elements.to_le_bytes();
+        let original = bytes;
+        let expected_size = u64::from(elements) * 4 + 4;
+        let expected = format!("bad VectorFloat32 value (len=4, expected={expected_size})");
+        assert_eq!(
+            PeekBytesAsVectorFloat32(&bytes).unwrap_err().to_string(),
+            expected
+        );
+        // Result::Err exposes neither an invalid vector nor a consumed suffix.
+        assert_eq!(
+            ZeroCopyDeserializeVectorFloat32(&bytes)
+                .unwrap_err()
+                .to_string(),
+            expected
+        );
+        assert_eq!(bytes, original);
+    }
+
+    let zero_with_suffix = [0, 0, 0, 0, 0xaa];
+    assert_eq!(PeekBytesAsVectorFloat32(&zero_with_suffix).unwrap(), 4);
+    let (zero, remaining) = ZeroCopyDeserializeVectorFloat32(&zero_with_suffix).unwrap();
+    assert!(zero.IsZeroValue());
+    assert_eq!(remaining, &[0xaa]);
+
+    let single = [1, 0, 0, 0, 0, 0, 0x80, 0x3f];
+    assert_eq!(
+        PeekBytesAsVectorFloat32(&single[..7])
+            .unwrap_err()
+            .to_string(),
+        "bad VectorFloat32 value (len=7, expected=8)"
+    );
+    assert_eq!(PeekBytesAsVectorFloat32(&single).unwrap(), 8);
+    let (decoded, remaining) = ZeroCopyDeserializeVectorFloat32(&single).unwrap();
+    assert_eq!(decoded.Elements(), &[1.0]);
+    assert!(remaining.is_empty());
+}
