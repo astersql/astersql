@@ -95,6 +95,27 @@ fn import_assignment_validation_matches_go_error_contract() {
         }],
     };
     assert_eq!(checkExprWithProvidedProps(0, &supported, 0), Ok(()));
+
+    // UNCOMPRESS may consult session variables for memory tracking when they
+    // are available, but does not require them. IMPORT INTO therefore accepts
+    // the same nested UNCOMPRESS(COMPRESS(@raw)) shape as Go with no props.
+    let compression_round_trip = Expr {
+        name: Some("uncompress"),
+        required: 0,
+        children: vec![Expr {
+            name: Some("compress"),
+            required: 0,
+            children: vec![Expr {
+                name: Some("getvar"),
+                required: 0,
+                children: vec![],
+            }],
+        }],
+    };
+    assert_eq!(
+        checkExprWithProvidedProps(0, &compression_round_trip, 0),
+        Ok(())
+    );
 }
 
 #[test]

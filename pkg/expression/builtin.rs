@@ -2556,6 +2556,17 @@ pub mod formal_registry {
         }
     }
 
+    pub(crate) fn allowedOptionalEvalPropsForSignature(
+        signature: &str,
+        fallback: OptionalEvalPropKeySet,
+    ) -> OptionalEvalPropKeySet {
+        if signature == "builtinUncompressSig" {
+            crate::exprctx::OptPropSessionVars.AsPropKeySet()
+        } else {
+            fallback
+        }
+    }
+
     impl Clone for GeneratedPolicyBuiltin {
         fn clone(&self) -> Self {
             Self {
@@ -2605,6 +2616,12 @@ pub mod formal_registry {
         }
         fn RequiredOptionalEvalProps(&self) -> OptionalEvalPropKeySet {
             self.function.RequiredOptionalEvalProps()
+        }
+        fn AllowedOptionalEvalProps(&self) -> OptionalEvalPropKeySet {
+            allowedOptionalEvalPropsForSignature(
+                self.signature,
+                self.function.AllowedOptionalEvalProps(),
+            )
         }
         fn isExtensionFunction(&self) -> bool {
             self.function.isExtensionFunction()

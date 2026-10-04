@@ -38,6 +38,12 @@ pub trait builtinFunc: CollationInfo {
         OptionalEvalPropKeySet::default()
     }
 
+    /// Optional session properties this builtin may consume when present, but
+    /// which callers do not have to provide in order to evaluate it.
+    fn AllowedOptionalEvalProps(&self) -> OptionalEvalPropKeySet {
+        OptionalEvalPropKeySet::default()
+    }
+
     /// 是否为扩展（非核心）函数。
     fn isExtensionFunction(&self) -> bool {
         false

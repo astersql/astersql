@@ -96,20 +96,22 @@ impl assertionEvalContext<'_> {
         }
     }
 
-    /// 读取可选属性前断言其已在 RequiredOptionalEvalProps 中声明。
+    /// 读取可选属性前断言其已声明为 required 或 allowed。
     pub fn GetOptionalPropProvider(
         &self,
         key: OptionalEvalPropKey,
     ) -> Option<&dyn OptionalEvalPropProvider> {
-        let required = self
+        let declared = self
             .function
             .map_or_else(OptionalEvalPropKeySet::default, |function| {
-                function.RequiredOptionalEvalProps()
+                OptionalEvalPropKeySet(
+                    function.RequiredOptionalEvalProps().0 | function.AllowedOptionalEvalProps().0,
+                )
             });
         // builtin 读取未声明属性通常意味着向量化/缓存阶段缺少依赖，测试包装在访问点立即暴露问题。
         assert!(
-            required.Contains(key),
-            "函数读取了未在 RequiredOptionalEvalProps 声明的可选属性: {key:?}"
+            declared.Contains(key),
+            "函数读取了未在 RequiredOptionalEvalProps 或 AllowedOptionalEvalProps 声明的可选属性: {key:?}"
         );
         self.eval_context.GetOptionalPropProviderUnwrapped(key)
     }

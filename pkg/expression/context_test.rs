@@ -105,6 +105,7 @@ impl EvalContext for TestEvalContext {
 
 struct TestBuiltin {
     required: OptionalEvalPropKeySet,
+    allowed: OptionalEvalPropKeySet,
     collation: collationInfo,
     args: Vec<Box<dyn Expression>>,
     ret_type: types::FieldType,
@@ -115,6 +116,7 @@ impl TestBuiltin {
     fn new(required: OptionalEvalPropKeySet) -> Self {
         Self {
             required,
+            allowed: OptionalEvalPropKeySet::default(),
             collation: collationInfo::default(),
             args: Vec::new(),
             ret_type: types::FieldType::default(),
@@ -160,6 +162,9 @@ impl builtinFunc for TestBuiltin {
     fn RequiredOptionalEvalProps(&self) -> OptionalEvalPropKeySet {
         self.required
     }
+    fn AllowedOptionalEvalProps(&self) -> OptionalEvalPropKeySet {
+        self.allowed
+    }
     fn SafeToShareAcrossSession(&self) -> bool {
         true
     }
@@ -186,7 +191,14 @@ impl builtinFunc for TestBuiltin {
         self.collator.as_ref()
     }
     fn Clone(&self) -> Box<dyn builtinFunc> {
-        Box::new(Self::new(self.required))
+        Box::new(Self {
+            required: self.required,
+            allowed: self.allowed,
+            collation: self.collation.clone(),
+            args: self.args.clone(),
+            ret_type: self.ret_type.clone(),
+            collator: self.collator.Clone(),
+        })
     }
     fn MemoryUsage(&self) -> i64 {
         std::mem::size_of::<Self>() as i64
@@ -211,5 +223,54 @@ fn nested_assertion_context_checks_only_the_current_builtin_like_go() {
         child_context
             .GetOptionalPropProvider(exprctx::OptPropCurrentUser)
             .is_some()
+    );
+}
+
+#[test]
+fn assertion_context_accepts_allowed_optional_property_without_requiring_it() {
+    let base = TestEvalContext {
+        user_vars: EmptyUserVars,
+        provider: TestProvider,
+    };
+    let mut function = TestBuiltin::new(OptionalEvalPropKeySet::default());
+    function.allowed = exprctx::OptPropCurrentUser.AsPropKeySet();
+    let context = assertionEvalContext::new_for_test(&base, &function);
+
+    assert!(
+        context
+            .GetOptionalPropProvider(exprctx::OptPropCurrentUser)
+            .is_some()
+    );
+    assert_eq!(
+        function.RequiredOptionalEvalProps(),
+        OptionalEvalPropKeySet::default()
+    );
+}
+
+#[test]
+#[should_panic(expected = "RequiredOptionalEvalProps 或 AllowedOptionalEvalProps")]
+fn assertion_context_rejects_undeclared_optional_property() {
+    let base = TestEvalContext {
+        user_vars: EmptyUserVars,
+        provider: TestProvider,
+    };
+    let function = TestBuiltin::new(OptionalEvalPropKeySet::default());
+    assertionEvalContext::new_for_test(&base, &function)
+        .GetOptionalPropProvider(exprctx::OptPropCurrentUser);
+}
+
+#[test]
+fn uncompress_allows_session_vars_without_requiring_them() {
+    assert_eq!(
+        formal_registry::allowedOptionalEvalPropsForSignature(
+            "builtinUncompressSig",
+            OptionalEvalPropKeySet::default(),
+        ),
+        exprctx::OptPropSessionVars.AsPropKeySet()
+    );
+    let fallback = exprctx::OptPropCurrentUser.AsPropKeySet();
+    assert_eq!(
+        formal_registry::allowedOptionalEvalPropsForSignature("builtinCompressSig", fallback),
+        fallback
     );
 }
