@@ -24,6 +24,7 @@
 //! 本文件只解释测试意图与断言依据，不改任何可执行逻辑。
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::import_retry::{
@@ -136,6 +137,30 @@ impl SplitClient for TestSplitClient {
             }
         }
         Ok(out)
+    }
+}
+
+struct MissingRegionByIdClient {
+    inner: Arc<TestSplitClient>,
+    get_calls: AtomicUsize,
+    scan_calls: AtomicUsize,
+}
+
+impl SplitClient for MissingRegionByIdClient {
+    fn GetRegionByID(&self, _ctx: &Context, _id: u64) -> Result<RegionInfo> {
+        self.get_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(RegionInfo::default())
+    }
+
+    fn ScanRegions(
+        &self,
+        ctx: &Context,
+        start: &[u8],
+        end: &[u8],
+        limit: i32,
+    ) -> Result<Vec<RegionInfo>> {
+        self.scan_calls.fetch_add(1, Ordering::SeqCst);
+        self.inner.ScanRegions(ctx, start, end, limit)
     }
 }
 
@@ -404,6 +429,42 @@ fn test_region_split_scan() {
     // 重叠判定应至少命中 aay 段。
     assert!(!regions.is_empty());
     assert_eq!(regions[0].Region.as_ref().unwrap().StartKey, rk("aay"));
+}
+
+#[test]
+fn missing_region_by_id_stops_leader_retry_and_rescans_range() {
+    let client = Arc::new(MissingRegionByIdClient {
+        inner: init_test_client(),
+        get_calls: AtomicUsize::new(0),
+        scan_calls: AtomicUsize::new(0),
+    });
+    let rs =
+        utils_retry::InitialRetryState(3, std::time::Duration::ZERO, std::time::Duration::ZERO);
+    let mut ctl = CreateRangeController(rk(""), rk("zzz"), client.clone(), rs);
+    let first = Arc::new(Mutex::new(true));
+    let first_for_callback = first.clone();
+    let mut f = Box::new(move |_ctx: &Context, region: &mut RegionInfo| {
+        if region.Region.as_ref().map(|meta| meta.Id) == Some(2)
+            && *first_for_callback.lock().unwrap()
+        {
+            *first_for_callback.lock().unwrap() = false;
+            return RPCResult {
+                StoreError: Some(errorpb::Error {
+                    Message: "leader not found".into(),
+                    NotLeader: Some(errorpb::NotLeader::default()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+        }
+        RPCResultOK()
+    }) as crate::import_retry::RegionFunc;
+
+    ctl.ApplyFuncToRange(&Context::Background(), &mut f)
+        .unwrap();
+
+    assert_eq!(client.get_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(client.scan_calls.load(Ordering::SeqCst), 2);
 }
 
 /// Go `TestPaginateScanLeader`.

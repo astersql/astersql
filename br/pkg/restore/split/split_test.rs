@@ -34,12 +34,14 @@ use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use astersql_br_pkg_errors::ErrPDBatchScanRegion;
+use astersql_br_pkg_errors::{ErrKVEpochNotMatch, ErrPDBatchScanRegion, ErrPDLeaderNotFound};
 use astersql_br_pkg_restore_utils::RewriteRules;
 use astersql_br_pkg_restore_utils::stubs::import_sstpb;
 use astersql_errors::{Annotatef, New, SharedError};
 
-use crate::client::{NewClient, NewCodecAwareClient, PdBackend, SplitClient};
+use crate::client::{
+    NewClient, NewCodecAwareClient, PdBackend, SplitClient, validateRegionAfterNotLeader,
+};
 use crate::mock_pd_client::{NewFakeSplitClient, NewMockPDClientForSplit, RegionTree};
 use crate::region::RegionInfo;
 use crate::split::{
@@ -2123,6 +2125,42 @@ fn test_split_and_scatter() {
         // 断言/错误路径：验证与 Go 测试相同的边界、计数或错误分类。
         assert_eq!(region.Region.as_ref().unwrap().EndKey, expected[i + 1]);
     }
+}
+
+#[test]
+fn not_leader_region_refresh_classifies_missing_metadata_and_leader() {
+    let previous = RegionInfo {
+        Region: Some(metapb::Region {
+            Id: 7,
+            RegionEpoch: Some(crate::stubs::RegionEpoch {
+                ConfVer: 1,
+                Version: 2,
+            }),
+            ..Default::default()
+        }),
+        Leader: Some(metapb::Peer { Id: 8, StoreId: 9 }),
+        ..Default::default()
+    };
+
+    let missing = validateRegionAfterNotLeader(&RegionInfo::default(), &previous).unwrap_err();
+    assert!(ErrKVEpochNotMatch.Equal(Some(&missing)));
+
+    let without_leader = RegionInfo {
+        Region: previous.Region.clone(),
+        ..Default::default()
+    };
+    let missing_leader = validateRegionAfterNotLeader(&without_leader, &previous).unwrap_err();
+    assert!(ErrPDLeaderNotFound.Equal(Some(&missing_leader)));
+
+    let refreshed = RegionInfo {
+        Region: previous.Region.clone(),
+        Leader: Some(metapb::Peer {
+            Id: 10,
+            StoreId: 11,
+        }),
+        ..Default::default()
+    };
+    validateRegionAfterNotLeader(&refreshed, &previous).unwrap();
 }
 
 #[test]

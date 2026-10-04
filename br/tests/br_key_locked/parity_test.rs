@@ -324,6 +324,17 @@ fn go_rust_public_contract_matches() {
     let wrapped_nil = CodecPDClient::new(pd_nil);
     assert!(wrapped_nil.GetRegion(&ctx, b"k", &[]).unwrap().is_none());
 
+    // A present router wrapper with absent/default metadata is the Rust stub's
+    // representation of Go's `region.Meta == nil` and must also short-circuit.
+    let pd_nil_meta = RecordingPd::with_region(metapb::Region::default());
+    let wrapped_nil_meta = CodecPDClient::new(pd_nil_meta);
+    assert!(
+        wrapped_nil_meta
+            .GetRegionByID(&ctx, 1, &[])
+            .unwrap()
+            .is_none()
+    );
+
     // tablecodec record key shape: t + EncodeInt(tableID) + _r + EncodeInt(rowID)
     // 记录键形状：'t'+表ID+'_r'+行ID，与 Go tablecodec 一致。
     let prefix = tablecodec::GenTableRecordPrefix(42);

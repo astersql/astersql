@@ -137,6 +137,11 @@ impl Error {
     pub fn Cause(&self) -> &Self {
         self
     }
+
+    /// Reports whether this error carries the requested normalized BR code.
+    pub fn IsCode(&self, code: &str) -> bool {
+        self.code == Some(code)
+    }
 }
 
 /// `Error` 的 impl：方法语义、错误传播与并发约束对齐 Go。
@@ -1342,7 +1347,7 @@ pub mod utils_retry {
     /// `WithRetryV2` 数据流：调用方准备输入，本函数产出可断言结果或错误。
     pub fn WithRetryV2<T, F>(
         _ctx: &super::Context,
-        _strategy: BackoffRetryAllErrorStrategy,
+        strategy: BackoffRetryAllErrorStrategy,
         mut f: F,
     ) -> super::Result<T>
     where
@@ -1350,10 +1355,16 @@ pub mod utils_retry {
     {
         // Simplified: try a few times immediately (no sleep) for unit tests.
         let mut last = None;
-        for _ in 0..4 {
+        for _ in 0..strategy.max_retry {
             match f(&super::Context::Background()) {
                 Ok(v) => return Ok(v),
-                Err(e) => last = Some(e),
+                Err(e) => {
+                    let should_stop = strategy.non_retry.is_some_and(|non_retry| non_retry(&e));
+                    last = Some(e);
+                    if should_stop {
+                        break;
+                    }
+                }
             }
         }
         Err(last.unwrap_or_else(|| super::Error::new("retry exhausted")))
@@ -1365,6 +1376,7 @@ pub mod utils_retry {
     /// `BackoffRetryAllErrorStrategy` 生命周期：构造后是否可变、是否跨线程共享需明确。
     pub struct BackoffRetryAllErrorStrategy {
         pub max_retry: i32,
+        non_retry: Option<fn(&super::Error) -> bool>,
     }
 
     /// `NewBackoffRetryAllErrorStrategy`：承担本模块局部职责，输入输出与错误语义需与 Go 对齐。
@@ -1375,7 +1387,23 @@ pub mod utils_retry {
         _initial: Duration,
         _max: Duration,
     ) -> BackoffRetryAllErrorStrategy {
-        BackoffRetryAllErrorStrategy { max_retry }
+        BackoffRetryAllErrorStrategy {
+            max_retry,
+            non_retry: None,
+        }
+    }
+
+    /// Builds a retry strategy that stops immediately for classified errors.
+    pub fn NewBackoffRetryAllExceptStrategy(
+        max_retry: i32,
+        _initial: Duration,
+        _max: Duration,
+        non_retry: fn(&super::Error) -> bool,
+    ) -> BackoffRetryAllErrorStrategy {
+        BackoffRetryAllErrorStrategy {
+            max_retry,
+            non_retry: Some(non_retry),
+        }
     }
 }
 

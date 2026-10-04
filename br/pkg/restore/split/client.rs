@@ -52,7 +52,8 @@ use std::sync::{Mutex, Once};
 use std::time::Duration;
 
 use astersql_br_pkg_errors::{
-    ErrInvalidRange, ErrPDInvalidResponse, ErrPDNotFullyScatter, ErrPDRegionsNotFullyScatter,
+    ErrInvalidRange, ErrKVEpochNotMatch, ErrKVNotLeader, ErrPDInvalidResponse, ErrPDLeaderNotFound,
+    ErrPDNotFullyScatter, ErrPDRegionsNotFullyScatter,
 };
 use astersql_errors::{Annotate, Annotatef, New, SharedError};
 
@@ -590,11 +591,24 @@ impl PdClient {
     /// 留意空集合、取消上下文与默认值是否保持一致。
     fn batchSplitRegionsWithOrigin(
         &self,
-        _ctx: &Context,
+        ctx: &Context,
         region: &RegionInfo,
         keys: &[Vec<u8>],
     ) -> Result<(RegionInfo, Vec<RegionInfo>)> {
-        self.backend.SplitRegion(region, keys, self.isRawKv)
+        let mut current = region.clone();
+        for _ in 0..splitRegionMaxRetryTime {
+            match self.backend.SplitRegion(&current, keys, self.isRawKv) {
+                Ok(result) => return Ok(result),
+                Err(err) if ErrKVNotLeader.Equal(Some(&err)) => {
+                    let region_id = current.Region.as_ref().map(|meta| meta.Id).unwrap_or(0);
+                    let refreshed = self.GetRegionByID(ctx, region_id)?;
+                    validateRegionAfterNotLeader(&refreshed, &current)?;
+                    current = refreshed;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Err(New("split region retry exhausted"))
     }
 
     /// `waitRegionsSplit`：承担本模块局部职责，输入输出与错误语义需与 Go 对齐。
@@ -785,6 +799,19 @@ impl PdClient {
             backoff,
         );
     }
+}
+
+pub(crate) fn validateRegionAfterNotLeader(
+    refreshed: &RegionInfo,
+    previous: &RegionInfo,
+) -> Result<()> {
+    if refreshed.Region.is_none() || !crate::split::CheckRegionEpoch(refreshed, previous) {
+        return Err(SharedError::new(ErrKVEpochNotMatch.clone()));
+    }
+    if refreshed.Leader.is_none() {
+        return Err(SharedError::new(ErrPDLeaderNotFound.clone()));
+    }
+    Ok(())
 }
 
 /// `WaitRegionOnlineAttemptTimes_local`：承担本模块局部职责，输入输出与错误语义需与 Go 对齐。

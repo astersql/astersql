@@ -132,16 +132,23 @@ impl RangeController {
     // 带退避地查询 PD 找 leader；epoch 变化则报 ErrKVEpochNotMatch。
     fn tryFindLeader(&self, ctx: &Context, region: &RegionInfo) -> Result<metapb::Peer> {
         // 找 leader 使用独立退避策略，不消耗外层 Apply 的重试次数。
-        let strategy = utils_retry::NewBackoffRetryAllErrorStrategy(
+        let strategy = utils_retry::NewBackoffRetryAllExceptStrategy(
             4,
             Duration::from_secs(2),
             Duration::from_secs(10),
+            isNonRetryErrForFindLeader,
         );
         let region_id = region.Region.as_ref().map(|r| r.Id).unwrap_or(0);
         let client = self.metaClient.clone();
         let region = region.clone();
         utils_retry::WithRetryV2(ctx, strategy, move |_ctx| {
             let r = client.GetRegionByID(_ctx, region_id)?;
+            if r.Region.is_none() {
+                return Err(Error::Annotatef(
+                    berrors::ErrKVEpochNotMatch("region is not found"),
+                    format!("region {region_id} is not found"),
+                ));
+            }
             // epoch 已变说明拓扑更新，外层应走 FromStart 而非继续用旧 peer。
             if !CheckRegionEpoch(&r, &region) {
                 return Err(Error::Annotatef(
@@ -299,6 +306,10 @@ impl RangeController {
         self.listener.OnRegionSuccess(ctx, region);
         (true, None)
     }
+}
+
+fn isNonRetryErrForFindLeader(err: &Error) -> bool {
+    err.IsCode("BR:KV:ErrKVEpochNotMatch")
 }
 
 /// Go classifies the special TiKV memory-pressure response by the top-level

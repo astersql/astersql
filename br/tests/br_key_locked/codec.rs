@@ -175,6 +175,9 @@ fn processRegionResult(region: Result<Option<router::Region>>) -> Result<Option<
         Ok(None) => return Ok(None),
         Ok(Some(r)) => r,
     };
+    if region.Meta == metapb::Region::default() {
+        return Ok(None);
+    }
     decodeRegionMetaKey(&mut region.Meta).map_err(Error::Trace)?;
     Ok(Some(region))
 }
