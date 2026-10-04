@@ -1887,6 +1887,7 @@ impl crate::multi_schema_change::SubJobRunner for DiskFullRunner {
         _sub_job: &crate::multi_schema_change::SubJob,
         _rolling_back: bool,
         _skip_version: bool,
+        use_cloud_storage: bool,
     ) -> Result<crate::multi_schema_change::StepResult, crate::multi_schema_change::MultiSchemaError>
     {
         use crate::multi_schema_change::{MultiJobState, StepResult};
@@ -1897,6 +1898,7 @@ impl crate::multi_schema_change::SubJobRunner for DiskFullRunner {
             error: None,
             paused_for_disk_full: true,
             pause_reason: Some("disk full".to_string()),
+            use_cloud_storage,
         })
     }
 }
@@ -1927,6 +1929,7 @@ fn disk_full_pause_preserves_the_generated_schema_version() {
         pause_reason: None,
         error: None,
         schema_version: 0,
+        use_cloud_storage: false,
     };
 
     let version = run_multi_schema_change(&mut job, &mut DiskFullRunner).unwrap();
@@ -1938,4 +1941,121 @@ fn disk_full_pause_preserves_the_generated_schema_version() {
     assert_eq!(job.state, MultiJobState::Paused);
     assert_eq!(job.resume_reason, None);
     assert_eq!(job.pause_reason.as_deref(), Some("disk full"));
+}
+
+struct CloudModeRunner {
+    calls: usize,
+    inherited_modes: Vec<bool>,
+}
+
+impl crate::multi_schema_change::SubJobRunner for CloudModeRunner {
+    fn run_step(
+        &mut self,
+        _sub_job: &crate::multi_schema_change::SubJob,
+        _rolling_back: bool,
+        _skip_version: bool,
+        use_cloud_storage: bool,
+    ) -> Result<crate::multi_schema_change::StepResult, crate::multi_schema_change::MultiSchemaError>
+    {
+        use crate::multi_schema_change::{MultiJobState, StepResult};
+
+        self.inherited_modes.push(use_cloud_storage);
+        self.calls += 1;
+        Ok(StepResult {
+            version: self.calls as u64,
+            state: MultiJobState::Done,
+            error: None,
+            paused_for_disk_full: false,
+            pause_reason: None,
+            use_cloud_storage: self.calls == 1,
+        })
+    }
+}
+
+#[test]
+fn multi_schema_parent_preserves_cloud_mode_for_later_proxy_jobs() {
+    use crate::multi_schema_change::{
+        MultiAction, MultiJobState, MultiSchemaInfo, MultiSchemaJob, SubJob,
+        run_multi_schema_change,
+    };
+
+    let sub_job = || SubJob {
+        action: MultiAction::ModifyComment,
+        state: MultiJobState::Running,
+        schema_version: 0,
+        revertible: false,
+        need_reorg: true,
+        error: None,
+        warning: None,
+    };
+    let mut job = MultiSchemaJob {
+        state: MultiJobState::Running,
+        info: MultiSchemaInfo {
+            revertible: false,
+            sub_jobs: vec![sub_job(), sub_job()],
+            ..MultiSchemaInfo::default()
+        },
+        resume_reason: None,
+        pause_reason: None,
+        error: None,
+        schema_version: 0,
+        use_cloud_storage: false,
+    };
+    let mut runner = CloudModeRunner {
+        calls: 0,
+        inherited_modes: Vec::new(),
+    };
+
+    run_multi_schema_change(&mut job, &mut runner).unwrap();
+    assert!(job.use_cloud_storage);
+    run_multi_schema_change(&mut job, &mut runner).unwrap();
+
+    assert_eq!(runner.inherited_modes, vec![false, true]);
+    assert!(job.use_cloud_storage);
+}
+
+#[test]
+fn every_multi_schema_proxy_path_persists_cloud_mode() {
+    use crate::multi_schema_change::{
+        MultiAction, MultiJobState, MultiSchemaInfo, MultiSchemaJob, SubJob,
+        run_multi_schema_change,
+    };
+
+    for (name, parent_state, parent_revertible, sub_revertible) in [
+        ("rollback", MultiJobState::RollingBack, true, true),
+        ("revertible", MultiJobState::Running, true, true),
+        ("batched boundary", MultiJobState::Running, true, false),
+        ("non-revertible", MultiJobState::Running, false, false),
+    ] {
+        let mut job = MultiSchemaJob {
+            state: parent_state,
+            info: MultiSchemaInfo {
+                revertible: parent_revertible,
+                sub_jobs: vec![SubJob {
+                    action: MultiAction::ModifyComment,
+                    state: MultiJobState::Running,
+                    schema_version: 0,
+                    revertible: sub_revertible,
+                    need_reorg: true,
+                    error: None,
+                    warning: None,
+                }],
+                ..MultiSchemaInfo::default()
+            },
+            resume_reason: None,
+            pause_reason: None,
+            error: None,
+            schema_version: 0,
+            use_cloud_storage: false,
+        };
+        let mut runner = CloudModeRunner {
+            calls: 0,
+            inherited_modes: Vec::new(),
+        };
+
+        run_multi_schema_change(&mut job, &mut runner).unwrap();
+
+        assert!(job.use_cloud_storage, "{name}");
+        assert_eq!(runner.inherited_modes, vec![false], "{name}");
+    }
 }

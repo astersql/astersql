@@ -1206,6 +1206,33 @@ pub fn init_for_reorg_indexes(
     Ok(())
 }
 
+/// Restore the owner-local cloud-storage URI for a durable add-index job.
+///
+/// `UseCloudStorage` is persisted in the job while the URI itself lives in the
+/// previous owner's reorg context. A new owner must therefore reload and cache
+/// the configured URI before submitting a replacement distributed task. Merge
+/// tasks and local-sort jobs intentionally bypass cloud storage.
+pub fn resolve_cloud_storage_uri_after_owner_failover(
+    job_id: i64,
+    use_cloud_storage: bool,
+    merge_temp_index: bool,
+    cached_uri: &mut String,
+    load_configured_uri: impl FnOnce() -> String,
+) -> Result<String, String> {
+    if merge_temp_index || !use_cloud_storage || !cached_uri.is_empty() {
+        return Ok(cached_uri.clone());
+    }
+
+    let configured_uri = load_configured_uri();
+    if configured_uri.is_empty() {
+        return Err(format!(
+            "cloud storage URI is empty for add-index job {job_id} with cloud storage enabled"
+        ));
+    }
+    cached_uri.clone_from(&configured_uri);
+    Ok(configured_uri)
+}
+
 pub use astersql_ddl_ingest::env::{
     init_global_lightning_env, initialized_disk_root, replace_global_lightning_env_for_test,
 };

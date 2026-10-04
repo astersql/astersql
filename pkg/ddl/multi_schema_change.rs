@@ -174,6 +174,8 @@ pub struct MultiSchemaJob {
     pub error: Option<String>,
     /// 已产生的最大 schema 版本。
     pub schema_version: u64,
+    /// 父 job 持久化的云存储模式，供 owner failover 后创建后续代理 job。
+    pub use_cloud_storage: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -243,6 +245,8 @@ pub struct StepResult {
     pub paused_for_disk_full: bool,
     /// 暂停原因文案。
     pub pause_reason: Option<String>,
+    /// 本次代理 job 是否选择了云存储模式。
+    pub use_cloud_storage: bool,
 }
 
 /// 子 job 单步执行器：由上层注入真实 DDL 步进或测试桩。
@@ -253,7 +257,17 @@ pub trait SubJobRunner {
         sub_job: &SubJob,
         rolling_back: bool,
         skip_version: bool,
+        use_cloud_storage: bool,
     ) -> Result<StepResult, MultiSchemaError>;
+}
+
+/// Preserve the cloud-storage choice discovered by a temporary proxy job on
+/// its durable multi-schema parent. The update is monotonic because a later
+/// local-only sub-job must not erase the mode selected by an add-index sub-job.
+fn update_parent_job_from_proxy(parent: &mut MultiSchemaJob, result: &StepResult) {
+    if result.use_cloud_storage {
+        parent.use_cloud_storage = true;
+    }
 }
 
 /// 填充冲突检测字段后，追加一个默认可回滚的 SubJob。
@@ -580,7 +594,13 @@ pub fn run_multi_schema_change(
             .iter()
             .rposition(|sub| !sub.state.is_finished())
         {
-            let result = runner.run_step(&job.info.sub_jobs[index], true, false)?;
+            let result = runner.run_step(
+                &job.info.sub_jobs[index],
+                true,
+                false,
+                job.use_cloud_storage,
+            )?;
+            update_parent_job_from_proxy(job, &result);
             job.info.sub_jobs[index].state = result.state;
             job.info.sub_jobs[index].schema_version = result.version;
             job.info.sub_jobs[index].error = result.error;
@@ -599,7 +619,13 @@ pub fn run_multi_schema_change(
             .position(|sub| sub.revertible && !sub.state.is_finished())
         {
             let previous = job.info.sub_jobs[index].state;
-            let result = runner.run_step(&job.info.sub_jobs[index], false, false)?;
+            let result = runner.run_step(
+                &job.info.sub_jobs[index],
+                false,
+                false,
+                job.use_cloud_storage,
+            )?;
+            update_parent_job_from_proxy(job, &result);
             job.info.sub_jobs[index].state = result.state;
             job.info.sub_jobs[index].schema_version = result.version;
             job.info.sub_jobs[index].error = result.error.clone();
@@ -616,7 +642,13 @@ pub fn run_multi_schema_change(
             if job.info.sub_jobs[index].state.is_finished() {
                 continue;
             }
-            let result = runner.run_step(&job.info.sub_jobs[index], false, generated)?;
+            let result = runner.run_step(
+                &job.info.sub_jobs[index],
+                false,
+                generated,
+                job.use_cloud_storage,
+            )?;
+            update_parent_job_from_proxy(job, &result);
             if result.version != 0 {
                 generated = true;
                 job.schema_version = job.schema_version.max(result.version);
@@ -639,7 +671,13 @@ pub fn run_multi_schema_change(
         .iter()
         .position(|sub| !sub.state.is_finished())
     {
-        let result = runner.run_step(&job.info.sub_jobs[index], false, false)?;
+        let result = runner.run_step(
+            &job.info.sub_jobs[index],
+            false,
+            false,
+            job.use_cloud_storage,
+        )?;
+        update_parent_job_from_proxy(job, &result);
         job.info.sub_jobs[index].state = result.state;
         job.info.sub_jobs[index].schema_version = result.version;
         job.info.sub_jobs[index].error = result.error;

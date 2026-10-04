@@ -416,3 +416,66 @@ fn test_bounded_index_presplit_keys_retain_decodable_prefix() {
         );
     }
 }
+
+#[test]
+fn cloud_storage_uri_is_reloaded_after_owner_failover() {
+    use crate::index::resolve_cloud_storage_uri_after_owner_failover;
+
+    let mut cached = String::new();
+    let uri =
+        resolve_cloud_storage_uri_after_owner_failover(900_001, true, false, &mut cached, || {
+            "s3://bucket/dxf/".to_owned()
+        })
+        .expect("the new owner should reload the configured URI");
+    assert_eq!(uri, "s3://bucket/dxf/");
+    assert_eq!(cached, uri);
+
+    let cached_uri =
+        resolve_cloud_storage_uri_after_owner_failover(900_001, true, false, &mut cached, || {
+            "s3://changed/dxf/".to_owned()
+        })
+        .expect("an existing owner cache wins over changed configuration");
+    assert_eq!(cached_uri, "s3://bucket/dxf/");
+}
+
+#[test]
+fn cloud_storage_uri_recovery_preserves_go_error_and_bypass_paths() {
+    use crate::index::resolve_cloud_storage_uri_after_owner_failover;
+
+    let mut cached = String::new();
+    let error = resolve_cloud_storage_uri_after_owner_failover(
+        900_001,
+        true,
+        false,
+        &mut cached,
+        String::new,
+    )
+    .expect_err("a cloud job cannot silently resume in local mode");
+    assert_eq!(
+        error,
+        "cloud storage URI is empty for add-index job 900001 with cloud storage enabled"
+    );
+
+    assert_eq!(
+        resolve_cloud_storage_uri_after_owner_failover(
+            900_001,
+            false,
+            false,
+            &mut cached,
+            || panic!("local sort must not load cloud configuration"),
+        )
+        .unwrap(),
+        ""
+    );
+    assert_eq!(
+        resolve_cloud_storage_uri_after_owner_failover(
+            900_001,
+            true,
+            true,
+            &mut cached,
+            || panic!("merge-temp-index must not load cloud configuration"),
+        )
+        .unwrap(),
+        ""
+    );
+}
