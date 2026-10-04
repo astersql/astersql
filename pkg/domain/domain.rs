@@ -3232,6 +3232,9 @@ impl Domain {
                                 table.IsAutoIncColUnsigned(),
                             )
                         });
+                    allocator
+                        .transfer(table.DBID, table.ID)
+                        .map_err(DomainError::from_auto_id)?;
                     Self::rebase_stats_auto_id_allocator(
                         &allocator,
                         Self::auto_increment_allocator_base(table.AutoIncID),
@@ -6042,13 +6045,9 @@ impl Domain {
 
     /// Force the full-schema reload path used by DDL compatibility tests.
     ///
-    /// A full reload replaces table objects, so their local AutoID reservation
-    /// caches must be rebuilt from the persisted allocator high-water marks.
+    /// A full reload replaces table objects, but Go keeps compatible AutoID
+    /// allocators and transfers them to the table's current database identity.
     pub fn force_full_reload_for_test(&self) -> Result<i64, DomainError> {
-        self.stats_auto_id_allocators
-            .lock()
-            .expect("domain AutoID allocator lock poisoned")
-            .clear();
         self.reconcile_from_committed_metadata_with_mode(false)?;
         self.reload()
     }

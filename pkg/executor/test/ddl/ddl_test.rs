@@ -1138,6 +1138,34 @@ fn test_rename_table_with_reload() {
     tk.MustExec("drop database rename3", Vec::new());
 }
 
+/// 跨库 rename 后删除源库并 full reload，单点 AutoID 仍从目标表水位继续分配。
+#[test]
+fn cross_database_rename_does_not_reuse_single_point_auto_id() {
+    let (mut tk, domain) = ddl_testkit_with_domain();
+    for db in ["rename1", "rename2"] {
+        tk.MustExec(&format!("drop database if exists {db}"), Vec::new());
+        tk.MustExec(&format!("create database {db}"), Vec::new());
+    }
+    tk.MustExec(
+        "create table rename1.t(id int primary key auto_increment, v varchar(20)) AUTO_ID_CACHE=1",
+        Vec::new(),
+    );
+    tk.MustExec(
+        "insert into rename1.t(v) values ('row1'), ('row2')",
+        Vec::new(),
+    );
+    force_full_reload(&mut tk, &domain);
+    tk.MustExec("rename table rename1.t to rename2.t", Vec::new());
+    tk.MustExec("drop database rename1", Vec::new());
+    force_full_reload(&mut tk, &domain);
+    tk.MustExec(
+        "replace into rename2.t(v) values ('replacement')",
+        Vec::new(),
+    );
+    tk.MustQuery("select * from rename2.t", Vec::new())
+        .Check(Rows(&["1 row1", "2 row2", "3 replacement"]));
+}
+
 // this test will change the fail-point `mockAutoIDChange`, so we move it to the `testRecoverTable` suite
 /// RENAME TABLE：启用 `mockAutoIDChange` failpoint，覆盖跨库/同库 rename 与显式大 AutoID。
 #[test]
