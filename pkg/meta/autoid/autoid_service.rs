@@ -269,11 +269,11 @@ struct RpcRetryLogState {
     active: bool,
     terminal: bool,
     recovered: bool,
-    ctx: Context,
+    completion_error: Option<AutoIdError>,
 }
 
 impl RpcRetryLogState {
-    fn new(operation: &'static str, allocator: &SinglePointAllocator, ctx: &Context) -> Self {
+    fn new(operation: &'static str, allocator: &SinglePointAllocator) -> Self {
         let state = allocator.state.lock().unwrap();
         Self {
             operation,
@@ -286,8 +286,13 @@ impl RpcRetryLogState {
             active: false,
             terminal: false,
             recovered: false,
-            ctx: ctx.clone(),
+            completion_error: None,
         }
+    }
+
+    fn failed(&mut self, error: AutoIdError) -> AutoIdError {
+        self.completion_error = Some(error.clone());
+        error
     }
 
     fn retry(&mut self) {
@@ -298,7 +303,7 @@ impl RpcRetryLogState {
         self.active = true;
         self.request_id = RPC_RETRY_REQUEST_SEQUENCE.fetch_add(1, Ordering::SeqCst) + 1;
         eprintln!(
-            "autoid request entered RPC retry: category=autoid client request_id={} operation={} keyspace_id={} db_id={} table_id={} request_elapsed={:?} rpc_error_count={}",
+            "autoid request entered RPC retry: category=autoid client autoid-request-id={} operation={} keyspace-id={} db-id={} table-id={} request-elapsed={:?} rpc-error-count={}",
             self.request_id,
             self.operation,
             self.keyspace_id,
@@ -312,7 +317,7 @@ impl RpcRetryLogState {
     fn fast_fail(&mut self, error: &AutoIdError, elapsed: Duration) {
         self.terminal = true;
         eprintln!(
-            "autoid request stopped after reaching RPC retry limit: category=autoid client request_id={} operation={} keyspace_id={} db_id={} table_id={} request_elapsed={:?} rpc_retry_elapsed={elapsed:?} rpc_error_count={} outcome=fast-failed action={RPC_RETRY_ACTION} error={error}",
+            "autoid request stopped after reaching RPC retry limit: category=autoid client autoid-request-id={} operation={} keyspace-id={} db-id={} table-id={} request-elapsed={:?} rpc-retry-elapsed={elapsed:?} rpc-error-count={} outcome=fast-failed action={RPC_RETRY_ACTION} error={error}",
             self.request_id,
             self.operation,
             self.keyspace_id,
@@ -331,13 +336,18 @@ impl Drop for RpcRetryLogState {
         }
         let outcome = if self.recovered {
             "recovered"
-        } else if self.ctx.is_canceled() {
+        } else if matches!(self.completion_error, Some(AutoIdError::Canceled)) {
             "context-canceled"
         } else {
             "failed"
         };
+        let error = self
+            .completion_error
+            .as_ref()
+            .map(|error| format!(" error={error}"))
+            .unwrap_or_default();
         eprintln!(
-            "autoid request completed after RPC retry: category=autoid client request_id={} operation={} keyspace_id={} db_id={} table_id={} request_elapsed={:?} rpc_error_count={} outcome={outcome}",
+            "autoid request completed after RPC retry: category=autoid client autoid-request-id={} operation={} keyspace-id={} db-id={} table-id={} request-elapsed={:?} rpc-error-count={} outcome={outcome}{error}",
             self.request_id,
             self.operation,
             self.keyspace_id,
@@ -350,9 +360,9 @@ impl Drop for RpcRetryLogState {
 }
 
 #[derive(Clone, Copy)]
-struct RpcRetryPolicy {
-    min_errors: usize,
-    min_duration: Duration,
+pub(crate) struct RpcRetryPolicy {
+    pub(crate) min_errors: usize,
+    pub(crate) min_duration: Duration,
 }
 
 impl Default for RpcRetryPolicy {
@@ -365,14 +375,13 @@ impl Default for RpcRetryPolicy {
 }
 
 #[derive(Default)]
-struct RpcRetryState {
-    errors: usize,
-    first_error: Option<Instant>,
+pub(crate) struct RpcRetryState {
+    pub(crate) errors: usize,
+    pub(crate) first_error: Option<Instant>,
 }
 
 impl RpcRetryState {
-    fn observe(&mut self, policy: RpcRetryPolicy) -> bool {
-        let now = Instant::now();
+    pub(crate) fn observe(&mut self, now: Instant, policy: RpcRetryPolicy) -> bool {
         self.first_error.get_or_insert(now);
         self.errors += 1;
         policy.min_errors > 0
@@ -382,6 +391,14 @@ impl RpcRetryState {
 }
 
 impl SinglePointAllocator {
+    pub(crate) fn effective_retry_policy(&self) -> RpcRetryPolicy {
+        if self.retry_policy.min_errors > 0 {
+            self.retry_policy
+        } else {
+            RpcRetryPolicy::default()
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn set_retry_policy_for_test(&mut self, min_errors: usize, min_duration: Duration) {
         self.retry_policy = RpcRetryPolicy {
@@ -431,13 +448,9 @@ impl SinglePointAllocator {
         request_log: &mut RpcRetryLogState,
     ) -> Result<()> {
         ctx.check()?;
-        let policy = if self.retry_policy.min_errors > 0 {
-            self.retry_policy
-        } else {
-            RpcRetryPolicy::default()
-        };
-        let limit = retry.observe(policy);
+        let now = Instant::now();
         request_log.retry();
+        let limit = retry.observe(now, self.effective_retry_policy());
         self.discover.reset_conn_if_version(version);
         ctx.check()?;
         if limit {
@@ -460,9 +473,12 @@ impl SinglePointAllocator {
     fn rebase_inner(&self, ctx: &Context, new_base: i64, force: bool) -> Result<()> {
         let mut backoffer = Backoffer::default();
         let mut retry = RpcRetryState::default();
-        let mut request_log = RpcRetryLogState::new("rebase", self, ctx);
+        let mut request_log = RpcRetryLogState::new("rebase", self);
         loop {
-            let (client, version) = self.discover.get_client(ctx, self.keyspace_id)?;
+            let (client, version) = self
+                .discover
+                .get_client(ctx, self.keyspace_id)
+                .map_err(|error| request_log.failed(error))?;
             let state = self.state.lock().unwrap();
             let request = RebaseRequest {
                 database_id: state.database_id,
@@ -476,7 +492,7 @@ impl SinglePointAllocator {
                 Ok(response) => {
                     backoffer.reset();
                     if !response.errmsg.is_empty() {
-                        return Err(AutoIdError::Service(response.errmsg));
+                        return Err(request_log.failed(AutoIdError::Service(response.errmsg)));
                     }
                     if force {
                         self.state.lock().unwrap().last_allocated = new_base;
@@ -487,10 +503,13 @@ impl SinglePointAllocator {
                     return Ok(());
                 }
                 Err(error @ AutoIdError::Rpc(_)) => {
-                    self.retry_rpc(ctx, version, "rebase", &error, &mut retry, &mut request_log)?;
-                    backoffer.backoff(Some(ctx))?;
+                    self.retry_rpc(ctx, version, "rebase", &error, &mut retry, &mut request_log)
+                        .map_err(|error| request_log.failed(error))?;
+                    backoffer
+                        .backoff(Some(ctx))
+                        .map_err(|error| request_log.failed(error))?;
                 }
-                Err(error) => return Err(error),
+                Err(error) => return Err(request_log.failed(error)),
             }
         }
     }
@@ -611,10 +630,13 @@ impl SinglePointAllocator {
         }
         let mut backoffer = Backoffer::default();
         let mut retry = RpcRetryState::default();
-        let mut request_log = RpcRetryLogState::new("alloc", self, ctx);
+        let mut request_log = RpcRetryLogState::new("alloc", self);
         // 与 rebase_inner 相同的 RPC 重试环。
         loop {
-            let (client, version) = self.discover.get_client(ctx, self.keyspace_id)?;
+            let (client, version) = self
+                .discover
+                .get_client(ctx, self.keyspace_id)
+                .map_err(|error| request_log.failed(error))?;
             let state = self.state.lock().unwrap();
             let request = AutoIdRequest {
                 database_id: state.database_id,
@@ -630,17 +652,20 @@ impl SinglePointAllocator {
                 Ok(response) => {
                     backoffer.reset();
                     if !response.errmsg.is_empty() {
-                        return Err(AutoIdError::Service(response.errmsg));
+                        return Err(request_log.failed(AutoIdError::Service(response.errmsg)));
                     }
                     self.update_last_allocated(response.max);
                     request_log.recovered = true;
                     return Ok((response.min, response.max));
                 }
                 Err(error @ AutoIdError::Rpc(_)) => {
-                    self.retry_rpc(ctx, version, "alloc", &error, &mut retry, &mut request_log)?;
-                    backoffer.backoff(Some(ctx))?;
+                    self.retry_rpc(ctx, version, "alloc", &error, &mut retry, &mut request_log)
+                        .map_err(|error| request_log.failed(error))?;
+                    backoffer
+                        .backoff(Some(ctx))
+                        .map_err(|error| request_log.failed(error))?;
                 }
-                Err(error) => return Err(error),
+                Err(error) => return Err(request_log.failed(error)),
             }
         }
     }

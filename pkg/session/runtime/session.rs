@@ -1215,7 +1215,12 @@ impl ConcreteSession {
             return self
                 .domain
                 .allocate_stats_auto_id_with_increment(table_id, explicit, kind, increment, offset)
-                .map_err(|error| session_error("allocate table auto ID", error));
+                .map_err(|error| {
+                    SessionError::with_source(
+                        format!("allocate table auto ID: {error}"),
+                        astersql_errors::SharedError::new(error),
+                    )
+                });
         }
 
         let mut state = self.state.borrow_mut();

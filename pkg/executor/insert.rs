@@ -56,7 +56,7 @@ pub trait InsertRuntime {
     type Assignment;
     type ForeignKeyCheck;
     type ForeignKeyCascade;
-    type Error;
+    type Error: std::error::Error + 'static;
 
     fn transaction(&mut self) -> Result<Self::Transaction, Self::Error>;
     fn set_top_sql_option(&mut self, transaction: &mut Self::Transaction);
@@ -356,6 +356,10 @@ impl<R: InsertRuntime> InsertExec<R> {
             self.runtime.insert_rows_from_select(context)
         } else {
             self.runtime.insert_rows(context).map_err(|error| {
+                // Rebase errors can bypass InsertValues::handleErr.
+                if crate::insert_common::is_terminal_auto_id_error(&error) {
+                    return error;
+                }
                 if self.runtime.error_is_auto_increment_read_failure(&error)
                     && self.runtime.on_duplicate_assignments().is_empty()
                 {

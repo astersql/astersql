@@ -230,6 +230,11 @@ pub(super) fn rebase_ids(domain: &Domain, schema: i64, t: &TableInfo) -> Result<
                 .map_err(|e| e.to_string())?;
         }
     }
+    if single_point {
+        if let Some(allocator) = allocs.get(autoid::AllocatorType::AutoIncrement) {
+            domain.install_single_point_auto_id_allocator(t.ID, allocator);
+        }
+    }
     Ok(())
 }
 pub(super) fn check_columnar(domain: &Domain, t: &TableInfo) -> Result<(), String> {

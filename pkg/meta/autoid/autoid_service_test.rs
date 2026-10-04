@@ -41,12 +41,15 @@ impl LeaderDiscovery for FakeDiscovery {
 struct FakeClient {
     alloc_results: Mutex<VecDeque<Result<AutoIdResponse>>>,
     rebase_results: Mutex<VecDeque<Result<RebaseResponse>>>,
+    alloc_requests: Mutex<Vec<AutoIdRequest>>,
+    rebase_requests: Mutex<Vec<RebaseRequest>>,
     alloc_calls: AtomicUsize,
     rebase_calls: AtomicUsize,
 }
 
 impl AutoIdClient for FakeClient {
-    fn alloc_auto_id(&self, _ctx: &Context, _request: AutoIdRequest) -> Result<AutoIdResponse> {
+    fn alloc_auto_id(&self, _ctx: &Context, request: AutoIdRequest) -> Result<AutoIdResponse> {
+        self.alloc_requests.lock().unwrap().push(request);
         self.alloc_calls.fetch_add(1, Ordering::SeqCst);
         self.alloc_results
             .lock()
@@ -59,7 +62,8 @@ impl AutoIdClient for FakeClient {
             }))
     }
 
-    fn rebase(&self, _ctx: &Context, _request: RebaseRequest) -> Result<RebaseResponse> {
+    fn rebase(&self, _ctx: &Context, request: RebaseRequest) -> Result<RebaseResponse> {
+        self.rebase_requests.lock().unwrap().push(request);
         self.rebase_calls.fetch_add(1, Ordering::SeqCst);
         self.rebase_results
             .lock()
@@ -422,4 +426,239 @@ fn go_merge_12_rpc_retry_recovers_and_service_error_does_not_retry() {
         Err(AutoIdError::Service(_))
     ));
     assert_eq!(service.alloc_calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn rpc_retry_limit_recovery_and_logging_follow_request_outcome() {
+    const SCENARIO: &str = "ASTERSQL_AUTOID_RETRY_SCENARIO";
+    if let Ok(scenario) = std::env::var(SCENARIO) {
+        let (operation, outcome) = scenario.split_once(':').unwrap();
+        let client = Arc::new(FakeClient::default());
+        let failures = if outcome == "limit" {
+            3
+        } else if matches!(outcome, "recover" | "failed" | "canceled") {
+            2
+        } else {
+            0
+        };
+        for index in 0..failures {
+            let error = AutoIdError::Rpc(format!("rpc error: mixed failure {index} at 100%"));
+            if operation == "alloc" {
+                client.alloc_results.lock().unwrap().push_back(Err(error));
+            } else {
+                client.rebase_results.lock().unwrap().push_back(Err(error));
+            }
+        }
+        if matches!(outcome, "failed" | "canceled") {
+            let error = if outcome == "canceled" {
+                AutoIdError::Canceled
+            } else {
+                AutoIdError::Service("local validation failed".into())
+            };
+            if operation == "alloc" {
+                client.alloc_results.lock().unwrap().push_back(Err(error));
+            } else {
+                client.rebase_results.lock().unwrap().push_back(Err(error));
+            }
+        }
+        let ctx = Context::background();
+        if outcome.starts_with("local") {
+            if outcome == "local-canceled" {
+                ctx.cancel();
+            }
+            let error = AutoIdError::Service("local validation failed".into());
+            client
+                .alloc_results
+                .lock()
+                .unwrap()
+                .push_back(Err(error.clone()));
+            client.rebase_results.lock().unwrap().push_back(Err(error));
+        }
+        let discover = Arc::new(ClientDiscover::new(
+            Arc::new(FakeDiscovery),
+            Arc::new(FakeConnector {
+                client: client.clone(),
+            }),
+        ));
+        discover.seed_client_for_test(client.clone());
+        let mut alloc = SinglePointAllocator::new(11, 22, false, NULLSPACE_ID, discover.clone());
+        alloc.set_retry_policy_for_test(3, Duration::ZERO);
+        if matches!(outcome, "recover" | "success") {
+            client
+                .alloc_results
+                .lock()
+                .unwrap()
+                .push_back(Ok(AutoIdResponse {
+                    min: 100,
+                    max: 101,
+                    errmsg: String::new(),
+                }));
+        }
+        let result = if operation == "alloc" {
+            let result = alloc.alloc(&ctx, 1, 1, 1);
+            if matches!(outcome, "recover" | "success") {
+                assert_eq!(result, Ok((100, 101)));
+            }
+            result.map(|_| ())
+        } else {
+            alloc.rebase(&ctx, 100, false)
+        };
+        if outcome == "limit" {
+            let error = result.unwrap_err();
+            assert!(is_rpc_retry_limit_error(&error));
+            assert!(error.to_string().contains("3 RPC errors"));
+            assert!(error.to_string().contains("mixed failure 2 at 100%"));
+            assert!(error.to_string().contains("db_id=11, table_id=22"));
+            assert!(error.to_string().contains("then retry the statement"));
+        } else if outcome == "canceled" {
+            assert_eq!(result, Err(AutoIdError::Canceled));
+        } else if outcome == "failed" || outcome.starts_with("local") {
+            assert_eq!(
+                result,
+                Err(AutoIdError::Service("local validation failed".into()))
+            );
+        } else {
+            result.unwrap();
+        }
+        let calls = if operation == "alloc" {
+            client.alloc_calls.load(Ordering::SeqCst)
+        } else {
+            client.rebase_calls.load(Ordering::SeqCst)
+        };
+        assert_eq!(calls, if outcome == "limit" { 3 } else { failures + 1 });
+
+        assert_eq!(discover.version(), failures as u64);
+        if matches!(
+            outcome,
+            "limit" | "failed" | "canceled" | "local" | "local-canceled"
+        ) {
+            assert_eq!(alloc.base(), 0);
+        } else {
+            assert_eq!(alloc.base(), if operation == "alloc" { 101 } else { 100 });
+        }
+        if operation == "alloc" {
+            assert!(
+                client
+                    .alloc_requests
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|request| request
+                        == &AutoIdRequest {
+                            database_id: 11,
+                            table_id: 22,
+                            n: 1,
+                            increment: 1,
+                            offset: 1,
+                            is_unsigned: false,
+                            keyspace_id: NULLSPACE_ID,
+                        })
+            );
+        } else {
+            assert!(
+                client
+                    .rebase_requests
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|request| request
+                        == &RebaseRequest {
+                            database_id: 11,
+                            table_id: 22,
+                            base: 100,
+                            force: false,
+                            is_unsigned: false,
+                        })
+            );
+        }
+        return;
+    }
+    for operation in ["alloc", "rebase"] {
+        for outcome in [
+            "limit",
+            "recover",
+            "failed",
+            "canceled",
+            "local",
+            "local-canceled",
+            "success",
+        ] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "autoid_service_test::rpc_retry_limit_recovery_and_logging_follow_request_outcome", "--nocapture"])
+                .env(SCENARIO, format!("{operation}:{outcome}"))
+                .output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let logs = String::from_utf8(output.stderr).unwrap();
+            assert_eq!(
+                logs.matches("autoid request entered RPC retry").count(),
+                usize::from(matches!(
+                    outcome,
+                    "limit" | "recover" | "failed" | "canceled"
+                ))
+            );
+            assert_eq!(
+                logs.matches("autoid request stopped after reaching RPC retry limit")
+                    .count(),
+                usize::from(outcome == "limit")
+            );
+            assert_eq!(
+                logs.matches("autoid request completed after RPC retry")
+                    .count(),
+                usize::from(matches!(outcome, "recover" | "failed" | "canceled"))
+            );
+            if matches!(outcome, "limit" | "recover" | "failed" | "canceled") {
+                assert!(logs.contains(&format!("operation={operation}")));
+                assert!(logs.contains("keyspace-id=4294967295 db-id=11 table-id=22"));
+                assert_eq!(logs.matches("autoid-request-id=1").count(), 2);
+                assert!(logs.contains(match outcome {
+                    "limit" => "outcome=fast-failed",
+                    "failed" => "outcome=failed",
+                    "canceled" => "outcome=context-canceled",
+                    _ => "outcome=recovered",
+                }));
+                if outcome == "failed" {
+                    assert!(logs.contains("error=autoid service error: local validation failed"));
+                }
+                if outcome == "canceled" {
+                    assert!(logs.contains("error=context canceled"));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn rpc_retry_policy_requires_both_count_and_elapsed_duration() {
+    use crate::autoid_service::{RpcRetryPolicy, RpcRetryState};
+    let mut allocator = new_test_single_point_alloc(Arc::new(FakeClient::default()));
+    for min_errors in [10, 0] {
+        if min_errors == 0 {
+            allocator.set_retry_policy_for_test(0, Duration::ZERO);
+        }
+        let defaults = allocator.effective_retry_policy();
+        assert_eq!(defaults.min_errors, 10);
+        assert_eq!(defaults.min_duration, Duration::from_secs(15));
+    }
+    let policy = RpcRetryPolicy {
+        min_errors: 3,
+        min_duration: Duration::from_secs(2),
+    };
+    let start = Instant::now();
+    let mut state = RpcRetryState::default();
+    assert!(!state.observe(start, policy));
+    assert!(!state.observe(start + Duration::from_secs(1), policy));
+    assert!(state.observe(start + Duration::from_secs(2), policy));
+    assert_eq!(state.errors, 3);
+    assert_eq!(state.first_error, Some(start));
+    let mut count_only = RpcRetryState::default();
+    for _ in 0..3 {
+        assert!(!count_only.observe(start, policy));
+    }
+    let mut duration_only = RpcRetryState::default();
+    assert!(!duration_only.observe(start, policy));
+    assert!(!duration_only.observe(start + Duration::from_secs(3), policy));
 }

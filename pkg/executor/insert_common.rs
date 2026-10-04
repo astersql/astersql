@@ -208,10 +208,25 @@ pub struct ToBeCheckedRow<D, T, E> {
     pub ignored: bool,
 }
 
+/// A terminal allocator error must survive conversion and INSERT IGNORE handling.
+pub(crate) fn is_terminal_auto_id_error(mut error: &(dyn std::error::Error + 'static)) -> bool {
+    loop {
+        if let Some(error) = error.downcast_ref::<astersql_meta_autoid::AutoIdError>() {
+            if astersql_meta_autoid::is_rpc_retry_limit_error(error) {
+                return true;
+            }
+        }
+        match error.source() {
+            Some(source) => error = source,
+            None => return false,
+        }
+    }
+}
+
 /// INSERT 后端能力边界：错误、列、表达式求值、自增分配、事务写行等。
 pub trait InsertBackend: Send + Sync + 'static {
     type Context: Clone;
-    type Error: Clone;
+    type Error: Clone + std::error::Error + 'static;
     type Datum: Clone;
     type Table: Clone;
     type Column: Clone;
@@ -736,6 +751,10 @@ impl<B: InsertBackend> InsertValues<B> {
         let Some(mut error) = error else {
             return Ok(());
         };
+        // Allocation produced no ID; statement error conversion cannot make it safe.
+        if is_terminal_auto_id_error(&error) {
+            return Err(error);
+        }
         error = if self.backend.in_load_data_statement() {
             completeLoadErr(self.backend.as_ref(), column, row_index, error)
         } else {

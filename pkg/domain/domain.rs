@@ -166,6 +166,8 @@ pub enum DomainError {
     NotInitialized,
     /// 存储层错误。
     Store(String),
+    /// Terminal AutoID errors retain their marker across SQL error wrapping.
+    AutoId(astersql_meta_autoid::AutoIdError),
     /// DDL 子系统错误。
     Ddl(String),
     /// 找不到指定 keyspace。
@@ -190,10 +192,29 @@ pub enum DomainError {
 
 impl std::fmt::Display for DomainError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{self:?}")
+        match self {
+            Self::AutoId(error) => write!(f, "{error}"),
+            _ => write!(f, "{self:?}"),
+        }
     }
 }
-impl std::error::Error for DomainError {}
+impl std::error::Error for DomainError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::AutoId(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+impl DomainError {
+    fn from_auto_id(error: astersql_meta_autoid::AutoIdError) -> Self {
+        if astersql_meta_autoid::is_rpc_retry_limit_error(&error) {
+            Self::AutoId(error)
+        } else {
+            Self::Store(error.to_string())
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// 慢查询记录：SQL 文本、digest、耗时与是否内部语句。
@@ -4600,6 +4621,19 @@ impl Domain {
             })
     }
 
+    /// Keep the allocator selected by CREATE TABLE on the DML allocation path.
+    pub fn install_single_point_auto_id_allocator(
+        &self,
+        table_id: i64,
+        allocator: Arc<dyn AutoIdAllocator>,
+    ) {
+        assert_eq!(allocator.get_type(), AllocatorType::AutoIncrement);
+        self.stats_auto_id_allocators
+            .lock()
+            .expect("domain AutoID allocator lock poisoned")
+            .insert((table_id, 0), allocator);
+    }
+
     /// 分配统计自增 ID。
     pub fn allocate_stats_auto_id(
         &self,
@@ -4653,14 +4687,14 @@ impl Domain {
             };
             allocator
                 .rebase(&AutoIdContext::background(), value as i64, false)
-                .map_err(|error| DomainError::Store(error.to_string()))?;
+                .map_err(DomainError::from_auto_id)?;
             self.record_stats_auto_id_next(table_id, kind, value.saturating_add(1));
             return Ok((value, rebased));
         }
 
         let (_, maximum) = allocator
             .alloc(&AutoIdContext::background(), 1, 1, 1)
-            .map_err(|error| DomainError::Store(error.to_string()))?;
+            .map_err(DomainError::from_auto_id)?;
         let value = maximum as u64;
         let next = value
             .checked_add(1)
@@ -4705,7 +4739,7 @@ impl Domain {
             })?;
         let (_, maximum) = allocator
             .alloc(&AutoIdContext::background(), 1, increment, offset)
-            .map_err(|error| DomainError::Store(error.to_string()))?;
+            .map_err(DomainError::from_auto_id)?;
         let value = maximum as u64;
         let next = value
             .checked_add(1)

@@ -37,10 +37,27 @@ struct CheckedRow {
 enum TestError {
     NotFound,
     Flush,
+    AutoId(astersql_meta_autoid::AutoIdError),
+}
+
+impl std::fmt::Display for TestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+impl std::error::Error for TestError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::AutoId(error) => Some(error),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Default)]
 struct TestRuntime {
+    insert_error: Option<TestError>,
+    auto_id_error_handled: bool,
     snapshot_ended: bool,
     fail_flush: bool,
     on_duplicate: Vec<()>,
@@ -215,13 +232,14 @@ impl InsertRuntime for TestRuntime {
         Ok(())
     }
     fn insert_rows(&mut self, _: &mut Self::Context) -> Result<(), Self::Error> {
-        Ok(())
+        self.insert_error.clone().map_or(Ok(()), Err)
     }
-    fn handle_auto_increment_read_error(&mut self, error: Self::Error) -> Self::Error {
-        error
+    fn handle_auto_increment_read_error(&mut self, _error: Self::Error) -> Self::Error {
+        self.auto_id_error_handled = true;
+        TestError::Flush
     }
-    fn error_is_auto_increment_read_failure(&self, _: &Self::Error) -> bool {
-        false
+    fn error_is_auto_increment_read_failure(&self, error: &Self::Error) -> bool {
+        matches!(error, TestError::AutoId(_))
     }
     fn register_runtime_stats(&mut self) {}
     fn reset_memory_usage(&mut self) {}
@@ -293,4 +311,34 @@ fn insert_logs_unique_index_pointing_to_missing_row() {
 
     assert_eq!(executor.exec(&mut (), vec![1]), Err(TestError::NotFound));
     assert_eq!(executor.runtime.inconsistent_index_logs.get(), 1);
+}
+
+#[test]
+fn terminal_auto_id_rebase_error_bypasses_statement_error_context() {
+    let error = TestError::AutoId(astersql_meta_autoid::AutoIdError::RpcRetryLimit(
+        "last RPC failure at 100%".into(),
+    ));
+    let mut executor = InsertExec {
+        runtime: TestRuntime {
+            insert_error: Some(error.clone()),
+            ..Default::default()
+        },
+    };
+    assert_eq!(executor.Next(&mut (), &mut ()), Err(error));
+    assert!(!executor.runtime.auto_id_error_handled);
+}
+
+#[test]
+fn ordinary_auto_id_error_still_uses_statement_error_context() {
+    let error = TestError::AutoId(astersql_meta_autoid::AutoIdError::AutoIncrementReadFailed(
+        "read failed".into(),
+    ));
+    let mut executor = InsertExec {
+        runtime: TestRuntime {
+            insert_error: Some(error),
+            ..Default::default()
+        },
+    };
+    assert_eq!(executor.Next(&mut (), &mut ()), Err(TestError::Flush));
+    assert!(executor.runtime.auto_id_error_handled);
 }
