@@ -853,7 +853,11 @@ pub(super) fn encode_relational_index_entries(
                         | astersql_meta_model::SchemaState::WriteOnly
                         | astersql_meta_model::SchemaState::WriteReorganization
                 )))
-            && !index.Primary
+            // A clustered PRIMARY KEY is encoded in the record key itself and
+            // has no independent index KV. A non-clustered PRIMARY KEY does,
+            // so DML and partition reorganization must maintain it just like
+            // every other secondary index.
+            && (!index.Primary || !table.HasClusteredIndex())
             && !index.Global
     }) {
         if !index.ConditionExprString.is_empty() {
@@ -885,7 +889,7 @@ pub(super) fn encode_relational_unique_index_entries(
     for index in table.Indices.iter().filter(|index| {
         index.Unique
             && index.State == astersql_meta_model::StatePublic
-            && !index.Primary
+            && (!index.Primary || !table.HasClusteredIndex())
             && !index.Global
     }) {
         if !index.ConditionExprString.is_empty() {

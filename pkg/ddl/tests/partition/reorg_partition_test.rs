@@ -540,3 +540,75 @@ fn reorg_non_touched_phase_preserves_all_four_global_entries() {
     }
     tk.MustContainErrMsg("insert into reorg_phase values (31,300)", "Duplicate entry");
 }
+
+/// A clustered PRIMARY KEY is the record handle and therefore has no separate
+/// index KV. A non-clustered PRIMARY KEY remains an ordinary maintained index,
+/// including while REORGANIZE PARTITION moves records to new physical IDs.
+#[test]
+fn reorg_partition_backfills_only_nonclustered_primary_index_entries() {
+    let store = CreateAnalyzeStatsStore();
+    let domain = store.domain();
+    let mut tk = TestKit::new(store);
+
+    for (table_name, primary_mode, expect_primary_entries) in [
+        ("reorg_clustered_pk", "clustered", false),
+        ("reorg_nonclustered_pk", "nonclustered", true),
+    ] {
+        tk.MustExec(
+            &format!(
+                "create table {table_name} (\
+                     a int, b int, c int, primary key (a,b) {primary_mode}, key idx_c(c)) \
+                 partition by range (b) (\
+                     partition p0 values less than (10), \
+                     partition pmax values less than (maxvalue))"
+            ),
+            Vec::new(),
+        );
+        tk.MustExec(
+            &format!("insert into {table_name} values (1,11,1),(2,12,2),(3,13,3),(4,14,4)"),
+            Vec::new(),
+        );
+        tk.MustExec(
+            &format!(
+                "alter table {table_name} reorganize partition pmax into \
+                 (partition p1 values less than (20), \
+                  partition pmax values less than (maxvalue))"
+            ),
+            Vec::new(),
+        );
+
+        let table = domain.table_by_name("test", table_name).unwrap();
+        let p1 = table.GetPartitionInfo().unwrap().GetPartitionIDByName("p1");
+        let primary_id = table.FindIndexByName("primary").unwrap().ID;
+        let secondary_id = table.FindIndexByName("idx_c").unwrap().ID;
+        let count_entries = |index_id| {
+            domain.storage_handle().with_storage(|storage| {
+                let (start, end) = astersql_tablecodec::GetTableIndexKeyRange(p1, index_id);
+                let snapshot = storage.GetSnapshot(storage.CurrentVersion("global").unwrap());
+                let mut iterator = snapshot
+                    .Iter(astersql_kv::Key(start), Some(astersql_kv::Key(end)))
+                    .unwrap();
+                let mut count = 0;
+                while iterator.Valid() {
+                    count += 1;
+                    iterator.Next().unwrap();
+                }
+                iterator.Close();
+                count
+            })
+        };
+        assert_eq!(
+            count_entries(primary_id),
+            usize::from(expect_primary_entries) * 4
+        );
+        assert_eq!(count_entries(secondary_id), 4);
+        tk.MustExec(&format!("admin check table {table_name}"), Vec::new());
+        tk.MustQuery(
+            &format!("select a,b,c from {table_name} order by a"),
+            Vec::new(),
+        )
+        .Check(astersql_testkit::Rows(&[
+            "1 11 1", "2 12 2", "3 13 3", "4 14 4",
+        ]));
+    }
+}
