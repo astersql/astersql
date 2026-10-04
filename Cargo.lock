@@ -2384,6 +2384,7 @@ dependencies = [
  "astersql-errno",
  "astersql-expression",
  "astersql-kv",
+ "astersql-meta",
  "astersql-meta-model",
  "astersql-parser-ast",
  "astersql-parser-mysql",

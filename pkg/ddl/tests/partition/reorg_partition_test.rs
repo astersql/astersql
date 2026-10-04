@@ -254,3 +254,159 @@ fn reorg_partition_replaces_selected_definitions_without_losing_rows() {
         4
     );
 }
+
+/// Enter exactly the phase changed by 45e4745, after new-partition data and
+/// indexes have been built. Use the production pooled session/KV backfiller;
+/// the absent whole REORGANIZE job lifecycle is not part of this fixture.
+#[test]
+fn reorg_non_touched_phase_preserves_all_four_global_entries() {
+    use astersql_ddl::job_worker::DurableJobSession;
+    use astersql_ddl::reorg::{ReorgElement, ReorgInfo};
+    let store = CreateAnalyzeStatsStore();
+    let domain = store.domain();
+    let mut tk = TestKit::new(store);
+    tk.MustExec("create table reorg_phase(a int, b int, unique key idx_b(b) global) partition by range(a) (partition p0 values less than (10), partition p1a values less than (15), partition p1b values less than (30), partition pmax values less than (maxvalue))", Vec::new());
+    tk.MustExec(
+        "insert into reorg_phase values (1,10),(12,120),(25,250),(30,300)",
+        Vec::new(),
+    );
+    let mut final_table = domain
+        .table_by_name("test", "reorg_phase")
+        .unwrap()
+        .as_ref()
+        .clone();
+    // REORGANIZE rebuilds a fresh global index. Avoid depending on whether
+    // ordinary DML already maintains the source index in this repository.
+    final_table.MaxIndexID += 1;
+    final_table
+        .Indices
+        .iter_mut()
+        .find(|index| index.Name.L == "idx_b")
+        .unwrap()
+        .ID = final_table.MaxIndexID;
+    let schema_id = domain
+        .info_schema()
+        .AllSchemas()
+        .into_iter()
+        .find(|db| db.name.lower == "test")
+        .unwrap()
+        .id;
+    let index_id = final_table
+        .Indices
+        .iter()
+        .find(|index| index.Name.L == "idx_b")
+        .unwrap()
+        .ID;
+    let table_id = final_table.ID;
+    let pool = astersql_session::runtime::system_session::SystemSessionPool::new(domain.clone());
+    let mut session = pool.acquire().unwrap();
+    session.begin().unwrap();
+    let table = final_table.clone();
+    session.with_execution_context(Box::new(move |context| {
+        let mut table = table;
+        let mut job_id = 0;
+        context.with_transaction(&mut |txn| {
+            let key = astersql_meta::transaction_meta_string_key(b"NextGlobalID");
+            job_id = astersql_kv::IncInt64(txn, &key, 3).map_err(|e| e.to_string())?;
+            Ok(Vec::new())
+        })?;
+        let mut finished = table.clone();
+        let pi = table.Partition.as_mut().unwrap();
+        let definitions = pi.Definitions.clone();
+        pi.DDLAction = ACTION_REORGANIZE_PARTITION;
+        pi.DDLState = astersql_meta_model::SchemaState::WriteReorganization;
+        pi.AddingDefinitions = definitions[1..3].to_vec();
+        pi.DroppingDefinitions = vec![part(job_id - 2, "p1", "20"), part(job_id - 1, "p2", "30")];
+        pi.Definitions = vec![definitions[0].clone(), pi.DroppingDefinitions[0].clone(), pi.DroppingDefinitions[1].clone(), definitions[3].clone()];
+        table.Indices.iter_mut().find(|i| i.ID == index_id).unwrap().State = astersql_meta_model::SchemaState::WriteReorganization;
+        context.with_transaction(&mut |txn| {
+            astersql_meta::TransactionMutator::new(txn).update_table(schema_id, &mut table)?;
+            Ok(Vec::new())
+        })?;
+        let job = astersql_meta_model::group_3::Job { id: job_id, schema_id, table_id, ..Default::default() };
+        // Seed only the completed AddingDefinitions phase through the same real
+        // backfill adapter. Neither non-touched partition has an index entry yet.
+        for definition in &table.Partition.as_ref().unwrap().AddingDefinitions {
+            let prefix = astersql_tablecodec::GenTableRecordPrefix(definition.ID);
+            let result = context.backfill_prepared_indexes(astersql_ddl::backfilling::IndexBackfillBatch {
+                schema_id, table_id, index_ids: vec![index_id],
+                task: astersql_ddl::backfilling::ReorgBackfillTask {
+                    job_id, physical_table_id: definition.ID,
+                    start_key: prefix.0.clone(), end_key: prefix.PrefixNext().0,
+                    ..Default::default()
+                }, batch_size: 16, resource_group: String::new(), sql_mode: 0,
+            })?;
+            assert!(result.done);
+            assert_eq!(result.added_count, 1);
+        }
+        let prefix = astersql_tablecodec::GenTableRecordPrefix(definitions[0].ID);
+        let element = ReorgElement { id: index_id, element_type: b"_idx_".to_vec() };
+        let mut reorg = ReorgInfo {
+            job_id, physical_table_id: definitions[0].ID,
+            start_key: prefix.0.clone(), end_key: prefix.PrefixNext().0,
+            element: element.clone(), elements: vec![element], ..Default::default()
+        };
+        context.query(&format!("INSERT INTO mysql.tidb_ddl_reorg (job_id,ele_id,ele_type,start_key,end_key,physical_id) VALUES ({job_id},{index_id},X'5f6964785f',X'',X'',{})", reorg.physical_table_id), "init_handle")?;
+        // A batch of one exercises bounded processing through the final partition.
+        let mut batches = 0;
+        while !astersql_ddl::partition::backfill_non_touched_partition_indexes(context, &job, &table, &mut reorg, 1)? {
+            batches += 1;
+            assert!(batches < 8);
+        }
+        assert_eq!(reorg.physical_table_id, 0);
+        assert_eq!(context.query(&format!("SELECT physical_id FROM mysql.tidb_ddl_reorg WHERE job_id={job_id}"), "get_handle")?, vec![vec!["0".to_owned()]]);
+        context.with_transaction(&mut |txn| {
+            astersql_meta::TransactionMutator::new(txn).update_table(schema_id, &mut finished)?;
+            Ok(Vec::new())
+        })?;
+        context.query(&format!("DELETE FROM mysql.tidb_ddl_reorg WHERE job_id={job_id}"), "clean_handle")?;
+        Ok(Vec::new())
+    })).unwrap();
+    session.commit().unwrap();
+    domain.reload().unwrap();
+    let (start, end) = astersql_tablecodec::GetTableIndexKeyRange(table_id, index_id);
+    let values = domain.storage_handle().with_storage(|storage| {
+        let mut iter = storage
+            .GetSnapshot(storage.CurrentVersion("global").unwrap())
+            .Iter(astersql_kv::Key(start), Some(astersql_kv::Key(end)))
+            .unwrap();
+        let mut values = Vec::new();
+        while iter.Valid() {
+            values.push(iter.Value().to_vec());
+            iter.Next().unwrap();
+        }
+        iter.Close();
+        values
+    });
+    assert_eq!(values.len(), 4);
+    let mut counts = std::collections::BTreeMap::new();
+    for value in values {
+        let handle = astersql_tablecodec::DecodeHandleInIndexValue(value)
+            .unwrap()
+            .unwrap();
+        let handle = handle
+            .as_any()
+            .downcast_ref::<astersql_tablecodec::kv::PartitionHandle>()
+            .unwrap();
+        *counts.entry(handle.PartitionID).or_insert(0) += 1;
+    }
+    for definition in &final_table.Partition.as_ref().unwrap().Definitions {
+        assert_eq!(
+            counts.get(&definition.ID),
+            Some(&1),
+            "partition {}",
+            definition.Name.O
+        );
+    }
+    tk.MustExec("admin check table reorg_phase", Vec::new());
+    for hint in ["use index(idx_b)", "ignore index(idx_b)"] {
+        tk.MustQuery(
+            &format!("select a,b from reorg_phase {hint} where b >= 0 order by b"),
+            Vec::new(),
+        )
+        .Check(astersql_testkit::Rows(&[
+            "1 10", "12 120", "25 250", "30 300",
+        ]));
+    }
+    tk.MustContainErrMsg("insert into reorg_phase values (31,300)", "Duplicate entry");
+}

@@ -975,8 +975,7 @@ pub fn find_next_partition_id(current: i64, definitions: &[PartitionDefinition])
         .map(|definition| definition.id)
         .next()
 }
-/// 返回当前分区之后第一个未被并发分区 DDL 触及（既非正在删除
-/// 也非正在添加）的分区 ID。
+/// 返回 Definitions 中当前分区之后第一个不在 DroppingDefinitions 中的分区 ID。
 pub fn find_next_non_touched_partition_id(
     current: i64,
     definitions: &[PartitionDefinition],
@@ -985,8 +984,58 @@ pub fn find_next_non_touched_partition_id(
         .iter()
         .skip_while(|definition| definition.id != current)
         .skip(1)
-        .find(|definition| !definition.dropping && !definition.adding)
+        .find(|definition| !definition.dropping)
         .map(|definition| definition.id)
+}
+
+/// Advance the canonical reorg cursor through Definitions minus DroppingDefinitions.
+/// An unknown current ID terminates traversal, matching Go's warning-only fallback.
+pub fn next_non_touched_partition_id(
+    current: i64,
+    partition: &astersql_meta_model::PartitionInfo,
+) -> i64 {
+    if !partition
+        .Definitions
+        .iter()
+        .any(|definition| definition.ID == current)
+    {
+        astersql_util_logutil::log::BgLogger().warn(format!(
+            "current partition not found in the table definitions: partitionID={current}"
+        ));
+        return 0;
+    }
+    let definitions = partition
+        .Definitions
+        .iter()
+        .map(|definition| PartitionDefinition {
+            id: definition.ID,
+            dropping: partition
+                .DroppingDefinitions
+                .iter()
+                .any(|dropped| dropped.ID == definition.ID),
+            adding: false,
+        })
+        .collect::<Vec<_>>();
+    find_next_non_touched_partition_id(current, &definitions).unwrap_or(0)
+}
+
+/// Go getNextPartitionInfo's recreated-index branch. Absence from AddingDefinitions
+/// selects the non-touched phase; it is not an error in that phase.
+pub fn next_recreated_index_partition_id(
+    current: i64,
+    partition: &astersql_meta_model::PartitionInfo,
+) -> i64 {
+    if let Some(position) = partition
+        .AddingDefinitions
+        .iter()
+        .position(|p| p.ID == current)
+    {
+        return partition
+            .AddingDefinitions
+            .get(position + 1)
+            .map_or(0, |p| p.ID);
+    }
+    next_non_touched_partition_id(current, partition)
 }
 
 /// 分配新的索引 ID：单调递增，保证表内唯一。

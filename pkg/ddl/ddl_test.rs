@@ -186,3 +186,222 @@ fn modify_generated_column_metadata_strips_qualifiers() {
         assert_eq!(actual, dependencies, "{sql}");
     }
 }
+
+#[test]
+fn next_non_touched_partition_skips_each_dropped_definition() {
+    use crate::index::{PartitionDefinition, find_next_non_touched_partition_id};
+    let defs = (1..=5)
+        .map(|id| PartitionDefinition {
+            id,
+            dropping: id == 2 || id == 3,
+            adding: false,
+        })
+        .collect::<Vec<_>>();
+    for (current, next) in [
+        (1, Some(4)),
+        (2, Some(4)),
+        (3, Some(4)),
+        (4, Some(5)),
+        (5, None),
+        (6, None),
+    ] {
+        assert_eq!(find_next_non_touched_partition_id(current, &defs), next);
+    }
+    assert_eq!(find_next_non_touched_partition_id(1, &defs[..3]), None);
+    // Go excludes DroppingDefinitions only: membership in AddingDefinitions
+    // does not change this helper's Definitions-minus-Dropping contract.
+    let mut defs = defs;
+    defs[3].adding = true;
+    assert_eq!(find_next_non_touched_partition_id(1, &defs), Some(4));
+}
+
+#[test]
+fn canonical_non_touched_cursor_matches_go_partition_definitions() {
+    use astersql_meta_model::{PartitionDefinition, PartitionInfo};
+    let defs = |ids: &[i64]| {
+        ids.iter()
+            .map(|id| PartitionDefinition {
+                ID: *id,
+                ..Default::default()
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut pi = PartitionInfo {
+        Definitions: defs(&[1, 2, 3, 4, 5]),
+        DroppingDefinitions: defs(&[2, 3]),
+        ..Default::default()
+    };
+    for (current, next) in [(1, 4), (2, 4), (3, 4), (4, 5), (5, 0), (6, 0)] {
+        assert_eq!(
+            crate::index::next_non_touched_partition_id(current, &pi),
+            next
+        );
+    }
+    pi.Definitions.truncate(3);
+    assert_eq!(crate::index::next_non_touched_partition_id(1, &pi), 0);
+}
+
+#[test]
+fn recreated_index_cursor_keeps_adding_miss_local_to_lookup() {
+    use astersql_meta_model::{PartitionDefinition, PartitionInfo};
+    let definition = |id| PartitionDefinition {
+        ID: id,
+        ..Default::default()
+    };
+    let partition = PartitionInfo {
+        Definitions: (1..=5).map(definition).collect(),
+        DroppingDefinitions: vec![definition(2), definition(3)],
+        AddingDefinitions: vec![definition(6), definition(7)],
+        ..Default::default()
+    };
+    // A missing AddingDefinitions entry is the normal untouched-partition path.
+    assert_eq!(
+        crate::index::next_recreated_index_partition_id(1, &partition),
+        4
+    );
+    assert_eq!(
+        crate::index::next_recreated_index_partition_id(4, &partition),
+        5
+    );
+    assert_eq!(
+        crate::index::next_recreated_index_partition_id(5, &partition),
+        0
+    );
+    assert_eq!(
+        crate::index::next_recreated_index_partition_id(6, &partition),
+        7
+    );
+    assert_eq!(
+        crate::index::next_recreated_index_partition_id(7, &partition),
+        0
+    );
+    assert_eq!(
+        crate::index::next_recreated_index_partition_id(8, &partition),
+        0
+    );
+}
+
+#[test]
+fn non_touched_index_phase_processes_current_and_propagates_errors() {
+    use crate::job_worker::JobExecutionContext;
+    struct Context {
+        batch_error: bool,
+        checkpoint_error: bool,
+        batches: usize,
+        checkpoints: usize,
+    }
+    impl JobExecutionContext for Context {
+        fn backfill_prepared_indexes(
+            &mut self,
+            request: crate::backfilling::IndexBackfillBatch,
+        ) -> Result<crate::backfilling::BackfillTaskContext, String> {
+            self.batches += 1;
+            assert_eq!(request.task.physical_table_id, 5);
+            assert_eq!(request.index_ids, vec![9]);
+            if self.batch_error {
+                return Err("index write failed".into());
+            }
+            Ok(crate::backfilling::BackfillTaskContext {
+                done: true,
+                next_key: request.task.end_key,
+                ..Default::default()
+            })
+        }
+        fn query(&mut self, sql: &str, _: &str) -> Result<Vec<Vec<String>>, String> {
+            self.checkpoints += 1;
+            assert!(sql.contains("physical_id=0"));
+            if self.checkpoint_error {
+                return Err("checkpoint write failed".into());
+            }
+            Ok(Vec::new())
+        }
+        fn with_transaction(
+            &mut self,
+            _: &mut dyn FnMut(&mut dyn astersql_kv::Transaction) -> Result<Vec<u8>, String>,
+        ) -> Result<Vec<u8>, String> {
+            unreachable!()
+        }
+    }
+    let table = astersql_meta_model::TableInfo {
+        ID: 10,
+        Partition: Some(astersql_meta_model::PartitionInfo {
+            Enable: true,
+            Definitions: vec![astersql_meta_model::PartitionDefinition {
+                ID: 5,
+                ..Default::default()
+            }],
+            AddingDefinitions: vec![astersql_meta_model::PartitionDefinition {
+                ID: 6,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        Indices: vec![astersql_meta_model::IndexInfo {
+            ID: 9,
+            Global: true,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let element = crate::reorg::ReorgElement {
+        id: 9,
+        element_type: b"_idx_".to_vec(),
+    };
+    let initial = crate::reorg::ReorgInfo {
+        job_id: 42,
+        physical_table_id: 5,
+        start_key: vec![1],
+        end_key: vec![2],
+        element: element.clone(),
+        elements: vec![element],
+        ..Default::default()
+    };
+    let job = astersql_meta_model::group_3::Job {
+        id: 42,
+        ..Default::default()
+    };
+    for (batch_error, checkpoint_error, expected) in [
+        (true, false, "index write failed"),
+        (false, true, "checkpoint write failed"),
+        (false, false, ""),
+    ] {
+        let mut context = Context {
+            batch_error,
+            checkpoint_error,
+            batches: 0,
+            checkpoints: 0,
+        };
+        let mut reorg = initial.clone();
+        let result = crate::partition::backfill_non_touched_partition_indexes(
+            &mut context,
+            &job,
+            &table,
+            &mut reorg,
+            1,
+        );
+        assert_eq!(
+            context.batches, 1,
+            "the last current partition must still be backfilled"
+        );
+        if expected.is_empty() {
+            assert_eq!(result, Ok(true));
+            assert_eq!(reorg.physical_table_id, 0);
+            assert_eq!(context.checkpoints, 1);
+            assert_eq!(
+                crate::partition::backfill_non_touched_partition_indexes(
+                    &mut context,
+                    &job,
+                    &table,
+                    &mut reorg,
+                    1
+                ),
+                Ok(true)
+            );
+            assert_eq!(context.batches, 1, "zero cursor is complete");
+        } else {
+            assert_eq!(result, Err(expected.into()));
+            assert_eq!(reorg, initial, "failed work cannot publish the cursor");
+            assert_eq!(context.checkpoints, usize::from(!batch_error));
+        }
+    }
+}

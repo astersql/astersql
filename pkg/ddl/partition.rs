@@ -1209,3 +1209,81 @@ fn encode_hex(bytes: &[u8]) -> String {
     }
     output
 }
+
+/// Execute one batch of Go reorgPartitionDataAndIndex's non-touched phase.
+/// The caller supplies the existing worker transaction and its restored cursor;
+/// this stage neither submits jobs nor copies or switches partition definitions.
+pub fn backfill_non_touched_partition_indexes(
+    context: &mut dyn crate::job_worker::JobExecutionContext,
+    job: &astersql_meta_model::group_3::Job,
+    table: &astersql_meta_model::TableInfo,
+    reorg: &mut crate::reorg::ReorgInfo,
+    batch_size: usize,
+) -> Result<bool, String> {
+    // There is work even if this is the last remaining partition. Do not use
+    // successor lookup as the guard for processing the current partition.
+    if reorg.physical_table_id == 0 {
+        return Ok(true);
+    }
+    if reorg.job_id != job.id {
+        return Err("partition index cursor belongs to a different DDL job".into());
+    }
+    if batch_size == 0 {
+        return Err("partition index backfill batch size must be positive".into());
+    }
+    let partition = table
+        .GetPartitionInfo()
+        .ok_or("partition definitions missing")?;
+    let indexes = reorg.element_ids();
+    if indexes.is_empty()
+        || indexes.iter().any(|id| {
+            !table
+                .Indices
+                .iter()
+                .any(|index| index.ID == *id && index.Global)
+        })
+    {
+        return Err("non-touched partition backfill requires global index elements".into());
+    }
+    let result = context.backfill_prepared_indexes(crate::backfilling::IndexBackfillBatch {
+        schema_id: job.schema_id,
+        table_id: table.ID,
+        index_ids: indexes,
+        task: crate::backfilling::ReorgBackfillTask {
+            job_id: job.id,
+            physical_table_id: reorg.physical_table_id,
+            start_key: reorg.start_key.clone(),
+            end_key: reorg.end_key.clone(),
+            priority: job.priority,
+            ..Default::default()
+        },
+        batch_size,
+        resource_group: job
+            .reorg_meta
+            .as_ref()
+            .map(|m| m.ResourceGroupName.clone())
+            .unwrap_or_default(),
+        sql_mode: job.sql_mode as i64,
+    })?;
+    let mut next = reorg.clone();
+    next.start_key = result.next_key;
+    if result.done {
+        next.physical_table_id =
+            crate::index::next_recreated_index_partition_id(reorg.physical_table_id, partition);
+        if next.physical_table_id != 0 {
+            let prefix = astersql_tablecodec::GenTableRecordPrefix(next.physical_table_id);
+            next.start_key = prefix.0.clone();
+            next.end_key = prefix.PrefixNext().0;
+        }
+    }
+    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    context.query(&format!(
+        "UPDATE mysql.tidb_ddl_reorg SET ele_id={},ele_type=X'{}',start_key=X'{}',end_key=X'{}',physical_id={} WHERE job_id={}",
+        next.element.id, hex(&next.element.element_type), hex(&next.start_key),
+        hex(&next.end_key), next.physical_table_id, job.id,
+    ), "update_handle")?;
+    // Failed index writes or checkpoint updates must leave the old cursor for
+    // the worker's rollback/retry. Both writes use the same owner transaction.
+    *reorg = next;
+    Ok(reorg.physical_table_id == 0)
+}
