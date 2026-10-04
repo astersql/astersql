@@ -206,12 +206,29 @@ pub fn restore_expr(expr: &parser_ast::ExprNode) -> Result<String, String> {
             FnName,
             Args,
         } => {
+            let function = FnName.O.to_ascii_uppercase();
+            if Schema.O.is_empty()
+                && matches!(
+                    function.as_str(),
+                    "INTERVAL" | "DATE_ADD" | "DATE_SUB" | "ADDDATE" | "SUBDATE" | "MAKEDATE"
+                )
+            {
+                // These parser nodes retain the temporal interval as three
+                // arguments. Reuse the function AST's Go-compatible restoration
+                // so the unit is emitted after INTERVAL rather than as an argument.
+                let args = Args
+                    .iter()
+                    .map(|arg| restore_expr(arg).map(crate::functions::expr))
+                    .collect::<Result<Vec<_>, _>>()?;
+                return crate::functions::FuncCallExpr::keyword(&function, args)
+                    .restore()
+                    .map_err(|error| error.to_string());
+            }
             let args = Args
                 .iter()
                 .map(restore_expr)
                 .collect::<Result<Vec<_>, _>>()?
                 .join(",");
-            let function = FnName.O.to_ascii_uppercase();
             if Schema.O.is_empty() {
                 Ok(format!("{function}({args})"))
             } else {
@@ -846,7 +863,7 @@ fn restore_field_list(fields: &parser_ast::FieldList) -> Result<String, String> 
         .iter()
         .map(restore_select_field)
         .collect::<Result<Vec<_>, _>>()?
-        .join(", "))
+        .join(","))
 }
 
 fn restore_limit(limit: &parser_ast::Limit) -> Result<String, String> {
