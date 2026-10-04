@@ -112,7 +112,7 @@ fn planner_block_names_and_mpp_warnings_keep_session_semantics() {
     let mut explain_vars = SessionVars::new();
     explain_vars.AllowMPPExecution = true;
     explain_vars.EnforceMPPExecution = true;
-    explain_vars.StmtCtx.InExplainStmt = true;
+    explain_vars.StmtCtx.SetExplainContext(true, true, "ru");
     explain_vars.RaiseWarningWhenMPPEnforced("explain mpp warning");
     let warnings = explain_vars.StmtCtx.GetWarnings();
     assert_eq!(warnings.len(), 1);

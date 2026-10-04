@@ -1040,7 +1040,7 @@ impl SessionVars {
             return;
         }
         let warning = warning.into();
-        if self.StmtCtx.InExplainStmt {
+        if self.StmtCtx.IsInExplainStmt() {
             self.StmtCtx
                 .AppendWarning(stmtctx_dependency::errors::NewNoStackError(warning));
         } else {

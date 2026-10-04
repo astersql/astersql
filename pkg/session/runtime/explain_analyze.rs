@@ -30,6 +30,71 @@ pub(super) fn append_read_pool_execution_info(
 // 为关系型 SELECT 执行真实查询，并把实际行数、耗时及模拟的 TiKV RPC 统计
 // 组织成与执行器树一致的 EXPLAIN ANALYZE 结果。
 impl ConcreteSession {
+    /// Preserve the existing executed operator rows in Go's RU column order.
+    /// This commit reserves RU attribution columns until counters are available.
+    pub(super) fn explain_analyze_ru_rows(
+        result: ConcreteRecordSet,
+    ) -> SessionResult<ConcreteRecordSet> {
+        let column = |name: &str| {
+            result
+                .columns
+                .iter()
+                .position(|column| column == name)
+                .ok_or_else(|| SessionError::new(format!("EXPLAIN ANALYZE is missing {name}")))
+        };
+        let id = column("id")?;
+        let task = column("task")?;
+        let actual = column("actRows")?;
+        let rows = result
+            .rows
+            .into_iter()
+            .filter(|row| row[id] != "_0")
+            .map(|row| {
+                vec![
+                    row[id].clone(),
+                    row[task].clone(),
+                    row[actual].clone(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                ]
+            })
+            .collect();
+        let columns = [
+            "id", "task", "actRows", "selfRU", "cumRU", "cumRU%", "detail",
+        ];
+        let fields = columns
+            .iter()
+            .map(|name| {
+                let mut field_type = astersql_parser_types::FieldType::default();
+                let (charset, collation) = astersql_types::field::DefaultCharsetForType(
+                    astersql_parser_mysql::r#type::TypeString,
+                );
+                field_type.SetType(astersql_parser_mysql::r#type::TypeString);
+                field_type.SetCharset(charset);
+                field_type.SetCollate(collation);
+                field_type.SetFlen(astersql_parser_mysql::r#const::MaxBlobWidth as isize);
+                field_type.SetFlag(astersql_parser_mysql::r#type::UnsignedFlag);
+                Some(ConcreteResultField {
+                    column: astersql_meta_model::ColumnInfo {
+                        FieldType: field_type,
+                        ..Default::default()
+                    },
+                    column_as_name: ast::NewCIStr(name),
+                    table_name: ast::CIStr::default(),
+                    table_as_name: ast::CIStr::default(),
+                    db_name: ast::NewCIStr("information_schema"),
+                })
+            })
+            .collect();
+        Ok(ConcreteRecordSet::new_with_fields(
+            columns.into_iter().map(str::to_owned).collect(),
+            rows,
+            fields,
+        ))
+    }
+
     fn explain_analyze_simple_typed_select(
         &self,
         statement: &ast::SelectStmt,
@@ -797,31 +862,33 @@ impl ConcreteSession {
             ));
         }
         let table_regions = regions_for(None);
-        // 没有点查或索引访问路径时，输出 TableReader -> Selection ->
-        // TableFullScan 的默认执行树。
+        // Selection exists only when the SELECT has a predicate. An
+        // unconditional pass-through node would invent an extra operator row.
         let table_rpc = rpc_count(table_regions);
         let elapsed = elapsed_text(table_rpc);
-        Ok(ConcreteRecordSet::new(
-            columns,
-            with_limit(vec![
-                row(
-                    "TableReader",
-                    selected_rows,
-                    format!(
-                        "time:{elapsed}, loops:1, cop_task: {{num: {table_regions}}}, num_rpc:{table_rpc}"
-                    ),
-                ),
-                row(
-                    "└─Selection",
-                    selected_rows,
-                    format!("time:{elapsed}, loops:1"),
-                ),
-                row(
-                    "  └─TableFullScan",
-                    total_rows,
-                    scan_execution(total_rows, table_rpc),
-                ),
-            ]),
-        ))
+        let mut rows = vec![row(
+            "TableReader",
+            selected_rows,
+            format!(
+                "time:{elapsed}, loops:1, cop_task: {{num: {table_regions}}}, num_rpc:{table_rpc}"
+            ),
+        )];
+        if statement.Where.is_some() {
+            rows.push(row(
+                "└─Selection",
+                selected_rows,
+                format!("time:{elapsed}, loops:1"),
+            ));
+        }
+        rows.push(row(
+            if statement.Where.is_some() {
+                "  └─TableFullScan"
+            } else {
+                "└─TableFullScan"
+            },
+            total_rows,
+            scan_execution(total_rows, table_rpc),
+        ));
+        Ok(ConcreteRecordSet::new(columns, with_limit(rows)))
     }
 }

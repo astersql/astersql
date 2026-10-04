@@ -288,3 +288,20 @@ fn test_plan_caches_support_shared_accessor_and_keep_nil_digest_semantics() {
     stmt.SetFlatPlan(None);
     assert!(stmt.GetFlatPlan().is_none());
 }
+
+#[test]
+fn explain_context_updates_shared_statement_state_and_resets() {
+    let mut context = NewStmtCtx();
+    context.InExplainStmt = true;
+    context.ExplainFormat = "brief".to_owned();
+    assert_eq!(context.ExplainContext(), (true, false, "brief".to_owned()));
+    let context = std::sync::Arc::from(context);
+    let shared: std::sync::Arc<StatementContext> = context;
+    let observer = shared.clone();
+    shared.SetExplainContext(true, true, "ru");
+    assert_eq!(observer.ExplainContext(), (true, true, "ru".to_owned()));
+    assert!(observer.IsInExplainAnalyzeStmt());
+    shared.SetExplainContext(false, false, "");
+    assert_eq!(observer.ExplainContext(), (false, false, String::new()));
+    assert!(!observer.IsInExplainAnalyzeStmt());
+}

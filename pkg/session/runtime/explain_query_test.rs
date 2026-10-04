@@ -17,8 +17,9 @@ use astersql_parser::Parser;
 use astersql_parser_ast::SelectStmt;
 
 use super::{
-    ConcreteSession, empty_strict_integer_interval, should_reorder_hash_join_equal_conditions,
-    should_swap_generated_hash_key, should_swap_hash_join_equality,
+    ConcreteRecordSet, ConcreteSession, empty_strict_integer_interval,
+    should_reorder_hash_join_equal_conditions, should_swap_generated_hash_key,
+    should_swap_hash_join_equality,
 };
 
 #[test]
@@ -114,5 +115,54 @@ fn read_pool_explain_execution_info_preserves_the_complete_captured_aggregate() 
     assert_eq!(
         execution,
         format!("{unchanged}, read_pool:{}", pool.String())
+    );
+}
+
+#[test]
+fn explain_ru_preserves_flat_operator_order_and_skips_empty_id() {
+    let input = ConcreteRecordSet::new(
+        ["id", "estRows", "actRows", "task", "operator info"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        vec![
+            vec!["TableReader_1", "4", "4", "root", ""],
+            vec!["└─TableFullScan_2", "4", "4", "cop[tikv]", ""],
+            vec!["_0", "0", "0", "root", ""],
+            vec!["CTE_3", "2", "2", "root", ""],
+            vec!["└─TableFullScan_4", "2", "2", "cop[tikv]", ""],
+            vec!["ScalarSubQuery_5", "1", "1", "root", ""],
+        ]
+        .into_iter()
+        .map(|row| row.into_iter().map(str::to_owned).collect())
+        .collect(),
+    );
+    let mut output = ConcreteSession::explain_analyze_ru_rows(input).unwrap();
+    let expected = [
+        ("TableReader_1", "root", "4"),
+        ("└─TableFullScan_2", "cop[tikv]", "4"),
+        ("CTE_3", "root", "2"),
+        ("└─TableFullScan_4", "cop[tikv]", "2"),
+        ("ScalarSubQuery_5", "root", "1"),
+    ];
+    for (id, task, actual) in expected {
+        let row = output.next_row().unwrap().unwrap();
+        assert_eq!(&row[..3], [id, task, actual]);
+        assert!(row[3..].iter().all(String::is_empty));
+    }
+    assert!(output.next_row().unwrap().is_none());
+    let empty = ConcreteRecordSet::new(
+        ["id", "task", "actRows"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        Vec::new(),
+    );
+    assert!(
+        ConcreteSession::explain_analyze_ru_rows(empty)
+            .unwrap()
+            .next_row()
+            .unwrap()
+            .is_none()
     );
 }

@@ -2844,6 +2844,14 @@ impl ConcreteSession {
             )));
         }
         if let Some(explain) = statement.as_any().downcast_ref::<ast::ExplainStmt>() {
+            let ru_format = explain
+                .Format
+                .eq_ignore_ascii_case(astersql_types::ExplainFormatRU);
+            if ru_format && !explain.analyze {
+                return Err(SessionError::new(
+                    "'explain format=ru' cannot work without 'analyze', please use 'explain analyze format=ru'",
+                ));
+            }
             if !explain.analyze {
                 let child = explain
                     .stmt
@@ -3008,10 +3016,13 @@ impl ConcreteSession {
             }
             if let Some(select) = child.as_any().downcast_ref::<ast::SelectStmt>() {
                 self.record_replica_read_request(select, statement_sql.unwrap_or_default());
-                return Ok(Some(self.explain_analyze_relational_select(
-                    select,
-                    statement_sql.unwrap_or_default(),
-                )?));
+                let rows = self
+                    .explain_analyze_relational_select(select, statement_sql.unwrap_or_default())?;
+                return Ok(Some(if ru_format {
+                    Self::explain_analyze_ru_rows(rows)?
+                } else {
+                    rows
+                }));
             }
             self.state.borrow_mut().last_dml_report = None;
             let child_record_set = self.execute_statement(child, None)?;
@@ -3020,7 +3031,12 @@ impl ConcreteSession {
                     "EXPLAIN ANALYZE concrete runtime only accepts DML children",
                 ));
             }
-            return Ok(Some(self.explain_dml_record_set()?));
+            let rows = self.explain_dml_record_set()?;
+            return Ok(Some(if ru_format {
+                Self::explain_analyze_ru_rows(rows)?
+            } else {
+                rows
+            }));
         }
         if let Some(set_operation) = statement.as_any().downcast_ref::<ast::SetOprStmt>() {
             if self.relational_query_node_has_table(set_operation) {
@@ -3770,6 +3786,12 @@ impl ConcreteSession {
         let statement_sql = split_statement_sql(sql);
         let mut record_sets = Vec::new();
         for (index, statement) in statements.into_iter().enumerate() {
+            let explain = statement.as_any().downcast_ref::<ast::ExplainStmt>();
+            self.session_vars.StmtCtx.SetExplainContext(
+                explain.is_some(),
+                explain.is_some_and(|explain| explain.analyze),
+                explain.map_or("", |explain| explain.Format.as_str()),
+            );
             self.session_vars.StmtCtx.ResetDistSQLFromCache();
             self.state.borrow_mut().statement_txn_start_ts = 0;
             let full_rollback = statement

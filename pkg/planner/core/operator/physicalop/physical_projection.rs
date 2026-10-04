@@ -256,7 +256,7 @@ impl PhysicalProjection {
         // StmtCtx is the stable source here: BuildPBCtx may already have been
         // restored by the time the physical tree is rendered.
         let remove_column_numbers = statement_context
-            .ExplainFormat
+            .ExplainFormatValue()
             .trim()
             .eq_ignore_ascii_case(expression::types::ExplainFormatPlanTree);
         let mut result = expression::ExplainExpressionListWithColumnNumbers(

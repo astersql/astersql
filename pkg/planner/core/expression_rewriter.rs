@@ -2098,7 +2098,11 @@ pub fn handleExistSubquery(
         let physical_plan: std::sync::Arc<dyn base::PhysicalPlan> = physical_plan.into();
 
         if builder.ctx.GetBuildPBCtx().InExplainStmt
-            && !builder.ctx.GetSessionVars().StmtCtx.InExplainAnalyzeStmt
+            && !builder
+                .ctx
+                .GetSessionVars()
+                .StmtCtx
+                .IsInExplainAnalyzeStmt()
             && explain_non_eval_scalar_subquery(builder.ctx.GetSessionVars())
         {
             let new_column_id = builder.ctx.GetExprCtx().AllocPlanColumnID();

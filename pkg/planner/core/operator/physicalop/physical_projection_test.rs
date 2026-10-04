@@ -261,3 +261,36 @@ fn normalized_explain_honors_ignore_inlist_plan_digest_like_go() {
         ))
     );
 }
+
+#[test]
+fn projection_explain_reads_shared_statement_format() {
+    let context: base::ContextRef = Arc::new(TestPlanContext::new());
+    let mut projection = PhysicalProjection::New(context.clone());
+    projection.Exprs = vec![Box::new(expression::Column::new(
+        *expression::types::NewFieldType(expression::mysql::TypeLonglong),
+        1,
+        1,
+        0,
+    ))];
+    projection
+        .PhysicalSchemaProducer
+        .SetSchema(expression::NewSchema(vec![expression::Column::new(
+            *expression::types::NewFieldType(expression::mysql::TypeLonglong),
+            1,
+            1,
+            0,
+        )]));
+    let ordinary = projection.ExplainInfo();
+    assert!(ordinary.contains('#'), "{ordinary}");
+    context
+        .GetSessionVars()
+        .StmtCtx
+        .SetExplainContext(true, true, "ru");
+    assert_eq!(projection.ExplainInfo(), ordinary);
+    context
+        .GetSessionVars()
+        .StmtCtx
+        .SetExplainContext(true, false, "plan_tree");
+    let tree = projection.ExplainInfo();
+    assert!(!tree.contains('#'), "{tree}");
+}

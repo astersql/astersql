@@ -484,6 +484,7 @@ pub struct StatementContext {
     pub InDeleteStmt: bool,
     pub InSelectStmt: bool,
     pub InLoadDataStmt: bool,
+    explainContext: Mutex<Option<(bool, bool, String)>>,
     pub InExplainStmt: bool,
     pub InExplainAnalyzeStmt: bool,
     pub StmtHints: StatementHints,
@@ -586,6 +587,51 @@ pub struct StatementContext {
 }
 
 impl StatementContext {
+    /// Set per-statement EXPLAIN state through a shared session context.
+    /// Consumers use the value accessors; public fields remain the initial
+    /// values for contexts constructed with exclusive ownership.
+    pub fn SetExplainContext(&self, in_explain: bool, analyze: bool, format: &str) {
+        *self
+            .explainContext
+            .lock()
+            .expect("explain context lock poisoned") =
+            Some((in_explain, analyze, format.to_owned()));
+    }
+
+    pub fn ExplainContext(&self) -> (bool, bool, String) {
+        self.explainContext
+            .lock()
+            .expect("explain context lock poisoned")
+            .clone()
+            .unwrap_or_else(|| {
+                (
+                    self.InExplainStmt,
+                    self.InExplainAnalyzeStmt,
+                    self.ExplainFormat.clone(),
+                )
+            })
+    }
+
+    pub fn IsInExplainStmt(&self) -> bool {
+        self.explainContext
+            .lock()
+            .expect("explain context lock poisoned")
+            .as_ref()
+            .map_or(self.InExplainStmt, |context| context.0)
+    }
+
+    pub fn IsInExplainAnalyzeStmt(&self) -> bool {
+        self.explainContext
+            .lock()
+            .expect("explain context lock poisoned")
+            .as_ref()
+            .map_or(self.InExplainAnalyzeStmt, |context| context.1)
+    }
+
+    pub fn ExplainFormatValue(&self) -> String {
+        self.ExplainContext().2
+    }
+
     pub fn SetStaleness(&self, stale: bool) {
         self.IsStaleness.store(stale, Ordering::Release);
     }
@@ -643,6 +689,7 @@ impl StatementContext {
             InDeleteStmt: false,
             InSelectStmt: false,
             InLoadDataStmt: false,
+            explainContext: Mutex::new(None),
             InExplainStmt: false,
             InExplainAnalyzeStmt: false,
             StmtHints: StatementHints::default(),

@@ -728,7 +728,8 @@ fn initialNonPreparedCacheEligibility(
 
 /// 仅在 EXPLAIN FORMAT=plan_cache 时需要旁路警告。
 fn shouldWarnPlanCacheBypass(vars: &SessionVars) -> bool {
-    vars.StmtCtx.InExplainStmt && vars.StmtCtx.ExplainFormat == types::ExplainFormatPlanCache
+    let (in_explain, _, format) = vars.StmtCtx.ExplainContext();
+    in_explain && format == types::ExplainFormatPlanCache
 }
 
 /// 按需追加跳过非预处理计划缓存的警告。

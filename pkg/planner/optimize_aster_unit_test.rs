@@ -199,6 +199,15 @@ fn non_prepared_cache_bypass_warning_is_explain_plan_cache_only() {
         warnings[0].Err.as_ref().unwrap().to_string(),
         "skip non-prepared plan-cache: unsupported statement"
     );
+    let shared = SessionVars::new();
+    shared
+        .StmtCtx
+        .SetExplainContext(true, true, types::ExplainFormatRU);
+    assert!(!shouldWarnPlanCacheBypass(&shared));
+    shared
+        .StmtCtx
+        .SetExplainContext(true, false, types::ExplainFormatPlanCache);
+    assert!(shouldWarnPlanCacheBypass(&shared));
 }
 
 /// 测试用非预处理缓存语句桩。
