@@ -979,6 +979,57 @@ fn tlsOption2GlobalPriv(
     dependencies: &dyn GrantDependencies,
     options: &[AuthTokenOrTlsOption],
 ) -> GrantResult<Option<String>> {
+    tls_options_to_global_priv_with_validation(
+        options,
+        |cipher| dependencies.is_supported_cipher(cipher),
+        |name| dependencies.validate_x509_name(name),
+        |san| dependencies.validate_san(san),
+    )
+}
+
+/// Convert CREATE/ALTER USER REQUIRE options using the same conversion as GRANT.
+/// An omitted clause yields `{}`, whereas a token-issuer-only clause has no TLS value.
+pub fn account_tls_options_to_global_priv(
+    options: &[astersql_parser_ast::AuthTokenOrTLSOption],
+) -> GrantResult<Option<String>> {
+    use astersql_parser_ast::AuthTokenOrTLSOptionType as AstOption;
+    let options = options
+        .iter()
+        .map(|option| AuthTokenOrTlsOption {
+            option_type: match option.Type {
+                AstOption::TlsNone => AuthTokenOrTlsOptionType::TlsNone,
+                AstOption::Ssl => AuthTokenOrTlsOptionType::Ssl,
+                AstOption::X509 => AuthTokenOrTlsOptionType::X509,
+                AstOption::Cipher => AuthTokenOrTlsOptionType::Cipher,
+                AstOption::Issuer => AuthTokenOrTlsOptionType::Issuer,
+                AstOption::Subject => AuthTokenOrTlsOptionType::Subject,
+                AstOption::SAN => AuthTokenOrTlsOptionType::San,
+                AstOption::TokenIssuer => AuthTokenOrTlsOptionType::TokenIssuer,
+            },
+            value: option.Value.clone(),
+        })
+        .collect::<Vec<_>>();
+    tls_options_to_global_priv_with_validation(
+        &options,
+        |cipher| Ok(astersql_util_tls::SupportCipher.contains(cipher)),
+        |name| {
+            astersql_util::misc::CheckSupportX509NameOneline(name)
+                .map_err(|error| GrantError::new(error.to_string()))
+        },
+        |san| {
+            astersql_util::misc::ParseAndCheckSAN(san)
+                .map(|_| ())
+                .map_err(|error| GrantError::new(error.to_string()))
+        },
+    )
+}
+
+fn tls_options_to_global_priv_with_validation(
+    options: &[AuthTokenOrTlsOption],
+    supported_cipher: impl Fn(&str) -> GrantResult<bool>,
+    validate_x509_name: impl Fn(&str) -> GrantResult,
+    validate_san: impl Fn(&str) -> GrantResult,
+) -> GrantResult<Option<String>> {
     if options.is_empty() {
         return Ok(Some("{}".to_owned()));
     }
@@ -997,7 +1048,7 @@ fn tlsOption2GlobalPriv(
                 | AuthTokenOrTlsOptionType::X509 => "",
             };
             return Err(GrantError::new(format!(
-                "duplicate REQUIRE {type_name} clause"
+                "Duplicate require {type_name} clause"
             )));
         }
     }
@@ -1011,9 +1062,9 @@ fn tlsOption2GlobalPriv(
             AuthTokenOrTlsOptionType::Cipher => {
                 global.ssl_type = SslType::Specified;
                 if !option.value.is_empty() {
-                    if !dependencies.is_supported_cipher(&option.value)? {
+                    if !supported_cipher(&option.value)? {
                         return Err(GrantError::new(format!(
-                            "unsupported cipher suite: {}",
+                            "Unsupported cipher suite: {}",
                             option.value
                         )));
                     }
@@ -1021,17 +1072,17 @@ fn tlsOption2GlobalPriv(
                 }
             }
             AuthTokenOrTlsOptionType::Issuer => {
-                dependencies.validate_x509_name(&option.value)?;
+                validate_x509_name(&option.value)?;
                 global.ssl_type = SslType::Specified;
                 global.x509_issuer = option.value.clone();
             }
             AuthTokenOrTlsOptionType::Subject => {
-                dependencies.validate_x509_name(&option.value)?;
+                validate_x509_name(&option.value)?;
                 global.ssl_type = SslType::Specified;
                 global.x509_subject = option.value.clone();
             }
             AuthTokenOrTlsOptionType::San => {
-                dependencies.validate_san(&option.value)?;
+                validate_san(&option.value)?;
                 global.ssl_type = SslType::Specified;
                 global.san = option.value.clone();
             }
@@ -1475,20 +1526,29 @@ fn set_cell(row: &Row, field: Option<&ResultField>, index: usize) -> String {
 
 /// 将 GlobalPrivValue 序列化为 mysql.global_priv 使用的 JSON。
 fn serialize_global_priv(global: &GlobalPrivValue) -> String {
+    // MySQL SSLType values and Go's json.Marshal `omitempty` representation.
     let ssl_type = match global.ssl_type {
-        SslType::NotSpecified => 0,
-        SslType::None => 1,
-        SslType::Any => 2,
-        SslType::X509 => 3,
-        SslType::Specified => 4,
+        SslType::NotSpecified => -1,
+        SslType::None => 0,
+        SslType::Any => 1,
+        SslType::X509 => 2,
+        SslType::Specified => 3,
     };
-    format!(
-        "{{\"ssl_type\":{ssl_type},\"ssl_cipher\":\"{}\",\"x509_issuer\":\"{}\",\"x509_subject\":\"{}\",\"san\":\"{}\"}}",
-        json_escape(&global.ssl_cipher),
-        json_escape(&global.x509_issuer),
-        json_escape(&global.x509_subject),
-        json_escape(&global.san),
-    )
+    let mut fields = Vec::new();
+    if ssl_type != 0 {
+        fields.push(format!("\"ssl_type\":{ssl_type}"));
+    }
+    for (name, value) in [
+        ("ssl_cipher", &global.ssl_cipher),
+        ("x509_issuer", &global.x509_issuer),
+        ("x509_subject", &global.x509_subject),
+        ("san", &global.san),
+    ] {
+        if !value.is_empty() {
+            fields.push(format!("\"{name}\":\"{}\"", json_escape(value)));
+        }
+    }
+    format!("{{{}}}", fields.join(","))
 }
 
 /// JSON 字符串转义。

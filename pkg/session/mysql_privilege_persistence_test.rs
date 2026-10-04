@@ -247,3 +247,185 @@ fn mysql_privilege_failed_account_batch_rolls_back_tables_and_cache() {
         "failed GRANT commit must not publish the cache delta",
     );
 }
+
+#[test]
+fn mysql_alter_user_preserves_require() {
+    let (_, admin) = CreateAnalyzeSession().expect("canonical REQUIRE session");
+    execute(
+        &admin,
+        "CREATE USER 'require_user'@'%' REQUIRE SUBJECT '/C=US/O=Example/CN=TiDB' SAN 'DNS:foo'",
+    );
+    let priv_sql = "SELECT Priv FROM mysql.global_priv WHERE User='require_user' AND Host='%'";
+    let priv_value = r#"{"ssl_type":3,"x509_subject":"/C=US/O=Example/CN=TiDB","san":"DNS:foo"}"#;
+    assert_eq!(rows(&admin, priv_sql), vec![vec![priv_value.to_owned()]]);
+
+    execute(&admin, "ALTER USER 'require_user'@'%' ACCOUNT LOCK");
+    assert_eq!(rows(&admin, priv_sql), vec![vec![priv_value.to_owned()]]);
+    assert_eq!(
+        rows(
+            &admin,
+            "SELECT Account_locked FROM mysql.user WHERE User='require_user' AND Host='%'"
+        ),
+        vec![vec!["Y".to_owned()]],
+    );
+    assert_eq!(
+        rows(&admin, "SHOW CREATE USER 'require_user'@'%'") ,
+        vec![vec!["CREATE USER `require_user`@`%` IDENTIFIED WITH 'mysql_native_password' AS '' REQUIRE SUBJECT '/C=US/O=Example/CN=TiDB' SAN 'DNS:foo' PASSWORD EXPIRE DEFAULT ACCOUNT LOCK PASSWORD HISTORY DEFAULT PASSWORD REUSE INTERVAL DEFAULT".to_owned()]],
+    );
+
+    for sql in [
+        "ALTER USER 'require_user'@'%' ACCOUNT UNLOCK",
+        "ALTER USER 'require_user'@'%' PASSWORD EXPIRE",
+        "ALTER USER 'require_user'@'%' COMMENT ''",
+    ] {
+        execute(&admin, sql);
+        assert_eq!(
+            rows(&admin, priv_sql),
+            vec![vec![priv_value.to_owned()]],
+            "{sql}"
+        );
+    }
+    assert_eq!(
+        rows(
+            &admin,
+            "SELECT Account_locked, Password_expired FROM mysql.user WHERE User='require_user' AND Host='%'"
+        ),
+        vec![vec!["N".to_owned(), "Y".to_owned()]],
+    );
+    let attributes = rows(
+        &admin,
+        "SELECT User_attributes FROM mysql.user WHERE User='require_user' AND Host='%'",
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&attributes[0][0]).unwrap(),
+        serde_json::json!({"metadata": {"comment": ""}})
+    );
+    execute(&admin, "ALTER USER 'require_user'@'%' REQUIRE SSL");
+    assert_eq!(
+        rows(&admin, priv_sql),
+        vec![vec![r#"{"ssl_type":1}"#.to_owned()]]
+    );
+    execute(&admin, "ALTER USER 'require_user'@'%' REQUIRE NONE");
+    assert_eq!(rows(&admin, priv_sql), vec![vec!["{}".to_owned()]]);
+
+    execute(
+        &admin,
+        "CREATE USER 'token_only'@'%' IDENTIFIED WITH 'tidb_auth_token' REQUIRE token_issuer 'issuer-abc'",
+    );
+    let token_priv_sql =
+        "SELECT count(*) FROM mysql.global_priv WHERE User='token_only' AND Host='%'";
+    assert_eq!(rows(&admin, token_priv_sql), vec![vec!["0".to_owned()]]);
+    execute(&admin, "ALTER USER 'token_only'@'%' ACCOUNT LOCK");
+    assert_eq!(rows(&admin, token_priv_sql), vec![vec!["0".to_owned()]]);
+    assert_eq!(
+        rows(&admin, "SHOW CREATE USER 'token_only'@'%'") ,
+        vec![vec!["CREATE USER `token_only`@`%` IDENTIFIED WITH 'tidb_auth_token' AS '' REQUIRE NONE token_issuer issuer-abc PASSWORD EXPIRE DEFAULT ACCOUNT LOCK PASSWORD HISTORY DEFAULT PASSWORD REUSE INTERVAL DEFAULT".to_owned()]],
+    );
+}
+
+#[test]
+fn mysql_alter_user_token_only_require_preserves_existing_tls() {
+    let (_, admin) = CreateAnalyzeSession().expect("canonical token REQUIRE session");
+    execute(
+        &admin,
+        "CREATE USER 'token_tls'@'%' IDENTIFIED WITH 'tidb_auth_token' REQUIRE SUBJECT '/C=US/O=Example/CN=TiDB' SAN 'DNS:foo' token_issuer 'issuer-old'",
+    );
+    let priv_sql = "SELECT Priv FROM mysql.global_priv WHERE User='token_tls' AND Host='%'";
+    let expected = vec![vec![
+        r#"{"ssl_type":3,"x509_subject":"/C=US/O=Example/CN=TiDB","san":"DNS:foo"}"#.to_owned(),
+    ]];
+    assert_eq!(rows(&admin, priv_sql), expected);
+    execute(
+        &admin,
+        "ALTER USER 'token_tls'@'%' REQUIRE token_issuer 'issuer-new'",
+    );
+    assert_eq!(rows(&admin, priv_sql), expected);
+    assert_eq!(
+        rows(
+            &admin,
+            "SELECT Token_issuer FROM mysql.user WHERE User='token_tls' AND Host='%'"
+        ),
+        vec![vec!["issuer-new".to_owned()]]
+    );
+    assert!(
+        rows(&admin, "SHOW CREATE USER 'token_tls'@'%'")[0][0].contains(
+            "REQUIRE SUBJECT '/C=US/O=Example/CN=TiDB' SAN 'DNS:foo' token_issuer issuer-new"
+        )
+    );
+}
+
+#[test]
+fn mysql_alter_user_require_mutations_are_atomic() {
+    let (_, admin) = CreateAnalyzeSession().expect("canonical REQUIRE rollback session");
+    execute(
+        &admin,
+        "CREATE USER 'require_atomic'@'%' REQUIRE SUBJECT '/C=US/O=Example/CN=TiDB' SAN 'DNS:foo'",
+    );
+    let priv_sql = "SELECT Priv FROM mysql.global_priv WHERE User='require_atomic' AND Host='%'";
+    let original_priv = rows(&admin, priv_sql);
+    let original_create = rows(&admin, "SHOW CREATE USER 'require_atomic'@'%'");
+    let error = match admin
+        .execute("ALTER USER 'require_atomic'@'%', 'missing_require'@'%' REQUIRE SSL ACCOUNT LOCK")
+    {
+        Ok(_) => panic!("missing account must roll back the whole ALTER USER batch"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("Operation ALTER USER failed for 'missing_require'@'%'"),
+        "{error}"
+    );
+    assert_eq!(rows(&admin, priv_sql), original_priv);
+    assert_eq!(
+        rows(&admin, "SHOW CREATE USER 'require_atomic'@'%'"),
+        original_create
+    );
+    assert_eq!(
+        rows(
+            &admin,
+            "SELECT Account_locked FROM mysql.user WHERE User='require_atomic' AND Host='%'"
+        ),
+        vec![vec!["N".to_owned()]]
+    );
+
+    admin.InjectNextDmlCommitError("injected REQUIRE commit failure");
+    let error = match admin.execute("ALTER USER 'require_atomic'@'%' REQUIRE SSL ACCOUNT LOCK") {
+        Ok(_) => panic!("commit failure must not publish TLS or account cache changes"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("injected REQUIRE commit failure"),
+        "{error}"
+    );
+    assert_eq!(rows(&admin, priv_sql), original_priv);
+    assert_eq!(
+        rows(&admin, "SHOW CREATE USER 'require_atomic'@'%'"),
+        original_create
+    );
+    assert_eq!(
+        rows(
+            &admin,
+            "SELECT Account_locked FROM mysql.user WHERE User='require_atomic' AND Host='%'"
+        ),
+        vec![vec!["N".to_owned()]]
+    );
+
+    execute(
+        &admin,
+        "ALTER USER IF EXISTS 'require_atomic'@'%', 'missing_require'@'%' REQUIRE SSL ACCOUNT LOCK",
+    );
+    assert_eq!(
+        rows(&admin, priv_sql),
+        vec![vec![r#"{"ssl_type":1}"#.to_owned()]]
+    );
+    assert_eq!(
+        rows(
+            &admin,
+            "SELECT Account_locked FROM mysql.user WHERE User='require_atomic' AND Host='%'"
+        ),
+        vec![vec!["Y".to_owned()]]
+    );
+}

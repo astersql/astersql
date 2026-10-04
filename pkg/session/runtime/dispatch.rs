@@ -1531,6 +1531,11 @@ impl ConcreteSession {
             self.execute_create_user(create_user)?;
             return Ok(None);
         }
+        if let Some(alter_user) = statement.as_any().downcast_ref::<ast::AlterUserStmt>() {
+            self.finish_transaction(true)?;
+            self.execute_alter_user(alter_user)?;
+            return Ok(None);
+        }
         if let Some(grant_role) = statement.as_any().downcast_ref::<ast::GrantRoleStmt>() {
             self.finish_transaction(true)?;
             self.execute_grant_role(grant_role)?;
@@ -2392,6 +2397,21 @@ impl ConcreteSession {
                             "Operation SHOW CREATE USER failed for '{user}'@'{host}'"
                         ))
                     })?;
+                // Match the account identifier quoting used by SHOW CREATE USER.
+                let account_prefix = format!(
+                    "CREATE USER '{}'@'{}' ",
+                    user.replace('\'', "''"),
+                    host.replace('\'', "''"),
+                );
+                let create = if let Some(options) = create.strip_prefix(&account_prefix) {
+                    format!(
+                        "CREATE USER `{}`@`{}` {options}",
+                        user.replace('`', "``"),
+                        host.replace('`', "``"),
+                    )
+                } else {
+                    create
+                };
                 return Ok(Some(ConcreteRecordSet::new(
                     vec!["CREATE USER".to_owned()],
                     vec![vec![create]],

@@ -353,7 +353,7 @@ fn grant_global_dynamic_and_tls_matches_go_mutations() {
     assert!(state.mutations.iter().any(|mutation| matches!(
         mutation,
         SystemMutation::UpdateGlobalPriv { value: Some(value), .. }
-            if value.contains("\"ssl_type\":4") && value.contains("TLS_AES_128_GCM_SHA256")
+            if value.contains("\"ssl_type\":3") && value.contains("TLS_AES_128_GCM_SHA256")
     )));
     assert_eq!(
         dependencies.notified.lock().unwrap().as_slice(),
@@ -447,4 +447,68 @@ fn grant_column_uses_canonical_column_and_rejects_non_column_privilege() {
         }],
     );
     assert!(invalid.Next().unwrap_err().message.contains("COLUMN GRANT"));
+}
+
+#[test]
+fn account_tls_require_serialization_matches_go_json() {
+    use astersql_parser_ast::{AuthTokenOrTLSOption, AuthTokenOrTLSOptionType as Kind};
+    let option = |kind, value: &str| AuthTokenOrTLSOption {
+        Type: kind,
+        Value: value.to_owned(),
+    };
+    let convert = crate::grant::account_tls_options_to_global_priv;
+    assert_eq!(convert(&[]).unwrap(), Some("{}".to_owned()));
+    assert_eq!(
+        convert(&[option(Kind::TlsNone, "")]).unwrap(),
+        Some("{}".to_owned())
+    );
+    assert_eq!(
+        convert(&[option(Kind::Ssl, "")]).unwrap(),
+        Some(r#"{"ssl_type":1}"#.to_owned())
+    );
+    assert_eq!(
+        convert(&[option(Kind::X509, "")]).unwrap(),
+        Some(r#"{"ssl_type":2}"#.to_owned())
+    );
+    assert_eq!(
+        convert(&[option(Kind::TokenIssuer, "issuer-abc")]).unwrap(),
+        None
+    );
+    assert_eq!(
+        convert(&[
+            option(Kind::Subject, "/C=US/O=Example/CN=TiDB"),
+            option(Kind::SAN, "DNS:foo")
+        ])
+        .unwrap(),
+        Some(
+            r#"{"ssl_type":3,"x509_subject":"/C=US/O=Example/CN=TiDB","san":"DNS:foo"}"#.to_owned()
+        ),
+    );
+}
+
+#[test]
+fn account_tls_require_validation_preserves_go_errors() {
+    use astersql_parser_ast::{AuthTokenOrTLSOption, AuthTokenOrTLSOptionType as Kind};
+    let option = |kind, value: &str| AuthTokenOrTLSOption {
+        Type: kind,
+        Value: value.to_owned(),
+    };
+    let convert = crate::grant::account_tls_options_to_global_priv;
+    assert_eq!(
+        convert(&[
+            option(Kind::Subject, "/C=US"),
+            option(Kind::Subject, "/C=SE")
+        ])
+        .unwrap_err()
+        .to_string(),
+        "Duplicate require SUBJECT clause",
+    );
+    assert!(convert(&[option(Kind::Subject, "/C=US=bad")]).is_err());
+    assert!(convert(&[option(Kind::SAN, "EMAIL:client@example.com")]).is_err());
+    assert_eq!(
+        convert(&[option(Kind::Cipher, "not-a-cipher")])
+            .unwrap_err()
+            .to_string(),
+        "Unsupported cipher suite: not-a-cipher",
+    );
 }

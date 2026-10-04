@@ -3923,6 +3923,347 @@ impl ConcreteSession {
         Ok(())
     }
 
+    /// Persist TLS requirements inside the account mutation's transaction.
+    fn persist_account_tls(
+        &self,
+        privileges: &mut astersql_privilege_privileges::MySQLPrivilege,
+        user: &str,
+        host: &str,
+        value: &str,
+    ) -> SessionResult<()> {
+        let quote = |value: &str| format!("'{}'", value.replace('\\', "\\\\").replace('\'', "''"));
+        self.execute_privilege_mutation(&format!(
+            "INSERT INTO mysql.global_priv (Host, User, Priv) VALUES ({}, {}, {}) ON DUPLICATE KEY UPDATE Priv=values(Priv)",
+            quote(host), quote(user), quote(value),
+        ))?;
+        let value = serde_json::from_str(value)
+            .map_err(|error| session_error("decode account TLS requirements", error))?;
+        let row = HashMap::from([
+            ("host".to_owned(), serde_json::json!(host)),
+            ("user".to_owned(), serde_json::json!(user)),
+            ("priv".to_owned(), value),
+        ]);
+        privileges
+            .global_priv
+            .retain(|record| !record.base.fullyMatch(user, host));
+        privileges
+            .decodeGlobalPrivTableRow(&row)
+            .map_err(|error| session_error("cache account TLS requirements", error))?;
+        privileges
+            .global_priv
+            .sort_by(astersql_privilege_privileges::compareGlobalPrivRecord);
+        Ok(())
+    }
+
+    /// ALTER options supported by the concrete account persistence path.
+    pub(super) fn execute_alter_user(&self, statement: &ast::AlterUserStmt) -> SessionResult<()> {
+        if statement.CurrentAuth.is_some()
+            || statement.CurrentDualPasswordOption != ast::DualPasswordOptionType::None
+            || statement.Specs.iter().any(|spec| {
+                spec.AuthOpt.is_some()
+                    || spec.User.current_user
+                    || spec.DualPasswordOption != ast::DualPasswordOptionType::None
+            })
+            || !statement.ResourceOptions.is_empty()
+            || statement.ResourceGroupNameOption.is_some()
+            || statement.PasswordOrLockOptions.iter().any(|option| {
+                !matches!(
+                    option.Type,
+                    ast::PasswordOrLockOptionType::Lock
+                        | ast::PasswordOrLockOptionType::Unlock
+                        | ast::PasswordOrLockOptionType::PasswordExpire
+                )
+            })
+        {
+            return Err(SessionError::new(
+                "statement requires the full planner/executor session ABI",
+            ));
+        }
+        let handle = runtime_privilege_handle(&self.domain);
+        let mut privileges = handle.Get();
+        let caller = self.login_user.as_deref().unwrap_or("root");
+        let caller_host = self.authenticated_host.as_deref().unwrap_or("%");
+        let skip_grant_table = astersql_config::get_global_config()
+            .security
+            .skip_grant_table;
+        if !skip_grant_table
+            && !privileges.RequestVerification(
+                &self.active_roles.borrow(),
+                caller,
+                caller_host,
+                "",
+                "",
+                "",
+                astersql_privilege_privileges::CreateUserPriv,
+            )
+            && !privileges.RequestVerification(
+                &self.active_roles.borrow(),
+                caller,
+                caller_host,
+                "mysql",
+                "user",
+                "",
+                astersql_privilege_privileges::UpdatePriv,
+            )
+        {
+            return Err(SessionError::new(
+                "[planner:1227]Access denied; you need (at least one of) the CREATE USER privilege(s) for this operation",
+            ));
+        }
+        let can_alter_system_user = skip_grant_table
+            || privileges.RequestDynamicVerification(
+                &self.active_roles.borrow(),
+                caller,
+                caller_host,
+                "SYSTEM_USER",
+                false,
+            );
+        let can_alter_restricted_user = skip_grant_table
+            || privileges.RequestDynamicVerification(
+                &self.active_roles.borrow(),
+                caller,
+                caller_host,
+                "RESTRICTED_USER_ADMIN",
+                false,
+            );
+        let priv_data = astersql_executor::grant::account_tls_options_to_global_priv(
+            &statement.AuthTokenOrTLSOptions,
+        )
+        .map_err(|error| session_error("ALTER USER REQUIRE", error))?;
+        let lock = statement
+            .PasswordOrLockOptions
+            .iter()
+            .rev()
+            .find_map(|option| match option.Type {
+                ast::PasswordOrLockOptionType::Lock => Some(true),
+                ast::PasswordOrLockOptionType::Unlock => Some(false),
+                _ => None,
+            });
+        let expire = statement
+            .PasswordOrLockOptions
+            .iter()
+            .any(|option| option.Type == ast::PasswordOrLockOptionType::PasswordExpire);
+        let metadata = statement
+            .CommentOrAttributeOption
+            .as_ref()
+            .map(|option| {
+                let metadata = match option.Type {
+                    ast::CommentOrAttributeOptionType::UserComment => {
+                        serde_json::json!({"comment": option.Value})
+                    }
+                    ast::CommentOrAttributeOptionType::UserAttribute => {
+                        serde_json::from_str(&option.Value)
+                            .map_err(|error| session_error("ALTER USER ATTRIBUTE", error))?
+                    }
+                };
+                Ok::<_, SessionError>(metadata)
+            })
+            .transpose()?;
+        let quote = |value: &str| format!("'{}'", value.replace('\\', "\\\\").replace('\'', "''"));
+        let mut failed_users = Vec::new();
+        let mut need_rollback = false;
+        let mut create_sql_updates = Vec::new();
+        self.begin_transaction(&ast::BeginStmt::default())?;
+        let result = (|| {
+            for spec in &statement.Specs {
+                let user = &spec.User.username;
+                let host = account_host(&spec.User.hostname).to_ascii_lowercase();
+                let identity = format!("'{}'@'{}'", user, host);
+                let Some(index) = privileges
+                    .user
+                    .iter()
+                    .position(|record| record.base.fullyMatch(user, &host))
+                else {
+                    failed_users.push(identity);
+                    continue;
+                };
+                let roles = privileges.getAllRoles(user, &host);
+                if !can_alter_system_user
+                    && !can_alter_restricted_user
+                    && privileges.RequestDynamicVerification(
+                        &roles,
+                        user,
+                        &host,
+                        "SYSTEM_USER",
+                        false,
+                    )
+                {
+                    return Err(SessionError::new(
+                        "[planner:1227]Access denied; you need (at least one of) the SYSTEM_USER or SUPER privilege(s) for this operation",
+                    ));
+                }
+                if astersql_util_sem_compat::IsEnabled()
+                    && !can_alter_restricted_user
+                    && privileges.RequestDynamicVerification(
+                        &roles,
+                        user,
+                        &host,
+                        "RESTRICTED_USER_ADMIN",
+                        false,
+                    )
+                {
+                    return Err(SessionError::new(
+                        "[planner:1227]Access denied; you need (at least one of) the RESTRICTED_USER_ADMIN privilege(s) for this operation",
+                    ));
+                }
+                let mut record = privileges.user[index].clone();
+                let mut fields = Vec::new();
+                if let Some(locked) = lock {
+                    fields.push(format!(
+                        "account_locked='{}'",
+                        if locked { "Y" } else { "N" }
+                    ));
+                    record.AccountLocked = locked;
+                }
+                if expire {
+                    fields.push("password_expired='Y'".to_owned());
+                    record.PasswordExpired = true;
+                }
+                if let Some(metadata) = metadata.as_ref() {
+                    fields.push(format!(
+                        "user_attributes=json_merge_patch(coalesce(user_attributes, '{{}}'), {})",
+                        quote(&serde_json::json!({"metadata": metadata}).to_string()),
+                    ));
+                }
+                if let Some(issuer) = statement
+                    .AuthTokenOrTLSOptions
+                    .iter()
+                    .find(|option| option.Type == ast::AuthTokenOrTLSOptionType::TokenIssuer)
+                {
+                    if record.AuthPlugin == "tidb_auth_token" {
+                        fields.push(format!("token_issuer={}", quote(&issuer.Value)));
+                        record.AuthTokenIssuer = issuer.Value.clone();
+                    } else {
+                        self.state
+                            .borrow_mut()
+                            .current_warnings
+                            .push(SessionWarning::warning(
+                                "TOKEN_ISSUER is not needed for the auth plugin".to_owned(),
+                            ));
+                    }
+                }
+                if !fields.is_empty() {
+                    if self
+                        .execute_privilege_mutation(&format!(
+                            "UPDATE mysql.user SET {} WHERE Host={} AND User={}",
+                            fields.join(", "),
+                            quote(&host),
+                            quote(user),
+                        ))
+                        .is_err()
+                    {
+                        failed_users.push(identity);
+                        need_rollback = true;
+                        continue;
+                    }
+                }
+                // Omission preserves existing requirements. A token-only REQUIRE has no TLS value.
+                if !statement.AuthTokenOrTLSOptions.is_empty()
+                    && let Some(value) = priv_data.as_deref().filter(|value| !value.is_empty())
+                    && self
+                        .persist_account_tls(&mut privileges, user, &host, value)
+                        .is_err()
+                {
+                    failed_users.push(identity);
+                    need_rollback = true;
+                    continue;
+                }
+                privileges.user[index] = record.clone();
+                let require = privileges
+                    .global_priv
+                    .iter()
+                    .find(|record| record.base.fullyMatch(user, &host))
+                    .map(|record| record.Priv.RequireStr())
+                    .unwrap_or_else(|| "NONE".to_owned());
+                let token = if record.AuthTokenIssuer.is_empty() {
+                    String::new()
+                } else {
+                    format!(" token_issuer {}", record.AuthTokenIssuer)
+                };
+                let authentication = if record.AuthenticationString.is_empty()
+                    && record.AuthPlugin == "auth_socket"
+                {
+                    format!("IDENTIFIED WITH '{}'", record.AuthPlugin)
+                } else {
+                    format!(
+                        "IDENTIFIED WITH '{}' AS '{}'",
+                        record.AuthPlugin.replace('\'', "''"),
+                        record.AuthenticationString.replace('\'', "''")
+                    )
+                };
+                let mut create = format!(
+                    "CREATE USER '{}'@'{}' {authentication} REQUIRE {require}{token} PASSWORD EXPIRE {}ACCOUNT {} PASSWORD HISTORY DEFAULT PASSWORD REUSE INTERVAL DEFAULT",
+                    user.replace('\'', "''"),
+                    host.replace('\'', "''"),
+                    if record.PasswordExpired {
+                        ""
+                    } else {
+                        "DEFAULT "
+                    },
+                    if record.AccountLocked {
+                        "LOCK"
+                    } else {
+                        "UNLOCK"
+                    },
+                );
+                if let Some(metadata) = metadata.as_ref() {
+                    create.push_str(" ATTRIBUTE '");
+                    create.push_str(
+                        &metadata
+                            .to_string()
+                            .replace(":", ": ")
+                            .replace(",", ", ")
+                            .replace('\'', "''"),
+                    );
+                    create.push('\'');
+                } else if let Some(existing) = RUNTIME_CREATE_USER_SQL
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(&runtime_domain_id(&self.domain))
+                    .and_then(|accounts| accounts.get(&(user.clone(), host.clone())))
+                    .and_then(|sql| {
+                        sql.split_once(" ATTRIBUTE ")
+                            .map(|(_, attribute)| attribute.to_owned())
+                    })
+                {
+                    create.push_str(" ATTRIBUTE ");
+                    create.push_str(&existing);
+                }
+                create_sql_updates.push(((user.clone(), host), create));
+            }
+            if !failed_users.is_empty() && (!statement.IfExists || need_rollback) {
+                return Err(SessionError::new(format!(
+                    "[executor:1396]Operation ALTER USER failed for {}",
+                    failed_users.join(","),
+                )));
+            }
+            for user in &failed_users {
+                self.state
+                    .borrow_mut()
+                    .current_warnings
+                    .push(SessionWarning::note_with_code(
+                        astersql_errno::errcode::ErrBadUser,
+                        format!("User {user} does not exist."),
+                    ));
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.finish_transaction(false)?;
+            return Err(error);
+        }
+        self.finish_transaction(true)?;
+        privileges.SortUserTable();
+        handle.merge(privileges);
+        RUNTIME_CREATE_USER_SQL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(runtime_domain_id(&self.domain))
+            .or_default()
+            .extend(create_sql_updates);
+        Ok(())
+    }
+
     pub(super) fn execute_create_user(&self, statement: &ast::CreateUserStmt) -> SessionResult<()> {
         let handle = runtime_privilege_handle(&self.domain);
         let mut privileges = handle.Get();
@@ -3930,6 +4271,16 @@ impl ConcreteSession {
             .select_variable(astersql_sessionctx_vardef::DefaultAuthPlugin, true)
             .unwrap_or_else(|_| astersql_parser_mysql::r#const::AuthNativePassword.to_owned());
         let quote = |value: &str| format!("'{}'", value.replace('\\', "\\\\").replace('\'', "''"));
+        let priv_data = astersql_executor::grant::account_tls_options_to_global_priv(
+            &statement.AuthTokenOrTLSOptions,
+        )
+        .map_err(|error| session_error("CREATE USER REQUIRE", error))?;
+        let token_issuer = statement
+            .AuthTokenOrTLSOptions
+            .iter()
+            .find(|option| option.Type == ast::AuthTokenOrTLSOptionType::TokenIssuer)
+            .map(|option| option.Value.as_str())
+            .unwrap_or_default();
         let mut persisted_rows = Vec::new();
         let mut new_users = Vec::new();
         for spec in &statement.Specs {
@@ -3960,21 +4311,46 @@ impl ConcreteSession {
                 .map(|option| option.AuthPlugin.as_str())
                 .filter(|plugin| !plugin.is_empty())
                 .unwrap_or(&default_plugin);
+            let record_token_issuer = if plugin == "tidb_auth_token" {
+                if token_issuer.is_empty() {
+                    self.state.borrow_mut().current_warnings.push(SessionWarning::warning(
+                        "TOKEN_ISSUER is needed for 'tidb_auth_token' user, please use 'alter user' to declare it".to_owned(),
+                    ));
+                }
+                token_issuer
+            } else {
+                if !token_issuer.is_empty() {
+                    self.state
+                        .borrow_mut()
+                        .current_warnings
+                        .push(SessionWarning::warning(format!(
+                            "TOKEN_ISSUER is not needed for '{plugin}' user"
+                        )));
+                }
+                ""
+            };
             persisted_rows.push(format!(
-                "({}, {}, {}, {})",
+                "({}, {}, {}, {}, {})",
                 quote(&host),
                 quote(user),
                 quote(&password),
                 quote(plugin),
+                quote(record_token_issuer),
             ));
-            new_users.push((host, user.clone(), password, plugin.to_owned()));
+            new_users.push((
+                host,
+                user.clone(),
+                password,
+                plugin.to_owned(),
+                record_token_issuer.to_owned(),
+            ));
         }
         if persisted_rows.is_empty() {
             return Ok(());
         }
 
         let insert_sql = format!(
-            "INSERT {}INTO mysql.user (Host, User, authentication_string, plugin) VALUES {}",
+            "INSERT {}INTO mysql.user (Host, User, authentication_string, plugin, Token_issuer) VALUES {}",
             if statement.IfNotExists { "IGNORE " } else { "" },
             persisted_rows.join(", "),
         );
@@ -3983,8 +4359,17 @@ impl ConcreteSession {
             .first()
             .and_then(|statement| statement.as_any().downcast_ref::<ast::InsertStmt>())
             .ok_or_else(|| SessionError::new("CREATE USER persistence did not parse as INSERT"))?;
-        self.ensure_implicit_transaction()?;
-        if let Err(error) = self.execute_insert(insert) {
+        self.begin_transaction(&ast::BeginStmt::default())?;
+        let result = (|| {
+            self.execute_insert(insert)?;
+            if let Some(value) = priv_data.as_deref().filter(|value| !value.is_empty()) {
+                for (host, user, _, _, _) in &new_users {
+                    self.persist_account_tls(&mut privileges, user, host, value)?;
+                }
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
             self.finish_transaction(false)?;
             return Err(error);
         }
@@ -4018,7 +4403,7 @@ impl ConcreteSession {
                             .replace(",", ", ")
                     }
                 });
-        for (host, user, password, plugin) in new_users {
+        for (host, user, password, plugin, token_issuer) in new_users {
             if !privileges
                 .user
                 .iter()
@@ -4028,6 +4413,7 @@ impl ConcreteSession {
                 record.AuthenticationString = password.clone();
                 record.AuthPlugin = plugin.clone();
                 record.AccountLocked = account_locked;
+                record.AuthTokenIssuer = token_issuer.clone();
                 privileges.user.push(record);
             }
             let authentication = if password.is_empty() && plugin == "auth_socket" {
@@ -4039,8 +4425,19 @@ impl ConcreteSession {
                     password.replace('\'', "''")
                 )
             };
+            let require = privileges
+                .global_priv
+                .iter()
+                .find(|record| record.base.fullyMatch(&user, &host))
+                .map(|record| record.Priv.RequireStr())
+                .unwrap_or_else(|| "NONE".to_owned());
+            let token = if token_issuer.is_empty() {
+                String::new()
+            } else {
+                format!(" token_issuer {token_issuer}")
+            };
             let mut create = format!(
-                "CREATE USER '{}'@'{}' {authentication} REQUIRE NONE PASSWORD EXPIRE DEFAULT ACCOUNT {} PASSWORD HISTORY DEFAULT PASSWORD REUSE INTERVAL DEFAULT",
+                "CREATE USER '{}'@'{}' {authentication} REQUIRE {require}{token} PASSWORD EXPIRE DEFAULT ACCOUNT {} PASSWORD HISTORY DEFAULT PASSWORD REUSE INTERVAL DEFAULT",
                 user.replace('\'', "''"),
                 host.replace('\'', "''"),
                 if account_locked { "LOCK" } else { "UNLOCK" }
