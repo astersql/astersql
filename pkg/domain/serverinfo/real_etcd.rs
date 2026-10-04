@@ -199,9 +199,12 @@ impl EtcdClient for RealEtcdClient {
         let mut client = self.client();
         let physical_key = self.key(key);
         let options = lease.map(|lease| PutOptions::new().with_lease(lease));
-        self.runtime
-            .block_on(async { client.put(physical_key, value, options).await })
-            .map_err(|error| SyncError(format!("put etcd key {key}: {error}")))?;
+        run_with_context(
+            &self.runtime,
+            context,
+            client.put(physical_key, value, options),
+        )
+        .map_err(|error| SyncError(format!("put etcd key {key}: {error}")))?;
         Ok(())
     }
 
@@ -246,8 +249,7 @@ impl EtcdClient for RealEtcdClient {
             return Err(SyncError("context cancelled".into()));
         }
         let mut client = self.client();
-        self.runtime
-            .block_on(async { client.lease_revoke(lease).await })
+        run_with_context(&self.runtime, context, client.lease_revoke(lease))
             .map_err(|error| SyncError(format!("revoke etcd lease {lease}: {error}")))?;
         Ok(())
     }
@@ -291,6 +293,82 @@ impl EtcdClient for RealEtcdClient {
             .map_err(|error| SyncError(format!("compare-and-put etcd key {key}: {error}")))
     }
 
+    fn TryCreateClaim(
+        &self,
+        context: &Context,
+        key: &str,
+        id: &str,
+        lease: i64,
+    ) -> Result<(bool, crate::ObservedStatusEndpointClaim), SyncError> {
+        let physical = self.key(key);
+        let txn = Txn::new()
+            .when([Compare::create_revision(
+                physical.clone(),
+                CompareOp::Equal,
+                0,
+            )])
+            .and_then([TxnOp::put(
+                physical.clone(),
+                id,
+                Some(PutOptions::new().with_lease(lease)),
+            )])
+            .or_else([TxnOp::get(physical, None)]);
+        let mut client = self.client();
+        let response = run_with_context(&self.runtime, context, client.txn(txn))?;
+        if response.succeeded() {
+            return Ok((true, crate::ObservedStatusEndpointClaim::default()));
+        }
+        let responses = response.op_responses();
+        if responses.len() != 1 {
+            return Err(SyncError(format!(
+                "unexpected advertised status endpoint claim response count {}",
+                responses.len()
+            )));
+        }
+        let etcd_client::TxnOpResponse::Get(range) = &responses[0] else {
+            return Err(SyncError(
+                "advertised status endpoint claim disappeared while reading its owner".into(),
+            ));
+        };
+        if range.kvs().len() != 1 {
+            return Err(SyncError(
+                "advertised status endpoint claim disappeared while reading its owner".into(),
+            ));
+        }
+        let kv = &range.kvs()[0];
+        Ok((
+            false,
+            crate::ObservedStatusEndpointClaim {
+                id: String::from_utf8_lossy(kv.value()).into_owned(),
+                lease: kv.lease(),
+                mod_revision: kv.mod_revision(),
+            },
+        ))
+    }
+    fn ReattachClaim(
+        &self,
+        context: &Context,
+        key: &str,
+        observed: &crate::ObservedStatusEndpointClaim,
+        lease: i64,
+    ) -> Result<bool, SyncError> {
+        let physical = self.key(key);
+        let txn = Txn::new()
+            .when([
+                Compare::value(physical.clone(), CompareOp::Equal, observed.id.as_bytes()),
+                Compare::mod_revision(physical.clone(), CompareOp::Equal, observed.mod_revision),
+            ])
+            .and_then([TxnOp::put(
+                physical.clone(),
+                observed.id.as_bytes(),
+                Some(PutOptions::new().with_lease(lease)),
+            )])
+            .or_else([TxnOp::get(physical, None)]);
+        let mut client = self.client();
+        run_with_context(&self.runtime, context, client.txn(txn))
+            .map(|response| response.succeeded())
+    }
+
     fn CompareAndDelete(
         &self,
         context: &Context,
@@ -308,8 +386,7 @@ impl EtcdClient for RealEtcdClient {
             ])
             .and_then([TxnOp::delete(physical_key, None)]);
         let mut client = self.client();
-        self.runtime
-            .block_on(async { client.txn(txn).await })
+        run_with_context(&self.runtime, context, client.txn(txn))
             .map(|response| response.succeeded())
             .map_err(|error| SyncError(format!("compare-and-delete etcd key {key}: {error}")))
     }

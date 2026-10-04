@@ -53,6 +53,7 @@ pub trait DomainFactory: Send + Sync {
         store: Arc<dyn StorageRuntime>,
         etcd_client: Option<String>,
         schema_filter: Option<String>,
+        server_info_options: &[astersql_domain_serverinfo::SyncerOption],
     ) -> Arc<dyn DomainRuntime>;
     fn LogInitFailure(&self, store_uuid: &str, error: &SessionError);
 }
@@ -79,7 +80,7 @@ impl domainMap {
         &self,
         store: Option<Arc<dyn StorageRuntime>>,
     ) -> SessionResult<Arc<dyn DomainRuntime>> {
-        self.getWithEtcdClient(store, None, None)
+        self.getWithEtcdClient(store, None, None, &[])
     }
 
     /// 带 schema filter 获取或创建 Domain。
@@ -88,7 +89,20 @@ impl domainMap {
         store: Arc<dyn StorageRuntime>,
         filter: String,
     ) -> SessionResult<Arc<dyn DomainRuntime>> {
-        self.getWithEtcdClient(Some(store), None, Some(filter))
+        self.getWithEtcdClient(Some(store), None, Some(filter), &[])
+    }
+
+    /// The temporary system-variable Domain never owns a serving status endpoint.
+    pub fn getDomainForGlobalVarInit(
+        &self,
+        store: Arc<dyn StorageRuntime>,
+    ) -> SessionResult<Arc<dyn DomainRuntime>> {
+        self.getWithEtcdClient(
+            Some(store),
+            None,
+            Some("systemDBFilter".into()),
+            &[astersql_domain_serverinfo::SyncerOption::WithoutStatusEndpointClaim],
+        )
     }
 
     /// 核心查找/创建逻辑：命中缓存则返回，否则工厂建 Domain 并 Init，失败重试。
@@ -97,6 +111,7 @@ impl domainMap {
         store: Option<Arc<dyn StorageRuntime>>,
         etcd_client: Option<String>,
         schema_filter: Option<String>,
+        server_info_options: &[astersql_domain_serverinfo::SyncerOption],
     ) -> SessionResult<Arc<dyn DomainRuntime>> {
         let mut domains = self.domains.lock().expect("domain map lock poisoned");
         let Some(store) = store else {
@@ -118,6 +133,7 @@ impl domainMap {
                 Arc::clone(&store),
                 etcd_client.clone(),
                 schema_filter.clone(),
+                server_info_options,
             );
             match domain.Init() {
                 Ok(()) => {

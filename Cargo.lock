@@ -2736,6 +2736,7 @@ name = "astersql-domain-serverinfo"
 version = "0.1.0"
 dependencies = [
  "astersql-config",
+ "astersql-util-logutil",
  "base64 0.22.1",
  "etcd-client",
  "tokio",

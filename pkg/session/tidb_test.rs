@@ -285,3 +285,158 @@ fn canonical_parse_forwards_warnings_and_preserves_errors() {
         ["deprecated syntax", "warning before parse failure"]
     );
 }
+
+#[test]
+fn global_variable_init_domain_skips_claim_and_serving_domain_warns_once() {
+    use super::tidb::{DomainFactory, DomainRuntime, StorageRuntime, domainMap};
+    use astersql_domain_serverinfo::{Context, EtcdClient, MemoryEtcdClient, SyncerOption};
+    use astersql_util_logutil::log::{BgLogger, LogField};
+    use std::sync::{Arc, Mutex};
+    struct Store;
+    impl StorageRuntime for Store {
+        fn UUID(&self) -> String {
+            "global-variable-init-store".into()
+        }
+        fn ClearOption(&self, _: &str) {}
+    }
+    struct RuntimeDomain {
+        domain: Arc<astersql_domain::domain::Domain>,
+        client: Arc<MemoryEtcdClient>,
+        id: String,
+        options: Vec<SyncerOption>,
+        close: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    }
+    impl DomainRuntime for RuntimeDomain {
+        fn Init(&self) -> super::SessionResult {
+            self.domain
+                .install_server_info_syncer(self.id.clone(), self.client.clone(), &self.options)
+                .map_err(|e| super::SessionError::new(e.to_string()))
+        }
+        fn Close(&self) {
+            self.domain.close();
+            if let Some(close) = self.close.lock().unwrap().take() {
+                close();
+            }
+        }
+        fn SetOnClose(&self, callback: Box<dyn Fn() + Send + Sync>) {
+            *self.close.lock().unwrap() = Some(callback);
+        }
+    }
+    struct Factory {
+        client: Arc<MemoryEtcdClient>,
+        next: std::sync::atomic::AtomicUsize,
+    }
+    impl DomainFactory for Factory {
+        fn NewDomainWithEtcdClient(
+            &self,
+            _: Arc<dyn StorageRuntime>,
+            _: Option<String>,
+            filter: Option<String>,
+            options: &[SyncerOption],
+        ) -> Arc<dyn DomainRuntime> {
+            let n = self.next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(
+                filter,
+                if n == 0 {
+                    Some("systemDBFilter".into())
+                } else {
+                    None
+                }
+            );
+            let (domain, session) = super::runtime::CreateAnalyzeSession().unwrap();
+            // Keep real, populated mysql metadata and SQL reads at this boundary.
+            let mut result = session
+                .execute("SELECT VARIABLE_VALUE FROM mysql.tidb WHERE VARIABLE_NAME = 'system_tz'")
+                .unwrap();
+            assert!(result[0].next_row().unwrap().is_some());
+            Arc::new(RuntimeDomain {
+                domain,
+                client: self.client.clone(),
+                id: format!("global-init-{n}"),
+                options: options.to_vec(),
+                close: Mutex::new(None),
+            })
+        }
+        fn LogInitFailure(&self, _: &str, error: &super::SessionError) {
+            panic!("Domain initialization failed: {error}");
+        }
+    }
+    let client = Arc::new(MemoryEtcdClient::default());
+    let cfg = astersql_domain_serverinfo::GetGlobalServerConfig();
+    let info = astersql_domain_serverinfo::StaticInfo {
+        IP: cfg.AdvertiseAddress,
+        StatusPort: cfg.StatusPort,
+        ..Default::default()
+    };
+    let (_, key) = astersql_domain_serverinfo::build_status_endpoint_claim(
+        &astersql_domain_serverinfo::ServerInfo {
+            StaticInfo: info,
+            ..Default::default()
+        },
+        true,
+    );
+    client
+        .Put(
+            &Context::Background(),
+            &key,
+            b"existing-server".to_vec(),
+            Some(0x123),
+        )
+        .unwrap();
+    let map = domainMap::new(
+        Arc::new(Factory {
+            client: client.clone(),
+            next: Default::default(),
+        }),
+        1,
+    );
+    let store: Arc<dyn StorageRuntime> = Arc::new(Store);
+    let temporary = map.getDomainForGlobalVarInit(store.clone()).unwrap();
+    assert_eq!(client.Snapshot()[&key].value, b"existing-server");
+    assert!(
+        client
+            .Snapshot()
+            .contains_key("/tidb/server/info/global-init-0")
+    );
+    temporary.Close();
+    let serving = map.Get(Some(store.clone())).unwrap();
+    let warnings: Vec<_> = BgLogger()
+        .entries()
+        .into_iter()
+        .filter(|e| {
+            e.message == "advertised status endpoint already has an active claim"
+                && e.fields.contains(&LogField::String(
+                    "local-server-info-id".into(),
+                    "global-init-1".into(),
+                ))
+        })
+        .collect();
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].fields.contains(&LogField::String(
+        "existing-server-info-id".into(),
+        "existing-server".into()
+    )));
+    assert!(warnings[0].fields.contains(&LogField::String(
+        "existing-lease-id".into(),
+        "0000000000000123".into()
+    )));
+    assert!(
+        !BgLogger()
+            .entries()
+            .iter()
+            .any(|e| e.fields.contains(&LogField::String(
+                "local-server-info-id".into(),
+                "global-init-0".into()
+            )))
+    );
+    assert!(Arc::ptr_eq(&serving, &map.Get(None).unwrap()));
+    serving.Close();
+    client.Delete(&Context::Background(), &key).unwrap();
+    let replacement = map.Get(Some(store)).unwrap();
+    assert_eq!(client.Snapshot()[&key].value, b"global-init-2");
+    assert_eq!(
+        client.Snapshot()[&key].lease,
+        client.Snapshot()["/tidb/server/info/global-init-2"].lease
+    );
+    replacement.Close();
+}

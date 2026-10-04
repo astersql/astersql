@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, mpsc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use base64::Engine;
+use astersql_util_logutil::log::{BgLogger, LogField, LogLevel};
 
 use crate::info::*;
 
@@ -65,6 +65,9 @@ impl Context {
     /// 标记已取消。
     pub fn Cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
+    }
+    pub fn HasDeadline(&self) -> bool {
+        self.deadline.is_some()
     }
     /// 是否已取消或超过截止时间。
     pub fn Done(&self) -> bool {
@@ -137,6 +140,30 @@ pub trait EtcdClient: Send + Sync {
             "atomic etcd compare-and-put is unavailable".into(),
         ))
     }
+    /// Atomically create a claim, or observe its owner and modification revision.
+    fn TryCreateClaim(
+        &self,
+        _context: &Context,
+        _key: &str,
+        _id: &str,
+        _lease: i64,
+    ) -> Result<(bool, crate::ObservedStatusEndpointClaim), SyncError> {
+        Err(SyncError(
+            "atomic etcd claim transaction is unavailable".into(),
+        ))
+    }
+    /// Compare value and modification revision before attaching a new lease.
+    fn ReattachClaim(
+        &self,
+        _context: &Context,
+        _key: &str,
+        _observed: &crate::ObservedStatusEndpointClaim,
+        _lease: i64,
+    ) -> Result<bool, SyncError> {
+        Err(SyncError(
+            "atomic etcd revision transaction is unavailable".into(),
+        ))
+    }
     /// Remove a claim only when it still has this server ID and lease.
     fn CompareAndDelete(
         &self,
@@ -155,6 +182,8 @@ pub trait EtcdClient: Send + Sync {
 pub struct MemoryEtcdClient {
     values: Mutex<BTreeMap<String, KeyValue>>,
     transient_get_failures: AtomicUsize,
+    revisions: Mutex<BTreeMap<String, i64>>,
+    next_revision: AtomicI64,
 }
 
 impl MemoryEtcdClient {
@@ -204,7 +233,15 @@ impl EtcdClient for MemoryEtcdClient {
         if context.Done() {
             return Err(SyncError("context cancelled".into()));
         }
-        self.values.lock().expect("etcd lock poisoned").insert(
+        let mut values = self.values.lock().expect("etcd lock poisoned");
+        self.revisions
+            .lock()
+            .expect("revision lock poisoned")
+            .insert(
+                key.into(),
+                self.next_revision.fetch_add(1, Ordering::SeqCst) + 1,
+            );
+        values.insert(
             key.into(),
             KeyValue {
                 key: key.into(),
@@ -263,6 +300,13 @@ impl EtcdClient for MemoryEtcdClient {
             _ => false,
         };
         if matches {
+            self.revisions
+                .lock()
+                .expect("revision lock poisoned")
+                .insert(
+                    key.into(),
+                    self.next_revision.fetch_add(1, Ordering::SeqCst) + 1,
+                );
             values.insert(
                 key.into(),
                 KeyValue {
@@ -270,6 +314,75 @@ impl EtcdClient for MemoryEtcdClient {
                     value,
                     lease: Some(lease),
                 },
+            );
+        }
+        Ok(matches)
+    }
+
+    fn TryCreateClaim(
+        &self,
+        context: &Context,
+        key: &str,
+        id: &str,
+        lease: i64,
+    ) -> Result<(bool, crate::ObservedStatusEndpointClaim), SyncError> {
+        if context.Done() {
+            return Err(SyncError("context cancelled".into()));
+        }
+        let mut values = self.values.lock().expect("etcd lock poisoned");
+        let mut revisions = self.revisions.lock().expect("revision lock poisoned");
+        if let Some(current) = values.get(key) {
+            return Ok((
+                false,
+                crate::ObservedStatusEndpointClaim {
+                    id: String::from_utf8_lossy(&current.value).into_owned(),
+                    lease: current.lease.unwrap_or_default(),
+                    mod_revision: revisions[key],
+                },
+            ));
+        }
+        values.insert(
+            key.into(),
+            KeyValue {
+                key: key.into(),
+                value: id.as_bytes().to_vec(),
+                lease: Some(lease),
+            },
+        );
+        revisions.insert(
+            key.into(),
+            self.next_revision.fetch_add(1, Ordering::SeqCst) + 1,
+        );
+        Ok((true, crate::ObservedStatusEndpointClaim::default()))
+    }
+    fn ReattachClaim(
+        &self,
+        context: &Context,
+        key: &str,
+        observed: &crate::ObservedStatusEndpointClaim,
+        lease: i64,
+    ) -> Result<bool, SyncError> {
+        if context.Done() {
+            return Err(SyncError("context cancelled".into()));
+        }
+        let mut values = self.values.lock().expect("etcd lock poisoned");
+        let mut revisions = self.revisions.lock().expect("revision lock poisoned");
+        let matches = values
+            .get(key)
+            .is_some_and(|current| current.value == observed.id.as_bytes())
+            && revisions.get(key) == Some(&observed.mod_revision);
+        if matches {
+            values.insert(
+                key.into(),
+                KeyValue {
+                    key: key.into(),
+                    value: observed.id.as_bytes().to_vec(),
+                    lease: Some(lease),
+                },
+            );
+            revisions.insert(
+                key.into(),
+                self.next_revision.fetch_add(1, Ordering::SeqCst) + 1,
             );
         }
         Ok(matches)
@@ -495,34 +608,8 @@ fn newSyncer(
     let claim_enabled = astersql_config::get_global_config().status.report_status
         && !options.contains(&SyncerOption::WithoutStatusEndpointClaim)
         && !info.StaticInfo.IsAssumed();
-    let statusEndpointClaimKey = if claim_enabled {
-        let raw_host = info.StaticInfo.IP.trim();
-        let host = raw_host
-            .parse::<std::net::IpAddr>()
-            .map(|address| address.to_string())
-            .unwrap_or_else(|_| raw_host.trim_end_matches('.').to_lowercase());
-        if host.is_empty() {
-            None
-        } else {
-            let host = if host.contains(':') {
-                format!("[{host}]")
-            } else {
-                host
-            };
-            let port = if info.StaticInfo.StatusPort == 0 {
-                astersql_config::DEF_STATUS_PORT as u32
-            } else {
-                info.StaticInfo.StatusPort
-            };
-            let endpoint = format!("{host}:{port}");
-            Some(format!(
-                "/tidb/server/status_addr/{}",
-                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(endpoint.as_bytes())
-            ))
-        }
-    } else {
-        None
-    };
+    let (_, key) = crate::build_status_endpoint_claim(&info, claim_enabled);
+    let statusEndpointClaimKey = (!key.is_empty()).then_some(key);
     Box::new(Syncer {
         serverInfoPath: serverInfoKeyPath(&uuid),
         etcdCli: etcd_client,
@@ -535,38 +622,55 @@ fn newSyncer(
 }
 
 impl Syncer {
-    fn tryClaimStatusEndpoint(&self, context: &Context) {
-        let (Some(client), Some(key), Some(session)) =
-            (&self.etcdCli, &self.statusEndpointClaimKey, &self.session)
-        else {
+    pub fn tryClaimStatusEndpoint(
+        &self,
+        context: &Context,
+    ) -> Option<crate::StatusEndpointClaimResult> {
+        let (Some(client), Some(session)) = (&self.etcdCli, &self.session) else {
+            return None;
+        };
+        let info = self.GetLocalServerInfo();
+        let claim = crate::StatusEndpointClaim::from_key(
+            client.as_ref(),
+            &info,
+            self.statusEndpointClaimKey.clone().unwrap_or_default(),
+        );
+        claim.try_acquire_and_report(context, session.Lease(), |result| {
+            result.report_result(&info.StaticInfo.Keyspace);
+        })
+    }
+
+    fn cleanupFailedRegistration(&self) {
+        let (Some(client), Some(session)) = (&self.etcdCli, &self.session) else {
             return;
         };
-        let id = self
-            .info
-            .read()
-            .expect("server info lock poisoned")
-            .StaticInfo
-            .ID
-            .clone();
-        let lease = session.Lease();
-        match client.CompareAndPut(context, key, None, id.as_bytes().to_vec(), lease) {
-            Ok(true) => return,
-            Ok(false) => {}
-            Err(_) => return,
+        session.Close();
+        let context = Context::Background().WithTimeout(KeyOpDefaultTimeout);
+        let info = self.GetLocalServerInfo();
+        let claim = crate::StatusEndpointClaim::from_key(
+            client.as_ref(),
+            &info,
+            self.statusEndpointClaimKey.clone().unwrap_or_default(),
+        );
+        if !claim.key.is_empty() {
+            if let Err(error) = client.CompareAndDelete(
+                &context,
+                &claim.key,
+                (info.StaticInfo.ID.as_bytes(), session.Lease()),
+            ) {
+                let mut fields = claim.cleanup_fields(session.Lease());
+                fields.push(LogField::String("error".into(), error.to_string()));
+                BgLogger().log(
+                    LogLevel::Warn,
+                    "failed to remove advertised status endpoint claim",
+                    fields,
+                );
+            }
         }
-        let Ok(observed) = client.Get(context, key, false) else {
-            return;
-        };
-        if let Some(existing) = observed.first()
-            && existing.value == id.as_bytes()
-        {
-            let _ = client.CompareAndPut(
-                context,
-                key,
-                Some((&existing.value, existing.lease)),
-                id.into_bytes(),
-                lease,
-            );
+        if let Err(error) = client.RevokeLease(&context, session.Lease()) {
+            let mut fields = claim.cleanup_fields(session.Lease());
+            fields.push(LogField::String("error".into(), error.to_string()));
+            BgLogger().log(LogLevel::Warn, "failed to revoke server info lease", fields);
         }
     }
 
@@ -585,7 +689,7 @@ impl Syncer {
         self.session = Some(Session::WithLease(45, lease));
         self.tryClaimStatusEndpoint(&context);
         if let Err(error) = self.StoreServerInfo(context) {
-            self.RevokeSession();
+            self.cleanupFailedRegistration();
             return Err(error);
         }
         Ok(())
@@ -776,11 +880,21 @@ impl Syncer {
         if let Some(client) = &self.etcdCli {
             if let (Some(key), Some(session)) = (&self.statusEndpointClaimKey, &self.session) {
                 let info = self.info.read().expect("server info lock poisoned");
-                let _ = client.CompareAndDelete(
-                    &Context::Background(),
+                if let Err(error) = client.CompareAndDelete(
+                    &Context::Background().WithTimeout(KeyOpDefaultTimeout),
                     key,
                     (info.StaticInfo.ID.as_bytes(), session.Lease()),
-                );
+                ) {
+                    let claim =
+                        crate::StatusEndpointClaim::from_key(client.as_ref(), &info, key.clone());
+                    let mut fields = claim.cleanup_fields(session.Lease());
+                    fields.push(LogField::String("error".into(), error.to_string()));
+                    BgLogger().log(
+                        LogLevel::Error,
+                        "failed to remove advertised status endpoint claim",
+                        fields,
+                    );
+                }
             }
             let _ = client.Delete(&Context::Background(), &self.serverInfoPath);
         }
@@ -821,6 +935,10 @@ impl Syncer {
                 // 超时唤醒：检查 session，到期则上报 min start TS。
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if self.Done() {
+                        match exit.try_recv() {
+                            Ok(()) | Err(mpsc::TryRecvError::Disconnected) => return,
+                            Err(mpsc::TryRecvError::Empty) => {}
+                        }
                         let _ = self.Restart(Context::Background());
                     }
                     if Instant::now() >= next_report {

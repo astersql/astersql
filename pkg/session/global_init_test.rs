@@ -71,11 +71,16 @@ impl GlobalInitRuntime for TestRuntime {
     type Domain = ();
     type Session = TestSession;
 
-    fn get_or_create_with_filter(
+    fn get_domain_for_global_var_init(
         &mut self,
         _store: &Self::Store,
         _filter: systemDBFilter,
+        server_info_options: &[astersql_domain_serverinfo::SyncerOption],
     ) -> Result<Self::Domain, Self::Error> {
+        assert_eq!(
+            server_info_options,
+            &[astersql_domain_serverinfo::SyncerOption::WithoutStatusEndpointClaim]
+        );
         self.event("domain");
         (self.fail_at != Some(TestError::Domain))
             .then_some(())

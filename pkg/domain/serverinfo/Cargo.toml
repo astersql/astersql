@@ -12,6 +12,7 @@ go-package = "pkg/domain/serverinfo"
 legacy-tasks = ["task-761", "task-773"]
 
 [dependencies]
+astersql-util-logutil = { path = "../../util/logutil" }
 base64 = "0.22"
 astersql-config = { path = "../../config" }
 etcd-client = { version = "0.19", features = ["tls"] }

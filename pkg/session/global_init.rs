@@ -93,10 +93,11 @@ pub trait GlobalInitRuntime {
     type Session;
 
     /// 按过滤器获取或创建 Domain。
-    fn get_or_create_with_filter(
+    fn get_domain_for_global_var_init(
         &mut self,
         store: &Self::Store,
         filter: systemDBFilter,
+        server_info_options: &[astersql_domain_serverinfo::SyncerOption],
     ) -> Result<Self::Domain, Self::Error>;
     /// 在给定 Domain 上创建临时会话。
     fn create_session(
@@ -126,7 +127,11 @@ pub fn initGlobalVarFromSystemDB<R: GlobalInitRuntime>(
     runtime: &mut R,
     store: &R::Store,
 ) -> Result<(), R::Error> {
-    let domain = runtime.get_or_create_with_filter(store, systemDBFilter)?;
+    let domain = runtime.get_domain_for_global_var_init(
+        store,
+        systemDBFilter,
+        &[astersql_domain_serverinfo::SyncerOption::WithoutStatusEndpointClaim],
+    )?;
 
     // Keep the temporary session inside this scope so it is dropped before the
     // isolated domain is closed, matching Go's deferred dom.Close ordering.
