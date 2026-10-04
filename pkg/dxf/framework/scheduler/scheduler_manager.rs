@@ -123,7 +123,7 @@ impl Manager {
     pub fn start(&self) -> Result<()> {
         self.node_manager
             .refresh_nodes(self.task_manager.as_ref(), &self.slot_manager)?;
-        self.drain_cleanup_task_batches();
+        self.drain_clean_task_batches();
         self.initialized.store(true, Ordering::Release);
         Ok(())
     }
@@ -186,7 +186,7 @@ impl Manager {
         let schedulable = self.get_schedulable_tasks()?;
         self.start_schedulers(schedulable)?;
         self.drive_schedulers();
-        self.drain_cleanup_task_batches();
+        self.drain_clean_task_batches();
         Ok(())
     }
 
@@ -334,13 +334,13 @@ impl Manager {
     }
 
     /// 对终态任务执行类型相关清理，再批量迁入历史表。
-    pub fn cleanup_finished_tasks(&self) -> Result<usize> {
+    pub fn clean_finished_tasks(&self) -> Result<usize> {
         let tasks = self.task_manager.cleanup_tasks()?;
-        self.cleanup_task_batch(tasks)
+        self.clean_task_batch(tasks)
     }
 
     /// Process one bounded batch; errors or partial progress stop this drain.
-    pub fn process_cleanup_task_batch(&self) -> bool {
+    pub fn process_clean_task_batch(&self) -> bool {
         let Ok(tasks) = self.task_manager.cleanup_tasks() else {
             return false;
         };
@@ -348,51 +348,51 @@ impl Manager {
             return false;
         }
         let count = tasks.len();
-        matches!(self.cleanup_task_batch(tasks), Ok(transferred) if transferred == count)
+        matches!(self.clean_task_batch(tasks), Ok(transferred) if transferred == count)
     }
 
     /// Drain consecutive batches only while every task reaches history.
-    pub fn drain_cleanup_task_batches(&self) {
-        while self.process_cleanup_task_batch() {}
+    pub fn drain_clean_task_batches(&self) {
+        while self.process_clean_task_batch() {}
     }
 
-    fn cleanup_task_batch(&self, mut tasks: Vec<Task>) -> Result<usize> {
+    fn clean_task_batch(&self, mut tasks: Vec<Task>) -> Result<usize> {
         if tasks.is_empty() {
             return Ok(0);
         }
         let mut cleaned = Vec::with_capacity(tasks.len());
         let mut singles = Vec::new();
-        let mut groups: HashMap<String, (Arc<dyn CleanUpRoutine>, Vec<Task>)> = HashMap::new();
+        let mut groups: HashMap<String, (Arc<dyn Cleaner>, Vec<Task>)> = HashMap::new();
         for task in tasks.drain(..) {
             if let Some((_, group)) = groups.get_mut(&task.base.task_type) {
                 group.push(task);
                 continue;
             }
-            let Some(factory) = get_scheduler_cleanup_factory(&task.base.task_type) else {
+            let Some(factory) = get_cleaner_factory(&task.base.task_type) else {
                 cleaned.push(task);
                 continue;
             };
-            let cleanup = factory();
-            if cleanup.batch_cleanup().is_some() {
-                groups.insert(task.base.task_type.clone(), (cleanup, vec![task]));
+            let cleaner = factory();
+            if cleaner.batch_cleaner().is_some() {
+                groups.insert(task.base.task_type.clone(), (cleaner, vec![task]));
             } else {
-                singles.push((cleanup, task));
+                singles.push((cleaner, task));
             }
         }
         let mut failed = false;
-        for (cleanup, mut task) in singles {
-            if cleanup.clean_up(&mut task).is_err() {
+        for (cleaner, mut task) in singles {
+            if cleaner.clean(&mut task).is_err() {
                 failed = true;
                 break;
             }
             cleaned.push(task);
         }
         if !failed {
-            for (_, (cleanup, mut group)) in groups {
-                if cleanup
-                    .batch_cleanup()
+            for (_, (cleaner, mut group)) in groups {
+                if cleaner
+                    .batch_cleaner()
                     .expect("batch capability established")
-                    .clean_up_batch(&mut group)
+                    .batch_clean(&mut group)
                     .is_err()
                 {
                     failed = true;

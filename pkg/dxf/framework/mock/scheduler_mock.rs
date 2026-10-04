@@ -149,30 +149,30 @@ pub fn NewMockScheduler<H, C: ?Sized>(_controller: &C) -> MockScheduler<H> {
 
 /// 任务后置清理例程 mock（如历史表迁移、中间文件清理）。
 #[derive(Default)]
-pub struct MockCleanUpRoutine {
+pub struct MockCleaner {
     /// 执行清理。
-    pub CleanUp: Handler<dyn FnMut(storage::Context, &mut proto::Task) -> MockResult<()> + Send>,
+    pub Clean: Handler<dyn FnMut(storage::Context, &mut proto::Task) -> MockResult<()> + Send>,
 }
 
-/// CleanUpRoutine 期望记录器别名。
-pub type MockCleanUpRoutineMockRecorder = MockCleanUpRoutine;
+/// Cleaner 期望记录器别名。
+pub type MockCleanerMockRecorder = MockCleaner;
 
 /// GoMock 风格 API。
-impl MockCleanUpRoutine {
+impl MockCleaner {
     /// 返回期望记录器。
-    pub fn EXPECT(&mut self) -> &mut MockCleanUpRoutineMockRecorder {
+    pub fn EXPECT(&mut self) -> &mut MockCleanerMockRecorder {
         self
     }
 
     /// GoMock 标记占位。
     pub fn ISGOMOCK(&self) {}
 
-    mock_method!(CleanUp(context: storage::Context, task: &mut proto::Task) -> MockResult<()>);
+    mock_method!(Clean(context: storage::Context, task: &mut proto::Task) -> MockResult<()>);
 }
 
-/// 构造空期望 MockCleanUpRoutine。
-pub fn NewMockCleanUpRoutine<C: ?Sized>(_controller: &C) -> MockCleanUpRoutine {
-    MockCleanUpRoutine::default()
+/// 构造空期望 MockCleaner。
+pub fn NewMockCleaner<C: ?Sized>(_controller: &C) -> MockCleaner {
+    MockCleaner::default()
 }
 
 /// 任务管理器 mock：查询/推进任务与子任务状态、暂停/回滚/成功等。

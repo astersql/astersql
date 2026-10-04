@@ -22,10 +22,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// 记录调用次数，并模拟清理过程对任务元数据的合法改写。
-struct CountingCleanup(Arc<AtomicUsize>);
+struct CountingCleaner(Arc<AtomicUsize>);
 
-impl CleanUpRoutine for CountingCleanup {
-    fn clean_up(&self, task: &mut Task) -> Result<()> {
+impl Cleaner for CountingCleaner {
+    fn clean(&self, task: &mut Task) -> Result<()> {
         self.0.fetch_add(1, Ordering::AcqRel);
         task.meta.extend_from_slice(b"-clean");
         Ok(())
@@ -33,7 +33,7 @@ impl CleanUpRoutine for CountingCleanup {
 }
 
 #[test]
-fn test_clean_up_routine() {
+fn test_scheduler_cleaner() {
     let task_manager = Arc::new(TestTaskManager::default());
     let mut finished = task(1, TASK_STATE_SUCCEED);
     finished.base.task_type = "cleanup-test".to_owned();
@@ -42,15 +42,15 @@ fn test_clean_up_routine() {
 
     let calls = Arc::new(AtomicUsize::new(0));
     // 工厂按任务类型派发；每次构造的新例程共享计数器，以便验证实际调用次数。
-    RegisterSchedulerCleanUpFactory(
+    RegisterCleanerFactory(
         "cleanup-test",
         Arc::new({
             let calls = Arc::clone(&calls);
-            move || Arc::new(CountingCleanup(Arc::clone(&calls)))
+            move || Arc::new(CountingCleaner(Arc::clone(&calls)))
         }),
     );
     let manager = Manager::new(task_manager.clone(), "server", None);
-    assert_eq!(manager.cleanup_finished_tasks().unwrap(), 1);
+    assert_eq!(manager.clean_finished_tasks().unwrap(), 1);
     assert_eq!(calls.load(Ordering::Acquire), 1);
     let transferred = task_manager.transferred_tasks.lock().unwrap();
     // 迁入历史记录的必须是清理后的任务，而不是清理前的快照。
@@ -59,7 +59,7 @@ fn test_clean_up_routine() {
 }
 
 #[test]
-fn cleanup_starts_immediately_and_drains_all_bounded_batches() {
+fn clean_starts_immediately_and_drains_all_bounded_batches() {
     let restore = crate::proto::SetTaskCleanupBatchSizeForTest(2);
     let task_manager = Arc::new(TestTaskManager::default());
     for id in 1..=5 {
@@ -71,9 +71,9 @@ fn cleanup_starts_immediately_and_drains_all_bounded_batches() {
     assert_eq!(task_manager.transferred_tasks.lock().unwrap().len(), 5);
 }
 
-struct PartialCleanup(Arc<AtomicUsize>);
-impl CleanUpRoutine for PartialCleanup {
-    fn clean_up(&self, task: &mut Task) -> Result<()> {
+struct PartialCleaner(Arc<AtomicUsize>);
+impl Cleaner for PartialCleaner {
+    fn clean(&self, task: &mut Task) -> Result<()> {
         self.0.fetch_add(1, Ordering::AcqRel);
         if task.base.id == 2 {
             Err(SchedulerError::new("cleanup failed"))
@@ -84,16 +84,16 @@ impl CleanUpRoutine for PartialCleanup {
 }
 
 #[test]
-fn cleanup_drain_stops_on_empty_query_failure_transfer_failure_and_partial_progress() {
+fn clean_drain_stops_on_empty_query_failure_transfer_failure_and_partial_progress() {
     for failure in ["empty", "query", "transfer", "partial", "zero"] {
         let tasks = Arc::new(TestTaskManager::default());
         let calls = Arc::new(AtomicUsize::new(0));
         let kind = format!("drain-stop-{failure}");
         if failure == "partial" || failure == "zero" {
             let calls = calls.clone();
-            RegisterSchedulerCleanUpFactory(
+            RegisterCleanerFactory(
                 &kind,
-                Arc::new(move || Arc::new(PartialCleanup(calls.clone()))),
+                Arc::new(move || Arc::new(PartialCleaner(calls.clone()))),
             );
         }
         if failure != "empty" && failure != "query" {
@@ -114,7 +114,7 @@ fn cleanup_drain_stops_on_empty_query_failure_transfer_failure_and_partial_progr
             *tasks.transfer_error.lock().unwrap() = Some(SchedulerError::new("transfer failed"));
         }
         let manager = Manager::new(tasks.clone(), "server", None);
-        manager.drain_cleanup_task_batches();
+        manager.drain_clean_task_batches();
         assert_eq!(tasks.cleanup_reads.load(Ordering::Acquire), 1, "{failure}");
         assert_eq!(
             tasks.transferred_tasks.lock().unwrap().len(),
@@ -128,12 +128,12 @@ fn cleanup_drain_stops_on_empty_query_failure_transfer_failure_and_partial_progr
 }
 
 #[test]
-fn cleanup_batch_reports_full_progress_and_tick_drains_new_terminal_tasks() {
+fn clean_batch_reports_full_progress_and_tick_drains_new_terminal_tasks() {
     let tasks = Arc::new(TestTaskManager::default());
     tasks.insert_task(task(1, TASK_STATE_SUCCEED));
     let manager = Manager::new(tasks.clone(), "server", None);
-    assert!(manager.process_cleanup_task_batch());
-    assert!(!manager.process_cleanup_task_batch());
+    assert!(manager.process_clean_task_batch());
+    assert!(!manager.process_clean_task_batch());
     manager.start().unwrap();
     tasks.insert_task(task(2, TASK_STATE_REVERTED));
     manager.tick().unwrap();

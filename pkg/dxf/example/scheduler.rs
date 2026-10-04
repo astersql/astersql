@@ -111,11 +111,11 @@ pub fn Step2Str(task_type: &str, step: i64) -> String {
     }
 }
 /// 任务结束后的清理钩子（示例为空实现）。
-pub struct postCleanupImpl;
-/// postCleanupImpl 方法实现。
-impl postCleanupImpl {
+pub struct postCleanImpl;
+/// postCleanImpl 方法实现。
+impl postCleanImpl {
     /// 清理中间资源；示例直接成功。
-    pub fn CleanUp(&self, _: &Context, _: &Task) -> Result<()> {
+    pub fn Clean(&self, _: &Context, _: &Task) -> Result<()> {
         Ok(())
     }
 }

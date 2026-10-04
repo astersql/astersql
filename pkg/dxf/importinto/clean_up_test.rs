@@ -79,7 +79,7 @@ impl crate::ImportCleanUpRuntime for MetadataObservingRuntime {
     }
 }
 #[test]
-fn cleanup_redacts_metadata_before_metering_but_keeps_live_storage_credentials() {
+fn clean_redacts_metadata_before_metering_but_keeps_live_storage_credentials() {
     let mut meta = crate::TaskMeta::default();
     meta.Plan.CloudStorageURI =
         "s3://bucket/import?access-key=cleanup-access-key&secret-access-key=cleanup-secret".into();
@@ -89,8 +89,8 @@ fn cleanup_redacts_metadata_before_metering_but_keeps_live_storage_credentials()
     task.ID = 42;
     task.State = astersql_dxf_framework_proto::TaskStateSucceed;
     task.Meta = meta.Marshal().unwrap();
-    crate::ImportCleanUp::new(std::sync::Arc::new(MetadataObservingRuntime))
-        .CleanUp(&mut task)
+    crate::ImportCleaner::new(std::sync::Arc::new(MetadataObservingRuntime))
+        .Clean(&mut task)
         .unwrap();
 }
 
@@ -267,7 +267,7 @@ fn live_uri(bucket: &str) -> String {
     format!("s3://{bucket}/import?access-key=cleanup-access-key&secret-access-key=cleanup-secret")
 }
 #[test]
-fn cleanup_batch_groups_live_uris_scans_once_preserves_neighbors_and_redacts() {
+fn batch_clean_groups_live_uris_scans_once_preserves_neighbors_and_redacts() {
     use astersql_ingestor_globalsort::Storage;
     use std::sync::atomic::Ordering;
     let uri = live_uri("bucket");
@@ -292,8 +292,8 @@ fn cleanup_batch_groups_live_uris_scans_once_preserves_neighbors_and_redacts() {
         cleanup_task(43, &uri, astersql_dxf_framework_proto::TaskStateFailed),
         cleanup_task(44, &other, astersql_dxf_framework_proto::TaskStateSucceed),
     ];
-    crate::ImportCleanUp::new(runtime.clone())
-        .CleanUpBatch(&mut tasks)
+    crate::ImportCleaner::new(runtime.clone())
+        .BatchClean(&mut tasks)
         .unwrap();
     assert_eq!(first_store.scans.load(Ordering::SeqCst), 1);
     assert_eq!(other_store.scans.load(Ordering::SeqCst), 1);
@@ -328,7 +328,7 @@ fn cleanup_batch_groups_live_uris_scans_once_preserves_neighbors_and_redacts() {
     assert!(!events.contains(&"meter:43".into()));
 }
 #[test]
-fn cleanup_batch_errors_close_store_and_prevent_metering() {
+fn batch_clean_errors_close_store_and_prevent_metering() {
     use std::sync::atomic::Ordering;
     let uri = live_uri("bucket");
     for (scan, delete, open, expected) in [
@@ -351,8 +351,8 @@ fn cleanup_batch_errors_close_store_and_prevent_metering() {
             &uri,
             astersql_dxf_framework_proto::TaskStateSucceed,
         )];
-        let error = crate::ImportCleanUp::new(runtime.clone())
-            .CleanUpBatch(&mut tasks)
+        let error = crate::ImportCleaner::new(runtime.clone())
+            .BatchClean(&mut tasks)
             .unwrap_err();
         assert_eq!(error.to_string(), expected);
         assert_eq!(store.closes.load(Ordering::SeqCst), usize::from(!open));
@@ -368,7 +368,7 @@ fn cleanup_batch_errors_close_store_and_prevent_metering() {
     }
 }
 #[test]
-fn cleanup_batch_table_modes_precede_files_and_missing_table_is_ignored() {
+fn batch_clean_table_modes_precede_files_and_missing_table_is_ignored() {
     let uri = live_uri("bucket");
     for error in [None, Some(true), Some(false)] {
         let runtime = std::sync::Arc::new(CleanupRuntime {
@@ -381,7 +381,7 @@ fn cleanup_batch_table_modes_precede_files_and_missing_table_is_ignored() {
             cleanup_task(42, &uri, astersql_dxf_framework_proto::TaskStateSucceed),
             cleanup_task(43, &uri, astersql_dxf_framework_proto::TaskStateFailed),
         ];
-        let result = crate::ImportCleanUp::new(runtime.clone()).CleanUpBatch(&mut tasks);
+        let result = crate::ImportCleaner::new(runtime.clone()).BatchClean(&mut tasks);
         let events = runtime.events.lock().unwrap();
         if error == Some(false) {
             assert_eq!(result.unwrap_err().to_string(), "table failed");
@@ -397,16 +397,16 @@ fn cleanup_batch_table_modes_precede_files_and_missing_table_is_ignored() {
     }
 }
 #[test]
-fn cleanup_batch_empty_local_and_malformed_inputs_follow_go_order() {
+fn batch_clean_empty_local_and_malformed_inputs_follow_go_order() {
     let runtime = std::sync::Arc::new(CleanupRuntime::default());
-    let cleaner = crate::ImportCleanUp::new(runtime.clone());
-    cleaner.CleanUpBatch(&mut []).unwrap();
+    let cleaner = crate::ImportCleaner::new(runtime.clone());
+    cleaner.BatchClean(&mut []).unwrap();
     let mut local = [cleanup_task(
         1,
         "",
         astersql_dxf_framework_proto::TaskStateSucceed,
     )];
-    cleaner.CleanUpBatch(&mut local).unwrap();
+    cleaner.BatchClean(&mut local).unwrap();
     assert!(runtime.events.lock().unwrap().is_empty());
     let uri = live_uri("bucket");
     let mut tasks = vec![
@@ -414,13 +414,13 @@ fn cleanup_batch_empty_local_and_malformed_inputs_follow_go_order() {
         cleanup_task(43, &uri, astersql_dxf_framework_proto::TaskStateFailed),
     ];
     tasks[1].Meta = b"invalid".to_vec();
-    assert!(cleaner.CleanUpBatch(&mut tasks).is_err());
+    assert!(cleaner.BatchClean(&mut tasks).is_err());
     assert!(!String::from_utf8_lossy(&tasks[0].Meta).contains("cleanup-access-key"));
     assert_eq!(tasks[1].Meta, b"invalid");
     assert!(runtime.events.lock().unwrap().is_empty());
 }
 #[test]
-fn cleanup_batch_meter_failure_occurs_after_files() {
+fn batch_clean_meter_failure_occurs_after_files() {
     use astersql_ingestor_globalsort::Storage;
     let uri = live_uri("bucket");
     let store = CleanupMemoryStore::default();
@@ -435,8 +435,8 @@ fn cleanup_batch_meter_failure_occurs_after_files() {
         cleanup_task(43, &uri, astersql_dxf_framework_proto::TaskStateSucceed),
     ];
     assert_eq!(
-        crate::ImportCleanUp::new(runtime.clone())
-            .CleanUpBatch(&mut tasks)
+        crate::ImportCleaner::new(runtime.clone())
+            .BatchClean(&mut tasks)
             .unwrap_err()
             .to_string(),
         "meter failed"
@@ -445,14 +445,14 @@ fn cleanup_batch_meter_failure_occurs_after_files() {
     assert_eq!(store.closes.load(std::sync::atomic::Ordering::Acquire), 1);
 }
 #[test]
-fn registered_import_cleanup_exposes_batch_and_writes_redaction_on_error() {
+fn registered_import_cleaner_exposes_batch_and_writes_redaction_on_error() {
     let uri = live_uri("bucket");
     let runtime = std::sync::Arc::new(CleanupRuntime {
         open_error: true,
         ..Default::default()
     });
-    crate::RegisterImportCleanUpFactory(runtime);
-    let factory = astersql_dxf_framework_scheduler::get_scheduler_cleanup_factory(
+    crate::RegisterImportCleanerFactory(runtime);
+    let factory = astersql_dxf_framework_scheduler::get_cleaner_factory(
         astersql_dxf_framework_proto::ImportInto,
     )
     .unwrap();
@@ -470,9 +470,9 @@ fn registered_import_cleanup_exposes_batch_and_writes_redaction_on_error() {
         .collect();
     assert_eq!(
         cleaner
-            .batch_cleanup()
+            .batch_cleaner()
             .unwrap()
-            .clean_up_batch(&mut tasks)
+            .batch_clean(&mut tasks)
             .unwrap_err()
             .to_string(),
         "open failed"
@@ -483,7 +483,7 @@ fn registered_import_cleanup_exposes_batch_and_writes_redaction_on_error() {
 }
 
 #[test]
-fn cleanup_batch_meters_eight_tasks_with_four_concurrent_workers() {
+fn batch_clean_meters_eight_tasks_with_four_concurrent_workers() {
     let uri = live_uri("parallel-meter");
     let runtime = std::sync::Arc::new(CleanupRuntime {
         stores: HashMap::from([(uri.clone(), CleanupMemoryStore::default())]),
@@ -496,8 +496,8 @@ fn cleanup_batch_meters_eight_tasks_with_four_concurrent_workers() {
     let mut tasks: Vec<_> = (1..=8)
         .map(|id| cleanup_task(id, &uri, astersql_dxf_framework_proto::TaskStateSucceed))
         .collect();
-    crate::ImportCleanUp::new(runtime.clone())
-        .CleanUpBatch(&mut tasks)
+    crate::ImportCleaner::new(runtime.clone())
+        .BatchClean(&mut tasks)
         .unwrap();
     assert_eq!(
         runtime
@@ -530,22 +530,21 @@ fn parallel_metering_cancels_pending_tasks_joins_workers_and_preserves_first_err
     let barrier = Arc::new(Barrier::new(4));
     let parent = astersql_dxf_framework_metering::Context::background();
     let error = astersql_errors::New("metering failed");
-    let returned =
-        crate::clean_up::sendMeterOnCleanUpInParallel(&parent, &refs, |context, task| {
-            started.fetch_add(1, Ordering::AcqRel);
-            barrier.wait();
-            let result = if task.ID == 1 {
-                Err(error.clone())
-            } else {
-                while !context.is_cancelled() {
-                    std::thread::yield_now();
-                }
-                Err(astersql_errors::New("context canceled"))
-            };
-            exited.fetch_add(1, Ordering::AcqRel);
-            result
-        })
-        .unwrap_err();
+    let returned = crate::clean_up::sendMeterOnCleanInParallel(&parent, &refs, |context, task| {
+        started.fetch_add(1, Ordering::AcqRel);
+        barrier.wait();
+        let result = if task.ID == 1 {
+            Err(error.clone())
+        } else {
+            while !context.is_cancelled() {
+                std::thread::yield_now();
+            }
+            Err(astersql_errors::New("context canceled"))
+        };
+        exited.fetch_add(1, Ordering::AcqRel);
+        result
+    })
+    .unwrap_err();
     assert!(returned.ptr_eq(&error));
     assert_eq!(started.load(Ordering::Acquire), 4);
     assert_eq!(exited.load(Ordering::Acquire), 4);
@@ -562,7 +561,7 @@ fn parallel_metering_propagates_parent_cancellation_and_recovers_panic() {
     let parent = astersql_dxf_framework_metering::Context::background();
     parent.cancel();
     assert_eq!(
-        crate::clean_up::sendMeterOnCleanUpInParallel(&parent, &[&task], |_, _| panic!(
+        crate::clean_up::sendMeterOnCleanInParallel(&parent, &[&task], |_, _| panic!(
             "must not send cancelled task"
         ))
         .unwrap_err()
@@ -570,21 +569,19 @@ fn parallel_metering_propagates_parent_cancellation_and_recovers_panic() {
         "context canceled"
     );
     assert!(
-        crate::clean_up::sendMeterOnCleanUpInParallel(&parent, &[], |_, _| panic!("empty")).is_ok()
+        crate::clean_up::sendMeterOnCleanInParallel(&parent, &[], |_, _| panic!("empty")).is_ok()
     );
     let deadline = astersql_dxf_framework_metering::Context::background()
         .with_timeout(std::time::Duration::ZERO);
     assert_eq!(
-        crate::clean_up::sendMeterOnCleanUpInParallel(&deadline, &[&task], |_, _| panic!(
-            "expired"
-        ))
-        .unwrap_err()
-        .to_string(),
+        crate::clean_up::sendMeterOnCleanInParallel(&deadline, &[&task], |_, _| panic!("expired"))
+            .unwrap_err()
+            .to_string(),
         "context deadline exceeded"
     );
     let parent = astersql_dxf_framework_metering::Context::background();
     assert_eq!(
-        crate::clean_up::sendMeterOnCleanUpInParallel(&parent, &[&task], |_, _| panic!(
+        crate::clean_up::sendMeterOnCleanInParallel(&parent, &[&task], |_, _| panic!(
             "metering panic"
         ))
         .unwrap_err()
@@ -594,11 +591,11 @@ fn parallel_metering_propagates_parent_cancellation_and_recovers_panic() {
 }
 
 #[test]
-fn cleanup_drain_moves_all_bounded_batches_through_real_sql_history() {
+fn clean_drain_moves_all_bounded_batches_through_real_sql_history() {
     use astersql_dxf_framework_scheduler as scheduler;
     struct Cleaner(std::sync::Arc<std::sync::atomic::AtomicUsize>);
-    impl scheduler::CleanUpRoutine for Cleaner {
-        fn clean_up(&self, task: &mut scheduler::Task) -> scheduler::Result<()> {
+    impl scheduler::Cleaner for Cleaner {
+        fn clean(&self, task: &mut scheduler::Task) -> scheduler::Result<()> {
             self.0.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             task.meta = b"cleaned-metadata".to_vec();
             Ok(())
@@ -611,7 +608,7 @@ fn cleanup_drain_moves_all_bounded_batches_through_real_sql_history() {
         .unwrap();
     let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let cleaner_calls = calls.clone();
-    scheduler::RegisterSchedulerCleanUpFactory(
+    scheduler::RegisterCleanerFactory(
         "sql-history-drain",
         std::sync::Arc::new(move || std::sync::Arc::new(Cleaner(cleaner_calls.clone()))),
     );
@@ -651,7 +648,7 @@ fn cleanup_drain_moves_all_bounded_batches_through_real_sql_history() {
         ":4000",
         None,
     );
-    manager.drain_cleanup_task_batches();
+    manager.drain_clean_task_batches();
     restore();
     assert_eq!(calls.load(std::sync::atomic::Ordering::Acquire), 3);
     assert!(storage_manager.GetCleanupTasks(()).unwrap().is_empty());

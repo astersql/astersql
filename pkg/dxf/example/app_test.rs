@@ -37,7 +37,7 @@
 // `TaskTable` fake standing in for the unported `storage.TaskManager`.
 
 use crate::{
-    StepDone, StepInit, StepOne, StepTwo, newScheduler, newTaskExecutor, postCleanupImpl,
+    StepDone, StepInit, StepOne, StepTwo, newScheduler, newTaskExecutor, postCleanImpl,
     subtaskMeta, taskMeta,
 };
 use astersql_dxf_framework_taskexecutor::{
@@ -282,9 +282,9 @@ fn test_example_application() {
     scheduler
         .OnDone(&Context::Background(), &task)
         .expect("OnDone should succeed");
-    postCleanupImpl
-        .CleanUp(&Context::Background(), &task)
-        .expect("CleanUp should succeed");
+    postCleanImpl
+        .Clean(&Context::Background(), &task)
+        .expect("Clean should succeed");
 
     SetSubtaskCheckIntervalForTest(backoff_guard.0, backoff_guard.1);
     ClearTaskExecutors();

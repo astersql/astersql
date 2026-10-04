@@ -79,7 +79,7 @@ impl CleanupMeteringContext {
     }
 }
 
-const CLEANUP_METERING_CONCURRENCY: usize = 4;
+const CLEAN_METERING_CONCURRENCY: usize = 4;
 
 /// 清理所需副作用的运行时抽象。
 ///
@@ -151,12 +151,12 @@ impl Drop for CleanupStoreGuard {
 }
 
 /// Import Into 清理入口，持有运行时适配器。
-pub struct ImportCleanUp {
+pub struct ImportCleaner {
     /// 清理副作用实现。
     runtime: Arc<dyn ImportCleanUpRuntime>,
 }
 
-impl ImportCleanUp {
+impl ImportCleaner {
     /// 用给定运行时构造清理器。
     pub fn new(runtime: Arc<dyn ImportCleanUpRuntime>) -> Self {
         Self { runtime }
@@ -167,21 +167,21 @@ impl ImportCleanUp {
     /// 这些子任务可能共享已排序文件，过早删除会导致并发写入失败。
     /// Cleanup only runs after all write-and-ingest subtasks finish, because
     /// those subtasks can share sorted files.
-    pub fn CleanUp(&self, task: &mut Task) -> Result<(), errors::SharedError> {
-        self.CleanUpBatch(std::slice::from_mut(task))
+    pub fn Clean(&self, task: &mut Task) -> Result<(), errors::SharedError> {
+        self.BatchClean(std::slice::from_mut(task))
     }
 
     /// Restore all table modes, delete each URI group with one scan, then meter.
     /// Cleanup and history transfer are not atomic; retries must be safe.
-    pub fn CleanUpBatch(&self, tasks: &mut [Task]) -> Result<(), errors::SharedError> {
-        self.CleanUpBatchWithContext(
+    pub fn BatchClean(&self, tasks: &mut [Task]) -> Result<(), errors::SharedError> {
+        self.BatchCleanWithContext(
             &astersql_dxf_framework_metering::Context::background(),
             tasks,
         )
     }
 
     /// Cleanup with caller cancellation propagated to the parallel metering workers.
-    pub fn CleanUpBatchWithContext(
+    pub fn BatchCleanWithContext(
         &self,
         context: &astersql_dxf_framework_metering::Context,
         tasks: &mut [Task],
@@ -223,13 +223,13 @@ impl ImportCleanUp {
                 .map_err(|error| errors::New(error.to_string()))?;
         }
         let meter_tasks: Vec<_> = meter_tasks.into_iter().map(|index| &tasks[index]).collect();
-        sendMeterOnCleanUpInParallel(context, &meter_tasks, |context, task| {
-            self.sendMeterOnCleanUp(context, task)
+        sendMeterOnCleanInParallel(context, &meter_tasks, |context, task| {
+            self.sendMeterOnClean(context, task)
         })
     }
 
     /// 从 post-process 元数据提取行数/数据 KV/索引 KV 大小并发送计量。
-    fn sendMeterOnCleanUp(
+    fn sendMeterOnClean(
         &self,
         context: &CleanupMeteringContext,
         task: &Task,
@@ -252,7 +252,7 @@ impl ImportCleanUp {
 }
 
 /// Run bounded workers, stop dispatch after the first error, and join every worker.
-pub(crate) fn sendMeterOnCleanUpInParallel<F>(
+pub(crate) fn sendMeterOnCleanInParallel<F>(
     parent: &astersql_dxf_framework_metering::Context,
     tasks: &[&Task],
     send: F,
@@ -267,7 +267,7 @@ where
     let pending = Mutex::new(tasks.iter());
     let first_error = Mutex::new(None);
     std::thread::scope(|scope| {
-        for _ in 0..CLEANUP_METERING_CONCURRENCY.min(tasks.len()) {
+        for _ in 0..CLEAN_METERING_CONCURRENCY.min(tasks.len()) {
             let context = &context;
             let pending = &pending;
             let first_error = &first_error;
@@ -330,22 +330,22 @@ pub fn meterDataFromPostProcess(meta: &PostProcessStepMeta) -> (u64, u64, u64) {
     (row_count, data_kv_size, index_kv_size)
 }
 
-impl astersql_dxf_framework_scheduler::CleanUpRoutine for ImportCleanUp {
-    fn clean_up(
+impl astersql_dxf_framework_scheduler::Cleaner for ImportCleaner {
+    fn clean(
         &self,
         task: &mut astersql_dxf_framework_scheduler::Task,
     ) -> astersql_dxf_framework_scheduler::Result<()> {
-        astersql_dxf_framework_scheduler::BatchCleanUpRoutine::clean_up_batch(
+        astersql_dxf_framework_scheduler::BatchCleaner::batch_clean(
             self,
             std::slice::from_mut(task),
         )
     }
-    fn batch_cleanup(&self) -> Option<&dyn astersql_dxf_framework_scheduler::BatchCleanUpRoutine> {
+    fn batch_cleaner(&self) -> Option<&dyn astersql_dxf_framework_scheduler::BatchCleaner> {
         Some(self)
     }
 }
-impl astersql_dxf_framework_scheduler::BatchCleanUpRoutine for ImportCleanUp {
-    fn clean_up_batch(
+impl astersql_dxf_framework_scheduler::BatchCleaner for ImportCleaner {
+    fn batch_clean(
         &self,
         tasks: &mut [astersql_dxf_framework_scheduler::Task],
     ) -> astersql_dxf_framework_scheduler::Result<()> {
@@ -356,7 +356,7 @@ impl astersql_dxf_framework_scheduler::BatchCleanUpRoutine for ImportCleanUp {
             .map_err(|error| {
                 astersql_dxf_framework_scheduler::SchedulerError::new(error.to_string())
             })?;
-        let result = self.CleanUpBatch(&mut import_tasks);
+        let result = self.BatchClean(&mut import_tasks);
         // Redaction persists even when a later cleanup side effect fails.
         for (task, import_task) in tasks.iter_mut().zip(import_tasks) {
             task.meta = import_task.Meta;
@@ -368,9 +368,9 @@ impl astersql_dxf_framework_scheduler::BatchCleanUpRoutine for ImportCleanUp {
 }
 
 /// Register the import cleaner on the owner's actual cleanup capability path.
-pub fn RegisterImportCleanUpFactory(runtime: Arc<dyn ImportCleanUpRuntime>) {
-    astersql_dxf_framework_scheduler::RegisterSchedulerCleanUpFactory(
+pub fn RegisterImportCleanerFactory(runtime: Arc<dyn ImportCleanUpRuntime>) {
+    astersql_dxf_framework_scheduler::RegisterCleanerFactory(
         astersql_dxf_framework_proto::ImportInto,
-        Arc::new(move || Arc::new(ImportCleanUp::new(runtime.clone()))),
+        Arc::new(move || Arc::new(ImportCleaner::new(runtime.clone()))),
     );
 }

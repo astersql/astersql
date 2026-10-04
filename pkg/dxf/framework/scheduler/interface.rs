@@ -521,13 +521,13 @@ pub trait Scheduler: Send + Sync {
 /// 按任务类型创建 Scheduler 的工厂。
 pub type SchedulerFactory = Arc<dyn Fn(Task, Param) -> Arc<dyn Scheduler> + Send + Sync + 'static>;
 /// 创建清理例程的工厂。
-pub type CleanUpFactory = Arc<dyn Fn() -> Arc<dyn CleanUpRoutine> + Send + Sync + 'static>;
+pub type CleanerFactory = Arc<dyn Fn() -> Arc<dyn Cleaner> + Send + Sync + 'static>;
 
 /// 全局 Scheduler 工厂注册表（按 task_type）。
 static SCHEDULER_FACTORIES: LazyLock<RwLock<HashMap<String, SchedulerFactory>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 /// 全局清理工厂注册表。
-static CLEANUP_FACTORIES: LazyLock<RwLock<HashMap<String, CleanUpFactory>>> =
+static CLEANER_FACTORIES: LazyLock<RwLock<HashMap<String, CleanerFactory>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
 /// 注册任务类型对应的 Scheduler 工厂（保留 Go 风格函数名）。
@@ -556,11 +556,11 @@ pub fn ClearSchedulerFactory() {
 }
 
 /// 任务完成后的清理例程。
-pub trait CleanUpRoutine: Send + Sync {
+pub trait Cleaner: Send + Sync {
     /// 执行清理。
-    fn clean_up(&self, task: &mut Task) -> Result<()>;
+    fn clean(&self, task: &mut Task) -> Result<()>;
     /// Optional batched capability; the owner invokes one instance per task type.
-    fn batch_cleanup(&self) -> Option<&dyn BatchCleanUpRoutine> {
+    fn batch_cleaner(&self) -> Option<&dyn BatchCleaner> {
         None
     }
 }
@@ -568,21 +568,21 @@ pub trait CleanUpRoutine: Send + Sync {
 /// A successful group is transferred together; failures transfer none of that
 /// group. Side effects and history transfer have no atomicity or rollback, so
 /// implementations must be idempotent after partial failure and retry.
-pub trait BatchCleanUpRoutine: CleanUpRoutine {
-    fn clean_up_batch(&self, tasks: &mut [Task]) -> Result<()>;
+pub trait BatchCleaner: Cleaner {
+    fn batch_clean(&self, tasks: &mut [Task]) -> Result<()>;
 }
 
 /// 注册任务类型对应的清理工厂。
-pub fn RegisterSchedulerCleanUpFactory(task_type: impl Into<String>, factory: CleanUpFactory) {
-    CLEANUP_FACTORIES
+pub fn RegisterCleanerFactory(task_type: impl Into<String>, factory: CleanerFactory) {
+    CLEANER_FACTORIES
         .write()
         .expect("cleanup factory lock poisoned")
         .insert(task_type.into(), factory);
 }
 
 /// 按任务类型查找清理工厂。
-pub fn get_scheduler_cleanup_factory(task_type: &str) -> Option<CleanUpFactory> {
-    CLEANUP_FACTORIES
+pub fn get_cleaner_factory(task_type: &str) -> Option<CleanerFactory> {
+    CLEANER_FACTORIES
         .read()
         .expect("cleanup factory lock poisoned")
         .get(task_type)
@@ -590,8 +590,8 @@ pub fn get_scheduler_cleanup_factory(task_type: &str) -> Option<CleanUpFactory> 
 }
 
 /// 清空所有清理工厂（测试用）。
-pub fn ClearSchedulerCleanUpFactory() {
-    CLEANUP_FACTORIES
+pub fn ClearCleanerFactory() {
+    CLEANER_FACTORIES
         .write()
         .expect("cleanup factory lock poisoned")
         .clear();

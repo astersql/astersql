@@ -98,11 +98,11 @@ impl TaskExecutorExtension {
 
 #[derive(Clone)]
 /// 任务级清理例程包装。
-pub struct CleanUpRoutine(Arc<dyn Fn(i64) -> Result<(), DxfError> + Send + Sync>);
+pub struct Cleaner(Arc<dyn Fn(i64) -> Result<(), DxfError> + Send + Sync>);
 
-impl CleanUpRoutine {
+impl Cleaner {
     /// 按任务 ID 执行清理。
-    pub fn cleanup(&self, task_id: i64) -> Result<(), DxfError> {
+    pub fn clean(&self, task_id: i64) -> Result<(), DxfError> {
         (self.0)(task_id)
     }
 }
@@ -135,8 +135,8 @@ pub fn GetCommonStepExecutor(step: Step, run_subtask: Arc<RunSubtaskFn>) -> Step
 
 #[allow(non_snake_case)]
 /// 空操作清理例程。
-pub fn GetCommonCleanUpRoutine() -> CleanUpRoutine {
-    CleanUpRoutine(Arc::new(|_| Ok(())))
+pub fn GetCommonCleaner() -> Cleaner {
+    Cleaner(Arc::new(|_| Ok(())))
 }
 
 /// 任务类型注册表：可同时登记调度器、清理与执行器。
@@ -148,7 +148,7 @@ pub trait TaskTypeRegistry: Send + Sync {
         extension: SchedulerExtension,
     ) -> Result<(), DxfError>;
     /// 注册清理例程。
-    fn register_cleanup(&self, task_type: &str, cleanup: CleanUpRoutine) -> Result<(), DxfError>;
+    fn register_cleanup(&self, task_type: &str, cleanup: Cleaner) -> Result<(), DxfError>;
     /// 注册执行器扩展。
     fn register_executor(
         &self,
@@ -177,7 +177,7 @@ pub fn RegisterExampleTask(
     registry: Arc<dyn TaskTypeRegistry>,
     scheduler: SchedulerExtension,
     executor: TaskExecutorExtension,
-    cleanup: CleanUpRoutine,
+    cleanup: Cleaner,
 ) -> Result<RegistrationGuard, DxfError> {
     RegisterTaskType(registry, TASK_TYPE_EXAMPLE, scheduler, executor, cleanup)
 }
@@ -189,7 +189,7 @@ pub fn RegisterTaskType(
     task_type: &str,
     scheduler: SchedulerExtension,
     executor: TaskExecutorExtension,
-    cleanup: CleanUpRoutine,
+    cleanup: Cleaner,
 ) -> Result<RegistrationGuard, DxfError> {
     // 顺序注册；任一步失败则 clear 并返回错误。
     let register_result = (|| {
@@ -219,7 +219,7 @@ pub fn RegisterTaskTypeForRollback(
     let executor = GetCommonTaskExecutorExt(Arc::new(move |task: &Task| {
         Ok(GetCommonStepExecutor(task.base.step, run.clone()))
     }));
-    RegisterExampleTask(registry, scheduler, executor, GetCommonCleanUpRoutine())
+    RegisterExampleTask(registry, scheduler, executor, GetCommonCleaner())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -82,11 +82,11 @@ pub enum CleanupError {
     Meter(String),
 }
 
-/// 回填任务的 S3 清理器（无状态，逻辑集中在 [`Self::cleanup`] 中）。
+/// 回填任务的 S3 清理器（无状态，逻辑集中在 [`Self::clean`] 中）。
 #[derive(Clone, Debug, Default)]
-pub struct BackfillCleanUpS3;
+pub struct BackfillCleaner;
 
-impl BackfillCleanUpS3 {
+impl BackfillCleaner {
     /// 执行清理主流程：删除云存储中间文件、按需上报计量数据、脱敏 URI。
     ///
     /// 参数说明：
@@ -95,7 +95,7 @@ impl BackfillCleanUpS3 {
     /// - `next_generation_kernel`：是否运行在下一代内核模式（该模式下需上报计量）；
     /// - `successful_read_summaries`：各成功读索引子任务的汇总统计，用于聚合计量数据；
     /// - `send_meter`：计量数据上报回调。
-    pub fn cleanup(
+    pub fn clean(
         &self,
         task: &mut CleanupTask,
         storage: &mut dyn CleanupStorage,
@@ -127,7 +127,7 @@ impl BackfillCleanUpS3 {
             && task.state == TaskState::Succeed
             && !task.meta.merge_temporary_index
         {
-            send_meter(send_meter_on_cleanup(successful_read_summaries))
+            send_meter(send_meter_on_clean(successful_read_summaries))
                 .map_err(CleanupError::Meter)?;
         }
         // 清理完成后脱敏 URI，防止其中携带的访问凭据落盘或出现在日志中。
@@ -139,7 +139,7 @@ impl BackfillCleanUpS3 {
 /// 聚合所有成功子任务的统计信息，得到清理阶段要上报的计量数据。
 ///
 /// 行数与处理字节数分别对各子任务汇总求和。
-pub fn send_meter_on_cleanup(summaries: &[SubtaskSummary]) -> MeteringData {
+pub fn send_meter_on_clean(summaries: &[SubtaskSummary]) -> MeteringData {
     MeteringData {
         row_count: summaries.iter().map(|summary| summary.row_count).sum(),
         index_kv_size: summaries

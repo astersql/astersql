@@ -13,13 +13,13 @@ use std::sync::mpsc::sync_channel;
 use std::time::Duration;
 use std::time::SystemTime;
 
-use crate::NewMockCleanUpRoutine;
+use crate::NewMockCleaner;
 
 #[test]
 // 清理回调接收可变任务引用，其修改必须像 Go 指针参数一样保留到调用方。
 fn cleanup_mock_preserves_go_mutable_task_pointer_semantics() {
-    let mut cleanup = NewMockCleanUpRoutine(&());
-    cleanup.CleanUp.set(Box::new(|_, task| {
+    let mut cleanup = NewMockCleaner(&());
+    cleanup.Clean.set(Box::new(|_, task| {
         task.Meta = b"redacted".to_vec();
         Ok(())
     }));
@@ -49,10 +49,10 @@ fn cleanup_mock_preserves_go_mutable_task_pointer_semantics() {
             Modifications: Vec::new(),
         },
     };
-    cleanup.CleanUp((), &mut task).unwrap();
+    cleanup.Clean((), &mut task).unwrap();
 
     assert_eq!(task.Meta, b"redacted");
-    assert_eq!(cleanup.CleanUp.call_count(), 1);
+    assert_eq!(cleanup.Clean.call_count(), 1);
 }
 
 #[test]

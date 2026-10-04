@@ -266,11 +266,11 @@ fn framework_executor_failure_is_returned_without_hiding_cleanup() {
 
 #[test]
 fn framework_cleanup_routine_is_repeatable_after_task_transfer_error() {
-    use astersql_dxf_framework_testutil::GetCommonCleanUpRoutine;
+    use astersql_dxf_framework_testutil::GetCommonCleaner;
 
-    let cleanup = GetCommonCleanUpRoutine();
-    assert!(cleanup.cleanup(1).is_ok());
-    assert!(cleanup.cleanup(2).is_ok());
+    let cleaner = GetCommonCleaner();
+    assert!(cleaner.clean(1).is_ok());
+    assert!(cleaner.clean(2).is_ok());
 }
 
 #[test]
@@ -359,7 +359,7 @@ fn framework_runtime_slots_and_prepare_mode_keep_legacy_defaults() {
 const _GO_FRAMEWORK_REMAINDER: &str = r####"
 
 // register_example_task 对应 Go 的 registerExampleTask。
-// 当调用方不传 runSubtaskFn 时，默认收集 StepOne/StepTwo subtask；executorExt 和 cleanup routine 都沿用 testutil mock。
+// 当调用方不传 runSubtaskFn 时，默认收集 StepOne/StepTwo subtask；executorExt 和 cleaner 都沿用 testutil mock。
 pub fn register_example_task(
     t: testing::TB,
     ctrl: &gomock::Controller,
@@ -371,7 +371,7 @@ pub fn register_example_task(
     let executor_ext = testutil::GetCommonTaskExecutorExt(ctrl, |task: &proto::Task| {
         Ok(testutil::GetCommonStepExecutor(ctrl, task.Step, run_subtask_fn))
     });
-    testutil::RegisterExampleTask(t, scheduler_ext, executor_ext, testutil::GetCommonCleanUpRoutine(ctrl));
+    testutil::RegisterExampleTask(t, scheduler_ext, executor_ext, testutil::GetCommonCleaner(ctrl));
 }
 
 // get_common_subtask_run_fn 对应 Go 的 getCommonSubtaskRunFn。
@@ -526,7 +526,7 @@ pub fn test_framework_sub_task_init_env_failed() {
     let step_exec = mockexecute::NewMockStepExecutor(c.MockCtrl);
     step_exec.EXPECT().Init(gomock::Any()).Return(errors::New("mockExecSubtaskInitEnvErr")).AnyTimes();
     let executor_ext = testutil::GetCommonTaskExecutorExt(c.MockCtrl, |_task: &proto::Task| Ok(step_exec));
-    testutil::RegisterExampleTask(t, scheduler_ext, executor_ext, testutil::GetCommonCleanUpRoutine(c.MockCtrl));
+    testutil::RegisterExampleTask(t, scheduler_ext, executor_ext, testutil::GetCommonCleaner(c.MockCtrl));
     let scope = handle::GetTargetScope();
     let task = testutil::SubmitAndWaitTask(c.Ctx, t, "key1", scope, 1);
     require::Equal(t, proto::TaskStateReverted, task.State);
@@ -603,10 +603,10 @@ pub fn test_framework_run_subtask_cancel_or_failed() {
     });
 }
 
-// test_framework_clean_up_routine 对应 Go 的 TestFrameworkCleanUpRoutine。
+// test_framework_cleaner 对应 Go 的 TestFrameworkCleaner。
 // 临时缩短 DefaultCleanUpInterval，校验正常 cleanup 与 transfer err 场景都能保留历史信息。
 #[test]
-pub fn test_framework_clean_up_routine() {
+pub fn test_framework_cleaner() {
     let bak = scheduler::DefaultCleanUpInterval;
     defer(|| scheduler::DefaultCleanUpInterval = bak);
     scheduler::DefaultCleanUpInterval = 500 * time::Millisecond;
@@ -744,7 +744,7 @@ pub fn test_max_runtime_slots() {
                 Ok(())
             }))
         });
-        testutil::RegisterExampleTask(t, scheduler_ext, executor_ext, testutil::GetCommonCleanUpRoutine(c.MockCtrl));
+        testutil::RegisterExampleTask(t, scheduler_ext, executor_ext, testutil::GetCommonCleaner(c.MockCtrl));
         testfailpoint::EnableCall(t, "github.com/pingcap/tidb/pkg/dxf/framework/storage/beforeSubmitTask", |_required_slots, params: &mut proto::ExtraParams| {
             params.PrepareMode = proto::PrepareModeRequired;
         });
@@ -786,7 +786,7 @@ pub fn test_max_runtime_slots() {
                 Ok(())
             }))
         });
-        testutil::RegisterExampleTask(t, scheduler_ext, executor_ext, testutil::GetCommonCleanUpRoutine(c.MockCtrl));
+        testutil::RegisterExampleTask(t, scheduler_ext, executor_ext, testutil::GetCommonCleaner(c.MockCtrl));
         let scope = handle::GetTargetScope();
         let (task, err) = handle::SubmitTask(c.Ctx, "prepare-mode-disabled", proto::TaskTypeExample, c.Store.GetKeyspace(), 1, scope, 0, INITIAL_TASK_META.as_bytes());
         require::NoError(t, err);
