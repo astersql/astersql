@@ -44,6 +44,23 @@ fn marshal_matches_go_field_omission_and_escaping() {
 }
 
 #[test]
+fn display_marshals_server_info_with_current_server_id() {
+    let info = sample_server_info();
+
+    let encoded = info.to_string();
+    let mut decoded = ServerInfo::default();
+    decoded.Unmarshal(encoded.as_bytes()).unwrap();
+
+    assert_eq!(decoded.StaticInfo.ID, info.StaticInfo.ID);
+    assert_eq!(decoded.StaticInfo.Keyspace, info.StaticInfo.Keyspace);
+    assert_eq!(
+        decoded.StaticInfo.AssumedKeyspace,
+        info.StaticInfo.AssumedKeyspace
+    );
+    assert_eq!(decoded.StaticInfo.JSONServerID, 9);
+}
+
+#[test]
 #[should_panic(expected = "ServerIDGetter")]
 fn marshal_requires_server_id_getter_like_go() {
     let mut info = ServerInfo::default();

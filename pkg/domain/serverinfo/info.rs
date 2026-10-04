@@ -155,6 +155,16 @@ impl fmt::Display for ServerInfoError {
 }
 impl std::error::Error for ServerInfoError {}
 
+impl fmt::Display for ServerInfo {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut info = self.clone();
+        match info.Marshal() {
+            Ok(encoded) => formatter.write_str(&String::from_utf8_lossy(&encoded)),
+            Err(error) => write!(formatter, "<failed to marshal server info: {error}>"),
+        }
+    }
+}
+
 impl StaticInfo {
     /// Decode the static part embedded in /info using the same Go-compatible
     /// field converters as ServerInfo; dynamic labels are intentionally ignored.
