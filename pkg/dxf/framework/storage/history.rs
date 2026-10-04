@@ -225,6 +225,15 @@ pub struct HistoryTaskPage {
     pub ApproxTotalCount: i64,
 }
 
+/// Task metadata required when deciding whether external artifacts may be removed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaskCleanupInfo {
+    pub ID: i64,
+    pub Type: proto::TaskType,
+    pub State: proto::TaskState,
+    pub EndTime: Option<std::time::SystemTime>,
+}
+
 // ValidateHistoryTaskPageSize validates page size for history task listing.
 /// 校验 pageSize 落在 [Min, Max] 区间。
 pub fn ValidateHistoryTaskPageSize(pageSize: i32) -> Result<(), Error> {

@@ -17,6 +17,9 @@ pub use metrics::*;
 /// 收集冲突 KV 步骤实现。
 pub mod collect_conflicts;
 pub use collect_conflicts::*;
+/// Conflict-row object naming and retention cleanup.
+pub mod conflictrows;
+pub use conflictrows::*;
 /// 冲突解决（删除冲突行等）步骤实现。
 pub mod conflict_resolution;
 pub use conflict_resolution::*;
@@ -51,6 +54,9 @@ mod collect_conflicts_test;
 #[cfg(test)]
 #[path = "conflict_resolution_test.rs"]
 mod conflict_resolution_test;
+#[cfg(test)]
+#[path = "conflictrows_test.rs"]
+mod conflictrows_test;
 #[cfg(test)]
 #[path = "encode_and_sort_operator_test.rs"]
 mod encode_and_sort_operator_test;

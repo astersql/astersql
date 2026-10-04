@@ -21,7 +21,6 @@
 
 #![allow(non_camel_case_types, non_snake_case)]
 
-use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -177,11 +176,7 @@ impl Collector for collectConflictsStepExecutor {
 /// 冲突行文件刻意放在 `<task-id>/` 之外：清理会删除任务目录，
 /// 但用户仍需能事后检查这些冲突行文件。
 pub fn getConflictRowFilenamePrefix(taskID: i64, subtaskID: i64, uuid: &str) -> String {
-    Path::new("conflicted-rows")
-        .join(taskID.to_string())
-        .join(format!("{subtaskID}-{uuid}"))
-        .to_string_lossy()
-        .into_owned()
+    crate::conflictrows::NewFileNamePrefixWithUUID(taskID, subtaskID, uuid)
 }
 
 /// Validate index metadata before starting encoders/readers.
