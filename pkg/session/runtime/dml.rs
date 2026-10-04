@@ -338,6 +338,42 @@ impl ConcreteSession {
         Ok(())
     }
 
+    pub(super) fn reorganize_partition_rows(
+        &self,
+        source: &astersql_meta_model::TableInfo,
+        target: &astersql_meta_model::TableInfo,
+        rows: &[RelationalRow],
+    ) -> SessionResult<()> {
+        let flags = self.dml_type_flags();
+        let mut mutations = Vec::new();
+        let mut moved = 0_u64;
+        for (_, row) in rows {
+            let (source_key, _) = encode_relational_row(source, row, flags)?;
+            let (target_key, target_value) = encode_relational_row(target, row, flags)?;
+            if source_key.0 == target_key.0 {
+                continue;
+            }
+            mutations.push((source_key, None));
+            mutations.extend(relational_index_mutations(source, Some(row), None, flags)?);
+            mutations.push((target_key, Some(target_value)));
+            mutations.extend(relational_index_mutations(target, None, Some(row), flags)?);
+            moved += 1;
+        }
+        if mutations.is_empty() {
+            return Ok(());
+        }
+        self.apply_relational_mutations(
+            &target.Name.L,
+            "ReorganizePartition",
+            mutations,
+            unique_lock_keys_for_rows(target, rows.iter().map(|(_, row)| row)),
+            moved,
+            0,
+            0,
+            0,
+        )
+    }
+
     pub(super) fn clear_temporary_table_data(
         &self,
         table: &astersql_meta_model::TableInfo,

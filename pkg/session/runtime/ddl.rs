@@ -2010,7 +2010,18 @@ impl ConcreteSession {
                     return Ok(());
                 }
                 ast::AlterTableType::ReorganizePartition => {
-                    self.domain
+                    let (_, source_table) = self
+                        .domain
+                        .stats_table(database, &statement.Table.Name.L)
+                        .ok_or_else(|| {
+                            SessionError::new(format!(
+                                "unknown table {database}.{}",
+                                statement.Table.Name.L
+                            ))
+                        })?;
+                    let source_rows = self.scan_registered_table(&source_table)?;
+                    let reorganized = self
+                        .domain
                         .ddl_replace_partitions(
                             database,
                             &statement.Table.Name.L,
@@ -2020,6 +2031,11 @@ impl ConcreteSession {
                         .map_err(|error| {
                             session_error("ALTER TABLE REORGANIZE PARTITION", error)
                         })?;
+                    // Route rows captured before the metadata switch through
+                    // the new definitions. This moves record keys and replaces
+                    // their local-index keys together, so retrying after a
+                    // missing reorg handle cannot publish a half-moved row.
+                    self.reorganize_partition_rows(&source_table, &reorganized, &source_rows)?;
                     return Ok(());
                 }
                 ast::AlterTableType::ExchangePartition => {

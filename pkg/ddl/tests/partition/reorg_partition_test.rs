@@ -255,6 +255,136 @@ fn reorg_partition_replaces_selected_definitions_without_losing_rows() {
     );
 }
 
+/// Go `TestReorgPartitionHandleNotExistNoPanic`: a missing durable reorg
+/// element is an ordinary retryable boundary, not an absent context that a
+/// partition worker may dereference.  After observing that boundary, the same
+/// table can still complete the partition replacement with both local indexes
+/// and every source row intact.
+#[test]
+fn missing_reorg_handle_returns_error_and_retry_preserves_rows_and_local_indexes() {
+    use astersql_ddl::job_worker::DurableJobSession;
+    use astersql_ddl::reorg::{PersistentReorgHandler, ReorgElement, ReorgInfo};
+    use astersql_meta_model::group_3::Job;
+
+    let store = CreateAnalyzeStatsStore();
+    let domain = store.domain();
+    let mut testkit = TestKit::new(store);
+    testkit.MustExec(
+        "create table reorg_missing_handle (\
+             a int unsigned primary key, b varchar(255), c int, \
+             key idx_b (b), key idx_cb (c,b)) \
+         partition by range (a) (\
+             partition p0 values less than (10), \
+             partition p1 values less than (20), \
+             partition pmax values less than (maxvalue))",
+        Vec::new(),
+    );
+    testkit.MustExec(
+        "insert into reorg_missing_handle values \
+         (1,'1',1),(10,'10',10),(23,'23',32),\
+         (34,'34',43),(45,'45',54),(56,'56',65)",
+        Vec::new(),
+    );
+
+    let table = domain
+        .table_by_name("test", "reorg_missing_handle")
+        .expect("partitioned table");
+    let p1 = table
+        .GetPartitionInfo()
+        .expect("partition metadata")
+        .GetPartitionIDByName("p1");
+    let schema_id = domain
+        .info_schema()
+        .AllSchemas()
+        .into_iter()
+        .find(|database| database.name.lower == "test")
+        .expect("test database")
+        .id;
+    let mut job = Job {
+        id: 69_303,
+        tp: ACTION_REORGANIZE_PARTITION,
+        schema_id,
+        table_id: table.ID,
+        snapshot_ver: 42,
+        ..Default::default()
+    };
+    let pool = astersql_session::runtime::system_session::SystemSessionPool::new(domain.clone());
+    let mut session = pool.acquire().expect("system session");
+    let error = PersistentReorgHandler::restore(&mut session, &mut job)
+        .err()
+        .expect("missing reorg element must be reported");
+    assert!(
+        error.contains("DDL reorg element does not exist"),
+        "{error}"
+    );
+    assert_eq!(job.snapshot_ver, 0);
+
+    let record_prefix = astersql_tablecodec::GenTableRecordPrefix(p1);
+    let info = ReorgInfo {
+        job_id: job.id,
+        physical_table_id: p1,
+        start_key: record_prefix.0.clone(),
+        end_key: record_prefix.PrefixNext().0,
+        element: ReorgElement {
+            id: table.Columns[0].ID,
+            element_type: b"_col_".to_vec(),
+        },
+        ..Default::default()
+    };
+    PersistentReorgHandler::initialize(&mut session, &info).expect("initialize retry state");
+    assert_eq!(
+        PersistentReorgHandler::restore(&mut session, &mut job)
+            .expect("retry restores the durable element")
+            .info,
+        info
+    );
+
+    testkit.MustExec(
+        "alter table reorg_missing_handle reorganize partition p1 into \
+         (partition p1a values less than (15), partition p1b values less than (20))",
+        Vec::new(),
+    );
+    testkit.MustExec("admin check table reorg_missing_handle", Vec::new());
+    let reorganized = domain
+        .table_by_name("test", "reorg_missing_handle")
+        .expect("reorganized table");
+    let local_index_entries = domain.storage_handle().with_storage(|storage| {
+        let snapshot = storage.GetSnapshot(storage.CurrentVersion("global").unwrap());
+        reorganized
+            .GetPartitionInfo()
+            .unwrap()
+            .Definitions
+            .iter()
+            .flat_map(|definition| {
+                reorganized
+                    .Indices
+                    .iter()
+                    .filter(|index| !index.Global)
+                    .map(|index| (definition.ID, index.ID))
+            })
+            .map(|(physical_id, index_id)| {
+                let (start, end) =
+                    astersql_tablecodec::GetTableIndexKeyRange(physical_id, index_id);
+                let mut iterator = snapshot
+                    .Iter(astersql_kv::Key(start), Some(astersql_kv::Key(end)))
+                    .unwrap();
+                let mut count = 0;
+                while iterator.Valid() {
+                    count += 1;
+                    iterator.Next().unwrap();
+                }
+                iterator.Close();
+                count
+            })
+            .sum::<usize>()
+    });
+    assert_eq!(local_index_entries, 12);
+    let expected = astersql_testkit::Rows(&["1", "10", "23", "34", "45", "56"]);
+    testkit
+        .MustQuery("select a from reorg_missing_handle order by a", Vec::new())
+        .Check(expected);
+}
+
 /// Enter exactly the phase changed by 45e4745, after new-partition data and
 /// indexes have been built. Use the production pooled session/KV backfiller;
 /// the absent whole REORGANIZE job lifecycle is not part of this fixture.
