@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use astersql_config_deploymode as deploymode;
 use astersql_config_kerneltype as kerneltype;
 use astersql_domain_infosync as infosync;
 use astersql_dxf_framework_handle as dxfhandle;
@@ -382,8 +383,9 @@ pub fn SubmitTask(
 }
 
 /// NextGen 且全局排序时启用异步 prepare（先轻量登记再异步准备）。
+/// Starter 的导入大小受限，使用同步 prepare 以更快返回校验结果。
 pub fn ShouldUseAsyncPrepare(plan: &importer::Plan) -> bool {
-    kerneltype::IsNextGen() && plan.IsGlobalSort()
+    kerneltype::IsNextGen() && !deploymode::IsStarter() && plan.IsGlobalSort()
 }
 
 /// 组装 LogicalPlan 并调用提交服务；异步 prepare 时强制并发与节点数为 1。

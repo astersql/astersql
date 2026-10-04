@@ -16,6 +16,8 @@ use crate::job::{
     convertToMySQLTime, speed_window,
 };
 
+static DEPLOY_MODE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
 struct NoUpdateProvider;
 
 struct EmptyErrorProvider;
@@ -447,6 +449,7 @@ fn invalid_task_meta_error_precedes_subtask_summary_error_like_go() {
 
 #[test]
 fn async_prepare_keeps_logical_plan_copy_and_mutates_caller_plan_like_go() {
+    let _guard = DEPLOY_MODE_TEST_LOCK.lock().unwrap();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let service = CapturingSubmissionService(calls.clone());
     let table = model::TableInfo {
@@ -474,6 +477,51 @@ fn async_prepare_keeps_logical_plan_copy_and_mutates_caller_plan_like_go() {
         assert_eq!(captured.1, 4);
         assert_eq!(captured.2, proto::PrepareModeDisabled);
     }
+}
+
+#[test]
+fn starter_global_sort_uses_synchronous_prepare() {
+    if astersql_config_kerneltype::IsClassic() {
+        return;
+    }
+
+    let _guard = DEPLOY_MODE_TEST_LOCK.lock().unwrap();
+    let original_mode = astersql_config_deploymode::Get();
+    struct RestoreDeployMode(astersql_config_deploymode::Mode);
+    impl Drop for RestoreDeployMode {
+        fn drop(&mut self) {
+            astersql_config_deploymode::Set(self.0).unwrap();
+        }
+    }
+    let _restore = RestoreDeployMode(original_mode);
+
+    let mut global_sort_plan = importer::Plan {
+        TableInfo: Some(Arc::new(model::TableInfo {
+            ID: 7,
+            Name: ast::NewCIStr("t"),
+            ..Default::default()
+        })),
+        ThreadCnt: 4,
+        MaxNodeCnt: 2,
+        CloudStorageURI: "s3://bucket/path".into(),
+        ..Default::default()
+    };
+
+    astersql_config_deploymode::Set(astersql_config_deploymode::Premium).unwrap();
+    assert!(crate::job::ShouldUseAsyncPrepare(&global_sort_plan));
+    astersql_config_deploymode::Set(astersql_config_deploymode::PremiumReserved).unwrap();
+    assert!(crate::job::ShouldUseAsyncPrepare(&global_sort_plan));
+    astersql_config_deploymode::Set(astersql_config_deploymode::Starter).unwrap();
+    assert!(!crate::job::ShouldUseAsyncPrepare(&global_sort_plan));
+
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let service = CapturingSubmissionService(calls.clone());
+    SubmitTask(&service, &mut global_sort_plan, "import").unwrap();
+    assert_eq!(
+        (global_sort_plan.ThreadCnt, global_sort_plan.MaxNodeCnt),
+        (4, 2)
+    );
+    assert_eq!(calls.lock().unwrap()[0], (4, 2, proto::PrepareModeDisabled));
 }
 
 #[test]
