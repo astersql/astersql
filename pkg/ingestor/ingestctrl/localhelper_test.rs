@@ -13,8 +13,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Barrier, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::localhelper::{
@@ -87,6 +87,35 @@ fn tune_store_write_limiter_updates_existing_buckets_and_disables_limiting() {
     let cancelled = CancellationToken::default();
     cancelled.cancel();
     assert_eq!(limiter.WaitN(&cancelled, 1, 10_000), Ok(()));
+}
+
+#[test]
+fn disabling_store_write_limiter_while_creating_bucket_does_not_publish_stale_bucket() {
+    let limiter = Arc::new(newStoreWriteLimiter(100));
+    let reached_before_write = Arc::new(Barrier::new(2));
+    let continue_get_limiter = Arc::new(Barrier::new(2));
+
+    let worker = {
+        let limiter = Arc::clone(&limiter);
+        let reached_before_write = Arc::clone(&reached_before_write);
+        let continue_get_limiter = Arc::clone(&continue_get_limiter);
+        std::thread::spawn(move || {
+            limiter
+                .getLimiterForTest(1, || {
+                    reached_before_write.wait();
+                    continue_get_limiter.wait();
+                })
+                .unwrap()
+                .is_none()
+        })
+    };
+
+    reached_before_write.wait();
+    limiter.UpdateLimit(0);
+    continue_get_limiter.wait();
+
+    assert!(worker.join().unwrap());
+    assert_eq!(limiter.limiterCount(), 0);
 }
 
 #[test]

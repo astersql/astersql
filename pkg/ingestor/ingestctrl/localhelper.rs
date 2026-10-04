@@ -178,6 +178,14 @@ pub fn calculateLimitAndBurst(writeLimit: isize) -> (isize, isize) {
 impl storeWriteLimiter {
     /// 惰性创建并返回指定 Store 的令牌桶；limit 为 0 时返回 None。
     fn getLimiter(&self, storeID: u64) -> Result<Option<Arc<Mutex<TokenBucket>>>> {
+        self.getLimiterWithBeforeWrite(storeID, || {})
+    }
+
+    fn getLimiterWithBeforeWrite(
+        &self,
+        storeID: u64,
+        beforeWrite: impl FnOnce(),
+    ) -> Result<Option<Arc<Mutex<TokenBucket>>>> {
         let limit = self.limit.load(Ordering::Acquire);
         if limit == 0 {
             return Ok(None);
@@ -190,8 +198,13 @@ impl storeWriteLimiter {
         {
             return Ok(Some(Arc::clone(limiter)));
         }
+        beforeWrite();
         // 双检：写锁下插入缺失的 Store 桶
         let mut limiters = self.limiters.write().map_err(|_| Error::Poisoned)?;
+        let limit = self.limit.load(Ordering::Acquire);
+        if limit == 0 {
+            return Ok(None);
+        }
         Ok(Some(Arc::clone(limiters.entry(storeID).or_insert_with(
             || {
                 Arc::new(Mutex::new(TokenBucket::new(
@@ -200,6 +213,23 @@ impl storeWriteLimiter {
                 )))
             },
         ))))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn getLimiterForTest(
+        &self,
+        storeID: u64,
+        beforeWrite: impl FnOnce(),
+    ) -> Result<Option<Arc<Mutex<TokenBucket>>>> {
+        self.getLimiterWithBeforeWrite(storeID, beforeWrite)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn limiterCount(&self) -> usize {
+        self.limiters
+            .read()
+            .map(|limiters| limiters.len())
+            .unwrap_or(0)
     }
 }
 
@@ -234,13 +264,17 @@ impl StoreWriteLimiter for storeWriteLimiter {
     fn UpdateLimit(&self, newLimit: isize) {
         let (limit, burst) = calculateLimitAndBurst(newLimit);
         // 速率未变则跳过刷新
-        if self.limit.swap(limit, Ordering::AcqRel) == limit {
+        if self.limit.load(Ordering::Acquire) == limit {
             return;
         }
-        self.burst.store(burst, Ordering::Release);
         let Ok(mut limiters) = self.limiters.write() else {
             return;
         };
+        if self.limit.load(Ordering::Acquire) == limit {
+            return;
+        }
+        self.limit.store(limit, Ordering::Release);
+        self.burst.store(burst, Ordering::Release);
         if limit == 0 {
             // 关闭限速时清空各 Store 桶
             limiters.clear();
