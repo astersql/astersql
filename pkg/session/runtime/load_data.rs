@@ -722,17 +722,22 @@ impl ConcreteSession {
             return Err(SessionError::new("mock commit one task error"));
         }
         let plan = crate::dml_runtime::PlanInsert(&insert)?;
-        let (copied_rows, deleted) =
-            match self.execute_relational_insert_with_load_counts(&insert, plan, false, None) {
-                Ok(counts) => counts,
-                Err(error) => {
-                    let message = error.to_string();
-                    if let Some(message) = message.strip_prefix("[kv:1062]") {
-                        return Err(load_data_error(1062, "23000", message));
-                    }
-                    return Err(error);
+        let (copied_rows, deleted) = match self.execute_relational_insert_with_load_counts(
+            &insert,
+            plan,
+            false,
+            None,
+            Some(row_number),
+        ) {
+            Ok(counts) => counts,
+            Err(error) => {
+                let message = error.to_string();
+                if let Some(message) = message.strip_prefix("[kv:1062]") {
+                    return Err(load_data_error(1062, "23000", message));
                 }
-            };
+                return Err(error);
+            }
+        };
         for warning in self
             .state
             .borrow_mut()

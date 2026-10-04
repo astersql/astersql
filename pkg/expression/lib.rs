@@ -876,3 +876,12 @@ mod builtin_now_test;
 mod builtin_inference;
 #[cfg(test)]
 mod builtin_inference_test;
+
+pub mod inference_helper;
+pub use builtin_inference::{
+    CheckEmbedTextAllowed, EmbedTextArgs, EvalEmbedTextArgs, EvalEmbedTextArgsFromExpr,
+    EvalEmbedTextArgsToDatum,
+};
+pub use inference_helper::*;
+#[cfg(test)]
+mod inference_helper_test;

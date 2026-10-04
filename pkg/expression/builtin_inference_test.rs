@@ -93,6 +93,16 @@ fn embedding_factory_starter_options_nulls_and_errors() {
     }
     let previous_assertions = intest::EnableAssert.swap(true, std::sync::atomic::Ordering::Relaxed);
     let ctx = context();
+    let session = expropt::SessionContextPropReader
+        .get_session_context(ctx.GetEvalCtx())
+        .unwrap();
+    assert!(
+        EvalEmbedTextArgsToDatum(Some(session), None)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("invalid EMBED_TEXT() usage")
+    );
     for (options, expected) in [
         (None, "[1,2,3]"),
         (Some(""), "[1,2,3]"),
@@ -197,3 +207,129 @@ fn embedding_factory_starter_options_nulls_and_errors() {
 }
 
 static MODE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[test]
+fn embedding_arguments_preserve_null_short_circuit_errors_and_options() {
+    let ctx = context();
+    let eval = ctx.GetEvalCtx();
+    assert!(
+        EvalEmbedTextArgs(eval, chunk::Row::default(), &[])
+            .unwrap_err()
+            .to_string()
+            .contains("invalid EMBED_TEXT")
+    );
+    assert!(
+        EvalEmbedTextArgs(
+            eval,
+            chunk::Row::default(),
+            &[
+                string(Some("m")),
+                string(Some("t")),
+                string(Some("{}")),
+                string(Some("extra"))
+            ]
+        )
+        .is_err()
+    );
+    let parsed = EvalEmbedTextArgs(
+        eval,
+        chunk::Row::default(),
+        &[
+            string(Some("mock/json")),
+            string(Some("[1,2,3]")),
+            string(Some("{\"plus\":1,\"plus@search\":10}")),
+        ],
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(parsed.Model, "mock/json");
+    assert_eq!(parsed.Text, "[1,2,3]");
+    assert_eq!(parsed.Opts.len(), 1);
+    assert_eq!(parsed.Opts["plus"], serde_json::json!(1));
+    for options in [None, Some("")] {
+        assert!(
+            EvalEmbedTextArgs(
+                eval,
+                chunk::Row::default(),
+                &[string(Some("m")), string(Some("t")), string(options)]
+            )
+            .unwrap()
+            .unwrap()
+            .Opts
+            .is_empty()
+        );
+    }
+    for index in 0..3 {
+        let mut bad = NewStrConst("unused");
+        bad.ParamMarker = Some(ParamMarker::new(999));
+        let expected = bad
+            .EvalString(eval, chunk::Row::default())
+            .unwrap_err()
+            .to_string();
+        let mut args = vec![string(Some("m")), string(Some("t")), string(Some("{}"))];
+        args[index] = Box::new(bad);
+        assert_eq!(
+            EvalEmbedTextArgs(eval, chunk::Row::default(), &args)
+                .unwrap_err()
+                .to_string(),
+            expected
+        );
+    }
+    assert!(
+        EvalEmbedTextArgs(
+            eval,
+            chunk::Row::default(),
+            &[string(None), string(Some("t")), string(Some("bad"))]
+        )
+        .unwrap()
+        .is_none()
+    );
+    assert!(
+        EvalEmbedTextArgs(
+            eval,
+            chunk::Row::default(),
+            &[string(Some("m")), string(None), string(Some("bad"))]
+        )
+        .unwrap()
+        .is_none()
+    );
+    assert!(
+        EvalEmbedTextArgsFromExpr(
+            eval,
+            chunk::Row::default(),
+            string(Some("not a function")).as_ref()
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("expects EMBED_TEXT")
+    );
+    assert!(
+        EvalEmbedTextArgsToDatum(None, Some(&parsed))
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("requires session context")
+    );
+    let one: ExprBox = Box::new(NewOne());
+    let other = BuildCastFunction(&ctx, &one, &types::NewFieldType(mysql::TypeVarString));
+    assert!(
+        EvalEmbedTextArgsFromExpr(eval, chunk::Row::default(), other.as_ref())
+            .unwrap_err()
+            .to_string()
+            .contains("expects EMBED_TEXT")
+    );
+    let expr = NewFunctionBase(
+        &ctx,
+        "embed_text",
+        *types::NewFieldType(mysql::TypeTiDBVectorFloat32),
+        vec![string(Some("mock/json")), string(Some("[1,2,3]"))],
+    )
+    .unwrap();
+    assert_eq!(
+        EvalEmbedTextArgsFromExpr(eval, chunk::Row::default(), expr.as_ref())
+            .unwrap()
+            .unwrap()
+            .Text,
+        "[1,2,3]"
+    );
+}

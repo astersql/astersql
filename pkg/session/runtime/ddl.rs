@@ -2175,6 +2175,20 @@ impl ConcreteSession {
                         {
                             continue;
                         }
+                        for option in &definition.Options {
+                            if option.Tp == ast::ColumnOptionType::Generated {
+                                if let Some(expr) = &option.Expr {
+                                    astersql_ddl::generated_column::check_embed_text_generated_column(&definition.Name.Name.L, expr, option.Stored).map_err(|error| SessionError::new(error.to_string()))?;
+                                    if option.Stored
+                                        && astersql_expression::IsEmbedTextFuncCall(expr)
+                                    {
+                                        return Err(SessionError::new(
+                                            "[ddl:3106]Unsupported on generated column: adding a generated column using EMBED_TEXT() through ALTER TABLE",
+                                        ));
+                                    }
+                                }
+                            }
+                        }
                         let mut column = astersql_ddl::BuildColumnInfoFromAST(
                             definition,
                             info.Columns.len() + columns.len(),
@@ -2348,6 +2362,7 @@ impl ConcreteSession {
                     .map_err(|error| {
                         session_error("build ALTER TABLE MODIFY COLUMN metadata", error)
                     })?;
+                    Self::check_embedding_column_dependencies(&column, &info)?;
                     Self::validate_enum_set_lengths(std::slice::from_ref(&column))?;
                     if column.GetType() == astersql_parser_mysql::r#type::TypeTiDBVectorFloat32 {
                         let dimensions = column.GetFlen() as i32;
@@ -2445,6 +2460,7 @@ impl ConcreteSession {
                     .map_err(|error| {
                         session_error("build ALTER TABLE CHANGE COLUMN metadata", error)
                     })?;
+                    Self::check_embedding_column_dependencies(&column, &info)?;
                     if self.persistent_actions_enabled() {
                         self.submit_normal_action(database,&statement.Table.Name.L,12,serde_json::json!({"column":column,"old_column_name":old_name.Name,"modify_column_type":0,"position":{"Tp":match spec.Position.Tp {ast::ColumnPositionType::None=>0,ast::ColumnPositionType::First=>1,ast::ColumnPositionType::After=>2},"RelativeColumn":spec.Position.RelativeColumn.as_ref().map(|column|serde_json::json!({"Name":column.Name}))}}))?;
                         handled_additive_spec = true;
@@ -3653,3 +3669,30 @@ impl ConcreteSession {
 #[cfg(test)]
 #[path = "ddl_test.rs"]
 mod tests;
+
+impl ConcreteSession {
+    fn check_embedding_column_dependencies(
+        column: &astersql_meta_model::ColumnInfo,
+        table: &astersql_meta_model::TableInfo,
+    ) -> SessionResult<()> {
+        if !column.IsGenerated() {
+            return Ok(());
+        }
+        for dependency in &table.Columns {
+            if column.Dependences.contains_key(&dependency.Name.L) && dependency.IsGenerated() {
+                let expression =
+                    crate::dml_runtime::ParseGeneratedExpr(&dependency.GeneratedExprString)?;
+                if astersql_expression::IsEmbedTextFuncCall(&expression) {
+                    return Err(SessionError::new(
+                        astersql_ddl::generated_column::embed_text_dependency_error(
+                            &column.Name.L,
+                            &dependency.Name.L,
+                        )
+                        .to_string(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}

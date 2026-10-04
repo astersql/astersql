@@ -144,3 +144,13 @@ fn fractional_timestamp_default_keeps_function_expression() {
     };
     assert!(String::from_utf8(value).unwrap().ends_with(')'));
 }
+
+#[test]
+fn embedding_generated_column_rejects_non_starter_before_shape_validation() {
+    let error = result("create table embedding_reject (text text, vec vector(3) generated always as (embed_text('mock/json', text)) stored)")
+        .expect_err("embedding DDL must reject unsupported deployment");
+    assert!(
+        error.to_string().contains("starter deployment mode"),
+        "{error}"
+    );
+}

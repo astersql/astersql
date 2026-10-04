@@ -70,49 +70,12 @@ impl builtinEmbedTextSig {
         let session = reader
             .get_session_context(ctx)
             .map_err(|_| errors::New("EMBED_TEXT requires session context"))?;
-        let args = &self.baseBuiltinFunc.args;
-        let (model, null) = args[0].EvalString(ctx, row.clone())?;
-        if null {
+        let args = EvalEmbedTextArgs(ctx, row, &self.baseBuiltinFunc.args)?;
+        let Some(args) = args else {
             return Ok((types::ZeroVectorFloat32(), true));
-        }
-        let (text, null) = args[1].EvalString(ctx, row.clone())?;
-        if null {
-            return Ok((types::ZeroVectorFloat32(), true));
-        }
-        let mut opts = inference::Options::new();
-        if args.len() == 3 {
-            let (value, null) = args[2].EvalString(ctx, row)?;
-            if !null && !value.is_empty() {
-                let json: serde_json::Value = serde_json::from_str(&value)
-                    .map_err(|_| errors::New("EMBED_TEXT expects options in JSON format"))?;
-                let object = json
-                    .as_object()
-                    .ok_or_else(|| errors::New("EMBED_TEXT expects options in JSON format"))?;
-                opts.extend(
-                    object
-                        .iter()
-                        .filter(|(key, _)| !key.ends_with("@search"))
-                        .map(|(key, value)| (key.clone(), value.clone())),
-                );
-            }
-        }
-        let runtime = session.embedding_runtime().ok_or_else(|| {
-            errors::New("EMBED_TEXT requires an initialized Domain embedding runtime")
-        })?;
-        let value = runtime
-            .embed_with_context_values(
-                &model,
-                &text,
-                &opts,
-                &|| session.embedding_cancellation(),
-                &session.embedding_context_values(),
-            )
-            .map_err(errors::New)?;
-        types_dependency::vector::CheckVectorDimValid(value.len() as i32)
-            .map_err(|error| errors::New(error.to_string()))?;
-        let vector = types_dependency::vector::CreateVectorFloat32(&value)
-            .map_err(|error| errors::New(error.to_string()))?;
-        Ok((vector, false))
+        };
+        let datum = EvalEmbedTextArgsToDatum(Some(session), Some(&args))?;
+        Ok((datum.GetVectorFloat32(), false))
     }
 }
 impl CollationInfo for builtinEmbedTextSig {
@@ -199,4 +162,98 @@ impl builtinFunc for builtinEmbedTextSig {
     ) -> Result<(types::VectorFloat32, bool), Error> {
         self.evaluate(ctx, row)
     }
+}
+
+/// Arguments are owned so reused row buffers cannot mutate provider inputs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EmbedTextArgs {
+    pub Model: String,
+    pub Text: String,
+    pub Opts: inference::Options,
+}
+pub fn CheckEmbedTextAllowed() -> Result<(), Error> {
+    if !deploymode::IsStarter() {
+        return Err(errors::New(
+            "EMBED_TEXT is only supported in starter deployment mode",
+        ));
+    }
+    Ok(())
+}
+pub fn EvalEmbedTextArgs(
+    ctx: &dyn EvalContext,
+    row: chunk::Row,
+    args: &[ExprBox],
+) -> Result<Option<EmbedTextArgs>, Error> {
+    if !(2..=3).contains(&args.len()) {
+        return Err(errors::New("invalid EMBED_TEXT() usage"));
+    }
+    let (model, null) = args[0].EvalString(ctx, row.clone())?;
+    if null {
+        return Ok(None);
+    }
+    let (text, null) = args[1].EvalString(ctx, row.clone())?;
+    if null {
+        return Ok(None);
+    }
+    let mut opts = inference::Options::new();
+    if args.len() == 3 {
+        let (value, null) = args[2].EvalString(ctx, row)?;
+        if !null && !value.is_empty() {
+            let json: serde_json::Value = serde_json::from_str(&value)
+                .map_err(|_| errors::New("EMBED_TEXT expects options in JSON format"))?;
+            let object = json
+                .as_object()
+                .ok_or_else(|| errors::New("EMBED_TEXT expects options in JSON format"))?;
+            opts.extend(
+                object
+                    .iter()
+                    .filter(|(key, _)| !key.ends_with("@search"))
+                    .map(|(key, value)| (key.clone(), value.clone())),
+            );
+        }
+    }
+    Ok(Some(EmbedTextArgs {
+        Model: model,
+        Text: text,
+        Opts: opts,
+    }))
+}
+pub fn EvalEmbedTextArgsFromExpr(
+    ctx: &dyn EvalContext,
+    row: chunk::Row,
+    expr: &dyn Expression,
+) -> Result<Option<EmbedTextArgs>, Error> {
+    let sf = expr
+        .as_any()
+        .downcast_ref::<ScalarFunction>()
+        .filter(|sf| sf.Function.as_any().is::<builtinEmbedTextSig>())
+        .ok_or_else(|| errors::New("generated-column evaluation expects EMBED_TEXT()"))?;
+    EvalEmbedTextArgs(ctx, row, sf.GetArgs())
+}
+pub fn EvalEmbedTextArgsToDatum(
+    session: Option<&dyn expropt::SessionContext>,
+    args: Option<&EmbedTextArgs>,
+) -> Result<types::Datum, Error> {
+    let session = session.ok_or_else(|| errors::New("EMBED_TEXT requires session context"))?;
+    CheckEmbedTextAllowed()?;
+    let args = args.ok_or_else(|| errors::New("invalid EMBED_TEXT() usage"))?;
+    let runtime = session.embedding_runtime().ok_or_else(|| {
+        errors::New("EMBED_TEXT requires an initialized Domain embedding runtime")
+    })?;
+    let value = runtime
+        .embed_with_context_values(
+            &args.Model,
+            &args.Text,
+            &args.Opts,
+            &|| session.embedding_cancellation(),
+            &session.embedding_context_values(),
+        )
+        .map_err(errors::New)?;
+    types_dependency::vector::CheckVectorDimValid(value.len() as i32)
+        .map_err(|error| errors::New(error.to_string()))?;
+    let vector = types_dependency::vector::CreateVectorFloat32(&value)
+        .map_err(|error| errors::New(error.to_string()))?;
+    let mut datum = types::Datum::default();
+    datum.SetVectorFloat32(vector);
+    Ok(datum)
 }

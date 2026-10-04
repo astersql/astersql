@@ -1136,8 +1136,24 @@ impl ConcreteSession {
 
     /// 求值生成列。
     fn evaluate_generated_columns(
+        &self,
         table: &astersql_meta_model::TableInfo,
         row: &mut HashMap<String, Option<String>>,
+    ) -> SessionResult<()> {
+        self.evaluate_generated_columns_inner(table, row, false)
+    }
+    fn evaluate_ordinary_generated_columns(
+        &self,
+        table: &astersql_meta_model::TableInfo,
+        row: &mut HashMap<String, Option<String>>,
+    ) -> SessionResult<()> {
+        self.evaluate_generated_columns_inner(table, row, true)
+    }
+    fn evaluate_generated_columns_inner(
+        &self,
+        table: &astersql_meta_model::TableInfo,
+        row: &mut HashMap<String, Option<String>>,
+        skip_embedding: bool,
     ) -> SessionResult<()> {
         for column in table.Columns.iter().filter(|column| column.IsGenerated()) {
             if column.Hidden
@@ -1154,7 +1170,22 @@ impl ConcreteSession {
                 continue;
             }
             let expression = crate::dml_runtime::ParseGeneratedExpr(&column.GeneratedExprString)?;
+            if skip_embedding && astersql_expression::IsEmbedTextFuncCall(&expression) {
+                continue;
+            }
             let value = match &expression.Kind {
+                ast::ExprKind::Function { FnName, Args, .. } if FnName.L == "embed_text" => {
+                    let value = self.execute_embed_text(Args, row)?;
+                    let vector = if value == CONCRETE_NULL_VALUE {
+                        None
+                    } else {
+                        Some(
+                            astersql_types::vector::ParseVectorFloat32(&value)
+                                .map_err(|error| SessionError::new(error.to_string()))?,
+                        )
+                    };
+                    self.cast_embedding_generated_value(column, vector, false, None)?
+                }
                 ast::ExprKind::Function { FnName, Args, .. }
                     if FnName.L == "lower" && Args.len() == 1 =>
                 {
@@ -1163,6 +1194,209 @@ impl ConcreteSession {
                 }
                 _ => crate::dml_runtime::EvalExpr(&expression, row, None)?,
             };
+            row.insert(column.Name.L.clone(), value);
+        }
+        Ok(())
+    }
+
+    fn cast_embedding_generated_value(
+        &self,
+        column: &astersql_meta_model::ColumnInfo,
+        vector: Option<astersql_types::vector::VectorFloat32>,
+        ignore: bool,
+        load_row_count: Option<u64>,
+    ) -> SessionResult<Option<String>> {
+        let flags = self
+            .dml_type_flags()
+            .WithTruncateAsWarning(self.dml_type_flags().TruncateAsWarning() || ignore);
+        let mut value = if let Some(vector) = vector {
+            let datum = astersql_types::datum::NewVectorFloat32Datum(vector);
+            let context = astersql_sessionctx_stmtctx::NewStmtCtx();
+            match datum.ConvertTo(context.TypeCtx().WithFlags(flags), &column.FieldType) {
+                Ok(datum) => {
+                    if context.WarningCount() > 0 {
+                        self.set_warning_with_code(
+                            1265,
+                            if let Some(row) = load_row_count {
+                                format!(
+                                    "Data truncated for column '{}' at row {row}",
+                                    column.Name.O
+                                )
+                            } else {
+                                format!("Data truncated for column '{}'", column.Name.O)
+                            },
+                        );
+                    }
+                    datum_to_runtime_value(&datum, Some(column))?
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    let message = if let Some(row) = load_row_count
+                        && message.to_ascii_lowercase().contains("data too long")
+                    {
+                        format!("Data truncated for column '{}' at row {row}", column.Name.O)
+                    } else {
+                        message
+                    };
+                    if ignore || flags.TruncateAsWarning() {
+                        self.set_warning_with_code(1105, message);
+                        None
+                    } else {
+                        return Err(SessionError::new(message));
+                    }
+                }
+            }
+        } else {
+            None
+        };
+        if value.is_none() && astersql_parser_mysql::r#type::HasNotNullFlag(column.GetFlag()) {
+            let message = if let Some(row) = load_row_count {
+                format!(
+                    "Column set to default value; NULL supplied to NOT NULL column '{}' at row {row}",
+                    column.Name.O
+                )
+            } else {
+                format!("Column '{}' cannot be null", column.Name.O)
+            };
+            if ignore || flags.TruncateAsWarning() {
+                self.set_warning_with_code(
+                    if load_row_count.is_some() { 1263 } else { 1048 },
+                    message,
+                );
+                value = Some(
+                    if column.GetType() == astersql_parser_mysql::r#type::TypeTiDBVectorFloat32 {
+                        "[]".to_owned()
+                    } else {
+                        ignored_not_null_value(column)
+                    },
+                );
+            } else {
+                return Err(SessionError::new(message));
+            }
+        }
+        Ok(value)
+    }
+
+    pub(super) fn fill_embedding_generated_rows(
+        &self,
+        table: &astersql_meta_model::TableInfo,
+        rows: &mut [Option<HashMap<String, Option<String>>>],
+        ignore: bool,
+        end_load_row_count: Option<u64>,
+    ) -> SessionResult<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let mut columns = Vec::new();
+        for column in table.Columns.iter().filter(|column| column.IsGenerated()) {
+            let expr = crate::dml_runtime::ParseGeneratedExpr(&column.GeneratedExprString)?;
+            if astersql_expression::IsEmbedTextFuncCall(&expr) {
+                columns.push((column, expr));
+            }
+        }
+        if columns.is_empty() {
+            return Ok(());
+        }
+        astersql_expression::CheckEmbedTextAllowed()
+            .map_err(|err| SessionError::new(err.to_string()))?;
+        let mut inputs = Vec::with_capacity(rows.len() * columns.len());
+        let mut tasks = Vec::with_capacity(inputs.capacity());
+        for (row_index, row) in rows.iter().enumerate() {
+            let Some(row) = row else {
+                continue;
+            };
+            for (column_index, (_, expr)) in columns.iter().enumerate() {
+                let ast::ExprKind::Function { Args, .. } = &expr.Kind else {
+                    unreachable!()
+                };
+                let input = (|| -> SessionResult<Option<astersql_expression::EmbedTextArgs>> {
+                    let Some(model) = relational_expression_value(&Args[0], row)? else {
+                        return Ok(None);
+                    };
+                    let Some(text) = relational_expression_value(&Args[1], row)? else {
+                        return Ok(None);
+                    };
+                    let mut options = astersql_inference::Options::new();
+                    if let Some(arg) = Args.get(2) {
+                        if let Some(value) = relational_expression_value(arg, row)?
+                            && !value.is_empty()
+                        {
+                            let json: serde_json::Value =
+                                serde_json::from_str(&value).map_err(|_| {
+                                    SessionError::new("EMBED_TEXT expects options in JSON format")
+                                })?;
+                            let object = json.as_object().ok_or_else(|| {
+                                SessionError::new("EMBED_TEXT expects options in JSON format")
+                            })?;
+                            options.extend(
+                                object
+                                    .iter()
+                                    .filter(|(key, _)| !key.ends_with("@search"))
+                                    .map(|(key, value)| (key.clone(), value.clone())),
+                            );
+                        }
+                    }
+                    Ok(Some(astersql_expression::EmbedTextArgs {
+                        Model: model,
+                        Text: text,
+                        Opts: options,
+                    }))
+                })()
+                .map_err(|error| error.to_string());
+                inputs.push(input);
+                tasks.push((row_index, column_index));
+            }
+        }
+        if tasks.is_empty() {
+            return Ok(());
+        }
+        let runtime = self.domain.get_embed_fn().ok_or_else(|| {
+            SessionError::new("EMBED_TEXT requires an initialized Domain embedding runtime")
+        })?;
+        let killer = self.sql_killer.clone();
+        let results = astersql_executor::insert_common::evaluate_embedding_inputs(
+            &|args| {
+                let values =
+                    runtime.embed_with_context(&args.Model, &args.Text, &args.Opts, &|| {
+                        (killer.GetKillSignal() > 0).then(|| "context canceled".to_owned())
+                    })?;
+                astersql_types::vector::CheckVectorDimValid(values.len() as i32)
+                    .map_err(|error| error.to_string())?;
+                astersql_types::vector::CreateVectorFloat32(&values)
+                    .map_err(|error| error.to_string())?;
+                Ok(values)
+            },
+            &inputs,
+            &|| (killer.GetKillSignal() > 0).then(|| "context canceled".to_owned()),
+        )
+        .map_err(SessionError::new)?;
+        let row_count = rows.len() as u64;
+        for (index, result) in results.into_iter().enumerate() {
+            let (row_index, column_index) = tasks[index];
+            let row = rows[row_index]
+                .as_mut()
+                .expect("task was created from a non-nil row");
+            let column = columns[column_index].0;
+            let vector = match result {
+                Ok(Some(values)) => {
+                    astersql_types::vector::CheckVectorDimValid(values.len() as i32)
+                        .map_err(|error| SessionError::new(error.to_string()))?;
+                    Some(
+                        astersql_types::vector::CreateVectorFloat32(&values)
+                            .map_err(|error| SessionError::new(error.to_string()))?,
+                    )
+                }
+                Ok(None) => None,
+                Err(error) if ignore || self.dml_type_flags().TruncateAsWarning() => {
+                    self.set_warning_with_code(1105, error);
+                    None
+                }
+                Err(error) => return Err(SessionError::new(error)),
+            };
+            let load_row_count =
+                end_load_row_count.map(|end| end.saturating_sub(row_count) + row_index as u64 + 1);
+            let value =
+                self.cast_embedding_generated_value(column, vector, ignore, load_row_count)?;
             row.insert(column.Name.L.clone(), value);
         }
         Ok(())
@@ -1863,6 +2097,7 @@ impl ConcreteSession {
             plan,
             from_select,
             select_columns,
+            None,
         )
         .map(|_| ())
     }
@@ -1874,6 +2109,7 @@ impl ConcreteSession {
         plan: crate::dml_runtime::InsertPlan,
         from_select: bool,
         select_columns: Option<&[String]>,
+        embedding_load_row_count: Option<u64>,
     ) -> SessionResult<(u64, u64)> {
         let insert_started = std::time::Instant::now();
         // Go's ResetContextOfStmt turns truncation into warnings for INSERT
@@ -2048,6 +2284,7 @@ impl ConcreteSession {
         let prefetch_time = prefetch_started.elapsed();
         let mut foreign_key_check_time = std::time::Duration::ZERO;
         let stats_before = working_rows.values().cloned().collect::<Vec<_>>();
+        let mut prepared_rows = Vec::with_capacity(statement.Lists.len());
         for (row_index, expressions) in statement.Lists.iter().enumerate() {
             let row_columns = if statement.Columns.is_empty() && expressions.is_empty() {
                 &[][..]
@@ -2445,7 +2682,21 @@ impl ConcreteSession {
                 }
                 row.insert("_tidb_rowid".to_owned(), Some(handle.to_string()));
             }
-            Self::evaluate_generated_columns(&table, &mut row)?;
+            self.evaluate_ordinary_generated_columns(&table, &mut row)?;
+            prepared_rows.push((row, candidate_insert_id, row_columns.to_vec()));
+        }
+        let (mut rows, prepared_metadata): (Vec<_>, Vec<_>) = prepared_rows
+            .into_iter()
+            .map(|(row, id, columns)| (Some(row), (id, columns)))
+            .unzip();
+        self.fill_embedding_generated_rows(
+            &table,
+            &mut rows,
+            plan.Ignore,
+            embedding_load_row_count,
+        )?;
+        for (row, (candidate_insert_id, row_columns)) in rows.into_iter().zip(prepared_metadata) {
+            let mut row = row.expect("INSERT prepared a non-nil row before embedding evaluation");
             if let Some(value) = Self::unmatched_range_partition_value(&table, &row) {
                 let message = format!("Table has no partition for value {value}");
                 if plan.Ignore {
@@ -2724,7 +2975,7 @@ impl ConcreteSession {
                         rebase_count += 1;
                     }
                 }
-                Self::evaluate_generated_columns(&table, &mut updated)?;
+                self.evaluate_generated_columns(&table, &mut updated)?;
                 let foreign_key_check_started = std::time::Instant::now();
                 let foreign_key_result = self.validate_and_lock_foreign_keys(
                     &table,
@@ -3180,6 +3431,23 @@ impl ConcreteSession {
             }
             let original = row.clone();
             for (column, expression) in &plan.Assignments {
+                if let Some(info) = table.Columns.iter().find(|info| {
+                    info.Name.L == *column
+                        && info.IsGenerated()
+                        && crate::dml_runtime::ParseGeneratedExpr(&info.GeneratedExprString)
+                            .is_ok_and(|expr| astersql_expression::IsEmbedTextFuncCall(&expr))
+                }) {
+                    if !matches!(
+                        expression.Kind,
+                        ast::ExprKind::DefaultValue | ast::ExprKind::NamedDefault(_)
+                    ) {
+                        return Err(SessionError::new(format!(
+                            "The value specified for generated column '{}' in table '{}' is not allowed",
+                            info.Name.O, table.Name.O
+                        )));
+                    }
+                    continue;
+                }
                 // Keep a selected CASE literal typed so batch DXF BLOB metadata
                 // follows the same conversion as a direct literal assignment.
                 let Some(expression) =
@@ -3245,7 +3513,7 @@ impl ConcreteSession {
                 self.allocate_runtime_auto_id(table.ID, Some(value), allocator_kind, 1, 1)?;
                 rebase_count += 1;
             }
-            Self::evaluate_generated_columns(&table, &mut row)?;
+            self.evaluate_generated_columns(&table, &mut row)?;
             if row == original {
                 updated_rows.push(row);
                 continue;
@@ -3452,7 +3720,7 @@ impl ConcreteSession {
                     self.relational_query_expression_value(&assignment.Expr, &joined_row, None)?;
                 updated.insert(assignment.Column.Name.L.clone(), value);
             }
-            Self::evaluate_generated_columns(&table, &mut updated)?;
+            self.evaluate_generated_columns(&table, &mut updated)?;
             if updated == original {
                 continue;
             }

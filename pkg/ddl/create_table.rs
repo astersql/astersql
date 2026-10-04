@@ -536,6 +536,16 @@ fn build_column(definition: &ast::ColumnDef, offset: usize) -> BuildResult<model
                     .Expr
                     .as_ref()
                     .ok_or_else(|| build_error("generated column has no expression"))?;
+                crate::generated_column::check_embedding_function_usage(
+                    &definition.Name.Name.L,
+                    expression,
+                    false,
+                )?;
+                crate::generated_column::check_embed_text_generated_column(
+                    &definition.Name.Name.L,
+                    expression,
+                    option.Stored,
+                )?;
                 let mut dependencies = HashSet::new();
                 collect_generated_column_dependencies(expression, &mut dependencies)?;
                 column.GeneratedExprString =
@@ -1244,6 +1254,11 @@ fn materialize_expression_index_columns(
         let Some(expression) = part.Expr.take() else {
             continue;
         };
+        crate::generated_column::check_embedding_function_usage(
+            &constraint.Name,
+            &expression,
+            true,
+        )?;
         let hidden_name = ast::NewCIStr(&format!("_V$_{}_{}", constraint.Name, part_offset));
         if offsets.contains_key(&hidden_name.L) {
             return Err(build_error(format!(
@@ -2342,6 +2357,20 @@ fn check_table_info_valid_with_stmt<C: ?Sized + 'static, E: 'static>(
         })
         .map(|column| column.Name.Name.L.as_str())
         .collect::<HashSet<_>>();
+    let embedding_columns = statement
+        .Cols
+        .iter()
+        .filter(|column| {
+            column.Options.iter().any(|option| {
+                option.Tp == ast::ColumnOptionType::Generated
+                    && option
+                        .Expr
+                        .as_ref()
+                        .is_some_and(astersql_expression::IsEmbedTextFuncCall)
+            })
+        })
+        .map(|column| column.Name.Name.L.as_str())
+        .collect::<HashSet<_>>();
     for column in &statement.Cols {
         for option in &column.Options {
             if option.Tp != ast::ColumnOptionType::Generated {
@@ -2373,6 +2402,20 @@ fn check_table_info_valid_with_stmt<C: ?Sized + 'static, E: 'static>(
                         "generated column '{}' refers to a later generated column",
                         column.Name.Name.O
                     )));
+                }
+            }
+        }
+    }
+    // Go verifies ordinary dependency order before rejecting dependencies on
+    // embedding columns, so keep that error precedence here as well.
+    for column in &table.Columns {
+        if column.IsGenerated() {
+            for dependency in column.Dependences.keys() {
+                if embedding_columns.contains(dependency.as_str()) {
+                    return Err(crate::generated_column::embed_text_dependency_error(
+                        &column.Name.L,
+                        dependency,
+                    ));
                 }
             }
         }

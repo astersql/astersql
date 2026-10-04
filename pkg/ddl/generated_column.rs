@@ -399,3 +399,171 @@ pub fn check_modify_generated_column(
     }
     Ok(())
 }
+
+/// EMBED_TEXT has a dedicated STORED form; nested calls and virtual columns
+/// remain unsupported even though the ordinary generated-column checker admits it.
+pub fn check_embed_text_generated_column(
+    name: &str,
+    expr: &astersql_parser_ast::ExprNode,
+    stored: bool,
+) -> Result<(), astersql_parser::errors::Error> {
+    use astersql_expression::{
+        CheckEmbedTextAllowed, ContainsEmbedTextFunc, ExtractEmbedTextInfo, IsEmbedTextFuncCall,
+    };
+    let error = |message: String| {
+        astersql_parser::errors::New(format!(
+            "[ddl:3106]'{message}' is not supported for generated columns."
+        ))
+    };
+    if !ContainsEmbedTextFunc(Some(expr)) {
+        return Ok(());
+    }
+    CheckEmbedTextAllowed().map_err(|err| error(err.to_string()))?;
+    if !IsEmbedTextFuncCall(expr) {
+        return Err(error(
+            "using EMBED_TEXT() as a nested expression inside other functions or expressions"
+                .into(),
+        ));
+    }
+    if !stored {
+        return Err(error(
+            "using EMBED_TEXT() in a virtual generated column".into(),
+        ));
+    }
+    ExtractEmbedTextInfo(expr).map_err(|err| {
+        error(format!(
+            "EMBED_TEXT() usage in generated column '{name}': {err}"
+        ))
+    })?;
+    Ok(())
+}
+pub fn embed_text_dependency_error(name: &str, dependency: &str) -> astersql_parser::errors::Error {
+    astersql_parser::errors::New(format!(
+        "[ddl:3106]'generated column '{name}' depends on generated column '{dependency}' that uses EMBED_TEXT()' is not supported for generated columns."
+    ))
+}
+
+/// The inference functions stay blocked in functional indexes. Only the
+/// explicitly validated generated-column EMBED_TEXT form is admitted.
+pub fn check_embedding_function_usage(
+    name: &str,
+    expr: &astersql_parser_ast::ExprNode,
+    functional_index: bool,
+) -> Result<(), astersql_parser::errors::Error> {
+    use astersql_parser_ast as ast;
+    #[derive(Default)]
+    struct Checker {
+        functional_index: bool,
+        embedding_expression: bool,
+        blocked: bool,
+        aggregate: bool,
+        row: bool,
+        window: bool,
+        cast_array: bool,
+        other_error: Option<String>,
+    }
+    impl ast::ExprNodeVisitor for Checker {
+        fn Enter(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
+            let skip = match &input.Kind {
+                ast::ExprKind::Function { FnName, Args, .. } => {
+                    if self.embedding_expression && FnName.L == "grouping" {
+                        self.aggregate = true;
+                        true
+                    } else if FnName.L.starts_with("vec_embed_")
+                        || (self.functional_index && FnName.L == "embed_text")
+                        || (self.embedding_expression
+                            && ((astersql_expression::is_illegal_generated_column_function(
+                                &FnName.L,
+                            ) && FnName.L != "embed_text")
+                                || !astersql_expression::formal_registry::IsFunctionSupported(
+                                    &FnName.L,
+                                )
+                                || FnName.L == "values"))
+                    {
+                        self.blocked = true;
+                        true
+                    } else if self.embedding_expression {
+                        match astersql_expression::formal_registry::VerifyArgsWrapper(
+                            &FnName.L,
+                            Args.len(),
+                        ) {
+                            Ok(()) => false,
+                            Err(error) => {
+                                self.other_error = Some(error.to_string());
+                                true
+                            }
+                        }
+                    } else {
+                        false
+                    }
+                }
+                ast::ExprKind::Variable { .. } | ast::ExprKind::Subquery { .. }
+                    if self.embedding_expression =>
+                {
+                    self.blocked = true;
+                    true
+                }
+                ast::ExprKind::AggregateFunction { .. } if self.embedding_expression => {
+                    self.aggregate = true;
+                    true
+                }
+                ast::ExprKind::Row(_) if self.embedding_expression => {
+                    self.row = true;
+                    true
+                }
+                ast::ExprKind::WindowFunction { .. } if self.embedding_expression => {
+                    self.window = true;
+                    true
+                }
+                ast::ExprKind::Cast { Tp, .. } if self.embedding_expression => {
+                    self.cast_array |= Tp.IsArray();
+                    false
+                }
+                _ => false,
+            };
+            (input.clone(), skip)
+        }
+        fn Leave(&mut self, input: &ast::ExprNode) -> (ast::ExprNode, bool) {
+            (input.clone(), true)
+        }
+    }
+    // Applying the existing checker to newly admitted EMBED_TEXT expressions
+    // must not make unsafe arguments legal. Ordinary non-inference validation
+    // remains owned by the existing generated-column paths.
+    let mut checker = Checker {
+        functional_index,
+        embedding_expression: astersql_expression::ContainsEmbedTextFunc(Some(expr)),
+        ..Default::default()
+    };
+    expr.Accept(&mut checker);
+    let message = if checker.blocked {
+        Some(if functional_index {
+            format!(
+                "[ddl:3758]Expression of expression index '{name}' contains a disallowed function"
+            )
+        } else {
+            format!(
+                "[ddl:3102]Expression of generated column '{name}' contains a disallowed function."
+            )
+        })
+    } else if checker.aggregate {
+        Some("[ddl:1111]Invalid use of group function".into())
+    } else if checker.row {
+        Some(if functional_index {
+            format!("[ddl:3800]Expression of expression index '{name}' cannot refer to a row value")
+        } else {
+            format!("[ddl:3764]Expression of generated column '{name}' cannot refer to a row value")
+        })
+    } else if checker.window {
+        Some(format!(
+            "[ddl:3593]You cannot use the window function '{name}' in this context.'"
+        ))
+    } else if checker.other_error.is_some() {
+        checker.other_error
+    } else if !functional_index && checker.cast_array {
+        Some("Use of CAST( .. AS .. ARRAY) outside of functional index in CREATE(non-SELECT)/ALTER TABLE or in general expressions".into())
+    } else {
+        None
+    };
+    message.map_or(Ok(()), |message| Err(astersql_parser::errors::New(message)))
+}

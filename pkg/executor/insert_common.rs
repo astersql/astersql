@@ -2187,3 +2187,49 @@ impl<B: InsertBackend> InsertRuntimeStat<B> {
         self.backend.insert_runtime_stats_type()
     }
 }
+
+/// Provider evaluation is separated from session-bound argument preparation.
+/// Results retain row/column order; provider failures do not cancel sibling work,
+/// while request cancellation is checked even for NULL inputs.
+pub fn evaluate_embedding_inputs(
+    evaluate: &(dyn Fn(&astersql_expression::EmbedTextArgs) -> Result<Vec<f32>, String> + Sync),
+    inputs: &[Result<Option<astersql_expression::EmbedTextArgs>, String>],
+    cancellation: &(dyn Fn() -> Option<String> + Sync),
+) -> Result<Vec<Result<Option<Vec<f32>>, String>>, String> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    if inputs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let next = AtomicUsize::new(0);
+    let results = std::sync::Mutex::new(vec![Ok(None); inputs.len()]);
+    let canceled = std::sync::Mutex::new(None);
+    std::thread::scope(|scope| {
+        for _ in 0..inputs.len().min(800) {
+            scope.spawn(|| {
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    if index >= inputs.len() {
+                        break;
+                    }
+                    if let Some(error) = cancellation() {
+                        let mut cause = canceled.lock().unwrap();
+                        if cause.is_none() {
+                            *cause = Some(error);
+                        }
+                        break;
+                    }
+                    let result = match &inputs[index] {
+                        Err(error) => Err(error.clone()),
+                        Ok(None) => Ok(None),
+                        Ok(Some(args)) => evaluate(args).map(Some),
+                    };
+                    results.lock().unwrap()[index] = result;
+                }
+            });
+        }
+    });
+    if let Some(error) = canceled.into_inner().unwrap() {
+        return Err(error);
+    }
+    Ok(results.into_inner().unwrap())
+}
