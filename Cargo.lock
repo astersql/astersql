@@ -7171,6 +7171,7 @@ version = "0.1.0"
 dependencies = [
  "astersql-meta-model",
  "astersql-parser-ast",
+ "astersql-util-stringutil",
 ]
 
 [[package]]

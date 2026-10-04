@@ -3730,6 +3730,7 @@ pub mod formal_registry {
         Rpad,
         Insert,
         Like,
+        Ilike,
         IsIPv4,
         IsIPv6,
         RegexpInstr,
@@ -3742,6 +3743,7 @@ pub mod formal_registry {
     struct CoreBuiltin {
         base: RegistryBuiltinBase,
         kind: CoreBuiltinKind,
+        ilike: Option<crate::builtin_ilike_kernel::IlikeSig>,
     }
 
     impl CollationInfo for CoreBuiltin {
@@ -3764,7 +3766,14 @@ pub mod formal_registry {
             self.base.CharsetAndCollation()
         }
         fn SetCharsetAndCollation(&mut self, charset: String, collation: String) {
-            self.base.SetCharsetAndCollation(charset, collation)
+            self.base.SetCharsetAndCollation(charset, collation.clone());
+            if matches!(self.kind, CoreBuiltinKind::Ilike) {
+                self.ilike = Some(crate::builtin_ilike_kernel::IlikeSig::new(
+                    collation,
+                    self.base.args[1].ConstLevel() >= crate::ConstOnlyInContext,
+                    self.base.args[2].ConstLevel() >= crate::ConstOnlyInContext,
+                ));
+            }
         }
         fn IsExplicitCharset(&self) -> bool {
             self.base.IsExplicitCharset()
@@ -4236,7 +4245,7 @@ pub mod formal_registry {
                         false,
                     ))
                 }
-                CoreBuiltinKind::Like => {
+                CoreBuiltinKind::Like | CoreBuiltinKind::Ilike => {
                     let (value, value_null) = self.base.args[0].EvalString(ctx, row.clone())?;
                     if value_null {
                         return Ok((0, true));
@@ -4249,6 +4258,12 @@ pub mod formal_registry {
                     let (escape, escape_null) = self.base.args[2].EvalInt(ctx, row)?;
                     if escape_null {
                         return Ok((0, true));
+                    }
+                    if let Some(signature) = self.ilike.as_ref() {
+                        return signature
+                            .eval_int(Some(&value), Some(&pattern_source), Some(escape))
+                            .map(|value| value.map_or((0, true), |value| (value, false)))
+                            .map_err(|error| errors::New(error.to_string()));
                     }
                     let mut pattern = self.base.collator.Pattern();
                     pattern.Compile(&pattern_source, escape as u8);
@@ -5828,14 +5843,22 @@ pub mod formal_registry {
                     "builtinInsertUTF8Sig",
                 )
             }
-            "like" => {
+            "like" | "ilike" => {
                 args[0] = crate::WrapWithCastAsString(ctx, args[0].CloneExpr());
                 args[1] = crate::WrapWithCastAsString(ctx, args[1].CloneExpr());
                 args[2] = crate::WrapWithCastAsInt(ctx, args[2].CloneExpr(), None);
                 (
-                    CoreBuiltinKind::Like,
+                    if name == "ilike" {
+                        CoreBuiltinKind::Ilike
+                    } else {
+                        CoreBuiltinKind::Like
+                    },
                     boolean_field_type(),
-                    "builtinLikeSig",
+                    if name == "ilike" {
+                        "builtinIlikeSig"
+                    } else {
+                        "builtinLikeSig"
+                    },
                 )
             }
             "is_ipv4" => (
@@ -6021,6 +6044,7 @@ pub mod formal_registry {
             CoreBuiltinKind::Rpad => tipb::ScalarFuncSig::RpadUtf8 as i32,
             CoreBuiltinKind::Insert => tipb::ScalarFuncSig::InsertUtf8 as i32,
             CoreBuiltinKind::Like => tipb::ScalarFuncSig::LikeSig as i32,
+            CoreBuiltinKind::Ilike => tipb::ScalarFuncSig::IlikeSig as i32,
             CoreBuiltinKind::IfNull(types::ETInt) => tipb::ScalarFuncSig::IfNullInt as i32,
             CoreBuiltinKind::IfNull(types::ETReal) => tipb::ScalarFuncSig::IfNullReal as i32,
             CoreBuiltinKind::IfNull(types::ETDecimal) => tipb::ScalarFuncSig::IfNullDecimal as i32,
@@ -6044,7 +6068,7 @@ pub mod formal_registry {
             CoreBuiltinKind::Compare(_, types::ETString) | CoreBuiltinKind::In(types::ETString) => {
                 Some(base.args.iter().map(|argument| argument.as_ref()).collect())
             }
-            CoreBuiltinKind::Like => Some(
+            CoreBuiltinKind::Like | CoreBuiltinKind::Ilike => Some(
                 base.args[..2]
                     .iter()
                     .map(|argument| argument.as_ref())
@@ -6088,7 +6112,14 @@ pub mod formal_registry {
                 base.SetRepertoire(collation.Repe);
             }
         }
-        GeneratedBuiltinFactoryOutput::new(signature, Box::new(CoreBuiltin { base, kind }))
+        let ilike = matches!(kind, CoreBuiltinKind::Ilike).then(|| {
+            crate::builtin_ilike_kernel::IlikeSig::new(
+                base.CharsetAndCollation().1,
+                base.args[1].ConstLevel() >= crate::ConstOnlyInContext,
+                base.args[2].ConstLevel() >= crate::ConstOnlyInContext,
+            )
+        });
+        GeneratedBuiltinFactoryOutput::new(signature, Box::new(CoreBuiltin { base, kind, ilike }))
     }
 
     macro_rules! core_factory {
@@ -6170,6 +6201,7 @@ pub mod formal_registry {
     core_factory!(insert_factory, "insert");
     core_factory!(ifnull_factory, "ifnull");
     core_factory!(like_factory, "like");
+    core_factory!(ilike_factory, "ilike");
     core_factory!(is_ipv4_factory, "is_ipv4");
     core_factory!(is_ipv6_factory, "is_ipv6");
     core_factory!(regexp_instr_factory, "regexp_instr");
@@ -6248,6 +6280,7 @@ pub mod formal_registry {
         ("insert", insert_factory),
         ("ifnull", ifnull_factory),
         ("like", like_factory),
+        ("ilike", ilike_factory),
         ("is_ipv4", is_ipv4_factory),
         ("is_ipv6", is_ipv6_factory),
         ("regexp_instr", regexp_instr_factory),

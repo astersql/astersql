@@ -1488,45 +1488,11 @@ fn row_matches_simple_where(
             });
         return if *Not { !matched } else { matched };
     }
-    if let ast::ExprKind::Like {
-        Expr, Pattern, Not, ..
-    } = &predicate.Kind
-        && let ast::ExprKind::Column(column) = &Expr.Kind
-    {
-        let pattern = literal(Pattern).unwrap_or_default().to_lowercase();
-        let value = row
-            .get(&column.Name.L)
-            .and_then(Option::as_ref)
-            .map(|value| value.to_lowercase())
-            .unwrap_or_default();
-        let pattern = pattern.as_bytes();
-        let value = value.as_bytes();
-        let mut current = vec![false; value.len() + 1];
-        current[0] = true;
-        for token in pattern.iter().copied() {
-            let mut next = vec![false; value.len() + 1];
-            match token {
-                b'%' => {
-                    next[0] = current[0];
-                    for index in 1..=value.len() {
-                        next[index] = current[index] || next[index - 1];
-                    }
-                }
-                b'_' => {
-                    for index in 1..=value.len() {
-                        next[index] = current[index - 1];
-                    }
-                }
-                literal => {
-                    for index in 1..=value.len() {
-                        next[index] = current[index - 1] && value[index - 1] == literal;
-                    }
-                }
-            }
-            current = next;
-        }
-        let matched = current[value.len()];
-        return if *Not { !matched } else { matched };
+    if matches!(predicate.Kind, ast::ExprKind::Like { .. }) {
+        return relational_value::relational_expression_value(predicate, row)
+            .ok()
+            .flatten()
+            .is_some_and(|value| value != "0");
     }
     let ast::ExprKind::Binary { Op, L, R } = &predicate.Kind else {
         return true;

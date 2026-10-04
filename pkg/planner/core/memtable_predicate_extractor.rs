@@ -29,10 +29,118 @@ pub enum Predicate {
     Eq(String, PredicateValue),
     In(String, Vec<PredicateValue>),
     Like(String, String),
+    LikeWithEscape(String, String, LikeEscape),
+    Ilike(String, String, LikeEscape),
+    Or(Vec<Predicate>),
+    Regexp(String, String),
     Ge(String, PredicateValue),
     Gt(String, PredicateValue),
     Le(String, PredicateValue),
     Lt(String, PredicateValue),
+}
+
+/// Only a plan-time constant ESCAPE can be used to build a scan pattern.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LikeEscape {
+    Constant(u8),
+    Missing,
+    Dynamic,
+    Deferred,
+    Parameter,
+}
+
+/// Build the scan pattern and report whether scalar evaluation must be retained.
+/// An inexact OR branch makes the complete disjunction a prefilter.
+pub(crate) fn extract_like_pattern(
+    predicate: &Predicate,
+    column: &str,
+    to_lower: bool,
+    need_regexp: bool,
+) -> Option<(String, bool)> {
+    use stringutil_dependency::string_util::CompileLike2Regexp;
+    if let Predicate::Or(branches) = predicate {
+        if to_lower || branches.is_empty() {
+            return None;
+        }
+        let mut patterns = Vec::with_capacity(branches.len());
+        let mut prefilter = false;
+        for branch in branches {
+            let (pattern, branch_prefilter) =
+                extract_like_pattern(branch, column, to_lower, need_regexp)?;
+            patterns.push(pattern);
+            prefilter |= branch_prefilter;
+        }
+        return Some((patterns.join("|"), prefilter));
+    }
+    let (field, pattern, escape, ilike) = match predicate {
+        Predicate::Like(field, pattern) => (field, pattern, b'\\', false),
+        Predicate::LikeWithEscape(field, pattern, LikeEscape::Constant(escape)) => {
+            (field, pattern, *escape, false)
+        }
+        Predicate::Ilike(field, pattern, LikeEscape::Constant(escape)) => {
+            (field, pattern, *escape, true)
+        }
+        Predicate::Eq(field, PredicateValue::String(value))
+            if field.eq_ignore_ascii_case(column) =>
+        {
+            let mut quoted = String::from("^");
+            for character in value.chars() {
+                if "\\.+*?()|[]{}^$".contains(character) {
+                    quoted.push('\\');
+                }
+                quoted.push(character);
+            }
+            quoted.push('$');
+            return Some((
+                if to_lower {
+                    quoted.to_lowercase()
+                } else {
+                    quoted
+                },
+                false,
+            ));
+        }
+        Predicate::Regexp(field, pattern) if field.eq_ignore_ascii_case(column) => {
+            return Some((
+                if to_lower {
+                    pattern.to_lowercase()
+                } else {
+                    pattern.clone()
+                },
+                false,
+            ));
+        }
+        _ => return None,
+    };
+    if !field.eq_ignore_ascii_case(column) {
+        return None;
+    }
+    if !need_regexp {
+        return Some((
+            if to_lower {
+                pattern.to_lowercase()
+            } else {
+                pattern.clone()
+            },
+            false,
+        ));
+    }
+    let mut pattern = CompileLike2Regexp(pattern, escape);
+    let prefilter = if ilike && !to_lower {
+        pattern = format!("(?i:{pattern})");
+        true
+    } else {
+        // Preserve the later correction in ece360bd: folded LIKE needs recheck.
+        !ilike && to_lower
+    };
+    Some((
+        if to_lower {
+            pattern.to_lowercase()
+        } else {
+            pattern
+        },
+        prefilter,
+    ))
 }
 
 /// 将谓词值列表转为字符串集合；含非字符串则返回 None。
@@ -259,20 +367,20 @@ impl ClusterLogTableExtractor {
         remaining = time_remaining;
         self.StartTime = start_time;
         self.EndTime = end_time;
-        remaining.retain(|predicate| match predicate {
-            Predicate::Like(field, pattern) if field.eq_ignore_ascii_case("message") => {
-                self.Patterns.push(pattern.clone());
-                false
+        remaining.retain(|predicate| {
+            if let Some((pattern, prefilter)) =
+                extract_like_pattern(predicate, "message", false, true)
+            {
+                self.Patterns.push(pattern);
+                return prefilter;
             }
-            _ => {
-                if let Some(raw) = values(predicate, "level") {
-                    if let Some(set) = strings(&raw.into_iter().cloned().collect::<Vec<_>>()) {
-                        intersect(&mut self.LogLevels, set, &mut levels);
-                        return false;
-                    }
+            if let Some(raw) = values(predicate, "level") {
+                if let Some(set) = strings(&raw.into_iter().cloned().collect::<Vec<_>>()) {
+                    intersect(&mut self.LogLevels, set, &mut levels);
+                    return false;
                 }
-                true
             }
+            true
         });
         self.SkipRequest |= (levels && self.LogLevels.is_empty())
             || (self.EndTime != 0 && self.StartTime > self.EndTime);

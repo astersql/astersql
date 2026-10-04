@@ -10,6 +10,7 @@ path = "lib.rs"
 doctest = false
 
 [dependencies]
+stringutil-dependency = { package = "astersql-util-stringutil", path = "../../../util/stringutil" }
 model-dependency = { package = "astersql-meta-model", path = "../../../meta/model" }
 parser-ast-dependency = { package = "astersql-parser-ast", path = "../../../parser/ast" }
 

@@ -47,3 +47,46 @@ fn metric_summary_keeps_quantile_predicate_like_go() {
         ["0.99"]
     );
 }
+
+#[test]
+fn like_extraction_distinguishes_prefilters_and_raw_display_patterns() {
+    use super::LikeEscape;
+    use super::memtable_predicate_extractor::extract_like_pattern;
+    let like = Predicate::LikeWithEscape(
+        "table_name".into(),
+        "%#_%".into(),
+        LikeEscape::Constant(b'#'),
+    );
+    assert_eq!(
+        extract_like_pattern(&like, "table_name", true, true),
+        Some(("^.*_.*$".into(), true))
+    );
+    assert_eq!(
+        extract_like_pattern(&like, "table_name", true, false),
+        Some(("%#_%".into(), false))
+    );
+    let ilike = Predicate::Ilike(
+        "table_name".into(),
+        "%FOO%".into(),
+        LikeEscape::Constant(b'\\'),
+    );
+    assert_eq!(
+        extract_like_pattern(&ilike, "table_name", true, true),
+        Some(("^.*foo.*$".into(), false))
+    );
+    let disjunction = Predicate::Or(vec![ilike, like]);
+    assert_eq!(
+        extract_like_pattern(&disjunction, "table_name", true, true),
+        None
+    );
+    let equality = Predicate::Eq("message".into(), string("a.b+"));
+    assert_eq!(
+        extract_like_pattern(&equality, "message", false, true),
+        Some((r"^a\.b\+$".into(), false))
+    );
+    let regexp = Predicate::Regexp("message".into(), "^FOO$".into());
+    assert_eq!(
+        extract_like_pattern(&regexp, "message", false, true),
+        Some(("^FOO$".into(), false))
+    );
+}

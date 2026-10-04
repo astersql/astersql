@@ -412,3 +412,50 @@ fn test_vectorized_builtin_ilike_for_constants() {
         vec![Some(0), Some(1), Some(0), Some(1)],
     );
 }
+
+#[test]
+fn canonical_ilike_factory_preserves_escape_null_and_clone() {
+    use crate::Expression;
+    let context = exprstatic::NewExprContext(vec![]);
+    for (value, pattern, escape, expected) in [
+        (Some("foo"), Some("%FOO%"), Some(b'\\'), Some(1)),
+        (Some("foo%"), Some("%FOO#%%"), Some(b'#'), Some(1)),
+        (Some("fooX"), Some("%FOO#%%"), Some(b'#'), Some(0)),
+        (Some("abc_def"), Some("%A_%"), Some(b'A'), Some(1)),
+        (None, Some("%FOO%"), Some(b'\\'), None),
+        (Some("foo"), None, Some(b'\\'), None),
+        (Some("foo"), Some("%FOO%"), None, None),
+    ] {
+        let string_argument = |value: Option<&str>| -> Box<dyn Expression> {
+            value.map_or_else(
+                || Box::new(crate::NewNull()) as Box<dyn Expression>,
+                |value| Box::new(crate::NewStrConst(value)),
+            )
+        };
+        let escape: Box<dyn Expression> = escape.map_or_else(
+            || Box::new(crate::NewNull()) as Box<dyn Expression>,
+            |escape| Box::new(crate::NewInt64Const(i64::from(escape))),
+        );
+        let expression = crate::NewFunctionBase(
+            &context,
+            "ilike",
+            *crate::types::NewFieldType(crate::mysql::TypeLonglong),
+            vec![string_argument(value), string_argument(pattern), escape],
+        )
+        .unwrap();
+        let function = expression
+            .as_any()
+            .downcast_ref::<crate::ScalarFunction>()
+            .unwrap();
+        assert_eq!(
+            function.Function.PbCode(),
+            tipb::ScalarFuncSig::IlikeSig as i32
+        );
+        for expression in [expression.CloneExpr(), expression] {
+            let (value, null) = expression
+                .EvalInt(context.GetEvalCtx(), crate::chunk::Row::default())
+                .unwrap();
+            assert_eq!(if null { None } else { Some(value) }, expected);
+        }
+    }
+}

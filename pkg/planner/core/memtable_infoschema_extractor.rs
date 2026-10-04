@@ -44,50 +44,19 @@ fn predicate_value_as_string(value: &PredicateValue) -> String {
     }
 }
 
-fn like_matches(pattern: &str, value: &str) -> bool {
-    let pattern = pattern.to_lowercase().chars().collect::<Vec<_>>();
-    let value = value.to_lowercase().chars().collect::<Vec<_>>();
-    let mut escaped = false;
-    let mut tokens = Vec::with_capacity(pattern.len());
-    for ch in pattern {
-        if escaped {
-            tokens.push((ch, false));
-            escaped = false;
-        } else if ch == '\\' {
-            escaped = true;
-        } else {
-            tokens.push((ch, ch == '%' || ch == '_'));
+fn like_matches(pattern: &str, value: &str, escape: u8) -> bool {
+    let (characters, kinds) = stringutil_dependency::string_util::CompilePattern(pattern, escape);
+    // Compile before folding: an uppercase escape byte must still escape its
+    // original pattern, as in Go's CompileLike2Regexp followed by ToLower.
+    let mut folded = Vec::new();
+    let mut folded_kinds = Vec::new();
+    for (character, kind) in characters.into_iter().zip(kinds) {
+        for character in character.to_lowercase() {
+            folded.push(character);
+            folded_kinds.push(kind);
         }
     }
-    if escaped {
-        tokens.push(('\\', false));
-    }
-
-    let mut previous = vec![false; value.len() + 1];
-    previous[0] = true;
-    for (token, wildcard) in tokens {
-        let mut current = vec![false; value.len() + 1];
-        match (token, wildcard) {
-            ('%', true) => {
-                current[0] = previous[0];
-                for index in 1..=value.len() {
-                    current[index] = previous[index] || current[index - 1];
-                }
-            }
-            ('_', true) => {
-                for index in 1..=value.len() {
-                    current[index] = previous[index - 1];
-                }
-            }
-            (literal, _) => {
-                for index in 1..=value.len() {
-                    current[index] = previous[index - 1] && value[index - 1] == literal;
-                }
-            }
-        }
-        previous = current;
-    }
-    previous[value.len()]
+    stringutil_dependency::string_util::DoMatch(&value.to_lowercase(), &folded, &folded_kinds)
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -97,6 +66,8 @@ pub struct InfoSchemaBaseExtractor {
     pub ColPredicates: BTreeMap<String, BTreeSet<String>>,
     /// 列名 -> LIKE 模式列表。
     pub LikePatterns: BTreeMap<String, Vec<String>>,
+    /// Plan-time escape bytes aligned with each displayed LIKE pattern.
+    pub LikeEscapes: BTreeMap<String, Vec<u8>>,
     /// 谓词交集为空时为 true，调用方可直接跳过远程/底层请求。
     pub SkipRequest: bool,
 }
@@ -114,6 +85,7 @@ impl InfoSchemaBaseExtractor {
     ) -> Vec<Predicate> {
         self.ColPredicates.clear();
         self.LikePatterns.clear();
+        self.LikeEscapes.clear();
         self.SkipRequest = false;
         // 仅处理白名单列；其它谓词原样退回。
         let allowed = columns
@@ -125,10 +97,19 @@ impl InfoSchemaBaseExtractor {
         for predicate in predicates {
             match predicate {
                 Predicate::Like(field, pattern) if allowed.contains(&field.to_lowercase()) => {
-                    self.LikePatterns
-                        .entry(field.to_lowercase())
-                        .or_default()
-                        .push(pattern.clone());
+                    self.push_like(field, pattern, b'\\');
+                    remaining.push(predicate.clone());
+                }
+                Predicate::LikeWithEscape(field, pattern, crate::LikeEscape::Constant(escape))
+                    if allowed.contains(&field.to_lowercase()) =>
+                {
+                    self.push_like(field, pattern, *escape);
+                    remaining.push(predicate.clone());
+                }
+                Predicate::Ilike(field, pattern, crate::LikeEscape::Constant(escape))
+                    if allowed.contains(&field.to_lowercase()) =>
+                {
+                    self.push_like(field, pattern, *escape);
                 }
                 Predicate::Eq(field, value) if allowed.contains(&field.to_lowercase()) => {
                     // 等值与 IN 合并进 ColPredicates，同列多次条件取交集。
@@ -156,6 +137,15 @@ impl InfoSchemaBaseExtractor {
         });
         remaining
     }
+    fn push_like(&mut self, field: &str, pattern: &str, escape: u8) {
+        let field = field.to_lowercase();
+        self.LikePatterns
+            .entry(field.clone())
+            .or_default()
+            .push(pattern.to_owned());
+        self.LikeEscapes.entry(field).or_default().push(escape);
+    }
+
     /// 将新取值并入列过滤集：首次赋值，再次则求交集。
     fn merge(&mut self, field: &str, values: BTreeSet<String>, initialized: &mut BTreeSet<String>) {
         let field = field.to_lowercase();
@@ -197,10 +187,17 @@ impl InfoSchemaBaseExtractor {
         self.ColPredicates
             .get(&field)
             .is_none_or(|values| values.contains(&value.to_lowercase()))
-            && self
-                .LikePatterns
-                .get(&field)
-                .is_none_or(|patterns| patterns.iter().all(|pattern| like_matches(pattern, value)))
+            && self.LikePatterns.get(&field).is_none_or(|patterns| {
+                patterns.iter().enumerate().all(|(index, pattern)| {
+                    let escape = self
+                        .LikeEscapes
+                        .get(&field)
+                        .and_then(|escapes| escapes.get(index))
+                        .copied()
+                        .unwrap_or(b'\\');
+                    like_matches(pattern, value, escape)
+                })
+            })
     }
 
     /// 从候选名称中应用等值/IN/LIKE 过滤并按小写名排序。

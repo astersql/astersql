@@ -645,3 +645,34 @@ fn TestMemtableInfoschemaExtractorPart4() {
         },
     ]);
 }
+
+#[test]
+fn infoschema_table_name_like_honors_custom_escape() {
+    let _guard = MEMTABLE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (store, _domain) = CreateMockStoreAndDomain();
+    let mut tk = TestKit::new(store);
+    must_exec(&mut tk, "create database like_escape");
+    must_exec(&mut tk, "use like_escape");
+    must_exec(&mut tk, "create table `abc_def` (a int)");
+    must_exec(&mut tk, "create table `abc#x` (a int)");
+    let result = tk.MustQuery(
+        "select table_name, table_name like '%#_%' escape '#' as self_true from information_schema.tables where table_schema = 'like_escape' and table_name like '%#_%' escape '#'",
+        Vec::new(),
+    );
+    assert_eq!(
+        result.Rows(),
+        vec![vec!["abc_def".to_owned(), "1".to_owned()]]
+    );
+    let result = tk.MustQuery(
+        "select table_name from information_schema.tables where table_schema = 'like_escape' and table_name like 'abc%'",
+        Vec::new(),
+    );
+    let mut rows = result.Rows();
+    rows.sort();
+    assert_eq!(
+        rows,
+        vec![vec!["abc#x".to_owned()], vec!["abc_def".to_owned()]]
+    );
+}

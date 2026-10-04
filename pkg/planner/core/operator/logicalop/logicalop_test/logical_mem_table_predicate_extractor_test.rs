@@ -62,7 +62,7 @@ fn TestClusterLogTableExtractor() {
     ]);
     assert!(remained.is_empty());
     assert_eq!((extractor.StartTime, extractor.EndTime), (100, 200));
-    assert_eq!(extractor.Patterns, vec!["%raft%"]);
+    assert_eq!(extractor.Patterns, vec!["^.*raft.*$"]);
     assert!(extractor.LogLevels.contains("error"));
 
     let remaining = extractor.ExtractPredicates(&[

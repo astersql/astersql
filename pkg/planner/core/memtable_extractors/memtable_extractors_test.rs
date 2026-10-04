@@ -37,7 +37,7 @@ fn infoschema_extraction_resets_all_previous_state() {
 fn infoschema_like_patterns_filter_values_case_insensitively() {
     let mut extractor = InfoSchemaColumnsExtractor::NewInfoSchemaColumnsExtractor();
     assert!(
-        extractor
+        !extractor
             .ExtractPredicates(&[Predicate::Like("column_name".into(), "ID\\_%".into())])
             .is_empty()
     );
@@ -308,4 +308,132 @@ fn infoschema_listing_preserves_sorting_visibility_and_ordinals() {
             ID: 7,
         }]
     );
+}
+
+#[test]
+fn cluster_log_like_compiles_regex_for_remote_search() {
+    let predicate = Predicate::Like("message".into(), "%a\\%b%".into());
+    let mut extractor = ClusterLogTableExtractor::default();
+    assert!(extractor.ExtractPredicates(&[predicate]).is_empty());
+    assert_eq!(extractor.Patterns, ["^.*a%b.*$"]);
+}
+
+#[test]
+fn cluster_log_escape_and_ilike_keep_scalar_rechecks() {
+    for (predicate, pattern, recheck) in [
+        (
+            Predicate::LikeWithEscape(
+                "message".into(),
+                "%a#%b%".into(),
+                LikeEscape::Constant(b'#'),
+            ),
+            "^.*a%b.*$",
+            false,
+        ),
+        (
+            Predicate::Ilike(
+                "message".into(),
+                "%error%".into(),
+                LikeEscape::Constant(b'\\'),
+            ),
+            "(?i:^.*error.*$)",
+            true,
+        ),
+        (
+            Predicate::Ilike(
+                "message".into(),
+                "%error#%%".into(),
+                LikeEscape::Constant(b'#'),
+            ),
+            "(?i:^.*error%.*$)",
+            true,
+        ),
+        (
+            Predicate::Or(vec![
+                Predicate::Ilike("message".into(), "%pd%".into(), LikeEscape::Constant(b'\\')),
+                Predicate::Like("message".into(), "%tikv%".into()),
+            ]),
+            "(?i:^.*pd.*$)|^.*tikv.*$",
+            true,
+        ),
+        (
+            Predicate::LikeWithEscape("message".into(), r"%a\_%".into(), LikeEscape::Constant(0)),
+            r"^.*a\\..*$",
+            false,
+        ),
+    ] {
+        let mut extractor = ClusterLogTableExtractor::default();
+        let remaining = extractor.ExtractPredicates(std::slice::from_ref(&predicate));
+        assert_eq!(extractor.Patterns, [pattern], "{predicate:?}");
+        assert_eq!(remaining, if recheck { vec![predicate] } else { vec![] });
+    }
+    for escape in [
+        LikeEscape::Missing,
+        LikeEscape::Dynamic,
+        LikeEscape::Deferred,
+        LikeEscape::Parameter,
+    ] {
+        let predicate = Predicate::Ilike("message".into(), "%FOO%".into(), escape);
+        let mut extractor = ClusterLogTableExtractor::default();
+        assert_eq!(
+            extractor.ExtractPredicates(std::slice::from_ref(&predicate)),
+            [predicate]
+        );
+        assert!(extractor.Patterns.is_empty());
+    }
+    let predicate = Predicate::Or(vec![
+        Predicate::Like("message".into(), "%foo%".into()),
+        Predicate::Like("other".into(), "%bar%".into()),
+    ]);
+    let mut extractor = ClusterLogTableExtractor::default();
+    assert_eq!(
+        extractor.ExtractPredicates(std::slice::from_ref(&predicate)),
+        [predicate]
+    );
+    assert!(extractor.Patterns.is_empty());
+}
+
+#[test]
+fn infoschema_custom_escape_filters_nonempty_metadata_and_retains_like() {
+    let mut extractor = InfoSchemaTablesExtractor::NewInfoSchemaTablesExtractor();
+    let predicate = Predicate::LikeWithEscape(
+        "table_name".into(),
+        "%#_%".into(),
+        LikeEscape::Constant(b'#'),
+    );
+    assert_eq!(
+        extractor.ExtractPredicates(std::slice::from_ref(&predicate)),
+        [predicate]
+    );
+    let tables = ["abc_def", "abc#x"].map(|name| TableInfo {
+        Name: NewCIStr(name),
+        ..Default::default()
+    });
+    let matching = tables
+        .iter()
+        .filter(|table| extractor.HasTableName(&table.Name.O))
+        .map(|table| table.Name.O.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(matching, ["abc_def"]);
+    assert_eq!(extractor.Base.LikePatterns["table_name"], ["%#_%"]);
+    extractor.ExtractPredicates(&[Predicate::Like("table_name".into(), "abc%".into())]);
+    assert!(
+        tables
+            .iter()
+            .all(|table| extractor.HasTableName(&table.Name.O))
+    );
+    extractor.ExtractPredicates(&[Predicate::Ilike(
+        "table_name".into(),
+        "%A_%".into(),
+        LikeEscape::Constant(b'A'),
+    )]);
+    assert!(extractor.HasTableName("abc_def"));
+    assert!(!extractor.HasTableName("abc#x"));
+    let unresolved =
+        Predicate::LikeWithEscape("table_name".into(), "%#_%".into(), LikeEscape::Deferred);
+    assert_eq!(
+        extractor.ExtractPredicates(std::slice::from_ref(&unresolved)),
+        [unresolved]
+    );
+    assert!(extractor.Base.LikePatterns.is_empty());
 }
