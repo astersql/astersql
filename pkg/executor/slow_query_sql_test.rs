@@ -68,6 +68,39 @@ fn slow_query_threshold_records_statement_and_plan() {
     ]));
 }
 
+/// A TiKV storage hint must produce a TiKV plan even when the table has a TiFlash replica.
+#[test]
+fn tiflash_replica_with_tikv_hint_uses_tikv_plan() {
+    let mut tk = slow_query_testkit();
+    tk.MustExec("create table t_kv_with_tiflash (a int)", Vec::new());
+    tk.MustExec("insert into t_kv_with_tiflash values (1)", Vec::new());
+    tk.MustExec(
+        "alter table t_kv_with_tiflash set tiflash replica 1",
+        Vec::new(),
+    );
+
+    let query = "select /*+ read_from_storage(tikv[t_kv_with_tiflash]) */ a from t_kv_with_tiflash";
+    let plan = tk.MustQuery(&format!("explain {query}"), Vec::new()).Rows();
+    assert!(
+        plan.iter().any(|row| row
+            .first()
+            .is_some_and(|operator| operator.contains("TableFullScan"))),
+        "expected a table scan, got {plan:?}"
+    );
+    assert!(
+        plan.iter()
+            .any(|row| row.get(2).is_some_and(|task| task.contains("cop[tikv]"))),
+        "expected the scan to use TiKV, got {plan:?}"
+    );
+    assert!(
+        !plan.iter().any(|row| row
+            .first()
+            .is_some_and(|operator| operator.contains("ExchangeSender"))),
+        "a TiKV-forced plan must not contain an MPP exchange: {plan:?}"
+    );
+    tk.MustQuery(query, Vec::new()).Check(Rows(&["1"]));
+}
+
 /// 验证慢日志分行、日志字节估算，以及 runtime stats 的 Merge/String。
 #[test]
 fn slow_query_sql_blocks_preserve_lines_and_merge_runtime_stats() {

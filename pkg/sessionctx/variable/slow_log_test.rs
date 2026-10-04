@@ -153,3 +153,17 @@ fn read_pool_task_details_are_logged_as_one_complete_field() {
             .contains("Read_pool_task_details")
     );
 }
+
+#[test]
+fn storage_from_fields_are_logged_for_tikv_without_mpp() {
+    let vars = crate::session::SessionVars::new();
+    let items = slow_log::SlowQueryLogItems {
+        SQL: "select * from t".into(),
+        StorageKV: true,
+        ..Default::default()
+    };
+
+    let log = vars.SlowLogFormat(&items);
+    assert!(log.contains("# Storage_from_kv: true\n"), "{log}");
+    assert!(log.contains("# Storage_from_mpp: false\n"), "{log}");
+}
