@@ -372,6 +372,139 @@ impl PointGetPlan {
     }
 }
 
+/// Borrowed session and table boundaries for batch lookup pruning. Common handles
+/// are returned to the executor, rather than persisted in the integer plan keys.
+pub struct BatchPointGetPruningContext<'a> {
+    pub StatementContext: &'a stmtctx::StatementContext,
+    pub EvalContext: &'a dyn expression::EvalContext,
+    pub PartitionedTable: Option<&'a dyn table::PartitionedTable>,
+    pub SinglePartition: Option<usize>,
+    pub PartitionNames: &'a [parser_ast::CIStr],
+    pub HandleColOffset: usize,
+}
+
+impl table::CastContext for BatchPointGetPruningContext<'_> {
+    fn TypeCtx(&self) -> expression::types::Context {
+        self.EvalContext.TypeCtx()
+    }
+    fn ErrCtx(&self) -> expression::errctx::Context {
+        self.EvalContext.ErrCtx()
+    }
+    fn SQLMode(&self) -> mysql::r#const::SQLMode {
+        self.EvalContext.SQLMode()
+    }
+    fn ConnectionID(&self) -> u64 {
+        self.EvalContext.CtxID()
+    }
+}
+
+impl BatchPointGetPruningContext<'_> {
+    fn encode_unique_values(
+        &self,
+        table: &TableInfo,
+        index: &IndexInfo,
+        values: &mut [Datum],
+    ) -> Result<Option<Vec<u8>>, expression::Error> {
+        if values.len() != index.Columns.len() {
+            return Err(expression::errors::New("unique index value count mismatch"));
+        }
+        for (value, index_column) in values.iter_mut().zip(&index.Columns) {
+            let column = table
+                .Columns
+                .get(index_column.Offset as usize)
+                .ok_or_else(|| expression::errors::New("index column offset out of range"))?;
+            match column.GetType() {
+                mysql::r#type::TypeString
+                | mysql::r#type::TypeVarString
+                | mysql::r#type::TypeVarchar => {
+                    let text = value.ToString()?;
+                    value.SetString(text, value.Collation());
+                }
+                mysql::r#type::TypeEnum
+                    if matches!(
+                        value.Kind(),
+                        types::datum::KindString
+                            | types::datum::KindBytes
+                            | types::datum::KindBinaryLiteral
+                    ) =>
+                {
+                    let Ok(text) = value.ToString() else {
+                        return Ok(None);
+                    };
+                    let Ok(parsed) = expression::types::ParseEnumName(
+                        column.GetElems(),
+                        &text,
+                        column.GetCollate(),
+                    ) else {
+                        return Ok(None);
+                    };
+                    value.SetMysqlEnum(parsed, column.GetCollate().to_owned());
+                }
+                _ => match table::CastValue(self, value.clone(), column, true, false) {
+                    Ok(converted) => *value = converted,
+                    Err(error) if error.kind() == table::CastErrorKind::Truncated => {
+                        return Ok(None);
+                    }
+                    Err(error) => return Err(expression::errors::New(error.to_string())),
+                },
+            }
+        }
+        match kv::codec::EncodeKey(
+            self.StatementContext.TimeZone(),
+            Vec::new(),
+            values.to_vec(),
+        ) {
+            Ok(encoded) => Ok(Some(encoded)),
+            Err(error) => match self.StatementContext.HandleError(Some(error)) {
+                Some(error) => Err(expression::errors::New(error.to_string())),
+                None => Ok(Some(Vec::new())),
+            },
+        }
+    }
+}
+
+/// Stable in-place compaction drops rejected keys and keeps all parallel arrays
+/// aligned. Moving rows releases their rejected allocations without suffix shifts.
+pub(crate) fn compact_batch_partition_values(
+    values: &mut Vec<Vec<Datum>>,
+    handles: &mut Vec<Box<dyn kv::Handle>>,
+    indexes: &[i32],
+    output_indexes: &mut Vec<usize>,
+    single_partition: Option<usize>,
+    partition_info: &model::PartitionInfo,
+    names: &[parser_ast::CIStr],
+) -> usize {
+    let mut position = 0;
+    let has_handles = !handles.is_empty();
+    for (source, &index) in indexes.iter().enumerate() {
+        if index < 0
+            || single_partition.is_some_and(|selected| selected != index as usize)
+            || (!names.is_empty()
+                && !partition_info
+                    .Definitions
+                    .get(index as usize)
+                    .is_some_and(|definition| names.iter().any(|name| name.L == definition.Name.L)))
+        {
+            continue;
+        }
+        if !values.is_empty() {
+            values.swap(position, source);
+        }
+        if has_handles {
+            handles.swap(position, source);
+        }
+        if single_partition.is_none() {
+            output_indexes.push(index as usize);
+        }
+        position += 1;
+    }
+    values.truncate(position);
+    if has_handles {
+        handles.truncate(position);
+    }
+    position
+}
+
 /// 批量点查：在 PointGetPlan 上叠加多组 handle / 索引值行 / 分区下标。
 pub struct BatchPointGetPlan {
     /// 共享的单点计划配置与表元数据。
@@ -430,7 +563,7 @@ impl BatchPointGetPlan {
         self.PartitionIdxs.retain(|idx| allowed.contains(idx));
     }
     /// 按允许分区同步裁剪分区下标、handle 与索引值行。
-    pub fn PrunePartitionsAndValues(&mut self, allowed: &[usize]) {
+    pub fn PrunePrecomputedPartitionsAndValues(&mut self, allowed: &[usize]) {
         let partitions = std::mem::take(&mut self.PartitionIdxs);
         let handles = std::mem::take(&mut self.Handles);
         let values = std::mem::take(&mut self.IndexValueRows);
@@ -447,6 +580,149 @@ impl BatchPointGetPlan {
                 self.IndexValueRows.push(row.clone());
             }
         }
+    }
+    /// Session-aware Go pruning path. The legacy precomputed-partition method is
+    /// retained for callers that already own aligned integer keys.
+    pub fn PrunePartitionsAndValues(
+        &mut self,
+        context: &BatchPointGetPruningContext<'_>,
+    ) -> Result<(Vec<Box<dyn kv::Handle>>, bool), expression::Error> {
+        use std::collections::HashSet;
+        let table =
+            self.PointGetPlan.TblInfo.as_ref().ok_or_else(|| {
+                expression::errors::New("batch point get requires table metadata")
+            })?;
+        let index = self.PointGetPlan.IndexInfo.as_ref();
+        let partition_info = if index.is_some_and(|index| index.Global) {
+            None
+        } else {
+            table.GetPartitionInfo()
+        };
+        if partition_info.is_some() && context.SinglePartition.is_none() {
+            self.PartitionIdxs.clear();
+        }
+        let common = table.IsCommonHandle && index.is_some_and(|index| index.Primary);
+        let mut handles: Vec<Box<dyn kv::Handle>> = Vec::new();
+        if let Some(index) = index {
+            if common {
+                let mut seen = HashSet::new();
+                let mut position = 0;
+                for source in 0..self.IndexValueRows.len() {
+                    if self.IndexValueRows[source].iter().any(Datum::IsNull) {
+                        continue;
+                    }
+                    let Some(encoded) = context.encode_unique_values(
+                        table,
+                        index,
+                        &mut self.IndexValueRows[source],
+                    )?
+                    else {
+                        continue;
+                    };
+                    let handle = kv::NewCommonHandle(encoded)
+                        .map_err(|error| expression::errors::New(error.to_string()))?;
+                    if !seen.insert(kv::Handle::Encoded(&handle)) {
+                        continue;
+                    }
+                    handles.push(Box::new(handle));
+                    self.IndexValueRows.swap(position, source);
+                    position += 1;
+                }
+                self.IndexValueRows.truncate(position);
+            } else {
+                self.IndexValueRows
+                    .retain(|row| !row.iter().any(Datum::IsNull));
+            }
+        } else {
+            let mut seen = HashSet::new();
+            handles.extend(
+                self.Handles
+                    .iter()
+                    .filter(|handle| seen.insert(**handle))
+                    .map(|handle| Box::new(kv::IntHandle(*handle)) as Box<dyn kv::Handle>),
+            );
+        }
+        if let Some(partition_info) = partition_info {
+            let partitioned_table = context.PartitionedTable.ok_or_else(|| {
+                expression::errors::New("partitioned batch point get requires a partition table")
+            })?;
+            let mut indexes = Vec::new();
+            let mut row =
+                vec![Datum::default(); table.Columns.len().max(context.HandleColOffset + 1)];
+            let count = if index.is_some() {
+                self.IndexValueRows.len()
+            } else {
+                handles.len()
+            };
+            for source in 0..count {
+                if let Some(index) = index {
+                    for (value, column) in self.IndexValueRows[source].iter().zip(&index.Columns) {
+                        row[column.Offset as usize] = value.clone();
+                    }
+                } else {
+                    let column = table.Columns.get(context.HandleColOffset).ok_or_else(|| {
+                        expression::errors::New("handle column offset out of range")
+                    })?;
+                    row[context.HandleColOffset] =
+                        if mysql::r#type::HasUnsignedFlag(column.GetFlag()) {
+                            types::datum::NewUintDatum(handles[source].IntValue() as u64)
+                        } else {
+                            types::datum::NewIntDatum(handles[source].IntValue())
+                        };
+                }
+                let (index, error) =
+                    match partitioned_table.GetPartitionIdxByRow(context.EvalContext, &row) {
+                        Ok(index) => (index, None),
+                        Err(error) => {
+                            if self.PointGetPlan.IndexInfo.is_none()
+                                && !table::ErrNoPartitionForGivenValue.Equal(Some(&error))
+                            {
+                                return Err(expression::errors::New(error.to_string()));
+                            }
+                            (-1, Some(model::errors::Errorf(error.to_string())))
+                        }
+                    };
+                let (index, error) =
+                    partition_info.ReplaceWithOverlappingPartitionIdx(index, error);
+                indexes.push(if error.is_some() { -1 } else { index });
+            }
+            // Integer/secondary paths preserve their original values on the early
+            // TableDual return; the common path always compacts both arrays first.
+            let matches = indexes.iter().any(|&index| {
+                index >= 0
+                    && context
+                        .SinglePartition
+                        .is_none_or(|selected| selected == index as usize)
+                    && (context.PartitionNames.is_empty()
+                        || partition_info.Definitions.get(index as usize).is_some_and(
+                            |definition| {
+                                context
+                                    .PartitionNames
+                                    .iter()
+                                    .any(|name| name.L == definition.Name.L)
+                            },
+                        ))
+            });
+            if !common && !matches {
+                return Ok((Vec::new(), true));
+            }
+            let found = compact_batch_partition_values(
+                &mut self.IndexValueRows,
+                &mut handles,
+                &indexes,
+                &mut self.PartitionIdxs,
+                context.SinglePartition,
+                partition_info,
+                context.PartitionNames,
+            );
+            if found == 0 {
+                return Ok((Vec::new(), true));
+            }
+        }
+        if index.is_none() {
+            self.Handles = handles.iter().map(|handle| handle.IntValue()).collect();
+        }
+        Ok((handles, false))
     }
     /// EXPLAIN：批量大小 + 内嵌点查说明。
     pub fn ExplainInfo(&self) -> String {

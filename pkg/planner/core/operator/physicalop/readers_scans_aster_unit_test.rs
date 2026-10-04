@@ -88,7 +88,7 @@ fn batch_partition_pruning_keeps_values_aligned() {
         vec![types::datum::NewIntDatum(20)],
         vec![types::datum::NewIntDatum(30)],
     ];
-    plan.PrunePartitionsAndValues(&[0, 1]);
+    plan.PrunePrecomputedPartitionsAndValues(&[0, 1]);
     assert_eq!(plan.PartitionIdxs, vec![0, 1]);
     assert_eq!(plan.Handles, vec![10, 30]);
     assert_eq!(plan.IndexValueRows.len(), 2);
