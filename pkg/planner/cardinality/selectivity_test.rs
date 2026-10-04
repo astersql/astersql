@@ -456,3 +456,333 @@ fn test_prepare_filter_for_stats_evaluation_updates_expression_column() {
     crate::selectivity::prepareFilterForStatsEvaluation(filter.as_mut());
     assert_eq!(0, filter.as_column().unwrap().Index);
 }
+
+struct RangeTestContext {
+    vars: variable::SessionVars,
+    expr: std::sync::Arc<exprstatic::ExprContext>,
+    ranger: planctx_dependency::rangerctx::RangerContext<'static>,
+}
+
+impl Default for RangeTestContext {
+    fn default() -> Self {
+        let expr = std::sync::Arc::new(exprstatic::NewExprContext(Vec::new()));
+        Self {
+            vars: variable::SessionVars::default(),
+            ranger: planctx_dependency::rangerctx::RangerContext {
+                TypeCtx: (*expression::types::DefaultStmtNoWarningContext).clone(),
+                ErrCtx: ranger::errctx::StrictNoWarningContext.clone(),
+                ExprCtx: expr.clone(),
+                RangeFallbackHandler: None,
+                PlanCacheTracker: None,
+                OptimizerFixControl: std::collections::HashMap::new(),
+                UseCache: false,
+                RegardNULLAsPoint: false,
+                OptPrefixIndexSingleScan: false,
+            },
+            expr,
+        }
+    }
+}
+
+impl CardinalityContext for RangeTestContext {
+    fn GetSessionVars(&self) -> &variable::SessionVars {
+        &self.vars
+    }
+
+    fn GetExprCtx(&self) -> &dyn planctx_dependency::exprctx::ExprContext {
+        self.expr.as_ref()
+    }
+
+    fn GetRangerCtx(&self) -> &planctx_dependency::rangerctx::RangerContext<'_> {
+        &self.ranger
+    }
+}
+
+#[test]
+fn selectivity_builds_ranges_for_each_appended_common_handle_column() {
+    crate::main_test::setup_for_cardinality_test();
+    let context = RangeTestContext::default();
+    for handle_columns in [2, 3] {
+        let ft = types::NewFieldType(mysql::TypeBlob);
+        let encode = |value| {
+            codec::EncodeKey(chrono_tz::UTC, Vec::new(), vec![types::NewIntDatum(value)]).unwrap()
+        };
+        let mut histogram = statistics::NewHistogram(1, 10, 0, 0, &ft, 1, 0);
+        histogram.AppendBucket(
+            &types::NewBytesDatum(encode(0)),
+            &types::NewBytesDatum(encode(9)),
+            100,
+            10,
+        );
+        let mut coll = statistics::NewHistColl(1, 100, 0, 0, 1);
+        coll.SetIdx(
+            1,
+            Box::new(statistics::Index {
+                CMSketch: None,
+                TopN: None,
+                FMSketch: None,
+                Info: Some(statistics::IndexInfo {
+                    ID: 1,
+                    Columns: vec![statistics::IndexColumnInfo {
+                        Length: types::UnspecifiedLength,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+                Histogram: histogram,
+                StatsLoadedStatus: statistics::NewStatsFullLoadStatus(),
+                PhysicalID: 1,
+                StatsVer: statistics::Version2 as i64,
+            }),
+        );
+        coll.Idx2ColUniqueIDs
+            .insert(1, (1..=handle_columns + 1).collect());
+        let filters = (1..=handle_columns + 1)
+            .map(|id| {
+                expression::NewFunction(
+                    context.expr.as_ref(),
+                    ast::EQ,
+                    *types::NewFieldType(mysql::TypeTiny),
+                    vec![column_expression(id), constant_expression(5)],
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        // No filled access path: Selectivity must build the extended index ranges
+        // itself, including every appended dimension, through the real ranger.
+        let columns = (1..=handle_columns + 1)
+            .map(|id| column(id, id))
+            .collect::<Vec<_>>();
+        let (mask, ranges, partial, _, _) = getMaskAndRanges(
+            &context,
+            &filters,
+            ranger::IndexRangeType,
+            &vec![types::UnspecifiedLength; columns.len()],
+            None,
+            &columns,
+        )
+        .unwrap();
+        assert_eq!(mask, (1 << filters.len()) - 1);
+        assert!(!partial);
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].LowVal.len(), columns.len());
+        let column_refs = columns.iter().collect::<Vec<_>>();
+        let range_refs = ranges.iter().collect::<Vec<_>>();
+        let expected = GetRowCountByIndexRanges(&context, &coll, 1, &range_refs, &column_refs)
+            .unwrap()
+            .Est
+            / 100.0;
+        assert_close(
+            expected.max(0.01),
+            Selectivity(&context, &coll, &filters, &[]).unwrap(),
+        );
+    }
+}
+
+#[test]
+fn prefixed_common_handle_estimation_uses_full_values_and_cached_scan_ranges() {
+    crate::main_test::setup_for_cardinality_test();
+    let context = RangeTestContext::default();
+    let integer = *types::NewFieldType(mysql::TypeLonglong);
+    let mut varchar = *types::NewFieldType(mysql::TypeVarchar);
+    varchar.SetFlen(64);
+    let columns = vec![
+        expression::Column::new(integer.clone(), 1, 1, 0),
+        expression::Column::new(varchar.clone(), 2, 2, 1),
+        expression::Column::new(integer.clone(), 3, 3, 2),
+    ];
+    let encode = |datum| codec::EncodeKey(chrono_tz::UTC, Vec::new(), vec![datum]).unwrap();
+    let mut index_top = statistics::NewTopN(10);
+    for value in 0..10 {
+        index_top.AppendTopN(encode(types::NewIntDatum(value)), 10);
+    }
+    index_top.Sort();
+    let mut coll = statistics::NewHistColl(1, 100, 0, 3, 1);
+    coll.StatsVer = statistics::Version2;
+    coll.SetIdx(
+        1,
+        Box::new(statistics::Index {
+            CMSketch: None,
+            TopN: Some(index_top.clone()),
+            FMSketch: None,
+            Info: Some(statistics::IndexInfo {
+                ID: 1,
+                Columns: vec![statistics::IndexColumnInfo {
+                    Length: types::UnspecifiedLength,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            Histogram: statistics::NewHistogram(
+                1,
+                10,
+                0,
+                0,
+                &types::NewFieldType(mysql::TypeBlob),
+                0,
+                0,
+            ),
+            StatsLoadedStatus: statistics::NewStatsFullLoadStatus(),
+            PhysicalID: 1,
+            StatsVer: statistics::Version2 as i64,
+        }),
+    );
+    coll.Idx2ColUniqueIDs.insert(1, vec![1, 2, 3]);
+    for (id, field) in [(1, integer.clone()), (2, varchar), (3, integer)] {
+        let mut top = statistics::NewTopN(100);
+        if id == 1 {
+            top = index_top.clone();
+        } else {
+            for value in 1..=100 {
+                let datum = if id == 2 {
+                    types_dependency::datum::NewStringDatum(format!("pp_{value:03}"))
+                } else {
+                    types::NewIntDatum(value)
+                };
+                top.AppendTopN(encode(datum), 1);
+            }
+            top.Sort();
+        }
+        coll.SetCol(
+            id,
+            Box::new(statistics::Column {
+                CMSketch: None,
+                TopN: Some(top),
+                FMSketch: None,
+                Info: None,
+                Histogram: statistics::NewHistogram(
+                    id,
+                    if id == 1 { 10 } else { 100 },
+                    0,
+                    0,
+                    &field,
+                    0,
+                    0,
+                ),
+                StatsLoadedStatus: statistics::NewStatsFullLoadStatus(),
+                PhysicalID: 1,
+                StatsVer: statistics::Version2 as i64,
+                IsHandle: false,
+            }),
+        );
+    }
+    let values = [
+        types::NewIntDatum(5),
+        types_dependency::datum::NewStringDatum("pp_055".to_owned()),
+        types::NewIntDatum(55),
+    ];
+    let compare = |offset: usize, name: &str| {
+        expression::NewFunction(
+            context.expr.as_ref(),
+            name,
+            *types::NewFieldType(mysql::TypeTiny),
+            vec![
+                Box::new(columns[offset].clone()),
+                Box::new({
+                    let mut value = expression::NewInt64Const(0);
+                    value.Value = values[offset].clone();
+                    value.RetType = columns[offset].RetType.clone();
+                    value
+                }),
+            ],
+        )
+        .unwrap()
+    };
+    let branches = (0..3)
+        .map(|offset| {
+            let mut terms = (0..offset).map(|i| compare(i, ast::EQ)).collect::<Vec<_>>();
+            terms.push(compare(offset, ast::GT));
+            expression::ComposeCNFCondition(context.expr.as_ref(), &terms).unwrap()
+        })
+        .collect::<Vec<_>>();
+    let filters = vec![expression::ComposeDNFCondition(context.expr.as_ref(), &branches).unwrap()];
+    let (mask, ranges, partial, _, _) = getMaskAndRanges(
+        &context,
+        &filters,
+        ranger::IndexRangeType,
+        &[-1, -1, -1],
+        None,
+        &columns,
+    )
+    .unwrap();
+    assert_eq!(mask, 1);
+    assert!(!partial);
+    assert!(
+        ranges
+            .iter()
+            .any(|range| range.LowVal.len() == 3 && range.LowVal[1].GetString() == "pp_055")
+    );
+    let estimate = Selectivity(&context, &coll, &filters, &[]).unwrap();
+    let column_refs = columns.iter().collect::<Vec<_>>();
+    let range_refs = ranges.iter().collect::<Vec<_>>();
+    let full_count = GetRowCountByIndexRanges(&context, &coll, 1, &range_refs, &column_refs)
+        .unwrap()
+        .Est;
+    assert_close(full_count / 100.0, estimate);
+    let (mask, ranges, partial, min_access, _) = getMaskAndRanges(
+        &context,
+        &filters,
+        ranger::IndexRangeType,
+        &[-1, 2, -1],
+        None,
+        &columns,
+    )
+    .unwrap();
+    assert_eq!(mask, 1);
+    assert!(partial);
+    assert!(
+        ranges
+            .iter()
+            .any(|range| range.LowVal.len() > 1 && range.LowVal[1].GetString() == "pp")
+    );
+    assert_eq!(
+        ranges
+            .iter()
+            .map(|range| range.String())
+            .collect::<Vec<_>>()
+            .join(", "),
+        "[5 \"pp\",5 +inf], (5,+inf]"
+    );
+    let path = planutil::AccessPath {
+        Index: Some(model::IndexInfo {
+            ID: 1,
+            ..Default::default()
+        }),
+        IdxCols: columns.clone(),
+        IdxColLens: vec![-1, 2, -1],
+        Ranges: ranges.0.clone(),
+        AccessConds: filters.clone(),
+        TableFilters: filters.clone(),
+        IsDNFCond: true,
+        MinAccessCondsForDNFCond: min_access as usize,
+        ..Default::default()
+    };
+    let cached_estimate = Selectivity(&context, &coll, &filters, &[&path]).unwrap();
+    let scan_ranges = path.Ranges.iter().collect::<Vec<_>>();
+    let scan_count = GetRowCountByIndexRanges(&context, &coll, 1, &scan_ranges, &column_refs)
+        .unwrap()
+        .Est;
+    assert_eq!(scan_count, 50.0);
+    assert_eq!(cached_estimate, 0.4);
+    // A prefix widens only its own dimension; the full predicate is retained.
+    for dimension in [2, 3] {
+        let equality = (0..dimension)
+            .map(|offset| compare(offset, ast::EQ))
+            .collect::<Vec<_>>();
+        let (_, ranges, _, _, _) = getMaskAndRanges(
+            &context,
+            &equality,
+            ranger::IndexRangeType,
+            &[-1, 2, -1][..dimension],
+            None,
+            &columns[..dimension],
+        )
+        .unwrap();
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].LowVal.len(), dimension);
+        assert_eq!(ranges[0].LowVal[1].GetString(), "pp");
+        if dimension == 3 {
+            assert_eq!(ranges[0].LowVal[2].GetInt64(), 55);
+        }
+    }
+}

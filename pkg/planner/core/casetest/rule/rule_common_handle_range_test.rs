@@ -132,3 +132,61 @@ fn common_handle_secondary_index_ranges() {
         tk.MustQuery(sql, Vec::new()).Check(rows("2.50 10"));
     }
 }
+
+#[test]
+fn common_handle_index_ranges_with_tuple_compare() {
+    let (store, _domain) = CreateMockStoreAndDomain();
+    let mut tk = TestKit::new(store);
+    tk.MustExec("use test", Vec::new());
+    tk.MustExec("CREATE TABLE t_chr_tuple (a bigint not null, b bigint not null, c bigint not null, PRIMARY KEY(b, c) CLUSTERED, KEY ia(a))", Vec::new());
+    tk.MustExec(
+        "insert into t_chr_tuple values (1,2,3),(1,2,4),(1,3,1),(2,1,1)",
+        Vec::new(),
+    );
+    // Exact physical ranges are checked through the real optimizer in
+    // core/integration_test.rs::common_handle_secondary_index_range_planning.
+    tk.MustQuery(
+        "select * from t_chr_tuple where (a,b,c) > (1,2,3) order by a,b,c",
+        Vec::new(),
+    )
+    .Check(rows("1 2 4\n1 3 1\n2 1 1"));
+    tk.MustExec("CREATE TABLE t_chr_tuple3 (a bigint not null, b bigint not null, c bigint not null, d bigint not null, PRIMARY KEY(b,c,d) CLUSTERED, KEY ia(a))", Vec::new());
+    tk.MustExec(
+        "insert into t_chr_tuple3 values (1,2,3,4),(1,2,3,5),(1,2,4,1)",
+        Vec::new(),
+    );
+    tk.MustQuery(
+        "select * from t_chr_tuple3 where (a,b,c,d) > (1,2,3,4) order by a,b,c,d",
+        Vec::new(),
+    )
+    .Check(rows("1 2 3 5\n1 2 4 1"));
+}
+
+#[test]
+fn index_range_estimation_with_prefixed_common_handle() {
+    let (store, _domain) = CreateMockStoreAndDomain();
+    let mut tk = TestKit::new(store);
+    tk.MustExec("use test", Vec::new());
+    tk.MustExec(
+        "create table t(p1 varchar(64), p2 int, c int, primary key(p1(2),p2) clustered, key ic(c))",
+        Vec::new(),
+    );
+    let values = (1..=100)
+        .map(|i| format!("('pp_{i:03}',{i},{})", i % 10))
+        .collect::<Vec<_>>();
+    tk.MustExec(
+        &format!("insert into t values {}", values.join(",")),
+        Vec::new(),
+    );
+    tk.MustExec("analyze table t all columns", Vec::new());
+    // Scan ranges, retained prefix filters, and 40/50 row estimates are
+    // checked at the optimizer/cardinality boundaries in their owning crates.
+    let sql = "select * from t use index(ic) where c = 5 and p1 = 'pp_055'";
+    let sql2 = "select * from t use index(ic) where c = 5 and p1 = 'pp_055' and p2 = 55";
+    let tuple = "select * from t where (c,p1,p2) > (5,'pp_055',55)";
+    let forced = "select * from t use index(ic) where (c,p1,p2) > (5,'pp_055',55)";
+    tk.MustQuery(sql, Vec::new()).Check(rows("pp_055 55 5"));
+    tk.MustQuery(sql2, Vec::new()).Check(rows("pp_055 55 5"));
+    assert_eq!(tk.MustQuery(tuple, Vec::new()).Rows().len(), 44);
+    assert_eq!(tk.MustQuery(forced, Vec::new()).Rows().len(), 44);
+}

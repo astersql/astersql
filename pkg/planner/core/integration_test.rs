@@ -4438,8 +4438,8 @@ fn common_handle_secondary_index_range_planning() {
         Length: length,
         ..Default::default()
     };
-    for kind in ["integer", "string", "ci", "prefix", "decimal"] {
-        let composite = matches!(kind, "integer" | "ci" | "prefix");
+    for kind in ["integer", "integer3", "string", "ci", "prefix", "decimal"] {
+        let composite = matches!(kind, "integer" | "integer3" | "ci" | "prefix");
         let pk_type = match kind {
             "string" | "ci" | "prefix" => expression::mysql::TypeVarchar,
             "decimal" => expression::mysql::TypeNewDecimal,
@@ -4484,6 +4484,12 @@ fn common_handle_secondary_index_range_planning() {
         )];
         if composite {
             primary.push(index_column("seq", 1, -1));
+        }
+        if kind == "integer3" {
+            primary.push(index_column("c", 4, -1));
+            columns[4]
+                .FieldType
+                .AddFlag(expression::mysql::PriKeyFlag | expression::mysql::NotNullFlag);
         }
         let table = Arc::new(model::TableInfo {
             ID: 7001,
@@ -4546,7 +4552,17 @@ fn common_handle_secondary_index_range_planning() {
         let context =
             integration_plan_context(&[kv_dependency::StoreType::TiKV], "tikv", false, false);
         let cases: Vec<(&str, &str, &str)> = match kind {
+            "integer3" => vec![(
+                "*",
+                "use index(ia) where (a,tenant,seq,c) > (1,2,3,4)",
+                "range:(1 2 3 4,1 2 3 +inf], (1 2 3,1 2 +inf], (1 2,1 +inf], (1,+inf]",
+            )],
             "integer" => vec![
+                (
+                    "*",
+                    "use index(ia) where (a,tenant,seq) > (1,2,3)",
+                    "range:(1 2 3,1 2 +inf], (1 2,1 +inf], (1,+inf]",
+                ),
                 (
                     "*",
                     "use index(ia) where a=10 and tenant=2",
@@ -4672,7 +4688,14 @@ fn common_handle_secondary_index_range_planning() {
             }
             assert_eq!(
                 scan.schema().Columns.len(),
-                scan.Index.as_ref().unwrap().Columns.len() + if composite { 2 } else { 1 }
+                scan.Index.as_ref().unwrap().Columns.len()
+                    + if kind == "integer3" {
+                        3
+                    } else if composite {
+                        2
+                    } else {
+                        1
+                    }
             );
         }
     }
