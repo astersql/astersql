@@ -702,6 +702,7 @@ impl DataSource {
             let Some(index) = path.Index.as_ref() else {
                 continue;
             };
+            let index_id = index.ID;
             let mut index_columns = index
                 .Columns
                 .iter()
@@ -751,7 +752,7 @@ impl DataSource {
             );
             if !append_columns.is_empty() {
                 appended_handles.push((
-                    index.ID,
+                    index_id,
                     index.Columns.len(),
                     append_columns
                         .iter()
@@ -976,7 +977,7 @@ impl DataSource {
                 let mut estimate = cardinality::GetRowCountByIndexRanges(
                     &cardinality_context,
                     histogram,
-                    index.ID,
+                    index_id,
                     &range_refs,
                     &column_refs,
                 )
@@ -1568,6 +1569,7 @@ impl DataSource {
         scan.FullIdxColLens = path.FullIdxColLens.clone();
         scan.IdxCols = path.IdxCols.clone();
         scan.IdxColLens = path.IdxColLens.clone();
+        scan.ConstCols = path.ConstCols.clone();
         scan.NoncacheableReason = path.NoncacheableReason.clone();
         scan.EqCondCount = path.EqCondCount;
         scan.AccessConds = path.AccessConds.clone();

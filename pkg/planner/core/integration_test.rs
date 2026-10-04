@@ -3542,6 +3542,65 @@ pub fn test_cor_col_range_predicate_access() {
 }
 
 #[test]
+pub fn test_cor_col_eq_provides_index_order() {
+    let context = integration_plan_context(&[kv_dependency::StoreType::TiKV], "tikv", false, false);
+    let index_schema = integration_multi_info_schema(
+        &["t1", "t3"],
+        false,
+        Some(("idx_b_c_a", &["b", "c", "a"])),
+        &[],
+    );
+    let assert_early_stop = |sql: &str| {
+        let plan = optimize_integration_query_with_schema(sql, &context, index_schema.clone());
+        let mut rows = Vec::new();
+        physical_plan_diagnostics(plan.as_ref(), &mut rows);
+        let scan = rows
+            .iter()
+            .find(|row| row.starts_with("IndexRangeScan "))
+            .unwrap_or_else(|| panic!("expected an index range scan: {rows:?}"));
+        assert!(
+            scan.contains("keep order:true"),
+            "correlated equality should let the index provide order: {rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|row| row.starts_with("TopN")),
+            "the sort should be eliminated: {rows:?}"
+        );
+        assert!(
+            rows.iter().filter(|row| row.starts_with("Limit")).count() >= 2,
+            "the root and coprocessor should both stop after one row: {rows:?}"
+        );
+    };
+
+    // Match the Go secondary-index case: the correlated equality fixes b, the literal equality
+    // fixes c, and the non-NULL key a after them can satisfy MIN ordering.
+    assert_early_stop(
+        "select (select /*+ NO_DECORRELATE() */ min(t3.a) from t3 use index (idx_b_c_a) where t1.b = t3.b and t3.c = 1) from t1",
+    );
+
+    // An explicit ORDER BY ... LIMIT over the same constrained index prefix has the same early-stop plan.
+    assert_early_stop(
+        "select (select /*+ NO_DECORRELATE() */ t3.a from t3 use index (idx_b_c_a) where t1.b = t3.b and t3.c = 1 order by t3.a limit 1) from t1",
+    );
+
+    // A correlated range does not fix its index key, so later keys cannot provide the requested order.
+    let range_schema = integration_multi_info_schema(
+        &["t1", "t2"],
+        false,
+        Some(("idx_b_c_d", &["b", "c", "d"])),
+        &[],
+    );
+    let range_sql = "select (select /*+ NO_DECORRELATE() */ min(t2.d) from t2 use index (idx_b_c_d) where t2.b = t1.b and t2.c < t1.c) from t1";
+    let range_plan = optimize_integration_query_with_schema(range_sql, &context, range_schema);
+    let mut range_rows = Vec::new();
+    physical_plan_diagnostics(range_plan.as_ref(), &mut range_rows);
+    assert!(
+        range_rows.iter().any(|row| row.starts_with("TopN")),
+        "a correlated range must retain its sort: {range_rows:?}"
+    );
+}
+
+#[test]
 pub fn test_explain_analyze_dml_commit() {
     assert_sql_parses("explain analyze delete from t");
     let table = typed_table("t", &["c1", "c2"]);

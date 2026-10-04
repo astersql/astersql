@@ -36,6 +36,7 @@ pub struct LogicalIndexScan {
     pub FullIdxColLens: Vec<isize>,
     pub IdxCols: Vec<Column>,
     pub IdxColLens: Vec<isize>,
+    pub ConstCols: Vec<bool>,
     pub NoncacheableReason: String,
 }
 
@@ -56,6 +57,7 @@ impl Default for LogicalIndexScan {
             FullIdxColLens: Vec::new(),
             IdxCols: Vec::new(),
             IdxColLens: Vec::new(),
+            ConstCols: Vec::new(),
             NoncacheableReason: String::new(),
         }
     }
@@ -199,17 +201,21 @@ impl LogicalIndexScan {
         if !prop.AllSameOrder().0 {
             return false;
         }
-        // 允许在等式前缀内滑动起点，再匹配剩余索引列与 SortItems。
+        // 允许跳过 AccessPath 标记为常量的索引列，以及普通等值前缀，再匹配 SortItems。
         let eval_ctx = self.SCtx().map(|context| context.GetExprCtx().GetEvalCtx());
         for (offset, column) in self.IdxCols.iter().enumerate() {
+            if self.ConstCols.get(offset).copied().unwrap_or(false) {
+                continue;
+            }
             let matches = eval_ctx.map_or_else(
                 || column.UniqueID == prop.SortItems[0].Col.UniqueID,
                 |ctx| column.EqualByExprAndID(ctx, &prop.SortItems[0].Col),
             );
             if matches {
-                return matchIndicesPropWithCtx(
+                return matchIndicesPropWithConstCols(
                     &self.IdxCols[offset..],
                     &self.IdxColLens[offset..],
+                    &self.ConstCols[offset..],
                     &prop.SortItems,
                     eval_ctx,
                 );
@@ -261,6 +267,34 @@ fn matchIndicesPropWithCtx(
                     |ctx| item.Col.EqualByExprAndID(ctx, &idx_cols[index]),
                 )
         })
+}
+
+fn matchIndicesPropWithConstCols(
+    idx_cols: &[Column],
+    col_lens: &[isize],
+    const_cols: &[bool],
+    prop_items: &[SortItem],
+    eval_ctx: Option<&dyn expression::EvalContext>,
+) -> bool {
+    let mut index_pos = 0;
+    for item in prop_items {
+        while const_cols.get(index_pos).copied().unwrap_or(false) {
+            index_pos += 1;
+        }
+        let Some(indexed) = idx_cols.get(index_pos) else {
+            return false;
+        };
+        if col_lens.get(index_pos).copied() != Some(expression::types::UnspecifiedLength as isize)
+            || !eval_ctx.map_or_else(
+                || indexed.UniqueID == item.Col.UniqueID,
+                |ctx| item.Col.EqualByExprAndID(ctx, indexed),
+            )
+        {
+            return false;
+        }
+        index_pos += 1;
+    }
+    true
 }
 
 /// LogicalPlan trait 委托到 LogicalIndexScan 具体实现。

@@ -54,7 +54,7 @@ pub struct AccessPath {
     pub IdxCols: Vec<expression::Column>,
     /// 对应 IdxCols 的前缀长度。
     pub IdxColLens: Vec<isize>,
-    /// 各索引列是否已被等值常量约束。
+    /// 各索引列是否已被等值常量约束，包括执行时由相关等值约束的列。
     pub ConstCols: Vec<bool>,
     /// 由访问条件推导的扫描 range 列表。
     pub Ranges: Vec<ranger::Range>,
@@ -240,7 +240,7 @@ impl AccessPath {
     /// 从 TableFilters 中拆出与索引列相关的相关列（correlated）访问条件。
     /// 相关列来自外层查询，出现在子查询索引匹配中时通常使计划不可缓存。
     pub fn SplitCorColAccessCondFromFilters(
-        &self,
+        &mut self,
         context: &dyn plan_base::PlanContext,
         eq_or_in_count: usize,
     ) -> (Vec<expression::ExprBox>, Vec<expression::ExprBox>) {
@@ -269,6 +269,7 @@ impl AccessPath {
                 access.push(filter.clone());
                 if self.IdxColLens[index] == -1 {
                     used[filter_index] = true;
+                    self.mark_const_col(index);
                 }
                 matched = true;
                 break;
@@ -303,6 +304,20 @@ impl AccessPath {
             break;
         }
 
+        // The Rust detacher keeps some equalities on indexed columns in IndexFilters rather
+        // than TableFilters. They still pin a full-length index key after filtering, so record
+        // that fact without moving or dropping the filter.
+        for index in 0..self.IdxCols.len() {
+            if self.IdxColLens[index] == -1
+                && self
+                    .IndexFilters
+                    .iter()
+                    .any(|filter| isColEqConstant(filter.as_ref(), &self.IdxCols[index]))
+            {
+                self.mark_const_col(index);
+            }
+        }
+
         let remained = self
             .TableFilters
             .iter()
@@ -311,6 +326,20 @@ impl AccessPath {
             .map(|(_, filter)| filter.clone())
             .collect();
         (access, remained)
+    }
+
+    /// 记录访问条件将索引列限制为每次执行的单一值。
+    ///
+    /// 相关等值的范围在执行时重建，因此计划期的 ranger 不会把该列记入 ConstCols。
+    /// 重建范围对等值列是点范围，跳过该列后索引剩余列仍保持顺序。前缀索引列不会
+    /// 调用此方法，因为前缀截断无法保证原始列值唯一。
+    fn mark_const_col(&mut self, index: usize) {
+        if self.ConstCols.is_empty() {
+            self.ConstCols = vec![false; self.IdxCols.len()];
+        }
+        if let Some(is_constant) = self.ConstCols.get_mut(index) {
+            *is_constant = true;
+        }
     }
 
     /// 全部 range 是否为点查（可走点查优化）。
