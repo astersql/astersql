@@ -93,6 +93,16 @@ pub trait Manager: Send {
         ttlJobEnable: bool,
     ) -> Result<(), ManagerError>;
 
+    /// Report TTL table metadata while retaining the prior Rust implementor ABI.
+    fn RegisterTTLTableInfo(
+        &mut self,
+        context: &context::Context,
+        tableID: i64,
+        ttlJobEnable: bool,
+    ) -> Result<(), ManagerError> {
+        self.RegisterTTLTask(context, tableID, ttlJobEnable)
+    }
+
     /// 上报表已移除 TTL 属性或整个表已被删除。
     // DeleteTTLTableInfo 上报表已移除 TTL 属性或整个表已被删除。
     fn DeleteTTLTableInfo(

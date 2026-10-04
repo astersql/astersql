@@ -107,6 +107,8 @@ fn go_merge_43_loader_reads_go_meta_without_private_catalog() {
 
 struct GoMerge43ExternalManager {
     role: String,
+    delete_error: Option<i64>,
+    register_error: Option<i64>,
     updated: Arc<Mutex<Vec<bool>>>,
     ttl_events: Arc<Mutex<Vec<(String, i64, bool)>>>,
 }
@@ -166,6 +168,9 @@ impl astersql_extworkload::Manager for GoMerge43ExternalManager {
             .lock()
             .unwrap()
             .push(("register".into(), table_id, enabled));
+        if self.register_error == Some(table_id) {
+            return Err("register failed".into());
+        }
         Ok(())
     }
     fn DeleteTTLTableInfo(
@@ -177,6 +182,9 @@ impl astersql_extworkload::Manager for GoMerge43ExternalManager {
             .lock()
             .unwrap()
             .push(("delete".into(), table_id, false));
+        if self.delete_error == Some(table_id) {
+            return Err("delete failed".into());
+        }
         Ok(())
     }
     fn RecycleTTLTask(
@@ -222,6 +230,8 @@ fn go_merge_43_external_workload_role_gates_ttl_and_master_updates() {
     let context = astersql_extworkload::context::Background();
 
     domain.set_external_workload_manager(Some(Box::new(GoMerge43ExternalManager {
+        delete_error: None,
+        register_error: None,
         role: astersql_config::RoleMaster.into(),
         updated: Arc::clone(&updated),
         ttl_events: Arc::clone(&ttl_events),
@@ -233,6 +243,8 @@ fn go_merge_43_external_workload_role_gates_ttl_and_master_updates() {
     assert_eq!(*updated.lock().unwrap(), [false]);
 
     domain.set_external_workload_manager(Some(Box::new(GoMerge43ExternalManager {
+        delete_error: None,
+        register_error: None,
         role: astersql_config::RoleTTLTaskWorker.into(),
         updated: Arc::clone(&updated),
         ttl_events: Arc::clone(&ttl_events),
@@ -262,6 +274,8 @@ fn go_merge_43_ddl_registers_and_deletes_ttl_table_with_external_manager() {
     domain.init().unwrap();
     let events = Arc::new(Mutex::new(Vec::new()));
     domain.set_external_workload_manager(Some(Box::new(GoMerge43ExternalManager {
+        delete_error: None,
+        register_error: None,
         role: astersql_config::RoleMaster.into(),
         updated: Arc::new(Mutex::new(Vec::new())),
         ttl_events: Arc::clone(&events),
@@ -1603,6 +1617,8 @@ fn external_workload_manager_binding_isolated_by_storage_owner() {
         DomainConfig::default(),
     );
     let manager: SharedManager = Arc::new(Mutex::new(Box::new(GoMerge43ExternalManager {
+        delete_error: None,
+        register_error: None,
         role: "master".into(),
         updated: Default::default(),
         ttl_events: Default::default(),
@@ -1863,4 +1879,71 @@ fn embedding_config_changes_invalidate_all_providers_but_identical_values_keep_c
     calls += 1;
     assert_eq!(provider.0.load(Ordering::SeqCst), calls);
     domain.close();
+}
+
+#[test]
+fn drop_schema_external_ttl_failure_restores_registrations_and_metadata() {
+    for compensation_fails in [false, true] {
+        let storage = Arc::try_unwrap(
+            astersql_store_mockstore_mockstorage::NewMockStorage(
+                astersql_store_mockstore_mockstorage::KVStore::NewMemoryWithWallClockTSO(),
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap_or_else(|_| panic!("mock storage has another owner"));
+        let domain = Domain::new(
+            storage,
+            Arc::new(crate::KvInfoSchemaLoader::default()),
+            DomainConfig::default(),
+        );
+        domain.init().unwrap();
+        let mut ids = Vec::new();
+        for (name, enabled) in [("a", true), ("b", false), ("c", true), ("d", true)] {
+            let table = astersql_meta_model::TableInfo {
+                Name: astersql_parser_ast::NewCIStr(name),
+                TTLInfo: Some(astersql_meta_model::TTLInfo {
+                    Enable: enabled,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            ids.push(domain.ddl_create_table("test", table, false).unwrap().ID);
+        }
+        let events = Arc::new(Mutex::new(Vec::new()));
+        domain.set_external_workload_manager(Some(Box::new(GoMerge43ExternalManager {
+            role: "master".into(),
+            updated: Default::default(),
+            ttl_events: events.clone(),
+            delete_error: Some(ids[3]),
+            register_error: compensation_fails.then_some(ids[2]),
+        })));
+        let error = domain.ddl_drop_database("test", false).unwrap_err();
+        assert!(error.to_string().contains("delete failed"), "{error}");
+        assert!(
+            domain
+                .ddl_database_names()
+                .unwrap()
+                .iter()
+                .any(|s| s == "test")
+        );
+        for name in ["a", "b", "c", "d"] {
+            assert!(domain.stats_table("test", name).is_some());
+        }
+        let calls = events.lock().unwrap();
+        assert_eq!(
+            calls
+                .iter()
+                .map(|(op, id, _)| (op.as_str(), *id))
+                .collect::<Vec<_>>(),
+            vec![
+                ("delete", ids[0]),
+                ("delete", ids[1]),
+                ("delete", ids[2]),
+                ("delete", ids[3]),
+                ("register", ids[2]),
+                ("register", ids[0])
+            ]
+        );
+    }
 }

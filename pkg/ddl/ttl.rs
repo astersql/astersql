@@ -260,3 +260,43 @@ pub fn get_ttl_info_in_options(
     }
     Ok((info, enable, schedule))
 }
+
+/// Apply Go onTTLInfoChange's option merge to the canonical table model.
+/// Unspecified enable/interval values retain the existing table settings.
+pub fn apply_model_ttl_change(
+    table: &mut astersql_meta_model::TableInfo,
+    info: Option<astersql_meta_model::TTLInfo>,
+    enable: Option<bool>,
+    interval: Option<String>,
+) -> Result<(), String> {
+    if let Some(mut info) = info {
+        if let Some(old) = &table.TTLInfo {
+            if enable.is_none() {
+                info.Enable = old.Enable;
+            }
+            if interval.is_none() {
+                info.JobInterval = old.JobInterval.clone();
+            }
+        }
+        table.TTLInfo = Some(info);
+    }
+    for (present, option) in [
+        (enable.is_some(), "TTL_ENABLE"),
+        (interval.is_some(), "TTL_JOB_INTERVAL"),
+    ] {
+        if present && table.TTLInfo.is_none() {
+            return Err(astersql_util_dbterror::ErrSetTTLOptionForNonTTLTable
+                .GenWithStackByArgs(&[option.into()])
+                .to_string());
+        }
+    }
+    if let Some(info) = table.TTLInfo.as_mut() {
+        if let Some(enable) = enable {
+            info.Enable = enable;
+        }
+        if let Some(interval) = interval {
+            info.JobInterval = interval;
+        }
+    }
+    Ok(())
+}

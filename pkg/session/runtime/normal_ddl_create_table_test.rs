@@ -366,16 +366,26 @@ fn normal_ddl_plan_create_table_commit_conflict_and_restart() {
     assert_eq!(durable(&f, j.id).state, JobState::Synced);
 }
 
+#[derive(Default)]
 struct TtlBoundary {
     calls: Arc<std::sync::Mutex<Vec<(i64, bool)>>>,
     fail: bool,
+    fail_at: Option<usize>,
+    fail_delete: bool,
+    role: String,
+    recycled: Arc<std::sync::Mutex<Vec<u64>>>,
+    fail_recycle: bool,
 }
 impl astersql_extworkload::Manager for TtlBoundary {
     fn Close(&mut self) -> Result<(), astersql_extworkload::ManagerError> {
         Ok(())
     }
     fn Role(&self) -> String {
-        astersql_config::RoleMaster.into()
+        if self.role.is_empty() {
+            astersql_config::RoleMaster.into()
+        } else {
+            self.role.clone()
+        }
     }
     fn Meta(&self) -> Option<&astersql_extworkload::keyspacepb::KeyspaceMeta> {
         None
@@ -422,7 +432,7 @@ impl astersql_extworkload::Manager for TtlBoundary {
         enabled: bool,
     ) -> Result<(), astersql_extworkload::ManagerError> {
         self.calls.lock().unwrap().push((id, enabled));
-        if self.fail {
+        if self.fail || self.fail_at == Some(self.calls.lock().unwrap().len()) {
             Err(std::io::Error::other("controller unavailable").into())
         } else {
             Ok(())
@@ -431,16 +441,26 @@ impl astersql_extworkload::Manager for TtlBoundary {
     fn DeleteTTLTableInfo(
         &mut self,
         _: &astersql_extworkload::context::Context,
-        _: i64,
+        id: i64,
     ) -> Result<(), astersql_extworkload::ManagerError> {
-        Ok(())
+        self.calls.lock().unwrap().push((-id, false));
+        if self.fail_delete {
+            Err("delete controller unavailable".into())
+        } else {
+            Ok(())
+        }
     }
     fn RecycleTTLTask(
         &mut self,
         _: &astersql_extworkload::context::Context,
-        _: u64,
+        create_time: u64,
     ) -> Result<(), astersql_extworkload::ManagerError> {
-        Ok(())
+        self.recycled.lock().unwrap().push(create_time);
+        if self.fail_recycle {
+            Err("recycle controller unavailable".into())
+        } else {
+            Ok(())
+        }
     }
     fn UpdateTTLJobEnable(
         &mut self,
@@ -468,13 +488,21 @@ impl astersql_extworkload::Manager for TtlBoundary {
 
 #[test]
 fn normal_ddl_plan_create_table_ttl_controller_success_failure_disabled() {
-    for (enabled, fail) in [(true, false), (true, true), (false, true)] {
+    for (enabled, fail, role) in [
+        (true, false, "master"),
+        (true, true, "master"),
+        (false, true, "master"),
+        (true, false, "ttl"),
+        (true, true, "ttl"),
+    ] {
         let f = Fixture::new();
         let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
         f.domain
             .set_external_workload_manager(Some(Box::new(TtlBoundary {
                 calls: calls.clone(),
                 fail,
+                role: role.into(),
+                ..Default::default()
             })));
         let mut t = table(&f);
         t.TTLInfo = Some(astersql_meta_model::TTLInfo {
@@ -1345,4 +1373,595 @@ fn normal_ddl_storage_class_worker_keeps_multi_schema_non_revertible_boundary() 
             .StorageClassTier,
         "IA"
     );
+}
+
+fn insert_ttl_action(f: &Fixture, action: u8, args: serde_json::Value) -> Job {
+    let mut j = Job {
+        id: 99812,
+        tp: action,
+        schema_id: f.db,
+        table_id: f.table,
+        schema_name: "test".into(),
+        table_name: "normal_ddl_target".into(),
+        state: JobState::Queueing,
+        version: JobVersion::V2,
+        ..Default::default()
+    };
+    j.raw_args = serde_json::to_vec(&args).unwrap();
+    let encoded = hex(&j.encode(false).unwrap());
+    f.pool.acquire().unwrap().query(format!("INSERT INTO mysql.tidb_ddl_job (job_id,reorg,schema_ids,table_ids,job_meta,type,processing) VALUES ({},0,'{}','{}',X'{}',{},0)",j.id,f.db,f.table,encoded,action)).unwrap();
+    j
+}
+
+#[test]
+fn normal_ddl_batch_ttl_registration_compensates_in_reverse() {
+    for fail in [false, true] {
+        let f = Fixture::new();
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        f.domain
+            .set_external_workload_manager(Some(Box::new(TtlBoundary {
+                calls: calls.clone(),
+                fail_at: fail.then_some(3),
+                fail_delete: fail,
+                ..Default::default()
+            })));
+        let mut tables = Vec::new();
+        for (i, enabled) in [true, false, true, true].into_iter().enumerate() {
+            let mut t = table(&f);
+            t.ID += i as i64;
+            t.Name = astersql_meta_model::ast::NewCIStr(format!("batch_{i}"));
+            t.TTLInfo = Some(astersql_meta_model::TTLInfo {
+                Enable: enabled,
+                ..Default::default()
+            });
+            tables.push(t);
+        }
+        let args = serde_json::json!({"tables":tables.iter().map(|t|serde_json::json!({"table_info":t,"fk_check":true})).collect::<Vec<_>>()});
+        let j = insert_ttl_action(&f, 60, args);
+        run(&f);
+        assert_eq!(
+            durable(&f, j.id).state,
+            if fail {
+                JobState::Cancelled
+            } else {
+                JobState::Done
+            }
+        );
+        for t in &tables {
+            assert_eq!(f.reader().get_table(f.db, t.ID).unwrap().is_some(), !fail);
+        }
+        let actual = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        let mut expected = vec![tables[0].ID, tables[2].ID, tables[3].ID];
+        if fail {
+            expected.extend([-tables[2].ID, -tables[0].ID]);
+        }
+        assert_eq!(actual, expected);
+        if !fail {
+            assert_eq!(
+                durable(&f, j.id)
+                    .binlog_info
+                    .unwrap()
+                    .multiple_table_infos
+                    .len(),
+                4
+            );
+        }
+    }
+}
+
+#[test]
+fn normal_ddl_alter_ttl_syncs_and_rolls_back_controller_failure() {
+    for (action, enabled, fail) in [
+        (65, true, false),
+        (65, false, false),
+        (65, true, true),
+        (67, false, false),
+        (67, false, true),
+    ] {
+        let f = Fixture::new();
+        let mut t = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+        t.TTLInfo = Some(astersql_meta_model::TTLInfo {
+            Enable: true,
+            JobInterval: "24h".into(),
+            ..Default::default()
+        });
+        let mut txn = f
+            .domain
+            .storage_handle()
+            .with_storage(|s| s.Begin(&[]))
+            .unwrap();
+        astersql_meta::TransactionMutator::new(txn.as_mut())
+            .update_table(f.db, &mut t)
+            .unwrap();
+        txn.Commit(&astersql_kv::Context::default()).unwrap();
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        f.domain
+            .set_external_workload_manager(Some(Box::new(TtlBoundary {
+                calls: calls.clone(),
+                fail,
+                fail_delete: fail,
+                ..Default::default()
+            })));
+        let j = insert_ttl_action(&f, action, serde_json::json!({"ttl_enable":enabled}));
+        run(&f);
+        assert_eq!(
+            durable(&f, j.id).state,
+            if fail {
+                JobState::Cancelled
+            } else {
+                JobState::Done
+            }
+        );
+        let after = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+        if fail {
+            assert_eq!(
+                serde_json::to_value(after.TTLInfo).unwrap(),
+                serde_json::to_value(&t.TTLInfo).unwrap()
+            );
+        } else if action == 67 {
+            assert!(after.TTLInfo.is_none());
+        } else {
+            assert_eq!(after.TTLInfo.unwrap().Enable, enabled);
+        }
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        assert_eq!(
+            calls.lock().unwrap()[0].0,
+            if enabled && action == 65 { t.ID } else { -t.ID }
+        );
+    }
+}
+
+#[test]
+fn external_ttl_completed_batch_recycles_original_max_create_time_only_from_worker() {
+    use super::{
+        ConcreteSession, ttl_metadata::collect_physical_ttl_tables, ttl_runtime::run_ttl_tick,
+        ttl_worker_session::TtlWorkerSqlSession,
+    };
+    use astersql_ttl_ttlworker::{persistent::PersistentJobStore, session::WorkerSession};
+    for (role, fail_recycle) in [("ttl", false), ("ttl", true), ("master", false)] {
+        let f = Fixture::new();
+        let setup = f.pool.acquire().unwrap();
+        for name in ["recycle_a", "recycle_b"] {
+            setup.query(format!("CREATE TABLE test.{name} (id INT PRIMARY KEY,created_at DATETIME) TTL = created_at + INTERVAL 1 DAY")).unwrap();
+            setup.query(format!("INSERT INTO test.{name} VALUES (1,'1970-01-01 00:00:01'),(2,'1970-01-04 00:00:00')")).unwrap();
+        }
+        let tables = collect_physical_ttl_tables(f.domain.info_schema().as_ref(), 200_000).unwrap();
+        let mut sql = TtlWorkerSqlSession::new(ConcreteSession::new(f.domain.clone()));
+        for (i, table) in tables.iter().enumerate() {
+            assert!(
+                PersistentJobStore::start_job(
+                    &mut sql,
+                    table,
+                    "dead-owner",
+                    &format!("recycle-job-{i}"),
+                    200_000 + i as u64 * 123,
+                    None
+                )
+                .unwrap()
+            );
+        }
+        let recycled = Arc::new(std::sync::Mutex::new(Vec::new()));
+        f.domain
+            .set_external_workload_manager(Some(Box::new(TtlBoundary {
+                role: role.into(),
+                recycled: recycled.clone(),
+                fail_recycle,
+                ..Default::default()
+            })));
+        let result = run_ttl_tick(&f.domain, "new-owner", 201_000, || false).unwrap();
+        assert_eq!(result.resumed, 2);
+        assert_eq!(result.finished, 2);
+        assert_eq!(
+            *recycled.lock().unwrap(),
+            if role == "ttl" { vec![200_123] } else { vec![] }
+        );
+        run_ttl_tick(&f.domain, "new-owner", 201_001, || false).unwrap();
+        assert_eq!(recycled.lock().unwrap().len(), usize::from(role == "ttl"));
+        assert_eq!(
+            sql.execute("SELECT id FROM test.recycle_a ORDER BY id", &[])
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+}
+
+#[test]
+fn sql_alter_ttl_syncs_controller_and_preserves_unspecified_options() {
+    let f = Fixture::new();
+    let sql = f.pool.acquire().unwrap();
+    sql.query("CREATE TABLE test.sql_ttl (id INT PRIMARY KEY,created_at DATETIME) TTL = created_at + INTERVAL 1 DAY TTL_JOB_INTERVAL='24h'").unwrap();
+    let id = f.domain.table_by_name("test", "sql_ttl").unwrap().ID;
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    f.domain
+        .set_external_workload_manager(Some(Box::new(TtlBoundary {
+            calls: calls.clone(),
+            ..Default::default()
+        })));
+    sql.query("ALTER TABLE test.sql_ttl TTL_ENABLE='OFF'")
+        .unwrap();
+    sql.query("ALTER TABLE test.sql_ttl TTL = created_at + INTERVAL 2 DAY")
+        .unwrap();
+    let ttl = f
+        .domain
+        .table_by_name("test", "sql_ttl")
+        .unwrap()
+        .TTLInfo
+        .clone()
+        .unwrap();
+    assert!(!ttl.Enable);
+    assert_eq!(ttl.JobInterval, "24h");
+    assert_eq!(ttl.IntervalExprStr, "2");
+    sql.query("ALTER TABLE test.sql_ttl TTL_ENABLE='ON'")
+        .unwrap();
+    sql.query("ALTER TABLE test.sql_ttl REMOVE TTL").unwrap();
+    assert!(
+        f.domain
+            .table_by_name("test", "sql_ttl")
+            .unwrap()
+            .TTLInfo
+            .is_none()
+    );
+    assert!(
+        sql.query("ALTER TABLE test.sql_ttl TTL_ENABLE='ON'")
+            .is_err()
+    );
+    assert_eq!(
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>(),
+        vec![-id, -id, id, -id]
+    );
+}
+
+struct TtlElectionTransport {
+    election: Arc<dyn astersql_owner::Manager>,
+    streams: std::sync::Mutex<Vec<std::sync::mpsc::Sender<Vec<u8>>>>,
+}
+impl super::ttl_runtime::TtlWatchTransport for TtlElectionTransport {
+    fn ttl_owner(&self, _: &str) -> Option<Arc<dyn astersql_owner::Manager>> {
+        Some(self.election.clone())
+    }
+    fn watch(
+        &self,
+        _: super::ttl_runtime::TtlWatchKind,
+        _: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<std::sync::mpsc::Receiver<Vec<u8>>, String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.streams.lock().unwrap().push(tx);
+        Ok(rx)
+    }
+    fn take_command(&self, _: &str) -> Result<bool, String> {
+        Ok(true)
+    }
+    fn response_command(
+        &self,
+        _: &str,
+        _: Result<serde_json::Value, String>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+#[test]
+fn external_ttl_worker_campaigns_separate_owner_and_closes_it_with_domain() {
+    let f = Fixture::new();
+    f.domain
+        .set_external_workload_manager(Some(Box::new(TtlBoundary {
+            role: "ttl".into(),
+            ..Default::default()
+        })));
+    let key = format!("/ttl-election-test/{:p}", Arc::as_ptr(&f.domain));
+    let election =
+        astersql_owner::NewMockManager(astersql_owner::Context::new(), "ttl-owner", None, &key);
+    let transport = Arc::new(TtlElectionTransport {
+        election: election.clone(),
+        streams: Default::default(),
+    });
+    assert!(
+        super::ttl_runtime::start_domain_ttl_job_manager_with_interval(
+            &f.domain,
+            Some(transport),
+            std::time::Duration::from_millis(10)
+        )
+        .unwrap()
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !election.IsOwner() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        election.IsOwner(),
+        "dedicated TTL manager must campaign its own owner"
+    );
+    f.domain.close();
+    assert!(
+        !election.IsOwner(),
+        "closing Domain must release TTL election"
+    );
+}
+
+#[test]
+fn external_ttl_incomplete_job_prevents_recycling_other_finished_job() {
+    use super::{
+        ConcreteSession, ttl_metadata::collect_physical_ttl_tables, ttl_runtime::run_ttl_event,
+        ttl_worker_session::TtlWorkerSqlSession,
+    };
+    use astersql_ttl_ttlworker::persistent::PersistentJobStore;
+    let f = Fixture::new();
+    let setup = f.pool.acquire().unwrap();
+    for name in ["incomplete_a", "incomplete_b"] {
+        setup.query(format!("CREATE TABLE test.{name} (id INT PRIMARY KEY,created_at DATETIME) TTL = created_at + INTERVAL 1 DAY")).unwrap();
+        setup
+            .query(format!(
+                "INSERT INTO test.{name} VALUES (1,'1970-01-01 00:00:01')"
+            ))
+            .unwrap();
+    }
+    let tables = collect_physical_ttl_tables(f.domain.info_schema().as_ref(), 200_000).unwrap();
+    let mut sql = TtlWorkerSqlSession::new(ConcreteSession::new(f.domain.clone()));
+    for (i, t) in tables.iter().enumerate() {
+        assert!(
+            PersistentJobStore::start_job(
+                &mut sql,
+                t,
+                "dead-owner",
+                &format!("incomplete-job-{i}"),
+                200_000 + i as u64,
+                None
+            )
+            .unwrap()
+        );
+    }
+    let recycled = Arc::new(std::sync::Mutex::new(Vec::new()));
+    f.domain
+        .set_external_workload_manager(Some(Box::new(TtlBoundary {
+            role: "ttl".into(),
+            recycled: recycled.clone(),
+            ..Default::default()
+        })));
+    let checks = std::cell::Cell::new(0);
+    let a = &tables[0];
+    let b = &tables[1];
+    assert!(
+        run_ttl_event(
+            &f.domain,
+            "new-owner",
+            201_000,
+            a.table_id,
+            a.physical_id,
+            "incomplete-job-0",
+            || {
+                checks.set(checks.get() + 1);
+                checks.get() >= 3
+            }
+        )
+        .is_err()
+    );
+    assert_eq!(
+        run_ttl_event(
+            &f.domain,
+            "new-owner",
+            201_001,
+            b.table_id,
+            b.physical_id,
+            "incomplete-job-1",
+            || false
+        )
+        .unwrap()
+        .finished,
+        1
+    );
+    assert!(recycled.lock().unwrap().is_empty());
+    assert_eq!(
+        run_ttl_event(
+            &f.domain,
+            "next-owner",
+            201_300,
+            a.table_id,
+            a.physical_id,
+            "incomplete-job-0",
+            || false
+        )
+        .unwrap()
+        .finished,
+        1
+    );
+    assert_eq!(*recycled.lock().unwrap(), vec![200_000]);
+}
+
+fn seed_ttl_on_target(f: &Fixture, enabled: bool) -> TableInfo {
+    let mut table = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+    table.TTLInfo = Some(astersql_meta_model::TTLInfo {
+        Enable: enabled,
+        ..Default::default()
+    });
+    let mut txn = f
+        .domain
+        .storage_handle()
+        .with_storage(|s| s.Begin(&[]))
+        .unwrap();
+    astersql_meta::TransactionMutator::new(txn.as_mut())
+        .update_table(f.db, &mut table)
+        .unwrap();
+    txn.Commit(&astersql_kv::Context::default()).unwrap();
+    table
+}
+
+#[test]
+fn normal_ddl_drop_ttl_deletes_before_transition_and_cancels_controller_error() {
+    for fail in [false, true] {
+        let f = Fixture::new();
+        let table = seed_ttl_on_target(&f, true);
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        f.domain
+            .set_external_workload_manager(Some(Box::new(TtlBoundary {
+                calls: calls.clone(),
+                fail_delete: fail,
+                ..Default::default()
+            })));
+        let j = insert_ttl_action(&f, 4, serde_json::json!({"fk_check":true,"identifiers":[]}));
+        run(&f);
+        if fail {
+            assert_eq!(durable(&f, j.id).state, JobState::Cancelled);
+            assert_eq!(
+                f.reader().get_table(f.db, table.ID).unwrap().unwrap().State,
+                SchemaState::Public
+            );
+        } else {
+            run(&f);
+            run(&f);
+            assert!(f.reader().get_table(f.db, table.ID).unwrap().is_none());
+        }
+        assert_eq!(*calls.lock().unwrap(), vec![(-table.ID, false)]);
+    }
+}
+
+#[test]
+fn normal_ddl_truncate_ttl_compensates_and_preserves_original_error() {
+    struct RestoreInfoSyncer(Option<Arc<astersql_domain_infosync::InfoSyncer>>);
+    impl Drop for RestoreInfoSyncer {
+        fn drop(&mut self) {
+            if let Some(original) = self.0.take() {
+                astersql_domain_infosync::setGlobalInfoSyncer(original);
+            }
+        }
+    }
+    let _restore = RestoreInfoSyncer(astersql_domain_infosync::getGlobalInfoSyncer().ok());
+    let _labels = astersql_domain_infosync::GlobalInfoSyncerInit(
+        "task121-truncate".into(),
+        Arc::new(|| 1),
+        None,
+        None,
+        None,
+        astersql_domain_infosync::Codec::default(),
+        false,
+        None,
+    )
+    .unwrap();
+    for (enabled, fail_delete, fail_register, fail_restore) in [
+        (true, false, false, false),
+        (false, false, false, false),
+        (true, true, false, false),
+        (true, false, true, false),
+        (true, false, true, true),
+    ] {
+        let f = Fixture::new();
+        let old = seed_ttl_on_target(&f, enabled);
+        let new_id = old.ID + 9000;
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        f.domain
+            .set_external_workload_manager(Some(Box::new(TtlBoundary {
+                calls: calls.clone(),
+                fail_delete,
+                fail_at: fail_register.then_some(2),
+                fail: fail_restore,
+                ..Default::default()
+            })));
+        let log = astersql_util_logutil::log::background_logger();
+        let j = insert_ttl_action(
+            &f,
+            11,
+            serde_json::json!({"new_table_id":new_id,"fk_check":true}),
+        );
+        run(&f);
+        if fail_delete || fail_register {
+            assert_eq!(durable(&f, j.id).state, JobState::Cancelled);
+            assert!(
+                durable(&f, j.id)
+                    .error
+                    .unwrap()
+                    .contains("controller unavailable")
+            );
+            assert!(f.reader().get_table(f.db, old.ID).unwrap().is_some());
+            assert!(f.reader().get_table(f.db, new_id).unwrap().is_none());
+        } else {
+            assert_eq!(
+                durable(&f, j.id).state,
+                JobState::Done,
+                "{:?}",
+                durable(&f, j.id).error
+            );
+            assert!(f.reader().get_table(f.db, old.ID).unwrap().is_none());
+            assert!(f.reader().get_table(f.db, new_id).unwrap().is_some());
+        }
+        let mut expected = vec![-old.ID];
+        if enabled && !fail_delete {
+            expected.push(new_id);
+            if fail_register {
+                expected.push(old.ID);
+            }
+        }
+        assert_eq!(
+            calls
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(id, _)| *id)
+                .collect::<Vec<_>>(),
+            expected
+        );
+        if fail_restore {
+            assert!(log.entries().iter().any(|e| {
+                e.message
+                    .contains("truncate_ttl_restore_old_registration_failed")
+                    && e.message.contains(&format!("oldTableID={}", old.ID))
+                    && e.message.contains(&format!("newTableID={new_id}"))
+            }));
+        }
+    }
+}
+
+#[test]
+fn external_ttl_two_managers_elect_one_owner_and_release_on_close() {
+    let first = Fixture::new();
+    let second = Fixture::new();
+    let key = format!("/ttl-two-election-test/{:p}", Arc::as_ptr(&first.domain));
+    let a = astersql_owner::NewMockManager(astersql_owner::Context::new(), "ttl-a", None, &key);
+    let b = astersql_owner::NewMockManager(astersql_owner::Context::new(), "ttl-b", None, &key);
+    for (f, election) in [(&first, a.clone()), (&second, b.clone())] {
+        f.domain
+            .set_external_workload_manager(Some(Box::new(TtlBoundary {
+                role: "ttl".into(),
+                ..Default::default()
+            })));
+        let transport = Arc::new(TtlElectionTransport {
+            election,
+            streams: Default::default(),
+        });
+        assert!(
+            super::ttl_runtime::start_domain_ttl_job_manager_with_interval(
+                &f.domain,
+                Some(transport),
+                std::time::Duration::from_millis(10)
+            )
+            .unwrap()
+        );
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !a.IsOwner() && !b.IsOwner() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_ne!(a.IsOwner(), b.IsOwner());
+    let (leader, follower, successor) = if a.IsOwner() {
+        (&first, &second, b.clone())
+    } else {
+        (&second, &first, a.clone())
+    };
+    leader.domain.close();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !successor.IsOwner() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(successor.IsOwner());
+    follower.domain.close();
+    assert!(!successor.IsOwner());
 }

@@ -358,7 +358,7 @@ fn test_manager_methods_set_deadline_and_metrics() {
     assert!(state.deadline_set);
     assert_eq!(None, state.labels);
 
-    let state = run_manager_call(|manager| manager.RegisterTTLTask(&background, 11, true));
+    let state = run_manager_call(|manager| manager.RegisterTTLTableInfo(&background, 11, true));
     assert_eq!(
         ("RegisterTTLTask", 11, true),
         (state.call.as_str(), state.table_id, state.ttl_job_enable)

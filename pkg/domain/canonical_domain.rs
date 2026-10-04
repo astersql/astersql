@@ -260,8 +260,26 @@ impl DdlMetadataService {
         database: &str,
         if_exists: bool,
     ) -> Result<DdlMetadataChange, kv::errors::SharedError> {
+        self.drop_database_with_ttl(store, database, if_exists, |_| Ok(()))
+    }
+
+    /// Coordinate the external TTL controller before changing durable metadata.
+    pub fn drop_database_with_ttl(
+        &self,
+        store: &dyn kv::Storage,
+        database: &str,
+        if_exists: bool,
+        before_drop: impl FnOnce(&[(String, TableInfo)]) -> Result<(), kv::errors::SharedError>,
+    ) -> Result<DdlMetadataChange, kv::errors::SharedError> {
         let database = database.to_ascii_lowercase();
         self.mutate(store, move |catalog| {
+            let existing = catalog
+                .tables
+                .iter()
+                .filter(|((schema, _), _)| schema == &database)
+                .map(|((schema, _), table)| (schema.clone(), table.clone()))
+                .collect::<Vec<_>>();
+            before_drop(&existing)?;
             let database_existed = catalog.databases.remove(&database).is_some();
             let table_keys = catalog
                 .tables
@@ -284,6 +302,34 @@ impl DdlMetadataService {
                 changed: database_existed || !old_tables.is_empty(),
                 old_tables,
                 ..DdlMetadataChange::default()
+            })
+        })
+    }
+
+    /// Apply TTL options and coordinate the controller in the current metadata
+    /// transaction. A callback error leaves the durable catalog unchanged.
+    pub fn alter_table_ttl(
+        &self,
+        store: &dyn kv::Storage,
+        database: &str,
+        table: &str,
+        apply: impl FnOnce(&mut TableInfo) -> Result<(), kv::errors::SharedError>,
+    ) -> Result<DdlMetadataChange, kv::errors::SharedError> {
+        let key = (database.to_ascii_lowercase(), table.to_ascii_lowercase());
+        self.mutate(store, move |catalog| {
+            let old = catalog
+                .tables
+                .get(&key)
+                .cloned()
+                .ok_or_else(|| kv::errors::New(format!("unknown table {}.{}", key.0, key.1)))?;
+            let mut updated = old.clone();
+            apply(&mut updated)?;
+            catalog.tables.insert(key.clone(), updated.clone());
+            Ok(DdlMetadataChange {
+                changed: true,
+                old_tables: vec![(key.0.clone(), old)],
+                new_tables: vec![(key.0, updated)],
+                ..Default::default()
             })
         })
     }

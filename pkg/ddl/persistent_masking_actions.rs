@@ -441,7 +441,9 @@ pub fn truncate_table(context: &mut dyn JobExecutionContext, job: &mut Job) -> R
             let mut new = t.clone();
             new.ID = args.NewTableID;
             if let Err(error) = context.register_create_table_ttl(&new) {
-                let _ = context.register_create_table_ttl(&old);
+                if let Err(compensation) = context.register_create_table_ttl(&old) {
+                    astersql_util_logutil::log::background_logger().warn(format!("truncate_ttl_restore_old_registration_failed oldTableID={} newTableID={} compensation={compensation} registerNewTableErr={error}",old.ID,new.ID));
+                }
                 job.state = JobState::Cancelled;
                 return Err(error);
             }

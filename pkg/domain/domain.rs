@@ -814,6 +814,7 @@ pub struct Domain {
     cross_ks_manager: RwLock<Option<Arc<astersql_domain_crossks::Manager>>>,
     embed_fn: RwLock<Option<Arc<astersql_inference::EmbedFn>>>,
     ttl_job_manager_started: AtomicBool,
+    ttl_running_jobs: Mutex<BTreeMap<String, (u64, bool)>>,
     mlog_purge_worker_started: AtomicBool,
     info_cache: Arc<InfoCache>,
     keyspace_runtimes: Mutex<BTreeMap<String, KeyspaceRuntime>>,
@@ -1469,6 +1470,7 @@ impl Domain {
             cross_ks_manager: RwLock::new(None),
             embed_fn: RwLock::new(None),
             ttl_job_manager_started: AtomicBool::new(false),
+            ttl_running_jobs: Mutex::new(BTreeMap::new()),
             mlog_purge_worker_started: AtomicBool::new(false),
             info_cache: cache,
             keyspace_runtimes: Mutex::new(BTreeMap::new()),
@@ -3493,11 +3495,56 @@ impl Domain {
     pub fn ddl_drop_database(&self, database: &str, if_exists: bool) -> Result<(), DomainError> {
         let change = self
             .store
-            .with_storage(|store| self.ddl_metadata.drop_database(store, database, if_exists))
+            .with_storage(|store| {
+                self.ddl_metadata
+                    .drop_database_with_ttl(store, database, if_exists, |tables| {
+                        self.drop_schema_ttl_tables(tables)
+                            .map_err(|error| astersql_kv::errors::New(error.to_string()))
+                    })
+            })
             .map_err(|error| DomainError::Ddl(error.to_string()))?;
         let change = self.publish_ddl_metadata_change(change)?;
-        self.remove_ttl_tables_from_external_workload(&change.old_tables)?;
         self.remove_tiflash_rules_for_dropped_tables(&change.old_tables)
+    }
+
+    /// Go dropSchemaTTLTablesFromExternalWorkload: restore only enabled tables,
+    /// in reverse deletion order, and preserve the initiating controller error.
+    fn drop_schema_ttl_tables(
+        &self,
+        tables: &[(String, astersql_meta_model::TableInfo)],
+    ) -> Result<(), DomainError> {
+        let Some(manager) = self.external_workload_manager() else {
+            return Ok(());
+        };
+        let mut manager = manager
+            .lock()
+            .expect("external workload manager lock poisoned");
+        let context = astersql_extworkload::context::Background();
+        let mut restore: Vec<(&str, &astersql_meta_model::TableInfo)> = Vec::new();
+        for (database, table) in tables {
+            let Some(ttl) = &table.TTLInfo else {
+                continue;
+            };
+            if let Err(error) = manager.DeleteTTLTableInfo(&context, table.ID) {
+                for (database, table) in restore.into_iter().rev() {
+                    if let Err(compensation) = manager.RegisterTTLTableInfo(
+                        &context,
+                        table.ID,
+                        astersql_sessionctx_vardef::EnableTTLJob.Load(),
+                    ) {
+                        astersql_util_logutil::log::background_logger().warn(format!(
+                            "drop_schema_ttl_restore_registrations_failed dbName={} tableID={} tableName={} compensation={} deleteTTLTableErr={}",
+                            database, table.ID, table.Name.O, compensation, error
+                        ));
+                    }
+                }
+                return Err(DomainError::Ddl(error.to_string()));
+            }
+            if ttl.Enable {
+                restore.push((database, table));
+            }
+        }
+        Ok(())
     }
 
     /// Read canonical database names directly from KV so empty schemas remain
@@ -3506,6 +3553,37 @@ impl Domain {
         self.store
             .with_storage(|store| self.ddl_metadata.database_names(store))
             .map_err(|error| DomainError::Ddl(error.to_string()))
+    }
+
+    /// Coordinate ALTER/REMOVE TTL on the existing canonical metadata path.
+    pub fn ddl_alter_table_ttl(
+        &self,
+        database: &str,
+        table: &str,
+        info: Option<astersql_meta_model::TTLInfo>,
+        enable: Option<bool>,
+        interval: Option<String>,
+        remove: bool,
+    ) -> Result<(), DomainError> {
+        let change = self
+            .store
+            .with_storage(|store| {
+                self.ddl_metadata
+                    .alter_table_ttl(store, database, table, |table| {
+                        if remove {
+                            table.TTLInfo = None;
+                        } else {
+                            astersql_ddl::ttl::apply_model_ttl_change(
+                                table, info, enable, interval,
+                            )
+                            .map_err(astersql_kv::errors::New)?;
+                        }
+                        self.sync_ttl_table_to_external_workload(table)
+                            .map_err(|e| astersql_kv::errors::New(e.to_string()))
+                    })
+            })
+            .map_err(|e| DomainError::Ddl(e.to_string()))?;
+        self.publish_ddl_metadata_change(change).map(|_| ())
     }
 
     /// DDL 建表后同步统计 catalog。
@@ -3548,7 +3626,7 @@ impl Domain {
             .expect("external workload manager lock poisoned");
         let context = astersql_extworkload::context::Background();
         let result = if table.TTLInfo.as_ref().is_some_and(|ttl| ttl.Enable) {
-            manager.RegisterTTLTask(
+            manager.RegisterTTLTableInfo(
                 &context,
                 table.ID,
                 astersql_sessionctx_vardef::EnableTTLJob.Load(),
@@ -5558,6 +5636,62 @@ impl Domain {
         !configured
             || (self.external_workload_manager().is_some()
                 && role == astersql_config::RoleTTLTaskWorker)
+    }
+
+    /// Register a locally owned durable TTL job with its original creation time.
+    pub fn track_ttl_job(&self, id: &str, create_time: u64) {
+        self.ttl_running_jobs
+            .lock()
+            .expect("TTL jobs lock poisoned")
+            .entry(id.into())
+            .or_insert((create_time, false));
+    }
+
+    /// Mark completion only after the durable finish transaction succeeds.
+    pub fn complete_ttl_job(&self, id: &str) {
+        if let Some((_, finished)) = self
+            .ttl_running_jobs
+            .lock()
+            .expect("TTL jobs lock poisoned")
+            .get_mut(id)
+        {
+            *finished = true;
+        }
+    }
+
+    /// Go checkFinishedJob: retire completed jobs, then recycle only when every
+    /// job in this observation finished. Controller errors are warning-only.
+    pub fn recycle_finished_ttl_jobs(&self) {
+        let mut jobs = self
+            .ttl_running_jobs
+            .lock()
+            .expect("TTL jobs lock poisoned");
+        let running = jobs.len();
+        let completed = jobs.values().filter(|(_, finished)| *finished).count();
+        let watermark = jobs
+            .values()
+            .filter(|(_, finished)| *finished)
+            .map(|(time, _)| *time)
+            .max()
+            .unwrap_or(0);
+        jobs.retain(|_, (_, finished)| !*finished);
+        if running == 0 || completed != running {
+            return;
+        }
+        let Some(manager) = self.external_workload_manager() else {
+            return;
+        };
+        let mut manager = manager.lock().expect("external workload manager poisoned");
+        if manager.Role() != astersql_config::RoleTTLTaskWorker {
+            return;
+        }
+        if let Err(error) =
+            manager.RecycleTTLTask(&astersql_extworkload::context::Background(), watermark)
+        {
+            astersql_util_logutil::log::background_logger().warn(format!(
+                "failed to recycle TTL task completedJobCreateTime={watermark}: {error}"
+            ));
+        }
     }
 
     /// Own and stop the concrete SQL-backed TTL manager loop with this Domain.

@@ -169,6 +169,10 @@ pub(super) enum TtlWatchEvent {
 /// A watch ends when its receiver disconnects. The caller then opens a fresh
 /// subscription against the same transport, as Go's job loop does.
 pub(super) trait TtlWatchTransport: Send + Sync + 'static {
+    fn ttl_owner(&self, _id: &str) -> Option<Arc<dyn astersql_owner::Manager>> {
+        None
+    }
+
     fn timer_notifier(&self) -> Option<Arc<dyn astersql_timer_tablestore::EtcdClient>> {
         None
     }
@@ -311,6 +315,19 @@ impl EtcdTtlWatchTransport {
 }
 
 impl TtlWatchTransport for EtcdTtlWatchTransport {
+    fn ttl_owner(&self, id: &str) -> Option<Arc<dyn astersql_owner::Manager>> {
+        if cfg!(test) {
+            return None;
+        }
+        Some(astersql_owner::NewOwnerManager(
+            astersql_owner::Context::new(),
+            self.client.clone(),
+            "ttl_job_manager",
+            id,
+            format!("{}/tidb/ttl_job_manager/leader", self.namespace),
+        ))
+    }
+
     fn timer_notifier(&self) -> Option<Arc<dyn astersql_timer_tablestore::EtcdClient>> {
         Some(Arc::new(super::ttl_timer_etcd::RealTimerEtcdClient::new(
             self.client.clone(),
@@ -478,6 +495,43 @@ impl Drop for EtcdTtlWatchTransport {
         {
             let _ = worker.join();
         }
+    }
+}
+
+struct TtlOwnerListener;
+impl astersql_owner::manager::Listener for TtlOwnerListener {
+    fn OnRetireOwner(&self) {}
+    fn OnBecomeOwner(&self) {
+        super::BgLogger().log(
+            super::LogLevel::Info,
+            "leader change of TTL job manager service, this node become owner",
+            [],
+        );
+    }
+}
+
+/// The runtime keeps the campaign alive and releases its lease with the loop.
+struct TtlElection {
+    runtime: tokio::runtime::Runtime,
+    manager: Arc<dyn astersql_owner::Manager>,
+}
+impl TtlElection {
+    fn start(manager: Arc<dyn astersql_owner::Manager>) -> Result<Self, String> {
+        let runtime = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
+        runtime.block_on(manager.SetListener(Arc::new(TtlOwnerListener)));
+        if let Err(error) = runtime.block_on(manager.CampaignOwner(&[5])) {
+            super::BgLogger().log(
+                super::LogLevel::Error,
+                "failed to campaign ttl job manager owner",
+                [super::LogField::String("error".into(), error.to_string())],
+            );
+        }
+        Ok(Self { runtime, manager })
+    }
+}
+impl Drop for TtlElection {
+    fn drop(&mut self) {
+        self.runtime.block_on(self.manager.Close());
     }
 }
 
@@ -857,6 +911,18 @@ pub(super) fn start_domain_ttl_job_manager_with_interval(
         std::process::id(),
         NEXT_OWNER_ID.fetch_add(1, Ordering::Relaxed)
     );
+    if !domain.should_start_ttl_job_manager() {
+        return Ok(false);
+    }
+    let election = if domain.ttl_external_workload_role().0 == astersql_config::RoleTTLTaskWorker {
+        transport
+            .as_ref()
+            .and_then(|t| t.ttl_owner(&owner_id))
+            .map(TtlElection::start)
+            .transpose()?
+    } else {
+        None
+    };
     let weak = Arc::downgrade(domain);
     let mut timer_runtime: Option<DomainTtlTimerRuntime> = None;
     let mut watcher: Option<TtlWatchRuntime> = None;
@@ -884,6 +950,14 @@ pub(super) fn start_domain_ttl_job_manager_with_interval(
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
+            if election
+                .as_ref()
+                .is_some_and(|election| !election.manager.IsOwner())
+            {
+                timer_runtime.take();
+                command_workers.reap();
+                return;
+            }
             let sync = (|| {
                 let schedules = collect_ttl_schedules(domain.info_schema().as_ref(), now)?;
                 let mut session =
@@ -937,6 +1011,7 @@ pub(super) fn start_domain_ttl_job_manager_with_interval(
                     [super::LogField::String("error".into(), error)],
                 );
             }
+            domain.recycle_finished_ttl_jobs();
             command_workers.reap();
             for event in notifications {
                 match event {
@@ -1127,6 +1202,18 @@ fn run_ttl_tick_inner(
             result.claimed += 1;
             (new_job_id, table.expire_time(now))
         };
+        let rows = coordinator.execute(
+            "SELECT current_job_start_time FROM mysql.tidb_ttl_table_status WHERE current_job_id=%?",
+            &[Datum::Text(job_id.clone())],
+        ).map_err(|e| format!("read TTL job creation time: {e:?}"))?;
+        let Some(Datum::Text(created)) = rows.first().and_then(|row| row.first()) else {
+            return Err(format!("TTL job start time missing: {job_id}"));
+        };
+        let created = chrono::NaiveDateTime::parse_from_str(created, "%Y-%m-%d %H:%M:%S")
+            .map_err(|e| format!("invalid TTL job start time: {e}"))?
+            .and_utc()
+            .timestamp() as u64;
+        domain.track_ttl_job(&job_id, created);
         let scan_ranges = persisted_scan_ranges(&mut coordinator, &job_id)?;
         let scan_count = scan_ranges.len();
         if scan_count == 0 {
@@ -1281,7 +1368,9 @@ fn run_ttl_tick_inner(
             &summary_text,
         )
         .map_err(|error| format!("finish TTL job {job_id}: {error:?}"))?;
+        domain.complete_ttl_job(&job_id);
         result.finished += 1;
     }
+    domain.recycle_finished_ttl_jobs();
     Ok(result)
 }

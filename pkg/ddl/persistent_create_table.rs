@@ -357,3 +357,85 @@ fn check_foreign_key(
     }
     Ok(())
 }
+
+/// Go onCreateTables: reuse the physical-table path, publish one schema version,
+/// then notify/register all tables. A controller failure compensates in reverse.
+pub fn batch_step(context: &mut dyn JobExecutionContext, job: &mut Job) -> Result<i64, String> {
+    let args =
+        astersql_meta_model::group_2::GetBatchCreateTableArgs(job).map_err(|e| cancel(job, e))?;
+    let mut tables = Vec::with_capacity(args.Tables.len());
+    let mut stub = job.clone_job().map_err(|e| cancel(job, e))?;
+    for args in args.Tables {
+        let info = args
+            .TableInfo
+            .ok_or_else(|| cancel(job, "missing batch table metadata"))?;
+        let mut table: TableInfo =
+            serde_json::from_value(serde_json::to_value(info).map_err(|e| cancel(job, e))?)
+                .map_err(|e| cancel(job, e))?;
+        stub.table_id = table.ID;
+        create_table(context, &mut stub, &mut table, args.FKCheck).map_err(|e| cancel(job, e))?;
+        tables.push(table);
+    }
+    let mut version = 0;
+    context.with_transaction(&mut |txn| {
+        version = TransactionMutator::new(txn).gen_schema_version()?;
+        let options = tables
+            .iter()
+            .map(|table| {
+                serde_json::json!({
+                    "schema_id": job.schema_id,
+                    "old_schema_id": job.schema_id,
+                    "table_id": table.ID,
+                    "old_table_id": table.ID,
+                })
+            })
+            .collect::<Vec<_>>();
+        let diff = serde_json::json!({
+            "version": version,
+            "type": job.tp,
+            "schema_id": job.schema_id,
+            "table_id": job.table_id,
+            "old_table_id": 0,
+            "old_schema_id": 0,
+            "regenerate_schema_map": false,
+            "affected_options": options,
+        });
+        txn.Set(
+            astersql_meta::transaction_meta_string_key(format!("Diff:{version}").as_bytes()),
+            serde_json::to_vec(&diff).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(Vec::new())
+    })?;
+    for (i, table) in tables.iter().enumerate() {
+        crate::persistent_actions::async_notify_event(
+            context,
+            job,
+            i as i64,
+            astersql_ddl_notifier::NewCreateTableEvent(Some(Box::new(table.clone()))),
+        )?;
+    }
+    let mut registered: Vec<i64> = Vec::new();
+    for table in &tables {
+        if let Err(error) = context.register_create_table_ttl(table) {
+            for id in registered.into_iter().rev() {
+                if let Err(compensation) = context.delete_drop_table_ttl(id) {
+                    astersql_util_logutil::log::background_logger().warn(format!(
+                        "failed to roll back TTL table registration tableID={id}: {compensation}"
+                    ));
+                }
+            }
+            return Err(cancel(job, error));
+        }
+        if table.TTLInfo.as_ref().is_some_and(|ttl| ttl.Enable) {
+            registered.push(table.ID);
+        }
+    }
+    job.finish_multiple_table_job(
+        JobState::Done,
+        SchemaState::Public,
+        version,
+        tables.into_iter().map(std::sync::Arc::new).collect(),
+    );
+    Ok(version)
+}

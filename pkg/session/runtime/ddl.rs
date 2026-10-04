@@ -3481,7 +3481,87 @@ impl ConcreteSession {
                     }
                     indexes.insert(name);
                 }
+                ast::AlterTableType::RemoveTTL => {
+                    if self.persistent_actions_enabled() {
+                        self.submit_normal_action(
+                            database,
+                            &statement.Table.Name.L,
+                            67,
+                            serde_json::json!({}),
+                        )?;
+                    } else {
+                        self.domain
+                            .ddl_alter_table_ttl(
+                                database,
+                                &statement.Table.Name.L,
+                                None,
+                                None,
+                                None,
+                                true,
+                            )
+                            .map_err(|e| session_error("REMOVE TTL", e))?;
+                    }
+                }
                 ast::AlterTableType::Option => {
+                    let mut ttl_info = None;
+                    let mut ttl_enable = None;
+                    let mut ttl_interval = None;
+                    for option in &spec.Options {
+                        match option.Tp {
+                            ast::TableOptionType::TTL => {
+                                ttl_info = Some(astersql_meta_model::TTLInfo {
+                                    ColumnName: option
+                                        .ColumnName
+                                        .as_ref()
+                                        .map(|c| c.Name.clone())
+                                        .unwrap_or_default(),
+                                    IntervalExprStr: option
+                                        .Value
+                                        .as_ref()
+                                        .map(|e| {
+                                            astersql_ddl::expression_text(e)
+                                                .map_err(|e| SessionError::new(e.to_string()))
+                                        })
+                                        .transpose()?
+                                        .unwrap_or_default(),
+                                    IntervalTimeUnit: option.TimeUnitValue.unwrap_or_default()
+                                        as i32,
+                                    Enable: true,
+                                    JobInterval: astersql_meta_model::DefaultTTLJobInterval.into(),
+                                });
+                            }
+                            ast::TableOptionType::TTLEnable => ttl_enable = Some(option.BoolValue),
+                            ast::TableOptionType::TTLJobInterval => {
+                                ttl_interval = Some(option.StrValue.clone())
+                            }
+                            _ => {}
+                        }
+                    }
+                    if ttl_info.is_some() || ttl_enable.is_some() || ttl_interval.is_some() {
+                        if self.persistent_actions_enabled() {
+                            self.submit_normal_action(
+                                database,
+                                &statement.Table.Name.L,
+                                65,
+                                serde_json::json!({
+                                    "ttl_info": ttl_info,
+                                    "ttl_enable": ttl_enable,
+                                    "ttl_cron_job_schedule": ttl_interval,
+                                }),
+                            )?;
+                        } else {
+                            self.domain
+                                .ddl_alter_table_ttl(
+                                    database,
+                                    &statement.Table.Name.L,
+                                    ttl_info,
+                                    ttl_enable,
+                                    ttl_interval,
+                                    false,
+                                )
+                                .map_err(|e| session_error("ALTER TTL", e))?;
+                        }
+                    }
                     let attribute = astersql_ddl::storage_class::GetEngineAttributeFromStorageClassTableOptions(&spec.Options).map_err(SessionError::new)?;
                     let (_, table) = self
                         .domain
@@ -3495,7 +3575,10 @@ impl ConcreteSession {
                     for option in &spec.Options {
                         if matches!(
                             option.Tp,
-                            ast::TableOptionType::EngineAttribute
+                            ast::TableOptionType::TTL
+                                | ast::TableOptionType::TTLEnable
+                                | ast::TableOptionType::TTLJobInterval
+                                | ast::TableOptionType::EngineAttribute
                                 | ast::TableOptionType::StorageClass
                                 | ast::TableOptionType::Compression
                         ) {

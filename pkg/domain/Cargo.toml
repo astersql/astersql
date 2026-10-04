@@ -12,6 +12,7 @@ go-package = "pkg/domain"
 legacy-tasks = ["task-1046", "task-1047", "task-1048", "task-1049", "task-1051", "task-1309"]
 
 [dependencies]
+"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../util/logutil" }
 tikv-client = { version = "=0.4.2", git = "ssh://git@github.com/astersql/client-rust.git", tag = "v0.4.2-aster.10", default-features = false }
 "astersql-ddl" = { package = "astersql-ddl", path = "../ddl" }
 "astersql-session-sessmgr" = { package = "astersql-session-sessmgr", path = "../session/sessmgr" }
@@ -118,7 +119,6 @@ tonic = { version = "0.12", default-features = false }
 "astersql-util-gctuner" = { package = "astersql-util-gctuner", path = "../util/gctuner" }
 "astersql-util-globalconn" = { package = "astersql-util-globalconn", path = "../util/globalconn" }
 "astersql-util-intest" = { package = "astersql-util-intest", path = "../util/intest" }
-"astersql-util-logutil" = { package = "astersql-util-logutil", path = "../util/logutil" }
 "astersql-util-memory" = { package = "astersql-util-memory", path = "../util/memory" }
 "astersql-util-memoryusagealarm" = { package = "astersql-util-memoryusagealarm", path = "../util/memoryusagealarm" }
 "astersql-util-printer" = { package = "astersql-util-printer", path = "../util/printer" }

@@ -1273,7 +1273,7 @@ impl astersql_ddl::job_worker::JobExecutionContext for ConcreteJobExecutionConte
         if let Some(m) = self.0.domain.external_workload_manager() {
             m.lock()
                 .map_err(|e| e.to_string())?
-                .RegisterTTLTask(
+                .RegisterTTLTableInfo(
                     &astersql_extworkload::context::Background(),
                     t.ID,
                     astersql_sessionctx_vardef::EnableTTLJob.Load(),

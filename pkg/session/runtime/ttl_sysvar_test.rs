@@ -6,7 +6,7 @@ use astersql_extworkload::{Manager, ManagerError, context, keyspacepb};
 
 use super::CreateAnalyzeSession;
 
-struct RecordingManager(Arc<Mutex<Vec<bool>>>);
+struct RecordingManager(Arc<Mutex<Vec<bool>>>, bool);
 
 impl Manager for RecordingManager {
     fn Close(&mut self) -> Result<(), ManagerError> {
@@ -66,7 +66,11 @@ impl Manager for RecordingManager {
         enabled: bool,
     ) -> Result<(), ManagerError> {
         self.0.lock().unwrap().push(enabled);
-        Ok(())
+        if self.1 {
+            Err(std::io::Error::other("TTL controller unavailable").into())
+        } else {
+            Ok(())
+        }
     }
     fn RegisterAutoAnalyze(&mut self, _: &context::Context, _: u64) -> Result<(), ManagerError> {
         Ok(())
@@ -80,7 +84,10 @@ impl Manager for RecordingManager {
 fn go_merge_43_set_global_ttl_enable_forwards_to_master_controller() {
     let (domain, session) = CreateAnalyzeSession().unwrap();
     let changes = Arc::new(Mutex::new(Vec::new()));
-    domain.set_external_workload_manager(Some(Box::new(RecordingManager(Arc::clone(&changes)))));
+    domain.set_external_workload_manager(Some(Box::new(RecordingManager(
+        Arc::clone(&changes),
+        false,
+    ))));
     session
         .execute("SET GLOBAL tidb_ttl_job_enable = OFF")
         .unwrap();
@@ -91,6 +98,27 @@ fn go_merge_43_set_global_ttl_enable_forwards_to_master_controller() {
         .unwrap();
     assert_eq!(*changes.lock().unwrap(), [false, true]);
     assert!(astersql_sessionctx_vardef::EnableTTLJob.Load());
+    session
+        .execute("SET GLOBAL tidb_ttl_job_enable = OFF")
+        .unwrap();
+    domain.notify_update_sysvar_cache(true);
+    assert_eq!(*changes.lock().unwrap(), [false, true, false]);
+    assert!(!astersql_sessionctx_vardef::EnableTTLJob.Load());
+    domain.set_external_workload_manager(Some(Box::new(RecordingManager(
+        Arc::clone(&changes),
+        true,
+    ))));
+    let error = session
+        .execute("SET GLOBAL tidb_ttl_job_enable = ON")
+        .err()
+        .unwrap();
+    assert!(
+        error.to_string().contains("TTL controller unavailable"),
+        "{error}"
+    );
+    assert_eq!(*changes.lock().unwrap(), [false, true, false, true]);
+    assert!(!astersql_sessionctx_vardef::EnableTTLJob.Load());
+    astersql_sessionctx_vardef::EnableTTLJob.Store(true);
 }
 
 struct Gcv2Manager {
@@ -410,11 +438,14 @@ fn external_controller_startup_failures_are_fatal_only_for_dedicated_gcv2() {
     for (role, missing_meta, keyspace_level, controller_failure, fatal, expected_create) in [
         ("gcv2", true, true, false, true, 0),
         ("master", true, true, false, false, 0),
+        ("ttl", true, true, false, false, 0),
         ("gcv2", false, false, false, true, 0),
         ("gcv2", false, true, true, true, 1),
         ("master", false, true, true, false, 1),
+        ("ttl", false, true, true, false, 1),
         ("master", false, false, false, false, 1),
         ("gcv2", false, true, false, false, 1),
+        ("ttl", false, true, false, false, 1),
     ] {
         let (domain, _) = CreateAnalyzeSession().unwrap();
         let calls = Arc::new(Mutex::new(Vec::new()));

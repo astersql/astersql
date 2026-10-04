@@ -22,6 +22,9 @@ pub fn handler_available(action: u8) -> bool {
         || matches!(
             action,
             1 | 3
+                | 60
+                | 65
+                | 67
                 | 4
                 | 6
                 | 7
@@ -48,6 +51,12 @@ pub fn step(
     context: &mut dyn crate::job_worker::JobExecutionContext,
     job: &mut Job,
 ) -> Result<i64, String> {
+    if job.tp == 60 {
+        return crate::persistent_create_table::batch_step(context, job);
+    }
+    if matches!(job.tp, 65 | 67) {
+        return alter_ttl(context, job);
+    }
     if job.tp == 12 {
         return crate::persistent_modify_column::step(context, job);
     }
@@ -615,6 +624,67 @@ fn modify_engine_attribute(
         error
     })?;
     let version = update_version_and_table(&mut meta, job, &mut table)?;
+    job.finish_table_job(
+        JobState::Done,
+        SchemaState::Public,
+        version,
+        std::sync::Arc::new(table),
+    );
+    Ok(version)
+}
+
+/// Go onTTLInfoChange/onTTLInfoRemove, within the owner's job transaction.
+fn alter_ttl(
+    context: &mut dyn crate::job_worker::JobExecutionContext,
+    job: &mut Job,
+) -> Result<i64, String> {
+    let args = if job.tp == 65 {
+        Some(
+            astersql_meta_model::group_2::GetAlterTTLInfoArgs(job).map_err(|error| {
+                job.state = JobState::Cancelled;
+                error.to_string()
+            })?,
+        )
+    } else {
+        None
+    };
+    let mut table = None;
+    let mut version = 0;
+    context.with_transaction(&mut |txn| {
+        let mut meta = astersql_meta::TransactionMutator::new(txn);
+        let mut t = public_table(&meta, job)?;
+        if let Some(args) = &args {
+            let info = args
+                .TTLInfo
+                .as_ref()
+                .map(|info| {
+                    serde_json::from_value(serde_json::to_value(info).map_err(|e| e.to_string())?)
+                        .map_err(|e| e.to_string())
+                })
+                .transpose()?;
+            crate::ttl::apply_model_ttl_change(
+                &mut t,
+                info,
+                args.TTLEnable,
+                args.TTLCronJobSchedule.clone(),
+            )?;
+        } else {
+            t.TTLInfo = None;
+        }
+        version = update_version_and_table(&mut meta, job, &mut t)?;
+        table = Some(t);
+        Ok(Vec::new())
+    })?;
+    let table = table.unwrap();
+    let result = if table.TTLInfo.as_ref().is_some_and(|ttl| ttl.Enable) {
+        context.register_create_table_ttl(&table)
+    } else {
+        context.delete_drop_table_ttl(table.ID)
+    };
+    result.map_err(|error| {
+        job.state = JobState::Cancelled;
+        error
+    })?;
     job.finish_table_job(
         JobState::Done,
         SchemaState::Public,
