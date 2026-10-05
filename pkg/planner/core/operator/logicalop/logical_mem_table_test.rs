@@ -111,6 +111,7 @@ fn prune_columns_covers_every_go_whitelisted_memory_table() {
         "deadlocks",
         "cluster_deadlocks",
         "tables",
+        "partitions",
     ];
     for name in names {
         let mut plan = mem_table(name, None);

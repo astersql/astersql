@@ -24,6 +24,7 @@ use crate::infoschema_reader::{
 
 struct InternalTestSource {
     requests: Mutex<Vec<DataRequest>>,
+    stats_requests: Mutex<Vec<(Vec<i64>, bool)>>,
     attr_viewer: Option<String>,
     attr_privileges: Option<astersql_privilege_privileges::UserPrivileges>,
     attr_rows: Vec<Row>,
@@ -34,6 +35,7 @@ impl InternalTestSource {
     fn new() -> Self {
         Self {
             requests: Mutex::new(Vec::new()),
+            stats_requests: Mutex::new(Vec::new()),
             attr_viewer: None,
             attr_privileges: None,
             attr_rows: Vec::new(),
@@ -117,6 +119,7 @@ impl InfoSchemaDataSource for InternalTestSource {
                 Datum::Int(2),
             ]],
             DataRequest::Keywords => vec![vec![text("ADD"), Datum::Int(1)]],
+            DataRequest::Tables { .. } | DataRequest::Partitions { .. } => Vec::new(),
             other => panic!("unexpected information-schema request: {other:?}"),
         })
     }
@@ -129,7 +132,11 @@ impl InfoSchemaDataSource for InternalTestSource {
         Ok(None)
     }
 
-    fn update_stats_cache(&self, _: &[i64]) -> InfoResult {
+    fn update_stats_cache(&self, table_ids: &[i64], need_column_lengths: bool) -> InfoResult {
+        self.stats_requests
+            .lock()
+            .unwrap()
+            .push((table_ids.to_vec(), need_column_lengths));
         Ok(())
     }
 
@@ -203,6 +210,73 @@ fn retriever(source: Arc<InternalTestSource>) -> memtableRetriever {
         accumulated_memory_record_count: 0,
         source,
     }
+}
+
+#[test]
+fn table_rows_only_skips_column_length_read() {
+    let source = Arc::new(InternalTestSource::new());
+    let mut reader = retriever(Arc::clone(&source));
+    let tables = [TableInfo {
+        id: 10,
+        schema: "test".to_owned(),
+        name: "t".to_owned(),
+        columns: Vec::new(),
+        partition_ids: vec![11, 12],
+    }];
+
+    reader.columns = vec![ColumnInfo {
+        name: "TABLE_ROWS".to_owned(),
+        offset: 0,
+    }];
+    reader.updateStatsCacheIfNeed(&tables).unwrap();
+    assert_eq!(
+        *source.stats_requests.lock().unwrap(),
+        vec![(vec![11, 12, 10], false)]
+    );
+
+    source.stats_requests.lock().unwrap().clear();
+    reader.columns = vec![ColumnInfo {
+        name: "DATA_LENGTH".to_owned(),
+        offset: 0,
+    }];
+    reader.updateStatsCacheIfNeed(&tables).unwrap();
+    assert_eq!(
+        *source.stats_requests.lock().unwrap(),
+        vec![(vec![11, 12, 10], true)]
+    );
+
+    source.stats_requests.lock().unwrap().clear();
+    reader.columns = vec![ColumnInfo {
+        name: "TABLE_NAME".to_owned(),
+        offset: 0,
+    }];
+    reader.updateStatsCacheIfNeed(&tables).unwrap();
+    assert!(source.stats_requests.lock().unwrap().is_empty());
+}
+
+#[test]
+fn table_and_partition_requests_preserve_stats_column_requirements() {
+    let source = Arc::new(InternalTestSource::new());
+    let mut reader = retriever(Arc::clone(&source));
+    reader.columns = vec![ColumnInfo {
+        name: "TABLE_ROWS".to_owned(),
+        offset: 0,
+    }];
+    reader.setDataFromTables().unwrap();
+    reader.setDataFromPartitions().unwrap();
+    assert_eq!(
+        source.requests(),
+        vec![
+            DataRequest::Tables {
+                need_row_count: true,
+                need_column_lengths: false,
+            },
+            DataRequest::Partitions {
+                need_row_count: true,
+                need_column_lengths: false,
+            },
+        ]
+    );
 }
 
 #[test]

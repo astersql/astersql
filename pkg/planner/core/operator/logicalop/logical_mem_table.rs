@@ -104,6 +104,7 @@ impl LogicalMemTable {
                 | "deadlocks"
                 | "cluster_deadlocks"
                 | "tables"
+                | "partitions"
         );
         if !prunable {
             return Ok(());

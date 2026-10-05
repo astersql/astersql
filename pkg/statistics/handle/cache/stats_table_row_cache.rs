@@ -73,17 +73,26 @@ impl StatsTableRowCache {
     pub fn GetColLength(&self, id: tableHistID) -> u64 {
         *self.state.read().unwrap().colLength.get(&id).unwrap_or(&0)
     }
-    /// 通过 Provider 拉取指定表 ID 的行数与列长度并合并进缓存。
-    pub fn UpdateByID(&self, p: &dyn RowStatsProvider, ids: &[i64]) -> Result<(), CacheError> {
+    /// 通过 Provider 拉取指定表 ID 的行数，并仅在长度列需要时读取列长度。
+    /// 每次替换整个快照，避免 TABLE_ROWS-only 读取继续暴露前一次的列长度。
+    pub fn UpdateByID(
+        &self,
+        p: &dyn RowStatsProvider,
+        ids: &[i64],
+        need_column_lengths: bool,
+    ) -> Result<(), CacheError> {
         let rows = p.RowCounts(ids)?;
-        let cols = p.ColumnLengths(ids)?;
+        let cols = if need_column_lengths {
+            p.ColumnLengths(ids)?
+        } else {
+            HashMap::new()
+        };
         let mut state = self.state.write().unwrap();
-        state.tableRows.extend(rows);
-        // 将 (tableID, histID) 元组键转为 tableHistID 结构体键后写入。
-        state.colLength.extend(
-            cols.into_iter()
-                .map(|((tableID, histID), v)| (tableHistID { tableID, histID }, v)),
-        );
+        state.tableRows = rows;
+        state.colLength = cols
+            .into_iter()
+            .map(|((tableID, histID), v)| (tableHistID { tableID, histID }, v))
+            .collect();
         Ok(())
     }
     /// 按表元信息估算行数、平均行长、数据长度与索引长度。

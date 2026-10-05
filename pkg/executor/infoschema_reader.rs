@@ -197,7 +197,10 @@ pub enum DataRequest {
         schema: String,
         table_id: i64,
     },
-    Tables,
+    Tables {
+        need_row_count: bool,
+        need_column_lengths: bool,
+    },
     CheckConstraints {
         tidb_extended: bool,
     },
@@ -215,7 +218,10 @@ pub enum DataRequest {
         table_id: i64,
         privilege_mask: u64,
     },
-    Partitions,
+    Partitions {
+        need_row_count: bool,
+        need_column_lengths: bool,
+    },
     Indexes,
     Index {
         schema: String,
@@ -352,7 +358,7 @@ pub trait InfoSchemaDataSource: Send + Sync {
         snapshot: &InfoSchemaSnapshot,
         table_id: i64,
     ) -> InfoResult<Option<i64>>;
-    fn update_stats_cache(&self, table_ids: &[i64]) -> InfoResult;
+    fn update_stats_cache(&self, table_ids: &[i64], need_column_lengths: bool) -> InfoResult;
     fn ddl_jobs_open(&self, snapshot: &InfoSchemaSnapshot) -> InfoResult<u64>;
     fn ddl_jobs_next(&self, token: u64, capacity: usize) -> InfoResult<Vec<Row>>;
     fn ddl_jobs_close(&self, token: u64) -> InfoResult;
@@ -389,6 +395,23 @@ pub struct memtableRetriever {
 }
 
 impl memtableRetriever {
+    fn statsReadRequirements(&self) -> (bool, bool) {
+        let mut need_row_count = false;
+        let mut need_column_lengths = false;
+        for column in &self.columns {
+            match column.name.to_ascii_uppercase().as_str() {
+                "TABLE_ROWS" => need_row_count = true,
+                "AVG_ROW_LENGTH" | "DATA_LENGTH" | "INDEX_LENGTH" => {
+                    need_row_count = true;
+                    need_column_lengths = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        (need_row_count, need_column_lengths)
+    }
+
     /// 初始化快照并分发装载后，按批返回行并做列投影。
     pub fn retrieve(&mut self) -> InfoResult<Vec<Row>> {
         // CLUSTER_INFO 需要 PROCESS 权限
@@ -599,15 +622,10 @@ impl memtableRetriever {
     pub fn setDataFromReferConst(&mut self) -> InfoResult {
         self.replace_rows(DataRequest::ReferentialConstraints)
     }
-    /// 若输出列依赖统计信息则刷新 stats cache。
+    /// 按输出列读取行数与必要的列长度统计。
     pub fn updateStatsCacheIfNeed(&self, tables: &[TableInfo]) -> InfoResult {
-        let needs = self.columns.iter().any(|column| {
-            matches!(
-                column.name.to_ascii_uppercase().as_str(),
-                "AVG_ROW_LENGTH" | "DATA_LENGTH" | "INDEX_LENGTH" | "TABLE_ROWS"
-            )
-        });
-        if !needs {
+        let (need_row_count, need_column_lengths) = self.statsReadRequirements();
+        if !need_row_count {
             return Ok(());
         }
         let mut ids = Vec::new();
@@ -615,7 +633,7 @@ impl memtableRetriever {
             ids.extend_from_slice(&table.partition_ids);
             ids.push(table.id);
         }
-        self.source.update_stats_cache(&ids)
+        self.source.update_stats_cache(&ids, need_column_lengths)
     }
     /// 追加单表 TABLES 行。
     pub fn setDataFromOneTable(&mut self, schema: &str, table_id: i64) -> InfoResult {
@@ -626,7 +644,11 @@ impl memtableRetriever {
     }
     /// 加载 TABLES 行。
     pub fn setDataFromTables(&mut self) -> InfoResult {
-        self.replace_rows(DataRequest::Tables)
+        let (need_row_count, need_column_lengths) = self.statsReadRequirements();
+        self.replace_rows(DataRequest::Tables {
+            need_row_count,
+            need_column_lengths,
+        })
     }
     /// 加载标准 CHECK_CONSTRAINTS。
     pub fn setDataFromCheckConstraints(&mut self) -> InfoResult {
@@ -642,7 +664,11 @@ impl memtableRetriever {
     }
     /// 加载 PARTITIONS 行。
     pub fn setDataFromPartitions(&mut self) -> InfoResult {
-        self.replace_rows(DataRequest::Partitions)
+        let (need_row_count, need_column_lengths) = self.statsReadRequirements();
+        self.replace_rows(DataRequest::Partitions {
+            need_row_count,
+            need_column_lengths,
+        })
     }
     /// 加载 TIDB_INDEXES 行。
     pub fn setDataFromIndexes(&mut self) -> InfoResult {

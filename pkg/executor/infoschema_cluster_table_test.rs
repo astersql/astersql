@@ -119,7 +119,7 @@ impl InfoSchemaDataSource for ClusterTableSource {
         Ok(None)
     }
 
-    fn update_stats_cache(&self, _: &[i64]) -> InfoResult {
+    fn update_stats_cache(&self, _: &[i64], _: bool) -> InfoResult {
         Ok(())
     }
 

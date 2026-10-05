@@ -108,7 +108,7 @@ impl InfoSchemaDataSource for DecodeSource {
     fn auto_increment_id(&self, _: &InfoSchemaSnapshot, _: i64) -> InfoResult<Option<i64>> {
         unreachable!()
     }
-    fn update_stats_cache(&self, _: &[i64]) -> InfoResult {
+    fn update_stats_cache(&self, _: &[i64], _: bool) -> InfoResult {
         unreachable!()
     }
     fn ddl_jobs_open(&self, _: &InfoSchemaSnapshot) -> InfoResult<u64> {

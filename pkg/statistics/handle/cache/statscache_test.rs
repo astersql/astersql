@@ -78,7 +78,7 @@ impl RowStatsProvider for RowProvider {
 fn estimate_data_length_matches_go_public_partition_and_sequence_rules() {
     let cache = StatsTableRowCache::default();
     cache
-        .UpdateByID(&RowProvider, &[10, 20, 21, 22, 30])
+        .UpdateByID(&RowProvider, &[10, 20, 21, 22, 30], true)
         .unwrap();
     let columns = vec![
         ColumnMeta {
