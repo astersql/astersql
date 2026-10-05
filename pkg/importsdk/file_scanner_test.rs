@@ -36,7 +36,8 @@
 
 use crate::{
     ErrTableNotFound, FileRouteRule, JobDatabase, JobRows, NewFileScanner, SQLValue,
-    WithEstimateRealSize, WithFileRouters, createDataFileMeta, defaultSDKConfig, processDataFiles,
+    WithEstimateRealSize, WithFileRouters, WithSkipInvalidFiles, createDataFileMeta,
+    defaultSDKConfig, encodeAuroraWildcardPath, processDataFiles,
 };
 use astersql_errors as errors;
 use astersql_lightning_mydump as mydump;
@@ -178,6 +179,69 @@ fn get_total_size_and_table_metas_match_go() {
     assert!(errors::ErrorEqual(Some(&error), Some(&ErrTableNotFound)));
 
     scanner.Close().expect("close should succeed");
+}
+
+/// Native Aurora snapshot paths are recognized automatically when callers do
+/// not provide explicit file routes.
+#[test]
+fn aurora_snapshot_paths_are_automatically_mapped() {
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let path = tmp_dir
+        .path()
+        .join("export/sales.v1/sales.v1.order.items/1/part-a.parquet");
+    std::fs::create_dir_all(path.parent().expect("parent")).expect("create directories");
+    std::fs::write(&path, b"data").expect("write parquet placeholder");
+
+    let db: Arc<dyn JobDatabase> = Arc::new(CanonicalDatabase::default());
+    let mut cfg = defaultSDKConfig();
+    WithEstimateRealSize(false)(&mut cfg);
+    let mut scanner = NewFileScanner(
+        &(),
+        &format!("file://{}", tmp_dir.path().display()),
+        db,
+        cfg,
+    )
+    .expect("scanner should initialize");
+
+    let metas = scanner.GetTableMetas(&()).expect("metadata should load");
+    assert_eq!(1, metas.len());
+    assert_eq!("sales.v1", metas[0].Database);
+    assert_eq!("order.items", metas[0].Table);
+}
+
+#[test]
+fn aurora_source_never_skips_missing_schema_during_estimation() {
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let path = tmp_dir.path().join("export/db/db.users/1/part-a.parquet");
+    std::fs::create_dir_all(path.parent().expect("parent")).expect("create directories");
+    std::fs::write(&path, b"data").expect("write parquet placeholder");
+
+    let db: Arc<dyn JobDatabase> = Arc::new(CanonicalDatabase::default());
+    let mut cfg = defaultSDKConfig();
+    WithEstimateRealSize(false)(&mut cfg);
+    WithSkipInvalidFiles(true)(&mut cfg);
+    let mut scanner = NewFileScanner(
+        &(),
+        &format!("file://{}", tmp_dir.path().display()),
+        db,
+        cfg,
+    )
+    .expect("scanner should initialize");
+    let error = scanner
+        .EstimateImportDataSize(&())
+        .expect_err("Aurora source must not hide a missing schema");
+    assert!(error.to_string().contains("schema not found"), "{error}");
+}
+
+#[test]
+fn aurora_remote_wildcard_uri_preserves_raw_percent_sequences() {
+    let encoded = encodeAuroraWildcardPath(
+        "s3://bucket/prefix%2E/export/db/db.order%2Eitems/*/part-*.parquet",
+    )
+    .expect("URI should encode");
+    let parsed = url::Url::parse(&encoded).expect("encoded URI");
+    assert!(parsed.path().contains("/prefix%252E/"), "{encoded}");
+    assert!(parsed.path().contains("db.order%252Eitems"), "{encoded}");
 }
 
 /// 对照 Go：解析错误中脱敏或隐藏含凭证的源路径。

@@ -135,6 +135,7 @@ pub struct fileScanner {
     loader: mydump::MDLoader,
     logger: log::Logger,
     config: SDKConfig,
+    aurora_source: bool,
 }
 
 /// 无法解析且无法脱敏时使用的占位源路径文案。
@@ -367,6 +368,7 @@ pub fn NewFileScanner(
             cfg.file_route_rules.clone()
         },
         filter: cfg.filter.clone(),
+        default_file_rules: cfg.file_route_rules.is_empty(),
     };
     let mut loader_options = Vec::new();
     if let Some(limit) = cfg.max_scan_files.filter(|limit| *limit > 0) {
@@ -378,21 +380,27 @@ pub fn NewFileScanner(
     if !cfg.estimate_real_size {
         loader_options.push(mydump::WithSkipRealSizeEstimation(true));
     }
+    if cfg.file_route_rules.is_empty() {
+        loader_options.push(mydump::WithAuroraAutoMapping());
+    }
     let loader_store: Arc<dyn mydump::Storage> = Arc::new(LoaderStorage {
         inner: Arc::clone(&store),
     });
-    let loader = mydump::NewLoaderWithStore(loader_config, loader_store, loader_options).map_err(
-        |error| {
-            annotate(
+    let loader = match mydump::NewLoaderWithStore(loader_config, loader_store, loader_options) {
+        Ok(loader) => loader,
+        Err(error) => {
+            store.Close();
+            return Err(annotate(
                 &ErrCreateLoader,
                 format!(
                     "source={}, charset={}, err={error}",
                     redacted_source_path, cfg.charset
                 ),
-            )
-        },
-    )?;
+            ));
+        }
+    };
 
+    let aurora_source = loader.IsAuroraSource();
     Ok(Box::new(fileScanner {
         redacted_source_path,
         db,
@@ -400,6 +408,7 @@ pub fn NewFileScanner(
         loader,
         logger: cfg.logger.clone(),
         config: cfg,
+        aurora_source,
     }))
 }
 
@@ -488,14 +497,16 @@ impl FileScanner for fileScanner {
                 match self.buildTableMeta(database, table, self.loader.GetAllFiles()) {
                     Ok(meta) => result.push(meta),
                     // skip_invalid_files 时记 warn 并跳过坏表。
-                    Err(error) if self.config.skip_invalid_files => self.logger.Warn(
-                        "skipping table due to invalid files",
-                        [
-                            log::Field::string("database", database.name.clone()),
-                            log::Field::string("table", table.name.clone()),
-                            log::Field::string("error", error.to_string()),
-                        ],
-                    ),
+                    Err(error) if self.config.skip_invalid_files && !self.aurora_source => {
+                        self.logger.Warn(
+                            "skipping table due to invalid files",
+                            [
+                                log::Field::string("database", database.name.clone()),
+                                log::Field::string("table", table.name.clone()),
+                                log::Field::string("error", error.to_string()),
+                            ],
+                        )
+                    }
                     Err(error) => return Err(error),
                 }
             }
@@ -549,7 +560,7 @@ impl FileScanner for fileScanner {
             for table in &database.tables {
                 let tikv_size = match self.estimateOneTableSize(ctx, table) {
                     Ok(size) => size,
-                    Err(error) if self.config.skip_invalid_files => {
+                    Err(error) if self.config.skip_invalid_files && !self.aurora_source => {
                         self.logger.Warn(
                             "skipping table during size estimation",
                             [
@@ -629,9 +640,17 @@ impl fileScanner {
             .as_ref()
             .expect("scanner storage is present before Close")
             .URI();
+        if self.aurora_source && uri.contains(['*', '?', '[', ']', '\\']) {
+            return Err(errors::New(
+                "Aurora source prefix contains glob metacharacters",
+            ));
+        }
         // 本地 file:// 前缀在通配路径中剥掉，便于 IMPORT INTO 使用。
         uri = uri.strip_prefix("file://").unwrap_or(&uri).to_owned();
         result.WildcardPath = format!("{}/{}", uri.trim_end_matches('/'), wildcard);
+        if self.aurora_source {
+            result.WildcardPath = encodeAuroraWildcardPath(&result.WildcardPath)?;
+        }
         Ok(result)
     }
 
@@ -820,6 +839,18 @@ impl fileScanner {
         }
         Ok(table_info)
     }
+}
+
+/// 对远端 Aurora 原始对象键恰好编码一次；本地绝对路径保持不变。
+pub(crate) fn encodeAuroraWildcardPath(path: &str) -> Result<String, errors::SharedError> {
+    let Some((scheme, rest)) = path.split_once("://") else {
+        return Ok(path.to_owned());
+    };
+    let (host, raw_path) = rest.split_once('/').unwrap_or((rest, ""));
+    let escaped_percent_path = raw_path.replace('%', "%25");
+    Url::parse(&format!("{scheme}://{host}/{escaped_percent_path}"))
+        .map(|uri| uri.to_string())
+        .map_err(|error| errors::New(error.to_string()))
 }
 
 /// 将 FileInfo 列表转为 DataFileMeta，并汇总文件大小。

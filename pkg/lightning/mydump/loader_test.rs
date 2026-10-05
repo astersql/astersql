@@ -440,6 +440,117 @@ fn TestSetupOptions() {
     assert!(mkdir("virtual"));
 }
 
+#[test]
+fn aurora_auto_mapping_validates_and_routes_complete_inventory() {
+    let cases = [
+        (
+            "export/sales/sales.order.items/1/part-a.parquet",
+            "sales",
+            "order.items",
+        ),
+        (
+            "export/sales.v1/sales.v1.order.items/part-a.parquet",
+            "sales.v1",
+            "order.items",
+        ),
+        (
+            "export+(v1)/db+$1/db+$1.order+(items)/part-a.parquet",
+            "db+$1",
+            "order+(items)",
+        ),
+        (
+            "export/db%20/db%20.order%2Eitems/1/part-a.parquet",
+            "db%20",
+            "order%2Eitems",
+        ),
+    ];
+    for (path, schema, table) in cases {
+        let storage = Arc::new(MemoryStorage::with(&[(path, b"data")]));
+        let loader = NewLoaderWithStore(
+            newConfigWithSourceDir(),
+            storage,
+            vec![WithAuroraAutoMapping(), WithSkipRealSizeEstimation(true)],
+        )
+        .unwrap_or_else(|error| panic!("{path}: {error}"));
+        assert!(loader.IsAuroraSource(), "{path}");
+        assert_eq!(schema, loader.GetDatabases()[0].name, "{path}");
+        assert_eq!(table, loader.GetDatabases()[0].tables[0].name, "{path}");
+    }
+
+    for (paths, message) in [
+        (vec!["export[1]/db/db.users/a/part-a.parquet"], "glob"),
+        (
+            vec!["export/db/db.order_items/1/part-a.parquet"],
+            "ambiguous",
+        ),
+        (
+            vec![
+                "export-a/db/db.users/1/part-a.parquet",
+                "export-b/db/db.users/1/part-b.parquet",
+            ],
+            "multiple",
+        ),
+        (
+            vec!["export/db/db.users/1/part-a.parquet", "db.orders.1.csv"],
+            "mixed",
+        ),
+        (
+            vec!["archive/customer/staging.users/1/part-a.parquet"],
+            "inconsistent",
+        ),
+    ] {
+        let entries = paths
+            .iter()
+            .map(|path| (*path, b"data" as &[u8]))
+            .collect::<Vec<_>>();
+        let error = NewLoaderWithStore(
+            newConfigWithSourceDir(),
+            Arc::new(MemoryStorage::with(&entries)),
+            vec![WithAuroraAutoMapping(), WithSkipRealSizeEstimation(true)],
+        )
+        .err()
+        .expect("invalid Aurora inventory must fail");
+        assert!(error.to_string().contains(message), "{error}");
+    }
+}
+
+#[test]
+fn aurora_auto_mapping_rejects_partial_or_explicit_routing() {
+    let storage = Arc::new(MemoryStorage::with(&[
+        ("export/db/db.users/1/part-a.parquet", b"a"),
+        ("export/db/db.users/2/part-b.parquet", b"b"),
+    ]));
+    let error = NewLoaderWithStore(
+        newConfigWithSourceDir(),
+        storage,
+        vec![WithMaxScanFiles(1), WithAuroraAutoMapping()],
+    )
+    .err()
+    .expect("automatic mapping must reject a truncated listing");
+    assert!(error.to_string().contains("incomplete"));
+
+    let mut cfg = newConfigWithSourceDir();
+    cfg.default_file_rules = false;
+    cfg.file_routes = vec![FileRouteRule {
+        pattern: r".*\.parquet$".into(),
+        schema: "target".into(),
+        table: "chosen".into(),
+        type_name: TYPE_PARQUET.into(),
+        ..Default::default()
+    }];
+    let error = NewLoaderWithStore(
+        cfg,
+        Arc::new(MemoryStorage::with(&[(
+            "export/db/db.users/1/part-a.parquet",
+            b"data",
+        )])),
+        vec![WithAuroraAutoMapping()],
+    )
+    .err()
+    .expect("automatic mapping requires default rules");
+    assert!(error.to_string().contains("requires default file rules"));
+}
+
 /// 并行 map 保持顺序，错误提前终止。
 #[test]
 fn TestParallelProcess() {

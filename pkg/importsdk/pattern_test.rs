@@ -170,6 +170,30 @@ fn generate_wildcard_path_prefers_mydumper_pattern_when_it_is_specific() {
     );
 }
 
+#[test]
+fn generate_wildcard_path_supports_aurora_partition_directories() {
+    let files = vec![
+        file_at(
+            "export-1/db/db.users/1/part-a.parquet",
+            mydump::Compression::None,
+        ),
+        file_at(
+            "export-1/db/db.users/2/part-b.parquet",
+            mydump::Compression::None,
+        ),
+    ];
+    let all = all_files(&[
+        "export-1/db/db.users/1/part-a.parquet",
+        "export-1/db/db.users/2/part-b.parquet",
+        "export-1/db/db.orders/1/part-a.parquet",
+        "export-1/db2/db2.users/1/part-a.parquet",
+    ]);
+    assert_eq!(
+        "export-1/db/db.users/*/part-*.parquet",
+        crate::pattern::generateWildcardPath(&files, &all, "db", "users").unwrap()
+    );
+}
+
 /// Mirrors Go's `TestGenerateWildcardPath` "Mydumper pattern fails, fallback to
 /// prefix/suffix succeeds" case: non-Mydumper filenames fall back to the
 /// generic prefix/suffix pattern, and adding a conflicting file that the

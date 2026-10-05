@@ -20,6 +20,7 @@
 // MDLoader 是后续 Region 切分与导入的入口元数据源。
 
 use crate::*;
+use regex::{Regex, escape as regex_escape};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::Read;
 use std::sync::{Arc, Mutex};
@@ -112,6 +113,7 @@ pub struct MDLoaderSetupConfig {
     pub max_scan_files: usize,
     pub scan_file_concurrency: usize,
     pub skip_real_size_estimation: bool,
+    pub aurora_auto_mapping: bool,
     pub support_partial_result: bool,
     pub file_iterator: Option<Arc<dyn FileIterator>>,
 }
@@ -122,6 +124,7 @@ impl Default for MDLoaderSetupConfig {
             max_scan_files: usize::MAX,
             scan_file_concurrency: 8,
             skip_real_size_estimation: false,
+            aurora_auto_mapping: false,
             support_partial_result: false,
             file_iterator: None,
         }
@@ -150,6 +153,10 @@ pub fn WithScanFileConcurrency(v: usize) -> MDLoaderSetupOption {
 pub fn WithSkipRealSizeEstimation(v: bool) -> MDLoaderSetupOption {
     Box::new(move |c| c.skip_real_size_estimation = v)
 }
+/// 启用 Aurora 原生快照目录的完整校验与自动库表映射。
+pub fn WithAuroraAutoMapping() -> MDLoaderSetupOption {
+    Box::new(|c| c.aurora_auto_mapping = true)
+}
 /// 出错时是否仍返回已扫描的部分结果。
 pub fn ReturnPartialResultOnError(v: bool) -> MDLoaderSetupOption {
     Box::new(move |c| c.support_partial_result = v)
@@ -164,6 +171,8 @@ pub struct LoaderConfig {
     pub char_set: String,
     pub file_routes: Vec<FileRouteRule>,
     pub filter: Vec<String>,
+    /// 文件路由是否来自内置默认规则；Aurora 自动映射只允许此前提。
+    pub default_file_rules: bool,
 }
 /// 默认 utf8mb4 与内置文件路由规则。
 impl Default for LoaderConfig {
@@ -172,6 +181,7 @@ impl Default for LoaderConfig {
             char_set: "utf8mb4".into(),
             file_routes: default_file_route_rules(),
             filter: Vec::new(),
+            default_file_rules: true,
         }
     }
 }
@@ -214,6 +224,7 @@ pub struct MDLoader {
     store: Arc<dyn Storage>,
     all_files: HashMap<String, FileInfo>,
     filter: Vec<String>,
+    aurora_source: bool,
 }
 /// 使用配置与选项构造 MDLoader（委托 NewLoaderWithStore）。
 pub fn NewLoader(
@@ -233,7 +244,15 @@ pub fn NewLoaderWithStore(
     for option in options {
         option(&mut setup)
     }
-    let router = NewFileRouter(&cfg.file_routes, Logger::default())?;
+    if setup.aurora_auto_mapping && !cfg.default_file_rules {
+        return Err(MydumpError::Configuration(
+            "Aurora automatic mapping requires default file rules".into(),
+        ));
+    }
+    if setup.aurora_auto_mapping {
+        setup.support_partial_result = false;
+    }
+    let fallback_router = NewFileRouter(&cfg.file_routes, Logger::default())?;
     let mut files = Vec::new();
     if let Some(iterator) = setup.file_iterator {
         iterator.IterateFiles(&mut |path, size| {
@@ -245,7 +264,31 @@ pub fn NewLoaderWithStore(
     }
     // 路径排序后截断到 max_scan_files，保证部分扫描结果稳定。
     files.sort_by(|a, b| a.0.cmp(&b.0));
+    if setup.aurora_auto_mapping && files.len() > setup.max_scan_files {
+        return Err(MydumpError::Io(
+            "incomplete automatic source scan: too many source files".into(),
+        ));
+    }
     files.truncate(setup.max_scan_files);
+    let raw_files = files
+        .iter()
+        .map(|(path, size)| RawFile {
+            path: path.clone(),
+            size: *size,
+        })
+        .collect::<Vec<_>>();
+    let aurora_rules = if setup.aurora_auto_mapping {
+        newAuroraFileRouter(&raw_files, &fallback_router)?
+    } else {
+        None
+    };
+    let aurora_source = aurora_rules.is_some();
+    let router = if let Some(mut rules) = aurora_rules {
+        rules.extend(cfg.file_routes.clone());
+        NewFileRouter(&rules, Logger::default())?
+    } else {
+        fallback_router
+    };
     let mut dbs: BTreeMap<String, MDDatabaseMeta> = BTreeMap::new();
     for (path, size) in files {
         // 无路由命中、Ignore 类型或 filter 排除的文件直接跳过。
@@ -349,6 +392,7 @@ pub fn NewLoaderWithStore(
         store,
         all_files,
         filter: cfg.filter,
+        aurora_source,
     })
 }
 /// 按路由结果插入或更新表/视图元数据（schema 或数据分片）。
@@ -389,9 +433,110 @@ impl MDLoader {
     pub fn GetAllFiles(&self) -> &HashMap<String, FileInfo> {
         &self.all_files
     }
+    /// 是否检测到并启用了 Aurora 原生快照映射。
+    pub fn IsAuroraSource(&self) -> bool {
+        self.aurora_source
+    }
     /// 按 filter 规则判断 schema.table 是否应跳过。
     pub fn shouldSkip(&self, schema: &str, table: &str) -> bool {
         should_skip_rules(&self.filter, schema, table)
+    }
+}
+
+/// 在过滤器处理前校验完整文件清单，并为每个 Aurora schema 生成原始键路由。
+fn newAuroraFileRouter(
+    files: &[RawFile],
+    fallback: &ChainRouters,
+) -> Result<Option<Vec<FileRouteRule>>, MydumpError> {
+    let aurora = Regex::new(
+        r"^(?:(.*)/)?([^/]+)/([^/]+\.[^/]+)/(?:[a-zA-Z0-9]+/)?(?i:part-[^/]+\.parquet)$",
+    )
+    .expect("static Aurora regex");
+    let data_suffix =
+        Regex::new(r"(?i)\.(sql|csv|parquet)(\.[^./]+)?$").expect("static data suffix regex");
+    let mut rules = Vec::new();
+    let mut root: Option<String> = None;
+    let mut schemas = std::collections::HashSet::new();
+    let mut unexpected = None;
+
+    for file in files {
+        let path = file.path.replace('\\', "/");
+        let Some(parts) = aurora.captures(&path) else {
+            if data_suffix.is_match(&path) {
+                let route = fallback.Route(&path)?;
+                if route.as_ref().is_none_or(|route| {
+                    matches!(
+                        route.source_type,
+                        SourceType::Sql | SourceType::Csv | SourceType::Parquet
+                    )
+                }) {
+                    unexpected = Some(path);
+                }
+            }
+            continue;
+        };
+        if path.contains(['*', '?', '[', ']', '\\']) {
+            return Err(MydumpError::Routing(
+                "Aurora file path contains glob metacharacters".into(),
+            ));
+        }
+        let current_root = parts.get(1).map_or("", |part| part.as_str());
+        let schema = parts.get(2).expect("schema capture").as_str();
+        let directory = parts.get(3).expect("table directory capture").as_str();
+        let table = directory
+            .strip_prefix(&format!("{schema}."))
+            .filter(|table| !table.is_empty())
+            .ok_or_else(|| {
+                MydumpError::Routing(format!(
+                    "inconsistent Aurora database/table directory: {path}"
+                ))
+            })?;
+        if format!("{schema}{table}")
+            .chars()
+            .any(|c| matches!(c, '_' | '\\' | '`' | '"' | ' ' | '*' | '?' | '[' | ']'))
+        {
+            return Err(MydumpError::Routing(format!(
+                "ambiguous Aurora identifier in {path}; provide an explicit file route with the original name"
+            )));
+        }
+        if let Some(root) = &root {
+            if root != current_root {
+                return Err(MydumpError::Routing(
+                    "multiple Aurora export roots; scope the source URL to one export".into(),
+                ));
+            }
+        } else {
+            root = Some(current_root.to_owned());
+        }
+        if schemas.insert(schema.to_owned()) {
+            let prefix = if current_root.is_empty() {
+                String::new()
+            } else {
+                format!("{current_root}/")
+            };
+            rules.push(FileRouteRule {
+                pattern: format!(
+                    r"^{}({})/{}([^/]+)/(?:[a-zA-Z0-9]+/)?(?i:part-[^/]+\.parquet)$",
+                    regex_escape(&prefix),
+                    regex_escape(schema),
+                    regex_escape(&format!("{schema}.")),
+                ),
+                schema: "$1".into(),
+                table: "$2".into(),
+                type_name: TYPE_PARQUET.into(),
+                ..Default::default()
+            });
+        }
+    }
+    if !rules.is_empty() {
+        if let Some(path) = unexpected {
+            return Err(MydumpError::Routing(format!(
+                "mixed or unmatched data in Aurora source: {path}"
+            )));
+        }
+        Ok(Some(rules))
+    } else {
+        Ok(None)
     }
 }
 

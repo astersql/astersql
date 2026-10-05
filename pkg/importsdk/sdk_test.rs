@@ -396,10 +396,8 @@ fn sdk_only_data_files_are_discovered_via_file_router() {
     sdk.Close().expect("Close");
 }
 
-/// Mirrors Go's `TestScanLimitation`: `WithMaxScanFiles(1)` caps discovery to
-/// a single data file, and `WithSkipInvalidFiles(true)` lets the scan finish
-/// without erroring even though the cap makes the mydumper-style listing
-/// look incomplete.
+/// Mirrors Go's `TestScanLimitation`: automatic mapping rejects an incomplete
+/// listing, while an explicit file route retains the legacy partial scan.
 #[test]
 fn sdk_scan_limitation_caps_discovered_files() {
     let tmp_dir = tempfile::tempdir().expect("tempdir");
@@ -408,18 +406,41 @@ fn sdk_scan_limitation_caps_discovered_files() {
     write_file(dir, "db2.tb2.002.csv", b"7,g\n8,h\n");
 
     let db: Arc<dyn JobDatabase> = Arc::new(CanonicalDatabase::default());
-    let mut sdk = new_sdk(
-        dir,
-        db,
-        vec![
-            WithCharset("utf8".to_owned()),
-            WithConcurrency(8),
-            WithFilter(vec!["*.*".to_owned()]),
-            WithSQLMode(mysql::r#const::ModeANSIQuotes),
-            WithSkipInvalidFiles(true),
-            WithMaxScanFiles(1),
-        ],
-    );
+    let mut options = vec![
+        WithCharset("utf8".to_owned()),
+        WithConcurrency(8),
+        WithFilter(vec!["*.*".to_owned()]),
+        WithSQLMode(mysql::r#const::ModeANSIQuotes),
+        WithSkipInvalidFiles(true),
+        WithMaxScanFiles(1),
+    ];
+    let error = NewImportSDK(
+        &(),
+        &format!("file://{}", dir.display()),
+        Arc::clone(&db),
+        options,
+    )
+    .err()
+    .expect("automatic mapping must reject a partial scan");
+    assert!(error.to_string().contains("incomplete"), "{error}");
+
+    options = vec![
+        WithCharset("utf8".to_owned()),
+        WithConcurrency(8),
+        WithFilter(vec!["*.*".to_owned()]),
+        WithSQLMode(mysql::r#const::ModeANSIQuotes),
+        WithSkipInvalidFiles(true),
+        WithMaxScanFiles(1),
+        WithFileRouters(vec![FileRouteRule {
+            pattern: r".*\.csv$".to_owned(),
+            schema: "db2".to_owned(),
+            table: "tb2".to_owned(),
+            type_name: "csv".to_owned(),
+            ..Default::default()
+        }]),
+    ];
+    let mut sdk = NewImportSDK(&(), &format!("file://{}", dir.display()), db, options)
+        .expect("explicit routing should retain partial scan behavior");
 
     let metas = sdk.GetTableMetas(&()).expect("GetTableMetas");
     assert_eq!(1, metas.len());
