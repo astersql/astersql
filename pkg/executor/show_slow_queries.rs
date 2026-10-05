@@ -22,6 +22,7 @@
 
 use astersql_types::datum::{Duration, Time};
 use astersql_util_chunk::Chunk;
+use astersql_util_execdetails::execdetails::{GetIARemoteReadSegmentStats, util::ScanDetail};
 
 #[derive(Clone)]
 /// 单条慢查询记录：SQL、起止时间、耗时、连接与事务等元数据。
@@ -30,6 +31,8 @@ pub struct SlowQueryInfo {
     pub start: Time,
     pub duration: Duration,
     pub detail: String,
+    /// Scan statistics used to expose IA remote-read metrics in ADMIN SHOW SLOW.
+    pub scan_detail: Option<ScanDetail>,
     pub success: bool,
     pub connection_id: u64,
     pub transaction_ts: u64,
@@ -91,6 +94,10 @@ impl<S: ShowSlowSource> ShowSlowExec<S> {
             req.AppendInt64(11, i64::from(slow.internal));
             req.AppendString(12, &slow.digest);
             req.AppendString(13, &slow.session_alias);
+            let ia = GetIARemoteReadSegmentStats(slow.scan_detail.as_ref());
+            req.AppendUint64(14, ia.Count);
+            req.AppendUint64(15, ia.Bytes);
+            req.AppendFloat64(16, ia.WaitTime.as_secs_f64());
             self.cursor += 1;
         }
         Ok(())

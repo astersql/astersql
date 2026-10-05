@@ -29,10 +29,10 @@ use crate::planbuilder::{
     AlterDDLJobOpt, AnalyzeOptionType, AnalyzeStatement, BuiltPlan, ColumnChoice, ColumnInfo,
     GetMaxWriteSpeedFromExpression, GetThreadOrBatchSizeFromExpression, IndexMeta, NewPlanBuilder,
     PartitionInfo, Privilege, ShowKind, Statement, TableInfo, Value,
-    appendVisitInfoIsRestrictedUser, buildShowSchema, checkAlterDDLJobOptValue,
-    checkImportIntoColAssignments, checkNextGenS3PathWithSem, collectVisitInfoFromGrantStmt,
-    fillDefaultDBForStatsObjects, getPathByIndexName, getPossibleAccessPaths, handleAnalyzeOptions,
-    removeIgnoredPaths,
+    appendVisitInfoIsRestrictedUser, buildShowSchema, buildShowSlowSchema,
+    checkAlterDDLJobOptValue, checkImportIntoColAssignments, checkNextGenS3PathWithSem,
+    collectVisitInfoFromGrantStmt, fillDefaultDBForStatsObjects, getPathByIndexName,
+    getPossibleAccessPaths, handleAnalyzeOptions, removeIgnoredPaths,
 };
 use crate::task::{Expression, FieldType, TypeCode};
 
@@ -136,6 +136,21 @@ fn show_schemas_have_named_nonzero_width_columns() {
                 .all(|column| !column.name.is_empty() && column.field_type.flen > 0)
         );
     }
+}
+
+#[test]
+fn show_slow_schema_appends_ia_remote_read_columns() {
+    let (schema, names) = buildShowSlowSchema();
+    assert_eq!(schema.len(), 17);
+    assert_eq!(names.len(), 17);
+    assert_eq!(
+        &names[14..],
+        [
+            "IA_REMOTE_READ_SEGMENT_COUNT",
+            "IA_REMOTE_READ_SEGMENT_SIZE",
+            "IA_REMOTE_READ_SEGMENT_WAIT_TIME",
+        ]
+    );
 }
 
 #[test]

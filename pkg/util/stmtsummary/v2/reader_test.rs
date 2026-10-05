@@ -94,7 +94,7 @@ fn go_merge_37_history_reader_preserves_ia_exec_count() {
     setStmtSummaryFilename(&active);
     fs::write(
         &active,
-        b"{\"begin\":1,\"end\":2,\"digest\":\"d\",\"ia_exec_count\":3}\n",
+        b"{\"begin\":1,\"end\":2,\"digest\":\"d\",\"ia_remote_exec_count\":3}\n",
     )
     .unwrap();
     let mut reader = NewHistoryReader(

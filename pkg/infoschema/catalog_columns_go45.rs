@@ -1127,7 +1127,7 @@ pub(super) fn statements_summary_columns() -> Vec<columnInfo> {
             "Max number of rocksdb block read byte",
         ),
         col(
-            "IA_EXEC_COUNT",
+            "IA_REMOTE_EXEC_COUNT",
             ColumnType::Longlong,
             20,
             None,

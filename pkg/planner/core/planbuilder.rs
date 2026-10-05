@@ -2492,7 +2492,25 @@ pub fn buildShowDDLJobQueriesWithRangeFields() -> (Schema, Vec<String>) {
 }
 /// 构建ShowSlowSchema（对应同名 Go 逻辑）。
 pub fn buildShowSlowSchema() -> (Schema, Vec<String>) {
-    schema(&["SQL", "START", "DURATION", "DETAIL"])
+    schema(&[
+        "SQL",
+        "START",
+        "DURATION",
+        "DETAILS",
+        "SUCC",
+        "CONN_ID",
+        "TRANSACTION_TS",
+        "USER",
+        "DB",
+        "TABLE_IDS",
+        "INDEX_IDS",
+        "INTERNAL",
+        "DIGEST",
+        "SESSION_ALIAS",
+        "IA_REMOTE_READ_SEGMENT_COUNT",
+        "IA_REMOTE_READ_SEGMENT_SIZE",
+        "IA_REMOTE_READ_SEGMENT_WAIT_TIME",
+    ])
 }
 /// 构建CommandOnDDLJobsFields（对应同名 Go 逻辑）。
 pub fn buildCommandOnDDLJobsFields() -> (Schema, Vec<String>) {

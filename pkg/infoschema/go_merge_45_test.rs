@@ -694,7 +694,7 @@ fn go_merge_45_metrics_and_storage_class_metadata() {
     assert_eq!(slow.columns[read_pool_offset + 1].name, "DB");
     let summary = table_registry().get(TableStatementsSummary).unwrap();
     assert_eq!(summary.columns.len(), 127);
-    assert_eq!(summary.columns[45].name, "IA_EXEC_COUNT");
+    assert_eq!(summary.columns[45].name, "IA_REMOTE_EXEC_COUNT");
     assert!(summary.columns[45].unsigned && summary.columns[45].not_null);
     let summary_model = buildTableMeta(TableStatementsSummary, &summary.columns)
         .model_meta
@@ -708,7 +708,7 @@ fn go_merge_45_metrics_and_storage_class_metadata() {
         0
     );
     for name in [
-        "IA_EXEC_COUNT",
+        "IA_REMOTE_EXEC_COUNT",
         "AVG_IA_REMOTE_READ_SEGMENT_COUNT",
         "MAX_IA_REMOTE_READ_SEGMENT_COUNT",
         "AVG_IA_REMOTE_READ_SEGMENT_SIZE",
