@@ -6,7 +6,7 @@
 //
 // 覆盖指标落盘、按表 ID 累加，以及从执行计划树提取并归一化表读代价。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -147,4 +147,20 @@ fn scan_time_uses_only_first_group_info_before_cop_fallback() {
         extractScanTimeFromExecutionInfo(&op).unwrap(),
         Duration::from_millis(3)
     );
+}
+
+/// 非替换型 AST 访问只返回遍历控制信号，同时按小写 schema 去重。
+#[test]
+fn db_name_extractor_uses_in_place_control_results() {
+    let mut extractor = DBNameExtractor::default();
+    let table = Node::TableName {
+        schema: "Analytics".into(),
+        table: "events".into(),
+    };
+
+    assert!(!extractor.Enter(&table));
+    assert!(!extractor.Enter(&table));
+    assert!(!extractor.Enter(&Node::Other));
+    assert!(extractor.Leave(&table));
+    assert_eq!(extractor.DBs, HashSet::from(["analytics".to_owned()]));
 }

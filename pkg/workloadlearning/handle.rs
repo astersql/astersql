@@ -518,14 +518,14 @@ pub struct DBNameExtractor {
 }
 impl DBNameExtractor {
     /// 进入节点：若为表名则记录 schema。
-    pub fn Enter(&mut self, node: Node) -> (Node, bool) {
-        if let Node::TableName { schema, .. } = &node {
+    pub fn Enter(&mut self, node: &Node) -> bool {
+        if let Node::TableName { schema, .. } = node {
             self.DBs.insert(schema.to_ascii_lowercase());
         }
-        (node, false)
+        false
     }
     /// 离开节点：始终继续遍历。
-    pub fn Leave(&self, node: Node) -> (Node, bool) {
-        (node, true)
+    pub fn Leave(&self, _node: &Node) -> bool {
+        true
     }
 }
