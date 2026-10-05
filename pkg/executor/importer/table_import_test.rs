@@ -14,12 +14,39 @@
 // limitations under the License.
 
 use std::fs;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::table_import::{
     ImportRuntimeConfig, calculateSubtaskCnt, getAdjustedMaxEngineSize, getRegionSplitSizeKeysWith,
     prepareSortDirPath,
 };
+
+#[test]
+fn disk_quota_checker_retries_failures_and_stops_without_hanging() {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&attempts);
+    let checker =
+        super::table_import::start_disk_quota_check_with(Duration::from_millis(1), move || {
+            let attempt = observed.fetch_add(1, Ordering::SeqCst);
+            if attempt == 0 {
+                Err("mock unsafe import and reset error".into())
+            } else {
+                Ok(())
+            }
+        });
+    for _ in 0..100 {
+        if attempts.load(Ordering::SeqCst) >= 2 {
+            break;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    checker.Stop();
+    assert!(attempts.load(Ordering::SeqCst) >= 2);
+}
 
 #[test]
 fn prepare_sort_dir_matches_go_filesystem_branches() {

@@ -1815,12 +1815,9 @@ fn initOptions(
             }
         }
     }
-    // 查询导入仅允许 thread / disable_precheck。
+    // 查询导入仅允许 thread / disable_precheck / disk_quota。
     if plan.DataSourceType == DataSourceTypeQuery {
-        if let Some(name) = names
-            .iter()
-            .find(|name| !matches!(name.as_str(), "thread" | "disable_precheck"))
-        {
+        if let Some(name) = names.iter().find(|name| !is_option_allowed_for_query(name)) {
             return Err(format!(
                 "option {name} is not supported for import from query"
             ));
@@ -1936,6 +1933,10 @@ fn initOptions(
         plan.MaxNodeCnt = session.AutoMaxDistTaskNodes()?;
     }
     Ok(())
+}
+
+pub(crate) fn is_option_allowed_for_query(name: &str) -> bool {
+    matches!(name, "thread" | "disable_precheck" | "disk_quota")
 }
 
 /// 返回选项是否需要取值；未知选项返回 None。

@@ -651,6 +651,36 @@ fn plan_default_disk_quota_is_adjusted_later() {
 }
 
 #[test]
+fn import_from_query_allows_disk_quota_and_rejects_file_options() {
+    for option in ["thread", "disable_precheck", "disk_quota"] {
+        assert!(
+            super::import::is_option_allowed_for_query(option),
+            "query import should allow {option}"
+        );
+    }
+    for option in [
+        "character_set",
+        "fields_terminated_by",
+        "checksum_table",
+        "max_write_speed",
+        "record_errors",
+        "detached",
+        "disable_tikv_import_mode",
+        "__max_engine_size",
+        "cloud_storage_uri",
+    ] {
+        assert!(
+            !super::import::is_option_allowed_for_query(option),
+            "query import should reject {option}"
+        );
+    }
+    assert_eq!(100_i64 << 30, parseByteSize("100GiB").unwrap());
+    assert_eq!(50_i64 << 30, parseByteSize("50gib").unwrap());
+    assert!(parseByteSize("aa").is_err());
+    assert!(parseByteSize("220MiBxxx").is_err());
+}
+
+#[test]
 fn adjust_options_preserves_go_zero_cpu_limit() {
     let mut file_plan = Plan {
         ThreadCnt: 8,

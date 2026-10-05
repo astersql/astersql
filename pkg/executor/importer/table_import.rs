@@ -21,7 +21,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use astersql_lightning_backend::{
@@ -338,6 +339,7 @@ pub struct TableImporter {
     region_split_size: i64,
     region_split_keys: i64,
     disk_quota: i64,
+    disk_quota_lock: Arc<Mutex<()>>,
     sort_directory: PathBuf,
     chunk_receiver: Option<SharedQueryChunkReceiver>,
     service: Arc<dyn TableImporterService>,
@@ -385,6 +387,7 @@ pub fn NewTableImporter(
         region_split_size,
         region_split_keys,
         disk_quota,
+        disk_quota_lock: Arc::new(Mutex::new(())),
         sort_directory,
         chunk_receiver: None,
         service,
@@ -594,10 +597,38 @@ impl TableImporter {
             return Ok(state);
         }
         if !state.LargeEngineIDs.is_empty() {
+            let _guard = self
+                .disk_quota_lock
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             self.service
                 .FlushAndImportLargeEngines(self.backend.as_ref(), &state.LargeEngineIDs)?;
         }
         Ok(state)
+    }
+
+    /// Start the quota loop used by IMPORT FROM SELECT. Stopping joins the worker,
+    /// so final engine close/import cannot race with a quota-triggered import.
+    pub fn StartDiskQuotaCheck(&self) -> DiskQuotaCheckHandle {
+        let service = Arc::clone(&self.service);
+        let backend = Arc::clone(&self.backend);
+        let disk_quota = self.disk_quota;
+        let disk_quota_lock = Arc::clone(&self.disk_quota_lock);
+        start_disk_quota_check_with(CheckDiskQuotaInterval, move || {
+            let state = service.CheckDiskQuota(backend.as_ref(), disk_quota);
+            if state.LargeEngineIDs.is_empty() && state.InProgressLargeEngines == 0 {
+                return Ok(());
+            }
+            if !state.LargeEngineIDs.is_empty() {
+                let _guard = disk_quota_lock
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                // Match Go: a quota import failure is retried by a later check and
+                // does not fail the foreground IMPORT FROM SELECT operation.
+                return service.FlushAndImportLargeEngines(backend.as_ref(), &state.LargeEngineIDs);
+            }
+            Ok(())
+        })
     }
 
     /// 绑定 IMPORT FROM SELECT 的选行 chunk 接收端。
@@ -613,8 +644,9 @@ impl TableImporter {
     ) -> Result<i64, String> {
         let data_engine = self.OpenDataEngine(context, 1)?;
         let index_engine = self.OpenIndexEngine(context, IndexEngineID)?;
+        let quota_checker = self.StartDiskQuotaCheck();
         let chunk = Chunk::default();
-        crate::ProcessChunk(
+        let process_result = crate::ProcessChunk(
             context,
             &chunk,
             self,
@@ -622,7 +654,11 @@ impl TableImporter {
             &index_engine,
             Some(Arc::clone(&group_checksum)),
             None,
-        )?;
+        );
+        // Stop and join before the final engine close/import, including the
+        // ProcessChunk error path.
+        quota_checker.Stop();
+        process_result?;
         let closed_data = data_engine
             .Close(context)
             .map_err(|error| error.to_string())?;
@@ -651,6 +687,65 @@ impl TableImporter {
     /// 导入任务标识（通常为 job id）。
     pub fn Identifier(&self) -> &str {
         &self.id
+    }
+}
+
+/// Running disk-quota loop. `Stop` is idempotent and always joins its worker.
+pub struct DiskQuotaCheckHandle {
+    state: Arc<(Mutex<bool>, Condvar)>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl DiskQuotaCheckHandle {
+    pub fn Stop(mut self) {
+        self.stop_and_join();
+    }
+
+    fn stop_and_join(&mut self) {
+        let (stopped, wake) = &*self.state;
+        *stopped
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
+        wake.notify_all();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+impl Drop for DiskQuotaCheckHandle {
+    fn drop(&mut self) {
+        self.stop_and_join();
+    }
+}
+
+pub(crate) fn start_disk_quota_check_with(
+    interval: Duration,
+    mut check: impl FnMut() -> Result<(), String> + Send + 'static,
+) -> DiskQuotaCheckHandle {
+    let state = Arc::new((Mutex::new(false), Condvar::new()));
+    let worker_state = Arc::clone(&state);
+    let worker = thread::spawn(move || {
+        let (stopped, wake) = &*worker_state;
+        loop {
+            let guard = stopped
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let (guard, _) = wake
+                .wait_timeout_while(guard, interval, |stopped| !*stopped)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if *guard {
+                return;
+            }
+            drop(guard);
+            // Match Go: quota import errors are logged there and retried on the
+            // next tick instead of failing IMPORT FROM SELECT.
+            let _ = check();
+        }
+    });
+    DiskQuotaCheckHandle {
+        state,
+        worker: Some(worker),
     }
 }
 
