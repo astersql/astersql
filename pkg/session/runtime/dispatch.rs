@@ -3807,6 +3807,10 @@ impl ConcreteSession {
         let statement_sql = split_statement_sql(sql);
         let mut record_sets = Vec::new();
         for (index, statement) in statements.into_iter().enumerate() {
+            // Scalar-subquery plans are owned by the statement that built
+            // them. Clear the registry before any fast or cached plan can be
+            // selected, matching Go's ResetContextOfStmt boundary.
+            self.session_vars.RestoreScalarSubQueries(Vec::new());
             let ru_scope = super::typed_adapter_bridge::SessionStatementRUScope::new(self);
             let explain = statement.as_any().downcast_ref::<ast::ExplainStmt>();
             self.session_vars.StmtCtx.SetExplainContext(

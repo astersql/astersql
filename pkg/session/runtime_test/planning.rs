@@ -17,6 +17,29 @@
 use super::*;
 
 #[test]
+fn statement_boundary_clears_scalar_subquery_registry() {
+    let session = concrete_session();
+    session.WithSessionVars(|variables| {
+        variables.RegisterScalarSubQ("previous statement");
+        assert_eq!(variables.SnapshotScalarSubQueries().len(), 1);
+    });
+
+    let mut result = session
+        .execute("SELECT 1")
+        .expect("execute statement after scalar subquery plan");
+    assert_eq!(
+        result.remove(0).Next().expect("read SELECT row"),
+        Some(vec!["1".to_owned()])
+    );
+    session.WithSessionVars(|variables| {
+        assert!(
+            variables.SnapshotScalarSubQueries().is_empty(),
+            "a statement must not inherit the previous statement's scalar subquery plans"
+        );
+    });
+}
+
+#[test]
 /// 参数未绑定应失败；常量 SELECT 允许；非法表名拒绝。
 fn concrete_runtime_rejects_unbound_or_full_executor_sql() {
     let runtime = runtime();
