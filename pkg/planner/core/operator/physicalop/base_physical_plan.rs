@@ -5040,20 +5040,28 @@ fn attach_canonical_mpp_join(
         }
         schema = expression::NewSchema(columns);
     }
+    let full_outer = join.BasePhysicalJoin.JoinType == base::JoinType::FullOuterJoin;
     let mut outer_index = 1 - join.BasePhysicalJoin.InnerChildIdx;
-    if join.BasePhysicalJoin.JoinType != base::JoinType::InnerJoin {
+    if join.BasePhysicalJoin.JoinType != base::JoinType::InnerJoin && !full_outer {
         outer_index = if join.BasePhysicalJoin.JoinType == base::JoinType::RightOuterJoin {
             1
         } else {
             0
         };
     }
-    let requested_hash_cols = physical
-        .get_child_req_props(outer_index)
-        .MPPPartitionCols
-        .iter()
-        .map(property::MPPPartitionColumn::Clone)
-        .collect::<Vec<_>>();
+    if full_outer {
+        outer_index = 0;
+    }
+    let requested_hash_cols = if full_outer {
+        Vec::new()
+    } else {
+        physical
+            .get_child_req_props(outer_index)
+            .MPPPartitionCols
+            .iter()
+            .map(property::MPPPartitionColumn::Clone)
+            .collect::<Vec<_>>()
+    };
     let task_hash_cols = child_tasks[outer_index].mpp_hash_cols();
     let task_matches_request = task_hash_cols_satisfy_output(&task_hash_cols, &requested_hash_cols);
     let outer_hash_cols = if task_matches_request {
@@ -5061,7 +5069,9 @@ fn attach_canonical_mpp_join(
     } else {
         requested_hash_cols
     };
-    let outer_partition_type = if task_matches_request {
+    let outer_partition_type = if full_outer {
+        property::AnyType
+    } else if task_matches_request {
         child_tasks[outer_index].mpp_partition_type()
     } else {
         physical.get_child_req_props(outer_index).MPPPartitionTp
@@ -5075,7 +5085,7 @@ fn attach_canonical_mpp_join(
         .any(|hash_col| !schema.Contains(&hash_col.Col))
         && !task_matches_request
         && is_one_phase_grouped_mpp_child(attached.children()[outer_index], &outer_hash_cols);
-    let (outer_partition_type, outer_hash_cols) = if grouped_partition_key_pruned {
+    let (outer_partition_type, outer_hash_cols) = if full_outer || grouped_partition_key_pruned {
         (property::AnyType, Vec::new())
     } else {
         (outer_partition_type, outer_hash_cols)
@@ -9844,6 +9854,14 @@ pub fn ExhaustPhysicalPlans(
         let Some(context) = join.SCtx().cloned() else {
             return Ok(Vec::new());
         };
+        if join.JoinType == base::JoinType::FullOuterJoin
+            && property.TaskTp == property::MppTaskType
+            && property.MPPPartitionTp == property::HashType
+        {
+            // FULL OUTER JOIN preserves unmatched rows from both inputs, so
+            // neither input hash layout can describe its output partitioning.
+            return Ok(Vec::new());
+        }
         if property.TaskTp == property::MppTaskType
             && !planner_util::ShouldCheckTiFlashPushDown(
                 context.as_ref(),
@@ -10886,33 +10904,6 @@ pub fn ExhaustPhysicalPlans(
                     .map(expression::ScalarFunction::clone_scalar)
             })
             .collect();
-        if join.JoinType == base::JoinType::FullOuterJoin
-            && property.TaskTp == property::RootTaskType
-        {
-            // FULL OUTER JOIN preserves both sides: enumerate ordinary probe
-            // candidates in Go's right-build/left-build order, or the hinted side.
-            let mut force_left = join.PreferJoinType & ((1 << 21) | (1 << 24)) != 0;
-            let mut force_right = join.PreferJoinType & ((1 << 22) | (1 << 23)) != 0;
-            if force_left && force_right {
-                context.GetSessionVars().StmtCtx.SetHintWarning(
-                    "Conflicting HASH_JOIN_BUILD and HASH_JOIN_PROBE hints detected. Both sides cannot be specified to use the same table. Please review the hints",
-                );
-                force_left = false;
-                force_right = false;
-            }
-            let forced = physical.FromHashJoinHint || force_left || force_right;
-            if hash_join_disabled && !forced {
-                return Ok(Vec::new());
-            }
-            physical.UseOuterToBuild = false;
-            physical.BasePhysicalJoin.InnerChildIdx = usize::from(!force_left);
-            if force_left || force_right {
-                return Ok(vec![Box::new(physical)]);
-            }
-            let mut left_build = physical.Clone(context.clone())?;
-            left_build.BasePhysicalJoin.InnerChildIdx = 0;
-            return Ok(vec![Box::new(physical), Box::new(left_build)]);
-        }
         let broadcast_enabled = context
             .GetSessionVars()
             .GetSystemVar(vardef::TiDBBCJThresholdCount)
@@ -10957,8 +10948,10 @@ pub fn ExhaustPhysicalPlans(
                 limit == -1 || *rows < limit as f64
             }
         });
-        let broadcast_enabled =
-            broadcast_enabled && build_fits_broadcast && !physical.FromHashJoinHint;
+        let broadcast_enabled = broadcast_enabled
+            && build_fits_broadcast
+            && !physical.FromHashJoinHint
+            && join.JoinType != base::JoinType::FullOuterJoin;
         let build_side_fixed = context
             .GetSessionVars()
             .GetSystemVar(vardef::TiDBOptMPPOuterJoinFixedBuildSide)
@@ -10970,6 +10963,15 @@ pub fn ExhaustPhysicalPlans(
             });
         let mut mpp_shuffle_build_index = broadcast_build_index;
         if !broadcast_enabled
+            && join.JoinType == base::JoinType::FullOuterJoin
+            && !join.EqualConditions.is_empty()
+            && !build_side_fixed
+        {
+            mpp_shuffle_build_index = usize::from(
+                child_rows.first().copied().unwrap_or_default()
+                    > child_rows.get(1).copied().unwrap_or_default(),
+            );
+        } else if !broadcast_enabled
             && matches!(
                 join.JoinType,
                 base::JoinType::SemiJoin | base::JoinType::AntiSemiJoin
@@ -11014,8 +11016,33 @@ pub fn ExhaustPhysicalPlans(
                 candidates
             };
             let root_candidates =
-                |physical: crate::PhysicalHashJoin| -> Result<_, expression::Error> {
-                    if join.JoinType == base::JoinType::RightOuterJoin {
+                |mut physical: crate::PhysicalHashJoin| -> Result<_, expression::Error> {
+                    if join.JoinType == base::JoinType::FullOuterJoin {
+                        let mut force_left = join.PreferJoinType & ((1 << 21) | (1 << 24)) != 0;
+                        let mut force_right = join.PreferJoinType & ((1 << 22) | (1 << 23)) != 0;
+                        if force_left && force_right {
+                            context.GetSessionVars().StmtCtx.SetHintWarning(
+                                "Conflicting HASH_JOIN_BUILD and HASH_JOIN_PROBE hints detected. Both sides cannot be specified to use the same table. Please review the hints",
+                            );
+                            force_left = false;
+                            force_right = false;
+                        }
+                        let forced = physical.FromHashJoinHint || force_left || force_right;
+                        if hash_join_disabled && !forced {
+                            return Ok(Vec::new());
+                        }
+                        physical.UseOuterToBuild = false;
+                        physical.BasePhysicalJoin.InnerChildIdx = usize::from(!force_left);
+                        if force_left || force_right {
+                            return Ok(vec![Box::new(physical) as Box<dyn PhysicalPlan>]);
+                        }
+                        let mut left_build = physical.Clone(context.clone())?;
+                        left_build.BasePhysicalJoin.InnerChildIdx = 0;
+                        Ok(vec![
+                            Box::new(physical) as Box<dyn PhysicalPlan>,
+                            Box::new(left_build),
+                        ])
+                    } else if join.JoinType == base::JoinType::RightOuterJoin {
                         // Go enumerates both the inner-build and outer-build
                         // variants for a right outer hash join. The derived
                         // right input can be the cheaper build side.

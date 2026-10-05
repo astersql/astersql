@@ -1020,6 +1020,48 @@ fn go_merge_46_sql_mpp_null_eq_hash_join_is_selected() {
 }
 
 #[test]
+fn mpp_full_outer_join_uses_shuffle_and_preserves_side_conditions() {
+    let context = integration_plan_context_with_params_and_vars(
+        &[kv_dependency::StoreType::TiFlash],
+        "tiflash",
+        false,
+        true,
+        Vec::new(),
+        None,
+        &[
+            ("tidb_enable_full_outer_join", "ON"),
+            ("tidb_broadcast_join_threshold_count", "1000000000"),
+            ("tidb_broadcast_join_threshold_size", "1000000000"),
+        ],
+    );
+    let schema = integration_multi_info_schema(&["t1", "t2"], true, None, &[]);
+    let sql = "select /*+ read_from_storage(tiflash[t1, t2]) */ * from t1 full outer join t2 on t1.a = t2.a and t1.b > 1 and t2.b > 1";
+    let plan = optimize_integration_query_with_schema(sql, &context, schema);
+
+    fn find_join(
+        plan: &dyn base::PhysicalPlan,
+    ) -> Option<&physicalop_dependency::PhysicalHashJoin> {
+        plan.as_any()
+            .downcast_ref::<physicalop_dependency::PhysicalHashJoin>()
+            .or_else(|| plan.children().iter().find_map(|child| find_join(*child)))
+    }
+
+    let join = find_join(plan.as_ref()).expect("MPP full outer PhysicalHashJoin from SQL");
+    assert_eq!(
+        join.BasePhysicalJoin.JoinType,
+        base::JoinType::FullOuterJoin
+    );
+    assert_eq!(join.StoreTp, kv_dependency::StoreType::TiFlash);
+    assert!(
+        join.MppShuffleJoin,
+        "full outer MPP join must not broadcast"
+    );
+    assert_eq!(join.BasePhysicalJoin.LeftConditions.len(), 1);
+    assert_eq!(join.BasePhysicalJoin.RightConditions.len(), 1);
+    assert!(context.GetSessionVars().StmtCtx.GetWarnings().is_empty());
+}
+
+#[test]
 fn signed_handle_ranges_keep_bounds_and_credit_point_predicates() {
     let context = integration_plan_context(&[kv_dependency::StoreType::TiKV], "tikv", false, false);
     let schema = integration_multi_info_schema(&["t3"], false, Some(("ib", &["b"])), &[]);
