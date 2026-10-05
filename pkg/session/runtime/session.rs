@@ -2045,6 +2045,14 @@ fn ensure_canonical_ddl_system_tables(
             astersql_meta_metadef::CreateTiDBMViewRefreshInfoTable,
         ),
         (
+            "tidb_mview_refresh_hist",
+            astersql_meta_metadef::CreateTiDBMViewRefreshHistTable,
+        ),
+        (
+            "tidb_mview_refresh_alert",
+            astersql_meta_metadef::CreateTiDBMViewRefreshAlertTable,
+        ),
+        (
             "tidb_mlog_purge_hist",
             astersql_meta_metadef::CreateTiDBMLogPurgeHistTable,
         ),

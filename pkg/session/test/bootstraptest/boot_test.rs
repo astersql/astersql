@@ -135,6 +135,35 @@ fn bootstrap_schema_catalog_uses_every_authoritative_system_table_definition_onc
     );
 }
 
+#[test]
+fn materialized_view_system_tables_survive_rebootstrap() {
+    let (mut tk, rebootstrap) = new_rebootstrap_test_kit();
+    let tables = [
+        "tidb_mview_refresh_info",
+        "tidb_mlog_purge_info",
+        "tidb_mview_refresh_hist",
+        "tidb_mview_refresh_alert",
+        "tidb_mlog_purge_hist",
+    ];
+
+    for table in tables {
+        tk.MustExec(&format!("drop table mysql.{table}"), Vec::new());
+    }
+    drop(tk);
+
+    let tk = rebootstrap();
+    for table in tables {
+        assert_eq!(
+            tk.MustQuery(
+                &format!("select table_name from information_schema.tables where table_schema='mysql' and table_name='{table}'"),
+                Vec::new(),
+            )
+            .Rows(),
+            vec![vec![table.to_owned()]],
+        );
+    }
+}
+
 /// 对应 Go `TestWriteDDLTableVersionToMySQLTiDB` 的真实 SQL 断言：首次 bootstrap
 /// 必须把权威 DDL 表版本写入 `mysql.tidb`，且值与 metadata 侧版本一致。
 #[test]

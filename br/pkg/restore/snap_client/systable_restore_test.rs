@@ -64,6 +64,22 @@ fn table(name: &str, columns: Vec<model::ColumnInfo>) -> model::TableInfo {
     }
 }
 
+#[test]
+fn materialized_view_maintenance_tables_are_unrecoverable() {
+    for table_name in [
+        "tidb_mview_refresh_info",
+        "tidb_mlog_purge_info",
+        "tidb_mview_refresh_hist",
+        "tidb_mview_refresh_alert",
+        "tidb_mlog_purge_hist",
+    ] {
+        assert!(
+            isUnrecoverableTable("mysql", table_name),
+            "mysql.{table_name} contains cluster-local IDs and TSOs"
+        );
+    }
+}
+
 /// TestCheckSysTableCompatibility — Go `TestCheckSysTableCompatibility`.
 /// Rust API takes TableInfo slices (Go takes Domain + metautil.Table).
 #[test]
