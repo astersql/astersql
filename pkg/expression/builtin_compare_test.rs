@@ -28,6 +28,31 @@ use crate::builtin_compare::{
 };
 
 #[test]
+fn string_comparison_uses_build_context_collation_snapshot() {
+    let context = exprstatic::NewExprContext(vec![exprstatic::WithNewCollationEnabled(false)]);
+    let string_constant = |value: &str| {
+        let mut constant = crate::NewStrConst(value);
+        let field_type = constant.RetType.as_mut().unwrap();
+        field_type.SetCharset("utf8".to_owned());
+        field_type.SetCollate("utf8_general_ci".to_owned());
+        Box::new(constant) as Box<dyn crate::Expression>
+    };
+    let expression = crate::NewFunctionBase(
+        &context,
+        crate::ast::EQ,
+        *crate::types::NewFieldType(crate::mysql::TypeTiny),
+        vec![string_constant("a"), string_constant("A")],
+    )
+    .unwrap();
+
+    let (value, is_null) = expression
+        .EvalInt(context.GetEvalCtx(), crate::chunk::Row::default())
+        .unwrap();
+    assert!(!is_null);
+    assert_eq!(value, 0);
+}
+
+#[test]
 fn greatest_and_least_preserve_go_evaluation_order_before_null() {
     for result in [
         greatest(

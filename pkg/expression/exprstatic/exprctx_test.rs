@@ -24,6 +24,7 @@ use std::sync::Arc;
 
 use chrono::TimeZone;
 use chrono_tz::{Asia::Tokyo, UTC};
+use exprctx::BuildContext as _;
 use exprstatic::*;
 
 /// `expressionContextWithAllOptions` 返回的对照状态。
@@ -45,6 +46,7 @@ fn expressionContextWithAllOptions() -> (ExprContext, ExprOptionState) {
         WithEvalCtx(eval_ctx.clone()),
         WithCharset("gbk".to_owned(), "gbk_bin".to_owned()),
         WithDefaultCollationForUTF8MB4("utf8mb4_0900_ai_ci".to_owned()),
+        WithNewCollationEnabled(!collate_crate::NewCollationEnabled()),
         WithBlockEncryptionMode("aes-256-cbc".to_owned()),
         WithSysDateIsNow(true),
         WithNoopFuncsMode(variable::WarnInt),
@@ -225,6 +227,7 @@ fn TestMakeExprContextStatic() {
         static_obj.GetDefaultCollationForUTF8MB4(),
         obj.GetDefaultCollationForUTF8MB4()
     );
+    assert_eq!(static_obj.NewCollationEnabled(), obj.NewCollationEnabled());
     assert_eq!(
         static_obj.GetBlockEncryptionMode(),
         obj.GetBlockEncryptionMode()

@@ -73,6 +73,7 @@ struct CachedPattern {
 /// 可执行的 ILIKE 签名：排序规则、常量标志与 pattern 缓存。
 pub struct IlikeSig {
     collation: String,
+    use_new_collation: bool,
     pattern_is_constant: bool,
     escape_is_constant: bool,
     pattern_cache: RwLock<Option<CachedPattern>>,
@@ -81,8 +82,9 @@ pub struct IlikeSig {
 impl Clone for IlikeSig {
     /// 克隆时不复制运行时缓存，强制新上下文重新编译。
     fn clone(&self) -> Self {
-        Self::new(
+        Self::new_with_collation_mode(
             self.collation.clone(),
+            self.use_new_collation,
             self.pattern_is_constant,
             self.escape_is_constant,
         )
@@ -96,8 +98,24 @@ impl IlikeSig {
         pattern_is_constant: bool,
         escape_is_constant: bool,
     ) -> Self {
+        Self::new_with_collation_mode(
+            collation,
+            collate::NewCollationEnabled(),
+            pattern_is_constant,
+            escape_is_constant,
+        )
+    }
+
+    /// Builds an ILIKE signature with the collation mode captured by its build context.
+    pub fn new_with_collation_mode(
+        collation: impl Into<String>,
+        use_new_collation: bool,
+        pattern_is_constant: bool,
+        escape_is_constant: bool,
+    ) -> Self {
         Self {
             collation: collation.into(),
+            use_new_collation,
             pattern_is_constant,
             escape_is_constant,
             pattern_cache: RwLock::new(None),
@@ -140,7 +158,7 @@ impl IlikeSig {
         let compiled = if cacheable {
             self.cached_pattern(&pattern, escape)
         } else {
-            compile_pattern(&self.collation, &pattern, escape)
+            compile_pattern(&self.collation, self.use_new_collation, &pattern, escape)
         };
         compiled.DoMatch(&value)
     }
@@ -160,7 +178,7 @@ impl IlikeSig {
             }
         }
 
-        let compiled = compile_pattern(&self.collation, source, escape);
+        let compiled = compile_pattern(&self.collation, self.use_new_collation, source, escape);
         let mut cache = self
             .pattern_cache
             .write()
@@ -175,8 +193,15 @@ impl IlikeSig {
 }
 
 /// 按排序规则取二进制排序器并编译通配 pattern。
-fn compile_pattern(collation: &str, source: &str, escape: u8) -> Arc<dyn WildcardPattern> {
-    let mut pattern = collate::ConvertAndGetBinCollator(collation).Pattern();
+fn compile_pattern(
+    collation: &str,
+    use_new_collation: bool,
+    source: &str,
+    escape: u8,
+) -> Arc<dyn WildcardPattern> {
+    let binary_collation = collate::ConvertAndGetBinCollation(collation);
+    let mut pattern =
+        collate::GetCollatorWithCollate(use_new_collation, &binary_collation).Pattern();
     pattern.Compile(source, escape);
     Arc::from(pattern)
 }

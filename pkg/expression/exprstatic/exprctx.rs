@@ -453,6 +453,7 @@ pub fn MakeExprContextStatic(context: &dyn exprctx::StaticConvertibleExprContext
         WithEvalCtx(eval_ctx),
         WithCharset(context.GetCharsetInfo().0, context.GetCharsetInfo().1),
         WithDefaultCollationForUTF8MB4(context.GetDefaultCollationForUTF8MB4()),
+        WithNewCollationEnabled(context.NewCollationEnabled()),
         WithBlockEncryptionMode(context.GetBlockEncryptionMode()),
         WithSysDateIsNow(context.GetSysdateIsNow()),
         WithNoopFuncsMode(context.GetNoopFuncsMode()),

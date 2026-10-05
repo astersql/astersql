@@ -5951,7 +5951,8 @@ pub mod formal_registry {
         base.SetCoercibility(default_coercibility);
         base.SetRepertoire(default_repertoire);
         base.SetCharsetAndCollation(default_charset.clone(), default_collation.clone());
-        base.collator = collate::GetCollator(&default_collation);
+        base.collator =
+            collate::GetCollatorWithCollate(ctx.NewCollationEnabled(), &default_collation);
         base.pb_code = match kind {
             CoreBuiltinKind::Compare(operator, eval_type) => {
                 comparison_pb_code(operator, eval_type)
@@ -6119,7 +6120,8 @@ pub mod formal_registry {
                 base.return_type.EvalType(),
                 &arguments,
             )?;
-            base.collator = collate::GetCollator(&collation.Collation);
+            base.collator =
+                collate::GetCollatorWithCollate(ctx.NewCollationEnabled(), &collation.Collation);
             base.SetCharsetAndCollation(collation.Charset, collation.Collation);
             if matches!(kind, CoreBuiltinKind::Compare(_, types::ETString)) {
                 base.SetCoercibility(crate::CoercibilityNumeric);
@@ -6130,8 +6132,9 @@ pub mod formal_registry {
             }
         }
         let ilike = matches!(kind, CoreBuiltinKind::Ilike).then(|| {
-            crate::builtin_ilike_kernel::IlikeSig::new(
+            crate::builtin_ilike_kernel::IlikeSig::new_with_collation_mode(
                 base.CharsetAndCollation().1,
+                ctx.NewCollationEnabled(),
                 base.args[1].ConstLevel() >= crate::ConstOnlyInContext,
                 base.args[2].ConstLevel() >= crate::ConstOnlyInContext,
             )
