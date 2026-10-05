@@ -611,7 +611,7 @@ impl LoadKeyspaceController {
                     return http_error(503, "manager notifier is unavailable");
                 }
                 if options.skip_auto_id_owner && svr.is_auto_id_owner() {
-                    return Response::text(304, "auto id service is owner");
+                    return Response::new(304, Vec::new());
                 }
                 // 强制退出：设 force_shutdown、记日志、Interrupt。
                 if !options.graceful {

@@ -140,6 +140,7 @@ impl StandbyShutdownServer for BlockingShutdownServer {
 struct SimpleShutdownServer {
     need_request_mgr_free: AtomicBool,
     force_shutdown: AtomicBool,
+    auto_id_owner: AtomicBool,
 }
 
 /// wait_zero_connections* 立即返回成功。
@@ -152,7 +153,7 @@ impl StandbyShutdownServer for SimpleShutdownServer {
         self.need_request_mgr_free.load(Ordering::Acquire)
     }
     fn is_auto_id_owner(&self) -> bool {
-        false
+        self.auto_id_owner.load(Ordering::Acquire)
     }
     fn set_force_shutdown(&self) {
         self.force_shutdown.store(true, Ordering::Release);
@@ -164,6 +165,29 @@ impl StandbyShutdownServer for SimpleShutdownServer {
     fn wait_zero_connections_timeout(&self, _timeout: Duration) -> bool {
         true
     }
+}
+
+#[test]
+fn test_exit_skips_auto_id_owner_with_empty_not_modified_response() {
+    let controller = LoadKeyspaceController::new(None);
+    controller.set_starter_mode(true);
+    controller.set_local_keyspace("ks1");
+    let server = Arc::new(SimpleShutdownServer::default());
+    server.auto_id_owner.store(true, Ordering::Release);
+    let mux = controller.handler(Some(server));
+
+    let response = mux.handle(&http_request(
+        Method::Get,
+        "/tidb-pool/exit",
+        HashMap::from([
+            ("keyspace".into(), "ks1".into()),
+            ("skip_auto_id_owner".into(), "true".into()),
+        ]),
+        "",
+    ));
+
+    assert_eq!(response.status, 304);
+    assert!(response.body.is_empty());
 }
 
 /// 构造带 query 的 HTTP 请求。
