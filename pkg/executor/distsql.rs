@@ -34,6 +34,8 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use astersql_util_memory::tracker::Tracker;
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// 行定位键：整型、编码后的 common handle，或「分区 id + 内层 handle」。
 pub enum Handle {
@@ -269,6 +271,8 @@ pub struct IndexReaderExecutor<B: DistSqlBackend> {
     pub result: Option<Box<dyn SelectResult>>,
     pub merged_rows: VecDeque<Row>,
     pub runtime_rows: u64,
+    /// Index Join inner tasks charge range construction to their task tracker.
+    pub range_mem_tracker: Option<Arc<Tracker>>,
 }
 impl<B: DistSqlBackend> IndexReaderExecutor<B> {
     /// 返回逻辑表 id。
@@ -318,9 +322,12 @@ impl<B: DistSqlBackend> IndexReaderExecutor<B> {
     }
     /// 把逻辑索引 ranges 映射为物理 KV ranges。
     pub fn buildKVRangesForIndexReader(&self) -> Result<Vec<KeyRange>, DistSqlError> {
-        self.context
-            .backend
-            .index_ranges(&self.table_ids, self.index_id, &self.ranges)
+        let ranges =
+            self.context
+                .backend
+                .index_ranges(&self.table_ids, self.index_id, &self.ranges)?;
+        consume_key_range_memory(self.range_mem_tracker.as_deref(), &ranges);
+        Ok(ranges)
     }
     /// 组装下推 Request。
     pub fn buildKVReq(&self, ranges: Vec<KeyRange>) -> Result<Request, DistSqlError> {
@@ -439,6 +446,10 @@ pub struct IndexLookUpExecutor<B: DistSqlBackend> {
     pub next_task_id: usize,
     pub current: VecDeque<Row>,
     pub stats: Arc<Mutex<IndexLookUpRunTimeStats>>,
+    /// Regular readers charge ranges to this executor-owned tracker.
+    pub mem_tracker: Option<Arc<Tracker>>,
+    /// Index Join inner tasks override `mem_tracker` with their task tracker.
+    pub range_mem_tracker: Option<Arc<Tracker>>,
 }
 
 impl<B: DistSqlBackend> IndexLookUpExecutor<B> {
@@ -467,6 +478,9 @@ impl<B: DistSqlBackend> IndexLookUpExecutor<B> {
             &self.partition_range_map,
             self.table_id,
             self.index_id,
+            self.range_mem_tracker
+                .as_deref()
+                .or(self.mem_tracker.as_deref()),
         )?;
         Ok(())
     }
@@ -731,22 +745,40 @@ pub fn buildKeyRanges<B: DistSqlBackend>(
     partitions: &BTreeMap<i64, Vec<KeyRange>>,
     table_id: i64,
     index_id: i64,
+    mem_tracker: Option<&Tracker>,
 ) -> Result<Vec<kvRangesWithPhysicalTblID>, DistSqlError> {
     if partitions.is_empty() {
+        let key_ranges = backend.index_ranges(&[table_id], index_id, ranges)?;
+        consume_key_range_memory(mem_tracker, &key_ranges);
         Ok(vec![kvRangesWithPhysicalTblID {
             physicalTblID: table_id,
-            keyRanges: backend.index_ranges(&[table_id], index_id, ranges)?,
+            keyRanges: key_ranges,
         }])
     } else {
         let mut result = Vec::new();
         for (id, part_ranges) in partitions {
+            let key_ranges = backend.index_ranges(&[*id], index_id, part_ranges)?;
+            consume_key_range_memory(mem_tracker, &key_ranges);
             result.push(kvRangesWithPhysicalTblID {
                 physicalTblID: *id,
-                keyRanges: backend.index_ranges(&[*id], index_id, part_ranges)?,
+                keyRanges: key_ranges,
             });
         }
         Ok(result)
     }
+}
+
+fn consume_key_range_memory(mem_tracker: Option<&Tracker>, ranges: &[KeyRange]) {
+    let Some(mem_tracker) = mem_tracker else {
+        return;
+    };
+    let bytes = ranges.iter().fold(0usize, |total, range| {
+        total
+            .saturating_add(std::mem::size_of::<KeyRange>())
+            .saturating_add(range.start.capacity())
+            .saturating_add(range.end.capacity())
+    });
+    mem_tracker.Consume(i64::try_from(bytes).unwrap_or(i64::MAX));
 }
 /// 索引扫描最大 in-flight 数：concurrency * 2。
 pub fn getIndexScanMaxInFlight(concurrency: usize) -> usize {

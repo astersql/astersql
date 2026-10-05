@@ -26,6 +26,8 @@ use std::fmt;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+use astersql_util_memory::tracker::Tracker;
+
 /// Builder results must expose the same typed Chunk lifecycle consumed by the
 /// statement adapter; a marker-only executor cannot be opened or drained.
 pub trait Executor: crate::adapter::ExecExecutor {}
@@ -2194,6 +2196,7 @@ pub trait ExecutorBuilderDependencies: Send + Sync {
         plan: &dyn DataReaderPlanData,
         contents: &[IndexJoinLookUpContent],
         snapshot_ts: u64,
+        range_mem_tracker: Option<Arc<Tracker>>,
     ) -> Result<ExecutorBox, BuildError>;
     /// openindexjoinhashexecutor。
     fn open_index_join_hash_executor(&self, executor: &mut dyn Executor) -> Result<(), BuildError>;
@@ -4737,9 +4740,10 @@ impl DataReaderBuilder {
         &self,
         plan: &dyn DataReaderPlanData,
         lookup_contents: &[IndexJoinLookUpContent],
+        range_mem_tracker: Arc<Tracker>,
     ) -> Result<ExecutorBox, BuildError> {
         self.cloneForIndexJoinBuild()
-            .buildExecutorForIndexJoinInternal(plan, lookup_contents)
+            .buildExecutorForIndexJoinInternal(plan, lookup_contents, range_mem_tracker)
     }
 
     /// 构建执行器用于索引连接Internal执行器。
@@ -4747,6 +4751,7 @@ impl DataReaderBuilder {
         &self,
         plan: &dyn DataReaderPlanData,
         lookup_contents: &[IndexJoinLookUpContent],
+        range_mem_tracker: Arc<Tracker>,
     ) -> Result<ExecutorBox, BuildError> {
         let kind = match plan.kind() {
             DataReaderPlanKind::TableReader => DataReaderBuildKind::TableReader,
@@ -4756,8 +4761,13 @@ impl DataReaderBuilder {
             DataReaderPlanKind::Projection => DataReaderBuildKind::Projection,
             DataReaderPlanKind::HashJoin => DataReaderBuildKind::HashJoin,
         };
-        self.dependencies
-            .build_data_reader_executor(kind, plan, lookup_contents, self.snapshot_ts)
+        self.dependencies.build_data_reader_executor(
+            kind,
+            plan,
+            lookup_contents,
+            self.snapshot_ts,
+            Some(range_mem_tracker),
+        )
     }
 
     /// 构建哈希连接用于索引连接执行器。
@@ -4787,6 +4797,7 @@ impl DataReaderBuilder {
             plan,
             lookup_contents,
             self.snapshot_ts,
+            None,
         )
     }
 
@@ -4807,6 +4818,7 @@ impl DataReaderBuilder {
             plan,
             lookup_contents,
             self.snapshot_ts,
+            None,
         )
     }
 
@@ -4821,6 +4833,7 @@ impl DataReaderBuilder {
             plan,
             lookup_contents,
             self.snapshot_ts,
+            None,
         )
     }
 
@@ -4864,12 +4877,14 @@ impl DataReaderBuilder {
         &self,
         plan: &dyn DataReaderPlanData,
         lookup_contents: &[IndexJoinLookUpContent],
+        range_mem_tracker: Arc<Tracker>,
     ) -> Result<ExecutorBox, BuildError> {
         self.dependencies.build_data_reader_executor(
             DataReaderBuildKind::IndexReader,
             plan,
             lookup_contents,
             self.snapshot_ts,
+            Some(range_mem_tracker),
         )
     }
 
@@ -4878,12 +4893,14 @@ impl DataReaderBuilder {
         &self,
         plan: &dyn DataReaderPlanData,
         lookup_contents: &[IndexJoinLookUpContent],
+        range_mem_tracker: Arc<Tracker>,
     ) -> Result<ExecutorBox, BuildError> {
         self.dependencies.build_data_reader_executor(
             DataReaderBuildKind::IndexLookupReader,
             plan,
             lookup_contents,
             self.snapshot_ts,
+            Some(range_mem_tracker),
         )
     }
 
@@ -4898,6 +4915,7 @@ impl DataReaderBuilder {
             plan,
             lookup_contents,
             self.snapshot_ts,
+            None,
         )
     }
 }

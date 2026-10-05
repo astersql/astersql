@@ -198,6 +198,7 @@ pub(crate) fn required_rows_reader(
         result: None,
         merged_rows: VecDeque::new(),
         runtime_rows: 0,
+        range_mem_tracker: None,
     }
 }
 

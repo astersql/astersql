@@ -18,11 +18,19 @@
 // 验证 `colNames2ResultFields`：库名回退、原始列/表名、以及别名长度截断
 //（MySQL 兼容上限 256 字符）。
 
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::adapter::{FieldName, SchemaColumn, colNames2ResultFields};
 use crate::builder::{IndexJoinLookUpContent, LogicalRange, buildRangesForIndexJoin};
+use crate::distsql::{
+    IndexLookUpExecutor, IndexLookUpRunTimeStats, IndexReaderExecutor, KeyRange,
+    newIndexLookUpExecutorContext, newIndexReaderExecutorContext,
+};
 use crate::slow_query::slowQueryRuntimeStats;
+use crate::table_readers_required_rows_test::RequiredRowsBackend;
+use astersql_util_memory::tracker::Tracker;
 
 /// 空 db_name 回退到会话库；过长 alias 截断到 256；表名用 original。
 #[test]
@@ -105,6 +113,98 @@ fn index_join_ranges_replace_each_join_key_offset_without_mutating_templates() {
     assert_eq!(ranges[2].low, vec![1, 9, 2, 10, 3]);
     assert_eq!(ranges[3].high, vec![4, 9, 5, 10, 6]);
     assert_eq!(templates[0].low, vec![1, 10, 2, 20, 3]);
+}
+
+#[test]
+fn index_reader_partition_ranges_use_index_join_memory_tracker() {
+    let backend = RequiredRowsBackend::new(Vec::new(), Duration::ZERO);
+    let tracker = Arc::new(Tracker::new(1, -1));
+    let mut reader = IndexReaderExecutor {
+        context: newIndexReaderExecutorContext(Arc::new(backend), 1, false),
+        table_id: 101,
+        index_id: 1,
+        plans: Vec::new(),
+        ranges: vec![KeyRange {
+            start: vec![1],
+            end: vec![2],
+        }],
+        access_conditions: Vec::new(),
+        index_columns: Vec::new(),
+        column_lengths: Vec::new(),
+        table_ids: vec![101, 102],
+        by_items: Vec::new(),
+        descending: false,
+        keep_order: false,
+        dummy: true,
+        result: None,
+        merged_rows: VecDeque::new(),
+        runtime_rows: 0,
+        range_mem_tracker: Some(Arc::clone(&tracker)),
+    };
+
+    reader.Open().expect("build partition index ranges");
+    assert!(tracker.BytesConsumed() > 0);
+}
+
+#[test]
+fn index_lookup_partition_ranges_prefer_index_join_tracker_and_fall_back_to_executor_tracker() {
+    let backend = RequiredRowsBackend::new(Vec::new(), Duration::ZERO);
+    let index_join_tracker = Arc::new(Tracker::new(1, -1));
+    let executor_tracker = Arc::new(Tracker::new(2, -1));
+    let mut reader = IndexLookUpExecutor {
+        context: newIndexLookUpExecutorContext(Arc::new(backend), 1, false),
+        table_id: 101,
+        index_id: 1,
+        idx_plans: Vec::new(),
+        tbl_plans: Vec::new(),
+        ranges: vec![KeyRange {
+            start: vec![1],
+            end: vec![2],
+        }],
+        grouped_kv_ranges: Vec::new(),
+        grouped_ranges: Vec::new(),
+        partition_range_map: BTreeMap::from([(
+            102,
+            vec![KeyRange {
+                start: vec![3],
+                end: vec![4],
+            }],
+        )]),
+        handle_offsets: Vec::new(),
+        common_handle: false,
+        partition_mode: true,
+        keep_order: false,
+        descending: false,
+        pushed_limit: None,
+        batch_size: 1,
+        max_batch_size: 1,
+        check_index_value: None,
+        dummy: true,
+        cancelled: Arc::default(),
+        result_tx: None,
+        result_rx: None,
+        table_tx: None,
+        index_join: None,
+        table_joins: Vec::new(),
+        pending: BTreeMap::new(),
+        next_task_id: 0,
+        current: VecDeque::new(),
+        stats: Arc::new(Mutex::new(IndexLookUpRunTimeStats::default())),
+        mem_tracker: Some(Arc::clone(&executor_tracker)),
+        range_mem_tracker: Some(Arc::clone(&index_join_tracker)),
+    };
+
+    reader
+        .buildTableKeyRanges()
+        .expect("build index join ranges");
+    assert!(index_join_tracker.BytesConsumed() > 0);
+    assert_eq!(executor_tracker.BytesConsumed(), 0);
+
+    reader.range_mem_tracker = None;
+    reader
+        .buildTableKeyRanges()
+        .expect("build regular index lookup ranges");
+    assert!(executor_tracker.BytesConsumed() > 0);
 }
 
 /// 完整保留 Go `TestSlowQueryRuntimeStats` 的 String/Clone/Merge 断言。
