@@ -82,6 +82,45 @@ fn TestTaskTable() {
 }
 
 #[test]
+fn cleanup_info_queries_active_and_history_with_exact_ids() {
+    let manager = TaskManager::new();
+    manager.push_result(vec![
+        chunk::Row::new(vec![
+            Cell::Int(7),
+            Cell::String(proto::ImportInto.into()),
+            Cell::String(proto::TaskStateSucceed.into()),
+            Cell::Int(1_700_000_000),
+        ]),
+        chunk::Row::new(vec![
+            Cell::Int(9),
+            Cell::String(proto::TaskTypeExample.into()),
+            Cell::String(proto::TaskStateFailed.into()),
+            Cell::Null,
+        ]),
+    ]);
+    let infos = manager.GetTaskCleanupInfoByIDs((), vec![7, 9]).unwrap();
+    assert_eq!(infos.len(), 2);
+    assert_eq!(
+        infos[&7].EndTime,
+        Some(UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000))
+    );
+    assert_eq!(infos[&9].EndTime, None);
+    let call = &manager.calls()[0];
+    assert!(call.sql.contains("tidb_global_task_history"));
+    assert_eq!(
+        call.args,
+        vec![Value::Int(7), Value::Int(9), Value::Int(7), Value::Int(9)]
+    );
+
+    assert!(
+        manager
+            .GetTaskCleanupInfoByIDs((), vec![])
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 /// 校验按 keyspace（逻辑租户/命名空间）汇总活跃任务数。
 fn TestGetActiveTaskCountsByKeyspace() {
     let manager = TaskManager::new();

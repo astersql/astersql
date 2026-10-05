@@ -205,6 +205,14 @@ impl TaskManager for StorageTaskManagerAdapter {
             .map(|items| items.into_iter().map(from_task).collect())
             .map_err(error)
     }
+    fn task_cleanup_info_by_ids(
+        &self,
+        task_ids: &[i64],
+    ) -> Result<std::collections::HashMap<i64, storage::TaskCleanupInfo>> {
+        self.manager
+            .GetTaskCleanupInfoByIDs(context(), task_ids.to_vec())
+            .map_err(error)
+    }
     fn task_by_id(&self, task_id: i64) -> Result<Task> {
         self.manager
             .GetTaskByID(context(), task_id)

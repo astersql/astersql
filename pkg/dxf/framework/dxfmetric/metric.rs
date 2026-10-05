@@ -49,6 +49,8 @@ pub const EventTooManyIdx: &str = "too-many-idx";
 pub const EventMergeSort: &str = "merge-sort";
 /// 事件：清理失败。
 pub const EventCleanupFailed: &str = "cleanup-failed";
+/// Event emitted when owner-side expired external-file cleanup fails.
+pub const EventExpiredFileCleanupFailed: &str = "expired-file-cleanup-failed";
 /// 事件：计量写入失败。
 pub const EventMeterWriteFailed: &str = "meter-write-failed";
 

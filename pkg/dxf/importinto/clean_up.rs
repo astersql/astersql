@@ -343,6 +343,49 @@ impl astersql_dxf_framework_scheduler::Cleaner for ImportCleaner {
     fn batch_cleaner(&self) -> Option<&dyn astersql_dxf_framework_scheduler::BatchCleaner> {
         Some(self)
     }
+
+    fn expired_file_cleaner(
+        &self,
+    ) -> Option<&dyn astersql_dxf_framework_scheduler::ExpiredFileCleaner> {
+        Some(self)
+    }
+}
+
+struct SchedulerTaskInfoGetter<'a> {
+    manager: &'a dyn astersql_dxf_framework_scheduler::TaskManager,
+}
+
+impl crate::conflictrows::TaskInfoGetter for SchedulerTaskInfoGetter<'_> {
+    fn GetTaskCleanupInfoByIDs(
+        &self,
+        _ctx: &astersql_objstore::storage::Context,
+        task_ids: &[i64],
+    ) -> anyhow::Result<HashMap<i64, astersql_dxf_framework_storage::TaskCleanupInfo>> {
+        self.manager
+            .task_cleanup_info_by_ids(task_ids)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))
+    }
+}
+
+impl astersql_dxf_framework_scheduler::ExpiredFileCleaner for ImportCleaner {
+    fn clean_expired_files(
+        &self,
+        context: &astersql_dxf_framework_scheduler::Context,
+        task_info_getter: &dyn astersql_dxf_framework_scheduler::TaskManager,
+        cloud_storage_uri: &str,
+    ) -> astersql_dxf_framework_scheduler::Result<()> {
+        let storage_context = astersql_objstore::storage::Context::from_cancellation_flag(
+            context.cancellation_flag(),
+        );
+        crate::conflictrows::CleanConflictRowFiles(
+            &storage_context,
+            &SchedulerTaskInfoGetter {
+                manager: task_info_getter,
+            },
+            cloud_storage_uri,
+        )
+        .map_err(|error| astersql_dxf_framework_scheduler::SchedulerError::new(error.to_string()))
+    }
 }
 impl astersql_dxf_framework_scheduler::BatchCleaner for ImportCleaner {
     fn batch_clean(

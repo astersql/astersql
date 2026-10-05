@@ -807,6 +807,14 @@ fn registered_import_scheduler_reuses_encode_runtime_services() {
         ) -> framework::Result<Vec<framework::Task>> {
             unreachable!()
         }
+        fn task_cleanup_info_by_ids(
+            &self,
+            _: &[i64],
+        ) -> framework::Result<
+            std::collections::HashMap<i64, astersql_dxf_framework_storage::TaskCleanupInfo>,
+        > {
+            unreachable!()
+        }
         fn task_by_id(&self, _: i64) -> framework::Result<framework::Task> {
             unreachable!()
         }

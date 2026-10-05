@@ -362,6 +362,10 @@ pub trait TaskManager: Send + Sync {
         tasks.truncate(crate::proto::GetTaskCleanupBatchSize() as usize);
         Ok(tasks)
     }
+    fn task_cleanup_info_by_ids(
+        &self,
+        task_ids: &[i64],
+    ) -> Result<HashMap<i64, astersql_dxf_framework_storage::TaskCleanupInfo>>;
     fn task_by_id(&self, task_id: i64) -> Result<Task>;
     fn task_base_by_id(&self, task_id: i64) -> Result<TaskBase>;
     fn all_nodes(&self) -> Result<Vec<ManagedNode>>;
@@ -563,6 +567,10 @@ pub trait Cleaner: Send + Sync {
     fn batch_cleaner(&self) -> Option<&dyn BatchCleaner> {
         None
     }
+    /// Optional owner-side cleanup for expired external files.
+    fn expired_file_cleaner(&self) -> Option<&dyn ExpiredFileCleaner> {
+        None
+    }
 }
 
 /// A successful group is transferred together; failures transfer none of that
@@ -570,6 +578,16 @@ pub trait Cleaner: Send + Sync {
 /// implementations must be idempotent after partial failure and retry.
 pub trait BatchCleaner: Cleaner {
     fn batch_clean(&self, tasks: &mut [Task]) -> Result<()>;
+}
+
+/// Optional owner-side expired-file cleanup capability.
+pub trait ExpiredFileCleaner: Cleaner {
+    fn clean_expired_files(
+        &self,
+        context: &Context,
+        task_info_getter: &dyn TaskManager,
+        cloud_storage_uri: &str,
+    ) -> Result<()>;
 }
 
 /// 注册任务类型对应的清理工厂。
@@ -587,6 +605,16 @@ pub fn get_cleaner_factory(task_type: &str) -> Option<CleanerFactory> {
         .expect("cleanup factory lock poisoned")
         .get(task_type)
         .cloned()
+}
+
+/// Return a stable snapshot so cleanup can run without holding the registry lock.
+pub fn get_cleaner_factories() -> Vec<(String, CleanerFactory)> {
+    CLEANER_FACTORIES
+        .read()
+        .expect("cleanup factory lock poisoned")
+        .iter()
+        .map(|(task_type, factory)| (task_type.clone(), factory.clone()))
+        .collect()
 }
 
 /// 清空所有清理工厂（测试用）。

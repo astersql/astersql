@@ -91,6 +91,35 @@ pub struct Manager {
 }
 
 impl Manager {
+    /// Run all registered owner-side expired-file cleaners once.
+    pub fn run_expired_file_clean(&self, context: &Context, cloud_storage_uri: &str) {
+        if cloud_storage_uri.is_empty() {
+            return;
+        }
+        for (_, factory) in get_cleaner_factories() {
+            let cleaner = factory();
+            let Some(expired_cleaner) = cleaner.expired_file_cleaner() else {
+                continue;
+            };
+            if let Err(_error) = expired_cleaner.clean_expired_files(
+                context,
+                self.task_manager.as_ref(),
+                cloud_storage_uri,
+            ) {
+                if context.is_cancelled() {
+                    return;
+                }
+                astersql_dxf_framework_dxfmetric::InitDistTaskMetrics()
+                    .ScheduleEventCounter
+                    .with_label_values(&[
+                        "-",
+                        astersql_dxf_framework_dxfmetric::EventExpiredFileCleanupFailed,
+                    ])
+                    .inc();
+            }
+        }
+    }
+
     /// 构造管理器并装配 NodeManager / SlotManager / Balancer。
     pub fn new(
         task_manager: Arc<dyn TaskManager>,

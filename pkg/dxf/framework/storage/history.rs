@@ -35,6 +35,48 @@ pub const MaxHistoryTaskPageSize: i32 = 200;
 pub const historyTaskSummaryColumns: &str = "t.id, t.task_key, t.type, t.state, t.step, t.priority, t.concurrency, t.create_time, t.target_scope, t.max_node_count, t.extra_params, t.keyspace, t.error, t.start_time, t.state_update_time, t.end_time";
 
 impl TaskManager {
+    /// Get cleanup metadata from both active and history task tables.
+    pub fn GetTaskCleanupInfoByIDs(
+        &self,
+        ctx: Context,
+        taskIDs: Vec<i64>,
+    ) -> Result<HashMap<i64, TaskCleanupInfo>, Error> {
+        if taskIDs.is_empty() {
+            return Ok(HashMap::new());
+        }
+        injectfailpoint::DXFRandomErrorWithOnePercent()?;
+        let placeholders = std::iter::repeat_n("%?", taskIDs.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut args = Vec::with_capacity(taskIDs.len() * 2);
+        args.extend(taskIDs.iter().copied().map(Value::from));
+        args.extend(taskIDs.iter().copied().map(Value::from));
+        let rows = self.ExecuteSQLWithNewSession(
+            ctx,
+            format!(
+                "select id, type, state, unix_timestamp(end_time) \
+                 from mysql.tidb_global_task where id in ({placeholders}) \
+                 union all select id, type, state, unix_timestamp(end_time) \
+                 from mysql.tidb_global_task_history where id in ({placeholders})"
+            ),
+            args,
+        )?;
+        let mut result = HashMap::with_capacity(rows.len());
+        for row in rows {
+            let seconds = (!row.IsNull(3)).then(|| row.GetInt64(3)).filter(|value| *value > 0);
+            let info = TaskCleanupInfo {
+                ID: row.GetInt64(0),
+                Type: task_type(row.GetString(1)),
+                State: task_state(row.GetString(2)),
+                EndTime: seconds.and_then(|value| {
+                    std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(value as u64))
+                }),
+            };
+            result.insert(info.ID, info);
+        }
+        Ok(result)
+    }
+
     // TransferSubtasks2HistoryWithSession transfer the selected subtasks into tidb_background_subtask_history table by taskID.
     // Go 版本复用传入 session，先插入历史表再删除原表记录；这里保留 SQL 顺序和错误短路语义。
     /// 在给定 session 上将指定 task 的子任务插入 history 再删除原表记录。

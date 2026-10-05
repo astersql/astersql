@@ -39,6 +39,8 @@ pub(super) struct TestTaskManager {
     /// 控制 prepare 后是否立即切换步骤，并统计垃圾回收调用次数。
     pub switch_after_prepare: AtomicBool,
     pub gc_calls: AtomicUsize,
+    pub cleanup_infos: Mutex<HashMap<i64, astersql_dxf_framework_storage::TaskCleanupInfo>>,
+    pub cleanup_info_calls: Mutex<Vec<Vec<i64>>>,
 }
 
 impl TestTaskManager {
@@ -69,6 +71,21 @@ impl TestTaskManager {
 }
 
 impl TaskManager for TestTaskManager {
+    fn task_cleanup_info_by_ids(
+        &self,
+        task_ids: &[i64],
+    ) -> Result<HashMap<i64, astersql_dxf_framework_storage::TaskCleanupInfo>> {
+        self.cleanup_info_calls
+            .lock()
+            .unwrap()
+            .push(task_ids.to_vec());
+        let infos = self.cleanup_infos.lock().unwrap();
+        Ok(task_ids
+            .iter()
+            .filter_map(|id| infos.get(id).cloned().map(|info| (*id, info)))
+            .collect())
+    }
+
     fn cleanup_tasks(&self) -> Result<Vec<Task>> {
         self.cleanup_reads.fetch_add(1, Ordering::AcqRel);
         if let Some(error) = self.cleanup_error.lock().unwrap().clone() {

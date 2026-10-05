@@ -457,6 +457,7 @@ fn registered_import_cleaner_exposes_batch_and_writes_redaction_on_error() {
     )
     .unwrap();
     let cleaner = factory();
+    assert!(cleaner.expired_file_cleaner().is_some());
     let mut tasks: Vec<_> = [42, 43]
         .into_iter()
         .map(|id| {

@@ -107,6 +107,84 @@ fn test_scheduler_clean_task() {
     assert_eq!(task_manager.transferred_tasks.lock().unwrap().len(), 1);
 }
 
+#[derive(Default)]
+struct ExpiredCleanerRecorder {
+    calls: Mutex<Vec<String>>,
+    fail: bool,
+}
+
+impl Cleaner for ExpiredCleanerRecorder {
+    fn clean(&self, _task: &mut Task) -> Result<()> {
+        Ok(())
+    }
+
+    fn expired_file_cleaner(&self) -> Option<&dyn ExpiredFileCleaner> {
+        Some(self)
+    }
+}
+
+impl ExpiredFileCleaner for ExpiredCleanerRecorder {
+    fn clean_expired_files(
+        &self,
+        _context: &Context,
+        _task_info_getter: &dyn TaskManager,
+        cloud_storage_uri: &str,
+    ) -> Result<()> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(cloud_storage_uri.to_owned());
+        if self.fail {
+            Err(SchedulerError::new("expired cleanup failed"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[test]
+fn expired_file_cleanup_runs_capable_factories_and_counts_failures() {
+    let successful = Arc::new(ExpiredCleanerRecorder::default());
+    let failing = Arc::new(ExpiredCleanerRecorder {
+        fail: true,
+        ..Default::default()
+    });
+    RegisterCleanerFactory("success", {
+        let cleaner = successful.clone();
+        Arc::new(move || cleaner.clone())
+    });
+    RegisterCleanerFactory("failure", {
+        let cleaner = failing.clone();
+        Arc::new(move || cleaner.clone())
+    });
+    RegisterCleanerFactory("ordinary", Arc::new(|| Arc::new(FailingSingleCleaner)));
+    let counter = &astersql_dxf_framework_dxfmetric::InitDistTaskMetrics().ScheduleEventCounter;
+    let before = counter
+        .with_label_values(&[
+            "-",
+            astersql_dxf_framework_dxfmetric::EventExpiredFileCleanupFailed,
+        ])
+        .get();
+    let manager = Manager::new(Arc::new(TestTaskManager::default()), "server", None);
+    manager.run_expired_file_clean(&Context::new(), "memstore://expired");
+
+    assert_eq!(
+        *successful.calls.lock().unwrap(),
+        vec!["memstore://expired"]
+    );
+    assert_eq!(*failing.calls.lock().unwrap(), vec!["memstore://expired"]);
+    assert_eq!(
+        counter
+            .with_label_values(&[
+                "-",
+                astersql_dxf_framework_dxfmetric::EventExpiredFileCleanupFailed
+            ])
+            .get()
+            - before,
+        1.0
+    );
+}
+
 #[test]
 /// Cancelling/Reverting/Pausing 属于无需执行资源的状态，启动时不得预留 slot。
 fn test_manager_scheduler_not_allocate_slots() {
