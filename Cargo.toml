@@ -1,5 +1,3 @@
-# Go 到 Rust 机械迁移的临时基线；当前不声明迁移草稿可构建。
-
 [workspace]
 resolver = "3"
 members = [
