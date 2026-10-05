@@ -146,6 +146,7 @@ fn default_global_vars(time_zone: &str) -> HashMap<&'static str, String> {
         (TIDB_ENABLE_ASYNC_MERGE_GLOBAL_STATS, "0".to_owned()),
         (TIDB_ANALYZE_PARTITION_CONCURRENCY, "0".to_owned()),
         (TIDB_ANALYZE_VERSION, "0".to_owned()),
+        (TIDB_ANALYZE_STORE_BATCH_SIZE, "4".to_owned()),
         (TIDB_ENABLE_HISTORICAL_STATS, "0".to_owned()),
         (TIDB_PARTITION_PRUNE_MODE, "static".to_owned()),
         (TIDB_ENABLE_ANALYZE_SNAPSHOT, "0".to_owned()),
@@ -183,6 +184,7 @@ impl GlobalVariableAccessor for FakeGlobalVars {
 struct FakeSessionContext {
     variables: Arc<SessionVariables>,
     location: Mutex<String>,
+    system_variables: Mutex<HashMap<String, String>>,
 }
 
 impl FakeSessionContext {
@@ -190,6 +192,7 @@ impl FakeSessionContext {
         Self {
             variables: Arc::new(SessionVariables::new(global_vars)),
             location: Mutex::new(String::new()),
+            system_variables: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -212,6 +215,10 @@ impl SessionContext for FakeSessionContext {
     }
 
     fn set_system_variable(&self, name: &str, value: &str) -> Result<(), StatsError> {
+        self.system_variables
+            .lock()
+            .unwrap()
+            .insert(name.to_owned(), value.to_owned());
         if name == TIME_ZONE {
             *self.location.lock().unwrap() = value.to_owned();
         }
@@ -385,6 +392,7 @@ fn test_update_sctx_vars_filters_analyze_skip_column_types() {
             (TIDB_ENABLE_ASYNC_MERGE_GLOBAL_STATS, "0".to_owned()),
             (TIDB_ANALYZE_PARTITION_CONCURRENCY, "0".to_owned()),
             (TIDB_ANALYZE_VERSION, "0".to_owned()),
+            (TIDB_ANALYZE_STORE_BATCH_SIZE, "7".to_owned()),
             (TIDB_ENABLE_HISTORICAL_STATS, "0".to_owned()),
             (TIDB_PARTITION_PRUNE_MODE, "static".to_owned()),
             (TIDB_ENABLE_ANALYZE_SNAPSHOT, "0".to_owned()),
@@ -404,6 +412,15 @@ fn test_update_sctx_vars_filters_analyze_skip_column_types() {
     assert_eq!(
         vec!["json", "text", "mediumblob"],
         context.session_variables().analyze_skip_column_types()
+    );
+    assert_eq!(
+        context
+            .system_variables
+            .lock()
+            .unwrap()
+            .get(TIDB_ANALYZE_STORE_BATCH_SIZE)
+            .map(String::as_str),
+        Some("7")
     );
 }
 

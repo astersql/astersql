@@ -310,6 +310,9 @@ pub struct analyzeRequestSpec {
     pub startTimestamp: u64,
     pub keepOrder: bool,
     pub concurrency: usize,
+    pub storeBatchSize: usize,
+    pub allowBatchTaskDataMerge: bool,
+    pub executeBatchTasksSerially: bool,
     pub resourceGroupTagger: Vec<u8>,
     pub resourceGroupName: String,
     pub explicitRequestSourceType: String,
@@ -356,6 +359,7 @@ pub trait analyzeColumnRuntime: Send + Sync {
 pub struct baseAnalyzeExec {
     pub tableID: i64,
     pub concurrency: usize,
+    pub analyzeStoreBatchSize: usize,
     pub analyzeRequest: analyzeRequest,
     pub options: BTreeMap<analyzeOptionType, u64>,
     pub job: Option<analyzeJob>,
@@ -461,6 +465,7 @@ impl AnalyzeColumnsExec {
         } else {
             (u64::MAX, isolationLevel::ReadCommitted)
         };
+        let enable_store_batch = self.baseAnalyzeExec.analyzeStoreBatchSize > 0;
         let spec = analyzeRequestSpec {
             physicalTableIDs: vec![self.baseAnalyzeExec.tableID],
             commonHandle: common_handle,
@@ -468,8 +473,12 @@ impl AnalyzeColumnsExec {
             analyzeRequest: self.baseAnalyzeExec.analyzeRequest.clone(),
             isolationLevel: isolation_level,
             startTimestamp: start_timestamp,
-            keepOrder: true,
+            // Full-sampling Analyze restores handle order after collecting samples.
+            keepOrder: false,
             concurrency: self.baseAnalyzeExec.concurrency,
+            storeBatchSize: self.baseAnalyzeExec.analyzeStoreBatchSize,
+            allowBatchTaskDataMerge: enable_store_batch,
+            executeBatchTasksSerially: enable_store_batch,
             resourceGroupTagger: self.baseAnalyzeExec.resourceGroupTagger.clone(),
             resourceGroupName: self.baseAnalyzeExec.resourceGroupName.clone(),
             explicitRequestSourceType: self.baseAnalyzeExec.explicitRequestSourceType.clone(),

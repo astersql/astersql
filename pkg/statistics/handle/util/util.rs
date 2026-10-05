@@ -61,6 +61,8 @@ pub const TIDB_ENABLE_ASYNC_MERGE_GLOBAL_STATS: &str = "tidb_enable_async_merge_
 pub const TIDB_ANALYZE_PARTITION_CONCURRENCY: &str = "tidb_analyze_partition_concurrency";
 /// 全局变量名：ANALYZE 统计版本（Version1/Version2）。
 pub const TIDB_ANALYZE_VERSION: &str = "tidb_analyze_version";
+/// 全局变量名：ANALYZE 每个 store 的请求批大小。
+pub const TIDB_ANALYZE_STORE_BATCH_SIZE: &str = "tidb_analyze_store_batch_size";
 /// 全局变量名：是否启用历史统计。
 pub const TIDB_ENABLE_HISTORICAL_STATS: &str = "tidb_enable_historical_stats";
 /// 全局变量名：分区剪枝模式（static/dynamic）。
@@ -350,6 +352,11 @@ pub fn update_sctx_vars_for_stats(context: &dyn SessionContext) -> Result<(), St
     variables
         .analyze_version
         .store(parse_i64(TIDB_ANALYZE_VERSION, &value)?, Ordering::Release);
+
+    // Auto Analyze sessions are pooled, so refresh their session value from the
+    // latest global setting before building a request.
+    let value = global(&variables, TIDB_ANALYZE_STORE_BATCH_SIZE)?;
+    context.set_system_variable(TIDB_ANALYZE_STORE_BATCH_SIZE, &value)?;
 
     let value = global(&variables, TIDB_ENABLE_HISTORICAL_STATS)?;
     variables
