@@ -664,6 +664,78 @@ pub enum Command {
     ResetConnection = 0x1f,
 }
 
+pub(crate) fn should_install_connection_alive(sql: &str) -> bool {
+    let Ok((statements, _)) = astersql_parser::Parser::default().ParseSQL(sql, &[]) else {
+        return false;
+    };
+    statements
+        .iter()
+        .any(|statement| should_install_connection_alive_for_stmt(statement.as_ref()))
+}
+
+fn should_install_connection_alive_for_stmt(statement: &dyn astersql_parser_ast::Node) -> bool {
+    if let Some(trace) = statement
+        .as_any()
+        .downcast_ref::<astersql_parser_ast::TraceStmt>()
+    {
+        return should_install_connection_alive_for_stmt(trace.Stmt.as_ref());
+    }
+    if let Some(explain) = statement
+        .as_any()
+        .downcast_ref::<astersql_parser_ast::ExplainStmt>()
+    {
+        if !explain.analyze {
+            return true;
+        }
+        return explain
+            .stmt
+            .as_deref()
+            .is_some_and(should_install_connection_alive_for_stmt);
+    }
+    if let Some(brie) = statement
+        .as_any()
+        .downcast_ref::<astersql_parser_ast::BRIEStmt>()
+        && matches!(
+            brie.Kind,
+            astersql_parser_ast::BRIEKind::Backup | astersql_parser_ast::BRIEKind::Restore
+        )
+    {
+        return false;
+    }
+    if statement
+        .as_any()
+        .downcast_ref::<astersql_parser_ast::AnalyzeTableStmt>()
+        .is_some()
+        || statement
+            .as_any()
+            .downcast_ref::<astersql_parser_ast::LoadDataStmt>()
+            .is_some()
+        || statement
+            .as_any()
+            .downcast_ref::<astersql_parser_ast::ImportIntoStmt>()
+            .is_some()
+        || statement
+            .as_any()
+            .downcast_ref::<astersql_parser_ast::CommitStmt>()
+            .is_some()
+        || statement
+            .as_any()
+            .downcast_ref::<astersql_parser_ast::RollbackStmt>()
+            .is_some()
+    {
+        return false;
+    }
+
+    // DDL nodes do not share a concrete Rust base type that supports downcasting.
+    // The parser-normalized node text still gives the same statement boundary and
+    // avoids classifying DML whose payload merely contains a DDL keyword.
+    let normalized = statement.Text().trim_start().to_ascii_lowercase();
+    !matches!(
+        normalized.split_ascii_whitespace().next(),
+        Some("alter" | "create" | "drop" | "rename" | "truncate" | "recover" | "flashback")
+    )
+}
+
 impl TryFrom<u8> for Command {
     type Error = ConnError;
 
@@ -727,6 +799,7 @@ impl Default for CancellationToken {
 
 /// 底层包 IO：读写、刷新、超时、TLS 升级与地址查询。
 pub type PacketCloseHandle = Arc<dyn Fn() + Send + Sync>;
+pub type ConnectionAliveProbe = Arc<dyn Fn() -> bool + Send + Sync>;
 
 pub trait PacketIo: Send {
     fn read_packet(&mut self) -> ConnResult<Vec<u8>>;
@@ -750,6 +823,10 @@ pub trait PacketIo: Send {
     }
     fn local_addr(&self) -> ConnResult<(String, String)>;
     fn connection_alive(&self) -> bool;
+    /// 返回可跨线程调用、且不会阻塞等待客户端数据的连接存活探针。
+    fn connection_alive_probe(&self) -> Option<ConnectionAliveProbe> {
+        None
+    }
     /// 返回无需获取 PacketIo 写锁即可关闭底层传输的控制句柄。
     fn close_handle(&self) -> Option<PacketCloseHandle> {
         None
@@ -854,6 +931,8 @@ pub trait TiDBContext: Send + Sync {
         cancel: &CancellationToken,
     ) -> ConnResult<Option<QueryResult>>;
     fn finish_protocol_response(&self, _write_duration: Duration) {}
+    /// Install the transport liveness probe used by SQLKiller checkpoints.
+    fn set_connection_alive_probe(&self, _probe: Option<ConnectionAliveProbe>) {}
     #[cfg(test)]
     fn result_fault_for_test(
         &self,
@@ -1572,39 +1651,49 @@ impl ClientConn {
     /// 执行文本协议查询并写回一个或多个结果集。
     pub fn handleQuery(&self, sql: &str, cancel: &CancellationToken) -> ConnResult<()> {
         let context = self.openSession()?;
-        let results = if let Some(path) = context.local_infile_path(sql)? {
-            if self.capability.load(Ordering::Acquire) & (1 << 7) == 0 {
-                return Err(ConnError::Session(
-                    "client does not support LOCAL INFILE".into(),
-                ));
-            }
-            let data = self.getDataFromPath(&path)?;
-            context.execute_local_infile(sql, data, cancel)?
-        } else {
-            context.execute_query_streaming(
-                sql,
-                self.capability.load(Ordering::Acquire) & CLIENT_MULTI_STATEMENTS != 0,
-                cancel,
-            )?
-        };
-        if results.is_empty() {
-            return self.writeOK();
+        let install_probe = should_install_connection_alive(sql);
+        if install_probe {
+            context.set_connection_alive_probe(self.connectionAliveProbe());
         }
-        let result_count = results.len();
-        for (index, mut result) in results.into_iter().enumerate() {
-            if index + 1 < result_count {
-                result.state.status |= SERVER_MORE_RESULTS_EXISTS;
+        let result = (|| {
+            let results = if let Some(path) = context.local_infile_path(sql)? {
+                if self.capability.load(Ordering::Acquire) & (1 << 7) == 0 {
+                    return Err(ConnError::Session(
+                        "client does not support LOCAL INFILE".into(),
+                    ));
+                }
+                let data = self.getDataFromPath(&path)?;
+                context.execute_local_infile(sql, data, cancel)?
+            } else {
+                context.execute_query_streaming(
+                    sql,
+                    self.capability.load(Ordering::Acquire) & CLIENT_MULTI_STATEMENTS != 0,
+                    cancel,
+                )?
+            };
+            if results.is_empty() {
+                return self.writeOK();
             }
-            let lifecycle = result.response_lifecycle.clone();
-            let write_result = self
-                .handleStmtResult(result)
-                .and_then(|_| self.flush_response(&lifecycle));
-            if let Some(lifecycle) = lifecycle {
-                lifecycle.finish();
+            let result_count = results.len();
+            for (index, mut result) in results.into_iter().enumerate() {
+                if index + 1 < result_count {
+                    result.state.status |= SERVER_MORE_RESULTS_EXISTS;
+                }
+                let lifecycle = result.response_lifecycle.clone();
+                let write_result = self
+                    .handleStmtResult(result)
+                    .and_then(|_| self.flush_response(&lifecycle));
+                if let Some(lifecycle) = lifecycle {
+                    lifecycle.finish();
+                }
+                write_result?;
             }
-            write_result?;
+            Ok(())
+        })();
+        if install_probe {
+            context.set_connection_alive_probe(None);
         }
-        Ok(())
+        result
     }
 
     /// 将预处理相关 COM_STMT_* / COM_SET_OPTION 交给 Session 执行并写结果。
@@ -1657,7 +1746,7 @@ impl ClientConn {
             }
             Command::StmtExecute => {
                 let statement_id = read_u32_le(payload, 0)?;
-                let (arguments, use_cursor) = {
+                let (arguments, use_cursor, install_probe) = {
                     let mut statements = self
                         .prepared_statements
                         .lock()
@@ -1666,44 +1755,59 @@ impl ClientConn {
                         ConnError::Session(format!("prepared statement {statement_id} not found"))
                     })?;
                     statement.max_allowed_packet = context.max_allowed_packet()?;
-                    crate::conn_stmt::ParseExecuteParams(statement, payload).map_err(|error| {
-                        match error {
-                            crate::conn_stmt::Error::NetPacketTooLarge => {
-                                ConnError::NetPacketTooLarge
-                            }
-                            other => ConnError::Session(other.to_string()),
-                        }
-                    })?
-                };
-                let mut result =
-                    context.execute_prepared_streaming(statement_id, &arguments, cancel)?;
-                if use_cursor && !result.columns.is_empty() {
-                    result.state.status |= SERVER_STATUS_CURSOR_EXISTS;
-                    let lifecycle = result.response_lifecycle.clone();
-                    {
-                        let _timer = WriteSQLResponseTimer::begin(&lifecycle);
-                        self.write_binary_result_metadata(&result)?;
-                    }
-                    self.flush_response(&lifecycle)?;
-                    let mut statements = self
-                        .prepared_statements
-                        .lock()
-                        .map_err(|_| ConnError::Poisoned("prepared statements"))?;
-                    let statement = statements.get_mut(&statement_id).ok_or_else(|| {
-                        ConnError::Session(format!("prepared statement {statement_id} not found"))
+                    let (arguments, use_cursor) = crate::conn_stmt::ParseExecuteParams(
+                        statement, payload,
+                    )
+                    .map_err(|error| match error {
+                        crate::conn_stmt::Error::NetPacketTooLarge => ConnError::NetPacketTooLarge,
+                        other => ConnError::Session(other.to_string()),
                     })?;
-                    statement.cursor_active = true;
-                    statement.protocol_cursor = Some(result);
-                    return Ok(());
+                    (
+                        arguments,
+                        use_cursor,
+                        should_install_connection_alive(&statement.sql),
+                    )
+                };
+                if install_probe {
+                    context.set_connection_alive_probe(self.connectionAliveProbe());
                 }
-                let lifecycle = result.response_lifecycle.clone();
-                let write_result = self
-                    .write_binary_result(result)
-                    .and_then(|_| self.flush_response(&lifecycle));
-                if let Some(lifecycle) = lifecycle {
-                    lifecycle.finish();
+                let execution = (|| {
+                    let mut result =
+                        context.execute_prepared_streaming(statement_id, &arguments, cancel)?;
+                    if use_cursor && !result.columns.is_empty() {
+                        result.state.status |= SERVER_STATUS_CURSOR_EXISTS;
+                        let lifecycle = result.response_lifecycle.clone();
+                        {
+                            let _timer = WriteSQLResponseTimer::begin(&lifecycle);
+                            self.write_binary_result_metadata(&result)?;
+                        }
+                        self.flush_response(&lifecycle)?;
+                        let mut statements = self
+                            .prepared_statements
+                            .lock()
+                            .map_err(|_| ConnError::Poisoned("prepared statements"))?;
+                        let statement = statements.get_mut(&statement_id).ok_or_else(|| {
+                            ConnError::Session(format!(
+                                "prepared statement {statement_id} not found"
+                            ))
+                        })?;
+                        statement.cursor_active = true;
+                        statement.protocol_cursor = Some(result);
+                        return Ok(());
+                    }
+                    let lifecycle = result.response_lifecycle.clone();
+                    let write_result = self
+                        .write_binary_result(result)
+                        .and_then(|_| self.flush_response(&lifecycle));
+                    if let Some(lifecycle) = lifecycle {
+                        lifecycle.finish();
+                    }
+                    write_result
+                })();
+                if install_probe {
+                    context.set_connection_alive_probe(None);
                 }
-                write_result
+                execution
             }
             Command::StmtSendLongData => {
                 let statement_id = read_u32_le(payload, 0)?;
@@ -2360,6 +2464,13 @@ impl ClientConn {
                 .lock()
                 .map(|packet| packet.connection_alive())
                 .unwrap_or(false)
+    }
+
+    fn connectionAliveProbe(&self) -> Option<ConnectionAliveProbe> {
+        self.packet
+            .lock()
+            .ok()
+            .and_then(|packet| packet.connection_alive_probe())
     }
 
     /// 将事务中/自动提交状态格式化为诊断字符串。

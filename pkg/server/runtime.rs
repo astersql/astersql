@@ -38,9 +38,9 @@ use astersql_util_sqlkiller::sqlkiller::{QueryInterrupted, SQLKiller};
 
 use crate::conn::{
     AUTH_NATIVE_PASSWORD, AuthRequest, CancellationToken, ColumnInfo, Command,
-    CompressionAlgorithm, ConnError, ConnResult, ConnectionDomain, PacketIo, PreparedMetadata,
-    QueryResult, ResponseLifecycle, SessionDriver, SessionProcessSnapshot, SessionState,
-    TiDBContext, TlsState, Value,
+    CompressionAlgorithm, ConnError, ConnResult, ConnectionAliveProbe, ConnectionDomain, PacketIo,
+    PreparedMetadata, QueryResult, ResponseLifecycle, SessionDriver, SessionProcessSnapshot,
+    SessionState, TiDBContext, TlsState, Value,
 };
 use crate::server::{Domain as ServerDomain, ServerDriver};
 
@@ -241,6 +241,27 @@ impl PacketIo for TcpPacketIo {
 
     fn connection_alive(&self) -> bool {
         self.alive
+    }
+
+    fn connection_alive_probe(&self) -> Option<ConnectionAliveProbe> {
+        let stream = Arc::new(Mutex::new(self.stream.try_clone().ok()?));
+        Some(Arc::new(move || {
+            let Ok(stream) = stream.lock() else {
+                return false;
+            };
+            if stream.set_nonblocking(true).is_err() {
+                return true;
+            }
+            let mut byte = [0_u8; 1];
+            let alive = match stream.peek(&mut byte) {
+                Ok(0) => false,
+                Ok(_) => true,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => true,
+                Err(_) => false,
+            };
+            let _ = stream.set_nonblocking(false);
+            alive
+        }))
     }
 
     fn close_handle(&self) -> Option<crate::conn::PacketCloseHandle> {
@@ -1899,6 +1920,10 @@ impl TiDBContext for ConcreteTiDBContext {
                 let _ = response_rx.recv();
             }
         }
+    }
+
+    fn set_connection_alive_probe(&self, probe: Option<ConnectionAliveProbe>) {
+        self.cancellation.IsConnectionAlive.Store(probe);
     }
 
     fn change_user(&self, _payload: &[u8], _cancel: &CancellationToken) -> ConnResult<()> {

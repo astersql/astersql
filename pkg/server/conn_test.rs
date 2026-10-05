@@ -44,6 +44,60 @@ fn cancellation_is_monotonic() {
     assert!(token.is_cancelled());
 }
 
+#[test]
+fn connection_alive_is_installed_for_interruptible_statements() {
+    for sql in [
+        "select 1",
+        "update t set a = 1",
+        "begin",
+        "set @a = 1",
+        "explain select 1",
+        "explain analyze select 1",
+        "trace select 1",
+    ] {
+        assert!(
+            should_install_connection_alive(sql),
+            "expected a connection probe for {sql}"
+        );
+    }
+
+    for sql in [
+        "commit",
+        "rollback",
+        "create table t (a int)",
+        "analyze table t",
+        "load data infile '/tmp/a' into table t",
+        "import into t from '/tmp/a.csv'",
+        "backup database * to 'local:///tmp/backup'",
+        "restore database * from 'local:///tmp/backup'",
+    ] {
+        assert!(
+            !should_install_connection_alive(sql),
+            "did not expect a connection probe for {sql}"
+        );
+    }
+}
+
+#[test]
+fn tcp_connection_probe_observes_peer_disconnect() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let peer = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let (server, _) = listener.accept().unwrap();
+    let packet = crate::runtime::TcpPacketIo::new(server, 1024).unwrap();
+    let probe = packet.connection_alive_probe().unwrap();
+    assert!(probe());
+
+    drop(peer);
+    assert!((0..100).any(|_| {
+        if probe() {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            false
+        } else {
+            true
+        }
+    }));
+}
+
 /// 认证插件常量字符串须与 TiDB / MySQL 握手约定一致。
 #[test]
 fn authentication_plugin_names_match_tidb_contract() {
