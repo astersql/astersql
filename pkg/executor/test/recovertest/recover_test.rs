@@ -543,6 +543,16 @@ fn assert_kind<T: std::fmt::Debug>(result: RecoveryResult<T>, expected: ErrorKin
     assert_eq!(result.unwrap_err().0, expected);
 }
 
+fn first_timestamp_without_ddl_jobs(
+    observations: impl IntoIterator<Item = (Result<u64, ()>, usize)>,
+) -> Option<u64> {
+    observations
+        .into_iter()
+        .find_map(|(current_version, ddl_job_count)| {
+            current_version.ok().filter(|_| ddl_job_count == 0)
+        })
+}
+
 fn validate_cluster_timestamp(
     flashback_ts: u64,
     current_ts: u64,
@@ -1146,7 +1156,11 @@ fn test_flashback_cluster_with_many_d_bs() {
         worker.join().unwrap();
     }
     assert_eq!(catalog.lock().unwrap().schemas.len(), 401); // 初始 `test` 库加 400 个并发创建的库。
-    validate_cluster_timestamp(100, 200, Some(90), None, Permissions::root(), true).unwrap();
+    let timestamp_observations = [(Err(()), 1), (Ok(100), 1), (Ok(101), 0)];
+    let flashback_ts = first_timestamp_without_ddl_jobs(timestamp_observations).unwrap();
+    assert_eq!(flashback_ts, 101);
+    validate_cluster_timestamp(flashback_ts, 200, Some(90), None, Permissions::root(), true)
+        .unwrap();
 }
 
 #[test]
