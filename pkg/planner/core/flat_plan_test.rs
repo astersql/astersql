@@ -14,7 +14,8 @@
 // limitations under the License.
 
 use crate::{
-    ExplainFlatPlanInRowFormat, FlattenPhysicalPlan, JoinType, OperatorLabel, PlanKind, PlanNode,
+    ExplainFlatPlanInRUFormat, ExplainFlatPlanInRowFormat, ExplainRUOperatorResult,
+    ExplainRUResult, FlattenPhysicalPlan, JoinType, OperatorLabel, PlanKind, PlanNode, StoreType,
 };
 
 fn node(id: i32, kind: PlanKind, children: Vec<PlanNode>) -> PlanNode {
@@ -95,6 +96,66 @@ fn physical_children_inherit_root_status_like_go() {
 
     assert!(flat.Main[0].IsRoot);
     assert!(flat.Main[1].IsRoot);
+}
+
+#[test]
+fn explain_analyze_ru_format_fills_operator_ru_columns() {
+    let mut root = node(
+        5,
+        PlanKind::TableReader,
+        vec![node(4, PlanKind::TableScan { table: "t".into() }, vec![])],
+    );
+    root.actual_rows = Some(0);
+    root.children[0].actual_rows = Some(0);
+    root.children[0].store_type = StoreType::TiKV;
+    let flat = FlattenPhysicalPlan(Some(&root), false).unwrap();
+    let rows = ExplainFlatPlanInRUFormat(
+        &flat,
+        Some(&ExplainRUResult {
+            Main: vec![
+                ExplainRUOperatorResult {
+                    self_ru: 43.0,
+                    cum_ru: 43.0,
+                },
+                ExplainRUOperatorResult::default(),
+            ],
+            TotalRU: 43.0,
+            ..Default::default()
+        }),
+    );
+
+    assert_eq!(
+        rows,
+        vec![
+            vec![
+                "TableReader_5",
+                "root",
+                "0",
+                "43.00",
+                "43.00",
+                "100.00%",
+                ""
+            ],
+            vec![
+                "\u{2514}\u{2500}TableScan_4",
+                "cop[tikv]",
+                "0",
+                "0.00",
+                "0.00",
+                "0.00%",
+                ""
+            ],
+        ]
+    );
+}
+
+#[test]
+fn explain_analyze_ru_format_leaves_ru_columns_empty_without_results() {
+    let flat = FlattenPhysicalPlan(Some(&node(1, PlanKind::Dual, vec![])), false).unwrap();
+    assert_eq!(
+        ExplainFlatPlanInRUFormat(&flat, None),
+        vec![vec!["Dual_1", "root", "N/A", "", "", "", ""]]
+    );
 }
 
 use base::Plan;

@@ -18,7 +18,8 @@
 // 覆盖 LOAD DATA 语句的 FIELDS / LINES 子句解析结果，校验字段分隔符、
 // 包围符、转义符与行起止符等默认值及显式覆盖行为是否与期望一致。
 
-use super::{ExplainInfoForEncode, JSONToString, LineFieldsInfo, NewLineFieldsInfo};
+use super::{Explain, ExplainInfoForEncode, JSONToString, LineFieldsInfo, NewLineFieldsInfo};
+use crate::{ExplainRUOperatorResult, ExplainRUResult, PlanKind, PlanNode, StoreType};
 use parser_ast_dependency::LoadDataStmt;
 
 /// 单条用例：SQL 文本与期望的 `LineFieldsInfo`。
@@ -146,4 +147,34 @@ fn test_json_to_string_matches_go_encoder_contract() {
             "]\n",
         )
     );
+}
+
+#[test]
+fn explain_render_result_routes_ru_format_to_ru_columns() {
+    let mut scan = PlanNode::New(2, PlanKind::TableScan { table: "t".into() }, Vec::new());
+    scan.store_type = StoreType::TiKV;
+    scan.actual_rows = Some(0);
+    let mut root = PlanNode::New(1, PlanKind::TableReader, vec![scan]);
+    root.actual_rows = Some(0);
+    let mut explain = Explain {
+        TargetPlan: Some(root),
+        Format: "ru".into(),
+        Analyze: true,
+        RUResult: Some(ExplainRUResult {
+            Main: vec![
+                ExplainRUOperatorResult {
+                    self_ru: 7.0,
+                    cum_ru: 7.0,
+                },
+                ExplainRUOperatorResult::default(),
+            ],
+            TotalRU: 7.0,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    explain.RenderResult().unwrap();
+    assert_eq!(explain.Rows[0][3..6], ["7.00", "7.00", "100.00%"]);
+    assert_eq!(explain.Rows[1][3..6], ["0.00", "0.00", "0.00%"]);
 }

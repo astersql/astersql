@@ -20,7 +20,10 @@
 // 执行计划（execution plan）描述 SQL 如何被物理算子树执行；本文件以迁移基线
 // 形式保存这些结构，供 EXPLAIN、优化与执行侧共享。
 
-use crate::{CIString, ExplainFlatPlanInRowFormat, FlattenPhysicalPlan, ToString};
+use crate::{
+    CIString, ExplainFlatPlanInRUFormat, ExplainFlatPlanInRowFormat, ExplainRUResult,
+    FlattenPhysicalPlan, ToString,
+};
 use parser_ast_dependency::{FieldsClause, LinesClause};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -828,6 +831,8 @@ pub struct Explain {
     pub Analyze: bool,
     pub Rows: Vec<Vec<String>>,
     pub BriefBinaryPlan: bool,
+    /// Occurrence-aligned values used by EXPLAIN ANALYZE FORMAT='ru'.
+    pub RUResult: Option<ExplainRUResult>,
 }
 
 /// 物理计划与是否为 Index Nested Loop 子侧的配对。
@@ -845,7 +850,11 @@ impl Explain {
             .ok_or_else(|| "explain target plan is missing".to_owned())?;
         let flat = FlattenPhysicalPlan(Some(target), false)
             .ok_or_else(|| "cannot flatten an empty plan".to_owned())?;
-        self.Rows = ExplainFlatPlanInRowFormat(&flat, &self.Format, self.Analyze);
+        self.Rows = if self.Format.eq_ignore_ascii_case("ru") {
+            ExplainFlatPlanInRUFormat(&flat, self.RUResult.as_ref())
+        } else {
+            ExplainFlatPlanInRowFormat(&flat, &self.Format, self.Analyze)
+        };
         Ok(())
     }
 }

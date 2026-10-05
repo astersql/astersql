@@ -394,6 +394,23 @@ pub struct FlatPhysicalPlan {
     pub BuildSideFirst: bool,
 }
 
+/// Occurrence-aligned RU values for one operator in an EXPLAIN tree.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ExplainRUOperatorResult {
+    pub self_ru: f64,
+    pub cum_ru: f64,
+}
+
+/// RU values produced by statement accounting for each flattened plan tree.
+/// Keeping values by occurrence avoids collapsing repeated plan IDs.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ExplainRUResult {
+    pub Main: Vec<ExplainRUOperatorResult>,
+    pub CTE: Vec<ExplainRUOperatorResult>,
+    pub ScalarSubQ: Vec<ExplainRUOperatorResult>,
+    pub TotalRU: f64,
+}
+
 impl FlatPhysicalPlan {
     /// 取出 SELECT 侧计划：DML（Update/Delete/Insert）时跳过根算子，返回子树与偏移。
     pub fn GetSelectPlan(&self) -> (&[FlatOperator], usize) {
@@ -660,6 +677,98 @@ pub fn ExplainFlatPlanInRowFormat(
             row
         })
         .collect()
+}
+
+/// Render EXPLAIN ANALYZE FORMAT='ru' using the occurrence-aligned values
+/// produced by statement RU accounting. When accounting is unavailable or a
+/// tree is not fully aligned, the three RU columns stay empty as in Go.
+pub fn ExplainFlatPlanInRUFormat(
+    flat: &FlatPhysicalPlan,
+    result: Option<&ExplainRUResult>,
+) -> Vec<Vec<String>> {
+    fn visit(
+        tree: &[FlatOperator],
+        values: Option<&[ExplainRUOperatorResult]>,
+        total_ru: f64,
+        rows: &mut Vec<Vec<String>>,
+    ) {
+        let values = values.filter(|values| values.len() == tree.len());
+        for (index, operator) in tree.iter().enumerate() {
+            let prefix = if operator.Level == 0 {
+                String::new()
+            } else {
+                format!(
+                    "{}{}",
+                    "  ".repeat(operator.Level.saturating_sub(1)),
+                    if operator.IsLastChild {
+                        "└─"
+                    } else {
+                        "├─"
+                    }
+                )
+            };
+            let id = format!("{prefix}{}{}", operator.ExplainID(), operator.Label);
+            let task = if operator.IsRoot {
+                "root".to_owned()
+            } else {
+                format!(
+                    "cop[{}]",
+                    format!("{:?}", operator.StoreType).to_lowercase()
+                )
+            };
+            let actual_rows = operator
+                .Origin
+                .actual_rows
+                .map_or_else(|| "N/A".to_owned(), |rows| rows.to_string());
+            let (self_ru, cum_ru, cum_ru_pct) =
+                values.and_then(|values| values.get(index)).map_or_else(
+                    || (String::new(), String::new(), String::new()),
+                    |value| {
+                        let percentage = if total_ru > 0.0 {
+                            value.cum_ru / total_ru * 100.0
+                        } else {
+                            0.0
+                        };
+                        (
+                            format!("{:.2}", value.self_ru),
+                            format!("{:.2}", value.cum_ru),
+                            format!("{percentage:.2}%"),
+                        )
+                    },
+                );
+            rows.push(vec![
+                id,
+                task,
+                actual_rows,
+                self_ru,
+                cum_ru,
+                cum_ru_pct,
+                String::new(),
+            ]);
+        }
+    }
+
+    let mut rows = Vec::with_capacity(flat.Main.len() + flat.CTE.len() + flat.ScalarSubQ.len());
+    let total_ru = result.map_or(0.0, |result| result.TotalRU);
+    visit(
+        &flat.Main,
+        result.map(|result| result.Main.as_slice()),
+        total_ru,
+        &mut rows,
+    );
+    visit(
+        &flat.CTE,
+        result.map(|result| result.CTE.as_slice()),
+        total_ru,
+        &mut rows,
+    );
+    visit(
+        &flat.ScalarSubQ,
+        result.map(|result| result.ScalarSubQ.as_slice()),
+        total_ru,
+        &mut rows,
+    );
+    rows
 }
 
 /// 将字节数格式化为可读字符串；负数表示不可用（N/A）。
