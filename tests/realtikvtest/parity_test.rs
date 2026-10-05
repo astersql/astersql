@@ -142,6 +142,12 @@ fn contract_normal_paths() {
             .iter()
             .any(|e| e.contains("delete from mysql.tidb_global_task"))
     );
+    assert!(
+        events
+            .iter()
+            .any(|e| e.contains("delete from mysql.tidb_import_jobs")),
+        "fresh RealTiKV fixtures must remove stale import jobs; events={events:?}"
+    );
     assert!(events.iter().any(|e| e.contains("drop table `t1`,`t2`")));
     assert!(events.iter().any(|e| e.contains("drop view `v1`")));
     assert!(
@@ -204,6 +210,12 @@ fn contract_boundary() {
             .iter()
             .any(|e| e.contains("delete from mysql.tidb_global_task")),
         "retainData skips cleanup SQL"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| e.contains("delete from mysql.tidb_import_jobs")),
+        "retainData preserves import jobs"
     );
     assert!(
         t.logs()

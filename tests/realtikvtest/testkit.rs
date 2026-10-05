@@ -410,6 +410,7 @@ pub fn CreateMockStoreAndDomainAndSetup(
     kit.MustExec("use test");
 
     if !option.retainData {
+        kit.MustExec("delete from mysql.tidb_import_jobs;");
         kit.MustExec("delete from mysql.tidb_global_task;");
         kit.MustExec("delete from mysql.tidb_background_subtask;");
         kit.MustExec("delete from mysql.tidb_ddl_job;");
