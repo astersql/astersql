@@ -68,33 +68,37 @@ fn test_child_timeout_does_not_extend_parent_deadline() {
     );
 }
 
-// TestCheckpointCalculatorRejectsUnsupportedMetaScanStorage 对应 Go：meta 扫描必须依赖支持 StartAfter 的 upstream storage。
+// TestCheckpointCalculatorValidatesMetaScanStorage 对应 Go：允许支持 StartAfter 的 upstream storage。
 #[test]
-fn test_checkpoint_calculator_rejects_unsupported_meta_scan_storage() {
-    // azure URI 不支持 StartAfter 增量扫描，构造阶段应直接失败。
-    let upstream = RecordingUpstreamStorage::with_uri(
-        MemStorage::new("file:///tmp/upstream"),
-        "azure://bucket/prefix/",
-    );
-    let err = NewCalculator(
-        CalculatorDeps {
-            PD: Box::new(FakePDMetaReader::default()),
-            Upstream: Box::new(upstream),
-            Sync: Box::new(NewExistenceSyncChecker(FileExistenceMap::default())),
-        },
-        CheckpointCalculatorConfig {
-            // 任务名非空以满足 NewCalculator 前置条件。
-            TaskName: "drr_test_task".into(),
-            ..Default::default()
-        },
-        None,
-    )
-    .unwrap_err();
-    // 断言：拒绝不支持 StartAfter 的 upstream URI（如 azure），与 Go 校验文案对齐。
-    assert!(
-        err.to_string()
-            .contains("StartAfter-capable upstream storage")
-    );
+fn test_checkpoint_calculator_validates_meta_scan_storage() {
+    for scheme in ["s3", "file", "gcs", "oss", "azure"] {
+        let upstream = RecordingUpstreamStorage::with_uri(
+            MemStorage::new("file:///tmp/upstream"),
+            &format!("{scheme}://bucket/prefix/"),
+        );
+        let result = NewCalculator(
+            CalculatorDeps {
+                PD: Box::new(FakePDMetaReader::default()),
+                Upstream: Box::new(upstream),
+                Sync: Box::new(NewExistenceSyncChecker(FileExistenceMap::default())),
+            },
+            CheckpointCalculatorConfig {
+                TaskName: "drr_test_task".into(),
+                ..Default::default()
+            },
+            None,
+        );
+        if scheme == "azure" {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("StartAfter-capable upstream storage")
+            );
+        } else {
+            assert!(result.is_ok(), "scheme {scheme} should be accepted");
+        }
+    }
 }
 
 // TestCheckpointCalculatorRequiresObjectSyncChecker 对应 Go：构造 calculator 时 Sync 依赖不可为空。

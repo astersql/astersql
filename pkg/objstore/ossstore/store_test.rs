@@ -53,6 +53,27 @@ impl MemoryOssApi {
     }
 }
 
+#[test]
+fn uri_preserves_oss_scheme_and_normalizes_prefix() {
+    for (prefix, expected) in [
+        ("", "oss://bucket/"),
+        ("data", "oss://bucket/data/"),
+        ("data/", "oss://bucket/data/"),
+        ("data/nested%2E", "oss://bucket/data/nested%2E/"),
+    ] {
+        let store = new_oss_store_for_test(
+            Arc::new(MemoryOssApi::default()),
+            s3like::backuppb::S3 {
+                Bucket: "bucket".to_owned(),
+                Prefix: prefix.to_owned(),
+                ..Default::default()
+            },
+            None,
+        );
+        assert_eq!(expected, store.URI());
+    }
+}
+
 impl API for MemoryOssApi {
     fn is_bucket_exist(&self, _: &storeapi::Context, _: &str) -> Result<bool> {
         Ok(true)

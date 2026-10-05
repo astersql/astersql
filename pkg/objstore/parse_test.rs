@@ -23,8 +23,8 @@ use std::path::Path;
 
 use crate::parse::{
     AzblobBackendOptions, AzureBlobStorage, BackendOptions, FormatBackendURL, GCSBackendOptions,
-    Gcs, IsLocalPath, KS3SDKProvider, Local, ParseBackend, ParseRawURL, S3, S3BackendOptions,
-    StorageBackend,
+    Gcs, IsLocalPath, KS3SDKProvider, Local, OSSProvider, ParseBackend, ParseRawURL, S3,
+    S3BackendOptions, StorageBackend,
 };
 
 /// 断言并取出 S3 后端，便于测试断言字段。
@@ -256,6 +256,24 @@ fn test_format_backend_url() {
             "s3://bucket/some%20prefix/",
         ),
         (
+            StorageBackend::S3(S3 {
+                bucket: "bucket".to_owned(),
+                prefix: "/some prefix/".to_owned(),
+                provider: OSSProvider.to_owned(),
+                ..S3::default()
+            }),
+            "oss://bucket/some%20prefix/",
+        ),
+        (
+            StorageBackend::S3(S3 {
+                bucket: "bucket".to_owned(),
+                prefix: "/some prefix/".to_owned(),
+                provider: KS3SDKProvider.to_owned(),
+                ..S3::default()
+            }),
+            "ks3://bucket/some%20prefix/",
+        ),
+        (
             StorageBackend::Gcs(Gcs {
                 bucket: "bucket".to_owned(),
                 prefix: "/some prefix/".to_owned(),
@@ -275,7 +293,14 @@ fn test_format_backend_url() {
         ),
     ];
     for (backend, expected) in cases {
-        assert_eq!(FormatBackendURL(&backend), expected);
+        let formatted = FormatBackendURL(&backend);
+        assert_eq!(formatted, expected);
+        if let StorageBackend::S3(expected_backend) = backend {
+            let parsed = s3(ParseBackend(&formatted, None).unwrap());
+            assert_eq!(parsed.bucket, expected_backend.bucket);
+            assert_eq!(parsed.prefix, expected_backend.prefix.trim_matches('/'));
+            assert_eq!(parsed.provider, expected_backend.provider);
+        }
     }
 }
 

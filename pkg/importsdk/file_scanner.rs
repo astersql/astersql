@@ -647,10 +647,7 @@ impl fileScanner {
         }
         // 本地 file:// 前缀在通配路径中剥掉，便于 IMPORT INTO 使用。
         uri = uri.strip_prefix("file://").unwrap_or(&uri).to_owned();
-        result.WildcardPath = format!("{}/{}", uri.trim_end_matches('/'), wildcard);
-        if self.aurora_source {
-            result.WildcardPath = encodeAuroraWildcardPath(&result.WildcardPath)?;
-        }
+        result.WildcardPath = buildWildcardPath(&uri, &wildcard, self.aurora_source)?;
         Ok(result)
     }
 
@@ -838,6 +835,20 @@ impl fileScanner {
             }
         }
         Ok(table_info)
+    }
+}
+
+/// Join a storage URI and generated glob without replacing the provider scheme.
+pub(crate) fn buildWildcardPath(
+    storage_uri: &str,
+    wildcard: &str,
+    aurora_source: bool,
+) -> Result<String, errors::SharedError> {
+    let path = format!("{}/{}", storage_uri.trim_end_matches('/'), wildcard);
+    if aurora_source {
+        encodeAuroraWildcardPath(&path)
+    } else {
+        Ok(path)
     }
 }
 

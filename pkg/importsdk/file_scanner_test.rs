@@ -35,9 +35,10 @@
 // 使用进程内 `CanonicalDatabase` 记录实际发出的 SQL，而非绑定 Go sqlmock 字面量。
 
 use crate::{
-    ErrTableNotFound, FileRouteRule, JobDatabase, JobRows, NewFileScanner, SQLValue,
-    WithEstimateRealSize, WithFileRouters, WithSkipInvalidFiles, createDataFileMeta,
-    defaultSDKConfig, encodeAuroraWildcardPath, processDataFiles,
+    ErrTableNotFound, FileRouteRule, ImportOptions, JobDatabase, JobRows, NewFileScanner,
+    NewSQLGenerator, SQLValue, TableMeta, WithEstimateRealSize, WithFileRouters,
+    WithSkipInvalidFiles, buildWildcardPath, createDataFileMeta, defaultSDKConfig,
+    encodeAuroraWildcardPath, processDataFiles,
 };
 use astersql_errors as errors;
 use astersql_lightning_mydump as mydump;
@@ -138,6 +139,41 @@ fn canonical_data_file_metadata_and_totals_match_go() {
     assert_eq!(2, metas.len());
     assert_eq!(809, total);
     assert_eq!("s3://bucket/b.csv", metas[1].Path);
+}
+
+#[test]
+fn file_scanner_preserves_storage_scheme_in_import_sql() {
+    let parameters =
+        "region=cn-hangzhou&endpoint=https://oss-cn-hangzhou.aliyuncs.com&role-arn=test-role";
+    for scheme in ["s3", "oss"] {
+        let wildcard_path =
+            buildWildcardPath(&format!("{scheme}://bucket/data/"), "db.tbl.*.csv", false).unwrap();
+        assert_eq!(
+            format!("{scheme}://bucket/data/db.tbl.*.csv"),
+            wildcard_path
+        );
+        let sql = NewSQLGenerator()
+            .GenerateImportSQL(
+                &TableMeta {
+                    Database: "db".to_owned(),
+                    Table: "tbl".to_owned(),
+                    WildcardPath: wildcard_path,
+                    ..Default::default()
+                },
+                &ImportOptions {
+                    Format: "csv".to_owned(),
+                    ResourceParameters: parameters.to_owned(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            format!(
+                "IMPORT INTO `db`.`tbl` FROM '{scheme}://bucket/data/db.tbl.*.csv?{parameters}' FORMAT 'csv'"
+            ),
+            sql
+        );
+    }
 }
 
 /// 对照 Go：总大小、表元数据列表、按名查找与未找到错误。

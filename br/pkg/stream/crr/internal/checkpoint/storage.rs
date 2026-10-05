@@ -333,8 +333,8 @@ pub(crate) fn validate_incremental_meta_scan_storage(raw_uri: &str) -> Result<()
         }
     };
     match scheme.as_str() {
-        // 三类后端在 BR 栈中均支持 StartAfter/续列。
-        "s3" | "file" | "gcs" => Ok(()),
+        // 这些后端在 BR 栈中均支持 StartAfter/续列。
+        "s3" | "oss" | "file" | "gcs" => Ok(()),
         "" => Err(Error::new(format!(
             "upstream storage uri {raw_uri:?} has empty scheme"
         ))),

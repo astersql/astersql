@@ -45,6 +45,16 @@ pub struct OSSStore {
 }
 
 impl OSSStore {
+    /// Returns the OSS-specific URI instead of exposing the wrapped S3 scheme.
+    pub fn URI(&self) -> String {
+        let bucket_prefix = self.Storage.GetBucketPrefix();
+        format!(
+            "oss://{}/{}",
+            bucket_prefix.Bucket,
+            bucket_prefix.PrefixStr()
+        )
+    }
+
     /// 关闭底层存储并停止凭证刷新后台任务。
     pub fn Close(&self) {
         self.Storage.Close();
@@ -258,6 +268,19 @@ pub fn new_oss_storage_for_test(
     let bucket_prefix = storeapi::NewBucketPrefix(&options.Bucket, &options.Prefix);
     let client = Client::from_dyn(svc, bucket_prefix.clone(), options.clone());
     s3like::NewStorage(client, bucket_prefix, options, access_rec)
+}
+
+/// Test-only constructor for exercising behavior supplied by the OSS wrapper.
+#[cfg(test)]
+pub fn new_oss_store_for_test(
+    svc: Arc<dyn API>,
+    options: s3like::backuppb::S3,
+    access_rec: Option<Arc<objectio::recording::AccessStats>>,
+) -> OSSStore {
+    OSSStore {
+        Storage: new_oss_storage_for_test(svc, options, access_rec),
+        credential_refresher: None,
+    }
 }
 
 /// Go 风格命名别名：去掉 Region 字符串前缀 `oss-`。

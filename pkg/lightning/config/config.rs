@@ -1010,7 +1010,7 @@ impl MydumperRuntime {
     /// 将本地路径规范化为 `file://` URL，或接受受支持的对象存储 URL。
     pub fn adjust_file_path(&mut self) -> Result<(), ConfigError> {
         let supported = [
-            "file", "local", "s3", "noop", "gcs", "gs", "azure", "azblob",
+            "file", "local", "s3", "oss", "noop", "gcs", "gs", "azure", "azblob",
         ];
         // Mirror Go: only URL-parse when this is not a Windows volume path.
         let maybe_url = url::Url::parse(&self.source_dir).ok();

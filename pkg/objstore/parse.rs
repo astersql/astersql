@@ -191,13 +191,43 @@ pub fn ParseRawURL(raw_url: &str) -> Result<ParsedURL> {
         } else {
             String::new()
         },
-        path: parsed.path().to_owned(),
+        path: decode_url_path(parsed.path()),
         query: parsed
             .query_pairs()
             .map(|(key, value)| (key.into_owned(), value.into_owned()))
             .collect(),
         original: raw_url.to_owned(),
     })
+}
+
+/// Decode percent escapes in a URL path, matching Go's `url.URL.Path` view.
+fn decode_url_path(path: &str) -> String {
+    let bytes = path.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && let (Some(high), Some(low)) =
+                (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
+        {
+            decoded.push((high << 4) | low);
+            index += 3;
+            continue;
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// 从已解析的 `ParsedURL` 构造后端（raw 为空时用 `url.String()`）。
@@ -569,7 +599,14 @@ pub fn FormatBackendURL(backend: &StorageBackend) -> String {
         StorageBackend::Noop => "noop:///".to_owned(),
         StorageBackend::MemStore => "memstore://".to_owned(),
         StorageBackend::Hdfs(hdfs) => hdfs.remote.clone(),
-        StorageBackend::S3(s3) => format_backend_url("s3", &s3.bucket, &s3.prefix),
+        StorageBackend::S3(s3) => {
+            let scheme = match s3.provider.as_str() {
+                OSSProvider => "oss",
+                KS3SDKProvider => "ks3",
+                _ => "s3",
+            };
+            format_backend_url(scheme, &s3.bucket, &s3.prefix)
+        }
         StorageBackend::Gcs(gcs) => format_backend_url("gcs", &gcs.bucket, &gcs.prefix),
         StorageBackend::AzureBlobStorage(azure) => {
             format_backend_url("azure", &azure.bucket, &azure.prefix)

@@ -315,6 +315,12 @@ fn test_check_and_adjust_file_path() {
         (format!("local://{slash_path}"), slash_path),
         ("s3://bucket_name".into(), "".into()),
         ("s3://bucket_name/path/to/dir".into(), "/path/to/dir".into()),
+        ("oss://bucketname".into(), "".into()),
+        ("oss://bucketname/path/to/dir".into(), "/path/to/dir".into()),
+        (
+            "oss://bucketname/path/to/dir?region=cn-hangzhou&endpoint=https://oss-cn-hangzhou.aliyuncs.com".into(),
+            "/path/to/dir".into(),
+        ),
         ("gcs://bucketname/path/to/dir".into(), "/path/to/dir".into()),
         ("gs://bucketname/path/to/dir".into(), "/path/to/dir".into()),
         ("noop:///".into(), "/".into()),
