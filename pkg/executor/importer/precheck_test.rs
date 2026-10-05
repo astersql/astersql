@@ -75,6 +75,22 @@ fn global_sort_missing_bucket_propagates_redacted_invalid_uri() {
 
 use crate as importer;
 use std::sync::Arc;
+
+struct StaticStorageFactory(std::path::PathBuf);
+impl importer::ImportStorageFactory for StaticStorageFactory {
+    fn Open(
+        &self,
+        _: &astersql_objstore_storeapi::Context,
+        uri: &str,
+        _: &str,
+    ) -> Result<importer::SharedStorage, String> {
+        assert_eq!(uri, "s3://bucket");
+        let storage = astersql_objstore::local::NewLocalStorage(&self.0)
+            .map_err(|error| error.to_string())?;
+        Ok(Arc::new(std::sync::Mutex::new(Box::new(storage))))
+    }
+}
+
 struct ControllerServices;
 impl importer::ColumnAssignmentFactory for ControllerServices {
     fn BuildAssignment(
@@ -169,13 +185,19 @@ impl importer::ImportResourceCalculator for ControllerServices {
     }
 }
 fn services() -> importer::LoadDataControllerServices {
+    services_with_storage_factory(Arc::new(ControllerServices))
+}
+
+fn services_with_storage_factory(
+    storage_factory: Arc<dyn importer::ImportStorageFactory>,
+) -> importer::LoadDataControllerServices {
     let mock = Arc::new(ControllerServices);
     importer::LoadDataControllerServices {
         DatumConverter: mock.clone(),
         AssignmentFactory: mock.clone(),
         ParserFactory: mock.clone(),
         SizeEstimator: mock.clone(),
-        StorageFactory: mock.clone(),
+        StorageFactory: storage_factory,
         TiKVConfigProbe: mock.clone(),
         ResourceCalculator: mock,
     }
@@ -247,6 +269,14 @@ fn requirements_reject_enabled_ttl_before_external_checks_in_both_entrypoints() 
                     .unwrap();
             }
             let meta = domain.table_by_name("test", "t").unwrap();
+            let source_directory = std::env::temp_dir().join(format!(
+                "astersql-import-precheck-ttl-{}-{:?}",
+                std::process::id(),
+                enabled
+            ));
+            std::fs::create_dir_all(&source_directory).unwrap();
+            let source_path = source_directory.join("file.csv");
+            std::fs::write(&source_path, b"1\n").unwrap();
             assert_eq!(meta.TTLInfo.as_ref().map(|ttl| ttl.Enable), enabled);
             let controller = importer::NewLoadDataController(
                 importer::Plan {
@@ -255,13 +285,19 @@ fn requirements_reject_enabled_ttl_before_external_checks_in_both_entrypoints() 
                     DisablePrecheck: true,
                     TableInfo: Some(meta.clone()),
                     InImportInto: true,
-                    Path: "/file.csv".into(),
+                    Path: source_path.to_string_lossy().into_owned(),
                     TotalFileSize: if enabled == Some(true) { 0 } else { 1 },
                     ..Default::default()
                 },
                 Arc::new(MetadataTableAdapter::New(&meta)),
                 importer::ASTArgs::default(),
-                services(),
+                if source == importer::DataSourceTypeFile {
+                    services_with_storage_factory(Arc::new(
+                        importer::ServerDiskImportStorageFactory,
+                    ))
+                } else {
+                    services()
+                },
                 vec![],
             )
             .unwrap();
@@ -271,7 +307,10 @@ fn requirements_reject_enabled_ttl_before_external_checks_in_both_entrypoints() 
                     session: pool.acquire().unwrap(),
                 };
                 let result = if before_files {
-                    controller.CheckRequirementsBeforeInitDataFiles(&mut service)
+                    controller.CheckRequirementsBeforeInitDataFiles(
+                        &astersql_objstore_storeapi::Context::default(),
+                        &mut service,
+                    )
                 } else {
                     controller.CheckRequirements(&mut service)
                 };
@@ -298,6 +337,114 @@ fn requirements_reject_enabled_ttl_before_external_checks_in_both_entrypoints() 
                     );
                 }
             }
+            std::fs::remove_dir_all(source_directory).unwrap();
         }
     }
+}
+
+#[test]
+fn async_prepare_checks_data_source_access_without_discovering_matches() {
+    use astersql_planner_core_operator_physicalop::MetadataTableAdapter;
+
+    let directory = std::env::temp_dir().join(format!(
+        "astersql-import-precheck-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let source = directory.join("source.csv");
+    std::fs::write(&source, b"1\n").unwrap();
+
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let pool = astersql_session::runtime::system_session::SystemSessionPool::new(domain.clone());
+    let session = pool.acquire().unwrap();
+    session
+        .query("CREATE TABLE test.t (id int primary key)")
+        .unwrap();
+    session.query("CREATE TABLE IF NOT EXISTS mysql.tidb_import_jobs (table_schema varchar(64), table_name varchar(64), status varchar(64))").unwrap();
+    let meta = domain.table_by_name("test", "t").unwrap();
+    let mut controller = importer::NewLoadDataController(
+        importer::Plan {
+            DBName: "test".into(),
+            DataSourceType: importer::DataSourceTypeFile,
+            DisablePrecheck: true,
+            TableInfo: Some(meta.clone()),
+            InImportInto: true,
+            Path: source.to_string_lossy().into_owned(),
+            ..Default::default()
+        },
+        Arc::new(MetadataTableAdapter::New(&meta)),
+        importer::ASTArgs::default(),
+        services_with_storage_factory(Arc::new(importer::ServerDiskImportStorageFactory)),
+        vec![],
+    )
+    .unwrap();
+    let context = astersql_objstore_storeapi::Context::default();
+
+    for path in [
+        source.clone(),
+        directory.join("*.csv"),
+        directory.join("not-matched-*.csv"),
+    ] {
+        controller.Plan.Path = path.to_string_lossy().into_owned();
+        let mut service = PrecheckBoundary {
+            calls: vec![],
+            session: pool.acquire().unwrap(),
+        };
+        controller
+            .CheckRequirementsBeforeInitDataFiles(&context, &mut service)
+            .unwrap();
+        assert_eq!(service.calls, vec!["jobs", "rows"]);
+    }
+
+    controller.Plan.Path = directory.join("missing.csv").to_string_lossy().into_owned();
+    let mut service = PrecheckBoundary {
+        calls: vec![],
+        session: pool.acquire().unwrap(),
+    };
+    let error = controller
+        .CheckRequirementsBeforeInitDataFiles(&context, &mut service)
+        .unwrap_err();
+    assert!(error.contains("Please check the file location is correct"));
+
+    controller.Plan.Path = directory
+        .join("[invalid.csv")
+        .to_string_lossy()
+        .into_owned();
+    let error = controller.CheckDataSourceAccess(&context).unwrap_err();
+    assert!(error.contains("Glob pattern error"));
+
+    std::fs::remove_dir_all(directory).unwrap();
+
+    let remote_directory = std::env::temp_dir().join(format!(
+        "astersql-import-remote-precheck-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&remote_directory).unwrap();
+    std::fs::write(remote_directory.join("prefix-not-a-csv.txt"), b"1").unwrap();
+    let remote = importer::NewLoadDataController(
+        importer::Plan {
+            DBName: "test".into(),
+            DataSourceType: importer::DataSourceTypeFile,
+            DisablePrecheck: true,
+            TableInfo: Some(meta.clone()),
+            InImportInto: true,
+            Path: "s3://bucket/prefix*.csv".into(),
+            ..Default::default()
+        },
+        Arc::new(MetadataTableAdapter::New(&meta)),
+        importer::ASTArgs::default(),
+        services_with_storage_factory(Arc::new(StaticStorageFactory(remote_directory.clone()))),
+        vec![],
+    )
+    .unwrap();
+    remote.CheckDataSourceAccess(&context).unwrap();
+    std::fs::remove_dir_all(remote_directory).unwrap();
 }

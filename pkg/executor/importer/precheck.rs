@@ -75,12 +75,17 @@ impl LoadDataController {
         self.checkRequirements(service, true)
     }
 
-    /// InitDataFiles 之前的轻量检查：跳过文件总大小，供异步 prepare 路径使用。
+    /// InitDataFiles 之前的轻量检查：跳过文件总大小并探测数据源访问。
     pub fn CheckRequirementsBeforeInitDataFiles(
         &self,
+        context: &astersql_objstore_storeapi::Context,
         service: &mut dyn ImportPrecheckService,
     ) -> Result<(), String> {
-        self.checkRequirements(service, false)
+        self.checkRequirements(service, false)?;
+        if self.Plan.DataSourceType == DataSourceTypeFile {
+            return self.CheckDataSourceAccess(context);
+        }
+        Ok(())
     }
 
     /// 按数据源类型串联各项检查；`check_total_file_size` 控制是否校验文件体量。

@@ -29,7 +29,7 @@ use astersql_lightning_mydump::{
     Compression, Parser as MydumpParser, ReadSeekCloser, SourceFileMeta, SourceType,
 };
 use astersql_meta_model::TableInfo;
-use astersql_objstore_storeapi::{Context as StorageContext, Storage};
+use astersql_objstore_storeapi::{Context as StorageContext, Storage, WalkOption};
 use astersql_parser_ast as ast;
 use astersql_parser_mysql::r#const::SQLMode;
 use astersql_table::{self as table, Table};
@@ -846,9 +846,10 @@ impl LoadDataController {
             return Ok(());
         }
         if self.data_store.is_none() {
+            let source = parse_data_source_path(&self.Plan.Path)?;
             self.data_store = Some(initExternalStore(
                 context,
-                &self.Plan.Path,
+                &source.storage_uri,
                 "IMPORT INTO data source",
                 self.storage_factory.as_ref(),
             )?);
@@ -863,6 +864,57 @@ impl LoadDataController {
         Ok(())
     }
 
+    /// Verify source credentials before asynchronous prepare discovers all matching files.
+    pub fn CheckDataSourceAccess(&self, context: &StorageContext) -> Result<(), String> {
+        let source = parse_data_source_path(&self.Plan.Path)?;
+        check_data_source_glob(&source.file_name_key)?;
+        let storage = initExternalStore(
+            context,
+            &source.storage_uri,
+            "IMPORT INTO data source",
+            self.storage_factory.as_ref(),
+        )?;
+        let storage = storage
+            .lock()
+            .map_err(|_| "data storage lock is poisoned".to_owned())?;
+        let result = if let Some(glob_index) = source
+            .file_name_key
+            .as_bytes()
+            .iter()
+            .position(|byte| matches!(byte, b'*' | b'['))
+        {
+            let common_prefix = if source.is_local {
+                String::new()
+            } else {
+                source.file_name_key[..glob_index].to_owned()
+            };
+            let option = WalkOption {
+                ObjPrefix: common_prefix,
+                SkipSubDir: true,
+                ..WalkOption::default()
+            };
+            let mut stopped_after_first_object = false;
+            let walked = storage.WalkDir(context, Some(&option), &mut |remote_path, _| {
+                let mut reader = storage.Open(context, remote_path, None)?;
+                reader.Close()?;
+                stopped_after_first_object = true;
+                Err(std::io::Error::other("data-source-access-check-complete").into())
+            });
+            if stopped_after_first_object {
+                Ok(())
+            } else {
+                walked.map_err(|error| format!("{}: failed to access data source", error))
+            }
+        } else {
+            storage
+                .Open(context, &source.file_name_key, None)
+                .and_then(|mut reader| reader.Close().map_err(Into::into))
+                .map_err(|error| format!("{}: Please check the file location is correct", error))
+        };
+        storage.Close();
+        result
+    }
+
     /// 枚举/匹配数据文件，估算真实大小并检测格式。
     pub fn InitDataFiles(&mut self, context: &StorageContext) -> Result<(), String> {
         // 查询数据源无需打开文件存储。
@@ -872,13 +924,15 @@ impl LoadDataController {
             self.TotalRealSize = 0;
             return Ok(());
         }
-        self.InitDataStore(context)?;
         validate_server_path(&self.Plan.Path, self.Plan.InImportInto)?;
+        let source = parse_data_source_path(&self.Plan.Path)?;
+        check_data_source_glob(&source.file_name_key)?;
+        self.InitDataStore(context)?;
         let storage = Arc::clone(self.data_store.as_ref().expect("checked above"));
         let storage = storage
             .lock()
             .map_err(|_| "data storage lock is poisoned".to_owned())?;
-        let pattern = storage_path(&self.Plan.Path);
+        let pattern = source.file_name_key;
         let mut raw_files = Vec::new();
         // 通配符：WalkDir 过滤；否则打开单文件。
         if has_glob(&pattern) {
@@ -2038,6 +2092,80 @@ fn validate_server_path(path: &str, in_import_into: bool) -> Result<(), String> 
     Ok(())
 }
 
+struct ParsedDataSourcePath {
+    storage_uri: String,
+    file_name_key: String,
+    is_local: bool,
+}
+
+/// Split the storage root from the object key while preserving credentials in the URI.
+fn parse_data_source_path(path: &str) -> Result<ParsedDataSourcePath, String> {
+    let mut parsed = astersql_objstore::parse::ParseRawURL(path)
+        .map_err(|error| format!("invalid IMPORT INTO data source URI: {error}"))?;
+    let is_local = astersql_objstore::parse::IsLocal(&parsed);
+    if is_local {
+        let file_name_key = std::path::Path::new(&parsed.path)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        // The production local factory accepts the requested file path and opens its parent.
+        return Ok(ParsedDataSourcePath {
+            storage_uri: path.to_owned(),
+            file_name_key,
+            is_local,
+        });
+    }
+    let file_name_key = parsed.path.trim_matches('/').to_owned();
+    parsed.path.clear();
+    Ok(ParsedDataSourcePath {
+        storage_uri: parsed.String(),
+        file_name_key,
+        is_local,
+    })
+}
+
+/// Reject malformed patterns before opening or walking external storage.
+fn check_data_source_glob(pattern: &str) -> Result<(), String> {
+    let bytes = pattern.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\' => {
+                index += 1;
+                if index == bytes.len() {
+                    return Err(
+                        "invalid IMPORT INTO data source URI: Glob pattern error: trailing escape"
+                            .into(),
+                    );
+                }
+            }
+            b'[' => {
+                let start = index;
+                index += 1;
+                if index < bytes.len() && matches!(bytes[index], b'!' | b'^') {
+                    index += 1;
+                }
+                let content_start = index;
+                while index < bytes.len() && bytes[index] != b']' {
+                    if bytes[index] == b'\\' {
+                        index += 1;
+                    }
+                    index += 1;
+                }
+                if index == bytes.len() || index == content_start {
+                    return Err(format!(
+                        "invalid IMPORT INTO data source URI: Glob pattern error near {}",
+                        &pattern[start..]
+                    ));
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    Ok(())
+}
+
 /// 去掉 scheme 与前导斜杠，得到存储内相对路径。
 pub(crate) fn storage_path(path: &str) -> String {
     if std::path::Path::new(path).is_absolute() {
@@ -2053,18 +2181,16 @@ pub(crate) fn storage_path(path: &str) -> String {
 
 /// 路径是否含通配符。
 fn has_glob(path: &str) -> bool {
-    path.contains('*') || path.contains('[') || path.contains('?')
+    path.contains('*') || path.contains('[')
 }
 
-/// 简易 glob 匹配（支持 `*`、`?` 与字符类 `[a-z]`）。
+/// 简易 glob 匹配（支持 `*` 与字符类 `[a-z]`；`?` 按 Go 路径规则作字面量）。
 fn glob_matches(pattern: &str, value: &str) -> bool {
     let (mut pattern_index, mut value_index, mut star, mut checkpoint) = (0, 0, None, 0);
     let pattern = pattern.as_bytes();
     let value = value.as_bytes();
     while value_index < value.len() {
-        if pattern_index < pattern.len()
-            && (pattern[pattern_index] == b'?' || pattern[pattern_index] == value[value_index])
-        {
+        if pattern_index < pattern.len() && pattern[pattern_index] == value[value_index] {
             pattern_index += 1;
             value_index += 1;
         } else if pattern_index < pattern.len() && pattern[pattern_index] == b'[' {
