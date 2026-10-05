@@ -404,26 +404,42 @@ fn build_typed_physical_plan(
             maximum_chunk_size,
             false,
         )?;
-        if !join.BasePhysicalJoin.LeftConditions.is_empty() {
+        if join.BasePhysicalJoin.JoinType != astersql_planner_core_base::JoinType::FullOuterJoin
+            && !join.BasePhysicalJoin.LeftConditions.is_empty()
+        {
             left = Box::new(crate::typed_selection::TypedSelection::new(
                 left,
                 join.BasePhysicalJoin.LeftConditions.clone(),
                 plan.s_ctx().clone(),
             ));
         }
-        if !join.BasePhysicalJoin.RightConditions.is_empty() {
+        if join.BasePhysicalJoin.JoinType != astersql_planner_core_base::JoinType::FullOuterJoin
+            && !join.BasePhysicalJoin.RightConditions.is_empty()
+        {
             right = Box::new(crate::typed_selection::TypedSelection::new(
                 right,
                 join.BasePhysicalJoin.RightConditions.clone(),
                 plan.s_ctx().clone(),
             ));
         }
+        let (left_conditions, right_conditions) = if join.BasePhysicalJoin.JoinType
+            == astersql_planner_core_base::JoinType::FullOuterJoin
+        {
+            (
+                join.BasePhysicalJoin.LeftConditions.clone(),
+                join.BasePhysicalJoin.RightConditions.clone(),
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
         return crate::typed_hash_join::TypedHashJoin::new(
             left,
             right,
             join.BasePhysicalJoin.LeftJoinKeys.clone(),
             join.BasePhysicalJoin.RightJoinKeys.clone(),
             join.BasePhysicalJoin.IsNullEQ.clone(),
+            left_conditions,
+            right_conditions,
             join.BasePhysicalJoin.OtherConditions.clone(),
             plan.s_ctx().clone(),
             join.BasePhysicalJoin.JoinType,

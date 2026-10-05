@@ -315,7 +315,7 @@ pub fn probe_flavor(join_type: JoinType) -> ProbeFlavor {
         JoinType::AntiSemi => ProbeFlavor::AntiSemi,
         JoinType::LeftOuterSemi => ProbeFlavor::LeftOuterSemi,
         JoinType::AntiLeftOuterSemi => ProbeFlavor::AntiLeftOuterSemi,
-        JoinType::LeftOuter | JoinType::RightOuter => ProbeFlavor::Outer,
+        JoinType::LeftOuter | JoinType::RightOuter | JoinType::FullOuter => ProbeFlavor::Outer,
     }
 }
 
@@ -357,6 +357,9 @@ pub fn new_join_probe(
         }
         JoinType::LeftOuterSemi | JoinType::AntiLeftOuterSemi => {
             return Err("left outer semi probes require the right build side".into());
+        }
+        JoinType::FullOuter => {
+            return Err("full outer join uses the HashJoinV1 two-joiner probe path".into());
         }
     })
 }

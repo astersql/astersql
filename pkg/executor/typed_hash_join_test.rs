@@ -160,6 +160,15 @@ fn typed_hash_join_covers_join_types_duplicates_outer_rows_and_paging() {
             vec![None, Some(30)],
         ]
     );
+    assert_eq!(
+        execute(JoinType::FullOuterJoin),
+        vec![
+            vec![Some(10), Some(10)],
+            vec![Some(10), Some(10)],
+            vec![Some(20), None],
+            vec![None, Some(30)],
+        ]
+    );
     assert_eq!(execute(JoinType::SemiJoin), vec![vec![Some(10)]]);
     assert_eq!(execute(JoinType::AntiSemiJoin), vec![vec![Some(20)]]);
     assert_eq!(

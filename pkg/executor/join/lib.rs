@@ -93,6 +93,9 @@ mod bench_test;
 /// 并发分片 map 单元测试。
 mod concurrent_map_test;
 #[cfg(test)]
+/// Full Outer Join v1 回归测试。
+mod full_outer_join_test;
+#[cfg(test)]
 /// Hash Join spill OOM action 单元测试。
 mod hash_join_spill_test;
 #[cfg(test)]

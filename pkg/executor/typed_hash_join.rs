@@ -24,6 +24,8 @@ pub struct TypedHashJoin {
     left_keys: Vec<astersql_expression::Column>,
     right_keys: Vec<astersql_expression::Column>,
     null_equal: Vec<bool>,
+    left_conditions: Vec<astersql_expression::ExprBox>,
+    right_conditions: Vec<astersql_expression::ExprBox>,
     other_conditions: Vec<astersql_expression::ExprBox>,
     context: ContextRef,
     join_type: JoinType,
@@ -51,6 +53,8 @@ impl TypedHashJoin {
         left_keys: Vec<astersql_expression::Column>,
         right_keys: Vec<astersql_expression::Column>,
         null_equal: Vec<bool>,
+        left_conditions: Vec<astersql_expression::ExprBox>,
+        right_conditions: Vec<astersql_expression::ExprBox>,
         other_conditions: Vec<astersql_expression::ExprBox>,
         context: ContextRef,
         join_type: JoinType,
@@ -83,6 +87,8 @@ impl TypedHashJoin {
             left_keys,
             right_keys,
             null_equal,
+            left_conditions,
+            right_conditions,
             other_conditions,
             context,
             join_type,
@@ -175,6 +181,25 @@ impl TypedHashJoin {
         .map_err(|error| astersql_errors::New(error.to_string()))
     }
 
+    fn side_conditions_match(
+        &self,
+        row: chunk::Row,
+        conditions: &[astersql_expression::ExprBox],
+    ) -> AdapterResult<bool> {
+        if conditions.is_empty() {
+            return Ok(true);
+        }
+        let expressions = astersql_expression::CNFExprs(
+            conditions
+                .iter()
+                .map(|expression| expression.CloneExpr())
+                .collect(),
+        );
+        astersql_expression::EvalBool(self.context.GetExprCtx().GetEvalCtx(), &expressions, row)
+            .map(|(matched, _)| matched)
+            .map_err(|error| astersql_errors::New(error.to_string()))
+    }
+
     fn append(&self, output: &mut chunk::Chunk, values: &[Datum]) {
         for (index, value) in values.iter().enumerate() {
             output.AppendDatum(index, value);
@@ -201,13 +226,16 @@ impl TypedHashJoin {
             for index in 0..input.NumRows() {
                 let row = input.GetRow(index);
                 let key = self.key(row.clone(), &self.right_keys)?;
+                let selected = self.side_conditions_match(row.clone(), &self.right_conditions)?;
                 let stored = self.build_rows.len();
                 self.build_rows.push(StoredRow {
                     values: Self::row_values(row, self.right.Schema()),
                     matched: false,
                 });
-                if let Some(key) = key {
-                    self.buckets.entry(key).or_default().push(stored);
+                if selected {
+                    if let Some(key) = key {
+                        self.buckets.entry(key).or_default().push(stored);
+                    }
                 }
             }
         }
@@ -219,7 +247,7 @@ impl TypedHashJoin {
             return;
         };
         match self.join_type {
-            JoinType::LeftOuterJoin if !self.pending_matched => {
+            JoinType::LeftOuterJoin | JoinType::FullOuterJoin if !self.pending_matched => {
                 let mut values = probe;
                 values.extend((0..self.right.Schema().len()).map(|_| Datum::default()));
                 self.append(output, &values);
@@ -275,7 +303,10 @@ impl TypedHashJoin {
                     self.build_rows[build_index].matched = true;
                     if matches!(
                         self.join_type,
-                        JoinType::InnerJoin | JoinType::LeftOuterJoin | JoinType::RightOuterJoin
+                        JoinType::InnerJoin
+                            | JoinType::LeftOuterJoin
+                            | JoinType::RightOuterJoin
+                            | JoinType::FullOuterJoin
                     ) {
                         self.append(output, &joined);
                     }
@@ -314,15 +345,23 @@ impl TypedHashJoin {
                 let row = self.probe_chunk.GetRow(self.probe_index);
                 self.probe_index += 1;
                 let key = self.key(row.clone(), &self.left_keys)?;
+                let probe_selected =
+                    self.side_conditions_match(row.clone(), &self.left_conditions)?;
                 self.pending_probe = Some(Self::row_values(row, self.left.Schema()));
-                self.pending_matches = key
-                    .as_ref()
-                    .and_then(|key| self.buckets.get(key))
-                    .cloned()
-                    .unwrap_or_default();
+                self.pending_matches = if probe_selected {
+                    key.as_ref()
+                        .and_then(|key| self.buckets.get(key))
+                        .cloned()
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
                 continue;
             }
-            if self.join_type == JoinType::RightOuterJoin {
+            if matches!(
+                self.join_type,
+                JoinType::RightOuterJoin | JoinType::FullOuterJoin
+            ) {
                 while self.unmatched_build_index < self.build_rows.len() && !output.IsFull() {
                     let index = self.unmatched_build_index;
                     self.unmatched_build_index += 1;

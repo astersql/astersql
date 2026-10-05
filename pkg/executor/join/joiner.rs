@@ -1302,6 +1302,7 @@ pub enum JoinType {
     AntiLeftOuterSemi,
     LeftOuter,
     RightOuter,
+    FullOuter,
     Inner,
 }
 /// 批量匹配外表时，每行相对当前内表行的状态。
@@ -1426,9 +1427,10 @@ impl Joiner {
                     output.push(self.naaj_match_row(outer, naaj))
                 }
                 JoinType::AntiLeftOuterSemi => output.push(self.with_marker(outer, Some(false))),
-                JoinType::LeftOuter | JoinType::RightOuter | JoinType::Inner => {
-                    output.push(self.project_joined(inner, outer))
-                }
+                JoinType::LeftOuter
+                | JoinType::RightOuter
+                | JoinType::FullOuter
+                | JoinType::Inner => output.push(self.project_joined(inner, outer)),
             }
             // 半连接族命中后无需继续扫内表。
             if matches!(
@@ -1481,9 +1483,10 @@ impl Joiner {
                 JoinType::AntiSemi => {}
                 JoinType::LeftOuterSemi => output.push(self.with_marker(outer, Some(true))),
                 JoinType::AntiLeftOuterSemi => output.push(self.with_marker(outer, Some(false))),
-                JoinType::LeftOuter | JoinType::RightOuter | JoinType::Inner => {
-                    output.push(self.project_joined(inner, outer))
-                }
+                JoinType::LeftOuter
+                | JoinType::RightOuter
+                | JoinType::FullOuter
+                | JoinType::Inner => output.push(self.project_joined(inner, outer)),
             }
         }
         Ok(statuses)
@@ -1504,7 +1507,7 @@ impl Joiner {
             JoinType::AntiLeftOuterSemi => {
                 output.push(self.with_marker(outer, if has_null { None } else { Some(true) }))
             }
-            JoinType::LeftOuter | JoinType::RightOuter => {
+            JoinType::LeftOuter | JoinType::RightOuter | JoinType::FullOuter => {
                 let inner = if self.default_inner.is_empty() {
                     vec![Value::Null]
                 } else {

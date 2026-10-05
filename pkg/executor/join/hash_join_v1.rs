@@ -1452,7 +1452,7 @@ use crate::hash_join_base::{
 };
 use crate::hash_join_stats::{HashJoinRuntimeStats, HashStatistic};
 use crate::hash_table_v1::{HashRowContainer, RowPointer};
-use crate::joiner::{JoinType, Joiner, NaajType, OuterRowStatus, Row};
+use crate::joiner::{JoinType, Joiner, NaajType, OuterRowStatus, Predicate, Row};
 use crate::row_table_builder::{Chunk, Value};
 use std::collections::HashMap;
 use std::time::Instant;
@@ -1502,6 +1502,9 @@ impl HashJoinCtxV1 {
         {
             return Err("null-aware hash join requires an anti join".into());
         }
+        if self.join_type == JoinType::FullOuter && self.build_side_is_outer {
+            return Err("full outer join does not use the legacy outer-build mode".into());
+        }
         Ok(())
     }
 }
@@ -1525,12 +1528,20 @@ impl ProbeSideTupleFetcherV1 {
 #[derive(Clone)]
 pub struct ProbeWorkerV1 {
     pub base: ProbeWorkerBase,
+    full_outer_build_joiner: Option<Joiner>,
+    full_outer_probe_joiner: Option<Joiner>,
+    full_outer_probe_filter: Vec<Predicate>,
+    full_outer_probe_key_indices: Vec<usize>,
 }
 impl ProbeWorkerV1 {
     /// 构造实例。
     pub fn new(id: usize, context: HashJoinContextBase) -> Self {
         Self {
             base: ProbeWorkerBase::new(id, context),
+            full_outer_build_joiner: None,
+            full_outer_probe_joiner: None,
+            full_outer_probe_filter: Vec::new(),
+            full_outer_probe_key_indices: Vec::new(),
         }
     }
     /// 对单行探测：查找匹配构建行并应用 join 语义。
@@ -1542,6 +1553,9 @@ impl ProbeWorkerV1 {
         probe: &Row,
         output: &mut Vec<Row>,
     ) -> Result<(), String> {
+        if ctx.join_type == JoinType::FullOuter {
+            return self.join_full_outer_probe_row(table, probe, output);
+        }
         let pointers = if ctx.null_aware {
             table.get_na_rows_by_indices(probe, &ctx.probe_key_indices)?
         } else {
@@ -1569,6 +1583,48 @@ impl ProbeWorkerV1 {
         }
         if !result.matched {
             joiner.on_miss_match(result.has_null || naaj_has_null(naaj), probe, output);
+        }
+        Ok(())
+    }
+
+    fn join_full_outer_probe_row(
+        &self,
+        table: &mut HashRowContainer,
+        probe: &Row,
+        output: &mut Vec<Row>,
+    ) -> Result<(), String> {
+        let build_joiner = self
+            .full_outer_build_joiner
+            .as_ref()
+            .ok_or_else(|| "full outer build joiner is missing".to_string())?;
+        let probe_joiner = self
+            .full_outer_probe_joiner
+            .as_ref()
+            .ok_or_else(|| "full outer probe joiner is missing".to_string())?;
+        if !passes_filter(&self.full_outer_probe_filter, probe)? {
+            probe_joiner.on_miss_match(false, probe, output);
+            return Ok(());
+        }
+        let pointers =
+            table.get_matched_rows_by_indices(probe, &self.full_outer_probe_key_indices)?;
+        let build_rows: Vec<Row> = pointers
+            .iter()
+            .filter_map(|pointer| table.row(*pointer).cloned())
+            .collect();
+        if build_rows.is_empty() {
+            probe_joiner.on_miss_match(false, probe, output);
+            return Ok(());
+        }
+        let statuses = build_joiner.try_to_match_outers(&build_rows, probe, output)?;
+        let mut matched = false;
+        for (pointer, status) in pointers.into_iter().zip(statuses) {
+            if status == OuterRowStatus::Matched {
+                matched = true;
+                table.mark_used(pointer);
+            }
+        }
+        if !matched {
+            probe_joiner.on_miss_match(false, probe, output);
         }
         Ok(())
     }
@@ -1620,6 +1676,11 @@ pub struct HashJoinV1Exec {
     state: ExecutorState,
     memory_limit: Option<i64>,
     pub stats: HashJoinRuntimeStats,
+    full_outer_build_joiner: Option<Joiner>,
+    full_outer_probe_joiner: Option<Joiner>,
+    full_outer_build_filter: Vec<Predicate>,
+    full_outer_probe_filter: Vec<Predicate>,
+    full_outer_rejected_build_rows: Vec<Row>,
 }
 
 impl HashJoinV1Exec {
@@ -1645,6 +1706,56 @@ impl HashJoinV1Exec {
             state: ExecutorState::Created,
             memory_limit: None,
             stats: HashJoinRuntimeStats::default(),
+            full_outer_build_joiner: None,
+            full_outer_probe_joiner: None,
+            full_outer_build_filter: Vec::new(),
+            full_outer_probe_filter: Vec::new(),
+            full_outer_rejected_build_rows: Vec::new(),
+        })
+    }
+
+    /// Construct the two-joiner form used by FULL OUTER JOIN. The build joiner
+    /// emits matches and unmatched build rows; the probe joiner emits unmatched
+    /// probe rows with the opposite NULL layout.
+    pub fn new_full_outer(
+        context: HashJoinCtxV1,
+        build_joiner: Joiner,
+        probe_joiner: Joiner,
+        build_filter: Vec<Predicate>,
+        probe_filter: Vec<Predicate>,
+        build_chunks: Vec<Chunk>,
+        probe_chunks: Vec<Chunk>,
+    ) -> Result<Self, String> {
+        context.validate()?;
+        if context.join_type != JoinType::FullOuter {
+            return Err("full outer constructor requires a full outer context".into());
+        }
+        if !matches!(
+            build_joiner.join_type(),
+            JoinType::LeftOuter | JoinType::RightOuter
+        ) || !matches!(
+            probe_joiner.join_type(),
+            JoinType::LeftOuter | JoinType::RightOuter
+        ) || build_joiner.join_type() == probe_joiner.join_type()
+        {
+            return Err("full outer join requires opposite left/right outer joiners".into());
+        }
+        Ok(Self {
+            context,
+            joiner: probe_joiner.clone(),
+            build_chunks,
+            probe_chunks,
+            table: None,
+            output: Vec::new(),
+            cursor: 0,
+            state: ExecutorState::Created,
+            memory_limit: None,
+            stats: HashJoinRuntimeStats::default(),
+            full_outer_build_joiner: Some(build_joiner),
+            full_outer_probe_joiner: Some(probe_joiner),
+            full_outer_build_filter: build_filter,
+            full_outer_probe_filter: probe_filter,
+            full_outer_rejected_build_rows: Vec::new(),
         })
     }
     /// 设置内存限额（供 spill 判定）。
@@ -1677,7 +1788,25 @@ impl HashJoinV1Exec {
         self.cursor = 0;
         let start = Instant::now();
         let worker = BuildWorkerV1::new(0, self.context.base.clone(), self.memory_limit);
-        match worker.build(&self.context, &self.build_chunks) {
+        self.full_outer_rejected_build_rows.clear();
+        let mut accepted_build_chunks = Vec::new();
+        let build_chunks = if self.context.join_type == JoinType::FullOuter {
+            for chunk in &self.build_chunks {
+                let mut accepted = Vec::new();
+                for row in chunk {
+                    if passes_filter(&self.full_outer_build_filter, row)? {
+                        accepted.push(row.clone());
+                    } else {
+                        self.full_outer_rejected_build_rows.push(row.clone());
+                    }
+                }
+                accepted_build_chunks.push(accepted);
+            }
+            &accepted_build_chunks
+        } else {
+            &self.build_chunks
+        };
+        match worker.build(&self.context, build_chunks) {
             Ok(table) => {
                 self.table = Some(table);
                 self.context.base.finish_build();
@@ -1699,6 +1828,13 @@ impl HashJoinV1Exec {
         let start = Instant::now();
         let mut fetcher = ProbeSideTupleFetcherV1::new(self.probe_chunks.clone());
         let worker = ProbeWorkerV1::new(0, self.context.base.clone());
+        let worker = ProbeWorkerV1 {
+            base: worker.base,
+            full_outer_build_joiner: self.full_outer_build_joiner.clone(),
+            full_outer_probe_joiner: self.full_outer_probe_joiner.clone(),
+            full_outer_probe_filter: self.full_outer_probe_filter.clone(),
+            full_outer_probe_key_indices: self.context.probe_key_indices.clone(),
+        };
         let table = self
             .table
             .as_mut()
@@ -1726,6 +1862,18 @@ impl HashJoinV1Exec {
         {
             for build in table.unmatched_rows() {
                 self.joiner.on_miss_match(false, build, &mut self.output);
+            }
+        }
+        if self.context.join_type == JoinType::FullOuter {
+            let build_joiner = self
+                .full_outer_build_joiner
+                .as_ref()
+                .ok_or_else(|| "full outer build joiner is missing".to_string())?;
+            for build in table.unmatched_rows() {
+                build_joiner.on_miss_match(false, build, &mut self.output);
+            }
+            for build in &self.full_outer_rejected_build_rows {
+                build_joiner.on_miss_match(false, build, &mut self.output);
             }
         }
         self.stats.fetch_and_probe += start.elapsed();
@@ -1777,6 +1925,15 @@ impl HashJoinV1Exec {
         self.output.clear();
         self.state = ExecutorState::Closed;
     }
+}
+
+fn passes_filter(filters: &[Predicate], row: &Row) -> Result<bool, String> {
+    for filter in filters {
+        if filter(row)? != Some(true) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// 相关子查询相关键：一行值向量。
