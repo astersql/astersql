@@ -28,6 +28,8 @@ use aws_config::BehaviorVersion;
 use aws_credential_types::Credentials;
 use aws_credential_types::provider::error::CredentialsError;
 use aws_credential_types::provider::{ProvideCredentials, SharedCredentialsProvider, future};
+use aws_smithy_types::DateTime;
+use aws_smithy_types::date_time::Format;
 use aws_types::region::Region;
 use serde::Deserialize;
 use tokio::runtime::Runtime;
@@ -251,6 +253,21 @@ fn load_sdk_config(
         loader = loader.credentials_provider(credentials);
     }
     let mut config = runtime.block_on(loader.load());
+    // For Alibaba endpoints the complete AWS chain remains authoritative. ECS RAM metadata is
+    // consulted lazily only when that chain cannot return credentials.
+    if options.Endpoint.contains(DOMAIN_ALIYUN)
+        && let Some(primary) = config.credentials_provider()
+    {
+        config = config
+            .into_builder()
+            .credentials_provider(SharedCredentialsProvider::new(
+                FallbackCredentialsProvider {
+                    primary,
+                    fallback: SharedCredentialsProvider::new(AliyunRamCredentialsProvider),
+                },
+            ))
+            .build();
+    }
     // RoleArn 非空时用 STS AssumeRole 包装凭证，并可附带 ExternalId。
     if !options.RoleArn.is_empty() {
         let mut builder =
@@ -345,12 +362,102 @@ pub fn autoNewCred(options: &backuppb::S3) -> Result<Option<SharedCredentialsPro
             None,
             "tidb-s3-static",
         )))),
-        CredentialSource::AliyunMetadata => {
-            Ok(createOssRAMCred()?.map(SharedCredentialsProvider::new))
-        }
+        CredentialSource::AliyunMetadata => Ok(None),
         CredentialSource::TencentCvmRole => createTencentCOSCred(),
         CredentialSource::DefaultChain => Ok(None),
     }
+}
+
+/// Credential provider that uses the fallback only after the primary provider fails.
+#[derive(Debug)]
+pub struct FallbackCredentialsProvider<P, F> {
+    primary: P,
+    fallback: F,
+}
+
+impl<P, F> FallbackCredentialsProvider<P, F> {
+    async fn credentials(&self) -> aws_credential_types::provider::Result
+    where
+        P: ProvideCredentials,
+        F: ProvideCredentials,
+    {
+        match self.primary.provide_credentials().await {
+            Ok(credentials) => Ok(credentials),
+            Err(primary_error) => self
+                .fallback
+                .provide_credentials()
+                .await
+                .map_err(|fallback_error| {
+                    CredentialsError::provider_error(anyhow!(
+                        "AWS credential chain failed ({primary_error}), and Alibaba Cloud ECS RAM fallback failed: {fallback_error}"
+                    ))
+                }),
+        }
+    }
+}
+
+impl<P, F> ProvideCredentials for FallbackCredentialsProvider<P, F>
+where
+    P: ProvideCredentials + fmt::Debug,
+    F: ProvideCredentials + fmt::Debug,
+{
+    fn provide_credentials<'a>(&'a self) -> future::ProvideCredentials<'a>
+    where
+        Self: 'a,
+    {
+        future::ProvideCredentials::new(self.credentials())
+    }
+}
+
+/// Construct a fallback provider while keeping the concrete providers injectable in tests.
+pub fn fallback_credentials_provider<P, F>(
+    primary: P,
+    fallback: F,
+) -> FallbackCredentialsProvider<P, F> {
+    FallbackCredentialsProvider { primary, fallback }
+}
+
+#[derive(Debug)]
+struct AliyunRamCredentialsProvider;
+
+impl ProvideCredentials for AliyunRamCredentialsProvider {
+    fn provide_credentials<'a>(&'a self) -> future::ProvideCredentials<'a>
+    where
+        Self: 'a,
+    {
+        future::ProvideCredentials::new(async {
+            load_aliyun_ram_credentials()
+                .await
+                .map_err(CredentialsError::provider_error)?
+                .ok_or_else(|| {
+                    CredentialsError::not_loaded("Alibaba Cloud ECS RAM credentials unavailable")
+                })
+        })
+    }
+}
+
+async fn load_aliyun_ram_credentials() -> Result<Option<Credentials>> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()?;
+    let role_response = client.get(ALIYUN_METADATA).send().await?;
+    if !role_response.status().is_success() {
+        return Ok(None);
+    }
+    let role = role_response.text().await?.trim().to_owned();
+    if role.is_empty() {
+        return Ok(None);
+    }
+    let credential_response = client
+        .get(format!("{ALIYUN_METADATA}{role}"))
+        .send()
+        .await?;
+    if !credential_response.status().is_success() {
+        return Ok(None);
+    }
+    Ok(Some(parse_aliyun_ram_credential(
+        &credential_response.text().await?,
+    )?))
 }
 
 /// Match the Go endpoint check exactly: either Tencent COS domain substring is accepted.
@@ -519,7 +626,35 @@ struct AliyunRamCredential {
     AccessKeyId: String,
     AccessKeySecret: String,
     SecurityToken: String,
+    Expiration: Option<String>,
     Code: String,
+}
+
+/// Convert an Alibaba RAM metadata response without losing temporary-credential expiration.
+pub fn parse_aliyun_ram_credential(body: &str) -> Result<Credentials> {
+    let credential: AliyunRamCredential = serde_json::from_str(body)?;
+    if credential.Code != "Success" {
+        return Err(anyhow!(
+            "get credential from Alibaba metadata failed, code={}",
+            credential.Code
+        ));
+    }
+    let expiry = credential
+        .Expiration
+        .as_deref()
+        .map(|value| DateTime::from_str(value, Format::DateTime))
+        .transpose()
+        .context("parse Alibaba RAM credential expiration")?
+        .map(SystemTime::try_from)
+        .transpose()
+        .context("convert Alibaba RAM credential expiration")?;
+    Ok(Credentials::new(
+        credential.AccessKeyId,
+        credential.AccessKeySecret,
+        Some(credential.SecurityToken),
+        expiry,
+        "aliyun-ram-metadata",
+    ))
 }
 
 /// 从阿里云 ECS 元数据服务拉取当前 RAM 角色的临时凭证；失败返回 `Ok(None)`。
@@ -535,21 +670,13 @@ pub fn createOssRAMCred() -> Result<Option<Credentials>> {
     if role.is_empty() {
         return Ok(None);
     }
-    let credential: AliyunRamCredential =
-        match client.get(format!("{ALIYUN_METADATA}{role}")).send() {
-            Ok(response) if response.status().is_success() => response.json()?,
-            Ok(_) | Err(_) => return Ok(None),
-        };
-    if credential.Code != "Success" {
-        return Ok(None);
-    }
-    Ok(Some(Credentials::new(
-        credential.AccessKeyId,
-        credential.AccessKeySecret,
-        Some(credential.SecurityToken),
-        None,
-        "aliyun-ram-metadata",
-    )))
+    let credential = match client.get(format!("{ALIYUN_METADATA}{role}")).send() {
+        Ok(response) if response.status().is_success() => {
+            parse_aliyun_ram_credential(&response.text()?)?
+        }
+        Ok(_) | Err(_) => return Ok(None),
+    };
+    Ok(Some(credential))
 }
 
 /// Detect GCS by explicit provider or the XML API endpoint, independently of

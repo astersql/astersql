@@ -469,9 +469,9 @@ fn standard_retry_classification_matches_aliyun_sdk() {
     assert!(retryer.IsErrorRetryable(&unexpected_eof));
 }
 
-/// prepare_backend：返回保留密钥的副本，并清空入参；禁止外发时拒绝。
+/// prepare_backend preserves the constructor copy; credential mutation follows provider selection.
 #[test]
-fn backend_credentials_are_cleared_without_losing_constructor_copy() {
+fn prepare_backend_preserves_constructor_copy_and_input() {
     let mut backend = s3like::backuppb::S3 {
         AccessKey: "ak".to_owned(),
         SecretAccessKey: "sk".to_owned(),
@@ -480,11 +480,7 @@ fn backend_credentials_are_cleared_without_losing_constructor_copy() {
     };
     let copy = prepare_backend(&mut backend, false).unwrap();
     assert_eq!(copy.AccessKey, "ak");
-    assert!(backend.AccessKey.is_empty());
-    assert!(backend.SecretAccessKey.is_empty());
-    assert!(backend.SessionToken.is_empty());
-
-    let mut denied = copy;
-    let error = prepare_backend(&mut denied, true).unwrap_err();
-    assert!(error.to_string().contains("sending OSS credentials"));
+    assert_eq!(backend.AccessKey, "ak");
+    assert_eq!(backend.SecretAccessKey, "sk");
+    assert_eq!(backend.SessionToken, "token");
 }

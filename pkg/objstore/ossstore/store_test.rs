@@ -436,3 +436,57 @@ fn test_can_use_internal_endpoint() {
     assert!(!can_use_internal_endpoint("cn-beijing", "cn-hangzhou"));
     assert!(can_use_internal_endpoint("cn-hangzhou", "cn-hangzhou"));
 }
+
+#[derive(Clone)]
+struct CountingCredentialsProvider {
+    calls: Arc<AtomicUsize>,
+    result: Result<ProviderCredentials, String>,
+}
+
+impl CredentialsProvider for CountingCredentialsProvider {
+    fn get_credentials(&self) -> Result<ProviderCredentials> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.result.clone().map_err(anyhow::Error::msg)
+    }
+}
+
+/// SendCredentials forwards the provider's current snapshot; disabling it clears the backend
+/// without consulting the provider, and provider failures leave existing fields untouched.
+#[test]
+fn test_set_backend_credentials() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let provider = CountingCredentialsProvider {
+        calls: calls.clone(),
+        result: Ok(ProviderCredentials {
+            access_key_id: "current-access-key".to_owned(),
+            access_key_secret: "current-secret-key".to_owned(),
+            security_token: "current-session-token".to_owned(),
+            provider_name: "test".to_owned(),
+        }),
+    };
+    let mut backend = s3like::backuppb::S3::default();
+    set_backend_credentials(&mut backend, &provider, true).unwrap();
+    assert_eq!(backend.AccessKey, "current-access-key");
+    assert_eq!(backend.SecretAccessKey, "current-secret-key");
+    assert_eq!(backend.SessionToken, "current-session-token");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    set_backend_credentials(&mut backend, &provider, false).unwrap();
+    assert!(backend.AccessKey.is_empty());
+    assert!(backend.SecretAccessKey.is_empty());
+    assert!(backend.SessionToken.is_empty());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    backend.AccessKey = "existing-access-key".to_owned();
+    backend.SecretAccessKey = "existing-secret-key".to_owned();
+    backend.SessionToken = "existing-session-token".to_owned();
+    let failing = CountingCredentialsProvider {
+        calls,
+        result: Err("credentials unavailable".to_owned()),
+    };
+    let error = set_backend_credentials(&mut backend, &failing, true).unwrap_err();
+    assert!(format!("{error:#}").contains("credentials unavailable"));
+    assert_eq!(backend.AccessKey, "existing-access-key");
+    assert_eq!(backend.SecretAccessKey, "existing-secret-key");
+    assert_eq!(backend.SessionToken, "existing-session-token");
+}

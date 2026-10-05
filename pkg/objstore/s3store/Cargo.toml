@@ -23,6 +23,7 @@ prefetch = { package = "astersql-util-prefetch", path = "../../util/prefetch" }
 reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"], default-features = false }
 s3like = { package = "astersql-objstore-s3like", path = "../s3like" }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 storeapi = { package = "astersql-objstore-storeapi", path = "../storeapi" }
 tokio = { version = "1", features = ["rt-multi-thread", "time", "macros"] }
 tracing = "0.1"

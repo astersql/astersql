@@ -30,7 +30,7 @@ use std::collections::VecDeque;
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Result, anyhow};
 use objstore::locking::{ErrLocked, LockMetaInput, TryLockRemote};
@@ -40,6 +40,9 @@ use objstore::parse::{
 use prefetch::reader::ReadCloser;
 use s3like::{ParseRangeInfo, RangeInfo};
 use s3store::*;
+
+use aws_credential_types::Credentials;
+use aws_credential_types::provider::{ProvideCredentials, future};
 
 #[derive(Debug)]
 struct NeverHttpClient;
@@ -785,6 +788,105 @@ fn test_s3_storage() {
     let storage = NewS3StorageForTest(Arc::new(MockS3::default()), &explicit, None);
     assert_eq!(storage.GetOptions().Region, "us-west-2");
     assert_eq!(storage.GetOptions().AccessKey, "ab");
+}
+
+#[derive(Debug)]
+struct TestCredentialsProvider {
+    calls: Arc<AtomicUsize>,
+    result: std::result::Result<Credentials, &'static str>,
+}
+
+impl ProvideCredentials for TestCredentialsProvider {
+    fn provide_credentials<'a>(&'a self) -> future::ProvideCredentials<'a>
+    where
+        Self: 'a,
+    {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let result = self.result.clone().map_err(|message| {
+            aws_credential_types::provider::error::CredentialsError::provider_error(anyhow!(
+                message
+            ))
+        });
+        future::ProvideCredentials::ready(result)
+    }
+}
+
+/// Aliyun endpoints must prefer the complete AWS chain and consult RAM metadata only on failure.
+#[test]
+fn test_aliyun_endpoint_prefers_aws_credential_chain() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let primary_calls = Arc::new(AtomicUsize::new(0));
+    let fallback_calls = Arc::new(AtomicUsize::new(0));
+    let provider = fallback_credentials_provider(
+        TestCredentialsProvider {
+            calls: primary_calls.clone(),
+            result: Ok(Credentials::new(
+                "aws-ak",
+                "aws-sk",
+                Some("aws-token".to_owned()),
+                None,
+                "aws",
+            )),
+        },
+        TestCredentialsProvider {
+            calls: fallback_calls.clone(),
+            result: Ok(Credentials::new(
+                "ram-ak",
+                "ram-sk",
+                Some("ram-token".to_owned()),
+                None,
+                "ram",
+            )),
+        },
+    );
+    let credentials = runtime.block_on(provider.provide_credentials()).unwrap();
+    assert_eq!(credentials.access_key_id(), "aws-ak");
+    assert_eq!(primary_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fallback_calls.load(Ordering::SeqCst), 0);
+}
+
+/// A failed AWS chain falls back once, and Alibaba RAM expiration survives conversion.
+#[test]
+fn test_fallback_credentials_provider_and_ram_expiration() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let fallback_calls = Arc::new(AtomicUsize::new(0));
+    let provider = fallback_credentials_provider(
+        TestCredentialsProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+            result: Err("primary credentials unavailable"),
+        },
+        TestCredentialsProvider {
+            calls: fallback_calls.clone(),
+            result: Ok(Credentials::new(
+                "ram-ak",
+                "ram-sk",
+                Some("ram-token".to_owned()),
+                None,
+                "ram",
+            )),
+        },
+    );
+    let credentials = runtime.block_on(provider.provide_credentials()).unwrap();
+    assert_eq!(credentials.access_key_id(), "ram-ak");
+    assert_eq!(fallback_calls.load(Ordering::SeqCst), 1);
+
+    let credentials = parse_aliyun_ram_credential(
+        r#"{"AccessKeyId":"ram-ak","AccessKeySecret":"ram-sk","SecurityToken":"ram-token","Expiration":"2099-01-02T03:04:05Z","Code":"Success"}"#,
+    )
+    .unwrap();
+    assert_eq!(credentials.access_key_id(), "ram-ak");
+    assert!(credentials.expiry().is_some());
+    assert_eq!(
+        credentials.expiry().unwrap(),
+        SystemTime::try_from(
+            aws_smithy_types::DateTime::from_str(
+                "2099-01-02T03:04:05Z",
+                aws_smithy_types::date_time::Format::DateTime,
+            )
+            .unwrap()
+        )
+        .unwrap()
+    );
 }
 
 #[test]

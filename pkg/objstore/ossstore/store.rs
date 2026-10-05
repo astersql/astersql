@@ -54,20 +54,33 @@ impl OSSStore {
     }
 }
 
-/// 拷贝并清洗后端配置：禁止把 OSS 凭证下发给 TiKV，并清空敏感字段。
+/// Copy the backend before credential forwarding mutates the caller-owned value.
 pub fn prepare_backend(
     backend: &mut s3like::backuppb::S3,
-    send_credentials: bool,
+    _send_credentials: bool,
 ) -> Result<s3like::backuppb::S3> {
-    let copy = backend.clone();
-    if send_credentials {
-        return Err(anyhow!("sending OSS credentials to TiKV is not supported"));
+    Ok(backend.clone())
+}
+
+/// Forward the provider's current credential snapshot, or clear secrets when forwarding is off.
+pub fn set_backend_credentials(
+    backend: &mut s3like::backuppb::S3,
+    provider: &dyn CredentialsProvider,
+    send_credentials: bool,
+) -> Result<()> {
+    if !send_credentials {
+        backend.AccessKey.clear();
+        backend.SecretAccessKey.clear();
+        backend.SessionToken.clear();
+        return Ok(());
     }
-    // 避免凭证残留在可能外传的配置中。
-    backend.AccessKey.clear();
-    backend.SecretAccessKey.clear();
-    backend.SessionToken.clear();
-    Ok(copy)
+    let credential = provider
+        .get_credentials()
+        .context("failed to get OSS credentials to send to TiKV")?;
+    backend.AccessKey = credential.access_key_id;
+    backend.SecretAccessKey = credential.access_key_secret;
+    backend.SessionToken = credential.security_token;
+    Ok(())
 }
 
 /// 按 Region 与是否内网拼出默认 OSS endpoint。
@@ -167,6 +180,8 @@ pub fn NewOSSStorage(
             .context("failed to get initial OSS credentials")?;
         (refresher.clone(), Some(refresher))
     };
+
+    set_backend_credentials(backend, credentials.as_ref(), opts.SendCredentials)?;
 
     let credential = credentials.get_credentials()?;
     let ecs_region_id = metadata_region(&credential.provider_name)?;
