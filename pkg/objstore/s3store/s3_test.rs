@@ -40,6 +40,7 @@ use objstore::parse::{
 use prefetch::reader::ReadCloser;
 use s3like::{ParseRangeInfo, RangeInfo};
 use s3store::*;
+use storeapi::Storage as _;
 
 use aws_credential_types::Credentials;
 use aws_credential_types::provider::{ProvideCredentials, future};
@@ -207,6 +208,7 @@ struct Calls {
     deletes: Vec<DeleteObjectInput>,
     lists: Vec<ListObjectsV2Input>,
     creates: Vec<CreateMultipartUploadInput>,
+    uploads: Vec<UploadPartInput>,
 }
 
 /// GetObject 响应体的行为模式：正常、慢读、失败计数、限量、总失败、交替失败。
@@ -539,6 +541,7 @@ impl S3API for MockS3 {
         input: &UploadPartInput,
         _: RequestOptions,
     ) -> Result<UploadPartOutput> {
+        self.calls.lock().unwrap().uploads.push(input.clone());
         Ok(UploadPartOutput {
             e_tag: Some(format!("etag-{}", input.part_number)),
         })
@@ -966,6 +969,44 @@ fn test_multi_upload_error_not_overwritten() {
     assert_eq!(
         access.traffic.write.load(Ordering::Relaxed),
         data.len() as u64
+    );
+}
+
+#[test]
+/// KS3 并发上传必须按 WriterOption.PartSize 分片，不能把总大小误当成固定 5 MiB。
+fn test_ks3_create_honors_part_size() {
+    const PART_SIZE: usize = 6 * 1024 * 1024;
+
+    let api = Arc::new(MockS3::default());
+    let storage = NewKS3StorageForTest(api.clone(), &options(), None);
+    let ctx = storeapi::Context::default();
+    let mut writer = storage
+        .Create(
+            &ctx,
+            "file",
+            Some(&storeapi::WriterOption {
+                Concurrency: 2,
+                PartSize: PART_SIZE as i64,
+            }),
+        )
+        .unwrap();
+
+    let data = vec![0_u8; 2 * PART_SIZE + 1024];
+    assert_eq!(writer.write(&ctx, &data).unwrap(), data.len());
+    writer.close(&ctx).unwrap();
+
+    let mut uploaded_parts = api
+        .calls
+        .lock()
+        .unwrap()
+        .uploads
+        .iter()
+        .map(|part| (part.part_number, part.body.len()))
+        .collect::<Vec<_>>();
+    uploaded_parts.sort_unstable();
+    assert_eq!(
+        uploaded_parts,
+        vec![(1, PART_SIZE), (2, PART_SIZE), (3, 1024)]
     );
 }
 
