@@ -369,6 +369,7 @@ enum StateCheckStep {
 
 #[derive(Default)]
 struct TwoStateChecks {
+    target_table_id: i64,
     previous: SchemaState,
     visits: usize,
     error: Option<&'static str>,
@@ -377,14 +378,18 @@ struct TwoStateChecks {
 impl TwoStateChecks {
     fn observe(
         &mut self,
+        is_add_column: bool,
+        table_id: i64,
         state: SchemaState,
         mut check: impl FnMut(StateCheckStep) -> Result<(), &'static str>,
     ) {
-        // Retain the later target-state filter from 0079af820ee15bc88759027fcf16dadba5dbfb28.
-        if !matches!(
-            state,
-            SchemaState::DeleteOnly | SchemaState::WriteOnly | SchemaState::WriteReorganization
-        ) || state == self.previous
+        if !is_add_column
+            || table_id != self.target_table_id
+            || !matches!(
+                state,
+                SchemaState::DeleteOnly | SchemaState::WriteOnly | SchemaState::WriteReorganization
+            )
+            || state == self.previous
             || self.error.is_some()
             || self.visits >= 3
         {
@@ -507,7 +512,17 @@ fn test_two_states() {
         let id = two_states_column(&mut table);
         let position = ColumnPosition::After("c3".into());
         let mut version = 0;
-        let mut checks = TwoStateChecks::default();
+        let mut checks = TwoStateChecks {
+            target_table_id: table.id,
+            ..TwoStateChecks::default()
+        };
+        checks.observe(true, table.id + 1, SchemaState::DeleteOnly, |_| {
+            panic!("another table's DDL must not run target checks")
+        });
+        checks.observe(false, table.id, SchemaState::DeleteOnly, |_| {
+            panic!("a non-add-column DDL must not run target checks")
+        });
+        assert_eq!(0, checks.visits);
         let mut steps = Vec::new();
         let mut snapshots = BTreeMap::new();
         let mut check = |step| {
@@ -543,7 +558,7 @@ fn test_two_states() {
                         "Public" => SchemaState::Public,
                         _ => panic!("unexpected production state {observed}"),
                     };
-                    checks.observe(state, |step| {
+                    checks.observe(true, table.id, state, |step| {
                         if let StateCheckStep::Compile(case) = step {
                             snapshots.insert(case, table.clone());
                         } else if let StateCheckStep::Execute(case) = step {
@@ -615,9 +630,12 @@ fn test_two_states_stops_after_check_error() {
         false,
     )
     .unwrap();
-    let mut checks = TwoStateChecks::default();
+    let mut checks = TwoStateChecks {
+        target_table_id: table.id,
+        ..TwoStateChecks::default()
+    };
     let mut called = Vec::new();
-    checks.observe(outcome.schema_state, |step| {
+    checks.observe(true, table.id, outcome.schema_state, |step| {
         called.push(step);
         Err("compile failed")
     });
@@ -629,7 +647,7 @@ fn test_two_states_stops_after_check_error() {
         false,
     )
     .unwrap();
-    checks.observe(outcome.schema_state, |_| {
+    checks.observe(true, table.id, outcome.schema_state, |_| {
         panic!("must preserve first error")
     });
     assert_eq!(Some("compile failed"), checks.error);
