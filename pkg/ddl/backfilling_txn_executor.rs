@@ -27,7 +27,39 @@
 
 use std::collections::VecDeque;
 
+use astersql_distsql_context::{DistSQLContext, WarnAppenderRef, errctx};
+use astersql_meta_model::group_3::DDLReorgMeta;
+
 use crate::backfilling::{BackfillResult, BackfillerType, ReorgBackfillTask};
+
+/// Builds the DistSQL context used by transactional reorganization scans.
+///
+/// Reorganization scans are single-pass bulk reads. Filling TiKV's block cache
+/// with those blocks provides no reuse for the DDL job and may evict the
+/// working set of concurrent foreground queries.
+pub fn new_default_reorg_dist_sql_context(
+    warn_handler: WarnAppenderRef,
+) -> DistSQLContext<'static> {
+    DistSQLContext {
+        WarnHandler: warn_handler.clone(),
+        EnableChunkRPC: true,
+        NotFillCache: true,
+        ErrCtx: errctx::NewContext(warn_handler),
+        ..DistSQLContext::default()
+    }
+}
+
+/// Builds a reorganization DistSQL context and applies the persisted job
+/// metadata that affects request attribution.
+pub fn new_reorg_dist_sql_context_with_reorg_meta(
+    reorg_meta: &DDLReorgMeta,
+    warn_handler: WarnAppenderRef,
+) -> DistSQLContext<'static> {
+    DistSQLContext {
+        ResourceGroupName: reorg_meta.ResourceGroupName.clone(),
+        ..new_default_reorg_dist_sql_context(warn_handler)
+    }
+}
 
 /// 回填工作者数量的硬上限，避免并发过高导致资源争用。
 pub const MAX_BACKFILL_WORKER_SIZE: usize = 16;

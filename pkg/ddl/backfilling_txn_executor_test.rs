@@ -25,8 +25,29 @@
 use crate::backfilling::BackfillerType;
 use crate::backfilling_txn_executor::{
     ExecutorError, MAX_BACKFILL_WORKER_SIZE, ReorgMeta, SessionContext, TaskIdAllocator,
-    TxnBackfillExecutor, expected_ingest_worker_count,
+    TxnBackfillExecutor, expected_ingest_worker_count, new_default_reorg_dist_sql_context,
+    new_reorg_dist_sql_context_with_reorg_meta,
 };
+
+#[test]
+fn reorg_dist_sql_contexts_do_not_fill_tikv_block_cache() {
+    use std::sync::Arc;
+
+    use astersql_distsql_context::contextutil::NewStaticWarnHandler;
+    use astersql_meta_model::group_3::DDLReorgMeta;
+
+    let default = new_default_reorg_dist_sql_context(Arc::new(NewStaticWarnHandler(0)));
+    assert!(default.NotFillCache);
+
+    let metadata = DDLReorgMeta {
+        ResourceGroupName: "ddl".to_owned(),
+        ..DDLReorgMeta::default()
+    };
+    let with_metadata =
+        new_reorg_dist_sql_context_with_reorg_meta(&metadata, Arc::new(NewStaticWarnHandler(0)));
+    assert!(with_metadata.NotFillCache);
+    assert_eq!(with_metadata.ResourceGroupName, "ddl");
+}
 
 /// 验证不同并发度、行大小、全局排序开关组合下的 worker 数量计算结果。
 #[test]

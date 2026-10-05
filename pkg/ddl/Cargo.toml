@@ -18,6 +18,7 @@ astersql-types = { path = "../types" }
 astersql-metrics = { path = "../metrics" }
 astersql-ddl-ingest = { path = "ingest" }
 astersql-dxf-framework-handle = { path = "../dxf/framework/handle" }
+"astersql-distsql-context" = { package = "astersql-distsql-context", path = "../distsql/context" }
 astersql-ddl-placement = { path = "placement" }
 astersql-table-tables = { path = "../table/tables" }
 astersql-tablecodec = { path = "../tablecodec" }
@@ -75,7 +76,6 @@ astersql-store-mockstore-mockstorage = { path = "../store/mockstore/mockstorage"
 "astersql-ddl-testargsv1" = { package = "astersql-ddl-testargsv1", path = "testargsv1" }
 "astersql-ddl-util" = { package = "astersql-ddl-util", path = "util" }
 "astersql-distsql" = { package = "astersql-distsql", path = "../distsql" }
-"astersql-distsql-context" = { package = "astersql-distsql-context", path = "../distsql/context" }
 "astersql-domain-affinity" = { package = "astersql-domain-affinity", path = "../domain/affinity" }
 "astersql-domain-infosync" = { package = "astersql-domain-infosync", path = "../domain/infosync" }
 "astersql-dxf-framework-dxfmetric" = { package = "astersql-dxf-framework-dxfmetric", path = "../dxf/framework/dxfmetric" }
