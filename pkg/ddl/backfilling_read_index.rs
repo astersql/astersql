@@ -175,6 +175,8 @@ pub enum ReadIndexError {
     InvalidRange,
     /// ingest 后端已关闭，无法继续写入。
     BackendClosed,
+    /// Local-sort disk probing or admission failed during initialization.
+    LocalSortDisk(String),
 }
 
 /// read-index 步骤执行器：驱动子任务扫描行数据并生成索引 KV。
@@ -202,6 +204,10 @@ pub struct ReadIndexStepExecutor {
     pub batch_size: usize,
     /// 写入速度上限（字节/秒），0 表示不限速。
     pub max_write_speed: usize,
+    /// TiDB executor node identifier used in local-sort admission errors.
+    pub exec_id: String,
+    /// Effective DXF slots whose local-sort headroom must be admitted.
+    pub runtime_slots: i32,
     /// 当前子任务的统计汇总。
     pub summary: SubtaskSummary,
     /// 各索引 ID 到其汇总产出的映射。
@@ -227,6 +233,8 @@ impl ReadIndexStepExecutor {
             use_cloud_storage: false,
             batch_size: 256,
             max_write_speed: 0,
+            exec_id: String::new(),
+            runtime_slots: 0,
             summary: SubtaskSummary::default(),
             summary_map: BTreeMap::new(),
             pipeline: None,
@@ -237,11 +245,30 @@ impl ReadIndexStepExecutor {
 
     /// 初始化执行器：记录云存储 URI 并打开 ingest 后端。
     /// URI 长度非零即视为启用云存储模式，与 Go 的 `len(uri) > 0` 一致。
-    pub fn init(&mut self, cloud_storage_uri: impl Into<String>) {
+    pub fn init(&mut self, cloud_storage_uri: impl Into<String>) -> Result<(), ReadIndexError> {
         self.cloud_storage_uri = cloud_storage_uri.into();
         self.use_cloud_storage = !self.cloud_storage_uri.is_empty();
+        if !self.use_cloud_storage && !self.exec_id.is_empty() {
+            let path = astersql_ddl_ingest::env::ingest_temp_data_dir().ok_or_else(|| {
+                ReadIndexError::LocalSortDisk("ingest environment is not initialized".into())
+            })?;
+            astersql_ddl_ingest::disk_root::check_local_sort_disk_space_at_path(
+                &self.exec_id,
+                &path,
+                self.runtime_slots,
+                100 * 1024 * 1024 * 1024,
+            )
+            .map_err(ReadIndexError::LocalSortDisk)?;
+        }
         self.backend_open = true;
         self.initialized = true;
+        Ok(())
+    }
+
+    /// Attaches the node and effective task slots supplied by the DXF base executor.
+    pub fn set_runtime_context(&mut self, exec_id: impl Into<String>, runtime_slots: i32) {
+        self.exec_id = exec_id.into();
+        self.runtime_slots = runtime_slots;
     }
 
     /// 执行一个回填子任务。

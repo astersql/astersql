@@ -27,6 +27,9 @@ use std::sync::{Arc, Mutex};
 /// 磁盘容量占用阈值：当占用超过该比例时视为接近写满。
 pub const CAPACITY_THRESHOLD: f64 = 0.9;
 
+/// Go reserves two GiB of local-sort headroom per effective DXF runtime slot.
+pub const LOCAL_SORT_HEADROOM_BYTES_PER_SLOT: u64 = 2 * 1024 * 1024 * 1024;
+
 const DEFAULT_DDL_DISK_QUOTA: u64 = 100 * 1024 * 1024 * 1024;
 
 /// Mirrors Go's test-only `TrackerCountForTest` counter.
@@ -178,5 +181,91 @@ impl DiskRoot {
 
 /// 判断磁盘是否存在写满风险：可用空间低于总容量的 1/10 时视为高风险。
 pub fn risk_of_disk_full(available: u64, capacity: u64) -> bool {
-    (available as f64) < (1.0 - CAPACITY_THRESHOLD) * (capacity as f64)
+    available < min_free_disk_bytes(capacity)
+}
+
+/// Returns the minimum free bytes using Go's `capacity - uint64(float64(capacity)*0.9)`
+/// conversion order. This deliberately preserves its rounding boundary.
+pub fn min_free_disk_bytes(capacity: u64) -> u64 {
+    capacity.wrapping_sub((capacity as f64 * CAPACITY_THRESHOLD) as u64)
+}
+
+/// Inputs to the deterministic local-sort admission calculation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LocalSortDiskSpaceCheck<'a> {
+    pub exec_id: &'a str,
+    pub sort_path: &'a str,
+    pub available_bytes: u64,
+    pub total_capacity_bytes: u64,
+    pub current_task_runtime_slots: i32,
+    pub ddl_disk_quota: u64,
+}
+
+/// Error returned when the filesystem was measured successfully but local sort
+/// does not have the headroom required by the current DXF task.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalSortDiskSpaceError(String);
+
+impl LocalSortDiskSpaceError {
+    pub const fn is_ingest_check_env_failed(&self) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Display for LocalSortDiskSpaceError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for LocalSortDiskSpaceError {}
+
+/// Applies the Go local-sort disk admission rule after the filesystem probe.
+pub fn check_local_sort_disk_space(
+    check: LocalSortDiskSpaceCheck<'_>,
+) -> Result<(), LocalSortDiskSpaceError> {
+    let task_headroom = (check.current_task_runtime_slots as u64)
+        .wrapping_mul(LOCAL_SORT_HEADROOM_BYTES_PER_SLOT)
+        .min(check.ddl_disk_quota);
+    let free_threshold =
+        min_free_disk_bytes(check.total_capacity_bytes).wrapping_add(task_headroom);
+    if check.available_bytes > free_threshold {
+        return Ok(());
+    }
+
+    let message = format!(
+        "insufficient free disk space on TiDB node {} at {}: {} bytes available; available free disk space must be greater than {} bytes; the add-index job cannot start because low disk space would degrade SST ingestion. Free disk space on this TiDB node by removing unnecessary logs or files",
+        check.exec_id, check.sort_path, check.available_bytes, free_threshold
+    );
+    let classified = astersql_util_dbterror::ErrIngestCheckEnvFailed
+        .GenWithStackByArgs(&[message.into()])
+        .to_string();
+    Err(LocalSortDiskSpaceError(classified))
+}
+
+/// Probes a concrete local-sort path and then applies the admission rule.
+/// Probe failures stay plain strings so the distributed executor may retry;
+/// confirmed low space remains an ingest-environment error.
+pub fn check_local_sort_disk_space_at_path(
+    exec_id: &str,
+    sort_path: &std::path::Path,
+    current_task_runtime_slots: i32,
+    ddl_disk_quota: u64,
+) -> Result<(), String> {
+    std::fs::create_dir_all(sort_path).map_err(|error| error.to_string())?;
+    let total_capacity_bytes = fs2::total_space(sort_path).map_err(|error| error.to_string())?;
+    let available_bytes = fs2::available_space(sort_path).map_err(|error| error.to_string())?;
+    let result = check_local_sort_disk_space(LocalSortDiskSpaceCheck {
+        exec_id,
+        sort_path: &sort_path.to_string_lossy(),
+        available_bytes,
+        total_capacity_bytes,
+        current_task_runtime_slots,
+        ddl_disk_quota,
+    });
+    if cfg!(target_os = "macos") {
+        Ok(())
+    } else {
+        result.map_err(|error| error.to_string())
+    }
 }

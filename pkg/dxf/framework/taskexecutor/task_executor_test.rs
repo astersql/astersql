@@ -1184,6 +1184,12 @@ fn test_task_base_get_runtime_slots() {
 }
 
 #[test]
+fn test_base_task_executor_exposes_exec_id_for_step_initialization() {
+    let e = new_env();
+    assert_eq!("id", e.executor.GetExecID());
+}
+
+#[test]
 fn test_subtask_run_logs_failure_and_no_error_on_success() {
     for error in [Some(ExecutorError("disk failed".into())), None] {
         let e = new_env();

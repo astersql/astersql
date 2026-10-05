@@ -16,7 +16,10 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::disk_root::{DiskRoot, ResourceTracker, risk_of_disk_full};
+use crate::disk_root::{
+    DiskRoot, LOCAL_SORT_HEADROOM_BYTES_PER_SLOT, LocalSortDiskSpaceCheck, ResourceTracker,
+    check_local_sort_disk_space, min_free_disk_bytes, risk_of_disk_full,
+};
 
 struct Tracker(AtomicU64);
 
@@ -64,9 +67,57 @@ fn import_decision_uses_quota_and_used_capacity_not_available_bytes() {
 
 #[test]
 fn risk_threshold_matches_go_floating_point_boundary() {
+    assert_eq!(min_free_disk_bytes(100), 10);
+    assert_eq!(min_free_disk_bytes(101), 11);
     assert!(risk_of_disk_full(0, 9));
     assert!(!risk_of_disk_full(10, 100));
     assert!(risk_of_disk_full(9, 100));
+    assert!(!risk_of_disk_full(11, 101));
+    assert!(risk_of_disk_full(10, 101));
+}
+
+#[test]
+fn local_sort_disk_space_matches_go_threshold_quota_and_message() {
+    const GIB: u64 = 1024 * 1024 * 1024;
+    const EXEC_ID: &str = "10.0.1.8:4000";
+
+    let check = |available_bytes, total_capacity_bytes, runtime_slots, quota| {
+        check_local_sort_disk_space(LocalSortDiskSpaceCheck {
+            exec_id: EXEC_ID,
+            sort_path: "/tmp/local-sort",
+            available_bytes,
+            total_capacity_bytes,
+            current_task_runtime_slots: runtime_slots,
+            ddl_disk_quota: quota,
+        })
+    };
+
+    assert!(check(7 * GIB, 20 * GIB, 2, 100 * GIB).is_ok());
+    let equal = check(6 * GIB, 20 * GIB, 2, 100 * GIB).unwrap_err();
+    assert!(equal.is_ingest_check_env_failed());
+    assert!(equal.to_string().contains(
+        "6442450944 bytes available; available free disk space must be greater than 6442450944 bytes"
+    ));
+    assert!(!equal.to_string().contains("bytes required"));
+
+    assert!(check(2 * GIB, 10 * GIB, 1, 100 * GIB).is_err());
+    assert!(check(121 * GIB, 200 * GIB, 60, 100 * GIB).is_ok());
+    assert!(check(120 * GIB, 200 * GIB, 60, 100 * GIB).is_err());
+
+    let user_error = check(GIB, GIB, 1, 100 * GIB).unwrap_err().to_string();
+    assert!(user_error.contains(
+        "insufficient free disk space on TiDB node 10.0.1.8:4000 at /tmp/local-sort: 1073741824 bytes available; available free disk space must be greater than 2254857831 bytes"
+    ));
+    assert!(user_error.contains(
+        "the add-index job cannot start because low disk space would degrade SST ingestion"
+    ));
+    assert!(
+        user_error
+            .contains("Free disk space on this TiDB node by removing unnecessary logs or files")
+    );
+    assert!(!user_error.contains("runtime slots"));
+    assert!(!user_error.contains("bytes per slot"));
+    assert_eq!(LOCAL_SORT_HEADROOM_BYTES_PER_SLOT, 2 * GIB);
 }
 
 #[test]

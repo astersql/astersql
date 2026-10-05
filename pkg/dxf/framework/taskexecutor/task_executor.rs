@@ -571,6 +571,10 @@ impl BaseTaskExecutor {
             .TaskBase
             .clone()
     }
+    /// Returns the executor node identifier (normally `IP:port`).
+    pub fn GetExecID(&self) -> &str {
+        &self.Param.execID
+    }
     /// 标记取消当前子任务步骤。
     pub fn CancelRunningSubtask(&self) {
         self.cancelRunStepWith(ErrCancelSubtask())

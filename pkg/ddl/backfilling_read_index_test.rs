@@ -22,7 +22,7 @@ use crate::backfilling_read_index::{
 fn nonempty_cloud_uri_uses_global_sort_like_go() {
     let mut executor = ReadIndexStepExecutor::new(1, vec![11], 7);
 
-    executor.init("   ");
+    executor.init("   ").unwrap();
 
     assert!(executor.use_cloud_storage);
 }
@@ -30,7 +30,7 @@ fn nonempty_cloud_uri_uses_global_sort_like_go() {
 #[test]
 fn cloud_task_meta_change_does_not_update_local_backend_speed() {
     let mut executor = ReadIndexStepExecutor::new(1, vec![11], 7);
-    executor.init("s3://bucket/prefix");
+    executor.init("s3://bucket/prefix").unwrap();
     executor.max_write_speed = 100;
 
     executor.task_meta_modified(512, 200);
@@ -42,7 +42,7 @@ fn cloud_task_meta_change_does_not_update_local_backend_speed() {
 #[test]
 fn global_sort_completion_records_all_index_ids_in_subtask_meta() {
     let mut executor = ReadIndexStepExecutor::new(1, vec![11, 12], 7);
-    executor.init("s3://bucket/prefix");
+    executor.init("s3://bucket/prefix").unwrap();
     let mut subtask = Subtask::default();
 
     executor
