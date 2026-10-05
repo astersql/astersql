@@ -511,7 +511,7 @@ fn refresh_cache(handle: Arc<TestHandle>, quota: bool) -> crate::StatsCacheImpl 
 }
 
 #[test]
-fn go_merge_47_selects_stats_meta_index_for_refresh_mode() {
+fn refresh_selects_stats_meta_index_for_refresh_mode() {
     for (ids, hint) in [(Vec::new(), "idx_ver"), (vec![7], "tbl")] {
         let handle = Arc::new(TestHandle::new(Vec::new()));
         let cache = refresh_cache(handle.clone(), false);
