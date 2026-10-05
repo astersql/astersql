@@ -384,3 +384,17 @@ fn dist_sql_cache_reset_preserves_statement_counters_and_warnings() {
     assert_eq!(sc.AffectedRows(), 3);
     assert_eq!(sc.GetWarnings().len(), 1);
 }
+
+#[test]
+fn engine_round_signals_mark_and_reset_together() {
+    let sc = NewStmtCtx();
+    sc.MarkAlternativeLogicalPlanMixedStorageEngines();
+    sc.MarkAlternativeLogicalPlanMissingTiFlashPath();
+    sc.MarkAlternativeLogicalPlanHasStoreTypeHint();
+    assert_eq!(sc.AlternativeLogicalPlanEngineSignals(), (true, true, true));
+    sc.ResetAlternativeRoundSignals();
+    assert_eq!(
+        sc.AlternativeLogicalPlanEngineSignals(),
+        (false, false, false)
+    );
+}

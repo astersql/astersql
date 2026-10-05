@@ -27,6 +27,85 @@ use types::datum::Datum;
 
 use crate::PhysPlanPartInfo;
 
+/// Reports whether a physical tree reads from TiKV and/or TiFlash.
+pub fn StorageEngineUsage(plan: &dyn PhysicalPlan) -> (bool, bool) {
+    if let Some(reader) = plan.as_any().downcast_ref::<crate::PhysicalTableReader>() {
+        return (
+            reader.StoreType == kv::StoreType::TiKV,
+            reader.StoreType == kv::StoreType::TiFlash,
+        );
+    }
+    if plan.as_any().is::<crate::PhysicalIndexReader>()
+        || plan.as_any().is::<crate::PhysicalIndexLookUpReader>()
+        || plan.as_any().is::<crate::PhysicalIndexMergeReader>()
+        || plan.as_any().is::<crate::PointGetPlan>()
+        || plan.as_any().is::<crate::BatchPointGetPlan>()
+    {
+        return (true, false);
+    }
+    let mut usage = (false, false);
+    if let Some(cte) = plan.as_any().downcast_ref::<crate::PhysicalCTE>() {
+        let seed = StorageEngineUsage(cte.CTE.SeedPlan.as_ref());
+        usage.0 |= seed.0;
+        usage.1 |= seed.1;
+        if let Some(recursive) = cte.CTE.RecurPlan.as_deref() {
+            let recursive = StorageEngineUsage(recursive);
+            usage.0 |= recursive.0;
+            usage.1 |= recursive.1;
+        }
+    }
+    for child in plan.children() {
+        let child_usage = StorageEngineUsage(child);
+        usage.0 |= child_usage.0;
+        usage.1 |= child_usage.1;
+    }
+    usage
+}
+
+fn is_single_scan_read(mut plan: &dyn PhysicalPlan) -> bool {
+    loop {
+        if plan.as_any().is::<crate::PhysicalIndexReader>() {
+            return true;
+        }
+        if let Some(reader) = plan.as_any().downcast_ref::<crate::PhysicalTableReader>() {
+            return reader.StoreType == kv::StoreType::TiKV;
+        }
+        if plan.as_any().is::<crate::PhysicalIndexLookUpReader>()
+            || plan.as_any().is::<crate::PhysicalIndexMergeReader>()
+        {
+            return false;
+        }
+        let children = plan.children();
+        if children.len() != 1 {
+            return false;
+        }
+        plan = children[0];
+    }
+}
+
+/// Reports whether an index join probes a handle or covering index in one scan.
+pub fn HasSingleScanIndexJoin(plan: &dyn PhysicalPlan) -> bool {
+    if let Some(join) = crate::index_join_base(plan) {
+        let children = join.children();
+        if let Some(inner) = children.get(join.BasePhysicalJoin.InnerChildIdx)
+            && is_single_scan_read(*inner)
+        {
+            return true;
+        }
+    }
+    if let Some(cte) = plan.as_any().downcast_ref::<crate::PhysicalCTE>()
+        && (HasSingleScanIndexJoin(cte.CTE.SeedPlan.as_ref())
+            || cte
+                .CTE
+                .RecurPlan
+                .as_deref()
+                .is_some_and(HasSingleScanIndexJoin))
+    {
+        return true;
+    }
+    plan.children().into_iter().any(HasSingleScanIndexJoin)
+}
+
 /// 批量克隆物理计划树（换绑同一 Context）。
 pub fn ClonePhysicalPlan(
     context: ContextRef,

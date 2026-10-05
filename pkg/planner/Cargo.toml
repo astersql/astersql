@@ -21,6 +21,7 @@ legacy-tasks = ["task-1186"]
 "astersql-planner-core" = { package = "astersql-planner-core", path = "core" }
 "astersql-planner-core-base" = { package = "astersql-planner-core-base", path = "core/base" }
 "astersql-planner-core-operator-logicalop" = { package = "astersql-planner-core-operator-logicalop", path = "core/operator/logicalop" }
+"astersql-planner-core-operator-physicalop" = { package = "astersql-planner-core-operator-physicalop", path = "core/operator/physicalop" }
 "astersql-planner-core-resolve" = { package = "astersql-planner-core-resolve", path = "core/resolve" }
 "astersql-planner-core-rule" = { package = "astersql-planner-core-rule", path = "core/rule" }
 "astersql-planner-indexadvisor" = { package = "astersql-planner-indexadvisor", path = "indexadvisor" }

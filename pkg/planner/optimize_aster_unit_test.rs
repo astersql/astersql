@@ -308,6 +308,7 @@ fn alternative_round_eligibility_matches_go_conditions() {
         semi_join_rewrite: true,
         fts_like_fallback: true,
         predicate_context_match: true,
+        ..AlternativeSignals::default()
     };
     assert!(!shouldTryNonDecorrelationRound(&vars, all));
     assert!(!shouldTryOrderAwareReorderRound(&vars, all));
@@ -337,6 +338,50 @@ fn alternative_round_eligibility_matches_go_conditions() {
         ..Default::default()
     };
     assert!(shouldTryFtsLikeFallbackRound(&vars, predicate_only));
+}
+
+#[test]
+fn engine_restricted_round_gates_match_go() {
+    let mut vars = SessionVars::new();
+    vars.EnableAlternativeLogicalPlans = true;
+    vars.AllowMPPExecution = true;
+    let signals = AlternativeSignals {
+        mixed_storage_engines: true,
+        ..AlternativeSignals::default()
+    };
+    assert!(shouldTryTiKVOnlyRound(&vars, signals));
+    assert!(shouldTryTiFlashOnlyRound(&vars, signals));
+
+    assert!(!shouldTryTiKVOnlyRound(
+        &vars,
+        AlternativeSignals {
+            has_store_type_hint: true,
+            ..signals
+        }
+    ));
+    assert!(!shouldTryTiFlashOnlyRound(
+        &vars,
+        AlternativeSignals {
+            missing_tiflash_path: true,
+            ..signals
+        }
+    ));
+    vars.EnforceMPPExecution = true;
+    assert!(!shouldTryTiKVOnlyRound(&vars, signals));
+}
+
+#[test]
+fn engine_round_guard_restores_isolation_read_engines() {
+    let vars = SessionVars::new();
+    let original = vars.GetIsolationReadEngines();
+    {
+        let _guard = AlternativeRoundGuard::setup(&vars, AlternativeRoundKind::TiKVOnly);
+        assert_eq!(
+            vars.GetIsolationReadEngines(),
+            HashSet::from([astersql_kv::StoreType::TiKV, astersql_kv::StoreType::TiDB])
+        );
+    }
+    assert_eq!(vars.GetIsolationReadEngines(), original);
 }
 
 /// FastPlan 仅在隔离读引擎包含 TiKV 时尝试。

@@ -36,9 +36,11 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use base::PhysicalPlan;
 
 use crate::{
-    CalcChildExpectedCnt, FlattenListPushDownPlan, FlattenTreePushDownPlan, GetTblStats,
-    PhysicalIndexLookUpReader, PhysicalIndexScan, PhysicalLimit, PhysicalProjection,
-    PhysicalTableReader, PhysicalTableScan,
+    BasePhysicalJoin, BasePhysicalPlan, CalcChildExpectedCnt, FlattenListPushDownPlan,
+    FlattenTreePushDownPlan, GetTblStats, HasSingleScanIndexJoin, PhysicalIndexJoin,
+    PhysicalIndexLookUpReader, PhysicalIndexReader, PhysicalIndexScan, PhysicalLimit,
+    PhysicalProjection, PhysicalSchemaProducer, PhysicalTableReader, PhysicalTableScan,
+    StorageEngineUsage,
 };
 
 /// 最小 PlanContext：分配计划 ID，并提供优化器变量记录所需的 SessionVars。
@@ -74,6 +76,43 @@ impl base::PlanContext for TestPlanContext {
     fn BuiltinFunctionUsageInc(&self, scalar_func_sig_name: &str) {
         self.1.Inc(scalar_func_sig_name)
     }
+}
+
+fn index_join(inner: Box<dyn PhysicalPlan>) -> PhysicalIndexJoin {
+    let ctx = context();
+    let producer = PhysicalSchemaProducer::New(BasePhysicalPlan::New(ctx.clone(), "IndexJoin", 0));
+    let mut join = PhysicalIndexJoin::New(BasePhysicalJoin::New(
+        producer,
+        base::JoinType::InnerJoin,
+    ))
+    .Init(ctx.clone(), property::StatsInfo::default(), 0, Vec::new());
+    join.BasePhysicalJoin.InnerChildIdx = 1;
+    join.set_children(vec![Box::new(PhysicalTableReader::New(ctx)), inner]);
+    join
+}
+
+#[test]
+fn storage_engine_usage_reports_reader_boundaries() {
+    let ctx = context();
+    let mut root = PhysicalProjection::New(ctx.clone());
+    let tikv = PhysicalTableReader::New(ctx.clone());
+    let mut tiflash = PhysicalTableReader::New(ctx);
+    tiflash.StoreType = kv::StoreType::TiFlash;
+    root.set_children(vec![Box::new(tikv), Box::new(tiflash)]);
+    assert_eq!(StorageEngineUsage(&root), (true, true));
+}
+
+#[test]
+fn single_scan_index_join_distinguishes_covering_and_double_reads() {
+    assert!(HasSingleScanIndexJoin(&index_join(Box::new(
+        PhysicalIndexReader::New(context())
+    ))));
+    assert!(HasSingleScanIndexJoin(&index_join(Box::new(
+        PhysicalTableReader::New(context())
+    ))));
+    assert!(!HasSingleScanIndexJoin(&index_join(Box::new(
+        PhysicalIndexLookUpReader::New(context())
+    ))));
 }
 
 /// 构造测试用 ContextRef。

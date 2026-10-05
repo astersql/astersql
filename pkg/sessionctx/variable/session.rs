@@ -765,6 +765,7 @@ struct AlternativeRoundOverrides {
     enable_correlate_subquery: Option<bool>,
     enable_semi_join_rewrite: Option<bool>,
     fts_like_fallback: Option<bool>,
+    isolation_read_engines: Option<HashSet<kv::StoreType>>,
 }
 
 impl crate::GlobalVarAccessor for DefaultGlobalVarAccessor {
@@ -1005,6 +1006,15 @@ impl SessionVars {
     }
     /// 返回隔离读允许的存储引擎集合。
     pub fn GetIsolationReadEngines(&self) -> HashSet<kv::StoreType> {
+        if let Some(engines) = self
+            .alternative_round_overrides
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .isolation_read_engines
+            .clone()
+        {
+            return engines;
+        }
         if self.StmtCtx.TiFlashEngineRemovedDueToStrictSQLMode {
             return self.IsolationReadEngines.clone();
         }
@@ -1615,6 +1625,17 @@ impl SessionVars {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         std::mem::replace(&mut overrides.fts_like_fallback, value)
+    }
+    /// 设置/取出引擎限定替代轮的隔离读引擎覆盖。
+    pub fn SetAlternativeIsolationReadEnginesOverride(
+        &self,
+        value: Option<HashSet<kv::StoreType>>,
+    ) -> Option<HashSet<kv::StoreType>> {
+        let mut overrides = self
+            .alternative_round_overrides
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::mem::replace(&mut overrides.isolation_read_engines, value)
     }
     /// 备选轮是否启用相关子查询（覆盖优先于会话默认）。
     pub fn AlternativeCorrelateEnabled(&self) -> bool {

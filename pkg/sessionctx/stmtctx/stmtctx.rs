@@ -573,6 +573,9 @@ pub struct StatementContext {
     AlternativeLogicalPlanSemiJoinRewrite: AtomicBool,
     AlternativeLogicalPlanFTSLikeFallback: AtomicBool,
     AlternativeLogicalPlanHasPredicateContextMatch: AtomicBool,
+    AlternativeLogicalPlanMixedStorageEngines: AtomicBool,
+    AlternativeLogicalPlanMissingTiFlashPath: AtomicBool,
+    AlternativeLogicalPlanHasStoreTypeHint: AtomicBool,
     pub FTSFunctionIsUsed: bool,
     pub IsExplainAnalyzeDML: bool,
     pub InHandleForeignKeyTrigger: AtomicBool,
@@ -778,6 +781,9 @@ impl StatementContext {
             AlternativeLogicalPlanSemiJoinRewrite: AtomicBool::new(false),
             AlternativeLogicalPlanFTSLikeFallback: AtomicBool::new(false),
             AlternativeLogicalPlanHasPredicateContextMatch: AtomicBool::new(false),
+            AlternativeLogicalPlanMixedStorageEngines: AtomicBool::new(false),
+            AlternativeLogicalPlanMissingTiFlashPath: AtomicBool::new(false),
+            AlternativeLogicalPlanHasStoreTypeHint: AtomicBool::new(false),
             FTSFunctionIsUsed: false,
             IsExplainAnalyzeDML: false,
             InHandleForeignKeyTrigger: AtomicBool::new(false),
@@ -1033,6 +1039,12 @@ impl StatementContext {
             .store(false, Ordering::Release);
         self.AlternativeLogicalPlanHasPredicateContextMatch
             .store(false, Ordering::Release);
+        self.AlternativeLogicalPlanMixedStorageEngines
+            .store(false, Ordering::Release);
+        self.AlternativeLogicalPlanMissingTiFlashPath
+            .store(false, Ordering::Release);
+        self.AlternativeLogicalPlanHasStoreTypeHint
+            .store(false, Ordering::Release);
         self.AlternativeLogicalPlanPreferCorrelate
             .store(false, Ordering::Release);
     }
@@ -1176,6 +1188,36 @@ impl StatementContext {
     pub fn MarkAlternativeLogicalPlanSemiJoinRewrite(&self) {
         self.AlternativeLogicalPlanSemiJoinRewrite
             .store(true, Ordering::Release);
+    }
+
+    /// 记录默认轮物理计划同时使用 TiKV 与 TiFlash。
+    pub fn MarkAlternativeLogicalPlanMixedStorageEngines(&self) {
+        self.AlternativeLogicalPlanMixedStorageEngines
+            .store(true, Ordering::Release);
+    }
+
+    /// 记录至少一个数据源缺少 TiFlash 访问路径。
+    pub fn MarkAlternativeLogicalPlanMissingTiFlashPath(&self) {
+        self.AlternativeLogicalPlanMissingTiFlashPath
+            .store(true, Ordering::Release);
+    }
+
+    /// 记录语句含显式 READ_FROM_STORAGE 引擎提示。
+    pub fn MarkAlternativeLogicalPlanHasStoreTypeHint(&self) {
+        self.AlternativeLogicalPlanHasStoreTypeHint
+            .store(true, Ordering::Release);
+    }
+
+    /// 一次性读取引擎限定替代轮所需的三个信号。
+    pub fn AlternativeLogicalPlanEngineSignals(&self) -> (bool, bool, bool) {
+        (
+            self.AlternativeLogicalPlanMixedStorageEngines
+                .load(Ordering::Acquire),
+            self.AlternativeLogicalPlanMissingTiFlashPath
+                .load(Ordering::Acquire),
+            self.AlternativeLogicalPlanHasStoreTypeHint
+                .load(Ordering::Acquire),
+        )
     }
 
     /// 本语句上下文唯一 ID。

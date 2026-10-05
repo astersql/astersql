@@ -4833,6 +4833,26 @@ fn build_table_source_runtime(
         source.PreferStoreType |= hint::PreferTiKV as i32;
         source.ForceTiKVPath();
     }
+    if source.PreferStoreType != 0 {
+        builder
+            .ctx
+            .GetSessionVars()
+            .StmtCtx
+            .MarkAlternativeLogicalPlanHasStoreTypeHint();
+    }
+    if builder.ctx.GetSessionVars().EnableAlternativeLogicalPlans
+        && (source.IsForUpdateRead
+            || !source
+                .PossibleAccessPaths
+                .iter()
+                .any(|path| path.StoreType == kv_dependency::StoreType::TiFlash))
+    {
+        builder
+            .ctx
+            .GetSessionVars()
+            .StmtCtx
+            .MarkAlternativeLogicalPlanMissingTiFlashPath();
+    }
     let result_table_info = source.TableInfo.Clone();
     if source.TableInfo.TableCacheStatusType == expression::model::TableCacheStatusEnable {
         if source.HandleCols.is_none() && source.UnMutableHandleCols.is_none() {

@@ -6323,6 +6323,7 @@ dependencies = [
  "astersql-planner-core",
  "astersql-planner-core-base",
  "astersql-planner-core-operator-logicalop",
+ "astersql-planner-core-operator-physicalop",
  "astersql-planner-core-resolve",
  "astersql-planner-core-rule",
  "astersql-planner-indexadvisor",
@@ -8260,6 +8261,7 @@ dependencies = [
  "astersql-util-logutil",
  "astersql-util-naming",
  "astersql-util-sqlexec",
+ "serde_json",
 ]
 
 [[package]]

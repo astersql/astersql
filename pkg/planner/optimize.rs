@@ -41,6 +41,7 @@ use astersql_parser_ast as ast;
 use astersql_planner_core as core;
 use astersql_planner_core_base as base;
 use astersql_planner_core_operator_logicalop as logicalop;
+use astersql_planner_core_operator_physicalop as physicalop;
 use astersql_planner_core_resolve as resolve;
 use astersql_planner_core_rule as rule;
 use astersql_sessionctx_stmtctx::{self as stmtctx, LogicalPlanBuildState, TableEntry};
@@ -1263,6 +1264,8 @@ enum AlternativeRoundKind {
     Correlate,
     SemiJoinRewrite,
     FtsLikeFallback,
+    TiKVOnly,
+    TiFlashOnly,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1272,8 +1275,8 @@ struct AlternativeRound {
     kind: AlternativeRoundKind,
 }
 
-/// 固定顺序的五类替代逻辑计划轮次。
-const ALTERNATIVE_ROUNDS: [AlternativeRound; 5] = [
+/// 固定顺序的七类替代逻辑计划轮次。
+const ALTERNATIVE_ROUNDS: [AlternativeRound; 7] = [
     AlternativeRound {
         name: "non-decorrelate",
         kind: AlternativeRoundKind::NonDecorrelate,
@@ -1294,6 +1297,14 @@ const ALTERNATIVE_ROUNDS: [AlternativeRound; 5] = [
         name: "fts-like-fallback",
         kind: AlternativeRoundKind::FtsLikeFallback,
     },
+    AlternativeRound {
+        name: "tikv-only",
+        kind: AlternativeRoundKind::TiKVOnly,
+    },
+    AlternativeRound {
+        name: "tiflash-only",
+        kind: AlternativeRoundKind::TiFlashOnly,
+    },
 ];
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1306,6 +1317,9 @@ struct AlternativeSignals {
     semi_join_rewrite: bool,
     fts_like_fallback: bool,
     predicate_context_match: bool,
+    mixed_storage_engines: bool,
+    missing_tiflash_path: bool,
+    has_store_type_hint: bool,
 }
 
 impl AlternativeSignals {
@@ -1319,6 +1333,8 @@ impl AlternativeSignals {
             fts_like_fallback,
             predicate_context_match,
         ) = stmt.AlternativeLogicalPlanSignals();
+        let (mixed_storage_engines, missing_tiflash_path, has_store_type_hint) =
+            stmt.AlternativeLogicalPlanEngineSignals();
         Self {
             decorrelated_apply,
             same_order_index_join,
@@ -1329,6 +1345,9 @@ impl AlternativeSignals {
             semi_join_rewrite,
             fts_like_fallback: result.non_viable_fts || fts_like_fallback,
             predicate_context_match: result.predicate_match || predicate_context_match,
+            mixed_storage_engines,
+            missing_tiflash_path,
+            has_store_type_hint,
         }
     }
 }
@@ -1361,6 +1380,23 @@ fn shouldTryFtsLikeFallbackRound(vars: &SessionVars, signals: AlternativeSignals
         && (signals.fts_like_fallback || signals.predicate_context_match)
 }
 
+fn shouldTryEngineRestrictedRounds(vars: &SessionVars, signals: AlternativeSignals) -> bool {
+    vars.EnableAlternativeLogicalPlans
+        && signals.mixed_storage_engines
+        && !signals.has_store_type_hint
+        && !vars.IsMPPEnforced()
+}
+
+fn shouldTryTiKVOnlyRound(vars: &SessionVars, signals: AlternativeSignals) -> bool {
+    shouldTryEngineRestrictedRounds(vars, signals)
+}
+
+fn shouldTryTiFlashOnlyRound(vars: &SessionVars, signals: AlternativeSignals) -> bool {
+    shouldTryEngineRestrictedRounds(vars, signals)
+        && !signals.missing_tiflash_path
+        && vars.IsMPPAllowed()
+}
+
 impl AlternativeRound {
     fn enabled(self, vars: &SessionVars, signals: AlternativeSignals) -> bool {
         match self.kind {
@@ -1371,6 +1407,8 @@ impl AlternativeRound {
             AlternativeRoundKind::Correlate => shouldTryCorrelateRound(vars, signals),
             AlternativeRoundKind::SemiJoinRewrite => shouldTrySemiJoinRewriteRound(vars, signals),
             AlternativeRoundKind::FtsLikeFallback => shouldTryFtsLikeFallbackRound(vars, signals),
+            AlternativeRoundKind::TiKVOnly => shouldTryTiKVOnlyRound(vars, signals),
+            AlternativeRoundKind::TiFlashOnly => shouldTryTiFlashOnlyRound(vars, signals),
         }
     }
 
@@ -1379,7 +1417,10 @@ impl AlternativeRound {
             AlternativeRoundKind::NonDecorrelate => flag & !rule::FLAG_DECORRELATE,
             AlternativeRoundKind::OrderAwareReorder => flag | rule::FLAG_ORDER_AWARE_JOIN_REORDER,
             AlternativeRoundKind::Correlate => flag | rule::FLAG_CORRELATE,
-            AlternativeRoundKind::SemiJoinRewrite | AlternativeRoundKind::FtsLikeFallback => flag,
+            AlternativeRoundKind::SemiJoinRewrite
+            | AlternativeRoundKind::FtsLikeFallback
+            | AlternativeRoundKind::TiKVOnly
+            | AlternativeRoundKind::TiFlashOnly => flag,
         }
     }
 }
@@ -1389,6 +1430,7 @@ struct AlternativeRoundGuard<'a> {
     vars: &'a SessionVars,
     kind: AlternativeRoundKind,
     previous: Option<bool>,
+    previous_engines: Option<HashSet<astersql_kv::StoreType>>,
 }
 
 impl<'a> AlternativeRoundGuard<'a> {
@@ -1401,12 +1443,31 @@ impl<'a> AlternativeRoundGuard<'a> {
             AlternativeRoundKind::FtsLikeFallback => {
                 vars.SetAlternativeFTSLikeFallbackOverride(Some(true))
             }
-            AlternativeRoundKind::NonDecorrelate | AlternativeRoundKind::OrderAwareReorder => None,
+            AlternativeRoundKind::NonDecorrelate
+            | AlternativeRoundKind::OrderAwareReorder
+            | AlternativeRoundKind::TiKVOnly
+            | AlternativeRoundKind::TiFlashOnly => None,
+        };
+        let previous_engines = match kind {
+            AlternativeRoundKind::TiKVOnly => Some(
+                vars.SetAlternativeIsolationReadEnginesOverride(Some(HashSet::from([
+                    astersql_kv::StoreType::TiKV,
+                    astersql_kv::StoreType::TiDB,
+                ]))),
+            ),
+            AlternativeRoundKind::TiFlashOnly => Some(
+                vars.SetAlternativeIsolationReadEnginesOverride(Some(HashSet::from([
+                    astersql_kv::StoreType::TiFlash,
+                    astersql_kv::StoreType::TiDB,
+                ]))),
+            ),
+            _ => None,
         };
         Self {
             vars,
             kind,
             previous,
+            previous_engines: previous_engines.flatten(),
         }
     }
 }
@@ -1423,6 +1484,10 @@ impl Drop for AlternativeRoundGuard<'_> {
             AlternativeRoundKind::FtsLikeFallback => {
                 self.vars
                     .SetAlternativeFTSLikeFallbackOverride(self.previous);
+            }
+            AlternativeRoundKind::TiKVOnly | AlternativeRoundKind::TiFlashOnly => {
+                self.vars
+                    .SetAlternativeIsolationReadEnginesOverride(self.previous_engines.take());
             }
             AlternativeRoundKind::NonDecorrelate | AlternativeRoundKind::OrderAwareReorder => {}
         }
@@ -1559,6 +1624,10 @@ fn optimize(
             return Ok((plan, names, 0.0));
         }
     };
+    let (has_tikv, has_tiflash) = physicalop::StorageEngineUsage(first.plan.as_ref());
+    if has_tikv && has_tiflash && !physicalop::HasSingleScanIndexJoin(first.plan.as_ref()) {
+        vars.StmtCtx.MarkAlternativeLogicalPlanMixedStorageEngines();
+    }
     let signals = AlternativeSignals::from_default_round(vars, &first);
     let enabled_rounds: Vec<_> = ALTERNATIVE_ROUNDS
         .into_iter()
