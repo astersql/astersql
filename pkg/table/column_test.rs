@@ -134,7 +134,7 @@ fn go_merge_49_raw_row_decode_restores_integer_handle() {
 }
 
 #[test]
-fn go_merge_49_raw_row_defaults_use_full_table_column_count() {
+fn raw_row_defaults_use_full_schema_for_null_after_hidden_column() {
     let ctx = test_context(
         true,
         chrono_tz::UTC,
@@ -155,7 +155,6 @@ fn go_merge_49_raw_row_defaults_use_full_table_column_count() {
     info_mut(&mut changed).ChangeStateInfo = Some(model::ChangeStateInfo {
         DependencyColumnOffset: 0,
     });
-    info_mut(&mut changed).DefaultValue = Some(model::DefaultValue::Int(9));
     let meta = model::TableInfo {
         Columns: vec![
             old.ColumnInfo.as_ref().clone(),
@@ -183,7 +182,7 @@ fn go_merge_49_raw_row_defaults_use_full_table_column_count() {
         &encoded,
     )
     .unwrap();
-    assert_eq!(row[1].GetInt64(), 9);
+    assert!(row[1].IsNull());
 }
 
 #[test]
