@@ -27,8 +27,9 @@
 use std::collections::BTreeMap;
 
 use crate::executor::{
-    DdlAction, DdlJob, DdlJobQueue, JobState, ObjectState, SessionContext, TableLockType,
-    handle_lock_on_finish, handle_lock_on_submit,
+    CancelJobError, DdlAction, DdlJob, DdlJobQueue, JobBackend, JobState, ObjectState,
+    SessionContext, SubmitResult, TableLockType, handle_lock_on_finish, handle_lock_on_submit,
+    is_retryable_ddl_cancel_err,
 };
 
 /// 测试辅助函数：按给定 ID、动作类型和状态构造一个最小化的 `DdlJob`。
@@ -228,4 +229,81 @@ fn truncate_lock_handoff_commits_or_rolls_back() {
     handle_lock_on_finish(&mut session, 1, 2, false);
     assert_eq!(Some(&TableLockType::Write), session.locked_tables.get(&1));
     assert!(!session.locked_tables.contains_key(&2));
+}
+
+#[test]
+fn ddl_cancel_retryability_matches_go_terminal_errors() {
+    assert!(is_retryable_ddl_cancel_err(&CancelJobError::Temporary(
+        "owner unavailable".into()
+    )));
+    for error in [
+        CancelJobError::Finished,
+        CancelJobError::CannotCancel,
+        CancelJobError::NotFound,
+    ] {
+        assert!(!is_retryable_ddl_cancel_err(&error));
+    }
+}
+
+#[derive(Default)]
+struct RetryCancelBackend {
+    job: Option<DdlJob>,
+    cancel_attempts: usize,
+}
+
+impl JobBackend for RetryCancelBackend {
+    fn submit(&mut self, job: &mut DdlJob) -> Result<SubmitResult, String> {
+        job.id = 1;
+        job.state = JobState::Running;
+        self.job = Some(job.clone());
+        Ok(SubmitResult {
+            job_id: 1,
+            merged: false,
+        })
+    }
+
+    fn history_job(&mut self, _job_id: i64) -> Result<Option<DdlJob>, String> {
+        Ok(self
+            .job
+            .as_ref()
+            .filter(|job| job.state == JobState::Cancelled)
+            .cloned())
+    }
+
+    fn current_job(&mut self, _job_id: i64) -> Result<Option<DdlJob>, String> {
+        Ok(self.job.clone())
+    }
+
+    fn cancel(&mut self, _job_id: i64) -> Result<(), CancelJobError> {
+        self.cancel_attempts += 1;
+        if self.cancel_attempts == 1 {
+            return Err(CancelJobError::Temporary("owner unavailable".into()));
+        }
+        let job = self.job.as_mut().expect("submitted job");
+        job.state = JobState::Cancelled;
+        job.error = Some("cancelled DDL job".into());
+        Ok(())
+    }
+}
+
+#[test]
+fn killed_ddl_retries_transient_cancel_before_clearing_job_id() {
+    let mut ddl = crate::executor::Executor::new(
+        RetryCancelBackend::default(),
+        std::time::Duration::from_millis(1),
+    );
+    let mut session = SessionContext {
+        killed: true,
+        ..Default::default()
+    };
+    let mut job = job(0, DdlAction::CreateTable, JobState::None, ObjectState::None);
+
+    assert_eq!(
+        Err(crate::executor::ExecutorError::JobFailed(
+            "cancelled DDL job".into()
+        )),
+        ddl.do_ddl_job_wrapper(&mut session, &mut job)
+    );
+    assert_eq!(2, ddl.backend().cancel_attempts);
+    assert_eq!(None, session.ddl_job_id);
 }

@@ -111,7 +111,7 @@ impl JobBackend for DecodeFailBackend {
         Ok(self.current.get(&job_id).cloned())
     }
 
-    fn cancel(&mut self, job_id: i64) -> Result<(), String> {
+    fn cancel(&mut self, job_id: i64) -> Result<(), crate::executor::CancelJobError> {
         if let Some(mut job) = self.current.remove(&job_id) {
             job.state = JobState::Cancelled;
             self.history.insert(job_id, job);

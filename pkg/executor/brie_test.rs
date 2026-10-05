@@ -22,9 +22,11 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use crate::brie::{
-    BrieError, BrieResult, alterTableModeArgs, backupConfig, backupMetadata, brieKind, brieOption,
-    brieOptionType, brieRuntime, brieStmt, cipherInfo, commonConfig, createTableOption,
-    databaseInfo, datum, executorBuilder, globalConfig, normalizedStorage, placementPolicyInfo,
+    BRIEExec, BrieError, BrieErrorKind, BrieResult, ResetGlobalBRIEQueueForTest,
+    alterTableModeArgs, backupConfig, backupMetadata, brieErrorClass, brieKind, brieOption,
+    brieOptionType, brieRuntime, brieStmt, brieTaskInfo, cipherInfo, commonConfig,
+    createTableOption, current_queue, databaseInfo, datum, executorBuilder, globalConfig,
+    mapBRIEError, normalizedStorage, now_millis, outdatedDuration, placementPolicyInfo,
     refreshMetaArgs, restoreConfig, resultChunk, showConfig, sqlTime, tableFilter, tableInfo,
     taskContext, tidbGlue,
 };
@@ -32,6 +34,7 @@ use crate::brie::{
 #[derive(Default)]
 struct MockRuntime {
     warnings: Mutex<Vec<u64>>,
+    kill_error: Mutex<Option<BrieError>>,
 }
 
 impl brieRuntime for MockRuntime {
@@ -62,7 +65,7 @@ impl brieRuntime for MockRuntime {
         Ok(vec![b'A'; 128])
     }
     fn parse_timestamp(&self, value: &str, _: &str) -> BrieResult<u64> {
-        value.parse().map_err(|e| BrieError(format!("{e}")))
+        value.parse().map_err(|e| BrieError::new(format!("{e}")))
     }
     fn connection_id(&self) -> u64 {
         7
@@ -71,7 +74,10 @@ impl brieRuntime for MockRuntime {
         "UTC".into()
     }
     fn check_killed(&self) -> BrieResult {
-        Ok(())
+        match self.kill_error.lock().unwrap().clone() {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
     fn append_job_not_found_warning(&self, id: u64) {
         self.warnings.lock().unwrap().push(id);
@@ -178,10 +184,7 @@ fn brie_kinds_and_result_chunk_match_sql_surface() {
     assert_eq!(brieKind::Backup.to_string(), "BACKUP");
     assert_eq!(brieKind::Restore.to_string(), "RESTORE");
     assert_eq!(brieKind::ShowBackupMeta.to_string(), "SHOW BACKUP META");
-    assert_eq!(
-        BrieError("backup failed".into()).to_string(),
-        "backup failed"
-    );
+    assert_eq!(BrieError::new("backup failed").to_string(), "backup failed");
     let mut chunk = resultChunk::default();
     chunk.push_row(vec![datum::String("db".into()), datum::Unsigned(42)]);
     assert_eq!(
@@ -190,6 +193,80 @@ fn brie_kinds_and_result_chunk_match_sql_surface() {
     );
     chunk.reset();
     assert!(chunk.rows.is_empty());
+}
+
+#[test]
+fn map_brie_error_preserves_kill_and_cancel_causes() {
+    let runtime = MockRuntime::default();
+    let ordinary = mapBRIEError(
+        &runtime,
+        Err(BrieError::new("disk full")),
+        Some(brieErrorClass::Backup),
+    )
+    .unwrap_err();
+    assert_eq!(BrieErrorKind::BackupFailed, ordinary.kind());
+
+    *runtime.kill_error.lock().unwrap() = Some(BrieError::query_interrupted(
+        "outer wrapper: query interrupted",
+    ));
+    let killed = mapBRIEError(
+        &runtime,
+        Err(BrieError::new("context canceled")),
+        Some(brieErrorClass::Backup),
+    )
+    .unwrap_err();
+    assert_eq!(BrieErrorKind::QueryInterrupted, killed.kind());
+
+    *runtime.kill_error.lock().unwrap() = None;
+    let canceled = mapBRIEError(
+        &runtime,
+        Err(BrieError::new("context canceled")),
+        Some(brieErrorClass::Restore),
+    )
+    .unwrap_err();
+    assert_eq!(BrieErrorKind::RestoreFailed, canceled.kind());
+}
+
+#[test]
+fn queued_brie_cancellation_records_terminal_state() {
+    ResetGlobalBRIEQueueForTest();
+    let runtime: Arc<dyn brieRuntime> = Arc::new(MockRuntime::default());
+    let info = Arc::new(Mutex::new(brieTaskInfo::new(brieKind::Backup)));
+    let mut executor = BRIEExec {
+        backupCfg: Some(backupConfig::default()),
+        restoreCfg: None,
+        showConfig: None,
+        info: Some(info.clone()),
+        runtime,
+        sessionID: 1,
+    };
+    let context = taskContext::default();
+    context.cancel();
+    let error = executor
+        .Next(&context, &mut resultChunk::default())
+        .unwrap_err();
+    assert_eq!(BrieErrorKind::ContextCanceled, error.kind());
+    let info = info.lock().unwrap();
+    assert!(info.finishTime.valid);
+    assert_eq!(error.to_string(), info.message);
+}
+
+#[test]
+fn clear_task_keeps_unfinished_brie_tasks() {
+    ResetGlobalBRIEQueueForTest();
+    let queue = current_queue();
+    let running = Arc::new(Mutex::new(brieTaskInfo::new(brieKind::Backup)));
+    let (_, running_id) = queue.registerTask(taskContext::default(), running);
+    let finished = Arc::new(Mutex::new(brieTaskInfo::new(brieKind::Backup)));
+    let (_, finished_id) = queue.registerTask(taskContext::default(), finished.clone());
+    finished.lock().unwrap().finishTime = sqlTime {
+        unixMillis: now_millis() - outdatedDuration.as_millis() as i64 - 1,
+        valid: true,
+    };
+    queue.clearTask();
+
+    assert!(queue.queryTask(running_id).is_some());
+    assert!(queue.queryTask(finished_id).is_none());
 }
 
 #[test]

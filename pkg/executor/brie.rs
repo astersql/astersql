@@ -38,13 +38,57 @@ pub const clearInterval: Duration = Duration::from_secs(10 * 60);
 /// 任务完成后保留时长（30 分钟），超时可从队列清除。
 pub const outdatedDuration: Duration = Duration::from_secs(30 * 60);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// 客户端可观察的 BRIE 错误身份。
+pub enum BrieErrorKind {
+    Other,
+    QueryInterrupted,
+    ContextCanceled,
+    BackupFailed,
+    RestoreFailed,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
-/// BRIE 路径统一错误类型。
-pub struct BrieError(pub String);
+/// BRIE 路径统一错误类型；错误身份独立于包装后的显示文本。
+pub struct BrieError {
+    message: String,
+    kind: BrieErrorKind,
+}
+
+impl BrieError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            kind: BrieErrorKind::Other,
+        }
+    }
+
+    pub fn query_interrupted(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            kind: BrieErrorKind::QueryInterrupted,
+        }
+    }
+
+    fn context_canceled() -> Self {
+        Self {
+            message: "context canceled".into(),
+            kind: BrieErrorKind::ContextCanceled,
+        }
+    }
+
+    pub fn kind(&self) -> BrieErrorKind {
+        self.kind
+    }
+
+    pub fn is_query_interrupted(&self) -> bool {
+        self.kind == BrieErrorKind::QueryInterrupted
+    }
+}
 
 impl fmt::Display for BrieError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
+        formatter.write_str(&self.message)
     }
 }
 
@@ -54,7 +98,7 @@ impl std::error::Error for BrieError {}
 pub type BrieResult<T = ()> = Result<T, BrieError>;
 
 /// 当前 Unix 毫秒时间戳。
-fn now_millis() -> i64 {
+pub(crate) fn now_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -138,7 +182,7 @@ impl taskContext {
 
     /// 取消对应的错误对象。
     pub fn error(&self) -> BrieError {
-        BrieError("context canceled".into())
+        BrieError::context_canceled()
     }
 }
 
@@ -252,7 +296,7 @@ pub struct brieTaskInfo {
 
 impl brieTaskInfo {
     /// 按种类构造空任务信息。
-    fn new(kind: brieKind) -> Self {
+    pub(crate) fn new(kind: brieKind) -> Self {
         Self {
             id: 0,
             query: String::new(),
@@ -374,7 +418,7 @@ impl brieQueue {
                 }
                 *busy = false;
                 self.workerReady.notify_one();
-                return Err(BrieError(format!(
+                return Err(BrieError::new(format!(
                     "backup/restore task {taskID} is canceled"
                 )));
             }
@@ -451,7 +495,7 @@ static globalBRIEQueue: LazyLock<RwLock<Arc<brieQueue>>> =
     LazyLock::new(|| RwLock::new(Arc::new(brieQueue::new())));
 
 /// 取得当前全局队列 Arc。
-fn current_queue() -> Arc<brieQueue> {
+pub(crate) fn current_queue() -> Arc<brieQueue> {
     globalBRIEQueue
         .read()
         .expect("global BRIE queue lock poisoned")
@@ -791,15 +835,15 @@ impl executorBuilder {
         let normalized_storage = self
             .runtime
             .normalize_storage_url(&statement.storage, &mut common)
-            .map_err(|error| BrieError(format!("invalid destination URL: {error}")))?;
+            .map_err(|error| BrieError::new(format!("invalid destination URL: {error}")))?;
         let scheme = normalized_storage.scheme.as_str();
         if self.runtime.sem_v1_enabled() && matches!(scheme, "hdfs" | "local" | "file" | "") {
-            return Err(BrieError(format!(
+            return Err(BrieError::new(format!(
                 "{scheme} storage is not supported with SEM"
             )));
         }
         if global.storeType != "tikv" {
-            return Err(BrieError(format!(
+            return Err(BrieError::new(format!(
                 "{} requires tikv store, not {}",
                 statement.kind, global.storeType
             )));
@@ -823,7 +867,7 @@ impl executorBuilder {
                         option.stringValue.as_str(),
                         "aes128-ctr" | "aes192-ctr" | "aes256-ctr" | "plaintext"
                     ) {
-                        return Err(BrieError(format!(
+                        return Err(BrieError::new(format!(
                             "unsupported encryption method: {}",
                             option.stringValue
                         )));
@@ -884,7 +928,7 @@ impl executorBuilder {
                         }
                         brieOptionType::Compression => {
                             if !matches!(option.stringValue.as_str(), "zstd" | "snappy" | "lz4") {
-                                return Err(BrieError(format!(
+                                return Err(BrieError::new(format!(
                                     "unsupported compression type: {}",
                                     option.stringValue
                                 )));
@@ -922,7 +966,7 @@ impl executorBuilder {
                 executor.restoreCfg = Some(config);
             }
             _ => {
-                return Err(BrieError(format!(
+                return Err(BrieError::new(format!(
                     "unsupported BRIE statement kind: {}",
                     statement.kind
                 )));
@@ -1040,7 +1084,7 @@ impl showMetaExec {
             .runtime
             .read_backup_metadata(context, &self.showConfig)
             .map_err(|error| {
-                BrieError(format!("failed to read metadata from backupmeta: {error}"))
+                BrieError::new(format!("failed to read metadata from backupmeta: {error}"))
             })?;
         let timezone = self.runtime.timezone();
         for table in metadata.tables {
@@ -1126,15 +1170,27 @@ impl BRIEExec {
         thread::spawn(move || {
             while !monitor_context.is_canceled() {
                 thread::sleep(Duration::from_secs(3));
-                if monitor_runtime.check_killed().is_err() {
-                    monitor_queue.cancelTask(task_id);
-                    break;
+                if let Err(error) = monitor_runtime.check_killed() {
+                    if error.is_query_interrupted() {
+                        monitor_queue.cancelTask(task_id);
+                        break;
+                    }
                 }
             }
         });
 
         // 获得执行权后构造 tidbGlue 并调用运行时
-        let progress = queue.acquireTask(&task_context, task_id)?;
+        let progress = match queue.acquireTask(&task_context, task_id) {
+            Ok(progress) => progress,
+            Err(error) => {
+                let error = mapBRIEError(self.runtime.as_ref(), Err(error), None)
+                    .expect_err("acquire failure must stay an error");
+                let mut info = info.lock().expect("BRIE task info mutex poisoned");
+                info.finishTime = sqlTime::now();
+                info.message = error.to_string();
+                return Err(error);
+            }
+        };
         let _release_guard = releaseTaskGuard(queue);
         info.lock().expect("BRIE task info mutex poisoned").execTime = sqlTime::now();
         let mut glue = tidbGlue {
@@ -1145,7 +1201,8 @@ impl BRIEExec {
         };
         let kind = info.lock().expect("BRIE task info mutex poisoned").kind;
         let result = match kind {
-            brieKind::Backup => handleBRIEError(
+            brieKind::Backup => mapBRIEError(
+                self.runtime.as_ref(),
                 self.runtime.run_backup(
                     &task_context,
                     &mut glue,
@@ -1153,9 +1210,10 @@ impl BRIEExec {
                         .as_ref()
                         .expect("backup executor requires backup config"),
                 ),
-                brieErrorClass::Backup,
+                Some(brieErrorClass::Backup),
             ),
-            brieKind::Restore => handleBRIEError(
+            brieKind::Restore => mapBRIEError(
+                self.runtime.as_ref(),
                 self.runtime.run_restore(
                     &task_context,
                     &mut glue,
@@ -1163,9 +1221,9 @@ impl BRIEExec {
                         .as_ref()
                         .expect("restore executor requires restore config"),
                 ),
-                brieErrorClass::Restore,
+                Some(brieErrorClass::Restore),
             ),
-            _ => Err(BrieError(format!(
+            _ => Err(BrieError::new(format!(
                 "unsupported BRIE statement kind: {kind}"
             ))),
         };
@@ -1213,12 +1271,37 @@ pub enum brieErrorClass {
 /// 为底层错误添加 BRIE backup/restore 前缀。
 pub fn handleBRIEError(result: BrieResult, class: brieErrorClass) -> BrieResult {
     result.map_err(|error| {
-        let operation = match class {
-            brieErrorClass::Backup => "backup",
-            brieErrorClass::Restore => "restore",
+        let (operation, kind) = match class {
+            brieErrorClass::Backup => ("backup", BrieErrorKind::BackupFailed),
+            brieErrorClass::Restore => ("restore", BrieErrorKind::RestoreFailed),
         };
-        BrieError(format!("BRIE {operation} failed: {error}"))
+        BrieError {
+            message: format!("BRIE {operation} failed: {error}"),
+            kind,
+        }
     })
+}
+
+/// 映射 BRIE 错误，同时保留 KILL QUERY 的错误身份。
+/// CANCEL BR JOB 只取消 taskContext，不设置 SQL killer，因此仍映射为 8124/8125 类别。
+pub fn mapBRIEError(
+    runtime: &dyn brieRuntime,
+    result: BrieResult,
+    class: Option<brieErrorClass>,
+) -> BrieResult {
+    let error = match result {
+        Ok(()) => return Ok(()),
+        Err(error) => error,
+    };
+    if let Err(kill_error) = runtime.check_killed() {
+        if kill_error.is_query_interrupted() {
+            return Err(kill_error);
+        }
+    }
+    match class {
+        Some(class) => handleBRIEError(Err(error), class),
+        None => Err(error),
+    }
 }
 
 /// SHOW BRIE 列表：遍历队列输出进度行。

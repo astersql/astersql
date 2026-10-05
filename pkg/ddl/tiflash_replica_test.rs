@@ -178,3 +178,39 @@ fn every_go_test_and_helper_has_an_executable_rust_mapping() {
     // future Go additions from silently becoming inert source-string records.
     assert_eq!(Duration::from_millis(600), TIFLASH_REPLICA_LEASE);
 }
+
+#[test]
+fn killed_batch_set_schema_tiflash_replica_returns_query_interrupted() {
+    let (mut ddl, mut session) = executor();
+    ddl.create_schema(&mut session, "test", &[], None, OnExist::Error)
+        .unwrap();
+    create_table(&mut ddl, &mut session, table("t1"));
+    create_table(&mut ddl, &mut session, table("t2"));
+    session.killed = true;
+
+    assert_eq!(
+        Err(ExecutorError::QueryInterrupted),
+        ddl.set_schema_tiflash_replica(&mut session, "test", 1, 1, 100)
+    );
+    assert!(
+        ddl.schemas["test"]
+            .tables
+            .values()
+            .all(|table| table.tiflash_replica_count == 0)
+    );
+}
+
+#[test]
+fn failpoint_only_batch_abort_stays_successful() {
+    let (mut ddl, mut session) = executor();
+    ddl.create_schema(&mut session, "test", &[], None, OnExist::Error)
+        .unwrap();
+    create_table(&mut ddl, &mut session, table("t1"));
+    session.batch_tiflash_abort = true;
+
+    assert_eq!(
+        Ok(()),
+        ddl.set_schema_tiflash_replica(&mut session, "test", 1, 1, 100)
+    );
+    assert_eq!(0, ddl.schemas["test"].tables["t1"].tiflash_replica_count);
+}

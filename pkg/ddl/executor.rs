@@ -644,6 +644,8 @@ pub enum ExecutorError {
     },
     /// 作业被用户取消。
     Cancelled,
+    /// 当前 SQL 被 KILL QUERY 中断（MySQL 1317）。
+    QueryInterrupted,
     /// 等待作业完成超时。
     Timeout,
     /// 列数超过上限（1017）。
@@ -675,7 +677,28 @@ pub trait JobBackend {
     /// 查询仍在执行中的作业。
     fn current_job(&mut self, job_id: i64) -> Result<Option<DdlJob>, String>;
     /// 取消指定作业。
-    fn cancel(&mut self, job_id: i64) -> Result<(), String>;
+    fn cancel(&mut self, job_id: i64) -> Result<(), CancelJobError>;
+}
+
+/// 系统取消 DDL 作业时的逐作业结果。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CancelJobError {
+    /// 作业已经完成，取消命令无需重试。
+    Finished,
+    /// 作业已经进入不可取消阶段，取消命令无需重试。
+    CannotCancel,
+    /// 作业已经不在当前队列中，取消命令无需重试。
+    NotFound,
+    /// 临时错误；保留会话中的作业 ID 并重试取消。
+    Temporary(String),
+}
+
+/// 与 Go `isRetryableDDLCancelErr` 一致：三个明确终态不重试，其余错误重试。
+pub fn is_retryable_ddl_cancel_err(error: &CancelJobError) -> bool {
+    !matches!(
+        error,
+        CancelJobError::Finished | CancelJobError::CannotCancel | CancelJobError::NotFound
+    )
 }
 
 /// 内存版作业后端：提交后立即同步完成，主要用于测试。
@@ -721,7 +744,7 @@ impl JobBackend for MemoryJobBackend {
         Ok(self.current.get(&job_id).cloned())
     }
 
-    fn cancel(&mut self, job_id: i64) -> Result<(), String> {
+    fn cancel(&mut self, job_id: i64) -> Result<(), CancelJobError> {
         let Some(mut job) = self.current.remove(&job_id) else {
             return Ok(());
         };
@@ -740,6 +763,8 @@ pub struct SessionContext {
     pub connection_id: u64,
     /// 会话是否已被 kill（用于中断等待中的 DDL）。
     pub killed: bool,
+    /// 测试 failpoint 对应的批量 TiFlash 提前结束；与 KILL 不同，不返回错误。
+    pub batch_tiflash_abort: bool,
     /// 服务是否正在关闭。
     pub shutting_down: bool,
     /// 当前会话正在等待的 DDL 作业 ID。
@@ -767,6 +792,7 @@ impl Default for SessionContext {
             query: String::new(),
             connection_id: 0,
             killed: false,
+            batch_tiflash_abort: false,
             shutting_down: false,
             ddl_job_id: None,
             warnings: Vec::new(),
@@ -1805,6 +1831,62 @@ impl<B: JobBackend> Executor<B> {
         )
     }
 
+    /// 为数据库中的普通表批量设置 TiFlash 副本数。
+    ///
+    /// KILL QUERY 必须以 QueryInterrupted 返回；仅由 failpoint 触发的提前结束仍成功。
+    /// 单表 DDL 返回取消/中断时立即停止，不继续处理剩余表。
+    pub fn set_schema_tiflash_replica(
+        &mut self,
+        session: &mut SessionContext,
+        schema_name: &str,
+        count: u64,
+        available_stores: u64,
+        pending_threshold: u32,
+    ) -> Result<(), ExecutorError> {
+        if count > available_stores {
+            return Err(ExecutorError::Unsupported(
+                "TiFlash replica count exceeds stores".into(),
+            ));
+        }
+        let table_names = self
+            .schema(schema_name)?
+            .tables
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        if table_names.is_empty() {
+            return Err(ExecutorError::Unsupported("empty database".into()));
+        }
+
+        for table_name in table_names {
+            if session.killed {
+                return Err(ExecutorError::QueryInterrupted);
+            }
+            if session.batch_tiflash_abort {
+                return Ok(());
+            }
+            // The Go path waits while pending replicas reach the configured threshold.
+            // This in-memory executor has no asynchronous schema cache, so it can only
+            // re-check the session abort signals before issuing the next DDL job.
+            if pending_threshold > 0 && self.pending_tiflash_tables >= pending_threshold {
+                if session.killed {
+                    return Err(ExecutorError::QueryInterrupted);
+                }
+                if session.batch_tiflash_abort {
+                    return Ok(());
+                }
+            }
+            let ident = Ident::new(schema_name, table_name);
+            match self.set_tiflash_replica(session, &ident, count, available_stores) {
+                Err(error @ (ExecutorError::Cancelled | ExecutorError::QueryInterrupted)) => {
+                    return Err(error);
+                }
+                other => other?,
+            }
+        }
+        Ok(())
+    }
+
     /// 更新某个物理表/分区的 TiFlash 副本同步状态（由存储层回调触发）。
     pub fn update_replica_status(
         &mut self,
@@ -2009,10 +2091,11 @@ impl<B: JobBackend> Executor<B> {
                 if session.shutting_down {
                     return Err(ExecutorError::Cancelled);
                 }
-                self.backend
-                    .cancel(job.id)
-                    .map_err(ExecutorError::JobSubmit)?;
-                session.ddl_job_id = None;
+                match self.backend.cancel(job.id) {
+                    Ok(()) => session.ddl_job_id = None,
+                    Err(error) if is_retryable_ddl_cancel_err(&error) => continue,
+                    Err(_) => session.ddl_job_id = None,
+                }
             }
             // 作业进入历史即代表已到达终态（完成/失败/取消）。
             let history = self
