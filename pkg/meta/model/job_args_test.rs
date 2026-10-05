@@ -911,6 +911,23 @@ fn test_get_set_tiflash_replica_args() {
             assert_eq!(true, args.ResetAvailable);
         }
     }
+
+    let with_skip_gate = SetTiFlashReplicaArgs {
+        ResetAvailable: true,
+        SkipColumnarStorageGate: true,
+        ..in_args.clone()
+    };
+    for v in [JobVersion1, JobVersion2] {
+        let mut j4 = decode_job(get_job_bytes(&with_skip_gate, v, ActionSetTiFlashReplica));
+        let args = GetSetTiFlashReplicaArgs(&mut j4).expect("set tiflash replica skip-gate args");
+        assert_eq!(with_skip_gate.TiflashReplica, args.TiflashReplica);
+        if v == JobVersion2 {
+            assert!(args.ResetAvailable);
+            assert!(args.SkipColumnarStorageGate);
+        } else {
+            assert!(!args.SkipColumnarStorageGate);
+        }
+    }
 }
 
 #[test]

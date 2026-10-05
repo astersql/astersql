@@ -2141,6 +2141,11 @@ fn register_global_vars() {
         vardef::ScopeGlobal,
         &["all_replicas", "closest_adaptive", "closest_replicas"],
     ));
+    RegisterSysVar(bool_var(
+        vardef::TiDBColumnarStorageEnabled,
+        vardef::DefTiDBColumnarStorageEnabled,
+        vardef::ScopeGlobal,
+    ));
 
     let mut schema = string_var(
         "tidb_schema_cache_size",

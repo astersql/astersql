@@ -9,11 +9,17 @@
 
 /// DXF（Distributed eXecution Framework）调度与任务管理 HTTP 接口。
 pub mod dxf;
+/// Live TiFlash replica summary response used by `/tiflash/replica`.
+pub mod flash_replica;
 /// 通用 TiKV status handler：schema、Region、MVCC、DDL 等运维接口。
 pub mod tikv_handler;
 
 pub use dxf::*;
+pub use flash_replica::*;
 pub use tikv_handler::*;
+
+#[cfg(test)]
+mod flash_replica_test;
 
 #[cfg(test)]
 /// DXF 解析与 TTL 相关单元测试。

@@ -1672,6 +1672,72 @@ fn tiflash_replica_response(server: &Server, request: &Request) -> Response {
     tikv_response(writer)
 }
 
+fn tiflash_replica_summary_response(server: &Server, request: &Request) -> Response {
+    use astersql_server_handler_tikvhandler::{
+        FlashReplicaSummary, parse_flash_replica_reload_query,
+    };
+
+    if request.method != Method::Get {
+        return serve_error(405, "method not allowed");
+    }
+    let reload =
+        match parse_flash_replica_reload_query(request.query.get("reload").map(String::as_str)) {
+            Ok(reload) => reload,
+            Err(error) => return serve_error(400, &error),
+        };
+    let Some(domain) = server.domain() else {
+        return serve_error(500, "domain is unavailable");
+    };
+    if reload && let Err(error) = domain.reload_schema() {
+        return serve_error(500, &error);
+    }
+    let Some(schema) = domain.schema_snapshot() else {
+        return serve_error(500, "schema is unavailable");
+    };
+    let table_count = schema
+        .AllSchemas()
+        .into_iter()
+        .filter_map(|database| schema.SchemaTableInfos(&database.name).ok())
+        .flatten()
+        .filter(|table| {
+            table
+                .model_meta
+                .as_ref()
+                .is_some_and(|metadata| metadata.TiFlashReplica.is_some())
+        })
+        .count();
+    let enabled = match domain
+        .global_system_variable(astersql_sessionctx_vardef::TiDBColumnarStorageEnabled)
+    {
+        Ok(value) => {
+            if astersql_sessionctx_variable::TiDBOptOn(&value) {
+                astersql_sessionctx_vardef::On.to_owned()
+            } else {
+                astersql_sessionctx_vardef::Off.to_owned()
+            }
+        }
+        Err(error) => return serve_error(500, &error),
+    };
+    let (keyspace, keyspace_id) = domain.keyspace_identity();
+    Response::json(
+        200,
+        FlashReplicaSummary {
+            keyspace,
+            keyspace_id,
+            tidb_columnar_storage_enabled: enabled,
+            columnar_store_type: astersql_config::get_global_config()
+                .cse
+                .columnar_store_type
+                .clone(),
+            can_disable: table_count == 0,
+            table_count,
+            reloaded: reload,
+        }
+        .to_json()
+        .to_string(),
+    )
+}
+
 fn upgrade_response(
     handler: &astersql_server_handler::upgrade_handler::ClusterUpgradeHandler,
     request: &Request,
@@ -2017,6 +2083,11 @@ pub fn build_status_router(server: Arc<Server>) -> Router {
     router.add(
         "/tables/{db}/{table}/ranges",
         Arc::new(move |request| table_response(&table_server, request, "ranges")),
+    );
+    let tiflash_server = Arc::clone(&server);
+    router.add(
+        "/tiflash/replica",
+        Arc::new(move |request| tiflash_replica_summary_response(&tiflash_server, request)),
     );
     let tiflash_server = Arc::clone(&server);
     router.add(

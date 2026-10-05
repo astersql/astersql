@@ -974,7 +974,12 @@ pub fn PreCheckTableTiFlashReplica(
     tiflash_store_count: u64,
     mut recorder: Option<&mut dyn TiFlashReplicaRecorder>,
     is_next_gen_restore: bool,
+    columnar_storage_enabled: &str,
 ) {
+    // The gate value is diagnostic-only for NextGen restores. Keep it in the
+    // production signature so the caller can include the exact cached value in
+    // its warning without ever changing the replica-stripping decision.
+    let _diagnostic_columnar_storage_enabled = columnar_storage_enabled;
     for table in tables {
         let Some(replica) = table.Info.TiFlashReplica.as_mut() else {
             continue;

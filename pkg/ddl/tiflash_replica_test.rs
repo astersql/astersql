@@ -214,3 +214,135 @@ fn failpoint_only_batch_abort_stays_successful() {
     );
     assert_eq!(0, ddl.schemas["test"].tables["t1"].tiflash_replica_count);
 }
+
+#[test]
+fn columnar_storage_gate_covers_frontend_job_intent_and_internal_bypass() {
+    let (mut ddl, mut session) = executor();
+    session
+        .system_vars
+        .insert("cse.columnar-store-type".into(), "columnar".into());
+    session.system_vars.insert(
+        astersql_sessionctx_vardef::TiDBColumnarStorageEnabled.into(),
+        "OFF".into(),
+    );
+    ddl.create_schema(&mut session, "test", &[], None, OnExist::Error)
+        .unwrap();
+    let ident = create_table(&mut ddl, &mut session, table("gated"));
+
+    let rejected = ddl
+        .set_tiflash_replica(&mut session, &ident, 1, 0)
+        .unwrap_err();
+    assert!(
+        rejected
+            .to_string()
+            .contains("Columnar Storage is not enabled")
+    );
+    assert_eq!(0, ddl.schemas["test"].tables["gated"].tiflash_replica_count);
+
+    for disabled_value in ["", "0", "unexpected"] {
+        session.system_vars.insert(
+            astersql_sessionctx_vardef::TiDBColumnarStorageEnabled.into(),
+            disabled_value.into(),
+        );
+        assert!(
+            ddl.set_tiflash_replica(&mut session, &ident, 1, 0).is_err(),
+            "value {disabled_value:?} must fail closed"
+        );
+    }
+    session.system_vars.insert(
+        astersql_sessionctx_vardef::TiDBColumnarStorageEnabled.into(),
+        "OFF".into(),
+    );
+
+    ddl.set_tiflash_replica_with_options(&mut session, &ident, 1, 0, true)
+        .unwrap();
+    assert_eq!(1, ddl.schemas["test"].tables["gated"].tiflash_replica_count);
+
+    // Removing replicas remains possible while the gate is OFF.
+    ddl.set_tiflash_replica(&mut session, &ident, 0, 0).unwrap();
+    assert_eq!(0, ddl.schemas["test"].tables["gated"].tiflash_replica_count);
+}
+
+#[test]
+fn columnar_storage_gate_is_rechecked_before_job_submission() {
+    let (mut ddl, mut session) = executor();
+    session
+        .system_vars
+        .insert("cse.columnar-store-type".into(), "columnar".into());
+    session.system_vars.insert(
+        astersql_sessionctx_vardef::TiDBColumnarStorageEnabled.into(),
+        "OFF".into(),
+    );
+
+    let error = ddl
+        .submit_simple_job(
+            &mut session,
+            DdlAction::SetTiFlashReplica,
+            1,
+            2,
+            std::collections::BTreeMap::from([
+                ("replica_count".into(), "1".into()),
+                ("skip_columnar_storage_gate".into(), "false".into()),
+            ]),
+        )
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Columnar Storage is not enabled")
+    );
+    assert!(ddl.backend().history().is_empty());
+}
+
+#[test]
+fn columnar_storage_gate_rejects_create_like_and_columnar_index_without_mutation() {
+    let (mut ddl, mut session) = executor();
+    session
+        .system_vars
+        .insert("cse.columnar-store-type".into(), "columnar".into());
+    session.system_vars.insert(
+        astersql_sessionctx_vardef::TiDBColumnarStorageEnabled.into(),
+        "OFF".into(),
+    );
+    ddl.create_schema(&mut session, "test", &[], None, OnExist::Error)
+        .unwrap();
+
+    let mut copied = table("copied");
+    copied.tiflash_replica_count = 1;
+    let error = ddl
+        .create_table(&mut session, "test", copied, OnExist::Error)
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Columnar Storage is not enabled")
+    );
+    assert!(!ddl.schemas["test"].tables.contains_key("copied"));
+
+    let ident = create_table(&mut ddl, &mut session, table("indexed"));
+    let mut index = crate::executor::IndexInfo::new("idx", vec!["id".into()]);
+    index.vector = true;
+    let error = ddl
+        .create_index(&mut session, &ident, index, false)
+        .unwrap_err();
+    assert_eq!(
+        ExecutorError::Unsupported(
+            "Unsupported add columnar index: Columnar Storage is not enabled".into()
+        ),
+        error
+    );
+    assert!(ddl.schemas["test"].tables["indexed"].indexes.is_empty());
+
+    session.system_vars.insert(
+        astersql_sessionctx_vardef::TiDBColumnarStorageEnabled.into(),
+        "ON".into(),
+    );
+    let mut index = crate::executor::IndexInfo::new("idx", vec!["id".into()]);
+    index.vector = true;
+    ddl.create_index(&mut session, &ident, index, false)
+        .unwrap();
+    assert_eq!(
+        1,
+        ddl.schemas["test"].tables["indexed"].tiflash_replica_count
+    );
+}

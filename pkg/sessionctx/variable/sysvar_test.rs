@@ -229,6 +229,23 @@ fn txn_file_sysvars_match_go_defaults_validation_and_session_propagation() {
     );
 }
 
+#[test]
+fn columnar_storage_gate_is_a_global_boolean_defaulting_on() {
+    let (mut vars, _) = session();
+    let variable = sysvar(vardef::TiDBColumnarStorageEnabled);
+    assert_eq!(variable.Scope, vardef::ScopeGlobal);
+    assert_eq!(variable.Type, vardef::TypeBool);
+    assert_eq!(variable.Value, vardef::On);
+    assert_eq!(
+        set_global_system_var(&mut vars, vardef::TiDBColumnarStorageEnabled, "OFF").unwrap(),
+        vardef::Off
+    );
+    assert_eq!(
+        set_global_system_var(&mut vars, vardef::TiDBColumnarStorageEnabled, "1").unwrap(),
+        vardef::On
+    );
+}
+
 /// 创建带默认内置变量的会话与内存全局 accessor。
 fn session() -> (SessionVars, MemoryGlobal) {
     let accessor = MemoryGlobal::with_defaults();

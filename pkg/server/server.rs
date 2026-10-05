@@ -622,6 +622,20 @@ pub trait Domain: Send + Sync {
         None
     }
 
+    /// Refresh InfoSchema before an explicitly requested summary read.
+    fn reload_schema(&self) -> Result<(), String> {
+        Err("schema reload is not configured".into())
+    }
+
+    /// Read one cached global variable without issuing storage/network I/O.
+    fn global_system_variable(&self, _name: &str) -> Result<String, String> {
+        Err("global system variables are not configured".into())
+    }
+
+    fn keyspace_identity(&self) -> (String, u32) {
+        (String::new(), 0)
+    }
+
     /// Publish a TiFlash status report for a physical table ID.
     fn publish_tiflash_replica_report(
         &self,

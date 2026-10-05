@@ -290,6 +290,87 @@ fn tiflash_report_updates_canonical_domain_replica() {
 }
 
 #[test]
+fn tiflash_replica_summary_reports_live_tables_gate_and_query_validation() {
+    let (domain, _) =
+        astersql_session::runtime::CreateAnalyzeSession().expect("initialize canonical domain");
+    domain
+        .ddl_create_database("replica_summary_test", false)
+        .expect("create schema");
+    domain
+        .ddl_create_table(
+            "replica_summary_test",
+            astersql_meta_model::TableInfo {
+                Name: astersql_parser_ast::NewCIStr("t"),
+                ..Default::default()
+            },
+            false,
+        )
+        .expect("create table");
+    let server = Server::new_test(
+        ServerConfig {
+            host: "127.0.0.1".into(),
+            port: 0,
+            status: StatusConfig {
+                report_status: true,
+                host: "127.0.0.1".into(),
+                port: 0,
+                ..StatusConfig::default()
+            },
+            ..ServerConfig::default()
+        },
+        Arc::new(Driver),
+    );
+    server
+        .run(Arc::new(crate::runtime::CanonicalServerDomain::new(
+            Arc::clone(&domain),
+        )))
+        .expect("start canonical status listener");
+    let address = server.status_listener_addr().expect("status address");
+    let request = |line: &str| {
+        let mut stream = TcpStream::connect(address).expect("connect status listener");
+        stream
+            .write_all(format!("{line}\r\nHost: localhost\r\nConnection: close\r\n\r\n").as_bytes())
+            .expect("write status request");
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .expect("read status response");
+        response
+    };
+
+    let empty = request("GET /tiflash/replica HTTP/1.1");
+    assert!(empty.starts_with("HTTP/1.1 200 OK"), "{empty}");
+    assert!(empty.contains("\"table_count\":0"), "{empty}");
+    assert!(empty.contains("\"can_disable\":true"), "{empty}");
+
+    domain
+        .ddl_set_tiflash_replica("replica_summary_test", "t", 1, Vec::new())
+        .expect("configure replica");
+    domain.set_global_system_variable(
+        astersql_sessionctx_vardef::TiDBColumnarStorageEnabled,
+        "OFF",
+    );
+    let live = request("GET /tiflash/replica?reload=true HTTP/1.1");
+    assert!(live.starts_with("HTTP/1.1 200 OK"), "{live}");
+    assert!(live.contains("\"table_count\":1"), "{live}");
+    assert!(live.contains("\"can_disable\":false"), "{live}");
+    assert!(live.contains("\"reloaded\":true"), "{live}");
+    assert!(
+        live.contains("\"tidb_columnar_storage_enabled\":\"OFF\""),
+        "{live}"
+    );
+
+    let invalid = request("GET /tiflash/replica?reload=maybe HTTP/1.1");
+    assert!(invalid.starts_with("HTTP/1.1 400 Bad Request"), "{invalid}");
+    let post = request("POST /tiflash/replica HTTP/1.1");
+    assert!(
+        post.starts_with("HTTP/1.1 405 Method Not Allowed"),
+        "{post}"
+    );
+    server.close();
+}
+
+#[test]
 /// 验证 `/metrics` 返回 Prometheus 文本格式的成功响应。
 fn status_listener_exposes_prometheus_metrics() {
     let server = Server::new_test(

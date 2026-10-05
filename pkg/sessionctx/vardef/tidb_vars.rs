@@ -1226,6 +1226,9 @@ pub const TiDBOptFixControl: &str = "tidb_opt_fix_control";
 // TiFlashReplicaRead is used to set the policy of TiFlash replica read when the query needs the TiFlash engine.
 pub const TiFlashReplicaRead: &str = "tiflash_replica_read";
 
+/// Cluster-level gate for adding TiFlash/columnar-storage replicas.
+pub const TiDBColumnarStorageEnabled: &str = "tidb_columnar_storage_enabled";
+
 // TiDBLockUnchangedKeys indicates whether to lock duplicate keys in INSERT IGNORE and REPLACE statements,
 // or unchanged unique keys in UPDATE statements, see PR #42210 and #42713
 pub const TiDBLockUnchangedKeys: &str = "tidb_lock_unchanged_keys";
@@ -1775,6 +1778,8 @@ pub const DefPDEnableFollowerHandleRegion: bool = true;
 pub const DefTiDBEnableBatchQueryRegion: bool = false;
 pub const DefTiDBEnableOrderedResultMode: bool = false;
 pub const DefTiDBEnablePseudoForOutdatedStats: bool = false;
+/// Missing persisted rows retain the historical ability to add replicas.
+pub const DefTiDBColumnarStorageEnabled: bool = true;
 pub const DefTiDBRegardNULLAsPoint: bool = true;
 pub const DefEnablePlacementCheck: bool = true;
 pub const DefTimestamp: &str = "0";

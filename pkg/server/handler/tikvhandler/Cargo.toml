@@ -12,6 +12,7 @@ go-package = "pkg/server/handler/tikvhandler"
 legacy-tasks = ["task-1281", "task-1285"]
 
 [dependencies]
+serde_json = "1"
 "astersql-config" = { package = "astersql-config", path = "../../../config" }
 "astersql-ddl" = { package = "astersql-ddl", path = "../../../ddl" }
 "astersql-ddl-util" = { package = "astersql-ddl-util", path = "../../../ddl/util" }

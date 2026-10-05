@@ -46,6 +46,108 @@ pub const TIFLASH_PENDING_TABLE_LIMIT: u32 = 100;
 /// TiFlash 待处理表检查的重试次数。
 pub const TIFLASH_PENDING_TABLE_RETRY: u32 = 7;
 
+const COLUMNAR_STORE_TYPE_OVERRIDE: &str = "cse.columnar-store-type";
+
+fn columnar_store_type(session: &SessionContext) -> String {
+    session
+        .system_vars
+        .get(COLUMNAR_STORE_TYPE_OVERRIDE)
+        .cloned()
+        .unwrap_or_else(|| {
+            astersql_config::get_global_config()
+                .cse
+                .columnar_store_type
+                .clone()
+        })
+}
+
+fn check_columnar_storage_enabled(session: &SessionContext) -> Result<(), ExecutorError> {
+    let store_type = columnar_store_type(session);
+    let columnar_enabled = matches!(store_type.as_str(), "columnar" | "both");
+    if !columnar_enabled {
+        return Ok(());
+    }
+    let value = session
+        .system_vars
+        .get(astersql_sessionctx_vardef::TiDBColumnarStorageEnabled)
+        .map(String::as_str)
+        .unwrap_or(astersql_sessionctx_vardef::On);
+    if astersql_sessionctx_variable::TiDBOptOn(value) {
+        Ok(())
+    } else {
+        Err(ExecutorError::Unsupported(format!(
+            "`set TiFlash replica` because Columnar Storage is not enabled for cluster default (tidb_columnar_storage_enabled={value:?})"
+        )))
+    }
+}
+
+fn check_columnar_storage_for_replica(
+    session: &SessionContext,
+    count: u64,
+    skip_gate: bool,
+) -> Result<(), ExecutorError> {
+    if count == 0 || skip_gate {
+        Ok(())
+    } else {
+        check_columnar_storage_enabled(session)
+    }
+}
+
+fn wrap_columnar_index_gate(error: ExecutorError) -> ExecutorError {
+    match error {
+        ExecutorError::Unsupported(message)
+            if message.contains("Columnar Storage is not enabled") =>
+        {
+            ExecutorError::Unsupported(
+                "Unsupported add columnar index: Columnar Storage is not enabled".into(),
+            )
+        }
+        error => error,
+    }
+}
+
+fn check_columnar_storage_for_job(
+    session: &SessionContext,
+    action: &DdlAction,
+    args: &BTreeMap<String, String>,
+) -> Result<(), ExecutorError> {
+    match action {
+        DdlAction::SetTiFlashReplica => check_columnar_storage_for_replica(
+            session,
+            args.get("replica_count")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or_default(),
+            args.get("skip_columnar_storage_gate")
+                .is_some_and(|value| value == "true"),
+        ),
+        DdlAction::CreateTable => check_columnar_storage_for_replica(
+            session,
+            args.get("tiflash_replica_count")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or_default(),
+            false,
+        )
+        .map_err(|error| {
+            if args
+                .get("columnar_index")
+                .is_some_and(|value| value == "true")
+            {
+                wrap_columnar_index_gate(error)
+            } else {
+                error
+            }
+        }),
+        DdlAction::AddIndex
+            if args
+                .get("columnar_index")
+                .is_some_and(|value| value == "true") =>
+        {
+            check_columnar_storage_enabled(session).map_err(wrap_columnar_index_gate)
+        }
+        _ => Ok(()),
+    }
+}
+
 /// 限定表名标识符，由"库名 + 表名"组成，例如 `db.tbl`。
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Ident {
@@ -1020,6 +1122,20 @@ impl<B: JobBackend> Executor<B> {
     ) -> Result<i64, ExecutorError> {
         check_identifier(&table.name, "table")?;
         validate_table_definition(&table)?;
+        let has_columnar_index = table.indexes.iter().any(|index| index.vector);
+        if has_columnar_index && table.tiflash_replica_count == 0 {
+            table.tiflash_replica_count = 1;
+        }
+        if table.tiflash_replica_count > 0 {
+            check_columnar_storage_for_replica(session, table.tiflash_replica_count, false)
+                .map_err(|error| {
+                    if has_columnar_index {
+                        wrap_columnar_index_gate(error)
+                    } else {
+                        error
+                    }
+                })?;
+        }
         let key = table.name.to_ascii_lowercase();
         if self.schema(schema_name)?.tables.contains_key(&key) {
             return match on_exist {
@@ -1033,13 +1149,20 @@ impl<B: JobBackend> Executor<B> {
         table.schema_id = self.schema(schema_name)?.id;
         let id = table.id;
         let schema_id = table.schema_id;
+        let tiflash_replica_count = table.tiflash_replica_count;
         self.schema_mut(schema_name)?.tables.insert(key, table);
         self.submit_simple_job(
             session,
             DdlAction::CreateTable,
             schema_id,
             id,
-            BTreeMap::new(),
+            BTreeMap::from([
+                (
+                    "tiflash_replica_count".into(),
+                    tiflash_replica_count.to_string(),
+                ),
+                ("columnar_index".into(), has_columnar_index.to_string()),
+            ]),
         )?;
         Ok(id)
     }
@@ -1354,6 +1477,9 @@ impl<B: JobBackend> Executor<B> {
         if_not_exists: bool,
     ) -> Result<i64, ExecutorError> {
         check_identifier(&index.name, "index")?;
+        if index.vector {
+            check_columnar_storage_enabled(session).map_err(wrap_columnar_index_gate)?;
+        }
         let new_id = self.alloc_id();
         let table = self.table_mut(ident)?;
         if table
@@ -1389,7 +1515,11 @@ impl<B: JobBackend> Executor<B> {
         } else {
             DdlAction::AddIndex
         };
+        let columnar = index.vector;
         table.indexes.push(index);
+        if columnar && table.tiflash_replica_count == 0 {
+            table.tiflash_replica_count = 1;
+        }
         let (schema_id, table_id) = (table.schema_id, table.id);
         self.submit_simple_job_with_schema_state(
             session,
@@ -1397,7 +1527,7 @@ impl<B: JobBackend> Executor<B> {
             schema_id,
             table_id,
             ObjectState::Public,
-            BTreeMap::new(),
+            BTreeMap::from([("columnar_index".into(), columnar.to_string())]),
         )?;
         self.table_mut(ident)?
             .indexes
@@ -1804,12 +1934,30 @@ impl<B: JobBackend> Executor<B> {
         count: u64,
         available_stores: u64,
     ) -> Result<(), ExecutorError> {
-        // 副本数不能超过可用的 TiFlash 存储节点数。
-        if count > available_stores {
+        self.set_tiflash_replica_with_options(session, ident, count, available_stores, false)
+    }
+
+    /// Internal variant used by placement-rule repair. The bypass only skips
+    /// the columnar-storage switch; all table-kind and store-count checks stay.
+    pub fn set_tiflash_replica_with_options(
+        &mut self,
+        session: &mut SessionContext,
+        ident: &Ident,
+        count: u64,
+        available_stores: u64,
+        skip_columnar_storage_gate: bool,
+    ) -> Result<(), ExecutorError> {
+        let current_count = self.table_mut(ident)?.tiflash_replica_count;
+        if current_count == count {
+            return Ok(());
+        }
+        let store_type = columnar_store_type(session);
+        if matches!(store_type.as_str(), "tiflash" | "both") && count > available_stores {
             return Err(ExecutorError::Unsupported(
                 "TiFlash replica count exceeds stores".into(),
             ));
         }
+        check_columnar_storage_for_replica(session, count, skip_columnar_storage_gate)?;
         let table = self.table_mut(ident)?;
         // 临时表、视图、序列不支持 TiFlash 副本。
         if table.temporary || table.view || table.sequence {
@@ -1827,7 +1975,13 @@ impl<B: JobBackend> Executor<B> {
             DdlAction::SetTiFlashReplica,
             ids.0,
             ids.1,
-            BTreeMap::new(),
+            BTreeMap::from([
+                ("replica_count".into(), count.to_string()),
+                (
+                    "skip_columnar_storage_gate".into(),
+                    skip_columnar_storage_gate.to_string(),
+                ),
+            ]),
         )
     }
 
@@ -2041,6 +2195,9 @@ impl<B: JobBackend> Executor<B> {
         schema_state: ObjectState,
         args: BTreeMap<String, String>,
     ) -> Result<(), ExecutorError> {
+        // Owner/job-side recheck: the global switch may change after SQL
+        // precheck but before the job reaches its first metadata transition.
+        check_columnar_storage_for_job(session, &action, &args)?;
         // 多模式变更收集阶段：只记录子操作，不立即提交。
         if let Some(actions) = session.multi_schema_actions.as_mut() {
             actions.push(action);

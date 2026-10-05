@@ -527,6 +527,29 @@ impl ServerDomain for CanonicalServerDomain {
         Some(self.domain.info_schema())
     }
 
+    fn reload_schema(&self) -> Result<(), String> {
+        self.domain
+            .reload()
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    fn global_system_variable(&self, name: &str) -> Result<String, String> {
+        Ok(self
+            .domain
+            .global_system_variable(name)
+            .unwrap_or_else(|| astersql_sessionctx_vardef::On.to_owned()))
+    }
+
+    fn keyspace_identity(&self) -> (String, u32) {
+        self.domain.storage().with_storage(|storage| {
+            (
+                storage.GetKeyspace(),
+                storage.DDLKeyspaceID().unwrap_or_default(),
+            )
+        })
+    }
+
     fn publish_tiflash_replica_report(
         &self,
         table_id: i64,

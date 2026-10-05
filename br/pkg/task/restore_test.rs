@@ -102,7 +102,7 @@ fn test_pre_check_table_tiflash_replicas() {
             ..Default::default()
         })
         .collect();
-    PreCheckTableTiFlashReplica(&mut tables, 2, None, false);
+    PreCheckTableTiFlashReplica(&mut tables, 2, None, false, "ON");
     assert!(tables[0].Info.TiFlashReplica.is_none());
     for table in &tables[1..3] {
         let replica = table.Info.TiFlashReplica.as_ref().unwrap();
@@ -110,6 +110,36 @@ fn test_pre_check_table_tiflash_replicas() {
         assert!(replica.AvailablePartitionIDs.is_empty());
     }
     assert!(tables[3].Info.TiFlashReplica.is_none());
+}
+
+#[test]
+fn nextgen_restore_always_strips_replicas_without_recording_them() {
+    #[derive(Default)]
+    struct Recorder(Vec<i64>);
+    impl TiFlashReplicaRecorder for Recorder {
+        fn AddTable(&mut self, table_id: i64, _: TiFlashReplicaInfo) {
+            self.0.push(table_id);
+        }
+    }
+
+    for diagnostic_value in ["OFF", "ON"] {
+        let mut tables = vec![Table {
+            Info: TableInfo {
+                ID: 42,
+                TiFlashReplica: Some(TiFlashReplicaInfo {
+                    Count: 1,
+                    Available: true,
+                    AvailablePartitionIDs: vec![42],
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+        let mut recorder = Recorder::default();
+        PreCheckTableTiFlashReplica(&mut tables, 0, Some(&mut recorder), true, diagnostic_value);
+        assert!(tables[0].Info.TiFlashReplica.is_none());
+        assert!(recorder.0.is_empty());
+    }
 }
 
 /// Corresponds to Go `TestPreCheckTableClusterIndex`.
