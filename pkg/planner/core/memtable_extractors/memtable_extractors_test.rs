@@ -222,6 +222,45 @@ fn statements_summary_keeps_time_predicates_for_v1() {
 }
 
 #[test]
+// 单边时间谓词必须保持开放端点，不能再隐式收窄为一小时窗口。
+fn statements_summary_preserves_open_ended_time_ranges() {
+    const MIN_DATETIME_MS: i64 = -62_135_596_800_000;
+    const MAX_DATETIME_MS: i64 = 253_402_300_799_999;
+
+    let mut lower_bounded = StatementsSummaryExtractor::default();
+    let lower_predicate = Predicate::Ge("summary_end_time".into(), PredicateValue::I64(100));
+    assert_eq!(
+        lower_bounded.ExtractPredicates(std::slice::from_ref(&lower_predicate)),
+        [lower_predicate]
+    );
+    assert_eq!(
+        lower_bounded.CoarseTimeRange,
+        Some(TimeRange::new(100, MAX_DATETIME_MS))
+    );
+    assert!(
+        lower_bounded
+            .ExplainInfo()
+            .contains("end_time: 9999-12-31 23:59:59.999999")
+    );
+
+    let mut upper_bounded = StatementsSummaryExtractor::default();
+    let upper_predicate = Predicate::Le("summary_begin_time".into(), PredicateValue::I64(200));
+    assert_eq!(
+        upper_bounded.ExtractPredicates(std::slice::from_ref(&upper_predicate)),
+        [upper_predicate]
+    );
+    assert_eq!(
+        upper_bounded.CoarseTimeRange,
+        Some(TimeRange::new(MIN_DATETIME_MS, 200))
+    );
+    assert!(
+        upper_bounded
+            .ExplainInfo()
+            .contains("start_time: 0001-01-01 00:00:00.000000")
+    );
+}
+
+#[test]
 // 元数据枚举需同时保证稳定排序、隐藏列过滤、原始序号和索引条件筛选。
 fn infoschema_listing_preserves_sorting_visibility_and_ordinals() {
     let table = |id, name: &str| TableInfo {

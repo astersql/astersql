@@ -1031,6 +1031,19 @@ pub struct StatementsSummaryExtractor {
     pub CoarseTimeRange: Option<TimeRange>,
 }
 
+/// MySQL DATETIME 下界（0001-01-01 00:00:00 UTC）的 Unix 毫秒值。
+pub const STATEMENTS_SUMMARY_MIN_DATETIME_MS: i64 = -62_135_596_800_000;
+/// MySQL DATETIME 上界（9999-12-31 23:59:59.999999 UTC）截断到毫秒的值。
+pub const STATEMENTS_SUMMARY_MAX_DATETIME_MS: i64 = 253_402_300_799_999;
+
+fn formatStatementsSummaryTime(time_ms: i64) -> String {
+    match time_ms {
+        STATEMENTS_SUMMARY_MIN_DATETIME_MS => "0001-01-01 00:00:00.000000".to_owned(),
+        STATEMENTS_SUMMARY_MAX_DATETIME_MS => "9999-12-31 23:59:59.999999".to_owned(),
+        _ => time_ms.to_string(),
+    }
+}
+
 impl StatementsSummaryExtractor {
     pub fn ExtractPredicates(&mut self, predicates: &[Predicate]) -> Vec<Predicate> {
         *self = Self::default();
@@ -1045,14 +1058,13 @@ impl StatementsSummaryExtractor {
         let (_, _, end_time) = extract_time_range(&remaining, "summary_begin_time");
         let (_, start_time, _) = extract_time_range(&remaining, "summary_end_time");
         if start_time != 0 || end_time != 0 {
-            const DEFAULT_STATEMENTS_DURATION_MS: i64 = 60 * 60 * 1000;
             let start_time = if start_time == 0 {
-                end_time.saturating_sub(DEFAULT_STATEMENTS_DURATION_MS)
+                STATEMENTS_SUMMARY_MIN_DATETIME_MS
             } else {
                 start_time
             };
             let end_time = if end_time == 0 {
-                start_time.saturating_add(DEFAULT_STATEMENTS_DURATION_MS)
+                STATEMENTS_SUMMARY_MAX_DATETIME_MS
             } else {
                 end_time
             };
@@ -1077,7 +1089,8 @@ impl StatementsSummaryExtractor {
         if let Some(range) = self.CoarseTimeRange {
             parts.push(format!(
                 "start_time: {}, end_time: {}",
-                range.StartTime, range.EndTime
+                formatStatementsSummaryTime(range.StartTime),
+                formatStatementsSummaryTime(range.EndTime)
             ));
         }
         parts.join(", ")
