@@ -205,6 +205,8 @@ pub const version283: i64 = 283;
 pub const version284: i64 = 284;
 /// Creates materialized-view maintenance system tables. Go later moved this migration from 285.
 pub const version316: i64 = 316;
+/// Adds the OPERATE VIEW static privilege. Go later moved this migration from 286.
+pub const version317: i64 = 317;
 
 /// 版本号与升级函数指针的配对（对应 Go upgradeToVerFunctions 表项）。
 pub struct VersionedUpgradeFunction {
@@ -259,7 +261,7 @@ pub struct bindingDigestPair {
     pub planDigest: String,
 }
 /// 当前代码支持的最新 bootstrap 版本。
-pub static mut currentBootstrapVersion: i64 = version316;
+pub static mut currentBootstrapVersion: i64 = version317;
 /// 有序升级函数表，对应 Go `upgradeToVerFunctions`。
 pub static upgradeToVerFunctions: LazyLock<Vec<VersionedUpgradeFunction>> = LazyLock::new(|| {
     macro_rules! upgrade_function {
@@ -788,6 +790,9 @@ pub static upgradeToVerFunctions: LazyLock<Vec<VersionedUpgradeFunction>> = Lazy
         (316) => {
             upgradeToVer316
         };
+        (317) => {
+            upgradeToVer317
+        };
     }
     macro_rules! upgrades {
         ($($version:tt),+ $(,)?) => {
@@ -809,7 +814,7 @@ pub static upgradeToVerFunctions: LazyLock<Vec<VersionedUpgradeFunction>> = Lazy
         141, 142, 143, 144, 146, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179,
         190, 191, 192, 193, 194, 195, 196, 197, 198, 209, 210, 211, 212, 213, 214, 215, 216, 217,
         218, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255,
-        256, 277, 278, 279, 280, 281, 282, 283, 284, 316,
+        256, 277, 278, 279, 280, 281, 282, 283, 284, 316, 317,
     ]
 });
 
@@ -1609,4 +1614,9 @@ pub fn upgradeToVer284(_s: &sessionapi::Session, _version: i64) {
 /// Dispatch the materialized-view maintenance table migration at its final Go version.
 pub fn upgradeToVer316(_s: &sessionapi::Session, _version: i64) {
     upgrade_action("upgradeToVer316");
+}
+
+/// Dispatch the OPERATE VIEW privilege migration at its final Go version.
+pub fn upgradeToVer317(_s: &sessionapi::Session, _version: i64) {
+    upgrade_action("upgradeToVer317");
 }
