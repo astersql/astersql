@@ -201,6 +201,8 @@ pub const version281: i64 = 281;
 pub const version282: i64 = 282;
 /// Analyze defaults migration, renumbered from v263 by Go #69886.
 pub const version283: i64 = 283;
+/// Migrates the legacy inverse txn-file switch on NextGen clusters.
+pub const version284: i64 = 284;
 
 /// 版本号与升级函数指针的配对（对应 Go upgradeToVerFunctions 表项）。
 pub struct VersionedUpgradeFunction {
@@ -255,7 +257,7 @@ pub struct bindingDigestPair {
     pub planDigest: String,
 }
 /// 当前代码支持的最新 bootstrap 版本。
-pub static mut currentBootstrapVersion: i64 = version283;
+pub static mut currentBootstrapVersion: i64 = version284;
 /// 有序升级函数表，对应 Go `upgradeToVerFunctions`。
 pub static upgradeToVerFunctions: LazyLock<Vec<VersionedUpgradeFunction>> = LazyLock::new(|| {
     macro_rules! upgrade_function {
@@ -778,6 +780,9 @@ pub static upgradeToVerFunctions: LazyLock<Vec<VersionedUpgradeFunction>> = Lazy
         (283) => {
             upgradeToVer283
         };
+        (284) => {
+            upgradeToVer284
+        };
     }
     macro_rules! upgrades {
         ($($version:tt),+ $(,)?) => {
@@ -799,7 +804,7 @@ pub static upgradeToVerFunctions: LazyLock<Vec<VersionedUpgradeFunction>> = Lazy
         141, 142, 143, 144, 146, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179,
         190, 191, 192, 193, 194, 195, 196, 197, 198, 209, 210, 211, 212, 213, 214, 215, 216, 217,
         218, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255,
-        256, 277, 278, 279, 280, 281, 282, 283,
+        256, 277, 278, 279, 280, 281, 282, 283, 284,
     ]
 });
 
@@ -1589,4 +1594,9 @@ mod sessionapi {
 /// Dispatch the analyze-default migration using its current Go version.
 pub fn upgradeToVer283(_s: &sessionapi::Session, _version: i64) {
     upgrade_action("upgradeToVer283");
+}
+
+/// Dispatch the NextGen txn-file compatibility migration.
+pub fn upgradeToVer284(_s: &sessionapi::Session, _version: i64) {
+    upgrade_action("upgradeToVer284");
 }

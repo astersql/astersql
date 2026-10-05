@@ -1275,6 +1275,12 @@ pub const TiDBAccelerateUserCreationUpdate: &str = "tidb_accelerate_user_creatio
 // TiDBEnableCachePrepareStmt indicates whether to support cache prepare stmt in plan cache.
 pub const TiDBEnableCachePrepareStmt: &str = "tidb_enable_cache_prepare_stmt";
 
+// TiDBEnableTxnFile controls whether file-based transactions are enabled.
+pub const TiDBEnableTxnFile: &str = "tidb_enable_txn_file";
+
+// TiDBTxnFileMinMutationSize is the minimum mutation size for file-based transactions.
+pub const TiDBTxnFileMinMutationSize: &str = "tidb_txn_file_min_mutation_size";
+
 // TiDB vars that have only global scope
 // Go const block：以下常量按原声明顺序逐项迁移。
 // TiDBGCEnable turns garbage collection on or OFF
@@ -1981,6 +1987,11 @@ pub const DefTiDBMemArbitratorQueryReservedText: &str = "0";
 pub const DefTiDBMemArbitratorWaitAverse: &str = "0";
 pub const DefTiDBIndexLookUpPushDownPolicy: &str = IndexLookUpPushDownPolicyHintOnly;
 pub const DefEnableCachePrepareStmt: bool = false;
+pub const DefTiDBEnableTxnFile: bool = false;
+/// Zero delegates the threshold to the TiKV client configuration.
+pub const DefTiDBTxnFileMinMutationSize: u64 = 0;
+/// Nonzero per-session thresholds smaller than 1 MiB are rejected.
+pub const MinTiDBTxnFileMinMutationSize: u64 = 1 << 20;
 // DefConnectAttrsSize is the default max aggregate byte size of connection attributes per connection.
 // This corresponds to performance_schema_session_connect_attrs_size. In TiDB, -1 means no limit up to 64KB.
 pub const DefConnectAttrsSize: i64 = 4096;

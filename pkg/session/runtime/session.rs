@@ -2118,6 +2118,52 @@ impl crate::upgrade_run::BootstrapVariableUpgradeRuntime for CanonicalBootstrapV
         ))?;
         Ok(())
     }
+
+    fn migrate_legacy_txn_file_variable(&mut self) -> Result<(), Self::Error> {
+        if astersql_config_kerneltype::IsClassic() {
+            return Ok(());
+        }
+        self.session.execute("BEGIN PESSIMISTIC")?;
+        let migration = (|| {
+            let mut sets = self.session.execute(
+                "SELECT VARIABLE_VALUE FROM mysql.global_variables \
+                 WHERE VARIABLE_NAME='tidb_disable_txn_file' FOR UPDATE",
+            )?;
+            let Some(mut rows) = sets.pop() else {
+                return Err(SessionError::new(
+                    "v284 txn-file migration returned no result set",
+                ));
+            };
+            let Some(row) = rows.next_row()? else {
+                return Ok(());
+            };
+            let enabled = if row
+                .first()
+                .is_some_and(|value| value.eq_ignore_ascii_case("ON"))
+            {
+                "OFF"
+            } else {
+                "ON"
+            };
+            self.session.execute(&format!(
+                "REPLACE INTO mysql.global_variables (VARIABLE_NAME, VARIABLE_VALUE) \
+                 VALUES ('{}', '{}')",
+                astersql_sessionctx_vardef::TiDBEnableTxnFile,
+                enabled,
+            ))?;
+            Ok(())
+        })();
+        match migration {
+            Ok(()) => {
+                self.session.execute("COMMIT")?;
+                Ok(())
+            }
+            Err(error) => {
+                let _ = self.session.execute("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
 }
 
 fn upgrade_canonical_domain(

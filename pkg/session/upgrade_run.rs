@@ -72,6 +72,8 @@ pub trait BootstrapVariableUpgradeRuntime {
         value: &str,
         comment: &str,
     ) -> Result<(), Self::Error>;
+    /// Atomically reads the legacy inverse switch and replaces the new switch.
+    fn migrate_legacy_txn_file_variable(&mut self) -> Result<(), Self::Error>;
 }
 
 /// Apply the variable migrations exercised by `bootstraptest/boot_test.go`.
@@ -85,7 +87,7 @@ pub fn upgrade_bootstrap_variables<R: BootstrapVariableUpgradeRuntime>(
 ) -> Result<(), R::Error> {
     use crate::upgrade_def::{
         version54, version59, version68, version80, version81, version97, version105, version135,
-        version215, version255, version279, version281, version283,
+        version215, version255, version279, version281, version283, version284,
     };
 
     if from < version54 && from <= crate::upgrade_def::version38 {
@@ -144,6 +146,9 @@ pub fn upgrade_bootstrap_variables<R: BootstrapVariableUpgradeRuntime>(
             vardef::TiDBAnalyzeDefaultNumTopN,
             &vardef::DefTiDBAnalyzeDefaultNumTopN.to_string(),
         )?;
+    }
+    if from < version284 {
+        runtime.migrate_legacy_txn_file_variable()?;
     }
     Ok(())
 }

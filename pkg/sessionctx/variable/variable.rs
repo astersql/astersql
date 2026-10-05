@@ -215,6 +215,10 @@ pub struct ConnectionInfo {
 pub struct SessionKVVars {
     pub BackoffLockFast: i32,
     pub BackOffWeight: i32,
+    /// Mirrors Go client-go's inverse compatibility switch.
+    pub DisableTxnFile: bool,
+    /// Zero delegates to the client-wide txn-file mutation threshold.
+    pub TxnFileMinMutationSize: u64,
 }
 
 impl Default for SessionKVVars {
@@ -222,6 +226,8 @@ impl Default for SessionKVVars {
         Self {
             BackoffLockFast: kv::DefBackoffLockFast,
             BackOffWeight: kv::DefBackOffWeight,
+            DisableTxnFile: !vardef::DefTiDBEnableTxnFile,
+            TxnFileMinMutationSize: vardef::DefTiDBTxnFileMinMutationSize,
         }
     }
 }

@@ -173,6 +173,62 @@ fn kv_backoff_sysvars_validate_and_update_session_kv_vars() {
     assert_eq!(vars.StmtCtx.WarningCount(), 2);
 }
 
+#[test]
+fn txn_file_sysvars_match_go_defaults_validation_and_session_propagation() {
+    let (mut vars, _) = session();
+
+    let enable = sysvar(vardef::TiDBEnableTxnFile);
+    assert_eq!(enable.Scope, vardef::ScopeGlobal | vardef::ScopeSession);
+    assert_eq!(enable.Value, vardef::Off);
+    assert!(vars.KVVars.DisableTxnFile);
+    for (input, disabled) in [(vardef::Off, true), (vardef::On, false)] {
+        let normalized = enable
+            .Validate(&mut vars, input, vardef::ScopeSession)
+            .unwrap();
+        enable.SetSessionFromHook(&mut vars, &normalized).unwrap();
+        assert_eq!(vars.KVVars.DisableTxnFile, disabled);
+    }
+
+    let minimum = sysvar(vardef::TiDBTxnFileMinMutationSize);
+    assert_eq!(minimum.Scope, vardef::ScopeGlobal | vardef::ScopeSession);
+    assert_eq!(minimum.Value, "0");
+    assert_eq!(vars.KVVars.TxnFileMinMutationSize, 0);
+    for rejected in [
+        "1".to_owned(),
+        (vardef::MinTiDBTxnFileMinMutationSize - 1).to_string(),
+    ] {
+        assert!(
+            minimum
+                .Validate(&mut vars, &rejected, vardef::ScopeSession)
+                .is_err()
+        );
+    }
+    let valid = (vardef::MinTiDBTxnFileMinMutationSize * 2).to_string();
+    let normalized = minimum
+        .Validate(&mut vars, &valid, vardef::ScopeSession)
+        .unwrap();
+    minimum.SetSessionFromHook(&mut vars, &normalized).unwrap();
+    assert_eq!(
+        vars.KVVars.TxnFileMinMutationSize,
+        vardef::MinTiDBTxnFileMinMutationSize * 2
+    );
+    assert!(
+        minimum
+            .Validate(&mut vars, "1", vardef::ScopeSession)
+            .is_err()
+    );
+    assert_eq!(
+        vars.KVVars.TxnFileMinMutationSize,
+        vardef::MinTiDBTxnFileMinMutationSize * 2
+    );
+    assert_eq!(
+        minimum
+            .Validate(&mut vars, "0", vardef::ScopeSession)
+            .unwrap(),
+        "0"
+    );
+}
+
 /// 创建带默认内置变量的会话与内存全局 accessor。
 fn session() -> (SessionVars, MemoryGlobal) {
     let accessor = MemoryGlobal::with_defaults();

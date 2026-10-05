@@ -502,6 +502,44 @@ fn register_basic_clamped_vars() {
     }));
     RegisterSysVar(backoff_weight);
 
+    let mut enable_txn_file = bool_var(
+        vardef::TiDBEnableTxnFile,
+        vardef::DefTiDBEnableTxnFile,
+        scope_both(),
+    );
+    enable_txn_file.SetSession = Some(Arc::new(|vars, value| {
+        vars.KVVars.DisableTxnFile = !TiDBOptOn(value);
+        Ok(())
+    }));
+    RegisterSysVar(enable_txn_file);
+
+    let mut txn_file_min_mutation_size = unsigned_var(
+        vardef::TiDBTxnFileMinMutationSize,
+        vardef::DefTiDBTxnFileMinMutationSize,
+        scope_both(),
+        0,
+        i64::MAX as u64,
+    );
+    txn_file_min_mutation_size.Validation = Some(Arc::new(|_, normalized, original, _| {
+        let value = original.parse::<u64>().map_err(|_| {
+            VariableError::wrong_value(vardef::TiDBTxnFileMinMutationSize, original)
+        })?;
+        if value > 0 && value < vardef::MinTiDBTxnFileMinMutationSize {
+            return Err(VariableError::wrong_value(
+                vardef::TiDBTxnFileMinMutationSize,
+                original,
+            ));
+        }
+        Ok(normalized.to_owned())
+    }));
+    txn_file_min_mutation_size.SetSession = Some(Arc::new(|vars, value| {
+        vars.KVVars.TxnFileMinMutationSize = value
+            .parse()
+            .map_err(|_| VariableError::wrong_value(vardef::TiDBTxnFileMinMutationSize, value))?;
+        Ok(())
+    }));
+    RegisterSysVar(txn_file_min_mutation_size);
+
     for (name, setter) in [
         ("tidb_max_bytes_before_tiflash_external_join", 0_u8),
         ("tidb_max_bytes_before_tiflash_external_group_by", 1_u8),

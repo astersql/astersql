@@ -52,6 +52,18 @@ impl BootstrapVariableUpgradeRuntime for VariableStore {
         self.0.insert(name.to_owned(), value.to_owned());
         Ok(())
     }
+
+    fn migrate_legacy_txn_file_variable(&mut self) -> SessionResult<()> {
+        if let Some(legacy) = self.0.get("tidb_disable_txn_file").cloned() {
+            let enabled = if legacy.eq_ignore_ascii_case("ON") {
+                "OFF"
+            } else {
+                "ON"
+            };
+            self.0.insert("tidb_enable_txn_file".into(), enabled.into());
+        }
+        Ok(())
+    }
 }
 
 #[test]
@@ -237,4 +249,34 @@ fn bootstrap_variable_backfills_stop_at_their_renumbered_versions() {
             .contains_key("tidb_default_string_match_selectivity")
     );
     assert_eq!(at281.0["tidb_analyze_default_num_buckets"], "256");
+}
+
+#[test]
+fn upgrade_to_ver284_replaces_new_switch_from_legacy_inverse_value() {
+    for (legacy, existing, expected) in [
+        (Some("ON"), Some("ON"), Some("OFF")),
+        (Some("OFF"), Some("OFF"), Some("ON")),
+        (Some("ON"), None, Some("OFF")),
+        (None, Some("ON"), Some("ON")),
+    ] {
+        let mut store = VariableStore::default();
+        if let Some(value) = legacy {
+            store.0.insert("tidb_disable_txn_file".into(), value.into());
+        }
+        if let Some(value) = existing {
+            store.0.insert("tidb_enable_txn_file".into(), value.into());
+        }
+        upgrade_bootstrap_variables(&mut store, 283).unwrap();
+        assert_eq!(
+            store.0.get("tidb_enable_txn_file").map(String::as_str),
+            expected
+        );
+    }
+
+    let mut current = VariableStore::default();
+    current
+        .0
+        .insert("tidb_disable_txn_file".into(), "ON".into());
+    upgrade_bootstrap_variables(&mut current, 284).unwrap();
+    assert!(!current.0.contains_key("tidb_enable_txn_file"));
 }
