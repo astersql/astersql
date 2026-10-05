@@ -153,3 +153,39 @@ pub fn TestCreateSSTWriterDefaultBlockSize() {
     writer.Close().unwrap();
     assert_eq!((2, 1), engine.KVStatistics());
 }
+
+// Go's sorted writer reuses one encoded-key buffer between batches. Rust takes
+// ownership of each Vec at Append, so later source-buffer writes must not alter
+// keys that have already crossed the writer boundary.
+#[test]
+fn sorted_batches_own_keys_after_source_buffer_reuse() {
+    let engine = makePebbleDB();
+    let mut writer = Writer::new(Arc::clone(&engine), 1);
+    let mut source_key = vec![b'a'; 3];
+
+    for (key, value) in [(b"aaa", b"1"), (b"bbb", b"2"), (b"ccc", b"3")] {
+        source_key.copy_from_slice(key);
+        writer.Append(source_key.clone(), value.to_vec()).unwrap();
+    }
+    source_key.copy_from_slice(b"zzz");
+
+    writer.Close().unwrap();
+    assert_eq!(
+        vec![
+            crate::KvPair {
+                key: b"aaa".to_vec(),
+                value: b"1".to_vec(),
+            },
+            crate::KvPair {
+                key: b"bbb".to_vec(),
+                value: b"2".to_vec(),
+            },
+            crate::KvPair {
+                key: b"ccc".to_vec(),
+                value: b"3".to_vec(),
+            },
+        ],
+        engine.snapshot().unwrap()
+    );
+    assert_eq!((12, 3), engine.KVStatistics());
+}
