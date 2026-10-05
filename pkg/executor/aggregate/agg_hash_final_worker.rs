@@ -386,6 +386,10 @@ impl HashAggFinalWorker {
         }
         Ok(restored)
     }
+    /// 返回当前 final map 中已经完成构建的分组数。
+    pub fn hash_state_rows(&self) -> usize {
+        self.result.len()
+    }
     /// 取出全部 group，附加各聚合最终值，按 max_chunk_size 切成多个 FinalResult。
     pub fn generate_result(&mut self, max_chunk_size: usize) -> Vec<FinalResult> {
         let mut chunks = Vec::new();

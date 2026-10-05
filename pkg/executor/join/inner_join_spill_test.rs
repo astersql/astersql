@@ -25,8 +25,9 @@ use crate::join_row_table::{RowTable, RowTableSegment};
 use crate::join_table_meta::EncodedRow;
 use crate::joiner::{JoinType, Joiner, Predicate, Row};
 use crate::row_table_builder::Value;
-use std::sync::Arc;
+use astersql_util_execdetails::execdetails::NewRuntimeStatsColl;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 fn execute_inner_join(
     right_as_build_side: bool,
@@ -121,6 +122,67 @@ fn inner_join_spill_executor_can_close_and_reopen_repeatedly() {
             sorted(expected.clone())
         );
     }
+}
+
+/// Typed hash-state evidence merges completed repeated opens and is poisoned by a failed build.
+#[test]
+fn hash_join_hash_state_tracks_repeated_open_and_failure() {
+    let context = HashJoinCtxV2::new(
+        JoinType::Inner,
+        vec![0],
+        vec![0],
+        true,
+        false,
+        2,
+        8,
+        Some(1),
+    )
+    .unwrap();
+    let joiner = Joiner::new(
+        JoinType::Inner,
+        true,
+        vec![],
+        vec![],
+        Some([vec![0], vec![0]]),
+        false,
+        2,
+    )
+    .unwrap();
+    let build = vec![vec![
+        vec![Value::Int(1)],
+        vec![Value::Int(2)],
+        vec![Value::Int(3)],
+    ]];
+    let probe = vec![vec![vec![Value::Int(1)], vec![Value::Int(3)]]];
+    let runtime_stats = Arc::new(Mutex::new(NewRuntimeStatsColl(None)));
+    let mut executor = HashJoinV2Exec::new(context, joiner, build.clone(), probe)
+        .unwrap()
+        .with_runtime_stats(9, runtime_stats.clone());
+
+    for _ in 0..2 {
+        executor.open().unwrap();
+        assert_eq!(executor.execute_all().unwrap().len(), 2);
+        executor.close();
+    }
+    let snapshot = runtime_stats
+        .lock()
+        .unwrap()
+        .GetRootHashStateRowsSnapshot(9)
+        .unwrap();
+    assert!(snapshot.Complete());
+    assert_eq!(snapshot.Rows, 6);
+
+    executor.set_build_chunks(vec![vec![Vec::new()]]);
+    executor.open().unwrap();
+    assert!(executor.execute_all().is_err());
+    executor.close();
+    let snapshot = runtime_stats
+        .lock()
+        .unwrap()
+        .GetRootHashStateRowsSnapshot(9)
+        .unwrap();
+    assert!(snapshot.Invalid());
+    assert!(!snapshot.Complete());
 }
 
 /// 构造单行单 segment 的 `RowTable` 夹具，指定 hash 与字节占用。

@@ -234,8 +234,9 @@ use crate::agg_hash_final_worker::{FinalResult, HashAggFinalWorker};
 use crate::agg_hash_partial_worker::HashAggPartialWorker;
 use crate::agg_spill::ParallelHashAggSpillHelper;
 use crate::agg_util::{AggMap, AggState, Aggregation, Chunk, HashAggRuntimeStats};
+use astersql_util_execdetails::execdetails::{HashStateRuntimeStats, RuntimeStatsColl};
 use std::collections::VecDeque;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug)]
 /// HashAgg 输入：待聚合 chunk、分组列下标与聚合描述列表。
@@ -256,6 +257,9 @@ pub struct HashAggExec {
     executed: bool,
     results: VecDeque<FinalResult>,
     pub runtime_stats: HashAggRuntimeStats,
+    hash_state_stats: Option<HashStateRuntimeStats>,
+    runtime_stats_coll: Option<Arc<Mutex<RuntimeStatsColl>>>,
+    plan_id: i32,
 }
 
 impl HashAggExec {
@@ -277,7 +281,20 @@ impl HashAggExec {
             executed: false,
             results: VecDeque::new(),
             runtime_stats: HashAggRuntimeStats::default(),
+            hash_state_stats: None,
+            runtime_stats_coll: None,
+            plan_id: 0,
         }
+    }
+    /// 为执行器启用与 Go RuntimeStatsColl 相同的 typed hash-state 证据。
+    pub fn with_runtime_stats(
+        mut self,
+        plan_id: i32,
+        runtime_stats_coll: Arc<Mutex<RuntimeStatsColl>>,
+    ) -> Self {
+        self.plan_id = plan_id;
+        self.runtime_stats_coll = Some(runtime_stats_coll);
+        self
     }
     /// Open：清空结果并重置 executed / 统计，标记已打开。
     pub fn open(&mut self) {
@@ -285,9 +302,21 @@ impl HashAggExec {
         self.executed = false;
         self.opened = true;
         self.runtime_stats = HashAggRuntimeStats::default();
+        self.hash_state_stats = self
+            .runtime_stats_coll
+            .as_ref()
+            .map(|_| HashStateRuntimeStats::default());
     }
     /// Close：释放结果队列并复位打开状态。
     pub fn close(&mut self) {
+        if let (Some(collection), Some(stats)) =
+            (&self.runtime_stats_coll, self.hash_state_stats.take())
+        {
+            collection
+                .lock()
+                .expect("runtime stats lock poisoned")
+                .RegisterStats(self.plan_id, Box::new(stats));
+        }
         self.results.clear();
         self.opened = false;
         self.executed = false;
@@ -298,7 +327,12 @@ impl HashAggExec {
             return Err("hash aggregate is not open".to_string());
         }
         if !self.executed {
-            self.execute()?;
+            if let Err(error) = self.execute() {
+                if let Some(stats) = &self.hash_state_stats {
+                    stats.Invalidate();
+                }
+                return Err(error);
+            }
             self.executed = true;
         }
         match self.results.pop_front() {
@@ -408,8 +442,14 @@ impl HashAggExec {
                 .merge_input(empty_group)?;
         }
         for final_worker in &mut final_workers {
+            if let Some(stats) = &self.hash_state_stats {
+                stats.AddRows(final_worker.hash_state_rows() as u64);
+            }
             self.results
                 .extend(final_worker.generate_result(self.max_chunk_size));
+        }
+        if let Some(stats) = &self.hash_state_stats {
+            stats.Complete();
         }
         Ok(())
     }

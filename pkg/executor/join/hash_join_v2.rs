@@ -1579,6 +1579,8 @@ use crate::join_row_table::RowTable;
 use crate::join_table_meta::{FieldKind, FieldType, JoinTableMeta, new_table_meta};
 use crate::joiner::{JoinType, Joiner, NaajType, Row};
 use crate::row_table_builder::{Chunk, RowTableBuilder, Value};
+use astersql_util_execdetails::execdetails::{HashStateRuntimeStats, RuntimeStatsColl};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 /// 构建任务：覆盖哈希表某一行号区间，供多 worker 并行建表。
@@ -1995,6 +1997,9 @@ pub struct HashJoinV2Exec {
     prepared: bool,
     in_restore: bool,
     pub stats: HashJoinRuntimeStatsV2,
+    hash_state_stats: Option<HashStateRuntimeStats>,
+    runtime_stats_coll: Option<Arc<Mutex<RuntimeStatsColl>>>,
+    plan_id: i32,
 }
 
 impl HashJoinV2Exec {
@@ -2022,7 +2027,24 @@ impl HashJoinV2Exec {
             prepared: false,
             in_restore: false,
             stats: HashJoinRuntimeStatsV2::default(),
+            hash_state_stats: None,
+            runtime_stats_coll: None,
+            plan_id: 0,
         })
+    }
+    /// 为执行器启用 typed hash-state 运行时证据。
+    pub fn with_runtime_stats(
+        mut self,
+        plan_id: i32,
+        runtime_stats_coll: Arc<Mutex<RuntimeStatsColl>>,
+    ) -> Self {
+        self.plan_id = plan_id;
+        self.runtime_stats_coll = Some(runtime_stats_coll);
+        self
+    }
+    /// 替换下一次 Open 使用的构建侧输入，覆盖 Go 重复 Open 的执行器复用路径。
+    pub fn set_build_chunks(&mut self, build_chunks: Vec<Chunk>) {
+        self.build_chunks = build_chunks;
     }
     /// 打开并启动构建与探测流水线。
     pub fn open(&mut self) -> Result<(), String> {
@@ -2036,6 +2058,10 @@ impl HashJoinV2Exec {
         self.prepared = false;
         self.stats.reset();
         self.stats.concurrency = self.context.concurrency;
+        self.hash_state_stats = self
+            .runtime_stats_coll
+            .as_ref()
+            .map(|_| HashStateRuntimeStats::default());
         self.state = ExecutorState::Open;
         Ok(())
     }
@@ -2108,6 +2134,9 @@ impl HashJoinV2Exec {
         }
         self.stats.fetch_and_build += start.elapsed();
         self.stats.max_build_hash_table = self.stats.max_build_hash_table.max(start.elapsed());
+        if let Some(stats) = &self.hash_state_stats {
+            stats.AddRows(table.hash_table.total_row_count() as u64);
+        }
         self.hash_table_context = Some(table);
         self.context.base.finish_build();
         Ok(())
@@ -2192,6 +2221,9 @@ impl HashJoinV2Exec {
             let mut partitions = vec![Vec::new(); self.context.partition_number];
             partitions[partition] = build;
             let table = HashTableContext::build(partitions, meta, &self.context.build_key_indices)?;
+            if let Some(stats) = &self.hash_state_stats {
+                stats.AddRows(table.hash_table.total_row_count() as u64);
+            }
             let worker = ProbeWorkerV2::new(0, self.context.base.clone());
             for row in probe {
                 worker.probe_row(&self.context, &table, &self.joiner, &row, &mut self.output)?;
@@ -2218,6 +2250,9 @@ impl HashJoinV2Exec {
             }
         }
         self.collect_spill_stats();
+        if let Some(stats) = &self.hash_state_stats {
+            stats.Complete();
+        }
         self.prepared = true;
         Ok(())
     }
@@ -2237,6 +2272,9 @@ impl HashJoinV2Exec {
         }
         if !self.prepared {
             if let Err(error) = self.start_build_and_probe() {
+                if let Some(stats) = &self.hash_state_stats {
+                    stats.Invalidate();
+                }
                 self.context.base.fail(error.clone());
                 return Err(error);
             }
@@ -2270,6 +2308,14 @@ impl HashJoinV2Exec {
     }
     /// 关闭执行器。
     pub fn close(&mut self) {
+        if let (Some(collection), Some(stats)) =
+            (&self.runtime_stats_coll, self.hash_state_stats.take())
+        {
+            collection
+                .lock()
+                .expect("runtime stats lock poisoned")
+                .RegisterStats(self.plan_id, Box::new(stats));
+        }
         self.context.base.cancel();
         if let Some(table) = self.hash_table_context.as_mut() {
             table.reset();

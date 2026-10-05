@@ -14,6 +14,7 @@ legacy-tasks = ["task-1069", "task-1070", "task-1074", "task-1090"]
 [dependencies]
 "astersql-executor-aggfuncs" = { package = "astersql-executor-aggfuncs", path = "../aggfuncs" }
 "astersql-util-chunk" = { package = "astersql-util-chunk", path = "../../util/chunk" }
+"astersql-util-execdetails" = { package = "astersql-util-execdetails", path = "../../util/execdetails" }
 "astersql-util-serialization" = { package = "astersql-util-serialization", path = "../../util/serialization" }
 
 [target.'cfg(windows)'.dependencies]
@@ -32,7 +33,6 @@ legacy-tasks = ["task-1069", "task-1070", "task-1074", "task-1090"]
 "astersql-util-chunk" = { package = "astersql-util-chunk", path = "../../util/chunk" }
 "astersql-util-codec" = { package = "astersql-util-codec", path = "../../util/codec" }
 "astersql-util-disk" = { package = "astersql-util-disk", path = "../../util/disk" }
-"astersql-util-execdetails" = { package = "astersql-util-execdetails", path = "../../util/execdetails" }
 "astersql-util-hack" = { package = "astersql-util-hack", path = "../../util/hack" }
 "astersql-util-logutil" = { package = "astersql-util-logutil", path = "../../util/logutil" }
 "astersql-util-memory" = { package = "astersql-util-memory", path = "../../util/memory" }

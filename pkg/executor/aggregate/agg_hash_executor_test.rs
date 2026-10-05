@@ -2,6 +2,8 @@
 
 use super::agg_hash_executor::{HashAggExec, HashAggInput};
 use super::agg_util::{AggKind, Aggregation, Value};
+use astersql_util_execdetails::execdetails::NewRuntimeStatsColl;
+use std::sync::{Arc, Mutex};
 
 #[test]
 fn spill_merges_tail_rows_with_their_existing_group() {
@@ -16,7 +18,9 @@ fn spill_merges_tail_rows_with_their_existing_group() {
         group_columns: vec![0],
         aggregations: vec![Aggregation::new(AggKind::Sum, Some(1))],
     };
-    let mut exec = HashAggExec::new(input, 1, 2, 32, Some(2_000));
+    let runtime_stats = Arc::new(Mutex::new(NewRuntimeStatsColl(None)));
+    let mut exec =
+        HashAggExec::new(input, 1, 2, 32, Some(2_000)).with_runtime_stats(7, runtime_stats.clone());
 
     exec.open();
     let mut rows = Vec::new();
@@ -31,4 +35,12 @@ fn spill_merges_tail_rows_with_their_existing_group() {
     assert!(exec.is_spill_triggered());
     assert_eq!(rows.len(), 10);
     assert_eq!(rows[2], vec![Value::Integer(2), Value::Float(2.0)]);
+    exec.close();
+    let snapshot = runtime_stats
+        .lock()
+        .unwrap()
+        .GetRootHashStateRowsSnapshot(7)
+        .unwrap();
+    assert!(snapshot.Complete());
+    assert_eq!(snapshot.Rows, 10);
 }

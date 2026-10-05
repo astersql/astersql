@@ -180,14 +180,19 @@ fn go_merge_14_cop_read_pool_and_invalid_coverage() {
 #[test]
 fn go_merge_14_hash_state_merge_and_overflow() {
     let state = exec::HashStateRuntimeStats::default();
+    assert!(!state.HashStateRowsSnapshot().Complete());
     let other = exec::HashStateRuntimeStats::default();
     other.AddRows(3);
     other.AddRows(2);
+    other.Complete();
     let mut merged = state.Clone();
     exec::RuntimeStats::Merge(&mut merged, &other);
     assert_eq!(merged.HashStateRowsSnapshot().Rows, 5);
+    assert!(!merged.HashStateRowsSnapshot().Complete());
     assert_eq!(state.HashStateRowsSnapshot().Rows, 0);
-    exec::RuntimeStats::Merge(&mut merged, &exec::HashStateRuntimeStats::default());
+    let complete_empty = exec::HashStateRuntimeStats::default();
+    complete_empty.Complete();
+    exec::RuntimeStats::Merge(&mut merged, &complete_empty);
     assert_eq!(merged.HashStateRowsSnapshot().Rows, 5);
     let concurrent = std::sync::Arc::new(exec::HashStateRuntimeStats::default());
     let workers: Vec<_> = (0..32)
@@ -200,6 +205,10 @@ fn go_merge_14_hash_state_merge_and_overflow() {
         worker.join().unwrap();
     }
     assert_eq!(concurrent.HashStateRowsSnapshot().Rows, 32);
+    concurrent.Complete();
+    assert!(concurrent.HashStateRowsSnapshot().Complete());
+    concurrent.Complete();
+    assert!(concurrent.HashStateRowsSnapshot().Invalid());
     concurrent.AddRows(1u64 << 63);
     assert!(concurrent.HashStateRowsSnapshot().Invalid());
     exec::RuntimeStats::Merge(&mut merged, concurrent.as_ref());
