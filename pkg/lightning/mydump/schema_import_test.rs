@@ -26,6 +26,9 @@ use std::sync::{Arc, Mutex};
 /// 记录 execute 调用并支持预设 query 结果的测试双。
 struct RecordingDatabase {
     executed: Mutex<Vec<String>>,
+    execute_errors: Mutex<HashMap<String, String>>,
+    queried: Mutex<Vec<String>>,
+    query_errors: Mutex<HashMap<String, String>>,
     query_results: Mutex<HashMap<String, Vec<Vec<String>>>>,
 }
 
@@ -34,15 +37,27 @@ impl RecordingDatabase {
     fn executions(&self) -> Vec<String> {
         self.executed.lock().unwrap().clone()
     }
+
+    /// Return the queries issued by the importer in call order.
+    fn queries(&self) -> Vec<String> {
+        self.queried.lock().unwrap().clone()
+    }
 }
 
 impl SchemaDatabase for RecordingDatabase {
     fn execute(&self, sql: &str) -> Result<(), MydumpError> {
         self.executed.lock().unwrap().push(sql.to_owned());
+        if let Some(message) = self.execute_errors.lock().unwrap().get(sql) {
+            return Err(MydumpError::Schema(message.clone()));
+        }
         Ok(())
     }
 
     fn query(&self, sql: &str) -> Result<Vec<Vec<String>>, MydumpError> {
+        self.queried.lock().unwrap().push(sql.to_owned());
+        if let Some(message) = self.query_errors.lock().unwrap().get(sql) {
+            return Err(MydumpError::Schema(message.clone()));
+        }
         Ok(self
             .query_results
             .lock()
@@ -51,6 +66,113 @@ impl SchemaDatabase for RecordingDatabase {
             .cloned()
             .unwrap_or_default())
     }
+}
+
+#[test]
+/// A CREATE TABLE execution error is ignored when the target now exists downstream.
+fn create_table_execution_error_is_ignored_when_table_exists() {
+    let storage = Arc::new(MemoryStorage::default());
+    let database = Arc::new(RecordingDatabase::default());
+    let create = "CREATE TABLE IF NOT EXISTS `test`.`t`(`id` INT);";
+    database
+        .execute_errors
+        .lock()
+        .unwrap()
+        .insert(create.into(), "unsupported collation".into());
+    database.query_results.lock().unwrap().insert(
+        "SHOW TABLES FROM `test` LIKE 't'".into(),
+        vec![vec!["t".into()]],
+    );
+    let importer = NewSchemaImporter(database.clone(), storage, 1);
+    let job = SchemaJob {
+        db_name: "test".into(),
+        tbl_name: "t".into(),
+        stmt_type: SchemaStmtType::SchemaCreateTable,
+        sql_str: "CREATE TABLE t(id INT);".into(),
+    };
+
+    importer.runCreateTableJob(&job).unwrap();
+    assert_eq!(database.executions(), vec![create]);
+    assert_eq!(database.queries(), vec!["SHOW TABLES FROM `test` LIKE 't'"]);
+}
+
+#[test]
+/// A CREATE TABLE execution error remains visible when the downstream table is absent.
+fn create_table_execution_error_is_returned_when_table_is_missing() {
+    let storage = Arc::new(MemoryStorage::default());
+    let database = Arc::new(RecordingDatabase::default());
+    let create = "CREATE TABLE IF NOT EXISTS `test`.`t`(`id` INT);";
+    database
+        .execute_errors
+        .lock()
+        .unwrap()
+        .insert(create.into(), "create table error".into());
+    let importer = NewSchemaImporter(database.clone(), storage, 1);
+    let job = SchemaJob {
+        db_name: "test".into(),
+        tbl_name: "t".into(),
+        stmt_type: SchemaStmtType::SchemaCreateTable,
+        sql_str: "CREATE TABLE t(id INT);".into(),
+    };
+
+    let error = importer.runCreateTableJob(&job).unwrap_err();
+    assert!(error.to_string().contains("create table error"));
+    assert_eq!(database.executions(), vec![create]);
+    assert_eq!(database.queries(), vec!["SHOW TABLES FROM `test` LIKE 't'"]);
+}
+
+#[test]
+/// A downstream lookup error supersedes the CREATE TABLE execution error.
+fn create_table_lookup_error_is_returned() {
+    let storage = Arc::new(MemoryStorage::default());
+    let database = Arc::new(RecordingDatabase::default());
+    let create = "CREATE TABLE IF NOT EXISTS `test`.`t`(`id` INT);";
+    let lookup = "SHOW TABLES FROM `test` LIKE 't'";
+    database
+        .execute_errors
+        .lock()
+        .unwrap()
+        .insert(create.into(), "create table error".into());
+    database
+        .query_errors
+        .lock()
+        .unwrap()
+        .insert(lookup.into(), "lookup error".into());
+    let importer = NewSchemaImporter(database.clone(), storage, 1);
+    let job = SchemaJob {
+        db_name: "test".into(),
+        tbl_name: "t".into(),
+        stmt_type: SchemaStmtType::SchemaCreateTable,
+        sql_str: "CREATE TABLE t(id INT);".into(),
+    };
+
+    let error = importer.runCreateTableJob(&job).unwrap_err();
+    assert!(error.to_string().contains("lookup error"));
+    assert!(!error.to_string().contains("create table error"));
+    assert_eq!(database.queries(), vec![lookup]);
+}
+
+#[test]
+/// Errors from statements after CREATE TABLE must remain visible and must not trigger a table lookup.
+fn later_statement_execution_error_is_not_ignored() {
+    let storage = Arc::new(MemoryStorage::default());
+    let database = Arc::new(RecordingDatabase::default());
+    database
+        .execute_errors
+        .lock()
+        .unwrap()
+        .insert("SET @a = 1;".into(), "later statement error".into());
+    let importer = NewSchemaImporter(database.clone(), storage, 1);
+    let job = SchemaJob {
+        db_name: "test".into(),
+        tbl_name: "t".into(),
+        stmt_type: SchemaStmtType::SchemaCreateTable,
+        sql_str: "CREATE TABLE t(id INT); SET @a = 1;".into(),
+    };
+
+    let error = importer.runCreateTableJob(&job).unwrap_err();
+    assert!(error.to_string().contains("later statement error"));
+    assert_eq!(database.queries(), Vec::<String>::new());
 }
 
 /// 构造指向 TableSchema 文件的表元数据。

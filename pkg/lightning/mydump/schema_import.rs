@@ -62,6 +62,12 @@ pub struct SchemaImporter {
     store: Arc<dyn Storage>,
     concurrency: usize,
 }
+
+#[derive(Debug)]
+struct StatementExecutionError {
+    index: usize,
+    error: MydumpError,
+}
 /// 构造 SchemaImporter；concurrency 至少为 1。
 pub fn NewSchemaImporter(
     db: Arc<dyn SchemaDatabase>,
@@ -173,10 +179,24 @@ impl SchemaImporter {
     }
     /// 运行建表任务（自动补 IF NOT EXISTS）。
     pub fn runCreateTableJob(&self, job: &SchemaJob) -> Result<(), MydumpError> {
-        self.runJob(
-            job,
-            &createIfNotExistsStmt(&job.sql_str, &job.db_name, &job.tbl_name)?,
-        )
+        let statements = createIfNotExistsStmt(&job.sql_str, &job.db_name, &job.tbl_name)?;
+        match self.runJobWithFailedStatement(job, &statements) {
+            Ok(()) => Ok(()),
+            Err(failure)
+                if isCreateTableStmt(
+                    statements
+                        .get(failure.index)
+                        .expect("failed statement index comes from the same slice"),
+                ) =>
+            {
+                if self.isTableExist(&job.db_name, &job.tbl_name)? {
+                    Ok(())
+                } else {
+                    Err(failure.error)
+                }
+            }
+            Err(failure) => Err(failure.error),
+        }
     }
     /// 运行通用任务（直接执行 sql_str）。
     pub fn runCommonJob(&self, job: &SchemaJob) -> Result<(), MydumpError> {
@@ -187,13 +207,25 @@ impl SchemaImporter {
     }
     /// 逐条执行解析后的语句；空列表保持 no-op，与 Go runJob 一致。
     pub fn runJob(&self, job: &SchemaJob, stmts: &[String]) -> Result<(), MydumpError> {
-        for stmt in stmts {
-            self.db.execute(stmt).map_err(|error| {
-                MydumpError::Schema(format!(
-                    "{} {}.{}: {error}",
-                    job.stmt_type, job.db_name, job.tbl_name
-                ))
-            })?
+        self.runJobWithFailedStatement(job, stmts)
+            .map_err(|failure| failure.error)
+    }
+
+    fn runJobWithFailedStatement(
+        &self,
+        job: &SchemaJob,
+        stmts: &[String],
+    ) -> Result<(), StatementExecutionError> {
+        for (index, stmt) in stmts.iter().enumerate() {
+            self.db
+                .execute(stmt)
+                .map_err(|error| StatementExecutionError {
+                    index,
+                    error: MydumpError::Schema(format!(
+                        "{} {}.{}: {error}",
+                        job.stmt_type, job.db_name, job.tbl_name
+                    )),
+                })?
         }
         Ok(())
     }
@@ -273,6 +305,12 @@ impl SchemaImporter {
         }
         Ok((non_views, views))
     }
+}
+
+fn isCreateTableStmt(statement: &str) -> bool {
+    Regex::new(r"(?is)^\s*CREATE\s+TABLE\b")
+        .expect("CREATE TABLE matcher is valid")
+        .is_match(statement)
 }
 /// 由库表名构造 TableName（不归一化大小写）。
 pub fn tableKey(db: &str, table: &str) -> TableName {
