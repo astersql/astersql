@@ -547,6 +547,48 @@ pub struct ExecutionSummary {
     pub elapsed_ns: u64,
 }
 
+/// 扫描明细：已处理/总版本及其键值字节数。
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ScanDetail {
+    /// Number of successfully decoded MVCC versions.
+    pub processed_versions: u64,
+    /// Encoded key/value bytes for successfully decoded versions.
+    pub processed_versions_size: u64,
+    /// Total versions visited by the mock scanner.
+    pub total_versions: u64,
+    /// Encoded key/value bytes for all visited versions.
+    pub total_versions_size: u64,
+}
+
+impl ScanDetail {
+    /// Merge a child executor's scan counters into this detail.
+    pub fn merge(&mut self, other: &Self) {
+        self.processed_versions = self
+            .processed_versions
+            .saturating_add(other.processed_versions);
+        self.processed_versions_size = self
+            .processed_versions_size
+            .saturating_add(other.processed_versions_size);
+        self.total_versions = self.total_versions.saturating_add(other.total_versions);
+        self.total_versions_size = self
+            .total_versions_size
+            .saturating_add(other.total_versions_size);
+    }
+
+    /// Record one successfully decoded key/value pair.
+    pub fn record(&mut self, key: &[u8], value: &[Datum]) {
+        let mut encoded_value = Vec::new();
+        for datum in value {
+            datum.encode(&mut encoded_value);
+        }
+        let bytes = key.len().saturating_add(encoded_value.len()) as u64;
+        self.processed_versions = self.processed_versions.saturating_add(1);
+        self.processed_versions_size = self.processed_versions_size.saturating_add(bytes);
+        self.total_versions = self.total_versions.saturating_add(1);
+        self.total_versions_size = self.total_versions_size.saturating_add(bytes);
+    }
+}
+
 /// 键上的悲观/乐观锁信息。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct LockInfo {
@@ -579,6 +621,8 @@ pub struct Response {
     pub ndvs: Vec<i64>,
     /// 执行摘要列表。
     pub summaries: Vec<ExecutionSummary>,
+    /// 执行树聚合后的扫描明细。
+    pub scan_detail: ScanDetail,
     /// 分页时的下一范围提示。
     pub last_range: Option<KeyRange>,
     /// 是否缓存命中。
@@ -834,6 +878,7 @@ fn response_from_output(
         range_counts: output.range_counts,
         ndvs: output.ndvs,
         summaries: output.summaries,
+        scan_detail: output.scan_detail,
         last_range,
         ..Response::default()
     }

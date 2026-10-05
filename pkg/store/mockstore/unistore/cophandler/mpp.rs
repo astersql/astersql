@@ -410,6 +410,7 @@ pub fn handle_mpp_dag_request(
             range_counts: output.range_counts,
             ndvs: output.ndvs,
             summaries: output.summaries,
+            scan_detail: output.scan_detail,
             ..Response::default()
         },
         Err(error) => Response {

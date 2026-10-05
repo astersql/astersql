@@ -21,7 +21,7 @@
 
 use crate::cop_handler::{
     AggCall, AggKind, CopError, Datum, ExecutionSummary, Executor, Expr, JoinType, KeyRange,
-    KvReader, Row, duration_summary,
+    KvReader, Row, ScanDetail, duration_summary,
 };
 use crate::topn::TopNHeap;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -38,6 +38,7 @@ pub struct ExecutionOutput {
     pub ndvs: Vec<i64>,
     pub summaries: Vec<ExecutionSummary>,
     pub intermediate: Vec<Vec<Row>>,
+    pub scan_detail: ScanDetail,
 }
 
 impl ExecutionOutput {
@@ -218,6 +219,7 @@ pub fn execute_executor(
             let mut left_output = execute_executor(reader, ranges, start_ts, left)?;
             let right_output = execute_executor(reader, ranges, start_ts, right)?;
             left_output.summaries.extend(right_output.summaries);
+            left_output.scan_detail.merge(&right_output.scan_detail);
             let rows = join(
                 &left_output.rows,
                 &right_output.rows,
@@ -304,6 +306,7 @@ fn scan(
     let mut rows = Vec::new();
     let mut counts = Vec::with_capacity(ranges.len());
     let mut ndvs = Vec::with_capacity(ranges.len());
+    let mut scan_detail = ScanDetail::default();
     for range in ranges {
         let pairs = reader.scan(std::slice::from_ref(range), start_ts, descending)?;
         counts.push(pairs.len() as i64);
@@ -321,6 +324,7 @@ fn scan(
             if index_scan {
                 distinct.insert(projected.clone());
             }
+            scan_detail.record(&pair.key, &pair.value);
             rows.push(projected);
         }
         ndvs.push(if index_scan { distinct.len() as i64 } else { 0 });
@@ -331,6 +335,7 @@ fn scan(
         range_counts: counts,
         ndvs,
         intermediate: Vec::new(),
+        scan_detail,
     })
 }
 

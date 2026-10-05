@@ -103,3 +103,33 @@ fn left_outer_join_null_pads_an_empty_right_input_to_its_schema_width() {
             .all(|row| row.len() == 3 && row[1..] == [Datum::Null, Datum::Null])
     );
 }
+
+/// Parent executors merge scan details from both table and index scan children.
+#[test]
+fn join_aggregates_table_and_index_scan_details() {
+    let reader = aggregation_reader();
+    let executor = Executor::Join {
+        join_type: JoinType::Inner,
+        left_key: Expr::Column(0),
+        right_key: Expr::Column(0),
+        left: Box::new(Executor::TableScan {
+            columns: vec![0],
+            descending: false,
+        }),
+        right: Box::new(Executor::IndexScan {
+            columns: vec![0],
+            unique: false,
+            descending: false,
+        }),
+    };
+
+    let output = execute_executor(&reader, &[KeyRange::default()], 1, &executor).unwrap();
+
+    assert_eq!(output.scan_detail.processed_versions, 6);
+    assert_eq!(output.scan_detail.total_versions, 6);
+    assert_eq!(
+        output.scan_detail.processed_versions_size,
+        output.scan_detail.total_versions_size
+    );
+    assert!(output.scan_detail.processed_versions_size > 0);
+}

@@ -359,3 +359,61 @@ fn MaterializedExec_and_handle_cop_request_smoke() {
         !response.chunks.is_empty() || !response.data.is_empty() || !response.summaries.is_empty()
     );
 }
+
+/// UniStore reports key/value scan bytes so RU evidence grows with scanned data.
+#[test]
+fn dag_response_reports_scanned_versions_and_bytes() {
+    let reader = sample_reader();
+    let scan = |end: Vec<u8>| {
+        handle_cop_request(
+            &reader,
+            &Request {
+                payload: RequestPayload::Dag(DagRequest {
+                    root: Some(Executor::TableScan {
+                        columns: vec![0, 1, 2],
+                        descending: false,
+                    }),
+                    output_offsets: vec![0, 1, 2],
+                    ..DagRequest::default()
+                }),
+                ranges: vec![KeyRange {
+                    start: b"t".to_vec(),
+                    end,
+                }],
+                start_ts: 100,
+                resolved_locks: Vec::new(),
+                paging_size: 0,
+                cache_enabled: false,
+                cache_if_match_version: 0,
+            },
+        )
+    };
+
+    let one_row = scan(b"t\0\0\0\0\0\0\0\0_r\0\0\0\0\0\0\0\x01".to_vec());
+    let response = scan(Vec::new());
+
+    assert_eq!(one_row.scan_detail.processed_versions, 1);
+    assert_eq!(response.scan_detail.processed_versions, 3);
+    assert_eq!(response.scan_detail.total_versions, 3);
+    assert!(response.scan_detail.processed_versions_size > 0);
+    assert_eq!(
+        response.scan_detail.processed_versions_size,
+        response.scan_detail.total_versions_size
+    );
+    assert!(
+        response.scan_detail.processed_versions_size > one_row.scan_detail.processed_versions_size
+    );
+
+    let expected_size = reader
+        .rows
+        .iter()
+        .map(|(key, (row, _))| {
+            let mut value = Vec::new();
+            for datum in row {
+                datum.encode(&mut value);
+            }
+            (key.len() + value.len()) as u64
+        })
+        .sum::<u64>();
+    assert_eq!(response.scan_detail.processed_versions_size, expected_size);
+}
