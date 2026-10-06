@@ -1934,12 +1934,27 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
                 statement_type
             };
             let seconds = vars.GetTotalCostDuration().as_secs_f64();
+            let exec_details = vars.StmtCtx.GetExecDetails();
             for database in astersql_util_metricsutil::GetDBNames(Some(vars)) {
                 astersql_metrics::server::RecordQueryDuration(
                     sql_type,
                     &database,
                     &vars.StmtCtx.ResourceGroupName,
                     seconds,
+                );
+                astersql_metrics::server::RecordQueryScanMetrics(
+                    sql_type,
+                    &database,
+                    exec_details.RequestCount.max(0) as u64,
+                    exec_details.CopExecDetails.ScanDetail.as_ref().map(|scan| {
+                        (
+                            scan.ProcessedKeys,
+                            scan.IaCacheHitCount,
+                            scan.IaRemoteReadSegmentCount,
+                            scan.IaRemoteReadSegmentBytes,
+                            scan.IaRemoteReadSegmentDuration,
+                        )
+                    }),
                 );
                 self.effects.borrow_mut().events.push(format!(
                     "statement_duration:{sql_type}:{database}:{}",

@@ -319,6 +319,7 @@ pub struct SnapshotRuntimeStats {
     pub process_time_micros: u64,
     pub description: String,
     pub read_pool_task_details: Option<astersql_kv::PoolTaskDetails>,
+    pub scan_detail: Option<astersql_util_execdetails::execdetails::util::ScanDetail>,
 }
 
 impl SnapshotRuntimeStats {
@@ -335,6 +336,13 @@ impl SnapshotRuntimeStats {
                 current.Merge(pool);
             } else {
                 self.read_pool_task_details = Some(pool.clone());
+            }
+        }
+        if let Some(scan) = other.scan_detail.as_ref() {
+            if let Some(current) = self.scan_detail.as_mut() {
+                current.Merge(scan);
+            } else {
+                self.scan_detail = Some(scan.clone());
             }
         }
         if !other.description.is_empty() {
@@ -522,6 +530,13 @@ pub trait PointGetDependencies: Send + Sync {
         stats: &runtimeStatsWithSnapshot,
     ) -> PointGetResult;
     fn merge_tikv_cpu_time(&self, process_time_micros: u64) -> PointGetResult;
+    /// Merge point-read scan diagnostics without increasing cop-task counts.
+    fn merge_scan_detail(
+        &self,
+        _scan_detail: Option<&astersql_util_execdetails::execdetails::util::ScanDetail>,
+    ) -> PointGetResult {
+        Ok(())
+    }
     fn actual_rows(&self, executor_id: i64) -> PointGetResult<u64>;
     fn update_delta_for_table_id(&self, table_id: i64) -> PointGetResult;
     fn encode_unique_index_values_for_key(
@@ -919,11 +934,13 @@ impl PointGetExecutor {
         if let Some(stats) = &self.stats {
             self.dependencies.register_runtime_stats(self.id, stats)?;
             if let Some(snapshot_stats) = &stats.snapshot_runtime_stats {
-                let process_time = snapshot_stats
+                let snapshot_stats = snapshot_stats
                     .lock()
-                    .map_err(|_| PointGetError::new("snapshot runtime stats lock is poisoned"))?
-                    .process_time_micros;
-                self.dependencies.merge_tikv_cpu_time(process_time)?;
+                    .map_err(|_| PointGetError::new("snapshot runtime stats lock is poisoned"))?;
+                self.dependencies
+                    .merge_scan_detail(snapshot_stats.scan_detail.as_ref())?;
+                self.dependencies
+                    .merge_tikv_cpu_time(snapshot_stats.process_time_micros)?;
             }
         }
         Ok(())

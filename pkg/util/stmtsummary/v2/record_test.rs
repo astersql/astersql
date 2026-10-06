@@ -24,7 +24,7 @@ use std::time::Duration;
 use task_stmtsummary_v2::*;
 
 #[test]
-fn go_merge_37_ia_json_keys_match_persisted_log_contract() {
+fn ia_json_keys_match_persisted_log_contract() {
     let mut record = StmtRecord::default();
     record.IAExecCount = 2;
     record.SumIARemoteReadSegmentCount = 3;
@@ -33,10 +33,10 @@ fn go_merge_37_ia_json_keys_match_persisted_log_contract() {
     record.MaxIARemoteReadSegmentWaitTime = Duration::from_millis(4);
     let json: serde_json::Value =
         serde_json::from_slice(&marshalStmtRecord(&record).unwrap()).unwrap();
-    assert_eq!(json["ia_remote_exec_count"], 2);
+    assert_eq!(json["ia_exec_count"], 2);
     assert_eq!(json["sum_ia_remote_read_segment_count"], 3);
     assert_eq!(json["max_ia_remote_read_segment_count"], 2);
-    assert!(json.get("ia_exec_count").is_none());
+    assert!(json.get("ia_remote_exec_count").is_none());
     assert!(json.get("sum_i_a_remote_read_segment_count").is_none());
     assert_eq!(json["sum_ia_remote_read_segment_wait_time"], 5_000_000);
     assert_eq!(json["max_ia_remote_read_segment_wait_time"], 4_000_000);
@@ -186,8 +186,8 @@ fn TestStmtRecord() {
         serde_json::from_slice(&marshalStmtRecord(&record2).unwrap()).unwrap();
     assert_eq!(items["additional_fields"]["stmt_meta_a"], "value_a");
     assert_eq!(items["digest"], record2.Digest);
-    assert!(items.get("ia_exec_count").is_none());
-    assert_eq!(items["ia_remote_exec_count"], 0);
+    assert_eq!(items["ia_exec_count"], 0);
+    assert!(items.get("ia_remote_exec_count").is_none());
     assert!(items.get("sum_ia_remote_read_segment_count").is_some());
     assert!(items.get("max_ia_remote_read_segment_count").is_some());
 

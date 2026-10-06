@@ -162,6 +162,7 @@ pub mod util {
         pub RocksdbBlockReadCount: u64,
         pub RocksdbBlockReadByte: u64,
         pub RocksdbBlockReadDuration: Duration,
+        pub IaCacheHitCount: u64,
         pub IaRemoteReadSegmentCount: u64,
         pub IaRemoteReadSegmentBytes: u64,
         pub IaRemoteReadSegmentDuration: Duration,
@@ -179,6 +180,7 @@ pub mod util {
             self.RocksdbBlockReadCount += other.RocksdbBlockReadCount;
             self.RocksdbBlockReadByte += other.RocksdbBlockReadByte;
             self.RocksdbBlockReadDuration += other.RocksdbBlockReadDuration;
+            self.IaCacheHitCount += other.IaCacheHitCount;
             self.IaRemoteReadSegmentCount += other.IaRemoteReadSegmentCount;
             self.IaRemoteReadSegmentBytes += other.IaRemoteReadSegmentBytes;
             self.IaRemoteReadSegmentDuration += other.IaRemoteReadSegmentDuration;

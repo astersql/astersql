@@ -86,25 +86,17 @@ fn ia_scan_collectors_register_sql_and_database_labels() {
     ensure_test_env();
     unsafe {
         metrics::InitMetrics().unwrap();
-        crate::server::IARemoteReadSegmentCount
-            .as_ref()
-            .unwrap()
-            .with_label_values(&["Select", "db1"])
-            .inc_by(3.0);
-        crate::server::IARemoteReadSegmentSize
-            .as_ref()
-            .unwrap()
-            .with_label_values(&["Select", "db1"])
-            .inc_by(4096.0);
-        crate::server::IARemoteReadSegmentWaitDuration
-            .as_ref()
-            .unwrap()
-            .with_label_values(&["Select", "db1"])
-            .observe(0.005);
         metrics::RegisterMetrics().unwrap();
     }
+    crate::server::RecordQueryScanMetrics(
+        "Select",
+        "db1",
+        2,
+        Some((11, 7, 3, 4096, std::time::Duration::from_millis(5))),
+    );
     let families = prometheus::gather();
     for (name, expected) in [
+        ("tidb_server_ia_cache_hit_count", 7.0),
         ("tidb_server_ia_remote_read_segment_count", 3.0),
         ("tidb_server_ia_remote_read_segment_size_bytes", 4096.0),
     ] {

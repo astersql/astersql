@@ -120,3 +120,43 @@ fn read_pool_snapshot_runtime_clone_merge_and_string_preserve_diagnostics() {
             .contains(&aggregate.String())
     );
 }
+
+#[test]
+fn point_get_snapshot_runtime_merges_scan_diagnostics() {
+    use crate::point_get::{SnapshotRuntimeStats, runtimeStatsWithSnapshot};
+    use astersql_util_execdetails::execdetails::util::ScanDetail;
+    use std::sync::{Arc, Mutex};
+
+    let mut stats = runtimeStatsWithSnapshot {
+        snapshot_runtime_stats: Some(Arc::new(Mutex::new(SnapshotRuntimeStats {
+            scan_detail: Some(ScanDetail {
+                ProcessedKeys: 1,
+                TotalKeys: 2,
+                IaCacheHitCount: 7,
+                IaRemoteReadSegmentCount: 2,
+                IaRemoteReadSegmentBytes: 4096,
+                IaRemoteReadSegmentDuration: std::time::Duration::from_millis(6),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }))),
+    };
+    let cloned = stats.Clone();
+    stats.Merge(&cloned);
+    let guard = stats
+        .snapshot_runtime_stats
+        .as_ref()
+        .unwrap()
+        .lock()
+        .unwrap();
+    let scan = guard.scan_detail.as_ref().unwrap();
+    assert_eq!(scan.ProcessedKeys, 2);
+    assert_eq!(scan.TotalKeys, 4);
+    assert_eq!(scan.IaCacheHitCount, 14);
+    assert_eq!(scan.IaRemoteReadSegmentCount, 4);
+    assert_eq!(scan.IaRemoteReadSegmentBytes, 8192);
+    assert_eq!(
+        scan.IaRemoteReadSegmentDuration,
+        std::time::Duration::from_millis(12)
+    );
+}

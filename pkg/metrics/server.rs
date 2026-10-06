@@ -169,6 +169,54 @@ pub fn RecordCommandDuration(sql_type: &str, database: &str, resource_group: &st
     }
 }
 
+/// Record statement RPC and scan metrics, including IA cache and remote-read details.
+pub fn RecordQueryScanMetrics(
+    sql_type: &str,
+    database: &str,
+    request_count: u64,
+    scan: Option<(i64, u64, u64, u64, std::time::Duration)>,
+) {
+    let _guard = crate::metrics::PACKAGE_INIT_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    unsafe {
+        if let Some(histogram) = (&*std::ptr::addr_of!(QueryRPCHistogram)).as_ref() {
+            histogram
+                .with_label_values(&[sql_type, database])
+                .observe(request_count as f64);
+        }
+        let Some((processed_keys, ia_cache_hits, remote_count, remote_bytes, remote_wait)) = scan
+        else {
+            return;
+        };
+        if let Some(histogram) = (&*std::ptr::addr_of!(QueryProcessedKeyHistogram)).as_ref() {
+            histogram
+                .with_label_values(&[sql_type, database])
+                .observe(processed_keys as f64);
+        }
+        if let Some(counter) = (&*std::ptr::addr_of!(IACacheHitCount)).as_ref() {
+            counter
+                .with_label_values(&[sql_type, database])
+                .inc_by(ia_cache_hits as f64);
+        }
+        if let Some(counter) = (&*std::ptr::addr_of!(IARemoteReadSegmentCount)).as_ref() {
+            counter
+                .with_label_values(&[sql_type, database])
+                .inc_by(remote_count as f64);
+        }
+        if let Some(counter) = (&*std::ptr::addr_of!(IARemoteReadSegmentSize)).as_ref() {
+            counter
+                .with_label_values(&[sql_type, database])
+                .inc_by(remote_bytes as f64);
+        }
+        if let Some(histogram) = (&*std::ptr::addr_of!(IARemoteReadSegmentWaitDuration)).as_ref() {
+            histogram
+                .with_label_values(&[sql_type, database])
+                .observe(remote_wait.as_secs_f64());
+        }
+    }
+}
+
 fn counter(subsystem: &'static str, name: &'static str, help: &'static str) -> prometheus::Counter {
     metricscommon::NewCounter(prometheus::CounterOpts {
         Namespace: "tidb",

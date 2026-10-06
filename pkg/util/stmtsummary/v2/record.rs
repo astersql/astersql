@@ -178,7 +178,7 @@ pub struct StmtRecord {
     pub MaxRocksdbBlockReadCount: u64,
     pub SumRocksdbBlockReadByte: u64,
     pub MaxRocksdbBlockReadByte: u64,
-    #[serde(rename = "ia_remote_exec_count")]
+    #[serde(rename = "ia_exec_count")]
     pub IAExecCount: i64,
     #[serde(rename = "sum_ia_remote_read_segment_count")]
     pub SumIARemoteReadSegmentCount: u64,

@@ -87,14 +87,14 @@ fn go_merge_38_history_reader_open_ended_ranges() {
 }
 
 #[test]
-fn go_merge_37_history_reader_preserves_ia_exec_count() {
+fn history_reader_preserves_ia_exec_count() {
     let _guard = FILE_TEST_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let active = dir.path().join("tidb-statements.log");
     setStmtSummaryFilename(&active);
     fs::write(
         &active,
-        b"{\"begin\":1,\"end\":2,\"digest\":\"d\",\"ia_remote_exec_count\":3}\n",
+        b"{\"begin\":1,\"end\":2,\"digest\":\"d\",\"ia_exec_count\":3}\n",
     )
     .unwrap();
     let mut reader = NewHistoryReader(
