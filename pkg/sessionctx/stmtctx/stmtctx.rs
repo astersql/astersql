@@ -53,9 +53,9 @@ use util_context::{
 
 pub use errctx_crate::errctx;
 pub use model_crate::group_1::{
-    FlagDividedByZeroAsWarning, FlagIgnoreTruncate, FlagIgnoreZeroInDate, FlagInInsertStmt,
-    FlagInLoadDataStmt, FlagInRestrictedSQL, FlagInSelectStmt, FlagInUpdateOrDeleteStmt,
-    FlagOverflowAsWarning, FlagTruncateAsWarning,
+    FlagDividedByZeroAsWarning, FlagEnableTiKVShortCircuitExpression, FlagIgnoreTruncate,
+    FlagIgnoreZeroInDate, FlagInInsertStmt, FlagInLoadDataStmt, FlagInRestrictedSQL,
+    FlagInSelectStmt, FlagInUpdateOrDeleteStmt, FlagOverflowAsWarning, FlagTruncateAsWarning,
 };
 pub use model_crate::group_4::{TableInfo, TableItemID};
 pub use parser_crate::ast::ast::StatementKind;
@@ -558,6 +558,8 @@ pub struct StatementContext {
     pub WeakConsistency: bool,
     pub StatsLoad: StatsLoadState,
     pub SysdateIsNow: bool,
+    /// Whether TiKV should short-circuit logical expression evaluation.
+    pub EnableTiKVShortCircuitExpression: bool,
     pub RCCheckTS: bool,
     pub IsSQLRegistered: AtomicBool,
     pub IsSQLAndPlanRegistered: AtomicBool,
@@ -766,6 +768,7 @@ impl StatementContext {
             WeakConsistency: false,
             StatsLoad: StatsLoadState::default(),
             SysdateIsNow: false,
+            EnableTiKVShortCircuitExpression: false,
             RCCheckTS: false,
             IsSQLRegistered: AtomicBool::new(false),
             IsSQLAndPlanRegistered: AtomicBool::new(false),
@@ -1699,6 +1702,9 @@ impl StatementContext {
     pub fn PushDownFlags(&self) -> u64 {
         // 先编码类型/错误策略，再按当前语句类型叠加 Insert/Update/Select 等位。
         let mut flags = PushDownFlagsWithTypeFlagsAndErrLevels(self.TypeFlags(), self.ErrLevels());
+        if self.EnableTiKVShortCircuitExpression {
+            flags |= FlagEnableTiKVShortCircuitExpression;
+        }
         if self.InInsertStmt {
             flags |= FlagInInsertStmt;
         } else if self.InUpdateStmt || self.InDeleteStmt {
@@ -1720,6 +1726,7 @@ impl StatementContext {
         self.InInsertStmt = flags & FlagInInsertStmt != 0;
         self.InSelectStmt = flags & FlagInSelectStmt != 0;
         self.InDeleteStmt = flags & FlagInUpdateOrDeleteStmt != 0;
+        self.EnableTiKVShortCircuitExpression = flags & FlagEnableTiKVShortCircuitExpression != 0;
         let mut levels = self.ErrLevels();
         levels[errctx::ErrGroup::ErrGroupDividedByZero as usize] =
             errctx::ResolveErrLevel(false, flags & FlagDividedByZeroAsWarning != 0);

@@ -717,6 +717,8 @@ pub struct SessionVars {
     pub RiskGroupNDVSkewRatio: f64,
     pub SelectivityFactor: f64,
     pub EnableVectorizedExpression: bool,
+    /// Enables short-circuit expression evaluation in TiKV.
+    pub EnableTiKVShortCircuitExpression: bool,
     pub EnableChunkRPC: bool,
     pub TiDBOptJoinReorderThreshold: i64,
     pub TiDBOptEnableAdvancedJoinReorder: bool,
@@ -932,6 +934,7 @@ impl SessionVars {
             RiskGroupNDVSkewRatio: vardef::DefOptRiskGroupNDVSkewRatio,
             SelectivityFactor: vardef::DefOptSelectivityFactor,
             EnableVectorizedExpression: vardef::DefEnableVectorizedExpression,
+            EnableTiKVShortCircuitExpression: vardef::DefTiDBEnableTiKVShortCircuitExpression,
             EnableChunkRPC: false,
             TiDBOptJoinReorderThreshold: vardef::DefTiDBOptJoinReorderThreshold,
             TiDBOptEnableAdvancedJoinReorder: vardef::DefTiDBOptEnableAdvancedJoinReorder,
@@ -1111,6 +1114,9 @@ impl SessionVars {
             self.ForeignKeyCheckInSharedLock = crate::TiDBOptOn(&normalized);
         } else if name.eq_ignore_ascii_case(vardef::TiDBEnableSharedLockUpgrade) {
             self.EnableSharedLockUpgrade = crate::TiDBOptOn(&normalized);
+        } else if name.eq_ignore_ascii_case(vardef::TiDBEnableTiKVShortCircuitExpression) {
+            self.EnableTiKVShortCircuitExpression = crate::TiDBOptOn(&normalized);
+            self.StmtCtx.EnableTiKVShortCircuitExpression = self.EnableTiKVShortCircuitExpression;
         } else if name.eq_ignore_ascii_case(vardef::TiDBDMLMaxExecutionTime) {
             self.DMLMaxExecutionTime = normalized.parse().map_err(|_| {
                 format!(

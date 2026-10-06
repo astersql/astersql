@@ -40,6 +40,32 @@ fn statement_boundary_clears_scalar_subquery_registry() {
 }
 
 #[test]
+fn statement_boundary_copies_tikv_short_circuit_expression_switch() {
+    let session = concrete_session();
+    session
+        .execute("SET tidb_enable_tikv_short_circuit_expression = ON")
+        .expect("enable TiKV short-circuit evaluation");
+    session
+        .execute("SELECT 1")
+        .expect("reset enabled statement");
+    session.WithSessionVars(|variables| {
+        assert!(variables.EnableTiKVShortCircuitExpression);
+        assert!(variables.StmtCtx.EnableTiKVShortCircuitExpression);
+    });
+
+    session
+        .execute("SET tidb_enable_tikv_short_circuit_expression = OFF")
+        .expect("disable TiKV short-circuit evaluation");
+    session
+        .execute("SELECT 1")
+        .expect("reset disabled statement");
+    session.WithSessionVars(|variables| {
+        assert!(!variables.EnableTiKVShortCircuitExpression);
+        assert!(!variables.StmtCtx.EnableTiKVShortCircuitExpression);
+    });
+}
+
+#[test]
 /// 参数未绑定应失败；常量 SELECT 允许；非法表名拒绝。
 fn concrete_runtime_rejects_unbound_or_full_executor_sql() {
     let runtime = runtime();

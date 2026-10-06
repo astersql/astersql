@@ -893,6 +893,19 @@ fn register_planner_tuning_vars() {
     parallel_apply.IsHintUpdatableVerified = true;
     RegisterSysVar(parallel_apply);
 
+    let mut tikv_short_circuit_expression = bool_var(
+        vardef::TiDBEnableTiKVShortCircuitExpression,
+        vardef::DefTiDBEnableTiKVShortCircuitExpression,
+        scope_both(),
+    );
+    tikv_short_circuit_expression.IsHintUpdatableVerified = true;
+    tikv_short_circuit_expression.SetSession = Some(Arc::new(|vars, value| {
+        vars.EnableTiKVShortCircuitExpression = TiDBOptOn(value);
+        vars.StmtCtx.EnableTiKVShortCircuitExpression = vars.EnableTiKVShortCircuitExpression;
+        Ok(())
+    }));
+    RegisterSysVar(tikv_short_circuit_expression);
+
     // 注册优化器代价模型与选择性相关调参变量。
     // Keep these definitions aligned with the optimizer-facing entries in
     // Go's `defaultSysVars`. Both are legal in SET_VAR hints, so their session

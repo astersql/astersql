@@ -132,6 +132,7 @@ pub struct StatementContext {
     warnings: Vec<VariableError>,
     pub InSelectStmt: bool,
     pub PrevLastInsertID: u64,
+    pub EnableTiKVShortCircuitExpression: bool,
 }
 
 impl StatementContext {
@@ -275,6 +276,7 @@ pub struct SessionVars {
     pub EnforceMPPExecution: bool,
     pub MultiStatementMode: i32,
     pub EnableWindowFunction: bool,
+    pub EnableTiKVShortCircuitExpression: bool,
     pub UseHashJoinV2: bool,
     pub TxnStartTS: u64,
     pub LastTxnInfo: String,
@@ -329,6 +331,7 @@ impl SessionVars {
             EnforceMPPExecution: vardef::DefTiDBEnforceMPPExecution,
             MultiStatementMode: 0,
             EnableWindowFunction: true,
+            EnableTiKVShortCircuitExpression: vardef::DefTiDBEnableTiKVShortCircuitExpression,
             UseHashJoinV2: true,
             TxnStartTS: 0,
             LastTxnInfo: String::new(),

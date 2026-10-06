@@ -803,6 +803,10 @@ pub const TiDBOptProjectionPushDown: &str = "tidb_opt_projection_push_down";
 // TiDBEnableVectorizedExpression is used to control whether to enable the vectorized expression evaluation.
 pub const TiDBEnableVectorizedExpression: &str = "tidb_enable_vectorized_expression";
 
+// TiDBEnableTiKVShortCircuitExpression controls whether TiKV evaluates logical
+// expressions with short-circuit semantics.
+pub const TiDBEnableTiKVShortCircuitExpression: &str = "tidb_enable_tikv_short_circuit_expression";
+
 // TiDBOptJoinReorderThreshold defines the threshold less than which
 // we'll choose a rather time-consuming algorithm to calculate the join order.
 pub const TiDBOptJoinReorderThreshold: &str = "tidb_opt_join_reorder_threshold";
@@ -1747,6 +1751,7 @@ pub const DefEnablePipelinedWindowFunction: bool = true;
 pub const DefTiDBEnableStrictNotNullCheck: bool = true;
 pub const DefEnableStrictDoubleTypeCheck: bool = true;
 pub const DefEnableVectorizedExpression: bool = true;
+pub const DefTiDBEnableTiKVShortCircuitExpression: bool = false;
 pub const DefTiDBOptJoinReorderThreshold: i64 = 0;
 pub const DefTiDBOptEnableAdvancedJoinReorder: bool = true;
 pub const DefTiDBOptJoinReorderThroughProj: bool = false;

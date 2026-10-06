@@ -2345,6 +2345,39 @@ fn full_outer_join_sysvar_supports_hints_and_boolean_values() {
 }
 
 #[test]
+fn tikv_short_circuit_expression_sysvar_updates_session_and_statement_state() {
+    let (mut validation_vars, _) = session();
+    let variable = sysvar(vardef::TiDBEnableTiKVShortCircuitExpression);
+    assert_eq!(variable.Scope, vardef::ScopeGlobal | vardef::ScopeSession);
+    assert_eq!(variable.Type, vardef::TypeBool);
+    assert_eq!(variable.Value, vardef::Off);
+    assert!(variable.IsHintUpdatableVerified);
+
+    assert!(!validation_vars.EnableTiKVShortCircuitExpression);
+    assert!(!validation_vars.StmtCtx.EnableTiKVShortCircuitExpression);
+    variable
+        .SetSessionFromHook(&mut validation_vars, vardef::On)
+        .unwrap();
+    assert!(validation_vars.EnableTiKVShortCircuitExpression);
+    assert!(validation_vars.StmtCtx.EnableTiKVShortCircuitExpression);
+    variable
+        .SetSessionFromHook(&mut validation_vars, vardef::Off)
+        .unwrap();
+    assert!(!validation_vars.EnableTiKVShortCircuitExpression);
+    assert!(!validation_vars.StmtCtx.EnableTiKVShortCircuitExpression);
+
+    let mut runtime_vars = crate::session::SessionVars::default();
+    runtime_vars
+        .SetSystemVar(vardef::TiDBEnableTiKVShortCircuitExpression, vardef::On)
+        .unwrap();
+    assert!(runtime_vars.EnableTiKVShortCircuitExpression);
+    runtime_vars
+        .SetSystemVar(vardef::TiDBEnableTiKVShortCircuitExpression, vardef::Off)
+        .unwrap();
+    assert!(!runtime_vars.EnableTiKVShortCircuitExpression);
+}
+
+#[test]
 fn foreign_key_shared_lock_has_runtime_registration() {
     let (mut vars, _) = session();
     let name = vardef::TiDBForeignKeyCheckInSharedLock;

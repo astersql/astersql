@@ -2746,6 +2746,8 @@ impl astersql_executor::select::StatementContextRuntime for ConcreteSession {
             variables.PartitionPruneMode
                 == astersql_sessionctx_variable::session::PartitionPruneMode::Dynamic,
         );
+        variables.StmtCtx.EnableTiKVShortCircuitExpression =
+            variables.EnableTiKVShortCircuitExpression;
         variables.ResetRelevantOptVarsAndFixes(false);
         inner.cte_scopes.borrow_mut().clear();
         inner.sql_killer.Reset();
