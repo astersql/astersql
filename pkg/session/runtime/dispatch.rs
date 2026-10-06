@@ -2239,6 +2239,11 @@ impl ConcreteSession {
         }
         if let Some(show) = statement.as_any().downcast_ref::<ast::ShowStmt>() {
             if show.Tp == ast::ShowStmtType::StorageClassTransitions {
+                if !astersql_config::get_global_config().enable_storage_class {
+                    return Err(SessionError::new(
+                        "[ddl:8200]Unsupported DDL operation: SHOW STORAGE_CLASS TRANSITIONS is disabled; set enable-storage-class = true in the TiDB configuration",
+                    ));
+                }
                 let statuses = self
                     .domain
                     .ddl()

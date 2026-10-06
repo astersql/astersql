@@ -14,6 +14,44 @@
 // limitations under the License.
 
 use super::storage_class::*;
+
+#[test]
+fn storage_class_admission_checks_requests_and_copied_metadata() {
+    struct Restore(astersql_config::Config);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            astersql_config::store_global_config(self.0.clone());
+        }
+    }
+    let _restore = Restore(astersql_config::get_global_config().as_ref().clone());
+    astersql_config::update_global(|config| config.enable_storage_class = false);
+
+    assert!(CheckStorageClassAdmission("", None).is_ok());
+    for attribute in [
+        r#"{"storage_class":"IA"}"#,
+        r#"{"storage_class":{"tier":"STANDARD","transitions":[{"tier":"IA","after_days":30}]}}"#,
+        r#"{"storage_class":[{"tier":"STANDARD"},{"tier":"IA","names_in":["p1"]}]}"#,
+    ] {
+        assert!(
+            CheckStorageClassAdmission(attribute, None)
+                .unwrap_err()
+                .contains("enable-storage-class")
+        );
+    }
+    let table = model::TableInfo {
+        StorageClassTier: "IA".into(),
+        ..Default::default()
+    };
+    assert!(
+        CheckStorageClassAdmission(&table.EngineAttribute, Some(&table))
+            .unwrap_err()
+            .contains("enable-storage-class")
+    );
+
+    astersql_config::update_global(|config| config.enable_storage_class = true);
+    assert!(CheckStorageClassAdmission(r#"{"storage_class":"IA"}"#, None).is_ok());
+    assert!(CheckStorageClassAdmission(&table.EngineAttribute, Some(&table)).is_ok());
+}
 #[test]
 fn storage_class_json_and_table_settings() {
     for input in [

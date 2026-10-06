@@ -1320,6 +1320,14 @@ fn normal_ddl_storage_class_worker_cancels_invalid_settings_without_metadata_cha
 
 #[test]
 fn normal_ddl_storage_class_sql_show_information_schema_and_partition_updates() {
+    struct RestoreConfig(astersql_config::Config);
+    impl Drop for RestoreConfig {
+        fn drop(&mut self) {
+            astersql_config::store_global_config(self.0.clone());
+        }
+    }
+    let _restore_config = RestoreConfig(astersql_config::get_global_config().as_ref().clone());
+    astersql_config::update_global(|config| config.enable_storage_class = true);
     struct RestoreDistTask(bool);
     impl Drop for RestoreDistTask {
         fn drop(&mut self) {
@@ -1443,6 +1451,47 @@ fn normal_ddl_storage_class_sql_show_information_schema_and_partition_updates() 
     session
         .query("ALTER TABLE test.storage_class_parts REMOVE PARTITIONING")
         .unwrap();
+}
+
+#[test]
+fn storage_class_config_gates_new_ddl_and_show_without_hiding_existing_data() {
+    struct RestoreConfig(astersql_config::Config);
+    impl Drop for RestoreConfig {
+        fn drop(&mut self) {
+            astersql_config::store_global_config(self.0.clone());
+        }
+    }
+
+    let _restore = RestoreConfig(astersql_config::get_global_config().as_ref().clone());
+    astersql_config::update_global(|config| config.enable_storage_class = true);
+    let f = Fixture::new();
+    let mut session = f.pool.acquire().unwrap();
+    session
+        .query("CREATE TABLE test.gated_storage_class(id int) STORAGE_CLASS='IA'")
+        .unwrap();
+
+    astersql_config::update_global(|config| config.enable_storage_class = false);
+    for sql in [
+        "CREATE TABLE test.denied_storage_class(id int) STORAGE_CLASS='IA'",
+        "CREATE TABLE test.denied_like LIKE test.gated_storage_class",
+        "ALTER TABLE test.gated_storage_class STORAGE_CLASS='STANDARD'",
+        "ALTER TABLE test.gated_storage_class COMMENT='changed', STORAGE_CLASS='STANDARD'",
+        "SHOW STORAGE_CLASS TRANSITIONS",
+    ] {
+        let error = session.query(sql).unwrap_err().to_string();
+        assert!(error.contains("enable-storage-class"), "{sql}: {error}");
+    }
+    assert!(
+        session
+            .query("SHOW CREATE TABLE test.gated_storage_class")
+            .unwrap()[0][1]
+            .contains("STORAGE_CLASS='IA'")
+    );
+    assert!(
+        session
+            .query("SELECT * FROM test.gated_storage_class")
+            .is_ok()
+    );
 }
 
 #[test]

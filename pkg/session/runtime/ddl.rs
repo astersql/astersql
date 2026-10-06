@@ -642,6 +642,11 @@ impl ConcreteSession {
             astersql_ddl::BuildTableInfoFromAST(&context, statement)
                 .map_err(|error| session_error("build CREATE TABLE metadata", error))?
         };
+        astersql_ddl::storage_class::CheckStorageClassAdmission(
+            &table.EngineAttribute,
+            Some(&table),
+        )
+        .map_err(SessionError::new)?;
         if table.PlacementPolicyRef.is_none()
             && statement.TemporaryKeyword == ast::TemporaryKeyword::None
             && let Some(policy) = RUNTIME_DATABASE_OPTIONS
@@ -1972,10 +1977,15 @@ impl ConcreteSession {
             .iter()
             .filter(|spec| spec.Tp == ast::AlterTableType::Option)
         {
-            astersql_ddl::storage_class::GetEngineAttributeFromStorageClassTableOptions(
-                &spec.Options,
-            )
-            .map_err(SessionError::new)?;
+            let attribute =
+                astersql_ddl::storage_class::GetEngineAttributeFromStorageClassTableOptions(
+                    &spec.Options,
+                )
+                .map_err(SessionError::new)?;
+            if let Some(attribute) = attribute.as_deref() {
+                astersql_ddl::storage_class::CheckStorageClassAdmission(attribute, None)
+                    .map_err(SessionError::new)?;
+            }
             // Reject every invalid value before applying any preceding option.
             for option in &spec.Options {
                 if option.Tp == ast::TableOptionType::Compression

@@ -34,6 +34,43 @@ fn format_error(error: impl std::fmt::Display) -> String {
         .GenWithStackByArgs(&[format!("'{error}'").into()])
         .to_string()
 }
+
+/// Reject new storage-class DDL while preserving metadata parsing and already
+/// accepted jobs. Table metadata covers `CREATE TABLE ... LIKE`; an explicit
+/// engine attribute covers ALTER before any option is applied.
+pub fn CheckStorageClassAdmission(
+    engine_attribute: &str,
+    table: Option<&model::TableInfo>,
+) -> Result<()> {
+    if astersql_config::get_global_config().enable_storage_class {
+        return Ok(());
+    }
+    let mut has_storage_class = false;
+    if !engine_attribute.is_empty() {
+        let attribute =
+            model::ParseEngineAttributeFromString(engine_attribute).map_err(format_error)?;
+        has_storage_class = attribute.StorageClass.is_some();
+    }
+    if let Some(table) = table {
+        has_storage_class |= !table.StorageClassTier.is_empty()
+            || !table.StorageClassTransitions.is_empty()
+            || table.Partition.as_ref().is_some_and(|partition| {
+                partition.Definitions.iter().any(|definition| {
+                    !definition.StorageClassTier.is_empty()
+                        || !definition.StorageClassTransitions.is_empty()
+                })
+            });
+    }
+    if has_storage_class {
+        return Err(dbterror::ErrGeneralUnsupportedDDL
+            .GenWithStack(
+                "Storage class is disabled; set enable-storage-class = true in the TiDB configuration",
+                &[],
+            )
+            .to_string());
+    }
+    Ok(())
+}
 fn check_tier(tier: &str) -> Result<()> {
     if matches!(tier, "STANDARD" | "IA") {
         Ok(())
