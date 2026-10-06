@@ -18,35 +18,39 @@ use astersql_meta_model::SchemaState;
 use astersql_meta_model::group_3::{Job, JobState};
 
 pub fn handler_available(action: u8) -> bool {
-    action == astersql_meta_model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_ATTRIBUTES
-        || matches!(
-            action,
-            1 | 3
-                | 60
-                | 65
-                | 67
-                | 4
-                | 6
-                | 7
-                | 10
-                | 11
-                | 12
-                | 14
-                | 17
-                | 47
-                | 26
-                | 32
-                | 39
-                | 55
-                | 74
-                | 75
-                | 76
-                | 85
-                | 86
-                | 87
-                | 88
-                | 93
-        )
+    matches!(
+        action,
+        astersql_meta_model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_REFRESH
+            | astersql_meta_model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_LOG_PURGE
+            | astersql_meta_model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_ATTRIBUTES
+    ) || matches!(
+        action,
+        1 | 3
+            | 60
+            | 65
+            | 67
+            | 4
+            | 6
+            | 7
+            | 10
+            | 11
+            | 12
+            | 14
+            | 17
+            | 47
+            | 26
+            | 32
+            | 39
+            | 55
+            | 74
+            | 75
+            | 76
+            | 85
+            | 86
+            | 87
+            | 88
+            | 93
+    )
 }
 
 pub fn step(
@@ -91,6 +95,12 @@ pub fn step(
     }
     if job.tp == astersql_meta_model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_ATTRIBUTES {
         return crate::persistent_alter_materialized_view_attributes::step(context, job);
+    }
+    if job.tp == astersql_meta_model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_REFRESH {
+        return crate::persistent_alter_materialized_view_refresh::step(context, job);
+    }
+    if job.tp == astersql_meta_model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_LOG_PURGE {
+        return crate::persistent_alter_materialized_view_log_purge::step(context, job);
     }
     if job.tp == 74 {
         return modify_engine_attribute(context, job);

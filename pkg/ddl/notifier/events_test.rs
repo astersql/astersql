@@ -249,3 +249,45 @@ fn event_json_null_and_empty_mini_slices_match_go() {
         serde_json::from_slice(&drop_schema.MarshalJSON().unwrap()).unwrap();
     assert!(json["mini_db_info"].get("tables").is_none());
 }
+
+#[test]
+fn materialized_view_alter_event_constructors_preserve_old_and_new_tables() {
+    let old = model::TableInfo {
+        ID: 41,
+        Name: ast::NewCIStr("mv"),
+        ..Default::default()
+    };
+    let mut new = old.clone();
+    new.Comment = "changed".into();
+
+    let cases = [
+        (
+            crate::NewAlterMaterializedViewRefreshEvent(
+                Some(Box::new(new.clone())),
+                Some(Box::new(old.clone())),
+            ),
+            model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_REFRESH,
+        ),
+        (
+            crate::NewAlterMaterializedViewAttributesEvent(
+                Some(Box::new(new.clone())),
+                Some(Box::new(old.clone())),
+            ),
+            model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_ATTRIBUTES,
+        ),
+        (
+            crate::NewAlterMaterializedViewLogPurgeEvent(
+                Some(Box::new(new.clone())),
+                Some(Box::new(old.clone())),
+            ),
+            model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_LOG_PURGE,
+        ),
+    ];
+    for (event, action) in cases {
+        assert_eq!(event.GetType(), action);
+        let json: serde_json::Value =
+            serde_json::from_slice(&event.MarshalJSON().unwrap()).unwrap();
+        assert_eq!(json["table_info"]["comment"], "changed");
+        assert_eq!(json["old_table_info"]["id"], 41);
+    }
+}

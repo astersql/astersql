@@ -639,13 +639,29 @@ impl From<WireEvent> for JsonSchemaChangeEvent {
     }
 }
 
-// Go events.go NewAlterMaterializedViewAttributesEvent retains both complete tables.
+// Go events.go materialized-view alter events retain both complete tables.
+event_constructor!(NewAlterMaterializedViewRefreshEvent, model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_REFRESH, TableInfo: table: Option<Box<model::TableInfo>>, OldTableInfo: old: Option<Box<model::TableInfo>>);
 event_constructor!(NewAlterMaterializedViewAttributesEvent, model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_ATTRIBUTES, TableInfo: table: Option<Box<model::TableInfo>>, OldTableInfo: old: Option<Box<model::TableInfo>>);
+event_constructor!(NewAlterMaterializedViewLogPurgeEvent, model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_LOG_PURGE, TableInfo: table: Option<Box<model::TableInfo>>, OldTableInfo: old: Option<Box<model::TableInfo>>);
 
 impl SchemaChangeEvent {
+    /// Go GetAlterMaterializedViewRefreshInfo returns the new complete table.
+    pub fn GetAlterMaterializedViewRefreshInfo(&self) -> Option<Box<model::TableInfo>> {
+        self.expect(model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_REFRESH)
+            .TableInfo
+            .clone()
+    }
+
     /// Go GetAlterMaterializedViewAttributesInfo returns the new complete table.
     pub fn GetAlterMaterializedViewAttributesInfo(&self) -> Option<Box<model::TableInfo>> {
         self.expect(model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_ATTRIBUTES)
+            .TableInfo
+            .clone()
+    }
+
+    /// Go GetAlterMaterializedViewLogPurgeInfo returns the new complete table.
+    pub fn GetAlterMaterializedViewLogPurgeInfo(&self) -> Option<Box<model::TableInfo>> {
+        self.expect(model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_LOG_PURGE)
             .TableInfo
             .clone()
     }

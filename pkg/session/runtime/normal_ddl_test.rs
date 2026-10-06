@@ -2267,6 +2267,107 @@ fn normal_ddl_plan_notifier_persistent_worker_publishes_full_event_once() {
 }
 
 #[test]
+fn normal_ddl_materialized_view_refresh_and_log_purge_update_metadata_and_publish_events() {
+    for (action, raw_args) in [
+        (
+            astersql_meta_model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_REFRESH,
+            serde_json::json!({
+                "refresh_method":"COMPLETE",
+                "refresh_start_with":"2026-10-06 12:00:00",
+                "refresh_next":"INTERVAL 1 HOUR",
+                "refresh_schedule_sql_mode":7,
+                "update_refresh_schedule":true
+            }),
+        ),
+        (
+            astersql_meta_model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_LOG_PURGE,
+            serde_json::json!({
+                "purge_method":"SCHEDULE",
+                "purge_start_with":"2026-10-06 13:00:00",
+                "purge_next":"INTERVAL 2 HOUR",
+                "purge_schedule_sql_mode":9,
+                "update_purge_schedule":true
+            }),
+        ),
+    ] {
+        let f = Fixture::new();
+        let mut table = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+        if action == astersql_meta_model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_REFRESH {
+            table.MaterializedView = Some(Default::default());
+        } else {
+            table.MaterializedViewLog = Some(Default::default());
+        }
+        let old = serde_json::to_value(&table).unwrap();
+        let mut txn = f
+            .domain
+            .storage_handle()
+            .with_storage(|s| s.Begin(&[]))
+            .unwrap();
+        txn.Set(
+            hash(
+                format!("DB:{}", f.db).as_bytes(),
+                format!("Table:{}", f.table).as_bytes(),
+            ),
+            astersql_meta_model::EncodeTableInfo(&table).unwrap(),
+        )
+        .unwrap();
+        txn.Commit(&astersql_kv::Context::default()).unwrap();
+
+        let mut job = Job::default();
+        job.id = 85100 + i64::from(action);
+        job.tp = action;
+        job.schema_id = f.db;
+        job.table_id = f.table;
+        job.schema_name = "test".into();
+        job.table_name = "normal_ddl_target".into();
+        job.state = JobState::Queueing;
+        job.version = astersql_meta_model::group_3::JobVersion::V2;
+        job.raw_args = serde_json::to_vec(&raw_args).unwrap();
+        f.insert_job(&mut job);
+
+        let mut session = f.pool.acquire().unwrap();
+        let mut sched = scheduler();
+        let mut ex = executor();
+        for _ in 0..3 {
+            sched
+                .schedule_persisted(&mut session, &Lease(AtomicBool::new(true)), &mut ex, 0)
+                .unwrap();
+        }
+        let after = f.reader().get_table(f.db, f.table).unwrap().unwrap();
+        if let Some(view) = after.MaterializedView.as_ref() {
+            assert_eq!(view.RefreshMethod, "COMPLETE");
+            assert_eq!(view.RefreshScheduleSQLMode.0, 7);
+        } else {
+            let log = after.MaterializedViewLog.as_ref().unwrap();
+            assert_eq!(log.PurgeMethod, "SCHEDULE");
+            assert_eq!(log.PurgeScheduleSQLMode.0, 9);
+        }
+        let rows = f
+            .pool
+            .acquire()
+            .unwrap()
+            .query(&format!(
+                "SELECT schema_change FROM mysql.tidb_ddl_notifier WHERE ddl_job_id={}",
+                job.id
+            ))
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        let event: serde_json::Value = serde_json::from_str(&rows[0][0]).unwrap();
+        assert_eq!(event["type"], action);
+        assert_eq!(event["old_table_info"], old);
+        assert_eq!(event["table_info"], serde_json::to_value(&after).unwrap());
+        assert_eq!(
+            f.reader()
+                .get_history_ddl_job(job.id)
+                .unwrap()
+                .unwrap()
+                .state,
+            JobState::Synced
+        );
+    }
+}
+
+#[test]
 fn normal_ddl_plan_notifier_metadata_conflict_rolls_back_then_owner_retries() {
     let (f, mut job, old) = notifier_fixture();
     let before = version(&f);
