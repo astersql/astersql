@@ -2548,12 +2548,30 @@ fn go_merge_187_terminal_once() {
 
 use crate::adapter::{
     AdapterResult, ChunkConfig, Digest, ExecExecutor, FieldName, Key, PessimisticErrorAction,
-    PlanInfo, Priority, RebuiltPlan, StatementContext, StatementNode, StatementSummary,
-    TelemetryInfo, pessimisticTxn,
+    PlanInfo, Priority, RebuiltPlan, SelectRUDetailsForStatementLog, StatementContext,
+    StatementNode, StatementSummary, TelemetryInfo, pessimisticTxn,
 };
 use astersql_errors as errors;
 use astersql_util_chunk as chunk;
 use std::time::{Duration, SystemTime};
+
+#[test]
+fn ru_log_selection_preserves_unfinalized_details_and_zero_total() {
+    use astersql_util_execdetails::execdetails::util::RUDetails;
+
+    let raw = RUDetails {
+        read_ru: 11.0,
+        write_ru: 7.0,
+        ru_wait_duration: Duration::from_millis(20),
+        ..Default::default()
+    };
+    let pending = SelectRUDetailsForStatementLog(Some(raw.clone()), 2, None, true).unwrap();
+    assert_eq!((pending.RRU(), pending.WRU()), (11.0, 7.0));
+
+    let finalized = SelectRUDetailsForStatementLog(Some(raw), 2, Some(0.0), true).unwrap();
+    assert_eq!((finalized.RRU(), finalized.WRU()), (0.0, 0.0));
+    assert_eq!(finalized.RUWaitDuration(), Duration::from_millis(20));
+}
 #[derive(Default)]
 struct RUTerminalRuntime {
     state: crate::statement_ru_result::StatementRUInstallState,

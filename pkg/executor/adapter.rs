@@ -173,6 +173,31 @@ pub struct ExecutionContext {
 /// TiKV/TiFlash RU details share the canonical execdetails contract.
 pub type RUDetails = tikvutil::RUDetails;
 
+/// Select the RU values exposed by slow logs and statement summaries without
+/// mutating the shared execution accounting.
+pub fn SelectRUDetailsForStatementLog(
+    raw: Option<astersql_util_execdetails::execdetails::util::RUDetails>,
+    version: u8,
+    total_ru_v2: Option<f64>,
+    is_write: bool,
+) -> Option<astersql_util_execdetails::execdetails::util::RUDetails> {
+    if version != 2 {
+        return raw;
+    }
+    let Some(total) = total_ru_v2 else {
+        return raw;
+    };
+    let wait = raw
+        .as_ref()
+        .map_or(Duration::ZERO, |details| details.RUWaitDuration());
+    Some(astersql_util_execdetails::execdetails::util::RUDetails {
+        read_ru: if is_write { 0.0 } else { total },
+        write_ru: if is_write { total } else { 0.0 },
+        ru_wait_duration: wait,
+        ..Default::default()
+    })
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 /// SQL/计划摘要：文本与二进制 digest。
 pub struct Digest {
@@ -2153,6 +2178,17 @@ impl ExecStmt {
             .as_deref()
             .filter(|metrics| !metrics.Bypass())
             .map(|_| self.StatementCtx.total_ru);
+        let is_write = matches!(
+            self.Plan.kind,
+            PlanKind::Insert | PlanKind::Update | PlanKind::Delete
+        ) || self
+            .StmtNode
+            .text
+            .trim()
+            .trim_end_matches(';')
+            .eq_ignore_ascii_case("commit");
+        let ru_details =
+            SelectRUDetailsForStatementLog(ru_details, self.Ctx.RUVersion(), total_ru_v2, is_write);
         let summary = StatementSummary {
             original_sql: self.GetOriginalSQL(),
             normalized_sql: self.StatementCtx.sql_normalized.clone(),
@@ -2163,15 +2199,7 @@ impl ExecStmt {
             success,
             ru_version: self.Ctx.RUVersion(),
             total_ru_v2,
-            is_write: matches!(
-                self.Plan.kind,
-                PlanKind::Insert | PlanKind::Update | PlanKind::Delete
-            ) || self
-                .StmtNode
-                .text
-                .trim()
-                .trim_end_matches(';')
-                .eq_ignore_ascii_case("commit"),
+            is_write,
             ru_details,
         };
         self.Ctx.Summary(&summary);

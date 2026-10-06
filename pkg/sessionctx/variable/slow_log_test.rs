@@ -167,3 +167,26 @@ fn storage_from_fields_are_logged_for_tikv_without_mpp() {
     assert!(log.contains("# Storage_from_kv: true\n"), "{log}");
     assert!(log.contains("# Storage_from_mpp: false\n"), "{log}");
 }
+
+#[test]
+fn ru_details_use_unified_read_write_fields() {
+    use execdetails::execdetails::util::RUDetails;
+
+    let vars = crate::session::SessionVars::new();
+    let items = slow_log::SlowQueryLogItems {
+        SQL: "select * from t".into(),
+        RUDetails: Some(RUDetails {
+            read_ru: 19.0,
+            write_ru: 0.0,
+            ru_wait_duration: std::time::Duration::from_millis(20),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let log = vars.SlowLogFormat(&items);
+    assert!(log.contains("# Request_unit_read: 19\n"), "{log}");
+    assert!(!log.contains("Request_unit_write"), "{log}");
+    assert!(log.contains("# Time_queued_by_rc: 0.02\n"), "{log}");
+    assert!(!log.contains("Request_unit_v2"), "{log}");
+}

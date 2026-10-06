@@ -135,6 +135,12 @@ pub const SlowLogIsSyncStatsFailed: &str = "IsSyncStatsFailed";
 pub const SlowLogStorageFromKV: &str = "Storage_from_kv";
 /// 是否从 MPP 存储读字段。
 pub const SlowLogStorageFromMPP: &str = "Storage_from_mpp";
+/// Read request-unit cost exposed by both RU versions.
+pub const SlowLogRRU: &str = "Request_unit_read";
+/// Write request-unit cost exposed by both RU versions.
+pub const SlowLogWRU: &str = "Request_unit_write";
+/// Time spent waiting for request units.
+pub const SlowLogWaitRUDuration: &str = "Time_queued_by_rc";
 /// 规则未指定连接 ID 时的占位值。
 pub const UnsetConnID: i64 = -1;
 
@@ -178,6 +184,7 @@ pub struct SlowQueryLogItems {
     pub ResultRows: i64,
     pub Warnings: Vec<JSONSQLWarnForSlowLog>,
     pub ResourceGroupName: String,
+    pub RUDetails: Option<ed::util::RUDetails>,
     pub MemMax: i64,
     pub DiskMax: i64,
     pub StorageKV: bool,
@@ -316,6 +323,21 @@ impl SessionVars {
         }
         writeSlowLogItem(&mut buffer, SlowLogStorageFromKV, items.StorageKV);
         writeSlowLogItem(&mut buffer, SlowLogStorageFromMPP, items.StorageMPP);
+        if let Some(details) = items.RUDetails.as_ref() {
+            if details.RRU() > 0.0 {
+                writeSlowLogItem(&mut buffer, SlowLogRRU, details.RRU());
+            }
+            if details.WRU() > 0.0 {
+                writeSlowLogItem(&mut buffer, SlowLogWRU, details.WRU());
+            }
+            if details.RUWaitDuration() > Duration::ZERO {
+                writeSlowLogItem(
+                    &mut buffer,
+                    SlowLogWaitRUDuration,
+                    duration_seconds(details.RUWaitDuration()),
+                );
+            }
+        }
         if !items.PrevStmt.is_empty() {
             writeSlowLogItem(&mut buffer, SlowLogPrevStmt, &items.PrevStmt);
         }
