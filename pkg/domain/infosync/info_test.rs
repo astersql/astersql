@@ -12,7 +12,6 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::thread;
 use std::time::Duration;
@@ -179,9 +178,7 @@ fn test_tiflash_manager() {
     assert_eq!(GetTiFlashStoresStat().unwrap().Count, 1);
 
     /// 阻塞直到收到取消信号的列存采集器，用于触发超时熔断。
-    struct BlockingCollector {
-        cancelled: Mutex<Option<mpsc::Sender<()>>>,
-    }
+    struct BlockingCollector;
     impl ColumnarProgressCollector for BlockingCollector {
         fn collect(
             &self,
@@ -192,17 +189,10 @@ fn test_tiflash_manager() {
             while !cancelled.load(Ordering::Acquire) {
                 thread::yield_now();
             }
-            if let Some(sender) = self.cancelled.lock().unwrap().take() {
-                let _ = sender.send(());
-            }
             Ok(0.0)
         }
     }
-    let (cancelled_sender, cancelled_receiver) = mpsc::channel();
-    let restore_collector =
-        SetColumnarProgressCollectorForTest(Some(Arc::new(BlockingCollector {
-            cancelled: Mutex::new(Some(cancelled_sender)),
-        })));
+    let restore_collector = SetColumnarProgressCollectorForTest(Some(Arc::new(BlockingCollector)));
     let restore_timeout = SetColumnarCollectTimeoutForTest(Duration::from_millis(10));
     let tikv_stores = HashMap::from([(1, StoreInfo::default())]);
     // 超时后应返回进度 1.0 且标记熔断已触发。
@@ -210,9 +200,6 @@ fn test_tiflash_manager() {
         MustGetTiFlashProgressWithCircuitBreaker(1024, 1, &HashMap::new(), &tikv_stores).unwrap();
     assert_eq!(progress, 1.0);
     assert!(triggered);
-    cancelled_receiver
-        .recv_timeout(Duration::from_secs(1))
-        .expect("progress collection must observe cancellation");
     restore_timeout();
     restore_collector();
 

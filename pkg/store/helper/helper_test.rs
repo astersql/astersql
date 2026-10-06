@@ -19,8 +19,11 @@
 // TiFlash 状态解析以及表键范围构造等。
 
 use std::collections::HashMap;
-use std::io::BufReader;
-use std::sync::{Arc, Mutex};
+use std::io::{BufReader, Read};
+use std::net::TcpListener;
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread;
+use std::time::Duration;
 
 use crate::*;
 
@@ -563,6 +566,48 @@ fn TestComputeTiFlashStatus() {
     for i in 1000..3000 {
         assert!(replicas2.contains_key(&i));
     }
+}
+
+#[test]
+fn collect_columnar_status_cancels_pending_request() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (request_started_tx, request_started_rx) = mpsc::channel();
+    let (request_cancelled_tx, request_cancelled_rx) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 1024];
+        let size = stream.read(&mut request).unwrap();
+        assert!(
+            String::from_utf8_lossy(&request[..size])
+                .starts_with("GET /kvengine/columnar_status?keyspace_id=7&table_id=9 HTTP/1.1")
+        );
+        request_started_tx.send(()).unwrap();
+
+        while stream.read(&mut request).unwrap_or_default() != 0 {}
+        request_cancelled_tx.send(()).unwrap();
+    });
+
+    let ctx = RequestContext::background();
+    let request_ctx = ctx.clone();
+    let request = thread::spawn(move || {
+        CollectColumnarStatusWithCtx(&request_ctx, &address.to_string(), 7, 9, None)
+    });
+
+    request_started_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("columnar status request must start");
+    ctx.cancel();
+
+    let error = request
+        .join()
+        .unwrap()
+        .expect_err("cancelling the context must stop the pending request");
+    assert!(error.to_string().contains("context canceled"));
+    request_cancelled_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("pending HTTP request must observe cancellation");
+    server.join().unwrap();
 }
 
 #[test]

@@ -1773,27 +1773,50 @@ pub fn CollectColumnarStatusWithCtx(
     table_id: i64,
     index_id: Option<i64>,
 ) -> Result<ColumnarStatusResp> {
+    ctx.check()?;
     let mut path =
         format!("/kvengine/columnar_status?keyspace_id={keyspace_id}&table_id={table_id}");
     if let Some(index_id) = index_id {
         path.push_str(&format!("&index_id={index_id}"));
     }
-    let response = http_client(ctx)?
-        .get(status_url(status_address, &path))
-        .send()?;
-    ctx.check()?;
-    let status = response.status();
-    if status != reqwest::StatusCode::OK {
-        let body = response.text().unwrap_or_default();
-        bail!(
-            "TiKV columnar status API returned status {}: {}",
-            status.as_u16(),
-            body
-        );
-    }
-    response
-        .json()
-        .context("decode TiKV columnar status response")
+    let client = reqwest::Client::builder()
+        .timeout(ctx.request_timeout())
+        .build()
+        .context("build internal HTTP client")?;
+    let request = async {
+        let response = client.get(status_url(status_address, &path)).send().await?;
+        let status = response.status();
+        if status != reqwest::StatusCode::OK {
+            let body = response.text().await.unwrap_or_default();
+            bail!(
+                "TiKV columnar status API returned status {}: {}",
+                status.as_u16(),
+                body
+            );
+        }
+        response
+            .json()
+            .await
+            .context("decode TiKV columnar status response")
+    };
+    let cancelled = async {
+        loop {
+            if let Err(error) = ctx.check() {
+                return error;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    };
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("build columnar status HTTP runtime")?
+        .block_on(async {
+            tokio::select! {
+                result = request => result,
+                error = cancelled => Err(error),
+            }
+        })
 }
 
 /// 采集 Columnar 状态（默认上下文）。
