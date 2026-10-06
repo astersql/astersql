@@ -34,6 +34,9 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use astersql_executor_internal_exec::adaptive_limit_controller::{
+    AdaptiveLimitController, AdaptiveLimitSnapshot,
+};
 use astersql_util_memory::tracker::Tracker;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -206,6 +209,8 @@ pub struct lookupTableTask {
     pub error: Option<DistSqlError>,
     pub build_done_time: Option<Instant>,
     pub mem_usage: usize,
+    /// Number of adaptively admitted handles owned by this task.
+    pub adaptive_limit_reservation: usize,
 }
 impl lookupTableTask {
     /// 排序辅助：当前任务行数。
@@ -445,7 +450,13 @@ pub struct IndexLookUpExecutor<B: DistSqlBackend> {
     pub pending: BTreeMap<usize, lookupTableTask>,
     pub next_task_id: usize,
     pub current: VecDeque<Row>,
+    /// Accounting for tasks whose rows are buffered in `current`.
+    pub adaptive_current: VecDeque<(usize, usize, usize, usize)>,
     pub stats: Arc<Mutex<IndexLookUpRunTimeStats>>,
+    /// Shared statement-local admission controller; `None` keeps the legacy path.
+    pub adaptive_limit_controller: Option<Arc<AdaptiveLimitController>>,
+    /// Direct index lookup renders its close-time snapshot in runtime stats.
+    pub report_adaptive_limit_stats: bool,
     /// Regular readers charge ranges to this executor-owned tracker.
     pub mem_tracker: Option<Arc<Tracker>>,
     /// Index Join inner tasks override `mem_tracker` with their task tracker.
@@ -554,6 +565,7 @@ impl<B: DistSqlBackend> IndexLookUpExecutor<B> {
         let limit = self.pushed_limit.clone();
         let cancelled = Arc::clone(&self.cancelled);
         let stats = Arc::clone(&self.stats);
+        let adaptive_limit_controller = self.adaptive_limit_controller.clone();
         let index_error_tx = result_tx.clone();
         // index worker：扫索引抽 handle，按批 dispatch 到 table_tx。
         self.index_join = Some(thread::spawn(move || {
@@ -571,6 +583,7 @@ impl<B: DistSqlBackend> IndexLookUpExecutor<B> {
                 max_batch_size: 1024,
                 scanned_keys: 0,
                 stats,
+                adaptive_limit_controller,
             };
             if let Err(error) = worker.fetchHandles() {
                 let _ = index_error_tx.send(lookupTableTask {
@@ -628,6 +641,9 @@ impl<B: DistSqlBackend> IndexLookUpExecutor<B> {
     /// 取消并 join 所有 worker，清空缓冲。
     pub fn Close(&mut self) -> Result<(), DistSqlError> {
         self.cancelled.store(true, AtomicOrdering::Release);
+        if let Some(controller) = &self.adaptive_limit_controller {
+            controller.Stop();
+        }
         self.table_tx.take();
         if let Some(join) = self.index_join.take() {
             join.join().map_err(panic_error)?;
@@ -637,23 +653,74 @@ impl<B: DistSqlBackend> IndexLookUpExecutor<B> {
         }
         self.result_tx.take();
         self.current.clear();
+        self.adaptive_current.clear();
+        if self.report_adaptive_limit_stats {
+            if let Some(controller) = &self.adaptive_limit_controller {
+                self.stats
+                    .lock()
+                    .expect("runtime stats poisoned")
+                    .adaptive_limit_snapshot = Some(controller.Snapshot());
+            }
+        }
         Ok(())
     }
     /// 从结果队列攒够 capacity 行后返回。
     pub fn Next(&mut self, capacity: usize) -> Result<Vec<Row>, DistSqlError> {
         while self.current.len() < capacity {
-            let Some(task) = self.getResultTask()? else {
+            let Some(mut task) = self.getResultTask()? else {
                 break;
             };
             if let Some(error) = task.error {
+                if let Some(controller) = &self.adaptive_limit_controller {
+                    controller.AbortLookup(task.adaptive_limit_reservation);
+                }
                 return Err(error);
+            }
+            let rows = task.rows.len();
+            if task.adaptive_limit_reservation > 0 {
+                if rows == 0 {
+                    if let Some(controller) = &self.adaptive_limit_controller {
+                        controller.CompleteLookup(
+                            task.adaptive_limit_reservation,
+                            task.handles.len(),
+                            0,
+                        );
+                    }
+                } else {
+                    self.adaptive_current.push_back((
+                        rows,
+                        rows,
+                        task.adaptive_limit_reservation,
+                        task.handles.len(),
+                    ));
+                }
+                task.adaptive_limit_reservation = 0;
             }
             self.current.extend(task.rows);
         }
-        Ok(self
-            .current
-            .drain(..capacity.min(self.current.len()))
-            .collect())
+        let count = capacity.min(self.current.len());
+        let rows = self.current.drain(..count).collect();
+        self.complete_adaptive_rows(count);
+        Ok(rows)
+    }
+
+    fn complete_adaptive_rows(&mut self, mut consumed: usize) {
+        let Some(controller) = &self.adaptive_limit_controller else {
+            return;
+        };
+        while consumed > 0 {
+            let Some((remaining, rows, reservation, handles)) = self.adaptive_current.front_mut()
+            else {
+                break;
+            };
+            let used = consumed.min(*remaining);
+            *remaining -= used;
+            consumed -= used;
+            if *remaining == 0 {
+                controller.CompleteLookup(*reservation, *handles, *rows);
+                self.adaptive_current.pop_front();
+            }
+        }
     }
     /// 按 task id 保序取出下一个完成任务；乱序到达的先放入 pending。
     pub fn getResultTask(&mut self) -> Result<Option<lookupTableTask>, DistSqlError> {
@@ -837,6 +904,7 @@ pub struct indexWorker<B: DistSqlBackend> {
     pub max_batch_size: usize,
     pub scanned_keys: usize,
     pub stats: Arc<Mutex<IndexLookUpRunTimeStats>>,
+    pub adaptive_limit_controller: Option<Arc<AdaptiveLimitController>>,
 }
 impl<B: DistSqlBackend> indexWorker<B> {
     /// 把错误包装成任务发往 table_tx。
@@ -853,6 +921,15 @@ impl<B: DistSqlBackend> indexWorker<B> {
         let mut task_id = 0;
         let mut cursor = 0;
         while cursor < rows.len() && !self.limitReached() {
+            let mut reservation = 0;
+            if let Some(controller) = &self.adaptive_limit_controller {
+                let (reserved, admitted) = controller.ReserveLookup(self.batch_size);
+                if !admitted {
+                    break;
+                }
+                reservation = reserved;
+                self.batch_size = reserved;
+            }
             let end = (cursor + self.batch_size).min(rows.len());
             let (completed, handles, _) =
                 self.extractLookUpPushDownRowsOrHandles(&rows[cursor..end])?;
@@ -861,7 +938,14 @@ impl<B: DistSqlBackend> indexWorker<B> {
                 handles,
                 exhausted: end == rows.len(),
                 index_rows: rows[cursor..end].to_vec(),
+                adaptive_limit_reservation: reservation,
             };
+            if reservation > data.handles.len() {
+                if let Some(controller) = &self.adaptive_limit_controller {
+                    controller.AbortLookup(reservation - data.handles.len());
+                }
+                data.adaptive_limit_reservation = data.handles.len();
+            }
             if self.buildAndDispatchLookupTasks(task_id, &mut data)? {
                 break;
             }
@@ -869,7 +953,10 @@ impl<B: DistSqlBackend> indexWorker<B> {
             self.scanned_keys += end - cursor;
             cursor = end;
             // 批大小指数增长直至 max_batch_size，降低小批调度开销。
-            self.batch_size = (self.batch_size * 2).min(self.max_batch_size);
+            self.batch_size = self.adaptive_limit_controller.as_ref().map_or_else(
+                || (self.batch_size * 2).min(self.max_batch_size),
+                |controller| controller.SuggestedBatchSize(self.max_batch_size),
+            );
         }
         let mut stats = self.stats.lock().expect("runtime stats poisoned");
         stats.fetch_handle += 1;
@@ -901,6 +988,7 @@ impl<B: DistSqlBackend> indexWorker<B> {
             handles,
             exhausted: true,
             index_rows: all,
+            adaptive_limit_reservation: 0,
         };
         self.buildAndDispatchLookupTasks(0, &mut data)?;
         Ok(())
@@ -920,6 +1008,7 @@ impl<B: DistSqlBackend> indexWorker<B> {
             handles,
             exhausted,
             index_rows: rows.to_vec(),
+            adaptive_limit_reservation: 0,
         })
     }
     /// 无 handle 则直接完成任务，否则构建回表任务并 send。
@@ -929,6 +1018,10 @@ impl<B: DistSqlBackend> indexWorker<B> {
         data: &mut extractedLookupTaskData,
     ) -> Result<bool, DistSqlError> {
         if data.handles.is_empty() && data.completed_rows.is_empty() {
+            if let Some(controller) = &self.adaptive_limit_controller {
+                controller.AbortLookup(data.adaptive_limit_reservation);
+            }
+            data.adaptive_limit_reservation = 0;
             return Ok(false);
         }
         let task = if data.handles.is_empty() {
@@ -940,7 +1033,15 @@ impl<B: DistSqlBackend> indexWorker<B> {
                 std::mem::take(&mut data.index_rows),
             )
         };
-        self.table_tx.send(task).map_err(|_| DistSqlError::Closed)?;
+        let mut task = task;
+        task.adaptive_limit_reservation = data.adaptive_limit_reservation;
+        data.adaptive_limit_reservation = 0;
+        if let Err(error) = self.table_tx.send(task) {
+            if let Some(controller) = &self.adaptive_limit_controller {
+                controller.AbortLookup(error.0.adaptive_limit_reservation);
+            }
+            return Err(DistSqlError::Closed);
+        }
         Ok(false)
     }
     /// 显式偏移优先，否则默认取最后一列。
@@ -1078,6 +1179,7 @@ pub struct extractedLookupTaskData {
     pub handles: Vec<Handle>,
     pub exhausted: bool,
     pub index_rows: Vec<Row>,
+    pub adaptive_limit_reservation: usize,
 }
 
 /// 执行回表任务，错误写入 task.error。
@@ -1195,6 +1297,7 @@ pub struct IndexLookUpRunTimeStats {
     pub table_task_num: u64,
     pub next_wait_index: Duration,
     pub next_wait_table: Duration,
+    pub adaptive_limit_snapshot: Option<AdaptiveLimitSnapshot>,
 }
 impl IndexLookUpRunTimeStats {
     /// 格式化为 explain 可读字符串。
@@ -1218,6 +1321,15 @@ impl IndexLookUpRunTimeStats {
                 self.next_wait_index, self.next_wait_table
             ));
         }
+        if let Some(snapshot) = self.adaptive_limit_snapshot {
+            parts.push(format!(
+                "adaptive:{{lookup:{}/{}, outstanding:{}, blocked:{:?}}}",
+                snapshot.lookup_handles,
+                snapshot.lookup_rows,
+                snapshot.lookup_outstanding_at_stop,
+                snapshot.lookup_admission_blocked
+            ));
+        }
         parts.join(", ")
     }
     /// 显式 Clone（对齐 Go 方法名）。
@@ -1233,6 +1345,9 @@ impl IndexLookUpRunTimeStats {
         self.table_task_num += other.table_task_num;
         self.next_wait_index += other.next_wait_index;
         self.next_wait_table += other.next_wait_table;
+        if self.adaptive_limit_snapshot.is_none() {
+            self.adaptive_limit_snapshot = other.adaptive_limit_snapshot;
+        }
     }
     /// 统计类型标识（对齐 Go）。
     pub fn Tp(&self) -> i32 {

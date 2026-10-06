@@ -582,6 +582,10 @@ pub const TiDBIndexLookupConcurrency: &str = "tidb_index_lookup_concurrency";
 // tidb_index_lookup_join_concurrency is deprecated, use tidb_executor_concurrency instead.
 pub const TiDBIndexLookupJoinConcurrency: &str = "tidb_index_lookup_join_concurrency";
 
+// TiDBEnableAdaptiveLimitScan enables statement-local adaptive admission for
+// early-stop ordered LIMIT scans.
+pub const TiDBEnableAdaptiveLimitScan: &str = "tidb_enable_adaptive_limit_scan";
+
 // TiDBIndexSerialScanConcurrency is used for controlling the concurrency of index scan operation
 // when we need to keep the data output order the same as the order of index data.
 // Deprecated: Use tidb_executor_concurrency for sequential scans and tidb_analyze_distsql_scan_concurrency for ANALYZE.
@@ -1599,6 +1603,7 @@ pub const ConservativeResolveConcurrency: i64 = 2;
 pub const DefHostname: &str = "localhost";
 pub const DefIndexLookupConcurrency: i64 = ConcurrencyUnset;
 pub const DefIndexLookupJoinConcurrency: i64 = ConcurrencyUnset;
+pub const DefTiDBEnableAdaptiveLimitScan: bool = false;
 pub const DefIndexSerialScanConcurrency: i64 = 1;
 pub const DefIndexJoinBatchSize: i64 = 25000;
 pub const DefIndexLookupSize: i64 = 20000;

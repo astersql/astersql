@@ -12,12 +12,12 @@ go-package = "pkg/executor/join"
 legacy-tasks = ["task-1117", "task-1118", "task-1119", "task-1120", "task-1121", "task-1122", "task-1123", "task-1124", "task-1125", "task-1126", "task-1132", "task-1135", "task-1136", "task-1137", "task-1138"]
 
 [dependencies]
+"astersql-executor-internal-exec" = { package = "astersql-executor-internal-exec", path = "../internal/exec" }
 "astersql-util-execdetails" = { package = "astersql-util-execdetails", path = "../../util/execdetails" }
 
 [target.'cfg(windows)'.dependencies]
 "astersql-executor-aggregate" = { package = "astersql-executor-aggregate", path = "../aggregate" }
 "astersql-executor-internal-applycache" = { package = "astersql-executor-internal-applycache", path = "../internal/applycache" }
-"astersql-executor-internal-exec" = { package = "astersql-executor-internal-exec", path = "../internal/exec" }
 "astersql-executor-internal-testutil" = { package = "astersql-executor-internal-testutil", path = "../internal/testutil" }
 "astersql-executor-internal-util" = { package = "astersql-executor-internal-util", path = "../internal/util" }
 "astersql-executor-internal-vecgroupchecker" = { package = "astersql-executor-internal-vecgroupchecker", path = "../internal/vecgroupchecker" }

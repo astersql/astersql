@@ -18,6 +18,7 @@ use crate::hash_join_stats::{
     write_spilled_partition_num_stats,
 };
 use crate::index_lookup_join::{IndexLookUpJoinRuntimeStats, InnerWorkerRuntimeStats};
+use astersql_executor_internal_exec::adaptive_limit_controller::AdaptiveLimitSnapshot;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
@@ -61,6 +62,7 @@ fn index_lookup_join_runtime_stats_clone_merge_and_format_match_go() {
             build: Duration::from_millis(250),
             join: Duration::from_millis(150),
         },
+        adaptive_limit_snapshot: None,
     };
     assert_eq!(
         stats.to_string(),
@@ -73,6 +75,36 @@ fn index_lookup_join_runtime_stats_clone_merge_and_format_match_go() {
         stats.to_string(),
         "inner:{total:10s, concurrency:5, task:32, construct:200ms, fetch:600ms, build:500ms, join:300ms}, probe:2s"
     );
+}
+
+#[test]
+fn index_lookup_join_runtime_stats_render_and_retain_adaptive_snapshot() {
+    let mut stats = IndexLookUpJoinRuntimeStats {
+        adaptive_limit_snapshot: Some(AdaptiveLimitSnapshot {
+            outer_fetched: 1413,
+            outer_consumed: 1000,
+            lookup_handles: 1256,
+            lookup_rows: 1000,
+            outer_outstanding_at_stop: 413,
+            lookup_outstanding_at_stop: 256,
+            ..AdaptiveLimitSnapshot::default()
+        }),
+        ..IndexLookUpJoinRuntimeStats::default()
+    };
+    assert!(
+        stats
+            .to_string()
+            .contains("adaptive:{outer:1413/1000, lookup:1256/1000, outstanding:413/256")
+    );
+    let other = IndexLookUpJoinRuntimeStats {
+        adaptive_limit_snapshot: Some(AdaptiveLimitSnapshot {
+            outer_fetched: 999,
+            ..AdaptiveLimitSnapshot::default()
+        }),
+        ..IndexLookUpJoinRuntimeStats::default()
+    };
+    stats.merge(&other);
+    assert_eq!(stats.adaptive_limit_snapshot.unwrap().outer_fetched, 1413);
 }
 
 /// 校验 v2 合并取耗时最大值、不合并 spill 向量，并格式化溢写统计。

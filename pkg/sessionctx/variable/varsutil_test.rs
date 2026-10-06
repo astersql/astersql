@@ -145,6 +145,7 @@ fn test_new_session_vars() {
     assert_eq!(session_defaults.TxnMode, "OPTIMISTIC");
     assert!(session_defaults.PreparedStmts.is_empty());
     assert!(session_defaults.PreparedStmtNameToID.is_empty());
+    assert!(!session_defaults.EnableAdaptiveLimitScan);
 
     let concurrency_defaults = sysvar::SessionVars::default();
     assert_eq!(

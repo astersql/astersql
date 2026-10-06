@@ -13,12 +13,16 @@
     non_upper_case_globals
 )]
 
+/// Ordered LIMIT 的语句级自适应准入控制器。
+pub mod adaptive_limit_controller;
 /// 执行器公共基类型与接口。
 pub mod executor;
 /// 索引使用率采样与上报。
 pub mod indexusage;
 
 // 执行器基类与 indexusage 的单元测试仅在 test 配置下编译。
+#[cfg(test)]
+mod adaptive_limit_controller_test;
 #[cfg(test)]
 mod executor_test;
 #[cfg(test)]

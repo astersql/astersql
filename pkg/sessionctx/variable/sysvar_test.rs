@@ -1759,6 +1759,7 @@ fn TestGlobalSystemVariableInitialValue() {
             vardef::AssertionFastStr,
         ),
         (vardef::TiDBEnableMutationChecker, "OFF", vardef::On),
+        (vardef::TiDBEnableAdaptiveLimitScan, vardef::Off, vardef::On),
         (
             vardef::TiDBPessimisticTransactionFairLocking,
             "OFF",
@@ -1816,6 +1817,19 @@ fn TestGlobalSystemVariableInitialValue() {
         ),
         vardef::Off
     );
+}
+
+#[test]
+fn adaptive_limit_scan_is_global_and_session_scoped_and_updates_session_state() {
+    register_builtin_sysvars();
+    let variable = GetSysVar(vardef::TiDBEnableAdaptiveLimitScan).unwrap();
+    assert!(variable.Scope.String().contains("GLOBAL"));
+    assert!(variable.Scope.String().contains("SESSION"));
+    assert_eq!(variable.Value, vardef::Off);
+
+    let (mut vars, _) = session();
+    variable.SetSessionFromHook(&mut vars, vardef::On).unwrap();
+    assert!(vars.EnableAdaptiveLimitScan);
 }
 
 /// Go uses strings.FieldsFunc for custom policy key/value parsing, which

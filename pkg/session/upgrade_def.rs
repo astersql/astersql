@@ -205,6 +205,8 @@ pub const version283: i64 = 283;
 pub const version284: i64 = 284;
 /// Adds scan_index_id to mysql.tidb_ttl_task for index-ordered TTL scans.
 pub const version285: i64 = 285;
+/// Materializes adaptive LIMIT scan as OFF on upgraded clusters.
+pub const version287: i64 = 287;
 /// Creates materialized-view maintenance system tables. Go later moved this migration from 285.
 pub const version316: i64 = 316;
 /// Adds the OPERATE VIEW static privilege. Go later moved this migration from 286.

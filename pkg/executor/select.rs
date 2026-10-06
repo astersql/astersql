@@ -26,6 +26,8 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use astersql_executor_internal_exec::adaptive_limit_controller::AdaptiveLimitController;
+
 /// 本地临时空间配额耗尽时的 panic 文案。
 pub const globalPanicStorageExceed: &str = "Out Of Quota For Local Temporary Space!";
 /// 全局内存限额耗尽时的 panic 文案。
@@ -553,6 +555,8 @@ pub struct LimitExec<R: LimitRuntime> {
     pub cursor: u64,
     /// 是否已产生过首批有效输出。
     pub meet_first_batch: bool,
+    /// Owns the adaptive controller lifecycle for an eligible ordered child.
+    pub adaptive_limit_controller: Option<Arc<AdaptiveLimitController>>,
 }
 
 impl<R: LimitRuntime> LimitExec<R> {
@@ -563,6 +567,9 @@ impl<R: LimitRuntime> LimitExec<R> {
 
     /// 重置游标并打开子执行器。
     pub fn open(&mut self, context: &mut R::Context) -> Result<(), R::Error> {
+        if let Some(controller) = &self.adaptive_limit_controller {
+            controller.Reset();
+        }
         self.cursor = 0;
         self.meet_first_batch = self.begin == 0;
         self.runtime.open_child(context, 0)
@@ -576,6 +583,9 @@ impl<R: LimitRuntime> LimitExec<R> {
     ) -> Result<(), R::Error> {
         self.runtime.reset_chunk(request);
         if self.cursor >= self.end {
+            if let Some(controller) = &self.adaptive_limit_controller {
+                controller.Stop();
+            }
             return Ok(());
         }
 
@@ -585,6 +595,9 @@ impl<R: LimitRuntime> LimitExec<R> {
             self.runtime.next_child(context, 0, &mut input)?;
             let rows = self.runtime.chunk_rows(&input) as u64;
             if rows == 0 {
+                if let Some(controller) = &self.adaptive_limit_controller {
+                    controller.Stop();
+                }
                 return Ok(());
             }
             if self.cursor.saturating_add(rows) <= self.begin {
@@ -600,6 +613,11 @@ impl<R: LimitRuntime> LimitExec<R> {
                 .selection_take_selected(request, &input, &selected);
             self.cursor = self.begin.saturating_add(take as u64);
             self.meet_first_batch = true;
+            if self.cursor >= self.end {
+                if let Some(controller) = &self.adaptive_limit_controller {
+                    controller.Stop();
+                }
+            }
             return Ok(());
         }
 
@@ -612,11 +630,19 @@ impl<R: LimitRuntime> LimitExec<R> {
         } else {
             self.cursor = self.cursor.saturating_add(rows);
         }
+        if rows == 0 || self.cursor >= self.end {
+            if let Some(controller) = &self.adaptive_limit_controller {
+                controller.Stop();
+            }
+        }
         Ok(())
     }
 
     /// 关闭子执行器。
     pub fn Close(&mut self) -> Result<(), R::Error> {
+        if let Some(controller) = &self.adaptive_limit_controller {
+            controller.Stop();
+        }
         self.runtime.close_child(0)
     }
 
@@ -759,6 +785,7 @@ pub fn ExecuteLimitValues<T: Clone>(
         end: offset.saturating_add(count) as u64,
         cursor: 0,
         meet_first_batch: false,
+        adaptive_limit_controller: None,
     };
     let mut context = ();
     executor.Open(&mut context)?;

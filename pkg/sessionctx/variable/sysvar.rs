@@ -257,6 +257,9 @@ pub fn GlobalSystemVariableInitialValueWithRuntime(
         }
         vardef::TiDBTxnAssertionLevel => vardef::AssertionFastStr.to_owned(),
         vardef::TiDBEnableMutationChecker => vardef::On.to_owned(),
+        // New clusters enable adaptive LIMIT admission; upgraded clusters are
+        // materialized as OFF by the version-287 migration.
+        vardef::TiDBEnableAdaptiveLimitScan => vardef::On.to_owned(),
         // next-gen 关闭悲观事务公平锁；经典路径默认开启。
         vardef::TiDBPessimisticTransactionFairLocking if runtime.next_gen => vardef::Off.to_owned(),
         vardef::TiDBPessimisticTransactionFairLocking => vardef::On.to_owned(),

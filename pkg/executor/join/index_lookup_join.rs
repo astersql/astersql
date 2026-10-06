@@ -675,7 +675,12 @@
 use crate::joiner::{Joiner, NaajType, Predicate, Row};
 use crate::row_table_builder::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use astersql_executor_internal_exec::adaptive_limit_controller::{
+    AdaptiveLimitController, AdaptiveLimitSnapshot,
+};
 
 /// 行级过滤谓词，与 Joiner 的 `Predicate` 同型。
 pub type RowFilter = Predicate;
@@ -907,6 +912,10 @@ pub struct IndexLookUpJoin {
     executed: bool,
     /// 运行时统计。
     pub stats: IndexLookUpJoinRuntimeStats,
+    /// True when the physical outer property requires ordered output.
+    pub adaptive_limit_eligible: bool,
+    /// Controller shared with the eligible outer lookup reader and LIMIT.
+    pub adaptive_limit_controller: Option<Arc<AdaptiveLimitController>>,
 }
 
 impl IndexLookUpJoin {
@@ -931,6 +940,8 @@ impl IndexLookUpJoin {
             closed: false,
             executed: false,
             stats: IndexLookUpJoinRuntimeStats::default(),
+            adaptive_limit_eligible: keep_outer_order,
+            adaptive_limit_controller: None,
         })
     }
     /// 打开执行器：重置 worker 与输出缓冲。
@@ -1008,6 +1019,9 @@ impl IndexLookUpJoin {
     }
     /// 关闭执行器并释放当前执行状态；保留输入以允许再次 open。
     pub fn close(&mut self) {
+        if let Some(controller) = &self.adaptive_limit_controller {
+            self.stats.adaptive_limit_snapshot = Some(controller.Snapshot());
+        }
         self.output.clear();
         self.cursor = 0;
         self.opened = false;
@@ -1041,6 +1055,8 @@ pub struct IndexLookUpJoinRuntimeStats {
     pub inner_worker: InnerWorkerRuntimeStats,
     /// 主线程 probe/join 总耗时。
     pub probe: Duration,
+    /// One executor-lifecycle snapshot; merges retain rather than add it.
+    pub adaptive_limit_snapshot: Option<AdaptiveLimitSnapshot>,
 }
 impl IndexLookUpJoinRuntimeStats {
     /// 统计类型编号（对齐 Go TpIndexLookUpJoinRuntimeStats）。
@@ -1054,6 +1070,9 @@ impl IndexLookUpJoinRuntimeStats {
         self.inner_worker.fetch += other.inner_worker.fetch;
         self.inner_worker.build += other.inner_worker.build;
         self.inner_worker.join += other.inner_worker.join;
+        if self.adaptive_limit_snapshot.is_none() {
+            self.adaptive_limit_snapshot = other.adaptive_limit_snapshot;
+        }
     }
 }
 impl std::fmt::Display for IndexLookUpJoinRuntimeStats {
@@ -1080,6 +1099,23 @@ impl std::fmt::Display for IndexLookUpJoinRuntimeStats {
         }
         if !self.probe.is_zero() {
             write!(formatter, ", probe:{:?}", self.probe)?;
+        }
+        if let Some(snapshot) = self.adaptive_limit_snapshot {
+            if !self.inner_worker.total_time.is_zero() || !self.probe.is_zero() {
+                write!(formatter, ", ")?;
+            }
+            write!(
+                formatter,
+                "adaptive:{{outer:{}/{}, lookup:{}/{}, outstanding:{}/{}, blocked:outer={:?},lookup={:?}}}",
+                snapshot.outer_fetched,
+                snapshot.outer_consumed,
+                snapshot.lookup_handles,
+                snapshot.lookup_rows,
+                snapshot.outer_outstanding_at_stop,
+                snapshot.lookup_outstanding_at_stop,
+                snapshot.outer_admission_blocked,
+                snapshot.lookup_admission_blocked,
+            )?;
         }
         Ok(())
     }

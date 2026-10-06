@@ -648,6 +648,8 @@ pub struct SessionVars {
     pub EvolvePlanBaselines: bool,
     pub ForeignKeyCheckInSharedLock: bool,
     pub EnableSharedLockUpgrade: bool,
+    /// Enables statement-local adaptive admission for early-stop ordered LIMIT scans.
+    pub EnableAdaptiveLimitScan: bool,
     pub SelectLimit: u64,
     pub UserVars: UserVars,
     systems: HashMap<String, String>,
@@ -864,6 +866,7 @@ impl SessionVars {
             EvolvePlanBaselines: vardef::DefTiDBEvolvePlanBaselines,
             ForeignKeyCheckInSharedLock: vardef::DefTiDBForeignKeyCheckInSharedLock,
             EnableSharedLockUpgrade: vardef::DefTiDBEnableSharedLockUpgrade,
+            EnableAdaptiveLimitScan: vardef::DefTiDBEnableAdaptiveLimitScan,
             SelectLimit: u64::MAX,
             UserVars: UserVars::new(),
             systems: HashMap::new(),

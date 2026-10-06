@@ -372,6 +372,16 @@ fn register_compatibility_vars() {
         vardef::DefTiDBEnableAsyncCommit,
         scope_both(),
     ));
+    let mut adaptive_limit_scan = bool_var(
+        vardef::TiDBEnableAdaptiveLimitScan,
+        vardef::DefTiDBEnableAdaptiveLimitScan,
+        scope_both(),
+    );
+    adaptive_limit_scan.SetSession = Some(Arc::new(|vars, value| {
+        vars.EnableAdaptiveLimitScan = TiDBOptOn(value);
+        Ok(())
+    }));
+    RegisterSysVar(adaptive_limit_scan);
     let mut historical_stats = bool_var(
         vardef::TiDBEnableHistoricalStats,
         false,

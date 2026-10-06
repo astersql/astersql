@@ -30,6 +30,9 @@ use crate::distsql::{
 };
 use crate::slow_query::slowQueryRuntimeStats;
 use crate::table_readers_required_rows_test::RequiredRowsBackend;
+use astersql_executor_internal_exec::adaptive_limit_controller::{
+    AdaptiveLimitConfig, AdaptiveLimitController,
+};
 use astersql_util_memory::tracker::Tracker;
 
 /// 空 db_name 回退到会话库；过长 alias 截断到 256；表名用 original。
@@ -189,7 +192,10 @@ fn index_lookup_partition_ranges_prefer_index_join_tracker_and_fall_back_to_exec
         pending: BTreeMap::new(),
         next_task_id: 0,
         current: VecDeque::new(),
+        adaptive_current: VecDeque::new(),
         stats: Arc::new(Mutex::new(IndexLookUpRunTimeStats::default())),
+        adaptive_limit_controller: None,
+        report_adaptive_limit_stats: false,
         mem_tracker: Some(Arc::clone(&executor_tracker)),
         range_mem_tracker: Some(Arc::clone(&index_join_tracker)),
     };
@@ -205,6 +211,83 @@ fn index_lookup_partition_ranges_prefer_index_join_tracker_and_fall_back_to_exec
         .buildTableKeyRanges()
         .expect("build regular index lookup ranges");
     assert!(executor_tracker.BytesConsumed() > 0);
+}
+
+#[test]
+fn ordered_index_lookup_reports_completed_tasks_to_adaptive_limit_controller() {
+    let backend = RequiredRowsBackend::new(
+        vec![
+            vec![crate::distsql::Datum::Signed(1)],
+            vec![crate::distsql::Datum::Signed(2)],
+        ],
+        Duration::ZERO,
+    );
+    let controller = Arc::new(AdaptiveLimitController::NewAdaptiveLimitLookupController(
+        AdaptiveLimitConfig {
+            demand_rows: 2,
+            initial_lookup_window: 2,
+            max_lookup_window: 8,
+            initial_lookup_batch_size: 2,
+            max_lookup_batch_size: 8,
+            ..AdaptiveLimitConfig::default()
+        },
+    ));
+    let mut reader = IndexLookUpExecutor {
+        context: newIndexLookUpExecutorContext(Arc::new(backend), 2, false),
+        table_id: 101,
+        index_id: 1,
+        idx_plans: Vec::new(),
+        tbl_plans: Vec::new(),
+        ranges: vec![KeyRange {
+            start: vec![1],
+            end: vec![2],
+        }],
+        grouped_kv_ranges: Vec::new(),
+        grouped_ranges: Vec::new(),
+        partition_range_map: BTreeMap::new(),
+        handle_offsets: vec![0],
+        common_handle: false,
+        partition_mode: false,
+        keep_order: true,
+        descending: false,
+        pushed_limit: None,
+        batch_size: 2,
+        max_batch_size: 8,
+        check_index_value: None,
+        dummy: false,
+        cancelled: Arc::default(),
+        result_tx: None,
+        result_rx: None,
+        table_tx: None,
+        index_join: None,
+        table_joins: Vec::new(),
+        pending: BTreeMap::new(),
+        next_task_id: 0,
+        current: VecDeque::new(),
+        adaptive_current: VecDeque::new(),
+        stats: Arc::new(Mutex::new(IndexLookUpRunTimeStats::default())),
+        adaptive_limit_controller: Some(Arc::clone(&controller)),
+        report_adaptive_limit_stats: true,
+        mem_tracker: None,
+        range_mem_tracker: None,
+    };
+
+    reader.Open().unwrap();
+    assert_eq!(reader.Next(1).unwrap().len(), 1);
+    assert_eq!(controller.Snapshot().lookup_reserved, 2);
+    assert_eq!(reader.Next(1).unwrap().len(), 1);
+    assert_eq!(controller.Snapshot().lookup_handles, 2);
+    assert_eq!(controller.Snapshot().lookup_rows, 2);
+    assert!(controller.Snapshot().stopped);
+    reader.Close().unwrap();
+    assert!(
+        reader
+            .stats
+            .lock()
+            .unwrap()
+            .String()
+            .contains("adaptive:{lookup:2/2")
+    );
 }
 
 /// 完整保留 Go `TestSlowQueryRuntimeStats` 的 String/Clone/Merge 断言。

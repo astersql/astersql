@@ -231,7 +231,7 @@ fn upgrade_backfills_and_preserves_values() {
     assert_eq!(store.0["tidb_analyze_default_num_buckets"], "512");
     assert_eq!(store.0["tidb_analyze_default_num_topn"], "150");
     let mut current = VariableStore::default();
-    upgrade_bootstrap_variables(&mut current, 283).unwrap();
+    upgrade_bootstrap_variables(&mut current, 287).unwrap();
     assert!(current.0.is_empty());
 }
 
@@ -279,4 +279,21 @@ fn upgrade_to_ver284_replaces_new_switch_from_legacy_inverse_value() {
         .insert("tidb_disable_txn_file".into(), "ON".into());
     upgrade_bootstrap_variables(&mut current, 284).unwrap();
     assert!(!current.0.contains_key("tidb_enable_txn_file"));
+}
+
+#[test]
+fn upgrade_to_ver287_backfills_adaptive_limit_scan_without_overwriting() {
+    let mut store = VariableStore::default();
+    upgrade_bootstrap_variables(&mut store, 286).unwrap();
+    assert_eq!(store.0["tidb_enable_adaptive_limit_scan"], "OFF");
+
+    store
+        .0
+        .insert("tidb_enable_adaptive_limit_scan".into(), "ON".into());
+    upgrade_bootstrap_variables(&mut store, 286).unwrap();
+    assert_eq!(store.0["tidb_enable_adaptive_limit_scan"], "ON");
+
+    let mut current = VariableStore::default();
+    upgrade_bootstrap_variables(&mut current, 287).unwrap();
+    assert!(!current.0.contains_key("tidb_enable_adaptive_limit_scan"));
 }
