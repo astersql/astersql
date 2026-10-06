@@ -63,6 +63,9 @@ pub mod executor;
 pub mod foreign_key;
 pub mod generated_column;
 pub mod index;
+pub mod index_auto_presplit;
+#[cfg(test)]
+mod index_auto_presplit_test;
 pub mod index_cop;
 pub mod index_merge_tmp;
 #[cfg(test)]
