@@ -1047,6 +1047,26 @@ fn test_find_all_user_effective_roles() {
 }
 
 #[test]
+/// SHOW GRANTS quotes account components as identifiers and follows ANSI_QUOTES.
+fn show_grants_quotes_account_names_for_sql_mode() {
+    let mut p = NewMySQLPrivilege();
+    let mut default_mode = NewUserRecord("ho`st", "u`ser");
+    default_mode.Privileges = SelectPriv;
+    let mut ansi_mode = NewUserRecord("ho\"st", "u\"ser");
+    ansi_mode.Privileges = SelectPriv;
+    p.user = vec![default_mode, ansi_mode];
+
+    assert_eq!(
+        p.showGrants("u`ser", "ho`st", &[], false),
+        vec!["GRANT SELECT ON *.* TO `u``ser`@`ho``st`"]
+    );
+    assert_eq!(
+        p.showGrants("u\"ser", "ho\"st", &[], true),
+        vec!["GRANT SELECT ON *.* TO \"u\"\"ser\"@\"ho\"\"st\""]
+    );
+}
+
+#[test]
 /// 用户表按主机特异性排序。
 fn test_sort_user_table() {
     fn names(records: &[UserRecord]) -> Vec<String> {

@@ -1282,8 +1282,8 @@ fn TestGrantOptionAndRevoke() {
     assert_eq!(
         grants,
         vec![
-            "GRANT SELECT ON *.* TO 'u1'@'%' WITH GRANT OPTION",
-            "GRANT UPDATE,DELETE ON `db`.* TO 'u1'@'%'",
+            "GRANT SELECT ON *.* TO `u1`@`%` WITH GRANT OPTION",
+            "GRANT UPDATE,DELETE ON `db`.* TO `u1`@`%`",
         ]
     );
 
@@ -1309,9 +1309,9 @@ fn TestGrantOptionAndRevoke() {
     assert_eq!(
         grants2,
         vec![
-            "GRANT SELECT ON `d1`.* TO 'u2'@'%'",
-            "GRANT SELECT ON `d2`.* TO 'u2'@'%' WITH GRANT OPTION",
-            "GRANT USAGE ON *.* TO 'u2'@'%'",
+            "GRANT SELECT ON `d1`.* TO `u2`@`%`",
+            "GRANT SELECT ON `d2`.* TO `u2`@`%` WITH GRANT OPTION",
+            "GRANT USAGE ON *.* TO `u2`@`%`",
         ]
     );
 
@@ -1334,8 +1334,8 @@ fn TestGrantOptionAndRevoke() {
     assert_eq!(
         grants3,
         vec![
-            "GRANT USAGE ON *.* TO 'u3'@'%'",
-            "GRANT USAGE ON `hchwang`.* TO 'u3'@'%' WITH GRANT OPTION",
+            "GRANT USAGE ON *.* TO `u3`@`%`",
+            "GRANT USAGE ON `hchwang`.* TO `u3`@`%` WITH GRANT OPTION",
         ]
     );
 }
@@ -1361,8 +1361,8 @@ fn TestDashboardClientDynamicPriv() {
     assert_eq!(
         grants,
         vec![
-            "GRANT 'dc_r1'@'%' TO 'dc_u1'@'%'",
-            "GRANT USAGE ON *.* TO 'dc_u1'@'%'",
+            "GRANT USAGE ON *.* TO `dc_u1`@`%`",
+            "GRANT `dc_r1`@`%` TO `dc_u1`@`%`",
         ]
     );
 
@@ -1381,9 +1381,9 @@ fn TestDashboardClientDynamicPriv() {
     assert_eq!(
         grants,
         vec![
-            "GRANT 'dc_r1'@'%' TO 'dc_u1'@'%'",
-            "GRANT DASHBOARD_CLIENT ON *.* TO 'dc_u1'@'%'",
-            "GRANT USAGE ON *.* TO 'dc_u1'@'%'",
+            "GRANT DASHBOARD_CLIENT ON *.* TO `dc_u1`@`%`",
+            "GRANT USAGE ON *.* TO `dc_u1`@`%`",
+            "GRANT `dc_r1`@`%` TO `dc_u1`@`%`",
         ]
     );
 }
@@ -1409,8 +1409,8 @@ fn TestGrantEvent() {
     assert_eq!(
         grants,
         vec![
-            "GRANT EVENT ON *.* TO 'u1'@'%'",
-            "GRANT EVENT ON `event_db`.* TO 'u1'@'%'",
+            "GRANT EVENT ON *.* TO `u1`@`%`",
+            "GRANT EVENT ON `event_db`.* TO `u1`@`%`",
         ]
     );
 }
@@ -1441,8 +1441,8 @@ fn TestGrantCreateTmpTables() {
     assert_eq!(
         grants,
         vec![
-            "GRANT CREATE TEMPORARY TABLES ON *.* TO 'u1'@'%'",
-            "GRANT CREATE TEMPORARY TABLES ON `create_tmp_table_db`.* TO 'u1'@'%'",
+            "GRANT CREATE TEMPORARY TABLES ON *.* TO `u1`@`%`",
+            "GRANT CREATE TEMPORARY TABLES ON `create_tmp_table_db`.* TO `u1`@`%`",
         ]
     );
 }
@@ -1735,8 +1735,8 @@ fn TestShowGrantsSQLMode() {
     assert_eq!(
         normal,
         vec![
-            "GRANT SELECT ON `test`.* TO 'show_sql_mode'@'localhost'",
-            "GRANT USAGE ON *.* TO 'show_sql_mode'@'localhost'",
+            "GRANT SELECT ON `test`.* TO `show_sql_mode`@`localhost`",
+            "GRANT USAGE ON *.* TO `show_sql_mode`@`localhost`",
         ]
     );
 
@@ -1745,8 +1745,8 @@ fn TestShowGrantsSQLMode() {
     assert_eq!(
         ansi,
         vec![
-            "GRANT SELECT ON \"test\".* TO 'show_sql_mode'@'localhost'",
-            "GRANT USAGE ON *.* TO 'show_sql_mode'@'localhost'",
+            "GRANT SELECT ON \"test\".* TO \"show_sql_mode\"@\"localhost\"",
+            "GRANT USAGE ON *.* TO \"show_sql_mode\"@\"localhost\"",
         ]
     );
 }

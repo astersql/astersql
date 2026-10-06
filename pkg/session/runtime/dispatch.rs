@@ -2491,11 +2491,16 @@ impl ConcreteSession {
                     host.replace('\'', "''"),
                 );
                 let create = if let Some(options) = create.strip_prefix(&account_prefix) {
-                    format!(
-                        "CREATE USER `{}`@`{}` {options}",
-                        user.replace('`', "``"),
-                        host.replace('`', "``"),
-                    )
+                    let ansi_quotes =
+                        astersql_parser_mysql::r#const::GetSQLMode(&self.state.borrow().sql_mode)
+                            .map_err(|error| session_error("parse sql_mode", error))?
+                            .HasANSIQuotesMode();
+                    let account = format!(
+                        "{}@{}",
+                        astersql_privilege_privileges::escape_identifier(&user, ansi_quotes),
+                        astersql_privilege_privileges::escape_identifier(&host, ansi_quotes),
+                    );
+                    format!("CREATE USER {account} {options}",)
                 } else {
                     create
                 };

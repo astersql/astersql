@@ -831,10 +831,18 @@ fn show_create_user_restores_authentication_and_account_options() {
     );
     tk.MustQuery("show create user 'test_show_create_user'@'%'", Vec::new())
         .Check(astersql_testkit::RowsWithSep("|", &[concat!(
-            "CREATE USER 'test_show_create_user'@'%' IDENTIFIED WITH 'mysql_native_password' AS ",
+            "CREATE USER `test_show_create_user`@`%` IDENTIFIED WITH 'mysql_native_password' AS ",
             "'*81F5E21E35407D884A6CD4A731AEBFB6AF209E1B' REQUIRE NONE PASSWORD EXPIRE DEFAULT ",
             "ACCOUNT UNLOCK PASSWORD HISTORY DEFAULT PASSWORD REUSE INTERVAL DEFAULT"
         )]));
+    tk.MustExec("set sql_mode=ansi_quotes", Vec::new());
+    tk.MustQuery("show create user 'test_show_create_user'@'%'", Vec::new())
+        .Check(astersql_testkit::RowsWithSep("|", &[concat!(
+            "CREATE USER \"test_show_create_user\"@\"%\" IDENTIFIED WITH 'mysql_native_password' AS ",
+            "'*81F5E21E35407D884A6CD4A731AEBFB6AF209E1B' REQUIRE NONE PASSWORD EXPIRE DEFAULT ",
+            "ACCOUNT UNLOCK PASSWORD HISTORY DEFAULT PASSWORD REUSE INTERVAL DEFAULT"
+        )]));
+    tk.MustExec("set sql_mode=default", Vec::new());
     let error = tk.QueryToErr("show create user 'missing'@'localhost'");
     assert!(error.message().contains("SHOW CREATE USER failed"));
     tk.MustExec(

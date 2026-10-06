@@ -1150,6 +1150,7 @@ impl MySQLPrivilege {
         ansi_quotes: bool,
     ) -> Vec<String> {
         let mut gs: Vec<String> = Vec::new();
+        let account = format_account_name(user, host, ansi_quotes);
         let all_roles = self.FindAllUserEffectiveRoles(user, host, roles);
 
         let mut has_global_grant = false;
@@ -1180,18 +1181,18 @@ impl MySQLPrivilege {
         let g = userPrivToString(current_priv);
         if !g.is_empty() {
             gs.push(if current_priv & GrantPriv != 0 {
-                format!("GRANT {g} ON *.* TO '{user}'@'{host}' WITH GRANT OPTION")
+                format!("GRANT {g} ON *.* TO {account} WITH GRANT OPTION")
             } else {
-                format!("GRANT {g} ON *.* TO '{user}'@'{host}'")
+                format!("GRANT {g} ON *.* TO {account}")
             });
         }
         // This is a mysql convention: a user with any global grant (even none
         // of the enumerable ones, e.g. only GrantPriv) still gets a USAGE line.
         if gs.is_empty() && has_global_grant {
             gs.push(if current_priv & GrantPriv != 0 {
-                format!("GRANT USAGE ON *.* TO '{user}'@'{host}' WITH GRANT OPTION")
+                format!("GRANT USAGE ON *.* TO {account} WITH GRANT OPTION")
             } else {
-                format!("GRANT USAGE ON *.* TO '{user}'@'{host}'")
+                format!("GRANT USAGE ON *.* TO {account}")
             });
         }
 
@@ -1214,13 +1215,13 @@ impl MySQLPrivilege {
             let g = dbPrivToString(*p);
             if !g.is_empty() {
                 gs.push(if p & GrantPriv != 0 {
-                    format!("GRANT {g} ON {escaped}.* TO '{user}'@'{host}' WITH GRANT OPTION")
+                    format!("GRANT {g} ON {escaped}.* TO {account} WITH GRANT OPTION")
                 } else {
-                    format!("GRANT {g} ON {escaped}.* TO '{user}'@'{host}'")
+                    format!("GRANT {g} ON {escaped}.* TO {account}")
                 });
             } else if p & GrantPriv != 0 {
                 gs.push(format!(
-                    "GRANT USAGE ON {escaped}.* TO '{user}'@'{host}' WITH GRANT OPTION"
+                    "GRANT USAGE ON {escaped}.* TO {account} WITH GRANT OPTION"
                 ));
             }
         }
@@ -1249,13 +1250,13 @@ impl MySQLPrivilege {
             let g = tablePrivToString(*p);
             if !g.is_empty() {
                 gs.push(if p & GrantPriv != 0 {
-                    format!("GRANT {g} ON {key} TO '{user}'@'{host}' WITH GRANT OPTION")
+                    format!("GRANT {g} ON {key} TO {account} WITH GRANT OPTION")
                 } else {
-                    format!("GRANT {g} ON {key} TO '{user}'@'{host}'")
+                    format!("GRANT {g} ON {key} TO {account}")
                 });
             } else if p & GrantPriv != 0 {
                 gs.push(format!(
-                    "GRANT USAGE ON {key} TO '{user}'@'{host}' WITH GRANT OPTION"
+                    "GRANT USAGE ON {key} TO {account} WITH GRANT OPTION"
                 ));
             }
         }
@@ -1279,7 +1280,7 @@ impl MySQLPrivilege {
         }
         for (key, v) in &column_priv_table {
             let priv_cols = privOnColumnsToString(v);
-            gs.push(format!("GRANT {priv_cols} ON {key} TO '{user}'@'{host}'"));
+            gs.push(format!("GRANT {priv_cols} ON {key} TO {account}"));
         }
         gs[sort_from..].sort();
 
@@ -1288,10 +1289,10 @@ impl MySQLPrivilege {
             let mut sorted: Vec<String> = edges
                 .0
                 .iter()
-                .map(|k| format!("'{}'@'{}'", k.Username, k.Hostname))
+                .map(|k| format_account_name(&k.Username, &k.Hostname, ansi_quotes))
                 .collect();
             sorted.sort();
-            gs.push(format!("GRANT {} TO '{user}'@'{host}'", sorted.join(", ")));
+            gs.push(format!("GRANT {} TO {account}", sorted.join(", ")));
         }
 
         // If the SHOW GRANTS is for the current user, there might be
@@ -1332,14 +1333,14 @@ impl MySQLPrivilege {
         if !dynamic_privs.is_empty() {
             dynamic_privs.sort();
             gs.push(format!(
-                "GRANT {} ON *.* TO '{user}'@'{host}'",
+                "GRANT {} ON *.* TO {account}",
                 dynamic_privs.join(",")
             ));
         }
         if !grantable_dynamic_privs.is_empty() {
             grantable_dynamic_privs.sort();
             gs.push(format!(
-                "GRANT {} ON *.* TO '{user}'@'{host}' WITH GRANT OPTION",
+                "GRANT {} ON *.* TO {account} WITH GRANT OPTION",
                 grantable_dynamic_privs.join(",")
             ));
         }
@@ -1611,6 +1612,14 @@ pub fn escape_identifier(name: &str, ansi_quotes: bool) -> String {
     format!(
         "{quote}{}{quote}",
         name.replace(quote, &format!("{quote}{quote}"))
+    )
+}
+
+fn format_account_name(user: &str, host: &str, ansi_quotes: bool) -> String {
+    format!(
+        "{}@{}",
+        escape_identifier(user, ansi_quotes),
+        escape_identifier(host, ansi_quotes)
     )
 }
 /// 将权限掩码格式化为逗号分隔的特权名列表。
