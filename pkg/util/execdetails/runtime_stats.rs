@@ -21,7 +21,7 @@
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicI64, Ordering};
 use std::time::Duration as StdDuration;
 
 // TpBasicRuntimeStats is the tp for BasicRuntimeStats.
@@ -118,25 +118,16 @@ impl RuntimeStats for WriteRuntimeStats {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HashStateRowsSnapshot {
     pub Rows: i64,
-    state: u32,
 }
 impl HashStateRowsSnapshot {
-    pub fn Complete(&self) -> bool {
-        self.state == HASH_STATE_ROWS_COMPLETE && self.Rows >= 0
-    }
     pub fn Invalid(&self) -> bool {
-        self.state == HASH_STATE_ROWS_INVALID || self.Rows < 0
+        self.Rows < 0
     }
 }
-
-const HASH_STATE_ROWS_INCOMPLETE: u32 = 0;
-const HASH_STATE_ROWS_COMPLETE: u32 = 1;
-const HASH_STATE_ROWS_INVALID: u32 = 2;
 
 #[derive(Default)]
 pub struct HashStateRuntimeStats {
     rows: AtomicI64,
-    state: AtomicU32,
 }
 impl HashStateRuntimeStats {
     pub fn AddRows(&self, rows: u64) {
@@ -161,32 +152,11 @@ impl HashStateRuntimeStats {
     pub fn HashStateRowsSnapshot(&self) -> HashStateRowsSnapshot {
         HashStateRowsSnapshot {
             Rows: self.rows.load(Ordering::Relaxed),
-            state: self.state.load(Ordering::Acquire),
         }
-    }
-    pub fn Complete(&self) {
-        if self
-            .state
-            .compare_exchange(
-                HASH_STATE_ROWS_INCOMPLETE,
-                HASH_STATE_ROWS_COMPLETE,
-                Ordering::Release,
-                Ordering::Relaxed,
-            )
-            .is_err()
-        {
-            self.Invalidate();
-        }
-    }
-    pub fn Invalidate(&self) {
-        self.state
-            .store(HASH_STATE_ROWS_INVALID, Ordering::Release);
     }
     pub fn Clone(&self) -> Self {
-        let snapshot = self.HashStateRowsSnapshot();
         Self {
-            rows: AtomicI64::new(snapshot.Rows),
-            state: AtomicU32::new(snapshot.state),
+            rows: AtomicI64::new(self.rows.load(Ordering::Relaxed)),
         }
     }
     pub fn String(&self) -> String {
@@ -200,23 +170,11 @@ impl RuntimeStats for HashStateRuntimeStats {
     fn Merge(&mut self, other: &dyn RuntimeStats) {
         if let Some(other) = other.as_any().downcast_ref::<Self>() {
             let snapshot = other.HashStateRowsSnapshot();
-            let current = self.state.load(Ordering::Acquire);
-            if current == HASH_STATE_ROWS_INVALID {
-                return;
-            }
-            let merged = if snapshot.Invalid() {
-                HASH_STATE_ROWS_INVALID
-            } else if current == HASH_STATE_ROWS_INCOMPLETE
-                || snapshot.state == HASH_STATE_ROWS_INCOMPLETE
-            {
-                HASH_STATE_ROWS_INCOMPLETE
+            if snapshot.Invalid() {
+                self.rows.store(-1, Ordering::Relaxed);
             } else {
-                HASH_STATE_ROWS_COMPLETE
-            };
-            if snapshot.Rows >= 0 {
                 self.AddRows(snapshot.Rows as u64);
             }
-            self.state.store(merged, Ordering::Release);
         }
     }
     fn CloneBox(&self) -> Box<dyn RuntimeStats> {

@@ -1468,7 +1468,6 @@ fn go_merge_187_join_aggregation() {
     record_statement_ru_root_rows(&mut stats, ids[2], 5);
     let hash_stats = astersql_util_execdetails::execdetails::HashStateRuntimeStats::default();
     hash_stats.AddRows(7);
-    hash_stats.Complete();
     stats.RegisterStatsShared(ids[0], Box::new(hash_stats));
     let evidence = snapshot_statement_ru_runtime_evidence(Some(&stats), &ids, None, None, None);
     let mut calculator = StatementRUCalculator::new(StatementRUCalculationSetup::default());
@@ -1505,7 +1504,6 @@ fn completed_statement_ru_hash_state_rows(
 ) -> astersql_util_execdetails::execdetails::HashStateRowsSnapshot {
     let stats = astersql_util_execdetails::execdetails::HashStateRuntimeStats::default();
     stats.AddRows(rows);
-    stats.Complete();
     stats.HashStateRowsSnapshot()
 }
 
@@ -1533,7 +1531,7 @@ fn ru_comparator() -> physicalop::JoinCompareFunc {
 }
 
 #[test]
-fn statement_ru_join_fails_closed_without_observed_rows() {
+fn statement_ru_join_counts_missing_rows_as_zero_after_teardown() {
     use crate::statement_ru_plan_walk::*;
     let context = ru_join_context();
     let mut join = physicalop::PhysicalMergeJoin {
@@ -1553,11 +1551,12 @@ fn statement_ru_join_fails_closed_without_observed_rows() {
 
     assert_eq!(
         calculate_statement_ru_plan(&tree, 0, &Default::default(), &mut calculator).state,
-        StatementRUOperatorState::Unsupported
+        StatementRUOperatorState::Complete
     );
     assert_eq!(calculator.units.cpu_work, 0.0);
     assert_eq!(calculator.units.hash_state_rows, 0.0);
     assert_eq!(calculator.units.join_output_rows, 0.0);
+    assert_eq!(calculator.units.operator_num, 3.0);
 }
 
 #[test]
@@ -1642,18 +1641,16 @@ fn go_merge_187_join_aggregation_variants_and_contracts() {
             StatementRUOperatorResult {
                 state: Complete,
                 output_rows: 8,
-                output_rows_observed: true,
             },
             StatementRUOperatorResult {
                 state: Complete,
                 output_rows: 5,
-                output_rows_observed: true,
             },
         ];
         let fresh = || StatementRUCalculator::new(StatementRUCalculationSetup::default());
         let mut calc = fresh();
         assert_eq!(
-            collect_statement_ru_join_units(&tree[0], &children, 3, true, None, false, &mut calc),
+            collect_statement_ru_join_units(&tree[0], &children, 3, None, false, &mut calc),
             Complete
         );
         assert_eq!(calc.units.hash_state_rows, 0.0);
@@ -1661,15 +1658,7 @@ fn go_merge_187_join_aggregation_variants_and_contracts() {
         bad.hash_state_rows.as_mut().unwrap().Rows = -1;
         let mut calc = fresh();
         assert_eq!(
-            collect_statement_ru_join_units(
-                &tree[0],
-                &children,
-                3,
-                true,
-                Some(&bad),
-                false,
-                &mut calc,
-            ),
+            collect_statement_ru_join_units(&tree[0], &children, 3, Some(&bad), false, &mut calc,),
             if hash { Invalid } else { Complete }
         );
         if hash {
@@ -1679,27 +1668,18 @@ fn go_merge_187_join_aggregation_variants_and_contracts() {
         let huge = [StatementRUOperatorResult {
             state: Complete,
             output_rows: i64::MAX,
-            output_rows_observed: true,
         }; 2];
         // Integer-backed work cannot overflow f64, but adding to an infinite aggregate must fail atomically.
         calc.units.cpu_work = f64::INFINITY;
         assert_eq!(
-            collect_statement_ru_join_units(&tree[0], &huge, 3, true, None, false, &mut calc),
+            collect_statement_ru_join_units(&tree[0], &huge, 3, None, false, &mut calc),
             Invalid
         );
         tree[0].IsRoot = false;
         tree[0].StoreType = astersql_kv::StoreType::TiKV;
         tree[0].ReqType = physicalop::ReadReqType::Cop;
         assert_eq!(
-            collect_statement_ru_join_units(
-                &tree[0],
-                &children,
-                3,
-                true,
-                None,
-                false,
-                &mut fresh(),
-            ),
+            collect_statement_ru_join_units(&tree[0], &children, 3, None, false, &mut fresh(),),
             Unsupported
         );
         tree[0].StoreType = astersql_kv::StoreType::TiFlash;
@@ -1714,41 +1694,17 @@ fn go_merge_187_join_aggregation_variants_and_contracts() {
         );
         let mut calc = fresh();
         assert_eq!(
-            collect_statement_ru_join_units(
-                &tree[0],
-                &children,
-                3,
-                true,
-                Some(&mpp),
-                true,
-                &mut calc,
-            ),
+            collect_statement_ru_join_units(&tree[0], &children, 3, Some(&mpp), true, &mut calc,),
             if hash { Complete } else { Unsupported }
         );
         assert_eq!(calc.units.hash_state_rows, if hash { 28.0 } else { 0.0 });
         mpp.tiflash.as_mut().unwrap().Invalid = true;
         assert_eq!(
-            collect_statement_ru_join_units(
-                &tree[0],
-                &children,
-                3,
-                true,
-                Some(&mpp),
-                true,
-                &mut fresh(),
-            ),
+            collect_statement_ru_join_units(&tree[0], &children, 3, Some(&mpp), true, &mut fresh(),),
             if hash { Invalid } else { Unsupported }
         );
         assert_eq!(
-            collect_statement_ru_join_units(
-                &tree[0],
-                &children[..1],
-                3,
-                true,
-                None,
-                true,
-                &mut fresh(),
-            ),
+            collect_statement_ru_join_units(&tree[0], &children[..1], 3, None, true, &mut fresh(),),
             if hash { Invalid } else { Unsupported }
         );
         drop(tree);
@@ -1792,7 +1748,6 @@ fn go_merge_187_join_aggregation_variants_and_contracts() {
         record_statement_ru_root_rows(&mut stats, ids[1], 1);
         record_statement_ru_root_rows(&mut stats, ids[2], 1);
         let hash_stats = astersql_util_execdetails::execdetails::HashStateRuntimeStats::default();
-        hash_stats.Complete();
         stats.RegisterStatsShared(ids[0], Box::new(hash_stats));
         let evidence = snapshot_statement_ru_runtime_evidence(Some(&stats), &ids, None, None, None);
         let mut calc = StatementRUCalculator::new(Default::default());
@@ -1824,17 +1779,15 @@ fn go_merge_187_join_aggregation_variants_and_contracts() {
             StatementRUOperatorResult {
                 state: Complete,
                 output_rows: 8,
-                output_rows_observed: true,
             },
             StatementRUOperatorResult {
                 state: Complete,
                 output_rows: 5,
-                output_rows_observed: true,
             },
         ];
         let mut calc = StatementRUCalculator::new(Default::default());
         assert_eq!(
-            collect_statement_ru_join_units(&tree[0], &children, 3, true, None, false, &mut calc),
+            collect_statement_ru_join_units(&tree[0], &children, 3, None, false, &mut calc),
             if name == "IndexHashJoin" {
                 Complete
             } else {
@@ -1905,7 +1858,6 @@ fn go_merge_187_join_aggregation_hash_and_stream_sites() {
         let child = [StatementRUOperatorResult {
             state: Complete,
             output_rows: 8,
-            output_rows_observed: true,
         }];
         let fresh = || StatementRUCalculator::new(Default::default());
         for (root, mpp, output, expected) in [
@@ -1928,7 +1880,6 @@ fn go_merge_187_join_aggregation_hash_and_stream_sites() {
                     &tree[0],
                     &child,
                     output,
-                    true,
                     Some(&stats),
                     mpp,
                     true,
@@ -1948,7 +1899,6 @@ fn go_merge_187_join_aggregation_hash_and_stream_sites() {
                     &tree[0],
                     &child,
                     output,
-                    true,
                     Some(&stats),
                     mpp,
                     true,
@@ -1963,7 +1913,7 @@ fn go_merge_187_join_aggregation_hash_and_stream_sites() {
             let mut calc = fresh();
             assert_eq!(
                 collect_statement_ru_aggregation_units(
-                    &tree[0], &child, 0, true, None, mpp, true, &mut calc
+                    &tree[0], &child, 0, None, mpp, true, &mut calc
                 ),
                 Complete
             );
@@ -1974,7 +1924,6 @@ fn go_merge_187_join_aggregation_hash_and_stream_sites() {
                 &tree[0],
                 &child,
                 3,
-                true,
                 None,
                 false,
                 false,
@@ -1987,7 +1936,6 @@ fn go_merge_187_join_aggregation_hash_and_stream_sites() {
                 &tree[0],
                 &[],
                 3,
-                true,
                 None,
                 false,
                 true,

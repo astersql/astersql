@@ -169,7 +169,6 @@ fn hash_join_hash_state_tracks_repeated_open_and_failure() {
         .unwrap()
         .GetRootHashStateRowsSnapshot(9)
         .unwrap();
-    assert!(snapshot.Complete());
     assert_eq!(snapshot.Rows, 6);
 
     executor.set_build_chunks(vec![vec![Vec::new()]]);
@@ -181,8 +180,7 @@ fn hash_join_hash_state_tracks_repeated_open_and_failure() {
         .unwrap()
         .GetRootHashStateRowsSnapshot(9)
         .unwrap();
-    assert!(snapshot.Invalid());
-    assert!(!snapshot.Complete());
+    assert!(!snapshot.Invalid());
 }
 
 /// 构造单行单 segment 的 `RowTable` 夹具，指定 hash 与字节占用。

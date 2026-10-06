@@ -1454,7 +1454,9 @@ use crate::hash_join_stats::{HashJoinRuntimeStats, HashStatistic};
 use crate::hash_table_v1::{HashRowContainer, RowPointer};
 use crate::joiner::{JoinType, Joiner, NaajType, OuterRowStatus, Predicate, Row};
 use crate::row_table_builder::{Chunk, Value};
+use astersql_util_execdetails::execdetails::{HashStateRuntimeStats, RuntimeStatsColl};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 /// 执行器生命周期状态：未打开 / 已打开 / 已关闭。
@@ -1681,6 +1683,9 @@ pub struct HashJoinV1Exec {
     full_outer_build_filter: Vec<Predicate>,
     full_outer_probe_filter: Vec<Predicate>,
     full_outer_rejected_build_rows: Vec<Row>,
+    hash_state_stats: Option<HashStateRuntimeStats>,
+    runtime_stats_coll: Option<Arc<Mutex<RuntimeStatsColl>>>,
+    plan_id: i32,
 }
 
 impl HashJoinV1Exec {
@@ -1711,6 +1716,9 @@ impl HashJoinV1Exec {
             full_outer_build_filter: Vec::new(),
             full_outer_probe_filter: Vec::new(),
             full_outer_rejected_build_rows: Vec::new(),
+            hash_state_stats: None,
+            runtime_stats_coll: None,
+            plan_id: 0,
         })
     }
 
@@ -1756,7 +1764,20 @@ impl HashJoinV1Exec {
             full_outer_build_filter: build_filter,
             full_outer_probe_filter: probe_filter,
             full_outer_rejected_build_rows: Vec::new(),
+            hash_state_stats: None,
+            runtime_stats_coll: None,
+            plan_id: 0,
         })
+    }
+    /// Enable typed hash-state evidence for statement RU accounting.
+    pub fn with_runtime_stats(
+        mut self,
+        plan_id: i32,
+        runtime_stats_coll: Arc<Mutex<RuntimeStatsColl>>,
+    ) -> Self {
+        self.plan_id = plan_id;
+        self.runtime_stats_coll = Some(runtime_stats_coll);
+        self
     }
     /// 设置内存限额（供 spill 判定）。
     pub fn SetMemoryLimit(&mut self, memory_limit: Option<i64>) {
@@ -1789,6 +1810,10 @@ impl HashJoinV1Exec {
         let start = Instant::now();
         let worker = BuildWorkerV1::new(0, self.context.base.clone(), self.memory_limit);
         self.full_outer_rejected_build_rows.clear();
+        self.hash_state_stats = self
+            .runtime_stats_coll
+            .as_ref()
+            .map(|_| HashStateRuntimeStats::default());
         let mut accepted_build_chunks = Vec::new();
         let build_chunks = if self.context.join_type == JoinType::FullOuter {
             for chunk in &self.build_chunks {
@@ -1808,6 +1833,9 @@ impl HashJoinV1Exec {
         };
         match worker.build(&self.context, build_chunks) {
             Ok(table) => {
+                if let Some(stats) = &self.hash_state_stats {
+                    stats.AddRows(build_chunks.iter().map(Vec::len).sum::<usize>() as u64);
+                }
                 self.table = Some(table);
                 self.context.base.finish_build();
             }
@@ -1917,6 +1945,14 @@ impl HashJoinV1Exec {
     }
     /// 关闭并释放资源。
     pub fn close(&mut self) {
+        if let (Some(collection), Some(stats)) =
+            (&self.runtime_stats_coll, self.hash_state_stats.take())
+        {
+            collection
+                .lock()
+                .expect("runtime stats lock poisoned")
+                .RegisterStats(self.plan_id, Box::new(stats));
+        }
         self.context.base.cancel();
         if let Some(table) = self.table.as_mut() {
             table.close();

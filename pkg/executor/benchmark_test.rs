@@ -1216,7 +1216,7 @@ fn run_row_number_window_case(pipelined: bool) -> Vec<Vec<WindowValue>> {
     };
     let mut executor = build_window(plan, Box::new(VecChunkExecutor::new(input)), pipelined)
         .expect("build real row-number window benchmark case");
-    let context = WindowExecContext;
+    let context = WindowExecContext::default();
     executor
         .open(&context)
         .expect("open real row-number window benchmark case");
@@ -1286,7 +1286,7 @@ fn run_lag_window_case(pipelined: bool) -> Vec<Vec<WindowValue>> {
     };
     let mut executor = build_window(plan, Box::new(VecChunkExecutor::new(input)), pipelined)
         .expect("build real lag window benchmark case");
-    let context = WindowExecContext;
+    let context = WindowExecContext::default();
     executor
         .open(&context)
         .expect("open real lag window benchmark case");
@@ -1357,7 +1357,7 @@ fn run_bit_xor_window_frame_case(pipelined: bool) -> Vec<Vec<WindowValue>> {
     };
     let mut executor = build_window(plan, Box::new(VecChunkExecutor::new(input)), pipelined)
         .expect("build real BIT_XOR ROWS-frame window benchmark case");
-    let context = WindowExecContext;
+    let context = WindowExecContext::default();
     executor.open(&context).expect("open BIT_XOR window case");
     let mut rows = Vec::new();
     loop {
@@ -1408,7 +1408,7 @@ fn run_average_window_frame_case(pipelined: bool) -> Vec<Vec<WindowValue>> {
     };
     let mut executor = build_window(plan, Box::new(VecChunkExecutor::new(input)), pipelined)
         .expect("build real AVG ROWS-frame window benchmark case");
-    let context = WindowExecContext;
+    let context = WindowExecContext::default();
     executor.open(&context).expect("open AVG window case");
     let mut rows = Vec::new();
     loop {
@@ -1465,7 +1465,7 @@ fn run_decimal_average_window_frame_case(pipelined: bool) -> Vec<Vec<WindowValue
     };
     let mut executor = build_window(plan, Box::new(VecChunkExecutor::new(input)), pipelined)
         .expect("build real DECIMAL AVG ROWS-frame window benchmark case");
-    let context = WindowExecContext;
+    let context = WindowExecContext::default();
     executor
         .open(&context)
         .expect("open DECIMAL AVG window case");
@@ -1527,7 +1527,7 @@ fn run_decimal_sum_window_frame_case(pipelined: bool) -> Vec<Vec<WindowValue>> {
     };
     let mut executor = build_window(plan, Box::new(VecChunkExecutor::new(input)), pipelined)
         .expect("build real DECIMAL SUM ROWS-frame window benchmark case");
-    let context = WindowExecContext;
+    let context = WindowExecContext::default();
     executor
         .open(&context)
         .expect("open DECIMAL SUM window case");
@@ -1584,7 +1584,7 @@ fn run_max_window_frame_case(pipelined: bool) -> Vec<Vec<WindowValue>> {
     };
     let mut executor = build_window(plan, Box::new(VecChunkExecutor::new(input)), pipelined)
         .expect("build real MAX ROWS-frame window benchmark case");
-    let context = WindowExecContext;
+    let context = WindowExecContext::default();
     executor.open(&context).expect("open MAX window case");
     let mut rows = Vec::new();
     loop {
@@ -1636,7 +1636,7 @@ fn run_min_window_frame_case(pipelined: bool) -> Vec<Vec<WindowValue>> {
     };
     let mut executor = build_window(plan, Box::new(VecChunkExecutor::new(input)), pipelined)
         .expect("build real MIN ROWS-frame window benchmark case");
-    let context = WindowExecContext;
+    let context = WindowExecContext::default();
     executor.open(&context).expect("open MIN window case");
     let mut rows = Vec::new();
     loop {
@@ -1806,7 +1806,7 @@ fn run_window_partition_lane(
     };
     let mut executor = build_window(plan, Box::new(VecChunkExecutor::new(chunks)), pipelined)
         .expect("build partition lane for real window benchmark");
-    let context = WindowExecContext;
+    let context = WindowExecContext::default();
     executor
         .open(&context)
         .expect("open partition lane for real window benchmark");

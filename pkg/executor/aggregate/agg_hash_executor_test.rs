@@ -41,6 +41,5 @@ fn spill_merges_tail_rows_with_their_existing_group() {
         .unwrap()
         .GetRootHashStateRowsSnapshot(7)
         .unwrap();
-    assert!(snapshot.Complete());
     assert_eq!(snapshot.Rows, 10);
 }

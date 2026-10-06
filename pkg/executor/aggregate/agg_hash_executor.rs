@@ -328,9 +328,6 @@ impl HashAggExec {
         }
         if !self.executed {
             if let Err(error) = self.execute() {
-                if let Some(stats) = &self.hash_state_stats {
-                    stats.Invalidate();
-                }
                 return Err(error);
             }
             self.executed = true;
@@ -447,9 +444,6 @@ impl HashAggExec {
             }
             self.results
                 .extend(final_worker.generate_result(self.max_chunk_size));
-        }
-        if let Some(stats) = &self.hash_state_stats {
-            stats.Complete();
         }
         Ok(())
     }

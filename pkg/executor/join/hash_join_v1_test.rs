@@ -104,6 +104,31 @@ fn hash_join_v1_can_be_opened_again_after_exhaustion_and_close() {
 }
 
 #[test]
+fn hash_join_v1_records_constructed_rows_across_repeated_open() {
+    let runtime_stats = Arc::new(std::sync::Mutex::new(
+        astersql_util_execdetails::execdetails::RuntimeStatsColl::default(),
+    ));
+    let mut executor =
+        build_hash_join_v1_exec(&info(JoinType::Inner, vec![row(&[1, 10])], vec![row(&[1])]))
+            .unwrap()
+            .with_runtime_stats(19, runtime_stats.clone());
+
+    for _ in 0..2 {
+        executor.open().unwrap();
+        assert_eq!(executor.execute_all().unwrap(), [row(&[1, 1, 10])]);
+        executor.close();
+    }
+
+    let snapshot = runtime_stats
+        .lock()
+        .unwrap()
+        .GetRootHashStateRowsSnapshot(19)
+        .unwrap();
+    assert_eq!(snapshot.Rows, 2);
+    assert!(!snapshot.Invalid());
+}
+
+#[test]
 fn nested_loop_apply_reuses_inner_results_for_equal_correlated_keys() {
     // 两条关联键同为 1 的 outer 行应共享一次内表构建，且缓存跨 next 批次生效。
     let calls = Arc::new(AtomicUsize::new(0));

@@ -2250,9 +2250,6 @@ impl HashJoinV2Exec {
             }
         }
         self.collect_spill_stats();
-        if let Some(stats) = &self.hash_state_stats {
-            stats.Complete();
-        }
         self.prepared = true;
         Ok(())
     }
@@ -2272,9 +2269,6 @@ impl HashJoinV2Exec {
         }
         if !self.prepared {
             if let Err(error) = self.start_build_and_probe() {
-                if let Some(stats) = &self.hash_state_stats {
-                    stats.Invalidate();
-                }
                 self.context.base.fail(error.clone());
                 return Err(error);
             }
