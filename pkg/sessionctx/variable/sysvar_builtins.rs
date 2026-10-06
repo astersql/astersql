@@ -997,6 +997,21 @@ fn register_sql_and_session_vars() {
         1,
         vardef::MaxConfigurableConcurrency as u64,
     ));
+    let mut query_cop_store_limit = unsigned_var(
+        vardef::TiDBQueryCopStoreLimit,
+        vardef::DefTiDBQueryCopStoreLimit as u64,
+        scope_both(),
+        0,
+        vardef::MaxConfigurableConcurrency as u64,
+    );
+    query_cop_store_limit.IsHintUpdatableVerified = true;
+    query_cop_store_limit.SetSession = Some(Arc::new(|vars, value| {
+        vars.QueryCopStoreLimit = value
+            .parse()
+            .map_err(|_| VariableError::wrong_type(vardef::TiDBQueryCopStoreLimit))?;
+        Ok(())
+    }));
+    RegisterSysVar(query_cop_store_limit);
     // 注册 sql_mode、时区、事务隔离、字符集等经典 MySQL/TiDB 会话变量。
     // Connector/J（DataGrip 使用）会在建连时一次读取这些 MySQL 兼容变量。
     // 保持它们位于规范 SysVar 注册表中，让所有会话按作用域读取默认值。

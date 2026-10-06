@@ -242,6 +242,8 @@ pub struct SessionVars {
     pub ForeignKeyCheckInSharedLock: bool,
     /// Child-task limit for Analyze store batches; 0 disables batching.
     pub AnalyzeStoreBatchSize: i64,
+    /// TiKV cop request concurrency per store within one query; zero disables the limit.
+    pub QueryCopStoreLimit: i64,
     pub DMLBatchSize: i64,
     pub KVVars: SessionKVVars,
     pub StmtCtx: StatementContext,
@@ -293,6 +295,7 @@ impl SessionVars {
             CDCWriteSource: 0,
             ForeignKeyCheckInSharedLock: vardef::DefTiDBForeignKeyCheckInSharedLock,
             AnalyzeStoreBatchSize: vardef::DefTiDBAnalyzeStoreBatchSize,
+            QueryCopStoreLimit: vardef::DefTiDBQueryCopStoreLimit,
             DMLBatchSize: vardef::DefDMLBatchSize,
             KVVars: SessionKVVars::default(),
             StmtCtx: StatementContext::default(),

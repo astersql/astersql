@@ -2525,3 +2525,30 @@ fn ttl_required_session_variables_match_go_defaults_bounds_and_retry_hook() {
     scan.SetSessionFromHook(&mut vars, &value).unwrap();
     assert_eq!(vars.system(vardef::TiDBDistSQLScanConcurrency), Some("1"));
 }
+
+#[test]
+#[serial]
+fn query_cop_store_limit_matches_go_defaults_bounds_and_session_hook() {
+    let (mut vars, _) = session();
+    let limiter = sysvar(vardef::TiDBQueryCopStoreLimit);
+    assert_eq!(limiter.Value, vardef::DefTiDBQueryCopStoreLimit.to_string());
+    assert_eq!(limiter.Scope, vardef::ScopeGlobal | vardef::ScopeSession);
+    assert_eq!(limiter.Type, vardef::TypeUnsigned);
+    assert_eq!(limiter.MinValue, 0);
+    assert_eq!(limiter.MaxValue, vardef::MaxConfigurableConcurrency as u64);
+    assert!(limiter.IsHintUpdatableVerified);
+
+    let value = limiter
+        .Validate(&mut vars, "0", vardef::ScopeSession)
+        .unwrap();
+    limiter.SetSessionFromHook(&mut vars, &value).unwrap();
+    assert_eq!(vars.system(vardef::TiDBQueryCopStoreLimit), Some("0"));
+    assert_eq!(vars.QueryCopStoreLimit, 0);
+
+    let value = limiter
+        .Validate(&mut vars, "17", vardef::ScopeSession)
+        .unwrap();
+    limiter.SetSessionFromHook(&mut vars, &value).unwrap();
+    assert_eq!(vars.system(vardef::TiDBQueryCopStoreLimit), Some("17"));
+    assert_eq!(vars.QueryCopStoreLimit, 17);
+}
