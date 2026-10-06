@@ -18,6 +18,46 @@
 use super::*;
 
 impl ConcreteSession {
+    fn check_base_table_materialized_view_dependency_constraints(
+        table: &astersql_meta_model::TableInfo,
+        operation: &str,
+    ) -> SessionResult<()> {
+        let Some(base) = table.MaterializedViewBase.as_ref() else {
+            return Ok(());
+        };
+        if !base.MViewIDs.is_empty() {
+            return Err(SessionError::new(format!(
+                "[ddl:8200]Unsupported DDL operation: {operation} with materialized view dependencies"
+            )));
+        }
+        if base.MLogID != 0 {
+            return Err(SessionError::new(format!(
+                "[ddl:8200]Unsupported DDL operation: {operation} with materialized view log"
+            )));
+        }
+        Ok(())
+    }
+
+    fn check_exchange_partition_materialized_view_constraints(
+        table: &astersql_meta_model::TableInfo,
+        table_role: &str,
+    ) -> SessionResult<()> {
+        if table.MaterializedViewLog.is_some() {
+            return Err(SessionError::new(format!(
+                "[ddl:8200]Unsupported DDL operation: EXCHANGE PARTITION on {table_role} with materialized view log"
+            )));
+        }
+        if table.MaterializedView.is_some() {
+            return Err(SessionError::new(format!(
+                "[ddl:8200]Unsupported DDL operation: EXCHANGE PARTITION on {table_role} materialized view table"
+            )));
+        }
+        Self::check_base_table_materialized_view_dependency_constraints(
+            table,
+            &format!("EXCHANGE PARTITION on {table_role}"),
+        )
+    }
+
     /// Next-gen bootstrap builds mysql tables with metadef's fixed IDs before
     /// inserting their metadata directly. The SQL bootstrap must preserve the
     /// same ID map when it creates the authoritative definitions.
@@ -1933,6 +1973,19 @@ impl ConcreteSession {
                 .collect::<SessionResult<Vec<_>>>()?;
             match spec.Tp {
                 ast::AlterTableType::Partition => {
+                    let (_, table) = self
+                        .domain
+                        .stats_table(database, &statement.Table.Name.L)
+                        .ok_or_else(|| {
+                            SessionError::new(format!(
+                                "unknown table {database}.{}",
+                                statement.Table.Name.L
+                            ))
+                        })?;
+                    Self::check_base_table_materialized_view_dependency_constraints(
+                        &table,
+                        "ALTER TABLE ... PARTITION BY",
+                    )?;
                     let options = spec.Partition.as_ref().ok_or_else(|| {
                         SessionError::new("ALTER TABLE PARTITION BY has no partition options")
                     })?;
@@ -1950,6 +2003,19 @@ impl ConcreteSession {
                     return Ok(());
                 }
                 ast::AlterTableType::RemovePartitioning => {
+                    let (_, table) = self
+                        .domain
+                        .stats_table(database, &statement.Table.Name.L)
+                        .ok_or_else(|| {
+                            SessionError::new(format!(
+                                "unknown table {database}.{}",
+                                statement.Table.Name.L
+                            ))
+                        })?;
+                    Self::check_base_table_materialized_view_dependency_constraints(
+                        &table,
+                        "ALTER TABLE ... REMOVE PARTITIONING",
+                    )?;
                     self.domain
                         .ddl_set_table_partitioning(database, &statement.Table.Name.L, None)
                         .map_err(|error| session_error("ALTER TABLE REMOVE PARTITIONING", error))?;
@@ -2070,6 +2136,14 @@ impl ConcreteSession {
                         .ok_or_else(|| {
                             SessionError::new("exchange table metadata is unavailable")
                         })?;
+                    Self::check_exchange_partition_materialized_view_constraints(
+                        &partitioned_info,
+                        "partitioned table",
+                    )?;
+                    Self::check_exchange_partition_materialized_view_constraints(
+                        &exchange_info,
+                        "non-partitioned table",
+                    )?;
                     let partition_id = partitioned_info
                         .GetPartitionInfo()
                         .and_then(|partition| {

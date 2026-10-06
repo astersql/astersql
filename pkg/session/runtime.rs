@@ -94,6 +94,8 @@ mod modify_column_dist_backfill;
 mod modify_column_pipeline;
 #[cfg(test)]
 mod normal_ddl_fixture;
+#[cfg(test)]
+mod normal_ddl_materialized_view_partition_test;
 pub mod normal_ddl_service;
 mod normal_ddl_submit;
 #[cfg(test)]
