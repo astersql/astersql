@@ -305,6 +305,15 @@ pub trait JobExecutionContext {
         Err("materialized view refresh cleanup unavailable".into())
     }
 
+    /// Move the durable refresh row in the active DDL transaction. Implementors
+    /// must not commit independently: the row and table metadata are one cutover.
+    fn migrate_mview_refresh_info(
+        &mut self,
+        _: &astersql_meta_model::group_2::RefreshMaterializedViewCompleteOutOfPlaceCutoverArgs,
+    ) -> Result<(), String> {
+        Err("materialized view refresh cutover migration unavailable".into())
+    }
+
     /// Evaluate persisted MLog schedules on an isolated UTC evaluation context.
     fn derive_create_mlog_schedule(
         &mut self,

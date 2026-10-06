@@ -296,6 +296,10 @@ pub mod persistent_create_materialized_view_shadow;
 pub mod persistent_create_table;
 
 pub mod persistent_create_materialized_view;
+pub mod persistent_mview_out_of_place_cutover;
+
+#[cfg(test)]
+mod persistent_mview_out_of_place_cutover_test;
 
 pub mod persistent_drop_column;
 pub mod persistent_masking_actions;

@@ -1174,6 +1174,46 @@ impl astersql_ddl::job_worker::JobExecutionContext for ConcreteJobExecutionConte
         })
     }
 
+    fn migrate_mview_refresh_info(
+        &mut self,
+        args: &astersql_meta_model::group_2::RefreshMaterializedViewCompleteOutOfPlaceCutoverArgs,
+    ) -> Result<(), String> {
+        let rows = self.query(
+            &format!(
+                "SELECT IFNULL(CAST(LAST_SUCCESS_READ_TSO AS CHAR), 'NULL') FROM mysql.tidb_mview_refresh_info WHERE MVIEW_ID={}",
+                args.OldMViewID
+            ),
+            "mview-refresh-cutover-read-refresh-info",
+        )?;
+        if rows.len() != 1 {
+            return Err("[ddl:8204]refresh materialized view complete OUT OF PLACE cutover: refresh info row missing in mysql.tidb_mview_refresh_info".into());
+        }
+        let observed = rows[0].first().map(String::as_str).unwrap_or("NULL");
+        let stale = if args.ExpectedLastSuccessReadTSONull {
+            observed != "NULL"
+        } else {
+            observed == "NULL"
+                || observed.parse::<u64>().ok() != Some(args.ExpectedLastSuccessReadTSO)
+        };
+        if stale {
+            return Err("[ddl:8204]refresh materialized view complete OUT OF PLACE cutover: stale LAST_SUCCESS_READ_TSO detected before cutover".into());
+        }
+        let next = if args.ShouldUpdateNextRefreshUnixSeconds {
+            args.NextRefreshUnixSeconds
+                .map_or_else(|| "NULL".to_owned(), |v| v.to_string())
+        } else {
+            "NEXT_REFRESH_UNIX_SECONDS".to_owned()
+        };
+        self.query(
+            &format!(
+                "UPDATE mysql.tidb_mview_refresh_info SET MVIEW_ID={}, LAST_SUCCESS_READ_TSO={}, LAST_SUCCESS_REFRESH_END_UNIX_SECONDS=UNIX_TIMESTAMP(), NEXT_REFRESH_UNIX_SECONDS={} WHERE MVIEW_ID={}",
+                args.ShadowTableID, args.BuildReadTSO, next, args.OldMViewID
+            ),
+            "mview-refresh-cutover-update-refresh-info",
+        )?;
+        Ok(())
+    }
+
     fn finish_create_mview_refresh(
         &mut self,
         _schema: &str,

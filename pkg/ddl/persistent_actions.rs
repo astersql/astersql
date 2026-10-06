@@ -49,7 +49,9 @@ pub fn handler_available(action: u8) -> bool {
             | 86
             | 87
             | 88
+            | 92
             | 93
+            | 94
     )
 }
 
@@ -75,7 +77,7 @@ pub fn step(
     if matches!(job.tp, 14 | 47) {
         return crate::persistent_masking_actions::rename_tables(context, job);
     }
-    if matches!(job.tp, 4 | 87 | 88) {
+    if matches!(job.tp, 4 | 87 | 88 | 94) {
         return crate::persistent_masking_actions::drop_table(context, job);
     }
     if matches!(job.tp, 7 | 32) {
@@ -89,6 +91,9 @@ pub fn step(
     }
     if job.tp == 93 {
         return crate::persistent_create_materialized_view_shadow::step(context, job);
+    }
+    if job.tp == astersql_meta_model::group_3::ACTION_MVIEW_REFRESH_OUT_OF_PLACE_CUTOVER {
+        return crate::persistent_mview_out_of_place_cutover::step(context, job);
     }
     if job.tp == 3 {
         return crate::persistent_create_table::step(context, job);

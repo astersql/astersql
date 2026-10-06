@@ -643,8 +643,15 @@ impl From<WireEvent> for JsonSchemaChangeEvent {
 event_constructor!(NewAlterMaterializedViewRefreshEvent, model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_REFRESH, TableInfo: table: Option<Box<model::TableInfo>>, OldTableInfo: old: Option<Box<model::TableInfo>>);
 event_constructor!(NewAlterMaterializedViewAttributesEvent, model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_ATTRIBUTES, TableInfo: table: Option<Box<model::TableInfo>>, OldTableInfo: old: Option<Box<model::TableInfo>>);
 event_constructor!(NewAlterMaterializedViewLogPurgeEvent, model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_LOG_PURGE, TableInfo: table: Option<Box<model::TableInfo>>, OldTableInfo: old: Option<Box<model::TableInfo>>);
+event_constructor!(NewMViewRefreshOutOfPlaceCutoverEvent, model::group_3::ACTION_MVIEW_REFRESH_OUT_OF_PLACE_CUTOVER, TableInfo: table: Option<Box<model::TableInfo>>, OldTableInfo: old: Option<Box<model::TableInfo>>);
 
 impl SchemaChangeEvent {
+    pub fn GetMViewRefreshOutOfPlaceCutoverInfo(
+        &self,
+    ) -> (Option<Box<model::TableInfo>>, Option<Box<model::TableInfo>>) {
+        let inner = self.expect(model::group_3::ACTION_MVIEW_REFRESH_OUT_OF_PLACE_CUTOVER);
+        (inner.TableInfo.clone(), inner.OldTableInfo.clone())
+    }
     /// Go GetAlterMaterializedViewRefreshInfo returns the new complete table.
     pub fn GetAlterMaterializedViewRefreshInfo(&self) -> Option<Box<model::TableInfo>> {
         self.expect(model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_REFRESH)

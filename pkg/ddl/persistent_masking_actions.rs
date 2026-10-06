@@ -142,6 +142,16 @@ pub fn drop_table(context: &mut dyn JobExecutionContext, job: &mut Job) -> Resul
                         t.Name.O
                     ));
                 }
+                if job.tp
+                    == astersql_meta_model::group_3::ACTION_DROP_MATERIALIZED_VIEW_SHADOW
+                    && t.MaterializedViewShadow.is_none()
+                {
+                    job.state = JobState::Cancelled;
+                    return Err(format!(
+                        "[ddl:1347]'{}' is not MATERIALIZED VIEW SHADOW TABLE",
+                        t.Name.O
+                    ));
+                }
                 if job.tp == astersql_meta_model::group_3::ACTION_DROP_MATERIALIZED_VIEW_LOG {
                     let Some(log) = t.MaterializedViewLog.as_ref() else {
                         job.state = JobState::Cancelled;

@@ -818,6 +818,52 @@ impl<'a> TransactionMutator<'a> {
             )
             .map_err(|e| e.to_string())
     }
+
+    /// Go SetSchemaDiffForMViewRefreshOutOfPlaceCutover. The promoted shadow is
+    /// reloaded as the new table, while the old MV and related base/log tables
+    /// are explicitly invalidated by affected options.
+    pub fn set_mview_cutover_schema_diff(
+        &mut self,
+        job: &astersql_meta_model::group_3::Job,
+        version: i64,
+        old_mview_id: i64,
+        shadow_table_id: i64,
+        affected: &[i64],
+    ) -> Result<(), String> {
+        let mut seen = std::collections::HashSet::new();
+        seen.insert(old_mview_id);
+        seen.insert(shadow_table_id);
+        let mut options = vec![serde_json::json!({
+            "schema_id": job.schema_id,
+            "old_schema_id": job.schema_id,
+            "table_id": shadow_table_id,
+            "old_table_id": old_mview_id
+        })];
+        options.extend(affected.iter().filter(|id| seen.insert(**id)).map(|id| {
+            serde_json::json!({
+                "schema_id": job.schema_id,
+                "old_schema_id": job.schema_id,
+                "table_id": id,
+                "old_table_id": id
+            })
+        }));
+        let diff = serde_json::json!({
+            "version": version,
+            "type": job.tp,
+            "schema_id": job.schema_id,
+            "table_id": shadow_table_id,
+            "old_table_id": old_mview_id,
+            "old_schema_id": job.schema_id,
+            "regenerate_schema_map": false,
+            "affected_options": options
+        });
+        self.txn
+            .Set(
+                transaction_meta_string_key(format!("Diff:{version}").as_bytes()),
+                serde_json::to_vec(&diff).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())
+    }
     pub fn add_history_ddl_job(
         &mut self,
         job: &mut astersql_meta_model::group_3::Job,
