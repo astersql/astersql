@@ -44,6 +44,16 @@ pub enum DriverError {
     BackendKeyExists { key: Key, value: Vec<u8> },
     /// 写冲突详情。
     WriteConflict(WriteConflict),
+    /// Shared-lock ownership was lost while upgrading to an exclusive lock.
+    SharedLockLost { start_ts: u64, key: Key },
+    /// A second concurrent shared-lock upgrader must be aborted to break the wait cycle.
+    LockUpgradeConflict { key: Key, owner_start_ts: u64 },
+    /// Non-retryable deadlock returned for a second shared-lock upgrader.
+    Deadlock {
+        lock_ts: u64,
+        lock_key: Key,
+        retryable: bool,
+    },
     /// 可重试事务错误（如锁相关）。
     Retryable(String),
     /// 非法事务选项。
@@ -86,6 +96,13 @@ impl Display for DriverError {
                 conflict.primary_rest,
                 conflict.reason
             ),
+            Self::SharedLockLost { start_ts, key } => write!(
+                formatter,
+                "Shared lock was lost during lock upgrade; transaction cannot continue, txnStartTS={start_ts}, key={}",
+                hex(key)
+            ),
+            Self::LockUpgradeConflict { .. } => formatter.write_str("lock upgrade conflict"),
+            Self::Deadlock { .. } => formatter.write_str("deadlock"),
             Self::Retryable(message) => write!(formatter, "retryable transaction error: {message}"),
             Self::InvalidOption(message) => {
                 write!(formatter, "invalid transaction option: {message}")
@@ -337,6 +354,22 @@ pub fn ExtractKeyExistsErrFromIndex(
 pub fn extractKeyErr(error: Option<DriverError>) -> Result<(), DriverError> {
     match error {
         None => Ok(()),
+        Some(DriverError::SharedLockLost { start_ts, key }) => {
+            let rendered = hex(&key).to_ascii_uppercase();
+            Err(DriverError::Backend(
+                kv::ErrSharedLockLost
+                    .GenWithStackByArgs(&[ErrorArg::from(start_ts), ErrorArg::from(rendered)])
+                    .to_string(),
+            ))
+        }
+        Some(DriverError::LockUpgradeConflict {
+            key,
+            owner_start_ts,
+        }) => Err(DriverError::Deadlock {
+            lock_ts: owner_start_ts,
+            lock_key: key,
+            retryable: false,
+        }),
         Some(DriverError::WriteConflict(conflict)) => Err(DriverError::Backend(
             newWriteConflictError(Some(conflict)).to_string(),
         )),

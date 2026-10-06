@@ -164,6 +164,8 @@ pub struct LockContext<K> {
     pub wait_time: Duration,
     /// 加锁模式。
     pub mode: LockMode,
+    /// Whether a shared pessimistic lock may be upgraded to an exclusive lock.
+    pub allow_shared_lock_upgrade: bool,
     /// 是否在加锁时返回已有值。
     pub return_values: bool,
     /// 是否检查键是否存在。
@@ -241,6 +243,10 @@ pub trait SelectRuntime {
     fn select_lock_mode(&self) -> LockMode;
     /// 锁等待时间配置。
     fn select_lock_wait_time(&self) -> i64;
+    /// Session gate propagated to TiKV's pessimistic lock context.
+    fn allow_shared_lock_upgrade(&self) -> bool {
+        false
+    }
     /// 从结果 chunk 提取待加锁键。
     fn lock_keys_from_chunk(&mut self, chunk: &Self::Chunk) -> Result<Vec<Self::Key>, Self::Error>;
     /// 键是否属于临时表（无需加锁）。
@@ -410,6 +416,7 @@ pub fn newLockCtx<R: SelectRuntime>(
         } else {
             LockMode::ForUpdate
         },
+        allow_shared_lock_upgrade: runtime.allow_shared_lock_upgrade(),
         return_values: false,
         check_existence: false,
         lock_only_if_exists: false,

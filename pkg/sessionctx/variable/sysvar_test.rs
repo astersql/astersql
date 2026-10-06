@@ -28,6 +28,31 @@ use chrono::FixedOffset;
 use serial_test::serial;
 
 #[test]
+fn shared_lock_upgrade_defaults_off_and_is_gated_to_next_gen() {
+    let (mut vars, _) = session();
+    let variable = sysvar(vardef::TiDBEnableSharedLockUpgrade);
+
+    assert!(!vars.EnableSharedLockUpgrade);
+    assert_eq!(variable.Value, vardef::Off);
+    let result = variable.Validate(&mut vars, vardef::On, vardef::ScopeSession);
+    if kerneltype::IsNextGen() {
+        let normalized = result.expect("next-gen accepts shared lock upgrades");
+        variable
+            .SetSessionFromHook(&mut vars, &normalized)
+            .expect("set shared lock upgrade");
+        assert!(vars.EnableSharedLockUpgrade);
+    } else {
+        let error = result.expect_err("classic rejects shared lock upgrades");
+        assert!(
+            error
+                .to_string()
+                .contains("tidb_enable_shared_lock_upgrade")
+        );
+        assert!(!vars.EnableSharedLockUpgrade);
+    }
+}
+
+#[test]
 #[serial]
 fn go_merge_47_analyze_defaults_follow_global_sysvars() {
     let (mut vars, _) = session();

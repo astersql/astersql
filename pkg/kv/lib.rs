@@ -165,6 +165,8 @@ pub mod tikvstore {
         pub WaitTimeoutMs: i64,
         /// Select TiKV SharedPessimisticLock mutation for FK parent checks.
         pub Shared: bool,
+        /// Allow a shared pessimistic lock to be upgraded to an exclusive lock.
+        pub AllowSharedLockUpgrade: bool,
         /// Fair-lock counters populated from TiKV per-key lock results.
         pub AggressiveLockNewCount: i32,
         pub AggressiveLockDerivedCount: i32,

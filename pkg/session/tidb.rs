@@ -272,6 +272,9 @@ pub trait FinishSessionRuntime {
     fn RollbackTxn(&mut self);
     fn ChangeTxnToInvalid(&mut self);
     fn IsDeadlock(&self, error: &SessionError) -> bool;
+    fn IsSharedLockLost(&self, _error: &SessionError) -> bool {
+        false
+    }
     fn ObserveAbortTxn(&mut self, pessimistic: bool, internal: bool);
     fn History(&mut self) -> &mut StmtHistory;
     fn StatementCountLimit(&self) -> usize;
@@ -349,7 +352,7 @@ fn shouldCheckConnectionAliveBeforeCommit(
 }
 
 /// 语句后的自动提交/回滚：无显式事务则 Commit；出错时按悲观死锁等规则 Rollback。
-fn autoCommitAfterStmt(
+pub(crate) fn autoCommitAfterStmt(
     session: &mut dyn FinishSessionRuntime,
     meets_error: Option<SessionError>,
     statement: &dyn StatementRuntime,
@@ -359,7 +362,10 @@ fn autoCommitAfterStmt(
         if !session.InTxn() {
             session.RollbackTxn();
             recordAbortTxnDuration(session, internal);
-        } else if session.TxnValid() && session.TxnIsPessimistic() && session.IsDeadlock(&error) {
+        } else if session.TxnValid()
+            && (session.IsSharedLockLost(&error)
+                || (session.TxnIsPessimistic() && session.IsDeadlock(&error)))
+        {
             session.RollbackTxn();
             recordAbortTxnDuration(session, internal);
         }

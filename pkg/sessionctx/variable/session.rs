@@ -643,6 +643,7 @@ pub struct SessionVars {
     pub UsePlanBaselines: bool,
     pub EvolvePlanBaselines: bool,
     pub ForeignKeyCheckInSharedLock: bool,
+    pub EnableSharedLockUpgrade: bool,
     pub SelectLimit: u64,
     pub UserVars: UserVars,
     systems: HashMap<String, String>,
@@ -876,6 +877,7 @@ impl SessionVars {
             UsePlanBaselines: vardef::DefTiDBUsePlanBaselines,
             EvolvePlanBaselines: vardef::DefTiDBEvolvePlanBaselines,
             ForeignKeyCheckInSharedLock: vardef::DefTiDBForeignKeyCheckInSharedLock,
+            EnableSharedLockUpgrade: vardef::DefTiDBEnableSharedLockUpgrade,
             SelectLimit: u64::MAX,
             UserVars: UserVars::new(),
             systems: HashMap::new(),
@@ -1118,6 +1120,8 @@ impl SessionVars {
                 crate::TidbOptInt64(&normalized, vardef::DefTiDBAnalyzeStoreBatchSize);
         } else if name.eq_ignore_ascii_case(vardef::TiDBForeignKeyCheckInSharedLock) {
             self.ForeignKeyCheckInSharedLock = crate::TiDBOptOn(&normalized);
+        } else if name.eq_ignore_ascii_case(vardef::TiDBEnableSharedLockUpgrade) {
+            self.EnableSharedLockUpgrade = crate::TiDBOptOn(&normalized);
         } else if name.eq_ignore_ascii_case(vardef::TiDBIsolationReadEngines) {
             self.IsolationReadEngines = normalized
                 .split(',')

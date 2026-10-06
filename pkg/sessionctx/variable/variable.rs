@@ -240,6 +240,7 @@ pub struct SessionVars {
     /// Nonzero values identify CDC writes and bypass BDR DDL restrictions.
     pub CDCWriteSource: u64,
     pub ForeignKeyCheckInSharedLock: bool,
+    pub EnableSharedLockUpgrade: bool,
     /// Child-task limit for Analyze store batches; 0 disables batching.
     pub AnalyzeStoreBatchSize: i64,
     /// TiKV cop request concurrency per store within one query; zero disables the limit.
@@ -294,6 +295,7 @@ impl SessionVars {
             SysWarningCount: 0,
             CDCWriteSource: 0,
             ForeignKeyCheckInSharedLock: vardef::DefTiDBForeignKeyCheckInSharedLock,
+            EnableSharedLockUpgrade: vardef::DefTiDBEnableSharedLockUpgrade,
             AnalyzeStoreBatchSize: vardef::DefTiDBAnalyzeStoreBatchSize,
             QueryCopStoreLimit: vardef::DefTiDBQueryCopStoreLimit,
             DMLBatchSize: vardef::DefDMLBatchSize,

@@ -31,6 +31,115 @@ fn record_steps(test_name: &str, steps: &[&str]) {
     assert!(!steps.is_empty());
 }
 
+use crate::tidb::{
+    FinishSessionRuntime, StatementKind, StatementRuntime, StmtHistory, autoCommitAfterStmt,
+};
+use crate::{SessionError, SessionResult};
+
+struct SharedLockLossSession {
+    pessimistic: bool,
+    rollback_count: usize,
+    abort_observations: usize,
+    history: StmtHistory,
+}
+
+impl FinishSessionRuntime for SharedLockLossSession {
+    fn InTxn(&self) -> bool {
+        true
+    }
+    fn IsAutocommit(&self) -> bool {
+        false
+    }
+    fn BatchCommit(&self) -> bool {
+        false
+    }
+    fn CouldRetry(&self) -> bool {
+        false
+    }
+    fn DisableRetry(&mut self) {}
+    fn StatementStartTime(&self) -> Option<std::time::Instant> {
+        None
+    }
+    fn CheckConnectionAlive(&mut self) -> SessionResult {
+        Ok(())
+    }
+    fn TxnValid(&self) -> bool {
+        true
+    }
+    fn TxnPending(&self) -> bool {
+        false
+    }
+    fn TxnIsPessimistic(&self) -> bool {
+        self.pessimistic
+    }
+    fn TxnRequestSourceInternal(&self) -> bool {
+        false
+    }
+    fn StmtCommit(&mut self) {}
+    fn StmtRollback(&mut self, _: bool) {}
+    fn CommitTxn(&mut self) -> SessionResult {
+        Ok(())
+    }
+    fn RollbackTxn(&mut self) {
+        self.rollback_count += 1;
+    }
+    fn ChangeTxnToInvalid(&mut self) {}
+    fn IsDeadlock(&self, _: &SessionError) -> bool {
+        false
+    }
+    fn IsSharedLockLost(&self, error: &SessionError) -> bool {
+        error.to_string() == "shared lock lost"
+    }
+    fn ObserveAbortTxn(&mut self, _: bool, _: bool) {
+        self.abort_observations += 1;
+    }
+    fn History(&mut self) -> &mut StmtHistory {
+        &mut self.history
+    }
+    fn StatementCountLimit(&self) -> usize {
+        usize::MAX
+    }
+    fn NewTxn(&mut self) -> SessionResult {
+        Ok(())
+    }
+    fn SetInTxn(&mut self, _: bool) {}
+    fn PreviousStatement(&self) -> String {
+        String::new()
+    }
+}
+
+struct OtherStatement;
+
+impl StatementRuntime for OtherStatement {
+    fn IsReadOnly(&self) -> bool {
+        false
+    }
+    fn Kind(&self) -> StatementKind {
+        StatementKind::Other
+    }
+}
+
+#[test]
+fn shared_lock_loss_rolls_back_optimistic_explicit_transaction() {
+    let mut session = SharedLockLossSession {
+        pessimistic: false,
+        rollback_count: 0,
+        abort_observations: 0,
+        history: StmtHistory::new(),
+    };
+
+    let error = autoCommitAfterStmt(
+        &mut session,
+        Some(SessionError::new("shared lock lost")),
+        &OtherStatement,
+    )
+    .expect_err("shared lock loss must be returned");
+
+    assert_eq!(error.to_string(), "shared lock lost");
+    assert_eq!(session.rollback_count, 1);
+    assert_eq!(session.abort_observations, 1);
+}
+
 #[test]
 /// 验证 domap.Get(nil) 场景不应 panic（enterprise plugin 可能传空 store）。
 fn test_domap_handle_nil() {

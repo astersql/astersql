@@ -1275,6 +1275,8 @@ pub const DivPrecisionIncrement: &str = "div_precision_increment";
 // TiDBEnableSharedLockPromotion indicates whether the `select for share` statement would be executed
 // as `select for update` statements which do acquire pessimistic locks.
 pub const TiDBEnableSharedLockPromotion: &str = "tidb_enable_shared_lock_promotion";
+/// Controls whether a pessimistic transaction may upgrade a shared lock to an exclusive lock.
+pub const TiDBEnableSharedLockUpgrade: &str = "tidb_enable_shared_lock_upgrade";
 
 // TiDBAccelerateUserCreationUpdate decides whether tidb will load & update the whole user's data in-memory.
 pub const TiDBAccelerateUserCreationUpdate: &str = "tidb_accelerate_user_creation_update";
@@ -1984,6 +1986,7 @@ pub const DefTiFlashPreAggMode: &str = ForcePreAggStr;
 pub const DefTiDBEnableLazyCursorFetch: bool = false;
 pub const DefOptEnableProjectionPushDown: bool = true;
 pub const DefTiDBEnableSharedLockPromotion: bool = false;
+pub const DefTiDBEnableSharedLockUpgrade: bool = false;
 pub const DefTiDBTSOClientRPCMode: &str = TSOClientRPCModeDefault;
 pub const DefTiDBCircuitBreakerPDMetaErrorRateRatio: f64 = 0.0;
 pub const DefTiDBAccelerateUserCreationUpdate: bool = false;

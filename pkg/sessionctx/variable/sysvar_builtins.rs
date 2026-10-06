@@ -2324,6 +2324,26 @@ fn register_foreign_key_shared_lock() {
             .get_global_sys_var(vardef::TiDBForeignKeyCheckInSharedLock)
     }));
     RegisterSysVar(variable);
+
+    let mut upgrade = bool_var(
+        vardef::TiDBEnableSharedLockUpgrade,
+        vardef::DefTiDBEnableSharedLockUpgrade,
+        vardef::ScopeGlobal | vardef::ScopeSession,
+    );
+    upgrade.Validation = Some(Arc::new(|_, normalized, original, _| {
+        if TiDBOptOn(normalized) && !kerneltype::IsNextGen() {
+            return Err(VariableError::wrong_value(
+                vardef::TiDBEnableSharedLockUpgrade,
+                original,
+            ));
+        }
+        Ok(normalized.to_owned())
+    }));
+    upgrade.SetSession = Some(Arc::new(|vars, value| {
+        vars.EnableSharedLockUpgrade = TiDBOptOn(value);
+        Ok(())
+    }));
+    RegisterSysVar(upgrade);
 }
 
 /// 一次性注册全部内置系统变量（幂等）。

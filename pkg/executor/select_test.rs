@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use crate::select::{
     ExecuteLimitValues, LockContext, LockMode, SelectLockExec, SelectRuntime, deduplicateLockKeys,
-    filterLockTableKeys,
+    filterLockTableKeys, newLockCtx,
 };
 
 #[derive(Default)]
@@ -31,6 +31,7 @@ struct LockRuntime {
     batches: VecDeque<Vec<i32>>,
     locked: Vec<Vec<i32>>,
     lock_table_filter_enabled: bool,
+    allow_shared_lock_upgrade: bool,
 }
 
 impl SelectRuntime for LockRuntime {
@@ -101,6 +102,9 @@ impl SelectRuntime for LockRuntime {
     }
     fn select_lock_wait_time(&self) -> i64 {
         0
+    }
+    fn allow_shared_lock_upgrade(&self) -> bool {
+        self.allow_shared_lock_upgrade
     }
     fn lock_keys_from_chunk(&mut self, chunk: &Self::Chunk) -> Result<Vec<Self::Key>, Self::Error> {
         Ok(chunk.clone())
@@ -175,6 +179,19 @@ impl SelectRuntime for LockRuntime {
     }
 }
 
+#[test]
+fn new_lock_context_propagates_shared_lock_upgrade_gate() {
+    let runtime = LockRuntime {
+        allow_shared_lock_upgrade: true,
+        ..LockRuntime::default()
+    };
+
+    let context = newLockCtx(&runtime, 123, vec![1], true).expect("lock context");
+
+    assert_eq!(context.mode, LockMode::Shared);
+    assert!(context.allow_shared_lock_upgrade);
+}
+
 /// 重复键只保留第一次出现，不重排其余键的相对顺序。
 #[test]
 fn select_lock_keys_are_deduplicated_without_reordering_first_occurrences() {
@@ -218,6 +235,7 @@ fn select_lock_buffers_all_chunks_and_locks_only_at_eof() {
         batches: VecDeque::from([vec![1], vec![2], Vec::new()]),
         locked: Vec::new(),
         lock_table_filter_enabled: false,
+        allow_shared_lock_upgrade: false,
     };
     let mut executor = SelectLockExec {
         runtime,
