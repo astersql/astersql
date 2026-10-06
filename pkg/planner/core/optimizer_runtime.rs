@@ -4497,6 +4497,72 @@ pub(crate) fn TakeLogicalRuleTrace() -> Vec<LogicalRule> {
     LOGICAL_RULE_TRACE.with(|trace| std::mem::take(&mut *trace.borrow_mut()))
 }
 
+/// 判断 LeftOuter Apply 内侧投影是否必须留在 Apply 下方。
+///
+/// 投影上提后会在外连接生成的 NULL 扩展行上再次求值；只有把全部内侧输入列替换为
+/// NULL 后仍得到 NULL 的表达式才可安全上提。`IFNULL`、`COALESCE`、`IS NULL` 等会
+/// 产生非 NULL 结果，必须保持在 Apply 内侧。
+fn skip_left_outer_apply_projection(
+    context: &base::ContextRef,
+    outer_schema: &expression::Schema,
+    projection: &logicalop::LogicalProjection,
+) -> bool {
+    let all_constant = !projection.Exprs.is_empty()
+        && projection.Exprs.iter().all(|expression| {
+            expression::ExtractCorColumns(expression.as_ref()).is_empty()
+                && expression::ExtractColumns(expression.as_ref()).is_empty()
+        });
+    if all_constant {
+        return true;
+    }
+    if projection.Exprs.iter().any(|expression| {
+        let columns = expression::ExtractColumns(expression.as_ref());
+        let correlated = expression::ExtractCorColumns(expression.as_ref());
+        (!columns.is_empty() || !correlated.is_empty())
+            && columns.iter().all(|column| outer_schema.Contains(column))
+            && correlated
+                .iter()
+                .all(|column| outer_schema.Contains(&column.column))
+    }) {
+        return true;
+    }
+    let Some(inner_schema) = projection.Children().first().map(|child| child.Schema()) else {
+        return true;
+    };
+    let nulls = inner_schema
+        .Columns
+        .iter()
+        .map(|column| {
+            let field_type = column
+                .RetType
+                .clone()
+                .unwrap_or_else(|| *expression::types::NewFieldType(expression::mysql::TypeNull));
+            Box::new(expression::NewNullWithFieldType(field_type)) as expression::ExprBox
+        })
+        .collect::<Vec<_>>();
+    projection.Exprs.iter().any(|projected| {
+        if expression::ExtractColumns(projected.as_ref()).is_empty() {
+            return false;
+        }
+        let substituted = expression::ColumnSubstitute(
+            context.GetExprCtx(),
+            projected.CloneExpr(),
+            inner_schema,
+            &nulls,
+        );
+        let evaluated = expression::FoldConstant(context.GetExprCtx(), substituted);
+        evaluated
+            .as_any()
+            .downcast_ref::<expression::Constant>()
+            .map(|constant| {
+                constant.DeferredExpr.is_none()
+                    && constant.ParamMarker.is_none()
+                    && constant.Value.IsNull()
+            })
+            != Some(true)
+    })
+}
+
 /// 解相关：把相关子查询尽量改写为 Join。
 fn decorrelate_descendants(plan: &mut logicalop::LogicalPlanRef) {
     for child in plan.Children_mut() {
@@ -4583,21 +4649,9 @@ fn decorrelate_descendants(plan: &mut logicalop::LogicalPlanRef) {
             .as_any()
             .downcast_ref::<logicalop::LogicalProjection>()
             .is_some_and(|projection| {
-                let all_constant = !projection.Exprs.is_empty()
-                    && projection.Exprs.iter().all(|expression| {
-                        expression::ExtractCorColumns(expression.as_ref()).is_empty()
-                            && expression::ExtractColumns(expression.as_ref()).is_empty()
-                    });
-                all_constant
-                    || projection.Exprs.iter().any(|expression| {
-                        let columns = expression::ExtractColumns(expression.as_ref());
-                        let correlated = expression::ExtractCorColumns(expression.as_ref());
-                        (!columns.is_empty() || !correlated.is_empty())
-                            && columns.iter().all(|column| outer_schema.Contains(column))
-                            && correlated
-                                .iter()
-                                .all(|column| outer_schema.Contains(&column.column))
-                    })
+                plan.SCtx().is_none_or(|context| {
+                    skip_left_outer_apply_projection(context, &outer_schema, projection)
+                })
             })
     {
         // Pulling a constant or outer-only projection above a left outer Apply

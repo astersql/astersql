@@ -4327,11 +4327,10 @@ fn build_lateral_join_runtime(
             "NATURAL JOIN and USING are not supported with LATERAL",
         ));
     }
-    match join.Tp {
+    let join_type = match join.Tp {
         crate::ast::JoinType::LeftJoin => {
-            return Err(expression::errors::New(
-                "LEFT JOIN is not supported with LATERAL",
-            ));
+            builder.optFlag |= rule::FLAG_ELIMINATE_OUTER_JOIN | rule::FLAG_OUTER_JOIN_TO_SEMI_JOIN;
+            base::JoinType::LeftOuterJoin
         }
         crate::ast::JoinType::RightJoin => {
             return Err(expression::errors::New(
@@ -4343,8 +4342,8 @@ fn build_lateral_join_runtime(
                 "FULL JOIN is not supported with LATERAL",
             ));
         }
-        crate::ast::JoinType::CrossJoin => {}
-    }
+        crate::ast::JoinType::CrossJoin => base::JoinType::InnerJoin,
+    };
     let left_full = find_join_full_schema(left.as_ref())
         .unwrap_or_else(|| (left.Schema().Clone(), left.OutputNames().Shallow()));
     let right_full = find_join_full_schema(right.as_ref())
@@ -4352,13 +4351,17 @@ fn build_lateral_join_runtime(
     let correlated = coreusage::ExtractCorColumnsBySchema4LogicalPlan(right.as_ref(), &left_full.0);
     let mut names = left.OutputNames().Shallow();
     names.0.extend(right.OutputNames().0.iter().cloned());
-    let visible_schema = merged_schema(left.Schema(), right.Schema());
-    let full_schema = merged_schema(&left_full.0, &right_full.0);
+    let mut visible_schema = merged_schema(left.Schema(), right.Schema());
+    let mut full_schema = merged_schema(&left_full.0, &right_full.0);
+    if join_type == base::JoinType::LeftOuterJoin {
+        reset_not_null(&mut visible_schema, left.Schema().Len());
+        reset_not_null(&mut full_schema, left_full.0.Len());
+    }
     let mut full_names = left_full.1.Shallow();
     full_names.0.extend(right_full.1.0.iter().cloned());
     let mut apply = logicalop::LogicalApply {
         LogicalJoin: logicalop::LogicalJoin {
-            JoinType: base::JoinType::InnerJoin,
+            JoinType: join_type,
             FullSchema: Some(full_schema.Clone()),
             FullNames: full_names,
             ..Default::default()

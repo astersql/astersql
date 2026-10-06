@@ -78,7 +78,7 @@ fn assert_error_cases(cases: &[(&str, &str, &str)]) {
     }
 }
 
-/// 基本 LATERAL / 非 LATERAL 构建，以及 LEFT/RIGHT JOIN LATERAL 拒绝。
+/// 基本 LATERAL / 非 LATERAL 构建，以及 LEFT JOIN 支持与 RIGHT JOIN 拒绝。
 #[test]
 fn test_lateral_join_plan_building() {
     assert_build_cases(&[
@@ -112,19 +112,17 @@ fn test_lateral_join_plan_building() {
             sql: "SELECT * FROM t t1, LATERAL (SELECT COUNT(*) FROM t WHERE t.a = t1.a) AS dt",
             expected_apply_count: 1,
         },
+        BuildCase {
+            name: "left outer",
+            sql: "SELECT * FROM t LEFT JOIN LATERAL (SELECT t.b) AS dt ON true",
+            expected_apply_count: 1,
+        },
     ]);
-    assert_error_cases(&[
-        (
-            "left unsupported",
-            "SELECT * FROM t LEFT JOIN LATERAL (SELECT t.b) AS dt ON true",
-            "LEFT JOIN is not supported with LATERAL",
-        ),
-        (
-            "right unsupported",
-            "SELECT * FROM t RIGHT JOIN LATERAL (SELECT t.a) AS dt ON true",
-            "RIGHT JOIN is not supported with LATERAL",
-        ),
-    ]);
+    assert_error_cases(&[(
+        "right unsupported",
+        "SELECT * FROM t RIGHT JOIN LATERAL (SELECT t.a) AS dt ON true",
+        "RIGHT JOIN is not supported with LATERAL",
+    )]);
 }
 
 /// 常量 / 相关 / 聚合 LATERAL 经逻辑优化后 Schema 仍有效。
@@ -232,22 +230,20 @@ fn test_lateral_join_explain() {
     assert!(first_apply(plan.as_ref()).is_some());
 }
 
-/// 错误路径：外连接 LATERAL 拒绝；CROSS/INNER/逗号 JOIN 仍成功。
+/// 错误路径：RIGHT JOIN LATERAL 拒绝；LEFT/CROSS/INNER/逗号 JOIN 仍成功。
 #[test]
 fn test_lateral_join_error_paths() {
-    assert_error_cases(&[
-        (
-            "right",
-            "SELECT * FROM t RIGHT JOIN LATERAL (SELECT t.a) AS dt ON true",
-            "RIGHT JOIN is not supported with LATERAL",
-        ),
-        (
-            "left",
-            "SELECT * FROM t LEFT JOIN LATERAL (SELECT t.a) AS dt ON true",
-            "LEFT JOIN is not supported with LATERAL",
-        ),
-    ]);
+    assert_error_cases(&[(
+        "right",
+        "SELECT * FROM t RIGHT JOIN LATERAL (SELECT t.a) AS dt ON true",
+        "RIGHT JOIN is not supported with LATERAL",
+    )]);
     assert_build_cases(&[
+        BuildCase {
+            name: "left",
+            sql: "SELECT * FROM t LEFT JOIN LATERAL (SELECT t.a) AS dt ON true",
+            expected_apply_count: 1,
+        },
         BuildCase {
             name: "cross",
             sql: "SELECT * FROM t CROSS JOIN LATERAL (SELECT t.a) AS dt",
@@ -264,6 +260,92 @@ fn test_lateral_join_error_paths() {
             expected_apply_count: 1,
         },
     ]);
+}
+
+/// LEFT JOIN LATERAL 构建 LeftOuterJoin Apply，并清除右侧输出的 NOT NULL 标记。
+#[test]
+fn left_join_lateral_builds_nullable_outer_apply() {
+    let (_, plan) = build_logical_for_test(
+        "SELECT * FROM t AS t1 LEFT JOIN LATERAL (SELECT a FROM t AS t2 WHERE t2.a=t1.a) AS dt ON true",
+    )
+    .expect("LEFT JOIN LATERAL must build");
+    let apply = first_apply(plan.as_ref()).expect("LEFT JOIN LATERAL must produce Apply");
+    assert_eq!(
+        apply.LogicalJoin.JoinType,
+        logicalop::JoinType::LeftOuterJoin
+    );
+    assert!(apply.IsLateral);
+
+    let outer_len = apply.Children()[0].Schema().Len();
+    for column in &apply.Schema().Columns[outer_len..] {
+        assert!(
+            column.RetType.as_ref().is_none_or(|field_type| {
+                !expression_dependency::mysql::HasNotNullFlag(field_type.GetFlag())
+            }),
+            "inner columns of LEFT JOIN LATERAL must be nullable"
+        );
+    }
+    let full_schema = apply
+        .LogicalJoin
+        .FullSchema
+        .as_ref()
+        .expect("Apply FullSchema");
+    let outer_full_len = apply.Children()[0]
+        .as_any()
+        .downcast_ref::<logicalop::LogicalJoin>()
+        .and_then(|join| join.FullSchema.as_ref())
+        .map_or(outer_len, expression_dependency::Schema::Len);
+    for column in &full_schema.Columns[outer_full_len..] {
+        assert!(
+            column.RetType.as_ref().is_none_or(|field_type| {
+                !expression_dependency::mysql::HasNotNullFlag(field_type.GetFlag())
+            }),
+            "inner FullSchema columns of LEFT JOIN LATERAL must be nullable"
+        );
+    }
+}
+
+/// 非 NULL 保持表达式不能从 LeftOuter Apply 内侧投影上提，否则无匹配行会被改写成值。
+#[test]
+fn left_join_lateral_keeps_null_producing_projection_below_apply() {
+    for (name, expression) in [
+        ("ifnull", "ifnull(b, 'z')"),
+        ("is null", "b is null"),
+        ("if", "if(b > 'c', 'hi', 'lo')"),
+    ] {
+        let sql = format!(
+            "SELECT t1.a, lat.bz FROM t AS t1 LEFT JOIN LATERAL (SELECT {expression} AS bz FROM t AS t2 WHERE t2.a=t1.a) AS lat ON true"
+        );
+        let (_, plan) = logical_optimize_for_test(&sql, rule_dependency::FLAG_DECORRELATE)
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
+        assert!(
+            first_apply(plan.as_ref()).is_some(),
+            "{name}: non-NULL-preserving projection must stay below Apply: {}",
+            logical_plan_string(plan.as_ref())
+        );
+    }
+
+    let sql = "SELECT t1.a, lat.bz FROM t AS t1 LEFT JOIN LATERAL (SELECT a + 1 AS bz FROM t AS t2 WHERE t2.a=t1.a) AS lat ON true";
+    let (_, plan) = logical_optimize_for_test(sql, rule_dependency::FLAG_DECORRELATE)
+        .expect("NULL-preserving projection must optimize");
+    assert!(
+        first_apply(plan.as_ref()).is_none(),
+        "NULL-preserving projection remains decorrelatable: {}",
+        logical_plan_string(plan.as_ref())
+    );
+}
+
+/// 上层恒真谓词可删除自身的非 LATERAL Apply，但不得连带删除嵌套 LATERAL Apply。
+#[test]
+fn redundant_outer_apply_does_not_prune_nested_lateral_apply() {
+    let sql = "SELECT t1.a FROM t AS t1 LEFT JOIN LATERAL (SELECT b FROM t AS t2 WHERE t2.a=t1.a) AS lat ON true WHERE 1=1 OR EXISTS (SELECT 1 FROM t AS t3 WHERE t3.a=t1.a)";
+    let (_, plan) = logical_optimize_for_test(sql, rule_dependency::FLAG_DECORRELATE)
+        .expect("nested LATERAL under a prunable Apply must optimize");
+    let plan_string = logical_plan_string(plan.as_ref());
+    assert!(
+        plan_string.contains("DataScan(t2)") && plan_string.matches("Join{").count() >= 2,
+        "the LATERAL branch may decorrelate to Join but must not be pruned: {plan_string}"
+    );
 }
 
 /// 边界：常量投影、空结果、UNION 与多列 LATERAL。
