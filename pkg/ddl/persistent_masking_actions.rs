@@ -129,9 +129,39 @@ pub fn drop_table(context: &mut dyn JobExecutionContext, job: &mut Job) -> Resul
                     else if t.MaterializedViewShadow.is_some() {Some("materialized view shadow table")}
                     else if t.MaterializedViewBase.as_ref().is_some_and(|b| !b.MViewIDs.is_empty()) {Some("base table with materialized view dependencies")}
                     else if t.MaterializedViewBase.as_ref().is_some_and(|b| b.MLogID!=0) {Some("base table with materialized view log")} else {None};
-                if let Some(kind)=kind {
+                if let Some(kind)=kind.filter(|_| job.tp == astersql_meta_model::group_3::ACTION_DROP_TABLE) {
                     job.state=JobState::Cancelled;
                     return Err(format!("[ddl:8200]Unsupported DDL operation: DROP TABLE on {kind}"));
+                }
+                if job.tp == astersql_meta_model::group_3::ACTION_DROP_MATERIALIZED_VIEW
+                    && t.MaterializedView.is_none()
+                {
+                    job.state = JobState::Cancelled;
+                    return Err(format!(
+                        "[ddl:1347]'{}' is not MATERIALIZED VIEW",
+                        t.Name.O
+                    ));
+                }
+                if job.tp == astersql_meta_model::group_3::ACTION_DROP_MATERIALIZED_VIEW_LOG {
+                    let Some(log) = t.MaterializedViewLog.as_ref() else {
+                        job.state = JobState::Cancelled;
+                        return Err(format!(
+                            "[ddl:1347]'{}' is not MATERIALIZED VIEW LOG",
+                            t.Name.O
+                        ));
+                    };
+                    if !log.DependentMViewIDs.is_empty() {
+                        let base = meta.get_table(job.schema_id, log.BaseTableID)?;
+                        let base_name = base.map_or_else(
+                            || format!("(Table ID {})", log.BaseTableID),
+                            |base| base.Name.O,
+                        );
+                        job.state = JobState::Cancelled;
+                        return Err(format!(
+                            "cannot drop materialized view log on {}.{}: dependent materialized views exist",
+                            job.schema_name, base_name
+                        ));
+                    }
                 }
                 if astersql_sessionctx_vardef::EnableForeignKey.Load() && args.FKCheck {
                     for db in meta.list_databases()? {
@@ -162,17 +192,48 @@ pub fn drop_table(context: &mut dyn JobExecutionContext, job: &mut Job) -> Resul
             error
         })?;
     }
+    let mut affected = Vec::new();
     context.with_transaction(&mut |txn| {
         let mut meta = TransactionMutator::new(txn);
         version = meta.gen_schema_version()?;
         meta.update_table(job.schema_id, &mut t)?;
-        meta.set_table_schema_diff(job, version)?;
         if t.State == SchemaState::None {
+            affected = update_materialized_view_dependencies(&mut meta, job, &t)?;
             meta.drop_table_and_auto_ids(job.schema_id, job.table_id)?;
+        }
+        if affected.is_empty() {
+            meta.set_table_schema_diff(job, version)?;
+        } else {
+            meta.set_drop_mview_schema_diff(job, version, &affected)?;
         }
         Ok(Vec::new())
     })?;
     if t.State == SchemaState::None {
+        if t.MaterializedView.is_some() {
+            context.query(
+                &format!(
+                    "DELETE FROM mysql.tidb_mview_refresh_info WHERE MVIEW_ID={}",
+                    t.ID
+                ),
+                "mview-refresh-info-delete",
+            )?;
+            let _ = context.query(
+                &format!(
+                    "DELETE FROM mysql.tidb_mview_refresh_alert WHERE MVIEW_ID={}",
+                    t.ID
+                ),
+                "mview-refresh-alert-delete",
+            );
+        }
+        if t.MaterializedViewLog.is_some() {
+            context.query(
+                &format!(
+                    "DELETE FROM mysql.tidb_mlog_purge_info WHERE MLOG_ID={}",
+                    t.ID
+                ),
+                "mlog-purge-info-delete",
+            )?;
+        }
         if t.TiFlashReplica.is_some() {
             let _ = context.cleanup_drop_table_resources(&t);
         }
@@ -222,6 +283,69 @@ pub fn drop_table(context: &mut dyn JobExecutionContext, job: &mut Job) -> Resul
     }
     job.schema_state = t.State;
     Ok(version)
+}
+
+fn update_materialized_view_dependencies(
+    meta: &mut TransactionMutator<'_>,
+    job: &Job,
+    dropping: &astersql_meta_model::TableInfo,
+) -> Result<Vec<i64>, String> {
+    let mut affected = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    if let Some(view) = &dropping.MaterializedView {
+        for base_id in &view.BaseTableIDs {
+            if !seen.insert(*base_id) {
+                continue;
+            }
+            let Some(mut base) = meta.get_table(job.schema_id, *base_id)? else {
+                continue;
+            };
+            let log_id = base
+                .MaterializedViewBase
+                .as_ref()
+                .map_or(0, |info| info.MLogID);
+            if let Some(info) = base.MaterializedViewBase.as_mut() {
+                info.MViewIDs.retain(|id| *id != job.table_id);
+                if info.MLogID == 0 && info.MViewIDs.is_empty() {
+                    base.MaterializedViewBase = None;
+                }
+            }
+            meta.update_table(job.schema_id, &mut base)?;
+            affected.push(*base_id);
+            if log_id == 0 {
+                continue;
+            }
+            let Some(mut log) = meta.get_table(job.schema_id, log_id)? else {
+                continue;
+            };
+            let Some(info) = log.MaterializedViewLog.as_mut() else {
+                continue;
+            };
+            if info.BaseTableID != *base_id {
+                continue;
+            }
+            let before = info.DependentMViewIDs.len();
+            info.DependentMViewIDs.retain(|id| *id != job.table_id);
+            if info.DependentMViewIDs.len() != before {
+                meta.update_table(job.schema_id, &mut log)?;
+                affected.push(log_id);
+            }
+        }
+    } else if let Some(log) = &dropping.MaterializedViewLog {
+        if let Some(mut base) = meta.get_table(job.schema_id, log.BaseTableID)? {
+            if let Some(info) = base.MaterializedViewBase.as_mut() {
+                if info.MLogID == job.table_id {
+                    info.MLogID = 0;
+                }
+                if info.MLogID == 0 && info.MViewIDs.is_empty() {
+                    base.MaterializedViewBase = None;
+                }
+            }
+            meta.update_table(job.schema_id, &mut base)?;
+            affected.push(log.BaseTableID);
+        }
+    }
+    Ok(affected)
 }
 
 fn sql_string(value: &str) -> String {

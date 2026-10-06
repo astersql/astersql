@@ -779,6 +779,45 @@ impl<'a> TransactionMutator<'a> {
             )
             .map_err(|e| e.to_string())
     }
+    /// Go `updateSchemaVersion(..., extraInfos...)` for a materialized-view drop.
+    /// Related base/log tables are reloaded from the same metadata transaction.
+    pub fn set_drop_mview_schema_diff(
+        &mut self,
+        job: &astersql_meta_model::group_3::Job,
+        version: i64,
+        affected: &[i64],
+    ) -> Result<(), String> {
+        let mut seen = std::collections::HashSet::new();
+        seen.insert(job.table_id);
+        let options: Vec<_> = affected
+            .iter()
+            .filter(|id| seen.insert(**id))
+            .map(|id| {
+                serde_json::json!({
+                    "schema_id": job.schema_id,
+                    "old_schema_id": job.schema_id,
+                    "table_id": id,
+                    "old_table_id": id
+                })
+            })
+            .collect();
+        let diff = serde_json::json!({
+            "version": version,
+            "type": job.tp,
+            "schema_id": job.schema_id,
+            "table_id": job.table_id,
+            "old_table_id": 0,
+            "old_schema_id": 0,
+            "regenerate_schema_map": false,
+            "affected_options": if options.is_empty() { serde_json::Value::Null } else { serde_json::json!(options) }
+        });
+        self.txn
+            .Set(
+                transaction_meta_string_key(format!("Diff:{version}").as_bytes()),
+                serde_json::to_vec(&diff).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())
+    }
     pub fn add_history_ddl_job(
         &mut self,
         job: &mut astersql_meta_model::group_3::Job,

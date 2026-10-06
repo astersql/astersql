@@ -43,6 +43,8 @@ pub fn handler_available(action: u8) -> bool {
                 | 76
                 | 85
                 | 86
+                | 87
+                | 88
                 | 93
         )
 }
@@ -69,7 +71,7 @@ pub fn step(
     if matches!(job.tp, 14 | 47) {
         return crate::persistent_masking_actions::rename_tables(context, job);
     }
-    if job.tp == 4 {
+    if matches!(job.tp, 4 | 87 | 88) {
         return crate::persistent_masking_actions::drop_table(context, job);
     }
     if matches!(job.tp, 7 | 32) {

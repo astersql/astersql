@@ -75,7 +75,7 @@ impl DurableJobExecutor for Initial {
         })
     }
 }
-fn seed(f: &Fixture, t: &TableInfo) {
+pub(super) fn seed(f: &Fixture, t: &TableInfo) {
     let mut tx = f
         .domain
         .storage_handle()
@@ -91,7 +91,7 @@ fn seed(f: &Fixture, t: &TableInfo) {
     .unwrap();
     tx.Commit(&astersql_kv::Context::default()).unwrap();
 }
-fn setup(v: JobVersion) -> (Fixture, TableInfo, Job) {
+pub(super) fn setup(v: JobVersion) -> (Fixture, TableInfo, Job) {
     let f = Fixture::new();
     f.pool
         .acquire()
@@ -184,7 +184,7 @@ fn setup(v: JobVersion) -> (Fixture, TableInfo, Job) {
     f.pool.acquire().unwrap().query(format!("INSERT INTO mysql.tidb_ddl_job (job_id,reorg,schema_ids,table_ids,job_meta,type,processing) VALUES ({},1,'{}','{},{},{}',X'{}',86,0)",j.id,f.db,j.table_id,base.ID,log.ID,hex(&wire))).unwrap();
     (f, view, j)
 }
-fn run(f: &Fixture, j: &mut Job) -> Result<i64, String> {
+pub(super) fn run(f: &Fixture, j: &mut Job) -> Result<i64, String> {
     let bytes = astersql_meta::encode_go_ddl_job(j, false).unwrap();
     JobWorker::new(WorkerType::General).transit_persisted_job_step(
         &mut f.pool.acquire().unwrap(),
