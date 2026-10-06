@@ -132,14 +132,17 @@ fn frontend_compile_bytes_use_normalized_sql_and_ignore_literal_length() {
         secure_text: String::new(),
         prepared_text: None,
     };
-    assert_eq!(
-        statement_ru_frontend_compile_bytes(&node, true, "original", "normalized"),
-        0.0
-    );
-    assert_eq!(
-        statement_ru_frontend_compile_bytes(&node, false, "", "ignored"),
-        node.original_text.len() as f64
-    );
+    for original_sql in ["", "original"] {
+        for (cache_hit, expect_zero) in [(false, false), (true, true), (false, false)] {
+            let bytes =
+                statement_ru_frontend_compile_bytes(&node, cache_hit, original_sql, "normalized");
+            assert_eq!(
+                bytes == 0.0,
+                expect_zero,
+                "cache_hit={cache_hit}, original_sql={original_sql:?}"
+            );
+        }
+    }
     assert_eq!(
         statement_ru_frontend_compile_bytes(
             &node,
