@@ -3326,3 +3326,29 @@ fn statement_ru_simple_select_real_tikv_terminal_publication() {
         &owner.StatementContext().statement_ru_finalized.unwrap()
     ));
 }
+
+#[test]
+fn canonical_adapter_topru_v2_reports_finalized_statement_total() {
+    use astersql_util_topsql_stmtstats::RUKey;
+    struct TopRUGuard;
+    impl Drop for TopRUGuard {
+        fn drop(&mut self) {
+            astersql_util_topsql_state::DisableTopRU();
+        }
+    }
+    astersql_util_topsql_state::EnableTopRU();
+    let _guard = TopRUGuard;
+    let owner = SessionBoundAdapterOwner::new(canonical_dml_session());
+    owner.session.domain.set_ru_version(2);
+    owner.TopSQLStart(b"sql-finalized", b"plan-finalized");
+    let stats = owner.top_sql_stats.borrow().as_ref().cloned().unwrap();
+    let key = RUKey::new("", b"sql-finalized", b"plan-finalized");
+    let begin = stats.MergeRUInto();
+    assert_eq!(begin[&key].ExecCount, 1);
+    assert_eq!(begin[&key].TotalRU, 0.0);
+    owner.TopSQLFinish(42.0);
+    let finished = stats.MergeRUInto();
+    assert_eq!(finished[&key].TotalRU, 42.0);
+    assert!(stats.MergeRUInto().is_empty());
+    stats.SetFinished();
+}

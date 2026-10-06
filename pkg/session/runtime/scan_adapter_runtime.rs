@@ -1547,6 +1547,7 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
         let top_ru = astersql_util_topsql_state::TopRUEnabled();
         let begin = astersql_util_topsql_stmtstats::ExecBeginInfo {
             InNetworkBytes: sc.network_received_bytes,
+            RUVersion: i32::from(self.RUVersion()),
             TopRUEnabled: top_ru,
             ..Default::default()
         };
