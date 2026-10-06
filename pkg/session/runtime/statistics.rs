@@ -268,6 +268,46 @@ fn quote_show_identifier(identifier: &str, ansi_quotes: bool) -> String {
     }
 }
 
+fn append_show_create_region_split_policies(
+    create: &mut String,
+    table: &astersql_meta_model::TableInfo,
+    ansi_quotes: bool,
+) {
+    let mut append_policy = |prefix: &str, policy: &astersql_meta_model::RegionSplitPolicy| {
+        create.push_str("\n/*T![region_split] ");
+        create.push_str(prefix);
+        create.push_str(" BETWEEN (");
+        create.push_str(&policy.Lower.join(", "));
+        create.push_str(") AND (");
+        create.push_str(&policy.Upper.join(", "));
+        create.push_str(") REGIONS ");
+        create.push_str(&policy.Regions.to_string());
+        create.push_str(" */");
+    };
+
+    if let Some(policy) = table.TableSplitPolicy.as_ref() {
+        append_policy("SPLIT", policy);
+    }
+    for index in &table.Indices {
+        let Some(policy) = index.RegionSplitPolicy.as_ref() else {
+            continue;
+        };
+        if index.Primary || index.Name.L == "primary" {
+            // The PRIMARY branch of CreateTableStmt does not accept an index
+            // name. Emitting `PRIMARY` here makes SHOW CREATE unparseable.
+            append_policy("SPLIT PRIMARY KEY", policy);
+        } else {
+            append_policy(
+                &format!(
+                    "SPLIT INDEX {}",
+                    quote_show_identifier(&index.Name.O, ansi_quotes)
+                ),
+                policy,
+            );
+        }
+    }
+}
+
 fn analyze_indexes_info(info: &astersql_meta_model::TableInfo, ddl_analyze: bool) -> Vec<String> {
     info.Indices
         .iter()
@@ -2788,6 +2828,9 @@ impl ConcreteSession {
                 }
             }
         }
+        // CREATE TABLE grammar places split policies after PARTITION BY. Keep
+        // this append after partition restoration so the output round-trips.
+        append_show_create_region_split_policies(&mut create, &table, ansi_quotes);
         Ok(ConcreteRecordSet::new(
             vec!["Table".to_owned(), "Create Table".to_owned()],
             vec![vec![table_name, create]],

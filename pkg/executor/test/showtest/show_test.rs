@@ -647,6 +647,113 @@ fn show_create_table_restores_placement_for_tables_and_partitions() {
     }
 }
 
+/// SHOW CREATE must emit region split policies in the CREATE TABLE grammar's
+/// order so that both non-clustered PRIMARY policies and partitioned tables can
+/// be parsed and recreated.
+#[test]
+fn show_create_table_region_split_policies_round_trip() {
+    let _guard = SHOW_SQL_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (store, domain) = astersql_testkit::mockstore::CreateMockStoreAndDomain();
+    let mut tk = astersql_testkit::TestKit::new(store);
+    tk.MustExec("use test", Vec::new());
+    tk.MustExec("drop table if exists t_split_src, t_split_dst", Vec::new());
+    tk.MustExec(
+        "create table t_split_src (\
+         id bigint not null, val bigint, primary key (id) nonclustered, index idx_val (val)\
+         ) partition by range (id) (\
+         partition p0 values less than (1000),\
+         partition pmax values less than (maxvalue))",
+        Vec::new(),
+    );
+    let mut table = (*domain.table_by_name("test", "t_split_src").unwrap()).clone();
+    table.TableSplitPolicy = Some(astersql_meta_model::RegionSplitPolicy {
+        Lower: vec!["0".to_owned()],
+        Upper: vec!["10000".to_owned()],
+        Regions: 5,
+        ..Default::default()
+    });
+    for index in &mut table.Indices {
+        index.RegionSplitPolicy = Some(astersql_meta_model::RegionSplitPolicy {
+            Lower: vec!["0".to_owned()],
+            Upper: vec![if index.Primary {
+                "1000000".to_owned()
+            } else {
+                "10000".to_owned()
+            }],
+            Regions: if index.Primary { 4 } else { 3 },
+            ..Default::default()
+        });
+    }
+    tk.MustExec("drop table t_split_src", Vec::new());
+    domain.ddl_create_table("test", table, false).unwrap();
+
+    let create = tk
+        .MustQuery("show create table t_split_src", Vec::new())
+        .Rows()[0][1]
+        .clone();
+    assert!(
+        create.contains("/*T![region_split] SPLIT BETWEEN (0) AND (10000) REGIONS 5 */"),
+        "actual SHOW CREATE: {create}"
+    );
+    assert!(
+        create.contains(
+            "/*T![region_split] SPLIT PRIMARY KEY BETWEEN (0) AND (1000000) REGIONS 4 */"
+        )
+    );
+    assert!(!create.contains("SPLIT PRIMARY KEY `PRIMARY`"));
+    assert!(
+        create.contains(
+            "/*T![region_split] SPLIT INDEX `idx_val` BETWEEN (0) AND (10000) REGIONS 3 */"
+        )
+    );
+    assert!(
+        create.find("PARTITION BY").unwrap() < create.find("/*T![region_split]").unwrap(),
+        "split policies must follow the partition definition: {create}"
+    );
+
+    let round_trip = create.replacen(
+        "CREATE TABLE `t_split_src`",
+        "CREATE TABLE `t_split_dst`",
+        1,
+    );
+    tk.MustExec(&round_trip, Vec::new());
+
+    tk.MustExec("drop table if exists t_clustered", Vec::new());
+    tk.MustExec(
+        "create table t_clustered (id bigint primary key clustered, val bigint, index idx_val (val))",
+        Vec::new(),
+    );
+    let mut clustered = (*domain.table_by_name("test", "t_clustered").unwrap()).clone();
+    clustered.TableSplitPolicy = Some(astersql_meta_model::RegionSplitPolicy {
+        Lower: vec!["0".to_owned()],
+        Upper: vec!["10000".to_owned()],
+        Regions: 5,
+        ..Default::default()
+    });
+    clustered
+        .Indices
+        .iter_mut()
+        .find(|index| index.Name.L == "idx_val")
+        .unwrap()
+        .RegionSplitPolicy = Some(astersql_meta_model::RegionSplitPolicy {
+        Lower: vec!["0".to_owned()],
+        Upper: vec!["10000".to_owned()],
+        Regions: 3,
+        ..Default::default()
+    });
+    tk.MustExec("drop table t_clustered", Vec::new());
+    domain.ddl_create_table("test", clustered, false).unwrap();
+    let clustered_create = tk
+        .MustQuery("show create table t_clustered", Vec::new())
+        .Rows()[0][1]
+        .clone();
+    assert!(clustered_create.contains("SPLIT BETWEEN (0) AND (10000) REGIONS 5"));
+    assert!(!clustered_create.contains("SPLIT PRIMARY KEY"));
+    assert!(clustered_create.contains("SPLIT INDEX `idx_val` BETWEEN (0) AND (10000) REGIONS 3"));
+}
+
 /// 对应 Go `TestShowVisibility`：库表可见性随授权与回收实时变化。
 #[test]
 fn show_visibility_tracks_database_and_table_privileges() {
