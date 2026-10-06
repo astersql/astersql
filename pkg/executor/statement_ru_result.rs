@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Evidence classification for the statement RU v3 calculator.
+//! Evidence classification for the statement RU v2 calculator.
 
 use astersql_resourcegroup::ruv2::model::{self, StmtResult, StmtUnits, StmtWeights};
 
@@ -98,7 +98,7 @@ pub fn classify_statement_ru_plan(mut plan: &dyn base::Plan) -> StatementRUPlanI
 }
 
 /// Read the configured statement weights for each finalization. Go keeps the
-/// weights in the `ru-v2` config section while RU v3 replaces its legacy model.
+/// weights in the `ru-v2` config section while RU v2 replaces its legacy model.
 pub fn current_statement_ru_weights() -> StmtWeights {
     astersql_config::get_global_config().ruv2.stmt_weights
 }

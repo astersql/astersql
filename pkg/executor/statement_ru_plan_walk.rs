@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! RU v3 statement-local evidence captured at terminal finalization.
+//! RU v2 statement-local evidence captured at terminal finalization.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};

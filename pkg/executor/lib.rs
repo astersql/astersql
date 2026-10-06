@@ -19,15 +19,15 @@ pub mod admin;
 pub mod admin_plugins;
 #[cfg(test)]
 mod admin_plugins_test;
-/// RU v3 的物理计划证据遍历与终端快照。
+/// RU v2 的物理计划证据遍历与终端快照。
 pub mod statement_ru_plan_walk;
 #[cfg(test)]
 mod statement_ru_plan_walk_test;
-/// RU v3 按执行引擎分摊原始单位和报告。
+/// RU v2 按执行引擎分摊原始单位和报告。
 pub mod statement_ru_reporting;
 #[cfg(test)]
 mod statement_ru_reporting_test;
-/// RU v3 语句结算所需的原始证据与计算辅助。
+/// RU v2 语句结算所需的原始证据与计算辅助。
 pub mod statement_ru_result;
 #[cfg(test)]
 mod statement_ru_result_test;

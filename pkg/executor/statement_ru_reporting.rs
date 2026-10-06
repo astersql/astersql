@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! RU v3 raw units attributed to TiDB, TiKV, and TiFlash.
+//! RU v2 raw units attributed to TiDB, TiKV, and TiFlash.
 
 use astersql_resourcegroup::ruv2::model::{StmtUnits, StmtWeights};
 
