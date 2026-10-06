@@ -247,6 +247,8 @@ pub const TiDBMLogPurgeMinRate: &str = "tidb_mlog_purge_min_rate";
 pub const TiDBMLogPurgeRateBudgetRatio: &str = "tidb_mlog_purge_rate_budget_ratio";
 /// TiFlash thread limit for MLog purge DELETE statements.
 pub const TiDBMLogPurgeDeleteTiFlashThreads: &str = "tidb_mlog_purge_delete_tiflash_threads";
+/// Controls whether materialized-view-log purge statements are written to the slow query log.
+pub const TiDBMLogLogSlowPurge: &str = "tidb_mlog_log_slow_purge";
 
 // The following session variables controls the memory quota during query execution.
 
@@ -1678,6 +1680,7 @@ pub const DefTiDBMLogPurgeBatchMaxSize: u64 = 1_000_000;
 pub const DefTiDBMLogPurgeMinRate: u64 = 2_000;
 pub const DefTiDBMLogPurgeRateBudgetRatio: f64 = 0.5;
 pub const DefTiDBMLogPurgeDeleteTiFlashThreads: i64 = 0;
+pub const DefTiDBMLogLogSlowPurge: bool = false;
 pub const DefMaxPreparedStmtCount: i64 = -1;
 pub const DefWaitTimeout: i64 = 28800;
 pub const DefTiDBMemQuotaApplyCache: i64 = 32 << 20; // 32MB.;
@@ -2182,6 +2185,7 @@ pub static SkipMissingPartitionStats: AtomicBoolValue =
     AtomicBoolValue::new(DefTiDBSkipMissingPartitionStats);
 pub static TiFlashEnablePipelineMode: AtomicBoolValue =
     AtomicBoolValue::new(DefTiDBEnableTiFlashPipelineMode);
+pub static MLogLogSlowPurge: AtomicBoolValue = AtomicBoolValue::new(DefTiDBMLogLogSlowPurge);
 pub static ServiceScope: LazyLock<AtomicStringValue> = LazyLock::new(|| AtomicStringValue::new(""));
 pub static SchemaVersionCacheLimit: AtomicI64Value =
     AtomicI64Value::new(DefTiDBSchemaVersionCacheLimit);

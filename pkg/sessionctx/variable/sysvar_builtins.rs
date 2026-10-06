@@ -246,13 +246,26 @@ fn register_compatibility_vars() {
         vardef::DefTiDBMLogPurgeBatchMinSize,
         vardef::DefTiDBMLogPurgeBatchMaxSize,
     ));
-    RegisterSysVar(unsigned_var(
+    let mut min_rate = unsigned_var(
         vardef::TiDBMLogPurgeMinRate,
         vardef::DefTiDBMLogPurgeMinRate,
         scope,
-        1,
+        0,
         i32::MAX as u64,
-    ));
+    );
+    min_rate.Validation = Some(Arc::new(|_, normalized, original, _| {
+        let value = normalized
+            .parse::<u64>()
+            .map_err(|_| VariableError::wrong_value(vardef::TiDBMLogPurgeMinRate, original))?;
+        if value == 0 {
+            return Err(VariableError::wrong_value(
+                vardef::TiDBMLogPurgeMinRate,
+                original,
+            ));
+        }
+        Ok(normalized.to_owned())
+    }));
+    RegisterSysVar(min_rate);
     let mut budget_ratio = float_var(
         vardef::TiDBMLogPurgeRateBudgetRatio,
         vardef::DefTiDBMLogPurgeRateBudgetRatio,
@@ -273,13 +286,39 @@ fn register_compatibility_vars() {
         Ok(normalized.to_owned())
     }));
     RegisterSysVar(budget_ratio);
-    RegisterSysVar(int_var(
+    let mut tiflash_threads = int_var(
         vardef::TiDBMLogPurgeDeleteTiFlashThreads,
         vardef::DefTiDBMLogPurgeDeleteTiFlashThreads,
         scope,
         0,
         vardef::MaxConfigurableConcurrency as u64,
-    ));
+    );
+    tiflash_threads.Validation = Some(Arc::new(|_, normalized, original, _| {
+        let value = original.parse::<i64>().map_err(|_| {
+            VariableError::wrong_value(vardef::TiDBMLogPurgeDeleteTiFlashThreads, original)
+        })?;
+        if value < 0 {
+            return Err(VariableError::wrong_value(
+                vardef::TiDBMLogPurgeDeleteTiFlashThreads,
+                original,
+            ));
+        }
+        Ok(normalized.to_owned())
+    }));
+    RegisterSysVar(tiflash_threads);
+    let mut log_slow_purge = bool_var(
+        vardef::TiDBMLogLogSlowPurge,
+        vardef::DefTiDBMLogLogSlowPurge,
+        vardef::ScopeGlobal,
+    );
+    log_slow_purge.SetGlobal = Some(Arc::new(|_, _, value| {
+        vardef::MLogLogSlowPurge.Store(TiDBOptOn(value));
+        Ok(())
+    }));
+    log_slow_purge.GetGlobal = Some(Arc::new(|_, _| {
+        Ok(BoolToOnOff(vardef::MLogLogSlowPurge.Load()))
+    }));
+    RegisterSysVar(log_slow_purge);
     RegisterSysVar(unsigned_var(
         vardef::Port,
         4000,

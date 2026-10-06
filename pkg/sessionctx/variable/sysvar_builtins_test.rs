@@ -289,6 +289,54 @@ fn connection_event_log_global_hooks() {
 }
 
 #[test]
+#[serial_test::serial]
+fn mlog_purge_variables_match_go_validation_and_global_slow_log_hook() {
+    crate::register_builtin_sysvars();
+    let mut vars = SessionVars::new(Box::new(NoopAccessor));
+
+    let batch = GetSysVar(vardef::TiDBMLogPurgeBatchSize)
+        .expect("MLog purge batch-size variable must be registered");
+    assert_eq!(batch.Value, vardef::DefTiDBMLogPurgeBatchSize.to_string());
+    assert_eq!(batch.MinValue, vardef::DefTiDBMLogPurgeBatchMinSize);
+    assert_eq!(batch.MaxValue, vardef::DefTiDBMLogPurgeBatchMaxSize);
+
+    for (name, accepted, rejected) in [
+        (vardef::TiDBMLogPurgeMinRate, "1", "0"),
+        (vardef::TiDBMLogPurgeRateBudgetRatio, "0.5", "0"),
+        (vardef::TiDBMLogPurgeDeleteTiFlashThreads, "0", "-1"),
+    ] {
+        let variable = GetSysVar(name).expect("MLog purge variable must be registered");
+        for scope in [vardef::ScopeGlobal, vardef::ScopeSession] {
+            assert!(
+                variable.Validate(&mut vars, accepted, scope).is_ok(),
+                "{name} should accept {accepted} at scope {scope:?}"
+            );
+            assert!(
+                variable.Validate(&mut vars, rejected, scope).is_err(),
+                "{name} should reject {rejected} at scope {scope:?}"
+            );
+        }
+    }
+
+    let variable = GetSysVar("tidb_mlog_log_slow_purge")
+        .expect("MLog slow-purge global variable must be registered");
+    assert_eq!(variable.Scope, vardef::ScopeGlobal);
+    assert_eq!(variable.Value, "OFF");
+    for value in ["ON", "OFF"] {
+        let normalized = variable
+            .Validate(&mut vars, value, vardef::ScopeGlobal)
+            .unwrap();
+        variable
+            .SetGlobalFromHook(&Context, &mut vars, &normalized, false)
+            .unwrap();
+        assert_eq!(
+            variable.GetGlobal.as_ref().unwrap()(&Context, &mut vars).unwrap(),
+            value
+        );
+    }
+}
+
+#[test]
 fn paging_byte_budget_defaults_to_disabled() {
     crate::register_builtin_sysvars();
     let variable = GetSysVar(vardef::TiDBPagingSizeBytes)
