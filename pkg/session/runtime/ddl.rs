@@ -3788,7 +3788,11 @@ impl ConcreteSession {
                                     IntervalTimeUnit: option.TimeUnitValue.unwrap_or_default()
                                         as i32,
                                     Enable: true,
-                                    JobInterval: astersql_meta_model::DefaultTTLJobInterval.into(),
+                                    JobInterval: if astersql_config_deploymode::IsStarter() {
+                                        astersql_meta_model::StarterDefaultTTLJobInterval.into()
+                                    } else {
+                                        astersql_meta_model::DefaultTTLJobInterval.into()
+                                    },
                                 });
                             }
                             ast::TableOptionType::TTLEnable => ttl_enable = Some(option.BoolValue),
@@ -3799,6 +3803,10 @@ impl ConcreteSession {
                         }
                     }
                     if ttl_info.is_some() || ttl_enable.is_some() || ttl_interval.is_some() {
+                        if let Some(interval) = ttl_interval.as_deref() {
+                            astersql_ddl::ttl::check_ttl_job_interval_for_ddl(interval)
+                                .map_err(|error| session_error("ALTER TTL", error))?;
+                        }
                         if self.persistent_actions_enabled() {
                             self.submit_normal_action(
                                 database,

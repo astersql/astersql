@@ -1609,7 +1609,11 @@ pub fn BuildTableInfoWithStmt<C: ?Sized + 'static, E: 'static>(
                     IntervalExprStr: interval_expression,
                     IntervalTimeUnit: interval_time_unit,
                     Enable: true,
-                    JobInterval: model::DefaultTTLJobInterval.to_owned(),
+                    JobInterval: if deploymode::IsStarter() {
+                        model::StarterDefaultTTLJobInterval.to_owned()
+                    } else {
+                        model::DefaultTTLJobInterval.to_owned()
+                    },
                 });
             }
             ast::TableOptionType::TTLEnable => ttl_enable = Some(option.BoolValue),
@@ -1624,6 +1628,7 @@ pub fn BuildTableInfoWithStmt<C: ?Sized + 'static, E: 'static>(
             info.Enable = enable;
         }
         if let Some(job_interval) = ttl_job_interval {
+            crate::ttl::check_ttl_job_interval_for_ddl(&job_interval).map_err(build_error)?;
             info.JobInterval = job_interval;
         }
     } else if ttl_enable.is_some() {

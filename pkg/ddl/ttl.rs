@@ -119,6 +119,8 @@ pub enum TtlError {
     InvalidInterval,
     /// 作业调度间隔非法。
     InvalidJobInterval,
+    /// Starter 部署模式只允许 15 分钟的作业调度间隔。
+    UnsupportedStarterJobInterval,
     /// 临时表不允许 TTL。
     TemporaryTable,
     /// 缓存表不允许 TTL。
@@ -175,6 +177,7 @@ pub fn validate_ttl_info(table: &TtlTable, ttl: &TtlInfo) -> Result<(), TtlError
     if ttl.interval_expression <= 0 || ttl.interval_unit.trim().is_empty() {
         return Err(TtlError::InvalidInterval);
     }
+    check_ttl_job_interval(&ttl.job_interval)?;
     validate_job_interval(&ttl.job_interval)?;
     // Go 仅禁止 common handle 中的 float/double 主键列；TTL 列是否属于主键并非条件。
     if table.common_handle
@@ -189,6 +192,25 @@ pub fn validate_ttl_info(table: &TtlTable, ttl: &TtlInfo) -> Result<(), TtlError
         return Err(TtlError::UnsupportedPrimaryKey);
     }
     Ok(())
+}
+
+/// Starter 部署模式只允许固定的 15 分钟 TTL 作业周期。
+pub fn check_ttl_job_interval(value: &str) -> Result<(), TtlError> {
+    if astersql_config_deploymode::IsStarter()
+        && value != astersql_meta_model::StarterDefaultTTLJobInterval
+    {
+        return Err(TtlError::UnsupportedStarterJobInterval);
+    }
+    Ok(())
+}
+
+/// DDL 入口使用的 Starter TTL 周期校验，保留 Go 的错误码和消息模板。
+pub fn check_ttl_job_interval_for_ddl(value: &str) -> Result<(), String> {
+    check_ttl_job_interval(value).map_err(|_| {
+        astersql_util_dbterror::ErrUnsupportedTTLJobIntervalInStarter
+            .GenWithStackByArgs(&[astersql_meta_model::StarterDefaultTTLJobInterval.into()])
+            .to_string()
+    })
 }
 
 /// 校验作业间隔字符串：正整数 + 单位 `s`/`m`/`h`/`d`。
@@ -225,6 +247,11 @@ pub fn check_drop_column_with_ttl(table: &TtlTable, column_name: &str) -> Result
 pub fn get_ttl_info_in_options(
     options: &[TtlOption],
 ) -> Result<(Option<TtlInfo>, Option<bool>, Option<String>), TtlError> {
+    let default_job_interval = if astersql_config_deploymode::IsStarter() {
+        astersql_meta_model::StarterDefaultTTLJobInterval
+    } else {
+        DEFAULT_TTL_JOB_INTERVAL
+    };
     let mut info = None;
     let mut enable = None;
     let mut schedule = None;
@@ -240,7 +267,7 @@ pub fn get_ttl_info_in_options(
                     interval_expression: *interval_expression,
                     interval_unit: interval_unit.to_ascii_uppercase(),
                     enable: true,
-                    job_interval: DEFAULT_TTL_JOB_INTERVAL.to_string(),
+                    job_interval: default_job_interval.to_string(),
                 });
             }
             TtlOption::Enable(value) => enable = Some(*value),
@@ -255,6 +282,7 @@ pub fn get_ttl_info_in_options(
             ttl.enable = value;
         }
         if let Some(value) = schedule.as_ref() {
+            check_ttl_job_interval(value)?;
             ttl.job_interval = value.clone();
         }
     }
@@ -269,6 +297,12 @@ pub fn apply_model_ttl_change(
     enable: Option<bool>,
     interval: Option<String>,
 ) -> Result<(), String> {
+    if let Some(info) = info.as_ref() {
+        check_ttl_job_interval_for_ddl(&info.JobInterval)?;
+    }
+    if let Some(interval) = interval.as_ref() {
+        check_ttl_job_interval_for_ddl(interval)?;
+    }
     if let Some(mut info) = info {
         if let Some(old) = &table.TTLInfo {
             if enable.is_none() {

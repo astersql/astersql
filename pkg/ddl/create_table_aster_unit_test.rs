@@ -150,6 +150,44 @@ fn formal_builder_derives_binary_charset_from_bare_table_collation() {
     assert_eq!(table.Columns[0].GetCollate(), "binary");
 }
 
+struct RestoreDeployMode(astersql_config_deploymode::Mode);
+
+impl Drop for RestoreDeployMode {
+    fn drop(&mut self) {
+        astersql_config_deploymode::Set(self.0).unwrap();
+    }
+}
+
+#[test]
+fn starter_builder_uses_and_enforces_fifteen_minute_ttl_interval() {
+    if !astersql_config_kerneltype::IsNextGen() {
+        return;
+    }
+
+    let _restore = RestoreDeployMode(astersql_config_deploymode::Get());
+    astersql_config_deploymode::Set(astersql_config_deploymode::Starter).unwrap();
+    let context = metabuild::NewContext::<(), std::convert::Infallible>(Vec::new());
+    let statement = parse_create(
+        "create table starter_ttl (created_at datetime) TTL = created_at + interval 1 day",
+    );
+    let table = BuildTableInfoFromAST(&context, &statement).expect("build starter TTL table");
+    assert_eq!(
+        table.TTLInfo.unwrap().JobInterval,
+        model::StarterDefaultTTLJobInterval
+    );
+
+    let invalid = parse_create(
+        "create table invalid_starter_ttl (created_at datetime) \
+         TTL = created_at + interval 1 day TTL_JOB_INTERVAL = '1h'",
+    );
+    let error = BuildTableInfoFromAST(&context, &invalid).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("TTL_JOB_INTERVAL other than '15m'")
+    );
+}
+
 /// 验证 RANGE 分区元数据的构建，并确认表继承数据库级默认字符集与排序规则。
 ///
 /// RANGE 分区按分区键的取值区间划分数据；`MAXVALUE` 表示无上界的兜底分区。

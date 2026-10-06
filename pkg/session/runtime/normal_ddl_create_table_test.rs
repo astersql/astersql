@@ -1743,6 +1743,44 @@ fn sql_alter_ttl_syncs_controller_and_preserves_unspecified_options() {
     );
 }
 
+struct RestoreDeployMode(astersql_config_deploymode::Mode);
+
+impl Drop for RestoreDeployMode {
+    fn drop(&mut self) {
+        astersql_config_deploymode::Set(self.0).unwrap();
+    }
+}
+
+#[test]
+fn starter_sql_uses_and_enforces_fifteen_minute_ttl_interval() {
+    if !astersql_config_kerneltype::IsNextGen() {
+        return;
+    }
+
+    let _restore = RestoreDeployMode(astersql_config_deploymode::Get());
+    astersql_config_deploymode::Set(astersql_config_deploymode::Starter).unwrap();
+    let f = Fixture::new();
+    let sql = f.pool.acquire().unwrap();
+
+    sql.query("CREATE TABLE test.starter_ttl (id INT PRIMARY KEY, created_at DATETIME) TTL = created_at + INTERVAL 1 DAY").unwrap();
+    assert_eq!(
+        f.domain
+            .table_by_name("test", "starter_ttl")
+            .unwrap()
+            .TTLInfo
+            .as_ref()
+            .unwrap()
+            .JobInterval,
+        astersql_meta_model::StarterDefaultTTLJobInterval
+    );
+    assert!(
+        sql.query("ALTER TABLE test.starter_ttl TTL_JOB_INTERVAL='1h'")
+            .is_err()
+    );
+    sql.query("ALTER TABLE test.starter_ttl TTL_JOB_INTERVAL='15m'")
+        .unwrap();
+}
+
 struct TtlElectionTransport {
     election: Arc<dyn astersql_owner::Manager>,
     streams: std::sync::Mutex<Vec<std::sync::mpsc::Sender<Vec<u8>>>>,

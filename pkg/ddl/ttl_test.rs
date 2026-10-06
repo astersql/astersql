@@ -16,8 +16,8 @@
 use std::collections::BTreeSet;
 
 use crate::ttl::{
-    ColumnDefinition, ColumnType, DEFAULT_TTL_JOB_INTERVAL, TtlInfo, TtlOption, TtlTable,
-    get_ttl_info_in_options, validate_ttl_info,
+    ColumnDefinition, ColumnType, DEFAULT_TTL_JOB_INTERVAL, TtlError, TtlInfo, TtlOption, TtlTable,
+    apply_model_ttl_change, check_ttl_job_interval, get_ttl_info_in_options, validate_ttl_info,
 };
 
 fn ttl_info(enable: bool, job_interval: &str) -> TtlInfo {
@@ -100,6 +100,68 @@ fn option_aggregation_defers_job_interval_validation_like_go() {
     assert_eq!(
         Ok((None, None, Some(invalid_schedule.clone()))),
         get_ttl_info_in_options(&[TtlOption::JobInterval(invalid_schedule)])
+    );
+}
+
+struct RestoreDeployMode(astersql_config_deploymode::Mode);
+
+impl Drop for RestoreDeployMode {
+    fn drop(&mut self) {
+        astersql_config_deploymode::Set(self.0).unwrap();
+    }
+}
+
+#[test]
+fn starter_uses_fifteen_minute_default_and_rejects_other_intervals() {
+    if !astersql_config_kerneltype::IsNextGen() {
+        return;
+    }
+
+    let _restore = RestoreDeployMode(astersql_config_deploymode::Get());
+    astersql_config_deploymode::Set(astersql_config_deploymode::Starter).unwrap();
+
+    let (info, _, _) = get_ttl_info_in_options(&[TtlOption::Definition {
+        column_name: "test_column".to_string(),
+        interval_expression: 5,
+        interval_unit: "YEAR".to_string(),
+    }])
+    .unwrap();
+    assert_eq!(
+        info.unwrap().job_interval,
+        astersql_meta_model::StarterDefaultTTLJobInterval
+    );
+    assert_eq!(
+        Ok(()),
+        check_ttl_job_interval(astersql_meta_model::StarterDefaultTTLJobInterval)
+    );
+    assert_eq!(
+        Err(TtlError::UnsupportedStarterJobInterval),
+        check_ttl_job_interval("1h")
+    );
+    assert_eq!(
+        Err(TtlError::UnsupportedStarterJobInterval),
+        get_ttl_info_in_options(&[
+            TtlOption::Definition {
+                column_name: "test_column".to_string(),
+                interval_expression: 5,
+                interval_unit: "YEAR".to_string(),
+            },
+            TtlOption::JobInterval("1h".to_string()),
+        ])
+    );
+
+    let mut table = astersql_meta_model::TableInfo {
+        TTLInfo: Some(astersql_meta_model::TTLInfo {
+            JobInterval: astersql_meta_model::StarterDefaultTTLJobInterval.to_string(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let error = apply_model_ttl_change(&mut table, None, None, Some("1h".to_string())).unwrap_err();
+    assert!(error.contains("TTL_JOB_INTERVAL other than '15m'"));
+    assert_eq!(
+        table.TTLInfo.unwrap().JobInterval,
+        astersql_meta_model::StarterDefaultTTLJobInterval
     );
 }
 
