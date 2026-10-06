@@ -529,6 +529,50 @@ fn go_merge_187_terminal_calculator_adds_response_bytes_once() {
 }
 
 #[test]
+fn analyze_plan_combines_logical_scan_estimates_and_transport_bytes() {
+    use crate::statement_ru_plan_walk::{
+        calculate_statement_ru_plan, snapshot_statement_ru_runtime_evidence,
+    };
+
+    let context: base::ContextRef = Arc::new(TypedPlanTestContext(
+        AtomicI32::new(0),
+        Default::default(),
+        Default::default(),
+    ));
+    let analyze = astersql_planner_core::RuntimeAnalyze::New(context, Default::default());
+    let tree = astersql_planner_core::FlattenTypedPhysicalPlan(&analyze).unwrap();
+    let analyze_id = base::Plan::id(&analyze);
+    let mut stats = astersql_util_execdetails::execdetails::NewRuntimeStatsColl(None);
+    stats.RecordAnalyzeScanBytes(analyze_id, 1000.0);
+    stats.RecordAnalyzeScanBytes(analyze_id, 9.0);
+    let metrics = NewRUV2Metrics();
+    metrics.AddTiKVCoprocessorResponseBytes(29);
+    let evidence = snapshot_statement_ru_runtime_evidence(
+        Some(&stats),
+        &[analyze_id],
+        None,
+        None,
+        Some(&metrics),
+    );
+    let mut calculator = new_statement_ru_terminal_calculator(
+        Some(&metrics),
+        StatementRUCalculationSetup {
+            full_report: true,
+            ..Default::default()
+        },
+        true,
+    )
+    .unwrap();
+
+    assert_eq!(
+        calculate_statement_ru_plan(&tree, 0, &evidence, &mut calculator).state,
+        StatementRUOperatorState::Complete
+    );
+    assert_eq!(calculator.units.scan_bytes, 1009.0);
+    assert_eq!(calculator.units.net_bytes, 29.0);
+}
+
+#[test]
 fn go_merge_187_owner_records_first_outcome_and_consumes_terminal_once() {
     let setup = StatementRUCalculationSetup {
         frontend_compile_bytes: 5.0,
