@@ -66,6 +66,8 @@ pub struct InfoSchemaBaseExtractor {
     pub ColPredicates: BTreeMap<String, BTreeSet<String>>,
     /// 列名 -> LIKE 模式列表。
     pub LikePatterns: BTreeMap<String, Vec<String>>,
+    /// Original patterns compiled before case folding, preserving ESCAPE semantics.
+    pub LikeMatchPatterns: BTreeMap<String, Vec<String>>,
     /// Plan-time escape bytes aligned with each displayed LIKE pattern.
     pub LikeEscapes: BTreeMap<String, Vec<u8>>,
     /// 谓词交集为空时为 true，调用方可直接跳过远程/底层请求。
@@ -86,6 +88,7 @@ impl InfoSchemaBaseExtractor {
         self.ColPredicates.clear();
         self.LikePatterns.clear();
         self.LikeEscapes.clear();
+        self.LikeMatchPatterns.clear();
         self.SkipRequest = false;
         // 仅处理白名单列；其它谓词原样退回。
         let allowed = columns
@@ -142,6 +145,10 @@ impl InfoSchemaBaseExtractor {
         self.LikePatterns
             .entry(field.clone())
             .or_default()
+            .push(pattern.to_lowercase());
+        self.LikeMatchPatterns
+            .entry(field.clone())
+            .or_default()
             .push(pattern.to_owned());
         self.LikeEscapes.entry(field).or_default().push(escape);
     }
@@ -195,7 +202,12 @@ impl InfoSchemaBaseExtractor {
                         .and_then(|escapes| escapes.get(index))
                         .copied()
                         .unwrap_or(b'\\');
-                    like_matches(pattern, value, escape)
+                    let original = self
+                        .LikeMatchPatterns
+                        .get(&field)
+                        .and_then(|patterns| patterns.get(index))
+                        .map_or(pattern.as_str(), String::as_str);
+                    like_matches(original, value, escape)
                 })
             })
     }

@@ -476,3 +476,47 @@ fn infoschema_custom_escape_filters_nonempty_metadata_and_retains_like() {
     );
     assert!(extractor.Base.LikePatterns.is_empty());
 }
+
+#[test]
+fn infoschema_folded_like_retains_original_filters() {
+    let table = TableInfo {
+        Name: NewCIStr("test70825"),
+        ..Default::default()
+    };
+    for pattern in ["T%", "t%"] {
+        let predicate = Predicate::Like("table_name".into(), pattern.into());
+        let mut extractor = InfoSchemaTablesExtractor::NewInfoSchemaTablesExtractor();
+        assert_eq!(
+            extractor.ExtractPredicates(&[predicate.clone()]),
+            [predicate]
+        );
+        assert_eq!(extractor.Base.LikePatterns["table_name"], ["t%"]);
+        assert!(extractor.HasTableName(&table.Name.O));
+    }
+    let mut columns = InfoSchemaColumnsExtractor::NewInfoSchemaColumnsExtractor();
+    for field in ["table_name", "column_name"] {
+        let predicate = Predicate::Like(field.into(), "T%".into());
+        assert_eq!(columns.ExtractPredicates(&[predicate.clone()]), [predicate]);
+        assert_eq!(columns.Base.LikePatterns[field], ["t%"]);
+    }
+    let left = Predicate::Like("column_name".into(), "abc%".into());
+    let right = Predicate::Like("column_name".into(), "%def".into());
+    let conjunction = [left.clone(), right.clone()];
+    assert_eq!(columns.ExtractPredicates(&conjunction), conjunction);
+    assert_eq!(columns.Base.LikePatterns["column_name"], ["abc%", "%def"]);
+    let disjunction = Predicate::Or(vec![left, right]);
+    assert_eq!(
+        columns.ExtractPredicates(&[disjunction.clone()]),
+        [disjunction]
+    );
+    assert!(columns.Base.LikePatterns.is_empty());
+    let ilike = Predicate::Ilike(
+        "column_name".into(),
+        "T%".into(),
+        LikeEscape::Constant(b'\\'),
+    );
+    assert!(columns.ExtractPredicates(&[ilike]).is_empty());
+    assert_eq!(columns.Base.LikePatterns["column_name"], ["t%"]);
+    assert!(columns.Base.Has("column_name", "Test"));
+    assert!(columns.Base.Has("column_name", "test"));
+}
