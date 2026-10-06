@@ -47,6 +47,43 @@ fn rows(session: &ConcreteSession, sql: &str) -> Vec<Vec<String>> {
 }
 
 #[test]
+fn vector_index_kind_is_persisted_for_create_and_alter() {
+    let (domain, session) = CreateAnalyzeSession().expect("canonical DDL session");
+
+    execute(
+        &session,
+        "create table test.vector_kind_create (v vector(3), \
+         vector index ((vec_cosine_distance(v))) using hnsw)",
+    );
+    let created = domain
+        .table_by_name("test", "vector_kind_create")
+        .expect("created vector-index table metadata");
+    let created_info = created.Indices[0]
+        .VectorInfo
+        .as_ref()
+        .expect("CREATE TABLE vector metadata");
+    assert_eq!(created_info.Kind, astersql_meta_model::VectorIndexKindHNSW);
+
+    execute(
+        &session,
+        "create table test.vector_kind_alter (v vector(3))",
+    );
+    execute(
+        &session,
+        "alter table test.vector_kind_alter add vector index idx \
+         ((vec_l2_distance(v))) using hnsw",
+    );
+    let altered = domain
+        .table_by_name("test", "vector_kind_alter")
+        .expect("altered vector-index table metadata");
+    let altered_info = altered.Indices[0]
+        .VectorInfo
+        .as_ref()
+        .expect("ALTER TABLE vector metadata");
+    assert_eq!(altered_info.Kind, astersql_meta_model::VectorIndexKindHNSW);
+}
+
+#[test]
 fn common_mysql_ddl_round_trips_through_catalog_and_storage() {
     let (_domain, session) = CreateAnalyzeSession().expect("canonical DDL session");
 

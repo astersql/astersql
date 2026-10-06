@@ -218,6 +218,33 @@ fn columnar_index_type_json_matches_go_uint8_encoding() {
         ColumnarIndexType::Vector
     );
 }
+
+#[test]
+fn vector_index_kind_json_persists_hnsw_and_accepts_legacy_metadata() {
+    let info = VectorIndexInfo {
+        Kind: VectorIndexKindHNSW.into(),
+        Dimension: 3,
+        DistanceMetric: DistanceMetricCosine.clone(),
+    };
+
+    let encoded = serde_json::to_value(&info).unwrap();
+    assert_eq!(encoded["kind"], "HNSW");
+    assert_eq!(
+        serde_json::from_value::<VectorIndexInfo>(encoded).unwrap(),
+        info
+    );
+
+    let legacy = serde_json::json!({
+        "dimension": 3,
+        "distance_metric": "COSINE"
+    });
+    assert_eq!(
+        serde_json::from_value::<VectorIndexInfo>(legacy)
+            .unwrap()
+            .Kind,
+        ""
+    );
+}
 use crate::group_1::{ColumnInfo, IndexColumn, IndexInfo, IsIndexPrefixCovered, TableInfo, ast};
 
 /// 精简断言：索引前缀覆盖要求从左侧按序匹配列，不能跳过前缀。
