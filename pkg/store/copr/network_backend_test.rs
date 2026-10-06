@@ -14,7 +14,9 @@ use kvproto::kvrpcpb;
 use protobuf::Message;
 
 use crate::batch_request_sender::{BatchResult, KeyRange, Peer, RegionVerId, Store};
-use crate::coprocessor::{CopProtocolResponse, CopRequestAttemptLimiter, CopTask, CopWireRequest};
+use crate::coprocessor::{
+    CopProtocolResponse, CopRequestAttemptLimiter, CopTask, CopWireRequest, StoreBatchWireTask,
+};
 use crate::network_backend::{
     CoprocessorResponseStream, KeyCodec, NetworkBackend, RegionMetadataTransport,
     StandardCoprocessorRequest, StandardCoprocessorTransport, TransactionLock,
@@ -194,6 +196,84 @@ impl StandardCoprocessorTransport for RecordingCoprocessor {
     fn close_address(&self, _address: &str) -> BatchResult<()> {
         Ok(())
     }
+}
+
+#[derive(Default)]
+struct TimeoutRecordingCoprocessor {
+    timeouts: Mutex<Vec<Duration>>,
+}
+
+impl StandardCoprocessorTransport for TimeoutRecordingCoprocessor {
+    fn send_unary(
+        &self,
+        _request: &StandardCoprocessorRequest,
+        timeout: Duration,
+    ) -> BatchResult<CopProtocolResponse> {
+        self.timeouts.lock().unwrap().push(timeout);
+        Ok(CopProtocolResponse::default())
+    }
+
+    fn send_stream(
+        &self,
+        _request: &StandardCoprocessorRequest,
+        _timeout: Duration,
+    ) -> BatchResult<Box<dyn CoprocessorResponseStream>> {
+        unreachable!("timeout regression exercises unary coprocessor RPCs")
+    }
+
+    fn close(&self) -> BatchResult<()> {
+        Ok(())
+    }
+
+    fn close_address(&self, _address: &str) -> BatchResult<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn serial_store_batch_timeout_scales_with_every_task() {
+    const DEFAULT_RPC_TIMEOUT: Duration = Duration::from_secs(60);
+    const EXPLICIT_READ_TIMEOUT: Duration = Duration::from_millis(500);
+    const BATCHED_CHILDREN: usize = 3;
+
+    let transport = Arc::new(TimeoutRecordingCoprocessor::default());
+    let backend = NetworkBackend::from_transports(
+        Arc::new(RecordingMetadata::default()),
+        Arc::clone(&transport) as Arc<dyn StandardCoprocessorTransport>,
+        Arc::new(RecordingLockResolver::default()),
+    );
+    let wire = CopWireRequest {
+        execute_batch_tasks_serially: true,
+        tasks: vec![StoreBatchWireTask::default(); BATCHED_CHILDREN],
+        ..CopWireRequest::default()
+    };
+    let task = CopTask {
+        region: RecordingMetadata::location().region,
+        ..CopTask::default()
+    };
+
+    StoreBackend::send_coprocessor(&backend, &task, &wire).unwrap();
+
+    let explicit_task = CopTask {
+        client_read_timeout: EXPLICIT_READ_TIMEOUT,
+        ..task.clone()
+    };
+    StoreBackend::send_coprocessor(&backend, &explicit_task, &wire).unwrap();
+
+    let concurrent_wire = CopWireRequest {
+        execute_batch_tasks_serially: false,
+        ..wire
+    };
+    StoreBackend::send_coprocessor(&backend, &task, &concurrent_wire).unwrap();
+
+    assert_eq!(
+        *transport.timeouts.lock().unwrap(),
+        vec![
+            DEFAULT_RPC_TIMEOUT * (BATCHED_CHILDREN as u32 + 1),
+            EXPLICIT_READ_TIMEOUT * (BATCHED_CHILDREN as u32 + 1),
+            DEFAULT_RPC_TIMEOUT,
+        ]
+    );
 }
 
 #[test]
