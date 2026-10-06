@@ -28,6 +28,18 @@ pub type Result<T> = std::result::Result<T, BuilderError>;
 pub type PreprocessOpt = dyn Fn(&mut preprocessor);
 /// 预处理器内部状态位标志类型。
 type preprocessorFlag = u64;
+/// Unexpected or unsupported statement type.
+pub const TypeInvalid: u8 = 0;
+/// SELECT statement.
+pub const TypeSelect: u8 = 1;
+/// Set-operation statement such as UNION.
+pub const TypeSetOpr: u8 = 2;
+/// DELETE statement.
+pub const TypeDelete: u8 = 3;
+/// UPDATE statement.
+pub const TypeUpdate: u8 = 4;
+/// INSERT statement.
+pub const TypeInsert: u8 = 5;
 /// 标志：当前处于 PREPARE 语句处理。
 const inPrepare: preprocessorFlag = 1 << 0;
 /// 标志：当前处于事务重试路径。
@@ -289,6 +301,10 @@ pub enum PreprocessNode {
         flen: i32,
         decimal: i32,
     },
+    UserVariable {
+        name: String,
+        assigned: bool,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -425,6 +441,21 @@ pub fn Preprocess(
 }
 
 impl preprocessor {
+    /// Record a user-variable visit using the same case-insensitive state machine as Go.
+    fn recordUserVariable(&mut self, name: &str, assigned: bool) {
+        let name = name.to_ascii_lowercase();
+        if assigned {
+            self.varsMutable.insert(name.clone());
+            self.varsReadonly.remove(&name);
+        } else if matches!(
+            self.stmtTp,
+            TypeSelect | TypeUpdate | TypeInsert | TypeDelete
+        ) && !self.varsMutable.contains(&name)
+        {
+            self.varsReadonly.insert(name);
+        }
+    }
+
     /// 记录失败结果并返回是否应中止遍历。
     fn fail(&mut self, result: Result<()>) {
         if self.err.is_none() {
@@ -439,6 +470,9 @@ impl preprocessor {
             return true;
         }
         match node {
+            PreprocessNode::UserVariable { name, assigned } => {
+                self.recordUserVariable(name, *assigned)
+            }
             PreprocessNode::CreateDatabase { name } => {
                 let r = self.checkCreateDatabaseGrammar(name);
                 self.fail(r);
@@ -1087,9 +1121,9 @@ pub fn EraseLastSemicolonInSQL(sql: &str) -> String {
 /// 将语句映射为可绑定类型编码。
 pub fn bindableStmtType(statement: &Statement) -> u8 {
     match statement {
-        Statement::Select { .. } => 1,
-        Statement::Insert(_) => 5,
-        _ => 0,
+        Statement::Select { .. } => TypeSelect,
+        Statement::Insert(_) => TypeInsert,
+        _ => TypeInvalid,
     }
 }
 

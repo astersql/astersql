@@ -23,9 +23,10 @@ use std::collections::HashMap;
 use crate::planbuilder::Statement;
 use crate::preprocess::{
     ColumnDef, ColumnOption, EraseLastSemicolonInSQL, IndexOption, IndexPart, Preprocess,
-    PreprocessNode, TableName, TableOption, TryAddExtraLimit, bindableStmtType,
-    checkAutoIncrementOp, checkColumn, checkColumnOptions, checkIndexInfo, checkIndexOptions,
-    checkIndexSpecs, checkTableEngine, isTableAliasDuplicate,
+    PreprocessNode, TableName, TableOption, TryAddExtraLimit, TypeDelete, TypeInsert, TypeSelect,
+    TypeUpdate, bindableStmtType, checkAutoIncrementOp, checkColumn, checkColumnOptions,
+    checkIndexInfo, checkIndexOptions, checkIndexSpecs, checkTableEngine, isTableAliasDuplicate,
+    preprocessor,
 };
 use crate::task::{PlanKind, PlanNode};
 
@@ -235,4 +236,47 @@ fn validator_matches_go_edge_semantics() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn readonly_user_variables_are_foldable_in_read_only_dml_expressions() {
+    for statement_type in [TypeSelect, TypeUpdate, TypeInsert, TypeDelete] {
+        let mut processor = preprocessor {
+            stmtTp: statement_type,
+            ..Default::default()
+        };
+
+        processor.Enter(&PreprocessNode::UserVariable {
+            name: "ID".into(),
+            assigned: false,
+        });
+
+        assert!(
+            processor.varsReadonly.contains("id"),
+            "statement type {statement_type} must expose a read-only variable for constant folding"
+        );
+    }
+}
+
+#[test]
+fn assignments_keep_user_variables_mutable_for_the_entire_dml_statement() {
+    for statement_type in [TypeUpdate, TypeInsert, TypeDelete] {
+        let mut processor = preprocessor {
+            stmtTp: statement_type,
+            ..Default::default()
+        };
+
+        for (name, assigned) in [("id", false), ("ID", true), ("Id", false)] {
+            processor.Enter(&PreprocessNode::UserVariable {
+                name: name.into(),
+                assigned,
+            });
+        }
+
+        assert!(processor.varsMutable.contains("id"));
+        assert!(
+            !processor.varsReadonly.contains("id"),
+            "statement type {statement_type} must not fold a variable assigned in the same statement"
+        );
+    }
 }
