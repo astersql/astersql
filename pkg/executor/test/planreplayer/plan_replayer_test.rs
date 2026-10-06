@@ -61,6 +61,8 @@ struct Backend {
     fail_prepare_dump: bool,
     /// 为 true 时 `load_bindings` 失败并触发 warning。
     fail_bindings: bool,
+    /// 为 true 时模拟 create-database 失败。
+    fail_create_tables: bool,
     /// 绑定加载失败累计的 warning 次数。
     binding_warnings: usize,
     /// 关闭 auto-analyze 时累计的 warning 次数。
@@ -261,6 +263,11 @@ impl PlanReplayerBackend for Backend {
         _archive: &mut Self::Archive,
     ) -> Result<HashSet<String>, Self::Error> {
         context.trace.push("tables");
+        if self.fail_create_tables {
+            return Err(
+                "plan replayer: failed to create database: tidb_low_resolution_tso".to_owned(),
+            );
+        }
         Ok(HashSet::from(["test".to_owned()]))
     }
 
@@ -703,6 +710,28 @@ fn load_runs_variables_schema_tiflash_stats_and_bindings_in_order() {
     );
     assert_eq!(backend.binding_warnings, 1);
     assert_eq!(backend.auto_analyze_warnings, 1);
+}
+
+/// create-database 的真实错误必须直接返回，不能继续执行后续 schema 阶段而掩盖原因。
+#[test]
+fn load_reports_create_database_error_before_follow_up_schema_work() {
+    let mut backend = Backend {
+        fail_create_tables: true,
+        ..Backend::default()
+    };
+    let mut context = Context::default();
+
+    let error = updateLoadInfo(&mut backend, &mut context, b"sql:select * from t").unwrap_err();
+
+    assert!(error.contains("plan replayer: failed to create database"));
+    assert!(error.contains("tidb_low_resolution_tso"));
+    assert!(!error.contains("Unknown database"));
+    assert_eq!(
+        context.trace,
+        ["variables", "disable-auto-analyze", "tables"]
+    );
+    assert_eq!(backend.binding_warnings, 0);
+    assert_eq!(backend.auto_analyze_warnings, 0);
 }
 
 /// explain explore：先读归档目标 SQL，再跑完整 load 环境初始化。

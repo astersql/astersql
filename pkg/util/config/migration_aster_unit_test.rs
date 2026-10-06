@@ -145,7 +145,7 @@ innodb_lock_wait_timeout = "88"
 
 #[test]
 #[serial]
-fn go_merge_11_ignores_read_timestamp_overrides() {
+fn plan_replayer_load_ignores_read_timestamp_overrides() {
     variable::clear_sys_vars_for_test();
     for name in [
         "tidb_low_resolution_tso",
