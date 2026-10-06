@@ -508,7 +508,7 @@ pub trait AdapterRuntime {
     fn RUV2ReporterAvailable(&self) -> bool;
     fn ResourceGroupName(&self) -> String;
     fn ReportRUV2Consumption(&self, resource_group: &str, tikv: f64, tidb: f64, tiflash: f64);
-    fn RecordLastQuery(&self, error: Option<&str>);
+    fn RecordLastQuery(&self, error: Option<&str>, total_ru_v2: f64);
     fn PlanReplayerCapture(&self, statement: &StatementNode, start_ts: u64, continuous: bool);
     fn SlowQuery(&self, transaction_ts: u64, sql: &str, success: bool, has_more_results: bool);
     fn Summary(&self, summary: &StatementSummary);
@@ -2007,7 +2007,7 @@ impl ExecStmt {
             supplementary.read_from_table_cache,
         );
         self.updatePrevStmt();
-        self.recordLastQueryInfo(error.as_ref());
+        self.recordLastQueryInfo(error.as_ref(), self.StatementCtx.total_ru);
         self.recordAffectedRows2Metrics();
         let commit = self.Ctx.CommitDetailsForFinish();
         self.observePhaseDurations(self.Ctx.RestrictedSQL(), commit.as_ref());
@@ -2069,9 +2069,9 @@ impl ExecStmt {
     }
 
     /// 记录上次查询信息（含错误）。
-    pub fn recordLastQueryInfo(&self, error: Option<&errors::SharedError>) {
+    pub fn recordLastQueryInfo(&self, error: Option<&errors::SharedError>, total_ru_v2: f64) {
         self.Ctx
-            .RecordLastQuery(error.map(|error| error.to_string()).as_deref());
+            .RecordLastQuery(error.map(|error| error.to_string()).as_deref(), total_ru_v2);
     }
 
     /// 检查是否触发 Plan Replayer 捕获任务。

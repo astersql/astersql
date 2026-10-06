@@ -649,6 +649,7 @@ impl ConcreteSession {
             "start_ts": start_ts,
             "for_update_ts": 0,
             "ru_consumption": ru_consumption,
+            "ru_v2_consumption": 0.0,
         });
         if let Err(error) = execution {
             info["error"] = serde_json::Value::String(error.to_string());

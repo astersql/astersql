@@ -803,6 +803,39 @@ fn last_query_info_tracks_prepared_and_previous_query_ru() {
     );
 }
 
+/// RU v2 的最终语句总量必须暴露在上一条查询信息中。
+// 对应 Go TestLastQueryInfoRUV2：真实 SQL 完成后读取 ru_v2_consumption。
+#[test]
+fn last_query_info_exposes_finalized_ru_v2_consumption() {
+    let (store, _domain) = CreateMockStoreAndDomain();
+    let mut tk = TestKit::new(store);
+    tk.MustExec(
+        "create table last_query_info_ru_v2(id int primary key, v int)",
+        Vec::new(),
+    );
+    tk.MustExec(
+        "insert into last_query_info_ru_v2 values (1, 2), (2, 3), (3, 4)",
+        Vec::new(),
+    );
+    tk.MustQuery(
+        "select * from last_query_info_ru_v2 where id > 0 order by id",
+        Vec::new(),
+    )
+    .Check(Rows(&["1 2", "2 3", "3 4"]));
+
+    let info = tk
+        .MustQuery("select @@tidb_last_query_info", Vec::new())
+        .Rows()[0][0]
+        .clone();
+    let info: serde_json::Value = serde_json::from_str(&info).expect("valid last query info JSON");
+    assert!(
+        info["ru_v2_consumption"]
+            .as_f64()
+            .is_some_and(|ru| ru > 0.0),
+        "unexpected LastQueryInfo RU v2: {info}"
+    );
+}
+
 /// General Log 必须记录真实 SQL 与非零事务起始时间，而不是只验证本地 mock。
 // 对应 TestGeneralLogNonzeroTxnStartTS：从生产 General logger 读取会话发出的结构化日志。
 #[test]

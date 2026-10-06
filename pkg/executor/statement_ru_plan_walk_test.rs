@@ -2563,6 +2563,7 @@ struct RUTerminalRuntime {
     reentrant_stmt: std::cell::RefCell<Option<crate::adapter::ExecStmt>>,
     published: std::cell::RefCell<Vec<(String, f64, f64, f64)>>,
     topsql: std::cell::RefCell<Vec<f64>>,
+    last_query_ru_v2: std::cell::RefCell<Vec<f64>>,
     calibration: std::cell::RefCell<Vec<astersql_resourcegroup::ruv2::model::StmtUnits>>,
 }
 #[allow(unused_variables)]
@@ -2738,7 +2739,9 @@ impl crate::adapter::AdapterRuntime for RUTerminalRuntime {
     ) {
         self.calibration.borrow_mut().push(units);
     }
-    fn RecordLastQuery(&self, _error: Option<&str>) {}
+    fn RecordLastQuery(&self, _error: Option<&str>, total_ru_v2: f64) {
+        self.last_query_ru_v2.borrow_mut().push(total_ru_v2);
+    }
     fn PlanReplayerCapture(&self, _statement: &StatementNode, _start_ts: u64, _continuous: bool) {}
     fn SlowQuery(&self, _transaction_ts: u64, _sql: &str, _success: bool, _has_more_results: bool) {
     }
@@ -3155,11 +3158,16 @@ fn go_merge_195_197_publish_snapshot_real_terminal_once() {
         )]
     );
     assert_eq!(*runtime.topsql.borrow(), [snapshot.result.total_ru]);
+    assert_eq!(
+        *runtime.last_query_ru_v2.borrow(),
+        [snapshot.result.total_ru]
+    );
     assert_eq!(*runtime.calibration.borrow(), [snapshot.units]);
     stmt.FinishExecuteStmt(0, None, false);
     assert_eq!(runtime.published.borrow().len(), 1);
     assert_eq!(runtime.calibration.borrow().len(), 1);
     assert_eq!(runtime.topsql.borrow().len(), 1);
+    assert_eq!(runtime.last_query_ru_v2.borrow().len(), 2);
     assert_eq!(stmt.StatementCtx.total_ru, snapshot.result.total_ru);
     assert_eq!(total.get() - before_total, snapshot.result.total_ru);
     assert_eq!(frontend.get() - before_frontend, 13.0);

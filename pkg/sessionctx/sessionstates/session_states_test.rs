@@ -1975,6 +1975,7 @@ fn null_fields_decode_to_go_zero_values() {
         "start_ts": null,
         "for_update_ts": null,
         "ru_consumption": null,
+        "ru_v2_consumption": null,
         "error": null
     }))
     .unwrap();
@@ -2030,6 +2031,7 @@ fn session_states_json_round_trip_matches_go_tags_and_omitempty() {
             StartTS: 123,
             ForUpdateTS: 456,
             RUConsumption: 1.5,
+            RUV2Consumption: 2.5,
             ErrMsg: "query failed".to_owned(),
         })),
         LastDDLInfo: Some(Box::new(LastDDLInfo {
@@ -2078,6 +2080,7 @@ fn session_states_json_round_trip_matches_go_tags_and_omitempty() {
     assert_eq!(json["user-var-types"]["answer"]["Tp"], 8);
     assert_eq!(json["prepared-stmts"]["5"]["types"], "Aw==");
     assert_eq!(json["warnings"][0]["level"], "Warning");
+    assert_eq!(json["query-info"]["ru_v2_consumption"], 2.5);
     assert_eq!(
         json["hypo-tiflash-replicas"]["test"]["t"],
         serde_json::json!({})

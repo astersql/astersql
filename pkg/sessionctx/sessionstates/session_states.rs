@@ -158,6 +158,13 @@ pub struct QueryInfo {
     /// 资源单元（RU）消耗量。
     pub RUConsumption: f64,
     #[serde(
+        rename = "ru_v2_consumption",
+        default,
+        deserialize_with = "null_default"
+    )]
+    /// 当前 RU v2 计量模型计算出的最终语句总量。
+    pub RUV2Consumption: f64,
+    #[serde(
         rename = "error",
         default,
         deserialize_with = "null_default",

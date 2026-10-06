@@ -1388,8 +1388,16 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
             reporter.report_ruv2_consumption(resource_group, tikv, tidb, tiflash);
         }
     }
-    fn RecordLastQuery(&self, error: Option<&str>) {
+    fn RecordLastQuery(&self, error: Option<&str>, total_ru_v2: f64) {
         self.effects.borrow_mut().last_error = error.map(str::to_owned);
+        let mut state = self.session.state.borrow_mut();
+        let mut info = serde_json::from_str::<serde_json::Value>(&state.last_query_info)
+            .unwrap_or_else(|_| serde_json::json!({}));
+        info["ru_v2_consumption"] = serde_json::json!(total_ru_v2);
+        if let Some(error) = error {
+            info["error"] = serde_json::Value::String(error.to_owned());
+        }
+        state.last_query_info = info.to_string();
     }
     fn PlanReplayerCapture(&self, statement: &StatementNode, start_ts: u64, continuous: bool) {
         self.effects.borrow_mut().events.push(format!(
