@@ -26,7 +26,7 @@ use crate::ddl::{
     ActionType as ProductionActionType, Job as ProductionJob, JobState as ProductionJobState,
 };
 use crate::job_worker::{
-    WorkerType, account_general_job_ru, build_placement_affects, choose_lease_time,
+    WorkerType, account_job_ru, build_placement_affects, choose_lease_time,
     job_need_gc as production_job_need_gc,
 };
 
@@ -276,7 +276,7 @@ fn build_placement_affects_matches_go_contract() {
 }
 
 #[test]
-fn general_ddl_ru_accounts_next_gen_transaction_bytes_and_clears_failed_jobs() {
+fn ddl_ru_accounts_weighted_transaction_bytes_for_every_worker_and_clears_failed_jobs() {
     use astersql_meta_model::group_3::{Job as WireJob, JobState as WireJobState};
 
     let mut job = WireJob {
@@ -284,19 +284,26 @@ fn general_ddl_ru_accounts_next_gen_transaction_bytes_and_clears_failed_jobs() {
         ru: 7.0,
         ..WireJob::default()
     };
-    account_general_job_ru(true, WorkerType::General, 13, &mut job);
-    assert_eq!(job.ru, 20.0);
+    account_job_ru(true, 13, 2.0, &mut job);
+    assert_eq!(job.ru, 33.0);
 
-    account_general_job_ru(false, WorkerType::General, 100, &mut job);
-    account_general_job_ru(true, WorkerType::AddIndex, 100, &mut job);
-    assert_eq!(job.ru, 20.0);
+    account_job_ru(false, 100, 2.0, &mut job);
+    assert_eq!(job.ru, 33.0);
+
+    // The production transaction boundary invokes this helper for every worker
+    // type; there is deliberately no General-only gate, matching Go accountJobRU.
+    for worker_type in [WorkerType::General, WorkerType::AddIndex] {
+        let mut worker_job = WireJob::default();
+        account_job_ru(true, 5, 3.0, &mut worker_job);
+        assert_eq!(worker_job.ru, 15.0, "{worker_type:?}");
+    }
 
     job.state = WireJobState::Cancelled;
-    account_general_job_ru(true, WorkerType::General, 100, &mut job);
+    account_job_ru(true, 100, 2.0, &mut job);
     assert_eq!(job.ru, 0.0);
     job.ru = 9.0;
     job.state = WireJobState::RollbackDone;
-    account_general_job_ru(true, WorkerType::General, 100, &mut job);
+    account_job_ru(true, 100, 2.0, &mut job);
     assert_eq!(job.ru, 0.0);
 }
 

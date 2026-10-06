@@ -177,10 +177,10 @@ pub fn job_need_gc(job: &Job) -> bool {
         )
 }
 
-pub(crate) fn account_general_job_ru(
+pub(crate) fn account_job_ru(
     next_gen: bool,
-    worker_type: WorkerType,
     transaction_size: usize,
+    transaction_kv_byte_weight: f64,
     job: &mut astersql_meta_model::group_3::Job,
 ) {
     if matches!(
@@ -189,8 +189,8 @@ pub(crate) fn account_general_job_ru(
             | astersql_meta_model::group_3::JobState::RollbackDone
     ) {
         job.ru = 0.0;
-    } else if next_gen && worker_type == WorkerType::General {
-        job.ru += transaction_size as f64;
+    } else if next_gen {
+        job.ru += transaction_size as f64 * transaction_kv_byte_weight;
     }
 }
 
@@ -543,18 +543,18 @@ impl JobWorker {
                 astersql_meta_model::group_3::JobState::Cancelled
                     | astersql_meta_model::group_3::JobState::RollbackDone
             );
-            let transaction_size = if !failed
-                && astersql_config_kerneltype::IsNextGen()
-                && self.worker_type == WorkerType::General
-            {
+            let transaction_size = if !failed && astersql_config_kerneltype::IsNextGen() {
                 session.transaction_size()?
             } else {
                 0
             };
-            account_general_job_ru(
+            account_job_ru(
                 astersql_config_kerneltype::IsNextGen(),
-                self.worker_type,
                 transaction_size,
+                astersql_config::get_global_config()
+                    .ruv2
+                    .ddl_weights
+                    .txn_kv_bytes,
                 job,
             );
             if !result.removed {
