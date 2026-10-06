@@ -1676,6 +1676,79 @@ impl ConcreteSession {
 
     /// 执行 ALTER TABLE（含统计相关变更）。
     pub(super) fn execute_alter_table(&self, statement: &ast::AlterTableStmt) -> SessionResult<()> {
+        // These operations mutate two tables. Match buildDDL's ordered visits
+        // before submitting a job or changing either table's data.
+        if let Some(user) = self.login_user.as_deref() {
+            let host = self
+                .authenticated_host
+                .as_deref()
+                .or(self.login_host.as_deref())
+                .unwrap_or("%");
+            let current_database = self.current_database();
+            let source_database = if statement.Table.Schema.L.is_empty() {
+                &current_database
+            } else {
+                &statement.Table.Schema.L
+            };
+            let privileges = runtime_privilege_handle(&self.domain).Get();
+            use astersql_privilege_privileges::{AlterPriv, CreatePriv, DropPriv, InsertPriv};
+            for spec in &statement.Specs {
+                if !matches!(
+                    spec.Tp,
+                    ast::AlterTableType::RenameTable | ast::AlterTableType::ExchangePartition
+                ) {
+                    continue;
+                }
+                let target = spec
+                    .NewTable
+                    .as_ref()
+                    .ok_or_else(|| SessionError::new("ALTER TABLE has no target table"))?;
+                let target_database = if target.Schema.L.is_empty() {
+                    &current_database
+                } else {
+                    &target.Schema.L
+                };
+                let mut visits = vec![
+                    (AlterPriv, source_database, &statement.Table.Name.L, "ALTER"),
+                    (DropPriv, source_database, &statement.Table.Name.L, "DROP"),
+                    (CreatePriv, target_database, &target.Name.L, "CREATE"),
+                    (InsertPriv, target_database, &target.Name.L, "INSERT"),
+                ];
+                if spec.Tp == ast::AlterTableType::ExchangePartition {
+                    visits.extend([
+                        (
+                            InsertPriv,
+                            source_database,
+                            &statement.Table.Name.L,
+                            "INSERT",
+                        ),
+                        (
+                            CreatePriv,
+                            source_database,
+                            &statement.Table.Name.L,
+                            "CREATE",
+                        ),
+                        (AlterPriv, target_database, &target.Name.L, "ALTER"),
+                        (DropPriv, target_database, &target.Name.L, "DROP"),
+                    ]);
+                }
+                for (privilege, database, table, command) in visits {
+                    if !privileges.RequestVerification(
+                        &self.active_roles.borrow(),
+                        user,
+                        host,
+                        database,
+                        table,
+                        "",
+                        privilege,
+                    ) {
+                        return Err(SessionError::new(format!(
+                            "[planner:1142]{command} command denied to user '{user}'@'{host}' for table '{table}'"
+                        )));
+                    }
+                }
+            }
+        }
         astersql_planner_core::InstallPlannerExpressionFactory()
             .map_err(|error| SessionError::new(error.to_string()))?;
         for spec in &statement.Specs {
@@ -2149,8 +2222,9 @@ impl ConcreteSession {
                     let new_table = spec.NewTable.as_ref().ok_or_else(|| {
                         SessionError::new("ALTER TABLE EXCHANGE PARTITION has no table")
                     })?;
+                    let current_database = self.current_database();
                     let new_database = if new_table.Schema.L.is_empty() {
-                        database
+                        current_database.as_str()
                     } else {
                         new_table.Schema.L.as_str()
                     };
@@ -2177,6 +2251,12 @@ impl ConcreteSession {
                         .ok_or_else(|| {
                             SessionError::new("exchange table metadata is unavailable")
                         })?;
+                    if astersql_meta_metadef::IsReservedID(exchange_info.ID) {
+                        return Err(SessionError::new(format!(
+                            "[ddl:8267]Exchange partition on system table '{}.{}' is forbidden",
+                            new_database, exchange_info.Name.L
+                        )));
+                    }
                     Self::check_exchange_partition_materialized_view_constraints(
                         &partitioned_info,
                         "partitioned table",
