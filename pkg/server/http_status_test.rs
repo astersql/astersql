@@ -18,7 +18,7 @@
 // 通过临时端口启动完整测试服务器，并直接发送 HTTP 请求，验证健康状态、
 // Prometheus 指标响应以及服务器关闭时两个监听器的生命周期。
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
@@ -46,6 +46,46 @@ impl Domain for TestDomain {
     fn start_timestamp(&self) -> i64 {
         1
     }
+
+    fn global_system_variables(&self) -> BTreeMap<String, String> {
+        BTreeMap::from([
+            ("init_connect".into(), "set @secret = 1".into()),
+            (
+                "tidb_cloud_storage_uri".into(),
+                "s3://bucket/path?access-key=key&region=us-east-1".into(),
+            ),
+        ])
+    }
+}
+
+#[test]
+fn nextgen_global_variables_route_masks_diagnostic_secrets() {
+    astersql_sessionctx_variable::register_builtin_sysvars();
+    let server = Server::new_test(ServerConfig::default(), Arc::new(Driver));
+    server.run(Arc::new(TestDomain)).unwrap();
+    let router = crate::http_status::build_status_router(server.clone());
+    let request = Request {
+        method: Method::Get,
+        path: "/variables/global".into(),
+        query: HashMap::new(),
+        raw_query: String::new(),
+        headers: HashMap::new(),
+        body: vec![],
+    };
+    let response = router.handle(&request);
+    if astersql_config_kerneltype::IsNextGen() {
+        assert_eq!(response.status, 200);
+        assert_eq!(response.headers["Cache-Control"], "no-store");
+        let values: BTreeMap<String, String> = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(values["init_connect"], "******");
+        assert_eq!(
+            values["tidb_cloud_storage_uri"],
+            "s3://bucket/path?access-key=xxxxxx&region=us-east-1"
+        );
+    } else {
+        assert_eq!(response.status, 404);
+    }
+    server.close();
 }
 
 fn ballast_request(method: Method, body: &[u8]) -> Request {

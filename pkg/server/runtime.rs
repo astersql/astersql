@@ -541,6 +541,10 @@ impl ServerDomain for CanonicalServerDomain {
             .unwrap_or_else(|| astersql_sessionctx_vardef::On.to_owned()))
     }
 
+    fn global_system_variables(&self) -> std::collections::BTreeMap<String, String> {
+        self.domain.global_system_variables()
+    }
+
     fn keyspace_identity(&self) -> (String, u32) {
         self.domain.storage().with_storage(|storage| {
             (

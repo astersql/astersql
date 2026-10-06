@@ -465,6 +465,9 @@ pub struct SysVar {
     pub Depended: bool,
     pub skipInit: bool,
     pub IsNoop: bool,
+    /// Marks non-empty values that diagnostics must mask. SQL getter semantics
+    /// are unchanged; extension variables containing secrets must opt in.
+    pub IsSensitive: bool,
     pub IsInitedFromConfig: bool,
     pub GlobalConfigName: String,
     pub RequireDynamicPrivileges: Option<PrivilegeHook>,
@@ -498,6 +501,7 @@ impl Default for SysVar {
             Depended: false,
             skipInit: false,
             IsNoop: false,
+            IsSensitive: false,
             IsInitedFromConfig: false,
             GlobalConfigName: String::new(),
             RequireDynamicPrivileges: None,
@@ -988,7 +992,25 @@ static SYS_VARS: LazyLock<RwLock<HashMap<String, Arc<SysVar>>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
 /// 注册/覆盖一个系统变量定义。
-pub fn RegisterSysVar(sys_var: SysVar) {
+pub fn RegisterSysVar(mut sys_var: SysVar) {
+    if matches!(
+        sys_var.Name.to_ascii_lowercase().as_str(),
+        "tidb_exp_embed_jina_ai_api_key"
+            | "tidb_exp_embed_openai_api_key"
+            | "tidb_exp_embed_cohere_api_key"
+            | "tidb_exp_embed_huggingface_api_key"
+            | "tidb_exp_embed_nvidia_nim_api_key"
+            | "tidb_exp_embed_gemini_api_key"
+            | "tidb_config"
+            | "tidb_trace_event"
+            | "init_connect"
+            | "validate_password.dictionary"
+            | "authentication_ldap_sasl_bind_root_pwd"
+            | "authentication_ldap_simple_bind_root_pwd"
+            | "init_slave"
+    ) {
+        sys_var.IsSensitive = true;
+    }
     SYS_VARS
         .write()
         .expect("sysvar registry poisoned")

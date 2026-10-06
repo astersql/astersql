@@ -223,6 +223,7 @@ fn noop_sys_var(variable: &crate::noop::NoopSysVar) -> SysVar {
             .map(|value| (*value).to_owned())
             .collect(),
         IsNoop: true,
+        IsSensitive: variable.name.eq_ignore_ascii_case("init_slave"),
         ..SysVar::default()
     }
 }
@@ -1683,6 +1684,18 @@ fn register_getters_and_defaults() {
 
 /// 注册仅全局作用域的系统变量。
 fn register_global_vars() {
+    let mut cloud_storage_uri = string_var(vardef::TiDBCloudStorageURI, "", vardef::ScopeGlobal);
+    cloud_storage_uri.GetGlobal = Some(Arc::new(|_, _| {
+        Ok(parser_ast::misc::redact_url(
+            &vardef::CloudStorageURI.Load(),
+        ))
+    }));
+    cloud_storage_uri.SetGlobal = Some(Arc::new(|_, _, value| {
+        vardef::CloudStorageURI.Store(value.to_owned());
+        Ok(())
+    }));
+    RegisterSysVar(cloud_storage_uri);
+
     // Preserve the obsolete knob for SQL compatibility without merge state.
     let mut merge = int_var(
         vardef::TiDBMergePartitionStatsConcurrency,

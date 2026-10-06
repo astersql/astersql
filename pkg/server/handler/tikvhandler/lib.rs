@@ -11,15 +11,21 @@
 pub mod dxf;
 /// Live TiFlash replica summary response used by `/tiflash/replica`.
 pub mod flash_replica;
+/// Redacted global-variable snapshot used by the NextGen status API.
+pub mod global_variables;
 /// 通用 TiKV status handler：schema、Region、MVCC、DDL 等运维接口。
 pub mod tikv_handler;
 
 pub use dxf::*;
 pub use flash_replica::*;
+pub use global_variables::*;
 pub use tikv_handler::*;
 
 #[cfg(test)]
 mod flash_replica_test;
+
+#[cfg(test)]
+mod global_variables_test;
 
 #[cfg(test)]
 /// DXF 解析与 TTL 相关单元测试。

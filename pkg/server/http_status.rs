@@ -568,6 +568,30 @@ fn metrics_response() -> Response {
     }
 }
 
+fn global_variables_response(server: &Server, request: &Request) -> Response {
+    if request.method != Method::Get {
+        return serve_error(405, "Method Not Allowed");
+    }
+    let overrides = server
+        .domain()
+        .map_or_else(std::collections::BTreeMap::new, |domain| {
+            domain.global_system_variables()
+        });
+    match astersql_server_handler_tikvhandler::global_variables(&overrides) {
+        Ok(values) => match serde_json::to_string(&values) {
+            Ok(body) => {
+                let mut response = Response::json(200, body);
+                response
+                    .headers
+                    .insert("Cache-Control".into(), "no-store".into());
+                response
+            }
+            Err(error) => serve_error(500, &format!("serialize global variables: {error}")),
+        },
+        Err(_) => serve_error(500, "unable to read global variables"),
+    }
+}
+
 /// 转义 JSON 字符串中的反斜杠与双引号。
 fn json_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
@@ -1969,6 +1993,13 @@ pub fn build_status_router(server: Arc<Server>) -> Router {
         Arc::new(move |_| status_response(&status_server)),
     );
     router.add("/metrics", Arc::new(|_| metrics_response()));
+    if astersql_config_kerneltype::IsNextGen() {
+        let variables_server = Arc::clone(&server);
+        router.add(
+            "/variables/global",
+            Arc::new(move |request| global_variables_response(&variables_server, request)),
+        );
+    }
 
     // These are real process diagnostics in Rust rather than the Go pprof
     // wire format, so register them before the generic unavailable routes.

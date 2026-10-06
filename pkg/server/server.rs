@@ -19,7 +19,7 @@
 // 服务；查询取消（KILL QUERY）与连接关闭分离，避免误杀客户端。
 // 排空流程严格分三步：自然退出、取消当前 SQL、最后才关闭连接。
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
@@ -630,6 +630,11 @@ pub trait Domain: Send + Sync {
     /// Read one cached global variable without issuing storage/network I/O.
     fn global_system_variable(&self, _name: &str) -> Result<String, String> {
         Err("global system variables are not configured".into())
+    }
+
+    /// Snapshot cached global-variable overrides without storage/network I/O.
+    fn global_system_variables(&self) -> BTreeMap<String, String> {
+        BTreeMap::new()
     }
 
     fn keyspace_identity(&self) -> (String, u32) {
