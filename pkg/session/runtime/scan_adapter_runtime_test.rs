@@ -2508,9 +2508,10 @@ fn paging_context_caches_grants_and_budget_until_statement_retry_reset() {
     session.WithSessionVars(|vars| vars.StmtCtx.ResetForRetry());
     let captured = session.cop_paging_size_bytes("capped");
     assert_eq!(captured, 4_194_304);
-    session
-        .domain
-        .set_global_system_variable("tidb_paging_size_bytes", "2097152");
+    let writer = super::ConcreteSession::new(Arc::clone(&session.domain));
+    writer
+        .Execute("set global tidb_paging_size_bytes=2097152")
+        .unwrap();
     assert_eq!(session.cop_paging_size_bytes("capped"), 4_194_304);
     session.WithSessionVars(|vars| vars.StmtCtx.ResetForRetry());
     assert_eq!(session.cop_paging_size_bytes("capped"), 2_097_152);
@@ -2571,7 +2572,7 @@ fn paging_byte_budget_default_reset_through_sql() {
     use crate::testutil::TestSession;
     let session = canonical_dml_session();
     for (set_sql, expected) in [
-        (None, "0"),
+        (Some("set global tidb_paging_size_bytes=0"), "0"),
         (Some("set global tidb_paging_size_bytes=4194304"), "4194304"),
         (Some("set global tidb_paging_size_bytes=default"), "0"),
         (Some("set global tidb_paging_size_bytes=0"), "0"),

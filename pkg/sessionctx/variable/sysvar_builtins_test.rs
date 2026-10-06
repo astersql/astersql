@@ -433,3 +433,50 @@ fn deprecated_merge_concurrency_always_reads_one() {
             .is_err()
     );
 }
+
+#[test]
+fn paging_byte_budget_global_hooks_are_live_and_session_writes_are_rejected() {
+    crate::register_builtin_sysvars();
+    let variable = GetSysVar(vardef::TiDBPagingSizeBytes).unwrap();
+    assert_eq!(variable.Scope, vardef::ScopeGlobal);
+    assert!(variable.SkipInit());
+    assert!(!variable.IsHintUpdatableVerified);
+    let mut vars = SessionVars::new(Box::new(NoopAccessor));
+    let getter = variable
+        .GetGlobal
+        .as_ref()
+        .expect("global byte budget getter");
+    let original = getter(&Context, &mut vars).unwrap();
+    for value in ["4194304", "0", "9223372036854775807"] {
+        let normalized = variable
+            .Validate(&mut vars, value, vardef::ScopeGlobal)
+            .unwrap();
+        assert_eq!(normalized, value);
+        variable
+            .SetGlobalFromHook(&Context, &mut vars, &normalized, false)
+            .unwrap();
+        assert_eq!(
+            variable.GetGlobalFromHook(&Context, &mut vars).unwrap(),
+            value
+        );
+        assert_eq!(
+            vars.GetSessionOrGlobalSystemVar(&Context, &variable.Name)
+                .unwrap(),
+            value
+        );
+    }
+    variable
+        .SetGlobalFromHook(&Context, &mut vars, &original, false)
+        .unwrap();
+    assert!(vars.SetSystemVar(&variable.Name, "0").is_err());
+    assert!(
+        variable
+            .Validate(&mut vars, "invalid", vardef::ScopeGlobal)
+            .is_err()
+    );
+    assert!(
+        variable
+            .SetGlobalFromHook(&Context, &mut vars, "invalid", false)
+            .is_err()
+    );
+}

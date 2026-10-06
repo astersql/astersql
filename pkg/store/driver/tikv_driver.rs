@@ -794,8 +794,9 @@ impl TikvStore {
         self.inner.lock().unwrap().coprocessor_store.clone()
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_coprocessor_store_for_test(&self, store: Arc<astersql_store_copr::Store>) {
+    /// Inject a store-local Cop RPC boundary for integration tests.
+    #[doc(hidden)]
+    pub fn set_coprocessor_store_for_test(&self, store: Arc<astersql_store_copr::Store>) {
         self.inner.lock().unwrap().coprocessor_store = Some(store);
     }
 

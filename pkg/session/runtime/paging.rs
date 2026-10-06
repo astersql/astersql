@@ -92,11 +92,7 @@ impl ConcreteSession {
     /// Existing requests retain their captured budget across global changes.
     pub(super) fn cop_paging_size_bytes(&self, name: &str) -> u64 {
         let cached = self.session_vars.StmtCtx.GetOrInitDistSQLFromCache(|| {
-            let budget = self
-                .domain
-                .global_system_variable("tidb_paging_size_bytes")
-                .and_then(|value| value.parse::<i64>().ok())
-                .unwrap_or(0);
+            let budget = astersql_sessionctx_vardef::PagingSizeBytes.Load();
             let enabled = self
                 .domain
                 .global_system_variable("tidb_enable_resource_control")

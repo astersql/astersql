@@ -2944,6 +2944,11 @@ impl ConcreteSession {
             .or_else(|| name.strip_prefix("global."))
             .unwrap_or(&name)
             .to_owned();
+        if name == astersql_sessionctx_vardef::TiDBPagingSizeBytes {
+            return Ok(astersql_sessionctx_vardef::PagingSizeBytes
+                .Load()
+                .to_string());
+        }
         if name == astersql_sessionctx_vardef::TiDBMergePartitionStatsConcurrency {
             return Ok("1".into());
         }
@@ -5666,6 +5671,25 @@ impl ConcreteSession {
                         },
                     )
                     .map_err(|error| session_error("set DDL service scope", error))?;
+                for warning in warnings {
+                    self.set_warning(warning.to_string());
+                }
+                self.domain.set_global_system_variable(&name, &normalized);
+                continue;
+            }
+            if name == astersql_sessionctx_vardef::TiDBPagingSizeBytes {
+                let (normalized, warnings) = self
+                    .session_vars
+                    .ValidateAndSetGlobalSystemVar(
+                        &name,
+                        value.trim_matches(['\'', '"']),
+                        if is_global {
+                            astersql_sessionctx_vardef::ScopeGlobal
+                        } else {
+                            astersql_sessionctx_vardef::ScopeSession
+                        },
+                    )
+                    .map_err(|error| SessionError::new(error.to_string()))?;
                 for warning in warnings {
                     self.set_warning(warning.to_string());
                 }

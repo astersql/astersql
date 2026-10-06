@@ -665,7 +665,8 @@ pub const TiDBMinPagingSize: &str = "tidb_min_paging_size";
 // TiDBMaxPagingSize is used to control the max paging size in the coprocessor paging protocol.
 pub const TiDBMaxPagingSize: &str = "tidb_max_paging_size";
 
-// TiDBPagingSizeBytes is the byte budget per coprocessor page.
+// TiDBPagingSizeBytes is the global byte budget per coprocessor page.
+// Updates apply when an existing session initializes its next statement context.
 // 0 means disabled (no byte-budget paging).
 pub const TiDBPagingSizeBytes: &str = "tidb_paging_size_bytes";
 
@@ -2179,6 +2180,7 @@ pub static EnableHistoricalStatsForCapture: AtomicBoolValue =
     AtomicBoolValue::new(DefTiDBEnableHistoricalStatsForCapture);
 pub static TTLRunningTasks: AtomicI32Value = AtomicI32Value::new(DefTiDBTTLRunningTasks as i32);
 pub static EnableResourceControl: AtomicBoolValue = AtomicBoolValue::new(false);
+pub static PagingSizeBytes: AtomicI64Value = AtomicI64Value::new(DefPagingSizeBytes);
 pub static EnableResourceControlStrictMode: AtomicBoolValue = AtomicBoolValue::new(true);
 pub static EnableCheckConstraint: AtomicBoolValue =
     AtomicBoolValue::new(DefTiDBEnableCheckConstraint);

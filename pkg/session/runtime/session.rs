@@ -65,6 +65,28 @@ impl SessionWarning {
         Self::warning_with_code(1105, message)
     }
 
+    pub(super) fn from_error(error: &astersql_errors::SharedError) -> Self {
+        let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(error);
+        while let Some(current) = cause {
+            if let Some(normalized) = current.downcast_ref::<astersql_errors::Error>() {
+                return Self::warning_with_code(normalized.Code() as u16, normalized.GetMsg());
+            }
+            if current
+                .downcast_ref::<astersql_sessionctx_variable::VariableError>()
+                .is_some_and(|error| {
+                    error.kind() == astersql_sessionctx_variable::VariableErrorKind::GlobalVariable
+                })
+            {
+                return Self::warning_with_code(
+                    astersql_sessionctx_variable::error::errGlobalVariable.code,
+                    current.to_string(),
+                );
+            }
+            cause = current.source();
+        }
+        Self::warning(error.to_string())
+    }
+
     pub(super) fn warning_with_code(code: u16, message: String) -> Self {
         Self {
             level: "Warning",

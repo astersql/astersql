@@ -3745,11 +3745,11 @@ impl ConcreteSession {
             .GetWarnings()
             .into_iter()
             .map(|warning| {
-                warning
-                    .Err
-                    .map_or_else(|| warning.Level, |error| error.to_string())
+                warning.Err.map_or_else(
+                    || SessionWarning::warning(warning.Level),
+                    |error| SessionWarning::from_error(&error),
+                )
             })
-            .map(SessionWarning::warning)
             .collect::<Vec<_>>();
         self.state
             .borrow_mut()
@@ -4166,6 +4166,32 @@ impl ConcreteSession {
             self.state
                 .borrow_mut()
                 .statement_mem_arbitrator_query_reserved = None;
+            if execution.is_ok()
+                && statement
+                    .as_any()
+                    .downcast_ref::<ast::SelectStmt>()
+                    .is_some_and(|select| select.From.is_none())
+            {
+                guard.ApplySuccessfulOptimizeEffects();
+            }
+            if !is_show_warnings {
+                let mut state = self.state.borrow_mut();
+                let mut published = state.current_warnings.clone();
+                for warning in variables.StmtCtx.GetWarnings() {
+                    if let Some(error) = warning.Err {
+                        let warning = SessionWarning::from_error(&error);
+                        // Consume already-published occurrences once; retain
+                        // repeated warnings from distinct optimizer phases.
+                        if let Some(index) = published.iter().position(|existing| {
+                            existing.code == warning.code && existing.message == warning.message
+                        }) {
+                            published.remove(index);
+                        } else {
+                            state.current_warnings.push(warning);
+                        }
+                    }
+                }
+            }
             let observation = self.finish_txn_statement_observation(current_sql);
             let restore = guard
                 .Finish()

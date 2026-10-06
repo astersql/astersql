@@ -669,7 +669,7 @@ impl SysVar {
             if !self.HasSessionScope() {
                 return Err(VariableError::new(
                     VariableErrorKind::GlobalVariable,
-                    format!("Variable '{}' is a GLOBAL variable", self.Name),
+                    crate::error::errGlobalVariable.format(&[&self.Name]),
                 ));
             }
             if self.InternalSessionVariable {

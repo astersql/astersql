@@ -49,7 +49,7 @@ pub fn InitializeHintRuntime() {
 fn parse_statement_hints(
     hints: Vec<ast::TableOptimizerHint>,
     current_database: &str,
-) -> (hint::StmtHints, Vec<String>) {
+) -> (hint::StmtHints, Vec<astersql_errors::SharedError>) {
     // SET_VAR 检查：系统变量须存在且已验证允许由 Hint 更新。
     let checker = |name: String, hint_name: String| {
         let Some(system_variable) = variable::GetSysVar(&name) else {
@@ -63,9 +63,11 @@ fn parse_statement_hints(
         if !system_variable.IsHintUpdatableVerified {
             return (
                 true,
-                Some(hint::errors::NewNoStackError(format!(
-                    "system variable {name} is not verified for SET_VAR"
-                ))),
+                Some(
+                    astersql_util_dbterror_plannererrors::ErrNotHintUpdatable
+                        .GenWithStackByArgs(&[name.into()])
+                        .into(),
+                ),
             );
         }
         (true, None)
@@ -85,7 +87,9 @@ fn parse_statement_hints(
         parsed,
         warnings
             .into_iter()
-            .map(|warning| warning.to_string())
+            .map(|warning| match warning {
+                hint::errors::Error::Parser(error) | hint::errors::Error::TiDB(error) => error,
+            })
             .collect(),
     )
 }
@@ -94,12 +98,12 @@ fn parse_statement_hints(
 fn apply_set_vars(
     variables: &variable::session::SessionVars,
     hints: &hint::StmtHints,
-    warnings: &mut Vec<String>,
+    warnings: &mut Vec<astersql_errors::SharedError>,
 ) {
     for (name, value) in &hints.SetVars {
         match variables.SetHintSystemVarWithOldState(name, value) {
             Ok(old_value) => variables.AddHintSystemVarRestore(name, &old_value),
-            Err(error) => warnings.push(error.to_string()),
+            Err(error) => warnings.push(astersql_errors::SharedError::new(error)),
         }
     }
 }
@@ -142,6 +146,16 @@ impl<'a> StatementHintGuard<'a> {
     /// 返回本语句边界内积累的警告。
     pub fn Warnings(&self) -> &[String] {
         &self.warnings
+    }
+
+    /// Apply the successful-optimization SET_VAR effects for SELECTs that the
+    /// runtime evaluates directly, matching planner::Optimize's final phase.
+    pub(crate) fn ApplySuccessfulOptimizeEffects(&self) {
+        let mut warnings = Vec::new();
+        apply_set_vars(self.variables, &self.effective_hints, &mut warnings);
+        for warning in warnings {
+            self.variables.StmtCtx.SetHintWarningFromError(warning);
+        }
     }
 
     /// 正常结束语句边界并提交 Hint 收尾逻辑。
@@ -198,14 +212,17 @@ pub fn StartStatementHints<'a>(
         .StmtHints
         .StoreWriteSlowLog(effective_hints.WriteSlowLog);
     for warning in &warnings {
-        variables.StmtCtx.SetHintWarning(warning.clone());
+        variables.StmtCtx.SetHintWarningFromError(warning.clone());
     }
 
     StatementHintGuard {
         variables,
         query_hints,
         effective_hints,
-        warnings,
+        warnings: warnings
+            .into_iter()
+            .map(|warning| warning.to_string())
+            .collect(),
         binding_sql: None,
         finished: false,
     }

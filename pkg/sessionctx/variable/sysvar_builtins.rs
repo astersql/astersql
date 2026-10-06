@@ -1590,13 +1590,24 @@ fn register_getters_and_defaults() {
     );
     enable_paging.Hidden = true;
     RegisterSysVar(enable_paging);
-    RegisterSysVar(unsigned_var(
+    let mut paging_bytes = unsigned_var(
         vardef::TiDBPagingSizeBytes,
         vardef::DefPagingSizeBytes as u64,
         vardef::ScopeGlobal,
         0,
         i64::MAX as u64,
-    ));
+    );
+    paging_bytes.SetGlobal = Some(Arc::new(|_, _, value| {
+        let bytes = value
+            .parse::<i64>()
+            .map_err(|_| VariableError::wrong_value(vardef::TiDBPagingSizeBytes, value))?;
+        vardef::PagingSizeBytes.Store(bytes);
+        Ok(())
+    }));
+    paging_bytes.GetGlobal = Some(Arc::new(|_, _| {
+        Ok(vardef::PagingSizeBytes.Load().to_string())
+    }));
+    RegisterSysVar(paging_bytes);
     RegisterSysVar(string_var(
         "tidb_memory_debug_mode_min_heap_inuse",
         "0",

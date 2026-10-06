@@ -1139,6 +1139,39 @@ impl kv::oracle::Oracle for OracleHandle {
     }
 }
 
+/// Per-store RPC boundary injection; MVCC and oracle behavior stay unchanged.
+#[derive(Clone, Default)]
+pub struct ClientHandle(
+    std::sync::Arc<std::sync::RwLock<Option<std::sync::Arc<dyn kv::Client + Send + Sync>>>>,
+);
+impl ClientHandle {
+    pub fn SetClient(&self, client: std::sync::Arc<dyn kv::Client + Send + Sync>) {
+        *self.0.write().expect("client lock poisoned") = Some(client);
+    }
+}
+impl kv::Client for ClientHandle {
+    fn Send(
+        &self,
+        ctx: &kv::Context,
+        request: &kv::Request,
+        vars: &dyn Any,
+        option: &kv::ClientSendOption,
+    ) -> Option<Box<dyn kv::Response>> {
+        let client = self.0.read().expect("client lock poisoned").clone();
+        match client {
+            Some(client) => client.Send(ctx, request, vars, option),
+            None => CANONICAL_CLIENT.Send(ctx, request, vars, option),
+        }
+    }
+    fn IsRequestTypeSupported(&self, request_type: i64, sub_type: i64) -> bool {
+        let client = self.0.read().expect("client lock poisoned").clone();
+        client.map_or_else(
+            || CANONICAL_CLIENT.IsRequestTypeSupported(request_type, sub_type),
+            |client| client.IsRequestTypeSupported(request_type, sub_type),
+        )
+    }
+}
+
 static CANONICAL_CLIENT: CanonicalClient = CanonicalClient;
 static CANONICAL_MPP_CLIENT: CanonicalMppClient = CanonicalMppClient;
 
@@ -1240,7 +1273,7 @@ impl kv::Storage for mockStorage {
     }
 
     fn GetClient(&self) -> &dyn kv::Client {
-        &CANONICAL_CLIENT
+        &self.canonical_client
     }
 
     fn GetMPPClient(&self) -> &dyn kv::MPPClient {
