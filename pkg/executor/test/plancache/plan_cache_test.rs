@@ -37,6 +37,50 @@ fn plan_cache_partition_hash_is_stable_and_state_sensitive() {
     assert_ne!(left, changed);
 }
 
+/// A prepared single-consumer CTE must keep the same inline semantics when an
+/// unrelated DDL change forces the statement to be planned again, both with
+/// and without the prepared plan cache.
+#[test]
+fn prepared_cte_remains_inline_after_unrelated_ddl() {
+    use astersql_testkit::{NewTestKit, Rows, mockstore::CreateMockStoreAndDomain};
+
+    for plan_cache_enabled in [false, true] {
+        let (store, _domain) = CreateMockStoreAndDomain();
+        let mut tk = NewTestKit(store.clone());
+        let mut ddl = NewTestKit(store);
+        tk.MustExec("use test", Vec::new());
+        ddl.MustExec("use test", Vec::new());
+        tk.MustExec(
+            &format!(
+                "set tidb_enable_prepared_plan_cache = {}",
+                u8::from(plan_cache_enabled)
+            ),
+            Vec::new(),
+        );
+        tk.MustExec("set tidb_opt_force_inline_cte = off", Vec::new());
+        tk.MustExec("create table source (a int)", Vec::new());
+        tk.MustExec("insert into source values (1)", Vec::new());
+        tk.MustExec(
+            "prepare cte_stmt from 'with cte as (select * from source) select * from cte where a = ?'",
+            Vec::new(),
+        );
+        tk.MustExec("set @p = 1", Vec::new());
+        tk.MustQuery("execute cte_stmt using @p", Vec::new())
+            .Check(Rows(&["1"]));
+
+        ddl.MustExec("create table unrelated (a int)", Vec::new());
+
+        tk.MustQuery("execute cte_stmt using @p", Vec::new())
+            .Check(Rows(&["1"]));
+        tk.MustQuery(
+            "with cte as (select * from source) select * from cte where a = 1",
+            Vec::new(),
+        )
+        .Check(Rows(&["1"]));
+        tk.MustExec("deallocate prepare cte_stmt", Vec::new());
+    }
+}
+
 /// Go `TestPointGetPreparedPlan`。
 ///
 /// 覆盖主键/唯一键 prepared plan 的参数替换、schema 失效和索引重建。

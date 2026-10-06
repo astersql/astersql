@@ -47,6 +47,7 @@ pub(crate) struct CteBinding {
     recursive_reference: bool,
     seed_stat: Arc<RwLock<logicalop::StatsInfo>>,
     storage_id: i32,
+    inline: bool,
 }
 
 impl Clone for CteBinding {
@@ -59,6 +60,7 @@ impl Clone for CteBinding {
             recursive_reference: self.recursive_reference,
             seed_stat: self.seed_stat.clone(),
             storage_id: self.storage_id,
+            inline: self.inline,
         }
     }
 }
@@ -404,7 +406,8 @@ fn build_set_operation_runtime(
         .as_ref()
         .or(statement.select_list.With.as_ref())
     {
-        build_with_runtime(builder, ctx, &with.borrow(), ctes)?;
+        let with = with.borrow();
+        build_with_runtime(builder, ctx, &with, statement, ctes)?;
     }
     let selects = &statement.select_list.selects;
     if selects.is_empty() {
@@ -828,32 +831,78 @@ fn join_references_table(join: &crate::ast::Join, table_name: &str) -> bool {
             .is_some_and(|node| result_set_references_table(node, table_name))
 }
 
+fn result_set_table_reference_count(node: &crate::ast::ResultSetNode, table_name: &str) -> usize {
+    match node {
+        crate::ast::ResultSetNode::TableSource(source) => {
+            usize::from(source.Source.Schema.O.is_empty() && source.Source.Name.L == table_name)
+                + source.QuerySource.as_ref().map_or(0, |query| {
+                    query
+                        .with_node(|node| query_table_reference_count(node, table_name))
+                        .unwrap_or(0)
+                })
+        }
+        crate::ast::ResultSetNode::Join(join) => join_table_reference_count(join, table_name),
+    }
+}
+
+fn join_table_reference_count(join: &crate::ast::Join, table_name: &str) -> usize {
+    join.Left
+        .as_deref()
+        .map_or(0, |node| result_set_table_reference_count(node, table_name))
+        + join
+            .Right
+            .as_deref()
+            .map_or(0, |node| result_set_table_reference_count(node, table_name))
+}
+
 /// 查询 AST 是否引用给定表名。
-fn query_references_table(node: &dyn crate::ast::Node, table_name: &str) -> bool {
+fn query_table_reference_count(node: &dyn crate::ast::Node, table_name: &str) -> usize {
     if let Some(select) = node.as_any().downcast_ref::<crate::ast::SelectStmt>() {
-        return select
-            .From
-            .as_ref()
-            .is_some_and(|from| join_references_table(&from.TableRefs, table_name))
-            || select
-                .children
-                .iter()
-                .any(|child| query_references_table(child.as_ref(), table_name));
+        return select.From.as_ref().map_or(0, |from| {
+            join_table_reference_count(&from.TableRefs, table_name)
+        }) + select
+            .children
+            .iter()
+            .map(|child| query_table_reference_count(child.as_ref(), table_name))
+            .sum::<usize>();
     }
     if let Some(list) = node.as_any().downcast_ref::<crate::ast::SetOprSelectList>() {
         return list
             .selects
             .iter()
-            .any(|select| query_references_table(select.as_ref(), table_name));
+            .map(|select| query_table_reference_count(select.as_ref(), table_name))
+            .sum();
     }
     node.as_any()
         .downcast_ref::<crate::ast::SetOprStmt>()
-        .is_some_and(|set| {
+        .map_or(0, |set| {
             set.select_list
                 .selects
                 .iter()
-                .any(|select| query_references_table(select.as_ref(), table_name))
+                .map(|select| query_table_reference_count(select.as_ref(), table_name))
+                .sum()
         })
+}
+
+fn query_references_table(node: &dyn crate::ast::Node, table_name: &str) -> bool {
+    query_table_reference_count(node, table_name) > 0
+}
+
+/// Recompute CTE consumer counts from the current AST build. A prepared AST can
+/// be planned again after a schema change, so no count from an earlier build is
+/// retained. Later CTE definitions can consume earlier ones; the current
+/// definition is intentionally excluded for non-recursive WITH clauses.
+fn cte_consumer_count(
+    with: &crate::ast::WithClause,
+    definition_index: usize,
+    query: &dyn crate::ast::Node,
+) -> usize {
+    let definition = &with.CTEs[definition_index];
+    query_table_reference_count(query, &definition.Name.L)
+        + with.CTEs[definition_index + 1..]
+            .iter()
+            .map(|later| query_table_reference_count(later.Query.as_ref(), &definition.Name.L))
+            .sum::<usize>()
 }
 
 /// 递归结果集是否含禁止的 ORDER BY/LIMIT。
@@ -974,10 +1023,11 @@ fn build_with_runtime(
     builder: &mut PlanBuilder,
     ctx: &dyn crate::context::Context,
     with: &crate::ast::WithClause,
+    query: &dyn crate::ast::Node,
     ctes: &mut CteEnvironment,
 ) -> Result<(), expression::Error> {
     let mut names = std::collections::HashSet::new();
-    for definition in &with.CTEs {
+    for (definition_index, definition) in with.CTEs.iter().enumerate() {
         if !names.insert(definition.Name.L.clone()) {
             return Err(expression::errors::New(format!(
                 "non-unique CTE name '{}'",
@@ -1046,6 +1096,7 @@ fn build_with_runtime(
                     recursive_reference: true,
                     seed_stat: seed_stat.clone(),
                     storage_id,
+                    inline: false,
                 },
             );
             builder.runtimeCTEs = Some(ctes.clone());
@@ -1092,6 +1143,7 @@ fn build_with_runtime(
                     recursive_reference: false,
                     seed_stat,
                     storage_id,
+                    inline: cte_consumer_count(with, definition_index, query) == 1,
                 },
             );
             builder.runtimeCTEs = Some(ctes.clone());
@@ -1333,7 +1385,8 @@ fn build_select_runtime_inner(
         .cloned()
         .collect::<std::collections::HashSet<_>>();
     if let Some(with) = &select.With {
-        build_with_runtime(builder, ctx, &with.borrow(), ctes)?;
+        let with = with.borrow();
+        build_with_runtime(builder, ctx, &with, select, ctes)?;
     }
 
     validate_grouping_function_arguments(select)?;
@@ -4598,7 +4651,16 @@ fn build_table_source_runtime(
                 class.ColumnMap.insert(visible.UniqueID, seed.Clone());
             }
         }
-        let mut plan: logicalop::LogicalPlanRef = if binding.recursive_reference {
+        let mut plan: logicalop::LogicalPlanRef = if binding.inline {
+            binding
+                .class
+                .borrow_mut()
+                .SeedPartLogicalPlan
+                .take()
+                .ok_or_else(|| {
+                    expression::errors::New("inline CTE seed plan was already consumed")
+                })?
+        } else if binding.recursive_reference {
             Box::new(
                 logicalop::LogicalCTETable {
                     SeedStat: binding.seed_stat,
@@ -4621,7 +4683,9 @@ fn build_table_source_runtime(
                 .Init(builder.ctx.clone(), query_block),
             )
         };
-        plan.SetSchema(schema);
+        if !binding.inline {
+            plan.SetSchema(schema);
+        }
         plan.SetOutputNames(names);
         builder.optFlag |= rule::FLAG_PRUNE_COLUMNS | rule::FLAG_BUILD_KEY_INFO;
         return Ok((plan, None));
