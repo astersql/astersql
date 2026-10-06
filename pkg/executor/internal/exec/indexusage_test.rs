@@ -173,9 +173,9 @@ fn cop_report_uses_physical_table_stats_and_skips_zero_or_pseudo_stats() {
     assert_eq!(collector.samples(10, 7).len(), 1);
 }
 
-/// Point Get 缺少统计时使用最大有符号 32 位整数，并保持 Go 的无符号转换语义。
+/// Point Get 缺少或只有伪统计时使用最大有符号 32 位整数，并继续上报使用量。
 #[test]
-fn point_get_falls_back_to_max_i32_without_stats_and_preserves_go_casts() {
+fn point_get_falls_back_to_max_i32_without_real_stats_and_preserves_go_casts() {
     let (reporter, collector) = reporter();
 
     reporter.ReportPointGetIndexUsage(10, 999, 7, 1, 2);
@@ -184,8 +184,14 @@ fn point_get_falls_back_to_max_i32_without_stats_and_preserves_go_casts() {
     assert_eq!(sample.kv_request_total, 1);
     assert_eq!(sample.rows, 2);
 
-    reporter.ReportCopIndexUsage(10, 20, 7, 9);
+    reporter.ReportPointGetIndexUsage(10, 21, 7, 1, 2);
     let sample = collector.samples(10, 7)[1];
+    assert_eq!(sample.table_rows, i32::MAX as u64);
+    assert_eq!(sample.kv_request_total, 1);
+    assert_eq!(sample.rows, 2);
+
+    reporter.ReportCopIndexUsage(10, 20, 7, 9);
+    let sample = collector.samples(10, 7)[2];
     assert_eq!(sample.kv_request_total, u64::MAX);
     assert_eq!(sample.rows, u64::MAX - 1);
 }
