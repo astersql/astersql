@@ -308,3 +308,33 @@ fn fast_check_supports_five_concurrent_workers() {
         worker.join().expect("fast-check worker panicked");
     }
 }
+
+#[test]
+fn partial_multi_valued_indexes_reject_admin_checks() {
+    let _restore = RestoreOnDrop::new(astersql_config::restore_func());
+    astersql_config::update_global(|conf| {
+        conf.experimental.allows_expression_index = true;
+    });
+    let mut tk = admin_testkit();
+    tk.MustExec("create table t_partial(a json, flag set('a','b'), index idx((cast(a as signed array))) where flag = 1)", Vec::new());
+    for with_rows in [false, true] {
+        if with_rows {
+            tk.MustExec(
+                "insert into t_partial values ('[1,2]', 'a'), ('[3,4]', 'b'), ('[5]', null)",
+                Vec::new(),
+            );
+        }
+        for fast_check in ["off", "on"] {
+            tk.MustExec(
+                &format!("set tidb_enable_fast_table_check = {fast_check}"),
+                Vec::new(),
+            );
+            for sql in [
+                "admin check table t_partial",
+                "admin check index t_partial idx",
+            ] {
+                tk.MustGetErrMsg(sql, "[executor:8273]Validation of partial indexes requires tidb_enable_fast_table_check=ON");
+            }
+        }
+    }
+}

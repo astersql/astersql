@@ -240,13 +240,13 @@ impl CheckTableExec {
 
         let mut index_names = Vec::with_capacity(self.indexInfos.len());
         for index in &self.indexInfos {
-            if index.mv_index || index.columnar_index {
-                continue;
-            }
             if index.condition.is_some() {
                 return Err(errors::New(
                     "ADMIN CHECK TABLE without fast-check does not support partial indexes",
                 ));
+            }
+            if index.mv_index || index.columnar_index {
+                continue;
             }
             index_names.push(index.name.clone());
         }

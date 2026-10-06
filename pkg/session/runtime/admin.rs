@@ -53,6 +53,19 @@ impl ConcreteSession {
                     statement.index, table.Name.L
                 )));
             }
+            // MV and columnar indexes always use the slow checker, even when
+            // fast checking is enabled. Reject their partial-index conditions
+            // before a count or row scan, including for an empty table.
+            if info.Indices.iter().any(|index| {
+                (statement.statement_type == ast::AdminStmtType::CheckTable
+                    || index.Name.L.eq_ignore_ascii_case(&statement.index))
+                    && (index.MVIndex || index.IsColumnarIndex())
+                    && index.HasCondition()
+            }) {
+                return Err(SessionError::new(
+                    "[executor:8273]Validation of partial indexes requires tidb_enable_fast_table_check=ON",
+                ));
+            }
         }
         if statement.tables.is_empty() {
             return Ok(());
