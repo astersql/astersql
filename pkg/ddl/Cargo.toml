@@ -5,6 +5,9 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+astersql-store-driver-error = { path = "../store/driver/error" }
+astersql-util-regionsplit = { path = "../util/regionsplit" }
+astersql-meta-autoid = { path = "../meta/autoid" }
 "astersql-config" = { package = "astersql-config", path = "../config" }
 astersql-ingestor-errdef = { path = "../ingestor/errdef" }
 astersql-ingestor-globalsort = { path = "../ingestor/globalsort" }

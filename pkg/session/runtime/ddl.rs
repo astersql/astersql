@@ -793,6 +793,19 @@ impl ConcreteSession {
         ) {
             return Ok(());
         }
+        if let Some(splitter) = self.domain.storage_handle().region_splitter() {
+            let expressions = astersql_expression_exprstatic::NewExprContext(Vec::new());
+            astersql_ddl::split_region::split_table_regions(
+                &astersql_kv::WithInternalSourceType(
+                    astersql_kv::Context::new(),
+                    astersql_kv::InternalTxnDDL,
+                ),
+                &expressions,
+                splitter.as_ref(),
+                &table_info,
+                &scope,
+            );
+        }
         let configured_policy_regions = table_info
             .TableSplitPolicy
             .iter()

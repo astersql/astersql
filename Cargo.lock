@@ -1950,6 +1950,7 @@ dependencies = [
  "astersql-statistics-handle",
  "astersql-statistics-handle-util",
  "astersql-store",
+ "astersql-store-driver-error",
  "astersql-store-driver-txn",
  "astersql-store-gcworker",
  "astersql-store-helper",

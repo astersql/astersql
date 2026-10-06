@@ -2021,6 +2021,7 @@ pub trait InfoSchemaLoader: Send + Sync {
 /// Domain 持有的唯一规范 KV Storage 的共享句柄。
 /// `Close` 需要可变借用，其余操作用共享引用；锁维护该生命周期边界。
 pub struct StorageHandle {
+    region_splitter: RwLock<Option<Arc<dyn kv::SplittableStore + Send + Sync>>>,
     inner: RwLock<Box<dyn kv::Storage + Send + Sync>>,
 }
 
@@ -2032,7 +2033,24 @@ impl StorageHandle {
     {
         Self {
             inner: RwLock::new(Box::new(store)),
+            region_splitter: RwLock::new(None),
         }
+    }
+
+    /// Attach the optional region-splitting capability of this storage.
+    /// Non-splittable stores retain None, matching Go's capability assertion.
+    pub fn set_region_splitter(&self, splitter: Arc<dyn kv::SplittableStore + Send + Sync>) {
+        *self
+            .region_splitter
+            .write()
+            .expect("region splitter lock poisoned") = Some(splitter);
+    }
+
+    pub fn region_splitter(&self) -> Option<Arc<dyn kv::SplittableStore + Send + Sync>> {
+        self.region_splitter
+            .read()
+            .expect("region splitter lock poisoned")
+            .clone()
     }
 
     /// 在读锁下访问内部 Storage。

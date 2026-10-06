@@ -1,4 +1,17 @@
 // Copyright 2026 AsterSQL.
+// Copyright 2026 PingCAP, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 // 真实表元信息与 Datum 的 Region split handle 构造。
 
@@ -225,4 +238,59 @@ pub fn GetSplitTableKeysForModel(
     let mut high_key = record_prefix;
     high_key.extend_from_slice(&high);
     get_values_list(&low_key, &high_key, number, keys)
+}
+
+/// Generate index policy boundaries using the model's prefix lengths and SQL datums.
+pub fn GetSplitIndexKeysForModel(
+    statement_context: &StatementContext,
+    table: &model::TableInfo,
+    index: &model::IndexInfo,
+    physical_id: i64,
+    lower: &[types::datum::Datum],
+    upper: &[types::datum::Datum],
+    number: usize,
+) -> Result<Vec<Vec<u8>>, SplitError> {
+    if number == 0 {
+        return Err(SplitError::InvalidRanges(
+            "split region count must be positive".into(),
+        ));
+    }
+    let encode = |values: &[types::datum::Datum]| {
+        tablecodec::GenIndexKey(
+            codec::NewEncoder(codec::collate::NewCollationEnabled()),
+            Some(if statement_context.time_zone.is_empty() {
+                codec::time::UTC
+            } else {
+                statement_context
+                    .time_zone
+                    .parse()
+                    .map_err(|_| SplitError::InvalidDatum("invalid statement time zone".into()))?
+            }),
+            Box::new(table.clone()),
+            Box::new(index.clone()),
+            physical_id,
+            values.to_vec(),
+            Some(Box::new(astersql_kv::IntHandle(i64::MIN))),
+            None,
+        )
+        .map(|(key, _)| key)
+        .map_err(|error| SplitError::InvalidDatum(error.to_string()))
+    };
+    let low = encode(lower)?;
+    let high = encode(upper)?;
+    if low >= high {
+        return Err(SplitError::InvalidRanges(
+            "index lower bound must be less than upper bound".into(),
+        ));
+    }
+    let mut keys = Vec::new();
+    if table
+        .Indices
+        .first()
+        .is_some_and(|first| first.ID != index.ID)
+    {
+        keys.push(tablecodec::EncodeTableIndexPrefix(physical_id, index.ID).0);
+    }
+    keys.push(tablecodec::EncodeTableIndexPrefix(physical_id, index.ID + 1).0);
+    get_values_list(&low, &high, number, keys)
 }

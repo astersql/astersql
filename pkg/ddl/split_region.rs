@@ -234,3 +234,206 @@ pub fn wait_scatter_finished(
     }
     Ok(finished)
 }
+
+pub const GLOBAL_SCATTER_GROUP_ID: i64 = -1;
+
+/// The scatter group belongs to the logical table, independently of key placement.
+pub fn get_scatter_config(scope: &str, table_id: i64) -> (bool, i64) {
+    match scope {
+        "table" => (true, table_id),
+        "global" => (true, GLOBAL_SCATTER_GROUP_ID),
+        _ => (false, table_id),
+    }
+}
+
+/// Apply persisted DDL pre-splitting to a splittable storage boundary.
+/// The caller supplies the job's scope and expression context, never a worker's
+/// current scatter setting. Storage errors are best effort, as in Go DDL.
+pub fn split_table_regions(
+    context: &astersql_kv::Context,
+    expressions: &dyn astersql_expression::BuildContext,
+    store: &dyn astersql_kv::SplittableStore,
+    table: &astersql_meta_model::TableInfo,
+    scope: &str,
+) -> Vec<u64> {
+    let statement_context = astersql_util_regionsplit::StatementContext {
+        time_zone: expressions.GetEvalCtx().Location().to_string(),
+    };
+    let (scatter, group) = get_scatter_config(scope, table.ID);
+    let mut regions = Vec::new();
+    let split = |keys: Vec<Vec<u8>>, regions: &mut Vec<u64>| match store.SplitRegions(
+        context,
+        &keys,
+        scatter,
+        Some(group),
+    ) {
+        Ok(ids) => regions.extend(ids),
+        Err(error) => eprintln!("DDL region pre-split failed: {error}"),
+    };
+    let has_policies = table.TableSplitPolicy.is_some()
+        || table
+            .Indices
+            .iter()
+            .any(|index| index.RegionSplitPolicy.is_some());
+    let parts = table.GetPartitionInfo();
+    let physical_ids: Vec<i64> = parts
+        .map(|parts| parts.Definitions.iter().map(|part| part.ID).collect())
+        .unwrap_or_else(|| vec![table.ID]);
+    let applicable_index = |index: &astersql_meta_model::IndexInfo, physical: i64| {
+        parts.is_none() || (index.Global == (physical == table.ID))
+    };
+    let index_keys = |physical| {
+        table
+            .Indices
+            .iter()
+            .filter(|index| applicable_index(index, physical))
+            .map(|index| {
+                astersql_tablecodec::EncodeTableIndexPrefix(
+                    physical,
+                    index.ID + i64::from(!index.Global),
+                )
+                .0
+            })
+            .collect::<Vec<_>>()
+    };
+    if has_policies {
+        let mut policy_ids = physical_ids.clone();
+        if parts.is_some() {
+            policy_ids.insert(0, table.ID);
+        }
+        for physical in policy_ids {
+            if parts.is_none() || physical != table.ID {
+                if let Some(policy) = &table.TableSplitPolicy {
+                    let keys = policy_bounds(expressions, policy).and_then(|(lower, upper)| {
+                        astersql_util_regionsplit::GetSplitTableKeysForModel(
+                            &statement_context,
+                            table,
+                            physical,
+                            &lower,
+                            &upper,
+                            policy.Regions as usize,
+                            Vec::new(),
+                        )
+                        .map_err(|error| error.to_string())
+                    });
+                    match keys {
+                        Ok(keys) => split(keys, &mut regions),
+                        Err(error) => eprintln!("DDL table split policy skipped: {error}"),
+                    }
+                }
+            }
+            for index in &table.Indices {
+                if !applicable_index(index, physical)
+                    || (table.HasClusteredIndex() && index.Primary)
+                {
+                    continue;
+                }
+                if let Some(policy) = &index.RegionSplitPolicy {
+                    let keys = policy_bounds(expressions, policy).and_then(|(lower, upper)| {
+                        astersql_util_regionsplit::GetSplitIndexKeysForModel(
+                            &statement_context,
+                            table,
+                            index,
+                            physical,
+                            &lower,
+                            &upper,
+                            policy.Regions as usize,
+                        )
+                        .map_err(|error| error.to_string())
+                    });
+                    match keys {
+                        Ok(keys) => split(keys, &mut regions),
+                        Err(error) => eprintln!("DDL index split policy skipped: {error}"),
+                    }
+                }
+            }
+        }
+    } else {
+        let shard_bits = if table.AutoRandomBits > 0 {
+            table.AutoRandomBits
+        } else {
+            table.ShardRowIDBits
+        };
+        if shard_bits > 0 && table.PreSplitRegions > 0 {
+            if parts.is_some() {
+                split(index_keys(table.ID), &mut regions);
+            }
+            let unsigned = table.GetPkColInfo().is_some_and(|column| {
+                astersql_parser_mysql::r#type::HasUnsignedFlag(column.GetFlag())
+            });
+            let format = astersql_meta_autoid::ShardIdFormat::new(
+                unsigned,
+                shard_bits,
+                table.AutoRandomRangeBits,
+            );
+            for physical in physical_ids {
+                let mut keys = vec![astersql_tablecodec::GenTablePrefix(physical).0];
+                let step = 1_i64 << (shard_bits - table.PreSplitRegions);
+                let max = 1_i64 << shard_bits;
+                let mut shard = step;
+                while shard < max {
+                    keys.push(
+                        astersql_tablecodec::EncodeRecordKey(
+                            astersql_tablecodec::GenTableRecordPrefix(physical),
+                            Box::new(astersql_kv::IntHandle(shard << format.incremental_bits)),
+                        )
+                        .0,
+                    );
+                    shard += step;
+                }
+                split(keys, &mut regions);
+                split(index_keys(physical), &mut regions);
+            }
+        } else {
+            for physical in physical_ids {
+                split(
+                    vec![astersql_tablecodec::GenTablePrefix(physical).0],
+                    &mut regions,
+                );
+            }
+        }
+    }
+    if scatter {
+        for &region in &regions {
+            if let Err(error) = store.WaitScatterRegionFinish(context, region, 0) {
+                eprintln!("DDL wait scatter failed: {error}");
+                let cause = astersql_kv::errors::Cause(Some(&error)).unwrap_or(error);
+                if cause
+                    .downcast_ref::<astersql_store_driver_error::PdError>()
+                    .is_none()
+                {
+                    break;
+                }
+            }
+        }
+    }
+    regions
+}
+
+fn policy_bounds(
+    context: &dyn astersql_expression::BuildContext,
+    policy: &astersql_meta_model::RegionSplitPolicy,
+) -> Result<
+    (
+        Vec<astersql_types::datum::Datum>,
+        Vec<astersql_types::datum::Datum>,
+    ),
+    String,
+> {
+    if policy.Regions <= 0 {
+        return Err("split region count must be positive".into());
+    }
+    let evaluate = |values: &[String]| {
+        values
+            .iter()
+            .map(|value| {
+                astersql_expression::ParseSimpleExpr(context, value, Vec::new())
+                    .and_then(|expression| {
+                        expression.Eval(context.GetEvalCtx(), astersql_util_chunk::Row::default())
+                    })
+                    .map_err(|error| error.to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()
+    };
+    Ok((evaluate(&policy.Lower)?, evaluate(&policy.Upper)?))
+}
