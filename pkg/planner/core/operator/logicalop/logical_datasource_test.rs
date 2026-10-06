@@ -508,6 +508,62 @@ fn appended_handle_point_estimate_aligns_to_table_selectivity() {
 }
 
 #[test]
+fn correlated_column_selectivity_scales_min_and_max_estimates() {
+    let mut path = planner_util::AccessPath {
+        CountAfterAccess: 1.0,
+        MinCountAfterAccess: 20.0,
+        MaxCountAfterAccess: 1_000.0,
+        ..Default::default()
+    };
+
+    super::scale_correlated_count_after_access(&mut path, 1_000.0);
+
+    assert_eq!(path.CountAfterAccess, 1.0);
+    assert_eq!(path.MinCountAfterAccess, 0.02);
+    assert_eq!(path.MaxCountAfterAccess, 1.0);
+}
+
+#[test]
+fn correlated_column_selectivity_handles_empty_pre_split_estimate() {
+    let mut path = planner_util::AccessPath {
+        CountAfterAccess: 3.0,
+        MinCountAfterAccess: 0.0,
+        MaxCountAfterAccess: 0.0,
+        ..Default::default()
+    };
+
+    super::scale_correlated_count_after_access(&mut path, 0.0);
+
+    assert_eq!(path.MinCountAfterAccess, 3.0);
+    assert_eq!(path.MaxCountAfterAccess, 3.0);
+}
+
+#[test]
+fn correlated_column_ndv_updates_point_and_risk_estimates_together() {
+    let correlated_column = planner_column(1, 101);
+    let mut path = planner_util::AccessPath {
+        CountAfterAccess: 1_000.0,
+        MinCountAfterAccess: 20.0,
+        MaxCountAfterAccess: 1_000.0,
+        CountAfterIndex: 1_000.0,
+        ..Default::default()
+    };
+
+    super::apply_correlated_selectivity(
+        &mut path,
+        1_000.0,
+        &[correlated_column],
+        &std::collections::HashMap::from([(101, 1_000.0)]),
+        false,
+    );
+
+    assert_eq!(path.CountAfterAccess, 1.0);
+    assert_eq!(path.MinCountAfterAccess, 0.02);
+    assert_eq!(path.MaxCountAfterAccess, 1.0);
+    assert_eq!(path.CountAfterIndex, 1.0);
+}
+
+#[test]
 fn unresolved_declared_column_suppresses_entire_handle_append() {
     let handle = planner_column(3, 103);
     let mut source = DataSource::default();

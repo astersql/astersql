@@ -27,6 +27,59 @@ use std::rc::Rc;
 /// DataSource 的引用计数可变句柄，便于 Gather 与路径枚举共享同一叶节点。
 pub type DataSourceRef = Rc<RefCell<DataSource>>;
 
+/// Keep the risk bounds aligned with a correlated-column selectivity update.
+///
+/// Correlated equalities are not materialized as ranges until execution, so the
+/// range estimator first produces all three counts without them.  When the
+/// point estimate is subsequently divided by the correlated column NDV, apply
+/// the same factor to the lower and upper bounds instead of leaving a phantom
+/// table-sized risk on the path.
+pub(crate) fn scale_correlated_count_after_access(
+    path: &mut planner_util::AccessPath,
+    count_before_split: f64,
+) {
+    if count_before_split <= 0.0 {
+        path.MinCountAfterAccess = path.CountAfterAccess;
+        path.MaxCountAfterAccess = path.CountAfterAccess;
+        return;
+    }
+    let scale = path.CountAfterAccess / count_before_split;
+    path.MinCountAfterAccess *= scale;
+    path.MaxCountAfterAccess *= scale;
+}
+
+pub(crate) fn apply_correlated_selectivity(
+    path: &mut planner_util::AccessPath,
+    base_row_count: f64,
+    correlated_columns: &[Column],
+    column_ndvs: &HashMap<i64, f64>,
+    pseudo: bool,
+) {
+    if correlated_columns.is_empty() {
+        return;
+    }
+    let count_before_split = path.CountAfterAccess;
+    if pseudo {
+        path.CountAfterAccess = (base_row_count / 1_000.0).max(1.0);
+    } else {
+        let selectivity = if base_row_count > 0.0 {
+            path.CountAfterAccess / base_row_count
+        } else {
+            0.0
+        };
+        for column in correlated_columns {
+            let ndv = column_ndvs
+                .get(&column.UniqueID)
+                .copied()
+                .unwrap_or(base_row_count * 0.8)
+                * selectivity;
+            path.CountAfterAccess /= ndv.max(1.0);
+        }
+    }
+    scale_correlated_count_after_access(path, count_before_split);
+    path.CountAfterIndex = path.CountAfterAccess;
+}
+
 /// Build the pseudo histogram collection that Go derives from a pseudo table.
 ///
 /// A bare `PseudoHistColl` has no columns, which makes `Selectivity` fall
@@ -781,14 +834,19 @@ impl DataSource {
             path.AccessConds = detached.AccessConds;
             let (index_filters, table_filters): (Vec<_>, Vec<_>) =
                 detached.RemainedConds.into_iter().partition(|condition| {
-                    expression::ExtractColumns(condition.as_ref())
-                        .into_iter()
-                        .all(|column| {
-                            isIndexColsCoveringCol(column, &index_columns, &path.IdxColLens, false)
-                                || handle_columns
+                    expression::ExtractCorColumns(condition.as_ref()).is_empty()
+                        && expression::ExtractColumns(condition.as_ref())
+                            .into_iter()
+                            .all(|column| {
+                                isIndexColsCoveringCol(
+                                    column,
+                                    &index_columns,
+                                    &path.IdxColLens,
+                                    false,
+                                ) || handle_columns
                                     .iter()
                                     .any(|handle| handle.UniqueID == column.UniqueID)
-                        })
+                            })
                 });
             path.IndexFilters = index_filters;
             path.TableFilters = table_filters;
@@ -862,18 +920,19 @@ impl DataSource {
                     }
                     let (index_filters, table_filters): (Vec<_>, Vec<_>) =
                         unique_filters.into_iter().partition(|condition| {
-                            expression::ExtractColumns(condition.as_ref())
-                                .into_iter()
-                                .all(|column| {
-                                    isIndexColsCoveringCol(
-                                        column,
-                                        &index_columns,
-                                        &path.IdxColLens,
-                                        false,
-                                    ) || handle_columns
-                                        .iter()
-                                        .any(|handle| handle.UniqueID == column.UniqueID)
-                                })
+                            expression::ExtractCorColumns(condition.as_ref()).is_empty()
+                                && expression::ExtractColumns(condition.as_ref())
+                                    .into_iter()
+                                    .all(|column| {
+                                        isIndexColsCoveringCol(
+                                            column,
+                                            &index_columns,
+                                            &path.IdxColLens,
+                                            false,
+                                        ) || handle_columns
+                                            .iter()
+                                            .any(|handle| handle.UniqueID == column.UniqueID)
+                                    })
                         });
                     path.IndexFilters = index_filters;
                     path.TableFilters = table_filters;
@@ -917,12 +976,16 @@ impl DataSource {
                     }
                 }
             }
-            if path.EqOrInCondCount == path.AccessConds.len() {
+            let correlated_access_count = if path.EqOrInCondCount == path.AccessConds.len() {
                 let (correlated_access, remained) =
                     path.SplitCorColAccessCondFromFilters(context.as_ref(), path.EqOrInCondCount);
+                let count = correlated_access.len();
                 path.AccessConds.extend(correlated_access);
                 path.TableFilters = remained;
-            }
+                count
+            } else {
+                0
+            };
             path.IsSingleScan = required_full_length.iter().all(|required| {
                 index_columns
                     .iter()
@@ -1038,6 +1101,16 @@ impl DataSource {
                 path.MinCountAfterAccess = base_row_count;
                 path.MaxCountAfterAccess = base_row_count;
                 path.CountAfterIndex = base_row_count;
+            }
+            if correlated_access_count > 0 {
+                apply_correlated_selectivity(
+                    path,
+                    base_row_count,
+                    &index_columns
+                        [path.EqOrInCondCount..path.EqOrInCondCount + correlated_access_count],
+                    &self.TableStats.ColNDVs,
+                    histogram.is_none(),
+                );
             }
         }
 
