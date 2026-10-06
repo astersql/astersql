@@ -17,6 +17,24 @@
 
 use super::*;
 
+fn has_explicit_region_split_config(table: &astersql_meta_model::TableInfo) -> bool {
+    table.TableSplitPolicy.is_some()
+        || table
+            .Indices
+            .iter()
+            .any(|index| index.RegionSplitPolicy.is_some())
+        || (table.ShardRowIDBits > 0 && table.PreSplitRegions > 0)
+}
+
+fn should_pre_split_after_create(
+    start_mode: astersql_domain::domain::StartMode,
+    implicit_split_enabled: bool,
+    table: &astersql_meta_model::TableInfo,
+) -> bool {
+    start_mode != astersql_domain::domain::StartMode::Restore
+        && (implicit_split_enabled || has_explicit_region_split_config(table))
+}
+
 impl ConcreteSession {
     fn check_base_table_materialized_view_dependency_constraints(
         table: &astersql_meta_model::TableInfo,
@@ -763,10 +781,33 @@ impl ConcreteSession {
         if table_info.TempTableType != astersql_meta_model::TempTableNone {
             return Ok(());
         }
-        if astersql_ddl::EnableSplitTableRegion.load(Ordering::SeqCst) == 0 {
+        let start_mode = self
+            .domain
+            .ddl()
+            .map(|ddl| ddl.start_mode())
+            .unwrap_or(astersql_domain::domain::StartMode::Normal);
+        if !should_pre_split_after_create(
+            start_mode,
+            astersql_ddl::EnableSplitTableRegion.load(Ordering::SeqCst) != 0,
+            &table_info,
+        ) {
             return Ok(());
         }
-        let split_bits = u32::try_from(table_info.PreSplitRegions.min(20)).unwrap_or_default();
+        let configured_policy_regions = table_info
+            .TableSplitPolicy
+            .iter()
+            .chain(
+                table_info
+                    .Indices
+                    .iter()
+                    .filter_map(|index| index.RegionSplitPolicy.as_ref()),
+            )
+            .filter_map(|policy| usize::try_from(policy.Regions).ok())
+            .max();
+        let region_count = configured_policy_regions.unwrap_or_else(|| {
+            let split_bits = u32::try_from(table_info.PreSplitRegions.min(20)).unwrap_or_default();
+            1usize << split_bits
+        });
         RUNTIME_REGION_COUNTS
             .lock()
             .expect("runtime region-count map poisoned")
@@ -777,7 +818,7 @@ impl ConcreteSession {
                     table.to_owned(),
                     None,
                 ),
-                1usize << split_bits,
+                region_count,
             );
         Ok(())
     }

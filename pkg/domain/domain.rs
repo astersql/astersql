@@ -82,6 +82,10 @@ pub trait DdlService: Send + Sync {
 
     /// 按 StartMode 启动 Domain 与后台 worker。
     fn start(&self, mode: StartMode) -> Result<(), String>;
+    /// Return the mode used to start this DDL service.
+    fn start_mode(&self) -> StartMode {
+        StartMode::Normal
+    }
     /// 停止后台 worker。
     fn stop(&self) -> Result<(), String>;
     fn owner_id(&self) -> Option<String>;

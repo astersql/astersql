@@ -201,6 +201,7 @@ struct Worker {
 struct Lifecycle {
     started: bool,
     closed: bool,
+    start_mode: StartMode,
     worker: Option<Worker>,
 }
 
@@ -293,6 +294,7 @@ impl NormalDdlService {
             lifecycle: Mutex::new(Lifecycle {
                 started: false,
                 closed: false,
+                start_mode: StartMode::Normal,
                 worker: None,
             }),
             last_error: Arc::new(Mutex::new(None)),
@@ -507,8 +509,13 @@ impl DdlService for NormalDdlService {
                 return Err(error);
             }
         }
+        state.start_mode = mode;
         state.started = true;
         Ok(())
+    }
+
+    fn start_mode(&self) -> StartMode {
+        self.lifecycle.lock().unwrap().start_mode
     }
     fn stop(&self) -> Result<(), String> {
         let worker = {
