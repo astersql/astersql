@@ -302,3 +302,168 @@ fn go_merge_16_materialized_restore_and_traversal() {
         "renamed"
     );
 }
+
+#[test]
+fn refresh_materialized_view_implement_optional_timestamps() {
+    let refresh = RefreshMaterializedViewStmt {
+        ViewName: Some(TableName {
+            Name: NewCIStr("mv"),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert_eq!(refresh.mode().unwrap(), RefreshMaterializedViewMode::Fast);
+    for (target, lower, suffix) in [
+        (0, 0, ""),
+        (2, 0, " UP TO TIMESTAMP 2"),
+        (0, 3, " MLOG RETAINED LOWER TIMESTAMP 3"),
+        (2, 3, " UP TO TIMESTAMP 2 MLOG RETAINED LOWER TIMESTAMP 3"),
+    ] {
+        let stmt = RefreshMaterializedViewImplementStmt {
+            RefreshStmt: Some(refresh.clone()),
+            TargetRefreshReadTSO: target,
+            MLogRetainedLowerTSO: lower,
+            ..Default::default()
+        };
+        assert_eq!(
+            crate::sql_restore::restore_node(&stmt).unwrap(),
+            format!("IMPLEMENT FOR REFRESH MATERIALIZED VIEW `mv` FAST USING TIMESTAMP 0{suffix}")
+        );
+    }
+    assert_eq!(
+        RefreshMaterializedViewImplementStmt::default()
+            .restore()
+            .unwrap_err(),
+        "RefreshMaterializedViewImplementStmt: missing RefreshStmt"
+    );
+    let invalid = RefreshMaterializedViewStmt {
+        Type: RefreshMaterializedViewType::Complete,
+        ..refresh
+    };
+    let expected =
+        "RefreshMaterializedViewStmt: COMPLETE refresh mode must be specified explicitly";
+    assert_eq!(invalid.mode().unwrap_err(), expected);
+    assert_eq!(invalid.restore().unwrap_err(), expected);
+    assert_eq!(
+        RefreshMaterializedViewImplementStmt {
+            RefreshStmt: Some(invalid),
+            ..Default::default()
+        }
+        .restore()
+        .unwrap_err(),
+        format!(
+            "An error occurred while restore RefreshMaterializedViewImplementStmt.RefreshStmt: {expected}"
+        )
+    );
+}
+
+#[test]
+fn refresh_materialized_view_visitors_preserve_order_skip_and_stop() {
+    #[derive(Default)]
+    struct Trace {
+        events: Vec<&'static str>,
+        skip_root: bool,
+        stop_table: bool,
+    }
+    fn name(node: &dyn Node) -> &'static str {
+        if node.as_any().is::<RefreshMaterializedViewImplementStmt>() {
+            "implement"
+        } else if node.as_any().is::<RefreshMaterializedViewStmt>() {
+            "refresh"
+        } else {
+            assert!(node.as_any().is::<ExprNode>());
+            "expression"
+        }
+    }
+    macro_rules! trace_visitor {
+        ($trait:ident, $($mutable:tt)*) => {
+            impl $trait for Trace {
+                fn enter(&mut self, node: & $($mutable)* dyn Node) -> bool {
+                    let label = name(node);
+                    self.events.push(label);
+                    self.skip_root && label == "implement"
+                }
+                fn leave(&mut self, node: & $($mutable)* dyn Node) -> bool {
+                    self.events.push(match name(node) {
+                        "implement" => "leave implement",
+                        "refresh" => "leave refresh",
+                        _ => "leave expression",
+                    });
+                    true
+                }
+                fn enter_table_name(&mut self, _: & $($mutable)* TableName) -> bool {
+                    self.events.push("table");
+                    false
+                }
+                fn leave_table_name(&mut self, _: & $($mutable)* TableName) -> bool {
+                    self.events.push("leave table");
+                    !self.stop_table
+                }
+                fn enter_embedded(&mut self, node: & $($mutable)* dyn std::any::Any) -> bool {
+                    if node.is::<AsOfClause>() {
+                        self.events.push("as of");
+                    }
+                    false
+                }
+                fn leave_embedded(&mut self, node: & $($mutable)* dyn std::any::Any) -> bool {
+                    if node.is::<AsOfClause>() {
+                        self.events.push("leave as of");
+                    }
+                    true
+                }
+            }
+        };
+    }
+    trace_visitor!(Visitor,);
+    trace_visitor!(InPlaceVisitor, mut);
+    let mut root = RefreshMaterializedViewImplementStmt {
+        RefreshStmt: Some(RefreshMaterializedViewStmt {
+            ViewName: Some(TableName {
+                Name: NewCIStr("mv"),
+                ..Default::default()
+            }),
+            AsOf: Some(AsOfClause {
+                TsExpr: ExprNode::Value("1".into()),
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    for (skip_root, stop_table, expected, result) in [
+        (
+            false,
+            false,
+            vec![
+                "implement",
+                "refresh",
+                "table",
+                "leave table",
+                "as of",
+                "expression",
+                "leave expression",
+                "leave as of",
+                "leave refresh",
+                "leave implement",
+            ],
+            true,
+        ),
+        (true, false, vec!["implement", "leave implement"], true),
+        (
+            false,
+            true,
+            vec!["implement", "refresh", "table", "leave table"],
+            false,
+        ),
+    ] {
+        let mut trace = Trace {
+            skip_root,
+            stop_table,
+            ..Default::default()
+        };
+        assert_eq!(root.accept(&mut trace), result);
+        assert_eq!(trace.events, expected);
+        trace.events.clear();
+        assert_eq!(Walk(&mut root, &mut trace), result);
+        assert_eq!(trace.events, expected);
+    }
+}

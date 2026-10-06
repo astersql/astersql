@@ -404,3 +404,95 @@ fn go_merge_35_restore_storage_class_roles_and_privileges() {
         );
     }
 }
+
+#[test]
+fn refresh_materialized_view_parser_fields_and_keywords() {
+    use crate::ast::{
+        CancelMaterializedViewJobStmt, CancelMaterializedViewJobType,
+        RefreshMaterializedViewCompleteType as Complete,
+        RefreshMaterializedViewObserveType as Observe, RefreshMaterializedViewStmt,
+        RefreshMaterializedViewType as Type,
+    };
+    for (sql, strategy, complete, observe, asynchronous, as_of) in [
+        (
+            "REFRESH MATERIALIZED VIEW db.mv FAST",
+            Type::Fast,
+            Complete::InPlace,
+            Observe::None,
+            false,
+            false,
+        ),
+        (
+            "REFRESH MATERIALIZED VIEW db.mv WITH ASYNC MODE FAST AS OF TIMESTAMP 123 WITH PROFILE",
+            Type::Fast,
+            Complete::InPlace,
+            Observe::Profile,
+            true,
+            true,
+        ),
+        (
+            "REFRESH MATERIALIZED VIEW db.mv COMPLETE IN PLACE",
+            Type::Complete,
+            Complete::InPlace,
+            Observe::None,
+            false,
+            false,
+        ),
+        (
+            "REFRESH MATERIALIZED VIEW db.mv WITH ASYNC MODE COMPLETE OUT OF PLACE DRY RUN",
+            Type::Complete,
+            Complete::OutOfPlace,
+            Observe::DryRun,
+            true,
+            false,
+        ),
+        (
+            "REFRESH MATERIALIZED VIEW db.mv COMPLETE DELTA APPLY WITH PROFILE",
+            Type::Complete,
+            Complete::DeltaApply,
+            Observe::Profile,
+            false,
+            false,
+        ),
+    ] {
+        let node = crate::New().ParseOneStmt(sql, "", "").expect(sql);
+        let stmt = node
+            .as_any()
+            .downcast_ref::<RefreshMaterializedViewStmt>()
+            .unwrap();
+        assert_eq!(
+            (
+                stmt.Type,
+                stmt.CompleteType,
+                stmt.ObserveType,
+                stmt.WithAsyncMode,
+                stmt.AsOf.is_some()
+            ),
+            (strategy, complete, observe, asynchronous, as_of),
+            "{sql}"
+        );
+        let view = stmt.ViewName.as_ref().unwrap();
+        assert_eq!((&*view.Schema.O, &*view.Name.O), ("db", "mv"));
+    }
+    let node = crate::New()
+        .ParseOneStmt("CANCEL MATERIALIZED VIEW REFRESH JOB 42", "", "")
+        .unwrap();
+    let cancel = node
+        .as_any()
+        .downcast_ref::<CancelMaterializedViewJobStmt>()
+        .unwrap();
+    assert_eq!(
+        (cancel.Tp, cancel.JobID),
+        (CancelMaterializedViewJobType::Refresh, 42)
+    );
+    for keyword in ["ASYNC", "COMPLETE", "DELTA", "PLACE"] {
+        let node = crate::New()
+            .ParseOneStmt(&format!("REFRESH MATERIALIZED VIEW {keyword} FAST"), "", "")
+            .unwrap();
+        let stmt = node
+            .as_any()
+            .downcast_ref::<RefreshMaterializedViewStmt>()
+            .unwrap();
+        assert_eq!(stmt.ViewName.as_ref().unwrap().Name.O, keyword);
+    }
+}
