@@ -758,6 +758,7 @@ impl SessionDriver for ConcreteSessionDriver {
             cancellation,
             transaction_mdl,
             cancel_requested: AtomicBool::new(false),
+            in_multi_statements: AtomicBool::new(false),
             closed: AtomicBool::new(false),
         }))
     }
@@ -788,10 +789,20 @@ struct ConcreteTiDBContext {
     cancellation: Arc<SQLKiller>,
     transaction_mdl: Arc<astersql_session_sessmgr::TransactionMDL>,
     cancel_requested: AtomicBool,
+    in_multi_statements: AtomicBool,
     closed: AtomicBool,
 }
 
 pub(crate) enum SessionRequest {
+    BeginCommand {
+        response: mpsc::SyncSender<()>,
+    },
+    RecordCommandDuration {
+        command: Command,
+        in_multi_statements: bool,
+        duration: Duration,
+        response: mpsc::SyncSender<()>,
+    },
     ChargeLongData {
         bytes: i64,
         response: mpsc::SyncSender<(bool, u64)>,
@@ -925,6 +936,33 @@ fn run_session_worker(
     let mut results = super::protocol_result::WorkerResults::new(result_sender);
     while let Ok(request) = requests.recv() {
         match request {
+            SessionRequest::BeginCommand { response } => {
+                session.WithSessionVars(|vars| vars.ResetDurationParse());
+                let _ = response.send(());
+            }
+            SessionRequest::RecordCommandDuration {
+                command,
+                in_multi_statements,
+                duration,
+                response,
+            } => {
+                session.WithSessionVars(|vars| {
+                    let statement_type = crate::conn::command_sql_type(
+                        command,
+                        in_multi_statements,
+                        &vars.StmtCtx.StmtType,
+                    );
+                    for database in astersql_session::GetDBNames(Some(vars)) {
+                        astersql_metrics::server::RecordCommandDuration(
+                            statement_type,
+                            &database,
+                            &vars.StmtCtx.ResourceGroupName,
+                            duration.as_secs_f64(),
+                        );
+                    }
+                });
+                let _ = response.send(());
+            }
             SessionRequest::ChargeLongData { bytes, response } => {
                 let _ = response.send(session.ChargeBoundLongData(bytes));
             }
@@ -996,6 +1034,7 @@ fn run_session_worker(
                 arguments,
                 response,
             } => {
+                session.WithSessionVars(|vars| vars.ResetDurationParse());
                 let _ = response.send(execute_prepared_on_session(
                     &session,
                     &cancellation,
@@ -1074,6 +1113,7 @@ fn run_session_worker(
                 arguments,
                 response,
             } => {
+                session.WithSessionVars(|vars| vars.ResetDurationParse());
                 let result = execute_prepared_on_session(
                     &session,
                     &cancellation,
@@ -1558,6 +1598,32 @@ impl ConcreteTiDBContext {
 }
 
 impl TiDBContext for ConcreteTiDBContext {
+    fn begin_command(&self) {
+        self.in_multi_statements.store(false, Ordering::Release);
+        let (tx, rx) = mpsc::sync_channel(1);
+        if self
+            .send_request(SessionRequest::BeginCommand { response: tx })
+            .is_ok()
+        {
+            let _ = rx.recv();
+        }
+    }
+
+    fn record_command_duration(&self, command: Command, duration: Duration) {
+        let (tx, rx) = mpsc::sync_channel(1);
+        if self
+            .send_request(SessionRequest::RecordCommandDuration {
+                command,
+                in_multi_statements: self.in_multi_statements.load(Ordering::Acquire),
+                duration,
+                response: tx,
+            })
+            .is_ok()
+        {
+            let _ = rx.recv();
+        }
+    }
+
     fn charge_long_data(&self, bytes: i64) -> ConnResult<(bool, u64)> {
         let (tx, rx) = mpsc::sync_channel(1);
         self.send_request(SessionRequest::ChargeLongData {
@@ -1781,6 +1847,8 @@ impl TiDBContext for ConcreteTiDBContext {
         self.ensure_not_cancelled(cancel)?;
         let statements =
             SplitSQLStatements(sql).map_err(|error| ConnError::Session(error.to_string()))?;
+        self.in_multi_statements
+            .store(statements.len() > 1, Ordering::Release);
         if !allow_multi_statements && statements.len() > 1 {
             return Err(ConnError::Session(
                 "multi-statement execution is disabled".to_owned(),

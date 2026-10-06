@@ -140,3 +140,44 @@ fn ia_scan_collectors_register_sql_and_database_labels() {
         assert_eq!(bucket.upper_bound(), 0.00005 * 2f64.powi(index as i32));
     }
 }
+
+#[test]
+fn statement_and_command_durations_use_independent_histograms() {
+    if crate::main_test::run_in_isolated_process(
+        "metrics_test::statement_and_command_durations_use_independent_histograms",
+    ) {
+        return;
+    }
+    ensure_test_env();
+    unsafe {
+        metrics::InitMetrics().unwrap();
+        metrics::RegisterMetrics().unwrap();
+    }
+    crate::server::RecordQueryDuration("Insert", "app", "rg", 1.25);
+    crate::server::RecordCommandDuration("MultiStmt", "app", "rg", 2.5);
+
+    let families = prometheus::gather();
+    for (name, sql_type, sum) in [
+        ("tidb_server_handle_query_duration_seconds", "Insert", 1.25),
+        (
+            "tidb_server_handle_command_duration_seconds",
+            "MultiStmt",
+            2.5,
+        ),
+    ] {
+        let metric = families
+            .iter()
+            .find(|family| family.name() == name)
+            .and_then(|family| {
+                family.get_metric().iter().find(|metric| {
+                    metric
+                        .get_label()
+                        .iter()
+                        .any(|label| label.name() == "sql_type" && label.value() == sql_type)
+                })
+            })
+            .expect("duration metric with requested SQL type");
+        assert_eq!(metric.get_histogram().sample_count(), 1);
+        assert_eq!(metric.get_histogram().sample_sum(), sum);
+    }
+}

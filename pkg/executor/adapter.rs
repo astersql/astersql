@@ -558,6 +558,7 @@ pub trait AdapterRuntime {
     fn ExecuteRunDurationForFinish(&self) -> Option<Duration> {
         None
     }
+    fn ObserveStatementDuration(&self, _statement_type: &str) {}
     fn OnFinishStatement(&self, _retries: usize, _success: bool, _affected_rows: u64) {}
     fn CommitDetailsForFinish(&self) -> Option<CommitDetails> {
         None
@@ -2061,6 +2062,8 @@ impl ExecStmt {
                 duration,
             );
         }
+        self.Ctx
+            .ObserveStatementDuration(&self.StatementCtx.statement_type);
         let fair = self.Ctx.FairLockingFinishMetrics();
         astersql_executor_metrics::executor_metrics::RecordFairLockingFinishMetrics(
             fair.stmt_used,

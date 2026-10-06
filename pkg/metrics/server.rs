@@ -135,6 +135,40 @@ pub static mut TLSVersion: Option<prometheus::CounterVec> = None;
 /// 按 TLS cipher 累计握手次数。
 pub static mut TLSCipher: Option<prometheus::CounterVec> = None;
 
+/// Record one SQL statement duration using the statement's database and resource-group labels.
+pub fn RecordQueryDuration(sql_type: &str, database: &str, resource_group: &str, seconds: f64) {
+    let _guard = crate::metrics::PACKAGE_INIT_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let histogram = unsafe {
+        (&*std::ptr::addr_of!(QueryDurationHistogram))
+            .as_ref()
+            .cloned()
+    };
+    if let Some(histogram) = histogram {
+        histogram
+            .with_label_values(&[sql_type, database, resource_group])
+            .observe(seconds);
+    }
+}
+
+/// Record one protocol command duration independently from its individual SQL statements.
+pub fn RecordCommandDuration(sql_type: &str, database: &str, resource_group: &str, seconds: f64) {
+    let _guard = crate::metrics::PACKAGE_INIT_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let histogram = unsafe {
+        (&*std::ptr::addr_of!(CommandDurationHistogram))
+            .as_ref()
+            .cloned()
+    };
+    if let Some(histogram) = histogram {
+        histogram
+            .with_label_values(&[sql_type, database, resource_group])
+            .observe(seconds);
+    }
+}
+
 fn counter(subsystem: &'static str, name: &'static str, help: &'static str) -> prometheus::Counter {
     metricscommon::NewCounter(prometheus::CounterOpts {
         Namespace: "tidb",

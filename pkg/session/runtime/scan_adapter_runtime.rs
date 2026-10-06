@@ -1923,6 +1923,31 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
         ));
         Some(duration)
     }
+    fn ObserveStatementDuration(&self, statement_type: &str) {
+        self.session.WithSessionVars(|vars| {
+            if vars.InRestrictedSQL || vars.StmtCtx.InRestrictedSQL {
+                return;
+            }
+            let sql_type = if statement_type.is_empty() {
+                astersql_metrics::LblGeneral
+            } else {
+                statement_type
+            };
+            let seconds = vars.GetTotalCostDuration().as_secs_f64();
+            for database in astersql_util_metricsutil::GetDBNames(Some(vars)) {
+                astersql_metrics::server::RecordQueryDuration(
+                    sql_type,
+                    &database,
+                    &vars.StmtCtx.ResourceGroupName,
+                    seconds,
+                );
+                self.effects.borrow_mut().events.push(format!(
+                    "statement_duration:{sql_type}:{database}:{}",
+                    vars.StmtCtx.ResourceGroupName
+                ));
+            }
+        });
+    }
     fn CleanupAfterFinish(&self) {
         use std::sync::atomic::Ordering;
         self.session.WithSessionVars(|vars| {

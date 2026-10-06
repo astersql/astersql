@@ -1775,6 +1775,46 @@ fn finish_execute_stmt_reports_execute_duration_from_formal_statement_start() {
 }
 
 #[test]
+fn finish_execute_stmt_records_individual_statement_duration_before_cleanup() {
+    use astersql_executor::adapter::PlanKind;
+    let session = canonical_dml_session();
+    let owner = Arc::new(SessionBoundAdapterOwner::new(session));
+    let mut statement = dml_stmt(
+        Arc::clone(&owner),
+        "insert into t values (1,1)",
+        PlanKind::Insert,
+    );
+    statement.StatementCtx.statement_type = "Insert".into();
+    statement.FinishExecuteStmt(0, None, false);
+    assert!(
+        owner
+            .effects
+            .borrow()
+            .events
+            .iter()
+            .any(|event| event == "statement_duration:Insert::")
+    );
+}
+
+#[test]
+fn finish_execute_stmt_skips_restricted_statement_duration() {
+    use astersql_executor::adapter::PlanKind;
+    let session = canonical_dml_session();
+    session.SetInRestrictedSQL(true);
+    let owner = Arc::new(SessionBoundAdapterOwner::new(session));
+    let mut statement = dml_stmt(Arc::clone(&owner), "select 1", PlanKind::Query);
+    statement.FinishExecuteStmt(0, None, false);
+    assert!(
+        !owner
+            .effects
+            .borrow()
+            .events
+            .iter()
+            .any(|event| event.starts_with("statement_duration:"))
+    );
+}
+
+#[test]
 fn finish_execute_stmt_restores_formal_plan_when_prior_path_missed_it() {
     use astersql_executor::adapter::PlanKind;
     let session = canonical_dml_session();

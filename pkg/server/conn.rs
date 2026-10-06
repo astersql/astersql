@@ -770,6 +770,20 @@ impl TryFrom<u8> for Command {
     }
 }
 
+pub(crate) fn command_sql_type(
+    command: Command,
+    in_multi_statements: bool,
+    statement_type: &str,
+) -> &str {
+    if command == Command::Query && in_multi_statements {
+        "MultiStmt"
+    } else if statement_type.is_empty() {
+        astersql_metrics::LblGeneral
+    } else {
+        statement_type
+    }
+}
+
 #[derive(Debug)]
 /// 可取消当前正在执行命令的令牌。
 pub struct CancellationToken(AtomicBool);
@@ -931,6 +945,8 @@ pub trait TiDBContext: Send + Sync {
         cancel: &CancellationToken,
     ) -> ConnResult<Option<QueryResult>>;
     fn finish_protocol_response(&self, _write_duration: Duration) {}
+    fn begin_command(&self) {}
+    fn record_command_duration(&self, _command: Command, _duration: Duration) {}
     /// Install the transport liveness probe used by SQLKiller checkpoints.
     fn set_connection_alive_probe(&self, _probe: Option<ConnectionAliveProbe>) {}
     #[cfg(test)]
@@ -1576,6 +1592,7 @@ impl ClientConn {
 
     /// 按 COM_* 命令分发到查询、预处理语句或管理命令处理函数。
     pub fn dispatch(&self, data: &[u8]) -> ConnResult<()> {
+        let command_started = Instant::now();
         let (&opcode, payload) = data
             .split_first()
             .ok_or(ConnError::MalformedPacket("empty command"))?;
@@ -1585,6 +1602,7 @@ impl ClientConn {
             .map_err(|_| ConnError::Poisoned("last_packet"))? = data.to_vec();
         let command = Command::try_from(opcode)?;
         let context = self.openSession()?;
+        context.begin_command();
         let cancel = Arc::new(CancellationToken::new());
         *self
             .current_cancel
@@ -1645,6 +1663,7 @@ impl ClientConn {
             .map_err(|_| ConnError::Poisoned("last_active"))? = Instant::now();
         self.server
             .connection_active(self.connection_id.load(Ordering::Acquire));
+        context.record_command_duration(command, command_started.elapsed());
         result
     }
 

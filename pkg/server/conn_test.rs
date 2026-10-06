@@ -22,6 +22,16 @@ fn command_bytes_follow_the_mysql_wire_protocol() {
     ));
 }
 
+#[test]
+fn command_duration_labels_only_multi_statement_queries_as_multi_stmt() {
+    assert_eq!(
+        command_sql_type(Command::Query, true, "Select"),
+        "MultiStmt"
+    );
+    assert_eq!(command_sql_type(Command::Query, false, "Select"), "Select");
+    assert_eq!(command_sql_type(Command::Ping, true, ""), "general");
+}
+
 /// 校验 Value 按 MySQL 文本协议编码：NULL 为 None，其余为字节串。
 #[test]
 fn values_have_mysql_text_protocol_encodings() {
