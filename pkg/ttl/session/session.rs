@@ -73,6 +73,7 @@ pub struct ExecutionContext {
     cancelled: Arc<AtomicBool>,
     deadline: Option<Instant>,
     phase_tracer: Option<Arc<PhaseTracer>>,
+    ttl_job_id: String,
 }
 
 impl Default for ExecutionContext {
@@ -82,6 +83,7 @@ impl Default for ExecutionContext {
             cancelled: Arc::new(AtomicBool::new(false)),
             deadline: None,
             phase_tracer: None,
+            ttl_job_id: String::new(),
         }
     }
 }
@@ -99,6 +101,18 @@ impl ExecutionContext {
     pub fn with_phase_tracer(mut self, tracer: Arc<PhaseTracer>) -> Self {
         self.phase_tracer = Some(tracer);
         self
+    }
+
+    /// Attribute user-table scan/delete statements and their transaction
+    /// boundaries to one TTL job. An empty ID explicitly disables attribution.
+    pub fn with_ttl_job(mut self, job_id: impl Into<String>) -> Self {
+        self.ttl_job_id = job_id.into();
+        self
+    }
+
+    /// Return the TTL job attached to this execution only.
+    pub fn ttl_job_id(&self) -> &str {
+        &self.ttl_job_id
     }
 
     /// 标记取消。
@@ -246,6 +260,7 @@ pub struct SessionVariables {
     global_time_zone: Mutex<String>,
     location: Mutex<TimeZone>,
     killed: AtomicI32,
+    ttl_job_id: Mutex<String>,
 }
 
 impl Default for SessionVariables {
@@ -258,6 +273,7 @@ impl Default for SessionVariables {
                 offset_seconds: 0,
             }),
             killed: AtomicI32::new(0),
+            ttl_job_id: Mutex::new(String::new()),
         }
     }
 }
@@ -310,6 +326,15 @@ impl SessionVariables {
     pub fn is_query_interrupted(&self) -> bool {
         self.killed.load(Ordering::Acquire) == 1
     }
+
+    /// Current statement's TTL job attribution. It is empty outside execution.
+    pub fn ttl_job_id(&self) -> String {
+        self.ttl_job_id.lock().unwrap().clone()
+    }
+
+    fn replace_ttl_job_id(&self, job_id: String) -> String {
+        std::mem::replace(&mut *self.ttl_job_id.lock().unwrap(), job_id)
+    }
 }
 
 /// 宿主注入的会话上下文：存储、变量、InfoSchema 与 SQL 执行器。
@@ -359,6 +384,7 @@ struct TransactionCleanup<'a> {
     tracer: Option<Arc<PhaseTracer>>,
     old_phase: Option<Phase>,
     success: bool,
+    ttl_job_id: String,
 }
 
 impl Drop for TransactionCleanup<'_> {
@@ -366,7 +392,8 @@ impl Drop for TransactionCleanup<'_> {
         if !self.success {
             // Use an independent context so cancellation of the caller cannot
             // suppress rollback, matching the one-second Go cleanup context.
-            let rollback_context = ExecutionContext::with_timeout(Duration::from_secs(1));
+            let rollback_context = ExecutionContext::with_timeout(Duration::from_secs(1))
+                .with_ttl_job(std::mem::take(&mut self.ttl_job_id));
             let _ = self.session.execute_sql(&rollback_context, "ROLLBACK", &[]);
         }
         if let (Some(tracer), Some(old_phase)) = (&self.tracer, self.old_phase) {
@@ -417,9 +444,27 @@ impl Session for TtlSession {
         sql: &str,
         arguments: &[SqlValue],
     ) -> Result<Vec<Row>, SessionError> {
+        struct RestoreJobId {
+            variables: Arc<SessionVariables>,
+            previous: Option<String>,
+        }
+        impl Drop for RestoreJobId {
+            fn drop(&mut self) {
+                if let Some(previous) = self.previous.take() {
+                    self.variables.replace_ttl_job_id(previous);
+                }
+            }
+        }
+
         let mut context = context.clone();
         // TTL 路径统一标记 request source，便于审计与限流分类。
         context.request_source = RequestSource::Ttl;
+        let variables = self.context.session_variables();
+        let previous = variables.replace_ttl_job_id(context.ttl_job_id().to_owned());
+        let _restore = RestoreJobId {
+            variables,
+            previous: Some(previous),
+        };
         let Some(mut record_set) = self
             .sql_executor
             .execute_internal(&context, sql, arguments)?
@@ -444,6 +489,7 @@ impl Session for TtlSession {
             tracer: tracer.clone(),
             old_phase,
             success: false,
+            ttl_job_id: context.ttl_job_id().to_owned(),
         };
         if let Some(tracer) = &tracer {
             tracer.enter_phase(Phase::BeginTransaction);

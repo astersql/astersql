@@ -59,6 +59,48 @@ fn delete_sql_targets_the_physical_partition() {
 }
 
 #[test]
+fn delete_statements_carry_the_task_job_id() {
+    struct Session {
+        state: SessionState,
+        jobs: Vec<String>,
+    }
+    impl WorkerSession for Session {
+        fn state(&self) -> &SessionState {
+            &self.state
+        }
+        fn state_mut(&mut self) -> &mut SessionState {
+            &mut self.state
+        }
+        fn execute(&mut self, _: &str, _: &[Datum]) -> Result<Vec<Vec<Datum>>, SessionError> {
+            Ok(Vec::new())
+        }
+        fn execute_with_ttl_job(
+            &mut self,
+            job_id: &str,
+            sql: &str,
+            args: &[Datum],
+        ) -> Result<Vec<Vec<Datum>>, SessionError> {
+            self.jobs.push(job_id.to_owned());
+            self.execute(sql, args)
+        }
+    }
+    struct Limiter;
+    impl DeleteRateLimiter for Limiter {
+        fn wait_delete_token(&mut self, _: usize) -> Result<(), SessionError> {
+            Ok(())
+        }
+    }
+
+    let delete = task("t", 1);
+    let mut session = Session {
+        state: SessionState::default(),
+        jobs: Vec::new(),
+    };
+    assert!(delete.do_delete(&mut session, &mut Limiter).is_empty());
+    assert_eq!(session.jobs, vec![delete.job_id]);
+}
+
+#[test]
 fn delete_task_continues_after_retryable_and_limiter_errors() {
     struct Session(RefCell<Vec<(String, Vec<Datum>)>>);
     impl WorkerSession for Session {
@@ -77,6 +119,14 @@ fn delete_task_continues_after_retryable_and_limiter_errors() {
             } else {
                 Ok(Vec::new())
             }
+        }
+        fn execute_with_ttl_job(
+            &mut self,
+            _: &str,
+            sql: &str,
+            args: &[Datum],
+        ) -> Result<Vec<Vec<Datum>>, SessionError> {
+            self.execute(sql, args)
         }
     }
     struct Limiter(usize);

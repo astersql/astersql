@@ -128,7 +128,7 @@ impl DeleteTask {
                 args.extend(row.iter().cloned());
             }
             args.push(expiration.argument.clone());
-            match session.execute(&sql, &args) {
+            match session.execute_with_ttl_job(&self.job_id, &sql, &args) {
                 Ok(_) => self.statistics.add_success(batch.len()),
                 Err(SessionError::NonRetryable(_)) => self.statistics.add_error(batch.len()),
                 Err(_) => {

@@ -118,6 +118,7 @@ struct MockSqlExecutor {
     variables: Arc<SessionVariables>,
     table: Mutex<TableState>,
     sleep_running: AtomicBool,
+    observed_job_ids: Mutex<Vec<String>>,
 }
 
 impl MockSqlExecutor {
@@ -127,6 +128,7 @@ impl MockSqlExecutor {
             variables,
             table: Mutex::new(TableState::default()),
             sleep_running: AtomicBool::new(false),
+            observed_job_ids: Mutex::new(Vec::new()),
         }
     }
 
@@ -150,6 +152,10 @@ impl SqlExecutor for MockSqlExecutor {
         sql: &str,
         _arguments: &[SqlValue],
     ) -> Result<Option<Box<dyn crate::RecordSet>>, SessionError> {
+        self.observed_job_ids
+            .lock()
+            .unwrap()
+            .push(self.variables.ttl_job_id());
         let trimmed = sql.trim();
         let upper = trimmed.to_ascii_uppercase();
         match upper.as_str() {
@@ -354,6 +360,48 @@ fn TestSessionRunInTxn() {
         executor.must_query_rows("select * from t order by id asc"),
         vec!["1 10".to_string(), "3 30".to_string()]
     );
+}
+
+#[test]
+fn ttl_job_attribution_covers_transaction_boundaries_and_is_restored() {
+    let (se, executor) = new_mock_pair();
+    let job = ExecutionContext::default().with_ttl_job("job-1");
+
+    se.execute_sql(&job, "select * from missing", &[])
+        .expect_err("the unsupported statement exercises error cleanup");
+    assert_eq!(se.session_variables().ttl_job_id(), "");
+
+    executor.observed_job_ids.lock().unwrap().clear();
+    se.run_in_transaction(
+        &job,
+        &mut || {
+            se.execute_sql(&job, "insert into t values (7, 70)", &[])
+                .map(|_| ())
+        },
+        TxnMode::Optimistic,
+    )
+    .unwrap();
+    assert_eq!(
+        *executor.observed_job_ids.lock().unwrap(),
+        vec!["job-1", "job-1", "job-1"]
+    );
+    assert_eq!(se.session_variables().ttl_job_id(), "");
+
+    executor.observed_job_ids.lock().unwrap().clear();
+    let error = se
+        .run_in_transaction(
+            &job,
+            &mut || Err(SessionError::Sql("abort".into())),
+            TxnMode::Pessimistic,
+        )
+        .unwrap_err();
+    assert!(matches!(error, SessionError::Sql(ref message) if message == "abort"));
+    assert_eq!(
+        *executor.observed_job_ids.lock().unwrap(),
+        vec!["job-1", "job-1"],
+        "BEGIN and cancellation-safe ROLLBACK retain the job"
+    );
+    assert_eq!(se.session_variables().ttl_job_id(), "");
 }
 
 /// Go defers rollback and phase restoration even while a callback panic unwinds.

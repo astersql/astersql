@@ -55,6 +55,7 @@ struct MockSession {
     state: SessionState,
     replies: VecDeque<Result<Vec<Row>, SessionError>>,
     calls: Vec<(String, Vec<Datum>)>,
+    job_ids: Vec<String>,
 }
 
 impl WorkerSession for MockSession {
@@ -69,6 +70,16 @@ impl WorkerSession for MockSession {
     fn execute(&mut self, sql: &str, args: &[Datum]) -> Result<Vec<Row>, SessionError> {
         self.calls.push((sql.into(), args.to_vec()));
         self.replies.pop_front().expect("unexpected SQL execution")
+    }
+
+    fn execute_with_ttl_job(
+        &mut self,
+        job_id: &str,
+        sql: &str,
+        args: &[Datum],
+    ) -> Result<Vec<Row>, SessionError> {
+        self.job_ids.push(job_id.to_owned());
+        self.execute(sql, args)
     }
 }
 
@@ -190,6 +201,7 @@ fn execute_retries_then_advances_cursor_and_counts_dispatched_rows() {
     assert_eq!(statistics.snapshot(), (3, 0, 0));
     assert_eq!(dispatched.len(), 2);
     assert_eq!(session.calls.len(), 3);
+    assert_eq!(session.job_ids, vec!["job-1", "job-1", "job-1"]);
     assert_eq!(session.calls[0], session.calls[1]);
     assert!(session.calls[2].0.contains("AND (`id`) > (%?)"));
     assert_eq!(session.calls[2].1.last(), Some(&Datum::Integer(2)));

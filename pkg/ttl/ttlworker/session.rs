@@ -87,6 +87,8 @@ pub struct SessionState {
     pub distsql_scan_concurrency: usize,
     /// 是否启用分页下推。
     pub enable_paging: bool,
+    /// Current statement's TTL job attribution; empty for metadata SQL.
+    pub ttl_job_id: String,
 }
 
 /// One captured expiration predicate, reused across scan pages and delete retries.
@@ -104,6 +106,19 @@ pub trait WorkerSession {
     fn state_mut(&mut self) -> &mut SessionState;
     /// 执行 SQL，返回结果行或会话错误。
     fn execute(&mut self, sql: &str, args: &[Datum]) -> Result<Vec<Row>, SessionError>;
+    /// Execute one user-table statement attributed to a TTL job, restoring the
+    /// pooled session state even when execution returns an error.
+    fn execute_with_ttl_job(
+        &mut self,
+        job_id: &str,
+        sql: &str,
+        args: &[Datum],
+    ) -> Result<Vec<Row>, SessionError> {
+        let previous = std::mem::replace(&mut self.state_mut().ttl_job_id, job_id.to_owned());
+        let result = self.execute(sql, args);
+        self.state_mut().ttl_job_id = previous;
+        result
+    }
     /// Refresh the SQL-backed variable snapshot before preparing a pooled session.
     fn refresh_state(&mut self) -> Result<(), SessionError> {
         Ok(())

@@ -303,7 +303,7 @@ impl TtlScanTask {
             // Go permits the initial attempt plus the configured number of
             // retries.  A five-retry task therefore has six attempts.
             for _ in 0..=SCAN_TASK_EXECUTE_SQL_MAX_RETRY {
-                let execution = session.execute(&sql, &args);
+                let execution = session.execute_with_ttl_job(&self.job_id, &sql, &args);
                 // Go cancels the statement context and checks that context
                 // before either retrying or dispatching the returned rows.
                 // Preserve that statement-boundary ordering here as well.
