@@ -304,18 +304,21 @@ pub fn split_table_regions(
         for physical in policy_ids {
             if parts.is_none() || physical != table.ID {
                 if let Some(policy) = &table.TableSplitPolicy {
-                    let keys = policy_bounds(expressions, policy).and_then(|(lower, upper)| {
-                        astersql_util_regionsplit::GetSplitTableKeysForModel(
-                            &statement_context,
-                            table,
-                            physical,
-                            &lower,
-                            &upper,
-                            policy.Regions as usize,
-                            Vec::new(),
-                        )
-                        .map_err(|error| error.to_string())
-                    });
+                    let bound_columns = astersql_util_regionsplit::GetHandleColumnInfos(table);
+                    let keys = policy_bounds(expressions, policy, &bound_columns, true).and_then(
+                        |(lower, upper)| {
+                            astersql_util_regionsplit::GetSplitTableKeysForModel(
+                                &statement_context,
+                                table,
+                                physical,
+                                &lower,
+                                &upper,
+                                policy.Regions as usize,
+                                Vec::new(),
+                            )
+                            .map_err(|error| error.to_string())
+                        },
+                    );
                     match keys {
                         Ok(keys) => split(keys, &mut regions),
                         Err(error) => eprintln!("DDL table split policy skipped: {error}"),
@@ -329,18 +332,25 @@ pub fn split_table_regions(
                     continue;
                 }
                 if let Some(policy) = &index.RegionSplitPolicy {
-                    let keys = policy_bounds(expressions, policy).and_then(|(lower, upper)| {
-                        astersql_util_regionsplit::GetSplitIndexKeysForModel(
-                            &statement_context,
-                            table,
-                            index,
-                            physical,
-                            &lower,
-                            &upper,
-                            policy.Regions as usize,
-                        )
-                        .map_err(|error| error.to_string())
-                    });
+                    let bound_columns = index
+                        .Columns
+                        .iter()
+                        .map(|column| table.Columns[column.Offset as usize].clone())
+                        .collect::<Vec<_>>();
+                    let keys = policy_bounds(expressions, policy, &bound_columns, false).and_then(
+                        |(lower, upper)| {
+                            astersql_util_regionsplit::GetSplitIndexKeysForModel(
+                                &statement_context,
+                                table,
+                                index,
+                                physical,
+                                &lower,
+                                &upper,
+                                policy.Regions as usize,
+                            )
+                            .map_err(|error| error.to_string())
+                        },
+                    );
                     match keys {
                         Ok(keys) => split(keys, &mut regions),
                         Err(error) => eprintln!("DDL index split policy skipped: {error}"),
@@ -413,6 +423,8 @@ pub fn split_table_regions(
 fn policy_bounds(
     context: &dyn astersql_expression::BuildContext,
     policy: &astersql_meta_model::RegionSplitPolicy,
+    columns: &[astersql_meta_model::ColumnInfo],
+    reject_null: bool,
 ) -> Result<
     (
         Vec<astersql_types::datum::Datum>,
@@ -424,14 +436,44 @@ fn policy_bounds(
         return Err("split region count must be positive".into());
     }
     let evaluate = |values: &[String]| {
+        let convert = values.len() == columns.len();
         values
             .iter()
-            .map(|value| {
+            .enumerate()
+            .map(|(offset, value)| {
                 astersql_expression::ParseSimpleExpr(context, value, Vec::new())
                     .and_then(|expression| {
                         expression.Eval(context.GetEvalCtx(), astersql_util_chunk::Row::default())
                     })
                     .map_err(|error| error.to_string())
+                    .and_then(|datum| {
+                        if !convert {
+                            return Ok(datum);
+                        }
+                        let type_context = context
+                            .GetEvalCtx()
+                            .TypeCtx()
+                            .WithFlags(astersql_types::Flags(0).WithAllowNegativeToUnsigned(true));
+                        astersql_util_regionsplit::ConvertValueToColumnType(
+                            &datum,
+                            &columns[offset],
+                            type_context,
+                        )
+                        .map_err(|error| error.to_string())
+                    })
+                    .and_then(|datum| {
+                        if reject_null && datum.IsNull() {
+                            Err(format!(
+                                "Column '{}' cannot be null",
+                                columns
+                                    .get(offset)
+                                    .map(|column| column.Name.O.as_str())
+                                    .unwrap_or_default()
+                            ))
+                        } else {
+                            Ok(datum)
+                        }
+                    })
             })
             .collect::<Result<Vec<_>, _>>()
     };

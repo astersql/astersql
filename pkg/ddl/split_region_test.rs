@@ -412,3 +412,89 @@ fn presplit_wait_continues_for_pd_errors_but_stops_for_other_errors() {
         assert_eq!(*store.waits.borrow(), waits);
     }
 }
+
+#[test]
+fn persisted_policy_bounds_are_converted_to_handle_column_types() {
+    astersql_planner_core::InstallPlannerExpressionFactory().unwrap();
+    let mut parser = astersql_parser::New();
+    let statement = parser
+        .ParseOneStmt("create table t (id bigint primary key)", "", "")
+        .unwrap();
+    let create = statement
+        .as_any()
+        .downcast_ref::<astersql_parser_ast::CreateTableStmt>()
+        .unwrap();
+    let context = astersql_meta_metabuild::NewContext::<(), std::convert::Infallible>(Vec::new());
+    let mut table = crate::BuildTableInfoFromAST(&context, create).unwrap();
+    table.ID = 100;
+    table.TableSplitPolicy = Some(astersql_meta_model::RegionSplitPolicy {
+        Lower: vec!["'0'".into()],
+        Upper: vec!["'10000'".into()],
+        Regions: 4,
+        ..Default::default()
+    });
+
+    let store = RecordingStore::default();
+    let expr = astersql_expression_exprstatic::NewExprContext(Vec::new());
+    super::split_region::split_table_regions(&Default::default(), &expr, &store, &table, "off");
+
+    let prefix = astersql_tablecodec::GenTableRecordPrefix(100);
+    assert_eq!(
+        store.calls.borrow()[0].0,
+        vec![2500_i64, 5000, 7500]
+            .into_iter()
+            .map(|handle| {
+                astersql_tablecodec::EncodeRecordKey(
+                    prefix.clone(),
+                    Box::new(astersql_kv::IntHandle(handle)),
+                )
+                .0
+            })
+            .collect::<Vec<_>>()
+    );
+
+    let mut index_keys = |lower: &str, upper: &str| {
+        let statement = parser
+            .ParseOneStmt(
+                "create table indexed (id bigint primary key, name varchar(100), index idx_name(name))",
+                "",
+                "",
+            )
+            .unwrap();
+        let create = statement
+            .as_any()
+            .downcast_ref::<astersql_parser_ast::CreateTableStmt>()
+            .unwrap();
+        let mut indexed = crate::BuildTableInfoFromAST(&context, create).unwrap();
+        indexed.ID = 200;
+        indexed.Indices[0].ID = 10;
+        indexed.Indices[0].RegionSplitPolicy = Some(astersql_meta_model::RegionSplitPolicy {
+            Lower: vec![lower.into()],
+            Upper: vec![upper.into()],
+            Regions: 3,
+            ..Default::default()
+        });
+        let store = RecordingStore::default();
+        super::split_region::split_table_regions(
+            &Default::default(),
+            &expr,
+            &store,
+            &indexed,
+            "off",
+        );
+        store.calls.into_inner()[0].0.clone()
+    };
+    let string_index_keys = index_keys("'0'", "'100'");
+    assert!(!string_index_keys.is_empty());
+    assert_eq!(string_index_keys, index_keys("0", "100"));
+
+    table.TableSplitPolicy = Some(astersql_meta_model::RegionSplitPolicy {
+        Lower: vec!["'not-an-integer'".into()],
+        Upper: vec!["'10000'".into()],
+        Regions: 4,
+        ..Default::default()
+    });
+    let store = RecordingStore::default();
+    super::split_region::split_table_regions(&Default::default(), &expr, &store, &table, "off");
+    assert!(store.calls.borrow().is_empty());
+}
