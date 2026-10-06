@@ -55,3 +55,15 @@ fn tiflash_keeps_go_supported_signature_variants() {
         );
     }
 }
+
+#[test]
+fn tiflash_pushes_null_safe_equality() {
+    let context = PushDownContext::new(false, None, None, 0);
+
+    assert!(can_expr_push_down(
+        &context,
+        &scalar("nulleq", "NullEQInt"),
+        StoreType::TiFlash,
+        false,
+    ));
+}

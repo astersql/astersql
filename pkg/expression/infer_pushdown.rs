@@ -466,6 +466,7 @@ const TIFLASH_FUNCTIONS: &[&str] = &[
     "le",
     "eq",
     "ne",
+    "nulleq",
     "lt",
     "gt",
     "in",
