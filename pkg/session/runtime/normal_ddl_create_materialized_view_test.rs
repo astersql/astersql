@@ -205,7 +205,7 @@ fn check(v: JobVersion) {
     );
     assert_eq!(j.state, JobState::Running);
     assert!(j.last_schema_version > 0);
-    assert!(!astersql_ddl::persistent_actions::handler_available(86));
+    assert!(astersql_ddl::persistent_actions::handler_available(86));
     let actual = f.reader().get_table(f.db, t.ID).unwrap().unwrap();
     assert_eq!(actual.State, SchemaState::Public);
     assert_eq!(
@@ -433,9 +433,19 @@ fn normal_ddl_plan_create_materialized_view_1_prewrite_error_and_unfinished_stag
         vec![7001]
     );
     assert!(f.reader().get_history_ddl_job(j.id).unwrap().is_none());
-    // This task cannot execute rollback or the data build phase.
     run(&f, &mut j).unwrap();
-    assert!(j.error.as_ref().unwrap().contains("stage unavailable"));
+    assert_eq!(j.state, JobState::RollbackDone, "{:?}", j.error);
+    assert!(f.reader().get_table(f.db, t.ID).unwrap().is_none());
+    assert_eq!(
+        f.reader()
+            .get_table(f.db, f.table)
+            .unwrap()
+            .unwrap()
+            .MaterializedViewBase
+            .unwrap()
+            .MViewIDs,
+        vec![7001]
+    );
 }
 #[test]
 fn normal_ddl_plan_create_materialized_view_1_independent_commit_conflict_restart() {
@@ -566,7 +576,7 @@ fn build_data(v: JobVersion) {
             .InitBuildState
             == astersql_meta_model::MViewInitBuildBuilding
     );
-    assert!(!astersql_ddl::persistent_actions::handler_available(86));
+    assert!(astersql_ddl::persistent_actions::handler_available(86));
 }
 #[test]
 fn normal_ddl_plan_create_materialized_view_2_v1() {

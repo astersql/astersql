@@ -261,6 +261,21 @@ pub trait JobExecutionContext {
         Err("materialized view independent refresh prewrite unavailable".into())
     }
 
+    /// Publish the successful initial build into the durable refresh schedule.
+    fn finish_create_mview_refresh(
+        &mut self,
+        _: &str,
+        _: &astersql_meta_model::TableInfo,
+        _: u64,
+    ) -> Result<(), String> {
+        Err("materialized view refresh publication unavailable".into())
+    }
+
+    /// Remove refresh bookkeeping while rolling CREATE MATERIALIZED VIEW back.
+    fn delete_create_mview_refresh(&mut self, _: i64) -> Result<(), String> {
+        Err("materialized view refresh cleanup unavailable".into())
+    }
+
     /// Evaluate persisted MLog schedules on an isolated UTC evaluation context.
     fn derive_create_mlog_schedule(
         &mut self,

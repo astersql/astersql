@@ -216,6 +216,18 @@ impl<B: DdlSchemaBarrier, P: DdlJobPolicy> crate::job_worker::DurableJobExecutor
             });
         }
         if job.state == JobState::Cancelling {
+            if job.tp == astersql_meta_model::group_3::ACTION_CREATE_MATERIALIZED_VIEW
+                && job.schema_state == astersql_meta_model::SchemaState::WriteReorganization
+            {
+                job.state = JobState::Rollingback;
+                job.error = Some("[ddl:8214]Cancelled DDL job".into());
+                job.error_count += 1;
+                return Ok(crate::job_worker::DurableJobStep {
+                    schema_version: 0,
+                    update_raw_args: false,
+                    removed: false,
+                });
+            }
             job.state = JobState::Cancelled;
             job.error = Some("[ddl:8214]Cancelled DDL job".into());
             job.error_count += 1;

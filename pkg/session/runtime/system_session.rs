@@ -1151,6 +1151,75 @@ impl astersql_ddl::job_worker::JobExecutionContext for ConcreteJobExecutionConte
         })
     }
 
+    fn finish_create_mview_refresh(
+        &mut self,
+        _schema: &str,
+        table: &astersql_meta_model::TableInfo,
+        read_ts: u64,
+    ) -> Result<(), String> {
+        let info = table
+            .MaterializedView
+            .as_ref()
+            .ok_or("create materialized view: invalid metadata")?;
+        let evaluate = |expression: &str| -> Result<Option<i64>, String> {
+            if expression.trim().is_empty() {
+                return Ok(None);
+            }
+            let mut parser = astersql_parser::New();
+            let statement = parser
+                .ParseOneStmt(&format!("select {expression}"), "utf8mb4", "utf8mb4_bin")
+                .map_err(|error| error.to_string())?;
+            let select = statement
+                .as_any()
+                .downcast_ref::<super::ast::SelectStmt>()
+                .ok_or("materialized view schedule is not a scalar expression")?;
+            let expression = select
+                .Fields
+                .Fields
+                .first()
+                .and_then(|field| field.Expr.as_ref())
+                .ok_or("materialized view schedule has no expression")?;
+            super::mview_ddl::mlog_schedule_unix_seconds_with_mode(
+                expression,
+                info.RefreshScheduleSQLMode,
+            )
+            .map_err(|error| error.to_string())
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| error.to_string())?
+            .as_secs() as i64;
+        let start = evaluate(&info.RefreshStartWith)?;
+        let next = evaluate(&info.RefreshNext)?;
+        let scheduled = match (start, info.RefreshNext.trim().is_empty()) {
+            (Some(start), false) if start < now.saturating_add(10) => next,
+            (Some(start), _) => Some(start),
+            (None, _) => next,
+        };
+        let next_sql = scheduled.map_or("NULL".to_owned(), |value| value.to_string());
+        self.query(
+            &format!("INSERT INTO mysql.tidb_mview_refresh_info (MVIEW_ID,LAST_SUCCESS_READ_TSO,LAST_SUCCESS_REFRESH_END_UNIX_SECONDS,NEXT_REFRESH_UNIX_SECONDS) VALUES ({},{},{},{}) ON DUPLICATE KEY UPDATE LAST_SUCCESS_READ_TSO=VALUES(LAST_SUCCESS_READ_TSO),LAST_SUCCESS_REFRESH_END_UNIX_SECONDS=VALUES(LAST_SUCCESS_REFRESH_END_UNIX_SECONDS),NEXT_REFRESH_UNIX_SECONDS=VALUES(NEXT_REFRESH_UNIX_SECONDS)", table.ID, read_ts, now, next_sql),
+            "mview-refresh-info-upsert",
+        )?;
+        Ok(())
+    }
+
+    fn delete_create_mview_refresh(&mut self, id: i64) -> Result<(), String> {
+        if let Err(error) = self.query(
+            &format!("DELETE FROM mysql.tidb_mview_refresh_info WHERE MVIEW_ID={id}"),
+            "mview-refresh-info-delete",
+        ) {
+            if !error.contains("tidb_mview_refresh_info") {
+                return Err(error);
+            }
+        }
+        let _ = self.query(
+            &format!("DELETE FROM mysql.tidb_mview_refresh_alert WHERE MVIEW_ID={id}"),
+            "mview-refresh-alert-delete",
+        );
+        Ok(())
+    }
+
     fn derive_create_mlog_schedule(
         &mut self,
         schema: &str,
