@@ -846,6 +846,11 @@ pub const TiDBStmtSummaryRefreshInterval: &str = "tidb_stmt_summary_refresh_inte
 // TiDBStmtSummaryHistorySize indicates the history size of each statement summary.
 pub const TiDBStmtSummaryHistorySize: &str = "tidb_stmt_summary_history_size";
 
+// TiDBStorageClassTransitionHistorySize limits the number of ended
+// storage-class transitions retained in the system history table.
+pub const TiDBStorageClassTransitionHistorySize: &str =
+    "tidb_storage_class_transition_history_size";
+
 // TiDBStmtSummaryMaxStmtCount indicates the max number of statements kept in memory.
 pub const TiDBStmtSummaryMaxStmtCount: &str = "tidb_stmt_summary_max_stmt_count";
 
@@ -1795,6 +1800,7 @@ pub const DefTiDBEnableStmtSummary: bool = true;
 pub const DefTiDBStmtSummaryInternalQuery: bool = false;
 pub const DefTiDBStmtSummaryRefreshInterval: i64 = 1800;
 pub const DefTiDBStmtSummaryHistorySize: i64 = 24;
+pub const DefTiDBStorageClassTransitionHistorySize: i64 = 1000;
 pub const DefTiDBStmtSummaryMaxStmtCount: i64 = 3000;
 pub const DefTiDBStmtSummaryMaxSQLLength: i64 = 32768;
 pub const DefTiDBStmtSummaryPersistEvicted: bool = false;

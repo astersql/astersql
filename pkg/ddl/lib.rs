@@ -302,3 +302,6 @@ pub mod persistent_modify_column;
 pub mod storage_class;
 #[cfg(test)]
 mod storage_class_test;
+pub mod storage_class_transition;
+#[cfg(test)]
+mod storage_class_transition_test;

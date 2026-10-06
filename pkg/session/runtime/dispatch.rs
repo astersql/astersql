@@ -2211,6 +2211,84 @@ impl ConcreteSession {
             return Ok(None);
         }
         if let Some(show) = statement.as_any().downcast_ref::<ast::ShowStmt>() {
+            if show.Tp == ast::ShowStmtType::StorageClassTransitions {
+                let statuses = self
+                    .domain
+                    .ddl()
+                    .map_or(Ok(Vec::new()), |ddl| {
+                        ddl.storage_class_transition_statuses()
+                    })
+                    .map_err(|error| session_error("show storage class transitions", error))?;
+                let rows = statuses
+                    .into_iter()
+                    .filter(|status| {
+                        self.information_schema_table_visible(
+                            &status.table_schema,
+                            &status.table_name,
+                        )
+                    })
+                    .map(|status| {
+                        vec![
+                            status.table_schema,
+                            status.table_name,
+                            status.table_id.to_string(),
+                            (status.partition_id != 0)
+                                .then_some(status.partition_name)
+                                .unwrap_or_default(),
+                            (status.partition_id != 0)
+                                .then(|| status.partition_id.to_string())
+                                .unwrap_or_default(),
+                            status.direction,
+                            status
+                                .status_valid
+                                .then(|| status.total_replicas.to_string())
+                                .unwrap_or_default(),
+                            status
+                                .status_valid
+                                .then(|| status.completed_replicas.to_string())
+                                .unwrap_or_default(),
+                            status
+                                .progress_valid
+                                .then(|| status.progress.to_string())
+                                .unwrap_or_default(),
+                            super::system_query::format_runtime_datetime(
+                                status.start_time,
+                                *self.time_zone.borrow(),
+                            ),
+                            status.duration.num_seconds().max(0).to_string(),
+                            status
+                                .last_update_time
+                                .map(|time| {
+                                    super::system_query::format_runtime_datetime(
+                                        time,
+                                        *self.time_zone.borrow(),
+                                    )
+                                })
+                                .unwrap_or_default(),
+                        ]
+                    })
+                    .collect();
+                return Ok(Some(ConcreteRecordSet::new(
+                    vec![
+                        "TABLE_SCHEMA",
+                        "TABLE_NAME",
+                        "TABLE_ID",
+                        "PARTITION_NAME",
+                        "PARTITION_ID",
+                        "DIRECTION",
+                        "TOTAL_REPLICAS",
+                        "COMPLETED_REPLICAS",
+                        "PROGRESS",
+                        "START_TIME",
+                        "DURATION",
+                        "LAST_UPDATE_TIME",
+                    ]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+                    rows,
+                )));
+            }
             if show.Tp == ast::ShowStmtType::Bindings {
                 return Ok(Some(self.show_binding_record_set(show.GlobalScope)));
             }

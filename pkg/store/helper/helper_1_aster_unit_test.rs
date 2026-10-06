@@ -507,3 +507,33 @@ fn tiflash_and_columnar_http_paths_match_go() {
     canceled.cancel();
     assert!(CollectColumnarStatusWithCtx(&canceled, "127.0.0.1:1", 1, 1, None).is_err());
 }
+
+#[test]
+fn storage_class_status_path_and_validation_match_go() {
+    let (address, request, server) = one_shot_http_server(200, r#"{"ready":2,"total":3}"#);
+    let status = CollectStorageClassStatus(&address, 7, 41, "IA").unwrap();
+    assert_eq!(status, StorageClassStatusResp { Ready: 2, Total: 3 });
+    assert!(request.recv().unwrap().starts_with(
+        "GET /kvengine/storage_class_status?keyspace_id=7&table_id=41&target=IA HTTP/1.1"
+    ));
+    server.join().unwrap();
+
+    for body in [r#"{"ready":1}"#, r#"{"total":1}"#, r#"{"ready":2,"total":1}"#] {
+        let (address, _, server) = one_shot_http_server(200, body);
+        assert!(CollectStorageClassStatus(&address, 7, 41, "STANDARD").is_err());
+        server.join().unwrap();
+    }
+
+    let (address, _, server) = one_shot_http_server(500, "bad status");
+    assert!(
+        CollectStorageClassStatus(&address, 7, 41, "IA")
+            .unwrap_err()
+            .to_string()
+            .contains("returned status 500: bad status")
+    );
+    server.join().unwrap();
+
+    let canceled = RequestContext::background();
+    canceled.cancel();
+    assert!(CollectStorageClassStatusWithCtx(&canceled, "127.0.0.1:1", 1, 1, "IA").is_err());
+}

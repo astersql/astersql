@@ -8,7 +8,160 @@ use astersql_domain::domain::{DdlService, StartMode};
 use astersql_owner::manager::{Context, Manager};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+const STORAGE_CLASS_TRANSITION_POLL_INTERVAL: Duration = Duration::from_secs(10);
+const STORAGE_CLASS_TRANSITION_PRUNE_INTERVAL: Duration = Duration::from_secs(60);
+
+fn parse_transition_time(value: &str) -> Result<chrono::DateTime<chrono::Utc>, String> {
+    chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
+        .map(|value| value.and_utc())
+        .map_err(|error| error.to_string())
+}
+
+fn transition_statuses(
+    pool: &SystemSessionPool,
+) -> Result<Vec<astersql_ddl::storage_class_transition::StorageClassTransitionStatus>, String> {
+    let rows = pool.acquire()?.query(
+        "SELECT table_schema,table_name,table_id,COALESCE(partition_name,''),COALESCE(partition_id,0),direction,COALESCE(total_replicas,0),COALESCE(completed_replicas,0),schema_version,start_ts,start_time,COALESCE(duration,0),COALESCE(finish_time,'') FROM mysql.tidb_storage_class_transition_history WHERE state='RUNNING' ORDER BY start_ts,table_id,direction",
+    )?;
+    let now = chrono::Utc::now();
+    rows.into_iter()
+        .map(|row| {
+            if row.len() != 13 {
+                return Err("invalid storage class transition status row".into());
+            }
+            let start_time = parse_transition_time(&row[10])?;
+            let total = row[6].parse::<u64>().map_err(|error| error.to_string())?;
+            let completed = row[7].parse::<u64>().map_err(|error| error.to_string())?;
+            let status_valid = total != 0 || completed != 0;
+            Ok(
+                astersql_ddl::storage_class_transition::StorageClassTransitionStatus {
+                    table_schema: row[0].clone(),
+                    table_name: row[1].clone(),
+                    table_id: row[2].parse::<i64>().map_err(|error| error.to_string())?,
+                    partition_name: row[3].clone(),
+                    partition_id: row[4].parse::<i64>().map_err(|error| error.to_string())?,
+                    direction: row[5].clone(),
+                    total_replicas: total,
+                    completed_replicas: completed,
+                    progress: if total == 0 {
+                        0.0
+                    } else {
+                        completed as f64 / total as f64
+                    },
+                    progress_valid: total != 0,
+                    start_time,
+                    duration: now
+                        .signed_duration_since(start_time)
+                        .max(chrono::Duration::zero()),
+                    last_update_time: status_valid.then_some(now),
+                    status_valid,
+                    physical_table_ids: Vec::new(),
+                    schema_version: row[8].parse::<i64>().map_err(|error| error.to_string())?,
+                    start_ts: row[9].parse::<u64>().map_err(|error| error.to_string())?,
+                },
+            )
+        })
+        .collect()
+}
+
+fn poll_storage_class_transitions(pool: &SystemSessionPool) -> Result<(), String> {
+    if !astersql_config_kerneltype::IsNextGen() {
+        return Ok(());
+    }
+    let (_, stores) =
+        astersql_domain_infosync::GetTiFlashProgressStores().map_err(|error| error.to_string())?;
+    let keyspace_id =
+        astersql_domain_infosync::GetTiKVStatusKeyspaceID().map_err(|error| error.to_string())?;
+    let session = pool.acquire()?;
+    let rows = session.query("SELECT table_id,direction,start_ts,start_time,physical_targets FROM mysql.tidb_storage_class_transition_history WHERE state='RUNNING' ORDER BY table_id,start_ts,direction")?;
+    for row in rows {
+        if row.len() != 5 {
+            return Err("invalid storage class transition poll row".into());
+        }
+        let table_id = row[0].parse::<i64>().map_err(|error| error.to_string())?;
+        let start_ts = row[2].parse::<u64>().map_err(|error| error.to_string())?;
+        let target = astersql_ddl::storage_class_transition::target_for_direction(&row[1])?;
+        let targets: Vec<astersql_ddl::storage_class_transition::StorageClassTransitionTarget> =
+            serde_json::from_str(&row[4]).map_err(|error| error.to_string())?;
+        astersql_ddl::storage_class_transition::validate_targets(&targets)?;
+        let mut ready = 0_u64;
+        let mut total = 0_u64;
+        let mut complete = true;
+        for physical in &targets {
+            let mut observed = false;
+            let mut target_ready = 0_u64;
+            let mut target_total = 0_u64;
+            for store in stores.values() {
+                match astersql_store_helper::CollectStorageClassStatus(
+                    &store.Store.StatusAddress,
+                    keyspace_id,
+                    physical.physical_id,
+                    target,
+                ) {
+                    Ok(status) => {
+                        observed = true;
+                        target_ready = target_ready.saturating_add(status.Ready);
+                        target_total = target_total.saturating_add(status.Total);
+                    }
+                    Err(_) if store.Store.StateName == "Tombstone" => {}
+                    Err(error) => return Err(error.to_string()),
+                }
+            }
+            ready = ready.saturating_add(target_ready);
+            total = total.saturating_add(target_total);
+            complete &= observed && target_total != 0 && target_ready == target_total;
+        }
+        let now = chrono::Utc::now();
+        let state = if complete { "COMPLETED" } else { "RUNNING" };
+        let finish = if complete {
+            format!(
+                ",finish_time='{}',duration={}",
+                now.format("%Y-%m-%d %H:%M:%S%.6f"),
+                now.signed_duration_since(parse_transition_time(&row[3])?)
+                    .num_seconds()
+                    .max(0)
+            )
+        } else {
+            String::new()
+        };
+        session.query(format!("UPDATE mysql.tidb_storage_class_transition_history SET total_replicas={total},completed_replicas={ready},state='{state}'{finish} WHERE table_id={table_id} AND start_ts={start_ts} AND direction='{}' AND state='RUNNING'", row[1].replace('\'', "''")))?;
+    }
+    Ok(())
+}
+
+fn prune_storage_class_transition_history(pool: &SystemSessionPool) -> Result<(), String> {
+    let session = pool.acquire()?;
+    let limit = session
+        .query("SELECT @@global.tidb_storage_class_transition_history_size")?
+        .first()
+        .and_then(|row| row.first())
+        .ok_or_else(|| "storage class transition history size is unavailable".to_owned())?
+        .parse::<u64>()
+        .map_err(|error| error.to_string())?;
+    let rows = session.query(format!(
+        "SELECT finish_time,table_id,start_ts,direction FROM mysql.tidb_storage_class_transition_history WHERE state IN ('COMPLETED','SUPERSEDED') ORDER BY finish_time DESC,table_id DESC,start_ts DESC,direction DESC LIMIT {limit},1"
+    ))?;
+    let Some(boundary) = rows.first() else {
+        return Ok(());
+    };
+    if boundary.len() != 4 {
+        return Err("invalid storage class transition history boundary".into());
+    }
+    let finish_time = boundary[0].replace('\'', "''");
+    let table_id = boundary[1]
+        .parse::<i64>()
+        .map_err(|error| error.to_string())?;
+    let start_ts = boundary[2]
+        .parse::<u64>()
+        .map_err(|error| error.to_string())?;
+    let direction = boundary[3].replace('\'', "''");
+    session.query(format!(
+        "DELETE FROM mysql.tidb_storage_class_transition_history WHERE state IN ('COMPLETED','SUPERSEDED') AND (finish_time<'{finish_time}' OR (finish_time='{finish_time}' AND table_id<{table_id}) OR (finish_time='{finish_time}' AND table_id={table_id} AND start_ts<{start_ts}) OR (finish_time='{finish_time}' AND table_id={table_id} AND start_ts={start_ts} AND direction<='{direction}'))"
+    ))?;
+    Ok(())
+}
 
 type ExecutorFactory = dyn Fn() -> Result<Box<dyn DurableJobExecutor>, String> + Send + Sync;
 type SubmitTableMode = dyn Fn(&str) -> Result<(), String> + Send + Sync;
@@ -239,6 +392,8 @@ impl DdlService for NormalDdlService {
                     let mut executor = None;
                     let mut owner_epoch = None;
                     let mut retry_state = true;
+                    let mut next_transition_poll = Instant::now();
+                    let mut next_transition_prune = Instant::now();
                     loop {
                         if lease.is_cancelled() {
                             break;
@@ -285,12 +440,31 @@ impl DdlService for NormalDdlService {
                                         executor = Some(make_executor()?);
                                     }
                                     let mut session = pool.acquire()?;
-                                    scheduler.schedule_persisted(
+                                    let scheduled = scheduler.schedule_persisted(
                                         &mut session,
                                         &lease,
                                         executor.as_mut().unwrap().as_mut(),
                                         0,
-                                    )
+                                    )?;
+                                    let now = Instant::now();
+                                    if now >= next_transition_poll {
+                                        if let Err(message) = poll_storage_class_transitions(&pool)
+                                        {
+                                            eprintln!("storage class transition poll: {message}");
+                                        }
+                                        next_transition_poll =
+                                            now + STORAGE_CLASS_TRANSITION_POLL_INTERVAL;
+                                    }
+                                    if now >= next_transition_prune {
+                                        if let Err(message) =
+                                            prune_storage_class_transition_history(&pool)
+                                        {
+                                            eprintln!("storage class transition prune: {message}");
+                                        }
+                                        next_transition_prune =
+                                            now + STORAGE_CLASS_TRANSITION_PRUNE_INTERVAL;
+                                    }
+                                    Ok(scheduled)
                                 })();
                                 match result {
                                     Ok(_) => *error.lock().unwrap() = None,
@@ -396,6 +570,12 @@ impl DdlService for NormalDdlService {
             )) as Arc<dyn astersql_ddl_jobsubmit::ServerState>
         });
         super::normal_ddl_submit::submit_and_wait(&self.pool, &self.cancellation, state, job)
+    }
+    fn storage_class_transition_statuses(
+        &self,
+    ) -> Result<Vec<astersql_ddl::storage_class_transition::StorageClassTransitionStatus>, String>
+    {
+        transition_statuses(&self.pool)
     }
     fn alter_table_mode(&self, target: &str) -> Result<(), String> {
         if self.lifecycle.lock().unwrap().closed {

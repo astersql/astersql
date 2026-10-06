@@ -92,6 +92,9 @@ pub fn step(
     if job.tp == astersql_meta_model::group_3::ACTION_ALTER_MATERIALIZED_VIEW_ATTRIBUTES {
         return crate::persistent_alter_materialized_view_attributes::step(context, job);
     }
+    if job.tp == 74 {
+        return modify_engine_attribute(context, job);
+    }
     let mut version = 0;
     context.with_transaction(&mut |txn| {
         version = step_metadata(txn, job)?;
@@ -107,7 +110,6 @@ fn step_metadata(txn: &mut dyn astersql_kv::Transaction, job: &mut Job) -> Resul
         17 | 39 => modify_table_metadata(txn, job),
         26 => modify_schema_charset(txn, job),
         55 => modify_schema_placement(txn, job),
-        74 => modify_engine_attribute(txn, job),
         75 => crate::table_mode::on_persistent_alter_table_mode(txn, job),
         76 => refresh_meta(txn, job),
         action => Err(format!(
@@ -586,7 +588,7 @@ fn initialize_prepared_index_action(
 /// engine_attribute.go onModifyTableEngineAttribute: retain original JSON and
 /// atomically rebuild canonical metadata with the schema version and job result.
 fn modify_engine_attribute(
-    txn: &mut dyn astersql_kv::Transaction,
+    context: &mut dyn crate::job_worker::JobExecutionContext,
     job: &mut Job,
 ) -> Result<i64, String> {
     let args =
@@ -600,32 +602,61 @@ fn modify_engine_attribute(
             error.to_string()
         },
     )?;
-    let mut meta = astersql_meta::TransactionMutator::new(txn);
-    let mut table = public_table(&meta, job)?;
-    if job
-        .multi_schema_info
-        .as_ref()
-        .is_some_and(|info| info.revertible)
-    {
-        job.mark_non_revertible();
-        return Ok(0);
-    }
-    table.EngineAttribute = args.EngineAttribute;
-    let settings = crate::storage_class::get_settings(&table).map_err(|error| {
-        job.state = JobState::Cancelled;
-        error
-    })?;
-    crate::storage_class::BuildStorageClassForTable(&mut table, settings.as_ref()).map_err(
-        |error| {
+    let mut old = None;
+    let mut current = None;
+    let mut schema_name = None;
+    let mut version = 0;
+    context.with_transaction(&mut |txn| {
+        let mut meta = astersql_meta::TransactionMutator::new(txn);
+        let mut table = public_table(&meta, job)?;
+        if job
+            .multi_schema_info
+            .as_ref()
+            .is_some_and(|info| info.revertible)
+        {
+            job.mark_non_revertible();
+            return Ok(Vec::new());
+        }
+        old = Some(crate::storage_class_transition::snapshot_physical_storage_classes(&table));
+        schema_name = Some(
+            meta.get_database(job.schema_id)?
+                .ok_or_else(|| format!("database {} does not exist", job.schema_id))?
+                .Name
+                .O,
+        );
+        table.EngineAttribute = args.EngineAttribute.clone();
+        let settings = crate::storage_class::get_settings(&table).map_err(|error| {
             job.state = JobState::Cancelled;
             error
-        },
-    )?;
-    crate::storage_class::rebuild_partitions(&mut table).map_err(|error| {
-        job.state = JobState::Cancelled;
-        error
+        })?;
+        crate::storage_class::BuildStorageClassForTable(&mut table, settings.as_ref()).map_err(
+            |error| {
+                job.state = JobState::Cancelled;
+                error
+            },
+        )?;
+        crate::storage_class::rebuild_partitions(&mut table).map_err(|error| {
+            job.state = JobState::Cancelled;
+            error
+        })?;
+        version = update_version_and_table(&mut meta, job, &mut table)?;
+        current = Some(table);
+        Ok(Vec::new())
     })?;
-    let version = update_version_and_table(&mut meta, job, &mut table)?;
+    if current.is_none() {
+        return Ok(0);
+    }
+    let table = current.unwrap();
+    if astersql_config_kerneltype::IsNextGen() {
+        stage_storage_class_transitions(
+            context,
+            job,
+            old.as_ref().unwrap(),
+            &table,
+            version,
+            schema_name.as_deref().unwrap(),
+        )?;
+    }
     job.finish_table_job(
         JobState::Done,
         SchemaState::Public,
@@ -633,6 +664,104 @@ fn modify_engine_attribute(
         std::sync::Arc::new(table),
     );
     Ok(version)
+}
+
+fn sql_string(value: &str) -> String {
+    format!("'{}'", value.replace('\\', "\\\\").replace('\'', "''"))
+}
+
+fn stage_storage_class_transitions(
+    context: &mut dyn crate::job_worker::JobExecutionContext,
+    job: &Job,
+    old: &std::collections::BTreeMap<i64, crate::storage_class_transition::PhysicalStorageClass>,
+    table: &astersql_meta_model::TableInfo,
+    schema_version: i64,
+    schema_name: &str,
+) -> Result<(), String> {
+    use crate::storage_class_transition as transition;
+    let current = transition::snapshot_physical_storage_classes(table);
+    let mut changed = transition::changed_physical_ids(old, &current);
+    if changed.is_empty() {
+        return Ok(());
+    }
+    let rows = context.query(
+        &format!(
+            "SELECT direction,start_ts,physical_targets FROM mysql.tidb_storage_class_transition_history WHERE state='RUNNING' AND table_id={}",
+            table.ID
+        ),
+        "load-table-storage-class-transitions",
+    )?;
+    let finish = chrono::Utc::now();
+    for row in rows {
+        if row.len() < 3 {
+            return Err("invalid storage class transition history row".into());
+        }
+        let targets: Vec<transition::StorageClassTransitionTarget> =
+            serde_json::from_str(&row[2]).map_err(|error| error.to_string())?;
+        transition::validate_targets(&targets)?;
+        if !targets
+            .iter()
+            .any(|target| changed.contains(&target.physical_id))
+        {
+            continue;
+        }
+        let start_ts = row[1].parse::<u64>().map_err(|error| error.to_string())?;
+        context.query(
+            &format!(
+                "UPDATE mysql.tidb_storage_class_transition_history SET state='SUPERSEDED',finish_time={},duration=GREATEST(TIMESTAMPDIFF(SECOND,start_time,{}),0) WHERE table_id={} AND start_ts={} AND direction={} AND state='RUNNING'",
+                sql_string(&finish.format("%Y-%m-%d %H:%M:%S%.6f").to_string()),
+                sql_string(&finish.format("%Y-%m-%d %H:%M:%S%.6f").to_string()),
+                table.ID,
+                start_ts,
+                sql_string(&row[0]),
+            ),
+            "supersede-storage-class-transition",
+        )?;
+        transition::add_current_targets(&mut changed, &current, &targets);
+    }
+    let start_ts = if job.real_start_ts != 0 {
+        job.real_start_ts
+    } else {
+        job.start_ts
+    };
+    for operation in transition::build_operations(
+        table,
+        &changed,
+        schema_version,
+        start_ts,
+        schema_name,
+        &table.Name.O,
+    )? {
+        let targets =
+            serde_json::to_string(&operation.targets).map_err(|error| error.to_string())?;
+        let partition_name = if operation.status.partition_id == 0 {
+            "NULL".to_owned()
+        } else {
+            sql_string(&operation.status.partition_name)
+        };
+        let partition_id = if operation.status.partition_id == 0 {
+            "NULL".to_owned()
+        } else {
+            operation.status.partition_id.to_string()
+        };
+        context.query(
+            &format!(
+                "INSERT INTO mysql.tidb_storage_class_transition_history (table_schema,table_name,table_id,partition_name,partition_id,direction,state,schema_version,start_ts,start_time,physical_targets) VALUES ({},{},{},{},{},{},'RUNNING',{},{},{},{})",
+                sql_string(&operation.status.table_schema),
+                sql_string(&operation.status.table_name),
+                operation.status.table_id,
+                partition_name,
+                partition_id,
+                sql_string(&operation.status.direction),
+                operation.status.schema_version,
+                operation.status.start_ts,
+                sql_string(&operation.status.start_time.format("%Y-%m-%d %H:%M:%S%.6f").to_string()),
+                sql_string(&targets),
+            ),
+            "insert-storage-class-transition",
+        )?;
+    }
+    Ok(())
 }
 
 /// Go onTTLInfoChange/onTTLInfoRemove, within the owner's job transaction.

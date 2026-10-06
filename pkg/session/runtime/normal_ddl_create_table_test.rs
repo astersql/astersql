@@ -1184,6 +1184,41 @@ fn normal_ddl_storage_class_worker_persists_original_attribute_v1_and_v2() {
         assert_eq!(table.EngineAttribute, original);
         assert_eq!(table.StorageClassTier, "IA");
         assert!(done.binlog_info.as_ref().unwrap().schema_version > 0);
+        if astersql_config_kerneltype::IsNextGen() {
+            let history = f.pool.acquire().unwrap().query(format!(
+                "SELECT table_schema,table_name,table_id,direction,state,schema_version,start_ts,physical_targets FROM mysql.tidb_storage_class_transition_history WHERE table_id={}",
+                f.table
+            )).unwrap();
+            assert_eq!(history.len(), 1);
+            assert_eq!(
+                &history[0][..5],
+                &[
+                    "test",
+                    "normal_ddl_target",
+                    &f.table.to_string(),
+                    "TO_IA",
+                    "RUNNING"
+                ]
+            );
+            assert_eq!(
+                history[0][5],
+                done.binlog_info
+                    .as_ref()
+                    .unwrap()
+                    .schema_version
+                    .to_string()
+            );
+            assert_ne!(history[0][6], "0");
+            let targets: Vec<astersql_ddl::storage_class_transition::StorageClassTransitionTarget> =
+                serde_json::from_str(&history[0][7]).unwrap();
+            assert_eq!(
+                targets
+                    .iter()
+                    .map(|target| target.physical_id)
+                    .collect::<Vec<_>>(),
+                vec![f.table]
+            );
+        }
         let rows = f
             .pool
             .acquire()
@@ -1226,6 +1261,16 @@ fn normal_ddl_storage_class_worker_cancels_invalid_settings_without_metadata_cha
 
 #[test]
 fn normal_ddl_storage_class_sql_show_information_schema_and_partition_updates() {
+    struct RestoreDistTask(bool);
+    impl Drop for RestoreDistTask {
+        fn drop(&mut self) {
+            astersql_sessionctx_vardef::EnableDistTask.Store(self.0);
+        }
+    }
+    let _restore_dist_task = RestoreDistTask(astersql_sessionctx_vardef::EnableDistTask.Load());
+    if astersql_config_kerneltype::IsNextGen() {
+        astersql_sessionctx_vardef::EnableDistTask.Store(false);
+    }
     let f = Fixture::new();
     let mut session = f.pool.acquire().unwrap();
     session
@@ -1270,6 +1315,23 @@ fn normal_ddl_storage_class_sql_show_information_schema_and_partition_updates() 
     session
         .query("ALTER TABLE test.storage_class_sql STORAGE_CLASS='STANDARD'")
         .unwrap();
+    if astersql_config_kerneltype::IsNextGen() {
+        let show = session.query("SHOW STORAGE_CLASS TRANSITIONS").unwrap();
+        assert_eq!(show.len(), 1);
+        assert_eq!(
+            &show[0][..6],
+            &[
+                "test",
+                "storage_class_sql",
+                &show[0][2],
+                "",
+                "",
+                "TO_STANDARD"
+            ]
+        );
+        let info = session.query("SELECT table_schema,table_name,direction FROM information_schema.tikv_storage_class_transitions WHERE table_name='storage_class_sql'").unwrap();
+        assert_eq!(info, vec![vec!["test", "storage_class_sql", "TO_STANDARD"]]);
+    }
     assert!(
         session
             .query("SHOW CREATE TABLE test.storage_class_sql")

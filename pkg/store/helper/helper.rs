@@ -1676,6 +1676,67 @@ pub struct ColumnarStatusResp {
     pub HasFtsIndexReady: bool,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+/// TiKV storage-class status response for one physical table.
+pub struct StorageClassStatusResp {
+    #[serde(rename = "ready")]
+    pub Ready: u64,
+    #[serde(rename = "total")]
+    pub Total: u64,
+}
+
+/// Collect a physical table's storage-class transition status from one TiKV.
+pub fn CollectStorageClassStatusWithCtx(
+    ctx: &RequestContext,
+    status_address: &str,
+    keyspace_id: KeyspaceID,
+    table_id: i64,
+    target: &str,
+) -> Result<StorageClassStatusResp> {
+    let path = format!(
+        "/kvengine/storage_class_status?keyspace_id={keyspace_id}&table_id={table_id}&target={target}"
+    );
+    let response = http_client(ctx)?
+        .get(status_url(status_address, &path))
+        .send()?;
+    ctx.check()?;
+    let status = response.status();
+    if status != reqwest::StatusCode::OK {
+        let body = response.text().unwrap_or_default();
+        bail!(
+            "TiKV storage class status API returned status {}: {}",
+            status.as_u16(),
+            body
+        );
+    }
+    let response: StorageClassStatusResp = response
+        .json()
+        .context("decode TiKV storage class status response")?;
+    if response.Ready > response.Total {
+        bail!(
+            "TiKV storage class status response has ready {} greater than total {}",
+            response.Ready,
+            response.Total
+        );
+    }
+    Ok(response)
+}
+
+pub fn CollectStorageClassStatus(
+    status_address: &str,
+    keyspace_id: KeyspaceID,
+    table_id: i64,
+    target: &str,
+) -> Result<StorageClassStatusResp> {
+    CollectStorageClassStatusWithCtx(
+        &RequestContext::background(),
+        status_address,
+        keyspace_id,
+        table_id,
+        target,
+    )
+}
+
 impl<'de> Deserialize<'de> for ColumnarStatusResp {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where

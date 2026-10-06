@@ -798,6 +798,14 @@ pub fn GetTiFlashProgressStores() -> Result<(HashMap<i64, StoreInfo>, HashMap<i6
     Ok(partitionTiFlashProgressStores(stores))
 }
 
+/// Return the keyspace ID used by TiKV status HTTP endpoints.
+pub fn GetTiKVStatusKeyspaceID() -> Result<u32> {
+    Ok(getGlobalInfoSyncer()?
+        .tikvCodec
+        .keyspace_id
+        .unwrap_or_default())
+}
+
 /// 按 Go `engine.IsTiFlashHTTPResp` / `IsTiFlashWriteHTTPResp` 语义拆分 store。
 /// NextGen compute 节点不存 Region，必须从进度计算的两组中都排除。
 pub(crate) fn partitionTiFlashProgressStores(

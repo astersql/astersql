@@ -1696,6 +1696,13 @@ fn register_global_vars() {
     );
     enable_stmt_summary.AllowEmpty = true;
     RegisterSysVar(enable_stmt_summary);
+    RegisterSysVar(int_var(
+        vardef::TiDBStorageClassTransitionHistorySize,
+        vardef::DefTiDBStorageClassTransitionHistorySize,
+        vardef::ScopeGlobal,
+        100,
+        100_000,
+    ));
 
     let mut mem_oom_action = enum_var(
         vardef::TiDBMemOOMAction,

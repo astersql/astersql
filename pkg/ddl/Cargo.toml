@@ -31,6 +31,7 @@ serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 astersql-ddl-schemaver = { path = "schemaver" }
 "astersql-config-deploymode" = { package = "astersql-config-deploymode", path = "../config/deploymode" }
+"astersql-config-kerneltype" = { package = "astersql-config-kerneltype", path = "../config/kerneltype" }
 "ddl-systable" = { package = "astersql-ddl-systable", path = "systable" }
 "astersql-kv" = { package = "astersql-kv", path = "../kv" }
 "astersql-meta-metabuild" = { package = "astersql-meta-metabuild", path = "../meta/metabuild" }

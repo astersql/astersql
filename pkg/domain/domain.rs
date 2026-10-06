@@ -100,6 +100,13 @@ pub trait DdlService: Send + Sync {
     ) -> Result<(), String> {
         Err("normal persistent DDL submission unavailable".into())
     }
+    /// Active explicit storage-class transitions visible to SHOW/InfoSchema.
+    fn storage_class_transition_statuses(
+        &self,
+    ) -> Result<Vec<astersql_ddl::storage_class_transition::StorageClassTransitionStatus>, String>
+    {
+        Ok(Vec::new())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

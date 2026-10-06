@@ -104,7 +104,7 @@ pub struct StorageClassTransitRule {
     pub Tier: String,
     #[serde(rename = "after_days", default)]
     pub AfterDays: u64,
-    #[serde(rename = "after_seconds", default, skip_serializing_if = "is_zero")]
+    #[serde(rename = "after_seconds", default)]
     pub AfterSeconds: u64,
 }
 impl StorageClassTransitRule {
@@ -125,8 +125,4 @@ pub fn buildStorageClassString(tier: &str, transitions: &[StorageClassTransitRul
         transitions: &'a [StorageClassTransitRule],
     }
     serde_json::to_string(&StorageClassInfo { tier, transitions }).unwrap_or_default()
-}
-
-fn is_zero(value: &u64) -> bool {
-    *value == 0
 }

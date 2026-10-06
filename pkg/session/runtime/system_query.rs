@@ -18,6 +18,7 @@
 use super::*;
 
 use super::query::format_unix_timestamp;
+use super::session::RuntimeTimeZone;
 
 pub(crate) fn performance_schema_connection_summary_rows(
     summaries: &[astersql_session_sessmgr::PerformanceSchemaAccountSummary],
@@ -1003,7 +1004,7 @@ impl ConcreteSession {
         Ok(catalog)
     }
 
-    fn information_schema_table_visible(&self, database: &str, table: &str) -> bool {
+    pub(super) fn information_schema_table_visible(&self, database: &str, table: &str) -> bool {
         let (Some(user), Some(host)) = (
             self.login_user.as_deref(),
             self.authenticated_host.as_deref(),
@@ -1139,6 +1140,82 @@ impl ConcreteSession {
             return Ok(Some(project_virtual_rows(statement, &columns, rows)?));
         }
         let table_name = source.Source.Name.L.as_str();
+        if table_name.eq_ignore_ascii_case("tikv_storage_class_transitions") {
+            let statuses = self
+                .domain
+                .ddl()
+                .map_or(Ok(Vec::new()), |ddl| {
+                    ddl.storage_class_transition_statuses()
+                })
+                .map_err(|error| session_error("read storage class transitions", error))?;
+            let rows = statuses
+                .into_iter()
+                .filter(|status| {
+                    self.information_schema_table_visible(&status.table_schema, &status.table_name)
+                })
+                .map(|status| {
+                    let start_time =
+                        format_runtime_datetime(status.start_time, *self.time_zone.borrow());
+                    let last_update = status
+                        .last_update_time
+                        .map(|time| format_runtime_datetime(time, *self.time_zone.borrow()));
+                    HashMap::from([
+                        ("table_schema".to_owned(), Some(status.table_schema)),
+                        ("table_name".to_owned(), Some(status.table_name)),
+                        ("table_id".to_owned(), Some(status.table_id.to_string())),
+                        (
+                            "partition_name".to_owned(),
+                            (status.partition_id != 0).then_some(status.partition_name),
+                        ),
+                        (
+                            "partition_id".to_owned(),
+                            (status.partition_id != 0).then(|| status.partition_id.to_string()),
+                        ),
+                        ("direction".to_owned(), Some(status.direction)),
+                        (
+                            "total_replicas".to_owned(),
+                            status
+                                .status_valid
+                                .then(|| status.total_replicas.to_string()),
+                        ),
+                        (
+                            "completed_replicas".to_owned(),
+                            status
+                                .status_valid
+                                .then(|| status.completed_replicas.to_string()),
+                        ),
+                        (
+                            "progress".to_owned(),
+                            status.progress_valid.then(|| status.progress.to_string()),
+                        ),
+                        ("start_time".to_owned(), Some(start_time)),
+                        (
+                            "duration".to_owned(),
+                            Some(status.duration.num_seconds().max(0).to_string()),
+                        ),
+                        ("last_update_time".to_owned(), last_update),
+                    ])
+                })
+                .collect();
+            return Ok(Some(project_virtual_rows(
+                statement,
+                &[
+                    "TABLE_SCHEMA",
+                    "TABLE_NAME",
+                    "TABLE_ID",
+                    "PARTITION_NAME",
+                    "PARTITION_ID",
+                    "DIRECTION",
+                    "TOTAL_REPLICAS",
+                    "COMPLETED_REPLICAS",
+                    "PROGRESS",
+                    "START_TIME",
+                    "DURATION",
+                    "LAST_UPDATE_TIME",
+                ],
+                rows,
+            )?));
+        }
         if table_name.eq_ignore_ascii_case("slow_query") {
             let rows = self
                 .state
@@ -3415,6 +3492,22 @@ impl ConcreteSession {
             .collect::<Vec<_>>()
             .join(",");
         format!("[{infos}]")
+    }
+}
+
+pub(super) fn format_runtime_datetime(
+    value: chrono::DateTime<chrono::Utc>,
+    time_zone: RuntimeTimeZone,
+) -> String {
+    match time_zone {
+        RuntimeTimeZone::Named(zone) => value
+            .with_timezone(&zone)
+            .format("%Y-%m-%d %H:%M:%S%.6f")
+            .to_string(),
+        RuntimeTimeZone::Fixed(zone) => value
+            .with_timezone(&zone)
+            .format("%Y-%m-%d %H:%M:%S%.6f")
+            .to_string(),
     }
 }
 
