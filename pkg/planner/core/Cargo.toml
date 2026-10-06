@@ -9,6 +9,13 @@ autotests = false
 path = "lib.rs"
 doctest = false
 
+[features]
+default = []
+nextgen = [
+    "config-deploymode-dependency/nextgen",
+    "config-kerneltype-dependency/nextgen",
+]
+
 [dependencies]
 astersql-bindinfo = { path = "../../bindinfo" }
 sha2 = "0.10"
@@ -17,6 +24,9 @@ asyncload-dependency = { package = "astersql-statistics-asyncload", path = "../.
 base-dependency = { package = "astersql-planner-core-base", path = "base" }
 cardinality-dependency = { package = "astersql-planner-cardinality", path = "../cardinality" }
 chunk-dependency = { package = "astersql-util-chunk", path = "../../util/chunk" }
+config-dependency = { package = "astersql-config", path = "../../config" }
+config-deploymode-dependency = { package = "astersql-config-deploymode", path = "../../config/deploymode" }
+config-kerneltype-dependency = { package = "astersql-config-kerneltype", path = "../../config/kerneltype" }
 coreusage-dependency = { package = "astersql-planner-util-coreusage", path = "../util/coreusage" }
 costusage-dependency = { package = "astersql-planner-util-costusage", path = "../util/costusage" }
 expression-dependency = { package = "astersql-expression", path = "../../expression" }
@@ -42,6 +52,7 @@ stringutil-dependency = { package = "astersql-util-stringutil", path = "../../ut
 table-dependency = { package = "astersql-table", path = "../../table" }
 tipb = { git = "https://github.com/pingcap/tipb.git", rev = "07f0ea6b6bffa9d8ac100d81ee51dbbfe4dda3bf", default-features = false, features = ["protobuf-codec"] }
 types-dependency = { package = "astersql-types", path = "../../types" }
+url = "2"
 vardef-dependency = { package = "astersql-sessionctx-vardef", path = "../../sessionctx/vardef" }
 variable-dependency = { package = "astersql-sessionctx-variable", path = "../../sessionctx/variable" }
 

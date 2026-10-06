@@ -24,6 +24,24 @@
 
 use logicalop_dependency::LogicalPlan as _;
 use std::collections::{HashMap, HashSet};
+#[cfg(feature = "nextgen")]
+use std::sync::Mutex;
+
+#[cfg(feature = "nextgen")]
+use config_deploymode_dependency::{Mode, Premium, Set, Starter};
+
+#[cfg(feature = "nextgen")]
+struct DeployModeGuard(Mode);
+
+#[cfg(feature = "nextgen")]
+static DEPLOY_MODE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(feature = "nextgen")]
+impl Drop for DeployModeGuard {
+    fn drop(&mut self) {
+        Set(self.0).unwrap_or_else(|_| Set(Premium).expect("restore Premium mode"));
+    }
+}
 
 use crate::main_test::{exercise_statement_for_test, logical_optimize_default_for_test};
 use crate::planbuilder::{
@@ -32,8 +50,9 @@ use crate::planbuilder::{
     PartitionInfo, Privilege, ShowKind, Statement, TableInfo, Value,
     appendVisitInfoIsRestrictedUser, buildShowSchema, buildShowSlowSchema,
     checkAlterDDLJobOptValue, checkImportIntoColAssignments, checkNextGenS3PathWithSem,
-    collectVisitInfoFromGrantStmt, fillDefaultDBForStatsObjects, getPathByIndexName,
-    getPossibleAccessPaths, handleAnalyzeOptions, removeIgnoredPaths,
+    checkStarterS3Path, collectVisitInfoFromGrantStmt, fillDefaultDBForStatsObjects,
+    getPathByIndexName, getPossibleAccessPaths, handleAnalyzeOptions, processNextGenS3PathWithSem,
+    removeIgnoredPaths,
 };
 use crate::task::{Expression, FieldType, TypeCode};
 
@@ -286,6 +305,13 @@ fn privilege_and_import_checks_preserve_go_boundaries() {
 #[test]
 /// DDL 作业选项与 next-gen S3 路径 SEM 校验。
 fn ddl_option_and_sem_path_validation_is_real() {
+    #[cfg(feature = "nextgen")]
+    let _mode_lock = DEPLOY_MODE_TEST_LOCK.lock().expect("lock deploy mode test");
+    #[cfg(feature = "nextgen")]
+    let _mode_guard = DeployModeGuard(config_deploymode_dependency::Get());
+    #[cfg(feature = "nextgen")]
+    Set(Premium).expect("set Premium mode");
+
     assert_eq!(
         GetThreadOrBatchSizeFromExpression(&AlterDDLJobOpt::Thread(8)).expect("thread count"),
         8
@@ -316,6 +342,46 @@ fn ddl_option_and_sem_path_validation_is_real() {
             .is_err()
     );
     assert!(checkNextGenS3PathWithSem("oss://bucket/path").is_err());
+    let premium_path =
+        processNextGenS3PathWithSem("s3://bucket?access-key=ak&secret-access-key=sk")
+            .expect("process Premium path");
+    assert!(premium_path.contains("external-id="));
+}
+
+#[cfg(feature = "nextgen")]
+#[test]
+fn starter_sem_accepts_caller_external_id_and_still_requires_auth() {
+    let _mode_lock = DEPLOY_MODE_TEST_LOCK.lock().expect("lock deploy mode test");
+    let original_mode = config_deploymode_dependency::Get();
+    let _mode_guard = DeployModeGuard(original_mode);
+    Set(Starter).expect("set Starter mode");
+
+    assert!(
+        checkNextGenS3PathWithSem(
+            "s3://bucket?external-id=caller-provided&access-key=ak&secret-access-key=sk"
+        )
+        .is_ok()
+    );
+    assert!(
+        checkNextGenS3PathWithSem("oss://bucket?external_id=caller-provided&role-arn=arn").is_ok()
+    );
+    assert!(checkNextGenS3PathWithSem("s3://bucket?external-id=caller-provided").is_err());
+    assert!(checkStarterS3Path("s3://bucket?access-key=ak&secret-access-key=sk").is_err());
+    assert!(
+        checkStarterS3Path("s3://bucket?external-id=&access-key=ak&secret-access-key=sk").is_err()
+    );
+    assert!(
+        checkStarterS3Path(
+            "s3://bucket?external-id=allowed&external_id=&access-key=ak&secret-access-key=sk"
+        )
+        .is_err()
+    );
+    assert!(checkStarterS3Path("oss://bucket?EXTERNAL_ID=caller-provided&role-arn=arn").is_ok());
+    let caller_path = "s3://bucket?EXTERNAL_ID=caller-provided&access-key=ak&secret-access-key=sk";
+    assert_eq!(
+        processNextGenS3PathWithSem(caller_path).expect("process Starter path"),
+        caller_path
+    );
 }
 
 #[test]

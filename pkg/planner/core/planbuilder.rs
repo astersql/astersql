@@ -22,6 +22,7 @@
 use crate::find_best_task::{AccessPath, IndexInfo};
 use crate::task::{Expression, FieldType, PlanKind, PlanNode, TypeCode};
 use std::collections::{HashMap, HashSet};
+use url::Url;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// 权限枚举：表级/动态权限等，用于 visitInfo 收集。
@@ -308,6 +309,7 @@ pub enum Statement {
     },
     ImportInto {
         table: TableInfo,
+        path: String,
         assignments: Vec<(String, Expression)>,
     },
     LoadStats {
@@ -701,9 +703,11 @@ impl PlanBuilder {
             Statement::Show(show) => self.buildShow(show),
             Statement::Insert(insert) => self.buildInsert(insert),
             Statement::LoadData { table, local } => self.buildLoadData(table, *local),
-            Statement::ImportInto { table, assignments } => {
-                self.buildImportInto(table, assignments)
-            }
+            Statement::ImportInto {
+                table,
+                path,
+                assignments,
+            } => self.buildImportInto(table, path, assignments),
             Statement::LoadStats { path } => Ok(self.buildLoadStats(path)),
             Statement::RefreshStats(objects) => self.buildRefreshStats(objects),
             Statement::LockStats(objects) => Ok(self.buildLockStats(objects)),
@@ -1121,14 +1125,23 @@ impl PlanBuilder {
     pub fn buildImportInto(
         &mut self,
         table: &TableInfo,
+        path: &str,
         assignments: &[(String, Expression)],
     ) -> Result<BuiltPlan> {
         checkImportIntoColAssignments(assignments)?;
+        let path = if config_kerneltype_dependency::IsNextGen()
+            && sem_dependency::IsEnabled()
+            && is_s3_like_path(path)
+        {
+            processNextGenS3PathWithSem(path)?
+        } else {
+            path.to_owned()
+        };
         self.requireInsertAndSelectPriv(std::slice::from_ref(table));
         Ok(BuiltPlan::Command {
             name: "import-into".into(),
             schema: Vec::new(),
-            arguments: vec![table.name.clone()],
+            arguments: vec![table.name.clone(), path],
         })
     }
     /// 构建LoadStats（对应同名 Go 逻辑）。
@@ -2942,40 +2955,107 @@ pub fn checkAlterDDLJobOptValue(option: &AlterDDLJobOpt) -> Result<()> {
         _ => Ok(()),
     }
 }
-/// 校验NextGenS3PathWithSem（对应同名 Go 逻辑）。
-pub fn checkNextGenS3PathWithSem(path: &str) -> Result<()> {
-    if !path.to_ascii_lowercase().starts_with("s3://") {
-        return Err(BuilderError("only s3:// paths are allowed".into()));
+fn first_query_values(path: &str) -> Result<HashMap<String, String>> {
+    let url = Url::parse(path)
+        .map_err(|error| BuilderError(format!("invalid data source URI: {error}")))?;
+    let mut values = HashMap::new();
+    for (key, value) in url.query_pairs() {
+        values
+            .entry(key.into_owned())
+            .or_insert_with(|| value.into_owned());
     }
+    Ok(values)
+}
 
+fn normalize_s3_query_key(key: &str) -> String {
+    key.to_ascii_lowercase().replace('_', "-")
+}
+
+fn is_s3_like_path(path: &str) -> bool {
+    Url::parse(path)
+        .map(|url| matches!(url.scheme(), "s3" | "oss"))
+        .unwrap_or(false)
+}
+
+/// Starter 部署要求调用者显式提供非空 external ID；所有别名均须有效。
+pub fn checkStarterS3Path(path: &str) -> Result<()> {
+    let mut has_external_id = false;
+    for (key, value) in first_query_values(path)? {
+        if normalize_s3_query_key(&key) != "external-id" {
+            continue;
+        }
+        has_external_id = !value.is_empty();
+        if !has_external_id {
+            break;
+        }
+    }
+    if !has_external_id {
+        return Err(BuilderError(
+            "invalid data source URI: external ID is required for Starter deployments".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// 校验 NextGen S3-like 路径在 SEM 下的认证与 external ID 约束。
+pub fn checkNextGenS3PathWithSem(path: &str) -> Result<()> {
+    let values = first_query_values(path)?;
+    let expected_external_id = config_dependency::get_global_keyspace_name();
+    let is_starter = config_deploymode_dependency::IsStarter();
     let mut has_access_key = false;
     let mut has_secret_access_key = false;
     let mut has_role_arn = false;
-    if let Some(query) = path.split_once('?').map(|(_, query)| query) {
-        for parameter in query.split('&') {
-            let (key, value) = parameter.split_once('=').unwrap_or((parameter, ""));
-            let key = key.to_ascii_lowercase().replace('_', "-");
-            match key.as_str() {
-                "access-key" => has_access_key |= !value.is_empty(),
-                "secret-access-key" => has_secret_access_key |= !value.is_empty(),
-                "role-arn" => has_role_arn |= !value.is_empty(),
-                // The standalone planner crate has no mutable global keyspace config. Its
-                // default keyspace name is empty, so any explicit non-empty value differs.
-                "external-id" if !value.is_empty() => {
+    for (key, value) in values {
+        match normalize_s3_query_key(&key).as_str() {
+            "access-key" => has_access_key |= !value.is_empty(),
+            "secret-access-key" => has_secret_access_key |= !value.is_empty(),
+            "role-arn" => has_role_arn |= !value.is_empty(),
+            "external-id" if !is_starter => {
+                if value != expected_external_id {
                     return Err(BuilderError(
-                        "explicit S3 external ID differs from the current keyspace".into(),
+                        "IMPORT INTO with explicit external ID is not supported in SEM mode".into(),
                     ));
                 }
-                _ => {}
             }
+            _ => {}
         }
     }
     if !has_role_arn && !(has_access_key && has_secret_access_key) {
         return Err(BuilderError(
-            "S3 access key/secret access key or role ARN is required in SEM mode".into(),
+            "IMPORT INTO from S3-like storage without access key/secret access key or role ARN is not supported in SEM mode".into(),
         ));
     }
     Ok(())
+}
+
+/// 应用 NextGen SEM 路径规则；Starter 保留调用者路径，其他模式写入 keyspace external ID。
+pub fn processNextGenS3PathWithSem(path: &str) -> Result<String> {
+    let is_starter = config_deploymode_dependency::IsStarter();
+    if is_starter {
+        checkStarterS3Path(path)?;
+    }
+    checkNextGenS3PathWithSem(path)?;
+    if is_starter {
+        return Ok(path.to_owned());
+    }
+
+    let mut url = Url::parse(path)
+        .map_err(|error| BuilderError(format!("invalid data source URI: {error}")))?;
+    let existing = url
+        .query_pairs()
+        .filter(|(key, _)| key.as_ref() != "external-id")
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    url.set_query(None);
+    {
+        let mut query = url.query_pairs_mut();
+        query.extend_pairs(existing);
+        query.append_pair(
+            "external-id",
+            &config_dependency::get_global_keyspace_name(),
+        );
+    }
+    Ok(url.to_string())
 }
 /// 获取ThreadOrBatchSizeFromExpression（对应同名 Go 逻辑）。
 pub fn GetThreadOrBatchSizeFromExpression(option: &AlterDDLJobOpt) -> Result<i64> {

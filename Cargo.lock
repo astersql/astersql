@@ -6536,6 +6536,9 @@ name = "astersql-planner-core"
 version = "0.1.0"
 dependencies = [
  "astersql-bindinfo",
+ "astersql-config",
+ "astersql-config-deploymode",
+ "astersql-config-kerneltype",
  "astersql-expression",
  "astersql-expression-aggregation",
  "astersql-expression-expropt",
@@ -6574,6 +6577,7 @@ dependencies = [
  "fail 0.5.1",
  "sha2 0.10.9",
  "tipb",
+ "url",
 ]
 
 [[package]]
