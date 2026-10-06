@@ -233,6 +233,90 @@ fn partition_presplit_separates_physical_keys_from_scatter_groups() {
 }
 
 #[test]
+fn partitioned_split_policies_keep_record_keys_on_physical_ids() {
+    astersql_planner_core::InstallPlannerExpressionFactory().unwrap();
+    use astersql_meta_model::{IndexInfo, RegionSplitPolicy};
+    let mut parser = astersql_parser::New();
+    let statement = parser
+        .ParseOneStmt(
+            "create table t (id bigint primary key, val bigint, index idx_local(val)) \
+             partition by range (id) (partition p0 values less than (100), \
+             partition p1 values less than (200))",
+            "",
+            "",
+        )
+        .unwrap();
+    let create = statement
+        .as_any()
+        .downcast_ref::<astersql_parser_ast::CreateTableStmt>()
+        .unwrap();
+    let context = astersql_meta_metabuild::NewContext::<(), std::convert::Infallible>(Vec::new());
+    let mut table = crate::BuildTableInfoFromAST(&context, create).unwrap();
+    table.ID = 100;
+    table.Partition.as_mut().unwrap().Definitions[0].ID = 101;
+    table.Partition.as_mut().unwrap().Definitions[1].ID = 102;
+
+    let policy = RegionSplitPolicy {
+        Lower: vec!["0".into()],
+        Upper: vec!["10000".into()],
+        Regions: 2,
+        ..Default::default()
+    };
+    table.TableSplitPolicy = Some(policy.clone());
+    let local_index = table
+        .Indices
+        .iter()
+        .position(|index| index.Name.L == "idx_local")
+        .expect("expected idx_local in table info");
+    table.Indices[local_index].ID = 11;
+    table.Indices[local_index].RegionSplitPolicy = Some(policy.clone());
+    table.Indices.push(IndexInfo {
+        ID: 22,
+        Global: true,
+        Columns: table.Indices[local_index].Columns.clone(),
+        RegionSplitPolicy: Some(policy),
+        ..Default::default()
+    });
+
+    let store = RecordingStore::default();
+    let expr = astersql_expression_exprstatic::NewExprContext(Vec::new());
+    super::split_region::split_table_regions(&Default::default(), &expr, &store, &table, "off");
+
+    let calls = store.calls.borrow();
+    assert_eq!(calls.len(), 5);
+    assert!(calls.iter().all(|(keys, _, _)| !keys.is_empty()));
+    assert!(calls[0].0.iter().all(|key| {
+        matches!(
+            astersql_tablecodec::DecodeKeyHead(astersql_kv::Key(key.clone())),
+            Ok((100, 22 | 23, false))
+        )
+    }));
+    for (table_call, index_call, physical) in [(1, 2, 101), (3, 4, 102)] {
+        assert!(calls[table_call].0.iter().all(|key| {
+            matches!(
+                astersql_tablecodec::DecodeKeyHead(astersql_kv::Key(key.clone())),
+                Ok((id, _, true)) if id == physical
+            )
+        }));
+        assert!(calls[index_call].0.iter().all(|key| {
+            matches!(
+                astersql_tablecodec::DecodeKeyHead(astersql_kv::Key(key.clone())),
+                Ok((id, 11 | 12, false)) if id == physical
+            )
+        }));
+    }
+    assert!(
+        calls
+            .iter()
+            .flat_map(|(keys, _, _)| keys)
+            .all(|key| !matches!(
+                astersql_tablecodec::DecodeKeyHead(astersql_kv::Key(key.clone())),
+                Ok((100, _, true))
+            ))
+    );
+}
+
+#[test]
 fn policies_use_persisted_scope_and_continue_after_storage_failure() {
     astersql_planner_core::InstallPlannerExpressionFactory().unwrap();
     use astersql_meta_model::RegionSplitPolicy;
