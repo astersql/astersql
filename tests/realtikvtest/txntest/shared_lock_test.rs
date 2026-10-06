@@ -189,6 +189,24 @@ fn prepare_foreign_key_tables(tk: &mut TestKit) {
     tk.MustExec("insert into parent values (1), (2)", Vec::new());
 }
 
+fn prepare_shared_lock_upgrade_tables(tk: &mut TestKit) {
+    tk.MustExec("drop table if exists child, parent", Vec::new());
+    tk.MustExec(
+        "create table parent (id int primary key, v int)",
+        Vec::new(),
+    );
+    tk.MustExec(
+        "create table child (id int primary key, pid int, \
+         foreign key (pid) references parent(id))",
+        Vec::new(),
+    );
+    tk.MustExec("insert into parent values (1, 0), (2, 0)", Vec::new());
+}
+
+fn enable_shared_lock_upgrade(tk: &mut TestKit) {
+    tk.MustExec("set @@tidb_enable_shared_lock_upgrade = ON", Vec::new());
+}
+
 fn assert_still_blocked<T>(receiver: &Receiver<T>, operation: &str) {
     match receiver.recv_timeout(BLOCKED_WINDOW) {
         Err(RecvTimeoutError::Timeout) => {}
@@ -432,6 +450,184 @@ fn test_shared_lock_blocks_exclusive_lock_until_every_holder_commits() {
     tk1.MustExec("commit", Vec::new());
     tk1.MustExec("admin check table parent", Vec::new());
     tk1.MustExec("admin check table child", Vec::new());
+}
+
+#[test]
+fn test_upgrade_multiple_shared_locks_in_one_statement() {
+    let _serial = serial_guard();
+    if !astersql_config_kerneltype::IsNextGen() {
+        return;
+    }
+    let _config = allow_foreign_key_check_in_shared_lock_for_test();
+    let (_store, mut tk, _database) =
+        prepare("test_upgrade_multiple_shared_locks_in_one_statement");
+    tk.MustExec(
+        "set @@tidb_foreign_key_check_in_shared_lock = ON",
+        Vec::new(),
+    );
+    enable_shared_lock_upgrade(&mut tk);
+    prepare_shared_lock_upgrade_tables(&mut tk);
+    tk.MustExec(
+        "insert into parent values (3, 0), (4, 0), (5, 0), (6, 0), \
+         (7, 0), (8, 0), (9, 0), (10, 0)",
+        Vec::new(),
+    );
+
+    tk.MustExec("begin pessimistic", Vec::new());
+    tk.MustExec(
+        "insert into child values (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), \
+         (6, 6), (7, 7), (8, 8), (9, 9), (10, 10)",
+        Vec::new(),
+    );
+    tk.MustExec(
+        "update parent set v = v + 1 where id between 1 and 10",
+        Vec::new(),
+    );
+    tk.MustExec("commit", Vec::new());
+
+    tk.MustQuery("select * from parent order by id", Vec::new())
+        .Check(Rows(&[
+            "1 1", "2 1", "3 1", "4 1", "5 1", "6 1", "7 1", "8 1", "9 1", "10 1",
+        ]));
+    tk.MustQuery("select * from child order by id", Vec::new())
+        .Check(Rows(&[
+            "1 1", "2 2", "3 3", "4 4", "5 5", "6 6", "7 7", "8 8", "9 9", "10 10",
+        ]));
+    tk.MustExec("admin check table parent", Vec::new());
+    tk.MustExec("admin check table child", Vec::new());
+}
+
+#[test]
+fn test_upgrade_multiple_shared_locks_in_separate_statements() {
+    let _serial = serial_guard();
+    if !astersql_config_kerneltype::IsNextGen() {
+        return;
+    }
+    let _config = allow_foreign_key_check_in_shared_lock_for_test();
+    let (_store, mut tk, _database) =
+        prepare("test_upgrade_multiple_shared_locks_in_separate_statements");
+    tk.MustExec(
+        "set @@tidb_foreign_key_check_in_shared_lock = ON",
+        Vec::new(),
+    );
+    enable_shared_lock_upgrade(&mut tk);
+    prepare_shared_lock_upgrade_tables(&mut tk);
+    tk.MustExec(
+        "insert into parent values (3, 0), (4, 0), (5, 0), (6, 0), \
+         (7, 0), (8, 0), (9, 0), (10, 0)",
+        Vec::new(),
+    );
+
+    tk.MustExec("begin pessimistic", Vec::new());
+    tk.MustExec(
+        "insert into child values (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), \
+         (6, 6), (7, 7), (8, 8), (9, 9), (10, 10)",
+        Vec::new(),
+    );
+    for id in 1..=10 {
+        tk.MustExec(
+            &format!("update parent set v = v + 1 where id = {id}"),
+            Vec::new(),
+        );
+    }
+    tk.MustExec("commit", Vec::new());
+
+    tk.MustQuery("select * from parent order by id", Vec::new())
+        .Check(Rows(&[
+            "1 1", "2 1", "3 1", "4 1", "5 1", "6 1", "7 1", "8 1", "9 1", "10 1",
+        ]));
+    tk.MustQuery("select * from child order by id", Vec::new())
+        .Check(Rows(&[
+            "1 1", "2 2", "3 3", "4 4", "5 5", "6 6", "7 7", "8 8", "9 9", "10 10",
+        ]));
+    tk.MustExec("admin check table parent", Vec::new());
+    tk.MustExec("admin check table child", Vec::new());
+}
+
+fn run_upgrade_multiple_shared_locks_waits_for_holder(
+    test_name: &str,
+    release_sql: &str,
+    expected_child_rows: Vec<Vec<String>>,
+) {
+    let (store, mut upgrader, database) = prepare(test_name);
+    let mut holder = session(store, &database);
+    upgrader.MustExec(
+        "set @@tidb_foreign_key_check_in_shared_lock = ON",
+        Vec::new(),
+    );
+    enable_shared_lock_upgrade(&mut upgrader);
+    enable_shared_lock_upgrade(&mut holder);
+    prepare_shared_lock_upgrade_tables(&mut upgrader);
+    upgrader.MustExec(
+        "insert into parent values (3, 0), (4, 0), (5, 0), (6, 0), \
+         (7, 0), (8, 0), (9, 0), (10, 0)",
+        Vec::new(),
+    );
+
+    holder.MustExec("begin pessimistic", Vec::new());
+    holder.MustExec("insert into child values (11, 5)", Vec::new());
+    upgrader.MustExec("begin pessimistic", Vec::new());
+    upgrader.MustExec(
+        "insert into child values (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), \
+         (6, 6), (7, 7), (8, 8), (9, 9), (10, 10)",
+        Vec::new(),
+    );
+
+    let (done_tx, done_rx) = mpsc::sync_channel(1);
+    let worker = thread::spawn(move || {
+        let result = upgrader
+            .Exec(
+                "update parent set v = v + 1 where id between 1 and 10",
+                Vec::new(),
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string());
+        done_tx
+            .send((upgrader, result))
+            .expect("send shared-lock upgrade result");
+    });
+    assert_still_blocked(&done_rx, "multi-key shared-lock upgrade");
+    holder.MustExec(release_sql, Vec::new());
+    let (mut upgrader, result) = done_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("shared-lock upgrader must resume after holder release");
+    worker.join().expect("join shared-lock upgrade worker");
+    expect_ok(result, "multi-key shared-lock upgrade");
+    upgrader.MustExec("commit", Vec::new());
+
+    upgrader
+        .MustQuery("select * from parent order by id", Vec::new())
+        .Check(Rows(&[
+            "1 1", "2 1", "3 1", "4 1", "5 1", "6 1", "7 1", "8 1", "9 1", "10 1",
+        ]));
+    upgrader
+        .MustQuery("select * from child order by id", Vec::new())
+        .Check(expected_child_rows);
+    upgrader.MustExec("admin check table parent", Vec::new());
+    upgrader.MustExec("admin check table child", Vec::new());
+}
+
+#[test]
+fn test_upgrade_multiple_shared_locks_waits_for_shared_holder() {
+    let _serial = serial_guard();
+    if !astersql_config_kerneltype::IsNextGen() {
+        return;
+    }
+    let _config = allow_foreign_key_check_in_shared_lock_for_test();
+    run_upgrade_multiple_shared_locks_waits_for_holder(
+        "test_upgrade_multiple_shared_locks_waits_for_holder_commit",
+        "commit",
+        Rows(&[
+            "1 1", "2 2", "3 3", "4 4", "5 5", "6 6", "7 7", "8 8", "9 9", "10 10", "11 5",
+        ]),
+    );
+    run_upgrade_multiple_shared_locks_waits_for_holder(
+        "test_upgrade_multiple_shared_locks_waits_for_holder_rollback",
+        "rollback",
+        Rows(&[
+            "1 1", "2 2", "3 3", "4 4", "5 5", "6 6", "7 7", "8 8", "9 9", "10 10",
+        ]),
+    );
 }
 
 #[test]
