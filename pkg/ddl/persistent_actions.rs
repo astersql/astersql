@@ -696,14 +696,14 @@ fn stage_storage_class_transitions(
     }
     let rows = context.query(
         &format!(
-            "SELECT direction,start_ts,physical_targets FROM mysql.tidb_storage_class_transition_history WHERE state='RUNNING' AND table_id={}",
+            "SELECT direction,start_ts,physical_targets,schema_version FROM mysql.tidb_storage_class_transition_history WHERE state='RUNNING' AND table_id={}",
             table.ID
         ),
         "load-table-storage-class-transitions",
     )?;
     let finish = chrono::Utc::now();
     for row in rows {
-        if row.len() < 3 {
+        if row.len() < 4 {
             return Err("invalid storage class transition history row".into());
         }
         let targets: Vec<transition::StorageClassTransitionTarget> =
@@ -716,9 +716,43 @@ fn stage_storage_class_transitions(
             continue;
         }
         let start_ts = row[1].parse::<u64>().map_err(|error| error.to_string())?;
+        let schema_version = row[3].parse::<i64>().map_err(|error| error.to_string())?;
+        let mut operation = transition::StorageClassTransitionOperation {
+            status: transition::StorageClassTransitionStatus {
+                table_schema: String::new(),
+                table_name: String::new(),
+                table_id: table.ID,
+                partition_name: String::new(),
+                partition_id: 0,
+                direction: row[0].clone(),
+                total_replicas: 0,
+                completed_replicas: 0,
+                progress: 0.0,
+                progress_valid: false,
+                start_time: astersql_meta_model::TSConvert2Time(start_ts),
+                duration: chrono::Duration::zero(),
+                last_update_time: None,
+                status_valid: false,
+                physical_table_ids: targets.iter().map(|target| target.physical_id).collect(),
+                schema_version,
+                start_ts,
+            },
+            target: transition::target_for_direction(&row[0])?.to_owned(),
+            targets: targets.clone(),
+        };
+        transition::set_targets(&mut operation);
+        let observed = context.cached_storage_class_observation(&operation);
+        let (total_replicas, completed_replicas) = observed
+            .map(|status| {
+                (
+                    status.total_replicas.to_string(),
+                    status.completed_replicas.to_string(),
+                )
+            })
+            .unwrap_or_else(|| ("NULL".into(), "NULL".into()));
         context.query(
             &format!(
-                "UPDATE mysql.tidb_storage_class_transition_history SET state='SUPERSEDED',finish_time={},duration=GREATEST(TIMESTAMPDIFF(SECOND,start_time,{}),0) WHERE table_id={} AND start_ts={} AND direction={} AND state='RUNNING'",
+                "UPDATE mysql.tidb_storage_class_transition_history SET state='SUPERSEDED',total_replicas={total_replicas},completed_replicas={completed_replicas},finish_time={},duration=GREATEST(TIMESTAMPDIFF(SECOND,start_time,{}),0) WHERE table_id={} AND start_ts={} AND direction={} AND state='RUNNING'",
                 sql_string(&finish.format("%Y-%m-%d %H:%M:%S%.6f").to_string()),
                 sql_string(&finish.format("%Y-%m-%d %H:%M:%S%.6f").to_string()),
                 table.ID,

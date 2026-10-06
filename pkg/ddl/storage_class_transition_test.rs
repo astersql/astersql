@@ -221,3 +221,46 @@ fn topology_replacement_respects_parent_shape_target_and_claims() {
     assert!(schema_published(11, 11));
     assert!(!schema_published(10, 11));
 }
+
+#[test]
+fn cached_observation_requires_the_exact_running_operation() {
+    let manager = StorageClassTransitionManager::default();
+    let mut operation = build_operations(
+        &table(),
+        &BTreeSet::from([11, 12]),
+        9,
+        1234,
+        "test",
+        "orders",
+    )
+    .unwrap()
+    .remove(0);
+    operation.status.total_replicas = 4;
+    operation.status.completed_replicas = 3;
+    operation.status.status_valid = true;
+    manager.observe(&operation);
+    assert_eq!(
+        manager
+            .cached_observation(&operation)
+            .map(|status| (status.total_replicas, status.completed_replicas)),
+        Some((4, 3))
+    );
+
+    let mut replacement = operation.clone();
+    replacement.status.start_ts += 1;
+    assert!(manager.cached_observation(&replacement).is_none());
+    replacement = operation.clone();
+    replacement.status.schema_version += 1;
+    assert!(manager.cached_observation(&replacement).is_none());
+    replacement = operation.clone();
+    replacement.status.physical_table_ids = vec![11, 13];
+    assert!(manager.cached_observation(&replacement).is_none());
+
+    manager.retain_active(&[operation.clone()]);
+    assert!(manager.cached_observation(&operation).is_some());
+    manager.retain_active(&[]);
+    assert!(manager.cached_observation(&operation).is_none());
+    manager.observe(&operation);
+    manager.remove(&operation);
+    assert!(manager.cached_observation(&operation).is_none());
+}

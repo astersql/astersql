@@ -264,6 +264,12 @@ pub type TransactionOperation =
 /// release their borrow before SQL execution. Explicit resource callbacks retain
 /// Go transaction boundaries for operations requiring an independent session.
 pub trait JobExecutionContext {
+    fn cached_storage_class_observation(
+        &mut self,
+        _: &crate::storage_class_transition::StorageClassTransitionOperation,
+    ) -> Option<crate::storage_class_transition::StorageClassTransitionStatus> {
+        None
+    }
     /// Use this owner's real URI cache and initialized ingest disk resource.
     fn reorg_index_environment(
         &mut self,

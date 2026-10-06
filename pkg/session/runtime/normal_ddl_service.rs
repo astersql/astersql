@@ -23,45 +23,56 @@ fn transition_statuses(
     pool: &SystemSessionPool,
 ) -> Result<Vec<astersql_ddl::storage_class_transition::StorageClassTransitionStatus>, String> {
     let rows = pool.acquire()?.query(
-        "SELECT table_schema,table_name,table_id,COALESCE(partition_name,''),COALESCE(partition_id,0),direction,COALESCE(total_replicas,0),COALESCE(completed_replicas,0),schema_version,start_ts,start_time,COALESCE(duration,0),COALESCE(finish_time,'') FROM mysql.tidb_storage_class_transition_history WHERE state='RUNNING' ORDER BY start_ts,table_id,direction",
+        "SELECT table_schema,table_name,table_id,COALESCE(partition_name,''),COALESCE(partition_id,0),direction,schema_version,start_ts,start_time,physical_targets FROM mysql.tidb_storage_class_transition_history WHERE state='RUNNING' ORDER BY start_ts,table_id,direction",
     )?;
     let now = chrono::Utc::now();
     rows.into_iter()
         .map(|row| {
-            if row.len() != 13 {
+            if row.len() != 10 {
                 return Err("invalid storage class transition status row".into());
             }
-            let start_time = parse_transition_time(&row[10])?;
-            let total = row[6].parse::<u64>().map_err(|error| error.to_string())?;
-            let completed = row[7].parse::<u64>().map_err(|error| error.to_string())?;
-            let status_valid = total != 0 || completed != 0;
-            Ok(
-                astersql_ddl::storage_class_transition::StorageClassTransitionStatus {
-                    table_schema: row[0].clone(),
-                    table_name: row[1].clone(),
-                    table_id: row[2].parse::<i64>().map_err(|error| error.to_string())?,
-                    partition_name: row[3].clone(),
-                    partition_id: row[4].parse::<i64>().map_err(|error| error.to_string())?,
-                    direction: row[5].clone(),
-                    total_replicas: total,
-                    completed_replicas: completed,
-                    progress: if total == 0 {
-                        0.0
-                    } else {
-                        completed as f64 / total as f64
+            let start_ts = row[7].parse::<u64>().map_err(|error| error.to_string())?;
+            let start_time = astersql_meta_model::TSConvert2Time(start_ts);
+            let targets =
+                serde_json::from_str::<Vec<_>>(&row[9]).map_err(|error| error.to_string())?;
+            let mut operation =
+                astersql_ddl::storage_class_transition::StorageClassTransitionOperation {
+                    status: astersql_ddl::storage_class_transition::StorageClassTransitionStatus {
+                        table_schema: row[0].clone(),
+                        table_name: row[1].clone(),
+                        table_id: row[2].parse::<i64>().map_err(|error| error.to_string())?,
+                        partition_name: row[3].clone(),
+                        partition_id: row[4].parse::<i64>().map_err(|error| error.to_string())?,
+                        direction: row[5].clone(),
+                        total_replicas: 0,
+                        completed_replicas: 0,
+                        progress: 0.0,
+                        progress_valid: false,
+                        start_time,
+                        duration: now
+                            .signed_duration_since(start_time)
+                            .max(chrono::Duration::zero()),
+                        last_update_time: None,
+                        status_valid: false,
+                        physical_table_ids: Vec::new(),
+                        schema_version: row[6].parse::<i64>().map_err(|error| error.to_string())?,
+                        start_ts,
                     },
-                    progress_valid: total != 0,
-                    start_time,
-                    duration: now
-                        .signed_duration_since(start_time)
-                        .max(chrono::Duration::zero()),
-                    last_update_time: status_valid.then_some(now),
-                    status_valid,
-                    physical_table_ids: Vec::new(),
-                    schema_version: row[8].parse::<i64>().map_err(|error| error.to_string())?,
-                    start_ts: row[9].parse::<u64>().map_err(|error| error.to_string())?,
-                },
-            )
+                    target: astersql_ddl::storage_class_transition::target_for_direction(&row[5])?
+                        .to_owned(),
+                    targets,
+                };
+            astersql_ddl::storage_class_transition::set_targets(&mut operation);
+            if let Some(observed) = pool
+                .storage_class_transition_manager()
+                .cached_observation(&operation)
+            {
+                operation.status = observed;
+                operation.status.duration = now
+                    .signed_duration_since(start_time)
+                    .max(chrono::Duration::zero());
+            }
+            Ok(operation.status)
         })
         .collect()
 }
@@ -75,9 +86,10 @@ fn poll_storage_class_transitions(pool: &SystemSessionPool) -> Result<(), String
     let keyspace_id =
         astersql_domain_infosync::GetTiKVStatusKeyspaceID().map_err(|error| error.to_string())?;
     let session = pool.acquire()?;
-    let rows = session.query("SELECT table_id,direction,start_ts,start_time,physical_targets FROM mysql.tidb_storage_class_transition_history WHERE state='RUNNING' ORDER BY table_id,start_ts,direction")?;
+    let rows = session.query("SELECT table_id,direction,start_ts,start_time,physical_targets,schema_version FROM mysql.tidb_storage_class_transition_history WHERE state='RUNNING' ORDER BY table_id,start_ts,direction")?;
+    let mut active = Vec::with_capacity(rows.len());
     for row in rows {
-        if row.len() != 5 {
+        if row.len() != 6 {
             return Err("invalid storage class transition poll row".into());
         }
         let table_id = row[0].parse::<i64>().map_err(|error| error.to_string())?;
@@ -86,6 +98,32 @@ fn poll_storage_class_transitions(pool: &SystemSessionPool) -> Result<(), String
         let targets: Vec<astersql_ddl::storage_class_transition::StorageClassTransitionTarget> =
             serde_json::from_str(&row[4]).map_err(|error| error.to_string())?;
         astersql_ddl::storage_class_transition::validate_targets(&targets)?;
+        let mut operation =
+            astersql_ddl::storage_class_transition::StorageClassTransitionOperation {
+                status: astersql_ddl::storage_class_transition::StorageClassTransitionStatus {
+                    table_schema: String::new(),
+                    table_name: String::new(),
+                    table_id,
+                    partition_name: String::new(),
+                    partition_id: 0,
+                    direction: row[1].clone(),
+                    total_replicas: 0,
+                    completed_replicas: 0,
+                    progress: 0.0,
+                    progress_valid: false,
+                    start_time: astersql_meta_model::TSConvert2Time(start_ts),
+                    duration: chrono::Duration::zero(),
+                    last_update_time: None,
+                    status_valid: false,
+                    physical_table_ids: Vec::new(),
+                    schema_version: row[5].parse::<i64>().map_err(|error| error.to_string())?,
+                    start_ts,
+                },
+                target: target.to_owned(),
+                targets: targets.clone(),
+            };
+        astersql_ddl::storage_class_transition::set_targets(&mut operation);
+        active.push(operation.clone());
         let mut ready = 0_u64;
         let mut total = 0_u64;
         let mut complete = true;
@@ -114,20 +152,33 @@ fn poll_storage_class_transitions(pool: &SystemSessionPool) -> Result<(), String
             complete &= observed && target_total != 0 && target_ready == target_total;
         }
         let now = chrono::Utc::now();
-        let state = if complete { "COMPLETED" } else { "RUNNING" };
-        let finish = if complete {
-            format!(
-                ",finish_time='{}',duration={}",
-                now.format("%Y-%m-%d %H:%M:%S%.6f"),
-                now.signed_duration_since(parse_transition_time(&row[3])?)
-                    .num_seconds()
-                    .max(0)
-            )
+        operation.status.total_replicas = total;
+        operation.status.completed_replicas = ready;
+        operation.status.progress_valid = total != 0;
+        operation.status.progress = if total == 0 {
+            0.0
         } else {
-            String::new()
+            ready as f64 / total as f64
         };
+        operation.status.last_update_time = Some(now);
+        operation.status.status_valid = true;
+        pool.storage_class_transition_manager().observe(&operation);
+        if !complete {
+            continue;
+        }
+        let state = "COMPLETED";
+        let finish = format!(
+            ",finish_time='{}',duration={}",
+            now.format("%Y-%m-%d %H:%M:%S%.6f"),
+            now.signed_duration_since(parse_transition_time(&row[3])?)
+                .num_seconds()
+                .max(0)
+        );
         session.query(format!("UPDATE mysql.tidb_storage_class_transition_history SET total_replicas={total},completed_replicas={ready},state='{state}'{finish} WHERE table_id={table_id} AND start_ts={start_ts} AND direction='{}' AND state='RUNNING'", row[1].replace('\'', "''")))?;
+        pool.storage_class_transition_manager().remove(&operation);
     }
+    pool.storage_class_transition_manager()
+        .retain_active(&active);
     Ok(())
 }
 
@@ -478,6 +529,7 @@ impl DdlService for NormalDdlService {
                             }
                         }
                         if !lease.is_owner() {
+                            pool.storage_class_transition_manager().clear();
                             owner_epoch = None;
                             retry_state = true;
                             executor = None;

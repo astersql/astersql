@@ -16,6 +16,7 @@
 //! Durable storage-class transition model shared by DDL staging and status readers.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::RwLock;
 
 use astersql_meta_model as model;
 use chrono::{DateTime, Duration, Utc};
@@ -72,6 +73,84 @@ pub struct StorageClassTransitionOperation {
     pub status: StorageClassTransitionStatus,
     pub target: String,
     pub targets: Vec<StorageClassTransitionTarget>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct StorageClassTransitionKey {
+    table_id: i64,
+    direction: String,
+    start_ts: u64,
+}
+
+#[derive(Debug, Default)]
+pub struct StorageClassTransitionManager {
+    observed: RwLock<BTreeMap<StorageClassTransitionKey, StorageClassTransitionStatus>>,
+}
+
+impl StorageClassTransitionOperation {
+    fn key(&self) -> StorageClassTransitionKey {
+        StorageClassTransitionKey {
+            table_id: self.status.table_id,
+            direction: self.status.direction.clone(),
+            start_ts: self.status.start_ts,
+        }
+    }
+}
+
+fn same_status(left: &StorageClassTransitionStatus, right: &StorageClassTransitionStatus) -> bool {
+    left.table_id == right.table_id
+        && left.schema_version == right.schema_version
+        && left.start_ts == right.start_ts
+        && left.partition_id == right.partition_id
+        && left.direction == right.direction
+        && left.start_time == right.start_time
+        && left.physical_table_ids == right.physical_table_ids
+}
+
+impl StorageClassTransitionManager {
+    pub fn observe(&self, operation: &StorageClassTransitionOperation) {
+        self.observed
+            .write()
+            .expect("storage class transition cache poisoned")
+            .insert(operation.key(), operation.status.clone());
+    }
+
+    pub fn cached_observation(
+        &self,
+        operation: &StorageClassTransitionOperation,
+    ) -> Option<StorageClassTransitionStatus> {
+        self.observed
+            .read()
+            .expect("storage class transition cache poisoned")
+            .get(&operation.key())
+            .filter(|status| status.status_valid && same_status(status, &operation.status))
+            .cloned()
+    }
+
+    pub fn remove(&self, operation: &StorageClassTransitionOperation) {
+        self.observed
+            .write()
+            .expect("storage class transition cache poisoned")
+            .remove(&operation.key());
+    }
+
+    pub fn retain_active(&self, operations: &[StorageClassTransitionOperation]) {
+        let active = operations
+            .iter()
+            .map(StorageClassTransitionOperation::key)
+            .collect::<BTreeSet<_>>();
+        self.observed
+            .write()
+            .expect("storage class transition cache poisoned")
+            .retain(|key, _| active.contains(key));
+    }
+
+    pub fn clear(&self) {
+        self.observed
+            .write()
+            .expect("storage class transition cache poisoned")
+            .clear();
+    }
 }
 
 pub fn normalized_target(tier: &str) -> &str {

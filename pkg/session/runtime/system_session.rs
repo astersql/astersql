@@ -213,6 +213,8 @@ struct MViewBuildContexts {
 }
 struct ConcreteDdlContext {
     mview_builds: Arc<Mutex<MViewBuildContexts>>,
+    storage_class_transitions:
+        Arc<astersql_ddl::storage_class_transition::StorageClassTransitionManager>,
     closed: AtomicBool,
     id: u64,
     session: Arc<sys::Session>,
@@ -358,6 +360,8 @@ struct ResourceState {
 }
 struct SystemResources {
     mview_builds: Arc<Mutex<MViewBuildContexts>>,
+    storage_class_transitions:
+        Arc<astersql_ddl::storage_class_transition::StorageClassTransitionManager>,
     callbacks: SystemSessionCallbacks,
     pool: sys::AdvancedSessionPool,
     state: Mutex<ResourceState>,
@@ -386,6 +390,7 @@ impl ddl::ResourcePool for SystemResources {
             .map_err(ddl_error)?;
         let context = Arc::new(ConcreteDdlContext {
             mview_builds: self.mview_builds.clone(),
+            storage_class_transitions: self.storage_class_transitions.clone(),
             closed: AtomicBool::new(false),
             id,
             session,
@@ -456,6 +461,8 @@ impl Default for SystemSessionCallbacks {
 pub struct SystemSessionPool {
     pool: Arc<ddl::Pool>,
     builds: Arc<Mutex<MViewBuildContexts>>,
+    storage_class_transitions:
+        Arc<astersql_ddl::storage_class_transition::StorageClassTransitionManager>,
 }
 impl SystemSessionPool {
     pub fn new(domain: Arc<Domain>) -> Arc<Self> {
@@ -471,6 +478,9 @@ impl SystemSessionPool {
     ) -> Arc<Self> {
         let resources = Arc::new(SystemResources {
             mview_builds: Arc::new(Mutex::new(MViewBuildContexts::default())),
+            storage_class_transitions: Arc::new(
+                astersql_ddl::storage_class_transition::StorageClassTransitionManager::default(),
+            ),
             callbacks,
             pool: sys::NewAdvancedSessionPool(5, move || {
                 let domain = Arc::clone(&domain);
@@ -494,8 +504,14 @@ impl SystemSessionPool {
         });
         Arc::new(Self {
             builds: resources.mview_builds.clone(),
+            storage_class_transitions: resources.storage_class_transitions.clone(),
             pool: Arc::new(ddl::Pool::new(resources)),
         })
+    }
+    pub(crate) fn storage_class_transition_manager(
+        &self,
+    ) -> &astersql_ddl::storage_class_transition::StorageClassTransitionManager {
+        &self.storage_class_transitions
     }
     pub fn acquire(&self) -> Result<SystemSessionLease, String> {
         self.acquire_with_cancellation(&sys::CancellationToken::default())
@@ -985,6 +1001,7 @@ struct ConcreteJobExecutionContext<'a>(
     &'a mut ConcreteSession,
     Arc<ddl::Pool>,
     Arc<Mutex<MViewBuildContexts>>,
+    Arc<astersql_ddl::storage_class_transition::StorageClassTransitionManager>,
 );
 impl astersql_ddl::index::ReorgIndexEnvironment for ConcreteJobExecutionContext<'_> {
     fn load_cloud_storage_uri(&mut self, job_id: i64) -> Result<String, String> {
@@ -1021,6 +1038,12 @@ impl astersql_ddl::index::ReorgIndexEnvironment for ConcreteJobExecutionContext<
     }
 }
 impl astersql_ddl::job_worker::JobExecutionContext for ConcreteJobExecutionContext<'_> {
+    fn cached_storage_class_observation(
+        &mut self,
+        operation: &astersql_ddl::storage_class_transition::StorageClassTransitionOperation,
+    ) -> Option<astersql_ddl::storage_class_transition::StorageClassTransitionStatus> {
+        self.3.cached_observation(operation)
+    }
     fn reorg_index_environment(
         &mut self,
     ) -> Result<&mut dyn astersql_ddl::index::ReorgIndexEnvironment, String> {
@@ -1716,13 +1739,19 @@ impl astersql_ddl::job_worker::DurableJobSession for SystemSessionLease {
     ) -> Result<Vec<u8>, String> {
         let pool = self.pool.clone();
         let builds = self.concrete().mview_builds.clone();
+        let storage_class_transitions = self.concrete().storage_class_transitions.clone();
         self.concrete()
             .call(move |session| {
                 if session.state.borrow().transaction.is_none() {
                     return Err(sys_error("active transaction required"));
                 }
-                operation(&mut ConcreteJobExecutionContext(session, pool, builds))
-                    .map_err(sys_error)
+                operation(&mut ConcreteJobExecutionContext(
+                    session,
+                    pool,
+                    builds,
+                    storage_class_transitions,
+                ))
+                .map_err(sys_error)
             })
             .map_err(|e| e.to_string())
     }

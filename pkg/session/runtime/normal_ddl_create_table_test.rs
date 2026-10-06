@@ -1218,6 +1218,65 @@ fn normal_ddl_storage_class_worker_persists_original_attribute_v1_and_v2() {
                     .collect::<Vec<_>>(),
                 vec![f.table]
             );
+
+            let mut operation =
+                astersql_ddl::storage_class_transition::StorageClassTransitionOperation {
+                    status: astersql_ddl::storage_class_transition::StorageClassTransitionStatus {
+                        table_schema: "test".into(),
+                        table_name: "normal_ddl_target".into(),
+                        table_id: f.table,
+                        partition_name: String::new(),
+                        partition_id: 0,
+                        direction: "TO_IA".into(),
+                        total_replicas: 4,
+                        completed_replicas: 3,
+                        progress: 0.75,
+                        progress_valid: true,
+                        start_time: astersql_meta_model::TSConvert2Time(
+                            history[0][6].parse().unwrap(),
+                        ),
+                        duration: chrono::Duration::zero(),
+                        last_update_time: Some(chrono::Utc::now()),
+                        status_valid: true,
+                        physical_table_ids: vec![f.table],
+                        schema_version: history[0][5].parse().unwrap(),
+                        start_ts: history[0][6].parse().unwrap(),
+                    },
+                    target: "IA".into(),
+                    targets,
+                };
+            astersql_ddl::storage_class_transition::set_targets(&mut operation);
+            f.pool
+                .storage_class_transition_manager()
+                .observe(&operation);
+
+            let standard = r#"{ "storage_class" : "STANDARD" }"#;
+            let standard_args = if version == JobVersion::V1 {
+                serde_json::json!([standard])
+            } else {
+                serde_json::json!({"engine_attribute":standard})
+            };
+            let mut replacement = Job {
+                id: job.id + 1,
+                tp: 74,
+                version,
+                schema_id: f.db,
+                table_id: f.table,
+                schema_name: "test".into(),
+                table_name: "normal_ddl_target".into(),
+                raw_args: serde_json::to_vec(&standard_args).unwrap(),
+                ..Default::default()
+            };
+            let replacement_wire =
+                astersql_meta::encode_go_ddl_job(&mut replacement, false).unwrap();
+            f.pool.acquire().unwrap().query(format!("INSERT INTO mysql.tidb_ddl_job (job_id,reorg,schema_ids,table_ids,job_meta,type,processing) VALUES ({},0,'{}','{}',X'{}',74,0)",replacement.id,f.db,f.table,hex(&replacement_wire))).unwrap();
+            run(&f);
+            assert_eq!(durable(&f, replacement.id).state, JobState::Done);
+            let terminal = f.pool.acquire().unwrap().query(format!(
+                "SELECT state,total_replicas,completed_replicas FROM mysql.tidb_storage_class_transition_history WHERE table_id={} AND start_ts={} AND direction='TO_IA'",
+                f.table, operation.status.start_ts
+            )).unwrap();
+            assert_eq!(terminal, vec![vec!["SUPERSEDED", "4", "3"]]);
         }
         let rows = f
             .pool
