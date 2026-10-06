@@ -419,6 +419,26 @@ fn TestMaxExecutionTime() {
     assert_eq!(vars.MaxExecutionTime, 99999);
 }
 
+#[test]
+fn TestDMLMaxExecutionTime() {
+    let (mut vars, _) = session();
+    let variable = sysvar(vardef::TiDBDMLMaxExecutionTime);
+    assert_eq!(variable.Scope, vardef::ScopeGlobal | vardef::ScopeSession);
+    assert_eq!(variable.Value, "0");
+    assert!(variable.IsHintUpdatableVerified);
+    assert_eq!(
+        variable
+            .Validate(&mut vars, "-10", vardef::ScopeSession)
+            .unwrap(),
+        "0"
+    );
+    let value = variable
+        .Validate(&mut vars, "99999", vardef::ScopeSession)
+        .unwrap();
+    variable.SetSessionFromHook(&mut vars, &value).unwrap();
+    assert_eq!(vars.DMLMaxExecutionTime, 99999);
+}
+
 /// 校验 tidb_max_keys_read 提示可更新变量。
 #[test]
 fn TestTiDBMaxKeysRead() {

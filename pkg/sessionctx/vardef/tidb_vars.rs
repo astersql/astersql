@@ -1674,6 +1674,7 @@ pub const DefMaxPagingSize: i64 = 50_000;
 pub const DefPagingSizeBytes: i64 = 0;
 pub const DefMaxChunkSize: i64 = 1024;
 pub const DefDMLBatchSize: i64 = 0;
+pub const DefTiDBDMLMaxExecutionTime: u64 = 0;
 pub const DefTiDBMLogPurgeBatchSize: u64 = 10_000;
 pub const DefTiDBMLogPurgeBatchMinSize: i64 = 1;
 pub const DefTiDBMLogPurgeBatchMaxSize: u64 = 1_000_000;

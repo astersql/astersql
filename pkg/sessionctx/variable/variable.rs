@@ -258,6 +258,8 @@ pub struct SessionVars {
     pub memory_total_available: bool,
     pub SelectLimit: u64,
     pub MaxExecutionTime: u64,
+    /// Timeout for transactional DML statements and COMMIT, in milliseconds.
+    pub DMLMaxExecutionTime: u64,
     pub DefaultStrMatchSelectivity: f64,
     pub OptPartialOrderedIndexForTopN: String,
     /// 是否允许 schema `*` 的通用 SQL binding。
@@ -311,6 +313,7 @@ impl SessionVars {
             memory_total_available: true,
             SelectLimit: u64::MAX,
             MaxExecutionTime: 0,
+            DMLMaxExecutionTime: vardef::DefTiDBDMLMaxExecutionTime,
             DefaultStrMatchSelectivity: vardef::DefTiDBDefaultStrMatchSelectivity as f64,
             OptPartialOrderedIndexForTopN: vardef::DefTiDBOptPartialOrderedIndexForTopN.to_owned(),
             EnableFuzzyBinding: false,

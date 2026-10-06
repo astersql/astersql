@@ -634,6 +634,10 @@ pub struct SessionVars {
     /// Internal restricted-SQL option permitting WriteReorganization index analysis.
     pub EnableDDLAnalyzeExecOpt: bool,
     pub DMLBatchSize: i32,
+    /// Timeout for transactional DML statements and COMMIT, in milliseconds.
+    pub DMLMaxExecutionTime: u64,
+    /// Non-transactional DML and its internal statements do not use the DML timeout.
+    pub InNonTransactionalDML: bool,
     pub RetryLimit: i64,
     pub DisableTxnAutoRetry: bool,
     pub EnableNonPreparedPlanCache: bool,
@@ -848,6 +852,8 @@ impl SessionVars {
             AnalyzeStoreBatchSize: vardef::DefTiDBAnalyzeStoreBatchSize,
             EnableDDLAnalyzeExecOpt: false,
             DMLBatchSize: 0,
+            DMLMaxExecutionTime: vardef::DefTiDBDMLMaxExecutionTime,
+            InNonTransactionalDML: false,
             RetryLimit: 10,
             DisableTxnAutoRetry: false,
             EnableNonPreparedPlanCache: vardef::DefTiDBEnableNonPreparedPlanCache,
@@ -1102,6 +1108,13 @@ impl SessionVars {
             self.ForeignKeyCheckInSharedLock = crate::TiDBOptOn(&normalized);
         } else if name.eq_ignore_ascii_case(vardef::TiDBEnableSharedLockUpgrade) {
             self.EnableSharedLockUpgrade = crate::TiDBOptOn(&normalized);
+        } else if name.eq_ignore_ascii_case(vardef::TiDBDMLMaxExecutionTime) {
+            self.DMLMaxExecutionTime = normalized.parse().map_err(|_| {
+                format!(
+                    "invalid {} value {normalized}",
+                    vardef::TiDBDMLMaxExecutionTime
+                )
+            })?;
         } else if name.eq_ignore_ascii_case(vardef::TiDBIsolationReadEngines) {
             self.IsolationReadEngines = normalized
                 .split(',')

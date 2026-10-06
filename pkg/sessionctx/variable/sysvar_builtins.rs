@@ -505,6 +505,22 @@ fn register_basic_clamped_vars() {
     }));
     RegisterSysVar(max_execution);
 
+    let mut dml_max_execution = unsigned_var(
+        vardef::TiDBDMLMaxExecutionTime,
+        vardef::DefTiDBDMLMaxExecutionTime,
+        scope_both(),
+        0,
+        i32::MAX as u64,
+    );
+    dml_max_execution.IsHintUpdatableVerified = true;
+    dml_max_execution.SetSession = Some(Arc::new(|vars, value| {
+        vars.DMLMaxExecutionTime = value
+            .parse()
+            .map_err(|_| VariableError::wrong_type(vardef::TiDBDMLMaxExecutionTime))?;
+        Ok(())
+    }));
+    RegisterSysVar(dml_max_execution);
+
     let mut max_keys = int_var("tidb_max_keys_read", 0, scope_both(), 0, i64::MAX as u64);
     max_keys.IsHintUpdatableVerified = true;
     max_keys.SetSession = Some(Arc::new(|vars, value| {

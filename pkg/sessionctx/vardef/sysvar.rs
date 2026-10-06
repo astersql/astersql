@@ -328,6 +328,8 @@ pub const TransactionIsolation: &str = "transaction_isolation";
 pub const TxnIsolationOneShot: &str = "tx_isolation_one_shot";
 // MaxExecutionTime is the name of the 'max_execution_time' system variable.
 pub const MaxExecutionTime: &str = "max_execution_time";
+// TiDBDMLMaxExecutionTime is the maximum execution time for transactional DML and COMMIT.
+pub const TiDBDMLMaxExecutionTime: &str = "tidb_dml_max_execution_time";
 // TiDBMaxKeysRead is the name of the 'tidb_max_keys_read' system variable.
 pub const TiDBMaxKeysRead: &str = "tidb_max_keys_read";
 // TiKVClientReadTimeout is the name of the 'tikv_client_read_timeout' system variable.

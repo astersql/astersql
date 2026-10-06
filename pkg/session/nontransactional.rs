@@ -393,6 +393,7 @@ pub enum LogLevel {
 pub struct SessionVars {
     pub read_staleness: u64,
     pub bulk_dml_enabled: bool,
+    pub in_non_transactional_dml: bool,
     pub autocommit: bool,
     pub in_transaction: bool,
     pub global_batch_dml_enabled: bool,
@@ -480,8 +481,10 @@ pub fn HandleNonTransactionalDML(
     // 暂时关闭陈旧读与 bulk DML，函数返回前恢复。
     let original_read_staleness = runtime.session_vars().read_staleness;
     let original_bulk_dml_enabled = runtime.session_vars().bulk_dml_enabled;
+    let original_in_non_transactional_dml = runtime.session_vars().in_non_transactional_dml;
     runtime.session_vars_mut().read_staleness = 0;
     runtime.session_vars_mut().bulk_dml_enabled = false;
+    runtime.session_vars_mut().in_non_transactional_dml = true;
 
     let outcome = (|| {
         runtime.preprocess(stmt)?;
@@ -540,6 +543,7 @@ pub fn HandleNonTransactionalDML(
 
     runtime.session_vars_mut().read_staleness = original_read_staleness;
     runtime.session_vars_mut().bulk_dml_enabled = original_bulk_dml_enabled;
+    runtime.session_vars_mut().in_non_transactional_dml = original_in_non_transactional_dml;
     outcome
 }
 

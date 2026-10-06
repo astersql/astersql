@@ -462,6 +462,9 @@ pub trait AdapterRuntime {
     fn MaximumChunkSize(&self) -> usize;
     fn Command(&self) -> u8;
     fn MaximumExecutionTime(&self) -> u64;
+    fn DMLMaximumExecutionTime(&self) -> u64 {
+        0
+    }
     fn SetProcessInfo(&self, sql: &str, started: SystemTime, command: u8, maximum_time: u64);
     fn CancelMaximumExecutionTime(&self);
     fn FinalizePreparedExecution(&self, _scanned_rows: usize, _success: bool) {}
@@ -1265,11 +1268,12 @@ impl ExecStmt {
             &self.getSQLForProcessInfo(),
             execution_started,
             self.Ctx.Command(),
-            if self.StmtNode.kind == StatementKind::Select {
-                self.Ctx.MaximumExecutionTime()
-            } else {
-                0
-            },
+            statementMaximumExecutionTime(
+                &self.Plan,
+                &self.StmtNode,
+                self.Ctx.MaximumExecutionTime(),
+                self.Ctx.DMLMaximumExecutionTime(),
+            ),
         );
         if self.StatementCtx.priority == Priority::Unspecified {
             let priority = if self.LowerPriority {
@@ -1454,6 +1458,21 @@ impl ExecStmt {
                 .unwrap_or_default(),
             chunk_config: config,
         }
+    }
+}
+
+pub(crate) fn statementMaximumExecutionTime(
+    plan: &PlanInfo,
+    statement: &StatementNode,
+    select_timeout: u64,
+    dml_timeout: u64,
+) -> u64 {
+    if statement.kind == StatementKind::Select {
+        select_timeout
+    } else if plan.IsDML() {
+        dml_timeout
+    } else {
+        0
     }
 }
 

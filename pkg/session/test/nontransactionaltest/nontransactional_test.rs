@@ -534,6 +534,7 @@ impl StubRuntime {
             vars: SessionVars {
                 read_staleness: 0,
                 bulk_dml_enabled: false,
+                in_non_transactional_dml: false,
                 autocommit: true,
                 in_transaction: false,
                 global_batch_dml_enabled: true,

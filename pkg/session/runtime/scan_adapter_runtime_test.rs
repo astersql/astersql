@@ -757,6 +757,33 @@ fn canonical_adapter_dml_executes_lazily_and_locks_insert_update_delete_mutation
 }
 
 #[test]
+fn transactional_dml_uses_dml_timeout() {
+    use crate::testutil::TestSession;
+    use astersql_executor::adapter::PlanKind;
+    let session = canonical_dml_session();
+    session
+        .Execute("set tidb_dml_max_execution_time = 60000")
+        .unwrap();
+    session.Execute("begin pessimistic").unwrap();
+    let owner = Arc::new(SessionBoundAdapterOwner::new(session));
+    let sql = "insert into t values (20,20)";
+    owner.BindDMLStatement(sql).unwrap();
+    assert!(
+        dml_stmt(Arc::clone(&owner), sql, PlanKind::Insert)
+            .Exec()
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        owner
+            .Effects()
+            .events
+            .iter()
+            .any(|event| event.starts_with("process:") && event.contains(":60000:"))
+    );
+}
+
+#[test]
 fn typed_dml_writer_defers_mutation_until_next_and_adapter_rejects_snapshot_writes() {
     use crate::testutil::TestSession;
     use astersql_executor::adapter::{ExecExecutor, PlanInfo, PlanKind};

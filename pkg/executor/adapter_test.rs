@@ -22,8 +22,9 @@
 
 use crate::adapter::{
     AdapterResult, CascadeBatch, ChunkConfig, ExecExecutor, ExecutionContext, FormatSQL,
-    IsFastPlan, PlanInfo, PlanKind, RecordSet, ResultField, SchemaColumn, detachedRecordSet,
-    isNoResultPlan, joinRecordSetErrors,
+    IsFastPlan, PlanInfo, PlanKind, RecordSet, ResultField, SchemaColumn, StatementKind,
+    StatementNode, detachedRecordSet, isNoResultPlan, joinRecordSetErrors,
+    statementMaximumExecutionTime,
 };
 use astersql_errors as errors;
 use astersql_sessionctx_vardef::QueryLogMaxLen;
@@ -179,4 +180,42 @@ fn adapter_fast_and_no_result_plan_classification_matches_execution_paths() {
     let mut empty = plan(PlanKind::Query);
     empty.schema.clear();
     assert!(isNoResultPlan(&empty));
+}
+
+#[test]
+fn transactional_dml_uses_dml_timeout_while_select_keeps_select_timeout() {
+    let statement = |kind| StatementNode {
+        kind,
+        original_text: String::new(),
+        text: String::new(),
+        secure_text: String::new(),
+        prepared_text: None,
+    };
+    assert_eq!(
+        statementMaximumExecutionTime(
+            &plan(PlanKind::Insert),
+            &statement(StatementKind::Insert),
+            30_000,
+            60_000,
+        ),
+        60_000
+    );
+    assert_eq!(
+        statementMaximumExecutionTime(
+            &plan(PlanKind::Query),
+            &statement(StatementKind::Select),
+            30_000,
+            60_000,
+        ),
+        30_000
+    );
+    assert_eq!(
+        statementMaximumExecutionTime(
+            &plan(PlanKind::DDL),
+            &statement(StatementKind::DDL),
+            30_000,
+            60_000,
+        ),
+        0
+    );
 }

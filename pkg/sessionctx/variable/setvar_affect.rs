@@ -148,6 +148,7 @@ pub static HINT_UPDATABLE_VERIFIED: &[&str] = &[
     "cte_max_recursion_depth",
     "sql_mode",
     "max_execution_time",
+    "tidb_dml_max_execution_time",
     "tidb_max_keys_read",
 ];
 

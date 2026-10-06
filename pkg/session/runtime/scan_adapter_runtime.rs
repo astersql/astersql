@@ -856,6 +856,15 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
                 .unwrap_or(0)
         })
     }
+    fn DMLMaximumExecutionTime(&self) -> u64 {
+        self.session.WithSessionVars(|vars| {
+            if vars.InNonTransactionalDML {
+                0
+            } else {
+                vars.DMLMaxExecutionTime
+            }
+        })
+    }
     fn SetProcessInfo(&self, sql: &str, started: SystemTime, command: u8, maximum_time: u64) {
         self.session
             .WithSessionVars(|vars| vars.StmtCtx.ResetAdapterExecRetryCount());
