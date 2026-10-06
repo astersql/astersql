@@ -9,6 +9,36 @@ use crate::statement_ru_result::{
 };
 use astersql_resourcegroup::ruv2::model::StmtUnits;
 
+struct RestoreGlobalConfig(Option<astersql_config::Config>);
+
+impl Drop for RestoreGlobalConfig {
+    fn drop(&mut self) {
+        if let Some(config) = self.0.take() {
+            astersql_config::store_global_config(config);
+        }
+    }
+}
+
+#[test]
+fn statement_ru_finalize_uses_current_config_weights() {
+    let _restore = RestoreGlobalConfig(Some(astersql_config::get_global_config().as_ref().clone()));
+    astersql_config::update_global(|config| {
+        config.ruv2.stmt_weights.cpu_work = 2.0;
+        config.ruv2.stmt_weights.scan_byte = 3.0;
+    });
+
+    let mut calculator = StatementRUCalculator::new(StatementRUCalculationSetup::default());
+    calculator.units = StmtUnits {
+        cpu_work: 5.0,
+        scan_bytes: 7.0,
+        ..Default::default()
+    };
+    assert_eq!(calculator.finalize().unwrap().result.total_ru, 31.0);
+
+    astersql_config::update_global(|config| config.ruv2.stmt_weights.cpu_work = 0.0);
+    assert_eq!(calculator.finalize().unwrap().result.total_ru, 21.0);
+}
+
 #[test]
 fn go_merge_197_scan_evidence_matches_go_validity_contract() {
     assert_eq!(classify_scan_evidence(0, 0, 0), ScanEvidence::Valid(0.0));
