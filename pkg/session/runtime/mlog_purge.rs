@@ -349,6 +349,18 @@ fn purge_history_duration(started: std::time::Instant) -> String {
     format!("{}.{:06}", micros / 1_000_000, micros % 1_000_000)
 }
 
+fn resolve_mlog_database(explicit: &str, current: &str) -> SessionResult<String> {
+    let database = if explicit.is_empty() {
+        current.to_owned()
+    } else {
+        explicit.to_owned()
+    };
+    if database.is_empty() {
+        return Err(SessionError::new("No database selected"));
+    }
+    Ok(database)
+}
+
 fn finalize_purge_history(session: &ConcreteSession, sql: &str) -> SessionResult<()> {
     if let Err(first) = session.execute(sql) {
         session.execute(sql).map_err(|second| {
@@ -437,11 +449,7 @@ impl ConcreteSession {
             .Table
             .as_ref()
             .ok_or_else(|| SessionError::new("PURGE MATERIALIZED VIEW LOG has no base table"))?;
-        let database = if target.Schema.L.is_empty() {
-            self.current_database()
-        } else {
-            target.Schema.L.clone()
-        };
+        let database = resolve_mlog_database(&target.Schema.L, &self.current_database())?;
         let base = self
             .resolve_runtime_table(&database, &target.Name.L)
             .ok_or_else(|| {
