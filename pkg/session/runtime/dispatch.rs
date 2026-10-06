@@ -4338,12 +4338,15 @@ impl ConcreteSession {
                 (Err(error), _, _) => {
                     let warnings = self.state.borrow().current_warnings.clone();
                     self.state.borrow_mut().last_warnings = warnings;
+                    ru_scope.fail(&error);
                     return Err(error);
                 }
                 (Ok(_), Err(error), _) => {
+                    ru_scope.fail(&error);
                     return Err(error);
                 }
                 (Ok(_), Ok(()), Err(error)) => {
+                    ru_scope.fail(&error);
                     return Err(error);
                 }
             }

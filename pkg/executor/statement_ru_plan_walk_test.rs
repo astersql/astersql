@@ -1287,6 +1287,44 @@ fn go_merge_187_row_and_write_operators() {
 }
 
 #[test]
+fn mem_table_and_lock_preserve_child_ru_work() {
+    use crate::statement_ru_plan_walk::*;
+    use base::PhysicalPlan as _;
+
+    let context: base::ContextRef = Arc::new(TypedPlanTestContext(
+        AtomicI32::new(0),
+        Default::default(),
+        Default::default(),
+    ));
+    for rows in [0, 3] {
+        let mem_table = physicalop::PhysicalMemTable::New(context.clone());
+        let mut projection = physicalop::PhysicalProjection::New(context.clone());
+        projection.Exprs = vec![Box::new(astersql_expression::Column::default())];
+        projection.set_children(vec![Box::new(mem_table)]);
+        let mut lock =
+            physicalop::LegacyPhysicalLock::New(context.clone(), "for update".to_owned(), 0);
+        lock.set_children(vec![Box::new(projection)]);
+
+        let tree = astersql_planner_core::FlattenTypedPhysicalPlan(&lock).unwrap();
+        let mut stats = astersql_util_execdetails::execdetails::NewRuntimeStatsColl(None);
+        for operator in &tree {
+            stats
+                .GetBasicRuntimeStats(operator.Origin.id(), true)
+                .unwrap()
+                .Record(std::time::Duration::ZERO, rows);
+        }
+        let ids: Vec<_> = tree.iter().map(|operator| operator.Origin.id()).collect();
+        let evidence = snapshot_statement_ru_runtime_evidence(Some(&stats), &ids, None, None, None);
+        let mut calculator = StatementRUCalculator::new(Default::default());
+        let result = calculate_statement_ru_plan(&tree, 0, &evidence, &mut calculator);
+        assert_eq!(result.state, StatementRUOperatorState::Complete);
+        assert_eq!(result.output_rows, rows as i64);
+        assert_eq!(calculator.units.cpu_work, rows as f64);
+        assert_eq!(calculator.units.operator_num, 3.0);
+    }
+}
+
+#[test]
 fn go_merge_187_row_and_write_operators_topn_boundaries() {
     use crate::statement_ru_plan_walk::*;
     let context: base::ContextRef = Arc::new(TypedPlanTestContext(

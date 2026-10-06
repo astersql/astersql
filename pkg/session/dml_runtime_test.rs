@@ -1613,6 +1613,40 @@ fn autocommit_failure_is_propagated_and_does_not_publish_kv_writes() {
     assert_eq!(rows.Next().expect("failed row visibility"), None);
 }
 
+#[test]
+fn explain_analyze_commit_failure_closes_terminal_and_preserves_rows() {
+    let session = concrete_session();
+    session
+        .execute("create table explain_commit_failure (a int primary key, b int)")
+        .expect("create commit-failure fixture");
+    session
+        .execute("insert into explain_commit_failure values (1, 10)")
+        .expect("seed commit-failure fixture");
+    session.InjectNextDmlCommitError("injected EXPLAIN ANALYZE commit failure");
+
+    let error = match session
+        .execute("explain analyze update explain_commit_failure set b = b + 1 where a = 1")
+    {
+        Ok(_) => panic!("commit failure must abort EXPLAIN ANALYZE DML"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("injected EXPLAIN ANALYZE commit failure")
+    );
+
+    let mut rows = session
+        .execute("select b from explain_commit_failure where a = 1")
+        .expect("session remains usable after terminal cleanup")
+        .remove(0);
+    assert_eq!(
+        rows.Next().expect("read preserved row"),
+        Some(vec!["10".to_owned()])
+    );
+    assert_eq!(rows.Next().expect("read terminal row"), None);
+}
+
 /// EXPLAIN ANALYZE 报告 auto_id_allocator 的 alloc/rebase 计数（含无自增对照）。
 #[test]
 fn explain_analyze_dml2_reports_go_auto_id_allocator_matrix() {

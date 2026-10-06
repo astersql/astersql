@@ -313,6 +313,12 @@ pub trait RecordSet {
     fn Next(&mut self, output: &mut chunk::Chunk) -> AdapterResult;
     fn NewChunk(&mut self) -> chunk::Chunk;
     fn Close(&mut self) -> AdapterResult;
+    /// Close after a session-side terminal failure and preserve that error for
+    /// statement finalization. Buffered/detached results have no statement to
+    /// finalize, so their default behavior is the ordinary close path.
+    fn CloseWithError(&mut self, _last_error: errors::SharedError) -> AdapterResult {
+        self.Close()
+    }
     /// Optional detach hook; a result set without an owned executor is not detachable.
     fn TryDetach(&mut self) -> AdapterResult<(Option<Box<dyn RecordSet>>, bool)> {
         Ok((None, false))
@@ -708,12 +714,20 @@ impl recordSet {
         Ok(())
     }
 
-    /// Finish 后调用 CloseRecordSet 完成语句收尾。
-    pub fn Close(&mut self) -> AdapterResult {
+    fn close_with_error(&mut self, last_error: Option<errors::SharedError>) -> AdapterResult {
         let result = self.Finish();
-        let final_error = joinRecordSetErrors(&self.lastErrs);
+        let mut final_errors = self.lastErrs.clone();
+        if let Some(last_error) = last_error {
+            final_errors.push(last_error);
+        }
+        let final_error = joinRecordSetErrors(&final_errors);
         self.stmt.CloseRecordSet(self.txnStartTS, final_error);
         result
+    }
+
+    /// Finish 后调用 CloseRecordSet 完成语句收尾。
+    pub fn Close(&mut self) -> AdapterResult {
+        self.close_with_error(None)
     }
 
     /// 客户端已取回结果时写慢查询（可能还有更多结果）。
@@ -774,6 +788,10 @@ impl RecordSet for recordSet {
 
     fn Close(&mut self) -> AdapterResult {
         recordSet::Close(self)
+    }
+
+    fn CloseWithError(&mut self, last_error: errors::SharedError) -> AdapterResult {
+        self.close_with_error(Some(last_error))
     }
 
     fn TryDetach(&mut self) -> AdapterResult<(Option<Box<dyn RecordSet>>, bool)> {

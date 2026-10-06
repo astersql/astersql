@@ -1195,6 +1195,25 @@ impl SessionStatementRUScope {
         }
         Ok(())
     }
+
+    /// A session error after executor creation must still close the pending
+    /// result set and publish the original error as the terminal outcome.
+    pub(super) fn fail(&self, error: &crate::SessionError) {
+        let pending = self.session.statement_ru_pending.borrow_mut().take();
+        if let Some(mut pending) = pending {
+            pending.statement.RecordStatementRUFinalOutcome(false);
+            if let Some(mut record_set) = pending.record_set.take() {
+                let _ = record_set.CloseWithError(astersql_errors::New(error.to_string()));
+            } else {
+                let timestamp = pending.statement.Ctx.TransactionStartTS();
+                pending.statement.FinishExecuteStmt(
+                    timestamp,
+                    Some(astersql_errors::New(error.to_string())),
+                    false,
+                );
+            }
+        }
+    }
 }
 
 impl Drop for SessionStatementRUScope {

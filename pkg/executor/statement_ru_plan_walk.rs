@@ -1246,6 +1246,7 @@ fn calculate_statement_ru_plan_child_first(
             operator.IsRoot && !operator.ChildrenIdx.is_empty()
         } else if origin.is::<astersql_planner_core::ScalarSubqueryEvalCtx>()
             || origin.is::<op::PhysicalLock>()
+            || origin.is::<op::LegacyPhysicalLock>()
         {
             operator.IsRoot && operator.ChildrenIdx.len() == 1
         } else if origin.is::<op::PhysicalShuffleReceiverStub>() {
