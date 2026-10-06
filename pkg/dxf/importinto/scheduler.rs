@@ -1451,8 +1451,12 @@ impl importScheduler {
         Ok(scheduler)
     }
 
-    /// 任务结束时注销 metrics。
+    /// 调度器关闭时释放本地注册句柄，但不撤销可由新 owner 接管的租约。
     pub fn Close(&self, task_id: i64) {
+        self.taskInfoMap
+            .lock()
+            .expect("import task registration mutex poisoned")
+            .clear();
         metricsManager.unregister(task_id);
     }
 

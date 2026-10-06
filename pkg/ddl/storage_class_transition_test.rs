@@ -202,6 +202,16 @@ fn topology_replacement_respects_parent_shape_target_and_claims() {
         partition(13, "p2", "STANDARD"),
     ];
     assert!(!targets_exist(&table, &operation));
+    // An obsolete target must never be observed as complete while the
+    // replacement topology is still being published.
+    table.Partition.as_mut().unwrap().DDLState = model::StateDeleteReorganization;
+    assert!(!targets_exist(&table, &operation));
+    assert!(!topology_is_stable(&table));
+    // A failed reconciliation leaves the same obsolete operation ineligible
+    // on the next poll; only the current physical targets may be observed.
+    table.Partition.as_mut().unwrap().DDLState = model::StateNone;
+    assert!(!targets_exist(&table, &operation));
+    assert!(topology_is_stable(&table));
     assert_eq!(
         replacement_physical_ids(&table, &operation, &BTreeSet::from([14])),
         BTreeSet::from([11])

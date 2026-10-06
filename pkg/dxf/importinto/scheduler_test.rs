@@ -365,6 +365,104 @@ fn failed_mode_switch_still_throttles_and_normal_switch_clears_timestamp() {
 }
 
 #[test]
+fn scheduler_close_releases_local_registration_without_revoking_lease() {
+    use crate::proto::TaskMeta;
+    use crate::scheduler::{ImportSchedulerRuntime, TaskRegistration, importScheduler};
+    use astersql_dxf_framework_proto::{
+        ExtraParams, ModifyParam, NormalPriority, StepInit, Task, TaskBase, TaskStatePending,
+        TaskTypeExample,
+    };
+    use astersql_errors::{New, SharedError};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, SystemTime};
+
+    struct Registration {
+        closed: Arc<AtomicUsize>,
+        dropped: Arc<AtomicUsize>,
+    }
+    impl Drop for Registration {
+        fn drop(&mut self) {
+            self.dropped.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    impl TaskRegistration for Registration {
+        fn register_once(&mut self, _: Duration) -> Result<(), SharedError> {
+            Ok(())
+        }
+        fn close(&mut self, _: Duration) -> Result<(), SharedError> {
+            self.closed.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+    struct Runtime {
+        closed: Arc<AtomicUsize>,
+        dropped: Arc<AtomicUsize>,
+    }
+    impl ImportSchedulerRuntime for Runtime {
+        fn new_task_registration(
+            &self,
+            _: i64,
+            _: Duration,
+        ) -> Result<Box<dyn TaskRegistration>, SharedError> {
+            Ok(Box::new(Registration {
+                closed: self.closed.clone(),
+                dropped: self.dropped.clone(),
+            }))
+        }
+        fn switch_to_import_mode(&self) -> Result<(), SharedError> {
+            Err(New("unused"))
+        }
+        fn switch_to_normal_mode(&self) -> Result<(), SharedError> {
+            Err(New("unused"))
+        }
+    }
+
+    let closed = Arc::new(AtomicUsize::new(0));
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let task = Task {
+        TaskBase: TaskBase {
+            ID: 279,
+            Key: String::new(),
+            Type: TaskTypeExample,
+            State: TaskStatePending,
+            Step: StepInit,
+            Priority: NormalPriority,
+            RequiredSlots: 0,
+            TargetScope: String::new(),
+            CreateTime: SystemTime::UNIX_EPOCH,
+            MaxNodeCount: 0,
+            ExtraParams: ExtraParams::default(),
+            Keyspace: String::new(),
+        },
+        SchedulerID: String::new(),
+        StartTime: SystemTime::UNIX_EPOCH,
+        StateUpdateTime: SystemTime::UNIX_EPOCH,
+        Meta: TaskMeta::default().Marshal().unwrap(),
+        Error: None,
+        ModifyParam: ModifyParam {
+            PrevState: "",
+            Modifications: vec![],
+        },
+    };
+    let scheduler = importScheduler::new(
+        Arc::new(Runtime {
+            closed: closed.clone(),
+            dropped: dropped.clone(),
+        }),
+        &task,
+    )
+    .unwrap();
+    scheduler.registerTask(task.ID);
+
+    scheduler.Close(task.ID);
+
+    assert_eq!(closed.load(Ordering::SeqCst), 0);
+    assert_eq!(dropped.load(Ordering::SeqCst), 1);
+    scheduler.Close(task.ID);
+}
+
+#[test]
 fn scheduler_framework_task_bridge_keeps_import_state_and_modifications() {
     use crate::scheduler::frameworkTaskToImportTask;
     use astersql_dxf_framework_scheduler as framework;
