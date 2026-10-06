@@ -33,8 +33,8 @@
 // - 重组任务可运行性判断（取消、暂停、失去 owner 等情况）。
 
 use crate::column::{
-    ColumnInfo, ColumnKind, ColumnPosition, DefaultValue, FieldType, SchemaState, TableInfo,
-    init_and_add_column_to_table,
+    ColumnInfo, ColumnKind, ColumnPosition, DefaultValue, FieldType, IndexColumn, IndexInfo,
+    SchemaState, TableInfo, init_and_add_column_to_table,
 };
 use crate::modify_column::{
     ModifyColumnArgs, ModifyColumnContext, ModifyColumnError, ModifyColumnType,
@@ -191,6 +191,88 @@ fn test_rollback_column_type_change_between_integer() {
                 .all(|column| !column.name.starts_with("_col$_"))
         );
     }
+}
+
+/// A failed MODIFY COLUMN rollback must clear only temporary online-DDL markers and preserve an
+/// original NOT NULL constraint. This covers both a validation-only rollback and a reorg rollback.
+#[test]
+fn test_modify_column_rollback_preserves_original_not_null() {
+    for modify_type in [ModifyColumnType::NoReorgWithCheck, ModifyColumnType::Reorg] {
+        let mut original = integer("a", 16, false);
+        original.not_null = true;
+        let mut table = table_with(original);
+        let old = table.columns[0].clone();
+        let mut narrower = integer("a", 8, false);
+        narrower.not_null = true;
+        let mut args = args(&old, narrower);
+        args.modify_type = modify_type;
+        let mut version = 0;
+
+        if modify_type == ModifyColumnType::Reorg {
+            let outcome =
+                advance_modify_column(&mut table, &mut args, &context(), true, &mut version, false)
+                    .unwrap();
+            assert_eq!(SchemaState::DeleteOnly, outcome.schema_state);
+        } else {
+            assert_eq!(
+                Err(ModifyColumnError::DataTruncated),
+                advance_modify_column(
+                    &mut table,
+                    &mut args,
+                    &context(),
+                    false,
+                    &mut version,
+                    false,
+                )
+            );
+        }
+
+        let outcome =
+            advance_modify_column(&mut table, &mut args, &context(), true, &mut version, true)
+                .unwrap();
+        assert!(outcome.rollback_done);
+        assert!(table.columns[0].not_null);
+        assert!(!table.columns[0].prevent_null_insert);
+        assert!(table.columns[0].change_dependency_offset.is_none());
+    }
+}
+
+/// Index-only reorganization of a nullable column must continue accepting NULL writes while the
+/// changing index is in DeleteOnly. Only NULL-to-NOT-NULL changes may set the temporary guard.
+#[test]
+fn test_modify_column_index_reorg_allows_null() {
+    let mut old = integer("a", 20, false);
+    old.field_type.kind = ColumnKind::String;
+    old.field_type.charset = "utf8mb4".into();
+    old.field_type.collation = "utf8mb4_bin".into();
+    let mut table = table_with(old);
+    table.indices.push(IndexInfo {
+        id: 10,
+        name: "idx_a".into(),
+        state: SchemaState::Public,
+        columns: vec![IndexColumn {
+            name: "a".into(),
+            offset: 0,
+            length: None,
+            use_changing_type: false,
+        }],
+        primary: false,
+        columnar: false,
+    });
+    let old = table.columns[0].clone();
+    let mut narrower = old.clone();
+    narrower.field_type.kind = ColumnKind::Varchar;
+    narrower.field_type.flen = 10;
+    let mut args = args(&old, narrower);
+    args.modify_type = ModifyColumnType::IndexReorg;
+    let mut version = 0;
+
+    let outcome =
+        advance_modify_column(&mut table, &mut args, &context(), true, &mut version, false)
+            .unwrap();
+    assert_eq!(SchemaState::DeleteOnly, outcome.schema_state);
+    assert!(!old.not_null);
+    assert!(!table.columns[0].prevent_null_insert);
 }
 
 /// 整数仅显示宽度变化（tinyint(3) -> tinyint(1)）不触发行数据重组；
