@@ -42,7 +42,9 @@ struct IntegrationPlanContext {
     /// 会话级系统变量与语句上下文。
     session_vars: variable_dependency::session::SessionVars,
     /// 表达式求值/构建上下文。
-    expr_ctx: exprstatic_dependency::ExprContext,
+    expr_ctx: Arc<exprstatic_dependency::ExprContext>,
+    /// Protobuf-build context needed while scalar subqueries are optimized.
+    build_pb: base::BuildPBContext,
     /// 范围推导（Ranger）上下文，供索引范围裁剪。
     ranger_ctx: base::RangerContext<'static>,
     /// 内置函数使用计数，供 EXPLAIN/诊断断言。
@@ -63,7 +65,7 @@ impl base::PlanContext for IntegrationPlanContext {
     }
 
     fn GetExprCtx(&self) -> &dyn expression::exprctx::ExprContext {
-        &self.expr_ctx
+        self.expr_ctx.as_ref()
     }
 
     fn GetRangerCtx(&self) -> &base::RangerContext<'_> {
@@ -71,11 +73,11 @@ impl base::PlanContext for IntegrationPlanContext {
     }
 
     fn GetNullRejectCheckExprCtx(&self) -> &dyn expression::exprctx::ExprContext {
-        &self.expr_ctx
+        self.expr_ctx.as_ref()
     }
 
     fn GetBuildPBCtx(&self) -> &base::BuildPBContext {
-        panic!("integration planner tests do not build protobuf executors")
+        &self.build_pb
     }
 
     fn BuiltinFunctionUsageInc(&self, name: &str) {
@@ -154,12 +156,11 @@ fn integration_plan_context_with_params_and_vars(
             });
     }
     let ranger_params = params.clone();
-    let expression_context =
-        exprstatic_dependency::NewExprContext(vec![exprstatic_dependency::WithEvalCtx(Arc::new(
-            exprstatic_dependency::NewEvalContext(vec![exprstatic_dependency::WithParamList(
-                params,
-            )]),
-        ))]);
+    let expression_context = Arc::new(exprstatic_dependency::NewExprContext(vec![
+        exprstatic_dependency::WithEvalCtx(Arc::new(exprstatic_dependency::NewEvalContext(vec![
+            exprstatic_dependency::WithParamList(params),
+        ]))),
+    ]));
     let ranger_expression: Arc<dyn expression::exprctx::BuildContext> =
         Arc::new(exprstatic_dependency::NewExprContext(vec![
             exprstatic_dependency::WithEvalCtx(Arc::new(exprstatic_dependency::NewEvalContext(
@@ -169,7 +170,17 @@ fn integration_plan_context_with_params_and_vars(
     Arc::new(IntegrationPlanContext {
         plan_id: AtomicI32::new(0),
         session_vars,
-        expr_ctx: expression_context,
+        expr_ctx: Arc::clone(&expression_context),
+        build_pb: base::BuildPBContext {
+            ExprCtx: expression_context,
+            Client: None,
+            TiFlashFastScan: false,
+            TiFlashFineGrainedShuffleBatchSize: 0,
+            GroupConcatMaxLen: 0,
+            InExplainStmt: false,
+            WarnHandler: None,
+            ExtraWarnghandler: None,
+        },
         ranger_ctx: base::RangerContext {
             TypeCtx: expression::types::DefaultStmtNoWarningContext.clone(),
             ErrCtx: expression::errctx::StrictNoWarningContext.clone(),
@@ -2003,6 +2014,52 @@ fn test_insert_select_planbuilder_runtime() {
             .Len(),
         insert.TableSchema.as_ref().expect("target schema").Len() * 2 + 1
     );
+}
+
+#[test]
+fn insert_values_scalar_subquery_preserves_source_select_privilege() {
+    fn evaluate_scalar_subquery_for_privilege_test(
+        _ctx: &dyn crate::context::Context,
+        _plan: &dyn base::PhysicalPlan,
+        _info_schema: &dyn infoschema_dependency::infoschema::InfoSchema,
+        _plan_context: &dyn base::PlanContext,
+    ) -> Result<Option<Vec<expression::types::Datum>>, expression::Error> {
+        Ok(Some(vec![expression::types::NewIntDatum(1)]))
+    }
+
+    crate::InstallEvalSubqueryFirstRow(evaluate_scalar_subquery_for_privilege_test)
+        .expect("install scalar-subquery evaluator");
+    let context = integration_plan_context(&[kv_dependency::StoreType::TiKV], "tikv", false, false);
+    let statement = crate::ast::NodeRef::new(
+        parser_dependency::New()
+            .ParseOneStmt(
+                "insert into t (a, b) values (1, (select b from s where a = 1))",
+                "",
+                "",
+            )
+            .expect("parse INSERT VALUES scalar subquery"),
+    );
+    let (mut builder, _) = crate::NewPlanBuilder()
+        .withDataSourceProvider(Arc::new(IntegrationStatsProvider {
+            row_count: 1_000.0,
+            pseudo: true,
+            apply_isolation_filter: true,
+        }))
+        .Init(
+            context,
+            integration_multi_info_schema(&["t", "s"], false, None, &[]),
+            hint_dependency::NewQBHintHandler(None),
+        );
+
+    builder
+        .BuildNodeRef(crate::context::TODO(), &statement)
+        .expect("INSERT VALUES scalar subquery must build");
+
+    assert!(builder.GetVisitInfo().iter().any(|visit| {
+        visit.privilege == Some(crate::planbuilder::Privilege::Select)
+            && visit.db == "test"
+            && visit.table == "s"
+    }));
 }
 
 // —— TiFlash 标量/时间/位运算表达式下推契约 ——

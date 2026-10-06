@@ -4706,6 +4706,26 @@ fn build_table_source_runtime(
         .is
         .ModelTableInfoByName(&schema_key, &table_key)
         .map_err(|error| expression::errors::New(error.to_string()))?;
+    let auth_error = builder.ctx.GetSessionVars().User.as_ref().map(|user| {
+        plannererrors::ErrTableaccessDenied
+            .FastGenByArgs(&[
+                "SELECT".into(),
+                user.auth_username.clone().into(),
+                user.auth_hostname.clone().into(),
+                table_info.Name.L.clone().into(),
+            ])
+            .into()
+    });
+    builder.visitInfo.push(VisitInfo {
+        privilege: Some(crate::planbuilder::Privilege::Select),
+        db: schema_name.clone(),
+        table: table_info.Name.L.clone(),
+        column: String::new(),
+        error: auth_error,
+        alterWritable: false,
+        dynamicPrivs: Vec::new(),
+        dynamicWithGrant: false,
+    });
     let effective_table_name = if table_source.AsName.O.is_empty() {
         table_info.Name.clone()
     } else {

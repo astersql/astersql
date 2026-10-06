@@ -53,14 +53,16 @@ pub struct CteInfo {
 
 /// 运行时权限访问信息（含 expression::Error）。
 pub struct VisitInfo {
+    /// Static table privilege required by this access. Dynamic-only checks use `None`.
+    pub privilege: Option<crate::planbuilder::Privilege>,
     /// 数据库名。
     pub db: String,
     /// 表名。
     pub table: String,
     /// 列名。
     pub column: String,
-    /// 关联错误信息。
-    pub error: expression::Error,
+    /// 关联错误信息；无登录用户时与 Go 的 nil authErr 一致。
+    pub error: Option<expression::Error>,
     /// 是否允许写类 ALTER 权限语义。
     pub alterWritable: bool,
     /// 动态权限名列表。
@@ -73,10 +75,11 @@ impl VisitInfo {
     /// 构造仅含动态权限的 VisitInfo。
     pub fn dynamic(privileges: Vec<String>, with_grant: bool, error: expression::Error) -> Self {
         Self {
+            privilege: None,
             db: String::new(),
             table: String::new(),
             column: String::new(),
-            error,
+            error: Some(error),
             alterWritable: false,
             dynamicPrivs: privileges,
             dynamicWithGrant: with_grant,
@@ -1539,9 +1542,63 @@ impl PlanBuilder {
                 .collect::<Result<Vec<_>, _>>()?
         };
 
-        let select = statement.Select.as_deref().ok_or_else(|| {
-            expression::errors::New("this runtime segment requires INSERT ... SELECT")
-        })?;
+        let Some(select) = statement.Select.as_deref() else {
+            let mut rows = Vec::with_capacity(statement.Lists.len());
+            for (row_index, row) in statement.Lists.iter().enumerate() {
+                if row.len() != affected_columns.len() {
+                    return Err(expression::errors::New(format!(
+                        "Column count doesn't match value count at row {}",
+                        row_index + 1
+                    )));
+                }
+                let mut expressions = Vec::with_capacity(row.len());
+                for (value, column) in row.iter().zip(&affected_columns) {
+                    if column.IsGenerated() && !value.IsDefaultExpr() {
+                        return Err(expression::errors::New(format!(
+                            "The value specified for generated column '{}' in table '{}' is not allowed",
+                            column.Name.O, table_info.Name.O
+                        )));
+                    }
+                    let mut mock = logicalop::LogicalTableDual::default()
+                        .Init(self.ctx.clone(), self.getSelectOffset());
+                    mock.SetSchema(expression::NewSchema(Vec::new()));
+                    mock.SetOutputNames(expression::types::NameSlice(Vec::new()));
+                    let (rewritten, rewritten_plan) = crate::expression_rewriter::rewrite(
+                        self,
+                        crate::context::TODOArc(),
+                        value,
+                        Box::new(mock),
+                        Default::default(),
+                        true,
+                    )?;
+                    if rewritten_plan
+                        .as_any()
+                        .downcast_ref::<logicalop::LogicalTableDual>()
+                        .is_none()
+                    {
+                        return Err(expression::errors::New(
+                            "Insert's SET operation or VALUES_LIST doesn't support complex subqueries now",
+                        ));
+                    }
+                    expressions.push(rewritten.ok_or_else(|| {
+                        expression::errors::New("insert value rewrite returned no expression")
+                    })?);
+                }
+                rows.push(expressions);
+            }
+
+            let mut insert = physicalop::Insert::New(self.ctx.clone());
+            insert.Table = Some(target_table);
+            insert.TableSchema = Some(table_schema);
+            insert.TableColNames = table_names;
+            insert.Columns = statement.Columns.iter().cloned().map(Box::new).collect();
+            insert.Lists = rows;
+            insert.IsReplace = statement.IsReplace;
+            insert.IgnoreErr = statement.IgnoreErr;
+            insert.RowLen = affected_columns.len() as isize;
+            insert.ResolveIndices()?;
+            return Ok(Box::new(insert));
+        };
         let mut augmented_select = None;
         let mut actual_column_count = None;
         if !statement.OnDuplicate.is_empty()
