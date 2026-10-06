@@ -25,6 +25,8 @@ pub use window::{Decimal, DecimalAverage, DecimalSum};
 #[cfg(test)]
 mod window_executor_test;
 #[cfg(test)]
+mod window_memory_test;
+#[cfg(test)]
 mod window_sql_test;
 #[cfg(test)]
 mod window_test;

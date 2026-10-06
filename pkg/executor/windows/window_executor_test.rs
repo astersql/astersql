@@ -86,7 +86,7 @@ fn order_by_value() -> Vec<OrderBy> {
 
 #[test]
 fn go_test_window_executors_basic_matches_buffered_and_pipelined() {
-    let context = ExecContext;
+    let context = ExecContext::default();
     let input = rows();
 
     // 同一组分区编号与滑动求和断言必须同时适用于缓冲式和流水式执行器。
@@ -151,7 +151,7 @@ fn go_test_window_executors_basic_matches_buffered_and_pipelined() {
 
 #[test]
 fn go_test_build_ordered_window_exec_returns_ordered_pipeline() {
-    let context = ExecContext;
+    let context = ExecContext::default();
     let executor = super::build_ordered(
         build_plan(
             2,
@@ -178,7 +178,7 @@ fn go_test_build_ordered_window_exec_returns_ordered_pipeline() {
 
 #[test]
 fn go_test_window_return_column_nullable_attribute_matches_empty_frame_values() {
-    let context = ExecContext;
+    let context = ExecContext::default();
     // “下一行到下一行”的帧会让末行得到空帧，用于核对各函数的空输入约定。
     let frame = WindowFrame {
         frame_type: FrameType::Rows,

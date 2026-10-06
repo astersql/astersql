@@ -59,7 +59,7 @@ fn execute(
         false,
     )
     .unwrap();
-    run_executor(executor, &ExecContext).unwrap()
+    run_executor(executor, &ExecContext::default()).unwrap()
 }
 
 /// 将整数序列转换为单列输入，便于明确表达按值排序的窗口帧用例。
@@ -230,7 +230,7 @@ fn go_test_window_functions_data_reference_preserves_lag_across_chunks() {
     )
     .unwrap();
     assert_eq!(
-        run_executor(executor, &ExecContext).unwrap(),
+        run_executor(executor, &ExecContext::default()).unwrap(),
         vec![
             vec![Value::Int(1), Value::Null],
             vec![Value::Int(2), Value::Int(1)],

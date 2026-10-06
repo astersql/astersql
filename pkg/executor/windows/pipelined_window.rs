@@ -19,10 +19,12 @@
 // 并及时丢弃不再需要的前缀行以控制内存。`OrderedWindowExec` 是其有序包装。
 
 use std::collections::VecDeque;
+use std::mem::size_of;
 
 use crate::window::{
     BoundType, ChildExecutor, Chunk, ExecContext, FrameBound, GroupChecker, OrderBy, Result, Row,
-    WindowFunction,
+    Value, WindowFunction, WindowMemoryTracker, reset_partial_result_and_release_memory,
+    reset_partial_results_and_release_memory, update_partial_result_and_track_memory,
 };
 
 /// 缓存的子计划 Chunk 元信息：剩余待产出行数与累计行水位。
@@ -91,6 +93,9 @@ pub struct PipelinedWindowExec {
     pub empty_frame: bool,
     /// 滑动窗口状态是否已初始化。
     pub initialized_sliding_window: bool,
+    pub memory_tracker: WindowMemoryTracker,
+    pub(crate) data_memory: i64,
+    pub(crate) rows_memory: i64,
 }
 
 /// 有序窗口：内部委托 PipelinedWindowExec。
@@ -120,16 +125,25 @@ impl PipelinedWindowExec {
     /// 打开子执行器并复位自身状态。
     pub fn open(&mut self, context: &ExecContext) -> Result<()> {
         self.child.open(context)?;
+        self.memory_tracker.open(&context.statement_memory_tracker);
         self.open_self()
     }
 
     /// 关闭子执行器。
     pub fn close(&mut self) -> Result<()> {
+        self.child_result = None;
+        self.data.clear();
+        self.rows.clear();
+        self.group_checker.reset();
+        self.data_memory = 0;
+        self.rows_memory = 0;
+        self.memory_tracker.close();
         self.child.close()
     }
 
     /// 复位分区/滑动窗口相关状态，并 reset 所有窗口函数。
     pub fn open_self(&mut self) -> Result<()> {
+        // `open` always establishes the statement parent before resetting state.
         self.done = false;
         self.new_partition = false;
         self.whole = false;
@@ -148,6 +162,9 @@ impl PipelinedWindowExec {
         self.rows.clear();
         self.data.clear();
         self.child_result = None;
+        self.group_checker.reset();
+        self.data_memory = 0;
+        self.rows_memory = 0;
         for function in &mut self.window_functions {
             function.reset();
         }
@@ -193,7 +210,11 @@ impl PipelinedWindowExec {
             let index = self.data_index as usize;
             if index < self.data.len() && self.data[index].remaining != 0 {
                 let remaining = self.data[index].remaining;
-                let produced = self.produce(index, remaining)?;
+                let old_chunk_memory = self.data[index].chunk.memory_usage();
+                let produced = self.produce(index, remaining);
+                self.memory_tracker
+                    .consume(self.data[index].chunk.memory_usage() - old_chunk_memory);
+                let produced = produced?;
                 self.data[index].remaining -= produced;
                 if self.data[index].remaining == 0 {
                     self.data_index += 1;
@@ -201,8 +222,13 @@ impl PipelinedWindowExec {
             }
         }
         if let Some(mut first) = self.data.pop_front() {
+            self.memory_tracker.consume(-first.chunk.memory_usage());
             output.swap_columns(&mut first.chunk);
             self.data_index -= 1;
+            if self.data.is_empty() {
+                self.memory_tracker.consume(-self.data_memory);
+                self.data_memory = 0;
+            }
         }
         Ok(())
     }
@@ -229,6 +255,7 @@ impl PipelinedWindowExec {
         self.rows_to_consume += (end - begin) as u64;
         self.rows
             .extend_from_slice(&self.child_result.as_ref().unwrap().rows[begin..end]);
+        self.refresh_rows_memory();
         Ok(())
     }
 
@@ -248,6 +275,11 @@ impl PipelinedWindowExec {
             remaining: row_count as u64,
             accumulated: self.accumulated,
         });
+        self.memory_tracker
+            .consume(self.data.back().unwrap().chunk.memory_usage());
+        let data_memory = (self.data.capacity() * size_of::<DataInfo>()) as i64;
+        self.memory_tracker.consume(data_memory - self.data_memory);
+        self.data_memory = data_memory;
         self.child_result = Some(child);
         Ok(false)
     }
@@ -339,13 +371,17 @@ impl PipelinedWindowExec {
             let mut values = Vec::with_capacity(self.window_functions.len());
             // 空帧：返回 reset 后的默认结果。
             if start >= end {
-                for function in &mut self.window_functions {
+                for (index, function) in self.window_functions.iter_mut().enumerate() {
                     if function.ignores_frame() {
                         values.push(function.result()?);
                         continue;
                     }
                     if !self.empty_frame {
-                        function.reset();
+                        reset_partial_result_and_release_memory(
+                            &self.memory_tracker,
+                            index,
+                            function.as_mut(),
+                        );
                     }
                     values.push(function.result()?);
                 }
@@ -357,7 +393,7 @@ impl PipelinedWindowExec {
                 self.empty_frame = false;
                 let relative_start = start - self.row_start;
                 let relative_end = end - self.row_start;
-                for function in &mut self.window_functions {
+                for (index, function) in self.window_functions.iter_mut().enumerate() {
                     if function.ignores_frame() {
                         values.push(function.result()?);
                         continue;
@@ -370,9 +406,20 @@ impl PipelinedWindowExec {
                     };
                     if !slid {
                         function.set_window_start(start);
-                        function.reset();
-                        function
-                            .update(&self.rows[relative_start as usize..relative_end as usize])?;
+                        reset_partial_result_and_release_memory(
+                            &self.memory_tracker,
+                            index,
+                            function.as_mut(),
+                        );
+                        update_partial_result_and_track_memory(
+                            &self.memory_tracker,
+                            index,
+                            function.as_mut(),
+                            &self.rows[relative_start as usize..relative_end as usize],
+                        )?;
+                    } else {
+                        self.memory_tracker
+                            .update_partial_result(index, function.partial_result_memory_usage());
                     }
                     values.push(function.result()?);
                 }
@@ -396,6 +443,10 @@ impl PipelinedWindowExec {
             let drop_count = extend - self.row_start;
             self.dropped += drop_count;
             self.rows.drain(..drop_count as usize);
+            if self.rows.is_empty() {
+                self.rows = Vec::new();
+            }
+            self.refresh_rows_memory();
             self.row_start = extend;
             // Sliding implementations receive offsets relative to `rows`.
             // Once the prefix is dropped, their previous offsets no longer
@@ -430,11 +481,38 @@ impl PipelinedWindowExec {
         let drop_count = self.row_count - self.row_start;
         self.dropped += drop_count;
         self.rows.drain(..drop_count as usize);
+        if self.rows.is_empty() {
+            self.rows = Vec::new();
+        }
+        self.refresh_rows_memory();
         self.row_start = 0;
         self.row_count = 0;
         self.initialized_sliding_window = false;
-        for function in &mut self.window_functions {
-            function.reset();
-        }
+        reset_partial_results_and_release_memory(&self.memory_tracker, &mut self.window_functions);
+    }
+
+    fn refresh_rows_memory(&mut self) {
+        let rows_memory = (self.rows.capacity() * size_of::<Row>()) as i64
+            + self
+                .rows
+                .iter()
+                .map(|row| {
+                    (row.capacity() * size_of::<Value>()) as i64
+                        + row.iter().map(value_heap_memory_usage).sum::<i64>()
+                })
+                .sum::<i64>();
+        self.memory_tracker.consume(rows_memory - self.rows_memory);
+        self.rows_memory = rows_memory;
+    }
+
+    pub fn memory_bytes(&self) -> i64 {
+        self.memory_tracker.bytes_consumed()
+    }
+}
+
+fn value_heap_memory_usage(value: &Value) -> i64 {
+    match value {
+        Value::Text(value) => value.capacity() as i64,
+        _ => 0,
     }
 }

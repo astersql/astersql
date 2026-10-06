@@ -35,7 +35,7 @@ fn range_current_row_keeps_adjacent_large_integers_in_distinct_peer_groups() {
     .unwrap();
 
     assert_eq!(
-        run_executor(executor, &ExecContext).unwrap(),
+        run_executor(executor, &ExecContext::default()).unwrap(),
         vec![
             vec![Value::Int(9_007_199_254_740_992), Value::UInt(1)],
             vec![Value::Int(9_007_199_254_740_993), Value::UInt(1)],

@@ -22,6 +22,9 @@
 use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::fmt;
+use std::mem::size_of;
+use std::sync::atomic::{AtomicI64, Ordering as AtomicOrdering};
+use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Copy, Debug, Eq)]
 /// 定点十进制：系数 + 小数位数（scale）。
@@ -102,6 +105,13 @@ pub enum Value {
 }
 
 impl Value {
+    fn heap_memory_usage(&self) -> i64 {
+        match self {
+            Self::Text(value) => value.capacity() as i64,
+            _ => 0,
+        }
+    }
+
     /// 提取数值近似；非数值返回 None。
     fn numeric(&self) -> Option<f64> {
         match self {
@@ -210,6 +220,20 @@ impl Chunk {
         output.extend(values);
         Ok(())
     }
+
+    /// Return the bytes owned by this chunk, including nested row/value buffers.
+    pub fn memory_usage(&self) -> i64 {
+        size_of::<Self>() as i64
+            + (self.rows.capacity() * size_of::<Row>()) as i64
+            + self
+                .rows
+                .iter()
+                .map(|row| {
+                    (row.capacity() * size_of::<Value>()) as i64
+                        + row.iter().map(Value::heap_memory_usage).sum::<i64>()
+                })
+                .sum::<i64>()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -234,8 +258,100 @@ impl std::error::Error for Error {}
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Clone, Debug, Default)]
-/// 执行上下文占位（会话/时区等可在此扩展）。
-pub struct ExecContext;
+/// A composable byte counter used by executor-local and statement-level tracking.
+pub struct MemoryTracker(Arc<AtomicI64>);
+
+impl MemoryTracker {
+    pub fn consume(&self, bytes: i64) {
+        self.0.fetch_add(bytes, AtomicOrdering::Relaxed);
+    }
+
+    pub fn bytes_consumed(&self) -> i64 {
+        self.0.load(AtomicOrdering::Relaxed)
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+/// 执行上下文，包含语句级内存跟踪器。
+pub struct ExecContext {
+    pub statement_memory_tracker: MemoryTracker,
+}
+
+#[derive(Debug)]
+struct WindowMemoryState {
+    local: MemoryTracker,
+    parent: Option<MemoryTracker>,
+    initial_partial_result_memory: i64,
+    partial_result_memory: Vec<i64>,
+}
+
+#[derive(Clone, Debug)]
+pub struct WindowMemoryTracker(Arc<Mutex<WindowMemoryState>>);
+
+impl WindowMemoryTracker {
+    pub fn new(initial_partial_result_memory: Vec<i64>) -> Self {
+        let function_count = initial_partial_result_memory.len();
+        Self(Arc::new(Mutex::new(WindowMemoryState {
+            local: MemoryTracker::default(),
+            parent: None,
+            initial_partial_result_memory: initial_partial_result_memory.iter().sum(),
+            partial_result_memory: vec![0; function_count],
+        })))
+    }
+
+    pub fn open(&self, statement: &MemoryTracker) {
+        self.close();
+        let initial = {
+            let mut state = self.0.lock().unwrap();
+            state.parent = Some(statement.clone());
+            state.partial_result_memory.fill(0);
+            state.initial_partial_result_memory
+        };
+        self.consume(initial);
+    }
+
+    pub fn consume(&self, bytes: i64) {
+        if bytes == 0 {
+            return;
+        }
+        let state = self.0.lock().unwrap();
+        state.local.consume(bytes);
+        if let Some(parent) = &state.parent {
+            parent.consume(bytes);
+        }
+    }
+
+    pub fn update_partial_result(&self, index: usize, bytes: i64) {
+        let delta = {
+            let mut state = self.0.lock().unwrap();
+            let delta = bytes - state.partial_result_memory[index];
+            state.partial_result_memory[index] = bytes;
+            delta
+        };
+        self.consume(delta);
+    }
+
+    pub fn release_partial_result(&self, index: usize) {
+        self.update_partial_result(index, 0);
+    }
+
+    pub fn bytes_consumed(&self) -> i64 {
+        self.0.lock().unwrap().local.bytes_consumed()
+    }
+
+    pub fn close(&self) {
+        let (bytes, parent) = {
+            let mut state = self.0.lock().unwrap();
+            let bytes = state.local.bytes_consumed();
+            state.local.consume(-bytes);
+            state.partial_result_memory.fill(0);
+            (bytes, state.parent.take())
+        };
+        if let Some(parent) = parent {
+            parent.consume(-bytes);
+        }
+    }
+}
 
 /// 子执行器：提供已排序/分区的输入 Chunk 流。
 pub trait ChildExecutor: Send {
@@ -430,6 +546,14 @@ pub trait WindowFunction: Send {
     fn ignores_frame(&self) -> bool {
         false
     }
+    /// Fixed bytes allocated with the partial result.
+    fn initial_partial_result_memory_usage(&self) -> i64 {
+        size_of::<usize>() as i64
+    }
+    /// Additional bytes retained while updating the partial result.
+    fn partial_result_memory_usage(&self) -> i64 {
+        0
+    }
 }
 
 #[derive(Default)]
@@ -515,6 +639,22 @@ impl WindowFunction for Lag {
 
     fn slide(&mut self, _rows: &[Row], _start: u64, _end: u64) -> Result<bool> {
         Ok(true)
+    }
+
+    fn partial_result_memory_usage(&self) -> i64 {
+        (self.rows.capacity() * size_of::<Row>()) as i64
+            + self
+                .rows
+                .iter()
+                .map(|row| {
+                    (row.capacity() * size_of::<Value>()) as i64
+                        + row.iter().map(Value::heap_memory_usage).sum::<i64>()
+                })
+                .sum::<i64>()
+    }
+
+    fn initial_partial_result_memory_usage(&self) -> i64 {
+        size_of::<Self>() as i64
     }
 }
 
@@ -751,6 +891,14 @@ impl WindowFunction for VarSamp {
     fn slide(&mut self, rows: &[Row], start: u64, end: u64) -> Result<bool> {
         self.update(&rows[start as usize..end as usize])?;
         Ok(true)
+    }
+
+    fn partial_result_memory_usage(&self) -> i64 {
+        (self.values.capacity() * size_of::<f64>()) as i64
+    }
+
+    fn initial_partial_result_memory_usage(&self) -> i64 {
+        size_of::<Self>() as i64
     }
 }
 
@@ -1049,6 +1197,20 @@ impl WindowFunction for MaxValue {
         self.state.last_start = start;
         self.state.last_end = start;
     }
+
+    fn partial_result_memory_usage(&self) -> i64 {
+        (self.state.values.capacity() * size_of::<Value>()) as i64
+            + self
+                .state
+                .values
+                .iter()
+                .map(Value::heap_memory_usage)
+                .sum::<i64>()
+    }
+
+    fn initial_partial_result_memory_usage(&self) -> i64 {
+        size_of::<Self>() as i64
+    }
 }
 
 /// MIN 窗口聚合。
@@ -1092,6 +1254,20 @@ impl WindowFunction for MinValue {
     fn set_window_start(&mut self, start: u64) {
         self.state.last_start = start;
         self.state.last_end = start;
+    }
+
+    fn partial_result_memory_usage(&self) -> i64 {
+        (self.state.values.capacity() * size_of::<Value>()) as i64
+            + self
+                .state
+                .values
+                .iter()
+                .map(Value::heap_memory_usage)
+                .sum::<i64>()
+    }
+
+    fn initial_partial_result_memory_usage(&self) -> i64 {
+        size_of::<Self>() as i64
     }
 }
 
@@ -1237,6 +1413,12 @@ impl GroupChecker {
     pub fn is_exhausted(&self) -> bool {
         self.next_group >= self.groups.len()
     }
+
+    pub fn reset(&mut self) {
+        self.groups.clear();
+        self.next_group = 0;
+        self.previous_last_key = None;
+    }
 }
 
 /// 分区行消费与结果追加的处理器抽象。
@@ -1246,17 +1428,52 @@ pub trait WindowProcessor: Send {
     fn reset_partial_result(&mut self);
 }
 
+pub(crate) fn update_partial_result_and_track_memory(
+    tracker: &WindowMemoryTracker,
+    index: usize,
+    function: &mut dyn WindowFunction,
+    rows: &[Row],
+) -> Result<()> {
+    let result = function.update(rows);
+    tracker.update_partial_result(index, function.partial_result_memory_usage());
+    result
+}
+
+pub(crate) fn reset_partial_result_and_release_memory(
+    tracker: &WindowMemoryTracker,
+    index: usize,
+    function: &mut dyn WindowFunction,
+) {
+    function.reset();
+    tracker.release_partial_result(index);
+}
+
+pub(crate) fn reset_partial_results_and_release_memory(
+    tracker: &WindowMemoryTracker,
+    functions: &mut [Box<dyn WindowFunction>],
+) {
+    for (index, function) in functions.iter_mut().enumerate() {
+        reset_partial_result_and_release_memory(tracker, index, function.as_mut());
+    }
+}
+
 /// 整分区聚合处理器（无显式帧）。
 pub struct AggWindowProcessor {
     pub window_functions: Vec<Box<dyn WindowFunction>>,
+    pub memory_tracker: WindowMemoryTracker,
 }
 
 impl WindowProcessor for AggWindowProcessor {
     /// 用整分区行更新聚合状态；不保留行缓冲。
     fn consume_group_rows(&mut self, rows: Vec<Row>) -> Result<Vec<Row>> {
         if !rows.is_empty() {
-            for function in &mut self.window_functions {
-                function.update(&rows)?;
+            for (index, function) in self.window_functions.iter_mut().enumerate() {
+                update_partial_result_and_track_memory(
+                    &self.memory_tracker,
+                    index,
+                    function.as_mut(),
+                    &rows,
+                )?;
             }
         }
         Ok(Vec::new())
@@ -1274,9 +1491,7 @@ impl WindowProcessor for AggWindowProcessor {
     }
 
     fn reset_partial_result(&mut self) {
-        for function in &mut self.window_functions {
-            function.reset();
-        }
+        reset_partial_results_and_release_memory(&self.memory_tracker, &mut self.window_functions);
     }
 }
 
@@ -1287,6 +1502,7 @@ pub struct RowFrameWindowProcessor {
     pub end: FrameBound,
     pub current_row: u64,
     pub initialized_sliding_window: bool,
+    pub memory_tracker: WindowMemoryTracker,
 }
 
 impl RowFrameWindowProcessor {
@@ -1328,6 +1544,7 @@ impl RowFrameWindowProcessor {
 /// 对多组 `[start,end)` 调用窗口函数（优先 slide）。
 fn calculate_frames(
     functions: &mut [Box<dyn WindowFunction>],
+    memory_tracker: &WindowMemoryTracker,
     rows: &[Row],
     frames: impl IntoIterator<Item = (u64, u64)>,
     initialized_sliding: &mut bool,
@@ -1340,7 +1557,7 @@ fn calculate_frames(
         let end = end.max(start);
         let frame = &rows[start as usize..end as usize];
         let mut values = Vec::with_capacity(functions.len());
-        for function in functions.iter_mut() {
+        for (index, function) in functions.iter_mut().enumerate() {
             if function.ignores_frame() {
                 values.push(function.result()?);
                 continue;
@@ -1352,8 +1569,15 @@ fn calculate_frames(
             };
             if !slid {
                 function.set_window_start(start);
-                function.reset();
-                function.update(frame)?;
+                reset_partial_result_and_release_memory(memory_tracker, index, function.as_mut());
+                update_partial_result_and_track_memory(
+                    memory_tracker,
+                    index,
+                    function.as_mut(),
+                    frame,
+                )?;
+            } else {
+                memory_tracker.update_partial_result(index, function.partial_result_memory_usage());
             }
             values.push(function.result()?);
         }
@@ -1379,6 +1603,7 @@ impl WindowProcessor for RowFrameWindowProcessor {
             .collect::<Vec<_>>();
         calculate_frames(
             &mut self.window_functions,
+            &self.memory_tracker,
             rows,
             frames,
             &mut self.initialized_sliding_window,
@@ -1388,9 +1613,7 @@ impl WindowProcessor for RowFrameWindowProcessor {
     fn reset_partial_result(&mut self) {
         self.current_row = 0;
         self.initialized_sliding_window = false;
-        for function in &mut self.window_functions {
-            function.reset();
-        }
+        reset_partial_results_and_release_memory(&self.memory_tracker, &mut self.window_functions);
     }
 }
 
@@ -1404,6 +1627,7 @@ pub struct RangeFrameWindowProcessor {
     pub last_end_offset: u64,
     pub order_by: Vec<OrderBy>,
     pub initialized_sliding_window: bool,
+    pub memory_tracker: WindowMemoryTracker,
 }
 
 impl RangeFrameWindowProcessor {
@@ -1457,6 +1681,7 @@ impl WindowProcessor for RangeFrameWindowProcessor {
         }
         calculate_frames(
             &mut self.window_functions,
+            &self.memory_tracker,
             rows,
             frames,
             &mut self.initialized_sliding_window,
@@ -1468,9 +1693,7 @@ impl WindowProcessor for RangeFrameWindowProcessor {
         self.last_start_offset = 0;
         self.last_end_offset = 0;
         self.initialized_sliding_window = false;
-        for function in &mut self.window_functions {
-            function.reset();
-        }
+        reset_partial_results_and_release_memory(&self.memory_tracker, &mut self.window_functions);
     }
 }
 
@@ -1492,20 +1715,30 @@ pub struct WindowExec {
     pub input_columns: usize,
     /// 帧/聚合处理器。
     pub processor: Box<dyn WindowProcessor>,
+    pub memory_tracker: WindowMemoryTracker,
+    pub(crate) result_queue_memory: i64,
 }
 
 impl WindowExec {
     /// 复位状态并打开子执行器。
     pub fn open(&mut self, context: &ExecContext) -> Result<()> {
+        self.memory_tracker.open(&context.statement_memory_tracker);
         self.executed = false;
         self.result_chunks.clear();
         self.remaining_rows_in_chunk.clear();
         self.child_result = None;
+        self.group_checker.reset();
         self.child.open(context)
     }
 
     /// 关闭子执行器。
     pub fn close(&mut self) -> Result<()> {
+        self.child_result = None;
+        self.result_chunks.clear();
+        self.remaining_rows_in_chunk.clear();
+        self.group_checker.reset();
+        self.result_queue_memory = 0;
+        self.memory_tracker.close();
         self.child.close()
     }
 
@@ -1520,8 +1753,13 @@ impl WindowExec {
             }
         }
         if let Some(mut result) = self.result_chunks.pop_front() {
+            self.memory_tracker.consume(-result.memory_usage());
             output.swap_columns(&mut result);
             self.remaining_rows_in_chunk.pop_front();
+            if self.result_chunks.is_empty() {
+                self.memory_tracker.consume(-self.result_queue_memory);
+                self.result_queue_memory = 0;
+            }
         }
         Ok(())
     }
@@ -1538,7 +1776,7 @@ impl WindowExec {
         if self.group_checker.is_exhausted() {
             if self.fetch_child(context)? {
                 self.executed = true;
-                return self.consume_group_rows(group_rows);
+                return self.consume_tracked_group_rows(group_rows);
             }
             self.group_checker
                 .split_into_groups(self.child_result.as_ref().unwrap())?;
@@ -1550,7 +1788,7 @@ impl WindowExec {
         while meets_last_group {
             if self.fetch_child(context)? {
                 self.executed = true;
-                return self.consume_group_rows(group_rows);
+                return self.consume_tracked_group_rows(group_rows);
             }
             let same = self
                 .group_checker
@@ -1562,7 +1800,15 @@ impl WindowExec {
             group_rows.extend_from_slice(&self.child_result.as_ref().unwrap().rows[begin..end]);
             meets_last_group = end == self.child_result.as_ref().unwrap().num_rows();
         }
-        self.consume_group_rows(group_rows)
+        self.consume_tracked_group_rows(group_rows)
+    }
+
+    fn consume_tracked_group_rows(&mut self, rows: Vec<Row>) -> Result<()> {
+        let memory = rows_memory_usage(&rows);
+        self.memory_tracker.consume(memory);
+        let result = self.consume_group_rows(rows);
+        self.memory_tracker.consume(-memory);
+        result
     }
 
     /// 将分区行写入结果块的窗口列，并更新 remaining 计数。
@@ -1577,12 +1823,19 @@ impl WindowExec {
             let remained = remaining_chunk.min(remaining_group);
             self.remaining_rows_in_chunk[index] -= remained;
             remaining_group -= remained;
+            let old_chunk_memory = self.result_chunks[index].memory_usage();
             rows = self.processor.consume_group_rows(rows)?;
             let values = self.processor.append_result(&rows, remained)?;
             let first_row = self.result_chunks[index].num_rows() - remaining_chunk;
-            for (offset, result) in values.into_iter().enumerate() {
-                self.result_chunks[index].append_results(first_row + offset, result)?;
-            }
+            let append_result = values
+                .into_iter()
+                .enumerate()
+                .try_for_each(|(offset, result)| {
+                    self.result_chunks[index].append_results(first_row + offset, result)
+                });
+            self.memory_tracker
+                .consume(self.result_chunks[index].memory_usage() - old_chunk_memory);
+            append_result?;
             if remaining_group == 0 {
                 self.processor.reset_partial_result();
                 break;
@@ -1603,7 +1856,29 @@ impl WindowExec {
             // 新块先投影输入列，remaining 记待填窗口列行数。
             .push_back(child.projected(self.input_columns));
         self.remaining_rows_in_chunk.push_back(child.num_rows());
+        let result = self.result_chunks.back().unwrap();
+        self.memory_tracker.consume(result.memory_usage());
+        let new_queue_memory = (self.result_chunks.capacity() * size_of::<Chunk>()) as i64
+            + (self.remaining_rows_in_chunk.capacity() * size_of::<usize>()) as i64;
+        self.memory_tracker
+            .consume(new_queue_memory - self.result_queue_memory);
+        self.result_queue_memory = new_queue_memory;
         self.child_result = Some(child);
         Ok(false)
     }
+
+    pub fn memory_bytes(&self) -> i64 {
+        self.memory_tracker.bytes_consumed()
+    }
+}
+
+fn rows_memory_usage(rows: &[Row]) -> i64 {
+    (rows.len() * size_of::<Row>()) as i64
+        + rows
+            .iter()
+            .map(|row| {
+                (row.capacity() * size_of::<Value>()) as i64
+                    + row.iter().map(Value::heap_memory_usage).sum::<i64>()
+            })
+            .sum::<i64>()
 }

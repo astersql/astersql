@@ -24,7 +24,7 @@ use crate::pipelined_window::{OrderedWindowExec, PipelinedWindowExec};
 use crate::window::{
     AggWindowProcessor, BoundType, ChildExecutor, Chunk, Error, ExecContext, FrameBound, FrameType,
     GroupChecker, OrderBy, RangeFrameWindowProcessor, Result, RowFrameWindowProcessor, WindowExec,
-    WindowFrame, WindowFunction,
+    WindowFrame, WindowFunction, WindowMemoryTracker,
 };
 
 /// 物理窗口计划片段：schema、分区键、排序键、窗口函数与帧定义。
@@ -75,6 +75,13 @@ impl WindowExecutor {
             Self::Buffered(executor) => executor.close(),
         }
     }
+
+    pub fn memory_bytes(&self) -> i64 {
+        match self {
+            Self::Pipelined(executor) => executor.memory_bytes(),
+            Self::Buffered(executor) => executor.memory_bytes(),
+        }
+    }
 }
 
 /// 构建有序流水线窗口（OrderedWindowExec）；非流水线结果视为错误。
@@ -98,6 +105,12 @@ pub fn build(
 ) -> Result<WindowExecutor> {
     // 输入列数 = schema 总列 - 窗口函数结果列。
     let function_count = plan.window_functions.len();
+    let memory_tracker = WindowMemoryTracker::new(
+        plan.window_functions
+            .iter()
+            .map(|function| function.initial_partial_result_memory_usage())
+            .collect(),
+    );
     let input_columns = plan
         .schema_columns
         .checked_sub(function_count)
@@ -150,6 +163,9 @@ pub fn build(
             range_frame,
             empty_frame: false,
             initialized_sliding_window: false,
+            memory_tracker,
+            data_memory: 0,
+            rows_memory: 0,
         }));
     }
 
@@ -158,6 +174,7 @@ pub fn build(
         // 无帧：整分区一次聚合。
         None => Box::new(AggWindowProcessor {
             window_functions: plan.window_functions,
+            memory_tracker: memory_tracker.clone(),
         }),
         // ROWS 帧：按行偏移滑动窗口。
         Some(frame) if frame.frame_type == FrameType::Rows => Box::new(RowFrameWindowProcessor {
@@ -166,6 +183,7 @@ pub fn build(
             end: frame.end,
             current_row: 0,
             initialized_sliding_window: false,
+            memory_tracker: memory_tracker.clone(),
         }),
         // RANGE 帧：按排序键值域滑动窗口。
         Some(mut frame) => {
@@ -180,6 +198,7 @@ pub fn build(
                 last_end_offset: 0,
                 order_by: plan.order_by,
                 initialized_sliding_window: false,
+                memory_tracker: memory_tracker.clone(),
             })
         }
     };
@@ -192,5 +211,7 @@ pub fn build(
         remaining_rows_in_chunk: VecDeque::new(),
         input_columns,
         processor,
+        memory_tracker,
+        result_queue_memory: 0,
     }))
 }
