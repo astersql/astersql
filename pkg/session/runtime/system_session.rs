@@ -1643,6 +1643,38 @@ impl astersql_ddl::delete_range::DeleteRangeExecutor for SystemSessionLease {
     }
 }
 impl astersql_ddl::job_worker::DurableJobSession for SystemSessionLease {
+    fn transaction_size(&mut self) -> Result<usize, String> {
+        self.concrete()
+            .call(|session| {
+                session
+                    .inner
+                    .state
+                    .borrow()
+                    .transaction
+                    .as_ref()
+                    .map(|transaction| transaction.Size())
+                    .ok_or_else(|| sys_error("active transaction required"))
+            })
+            .map_err(|error| error.to_string())
+    }
+
+    fn report_ddl_job_ru(&mut self, job: &astersql_meta_model::group_3::Job) {
+        let resource_group = job
+            .reorg_meta
+            .as_ref()
+            .map(|meta| meta.ResourceGroupName.as_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or(astersql_resourcegroup::DEFAULT_RESOURCE_GROUP_NAME);
+        let resource_group = resource_group.to_owned();
+        let ru = job.ru;
+        let _ = self.concrete().call(move |session| {
+            if let Some(reporter) = session.inner.domain.ruv2_consumption_reporter() {
+                reporter.report_ruv2_consumption(&resource_group, ru, 0.0, 0.0);
+            }
+            Ok(())
+        });
+    }
+
     fn bind_owner_epoch(&mut self, epoch: u64) -> Result<(), String> {
         let mut contexts = self
             .concrete()

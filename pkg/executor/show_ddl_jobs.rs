@@ -97,7 +97,7 @@ pub struct BinlogInfo {
     pub database_name: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 /// 一条 DDL 作业的完整展示模型。
 pub struct DDLJob {
     pub id: i64,
@@ -117,6 +117,7 @@ pub struct DDLJob {
     pub reorg_meta: Option<ReorgMeta>,
     pub sub_jobs: Vec<SubJob>,
     pub may_need_reorg: bool,
+    pub ru: f64,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -129,6 +130,7 @@ pub struct DDLJobPredicates {
 /// 运行时默认重组参数与是否 next_gen 架构。
 pub struct DDLRuntimeConfig {
     pub next_gen: bool,
+    pub ru_version: u64,
     pub default_reorg_worker_count: usize,
     pub default_reorg_batch_size: usize,
     pub default_reorg_max_write_speed: u64,
@@ -502,10 +504,15 @@ fn appendCommonJobColumns<C: ShowDDLChunk>(
 
 /// 由作业 ReorgMeta 生成 Comments 列标签（analyze / ingest / 并发等）。
 pub fn showCommentsFromJob(job: &DDLJob, config: &DDLRuntimeConfig) -> String {
-    let Some(meta) = job.reorg_meta.as_ref() else {
-        return String::new();
-    };
     let mut labels = Vec::new();
+    let ru_comment = (config.next_gen
+        && config.ru_version == 2
+        && job.state.eq_ignore_ascii_case("synced")
+        && job.ru > 0.0)
+        .then(|| format!("RU={:.2}", job.ru));
+    let Some(meta) = job.reorg_meta.as_ref() else {
+        return ru_comment.unwrap_or_default();
+    };
     match meta.analyze_state {
         AnalyzeState::Running => labels.push("analyzing".to_owned()),
         AnalyzeState::Failed => labels.push("analyze_failed".to_owned()),
@@ -515,6 +522,9 @@ pub fn showCommentsFromJob(job: &DDLJob, config: &DDLRuntimeConfig) -> String {
     let adding_index = job.action.is_add_index || job.action.is_add_primary_key;
     // next_gen 下加索引只保留 analyze 相关标签，跳过 ingest/DXF 等。
     if adding_index && config.next_gen {
+        if let Some(comment) = ru_comment {
+            labels.push(comment);
+        }
         return labels.join(", ");
     }
     if adding_index {
@@ -548,6 +558,9 @@ pub fn showCommentsFromJob(job: &DDLJob, config: &DDLRuntimeConfig) -> String {
         if meta.max_node_count != 0 {
             labels.push(format!("max_node_count={}", meta.max_node_count));
         }
+    }
+    if let Some(comment) = ru_comment {
+        labels.push(comment);
     }
     labels.join(", ")
 }

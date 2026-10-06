@@ -177,6 +177,23 @@ pub fn job_need_gc(job: &Job) -> bool {
         )
 }
 
+pub(crate) fn account_general_job_ru(
+    next_gen: bool,
+    worker_type: WorkerType,
+    transaction_size: usize,
+    job: &mut astersql_meta_model::group_3::Job,
+) {
+    if matches!(
+        job.state,
+        astersql_meta_model::group_3::JobState::Cancelled
+            | astersql_meta_model::group_3::JobState::RollbackDone
+    ) {
+        job.ru = 0.0;
+    } else if next_gen && worker_type == WorkerType::General {
+        job.ru += transaction_size as f64;
+    }
+}
+
 /// 选择实际 lease（租约）时长；零值表示使用上限。
 pub fn choose_lease_time(lease: Duration, maximum: Duration) -> Duration {
     if lease.is_zero() || lease > maximum {
@@ -228,6 +245,12 @@ pub trait DurableJobSession {
     fn begin(&mut self) -> Result<(), String>;
     fn commit(&mut self) -> Result<(), String>;
     fn rollback(&mut self);
+    /// Return the bytes currently buffered by the active DDL transaction.
+    fn transaction_size(&mut self) -> Result<usize, String> {
+        Err("active DDL transaction size unavailable".into())
+    }
+    /// Report completed DDL RU to the job's resource group.
+    fn report_ddl_job_ru(&mut self, _: &astersql_meta_model::group_3::Job) {}
     fn with_transaction(&mut self, operation: TransactionOperation) -> Result<Vec<u8>, String>;
     fn with_execution_context(&mut self, _: ExecutionOperation) -> Result<Vec<u8>, String> {
         Err("DDL execution context unavailable".into())
@@ -515,6 +538,25 @@ impl JobWorker {
             }
             let result = executor.step(session, job)?;
             check_job_lease(lease)?;
+            let failed = matches!(
+                job.state,
+                astersql_meta_model::group_3::JobState::Cancelled
+                    | astersql_meta_model::group_3::JobState::RollbackDone
+            );
+            let transaction_size = if !failed
+                && astersql_config_kerneltype::IsNextGen()
+                && self.worker_type == WorkerType::General
+            {
+                session.transaction_size()?
+            } else {
+                0
+            };
+            account_general_job_ru(
+                astersql_config_kerneltype::IsNextGen(),
+                self.worker_type,
+                transaction_size,
+                job,
+            );
             if !result.removed {
                 let bytes = astersql_meta::encode_go_ddl_job(job, result.update_raw_args)?;
                 let hex = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
@@ -530,6 +572,10 @@ impl JobWorker {
             // metadata callback. Neither case is allowed to commit.
             check_job_lease(lease)?;
             session.commit()?;
+            if job.state == astersql_meta_model::group_3::JobState::Synced && job.ru > 0.0 {
+                astersql_metrics::ru_v2::AddDDLJobRU(job.ru);
+                session.report_ddl_job_ru(job);
+            }
             Ok(result.schema_version)
         })();
         if outcome.is_err() {

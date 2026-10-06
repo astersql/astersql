@@ -30,7 +30,8 @@ use crate::metrics::{
     register_external_metrics, setup_channelz_collector, with_grpc_channelz_collector_locked,
 };
 use crate::ru_v2::{
-    InitRUV2Metrics, RUV2ByEngine, RUV2BySQLType, RUV2Statements, RUV2TTLTotal, RUV2Total, RUV2Unit,
+    InitRUV2Metrics, RUV2ByEngine, RUV2ByEngineTiKV, RUV2BySQLType, RUV2BySQLTypeDDL,
+    RUV2Statements, RUV2TTLTotal, RUV2Total, RUV2Unit,
 };
 use crate::stmtsummary::{
     InitStmtSummaryMetrics, SetStmtSummaryWindowMetrics, StmtSummaryEvictedLogCounter,
@@ -220,6 +221,23 @@ fn ru_metric_definitions_preserve_labels_values_and_registration() {
             .iter()
             .any(|family| family.name().starts_with("tidb_ruv3_"))
     );
+}
+
+#[test]
+fn ddl_job_ru_updates_total_sql_type_and_tikv_counters() {
+    if crate::main_test::run_in_isolated_process(
+        "metrics_internal_test::ddl_job_ru_updates_total_sql_type_and_tikv_counters",
+    ) {
+        return;
+    }
+    ensure_test_env();
+    InitRUV2Metrics();
+    crate::ru_v2::AddDDLJobRU(12.5);
+    unsafe {
+        assert_eq!(RUV2Total.as_ref().unwrap().get(), 12.5);
+        assert_eq!(RUV2BySQLTypeDDL.as_ref().unwrap().get(), 12.5);
+        assert_eq!(RUV2ByEngineTiKV.as_ref().unwrap().get(), 12.5);
+    }
 }
 
 /// Go RU v2 collector names and label dimensions are part of the monitoring contract.

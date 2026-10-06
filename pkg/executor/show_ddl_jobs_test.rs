@@ -23,6 +23,7 @@ use crate::show_ddl_jobs::{
 fn runtime_config(next_gen: bool) -> DDLRuntimeConfig {
     DDLRuntimeConfig {
         next_gen,
+        ru_version: 1,
         default_reorg_worker_count: 4,
         default_reorg_batch_size: 256,
         default_reorg_max_write_speed: 0,
@@ -52,7 +53,36 @@ fn add_index_job() -> DDLJob {
         reorg_meta: None,
         sub_jobs: Vec::new(),
         may_need_reorg: true,
+        ru: 0.0,
     }
+}
+
+#[test]
+fn ddl_job_ru_comments_follow_next_gen_ru_v2_and_terminal_state_gates() {
+    let mut job = add_index_job();
+    job.action = DDLAction::default();
+    job.may_need_reorg = false;
+    job.state = "synced".into();
+    job.ru = 12.345;
+
+    let mut config = runtime_config(true);
+    config.ru_version = 2;
+    assert_eq!(showCommentsFromJob(&job, &config), "RU=12.35");
+
+    job.reorg_meta = Some(ReorgMeta {
+        analyze_state: AnalyzeState::Running,
+        ..reorg_meta(ReorgType::None)
+    });
+    assert_eq!(showCommentsFromJob(&job, &config), "analyzing, RU=12.35");
+
+    config.ru_version = 1;
+    assert_eq!(showCommentsFromJob(&job, &config), "analyzing");
+    config.ru_version = 2;
+    job.state = "done".into();
+    assert_eq!(showCommentsFromJob(&job, &config), "analyzing");
+    job.state = "synced".into();
+    job.ru = 0.0;
+    assert_eq!(showCommentsFromJob(&job, &config), "analyzing");
 }
 
 fn reorg_meta(reorg_type: ReorgType) -> ReorgMeta {

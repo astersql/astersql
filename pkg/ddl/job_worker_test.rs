@@ -26,7 +26,8 @@ use crate::ddl::{
     ActionType as ProductionActionType, Job as ProductionJob, JobState as ProductionJobState,
 };
 use crate::job_worker::{
-    build_placement_affects, choose_lease_time, job_need_gc as production_job_need_gc,
+    WorkerType, account_general_job_ru, build_placement_affects, choose_lease_time,
+    job_need_gc as production_job_need_gc,
 };
 
 /// 测试用的 DDL Action（操作类型）枚举。
@@ -272,6 +273,31 @@ fn build_placement_affects_matches_go_contract() {
     assert_eq!(2, affects.len());
     assert_eq!((11, 21), (affects[0].old_table_id, affects[0].table_id));
     assert_eq!((12, 22), (affects[1].old_table_id, affects[1].table_id));
+}
+
+#[test]
+fn general_ddl_ru_accounts_next_gen_transaction_bytes_and_clears_failed_jobs() {
+    use astersql_meta_model::group_3::{Job as WireJob, JobState as WireJobState};
+
+    let mut job = WireJob {
+        state: WireJobState::Running,
+        ru: 7.0,
+        ..WireJob::default()
+    };
+    account_general_job_ru(true, WorkerType::General, 13, &mut job);
+    assert_eq!(job.ru, 20.0);
+
+    account_general_job_ru(false, WorkerType::General, 100, &mut job);
+    account_general_job_ru(true, WorkerType::AddIndex, 100, &mut job);
+    assert_eq!(job.ru, 20.0);
+
+    job.state = WireJobState::Cancelled;
+    account_general_job_ru(true, WorkerType::General, 100, &mut job);
+    assert_eq!(job.ru, 0.0);
+    job.ru = 9.0;
+    job.state = WireJobState::RollbackDone;
+    account_general_job_ru(true, WorkerType::General, 100, &mut job);
+    assert_eq!(job.ru, 0.0);
 }
 
 #[test]

@@ -346,6 +346,27 @@ pub fn AddRUV2Results(tikv_ru: f64, tidb_ru: f64, tiflash_ru: f64, total_ru: f64
     }
 }
 
+/// Record a completed DDL job as TiKV RU, matching the three Go counters.
+pub fn AddDDLJobRU(ru: f64) {
+    if ru <= 0.0 {
+        return;
+    }
+    unsafe {
+        RUV2Total
+            .as_ref()
+            .expect("RU v2 metrics initialized")
+            .Add(ru);
+        RUV2BySQLTypeDDL
+            .as_ref()
+            .expect("RU v2 SQL type metrics initialized")
+            .Add(ru);
+        RUV2ByEngineTiKV
+            .as_ref()
+            .expect("RU v2 engine metrics initialized")
+            .Add(ru);
+    }
+}
+
 // initRUV2CachedLabelCounters 对应 Go 的 WithLabelValues 预热过程；调用前要求三个 CounterVec 已初始化。
 /// 为常见 executor 与 TiKV coprocessor 标签预先取出 Counter，避免热路径反复查表。
 unsafe fn initRUV2CachedLabelCounters() {
