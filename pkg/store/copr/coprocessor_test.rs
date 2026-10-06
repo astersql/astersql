@@ -2093,6 +2093,83 @@ fn go_merge_48_batch_child_locks_share_one_hint_backoff() {
 }
 
 #[test]
+fn ignored_committed_lock_hint_backs_off_and_exhausts_retry_budget() {
+    let backend = TestBackend::with_locations(Vec::new());
+    let mut req = request(vec![key_range("a", "b")]);
+    req.committed_locks = vec![42];
+    let worker = worker(backend.clone(), req);
+    let task = CopTask {
+        region: RegionVerId::new(1, 1, 1),
+        ranges: KeyRanges::new(vec![key_range("a", "b")]),
+        ..CopTask::default()
+    };
+    *backend.response.lock().unwrap() = CopProtocolResponse {
+        locked: Some(go_merge_48_lock(42)),
+        ..CopProtocolResponse::default()
+    };
+
+    let error = worker
+        .handle_task_once(&mut Backoffer::new(0), task)
+        .unwrap_err();
+
+    assert!(
+        matches!(error, BatchError::BackoffExhausted(message) if message.contains("request hints"))
+    );
+    assert!(backend.resolved_lock_calls.lock().unwrap().is_empty());
+    assert_eq!(backend.wires.lock().unwrap()[0].committed_locks, vec![42]);
+}
+
+#[test]
+fn parent_and_shared_child_ignored_hints_back_off_once_per_response() {
+    let backend = TestBackend::with_locations(Vec::new());
+    let mut req = request(vec![key_range("a", "c")]);
+    req.resolved_locks = vec![42];
+    req.committed_locks = vec![43];
+    let mut parent = CopTask {
+        region: RegionVerId::new(1, 1, 1),
+        ranges: KeyRanges::new(vec![key_range("a", "b")]),
+        ..CopTask::default()
+    };
+    parent.batch_task_list.insert(
+        2,
+        BatchedCopTask {
+            task: Box::new(CopTask {
+                task_id: 2,
+                region: RegionVerId::new(2, 1, 1),
+                ranges: KeyRanges::new(vec![key_range("b", "c")]),
+                ..CopTask::default()
+            }),
+            store_id: 1,
+            peer: Some(Peer { id: 1, store_id: 1 }),
+            load_based_replica_retry: false,
+        },
+    );
+    let mut shared = kvproto::kvrpcpb::LockInfo::new();
+    let mut resolved = kvproto::kvrpcpb::LockInfo::new();
+    resolved.set_lock_version(42);
+    let mut committed = kvproto::kvrpcpb::LockInfo::new();
+    committed.set_lock_version(43);
+    shared.set_shared_lock_infos(vec![resolved, committed].into());
+    backend.response.lock().unwrap().locked = Some(go_merge_48_lock(42));
+    backend.response.lock().unwrap().batch_responses.insert(
+        2,
+        CopProtocolResponse {
+            locked: Some(shared.write_to_bytes().unwrap()),
+            ..CopProtocolResponse::default()
+        },
+    );
+
+    let mut backoffer = Backoffer::new(1);
+    let result = worker(backend.clone(), req)
+        .handle_task_once(&mut backoffer, parent)
+        .unwrap();
+
+    assert_eq!(backoffer.history.len(), 1);
+    assert_eq!(result.remains.len(), 2);
+    assert_eq!(backend.resolved_lock_calls.lock().unwrap().len(), 2);
+}
+
+#[test]
 fn go_merge_48_store_batch_metrics_count_failed_inputs_once() {
     let backend = TestBackend::with_locations(vec![location(3, 0, vec![key_range("b", "c")])]);
     let mut task = CopTask {
