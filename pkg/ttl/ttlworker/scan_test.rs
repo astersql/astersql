@@ -46,6 +46,7 @@ fn task(batch_size: usize) -> TtlScanTask {
         range_start: Some(vec![Datum::Integer(0)]),
         range_end: Some(vec![Datum::Integer(100)]),
         batch_size,
+        scan_index: None,
     }
 }
 
@@ -118,6 +119,39 @@ fn scan_sql_preserves_range_and_cursor_order() {
             Datum::Integer(3),
         ]
     );
+}
+
+#[test]
+fn index_scan_projects_table_key_for_delete_and_pages_by_index_order() {
+    let mut task = task(2);
+    task.scan_index = Some(crate::scan::ScanIndex {
+        id: 9,
+        name: "ttl_idx".into(),
+        columns: vec!["created_at".into()],
+        unique: false,
+    });
+    let (sql, _) = task.scan_sql(Some(&[Datum::Unsigned(10), Datum::Integer(7)]));
+    assert!(sql.contains("SELECT `created_at`,`id`"), "{sql}");
+    assert!(sql.contains("FORCE_INDEX(`ttl_idx`)"), "{sql}");
+    assert!(sql.contains("ORDER BY `created_at`,`id`"), "{sql}");
+
+    let mut session = MockSession::default();
+    session
+        .replies
+        .push_back(Ok(vec![vec![Datum::Unsigned(10), Datum::Integer(7)]]));
+    let stats = TtlStatistics::default();
+    let mut deleted = Vec::new();
+    let result = task.execute(
+        &mut session,
+        &stats,
+        |rows| {
+            deleted = rows;
+            Ok(())
+        },
+        || false,
+    );
+    assert_eq!(result.reason, TaskTerminateReason::Finished);
+    assert_eq!(deleted, vec![vec![Datum::Integer(7)]]);
 }
 
 #[test]

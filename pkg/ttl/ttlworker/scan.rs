@@ -23,6 +23,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::session::{Datum, PhysicalTable, Row, SessionError, WorkerSession};
 
+/// Persisted index-scan layout used to page in physical index order and delete by table key.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScanIndex {
+    pub id: i64,
+    pub name: String,
+    pub columns: Vec<String>,
+    pub unique: bool,
+}
+
 /// 单次扫描 SQL 执行的最大重试次数。
 pub const SCAN_TASK_EXECUTE_SQL_MAX_RETRY: usize = 5;
 
@@ -108,6 +117,8 @@ pub struct TtlScanTask {
     pub range_end: Option<Vec<Datum>>,
     /// 每批 SELECT 的 LIMIT。
     pub batch_size: usize,
+    /// Selected TTL index. None keeps the legacy primary-key scan format.
+    pub scan_index: Option<ScanIndex>,
 }
 
 /// 扫描结束时返回的结果摘要。
@@ -130,9 +141,34 @@ impl TtlScanTask {
     ///
     /// `cursor` 为上一批最后一行的键值；用于 `AND (keys) > (...)` 翻页。
     pub fn scan_sql(&self, cursor: Option<&[Datum]>) -> (String, Vec<Datum>) {
-        let columns = self
-            .table
-            .key_columns
+        let mut scan_columns = self
+            .scan_index
+            .as_ref()
+            .map(|index| index.columns.clone())
+            .unwrap_or_else(|| self.table.key_columns.clone());
+        for key in &self.table.key_columns {
+            if !scan_columns.contains(key) {
+                scan_columns.push(key.clone());
+            }
+        }
+        let mut order_columns = self
+            .scan_index
+            .as_ref()
+            .map(|index| index.columns.clone())
+            .unwrap_or_else(|| self.table.key_columns.clone());
+        if self.scan_index.as_ref().is_some_and(|index| !index.unique) {
+            for key in &self.table.key_columns {
+                if !order_columns.contains(key) {
+                    order_columns.push(key.clone());
+                }
+            }
+        }
+        let columns = scan_columns
+            .iter()
+            .map(|column| format!("`{column}`"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let order = order_columns
             .iter()
             .map(|column| format!("`{column}`"))
             .collect::<Vec<_>>()
@@ -144,8 +180,14 @@ impl TtlScanTask {
             .map(|name| format!(" PARTITION (`{}`)", name.replace('`', "``")))
             .unwrap_or_default();
         let mut sql = format!(
-            "SELECT {columns} FROM `{}`.`{}`{partition} WHERE `{}` < FROM_UNIXTIME(%?)",
-            self.table.schema, self.table.table, self.table.ttl_column
+            "SELECT {columns} FROM `{}`.`{}`{partition}{} WHERE `{}` < FROM_UNIXTIME(%?)",
+            self.table.schema,
+            self.table.table,
+            self.scan_index
+                .as_ref()
+                .map(|index| format!(" FORCE_INDEX(`{}`)", index.name.replace('`', "``")))
+                .unwrap_or_default(),
+            self.table.ttl_column,
         );
         let mut args = vec![Datum::Unsigned(self.expire_time)];
         if let Some(range_start) = &self.range_start {
@@ -153,7 +195,12 @@ impl TtlScanTask {
                 let placeholders = std::iter::repeat_n("%?", range_start.len())
                     .collect::<Vec<_>>()
                     .join(",");
-                sql.push_str(&format!(" AND ({columns}) >= ({placeholders})"));
+                let range_columns = if self.scan_index.is_some() {
+                    format!("`{}`", self.table.ttl_column)
+                } else {
+                    order.clone()
+                };
+                sql.push_str(&format!(" AND ({range_columns}) >= ({placeholders})"));
                 args.extend(range_start.iter().cloned());
             }
         }
@@ -162,19 +209,51 @@ impl TtlScanTask {
                 let placeholders = std::iter::repeat_n("%?", range_end.len())
                     .collect::<Vec<_>>()
                     .join(",");
-                sql.push_str(&format!(" AND ({columns}) < ({placeholders})"));
+                let range_columns = if self.scan_index.is_some() {
+                    format!("`{}`", self.table.ttl_column)
+                } else {
+                    order.clone()
+                };
+                sql.push_str(&format!(" AND ({range_columns}) < ({placeholders})"));
                 args.extend(range_end.iter().cloned());
             }
         }
         if let Some(cursor) = cursor {
-            let placeholders = std::iter::repeat_n("%?", cursor.len())
-                .collect::<Vec<_>>()
-                .join(",");
-            sql.push_str(&format!(" AND ({columns}) > ({placeholders})"));
-            args.extend_from_slice(cursor);
+            if self.scan_index.is_none() {
+                let placeholders = std::iter::repeat_n("%?", cursor.len())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                sql.push_str(&format!(" AND ({order}) > ({placeholders})"));
+                args.extend_from_slice(cursor);
+            } else {
+                let quoted = order_columns
+                    .iter()
+                    .map(|column| format!("`{column}`"))
+                    .collect::<Vec<_>>();
+                let mut disjuncts = Vec::new();
+                for frontier in (0..cursor.len()).rev() {
+                    let mut parts = Vec::new();
+                    for prefix in 0..frontier {
+                        if cursor[prefix] == Datum::Null {
+                            parts.push(format!("{} IS NULL", quoted[prefix]));
+                        } else {
+                            parts.push(format!("{} = %?", quoted[prefix]));
+                            args.push(cursor[prefix].clone());
+                        }
+                    }
+                    if cursor[frontier] == Datum::Null {
+                        parts.push(format!("{} IS NOT NULL", quoted[frontier]));
+                    } else {
+                        parts.push(format!("{} > %?", quoted[frontier]));
+                        args.push(cursor[frontier].clone());
+                    }
+                    disjuncts.push(format!("({})", parts.join(" AND ")));
+                }
+                sql.push_str(&format!(" AND ({})", disjuncts.join(" OR ")));
+            }
         }
         sql.push_str(&format!(
-            " ORDER BY {columns} LIMIT {}",
+            " ORDER BY {order} LIMIT {}",
             self.batch_size.max(1)
         ));
         (sql, args)
@@ -253,7 +332,27 @@ impl TtlScanTask {
             if rows.is_empty() {
                 return self.result(TaskTerminateReason::Finished, None, scanned);
             }
-            if let Err(error) = emit_delete(rows.clone()) {
+            let delete_rows = if self.scan_index.is_some() {
+                let scan_columns = self.scan_columns();
+                rows.iter()
+                    .map(|row| {
+                        self.table
+                            .key_columns
+                            .iter()
+                            .map(|key| {
+                                row[scan_columns
+                                    .iter()
+                                    .position(|column| column == key)
+                                    .expect("table key is projected")]
+                                .clone()
+                            })
+                            .collect()
+                    })
+                    .collect()
+            } else {
+                rows.clone()
+            };
+            if let Err(error) = emit_delete(delete_rows) {
                 return self.result(TaskTerminateReason::Error, Some(error), scanned);
             }
             statistics.add_total(rows.len());
@@ -266,12 +365,51 @@ impl TtlScanTask {
             // Go increments TotalRows only after the delete task has been
             // dispatched successfully.  Rows rejected by a canceled/full
             // dispatch must not be counted as scanned work.
-            cursor = rows.last().cloned();
+            cursor = rows.last().map(|row| self.order_key(row));
             // 末批不足 batch_size 说明已扫完。
             if rows.len() < self.batch_size.max(1) {
                 return self.result(TaskTerminateReason::Finished, None, scanned);
             }
         }
+    }
+
+    fn scan_columns(&self) -> Vec<String> {
+        let mut columns = self
+            .scan_index
+            .as_ref()
+            .map(|index| index.columns.clone())
+            .unwrap_or_else(|| self.table.key_columns.clone());
+        for key in &self.table.key_columns {
+            if !columns.contains(key) {
+                columns.push(key.clone());
+            }
+        }
+        columns
+    }
+    fn order_key(&self, row: &[Datum]) -> Row {
+        let scan_columns = self.scan_columns();
+        let mut order_columns = self
+            .scan_index
+            .as_ref()
+            .map(|index| index.columns.clone())
+            .unwrap_or_else(|| self.table.key_columns.clone());
+        if self.scan_index.as_ref().is_some_and(|index| !index.unique) {
+            for key in &self.table.key_columns {
+                if !order_columns.contains(key) {
+                    order_columns.push(key.clone());
+                }
+            }
+        }
+        order_columns
+            .iter()
+            .map(|column| {
+                row[scan_columns
+                    .iter()
+                    .position(|candidate| candidate == column)
+                    .unwrap()]
+                .clone()
+            })
+            .collect()
     }
 
     /// 组装 `ScanResult` 的内部辅助。

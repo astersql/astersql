@@ -121,6 +121,21 @@ fn go_merge_43_set_global_ttl_enable_forwards_to_master_controller() {
     astersql_sessionctx_vardef::EnableTTLJob.Store(true);
 }
 
+#[test]
+fn ttl_index_scan_global_switch_updates_runtime_gate() {
+    let (_, session) = CreateAnalyzeSession().unwrap();
+    let original = astersql_sessionctx_vardef::TTLEnableIndexScan.Load();
+    session
+        .execute("SET GLOBAL tidb_ttl_enable_index_scan = OFF")
+        .unwrap();
+    assert!(!astersql_sessionctx_vardef::TTLEnableIndexScan.Load());
+    session
+        .execute("SET GLOBAL tidb_ttl_enable_index_scan = ON")
+        .unwrap();
+    assert!(astersql_sessionctx_vardef::TTLEnableIndexScan.Load());
+    astersql_sessionctx_vardef::TTLEnableIndexScan.Store(original);
+}
+
 struct Gcv2Manager {
     role: String,
     meta: keyspacepb::KeyspaceMeta,

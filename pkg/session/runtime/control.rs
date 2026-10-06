@@ -6679,6 +6679,10 @@ impl ConcreteSession {
                         .map_err(SessionError::new)?;
                     astersql_sessionctx_vardef::EnableTTLJob.Store(enabled);
                 }
+                if name == astersql_sessionctx_vardef::TiDBTTLEnableIndexScan {
+                    astersql_sessionctx_vardef::TTLEnableIndexScan
+                        .Store(astersql_sessionctx_variable::TiDBOptOn(raw_value));
+                }
                 let global_value = astersql_sessionctx_variable::GetSysVar(&name).map_or_else(
                     || raw_value.to_owned(),
                     |variable| {

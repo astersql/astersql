@@ -21,9 +21,9 @@
 // mysql.tidb_ttl_task 的 SQL 构造、任务状态和行解码逻辑。
 
 /// 查询 mysql.tidb_ttl_task 的完整 SELECT（LOW_PRIORITY 降低对在线业务影响）。
-pub const selectFromTTLTask: &str = "SELECT LOW_PRIORITY job_id,table_id,scan_id,scan_range_start,scan_range_end,expire_time,owner_id,owner_addr,owner_hb_time,status,status_update_time,state,created_time FROM mysql.tidb_ttl_task";
+pub const selectFromTTLTask: &str = "SELECT LOW_PRIORITY job_id,table_id,scan_id,scan_range_start,scan_range_end,expire_time,owner_id,owner_addr,owner_hb_time,status,status_update_time,state,created_time,scan_index_id FROM mysql.tidb_ttl_task";
 /// 插入 TTL task 的 SQL 模板；`%?` 为 TiDB 占位符风格。
-pub const insertIntoTTLTask: &str = "INSERT LOW_PRIORITY INTO mysql.tidb_ttl_task SET job_id = %?,table_id = %?,scan_id = %?,scan_range_start = %?,scan_range_end = %?,expire_time = %?,created_time = %?";
+pub const insertIntoTTLTask: &str = "INSERT LOW_PRIORITY INTO mysql.tidb_ttl_task SET job_id = %?,table_id = %?,scan_id = %?,scan_range_start = %?,scan_range_end = %?,expire_time = %?,created_time = %?,scan_index_id = %?";
 
 #[derive(Clone, Debug, PartialEq)]
 /// 简化 Datum：承载扫描范围编码与系统表单元格值。
@@ -179,6 +179,29 @@ pub fn InsertIntoTTLTask(
     expire_time: i64,
     created_time: i64,
 ) -> Result<(String, Vec<Datum>), String> {
+    InsertIntoTTLTaskWithScanIndexID(
+        job_id,
+        table_id,
+        scan_id,
+        start,
+        end,
+        expire_time,
+        created_time,
+        None,
+    )
+}
+
+/// 构造带可选扫描索引 ID 的任务插入语句。
+pub fn InsertIntoTTLTaskWithScanIndexID(
+    job_id: &str,
+    table_id: i64,
+    scan_id: usize,
+    start: &[Datum],
+    end: &[Datum],
+    expire_time: i64,
+    created_time: i64,
+    scan_index_id: Option<i64>,
+) -> Result<(String, Vec<Datum>), String> {
     Ok((
         insertIntoTTLTask.to_owned(),
         vec![
@@ -189,6 +212,7 @@ pub fn InsertIntoTTLTask(
             Datum::Bytes(EncodeDatums(end)?),
             Datum::Time(expire_time),
             Datum::Time(created_time),
+            scan_index_id.map(Datum::Int).unwrap_or(Datum::Null),
         ],
     ))
 }
@@ -248,6 +272,7 @@ pub struct TTLTask {
     pub StatusUpdateTime: i64,
     pub State: Option<TTLTaskState>,
     pub CreatedTime: i64,
+    pub ScanIndexID: Option<i64>,
 }
 
 /// 从行中取字符串列；Bytes 按有损 UTF-8 转字符串，其它为零值。
@@ -469,9 +494,9 @@ fn parse_state(json: &str) -> Result<TTLTaskState, String> {
 }
 /// 将 13 列系统表行映射为 TTLTask；列数不足或范围解码失败则报错。
 pub fn RowToTTLTask(row: &Row) -> Result<TTLTask, String> {
-    if row.len() < 13 {
+    if row.len() < 14 {
         return Err(format!(
-            "TTL task row has {} columns, expected 13",
+            "TTL task row has {} columns, expected 14",
             row.len()
         ));
     }
@@ -510,5 +535,10 @@ pub fn RowToTTLTask(row: &Row) -> Result<TTLTask, String> {
             _ => None,
         },
         CreatedTime: int(row, 12),
+        ScanIndexID: match row.get(13) {
+            Some(Datum::Int(value)) => Some(*value),
+            Some(Datum::UInt(value)) => i64::try_from(*value).ok(),
+            _ => None,
+        },
     })
 }

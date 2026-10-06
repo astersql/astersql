@@ -47,6 +47,7 @@ fn scan_task(job_id: &str, scan_id: i64) -> TtlScanTask {
         range_start: None,
         range_end: None,
         batch_size: 128,
+        scan_index: None,
     }
 }
 

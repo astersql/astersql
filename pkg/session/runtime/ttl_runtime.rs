@@ -20,7 +20,7 @@ use astersql_timer_tablestore::NewTableTimerStore;
 use astersql_ttl_ttlworker::del::{DeleteRateLimiter, DeleteRetryBuffer, DeleteTask};
 use astersql_ttl_ttlworker::job_manager::TtlSummary;
 use astersql_ttl_ttlworker::persistent::PersistentJobStore;
-use astersql_ttl_ttlworker::scan::{TaskTerminateReason, TtlScanTask, TtlStatistics};
+use astersql_ttl_ttlworker::scan::{ScanIndex, TaskTerminateReason, TtlScanTask, TtlStatistics};
 use astersql_ttl_ttlworker::session::{Datum, SessionError, WorkerSession};
 use astersql_util_timeutil::time_zone::WithinDayTimePeriod;
 
@@ -711,6 +711,7 @@ pub(super) struct PersistedScanRange {
     pub(super) scan_id: i64,
     pub(super) start: Option<Vec<Datum>>,
     pub(super) end: Option<Vec<Datum>>,
+    pub(super) scan_index_id: Option<i64>,
 }
 
 pub(super) fn persisted_scan_ranges(
@@ -719,7 +720,7 @@ pub(super) fn persisted_scan_ranges(
 ) -> Result<Vec<PersistedScanRange>, String> {
     let rows = session
         .execute(
-            "SELECT scan_id,scan_range_start,scan_range_end FROM mysql.tidb_ttl_task WHERE job_id=%? ORDER BY scan_id",
+            "SELECT scan_id,scan_range_start,scan_range_end,scan_index_id FROM mysql.tidb_ttl_task WHERE job_id=%? ORDER BY scan_id",
             &[Datum::Text(job_id.into())],
         )
         .map_err(|error| format!("read TTL scan ranges: {error:?}"))?;
@@ -755,6 +756,11 @@ pub(super) fn persisted_scan_ranges(
                 scan_id,
                 start: decode(1)?,
                 end: decode(2)?,
+                scan_index_id: match row.get(3) {
+                    Some(Datum::Text(value)) => value.parse().ok(),
+                    Some(Datum::Integer(value)) => Some(*value),
+                    _ => None,
+                },
             })
         })
         .collect()
@@ -1180,7 +1186,8 @@ fn run_ttl_tick_inner(
             let expire_time = persisted_expire_time(&mut coordinator, &job_id)?;
             (job_id, expire_time)
         } else {
-            let scan_ranges = split_ttl_scan_ranges(domain, &table)?;
+            let expire_time = table.expire_time(now);
+            let scan_plan = split_ttl_scan_ranges(domain, &table, expire_time as i64)?;
             let claimed = PersistentJobStore::start_job_with_ranges(
                 &mut coordinator,
                 &table,
@@ -1188,7 +1195,8 @@ fn run_ttl_tick_inner(
                 &new_job_id,
                 now,
                 event.is_none().then_some(schedule.job_interval_seconds),
-                &scan_ranges,
+                &scan_plan.ranges,
+                scan_plan.index.as_ref().map(|index| index.id),
             )
             .map_err(|error| {
                 format!(
@@ -1200,7 +1208,7 @@ fn run_ttl_tick_inner(
                 continue;
             }
             result.claimed += 1;
-            (new_job_id, table.expire_time(now))
+            (new_job_id, expire_time)
         };
         let rows = coordinator.execute(
             "SELECT current_job_start_time FROM mysql.tidb_ttl_table_status WHERE current_job_id=%?",
@@ -1223,6 +1231,41 @@ fn run_ttl_tick_inner(
         let mut success_rows = 0;
         let mut error_rows = 0;
         for scan_range in scan_ranges {
+            let scan_index = scan_range
+                .scan_index_id
+                .map(|index_id| {
+                    let (_, model) =
+                        domain
+                            .stats_table(&table.schema, &table.table)
+                            .ok_or_else(|| {
+                                "TTL table disappeared while resolving scan index".to_owned()
+                            })?;
+                    let index = model
+                        .Indices
+                        .iter()
+                        .find(|index| index.ID == index_id)
+                        .ok_or_else(|| format!("TTL index with id {index_id} not found"))?;
+                    let columns = index
+                        .Columns
+                        .iter()
+                        .map(|index_column| {
+                            usize::try_from(index_column.Offset)
+                                .ok()
+                                .and_then(|offset| model.Columns.get(offset))
+                                .map(|column| column.Name.O.clone())
+                                .ok_or_else(|| {
+                                    format!("TTL index {index_id} contains an invalid column")
+                                })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok::<_, String>(ScanIndex {
+                        id: index.ID,
+                        name: index.Name.O.clone(),
+                        columns,
+                        unique: index.Unique,
+                    })
+                })
+                .transpose()?;
             let statistics = Arc::new(TtlStatistics::default());
             let state = persisted_task_state(&mut coordinator, &job_id, scan_range.scan_id)?;
             statistics.restore(state.total_rows, state.success_rows, state.error_rows);
@@ -1234,6 +1277,7 @@ fn run_ttl_tick_inner(
                 range_start: scan_range.start,
                 range_end: scan_range.end,
                 batch_size: 128,
+                scan_index,
             };
             let mut heartbeat = JobHeartbeat::start(
                 Arc::clone(domain),

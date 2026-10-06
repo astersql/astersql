@@ -48,6 +48,7 @@ fn resigning_a_task_returns_it_to_waiting() {
         range_start: None,
         range_end: None,
         batch_size: 10,
+        scan_index: None,
     };
     let mut manager = crate::task_manager::TaskManager::new("owner", 1);
     manager.push_waiting(crate::job_manager::initial_managed_task(scan.clone()));
@@ -81,6 +82,7 @@ fn scan_error_is_reported_as_a_finished_task() {
         range_start: None,
         range_end: None,
         batch_size: 10,
+        scan_index: None,
     };
     let mut manager = crate::task_manager::TaskManager::new("owner", 1);
     manager.push_waiting(crate::job_manager::initial_managed_task(scan));

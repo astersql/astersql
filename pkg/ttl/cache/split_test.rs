@@ -62,12 +62,16 @@ fn ttl_physical_table(table_id: i64, key_column: Column) -> crate::table::Physic
         columns: vec![
             key_column,
             Column {
+                id: 2,
                 name: "t".into(),
                 public: true,
                 key_kind: KeyKind::SignedInt,
+                nullable: false,
+                hidden: false,
             },
         ],
         primary_index_offsets: if is_int_handle { Vec::new() } else { vec![0] },
+        indexes: Vec::new(),
         partitions: Vec::new(),
         ttl: Some(TTLInfo {
             column_name: "t".into(),
@@ -103,25 +107,34 @@ impl RegionProvider for FailingRegions {
 /// 有符号整数主键列。
 fn signed_key(name: &str) -> Column {
     Column {
+        id: 1,
         name: name.into(),
         public: true,
         key_kind: KeyKind::SignedInt,
+        nullable: false,
+        hidden: false,
     }
 }
 /// 无符号整数主键列。
 fn unsigned_key(name: &str) -> Column {
     Column {
+        id: 1,
         name: name.into(),
         public: true,
         key_kind: KeyKind::UnsignedInt,
+        nullable: false,
+        hidden: false,
     }
 }
 /// 字节串主键列（common handle）。
 fn bytes_key(name: &str) -> Column {
     Column {
+        id: 1,
         name: name.into(),
         public: true,
         key_kind: KeyKind::Bytes,
+        nullable: false,
+        hidden: false,
     }
 }
 

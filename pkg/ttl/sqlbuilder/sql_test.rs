@@ -84,8 +84,8 @@ fn table_with_keys(key_columns: Vec<Column>) -> PhysicalTable {
 }
 
 use crate::{
-    BuildDeleteSQL, Column, Datum, FieldKind, FieldType, NewScanQueryGenerator, PhysicalTable,
-    SQLBuilder,
+    BuildDeleteSQL, Column, Datum, FieldKind, FieldType, IndexInfo, NewIndexScanQueryGenerator,
+    NewScanQueryGenerator, PhysicalTable, SQLBuilder,
 };
 
 #[test]
@@ -234,4 +234,38 @@ fn captured_offset_is_shared_by_select_and_delete_expiration() {
             assert!(generator.NextSQL(&[], 1).unwrap().contains(&expected));
         }
     }
+}
+
+#[test]
+fn index_scan_generator_uses_physical_order_and_projects_table_key() {
+    let id = Column::new("id", FieldType::new(FieldKind::Int));
+    let time = Column::new("created_at", FieldType::new(FieldKind::DateTime));
+    let index = IndexInfo {
+        id: 9,
+        name: "ttl_idx".into(),
+        columns: vec![time.clone()],
+        unique: false,
+    };
+    let table = PhysicalTable::new("test", "events", vec![id], time, None)
+        .unwrap()
+        .with_index(index.clone());
+    let mut generator = NewIndexScanQueryGenerator(
+        &table,
+        0,
+        vec![Datum::DateTime("2024-01-01 00:00:00".into())],
+        vec![Datum::DateTime("2025-01-01 00:00:00".into())],
+        &index,
+    )
+    .unwrap();
+    let sql = generator.NextSQL(&[], 2).unwrap();
+    assert!(
+        sql.contains("SELECT LOW_PRIORITY SQL_NO_CACHE `created_at`, `id`"),
+        "{sql}"
+    );
+    assert!(sql.contains("FORCE_INDEX(`ttl_idx`)"), "{sql}");
+    assert!(sql.contains("ORDER BY `created_at`, `id` ASC"), "{sql}");
+    assert_eq!(
+        generator.TableKey(&[Datum::DateTime("x".into()), Datum::Int(7)]),
+        vec![Datum::Int(7)]
+    );
 }

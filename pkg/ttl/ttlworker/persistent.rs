@@ -214,6 +214,7 @@ impl PersistentJobStore {
             now,
             schedule_interval_seconds,
             &[astersql_ttl_cache::table::newFullRange()],
+            None,
         )
     }
 
@@ -227,6 +228,7 @@ impl PersistentJobStore {
         now: u64,
         schedule_interval_seconds: Option<u64>,
         ranges: &[astersql_ttl_cache::table::ScanRange],
+        scan_index_id: Option<i64>,
     ) -> Result<bool, SessionError> {
         if !table.ttl_enabled {
             return Ok(false);
@@ -240,6 +242,7 @@ impl PersistentJobStore {
             now,
             schedule_interval_seconds,
             ranges,
+            scan_index_id,
         );
         match result {
             Ok(true) => {
@@ -273,6 +276,7 @@ impl PersistentJobStore {
         now: u64,
         schedule_interval_seconds: Option<u64>,
         ranges: &[astersql_ttl_cache::table::ScanRange],
+        scan_index_id: Option<i64>,
     ) -> Result<bool, SessionError> {
         let table_id = Datum::Integer(table.physical_id);
         let lock_sql =
@@ -354,7 +358,7 @@ impl PersistentJobStore {
             let end = astersql_ttl_cache::task::EncodeDatums(&range.End)
                 .map_err(SessionError::Execute)?;
             session.execute(
-                "INSERT INTO mysql.tidb_ttl_task (job_id,table_id,scan_id,scan_range_start,scan_range_end,expire_time,created_time) VALUES (%?,%?,%?,%?,%?,FROM_UNIXTIME(%?),FROM_UNIXTIME(%?))",
+                "INSERT INTO mysql.tidb_ttl_task (job_id,table_id,scan_id,scan_range_start,scan_range_end,expire_time,created_time,scan_index_id) VALUES (%?,%?,%?,%?,%?,FROM_UNIXTIME(%?),FROM_UNIXTIME(%?),%?)",
                 &[
                     Datum::Text(job_id.into()),
                     table_id.clone(),
@@ -363,6 +367,7 @@ impl PersistentJobStore {
                     Datum::Bytes(end),
                     Datum::Unsigned(expire),
                     Datum::Unsigned(now),
+                    scan_index_id.map(Datum::Integer).unwrap_or(Datum::Null),
                 ],
             )?;
         }

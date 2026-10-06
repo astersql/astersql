@@ -26,9 +26,12 @@ use crate::table::{Column, KeyKind, PartitionDefinition, TTLInfo, TableInfo, Tim
 /// 构造测试用 TTL 时间列（有符号整型句柄语义）。
 fn ttl_column() -> Column {
     Column {
+        id: 1,
         name: "created_at".into(),
         public: true,
         key_kind: KeyKind::SignedInt,
+        nullable: false,
+        hidden: false,
     }
 }
 
@@ -42,6 +45,7 @@ fn ttl_table(id: i64, partitions: Vec<PartitionDefinition>) -> TableInfo {
         common_handle: false,
         columns: vec![ttl_column()],
         primary_index_offsets: Vec::new(),
+        indexes: Vec::new(),
         partitions,
         ttl: Some(TTLInfo {
             column_name: "created_at".into(),

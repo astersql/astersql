@@ -64,6 +64,7 @@ fn go_merge_43_ttl_worker_scans_and_deletes_only_one_partition() {
         range_start: None,
         range_end: None,
         batch_size: 100,
+        scan_index: None,
     };
     let statistics = Arc::new(TtlStatistics::default());
     let mut scanned = Vec::new();
@@ -334,6 +335,7 @@ fn go_merge_43_ttl_scan_and_delete_expired_rows_through_real_sql() {
         range_start: None,
         range_end: None,
         batch_size: 16,
+        scan_index: None,
     };
     let statistics = Arc::new(TtlStatistics::default());
     let mut scan_worker = TtlWorkerSqlSession::new(session);
@@ -413,6 +415,7 @@ fn ttl_datetime_cutoff_uses_captured_global_wall_clock_in_utc() {
         range_start: None,
         range_end: None,
         batch_size: 1,
+        scan_index: None,
     };
     let mut scanned = Vec::new();
     let result = task.execute(
@@ -502,6 +505,7 @@ fn ttl_timestamp_pagination_preserves_instants_across_time_zones() {
             range_start: None,
             range_end: None,
             batch_size: 1,
+            scan_index: None,
         };
         let mut scanned = Vec::new();
         let result = task.execute(

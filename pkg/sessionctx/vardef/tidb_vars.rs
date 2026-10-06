@@ -1458,6 +1458,8 @@ pub const TiDBStmtSummaryFileMaxBackups: &str = "tidb_stmt_summary_file_max_back
 // TiDBTTLRunningTasks limits the count of running ttl tasks. Default to 0, means 3 times the count of TiKV (or no
 // limitation, if the storage is not TiKV).
 pub const TiDBTTLRunningTasks: &str = "tidb_ttl_running_tasks";
+/// Enables index-ordered TTL scans using suitable secondary indexes.
+pub const TiDBTTLEnableIndexScan: &str = "tidb_ttl_enable_index_scan";
 // AuthenticationLDAPSASLAuthMethodName defines the authentication method used by LDAP SASL authentication plugin
 pub const AuthenticationLDAPSASLAuthMethodName: &str = "authentication_ldap_sasl_auth_method_name";
 // AuthenticationLDAPSASLCAPath defines the ca certificate to verify LDAP connection in LDAP SASL authentication plugin
@@ -1938,6 +1940,7 @@ pub const DefTiDBTTLJobScheduleWindowStartTime: &str = "00:00 +0000";
 pub const DefTiDBTTLJobScheduleWindowEndTime: &str = "23:59 +0000";
 pub const DefTiDBTTLScanWorkerCount: i64 = 4;
 pub const DefTiDBTTLDeleteWorkerCount: i64 = 4;
+pub const DefTiDBTTLEnableIndexScan: bool = true;
 pub const DefaultExchangeCompressionMode: ExchangeCompressionMode =
     ExchangeCompressionModeUnspecified;
 pub const DefTiDBEnableResourceControl: bool = true;
@@ -2138,6 +2141,7 @@ pub static PasswordValidationMixedCaseCount: AtomicI32Value = AtomicI32Value::ne
 pub static PasswordValidtaionNumberCount: AtomicI32Value = AtomicI32Value::new((1) as i32);
 pub static PasswordValidationSpecialCharCount: AtomicI32Value = AtomicI32Value::new((1) as i32);
 pub static EnableTTLJob: AtomicBoolValue = AtomicBoolValue::new(DefTiDBTTLJobEnable);
+pub static TTLEnableIndexScan: AtomicBoolValue = AtomicBoolValue::new(DefTiDBTTLEnableIndexScan);
 pub static TTLScanBatchSize: AtomicI64Value = AtomicI64Value::new((DefTiDBTTLScanBatchSize) as i64);
 pub static TTLDeleteBatchSize: AtomicI64Value =
     AtomicI64Value::new((DefTiDBTTLDeleteBatchSize) as i64);

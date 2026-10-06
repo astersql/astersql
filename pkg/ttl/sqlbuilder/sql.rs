@@ -603,6 +603,15 @@ impl Column {
     }
 }
 
+/// TTL index scan uses the declared physical index order.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IndexInfo {
+    pub id: i64,
+    pub name: String,
+    pub columns: Vec<Column>,
+    pub unique: bool,
+}
+
 /// TTL 作用的物理表（可含分区名）：主键列与时间列用于拼 SELECT/DELETE。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PhysicalTable {
@@ -613,6 +622,7 @@ pub struct PhysicalTable {
     pub time_column: Column,
     /// 若为分区表，写入 `PARTITION(name)` 子句。
     pub partition: Option<String>,
+    pub indexes: Vec<IndexInfo>,
 }
 impl PhysicalTable {
     /// 构造物理表；主键列为空则报错。
@@ -634,7 +644,12 @@ impl PhysicalTable {
             key_columns,
             time_column,
             partition,
+            indexes: Vec::new(),
         })
+    }
+    pub fn with_index(mut self, index: IndexInfo) -> Self {
+        self.indexes.push(index);
+        self
     }
     /// 校验键前缀长度不超过主键列数。
     pub fn validate_key_prefix(&self, key: &[Datum]) -> Result<()> {
@@ -886,11 +901,16 @@ impl<'a> SQLBuilder<'a> {
     }
     /// 写入无条件的 SELECT（仅主键列，LOW_PRIORITY SQL_NO_CACHE）。
     pub fn write_select(&mut self) -> Result<()> {
+        self.write_select_columns(&self.table.key_columns)
+    }
+
+    /// Write a SELECT with the exact result layout required by an index scan.
+    pub fn write_select_columns(&mut self, columns: &[Column]) -> Result<()> {
         if self.state != sqlBuilderState::writeBegin {
             return Err(SqlError(format!("invalid state: {:?}", self.state)));
         }
         self.sql.push_str("SELECT LOW_PRIORITY SQL_NO_CACHE ");
-        self.write_column_names(&self.table.key_columns, false);
+        self.write_column_names(columns, false);
         self.sql.push_str(" FROM ");
         self.write_table_name();
         if let Some(partition) = &self.table.partition {
@@ -900,6 +920,17 @@ impl<'a> SQLBuilder<'a> {
         }
         self.state = sqlBuilderState::writeSelOrDel;
         self.is_read_only = true;
+        Ok(())
+    }
+
+    /// Force the validated TTL index so ORDER BY follows its physical order.
+    pub fn write_force_index(&mut self, index_name: &str) -> Result<()> {
+        if self.state != sqlBuilderState::writeSelOrDel || !self.is_read_only {
+            return Err(SqlError(format!("invalid state: {:?}", self.state)));
+        }
+        self.sql.push_str(" FORCE_INDEX(");
+        write_name(&mut self.sql, index_name);
+        self.sql.push(')');
         Ok(())
     }
     /// 写入无条件的 DELETE（后续必须再写过期条件）。
@@ -1042,6 +1073,14 @@ pub struct ScanQueryGenerator<'a> {
     limit: i32,
     first_build: bool,
     exhausted: bool,
+    index_plan: Option<IndexScanPlan>,
+}
+#[derive(Clone, Debug)]
+struct IndexScanPlan {
+    index: IndexInfo,
+    scan_columns: Vec<Column>,
+    order_columns: Vec<Column>,
+    key_offsets: Vec<usize>,
 }
 impl<'a> ScanQueryGenerator<'a> {
     /// 校验起止键前缀后创建生成器。
@@ -1062,6 +1101,7 @@ impl<'a> ScanQueryGenerator<'a> {
             limit: 0,
             first_build: true,
             exhausted: false,
+            index_plan: None,
         })
     }
     /// 用当前键（或 range_start）重建前缀栈，供下一句 WHERE 条件使用。
@@ -1073,7 +1113,13 @@ impl<'a> ScanQueryGenerator<'a> {
             self.stack.get_or_insert_with(Vec::new).clear();
             return Ok(());
         }
-        self.table.validate_key_prefix(&key)?;
+        if key.len() > self.order_columns().len() {
+            return Err(SqlError(format!(
+                "invalid pagination key length {} > {}",
+                key.len(),
+                self.order_columns().len()
+            )));
+        }
         let stack = self.stack.get_or_insert_with(Vec::new);
         stack.clear();
         for index in 0..key.len() {
@@ -1096,10 +1142,13 @@ impl<'a> ScanQueryGenerator<'a> {
         }
         // 无论成功失败，退出时都将 first_build 置 false（对应 Go defer）。
         let result = (|| {
+            let order_column_count = self.order_columns().len();
             self.stack
-                .get_or_insert_with(|| Vec::with_capacity(self.table.key_columns.len()));
+                .get_or_insert_with(|| Vec::with_capacity(order_column_count));
             if continue_from_result.len() >= self.limit as usize {
-                let key = continue_from_result.last().cloned();
+                let key = continue_from_result
+                    .last()
+                    .map(|row| self.order_key(row).to_vec());
                 self.set_stack(key)?;
             } else {
                 let stack = self.stack.as_mut().unwrap();
@@ -1123,11 +1172,25 @@ impl<'a> ScanQueryGenerator<'a> {
             return Ok(String::new());
         }
         let mut builder = SQLBuilder::new(self.table);
-        builder.write_select()?;
+        let order_columns = self.order_columns().to_vec();
+        if let Some(plan) = &self.index_plan {
+            builder.write_select_columns(&plan.scan_columns)?;
+            builder.write_force_index(&plan.index.name)?;
+        } else {
+            builder.write_select()?;
+        }
         if let Some(prefix) = self.stack.as_ref().and_then(|stack| stack.last()) {
             for (index, value) in prefix.iter().enumerate() {
-                let columns = &self.table.key_columns[index..=index];
+                let columns = &order_columns[index..=index];
                 let values = std::slice::from_ref(value);
+                if matches!(value, Datum::Null) {
+                    if index + 1 < prefix.len() {
+                        builder.write_common_condition(columns, "IS", values)?;
+                    } else if !self.first_build {
+                        builder.write_common_condition(columns, "IS NOT", values)?;
+                    }
+                    continue;
+                }
                 // 前缀列用 =；末列首次 >= 含起点，翻页用 > 排除上批末行。
                 let operator = if index + 1 < prefix.len() {
                     "="
@@ -1140,14 +1203,15 @@ impl<'a> ScanQueryGenerator<'a> {
             }
         }
         if !self.key_range_end.is_empty() {
-            builder.write_common_condition(
-                &self.table.key_columns[..self.key_range_end.len()],
-                "<",
-                &self.key_range_end,
-            )?;
+            let end_columns = if self.index_plan.is_some() {
+                std::slice::from_ref(&self.table.time_column)
+            } else {
+                &self.table.key_columns[..self.key_range_end.len()]
+            };
+            builder.write_common_condition(end_columns, "<", &self.key_range_end)?;
         }
         builder.write_expire_condition(self.expire_unix)?;
-        builder.write_order_by(&self.table.key_columns, false)?;
+        builder.write_order_by(&order_columns, false)?;
         builder.write_limit(self.limit)?;
         builder.build()
     }
@@ -1163,6 +1227,47 @@ impl<'a> ScanQueryGenerator<'a> {
     pub fn IsExhausted(&self) -> bool {
         self.is_exhausted()
     }
+    fn order_columns(&self) -> &[Column] {
+        self.index_plan
+            .as_ref()
+            .map(|plan| plan.order_columns.as_slice())
+            .unwrap_or(&self.table.key_columns)
+    }
+    fn order_key<'b>(&self, row: &'b [Datum]) -> &'b [Datum] {
+        if self.index_plan.is_some() {
+            &row[..self.order_columns().len()]
+        } else {
+            row
+        }
+    }
+    pub fn ScanColumnTypes(&self) -> Vec<FieldType> {
+        self.index_plan
+            .as_ref()
+            .map(|plan| {
+                plan.scan_columns
+                    .iter()
+                    .map(|column| column.field_type)
+                    .collect()
+            })
+            .unwrap_or_else(|| {
+                self.table
+                    .key_columns
+                    .iter()
+                    .map(|column| column.field_type)
+                    .collect()
+            })
+    }
+    pub fn TableKey(&self, row: &[Datum]) -> Vec<Datum> {
+        self.index_plan
+            .as_ref()
+            .map(|plan| {
+                plan.key_offsets
+                    .iter()
+                    .map(|offset| row[*offset].clone())
+                    .collect()
+            })
+            .unwrap_or_else(|| row[..self.table.key_columns.len()].to_vec())
+    }
 }
 /// 创建扫描查询生成器。
 pub fn NewScanQueryGenerator(
@@ -1172,6 +1277,58 @@ pub fn NewScanQueryGenerator(
     range_end: Vec<Datum>,
 ) -> Result<ScanQueryGenerator<'_>> {
     ScanQueryGenerator::new(table, expire_unix, range_start, range_end)
+}
+/// 创建按次级索引物理顺序分页的扫描生成器。
+pub fn NewIndexScanQueryGenerator<'a>(
+    table: &'a PhysicalTable,
+    expire_unix: impl Into<ExpireTime>,
+    range_start: Vec<Datum>,
+    range_end: Vec<Datum>,
+    index: &IndexInfo,
+) -> Result<ScanQueryGenerator<'a>> {
+    if range_start.len() > 1 || range_end.len() > 1 {
+        return Err(SqlError(
+            "index scan range must contain at most one TTL value".into(),
+        ));
+    }
+    if index.columns.first() != Some(&table.time_column) {
+        return Err(SqlError("TTL column must be the first index column".into()));
+    }
+    if index
+        .columns
+        .iter()
+        .any(|column| matches!(column.field_type.kind, FieldKind::Float | FieldKind::Set))
+    {
+        return Err(SqlError(
+            "TTL index contains an unsupported pagination type".into(),
+        ));
+    }
+    let mut scan_columns = index.columns.clone();
+    let mut key_offsets = Vec::with_capacity(table.key_columns.len());
+    for key in &table.key_columns {
+        if let Some(offset) = scan_columns.iter().position(|column| column == key) {
+            key_offsets.push(offset);
+        } else {
+            key_offsets.push(scan_columns.len());
+            scan_columns.push(key.clone());
+        }
+    }
+    let mut order_columns = index.columns.clone();
+    if !index.unique {
+        for key in &table.key_columns {
+            if !order_columns.contains(key) {
+                order_columns.push(key.clone());
+            }
+        }
+    }
+    let mut generator = ScanQueryGenerator::new(table, expire_unix, range_start, range_end)?;
+    generator.index_plan = Some(IndexScanPlan {
+        index: index.clone(),
+        scan_columns,
+        order_columns,
+        key_offsets,
+    });
+    Ok(generator)
 }
 /// 按行集合与过期时间构建带 IN 条件的 DELETE SQL。
 pub fn BuildDeleteSQL(

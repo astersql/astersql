@@ -33,13 +33,39 @@ pub enum KeyKind {
     SignedInt,
     UnsignedInt,
     Bytes,
+    Float,
+    Set,
 }
 /// 简化列元信息：名称、是否 public、键类型。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Column {
+    pub id: i64,
     pub name: String,
     pub public: bool,
     pub key_kind: KeyKind,
+    pub nullable: bool,
+    pub hidden: bool,
+}
+/// TTL 次级索引选择所需的索引列元信息。
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct IndexColumn {
+    pub column_offset: usize,
+    pub prefix_length: Option<usize>,
+}
+/// TTL 次级索引选择所需的索引元信息。
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct IndexInfo {
+    pub id: i64,
+    pub name: String,
+    pub columns: Vec<IndexColumn>,
+    pub unique: bool,
+    pub primary: bool,
+    pub public: bool,
+    pub invisible: bool,
+    pub global: bool,
+    pub multi_valued: bool,
+    pub columnar: bool,
+    pub conditional: bool,
 }
 /// 分区定义：物理分区 ID 与名称。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -79,6 +105,7 @@ pub struct TableInfo {
     pub common_handle: bool,
     pub columns: Vec<Column>,
     pub primary_index_offsets: Vec<usize>,
+    pub indexes: Vec<IndexInfo>,
     pub partitions: Vec<PartitionDefinition>,
     pub ttl: Option<TTLInfo>,
 }
@@ -117,8 +144,11 @@ pub fn getTableKeyColumns(table: &TableInfo) -> Result<Vec<Column>, String> {
     // 无用户主键时 TiDB 使用隐式 row id 作为记录句柄。
     Ok(vec![Column {
         name: "_tidb_rowid".into(),
+        id: -1,
         public: true,
         key_kind: KeyKind::SignedInt,
+        nullable: false,
+        hidden: false,
     }])
 }
 
@@ -162,6 +192,7 @@ pub struct PhysicalTable {
     pub PartitionDef: Option<PartitionDefinition>,
     pub KeyColumns: Vec<Column>,
     pub TimeColumn: Column,
+    pub Indices: Vec<IndexInfo>,
 }
 /// 在已知时间列前提下构造 PhysicalTable，并解析分区物理 ID。
 pub fn NewBasePhysicalTable(
@@ -213,6 +244,7 @@ pub fn NewBasePhysicalTable(
         PartitionDef: definition,
         KeyColumns: key_columns,
         TimeColumn: time_column,
+        Indices: table.indexes.clone(),
     })
 }
 /// 校验表启用 TTL 后查找时间列，再委托 NewBasePhysicalTable。
@@ -239,6 +271,178 @@ pub fn NewPhysicalTable(
     NewBasePhysicalTable(schema, table, partition, time_column)
 }
 impl PhysicalTable {
+    /// 按物理索引顺序描述 SELECT 列、ORDER BY 列和表键投影。
+    pub fn BuildTTLIndexScanPlan(&self, index: &IndexInfo) -> Result<TTLIndexScanPlan, String> {
+        if !index.public
+            || index.invisible
+            || index.global
+            || index.multi_valued
+            || index.columnar
+            || index.conditional
+            || index.columns.is_empty()
+        {
+            return Err(format!(
+                "index {} is not a supported TTL scan index",
+                index.name
+            ));
+        }
+        if index.primary && (self.TableInfo.pk_is_handle || self.TableInfo.common_handle) {
+            return Err(format!(
+                "clustered primary index {} uses the table scan path",
+                index.name
+            ));
+        }
+        let mut index_columns = Vec::with_capacity(index.columns.len());
+        for index_column in &index.columns {
+            if index_column.prefix_length.is_some() {
+                return Err(format!("index {} contains a prefix column", index.name));
+            }
+            let column = self
+                .TableInfo
+                .columns
+                .get(index_column.column_offset)
+                .filter(|column| column.public && !column.hidden)
+                .cloned()
+                .ok_or_else(|| format!("index {} contains an invalid column", index.name))?;
+            index_columns.push(column);
+        }
+        if index_columns[0].id != self.TimeColumn.id {
+            return Err(format!(
+                "TTL column {} is not the first index column",
+                self.TimeColumn.name
+            ));
+        }
+        if index.unique && index_columns.iter().skip(1).any(|column| column.nullable) {
+            return Err(format!(
+                "unique index {} has nullable pagination columns",
+                index.name
+            ));
+        }
+        let mut key_offsets = Vec::with_capacity(self.KeyColumns.len());
+        let mut key_columns_in_index = 0;
+        for key in &self.KeyColumns {
+            let offset = index_columns.iter().position(|column| column.id == key.id);
+            key_columns_in_index += usize::from(offset.is_some());
+            key_offsets.push(offset);
+        }
+        if !index.unique && key_columns_in_index > 0 && key_columns_in_index < self.KeyColumns.len()
+        {
+            return Err(format!(
+                "index {} contains only part of the table key",
+                index.name
+            ));
+        }
+        if !index.unique
+            && key_columns_in_index == 0
+            && self
+                .KeyColumns
+                .iter()
+                .any(|column| column.key_kind == KeyKind::UnsignedInt)
+        {
+            return Err(format!(
+                "index {} cannot seek by an unsigned table-key suffix",
+                index.name
+            ));
+        }
+        let mut order_columns = index_columns.clone();
+        if !index.unique && key_columns_in_index == 0 {
+            order_columns.extend(self.KeyColumns.clone());
+        }
+        if order_columns
+            .iter()
+            .any(|column| matches!(column.key_kind, KeyKind::Float | KeyKind::Set))
+        {
+            return Err(format!(
+                "index {} contains an unsupported pagination type",
+                index.name
+            ));
+        }
+        let mut scan_columns = index_columns;
+        let mut key_column_offsets = Vec::with_capacity(key_offsets.len());
+        for (key, offset) in self.KeyColumns.iter().zip(key_offsets) {
+            key_column_offsets.push(match offset {
+                Some(offset) => offset,
+                None => {
+                    let offset = scan_columns.len();
+                    scan_columns.push(key.clone());
+                    offset
+                }
+            });
+        }
+        Ok(TTLIndexScanPlan {
+            Index: index.clone(),
+            ScanColumns: scan_columns,
+            OrderColumns: order_columns,
+            KeyColumnOffsets: key_column_offsets,
+        })
+    }
+
+    /// 选择 Go 优先级相同的最优 TTL 索引。
+    pub fn FindTTLIndex(&self) -> Option<IndexInfo> {
+        self.Indices
+            .iter()
+            .filter_map(|index| self.BuildTTLIndexScanPlan(index).ok())
+            .min_by_key(|plan| {
+                let full_key = plan
+                    .KeyColumnOffsets
+                    .iter()
+                    .all(|offset| *offset < plan.Index.columns.len());
+                let priority = if plan.Index.columns.len() == 1 {
+                    0
+                } else if full_key {
+                    1
+                } else {
+                    2
+                };
+                (priority, plan.OrderColumns.len(), plan.ScanColumns.len())
+            })
+            .map(|plan| plan.Index)
+    }
+
+    /// 按索引 Region 边界拆分 TTL 时间列范围。
+    pub fn SplitIndexScanRanges(
+        &self,
+        regions: Option<&dyn RegionProvider>,
+        index: &IndexInfo,
+        expire_time: i64,
+        split_count: usize,
+    ) -> Result<Vec<ScanRange>, String> {
+        self.BuildTTLIndexScanPlan(index)?;
+        if split_count <= 1 {
+            return Ok(vec![newFullRange()]);
+        }
+        let Some(regions) = regions else {
+            return Ok(vec![newFullRange()]);
+        };
+        let prefix = index_prefix(self.ID, index.id);
+        let raw = splitRawKeyRanges(regions, &prefix, &prefix_next(prefix.clone()), split_count)?;
+        if raw.len() <= 1 {
+            return Ok(vec![newFullRange()]);
+        }
+        let mut result = Vec::new();
+        let mut start = Datum::Null;
+        for (position, range) in raw.iter().enumerate() {
+            let end = if position + 1 == raw.len() {
+                Datum::Null
+            } else {
+                decode_index_time_boundary(&range.end, &prefix)
+                    .map(|value| Datum::Time(value.min(expire_time)))
+                    .unwrap_or(Datum::Null)
+            };
+            if matches!(start, Datum::Null)
+                || matches!(end, Datum::Null)
+                || datum_less(&start, &end)
+            {
+                result.push(newDatumRange(start.clone(), end.clone()));
+                start = end;
+            }
+        }
+        Ok(if result.is_empty() {
+            vec![newFullRange()]
+        } else {
+            result
+        })
+    }
     /// 校验键前缀长度不超过 KeyColumns。
     pub fn ValidateKeyPrefix(&self, key: &[Datum]) -> Result<(), String> {
         if key.len() > self.KeyColumns.len() {
@@ -303,6 +507,7 @@ impl PhysicalTable {
                         .unwrap_or(Datum::Null),
                     KeyKind::UnsignedInt => unreachable!("handled before the common path"),
                     KeyKind::Bytes => GetNextBytesHandleDatum(&range.end, &prefix),
+                    KeyKind::Float | KeyKind::Set => Datum::Null,
                 }
             };
             if datum_less(&start, &end)
@@ -314,6 +519,26 @@ impl PhysicalTable {
             start = end;
         }
         Ok(output)
+    }
+}
+
+/// TTL index scan 的结果布局与严格分页顺序。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TTLIndexScanPlan {
+    pub Index: IndexInfo,
+    pub ScanColumns: Vec<Column>,
+    pub OrderColumns: Vec<Column>,
+    pub KeyColumnOffsets: Vec<usize>,
+}
+impl TTLIndexScanPlan {
+    pub fn OrderKey<'a>(&self, row: &'a [Datum]) -> &'a [Datum] {
+        &row[..self.OrderColumns.len()]
+    }
+    pub fn TableKey(&self, row: &[Datum]) -> Vec<Datum> {
+        self.KeyColumnOffsets
+            .iter()
+            .map(|offset| row[*offset].clone())
+            .collect()
     }
 }
 
@@ -453,6 +678,19 @@ fn record_prefix(table_id: i64) -> Vec<u8> {
     prefix.extend_from_slice(&((table_id as u64 ^ (1 << 63)).to_be_bytes()));
     prefix.extend_from_slice(b"_r");
     prefix
+}
+
+fn index_prefix(table_id: i64, index_id: i64) -> Vec<u8> {
+    let mut prefix = record_prefix(table_id);
+    prefix.extend_from_slice(b"_i");
+    prefix.extend_from_slice(&index_id.to_be_bytes());
+    prefix
+}
+
+fn decode_index_time_boundary(key: &[u8], prefix: &[u8]) -> Option<i64> {
+    let encoded = key.strip_prefix(prefix)?;
+    let bytes: [u8; 8] = encoded.get(..8)?.try_into().ok()?;
+    Some(i64::from_be_bytes(bytes))
 }
 /// 计算字典序上严格大于 key 的最短前缀（用于半开区间上界）。
 fn prefix_next(mut key: Vec<u8>) -> Vec<u8> {

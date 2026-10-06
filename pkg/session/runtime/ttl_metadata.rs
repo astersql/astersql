@@ -8,15 +8,60 @@ use astersql_parser_ast::TimeUnitType;
 use astersql_parser_duration::ParseDuration;
 use astersql_ttl_cache::table::{EvalExpireTime, TimeUnit};
 use astersql_ttl_ttlworker::session::PhysicalTable;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use astersql_domain::{Domain, StorageHandle};
 use astersql_ttl_cache::table::{
-    Column as CacheColumn, KeyKind, KeyRange, PhysicalTable as CachePhysicalTable, RegionProvider,
-    ScanRange, TableInfo as CacheTableInfo,
+    Column as CacheColumn, IndexColumn as CacheIndexColumn, IndexInfo as CacheIndexInfo, KeyKind,
+    KeyRange, PhysicalTable as CachePhysicalTable, RegionProvider, ScanRange,
+    TableInfo as CacheTableInfo,
 };
+use astersql_ttl_ttlworker::job_version_checker::{
+    JobVersionCheckResult, JobVersionChecker, ServerInfo as TtlServerInfo, VersionInfo,
+};
+use astersql_ttl_ttlworker::scan::ScanIndex;
+
+pub struct TtlScanRanges {
+    pub ranges: Vec<ScanRange>,
+    pub index: Option<ScanIndex>,
+}
 
 struct StorageRegions(Arc<StorageHandle>);
+
+fn ttl_index_scan_version_check() -> JobVersionCheckResult {
+    static CHECKER: OnceLock<Mutex<JobVersionChecker>> = OnceLock::new();
+    let convert = |info: astersql_domain_infosync::ServerInfo| TtlServerInfo {
+        version: VersionInfo {
+            version: info.Version,
+            git_hash: info.GitHash,
+        },
+        // The Rust infosync model contains only registered, concrete TiDB
+        // servers. Synthetic assumed entries are not returned by this API.
+        assumed: false,
+    };
+    let local = astersql_domain_infosync::GetServerInfo()
+        .map(convert)
+        .map(Some)
+        .map_err(|error| error.to_string());
+    let all = astersql_domain_infosync::GetAllServerInfo()
+        .map(|servers| {
+            servers
+                .into_iter()
+                .map(|(id, info)| (id, Some(convert(info))))
+                .collect()
+        })
+        .map_err(|error| error.to_string());
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    CHECKER
+        .get_or_init(|| Mutex::new(JobVersionChecker::default()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .check(now, local, all)
+}
 
 impl RegionProvider for StorageRegions {
     fn locate_key_range(&self, start: &[u8], end: &[u8]) -> Result<Vec<KeyRange>, String> {
@@ -36,16 +81,15 @@ impl RegionProvider for StorageRegions {
 pub fn split_ttl_scan_ranges(
     domain: &Arc<Domain>,
     table: &PhysicalTable,
-) -> Result<Vec<ScanRange>, String> {
+    expire_time: i64,
+) -> Result<TtlScanRanges, String> {
     let (_, model) = domain
         .stats_table(&table.schema, &table.table)
         .ok_or_else(|| format!("TTL table {}.{} disappeared", table.schema, table.table))?;
-    // The current range decoder handles one integer or byte handle. A
-    // composite handle or an unsupported collation must use Go's safe
-    // full-range fallback until its exact boundary decoding is available.
-    if table.key_columns.len() != 1 {
-        return Ok(vec![astersql_ttl_cache::table::newFullRange()]);
-    }
+    // These limitations apply only to the legacy primary-key splitter. An
+    // eligible TTL index is evaluated first and can safely serve tables with a
+    // composite or otherwise unsupported primary key.
+    let mut primary_split_supported = table.key_columns.len() == 1;
     if table.key_columns[0] != "_tidb_rowid" {
         let first = model
             .Columns
@@ -65,7 +109,7 @@ pub fn split_ttl_scan_ranges(
                     "utf8_bin" | "utf8mb4_bin" | "utf8mb4_0900_bin"
                 ));
         if !astersql_parser_mysql::util::IsIntegerType(first.GetType()) && !supported_string {
-            return Ok(vec![astersql_ttl_cache::table::newFullRange()]);
+            primary_split_supported = false;
         }
     }
     let key_columns = table
@@ -91,9 +135,21 @@ pub fn split_ttl_scan_ranges(
                 }
             };
             Ok(CacheColumn {
+                id: if name == "_tidb_rowid" {
+                    -1
+                } else {
+                    model
+                        .Columns
+                        .iter()
+                        .find(|column| column.Name.L.eq_ignore_ascii_case(name))
+                        .map(|column| column.ID)
+                        .unwrap_or(-1)
+                },
                 name: name.clone(),
                 public: true,
                 key_kind: kind,
+                nullable: false,
+                hidden: false,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -111,26 +167,142 @@ pub fn split_ttl_scan_ranges(
             None
         }
     };
-    CachePhysicalTable {
+    let cache_columns = model
+        .Columns
+        .iter()
+        .map(|column| CacheColumn {
+            id: column.ID,
+            name: column.Name.O.clone(),
+            public: column.State == StatePublic,
+            key_kind: if matches!(
+                column.GetType(),
+                astersql_parser_mysql::r#type::TypeFloat
+                    | astersql_parser_mysql::r#type::TypeDouble
+            ) {
+                KeyKind::Float
+            } else if column.GetType() == astersql_parser_mysql::r#type::TypeSet {
+                KeyKind::Set
+            } else if astersql_parser_mysql::util::IsIntegerType(column.GetType()) {
+                if astersql_parser_mysql::r#type::HasUnsignedFlag(column.GetFlag()) {
+                    KeyKind::UnsignedInt
+                } else {
+                    KeyKind::SignedInt
+                }
+            } else {
+                KeyKind::Bytes
+            },
+            nullable: !astersql_parser_mysql::r#type::HasNotNullFlag(column.GetFlag()),
+            hidden: column.Hidden,
+        })
+        .collect::<Vec<_>>();
+    let cache_indexes = model
+        .Indices
+        .iter()
+        .map(|index| CacheIndexInfo {
+            id: index.ID,
+            name: index.Name.O.clone(),
+            columns: index
+                .Columns
+                .iter()
+                .filter_map(|column| {
+                    usize::try_from(column.Offset)
+                        .ok()
+                        .map(|offset| CacheIndexColumn {
+                            column_offset: offset,
+                            prefix_length: (column.Length != -1)
+                                .then_some(column.Length.max(0) as usize),
+                        })
+                })
+                .collect(),
+            unique: index.Unique,
+            primary: index.Primary,
+            public: index.State == StatePublic,
+            invisible: index.Invisible,
+            global: index.Global,
+            multi_valued: index.MVIndex,
+            columnar: index.VectorInfo.is_some()
+                || index.InvertedInfo.is_some()
+                || index.FullTextInfo.is_some(),
+            conditional: !index.ConditionExprString.is_empty(),
+        })
+        .collect::<Vec<_>>();
+    let time_column = cache_columns
+        .iter()
+        .find(|column| column.name.eq_ignore_ascii_case(&table.ttl_column))
+        .cloned()
+        .ok_or_else(|| "TTL time column disappeared".to_owned())?;
+    let cache_table = CachePhysicalTable {
         ID: table.physical_id,
         Schema: table.schema.clone(),
         TableInfo: CacheTableInfo {
             id: table.table_id,
             name: table.table.clone(),
+            columns: cache_columns,
+            indexes: cache_indexes.clone(),
             ..Default::default()
         },
         Partition: table.partition_name.clone().unwrap_or_default(),
         PartitionDef: None,
         KeyColumns: key_columns,
-        TimeColumn: CacheColumn::default(),
+        TimeColumn: time_column,
+        Indices: cache_indexes,
+    };
+    let split_count = astersql_ttl_ttlworker::config::scan_split_count(
+        store_count.is_some(),
+        store_count.unwrap_or(0),
+    );
+    let regions = StorageRegions(domain.storage_handle());
+    if astersql_sessionctx_vardef::TTLEnableIndexScan.Load()
+        && let Some(index) = cache_table.FindTTLIndex()
+    {
+        match ttl_index_scan_version_check() {
+            JobVersionCheckResult::FallbackToPrimaryKey => {}
+            JobVersionCheckResult::BlockJob => {
+                return Err(
+                    "cannot create TTL job while TiDB server build versions are inconsistent"
+                        .into(),
+                );
+            }
+            JobVersionCheckResult::AllowIndexScan => {
+                let ranges = cache_table.SplitIndexScanRanges(
+                    Some(&regions),
+                    &index,
+                    expire_time,
+                    split_count,
+                )?;
+                let columns = index
+                    .columns
+                    .iter()
+                    .filter_map(|index_column| {
+                        cache_table
+                            .TableInfo
+                            .columns
+                            .get(index_column.column_offset)
+                            .map(|column| column.name.clone())
+                    })
+                    .collect();
+                return Ok(TtlScanRanges {
+                    ranges,
+                    index: Some(ScanIndex {
+                        id: index.id,
+                        name: index.name,
+                        columns,
+                        unique: index.unique,
+                    }),
+                });
+            }
+        }
     }
-    .SplitScanRanges(
-        Some(&StorageRegions(domain.storage_handle())),
-        astersql_ttl_ttlworker::config::scan_split_count(
-            store_count.is_some(),
-            store_count.unwrap_or(0),
-        ),
-    )
+    if !primary_split_supported {
+        return Ok(TtlScanRanges {
+            ranges: vec![astersql_ttl_cache::table::newFullRange()],
+            index: None,
+        });
+    }
+    Ok(TtlScanRanges {
+        ranges: cache_table.SplitScanRanges(Some(&regions), split_count)?,
+        index: None,
+    })
 }
 
 pub struct TtlSchedule {

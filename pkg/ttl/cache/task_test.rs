@@ -18,8 +18,8 @@
 // 验证 Insert/Select/Peek SQL 形态，以及 RowToTTLTask 对状态与 JSON state 的解码。
 
 use crate::task::{
-    Datum, InsertIntoTTLTask, PeekWaitingTTLTask, RowToTTLTask, SelectFromTTLTaskWithID,
-    SelectFromTTLTaskWithJobID, TTLTaskState, TaskStatus,
+    Datum, InsertIntoTTLTask, InsertIntoTTLTaskWithScanIndexID, PeekWaitingTTLTask, RowToTTLTask,
+    SelectFromTTLTaskWithID, SelectFromTTLTaskWithJobID, TTLTaskState, TaskStatus,
 };
 
 /// 按系统表列顺序构造一行 TTL task Datum。
@@ -41,6 +41,7 @@ fn task_row(status: &str, state: Option<&str>) -> Vec<Datum> {
             None => Datum::Null,
         },
         Datum::Time(70),
+        Datum::Null,
     ]
 }
 
@@ -64,6 +65,17 @@ fn insert_into_ttl_task_round_trip_without_background_gc() {
     };
     assert_eq!(crate::task::DecodeDatums(encoded_start).unwrap(), start);
     assert_eq!(crate::task::DecodeDatums(encoded_end).unwrap(), end);
+    assert_eq!(args[7], Datum::Null);
+}
+
+#[test]
+fn index_scan_id_is_persisted_and_decoded() {
+    let (_, args) =
+        InsertIntoTTLTaskWithScanIndexID("test-job", 1, 1, &[], &[], 100, 100, Some(42)).unwrap();
+    assert_eq!(args[7], Datum::Int(42));
+    let mut row = task_row("waiting", None);
+    row[13] = Datum::Int(42);
+    assert_eq!(RowToTTLTask(&row).unwrap().ScanIndexID, Some(42));
 }
 
 // Go codec.EncodeKey 的 int flag 为 3，后接翻转符号位的大端整数。

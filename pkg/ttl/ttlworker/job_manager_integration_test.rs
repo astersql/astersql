@@ -19,7 +19,8 @@
 // 契约：leader/TTL 门禁、锁唯一性、任务收尾、心跳、超时接管与 GC。
 
 use crate::job_manager::{JobManager, TableStatus};
-use crate::scan::{ScanResult, TaskTerminateReason, TtlScanTask};
+use crate::job_version_checker::{ServerInfo, VersionInfo};
+use crate::scan::{ScanIndex, ScanResult, TaskTerminateReason, TtlScanTask};
 use crate::session::PhysicalTable;
 use crate::timer::TtlJobAdapter;
 
@@ -101,6 +102,7 @@ fn finished_tasks_close_job_and_preserve_history_summary() {
             range_start: None,
             range_end: None,
             batch_size: 128,
+            scan_index: None,
         }));
     assert_eq!(manager.task_manager.reschedule(101).len(), 1);
     assert!(manager.task_manager.report_finished(ScanResult {
@@ -131,6 +133,51 @@ fn submission_enforces_leader_enabled_and_table_identity() {
     manager.refresh_tables([ttl_table(10, 11, false)]);
     assert!(!manager.can_submit_job(10, 11));
     assert!(manager.submit_job(10, 11, "request-1", 100).is_err());
+}
+
+#[test]
+fn index_scan_submission_obeys_version_gate_and_persists_choice() {
+    let mut manager = JobManager::new("manager-1", 1);
+    manager.is_leader = true;
+    manager.refresh_tables([ttl_table(10, 11, true)]);
+    manager.set_ttl_index(
+        11,
+        Some(ScanIndex {
+            id: 9,
+            name: "ttl_idx".into(),
+            columns: vec!["created_at".into()],
+            unique: false,
+        }),
+    );
+    let local = ServerInfo {
+        version: VersionInfo {
+            version: "v1".into(),
+            git_hash: "a".into(),
+        },
+        assumed: false,
+    };
+    manager.local_server = Ok(Some(local.clone()));
+    manager.all_servers = Ok(vec![
+        ("self".into(), Some(local.clone())),
+        (
+            "old".into(),
+            Some(ServerInfo {
+                version: VersionInfo {
+                    version: "v0".into(),
+                    git_hash: "z".into(),
+                },
+                assumed: false,
+            }),
+        ),
+    ]);
+    assert!(manager.submit_job(10, 11, "mixed", 100).is_err());
+
+    manager.all_servers = Ok(vec![("self".into(), Some(local))]);
+    // Known mismatch is cached for one minute, matching the Go retry gate.
+    assert!(manager.submit_job(10, 11, "cached", 130).is_err());
+    manager.submit_job(10, 11, "ready", 161).unwrap();
+    let job_id = "11-161-ready";
+    assert_eq!(manager.job_scan_indexes[job_id].as_ref().unwrap().id, 9);
 }
 
 /// 对应 Go 心跳和 `TestRescheduleJobs`：本地 job 续约，失联外部 job 可被接管。

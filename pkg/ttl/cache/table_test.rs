@@ -19,18 +19,21 @@
 
 use crate::table::{
     EvalExpireTime, GetASCIIPrefixDatumFromBytes, GetNextBytesHandleDatum,
-    GetNextIntDatumFromCommonHandle, GetNextIntHandle, KeyKind, NewBasePhysicalTable,
-    NewPhysicalTable, PartitionDefinition, RegionProvider, TTLInfo, TableInfo, TimeUnit,
-    getTableKeyColumns,
+    GetNextIntDatumFromCommonHandle, GetNextIntHandle, IndexColumn, IndexInfo, KeyKind,
+    NewBasePhysicalTable, NewPhysicalTable, PartitionDefinition, RegionProvider, TTLInfo,
+    TableInfo, TimeUnit, getTableKeyColumns,
 };
 use crate::task::Datum;
 
 /// 构造测试用列元信息。
 fn column(name: &str, public: bool, kind: KeyKind) -> crate::table::Column {
     crate::table::Column {
+        id: 0,
         name: name.into(),
         public,
         key_kind: kind,
+        nullable: false,
+        hidden: false,
     }
 }
 
@@ -44,6 +47,7 @@ fn base_table(name: &str) -> TableInfo {
         common_handle: false,
         columns: Vec::new(),
         primary_index_offsets: Vec::new(),
+        indexes: Vec::new(),
         partitions: Vec::new(),
         ttl: None,
     }
@@ -399,5 +403,64 @@ fn test_get_ascii_prefix_datum_from_bytes_truncates_at_first_control_byte() {
     assert_eq!(
         GetASCIIPrefixDatumFromBytes(b"ab\rc\xff"),
         Datum::String("ab\rc".into())
+    );
+}
+
+#[test]
+fn ttl_index_selection_rejects_unsafe_indexes_and_prefers_single_time_column() {
+    let mut table = base_table("indexed");
+    table.columns = vec![
+        crate::table::Column {
+            id: 1,
+            ..column("id", true, KeyKind::SignedInt)
+        },
+        crate::table::Column {
+            id: 2,
+            ..column("created_at", true, KeyKind::SignedInt)
+        },
+    ];
+    table.pk_is_handle = true;
+    table.ttl = Some(TTLInfo {
+        column_name: "created_at".into(),
+        interval: "1".into(),
+        unit: TimeUnit::Day,
+    });
+    table.indexes = vec![
+        IndexInfo {
+            id: 10,
+            name: "wrong_first".into(),
+            public: true,
+            columns: vec![IndexColumn {
+                column_offset: 0,
+                prefix_length: None,
+            }],
+            ..IndexInfo::default()
+        },
+        IndexInfo {
+            id: 11,
+            name: "ttl_idx".into(),
+            public: true,
+            columns: vec![IndexColumn {
+                column_offset: 1,
+                prefix_length: None,
+            }],
+            ..IndexInfo::default()
+        },
+    ];
+    let physical = NewPhysicalTable("test", &table, "").unwrap();
+    assert_eq!(physical.FindTTLIndex().unwrap().name, "ttl_idx");
+    let plan = physical
+        .BuildTTLIndexScanPlan(&physical.Indices[1])
+        .unwrap();
+    assert_eq!(
+        plan.ScanColumns
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["created_at", "id"]
+    );
+    assert_eq!(
+        plan.TableKey(&[Datum::Time(1), Datum::Int(7)]),
+        vec![Datum::Int(7)]
     );
 }

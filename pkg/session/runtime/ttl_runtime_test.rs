@@ -857,6 +857,7 @@ fn go_merge_43_ttl_persists_region_scan_ranges() {
             200_000,
             None,
             &ranges,
+            None,
         )
         .unwrap()
     );
@@ -1146,6 +1147,7 @@ fn go_merge_43_ttl_takeover_scans_all_persisted_ranges() {
             200_000,
             None,
             &ranges,
+            None,
         )
         .unwrap()
     );

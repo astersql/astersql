@@ -44,6 +44,7 @@ fn scan_task() -> TtlScanTask {
         range_start: None,
         range_end: None,
         batch_size: 100,
+        scan_index: None,
     }
 }
 

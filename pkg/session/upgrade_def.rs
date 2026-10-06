@@ -203,6 +203,8 @@ pub const version282: i64 = 282;
 pub const version283: i64 = 283;
 /// Migrates the legacy inverse txn-file switch on NextGen clusters.
 pub const version284: i64 = 284;
+/// Adds scan_index_id to mysql.tidb_ttl_task for index-ordered TTL scans.
+pub const version285: i64 = 285;
 /// Creates materialized-view maintenance system tables. Go later moved this migration from 285.
 pub const version316: i64 = 316;
 /// Adds the OPERATE VIEW static privilege. Go later moved this migration from 286.
@@ -787,6 +789,9 @@ pub static upgradeToVerFunctions: LazyLock<Vec<VersionedUpgradeFunction>> = Lazy
         (284) => {
             upgradeToVer284
         };
+        (285) => {
+            upgradeToVer285
+        };
         (316) => {
             upgradeToVer316
         };
@@ -814,7 +819,7 @@ pub static upgradeToVerFunctions: LazyLock<Vec<VersionedUpgradeFunction>> = Lazy
         141, 142, 143, 144, 146, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179,
         190, 191, 192, 193, 194, 195, 196, 197, 198, 209, 210, 211, 212, 213, 214, 215, 216, 217,
         218, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255,
-        256, 277, 278, 279, 280, 281, 282, 283, 284, 316, 317,
+        256, 277, 278, 279, 280, 281, 282, 283, 284, 285, 316, 317,
     ]
 });
 
@@ -1609,6 +1614,11 @@ pub fn upgradeToVer283(_s: &sessionapi::Session, _version: i64) {
 /// Dispatch the NextGen txn-file compatibility migration.
 pub fn upgradeToVer284(_s: &sessionapi::Session, _version: i64) {
     upgrade_action("upgradeToVer284");
+}
+
+/// Dispatch the TTL task scan-index column migration at its final Go version.
+pub fn upgradeToVer285(_s: &sessionapi::Session, _version: i64) {
+    upgrade_action("upgradeToVer285");
 }
 
 /// Dispatch the materialized-view maintenance table migration at its final Go version.

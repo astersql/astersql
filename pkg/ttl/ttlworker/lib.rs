@@ -15,6 +15,7 @@ pub mod config;
 pub mod del;
 pub mod job;
 pub mod job_manager;
+pub mod job_version_checker;
 pub mod persistent;
 pub mod scan;
 pub mod session;
@@ -33,6 +34,8 @@ mod job_manager_integration_test;
 mod job_manager_test;
 #[cfg(test)]
 mod job_test;
+#[cfg(test)]
+mod job_version_checker_test;
 #[cfg(test)]
 mod persistent_test;
 #[cfg(test)]

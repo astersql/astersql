@@ -22,6 +22,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::job::{JobStore, TtlJob};
+use crate::job_version_checker::{JobVersionCheckResult, JobVersionChecker, ServerInfo};
+use crate::scan::ScanIndex;
 use crate::session::PhysicalTable;
 use crate::task_manager::{ManagedTask, TaskManager, TaskState, TaskStatus};
 use crate::timer::{TtlJobAdapter, TtlJobTrace};
@@ -94,6 +96,14 @@ pub struct JobManager {
     pub now: u64,
     /// 外部请求 ID → (物理表 ID, 作业 ID) 映射。
     request_to_job: BTreeMap<String, (i64, String)>,
+    /// Eligible TTL index by physical table; absence keeps the legacy PK path.
+    ttl_indexes: BTreeMap<i64, ScanIndex>,
+    /// Persisted scan choice by job ID, mirroring scan_index_id in task rows.
+    pub job_scan_indexes: BTreeMap<String, Option<ScanIndex>>,
+    pub enable_index_scan: bool,
+    pub local_server: Result<Option<ServerInfo>, String>,
+    pub all_servers: Result<Vec<(String, Option<ServerInfo>)>, String>,
+    job_version_checker: JobVersionChecker,
 }
 
 impl JobManager {
@@ -109,6 +119,19 @@ impl JobManager {
             store: JobStore::default(),
             now: 0,
             request_to_job: BTreeMap::new(),
+            ttl_indexes: BTreeMap::new(),
+            job_scan_indexes: BTreeMap::new(),
+            enable_index_scan: true,
+            local_server: Err("server version unavailable".into()),
+            all_servers: Err("server versions unavailable".into()),
+            job_version_checker: JobVersionChecker::default(),
+        }
+    }
+    pub fn set_ttl_index(&mut self, physical_id: i64, index: Option<ScanIndex>) {
+        if let Some(index) = index {
+            self.ttl_indexes.insert(physical_id, index);
+        } else {
+            self.ttl_indexes.remove(&physical_id);
         }
     }
     /// 用最新物理表列表整体替换本地表缓存。
@@ -260,8 +283,30 @@ impl TtlJobAdapter for JobManager {
             return Err("TTL job cannot be submitted".to_owned());
         }
         let job_id = format!("{physical_id}-{now}-{request_id}");
+        let selected_index =
+            if self.enable_index_scan && self.ttl_indexes.contains_key(&physical_id) {
+                match self.job_version_checker.check(
+                    now,
+                    self.local_server.clone(),
+                    self.all_servers.clone(),
+                ) {
+                    JobVersionCheckResult::AllowIndexScan => {
+                        self.ttl_indexes.get(&physical_id).cloned()
+                    }
+                    JobVersionCheckResult::FallbackToPrimaryKey => None,
+                    JobVersionCheckResult::BlockJob => {
+                        return Err(
+                        "cannot create TTL job while TiDB server build versions are inconsistent"
+                            .into(),
+                    );
+                    }
+                }
+            } else {
+                None
+            };
         self.lock_new_job(physical_id, job_id.clone(), now, false)
             .ok_or_else(|| "failed to lock TTL job".to_owned())?;
+        self.job_scan_indexes.insert(job_id.clone(), selected_index);
         self.request_to_job
             .insert(request_id.to_owned(), (physical_id, job_id));
         Ok(TtlJobTrace {
