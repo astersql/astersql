@@ -24,6 +24,11 @@ impl<'a> RuntimeMLog<'a> {
         if log_id == 0 {
             return Ok(None);
         }
+        if base.GetPartitionInfo().is_some() {
+            return Err(SessionError::new(
+                "materialized view log on partitioned tables is not supported",
+            ));
+        }
         let log = session
             .domain
             .info_schema()

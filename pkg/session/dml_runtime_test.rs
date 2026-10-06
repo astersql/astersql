@@ -58,6 +58,37 @@ fn canonical_mlog_session() -> ConcreteSession {
     crate::runtime::BootstrapCanonicalDomain(Arc::clone(bootstrap.domain())).unwrap()
 }
 
+fn install_mlog_metadata(
+    session: &ConcreteSession,
+    base_name: &str,
+    log_name: &str,
+    base_id: i64,
+    log_id: i64,
+) {
+    use astersql_meta_model::{MaterializedViewBaseInfo, MaterializedViewLogInfo};
+    use astersql_parser_ast::NewCIStr;
+
+    let domain = session.domain();
+    let mut base = domain.stats_table("test", base_name).unwrap().1;
+    let mut log = domain.stats_table("test", log_name).unwrap().1;
+    base.ID = base_id;
+    log.ID = log_id;
+    base.MaterializedViewBase = Some(MaterializedViewBaseInfo {
+        MLogID: log.ID,
+        ..Default::default()
+    });
+    log.MaterializedViewLog = Some(MaterializedViewLogInfo {
+        BaseTableID: base.ID,
+        Columns: vec![NewCIStr("a"), NewCIStr("b")],
+        ..Default::default()
+    });
+    session
+        .execute(&format!("drop table `{base_name}`, `{log_name}`"))
+        .unwrap();
+    domain.ddl_create_table("test", base, false).unwrap();
+    domain.ddl_create_table("test", log, false).unwrap();
+}
+
 #[test]
 fn go_merge_49_canonical_bootstrap_installs_purge_history() {
     let session = canonical_mlog_session();
@@ -775,6 +806,92 @@ fn go_merge_49_sql_mlog_dml_shares_transaction() {
     .collect::<Vec<_>>();
     expected.sort();
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn mlog_load_data_uses_insert_mutation_pipeline() {
+    let session = concrete_session();
+    session
+        .execute("create table t_mlog_load (a int primary key, b int)")
+        .unwrap();
+    session.execute("create table `$mlog$t_mlog_load` (a int, b int, `_MLOG$_DML_TYPE` varchar(1), `_MLOG$_OLD_NEW` int)").unwrap();
+    install_mlog_metadata(
+        &session,
+        "t_mlog_load",
+        "$mlog$t_mlog_load",
+        991_001,
+        991_002,
+    );
+
+    session
+        .execute_with_load_data_reader(
+            "load data local infile 'mlog.csv' into table t_mlog_load fields terminated by ','",
+            std::io::Cursor::new(b"1,10\n".to_vec()),
+        )
+        .unwrap();
+    let mut rows = session
+        .execute("select a, b, `_MLOG$_DML_TYPE`, `_MLOG$_OLD_NEW` from `$mlog$t_mlog_load`")
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        rows.Next().unwrap(),
+        Some(vec!["1".into(), "10".into(), "I".into(), "1".into()])
+    );
+}
+
+#[test]
+fn mlog_rejects_import_into_and_partitioned_base_dml() {
+    let session = concrete_session();
+    session
+        .execute("create table t_mlog_import (a int primary key, b int, untracked int)")
+        .unwrap();
+    session.execute("create table `$mlog$t_mlog_import` (a int, b int, `_MLOG$_DML_TYPE` varchar(1), `_MLOG$_OLD_NEW` int)").unwrap();
+    install_mlog_metadata(
+        &session,
+        "t_mlog_import",
+        "$mlog$t_mlog_import",
+        991_011,
+        991_012,
+    );
+    let error = match session.execute("import into t_mlog_import from 's3://bucket/input.csv'") {
+        Ok(_) => panic!("IMPORT INTO must reject a base table with an MLog"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("IMPORT INTO on tables with materialized view log")
+    );
+    session
+        .execute("alter table t_mlog_import drop column untracked")
+        .unwrap();
+    let error = match session.execute("alter table t_mlog_import drop column b") {
+        Ok(_) => panic!("DROP COLUMN must reject an MLog-tracked base column"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("referenced by materialized view log"),
+        "unexpected tracked-column error: {error}"
+    );
+
+    session
+        .execute("create table t_mlog_partition (a int primary key, b int) partition by hash(a) partitions 2")
+        .unwrap();
+    session.execute("create table `$mlog$t_mlog_partition` (a int, b int, `_MLOG$_DML_TYPE` varchar(1), `_MLOG$_OLD_NEW` int)").unwrap();
+    install_mlog_metadata(
+        &session,
+        "t_mlog_partition",
+        "$mlog$t_mlog_partition",
+        991_021,
+        991_022,
+    );
+    let error = match session.execute("insert into t_mlog_partition values (1, 10)") {
+        Ok(_) => panic!("DML must reject a partitioned base table with an MLog"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("partitioned tables"));
 }
 
 #[test]

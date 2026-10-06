@@ -3442,6 +3442,31 @@ impl ConcreteSession {
                         columns.insert(name);
                         continue;
                     }
+                    if let Some(log_id) = info
+                        .MaterializedViewBase
+                        .as_ref()
+                        .map(|base| base.MLogID)
+                        .filter(|id| *id != 0)
+                    {
+                        let log = self
+                            .domain
+                            .info_schema()
+                            .TableByID(log_id)
+                            .and_then(|table| table.ModelMeta().ok());
+                        let Some(log_info) = log
+                            .as_deref()
+                            .and_then(|table| table.MaterializedViewLog.as_ref())
+                        else {
+                            return Err(SessionError::new(
+                                "[ddl:8200]ALTER TABLE on base table with invalid materialized view log metadata",
+                            ));
+                        };
+                        if log_info.Columns.iter().any(|column| column.L == name) {
+                            return Err(SessionError::new(format!(
+                                "[ddl:8200]ALTER TABLE on base table column {name} referenced by materialized view log"
+                            )));
+                        }
+                    }
                     if column_is_referenced_by_partial_index(&info, &name) {
                         return Err(SessionError::new(format!(
                             "[ddl:8200]Unsupported DDL operation: column '{name}' is referenced by \

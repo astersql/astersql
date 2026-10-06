@@ -1759,6 +1759,15 @@ impl ConcreteSession {
             let table = self
                 .resolve_runtime_table(&database, &import.Table.Name.L)
                 .ok_or_else(|| SessionError::new("import target table not found"))?;
+            if table
+                .MaterializedViewBase
+                .as_ref()
+                .is_some_and(|info| info.MLogID != 0)
+            {
+                return Err(SessionError::new(
+                    "IMPORT INTO on tables with materialized view log is not supported",
+                ));
+            }
             astersql_executor_importer::CheckImportTableTTL(&table)
                 .map_err(|error| SessionError::with_source(error.to_string(), error))?;
             if import.Select.is_some() {
