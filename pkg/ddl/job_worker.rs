@@ -527,6 +527,10 @@ impl JobWorker {
             session.rollback();
             return Err(error);
         }
+        // RU is encoded into the job row in this transaction. Keep the
+        // caller-visible job consistent with durable state when any later
+        // operation, including commit itself, abandons the transaction.
+        let ru_before_transaction = job.ru;
         let outcome = (|| {
             let rows = session.query(
                 &format!(
@@ -586,6 +590,7 @@ impl JobWorker {
         })();
         if outcome.is_err() {
             session.rollback();
+            job.ru = ru_before_transaction;
         }
         outcome
     }

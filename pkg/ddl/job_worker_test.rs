@@ -308,6 +308,128 @@ fn ddl_ru_accounts_weighted_transaction_bytes_for_every_worker_and_clears_failed
 }
 
 #[test]
+fn reorg_job_ru_is_persisted_for_modify_column_and_partition_and_rolled_back_on_commit_error() {
+    use crate::job_worker::{
+        DurableJobExecutor, DurableJobSession, DurableJobStep, JobLease, JobWorker,
+        TransactionOperation,
+    };
+    use astersql_meta_model::group_3::{
+        ACTION_MODIFY_COLUMN, ACTION_REORGANIZE_PARTITION, Job as WireJob,
+    };
+
+    struct Lease;
+    impl JobLease for Lease {
+        fn is_owner(&self) -> bool {
+            true
+        }
+        fn is_cancelled(&self) -> bool {
+            false
+        }
+    }
+
+    struct ReorgStep;
+    impl DurableJobExecutor for ReorgStep {
+        fn runnable(&mut self, _: &mut dyn DurableJobSession, _: &WireJob) -> Result<bool, String> {
+            Ok(true)
+        }
+        fn recover(&mut self, _: &WireJob, _: &dyn JobLease) -> Result<(), String> {
+            Ok(())
+        }
+        fn step(
+            &mut self,
+            _: &mut dyn DurableJobSession,
+            _: &mut WireJob,
+        ) -> Result<DurableJobStep, String> {
+            Ok(DurableJobStep {
+                schema_version: 1,
+                update_raw_args: false,
+                removed: false,
+            })
+        }
+        fn wait_synced(&mut self, _: &WireJob, _: i64, _: &dyn JobLease) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    struct ReorgSession {
+        commit_error: bool,
+        rolled_back: bool,
+    }
+    impl DurableJobSession for ReorgSession {
+        fn query(&mut self, sql: &str, label: &str) -> Result<Vec<Vec<String>>, String> {
+            if label == "get_job" {
+                return Ok(vec![vec!["expected".to_owned()]]);
+            }
+            assert_eq!(label, "update_job");
+            assert!(sql.contains("update mysql.tidb_ddl_job"));
+            Ok(Vec::new())
+        }
+        fn begin(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+        fn commit(&mut self) -> Result<(), String> {
+            if self.commit_error {
+                Err("injected commit error".to_owned())
+            } else {
+                Ok(())
+            }
+        }
+        fn rollback(&mut self) {
+            self.rolled_back = true;
+        }
+        fn transaction_size(&mut self) -> Result<usize, String> {
+            Ok(11)
+        }
+        fn with_transaction(&mut self, _: TransactionOperation) -> Result<Vec<u8>, String> {
+            Ok(Vec::new())
+        }
+    }
+
+    let weight = astersql_config::get_global_config()
+        .ruv2
+        .ddl_weights
+        .txn_kv_bytes;
+
+    for action in [ACTION_MODIFY_COLUMN, ACTION_REORGANIZE_PARTITION] {
+        let mut job = WireJob {
+            tp: action,
+            ru: 3.0,
+            ..WireJob::default()
+        };
+        let mut session = ReorgSession {
+            commit_error: false,
+            rolled_back: false,
+        };
+        JobWorker::new(WorkerType::General)
+            .transit_persisted_job_step(&mut session, &Lease, &mut ReorgStep, &mut job, b"expected")
+            .unwrap();
+        let expected = if astersql_config_kerneltype::IsNextGen() {
+            3.0 + 11.0 * weight
+        } else {
+            3.0
+        };
+        assert_eq!(job.ru, expected, "action {action}");
+        assert!(!session.rolled_back);
+    }
+
+    let mut job = WireJob {
+        tp: ACTION_MODIFY_COLUMN,
+        ru: 3.0,
+        ..WireJob::default()
+    };
+    let mut session = ReorgSession {
+        commit_error: true,
+        rolled_back: false,
+    };
+    let error = JobWorker::new(WorkerType::General)
+        .transit_persisted_job_step(&mut session, &Lease, &mut ReorgStep, &mut job, b"expected")
+        .unwrap_err();
+    assert_eq!(error, "injected commit error");
+    assert_eq!(job.ru, 3.0);
+    assert!(session.rolled_back);
+}
+
+#[test]
 #[should_panic(expected = "new table IDs must cover every old table ID")]
 fn build_placement_affects_rejects_mismatched_lengths_like_go() {
     let _ = build_placement_affects(&[11, 12], &[21]);
