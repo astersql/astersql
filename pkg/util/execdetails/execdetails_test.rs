@@ -335,34 +335,7 @@ fn go_merge_11_pool_task_string_matches_client_go_sample() {
 }
 
 /// 测试用 RU v2 权重，数值与 Go 测试向量对齐。
-fn default_ruv2_weights_for_test() -> ruv2::RUV2Weights {
-    ruv2::RUV2Weights {
-        RUScale: 2.01,
-        ResultChunkCells: 0.00010000,
-        ExecutorL1: 0.00013278,
-        ExecutorL2: 0.00000383,
-        ExecutorL3: 0.00141739,
-        ExecutorL5InsertRows: 0.00472572,
-        PlanCnt: 0.15392217,
-        PlanDeriveStatsPaths: 0.24968182,
-        ResourceManagerReadCnt: 0.02072003,
-        ResourceManagerWriteCnt: 0.07179779,
-        WriteKeys: 0.330760861554226,
-        SessionParserTotal: 0.19230499,
-        TxnCnt: 0.03013709,
-    }
-}
 
-/// 按相对/绝对容差比较浮点 RU 值。
-fn assert_close(expected: f64, actual: f64) {
-    let tolerance = expected.abs().max(1.0) * 0.01;
-    assert!(
-        (expected - actual).abs() <= tolerance,
-        "expected {expected}, got {actual}"
-    );
-}
-
-/// 构造精简的 tipb 执行摘要，供 RecordOneCopTask 等用例。
 fn cop_summary(time_ns: u64, rows: u64, iterations: u64) -> exec::tipb::ExecutorExecutionSummary {
     exec::tipb::ExecutorExecutionSummary {
         TimeProcessedNs: Some(time_ns),
@@ -373,14 +346,6 @@ fn cop_summary(time_ns: u64, rows: u64, iterations: u64) -> exec::tipb::Executor
 }
 
 /// 构造 protobuf Ruv2 计数器载荷。
-fn raw_ru(read: u64, write: u64, batch_get: u64, get: u64) -> ruv2::kvrpcpb::Ruv2 {
-    let mut raw = ruv2::kvrpcpb::Ruv2::new();
-    raw.set_read_rpc_count(read);
-    raw.set_write_rpc_count(write);
-    raw.set_storage_processed_keys_batch_get(batch_get);
-    raw.set_storage_processed_keys_get(get);
-    raw
-}
 
 #[test]
 /// ExecDetails::String 非零字段顺序与格式应匹配 Go。
@@ -543,258 +508,6 @@ fn test_p90_merge_preserves_samples_with_initialized_empty_backoff_map() {
     assert_eq!(summary.NumCopTasks, 1);
     assert_eq!(summary.ProcessTimePercentile.Size(), 2);
     assert_eq!(summary.WaitTimePercentile.Size(), 2);
-}
-
-#[test]
-/// RU v2 指标快照应能按权重算出读写 RU。
-fn test_ruv2_metrics_snapshot_calculate_ru_values() {
-    let weights = default_ruv2_weights_for_test();
-    let metrics = ruv2::NewRUV2Metrics();
-    metrics.AddResultChunkCells(1000);
-    metrics.AddExecutorMetric(1, "TableReader", 5);
-    metrics.AddExecutorMetric(1, "Projection", 7);
-    metrics.AddExecutorMetric(2, "Selection", 11);
-    metrics.AddExecutorMetric(3, "HashJoin", 13);
-    metrics.AddExecutorL5InsertRows(17);
-    metrics.AddPlanCnt(19);
-    metrics.AddPlanDeriveStatsPaths(23);
-    metrics.AddResourceManagerReadCnt(29);
-    metrics.AddResourceManagerWriteCnt(31);
-    metrics.AddWriteKeys(3);
-    metrics.AddWriteSize(66);
-    metrics.AddSessionParserTotal(37);
-    metrics.AddTxnCnt(41);
-    metrics.AddTiKVKVEngineCacheMiss(43);
-    metrics.AddTiKVCoprocessorWorkTotal("BatchSelection", 53);
-    metrics.AddTiKVCoprocessorWorkTotal("BatchTopN", 59);
-    metrics.AddTiKVCoprocessorExecutorIterations(61);
-    metrics.AddTiKVCoprocessorResponseBytes(67);
-    metrics.AddTiKVRaftstoreStoreWriteTriggerWB(71);
-    metrics.AddTiKVStorageProcessedKeysBatchGet(73);
-    metrics.AddTiKVStorageProcessedKeysGet(79);
-    assert_close(42.2851783309, metrics.CalculateRUValues(weights));
-    assert_close(
-        181980.2851783309,
-        metrics.TotalRU(weights, 157258.0, 24680.0),
-    );
-    assert_eq!((metrics.WriteKeys(), metrics.WriteSize()), (3, 66));
-
-    let mut zero_scale = weights;
-    zero_scale.RUScale = 0.0;
-    assert_eq!(metrics.CalculateRUValues(zero_scale), 0.0);
-    assert_eq!(metrics.TotalRU(zero_scale, 3.0, 4.0), 7.0);
-    assert_eq!(ruv2::FormatRUV2Total(None, weights, 3.0, 4.0), "7.00");
-
-    let bypassed = ruv2::NewRUV2Metrics();
-    bypassed.SetBypass(true);
-    bypassed.AddResultChunkCells(1000);
-    assert_eq!(bypassed.TotalRU(weights, 3.0, 4.0), 0.0);
-    assert_eq!(
-        ruv2::FormatRUV2Summary(Some(&bypassed), weights, 3.0, 4.0),
-        (String::new(), String::new())
-    );
-}
-
-#[test]
-/// 从提交明细更新 RU v2 指标。
-fn test_update_ruv2_metrics_from_commit_details() {
-    let metrics = ruv2::NewRUV2Metrics();
-    let weights = default_ruv2_weights_for_test();
-    let before = metrics.CalculateRUValues(weights);
-    ruv2::UpdateRUV2MetricsFromCommitDetails(
-        Some(&metrics),
-        Some(&ruv2::tikvutil::CommitDetails {
-            WriteKeys: 3,
-            WriteSize: 66,
-        }),
-    );
-    assert_eq!((metrics.WriteKeys(), metrics.WriteSize()), (3, 66));
-    assert_close(
-        before + 3.0 * weights.WriteKeys * weights.RUScale,
-        metrics.CalculateRUValues(weights),
-    );
-    let detail = ruv2::FormatRUV2Metrics(Some(&metrics), weights, 0.0, 0.0);
-    assert!(detail.contains("write_keys:3"));
-    assert!(detail.contains("write_size:66"));
-
-    let bypassed = ruv2::NewRUV2Metrics();
-    bypassed.SetBypass(true);
-    ruv2::UpdateRUV2MetricsFromCommitDetails(
-        Some(&bypassed),
-        Some(&ruv2::tikvutil::CommitDetails {
-            WriteKeys: 1,
-            WriteSize: 2,
-        }),
-    );
-    assert_eq!((bypassed.WriteKeys(), bypassed.WriteSize()), (0, 0));
-}
-
-#[test]
-/// 快照后 RU 值应冻结，不受后续累计影响。
-fn test_ruv2_metrics_snapshot_freezes_ru_values() {
-    let weights = default_ruv2_weights_for_test();
-    let metrics = ruv2::NewRUV2Metrics();
-    metrics.AddResultChunkCells(1000);
-    metrics.AddPlanCnt(2);
-    let baseline = metrics.CalculateRUValues(weights);
-    let snapshot = metrics.Clone();
-    metrics.AddPlanCnt(10);
-    assert_eq!(snapshot.PlanCnt(), 2);
-    assert_eq!(snapshot.CalculateRUValues(weights), baseline);
-    let mut updated = weights;
-    updated.ResultChunkCells *= 10.0;
-    updated.PlanCnt *= 10.0;
-    assert_ne!(baseline, snapshot.CalculateRUValues(updated));
-}
-
-#[test]
-/// 从 kv Ruv2 计数更新指标。
-fn test_update_ruv2_metrics_from_ruv2() {
-    let mut raw = raw_ru(2, 3, 17, 19);
-    raw.set_kv_engine_cache_miss(5);
-    raw.set_coprocessor_executor_iterations(7);
-    raw.set_coprocessor_response_bytes(11);
-    raw.set_raftstore_store_write_trigger_wb_bytes(13);
-    raw.mut_executor_inputs()
-        .set_tikv_coprocessor_executor_work_total_batch_fast_hash_aggr(47);
-    let metrics = ruv2::NewRUV2Metrics();
-    ruv2::UpdateRUV2MetricsFromRUV2(Some(&metrics), Some(&raw));
-    assert_eq!(metrics.ResourceManagerReadCnt(), 0);
-    assert_eq!(metrics.ResourceManagerWriteCnt(), 0);
-    assert_eq!(metrics.TiKVKVEngineCacheMiss(), 0);
-    assert_eq!(metrics.TiKVCoprocessorExecutorIterations(), 0);
-    assert_eq!(metrics.TiKVCoprocessorResponseBytes(), 11);
-    assert_eq!(metrics.TiKVRaftstoreStoreWriteTriggerWB(), 0);
-    assert_eq!(metrics.TiKVStorageProcessedKeysBatchGet(), 0);
-    assert_eq!(metrics.TiKVStorageProcessedKeysGet(), 0);
-    let detail = ruv2::FormatRUV2Metrics(Some(&metrics), default_ruv2_weights_for_test(), 0.0, 0.0);
-    for item in [
-        "resource_manager_read_cnt:2",
-        "resource_manager_write_cnt:3",
-        "BatchFastHashAggr:47",
-    ] {
-        assert!(!detail.contains(item), "unexpected {item} in {detail}");
-    }
-}
-
-#[test]
-/// 从 RUDetails 增量同步到 RU v2 指标。
-fn test_sync_ruv2_metrics_from_ru_details_incremental() {
-    let metrics = ruv2::NewRUV2Metrics();
-    let details = ruv2::tikvutil::NewRUDetails();
-    let mut first = raw_ru(2, 3, 7, 19);
-    first.set_kv_engine_cache_miss(5);
-    first
-        .mut_executor_inputs()
-        .set_tikv_coprocessor_executor_work_total_batch_index_scan(11);
-    details.AddRUV2(&first);
-    ruv2::SyncRUV2MetricsFromRUDetails(Some(&metrics), Some(&details));
-    assert_eq!(
-        (
-            metrics.ResourceManagerReadCnt(),
-            metrics.ResourceManagerWriteCnt()
-        ),
-        (0, 0)
-    );
-    assert_eq!(metrics.TiKVStorageProcessedKeysBatchGet(), 0);
-    ruv2::SyncRUV2MetricsFromRUDetails(Some(&metrics), Some(&details));
-    assert_eq!(metrics.ResourceManagerReadCnt(), 0);
-    details.AddRUV2(&raw_ru(10, 0, 100, 0));
-    ruv2::SyncRUV2MetricsFromRUDetails(Some(&metrics), Some(&details));
-    assert_eq!(metrics.ResourceManagerReadCnt(), 0);
-    assert_eq!(metrics.TiKVStorageProcessedKeysBatchGet(), 0);
-}
-
-#[test]
-/// bypass 路径下从 RUDetails 同步指标。
-fn test_sync_ruv2_metrics_from_ru_details_bypass() {
-    let metrics = ruv2::NewRUV2Metrics();
-    metrics.SetBypass(true);
-    let details = ruv2::tikvutil::NewRUDetails();
-    details.AddRUV2(&raw_ru(1, 1, 7, 0));
-    ruv2::SyncRUV2MetricsFromRUDetails(Some(&metrics), Some(&details));
-    assert_eq!(
-        (
-            metrics.ResourceManagerReadCnt(),
-            metrics.ResourceManagerWriteCnt(),
-            metrics.TiKVStorageProcessedKeysBatchGet()
-        ),
-        (0, 0, 0)
-    );
-}
-
-#[test]
-/// bypass 路径下从 Ruv2 更新指标。
-fn test_update_ruv2_metrics_from_ruv2_bypass() {
-    let metrics = ruv2::NewRUV2Metrics();
-    metrics.SetBypass(true);
-    ruv2::UpdateRUV2MetricsFromRUV2(Some(&metrics), Some(&raw_ru(1, 1, 1, 0)));
-    assert_eq!(
-        (
-            metrics.ResourceManagerReadCnt(),
-            metrics.ResourceManagerWriteCnt(),
-            metrics.TiKVStorageProcessedKeysBatchGet()
-        ),
-        (0, 0, 0)
-    );
-}
-
-#[test]
-/// 执行器指标录制快路径行为。
-fn test_executor_metric_recorder_fast_path() {
-    for label in ["BatchPointGetExec", "PointGetExecutor", "LimitExec"] {
-        assert!(ruv2::ResolveExecutorMetric(1, label).Available(), "{label}");
-    }
-    assert!(!ruv2::ResolveExecutorMetric(1, "Unknown").Available());
-    assert!(!ruv2::ResolveExecutorMetric(2, "HashAggExec").Available());
-    assert!(!ruv2::ExecutorMetricRecorder::default().Available());
-
-    let fast = ruv2::NewRUV2Metrics();
-    ruv2::ResolveExecutorMetric(1, "BatchPointGetExec").Record(&fast, 7);
-    ruv2::ResolveExecutorMetric(1, "PointGetExecutor").Record(&fast, 3);
-    ruv2::ResolveExecutorMetric(1, "LimitExec").Record(&fast, 5);
-    let slow = ruv2::NewRUV2Metrics();
-    slow.AddExecutorMetric(1, "BatchPointGetExec", 7);
-    slow.AddExecutorMetric(1, "PointGetExecutor", 3);
-    slow.AddExecutorMetric(1, "LimitExec", 5);
-    let mut weights = ruv2::RUV2Weights::default();
-    weights.RUScale = 1.0;
-    weights.ExecutorL1 = 1.0;
-    assert_eq!(
-        fast.CalculateRUValues(weights),
-        slow.CalculateRUValues(weights)
-    );
-}
-
-#[test]
-/// 格式化输出应先给出 RU 数值再列分项。
-fn test_format_ruv2_metrics_includes_ru_values_first() {
-    let weights = default_ruv2_weights_for_test();
-    let metrics = ruv2::NewRUV2Metrics();
-    metrics.AddResultChunkCells(1000);
-    metrics.AddResourceManagerWriteCnt(20);
-    metrics.AddTiKVCoprocessorWorkTotal("BatchTopN", 10);
-    let (total, formatted) = ruv2::FormatRUV2Summary(Some(&metrics), weights, 10987.0, 246.0);
-    assert_eq!(total, "11236.09");
-    assert_eq!(
-        total,
-        ruv2::FormatRUV2Total(Some(&metrics), weights, 10987.0, 246.0)
-    );
-    assert_eq!(
-        formatted,
-        ruv2::FormatRUV2Metrics(Some(&metrics), weights, 10987.0, 246.0)
-    );
-    let parts: Vec<_> = formatted.split(", ").collect();
-    assert_eq!(parts.len(), 7);
-    assert_eq!(
-        &parts[..4],
-        [
-            "total_ru:11236.09",
-            "tidb_ru:3.09",
-            "tikv_ru:10987.00",
-            "tiflash_ru:246.00"
-        ]
-    );
 }
 
 #[test]
@@ -1172,4 +885,36 @@ fn go_merge_187_runtime_evidence_bridge_shared_root() {
         collector.GetRootHashStateRowsSnapshot(3).map(|s| s.Rows),
         None
     );
+}
+#[test]
+fn test_update_ruv2_metrics_keeps_only_coprocessor_response_bytes() {
+    let metrics = ruv2::NewRUV2Metrics();
+    let mut raw = ruv2::kvrpcpb::Ruv2::new();
+    raw.set_coprocessor_response_bytes(97);
+    ruv2::UpdateRUV2MetricsFromRUV2(Some(&metrics), Some(&raw));
+    assert_eq!(metrics.TiKVCoprocessorResponseBytes(), 97);
+}
+
+#[test]
+fn test_sync_ruv2_metrics_from_ru_details_drains_deltas() {
+    let metrics = ruv2::NewRUV2Metrics();
+    let details = ruv2::tikvutil::NewRUDetails();
+    let mut first = ruv2::kvrpcpb::Ruv2::new();
+    first.set_coprocessor_response_bytes(7);
+    details.AddRUV2(&first);
+    ruv2::SyncRUV2MetricsFromRUDetails(Some(&metrics), Some(&details));
+    assert_eq!(metrics.TiKVCoprocessorResponseBytes(), 7);
+    ruv2::SyncRUV2MetricsFromRUDetails(Some(&metrics), Some(&details));
+    assert_eq!(metrics.TiKVCoprocessorResponseBytes(), 7);
+}
+
+#[test]
+fn test_ruv2_metrics_bypass_skips_raw_and_direct_updates() {
+    let metrics = ruv2::NewRUV2Metrics();
+    metrics.SetBypass(true);
+    let mut raw = ruv2::kvrpcpb::Ruv2::new();
+    raw.set_coprocessor_response_bytes(11);
+    ruv2::UpdateRUV2MetricsFromRUV2(Some(&metrics), Some(&raw));
+    metrics.AddTiKVCoprocessorResponseBytes(13);
+    assert_eq!(metrics.TiKVCoprocessorResponseBytes(), 0);
 }

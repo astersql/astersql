@@ -22,15 +22,6 @@
 use std::collections::HashMap;
 use std::hash::Hash;
 
-/// 累加「删除行 × 列」度量：忽略非正增量，溢出时饱和到 `i64::MAX`。
-pub fn addDeleteRowsColMultiply(total: i64, delta: i64) -> i64 {
-    if delta <= 0 || total == i64::MAX {
-        total
-    } else {
-        total.saturating_add(delta)
-    }
-}
-
 /// 子执行器返回的待删除数据块及其内存占用估计。
 pub struct DeleteChunk<D> {
     pub rows: Vec<Vec<D>>,
@@ -95,7 +86,6 @@ pub trait DeleteRuntime {
         context: &mut Self::Context,
     ) -> Result<(), Self::Error>;
     fn batch_delete_error(&self, error: Self::Error) -> Self::Error;
-    fn record_rows_column_multiply(&mut self, total: i64);
     /// Start a fresh processed-write accounting lifecycle when runtime stats are enabled.
     fn reset_write_runtime_stats(&mut self);
     /// Charge processed rows for the target table, including FK-ignored rows.
@@ -177,7 +167,6 @@ impl<R: DeleteRuntime> DeleteExec<R> {
         let mut row_count = 0;
         let mut previous_chunk_memory = 0;
         // 按 chunk 拉取；释放上一块内存后再计入当前块
-        let mut rows_column_multiply = 0;
 
         loop {
             self.runtime.consume_memory(-previous_chunk_memory);
@@ -191,9 +180,6 @@ impl<R: DeleteRuntime> DeleteExec<R> {
             for joined_row in chunk.rows {
                 // 达到 batch 大小则提交并开启新事务
                 if batch_delete && row_count >= batch_size {
-                    self.runtime
-                        .record_rows_column_multiply(rows_column_multiply);
-                    rows_column_multiply = 0;
                     self.doBatchDelete(context)?;
                     row_count = 0;
                 }
@@ -206,16 +192,11 @@ impl<R: DeleteRuntime> DeleteExec<R> {
                 {
                     continue;
                 }
-                let column_count = row.len() - usize::from(extra_handle);
                 self.deleteOneRow(context, table_id, None, extra_handle, &row)?;
-                rows_column_multiply =
-                    addDeleteRowsColMultiply(rows_column_multiply, column_count as i64);
                 row_count += 1;
             }
             self.runtime.may_flush_transaction()?;
         }
-        self.runtime
-            .record_rows_column_multiply(rows_column_multiply);
         Ok(())
     }
 
@@ -280,14 +261,13 @@ impl<R: DeleteRuntime> DeleteExec<R> {
         self.removeRowsInTblRowMap(context, table_rows, &positions)
     }
 
-    /// 遍历 `TableRowMap` 逐行删除并累计列乘积度量。
+    /// 遍历 `TableRowMap` 逐行删除。
     pub fn removeRowsInTblRowMap(
         &mut self,
         context: &mut R::Context,
         table_rows: TableRowMap<R::Handle, R::Datum>,
         positions: &[TableColumnPosition],
     ) -> Result<(), R::Error> {
-        let mut rows_column_multiply = 0;
         for (table_id, rows) in table_rows {
             for (handle, pair) in rows {
                 self.runtime.record_write_cpu_work(table_id, 1);
@@ -305,12 +285,8 @@ impl<R: DeleteRuntime> DeleteExec<R> {
                     &pair.handle_values,
                     Some(&positions[pair.position_index]),
                 )?;
-                rows_column_multiply =
-                    addDeleteRowsColMultiply(rows_column_multiply, pair.handle_values.len() as i64);
             }
         }
-        self.runtime
-            .record_rows_column_multiply(rows_column_multiply);
         Ok(())
     }
 

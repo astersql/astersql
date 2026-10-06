@@ -817,26 +817,6 @@ impl Default for SessionVars {
     }
 }
 impl SessionVars {
-    /// Reads legacy RU weights from the TiKV client configuration.
-    pub fn RUV2Weights(&self) -> execdetails::ruv2_metrics::RUV2Weights {
-        let cfg = config::get_global_config();
-        let weights = &cfg.tikv_client.ruv2;
-        execdetails::ruv2_metrics::RUV2Weights {
-            RUScale: weights.ru_scale,
-            ResultChunkCells: weights.result_chunk_cells,
-            ExecutorL1: weights.executor_l1,
-            ExecutorL2: weights.executor_l2,
-            ExecutorL3: weights.executor_l3,
-            ExecutorL5InsertRows: weights.executor_l5_insert_rows,
-            PlanCnt: weights.plan_cnt,
-            PlanDeriveStatsPaths: weights.plan_derive_stats_paths,
-            ResourceManagerReadCnt: weights.resource_manager_read_cnt,
-            ResourceManagerWriteCnt: weights.resource_manager_write_cnt,
-            WriteKeys: weights.write_keys,
-            SessionParserTotal: weights.session_parser_total,
-            TxnCnt: weights.txn_cnt,
-        }
-    }
     /// 返回会话当前数据库的快照。
     pub fn CurrentDB(&self) -> String {
         self.current_db

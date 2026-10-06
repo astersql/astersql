@@ -299,7 +299,6 @@ pub trait InsertBackend: Send + Sync + 'static {
     fn lock_unchanged_keys(&self) -> bool;
     fn pessimistic_transaction(&self) -> bool;
     fn truncate_as_warning_with_on_duplicate(&self) -> bool;
-    fn record_insert_rows_columns_metric(&self, delta: i64);
     fn invalidate_transaction_write_throughput_sli(&self);
     fn set_current_insert_batch_extra_columns(&self, columns: &[Vec<Self::Datum>]);
 
@@ -594,8 +593,6 @@ pub struct InsertValues<B: InsertBackend> {
     pub curBatchCnt: u64,
     pub maxRowsInBatch: u64,
     pub lastInsertID: u64,
-    pub recordRUV2RowsColMultiply: bool,
-    pub ruv2RecordedRowsColMultiply: i64,
     pub SelectExec: Option<B::Executor>,
     pub Table: B::Table,
     pub Columns: Vec<B::ColumnName>,
@@ -634,33 +631,6 @@ impl<B: InsertBackend> insertCommon<B> for InsertValues<B> {
 }
 
 impl<B: InsertBackend> InsertValues<B> {
-    /// 行数×列数，用于 RU/指标累计。
-    pub fn rowsColMultiply(&self) -> i64 {
-        let column_count = self.insertColumns.len();
-        if self.rowCount == 0 || column_count == 0 {
-            return 0;
-        }
-        let maximum = i64::MAX as u64;
-        if self.rowCount > maximum / column_count as u64 {
-            return i64::MAX;
-        }
-        (self.rowCount * column_count as u64) as i64
-    }
-
-    /// 将行×列乘积记入 RU v2 指标。
-    pub fn recordRowsColMultiply2RUV2Metrics(&mut self) {
-        if !self.recordRUV2RowsColMultiply {
-            return;
-        }
-        let current = self.rowsColMultiply();
-        let delta = current - self.ruv2RecordedRowsColMultiply;
-        if delta <= 0 {
-            return;
-        }
-        self.backend.record_insert_rows_columns_metric(delta);
-        self.ruv2RecordedRowsColMultiply = current;
-    }
-
     /// 解析请求列、补全额外 handle 列并做一次性列检查。
     pub fn initInsertColumns(&mut self) -> Result<(), B::Error> {
         let table_columns = self.backend.table_columns(&self.Table);
@@ -1802,7 +1772,6 @@ pub fn insertRows<B: InsertBackend, C: insertCommon<B>>(
             base.exec(context, &rows)?;
             {
                 let insert = base.insertCommon();
-                insert.recordRowsColMultiply2RUV2Metrics();
                 backend.memory_consume(&tracker, -memory_usage);
                 memory_usage = 0;
                 insert.doBatchInsert(context)?;
@@ -1820,7 +1789,6 @@ pub fn insertRows<B: InsertBackend, C: insertCommon<B>>(
         .lazyAdjustAutoIncrementDatum(context, rows)?;
     base.exec(context, &rows)?;
     let insert = base.insertCommon();
-    insert.recordRowsColMultiply2RUV2Metrics();
     insert.backend.memory_consume(&tracker, -memory_usage);
     Ok(())
 }
@@ -1878,7 +1846,6 @@ pub fn insertRowsFromSelect<B: InsertBackend, C: insertCommon<B>>(
                 total_delta += row_memory + extra_memory;
                 backend.set_current_insert_batch_extra_columns(&extra_columns);
                 base.exec(context, &rows)?;
-                base.insertCommon().recordRowsColMultiply2RUV2Metrics();
                 rows.clear();
                 extra_columns.clear();
                 total_delta -= row_memory + extra_memory;
@@ -1897,7 +1864,6 @@ pub fn insertRowsFromSelect<B: InsertBackend, C: insertCommon<B>>(
             (row_memory, extra_memory)
         };
         base.exec(context, &rows)?;
-        base.insertCommon().recordRowsColMultiply2RUV2Metrics();
         rows.clear();
         extra_columns.clear();
         backend.memory_consume(&tracker, -row_memory - extra_memory - chunk_memory);

@@ -32,7 +32,7 @@ use astersql_errors as errors;
 use astersql_planner_core_base as base;
 use astersql_sessionctx_vardef::QueryLogMaxLen;
 use astersql_util_chunk as chunk;
-pub use astersql_util_execdetails::ruv2_metrics::{RUV2Metrics, RUV2Weights};
+pub use astersql_util_execdetails::ruv2_metrics::RUV2Metrics;
 use astersql_util_execdetails::ruv2_metrics::{SyncRUV2MetricsFromRUDetails, tikvutil};
 
 /// 适配层统一结果类型。
@@ -502,7 +502,6 @@ pub trait AdapterRuntime {
     fn Audit(&self, sql: &str);
     fn ObservePhase(&self, phase: &str, internal: bool, duration: Duration);
     fn RecordDMLMetric(&self, statement_type: &str, value: i64);
-    fn RUV2Weights(&self) -> RUV2Weights;
     fn RUVersion(&self) -> u8 {
         1
     }

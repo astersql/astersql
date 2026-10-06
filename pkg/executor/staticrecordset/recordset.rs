@@ -24,7 +24,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
 use astersql_executor_internal_exec::executor::{
-    self as exec, Chunk, ExecContext, Executor, FieldType, RUV2Metrics,
+    self as exec, Chunk, ExecContext, Executor, FieldType,
 };
 
 /// 与内部执行器共用的错误类型别名。
@@ -52,22 +52,14 @@ pub struct RecordContext {
     pub ru_details: Option<Arc<RUDetails>>,
 }
 impl RecordContext {
-    /// 从 source 继承 RU 明细与 metrics，覆盖到当前上下文的克隆上。
+    /// 从 source 继承 RU 明细，覆盖到当前上下文的克隆上。
     fn inherit(&self, source: &Self) -> Self {
         let mut inherited = self.clone();
-        // 优先保留来源侧已绑定的 RU / metrics，避免会话侧空值冲掉。
+        // 优先保留来源侧已绑定的 RU，避免会话侧空值冲掉。
         if let Some(details) = &source.ru_details {
             inherited.ru_details = Some(details.clone());
         }
-        if let Some(metrics) = &source.exec_context.metrics {
-            inherited.exec_context.metrics = Some(metrics.clone());
-        }
         inherited
-    }
-    /// 绑定 RU v2 指标后返回自身（建造者模式）。
-    pub fn withMetrics(mut self, metrics: Arc<RUV2Metrics>) -> Self {
-        self.exec_context.metrics = Some(metrics);
-        self
     }
 }
 
@@ -118,7 +110,7 @@ impl RecordSet for staticRecordSet {
     }
 
     fn Next(&mut self, ctx: &RecordContext, req: &mut Chunk) -> Result<()> {
-        // 若构造时带了 source_ctx，则把其 RU/metrics 继承到本次调用上下文。
+        // 若构造时带了 source_ctx，则把其 RU 明细继承到本次调用上下文。
         let context = self
             .source_ctx
             .as_ref()

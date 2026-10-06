@@ -1006,50 +1006,9 @@ fn getUnit(d: std::time::Duration) -> std::time::Duration {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-/// RUv2 缩放权重（group1 精简版仅含 RUScale）。
-pub struct RUV2Weights {
-    pub RUScale: f64,
-}
-
-#[derive(Debug, Default)]
-/// 简单 RUv2 累加器（完整版见 ruv2_metrics）。
-pub struct RUV2Metrics {
-    total: std::sync::Mutex<f64>,
-}
-
-impl Clone for RUV2Metrics {
-    fn clone(&self) -> Self {
-        Self {
-            total: std::sync::Mutex::new(*self.total.lock().expect("metrics lock poisoned")),
-        }
-    }
-}
-
-impl RUV2Metrics {
-    pub fn Clone(&self) -> Self {
-        Clone::clone(self)
-    }
-
-    pub fn Add(&self, value: f64) {
-        *self.total.lock().expect("metrics lock poisoned") += value;
-    }
-
-    pub fn Merge(&self, other: Option<&Self>) {
-        if let Some(other) = other {
-            self.Add(*other.total.lock().expect("metrics lock poisoned"));
-        }
-    }
-
-    pub fn TotalRU(&self, weights: RUV2Weights, tikv: f64, tiflash: f64) -> f64 {
-        let scale = if weights.RUScale == 0.0 {
-            1.0
-        } else {
-            weights.RUScale
-        };
-        (*self.total.lock().expect("metrics lock poisoned") + tikv + tiflash) * scale
-    }
-}
+#[derive(Clone, Debug, Default)]
+/// Statement-local RU state storage used by `StmtExecDetails` in this focused crate.
+pub struct RUV2Metrics;
 
 /// 资源管理客户端 RU 版本常量。
 pub mod rmclient {

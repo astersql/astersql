@@ -96,162 +96,9 @@ impl Chunk {
     }
 }
 
-/// Next 路径上累计子算子输入行数与单元格数，供 RUV2 计量。
-#[derive(Default)]
-pub struct NextIOAcc {
-    pub(crate) in_rows: i64,
-    pub(crate) in_cells: i64,
-}
-impl NextIOAcc {
-    pub fn reset(&mut self) {
-        self.in_rows = 0;
-        self.in_cells = 0;
-    }
-    /// 累加输入：零行直接返回；单元格数 = 行 × 列。
-    pub fn addInput(&mut self, rows: usize, cols: usize) {
-        if rows == 0 {
-            return;
-        }
-        self.in_rows = self.in_rows.wrapping_add(rows as i64);
-        self.in_cells = self.in_cells.wrapping_add(calcCellCount(rows, cols));
-    }
-}
-/// 按 Go 的有符号整数语义计算 rows*cols，溢出时二进制回绕。
-pub fn calcCellCount(rows: usize, cols: usize) -> i64 {
-    (rows as i64).wrapping_mul(cols as i64)
-}
-/// 是否需要本地 NextIOAcc：有子节点且（跟踪 RUV2 或存在父级累加器）。
-pub fn needNextIOAcc(trackRUV2: bool, has_parent: bool, child_count: usize) -> bool {
-    child_count > 0 && (trackRUV2 || has_parent)
-}
-
-/// 某类执行器在 RUV2 中的计量元数据：标签、层级、是否按单元格计。
-#[derive(Clone, Debug, Default)]
-pub struct Ruv2ExecutorMetric {
-    pub label: &'static str,
-    pub level: u8,
-    pub use_cells: bool,
-}
-/// 按 Go 类型名字符串映射到 RUV2 计量配置；未知类型返回 None。
-pub fn ruv2ExecutorMetricByType(exec_type: &str) -> Option<Ruv2ExecutorMetric> {
-    let (level, label, use_cells) = match exec_type {
-        "*executor.BatchPointGetExec" => (1, "BatchPointGetExec", true),
-        "*executor.PointGetExecutor" => (1, "PointGetExecutor", true),
-        "*executor.LimitExec" => (1, "LimitExec", true),
-        "*aggregate.HashAggExec" => (2, "HashAggExec", false),
-        "*executor.ExpandExec" => (2, "ExpandExec", false),
-        "*executor.IndexLookUpExecutor" => (2, "IndexLookUpExecutor", false),
-        "*executor.IndexReaderExecutor" => (2, "IndexReaderExecutor", false),
-        "*executor.MemTableReaderExec" => (2, "MemTableReaderExec", false),
-        "*executor.ProjectionExec" => (2, "ProjectionExec", true),
-        "*executor.SelectionExec" => (2, "SelectionExec", false),
-        "*executor.SelectLockExec" => (2, "SelectLockExec", true),
-        "*executor.TableDualExec" => (2, "TableDualExec", false),
-        "*executor.TableReaderExecutor" => (2, "TableReaderExecutor", false),
-        "*executor.UnionScanExec" => (2, "UnionScanExec", false),
-        "*windows.WindowExec" | "*windows.PipelinedWindowExec" | "*windows.OrderedWindowExec" => {
-            (2, "WindowExec", false)
-        }
-        "*join.HashJoinV1Exec" => (2, "HashJoinV1Exec", false),
-        "*join.HashJoinV2Exec" => (2, "HashJoinV2Exec", false),
-        "*join.IndexLookUpJoin" => (2, "IndexLookUpJoin", true),
-        "*join.IndexLookUpMergeJoin" => (2, "IndexLookUpMergeJoin", true),
-        "*join.IndexNestedLoopHashJoin" => (2, "IndexNestedLoopHashJoin", true),
-        "*join.MergeJoinExec" => (2, "MergeJoinExec", false),
-        "*sortexec.TopNExec" => (2, "TopNExec", true),
-        "*aggregate.StreamAggExec" => (3, "StreamAggExec", false),
-        "*sortexec.SortExec" => (3, "SortExec", true),
-        _ => return None,
-    };
-    Some(Ruv2ExecutorMetric {
-        label,
-        level,
-        use_cells,
-    })
-}
-
-/// 会话级 RUV2 指标汇聚：可旁路，并按 (level, label) 累加。
-#[derive(Default)]
-pub struct RUV2Metrics {
-    bypass: AtomicBool,
-    values: Mutex<HashMap<(u8, String), i64>>,
-}
-impl RUV2Metrics {
-    /// 是否跳过计量（旁路）。
-    pub fn Bypass(&self) -> bool {
-        self.bypass.load(Ordering::Acquire)
-    }
-    /// 设置是否旁路 RUV2 计量。
-    pub fn SetBypass(&self, bypass: bool) {
-        self.bypass.store(bypass, Ordering::Release);
-    }
-    /// 累加指定层级/标签的计量增量。
-    pub fn AddExecutorMetric(&self, level: u8, label: &str, delta: i64) {
-        if let Ok(mut values) = self.values.lock() {
-            let value = values.entry((level, label.into())).or_default();
-            *value = value.wrapping_add(delta);
-        }
-    }
-    /// 读取指定层级/标签的累计计量值。
-    pub fn value(&self, level: u8, label: &str) -> i64 {
-        self.values
-            .lock()
-            .ok()
-            .and_then(|v| v.get(&(level, label.into())).copied())
-            .unwrap_or_default()
-    }
-}
-
-/// 单次 Open/Next 调用上下文：可选 RUV2 指标与父级输入累加器。
+/// 单次 Open/Next 调用上下文。
 #[derive(Clone, Default)]
-pub struct ExecContext {
-    pub metrics: Option<Arc<RUV2Metrics>>,
-    input_acc: Option<Arc<Mutex<NextIOAcc>>>,
-}
-impl ExecContext {
-    fn withInputAcc(&self, acc: Arc<Mutex<NextIOAcc>>) -> Self {
-        let mut next = self.clone();
-        next.input_acc = Some(acc);
-        next
-    }
-}
-
-/// 缓存在 BaseExecutor 上的 RUV2 Next 状态，避免每次查表。
-#[derive(Clone, Default)]
-pub struct Ruv2NextCacheState {
-    pub metrics: Option<Arc<RUV2Metrics>>,
-    pub region_name: String,
-    pub info: Option<Ruv2ExecutorMetric>,
-}
-/// 根据执行器类型填充 region 名、计量元数据与可用 metrics 句柄。
-fn populateRUV2NextCache(ctx: &ExecContext, cache: &mut Ruv2NextCacheState, exec_type: &str) {
-    cache.region_name = format!("{exec_type}.Next");
-    cache.info = ruv2ExecutorMetricByType(exec_type);
-    cache.metrics = cache
-        .info
-        .as_ref()
-        .and_then(|_| ctx.metrics.clone())
-        .filter(|metrics| !metrics.Bypass());
-}
-/// 按缓存的计量元数据把本轮 in/out 行或单元格增量写入 RUV2。
-pub fn addRUV2ExecutorMetricCached(
-    metrics: Option<&RUV2Metrics>,
-    info: &Ruv2ExecutorMetric,
-    in_rows: i64,
-    out_rows: i64,
-    in_cells: i64,
-    out_cells: i64,
-) {
-    let Some(metrics) = metrics else { return };
-    let delta = if info.use_cells {
-        in_cells.wrapping_add(out_cells)
-    } else {
-        in_rows.wrapping_add(out_rows)
-    };
-    if delta != 0 {
-        metrics.AddExecutorMetric(info.level, info.label, delta);
-    }
-}
+pub struct ExecContext;
 
 /// 算子基础运行时统计：Open/Next/Close 耗时与产出行数。
 #[derive(Default)]
@@ -293,12 +140,6 @@ pub trait Executor: Send {
         Ok(())
     }
     fn RegisterSQLAndPlanInExecForTopProfiling(&self) {}
-    fn ruv2NextCache(&mut self) -> Option<&mut Ruv2NextCacheState> {
-        None
-    }
-    fn reusableNextIOAcc(&mut self) -> Option<Arc<Mutex<NextIOAcc>>> {
-        None
-    }
     fn Detach(&mut self) -> (Option<Box<dyn Executor>>, bool) {
         (None, false)
     }
@@ -462,8 +303,6 @@ pub struct BaseExecutorV2 {
     allocator: ExecutorChunkAllocator,
     stats: ExecutorStats,
     killed: Arc<AtomicBool>,
-    ruv2_cache: Ruv2NextCacheState,
-    next_io_acc: Arc<Mutex<NextIOAcc>>,
 }
 impl BaseExecutorV2 {
     /// 从会话变量构造基础执行器。
@@ -479,8 +318,6 @@ impl BaseExecutorV2 {
             stats: ExecutorStats::new(vars.stmt_ctx.clone(), id),
             killed: vars.killed.clone(),
             meta,
-            ruv2_cache: Ruv2NextCacheState::default(),
-            next_io_acc: Arc::new(Mutex::new(NextIOAcc::default())),
         }
     }
     /// 基于当前执行器的会话侧状态再构造一个同族实例。
@@ -498,8 +335,6 @@ impl BaseExecutorV2 {
             allocator,
             stats: ExecutorStats::new(self.stats.stmt_ctx.clone(), id),
             killed: self.killed.clone(),
-            ruv2_cache: Ruv2NextCacheState::default(),
-            next_io_acc: Arc::new(Mutex::new(NextIOAcc::default())),
         }
     }
 }
@@ -557,15 +392,6 @@ impl Executor for BaseExecutorV2 {
     }
     fn RegisterSQLAndPlanInExecForTopProfiling(&self) {
         self.stats.RegisterSQLAndPlanInExecForTopProfiling();
-    }
-    fn ruv2NextCache(&mut self) -> Option<&mut Ruv2NextCacheState> {
-        Some(&mut self.ruv2_cache)
-    }
-    fn reusableNextIOAcc(&mut self) -> Option<Arc<Mutex<NextIOAcc>>> {
-        if let Ok(mut acc) = self.next_io_acc.lock() {
-            acc.reset();
-        }
-        Some(self.next_io_acc.clone())
     }
 }
 
@@ -647,17 +473,10 @@ pub fn NewFirstChunk(executor: &dyn Executor) -> Chunk {
     )
 }
 
-/// 包装 Open：填充 RUV2 缓存、捕获 panic，并记录 Open 耗时。
+/// 包装 Open：捕获 panic，并记录 Open 耗时。
 pub fn Open(ctx: &ExecContext, executor: &mut dyn Executor) -> Result<()> {
     let started = Instant::now();
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        let exec_type = executor.executorType();
-        if let Some(cache) = executor.ruv2NextCache() {
-            populateRUV2NextCache(ctx, cache, exec_type);
-        }
-        executor.Open(ctx)
-    }))
-    .unwrap_or(Err(Error::Panic));
+    let result = catch_unwind(AssertUnwindSafe(|| executor.Open(ctx))).unwrap_or(Err(Error::Panic));
     if let Some(stats) = executor.RuntimeStats() {
         if let Ok(mut stats) = stats.lock() {
             stats.RecordOpen(started.elapsed());
@@ -666,66 +485,13 @@ pub fn Open(ctx: &ExecContext, executor: &mut dyn Executor) -> Result<()> {
     result
 }
 
-/// 包装 Next：处理 SQL Killer、RUV2 输入/输出计量、父累加器与运行时统计。
+/// 包装 Next：处理 SQL Killer、运行时统计和查询中断。
 pub fn Next(ctx: &ExecContext, executor: &mut dyn Executor, req: &mut Chunk) -> Result<()> {
     let started = Instant::now();
     let result = catch_unwind(AssertUnwindSafe(|| {
         executor.HandleSQLKillerSignal()?;
-        let exec_type = executor.executorType();
-        // 优先使用缓存的计量元数据；region 名为空时再补填。
-        let (info, metrics, region_empty) = if let Some(cache) = executor.ruv2NextCache() {
-            (
-                cache.info.clone(),
-                cache.metrics.clone(),
-                cache.region_name.is_empty(),
-            )
-        } else {
-            (
-                ruv2ExecutorMetricByType(exec_type),
-                ctx.metrics.clone().filter(|m| !m.Bypass()),
-                false,
-            )
-        };
-        if region_empty {
-            if let Some(cache) = executor.ruv2NextCache() {
-                populateRUV2NextCache(ctx, cache, exec_type);
-            }
-        }
-        let track = info.is_some() && metrics.is_some();
-        let parent_acc = ctx.input_acc.clone();
-        let need_local = needNextIOAcc(track, parent_acc.is_some(), executor.AllChildren().len());
-        // 需要本地累加器时复用 BaseExecutor 上的实例，避免每轮分配。
-        let local_acc = need_local.then(|| {
-            executor
-                .reusableNextIOAcc()
-                .unwrap_or_else(|| Arc::new(Mutex::new(NextIOAcc::default())))
-        });
-        let child_ctx = local_acc
-            .clone()
-            .map_or_else(|| ctx.clone(), |acc| ctx.withInputAcc(acc));
         executor.RegisterSQLAndPlanInExecForTopProfiling();
-        executor.Next(&child_ctx, req)?;
-        // 将本算子产出回写到父级输入累加器。
-        if let Some(parent) = parent_acc {
-            if let Ok(mut parent) = parent.lock() {
-                parent.addInput(req.NumRows(), req.NumCols());
-            }
-        }
-        if track {
-            let (in_rows, in_cells) = local_acc
-                .and_then(|acc| acc.lock().ok().map(|acc| (acc.in_rows, acc.in_cells)))
-                .unwrap_or_default();
-            if let Some(info) = info.as_ref() {
-                addRUV2ExecutorMetricCached(
-                    metrics.as_deref(),
-                    info,
-                    in_rows,
-                    req.NumRows() as i64,
-                    in_cells,
-                    calcCellCount(req.NumRows(), req.NumCols()),
-                );
-            }
-        }
+        executor.Next(ctx, req)?;
         executor.HandleSQLKillerSignal()
     }))
     .unwrap_or(Err(Error::Panic));

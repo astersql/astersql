@@ -104,11 +104,8 @@ impl UpdateRuntime for WriteRuntime {
     fn set_drained(&mut self, drained: bool) {
         self.drained = drained;
     }
-    fn update_rows(&mut self, _: &mut Self::Context) -> Result<(usize, i64), Self::Error> {
-        Ok((3, 7))
-    }
-    fn update_rows_column_multiply_for_prepared_row(&self) -> i64 {
-        0
+    fn update_rows(&mut self, _: &mut Self::Context) -> Result<usize, Self::Error> {
+        Ok(3)
     }
     fn handle_update_error(&mut self, _: usize, error: Self::Error) -> Self::Error {
         error
@@ -119,7 +116,6 @@ impl UpdateRuntime for WriteRuntime {
     fn compose_new_row(&mut self, _: usize, _: &Self::Row) -> Result<Self::Row, Self::Error> {
         Ok(())
     }
-    fn record_rows_column_multiply(&mut self, _: i64) {}
     fn reset_write_runtime_stats(&mut self) {
         self.resets += 1;
     }

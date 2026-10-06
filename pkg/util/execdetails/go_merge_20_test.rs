@@ -17,13 +17,8 @@ fn go_merge_20_only_response_bytes_are_collected() {
         .set_tikv_coprocessor_executor_work_total_batch_index_scan(29);
 
     let statement_metrics = NewRUV2Metrics();
-    let global_response_bytes = metrics::RUV2TiKVCoprocessorResponseBytes.get();
     UpdateRUV2MetricsFromRUV2(Some(&statement_metrics), Some(&raw));
     assert_eq!(statement_metrics.TiKVCoprocessorResponseBytes(), 13);
-    assert_eq!(
-        metrics::RUV2TiKVCoprocessorResponseBytes.get(),
-        global_response_bytes
-    );
 }
 
 #[test]

@@ -2504,8 +2504,8 @@ fn go_merge_187_terminal_once() {
 
 use crate::adapter::{
     AdapterResult, ChunkConfig, Digest, ExecExecutor, FieldName, Key, PessimisticErrorAction,
-    PlanInfo, Priority, RUV2Weights, RebuiltPlan, StatementContext, StatementNode,
-    StatementSummary, TelemetryInfo, pessimisticTxn,
+    PlanInfo, Priority, RebuiltPlan, StatementContext, StatementNode, StatementSummary,
+    TelemetryInfo, pessimisticTxn,
 };
 use astersql_errors as errors;
 use astersql_util_chunk as chunk;
@@ -2673,9 +2673,6 @@ impl crate::adapter::AdapterRuntime for RUTerminalRuntime {
     fn Audit(&self, _sql: &str) {}
     fn ObservePhase(&self, _phase: &str, _internal: bool, _duration: Duration) {}
     fn RecordDMLMetric(&self, _statement_type: &str, _value: i64) {}
-    fn RUV2Weights(&self) -> RUV2Weights {
-        Default::default()
-    }
     fn RUVersion(&self) -> u8 {
         self.ru_version.unwrap_or(2)
     }

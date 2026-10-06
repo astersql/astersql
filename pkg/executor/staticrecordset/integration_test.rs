@@ -18,7 +18,7 @@
 use std::sync::{Arc, Mutex};
 
 use astersql_executor_internal_exec::executor::{
-    Chunk, Error, ExecContext, Executor, FieldType, RUV2Metrics, Schema,
+    Chunk, Error, ExecContext, Executor, FieldType, Schema,
 };
 
 use crate::{ChunkAllocator, CursorHandle, New, RecordContext, RecordSet, ResultField};
@@ -32,7 +32,6 @@ struct TestExecutor {
     next_error: Option<Error>,
     close_error: Option<Error>,
     panic_on_next: bool,
-    seen_metrics: Arc<Mutex<Option<Arc<RUV2Metrics>>>>,
 }
 
 impl TestExecutor {
@@ -46,7 +45,6 @@ impl TestExecutor {
             next_error: None,
             close_error: None,
             panic_on_next: false,
-            seen_metrics: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -65,9 +63,8 @@ impl Executor for TestExecutor {
         Ok(())
     }
 
-    fn Next(&mut self, ctx: &ExecContext, req: &mut Chunk) -> Result<(), Error> {
+    fn Next(&mut self, _ctx: &ExecContext, req: &mut Chunk) -> Result<(), Error> {
         self.record("executor.next");
-        *self.seen_metrics.lock().unwrap() = ctx.metrics.clone();
         if self.panic_on_next {
             panic!("staticrecordset test panic");
         }
@@ -285,27 +282,4 @@ fn static_recordset_converts_next_panic_to_error() {
         recordset.Next(&RecordContext::default(), &mut chunk),
         Err(Error::Panic)
     );
-}
-
-/// 对应 sourceCtx 的 RU v2 继承：调用上下文没有 metrics 时仍使用来源 metrics。
-#[test]
-fn static_recordset_inherits_source_metrics() {
-    let events = Arc::new(Mutex::new(Vec::new()));
-    let executor = executor(events, 1);
-    let seen_metrics = executor.seen_metrics.clone();
-    let metrics = Arc::new(RUV2Metrics::default());
-    let source_context = RecordContext::default().withMetrics(metrics.clone());
-    let mut recordset = New(
-        fields(),
-        Box::new(executor),
-        "select 1".into(),
-        Some(source_context),
-    );
-    let mut chunk = recordset.NewChunk(None);
-
-    recordset
-        .Next(&RecordContext::default(), &mut chunk)
-        .unwrap();
-    let inherited = seen_metrics.lock().unwrap().clone().unwrap();
-    assert!(Arc::ptr_eq(&inherited, &metrics));
 }

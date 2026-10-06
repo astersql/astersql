@@ -152,11 +152,6 @@ fn package_metrics_initialization_covers_go_success_boundary_and_error_paths() {
         );
     }
 
-    // RU v2 执行器计数：已知 level/label 命中，未知 level 返回 None。
-    assert!(astersql_metrics::ru_v2::RUV2ExecutorCounter(1, "BatchPointGetExec").is_some());
-    assert!(astersql_metrics::ru_v2::RUV2ExecutorCounter(2, "FutureExecutor").is_some());
-    assert!(astersql_metrics::ru_v2::RUV2ExecutorCounter(99, "FutureExecutor").is_none());
-
     // channelz 内部目标与空 socket 判定。
     assert!(astersql_metrics::metrics::is_internal_channelz_target(
         "bufnet"

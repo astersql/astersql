@@ -81,9 +81,6 @@ mod session_hint_bridge_aster_unit_test;
 #[path = "session_planner_ids_aster_unit_test.rs"]
 mod session_planner_ids_aster_unit_test;
 #[cfg(test)]
-#[path = "session_ruv2_aster_unit_test.rs"]
-mod session_ruv2_aster_unit_test;
-#[cfg(test)]
 #[path = "slow_log_test.rs"]
 mod slow_log_test;
 #[cfg(test)]

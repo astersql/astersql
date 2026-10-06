@@ -13,25 +13,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// DELETE 执行器指标累加辅助函数的单元测试。
-//
-// `addDeleteRowsColMultiply` 用于累计「删除行数 × 列数」类度量：
-// 忽略非正增量，并用饱和加法防止 `i64` 溢出。
+// DELETE 执行器单元测试。
 
 use std::collections::VecDeque;
 
 use crate::delete::{
-    DeleteChunk, DeleteExec, DeleteRuntime, TableColumnPosition, addDeleteRowsColMultiply,
-    onRemoveRowForFK,
+    DeleteChunk, DeleteExec, DeleteRuntime, TableColumnPosition, onRemoveRowForFK,
 };
-
-/// 验证正增量累加、非正增量忽略，以及接近上限时饱和到 `i64::MAX`。
-#[test]
-fn delete_metric_accumulation_saturates_and_ignores_non_positive_delta() {
-    assert_eq!(addDeleteRowsColMultiply(10, 5), 15);
-    assert_eq!(addDeleteRowsColMultiply(10, -1), 10);
-    assert_eq!(addDeleteRowsColMultiply(i64::MAX - 1, 10), i64::MAX);
-}
 
 #[derive(Default)]
 struct TestRuntime {
@@ -43,7 +31,6 @@ struct TestRuntime {
     extra_handle: bool,
     memory_deltas: Vec<i64>,
     removed: Vec<(i64, i64, Vec<i64>)>,
-    metrics: Vec<i64>,
     commits: usize,
     new_transactions: usize,
     flushes: usize,
@@ -156,10 +143,6 @@ impl DeleteRuntime for TestRuntime {
         "batch delete failed"
     }
 
-    fn record_rows_column_multiply(&mut self, total: i64) {
-        self.metrics.push(total);
-    }
-
     fn reset_write_runtime_stats(&mut self) {
         self.write_stats_resets += 1;
     }
@@ -267,7 +250,6 @@ fn single_table_delete_matches_batch_ignore_fk_metrics_and_memory_flow() {
     );
     assert_eq!(exec.runtime.affected_rows, 2);
     assert_eq!(exec.runtime.write_rows, vec![(7, 2), (7, 1)]);
-    assert_eq!(exec.runtime.metrics, vec![2, 2]);
     assert_eq!(exec.runtime.commits, 1);
     assert_eq!(exec.runtime.new_transactions, 1);
     assert_eq!(exec.runtime.flushes, 2);
@@ -322,7 +304,6 @@ fn multi_table_delete_deduplicates_handles_skips_outer_rows_and_keeps_latest_val
     assert_eq!(exec.runtime.affected_rows, 2);
     exec.runtime.write_rows.sort_unstable();
     assert_eq!(exec.runtime.write_rows, vec![(1, 1), (2, 1)]);
-    assert_eq!(exec.runtime.metrics, vec![4]);
     assert_eq!(exec.runtime.flushes, 1);
     assert_eq!(exec.runtime.memory_deltas, vec![0, 8, 14, 0, -8]);
 }

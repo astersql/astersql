@@ -1358,9 +1358,6 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
             .events
             .push(format!("dml:{statement_type}:{value}"));
     }
-    fn RUV2Weights(&self) -> RUV2Weights {
-        self.session.WithSessionVars(|vars| vars.RUV2Weights())
-    }
     fn RUVersion(&self) -> u8 {
         self.session.domain.ru_version() as u8
     }

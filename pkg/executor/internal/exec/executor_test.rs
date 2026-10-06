@@ -16,16 +16,15 @@
 // 执行器通用包装层的回归测试。
 //
 // 通过可配置的测试执行器记录生命周期事件并注入延迟、错误或 panic，覆盖
-// Next 输入计量、子执行器生命周期、错误包装以及 RUV2 指标映射等公共约束。
+// 子执行器生命周期与错误包装等公共约束。
 
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use crate::executor::{
-    BaseExecutorV2, BasicRuntimeStats, Chunk, Error, ExecContext, Executor, FieldType, RUV2Metrics,
-    Result, Schema, SessionVars, addRUV2ExecutorMetricCached, calcCellCount, needNextIOAcc,
-    ruv2ExecutorMetricByType,
+    BaseExecutorV2, BasicRuntimeStats, Chunk, Error, ExecContext, Executor, FieldType, Result,
+    Schema, SessionVars,
 };
 
 /// 可观察并可注入异常行为的最小执行器，用于隔离验证外层包装逻辑。
@@ -124,43 +123,6 @@ impl Executor for TestExecutor {
     fn RegisterSQLAndPlanInExecForTopProfiling(&self) {
         self.base.RegisterSQLAndPlanInExecForTopProfiling()
     }
-
-    fn ruv2NextCache(&mut self) -> Option<&mut crate::executor::Ruv2NextCacheState> {
-        self.base.ruv2NextCache()
-    }
-
-    fn reusableNextIOAcc(&mut self) -> Option<Arc<Mutex<crate::executor::NextIOAcc>>> {
-        self.base.reusableNextIOAcc()
-    }
-}
-
-#[test]
-/// 验证单元格数及 Next 输入累加器的启用边界与 Go 实现一致。
-fn next_io_accounting_matches_go_boundaries() {
-    assert_eq!(calcCellCount(3, 0), 0);
-    assert_eq!(calcCellCount(3, 4), 12);
-    assert_eq!(calcCellCount(usize::MAX, 2), -2);
-
-    let mut acc = crate::executor::NextIOAcc::default();
-    acc.addInput(3, 0);
-    assert_eq!((acc.in_rows, acc.in_cells), (3, 0));
-    acc.in_rows = i64::MAX;
-    acc.addInput(1, 1);
-    assert_eq!((acc.in_rows, acc.in_cells), (i64::MIN, 1));
-
-    let vars = SessionVars::default();
-    let mut executor = BaseExecutorV2::NewBaseExecutorV2(&vars, None, 0, vec![]);
-    let first = executor.reusableNextIOAcc().unwrap();
-    first.lock().unwrap().addInput(4, 2);
-    let second = executor.reusableNextIOAcc().unwrap();
-    assert!(Arc::ptr_eq(&first, &second));
-    let second_state = second.lock().unwrap();
-    assert_eq!((second_state.in_rows, second_state.in_cells), (0, 0));
-
-    assert!(needNextIOAcc(true, false, 1));
-    assert!(!needNextIOAcc(false, false, 1));
-    assert!(needNextIOAcc(false, true, 1));
-    assert!(!needNextIOAcc(true, true, 0));
 }
 
 #[test]
@@ -219,89 +181,4 @@ fn wrappers_propagate_killer_and_panic_errors() {
         crate::executor::Open(&ExecContext::default(), &mut executor),
         Err(Error::Panic)
     );
-}
-
-#[test]
-/// 验证 Go 执行器类型到 RUV2 元数据的映射，以及按单元格累计的缓存路径。
-fn ruv2_mapping_and_cached_accounting_match_go() {
-    let cases = [
-        ("*executor.BatchPointGetExec", 1, "BatchPointGetExec", true),
-        ("*executor.PointGetExecutor", 1, "PointGetExecutor", true),
-        ("*executor.LimitExec", 1, "LimitExec", true),
-        ("*aggregate.HashAggExec", 2, "HashAggExec", false),
-        ("*aggregate.StreamAggExec", 3, "StreamAggExec", false),
-        ("*executor.ExpandExec", 2, "ExpandExec", false),
-        (
-            "*executor.IndexLookUpExecutor",
-            2,
-            "IndexLookUpExecutor",
-            false,
-        ),
-        (
-            "*executor.IndexReaderExecutor",
-            2,
-            "IndexReaderExecutor",
-            false,
-        ),
-        (
-            "*executor.MemTableReaderExec",
-            2,
-            "MemTableReaderExec",
-            false,
-        ),
-        ("*executor.ProjectionExec", 2, "ProjectionExec", true),
-        ("*executor.SelectionExec", 2, "SelectionExec", false),
-        ("*executor.SelectLockExec", 2, "SelectLockExec", true),
-        ("*executor.TableDualExec", 2, "TableDualExec", false),
-        (
-            "*executor.TableReaderExecutor",
-            2,
-            "TableReaderExecutor",
-            false,
-        ),
-        ("*executor.UnionScanExec", 2, "UnionScanExec", false),
-        ("*join.HashJoinV1Exec", 2, "HashJoinV1Exec", false),
-        ("*join.HashJoinV2Exec", 2, "HashJoinV2Exec", false),
-        ("*join.IndexLookUpJoin", 2, "IndexLookUpJoin", true),
-        (
-            "*join.IndexLookUpMergeJoin",
-            2,
-            "IndexLookUpMergeJoin",
-            true,
-        ),
-        (
-            "*join.IndexNestedLoopHashJoin",
-            2,
-            "IndexNestedLoopHashJoin",
-            true,
-        ),
-        ("*join.MergeJoinExec", 2, "MergeJoinExec", false),
-        ("*sortexec.TopNExec", 2, "TopNExec", true),
-        ("*sortexec.SortExec", 3, "SortExec", true),
-        ("*windows.WindowExec", 2, "WindowExec", false),
-        ("*windows.PipelinedWindowExec", 2, "WindowExec", false),
-        ("*windows.OrderedWindowExec", 2, "WindowExec", false),
-    ];
-    for (typ, level, label, use_cells) in cases {
-        let info = ruv2ExecutorMetricByType(typ).unwrap();
-        assert_eq!(
-            (info.level, info.label, info.use_cells),
-            (level, label, use_cells)
-        );
-    }
-    for stale in [
-        "*executor.HashJoinExec",
-        "*executor.IndexLookUpJoin",
-        "*executor.SortExec",
-        "*executor.WindowExec",
-    ] {
-        assert!(ruv2ExecutorMetricByType(stale).is_none(), "{stale}");
-    }
-
-    let metrics = RUV2Metrics::default();
-    let info = ruv2ExecutorMetricByType("*executor.PointGetExecutor").unwrap();
-    addRUV2ExecutorMetricCached(Some(&metrics), &info, 2, 3, 20, 30);
-    assert_eq!(metrics.value(info.level, info.label), 50);
-    addRUV2ExecutorMetricCached(Some(&metrics), &info, 0, 0, i64::MAX, i64::MAX);
-    assert_eq!(metrics.value(info.level, info.label), 48);
 }

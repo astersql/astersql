@@ -73,10 +73,8 @@ pub trait UpdateRuntime {
     fn drained(&self) -> bool;
     /// 标记执行器是否已完成全部更新。
     fn set_drained(&mut self, drained: bool);
-    /// 从子执行器拉取并批量更新；返回 (首次匹配行数, 列乘积计数)。
-    fn update_rows(&mut self, context: &mut Self::Context) -> Result<(usize, i64), Self::Error>;
-    /// 已准备行的可写列数乘积（用于 affected rows 统计）。
-    fn update_rows_column_multiply_for_prepared_row(&self) -> i64;
+    /// 从子执行器拉取并批量更新；返回首次匹配行数。
+    fn update_rows(&mut self, context: &mut Self::Context) -> Result<usize, Self::Error>;
     /// 包装/记录更新失败（如 IGNORE、错误行号）。
     fn handle_update_error(&mut self, row_index: usize, error: Self::Error) -> Self::Error;
     /// 常量赋值快路径：直接合成新行，跳过表达式求值缓冲。
@@ -91,8 +89,6 @@ pub trait UpdateRuntime {
         row_index: usize,
         old_row: &Self::Row,
     ) -> Result<Self::Row, Self::Error>;
-    /// 累计 rows×columns 统计值。
-    fn record_rows_column_multiply(&mut self, value: i64);
     /// Start a fresh processed-write accounting lifecycle when runtime stats are enabled.
     fn reset_write_runtime_stats(&mut self);
     /// Charge rows matched for the first time, using runtime-owned target-table metadata.
@@ -181,24 +177,14 @@ impl<R: UpdateRuntime> UpdateExec<R> {
         if self.runtime.drained() {
             return Ok(());
         }
-        let (matched_rows, rows_column_multiply) = self.runtime.update_rows(context)?;
+        let matched_rows = self.runtime.update_rows(context)?;
         self.runtime.record_write_cpu_work(matched_rows);
-        self.runtime
-            .record_rows_column_multiply(rows_column_multiply);
         self.runtime.set_drained(true);
         Ok(())
     }
 
-    /// 查询已准备行的列乘积统计。
-    pub fn rowsColMultiplyForPreparedRow(&mut self) -> i64 {
-        // 运行时对当前已匹配且可更新的表行，用饱和算术累加可写列数。
-        // Runtime computes the exact sum of writable columns for the currently
-        // prepared, matched and updatable table rows with saturating arithmetic.
-        self.runtime.update_rows_column_multiply_for_prepared_row()
-    }
-
     /// 批量更新入口。
-    pub fn updateRows(&mut self, context: &mut R::Context) -> Result<(usize, i64), R::Error> {
+    pub fn updateRows(&mut self, context: &mut R::Context) -> Result<usize, R::Error> {
         self.runtime.update_rows(context)
     }
 
