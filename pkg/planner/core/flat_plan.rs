@@ -394,9 +394,13 @@ pub struct FlatPhysicalPlan {
     pub BuildSideFirst: bool,
 }
 
-/// Occurrence-aligned RU values for one operator in an EXPLAIN tree.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+/// Finalized RU projection for one exact flat-plan occurrence.
+///
+/// Keeping the operator together with its values prevents a later render from
+/// collapsing repeated plan IDs or re-flattening a different plan snapshot.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ExplainRUOperatorResult {
+    pub operator: Option<FlatOperator>,
     pub self_ru: f64,
     pub cum_ru: f64,
 }
@@ -409,6 +413,30 @@ pub struct ExplainRUResult {
     pub CTE: Vec<ExplainRUOperatorResult>,
     pub ScalarSubQ: Vec<ExplainRUOperatorResult>,
     pub TotalRU: f64,
+}
+
+/// Build an occurrence-owned result from the exact forest used by the RU
+/// calculator. Callers fill the value fields before transferring the result to
+/// `Explain::SetRUResult`.
+pub fn NewExplainRUResult(flat: Option<&FlatPhysicalPlan>) -> ExplainRUResult {
+    let Some(flat) = flat else {
+        return ExplainRUResult::default();
+    };
+    let own = |tree: &[FlatOperator]| {
+        tree.iter()
+            .cloned()
+            .map(|operator| ExplainRUOperatorResult {
+                operator: Some(operator),
+                ..Default::default()
+            })
+            .collect()
+    };
+    ExplainRUResult {
+        Main: own(&flat.Main),
+        CTE: own(&flat.CTE),
+        ScalarSubQ: own(&flat.ScalarSubQ),
+        TotalRU: 0.0,
+    }
 }
 
 impl FlatPhysicalPlan {
@@ -686,14 +714,15 @@ pub fn ExplainFlatPlanInRUFormat(
     flat: &FlatPhysicalPlan,
     result: Option<&ExplainRUResult>,
 ) -> Vec<Vec<String>> {
-    fn visit(
-        tree: &[FlatOperator],
-        values: Option<&[ExplainRUOperatorResult]>,
+    fn visit_owned(
+        values: &[ExplainRUOperatorResult],
         total_ru: f64,
         rows: &mut Vec<Vec<String>>,
-    ) {
-        let values = values.filter(|values| values.len() == tree.len());
-        for (index, operator) in tree.iter().enumerate() {
+    ) -> bool {
+        for value in values {
+            let Some(operator) = value.operator.as_ref() else {
+                return false;
+            };
             let prefix = if operator.Level == 0 {
                 String::new()
             } else {
@@ -720,54 +749,65 @@ pub fn ExplainFlatPlanInRUFormat(
                 .Origin
                 .actual_rows
                 .map_or_else(|| "N/A".to_owned(), |rows| rows.to_string());
-            let (self_ru, cum_ru, cum_ru_pct) =
-                values.and_then(|values| values.get(index)).map_or_else(
-                    || (String::new(), String::new(), String::new()),
-                    |value| {
-                        let percentage = if total_ru > 0.0 {
-                            value.cum_ru / total_ru * 100.0
-                        } else {
-                            0.0
-                        };
-                        (
-                            format!("{:.2}", value.self_ru),
-                            format!("{:.2}", value.cum_ru),
-                            format!("{percentage:.2}%"),
-                        )
-                    },
-                );
+            let percentage = if total_ru > 0.0 {
+                value.cum_ru / total_ru * 100.0
+            } else {
+                0.0
+            };
             rows.push(vec![
                 id,
                 task,
                 actual_rows,
-                self_ru,
-                cum_ru,
-                cum_ru_pct,
+                format!("{:.2}", value.self_ru),
+                format!("{:.2}", value.cum_ru),
+                format!("{percentage:.2}%"),
                 String::new(),
             ]);
+        }
+        true
+    }
+
+    fn visit_unavailable(tree: &[FlatOperator], rows: &mut Vec<Vec<String>>) {
+        let unavailable = tree
+            .iter()
+            .cloned()
+            .map(|operator| ExplainRUOperatorResult {
+                operator: Some(operator),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        let start = rows.len();
+        let _ = visit_owned(&unavailable, 0.0, rows);
+        for row in &mut rows[start..] {
+            row[3].clear();
+            row[4].clear();
+            row[5].clear();
         }
     }
 
     let mut rows = Vec::with_capacity(flat.Main.len() + flat.CTE.len() + flat.ScalarSubQ.len());
-    let total_ru = result.map_or(0.0, |result| result.TotalRU);
-    visit(
-        &flat.Main,
-        result.map(|result| result.Main.as_slice()),
-        total_ru,
-        &mut rows,
-    );
-    visit(
-        &flat.CTE,
-        result.map(|result| result.CTE.as_slice()),
-        total_ru,
-        &mut rows,
-    );
-    visit(
-        &flat.ScalarSubQ,
-        result.map(|result| result.ScalarSubQ.as_slice()),
-        total_ru,
-        &mut rows,
-    );
+    if let Some(result) = result {
+        let valid = !result.Main.is_empty()
+            && result.Main.iter().all(|value| value.operator.is_some())
+            && result.CTE.iter().all(|value| value.operator.is_some())
+            && result
+                .ScalarSubQ
+                .iter()
+                .all(|value| value.operator.is_some());
+        if valid {
+            let mut owned =
+                Vec::with_capacity(result.Main.len() + result.CTE.len() + result.ScalarSubQ.len());
+            if visit_owned(&result.Main, result.TotalRU, &mut owned)
+                && visit_owned(&result.CTE, result.TotalRU, &mut owned)
+                && visit_owned(&result.ScalarSubQ, result.TotalRU, &mut owned)
+            {
+                return owned;
+            }
+        }
+    }
+    visit_unavailable(&flat.Main, &mut rows);
+    visit_unavailable(&flat.CTE, &mut rows);
+    visit_unavailable(&flat.ScalarSubQ, &mut rows);
     rows
 }
 

@@ -19,7 +19,7 @@
 // 包围符、转义符与行起止符等默认值及显式覆盖行为是否与期望一致。
 
 use super::{Explain, ExplainInfoForEncode, JSONToString, LineFieldsInfo, NewLineFieldsInfo};
-use crate::{ExplainRUOperatorResult, ExplainRUResult, PlanKind, PlanNode, StoreType};
+use crate::{FlattenPhysicalPlan, NewExplainRUResult, PlanKind, PlanNode, StoreType};
 use parser_ast_dependency::LoadDataStmt;
 
 /// 单条用例：SQL 文本与期望的 `LineFieldsInfo`。
@@ -156,25 +156,74 @@ fn explain_render_result_routes_ru_format_to_ru_columns() {
     scan.actual_rows = Some(0);
     let mut root = PlanNode::New(1, PlanKind::TableReader, vec![scan]);
     root.actual_rows = Some(0);
+    let flat = FlattenPhysicalPlan(Some(&root), false).unwrap();
+    let mut result = NewExplainRUResult(Some(&flat));
+    result.Main[0].self_ru = 7.0;
+    result.Main[0].cum_ru = 7.0;
+    result.TotalRU = 7.0;
     let mut explain = Explain {
         TargetPlan: Some(root),
         Format: "ru".into(),
         Analyze: true,
-        RUResult: Some(ExplainRUResult {
-            Main: vec![
-                ExplainRUOperatorResult {
-                    self_ru: 7.0,
-                    cum_ru: 7.0,
-                },
-                ExplainRUOperatorResult::default(),
-            ],
-            TotalRU: 7.0,
-            ..Default::default()
-        }),
         ..Default::default()
     };
+    explain.SetRUResult(Some(result));
 
     explain.RenderResult().unwrap();
     assert_eq!(explain.Rows[0][3..6], ["7.00", "7.00", "100.00%"]);
     assert_eq!(explain.Rows[1][3..6], ["0.00", "0.00", "0.00%"]);
+}
+
+#[test]
+fn explain_ru_result_owns_occurrences_and_clears_stale_values() {
+    let original = PlanNode::New(
+        1,
+        PlanKind::Projection,
+        vec![PlanNode::New(2, PlanKind::Dual, vec![])],
+    );
+    let mut flat = FlattenPhysicalPlan(Some(&original), false).unwrap();
+    flat.CTE = FlattenPhysicalPlan(Some(&PlanNode::New(7, PlanKind::Dual, vec![])), false)
+        .unwrap()
+        .Main;
+    flat.ScalarSubQ = FlattenPhysicalPlan(Some(&PlanNode::New(7, PlanKind::Dual, vec![])), false)
+        .unwrap()
+        .Main;
+    let mut result = NewExplainRUResult(Some(&flat));
+    result.Main[0].self_ru = 3.0;
+    result.Main[0].cum_ru = 3.0;
+    result.CTE[0].self_ru = 2.0;
+    result.CTE[0].cum_ru = 2.0;
+    result.ScalarSubQ[0].self_ru = 1.0;
+    result.ScalarSubQ[0].cum_ru = 1.0;
+    result.TotalRU = 6.0;
+
+    let mut explain = Explain {
+        TargetPlan: Some(PlanNode::New(9, PlanKind::Dual, vec![])),
+        Format: "ru".into(),
+        Analyze: true,
+        ..Default::default()
+    };
+    explain.SetRUResult(Some(result));
+    explain.RenderResult().unwrap();
+    assert_eq!(explain.Rows.len(), 4);
+    assert!(explain.Rows[0][0].contains("Projection_1"));
+    assert_eq!(explain.Rows[0][3..6], ["3.00", "3.00", "50.00%"]);
+    assert_eq!(explain.Rows[2][0], "Dual_7");
+    assert_eq!(explain.Rows[2][3..6], ["2.00", "2.00", "33.33%"]);
+    assert_eq!(explain.Rows[3][0], "Dual_7");
+    assert_eq!(explain.Rows[3][3..6], ["1.00", "1.00", "16.67%"]);
+
+    let mut invalid = NewExplainRUResult(Some(&flat));
+    invalid.Main[0].operator = None;
+    explain.SetRUResult(Some(invalid));
+    explain.RenderResult().unwrap();
+    assert_eq!(explain.Rows.len(), 1);
+    assert!(explain.Rows[0][0].contains("Dual_9"));
+    assert_eq!(explain.Rows[0][3..6], ["", "", ""]);
+
+    explain.SetRUResult(None);
+    explain.RenderResult().unwrap();
+    assert_eq!(explain.Rows.len(), 1);
+    assert!(explain.Rows[0][0].contains("Dual_9"));
+    assert_eq!(explain.Rows[0][3..6], ["", "", ""]);
 }

@@ -14,8 +14,8 @@
 // limitations under the License.
 
 use crate::{
-    ExplainFlatPlanInRUFormat, ExplainFlatPlanInRowFormat, ExplainRUOperatorResult,
-    ExplainRUResult, FlattenPhysicalPlan, JoinType, OperatorLabel, PlanKind, PlanNode, StoreType,
+    ExplainFlatPlanInRUFormat, ExplainFlatPlanInRowFormat, FlattenPhysicalPlan, JoinType,
+    NewExplainRUResult, OperatorLabel, PlanKind, PlanNode, StoreType,
 };
 
 fn node(id: i32, kind: PlanKind, children: Vec<PlanNode>) -> PlanNode {
@@ -109,20 +109,11 @@ fn explain_analyze_ru_format_fills_operator_ru_columns() {
     root.children[0].actual_rows = Some(0);
     root.children[0].store_type = StoreType::TiKV;
     let flat = FlattenPhysicalPlan(Some(&root), false).unwrap();
-    let rows = ExplainFlatPlanInRUFormat(
-        &flat,
-        Some(&ExplainRUResult {
-            Main: vec![
-                ExplainRUOperatorResult {
-                    self_ru: 43.0,
-                    cum_ru: 43.0,
-                },
-                ExplainRUOperatorResult::default(),
-            ],
-            TotalRU: 43.0,
-            ..Default::default()
-        }),
-    );
+    let mut result = NewExplainRUResult(Some(&flat));
+    result.Main[0].self_ru = 43.0;
+    result.Main[0].cum_ru = 43.0;
+    result.TotalRU = 43.0;
+    let rows = ExplainFlatPlanInRUFormat(&flat, Some(&result));
 
     assert_eq!(
         rows,

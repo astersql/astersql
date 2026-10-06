@@ -833,6 +833,7 @@ pub struct Explain {
     pub BriefBinaryPlan: bool,
     /// Occurrence-aligned values used by EXPLAIN ANALYZE FORMAT='ru'.
     pub RUResult: Option<ExplainRUResult>,
+    pub RUResultSet: bool,
 }
 
 /// 物理计划与是否为 Index Nested Loop 子侧的配对。
@@ -842,6 +843,14 @@ pub struct PlanPair {
     pub isChildOfINL: bool,
 }
 impl Explain {
+    /// Transfer one occurrence-owned RU result to this EXPLAIN. Passing `None`
+    /// records a failed recalculation and clears any prior snapshot so rendering
+    /// cannot expose stale or plan-ID-keyed values.
+    pub fn SetRUResult(&mut self, result: Option<ExplainRUResult>) {
+        self.RUResult = result;
+        self.RUResultSet = true;
+    }
+
     /// 扁平化目标计划并按 Format 渲染为行结果。
     pub fn RenderResult(&mut self) -> Result<(), String> {
         let target = self
@@ -851,7 +860,12 @@ impl Explain {
         let flat = FlattenPhysicalPlan(Some(target), false)
             .ok_or_else(|| "cannot flatten an empty plan".to_owned())?;
         self.Rows = if self.Format.eq_ignore_ascii_case("ru") {
-            ExplainFlatPlanInRUFormat(&flat, self.RUResult.as_ref())
+            let result = if self.RUResultSet || self.RUResult.is_some() {
+                self.RUResult.as_ref()
+            } else {
+                None
+            };
+            ExplainFlatPlanInRUFormat(&flat, result)
         } else {
             ExplainFlatPlanInRowFormat(&flat, &self.Format, self.Analyze)
         };
