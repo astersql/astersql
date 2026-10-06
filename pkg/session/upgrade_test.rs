@@ -31,6 +31,7 @@ fn upgrade_to_ver_functions_check() {
 
     let mut last_version = 0;
     let mut first_version_after_reserved_range = None;
+    let mut first_version_after_second_reserved_range = None;
     for versioned_upgrade in crate::upgrade_def::upgradeToVerFunctions.iter() {
         assert!(
             versioned_upgrade.version > last_version,
@@ -40,6 +41,9 @@ fn upgrade_to_ver_functions_check() {
         last_version = versioned_upgrade.version;
         if last_version > 256 && first_version_after_reserved_range.is_none() {
             first_version_after_reserved_range = Some(last_version);
+        }
+        if last_version > 285 && first_version_after_second_reserved_range.is_none() {
+            first_version_after_second_reserved_range = Some(last_version);
         }
 
         EXECUTED_UPGRADES
@@ -63,6 +67,7 @@ fn upgrade_to_ver_functions_check() {
     }
 
     assert_eq!(first_version_after_reserved_range, Some(277));
+    assert_eq!(first_version_after_second_reserved_range, Some(316));
 
     // SAFETY: tests do not mutate the bootstrap version; this mirrors Go's
     // final comparison with currentBootstrapVersion.

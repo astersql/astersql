@@ -282,18 +282,18 @@ fn upgrade_to_ver284_replaces_new_switch_from_legacy_inverse_value() {
 }
 
 #[test]
-fn upgrade_to_ver287_backfills_adaptive_limit_scan_without_overwriting() {
+fn upgrade_to_ver317_backfills_adaptive_limit_scan_without_overwriting() {
     let mut store = VariableStore::default();
-    upgrade_bootstrap_variables(&mut store, 286).unwrap();
+    upgrade_bootstrap_variables(&mut store, 316).unwrap();
     assert_eq!(store.0["tidb_enable_adaptive_limit_scan"], "OFF");
 
     store
         .0
         .insert("tidb_enable_adaptive_limit_scan".into(), "ON".into());
-    upgrade_bootstrap_variables(&mut store, 286).unwrap();
+    upgrade_bootstrap_variables(&mut store, 316).unwrap();
     assert_eq!(store.0["tidb_enable_adaptive_limit_scan"], "ON");
 
     let mut current = VariableStore::default();
-    upgrade_bootstrap_variables(&mut current, 287).unwrap();
+    upgrade_bootstrap_variables(&mut current, 317).unwrap();
     assert!(!current.0.contains_key("tidb_enable_adaptive_limit_scan"));
 }
