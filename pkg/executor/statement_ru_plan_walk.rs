@@ -49,6 +49,7 @@ pub enum StatementRUOperatorState {
 pub struct StatementRUOperatorResult {
     pub state: StatementRUOperatorState,
     pub output_rows: i64,
+    pub output_rows_observed: bool,
 }
 
 /// Go `mergeStatementRUOperatorState` gives invalid evidence priority over
@@ -371,6 +372,7 @@ pub(crate) fn collect_statement_ru_join_units(
     operator: &astersql_planner_core::TypedFlatOperator<'_>,
     children: &[StatementRUOperatorResult],
     output_rows: i64,
+    output_rows_observed: bool,
     stats: Option<&StatementRUPlanEvidence>,
     mpp: bool,
     calculator: &mut StatementRUCalculator,
@@ -387,6 +389,9 @@ pub(crate) fn collect_statement_ru_join_units(
     }
     if children.len() != 2 {
         return Invalid;
+    }
+    if children.iter().any(|child| !child.output_rows_observed) || !output_rows_observed {
+        return Unsupported;
     }
     let Some((count, hash)) = statement_ru_join_contract_for_plan(operator.Origin) else {
         return Unsupported;
@@ -415,6 +420,7 @@ pub(crate) fn collect_statement_ru_aggregation_units(
     operator: &astersql_planner_core::TypedFlatOperator<'_>,
     children: &[StatementRUOperatorResult],
     output_rows: i64,
+    output_rows_observed: bool,
     stats: Option<&StatementRUPlanEvidence>,
     mpp: bool,
     supported_site: bool,
@@ -427,6 +433,9 @@ pub(crate) fn collect_statement_ru_aggregation_units(
     }
     if children.len() != 1 {
         return Invalid;
+    }
+    if !children[0].output_rows_observed || !output_rows_observed {
+        return Unsupported;
     }
     let origin = operator.Origin.as_any();
     let (agg, hash) = if let Some(agg) = origin.downcast_ref::<op::PhysicalHashAgg>() {
@@ -791,6 +800,7 @@ pub fn calculate_statement_ru_plan(
         return StatementRUOperatorResult {
             state: StatementRUOperatorState::Invalid,
             output_rows: 0,
+            output_rows_observed: false,
         };
     }
     calculate_statement_ru_plan_with_operators(
@@ -819,6 +829,7 @@ pub fn calculate_statement_ru_plan_with_operators(
         return StatementRUOperatorResult {
             state: StatementRUOperatorState::Invalid,
             output_rows: 0,
+            output_rows_observed: false,
         };
     }
     calculate_statement_ru_plan_child_first(
@@ -847,6 +858,7 @@ fn calculate_statement_ru_plan_child_first(
     let failed = |state| StatementRUOperatorResult {
         state,
         output_rows: 0,
+        output_rows_observed: false,
     };
     let Some(operator) = tree.get(index).filter(|_| depth > 0) else {
         return failed(Invalid);
@@ -883,12 +895,12 @@ fn calculate_statement_ru_plan_child_first(
         .plans
         .iter()
         .find(|stats| stats.plan_id == operator.Origin.id());
-    let rows = if let Some(stats) = stats {
+    let (rows, output_rows_observed) = if let Some(stats) = stats {
         if operator.IsRoot {
             if stats.root_rows.Invalid() {
                 return failed(Invalid);
             }
-            stats.root_rows.Rows
+            (stats.root_rows.Rows, stats.root_rows.Observed())
         } else if operator.StoreType == astersql_kv::StoreType::TiFlash
             && operator.ReqType == op::ReadReqType::MPP
         {
@@ -896,15 +908,15 @@ fn calculate_statement_ru_plan_child_first(
             if snapshot.is_some_and(|s| s.Invalid || s.Rows > i64::MAX as u64) {
                 return failed(Invalid);
             }
-            snapshot.map_or(0, |s| s.Rows as i64)
+            (snapshot.map_or(0, |s| s.Rows as i64), snapshot.is_some())
         } else {
             if stats.cop_rows.Invalid {
                 return failed(Invalid);
             }
-            stats.cop_rows.Rows
+            (stats.cop_rows.Rows, stats.cop_rows.Observed())
         }
     } else {
-        0
+        (0, false)
     };
     if rows < 0 {
         return failed(Invalid);
@@ -977,7 +989,15 @@ fn calculate_statement_ru_plan_child_first(
         } else {
             StatementRUOperator::LookupJoin
         };
-        collect_statement_ru_join_units(operator, &children, rows, stats, mpp, calculator)
+        collect_statement_ru_join_units(
+            operator,
+            &children,
+            rows,
+            output_rows_observed,
+            stats,
+            mpp,
+            calculator,
+        )
     } else if origin.is::<op::PhysicalHashAgg>() || origin.is::<op::PhysicalStreamAgg>() {
         category = if origin.is::<op::PhysicalHashAgg>() {
             StatementRUOperator::HashAgg
@@ -988,6 +1008,7 @@ fn calculate_statement_ru_plan_child_first(
             operator,
             &children,
             rows,
+            output_rows_observed,
             stats,
             mpp,
             supported_site,
@@ -1329,6 +1350,7 @@ fn calculate_statement_ru_plan_child_first(
     StatementRUOperatorResult {
         state: Complete,
         output_rows: rows,
+        output_rows_observed,
     }
 }
 
