@@ -91,6 +91,11 @@ fn go_merge_2_storage_and_starter_options() {
 #[test]
 fn go_merge_2_ru_weights_and_modes() {
     let mut config = new_config();
+    assert_eq!(
+        std::any::TypeId::of::<StmtWeights>(),
+        std::any::TypeId::of::<astersql_resourcegroup::ruv2::model::StmtWeights>(),
+        "RU v2 configuration must reuse the resource-group statement weight type"
+    );
     assert_eq!(config.ruv2.report_mode, RU_REPORT_MODE_RESULT);
     assert_eq!(config.ruv2.stmt_weights.cpu_work, 1.0);
     assert_eq!(config.ruv2.ddl_weights.txn_kv_bytes, 1.0);

@@ -15,6 +15,8 @@
 
 //! Raw units and weighting model used to calculate RU v3.
 
+use serde::{Deserialize, Serialize};
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct StmtUnits {
     pub write_statement: f64,
@@ -81,8 +83,10 @@ impl StmtUnits {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
 pub struct StmtWeights {
+    #[serde(skip)]
     pub cross_az_net_byte: f64,
     pub cpu_work: f64,
     pub scan_byte: f64,

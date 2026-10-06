@@ -8,6 +8,9 @@ autotests = false
 [lib]
 path = "lib.rs"
 
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
 [package.metadata.porting]
 go-package = "pkg/resourcegroup"
 legacy-tasks = ["task-36", "task-507"]

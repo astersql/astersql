@@ -27,6 +27,8 @@
 // - 维护进程级全局配置快照（`get_global_config` / `store_global_config`）；
 // - 处理配置的 JSON 序列化输出（隐藏已移除/隐藏项）。
 
+pub use astersql_resourcegroup::ruv2::model::StmtWeights;
+use astersql_resourcegroup::ruv2::model::default_weights;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE;
 use once_cell::sync::Lazy;
@@ -135,7 +137,7 @@ impl Default for RUV2Config {
     fn default() -> Self {
         Self {
             report_mode: RU_REPORT_MODE_RESULT.into(),
-            stmt_weights: StmtWeights::default(),
+            stmt_weights: default_weights(),
             ddl_weights: DDLWeights::default(),
         }
     }
@@ -180,42 +182,6 @@ impl Default for TiKVRUV2Config {
     }
 }
 
-/// Statement RU weights, matching the configurable subset of Go's ruv2.StmtWeights.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default, rename_all = "kebab-case")]
-pub struct StmtWeights {
-    #[serde(skip)]
-    pub cross_az_net_byte: f64,
-    pub cpu_work: f64,
-    pub scan_byte: f64,
-    pub net_byte: f64,
-    pub frontend_compile_byte: f64,
-    pub hash_state_row: f64,
-    pub join_output_row: f64,
-    pub write_statement: f64,
-    pub operator_num: f64,
-    pub write_key: f64,
-    pub write_byte: f64,
-}
-
-impl Default for StmtWeights {
-    fn default() -> Self {
-        Self {
-            cross_az_net_byte: 0.0,
-            cpu_work: 1.0,
-            scan_byte: 1.0,
-            net_byte: 1.0,
-            frontend_compile_byte: 1.0,
-            hash_state_row: 1.0,
-            join_output_row: 1.0,
-            write_statement: 1.0,
-            operator_num: 1.0,
-            write_key: 1.0,
-            write_byte: 1.0,
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct DDLWeights {
@@ -239,27 +205,6 @@ fn valid_ru_weight(section: &str, name: &str, value: f64) -> Result<(), ConfigEr
         )));
     }
     Ok(())
-}
-
-impl StmtWeights {
-    fn validate(&self) -> Result<(), ConfigError> {
-        for (name, value) in [
-            ("cpu-work", self.cpu_work),
-            ("scan-byte", self.scan_byte),
-            ("net-byte", self.net_byte),
-            ("cross-az-net-byte", self.cross_az_net_byte),
-            ("frontend-compile-byte", self.frontend_compile_byte),
-            ("hash-state-row", self.hash_state_row),
-            ("join-output-row", self.join_output_row),
-            ("write-statement", self.write_statement),
-            ("operator-num", self.operator_num),
-            ("write-key", self.write_key),
-            ("write-byte", self.write_byte),
-        ] {
-            valid_ru_weight("stmt-weights", name, value)?;
-        }
-        Ok(())
-    }
 }
 
 impl DDLWeights {
@@ -1355,7 +1300,10 @@ impl Config {
                 self.ruv2.report_mode
             )));
         }
-        self.ruv2.stmt_weights.validate()?;
+        self.ruv2
+            .stmt_weights
+            .validate()
+            .map_err(|error| message(format!("ru-v2.stmt-weights.{error}")))?;
         self.ruv2.ddl_weights.validate()?;
         // enable/disable 两个新旧开关同时设置且值冲突时，忽略废弃的 disable 侧。
         if self.log.enable_error_stack == self.log.disable_error_stack

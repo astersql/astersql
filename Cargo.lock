@@ -1811,6 +1811,7 @@ version = "0.1.0"
 dependencies = [
  "astersql-config-configtypes",
  "astersql-config-kerneltype",
+ "astersql-resourcegroup",
  "astersql-testkit-testsetup",
  "base64 0.22.1",
  "once_cell",
@@ -7833,6 +7834,9 @@ dependencies = [
 [[package]]
 name = "astersql-resourcegroup"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "astersql-resourcegroup-runaway"

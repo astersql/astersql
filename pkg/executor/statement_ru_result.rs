@@ -100,20 +100,7 @@ pub fn classify_statement_ru_plan(mut plan: &dyn base::Plan) -> StatementRUPlanI
 /// Read the configured statement weights for each finalization. Go keeps the
 /// weights in the `ru-v2` config section while RU v3 replaces its legacy model.
 pub fn current_statement_ru_weights() -> StmtWeights {
-    let configured = &astersql_config::get_global_config().ruv2.stmt_weights;
-    StmtWeights {
-        cross_az_net_byte: configured.cross_az_net_byte,
-        cpu_work: configured.cpu_work,
-        scan_byte: configured.scan_byte,
-        net_byte: configured.net_byte,
-        frontend_compile_byte: configured.frontend_compile_byte,
-        hash_state_row: configured.hash_state_row,
-        join_output_row: configured.join_output_row,
-        write_statement: configured.write_statement,
-        operator_num: configured.operator_num,
-        write_key: configured.write_key,
-        write_byte: configured.write_byte,
-    }
+    astersql_config::get_global_config().ruv2.stmt_weights
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
