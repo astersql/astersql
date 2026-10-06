@@ -127,6 +127,20 @@ fn preprocess_create_table_runs_real_grammar_checks() {
 }
 
 #[test]
+/// RENAME TABLE 语法检查不能只验证第一组旧/新表名。
+fn rename_tables_checks_every_pair() {
+    let table_name = |schema: &str, name: &str| TableName {
+        schema: schema.to_owned(),
+        name: name.to_owned(),
+        ..Default::default()
+    };
+    let valid_first = (table_name("test", "first"), table_name("test", "first_tmp"));
+    let invalid_second = (table_name("test", "second"), table_name("test", ""));
+    let node = PreprocessNode::RenameTables(vec![valid_first, invalid_second]);
+    assert!(Preprocess(&node, HashMap::new(), &[]).is_err());
+}
+
+#[test]
 /// 别名冲突、擦除末尾分号、以及非 FOR UPDATE 时注入 Limit 的行为对齐 Go。
 fn aliases_semicolons_and_select_limit_match_go_boundaries() {
     let mut aliases = HashMap::new();

@@ -303,6 +303,61 @@ fn privilege_and_import_checks_preserve_go_boundaries() {
 }
 
 #[test]
+/// RENAME TABLE 必须按输入顺序为每个旧/新表对收集完整权限。
+fn rename_tables_collects_privileges_for_every_pair() {
+    let named_table = |db: &str, name: &str| {
+        let mut value = table();
+        value.db = db.to_owned();
+        value.name = name.to_owned();
+        value
+    };
+    let pairs = vec![
+        (
+            named_table("rename_priv_atk", "pair0a"),
+            named_table("rename_priv_atk", "pair0a_tmp"),
+        ),
+        (
+            named_table("rename_priv_vic", "secret"),
+            named_table("rename_priv_atk", "secret_stolen"),
+        ),
+    ];
+    let mut builder = NewPlanBuilder(&[]);
+    let plan = builder
+        .Build(&Statement::RenameTables {
+            pairs: pairs.clone(),
+            user: Some(("rename_low".into(), "%".into())),
+        })
+        .expect("rename tables plan");
+    let BuiltPlan::RenameTables { pairs: planned } = plan else {
+        panic!("expected rename tables plan");
+    };
+    assert_eq!(planned.len(), 2);
+
+    let visits = builder.GetVisitInfo();
+    assert_eq!(visits.len(), 8);
+    assert_eq!(
+        visits
+            .iter()
+            .map(|visit| (&visit.privilege, visit.db.as_str(), visit.table.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            (&Privilege::Alter, "rename_priv_atk", "pair0a"),
+            (&Privilege::Drop, "rename_priv_atk", "pair0a"),
+            (&Privilege::Create, "rename_priv_atk", "pair0a_tmp"),
+            (&Privilege::Insert, "rename_priv_atk", "pair0a_tmp"),
+            (&Privilege::Alter, "rename_priv_vic", "secret"),
+            (&Privilege::Drop, "rename_priv_vic", "secret"),
+            (&Privilege::Create, "rename_priv_atk", "secret_stolen"),
+            (&Privilege::Insert, "rename_priv_atk", "secret_stolen"),
+        ]
+    );
+    assert_eq!(
+        visits[4].error,
+        "ALTER command denied to user 'rename_low'@'%' for table 'secret'"
+    );
+}
+
+#[test]
 /// DDL 作业选项与 next-gen S3 路径 SEM 校验。
 fn ddl_option_and_sem_path_validation_is_real() {
     #[cfg(feature = "nextgen")]

@@ -332,6 +332,10 @@ pub enum Statement {
         kind: String,
         table: Option<TableInfo>,
     },
+    RenameTables {
+        pairs: Vec<(TableInfo, TableInfo)>,
+        user: Option<(String, String)>,
+    },
     Trace {
         format: String,
         stmt: Box<Statement>,
@@ -510,6 +514,9 @@ pub enum BuiltPlan {
     Ddl {
         kind: String,
         table: Option<TableInfo>,
+    },
+    RenameTables {
+        pairs: Vec<(TableInfo, TableInfo)>,
     },
     Explain {
         target: Box<BuiltPlan>,
@@ -723,6 +730,7 @@ impl PlanBuilder {
                 values,
             } => self.buildSplitRegion(table, index.as_deref(), values),
             Statement::Ddl { kind, table } => self.buildDDL(kind, table.as_ref()),
+            Statement::RenameTables { pairs, user } => self.buildRenameTables(pairs, user.as_ref()),
             Statement::Trace { format, stmt } => self.buildTrace(format, stmt),
             Statement::Explain {
                 format,
@@ -1316,6 +1324,41 @@ impl PlanBuilder {
         Ok(BuiltPlan::Ddl {
             kind: kind.into(),
             table: table.cloned(),
+        })
+    }
+    /// 构建 RENAME TABLE 并收集每个旧/新表对的权限要求。
+    pub fn buildRenameTables(
+        &mut self,
+        pairs: &[(TableInfo, TableInfo)],
+        user: Option<&(String, String)>,
+    ) -> Result<BuiltPlan> {
+        for (old, new) in pairs {
+            for (privilege, table, command) in [
+                (Privilege::Alter, old, "ALTER"),
+                (Privilege::Drop, old, "DROP"),
+                (Privilege::Create, new, "CREATE"),
+                (Privilege::Insert, new, "INSERT"),
+            ] {
+                let error = user.as_ref().map_or_else(String::new, |(name, host)| {
+                    format!(
+                        "{command} command denied to user '{name}'@'{host}' for table '{}'",
+                        table.name
+                    )
+                });
+                self.visitInfo.push(visitInfo {
+                    privilege,
+                    db: table.db.clone(),
+                    table: table.name.clone(),
+                    column: String::new(),
+                    error,
+                    alterWritable: false,
+                    dynamicPrivs: Vec::new(),
+                    dynamicWithGrant: false,
+                });
+            }
+        }
+        Ok(BuiltPlan::RenameTables {
+            pairs: pairs.to_vec(),
         })
     }
     /// 构建Trace（对应同名 Go 逻辑）。
