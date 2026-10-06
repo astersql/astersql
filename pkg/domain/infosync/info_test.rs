@@ -9,11 +9,43 @@
 
 use crate::*;
 use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::thread;
 use std::time::Duration;
+
+fn one_shot_columnar_status(body: &'static str) -> (String, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = format!("http://{}", listener.local_addr().unwrap());
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        loop {
+            let count = stream.read(&mut chunk).unwrap();
+            request.extend_from_slice(&chunk[..count]);
+            if request.windows(4).any(|window| window == b"\r\n\r\n") || count == 0 {
+                break;
+            }
+        }
+        assert!(String::from_utf8(request).unwrap().starts_with(
+            "GET /kvengine/columnar_status?keyspace_id=0&table_id=41&index_id=9 HTTP/1.1"
+        ));
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+    });
+    (address, handle)
+}
 
 /// 串行化依赖全局 InfoSyncer 的测试，避免并发互相覆盖。
 pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
@@ -202,6 +234,67 @@ fn test_tiflash_manager() {
     assert!(tiflash.GetTableSyncStatus(2).unwrap().Accel);
     assert!(tiflash.GetTableSyncStatus(3).unwrap().Accel);
     CloseTiFlashManager().unwrap();
+}
+
+#[test]
+fn columnar_index_progress_uses_index_type_and_rejects_old_tikv_for_fulltext() {
+    let _guard = serial();
+    init(None);
+
+    let progress = |body, index_type| {
+        let (address, server) = one_shot_columnar_status(body);
+        let stores = HashMap::from([(
+            7,
+            StoreInfo {
+                Store: StoreMeta {
+                    ID: 7,
+                    StatusAddress: address,
+                    StateName: "Up".into(),
+                    ..Default::default()
+                },
+            },
+        )]);
+        let result = CalculateColumnarIndexProgress(41, 9, index_type, &stores);
+        server.join().unwrap();
+        result
+    };
+
+    let body = r#"{"ready":3,"vector-index-ready":2,"fts-index-ready":1,"total":4}"#;
+    assert_eq!(
+        progress(body, model::ColumnarIndexType::Fulltext).unwrap(),
+        0.25
+    );
+    assert_eq!(
+        progress(body, model::ColumnarIndexType::Vector).unwrap(),
+        0.5
+    );
+
+    let error = progress(
+        r#"{"ready":3,"vector-index-ready":2,"total":4}"#,
+        model::ColumnarIndexType::Fulltext,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("fts-index-ready not found"));
+    assert!(error.contains("store 7"));
+    assert!(error.contains("check TiKV version"));
+
+    let tombstone = HashMap::from([(
+        8,
+        StoreInfo {
+            Store: StoreMeta {
+                ID: 8,
+                StatusAddress: "127.0.0.1:1".into(),
+                StateName: "Tombstone".into(),
+                ..Default::default()
+            },
+        },
+    )]);
+    assert_eq!(
+        CalculateColumnarIndexProgress(41, 9, model::ColumnarIndexType::Fulltext, &tombstone,)
+            .unwrap(),
+        0.0
+    );
 }
 
 #[test]

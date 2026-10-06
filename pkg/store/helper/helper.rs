@@ -1661,15 +1661,47 @@ pub fn SyncTableSchemaToTiFlash(
     Ok(())
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 /// Columnar 引擎状态响应。
 pub struct ColumnarStatusResp {
     #[serde(rename = "ready")]
     pub Ready: u64,
     #[serde(rename = "vector-index-ready")]
     pub VectorIndexReady: u64,
+    #[serde(default, rename = "fts-index-ready")]
+    pub FtsIndexReady: u64,
     #[serde(rename = "total")]
     pub Total: u64,
+    #[serde(default, skip)]
+    pub HasFtsIndexReady: bool,
+}
+
+impl<'de> Deserialize<'de> for ColumnarStatusResp {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Payload {
+            #[serde(rename = "ready")]
+            ready: u64,
+            #[serde(rename = "vector-index-ready")]
+            vector_index_ready: u64,
+            #[serde(default, rename = "fts-index-ready")]
+            fts_index_ready: Option<u64>,
+            #[serde(rename = "total")]
+            total: u64,
+        }
+
+        let payload = Payload::deserialize(deserializer)?;
+        Ok(Self {
+            Ready: payload.ready,
+            VectorIndexReady: payload.vector_index_ready,
+            FtsIndexReady: payload.fts_index_ready.unwrap_or_default(),
+            Total: payload.total,
+            HasFtsIndexReady: payload.fts_index_ready.is_some(),
+        })
+    }
 }
 
 /// 带上下文采集 Columnar 状态。

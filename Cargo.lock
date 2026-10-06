@@ -2719,6 +2719,7 @@ dependencies = [
  "astersql-ddl-label",
  "astersql-ddl-placement",
  "astersql-meta-model",
+ "astersql-store-helper",
  "serde",
  "serde_json",
  "thiserror 2.0.19",

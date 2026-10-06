@@ -706,17 +706,48 @@ pub fn CleanTiFlashProgressCache() -> Result<()> {
 pub fn CalculateColumnarIndexProgress(
     tableID: i64,
     indexID: i64,
+    columnarIndexType: model::ColumnarIndexType,
     stores: &HashMap<i64, StoreInfo>,
 ) -> Result<f64> {
-    if stores.is_empty() {
+    let keyspace_id = getGlobalInfoSyncer()?
+        .tikvCodec
+        .keyspace_id
+        .unwrap_or_default();
+    let mut index_ready = 0_u64;
+    let mut total = 0_u64;
+    for store in stores.values() {
+        let status = match store_helper::CollectColumnarStatus(
+            &store.Store.StatusAddress,
+            keyspace_id,
+            tableID,
+            Some(indexID),
+        ) {
+            Ok(status) => status,
+            Err(_) if store.Store.StateName == "Tombstone" => continue,
+            Err(_) => {
+                return Err(Error::External(format!(
+                    "Failed to get columnar status from TiKV, store {} is {}",
+                    store.Store.StatusAddress, store.Store.StateName
+                )));
+            }
+        };
+        if columnarIndexType == model::ColumnarIndexType::Fulltext {
+            if !status.HasFtsIndexReady {
+                return Err(Error::External(format!(
+                    "fts-index-ready not found in TiKV columnar_status response from {} (store {}); please check TiKV version",
+                    store.Store.StatusAddress, store.Store.ID
+                )));
+            }
+            index_ready += status.FtsIndexReady;
+        } else {
+            index_ready += status.VectorIndexReady;
+        }
+        total += status.Total;
+    }
+    if total == 0 {
         return Ok(0.0);
     }
-    let key = format!("table-{tableID}-index-{indexID}-ready");
-    Ok(stores
-        .values()
-        .filter(|s| s.Store.Labels.get(&key).is_some_and(|v| v == "true"))
-        .count() as f64
-        / stores.len() as f64)
+    Ok(index_ready as f64 / total as f64)
 }
 /// 设置 TiFlash 规则组配置。
 pub fn SetTiFlashGroupConfig() -> Result<()> {

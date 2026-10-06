@@ -469,11 +469,30 @@ fn tiflash_and_columnar_http_paths_match_go() {
     let status = CollectColumnarStatus(&address, 7, 41, Some(9)).unwrap();
     assert_eq!(status.Ready, 2);
     assert_eq!(status.VectorIndexReady, 1);
+    assert_eq!(status.FtsIndexReady, 0);
+    assert!(!status.HasFtsIndexReady);
     assert_eq!(status.Total, 3);
     assert!(request.recv().unwrap().starts_with(
         "GET /kvengine/columnar_status?keyspace_id=7&table_id=41&index_id=9 HTTP/1.1"
     ));
     server.join().unwrap();
+
+    for (body, expected) in [
+        (
+            r#"{"ready":3,"vector-index-ready":2,"fts-index-ready":1,"total":4}"#,
+            1,
+        ),
+        (
+            r#"{"ready":3,"vector-index-ready":2,"fts-index-ready":0,"total":4}"#,
+            0,
+        ),
+    ] {
+        let (address, _, server) = one_shot_http_server(200, body);
+        let status = CollectColumnarStatus(&address, 7, 41, Some(9)).unwrap();
+        assert_eq!(status.FtsIndexReady, expected);
+        assert!(status.HasFtsIndexReady);
+        server.join().unwrap();
+    }
 
     let (address, _, server) = one_shot_http_server(500, "bad status");
     let error = CollectColumnarStatus(&address, 7, 41, None).unwrap_err();
