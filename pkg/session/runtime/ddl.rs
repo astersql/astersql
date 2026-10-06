@@ -2772,6 +2772,18 @@ impl ConcreteSession {
                                 statement.Table.Name.L
                             ))
                         })?;
+                    if current_table.MaterializedView.is_some() {
+                        let operation = match constraint.Tp {
+                            ast::ConstraintType::Unique => Some("ADD UNIQUE INDEX"),
+                            ast::ConstraintType::PrimaryKey => Some("ADD PRIMARY KEY"),
+                            _ => None,
+                        };
+                        if let Some(operation) = operation {
+                            return Err(SessionError::new(format!(
+                                "[ddl:8200]Unsupported ALTER TABLE {operation} on materialized view table"
+                            )));
+                        }
+                    }
                     if constraint.Tp == ast::ConstraintType::PrimaryKey
                         && (current_table.PKIsHandle
                             || current_table.IsCommonHandle

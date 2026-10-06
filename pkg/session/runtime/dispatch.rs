@@ -1926,6 +1926,23 @@ impl ConcreteSession {
             return Ok(None);
         }
         if let Some(create_index) = statement.as_any().downcast_ref::<ast::CreateIndexStmt>() {
+            if create_index.KeyType == ast::IndexKeyType::Unique {
+                let current_database = self.current_database();
+                let database = if create_index.Table.Schema.L.is_empty() {
+                    current_database.as_str()
+                } else {
+                    create_index.Table.Schema.L.as_str()
+                };
+                if self
+                    .domain
+                    .stats_table(database, &create_index.Table.Name.L)
+                    .is_some_and(|(_, table)| table.MaterializedView.is_some())
+                {
+                    return Err(SessionError::new(
+                        "[ddl:8200]Unsupported CREATE UNIQUE INDEX on materialized view table",
+                    ));
+                }
+            }
             let constraint_type = match create_index.KeyType {
                 ast::IndexKeyType::None => ast::ConstraintType::Index,
                 ast::IndexKeyType::Unique => ast::ConstraintType::Unique,

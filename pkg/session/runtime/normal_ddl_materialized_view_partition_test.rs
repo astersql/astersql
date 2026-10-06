@@ -128,3 +128,34 @@ fn materialized_view_roles_guard_exchange_partition() {
         "EXCHANGE PARTITION on partitioned table with materialized view dependencies",
     );
 }
+
+#[test]
+fn materialized_view_rejects_unique_and_primary_indexes() {
+    let fixture = Fixture::new();
+    update_table(&fixture, "normal_ddl_target", |table| {
+        table.MaterializedView = Some(astersql_meta_model::MaterializedViewInfo::default());
+    });
+
+    assert_unsupported(
+        &fixture,
+        "CREATE UNIQUE INDEX unique_id ON test.normal_ddl_target (id)",
+        "Unsupported CREATE UNIQUE INDEX on materialized view table",
+    );
+    assert_unsupported(
+        &fixture,
+        "ALTER TABLE test.normal_ddl_target ADD UNIQUE KEY unique_payload (payload)",
+        "Unsupported ALTER TABLE ADD UNIQUE INDEX on materialized view table",
+    );
+    assert_unsupported(
+        &fixture,
+        "ALTER TABLE test.normal_ddl_target ADD PRIMARY KEY (id) NONCLUSTERED",
+        "Unsupported ALTER TABLE ADD PRIMARY KEY on materialized view table",
+    );
+
+    fixture
+        .pool
+        .acquire()
+        .unwrap()
+        .query("CREATE INDEX payload_idx ON test.normal_ddl_target (payload)")
+        .unwrap();
+}
