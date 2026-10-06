@@ -395,11 +395,10 @@ fn go_merge_33_unsupported_create_table_option() {
         .as_any()
         .downcast_ref::<crate::ast::CreateTableStmt>()
         .unwrap();
-    assert!(
-        create
-            .Options
-            .iter()
-            .any(|option| option.Tp == crate::ast::TableOptionType::StartTransaction)
+    assert_eq!(create.Options.len(), 1);
+    assert_eq!(
+        create.Options[0].Tp,
+        crate::ast::TableOptionType::StartTransaction
     );
     let statement = parser
         .ParseOneStmt(
@@ -420,6 +419,11 @@ fn go_merge_33_unsupported_create_table_option() {
     assert!(
         parser
             .ParseOneStmt("CREATE SEQUENCE s START TRANSACTION", "", "")
+            .is_err()
+    );
+    assert!(
+        parser
+            .ParseOneStmt("ALTER TABLE t START TRANSACTION", "", "")
             .is_err()
     );
     parser.Reset();
