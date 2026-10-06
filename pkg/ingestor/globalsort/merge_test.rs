@@ -214,14 +214,35 @@ fn test_merge_operator_success() {
     assert_eq!(1, outputs.len());
 }
 
-// 并发度为 0 时构造 MergeOperator 应返回 InvalidArgument。
+// Go 会把零并发提升到 1，并按每核内存规划 reader 预算。
 #[test]
-fn test_merge_operator_rejects_zero_concurrency() {
+fn test_merge_operator_memory_plan_and_zero_concurrency() {
+    const GIB: i64 = 1024 * 1024 * 1024;
+    const MIB: i64 = 1024 * 1024;
+    assert_eq!(
+        crate::merge::get_merge_reader_memory(9 * GIB / 10, 1),
+        9 * GIB / 50
+    );
+    assert_eq!(
+        crate::merge::get_merge_reader_memory(4 * GIB, 3),
+        3 * 256 * MIB
+    );
+    let input_size = 80 * GIB;
+    let part_size = crate::merge::get_merge_part_size(input_size, 33, 16 * MIB as usize);
+    let max_output_size = input_size + 33 * 16 * MIB;
+    let max_parts = astersql_ingestor_simplesst::onefile_writer::MaxUploadPartCount as i64;
+    let expected = max_output_size / max_parts + i64::from(max_output_size % max_parts != 0);
+    assert_eq!(part_size, expected);
+    assert_eq!(
+        crate::merge::get_merge_part_size(MIB, 1, MIB as usize),
+        5 * MIB
+    );
+
     let store: Arc<dyn Storage> = Arc::new(MemoryStorage::default());
-    let result = NewMergeOperator(
+    let operator = NewMergeOperator(
         CancellationToken::default(),
         store,
-        0,
+        4 * GIB,
         "/out",
         0,
         None,
@@ -229,12 +250,13 @@ fn test_merge_operator_rejects_zero_concurrency() {
         0,
         false,
         OnDuplicateKey::Ignore,
+    )
+    .expect("zero concurrency is normalized like Go");
+    assert!(
+        crate::merge::MergeOverlappingFiles(&[], &operator)
+            .expect("normalized operator accepts empty input")
+            .is_empty()
     );
-    match result {
-        Err(Error::InvalidArgument(_)) => {}
-        Err(other) => panic!("expected InvalidArgument, got {other:?}"),
-        Ok(_) => panic!("expected InvalidArgument, got Ok"),
-    }
 }
 
 // 取消令牌已触发时，合并应立即以 Cancelled 失败。
@@ -328,7 +350,6 @@ fn test_merge_overlapping_files_internal_ignore_and_collector() {
         &CancellationToken::default(),
         &["/in/0.data".to_owned()],
         &store,
-        0,
         "/out",
         "0",
         0,
@@ -387,7 +408,6 @@ fn test_merge_duplicate_modes_match_one_file_writer() {
             &CancellationToken::default(),
             &["/in/modes.data".to_owned()],
             &store,
-            0,
             "/out",
             writer_id,
             0,
@@ -451,7 +471,6 @@ fn test_merge_collector_counts_rows_before_duplicate_filtering() {
         &CancellationToken::default(),
         &["/in/collector.data".to_owned()],
         &store,
-        0,
         "/out",
         "remove-collector",
         0,
@@ -482,7 +501,6 @@ fn test_merge_collector_counts_rows_before_duplicate_filtering() {
         &CancellationToken::default(),
         &["/in/collector.data".to_owned()],
         &store,
-        0,
         "/out",
         "error-collector",
         0,
@@ -528,7 +546,6 @@ fn test_merge_sorted_unique_data_round_trip() {
         &CancellationToken::default(),
         &["/in/even.data".to_owned(), "/in/odd.data".to_owned()],
         &store,
-        0,
         "/out",
         "merged",
         0,
@@ -592,7 +609,6 @@ fn merge_uses_object_streams_without_whole_file_reads() {
         &CancellationToken::default(),
         &["a".into(), "b".into()],
         &store,
-        0,
         "out",
         "stream",
         0,
@@ -703,7 +719,6 @@ fn merge_reads_and_writes_go_simplesst_wire_format() {
         &CancellationToken::default(),
         &["a".into(), "b".into()],
         &store,
-        0,
         "out",
         "go",
         0,

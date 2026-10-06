@@ -9,6 +9,7 @@ use crate::backfilling_read_index::SortedKvMeta;
 #[derive(Default)]
 struct BackendStub {
     merge_concurrency: Option<usize>,
+    merge_memory_per_core: Option<u64>,
     worker_pool_size: usize,
     tuned: Vec<(usize, bool)>,
 }
@@ -17,11 +18,12 @@ impl MergeSortBackend for BackendStub {
     fn merge_overlapping_files(
         &mut self,
         _files: &[String],
-        _part_size: u64,
+        memory_per_core: u64,
         _output_prefix: &str,
         concurrency: usize,
     ) -> Result<Vec<SortedKvMeta>, MergeBackendError> {
         self.merge_concurrency = Some(concurrency);
+        self.merge_memory_per_core = Some(memory_per_core);
         Ok(vec![SortedKvMeta {
             start_key: b"a".to_vec(),
             end_key: b"z".to_vec(),
@@ -73,6 +75,7 @@ fn zero_concurrency_is_forwarded_like_go() {
         .run_subtask(13, &mut meta, 0, 0, None)
         .expect("merge succeeds");
     assert_eq!(executor.backend.merge_concurrency, Some(0));
+    assert_eq!(executor.backend.merge_memory_per_core, Some(0));
 
     executor.running = true;
     executor.backend.worker_pool_size = 1;

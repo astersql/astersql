@@ -5,6 +5,12 @@
 // 从多个有序 SST 数据文件归并键值，空文件在首读 EOF 时关闭并不参与输出。
 // 归并用最小堆按 key 选路，保证全局有序。
 
+fn reader_memory_for_concurrency(concurrency: usize) -> i64 {
+    let per_reader = crate::byte_reader::ConcurrentReaderBufferSizePerConc
+        .load(std::sync::atomic::Ordering::Acquire);
+    concurrency.saturating_mul(per_reader) as i64
+}
+
 /// 左、空、右三路输入归并后应按 a、b、c、d 顺序产出。
 #[test]
 fn canonical_merge_kv_iter_orders_all_inputs_and_closes_empty_readers() {
@@ -155,7 +161,15 @@ fn test_merge_iter_switch_mode() {
         write_rows(&storage, &format!("switch-{file}"), &refs);
     }
     let paths = (0..4).map(|i| format!("switch-{i}")).collect::<Vec<_>>();
-    let mut iter = MergeKVIter::new_with_options(&paths, &storage, None, 2, true, 1).unwrap();
+    let mut iter = MergeKVIter::new_with_options(
+        &paths,
+        &storage,
+        None,
+        2,
+        true,
+        reader_memory_for_concurrency(1),
+    )
+    .unwrap();
     iter.set_hotspot_check_period(3);
     let mut output = Vec::new();
     while iter.next() {
@@ -213,7 +227,7 @@ fn test_hotspot() {
         None,
         2,
         true,
-        1,
+        reader_memory_for_concurrency(1),
     )
     .unwrap();
     iter.set_hotspot_check_period(2);
@@ -248,7 +262,15 @@ fn test_memory_usage_when_hotspot_change() {
         write_rows(&storage, &path, &refs);
         paths.push(path);
     }
-    let mut iter = MergeKVIter::new_with_options(&paths, &storage, None, 64, true, 16).unwrap();
+    let mut iter = MergeKVIter::new_with_options(
+        &paths,
+        &storage,
+        None,
+        64,
+        true,
+        reader_memory_for_concurrency(16),
+    )
+    .unwrap();
     iter.set_hotspot_check_period(5);
     let mut count = 0;
     while iter.next() {
@@ -406,7 +428,39 @@ fn test_merge_kv_iter_pass_wrong_param() {
     let error = MergeKVIter::new_with_options(&[], &MemoryStorage::default(), None, 1, true, 0)
         .err()
         .unwrap();
-    assert!(error.to_string().contains("outerConcurrency"));
+    assert!(error.to_string().contains("no reader openers"));
+}
+
+#[test]
+fn merge_kv_iter_tracks_unread_input_and_bounds_reader_concurrency() {
+    use crate::byte_reader::ConcurrentReaderBufferSizePerConc;
+    use crate::iter::{MergeKVIter, get_concurrent_reader_concurrency};
+
+    let storage = crate::MemoryStorage::default();
+    write_rows(&storage, "size-a", &[(b"a", b"1")]);
+    write_rows(&storage, "size-b", &[(b"b", b"22")]);
+    let total = storage.read("size-a").unwrap().len() + storage.read("size-b").unwrap().len();
+    let per_reader = ConcurrentReaderBufferSizePerConc.load(std::sync::atomic::Ordering::Acquire);
+    assert_eq!(
+        get_concurrent_reader_concurrency((300 * per_reader) as i64),
+        256
+    );
+    assert_eq!(
+        get_concurrent_reader_concurrency((4 * per_reader) as i64),
+        4
+    );
+    assert_eq!(get_concurrent_reader_concurrency(0), 0);
+
+    let iter = MergeKVIter::new_with_options(
+        &["size-a".into(), "size-b".into()],
+        &storage,
+        Some(&[0, 0]),
+        64,
+        true,
+        (4 * per_reader) as i64,
+    )
+    .unwrap();
+    assert_eq!(iter.InputSize(), total as i64);
 }
 
 #[test]

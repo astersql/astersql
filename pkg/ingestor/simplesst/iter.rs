@@ -84,6 +84,8 @@ pub struct MergeKVIter {
     hotspot_period: usize,
     hotspot_since_check: usize,
     current_hotspot: Option<usize>,
+    concurrent_reader_concurrency: usize,
+    input_size: i64,
 }
 impl MergeKVIter {
     /// 打开各路径、读取首元素并建堆；空文件对应槽位为 None。
@@ -103,13 +105,8 @@ impl MergeKVIter {
         offsets: Option<&[u64]>,
         buffer_size: usize,
         check_hotspot: bool,
-        outer_concurrency: usize,
+        reader_memory_size: i64,
     ) -> Result<Self> {
-        if outer_concurrency == 0 {
-            return Err(Error::InvalidData(
-                "outerConcurrency must be positive".into(),
-            ));
-        }
         if paths.is_empty() {
             return Err(Error::InvalidData("no reader openers".into()));
         }
@@ -118,8 +115,11 @@ impl MergeKVIter {
         }
         let mut readers: Vec<Option<KVReader>> = Vec::with_capacity(paths.len());
         let mut heap = BinaryHeap::new();
+        let mut input_size = 0_i64;
         for (index, path) in paths.iter().enumerate() {
             let offset = offsets.map_or(0, |v| v[index]);
+            let file_size = storage.read(path)?.len() as u64;
+            input_size = input_size.saturating_add(file_size.saturating_sub(offset) as i64);
             let mut reader = match KVReader::from_storage(storage, path, offset, buffer_size.max(1))
             {
                 Ok(reader) => reader,
@@ -170,6 +170,8 @@ impl MergeKVIter {
             hotspot_period: 10_000,
             hotspot_since_check: 0,
             current_hotspot: None,
+            concurrent_reader_concurrency: get_concurrent_reader_concurrency(reader_memory_size),
+            input_size,
         })
     }
     /// 弹出堆顶并补充同源下一键；返回 false 表示耗尽或已出错。
@@ -228,13 +230,14 @@ impl MergeKVIter {
             if let Some(index) = next
                 && let Some(reader) = self.readers[index].as_mut()
             {
-                if reader
-                    .enable_concurrent_read(
-                        1,
-                        crate::byte_reader::ConcurrentReaderBufferSizePerConc
-                            .load(std::sync::atomic::Ordering::Acquire),
-                    )
-                    .is_ok()
+                if self.concurrent_reader_concurrency > 0
+                    && reader
+                        .enable_concurrent_read(
+                            self.concurrent_reader_concurrency,
+                            crate::byte_reader::ConcurrentReaderBufferSizePerConc
+                                .load(std::sync::atomic::Ordering::Acquire),
+                        )
+                        .is_ok()
                 {
                     let _ = reader.switch_concurrent_mode(true);
                 }
@@ -292,6 +295,14 @@ impl MergeKVIter {
     pub fn open_reader_count(&self) -> usize {
         self.readers.iter().flatten().count()
     }
+    /// 创建迭代器时所有输入文件尚未读取的总字节数。
+    pub fn input_size(&self) -> i64 {
+        self.input_size
+    }
+    /// Go 风格别名：`input_size`。
+    pub fn InputSize(&self) -> i64 {
+        self.input_size()
+    }
     /// Go 风格别名：`next`。
     pub fn Next(&mut self) -> bool {
         self.next()
@@ -312,6 +323,17 @@ impl MergeKVIter {
     pub fn Close(&mut self) -> Result<()> {
         self.close()
     }
+}
+
+/// 根据总读内存预算计算热点文件的并发读取数，并限制为全局上限。
+pub fn get_concurrent_reader_concurrency(reader_memory_size: i64) -> usize {
+    const TOTAL_CONCURRENCY_LIMIT: usize = 256;
+    let per_reader = crate::byte_reader::ConcurrentReaderBufferSizePerConc
+        .load(std::sync::atomic::Ordering::Acquire) as i64;
+    if per_reader <= 0 {
+        return 0;
+    }
+    (reader_memory_size.max(0) / per_reader).min(TOTAL_CONCURRENCY_LIMIT as i64) as usize
 }
 
 /// 带权重的惰性多路归并器；只打开总权重不超过 limit 的连续 reader 窗口。

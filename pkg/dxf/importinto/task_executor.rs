@@ -716,8 +716,6 @@ pub struct MergeSortStepExecutor {
     runtime: Arc<ConfiguredEncodeSortRuntime>,
     summary: execute::SubtaskSummary,
     framework: Option<execute::FrameworkInfo>,
-    data_part_size: i64,
-    index_part_size: i64,
 }
 
 pub fn NewMergeSortStepExecutor(
@@ -731,8 +729,6 @@ pub fn NewMergeSortStepExecutor(
         runtime,
         summary: execute::SubtaskSummary::default(),
         framework: None,
-        data_part_size: 0,
-        index_part_size: 0,
     }
 }
 
@@ -774,13 +770,6 @@ impl execute::StepExecutor for MergeSortStepExecutor {
     fn Init(&mut self, _: execute::Context) -> anyhow::Result<()> {
         let resource = execute::StepExecFrameworkInfo::GetResource(self)
             .ok_or_else(|| anyhow::anyhow!("merge sort resource is unavailable"))?;
-        let (data, index) = getWriterMemorySizeLimit(&resource, &self.task_meta.Plan);
-        let maximum = globalsort::merge::MaxMergingFilesPerThread.load(Ordering::Relaxed) as u64;
-        let divisor = astersql_ingestor_simplesst::onefile_writer::MaxUploadPartCount as u64;
-        self.data_part_size = ((data.wrapping_mul(maximum) / divisor) as i64)
-            .max(globalsort::merge::MinUploadPartSize);
-        self.index_part_size = ((index.wrapping_mul(maximum) / divisor) as i64)
-            .max(globalsort::merge::MinUploadPartSize);
         Ok(())
     }
     fn RunSubtask(
@@ -818,11 +807,7 @@ impl execute::StepExecutor for MergeSortStepExecutor {
             let resource = execute::StepExecFrameworkInfo::GetResource(self)
                 .ok_or_else(|| anyhow::anyhow!("merge sort resource is unavailable"))?;
             let concurrency = resource.CPU.Capacity().max(1) as usize;
-            let part_size = if meta.KVGroup == DATA_KV_GROUP {
-                self.data_part_size
-            } else {
-                self.index_part_size
-            };
+            let memory_per_core = resource.MemoryPerCore();
             let indices = self
                 .task_meta
                 .Plan
@@ -876,7 +861,7 @@ impl execute::StepExecutor for MergeSortStepExecutor {
             let operator = globalsort::merge::NewMergeOperator(
                 globalsort::reader::CancellationToken::default(),
                 adapter,
-                part_size,
+                memory_per_core,
                 crate::encode_and_sort_operator::subtaskPrefix(self.task_id, subtask.ID),
                 astersql_ingestor_simplesst::onefile_writer::DefaultOneWriterBlockSize,
                 Some(on_close),

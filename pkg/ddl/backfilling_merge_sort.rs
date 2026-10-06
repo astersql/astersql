@@ -57,7 +57,7 @@ pub trait MergeSortBackend {
     /// 将一组键范围可能互相重叠的有序 KV 文件归并成互不重叠的输出文件。
     ///
     /// - `files`：待归并的输入文件路径列表；
-    /// - `part_size`：单个输出分片的目标大小（字节）；
+    /// - `memory_per_core`：每个 CPU 核可用于归并的内存（字节）；
     /// - `output_prefix`：输出文件在云存储中的路径前缀；
     /// - `concurrency`：归并并发度（工作线程数）。
     ///
@@ -65,7 +65,7 @@ pub trait MergeSortBackend {
     fn merge_overlapping_files(
         &mut self,
         files: &[String],
-        part_size: u64,
+        memory_per_core: u64,
         output_prefix: &str,
         concurrency: usize,
     ) -> Result<Vec<SortedKvMeta>, MergeBackendError>;
@@ -138,7 +138,7 @@ impl<B: MergeSortBackend> MergeSortExecutor<B> {
     /// 执行一个归并排序子任务。
     ///
     /// 流程：
-    /// 1. 根据每核内存估算输出分片大小 `part_size`；
+    /// 1. 把每核内存预算交给归并算子统一规划 reader 内存；
     /// 2. 调用后端把子任务元数据 `meta` 中记录的重叠数据文件归并成
     ///    互不重叠的文件；
     /// 3. 将各批次的排序 KV 元数据合并成一份，写回 `meta.meta_groups`；
@@ -158,15 +158,15 @@ impl<B: MergeSortBackend> MergeSortExecutor<B> {
         if !self.initialized {
             return Err(MergeSortError::NotInitialized);
         }
-        // 分片大小取 5MiB 与「每核内存 * 0.0008」中的较大者：
-        // 既保证分片不至于过小（避免产生过多小文件），又与可用内存成正比。
-        let part_size = (5_u64 << 20).max(memory_per_core.saturating_mul(8) / 10_000);
         // 输出文件前缀按「任务 ID/子任务 ID」组织，避免不同子任务互相覆盖。
         let prefix = format!("{}/{}", self.task_id, subtask_id);
         self.running = true;
-        let merge_result =
-            self.backend
-                .merge_overlapping_files(&meta.data_files, part_size, &prefix, concurrency);
+        let merge_result = self.backend.merge_overlapping_files(
+            &meta.data_files,
+            memory_per_core,
+            &prefix,
+            concurrency,
+        );
         self.running = false;
         let summaries = match merge_result {
             Ok(summaries) => summaries,

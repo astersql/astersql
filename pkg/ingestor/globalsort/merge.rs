@@ -29,6 +29,8 @@ use crate::{ConflictInfo, Error, KvPair, OnDuplicateKey, Result, Storage, Writer
 pub static MaxMergingFilesPerThread: AtomicUsize = AtomicUsize::new(250);
 /// 对象存储分片上传的最小 part 大小（5MiB）。
 pub const MinUploadPartSize: i64 = 5 * 1024 * 1024;
+/// 每个 CPU 核最多分配给归并 reader 的内存（256 MiB）。
+pub const MaxMergeReaderMemoryPerCore: i64 = 256 * 1024 * 1024;
 
 /// 归并过程中的字节/行数收集回调。
 pub trait Collector: Send + Sync {
@@ -74,7 +76,7 @@ pub type OnWriterClose = Arc<dyn Fn(&WriterSummary) + Send + Sync>;
 pub struct MergeOperator {
     token: CancellationToken,
     store: Arc<dyn Storage>,
-    part_size: i64,
+    total_reader_memory_size: i64,
     new_file_prefix: String,
     block_size: usize,
     on_writer_close: Option<OnWriterClose>,
@@ -87,12 +89,12 @@ pub struct MergeOperator {
     running_pool: Mutex<Option<Arc<Mutex<pool::WorkerPool<MergeTask, (usize, String)>>>>>,
 }
 
-/// 创建归并算子；`concurrency` 必须大于 0，`part_size` 会抬升到至少 `MinUploadPartSize`。
+/// 创建归并算子；每核 reader 内存最多 256 MiB，并发度至少为 1。
 #[allow(clippy::too_many_arguments)]
 pub fn NewMergeOperator(
     token: CancellationToken,
     store: Arc<dyn Storage>,
-    part_size: i64,
+    memory_per_core: i64,
     new_file_prefix: impl Into<String>,
     block_size: usize,
     on_writer_close: Option<OnWriterClose>,
@@ -101,16 +103,11 @@ pub fn NewMergeOperator(
     check_hotspot: bool,
     on_duplicate: OnDuplicateKey,
 ) -> Result<MergeOperator> {
-    if concurrency == 0 {
-        return Err(Error::InvalidArgument(
-            "merge concurrency must be greater than zero".into(),
-        ));
-    }
+    let concurrency = concurrency.max(1);
     Ok(MergeOperator {
         token,
         store,
-        // 预留 1MiB 余量后再与最小 part 取 max，对齐 Go 侧上传分片约束。
-        part_size: part_size.saturating_add(1024 * 1024).max(MinUploadPartSize),
+        total_reader_memory_size: get_merge_reader_memory(memory_per_core, concurrency),
         new_file_prefix: new_file_prefix.into(),
         block_size,
         on_writer_close,
@@ -122,6 +119,14 @@ pub fn NewMergeOperator(
         conflict_info: Arc::new(Mutex::new(ConflictInfo::default())),
         running_pool: Mutex::new(None),
     })
+}
+
+/// 返回一个归并子任务的总 reader 内存预算。
+pub fn get_merge_reader_memory(memory_per_core: i64, concurrency: usize) -> i64 {
+    MaxMergeReaderMemoryPerCore
+        .min(memory_per_core / 5)
+        .max(0)
+        .saturating_mul(concurrency as i64)
 }
 
 impl MergeOperator {
@@ -143,6 +148,7 @@ impl MergeOperator {
 struct MergeTask {
     id: usize,
     files: Vec<String>,
+    active_group_count: usize,
 }
 impl pool::TaskMayPanic for MergeTask {
     fn RecoverArgs(&self) -> (String, String, Option<pool::Error>) {
@@ -156,14 +162,13 @@ impl pool::TaskMayPanic for MergeTask {
 struct MergeWorker {
     token: CancellationToken,
     store: Arc<dyn Storage>,
-    part_size: i64,
+    total_reader_memory_size: i64,
     prefix: String,
     block_size: usize,
     writer_closed: Option<OnWriterClose>,
     collector: Option<Arc<dyn Collector>>,
     hotspot: bool,
     duplicate: OnDuplicateKey,
-    groups: usize,
     conflicts: Arc<Mutex<ConflictInfo>>,
     error: Arc<Mutex<Option<Error>>>,
 }
@@ -177,7 +182,6 @@ impl pool::Worker<MergeTask, (usize, String)> for MergeWorker {
             &self.token,
             &task.files,
             self.store.as_ref(),
-            self.part_size,
             &self.prefix,
             &task.id.to_string(),
             self.block_size,
@@ -185,7 +189,7 @@ impl pool::Worker<MergeTask, (usize, String)> for MergeWorker {
             self.collector.as_deref(),
             self.hotspot,
             self.duplicate,
-            self.groups,
+            self.total_reader_memory_size / task.active_group_count.max(1) as i64,
             &self.conflicts,
         ) {
             Ok(path) => {
@@ -261,6 +265,7 @@ pub fn MergeOverlappingFiles(paths: &[String], op: &MergeOperator) -> Result<Vec
         return Ok(Vec::new());
     }
     let group_count = groups.len();
+    let active_group_count = group_count.min(op.concurrency);
     let context = pool::NewContext(pool::Context::background());
     let input = pool::Channel::bounded(1);
     let error = Arc::new(Mutex::new(None));
@@ -270,7 +275,7 @@ pub fn MergeOverlappingFiles(paths: &[String], op: &MergeOperator) -> Result<Vec
     let writer_closed = op.on_writer_close.clone();
     let collector = op.collector.clone();
     let conflicts = op.conflict_info.clone();
-    let part_size = op.part_size;
+    let total_reader_memory_size = op.total_reader_memory_size;
     let block_size = op.block_size;
     let hotspot = op.check_hotspot;
     let duplicate = op.on_duplicate;
@@ -279,14 +284,13 @@ pub fn MergeOverlappingFiles(paths: &[String], op: &MergeOperator) -> Result<Vec
         move || MergeWorker {
             token: token.clone(),
             store: store.clone(),
-            part_size,
+            total_reader_memory_size,
             prefix: prefix.clone(),
             block_size,
             writer_closed: writer_closed.clone(),
             collector: collector.clone(),
             hotspot,
             duplicate,
-            groups: group_count,
             conflicts: conflicts.clone(),
             error: error.clone(),
         }
@@ -316,7 +320,11 @@ pub fn MergeOverlappingFiles(paths: &[String], op: &MergeOperator) -> Result<Vec
                     break;
                 }
                 let id = op.next_writer_id.fetch_add(1, Ordering::Relaxed);
-                if !input.send(MergeTask { id, files }) {
+                if !input.send(MergeTask {
+                    id,
+                    files,
+                    active_group_count,
+                }) {
                     break;
                 }
             }
@@ -409,7 +417,6 @@ pub fn merge_overlapping_files_internal(
     token: &CancellationToken,
     paths: &[String],
     store: &dyn Storage,
-    _part_size: i64,
     new_file_prefix: &str,
     writer_id: &str,
     _block_size: usize,
@@ -417,13 +424,17 @@ pub fn merge_overlapping_files_internal(
     collector: Option<&dyn Collector>,
     _check_hotspot: bool,
     on_duplicate: OnDuplicateKey,
-    _file_group_count: usize,
+    _reader_memory_size: i64,
     conflicts: &Mutex<ConflictInfo>,
 ) -> Result<String> {
     use std::collections::BinaryHeap;
     if token.is_cancelled() {
         return Err(Error::Cancelled);
     }
+    let input_size = paths.iter().try_fold(0_i64, |total, path| {
+        Ok::<_, Error>(total.saturating_add(store.file_size(path)? as i64))
+    })?;
+    let _part_size = get_merge_part_size(input_size, paths.len(), _block_size);
     let mut readers = paths
         .iter()
         .map(|path| store.open(path))
@@ -526,6 +537,15 @@ pub fn merge_overlapping_files_internal(
         callback(&summary);
     }
     Ok(data_file)
+}
+
+/// 根据实际输入大小和每个输入最多一个 block 的对齐膨胀计算上传 part 大小。
+pub fn get_merge_part_size(input_size: i64, file_count: usize, block_size: usize) -> i64 {
+    let padding = (file_count as i64).saturating_mul(block_size as i64);
+    let max_output_size = input_size.saturating_add(padding);
+    let max_parts = astersql_ingestor_simplesst::onefile_writer::MaxUploadPartCount as i64;
+    let part_size = max_output_size / max_parts + i64::from(max_output_size % max_parts != 0);
+    part_size.max(MinUploadPartSize)
 }
 
 struct MergeHead {
