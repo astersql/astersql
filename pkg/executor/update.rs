@@ -73,7 +73,7 @@ pub trait UpdateRuntime {
     fn drained(&self) -> bool;
     /// 标记执行器是否已完成全部更新。
     fn set_drained(&mut self, drained: bool);
-    /// 从子执行器拉取并批量更新；返回 (更新行数, 列乘积计数)。
+    /// 从子执行器拉取并批量更新；返回 (首次匹配行数, 列乘积计数)。
     fn update_rows(&mut self, context: &mut Self::Context) -> Result<(usize, i64), Self::Error>;
     /// 已准备行的可写列数乘积（用于 affected rows 统计）。
     fn update_rows_column_multiply_for_prepared_row(&self) -> i64;
@@ -93,6 +93,10 @@ pub trait UpdateRuntime {
     ) -> Result<Self::Row, Self::Error>;
     /// 累计 rows×columns 统计值。
     fn record_rows_column_multiply(&mut self, value: i64);
+    /// Start a fresh processed-write accounting lifecycle when runtime stats are enabled.
+    fn reset_write_runtime_stats(&mut self);
+    /// Charge rows matched for the first time, using runtime-owned target-table metadata.
+    fn record_write_cpu_work(&mut self, matched_rows: usize);
     /// 设置客户端可见的 OK 报文信息（affected rows 等）。
     fn set_message(&mut self);
     /// 将本执行器运行时统计注册到会话。
@@ -177,7 +181,8 @@ impl<R: UpdateRuntime> UpdateExec<R> {
         if self.runtime.drained() {
             return Ok(());
         }
-        let (_updated_rows, rows_column_multiply) = self.runtime.update_rows(context)?;
+        let (matched_rows, rows_column_multiply) = self.runtime.update_rows(context)?;
+        self.runtime.record_write_cpu_work(matched_rows);
         self.runtime
             .record_rows_column_multiply(rows_column_multiply);
         self.runtime.set_drained(true);
@@ -226,6 +231,7 @@ impl<R: UpdateRuntime> UpdateExec<R> {
 
     /// 打开：复位 drained，必要时初始化求值缓冲，再打开子计划。
     pub fn Open(&mut self, context: &mut R::Context) -> Result<(), R::Error> {
+        self.runtime.reset_write_runtime_stats();
         self.runtime.set_drained(false);
         if !self.runtime.all_assignments_are_constant() {
             self.runtime.initialize_evaluation_buffer();

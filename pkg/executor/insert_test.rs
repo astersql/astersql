@@ -63,6 +63,8 @@ struct TestRuntime {
     on_duplicate: Vec<()>,
     conflicting_unique_key: bool,
     inconsistent_index_logs: Cell<usize>,
+    write_rows: Vec<usize>,
+    write_stats_resets: usize,
 }
 
 impl InsertRuntime for TestRuntime {
@@ -91,6 +93,12 @@ impl InsertRuntime for TestRuntime {
         self.snapshot_ended = true;
     }
     fn add_record_rows(&mut self, _: u64) {}
+    fn reset_write_runtime_stats(&mut self) {
+        self.write_stats_resets += 1;
+    }
+    fn record_write_cpu_work(&mut self, rows: usize) {
+        self.write_rows.push(rows);
+    }
     fn on_duplicate_assignments(&self) -> &[Self::Assignment] {
         &self.on_duplicate
     }
@@ -298,6 +306,20 @@ fn insert_ends_snapshot_stats_when_flush_fails() {
 
     assert_eq!(executor.exec(&mut (), vec![1]), Err(TestError::Flush));
     assert!(executor.runtime.snapshot_ended);
+    assert_eq!(executor.runtime.write_rows, vec![1]);
+}
+
+#[test]
+fn insert_resets_write_stats_on_open_and_counts_all_input_rows() {
+    let mut executor = InsertExec {
+        runtime: TestRuntime::default(),
+    };
+
+    executor.Open(&mut ()).unwrap();
+    executor.exec(&mut (), vec![1, 2, 3]).unwrap();
+
+    assert_eq!(executor.runtime.write_stats_resets, 1);
+    assert_eq!(executor.runtime.write_rows, vec![3]);
 }
 
 #[test]

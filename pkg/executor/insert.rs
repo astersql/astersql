@@ -64,6 +64,10 @@ pub trait InsertRuntime {
     fn begin_snapshot_stats(&mut self, transaction: &mut Self::Transaction);
     fn end_snapshot_stats(&mut self, transaction: &mut Self::Transaction);
     fn add_record_rows(&mut self, rows: u64);
+    /// Start a fresh processed-write accounting lifecycle when runtime stats are enabled.
+    fn reset_write_runtime_stats(&mut self);
+    /// Charge processed target rows using the runtime-owned table/index metadata.
+    fn record_write_cpu_work(&mut self, rows: usize);
     fn on_duplicate_assignments(&self) -> &[Self::Assignment];
     fn ignore_errors(&self) -> bool;
     fn shard_allocate_step(&self) -> usize;
@@ -178,6 +182,7 @@ impl<R: InsertRuntime> InsertExec<R> {
             self.runtime.begin_snapshot_stats(&mut transaction);
         }
         self.runtime.add_record_rows(rows.len() as u64);
+        self.runtime.record_write_cpu_work(rows.len());
         // ON DUPLICATE → 批更新；IGNORE → 批量检查插入；否则逐行 add_record
         let result = if !self.runtime.on_duplicate_assignments().is_empty() {
             self.batchUpdateDupRows(context, rows, &mut transaction)
@@ -385,6 +390,7 @@ impl<R: InsertRuntime> InsertExec<R> {
 
     /// 打开执行器：初始化求值缓冲，必要时打开子 SELECT。
     pub fn Open(&mut self, context: &mut R::Context) -> Result<(), R::Error> {
+        self.runtime.reset_write_runtime_stats();
         if !self.runtime.on_duplicate_assignments().is_empty() {
             self.runtime.initialize_duplicate_evaluation_buffer();
         }

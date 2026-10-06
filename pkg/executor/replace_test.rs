@@ -37,6 +37,8 @@ struct TestRuntime {
     snapshot_ends: usize,
     added: usize,
     close_error: bool,
+    write_rows: Vec<usize>,
+    write_stats_resets: usize,
 }
 
 impl Default for TestRuntime {
@@ -52,6 +54,8 @@ impl Default for TestRuntime {
             snapshot_ends: 0,
             added: 0,
             close_error: false,
+            write_rows: Vec::new(),
+            write_stats_resets: 0,
         }
     }
 }
@@ -152,6 +156,12 @@ impl ReplaceRuntime for TestRuntime {
     fn add_record_rows(&mut self, rows: u64) {
         self.record_rows_added += rows;
     }
+    fn reset_write_runtime_stats(&mut self) {
+        self.write_stats_resets += 1;
+    }
+    fn record_write_cpu_work(&mut self, rows: usize) {
+        self.write_rows.push(rows);
+    }
     fn optimize_duplicate_key_check(&self, _: &()) -> Self::DuplicateKeyCheckMode {}
     fn may_flush(&mut self, _: &mut ()) -> Result<(), Self::Error> {
         Ok(())
@@ -206,8 +216,21 @@ fn exec_counts_input_rows_and_only_closes_enabled_snapshot_stats() {
     executor.exec(&mut (), vec![1, 2, 3]).unwrap();
 
     assert_eq!(executor.runtime.record_rows_added, 3);
+    assert_eq!(executor.runtime.write_rows, vec![3]);
     assert_eq!(executor.runtime.snapshot_ends, 0);
     assert_eq!(executor.runtime.added, 1);
+}
+
+#[test]
+fn open_resets_replace_write_runtime_stats() {
+    let mut executor = ReplaceExec {
+        runtime: TestRuntime::default(),
+        priority: 0,
+    };
+
+    executor.Open(&mut ()).unwrap();
+
+    assert_eq!(executor.runtime.write_stats_resets, 1);
 }
 
 #[test]

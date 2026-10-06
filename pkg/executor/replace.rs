@@ -88,6 +88,10 @@ pub trait ReplaceRuntime {
     ) -> Result<(), Self::Error>;
     fn set_prefetch_duration(&mut self, duration: Duration);
     fn add_record_rows(&mut self, rows: u64);
+    /// Start a fresh processed-write accounting lifecycle when runtime stats are enabled.
+    fn reset_write_runtime_stats(&mut self);
+    /// Charge processed target rows using the runtime-owned table/index metadata.
+    fn record_write_cpu_work(&mut self, rows: usize);
     fn optimize_duplicate_key_check(
         &self,
         transaction: &Self::Transaction,
@@ -130,6 +134,7 @@ impl<R: ReplaceRuntime> ReplaceExec<R> {
 
     /// 打开：挂接内存追踪；有 SELECT 则 open_select，否则初始化求值缓冲。
     pub fn Open(&mut self, ctx: &mut R::Context) -> Result<(), R::Error> {
+        self.runtime.reset_write_runtime_stats();
         self.runtime.attach_memory_tracker();
         if self.runtime.has_select_executor() {
             self.runtime.open_select(ctx)
@@ -197,7 +202,8 @@ impl<R: ReplaceRuntime> ReplaceExec<R> {
 
     /// 批量 REPLACE：约束检查 → 预取缓存 → 逐行 replaceRow → 可选 flush。
     pub fn exec(&mut self, ctx: &mut R::Context, rows: Vec<R::Row>) -> Result<(), R::Error> {
-        let record_rows = rows.len() as u64;
+        let processed_rows = rows.len();
+        let record_rows = processed_rows as u64;
         // 将输入行转为需做唯一键检查的 CheckedRow。
         let checked_rows = self.runtime.keys_need_check(rows)?;
         let mut transaction = self.runtime.transaction()?;
@@ -221,6 +227,7 @@ impl<R: ReplaceRuntime> ReplaceExec<R> {
         }
 
         self.runtime.add_record_rows(record_rows);
+        self.runtime.record_write_cpu_work(processed_rows);
         let duplicate_check = self.runtime.optimize_duplicate_key_check(&transaction);
         for row in &checked_rows {
             if let Err(error) = self.replaceRow(ctx, &mut transaction, row, &duplicate_check) {

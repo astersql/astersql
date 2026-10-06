@@ -54,6 +54,8 @@ struct TestRuntime {
     closed: usize,
     reset_memory: usize,
     close_error: bool,
+    write_rows: Vec<(i64, usize)>,
+    write_stats_resets: usize,
 }
 
 impl DeleteRuntime for TestRuntime {
@@ -158,6 +160,14 @@ impl DeleteRuntime for TestRuntime {
         self.metrics.push(total);
     }
 
+    fn reset_write_runtime_stats(&mut self) {
+        self.write_stats_resets += 1;
+    }
+
+    fn record_write_cpu_work(&mut self, table_id: i64, rows: usize) {
+        self.write_rows.push((table_id, rows));
+    }
+
     fn ignore_errors(&self) -> bool {
         !self.ignored_handles.is_empty()
     }
@@ -256,6 +266,7 @@ fn single_table_delete_matches_batch_ignore_fk_metrics_and_memory_flow() {
         vec![(7, 1, vec![1, 10]), (7, 3, vec![3, 30])]
     );
     assert_eq!(exec.runtime.affected_rows, 2);
+    assert_eq!(exec.runtime.write_rows, vec![(7, 2), (7, 1)]);
     assert_eq!(exec.runtime.metrics, vec![2, 2]);
     assert_eq!(exec.runtime.commits, 1);
     assert_eq!(exec.runtime.new_transactions, 1);
@@ -263,6 +274,17 @@ fn single_table_delete_matches_batch_ignore_fk_metrics_and_memory_flow() {
     assert_eq!(exec.runtime.memory_deltas, vec![0, 10, -10, 20, -20]);
     assert_eq!(exec.runtime.fk_checks, 0);
     assert_eq!(exec.runtime.fk_cascades, 2);
+}
+
+#[test]
+fn delete_open_resets_write_runtime_stats() {
+    let mut exec = DeleteExec {
+        runtime: TestRuntime::default(),
+    };
+
+    exec.Open(&mut ()).unwrap();
+
+    assert_eq!(exec.runtime.write_stats_resets, 1);
 }
 
 #[test]
@@ -298,6 +320,8 @@ fn multi_table_delete_deduplicates_handles_skips_outer_rows_and_keeps_latest_val
         vec![(1, 10, vec![10, 101]), (2, 20, vec![20, 200])]
     );
     assert_eq!(exec.runtime.affected_rows, 2);
+    exec.runtime.write_rows.sort_unstable();
+    assert_eq!(exec.runtime.write_rows, vec![(1, 1), (2, 1)]);
     assert_eq!(exec.runtime.metrics, vec![4]);
     assert_eq!(exec.runtime.flushes, 1);
     assert_eq!(exec.runtime.memory_deltas, vec![0, 8, 14, 0, -8]);

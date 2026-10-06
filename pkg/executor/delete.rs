@@ -96,6 +96,10 @@ pub trait DeleteRuntime {
     ) -> Result<(), Self::Error>;
     fn batch_delete_error(&self, error: Self::Error) -> Self::Error;
     fn record_rows_column_multiply(&mut self, total: i64);
+    /// Start a fresh processed-write accounting lifecycle when runtime stats are enabled.
+    fn reset_write_runtime_stats(&mut self);
+    /// Charge processed rows for the target table, including FK-ignored rows.
+    fn record_write_cpu_work(&mut self, table_id: i64, rows: usize);
 
     fn ignore_errors(&self) -> bool;
     fn check_fk_ignore_error(
@@ -180,6 +184,8 @@ impl<R: DeleteRuntime> DeleteExec<R> {
             let Some(chunk) = self.runtime.next_child_chunk(context)? else {
                 break;
             };
+            self.runtime
+                .record_write_cpu_work(table_id, chunk.rows.len());
             previous_chunk_memory = chunk.memory_usage;
             self.runtime.consume_memory(previous_chunk_memory);
             for joined_row in chunk.rows {
@@ -284,6 +290,7 @@ impl<R: DeleteRuntime> DeleteExec<R> {
         let mut rows_column_multiply = 0;
         for (table_id, rows) in table_rows {
             for (handle, pair) in rows {
+                self.runtime.record_write_cpu_work(table_id, 1);
                 if self.runtime.ignore_errors()
                     && self
                         .runtime
@@ -332,6 +339,7 @@ impl<R: DeleteRuntime> DeleteExec<R> {
 
     /// 打开子执行器。
     pub fn Open(&mut self, context: &mut R::Context) -> Result<(), R::Error> {
+        self.runtime.reset_write_runtime_stats();
         self.runtime.open_child(context)
     }
 
