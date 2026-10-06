@@ -33,6 +33,13 @@ pub const BACKFILL_TASK_META_VERSION_0: u32 = 0;
 /// 回填任务元数据的版本号 1（当前格式），用于兼容性判断。
 pub const BACKFILL_TASK_META_VERSION_1: u32 = 1;
 
+/// 回填任务的执行摘要。
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct BackfillTaskSummary {
+    /// 全局排序路径生成的索引 KV 总字节数。
+    pub index_kv_size: u64,
+}
+
 /// 回填任务的整体元数据，对应一个 DDL 作业（如新增索引）在
 /// 分布式任务框架中的任务描述。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -53,6 +60,8 @@ pub struct BackfillTaskMeta {
     pub estimate_row_size: usize,
     /// 是否需要合并临时索引（增量数据写入的临时索引与回填数据合并）。
     pub merge_temporary_index: bool,
+    /// 任务执行摘要；本地回填及尚未完成写入计划时保持为空。
+    pub summary: Option<BackfillTaskSummary>,
     /// 元数据版本号，见 `BACKFILL_TASK_META_VERSION_*` 常量。
     pub version: u32,
     /// 每批处理的行数。

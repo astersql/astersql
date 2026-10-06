@@ -30,7 +30,9 @@
 //   回正式索引）合并阶段的计划生成。
 
 use crate::backfilling::Key;
-use crate::backfilling_dist_executor::{BackfillStep, BackfillSubTaskMeta, BackfillTaskMeta};
+use crate::backfilling_dist_executor::{
+    BackfillStep, BackfillSubTaskMeta, BackfillTaskMeta, BackfillTaskSummary,
+};
 use crate::backfilling_read_index::SortedKvMeta;
 
 /// 运行期可动态调整的任务参数修改项。
@@ -117,6 +119,28 @@ impl LitBackfillScheduler {
     /// DXF persists errors as text, retaining the normalized RFC prefix.
     pub fn is_retryable_scheduler_message(message: &str) -> bool {
         !message.contains("[GlobalSort:TooManyDataFiles]")
+    }
+
+    /// 生成全局排序写入计划，并仅在计划成功后记录索引 KV 总大小。
+    ///
+    /// `subtasks` 是 merge-sort 阶段的输出；该阶段被跳过时，调用方传入
+    /// read-index 阶段的输出。计划器失败时任务元数据保持不变，便于框架重试。
+    pub fn plan_global_sort_ingest<T>(
+        &mut self,
+        subtasks: &[BackfillSubTaskMeta],
+        build_plan: impl FnOnce(&[SortedKvMeta], &[i64]) -> Result<T, PlanError>,
+    ) -> Result<T, PlanError> {
+        let (meta_groups, element_ids) = merge_meta_groups(subtasks)?;
+        let mut total_kv_size = 0_u64;
+        for group in &meta_groups {
+            total_kv_size = total_kv_size.wrapping_add(group.total_kv_size);
+        }
+
+        let plan = build_plan(&meta_groups, &element_ids)?;
+        self.task_meta.summary = Some(BackfillTaskSummary {
+            index_kv_size: total_kv_size,
+        });
+        Ok(plan)
     }
 }
 

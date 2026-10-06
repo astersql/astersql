@@ -29,7 +29,8 @@
 // - 回填任务元数据（`BackfillTaskMeta`）的版本号约定。
 
 use crate::backfilling_dist_executor::{
-    BACKFILL_TASK_META_VERSION_0, BACKFILL_TASK_META_VERSION_1, BackfillStep, BackfillTaskMeta,
+    BACKFILL_TASK_META_VERSION_0, BACKFILL_TASK_META_VERSION_1, BackfillStep, BackfillSubTaskMeta,
+    BackfillTaskMeta, BackfillTaskSummary,
 };
 use crate::backfilling_dist_scheduler::{
     LitBackfillScheduler, Modification, MultipleFilesStat, PlanError, RegionMeta,
@@ -67,6 +68,7 @@ fn test_backfilling_scheduler_local_mode() {
         BackfillStep::Done,
         scheduler.get_next_step(BackfillStep::ReadIndex)
     );
+    assert_eq!(None, scheduler.task_meta.summary);
 
     // 模拟 TS（时间戳，事务系统中用于标识快照版本的逻辑时间）分配器：
     // 每次调用返回递增的时间戳。
@@ -188,6 +190,79 @@ fn test_backfilling_scheduler_global_sort_mode() {
     assert!(plan.iter().all(|subtask| subtask.element_ids == vec![10]));
 }
 
+#[test]
+fn global_sort_ingest_records_total_only_after_successful_planning() {
+    let original_meta = BackfillTaskMeta {
+        element_ids: vec![10, 20],
+        cloud_storage_uri: "gs://sorted/addindex".to_owned(),
+        ..BackfillTaskMeta::default()
+    };
+    let mut scheduler = LitBackfillScheduler::new(original_meta.clone());
+    let subtasks = vec![
+        BackfillSubTaskMeta {
+            meta_groups: vec![
+                SortedKvMeta {
+                    start_key: b"ta".to_vec(),
+                    end_key: b"tc".to_vec(),
+                    file_count: 1,
+                    total_kv_size: 12,
+                },
+                SortedKvMeta {
+                    start_key: b"td".to_vec(),
+                    end_key: b"tf".to_vec(),
+                    file_count: 1,
+                    total_kv_size: 30,
+                },
+            ],
+            element_ids: vec![10, 20],
+            ..BackfillSubTaskMeta::default()
+        },
+        BackfillSubTaskMeta {
+            meta_groups: vec![
+                SortedKvMeta {
+                    start_key: b"ta".to_vec(),
+                    end_key: b"tc".to_vec(),
+                    file_count: 1,
+                    total_kv_size: 5,
+                },
+                SortedKvMeta {
+                    start_key: b"td".to_vec(),
+                    end_key: b"tf".to_vec(),
+                    file_count: 1,
+                    total_kv_size: 7,
+                },
+            ],
+            element_ids: vec![10, 20],
+            ..BackfillSubTaskMeta::default()
+        },
+    ];
+
+    let error = scheduler
+        .plan_global_sort_ingest(&subtasks, |_, _| Err::<(), _>(PlanError::NoNodes))
+        .unwrap_err();
+    assert_eq!(PlanError::NoNodes, error);
+    assert_eq!(original_meta, scheduler.task_meta);
+
+    let plan = scheduler
+        .plan_global_sort_ingest(&subtasks, |groups, element_ids| {
+            assert_eq!(vec![10, 20], element_ids);
+            assert_eq!(17, groups[0].total_kv_size);
+            assert_eq!(37, groups[1].total_kv_size);
+            Ok(vec![groups.len()])
+        })
+        .unwrap();
+    assert_eq!(vec![2], plan);
+    assert_eq!(vec![10, 20], scheduler.task_meta.element_ids);
+    assert_eq!(
+        "gs://sorted/addindex",
+        scheduler.task_meta.cloud_storage_uri
+    );
+    assert_eq!(
+        Some(BackfillTaskSummary { index_kv_size: 54 }),
+        scheduler.task_meta.summary
+    );
+}
+
 /// 汇总测试三种模式下 `get_next_step` 的状态机流转：
 /// 本地模式、全局排序模式、临时索引合并模式。
 #[test]
@@ -244,6 +319,16 @@ fn test_backfill_task_meta_version() {
         ..BackfillTaskMeta::default()
     };
     assert_eq!(BACKFILL_TASK_META_VERSION_1, current.version);
+    assert_eq!(None, current.summary);
+
+    let with_zero_summary = BackfillTaskMeta {
+        summary: Some(BackfillTaskSummary { index_kv_size: 0 }),
+        ..BackfillTaskMeta::default()
+    };
+    assert_eq!(
+        Some(BackfillTaskSummary { index_kv_size: 0 }),
+        with_zero_summary.summary
+    );
 }
 
 /// Go's merge-temporary-index plan identifies the target through the encoded
