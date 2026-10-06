@@ -19,8 +19,8 @@
 // Hint 强制选用计划、以及 Hint 不适用时回退并告警。
 
 use crate::find_best_task::{
-    AccessPath, DataSource, LogicalPlan, PhysicalProperty, SortItem, findBestTask, getTaskPlanCost,
-    mockLogicalPlan4Test,
+    AccessPath, DataSource, LogicalPlan, PhysicalProperty, SortItem, candidatePath,
+    compareCandidates, findBestTask, getTaskPlanCost, mockLogicalPlan4Test,
 };
 use crate::task::{PlanKind, StatsInfo, StoreType, Task, TaskType};
 
@@ -153,4 +153,46 @@ fn cache_key_distinguishes_mpp_partition_requirement() {
 
     assert!(!findBestTask(&mut logical, &any_partition, 1).is_invalid());
     assert!(findBestTask(&mut logical, &required_partition, 1).is_invalid());
+}
+
+fn index_join_candidate(count: f64, adjusted: f64, adjusted_ok: bool) -> candidatePath {
+    candidatePath {
+        path: AccessPath {
+            count_after_access: count,
+            ..AccessPath::default()
+        },
+        countAfterAccess4IndexJoin: adjusted,
+        countAfterAccess4IndexJoinOK: adjusted_ok,
+        indexJoinCols: 1,
+        accessCondsColMap: Default::default(),
+        indexCondsColMap: Default::default(),
+        matchPropResult: Default::default(),
+        partialOrderMatchResult: Default::default(),
+        matchWithAdvisorySortItems: false,
+        partialPathMatchResults: Vec::new(),
+        isFullRange: false,
+        eqOrInCount: 0,
+    }
+}
+
+/// IndexJoin skyline pruning must compare the per-probe access count after the join-key NDV.
+#[test]
+fn index_join_skyline_uses_adjusted_count_after_access() {
+    let ds = DataSource::default();
+    let prop = PhysicalProperty::default();
+    let current = index_join_candidate(10_000_000.0, 101.0, true);
+    let best = index_join_candidate(202_000.0, 202_000.0, true);
+
+    assert_eq!(compareCandidates(&ds, &prop, &current, &best, false).0, 1);
+}
+
+/// Unstable join-key statistics must disable the empirical 1000x pruning rule.
+#[test]
+fn index_join_skyline_skips_unstable_adjusted_count() {
+    let ds = DataSource::default();
+    let prop = PhysicalProperty::default();
+    let current = index_join_candidate(101.0, 101.0, false);
+    let best = index_join_candidate(1_000_000.0, 1_000_000.0, true);
+
+    assert_eq!(compareCandidates(&ds, &prop, &current, &best, false).0, 0);
 }

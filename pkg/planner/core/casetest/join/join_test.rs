@@ -871,3 +871,60 @@ fn test_index_join_inner_row_count_uses_usable_join_keys() {
     );
     tk.MustExec("set tidb_opt_fix_control = ''", Vec::new());
 }
+
+/// Propagated constants must not make the low-NDV `idx_c` dominate the usable join-key index.
+#[test]
+fn test_index_join_inner_index_selection_uses_adjusted_access_count() {
+    let (store, _domain) = astersql_testkit::mockstore::CreateMockStoreAndDomain();
+    let mut tk = astersql_testkit::TestKit::new(store);
+    tk.MustExec("use test", Vec::new());
+    tk.MustExec(
+        "create table t_outer (id int not null, c varchar(36) not null, primary key (id), key idx_c (c))",
+        Vec::new(),
+    );
+    tk.MustExec(
+        "create table t_inner (id int not null auto_increment, k int not null, c varchar(36) not null, primary key (id), key idx_k (k), key idx_c (c))",
+        Vec::new(),
+    );
+
+    let outer = (1..=101)
+        .map(|id| format!("({id}, 'cust-1')"))
+        .collect::<Vec<_>>()
+        .join(",");
+    tk.MustExec(
+        &format!("insert into t_outer (id, c) values {outer}"),
+        Vec::new(),
+    );
+    let inner = (1..=303)
+        .map(|k| format!("({k}, 'cust-{}')", (k - 1) / 101 + 1))
+        .collect::<Vec<_>>()
+        .join(",");
+    tk.MustExec(
+        &format!("insert into t_inner (k, c) values {inner}"),
+        Vec::new(),
+    );
+    tk.MustExec("analyze table t_outer, t_inner", Vec::new());
+
+    let plan = tk
+        .MustQuery(
+            "explain format='plan_tree' select /*+ inl_join(i) */ * from t_outer o join t_inner i on i.k = o.id and i.c = o.c where o.c = 'cust-1'",
+            Vec::new(),
+        )
+        .String();
+    assert!(
+        plan.contains("outer key:test.t_outer.id, inner key:test.t_inner.k"),
+        "expected k as the IndexJoin key: {plan}"
+    );
+    let inner_plan = plan
+        .split_once("IndexLookUp(Probe)")
+        .map(|(_, inner)| inner)
+        .expect("IndexJoin plan must contain the inner lookup subtree");
+    assert!(
+        inner_plan.contains("index:idx_k(k)"),
+        "expected the usable join-key index: {plan}"
+    );
+    assert!(
+        !inner_plan.contains("index:idx_c(c)"),
+        "constant-propagated idx_c must not dominate: {plan}"
+    );
+}

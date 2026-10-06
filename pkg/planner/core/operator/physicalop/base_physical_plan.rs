@@ -8906,6 +8906,13 @@ fn find_best_data_source_task(
         })
     });
     source.PossibleAccessPaths.retain(|path| {
+        let matches_index_join = property.IndexJoinProp.as_ref().is_some_and(|join| {
+            path.IdxCols.first().is_some_and(|index_column| {
+                join.InnerJoinKeys
+                    .iter()
+                    .any(|join_key| join_key.UniqueID == index_column.UniqueID)
+            })
+        });
         let matches_order = !property.SortItems.is_empty()
             && property.SortItems.len() <= path.IdxCols.len()
             && property
@@ -8916,6 +8923,7 @@ fn find_best_data_source_task(
         if !path.IsTablePath()
             && !path.IsSingleScan
             && !matches_order
+            && !matches_index_join
             && !path.Forced
             && path.CountAfterAccess >= source_rows * 0.5
         {
@@ -8926,6 +8934,7 @@ fn find_best_data_source_task(
         }
         path.IsTablePath()
             || !path.AccessConds.is_empty()
+            || matches_index_join
             || matches_order
             || path.Forced
             || path.IsSingleScan
@@ -9019,6 +9028,69 @@ fn find_best_data_source_task(
                     })
             })
             .unwrap_or(false);
+        let index_join_count_after_access = property.IndexJoinProp.as_ref().and_then(|join| {
+            let gather = gather
+                .as_any()
+                .downcast_ref::<logicalop::TiKVSingleGather>()?;
+            let index_id = gather.Index.as_ref()?.ID;
+            let source = gather.Source.as_ref()?.borrow();
+            let path = source.PossibleAccessPaths.iter().find(|path| {
+                path.Index
+                    .as_ref()
+                    .is_some_and(|index| index.ID == index_id)
+            })?;
+            let mut usable_join_key = None;
+            for (offset, index_column) in path.IdxCols.iter().enumerate() {
+                if path.IdxColLens.get(offset).copied().unwrap_or(-1) != -1 {
+                    return None;
+                }
+                if join
+                    .InnerJoinKeys
+                    .iter()
+                    .any(|key| key.UniqueID == index_column.UniqueID)
+                {
+                    if usable_join_key.is_some() {
+                        return None;
+                    }
+                    usable_join_key = Some(index_column);
+                    break;
+                }
+                if !path.AccessConds.iter().any(|condition| {
+                    expression::ExtractColumns(condition.as_ref())
+                        .iter()
+                        .any(|column| column.UniqueID == index_column.UniqueID)
+                }) {
+                    break;
+                }
+            }
+            let join_key = usable_join_key?;
+            let ndv = source
+                .TableStats
+                .ColNDVs
+                .get(&join_key.UniqueID)
+                .copied()
+                .or_else(|| {
+                    source
+                        .TableStats
+                        .HistColl
+                        .as_ref()?
+                        .as_ref()
+                        .downcast_ref::<statistics::HistColl>()?
+                        .GetCol(join_key.UniqueID)
+                        .map(|column| column.NDV as f64)
+                })
+                .filter(|ndv| *ndv > 0.0)?;
+            let already_counted = path.AccessConds.iter().any(|condition| {
+                expression::ExtractColumns(condition.as_ref())
+                    .iter()
+                    .any(|column| column.UniqueID == join_key.UniqueID)
+            });
+            Some(if already_counted || ndv == 1.0 {
+                path.CountAfterAccess
+            } else {
+                path.CountAfterAccess / ndv
+            })
+        });
         match canonical_find_best_task_router_inner(gather.as_mut(), property) {
             Ok(task) => {
                 let cost = task
@@ -9050,6 +9122,12 @@ fn find_best_data_source_task(
                             // eliminated before table lookup.  The generic
                             // reader cost does not otherwise see that benefit.
                             comparable_cost *= 0.01;
+                        }
+                        if let Some(count_after_access) = index_join_count_after_access {
+                            // IndexJoin probes bind one runtime key per outer row. Compare
+                            // inner candidates by the access count after that key's NDV,
+                            // while keeping constant-only index predicates already charged.
+                            comparable_cost = count_after_access;
                         }
                         if comparable_cost.is_finite()
                             && best

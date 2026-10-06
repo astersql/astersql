@@ -350,6 +350,10 @@ pub struct candidatePath {
     pub matchWithAdvisorySortItems: bool,
     pub partialPathMatchResults: Vec<PropMatchResult>,
     pub indexJoinCols: usize,
+    /// Adjusted per-probe CountAfterAccess used only for IndexJoin comparison.
+    pub countAfterAccess4IndexJoin: f64,
+    /// Whether the adjusted count is stable enough for the empirical skyline rule.
+    pub countAfterAccess4IndexJoinOK: bool,
     pub isFullRange: bool,
     pub eqOrInCount: usize,
 }
@@ -794,16 +798,20 @@ pub fn compareCandidates(
             return (result, rhs_pseudo);
         }
     }
-    if lhs.path.count_after_access > 100.0
-        && rhs.path.count_after_access > 100.0
+    let lhs_count_after_access = lhs.getCountAfterAccess4SkylinePruning();
+    let rhs_count_after_access = rhs.getCountAfterAccess4SkylinePruning();
+    if lhs_count_after_access.is_some_and(|count| count > 100.0)
+        && rhs_count_after_access.is_some_and(|count| count > 100.0)
         && !lhs.path.is_index_merge()
         && !rhs.path.is_index_merge()
         && prop.expected_count.is_infinite()
     {
-        if lhs.path.count_after_access * 1000.0 < rhs.path.count_after_access {
+        let lhs_count_after_access = lhs_count_after_access.unwrap();
+        let rhs_count_after_access = rhs_count_after_access.unwrap();
+        if rhs_count_after_access / lhs_count_after_access > 1000.0 && risk >= 0 {
             return (1, lhs_pseudo);
         }
-        if rhs.path.count_after_access * 1000.0 < lhs.path.count_after_access {
+        if lhs_count_after_access / rhs_count_after_access > 1000.0 && risk <= 0 {
             return (-1, rhs_pseudo);
         }
     }
@@ -1019,6 +1027,16 @@ impl candidatePath {
     pub fn equalPredicateCount(&self) -> usize {
         equal_predicate_count(&self.path)
     }
+
+    fn getCountAfterAccess4SkylinePruning(&self) -> Option<f64> {
+        if self.indexJoinCols == 0 {
+            Some(self.path.count_after_access)
+        } else if self.countAfterAccess4IndexJoinOK {
+            Some(self.countAfterAccess4IndexJoin)
+        } else {
+            None
+        }
+    }
 }
 /// 是否存在 v0 新 collation 的字符串 handle 限制。
 pub fn hasV0NewCollationStringHandle(ds: &DataSource) -> bool {
@@ -1063,6 +1081,8 @@ pub fn getTableCandidate(
         matchWithAdvisorySortItems: false,
         partialPathMatchResults: Vec::new(),
         indexJoinCols: 0,
+        countAfterAccess4IndexJoin: 0.0,
+        countAfterAccess4IndexJoinOK: false,
         isFullRange: path.full_range(),
         eqOrInCount: equal_predicate_count(path),
     }
@@ -1084,9 +1104,13 @@ pub fn getIndexCandidateForIndexJoin(
     ds: &DataSource,
     path: &AccessPath,
     index_join_cols: usize,
+    count_after_access: f64,
+    count_after_access_ok: bool,
 ) -> candidatePath {
     let mut c = getIndexCandidate(ds, path, &PhysicalProperty::default());
     c.indexJoinCols = index_join_cols;
+    c.countAfterAccess4IndexJoin = count_after_access;
+    c.countAfterAccess4IndexJoinOK = count_after_access_ok;
     c
 }
 /// 构造 IndexMerge 候选。

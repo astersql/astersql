@@ -81,6 +81,16 @@ pub(crate) fn apply_index_floor(access: f64, index: f64, floor: f64, unique: boo
     }
 }
 
+fn ndv_is_close(lhs: f64, rhs: f64) -> bool {
+    if lhs == 0.0 || rhs == 0.0 {
+        return lhs == rhs;
+    }
+    let min = lhs.min(rhs);
+    let max = lhs.max(rhs);
+    let diff = (lhs - rhs).abs();
+    max <= 20.0 || (diff < 200.0 && min >= 20.0) || diff / max < 0.2
+}
+
 /// Preserve the existing Fix44855 upper bound: single-column statistics,
 /// an exact column-set index, then initialized column NDVs as a lower bound.
 pub(crate) fn ndv_lower_bound(
@@ -696,7 +706,27 @@ fn source_probe(
                 &[true],
             )?
             .get_cost();
-        if best.as_ref().is_none_or(|(old, _)| cost < *old) {
+        let current_is_better = best.as_ref().is_none_or(|(old_cost, old_candidate)| {
+            let current_key_count = result
+                .key_offsets
+                .iter()
+                .filter(|offset| **offset >= 0)
+                .count();
+            let old_key_count = old_candidate
+                .result
+                .key_offsets
+                .iter()
+                .filter(|offset| **offset >= 0)
+                .count();
+            if current_key_count == old_key_count
+                && !ndv_is_close(result.eq_ndv, old_candidate.result.eq_ndv)
+            {
+                result.eq_ndv > old_candidate.result.eq_ndv
+            } else {
+                cost < *old_cost
+            }
+        });
+        if current_is_better {
             best = Some((cost, ProbeCandidate { plan, result }));
         }
     }

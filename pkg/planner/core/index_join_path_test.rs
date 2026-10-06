@@ -1,9 +1,12 @@
 // Copyright 2026 AsterSQL.
 
-use super::find_best_task::{AccessPath, Datum, IndexInfo, Range};
+use super::find_best_task::{
+    AccessPath, DataSource, Datum, IndexInfo, Range, getIndexCandidateForIndexJoin,
+};
 use super::index_join_path::{
     appendTailTemplateRange, indexJoinPathCmp4UnComparableOnes,
-    indexJoinPathGetRangeInfoAndMaxOneRow, indexJoinPathInfo, indexJoinPathResult, isNDVClose,
+    indexJoinPathCountAfterAccess4Compare, indexJoinPathGetRangeInfoAndMaxOneRow,
+    indexJoinPathInfo, indexJoinPathResult, isNDVClose,
 };
 use super::task::Expression;
 
@@ -34,8 +37,10 @@ fn tail_template_fallback_preserves_the_original_ranges() {
 }
 
 fn path_result(ndv: f64, used_columns: usize) -> indexJoinPathResult {
+    let path = AccessPath::default();
     indexJoinPathResult {
-        chosenPath: AccessPath::default(),
+        candidate: getIndexCandidateForIndexJoin(&DataSource::default(), &path, 1, 0.0, false),
+        chosenPath: path,
         chosenAccess: Vec::new(),
         chosenRemained: Vec::new(),
         chosenRanges: vec![Range::default()],
@@ -121,4 +126,63 @@ fn tail_range_marks_non_equality_and_excludes_its_ndv() {
         assert_eq!(result.eqUsedColsNDV, 2.0);
         assert_eq!(result.lastColManager.is_some(), dynamic);
     }
+}
+
+/// A single full-length runtime join key divides CountAfterAccess by its stable NDV.
+#[test]
+fn index_join_compare_count_uses_single_join_key_ndv() {
+    let path = AccessPath {
+        index: Some(IndexInfo {
+            columns: vec![7, 8],
+            prefix_lengths: vec![None, None],
+            unique: false,
+            global: false,
+            multi_valued: false,
+            vector: false,
+        }),
+        count_after_access: 30_300.0,
+        ..AccessPath::default()
+    };
+    let info = indexJoinPathInfo {
+        innerTableStats: Some(Default::default()),
+        columnNDV: [(7, 303.0)].into_iter().collect(),
+        ..Default::default()
+    };
+
+    assert_eq!(
+        indexJoinPathCountAfterAccess4Compare(&info, &path, &[0, -1], 1),
+        (100.0, true)
+    );
+}
+
+/// Prefix indexes and multiple runtime join keys are not stable enough for strong pruning.
+#[test]
+fn index_join_compare_count_rejects_unstable_key_shapes() {
+    let mut path = AccessPath {
+        index: Some(IndexInfo {
+            columns: vec![7, 8],
+            prefix_lengths: vec![Some(4), None],
+            unique: false,
+            global: false,
+            multi_valued: false,
+            vector: false,
+        }),
+        count_after_access: 30_300.0,
+        ..AccessPath::default()
+    };
+    let info = indexJoinPathInfo {
+        innerTableStats: Some(Default::default()),
+        columnNDV: [(7, 303.0), (8, 101.0)].into_iter().collect(),
+        ..Default::default()
+    };
+    assert_eq!(
+        indexJoinPathCountAfterAccess4Compare(&info, &path, &[0, -1], 1),
+        (30_300.0, false)
+    );
+
+    path.index.as_mut().unwrap().prefix_lengths[0] = None;
+    assert_eq!(
+        indexJoinPathCountAfterAccess4Compare(&info, &path, &[0, 1], 2),
+        (30_300.0, false)
+    );
 }

@@ -19,7 +19,10 @@
 // 连续索引前缀范围（Range），支持计划缓存下的可变范围重建，并在超出
 // `tidb_opt_range_max_size` 时回退（range fallback）。
 
-use crate::find_best_task::{AccessPath, DataSource, Datum, Range};
+use crate::find_best_task::{
+    AccessPath, DataSource, Datum, PhysicalProperty, Range, candidatePath, compareCandidates,
+    getIndexCandidateForIndexJoin,
+};
 use crate::task::{Expression, StatsInfo};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -67,6 +70,7 @@ impl mutableIndexJoinRange {
 #[derive(Clone, Debug)]
 pub struct indexJoinPathResult {
     pub chosenPath: AccessPath,
+    pub candidate: candidatePath,
     pub chosenAccess: Vec<Expression>,
     pub chosenRemained: Vec<Expression>,
     pub chosenRanges: Vec<Range>,
@@ -572,7 +576,7 @@ fn truncate_datum_to_prefix(value: &mut Datum, prefix_length: usize) {
 
 /// 比较两条路径结果，决定 `current` 是否优于 `best`。
 pub fn indexJoinPathCompare(
-    _ds: &DataSource,
+    ds: &DataSource,
     best: Option<&indexJoinPathResult>,
     current: Option<&indexJoinPathResult>,
 ) -> bool {
@@ -580,7 +584,14 @@ pub fn indexJoinPathCompare(
         (_, None) => false,
         (_, Some(current)) if current.chosenRanges.is_empty() => false,
         (None, Some(_)) => true,
-        (Some(best), Some(current)) => indexJoinPathCmp4UnComparableOnes(best, current),
+        (Some(best), Some(current)) => {
+            let property = PhysicalProperty::default();
+            match compareCandidates(ds, &property, &current.candidate, &best.candidate, false).0 {
+                1 => true,
+                -1 => false,
+                _ => indexJoinPathCmp4UnComparableOnes(best, current),
+            }
+        }
     }
 }
 /// 按 Go 的 NDV、已用列数与 Join Key 覆盖数依次决胜。
@@ -620,6 +631,69 @@ pub fn isNDVClose(lhs: f64, rhs: f64) -> bool {
     max <= 20.0 || (diff < 200.0 && min >= 20.0) || diff / max < 0.2
 }
 
+/// Adjust CountAfterAccess by one stable, full-length runtime join key.
+pub(crate) fn indexJoinPathCountAfterAccess4Compare(
+    info: &indexJoinPathInfo,
+    path: &AccessPath,
+    idx_off_to_key_off: &[i32],
+    used_columns: usize,
+) -> (f64, bool) {
+    if path.count_after_access <= 0.0 || info.innerTableStats.is_none() {
+        return (path.count_after_access, false);
+    }
+    let columns = if path.index_columns.is_empty() {
+        path.index
+            .as_ref()
+            .map(|index| index.columns.as_slice())
+            .unwrap_or_default()
+    } else {
+        path.index_columns.as_slice()
+    };
+    let prefix_lengths = path
+        .index
+        .as_ref()
+        .map(|index| index.prefix_lengths.as_slice())
+        .unwrap_or_default();
+    let mut join_key = None;
+    for (index_offset, key_offset) in idx_off_to_key_off.iter().copied().enumerate() {
+        if index_offset >= used_columns {
+            break;
+        }
+        if key_offset < 0 {
+            continue;
+        }
+        if join_key.is_some()
+            || columns.get(index_offset).is_none()
+            || prefix_lengths
+                .get(index_offset)
+                .is_some_and(Option::is_some)
+        {
+            return (path.count_after_access, false);
+        }
+        join_key = columns.get(index_offset).copied();
+    }
+    let Some(join_key) = join_key else {
+        return (path.count_after_access, false);
+    };
+    let Some(ndv) = info
+        .columnNDV
+        .get(&join_key)
+        .copied()
+        .filter(|ndv| *ndv > 0.0)
+    else {
+        return (path.count_after_access, false);
+    };
+    if path
+        .access_conditions
+        .iter()
+        .any(|condition| condition.column == Some(join_key))
+        || ndv == 1.0
+    {
+        return (path.count_after_access, true);
+    }
+    (path.count_after_access / ndv, true)
+}
+
 /// 组装 `indexJoinPathResult`，并用连接键 NDV 估算等值列基数。
 fn indexJoinPathConstructResult(
     path: &AccessPath,
@@ -646,8 +720,18 @@ fn indexJoinPathConstructResult(
         .take(used.saturating_sub(usize::from(last_col_is_range)))
         .map(|k| info.columnNDV.get(k).copied().unwrap_or(1.0))
         .fold(1.0, f64::max);
+    let (count_after_access, count_after_access_ok) =
+        indexJoinPathCountAfterAccess4Compare(info, path, &mapping, used);
+    let candidate = getIndexCandidateForIndexJoin(
+        &DataSource::default(),
+        path,
+        used,
+        count_after_access,
+        count_after_access_ok,
+    );
     indexJoinPathResult {
         chosenPath: path.clone(),
+        candidate,
         chosenAccess: access,
         chosenRemained: remained,
         chosenRanges: ranges,
@@ -886,8 +970,10 @@ pub fn getIndexJoinIntPKPathInfo(
         .or_else(|| ds.columns.first().copied())?;
     let offset = innerJoinKeys.iter().position(|key| *key == handle)?;
     let datum = Datum::Int(0);
+    let candidate = getIndexCandidateForIndexJoin(ds, path, 1, path.count_after_access, false);
     Some(indexJoinPathResult {
         chosenPath: path.clone(),
+        candidate,
         chosenAccess: Vec::new(),
         chosenRemained: pushed.to_vec(),
         chosenRanges: vec![Range {
