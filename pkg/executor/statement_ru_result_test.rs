@@ -27,7 +27,7 @@ fn go_merge_197_scan_evidence_matches_go_validity_contract() {
 }
 
 #[test]
-fn go_merge_197_trim_explain_prefix_matches_go_exact_forms() {
+fn trim_explain_prefix_matches_normalized_go_forms() {
     assert_eq!(
         trim_statement_ru_explain_prefix("explain analyze format = ? select * from t"),
         "select * from t"
@@ -92,7 +92,7 @@ fn go_merge_197_finalize_rejects_invalid_units() {
 }
 
 #[test]
-fn go_merge_187_runtime_evidence_bridge_frontend_compile_bytes() {
+fn frontend_compile_bytes_use_normalized_sql_and_ignore_literal_length() {
     use crate::adapter::{StatementKind, StatementNode};
     use crate::statement_ru_result::statement_ru_frontend_compile_bytes;
     let mut node = StatementNode {
@@ -119,6 +119,20 @@ fn go_merge_187_runtime_evidence_bridge_frontend_compile_bytes() {
         ),
         8.0
     );
+    let short_literal = statement_ru_frontend_compile_bytes(
+        &node,
+        false,
+        "select * from t where a = 'aaa'",
+        "select * from t where a = ?",
+    );
+    let long_literal = statement_ru_frontend_compile_bytes(
+        &node,
+        false,
+        "select * from t where a = 'aaaaaaaaaa'",
+        "select * from t where a = ?",
+    );
+    assert_eq!(short_literal, long_literal);
+    assert_eq!(short_literal, "select * from t where a = ?".len() as f64);
     node.original_text.clear();
     assert_eq!(
         statement_ru_frontend_compile_bytes(&node, false, "original", ""),
