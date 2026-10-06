@@ -337,6 +337,14 @@ impl ExecutorWithRetry<'_> {
     pub(crate) fn gather_id(&self) -> u64 {
         self.gather_id
     }
+
+    /// Follows the current coordinator after recovery so response consumers can
+    /// select exactly one execution-summary route.
+    pub fn ReportsExecutionSummariesDirectly(&self) -> bool {
+        self.coordinator()
+            .map(|coordinator| coordinator.ReportsExecutionSummariesDirectly())
+            .unwrap_or(false)
+    }
 }
 
 impl kv::Response for ExecutorWithRetry<'_> {

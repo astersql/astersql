@@ -49,6 +49,7 @@ enum Step {
 struct TestCoordinator {
     steps: VecDeque<Step>,
     closes: Arc<AtomicUsize>,
+    reports_directly: bool,
 }
 
 /// 空操作 StatusReporter。
@@ -87,6 +88,9 @@ impl kv::MppCoordinator for TestCoordinator {
     fn StatusReporter(&self) -> Arc<dyn kv::MppStatusReporter> {
         Arc::new(TestStatusReporter)
     }
+    fn ReportsExecutionSummariesDirectly(&self) -> bool {
+        self.reports_directly
+    }
     fn IsClosed(&self) -> bool {
         false
     }
@@ -100,11 +104,12 @@ struct TestFactory {
     scripts: Mutex<VecDeque<VecDeque<Step>>>,
     builds: AtomicUsize,
     closes: Arc<AtomicUsize>,
+    reports_directly_after_first: bool,
 }
 
 impl CoordinatorFactory for TestFactory {
     fn Build(&self, _: u64) -> Result<Box<dyn kv::MppCoordinator>, errors::SharedError> {
-        self.builds.fetch_add(1, Ordering::SeqCst);
+        let build_index = self.builds.fetch_add(1, Ordering::SeqCst);
         Ok(Box::new(TestCoordinator {
             steps: self
                 .scripts
@@ -113,6 +118,7 @@ impl CoordinatorFactory for TestFactory {
                 .pop_front()
                 .expect("script"),
             closes: self.closes.clone(),
+            reports_directly: self.reports_directly_after_first && build_index > 0,
         }))
     }
 }
@@ -174,6 +180,7 @@ fn concrete_manager_registers_routes_and_unregisters_shared_coordinator() {
     let coordinator: SharedMppCoordinator = Arc::new(Mutex::new(Box::new(TestCoordinator {
         steps: VecDeque::new(),
         closes: Arc::new(AtomicUsize::new(0)),
+        reports_directly: false,
     })));
     manager
         .Register(id, coordinator.clone(), Arc::new(TestStatusReporter))
@@ -203,6 +210,7 @@ fn held_responses_remain_fifo_and_close_unregisters_once() {
         ),
         builds: AtomicUsize::new(0),
         closes: closes.clone(),
+        reports_directly_after_first: false,
     });
     let registry = Arc::new(TestRegistry::default());
     let mut parent = memory::tracker::NewTracker(9, 0);
@@ -257,6 +265,7 @@ fn recoverable_error_rebuilds_with_new_gather_and_discards_held_results() {
         ),
         builds: AtomicUsize::new(0),
         closes: closes.clone(),
+        reports_directly_after_first: true,
     });
     let registry = Arc::new(TestRegistry::default());
     let mut parent = memory::tracker::NewTracker(10, 0);
@@ -275,12 +284,14 @@ fn recoverable_error_rebuilds_with_new_gather_and_discards_held_results() {
     )
     .expect("retry executor");
     executor.recovery_handler_mut().handlers = vec![Box::new(AcceptRecovery)];
+    assert!(!executor.ReportsExecutionSummariesDirectly());
 
     let response = kv::Response::Next(&mut executor, &kv::Context::todo())
         .unwrap()
         .unwrap();
     assert_eq!(response.GetData(), &[3]);
     assert_eq!(factory.builds.load(Ordering::SeqCst), 2);
+    assert!(executor.ReportsExecutionSummariesDirectly());
     assert_eq!(executor.gather_id(), 42);
     assert_eq!(registry.registered.lock().unwrap().len(), 2);
     assert_eq!(registry.unregistered.lock().unwrap().len(), 1);

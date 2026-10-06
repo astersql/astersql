@@ -382,6 +382,11 @@ pub trait MppCoordinator: Response + Send {
     fn Execute(&mut self, ctx: &Context) -> Result<Vec<KeyRange>, Error>;
     fn ReportStatus(&mut self, info: ReportStatusRequest) -> Result<(), Error>;
     fn StatusReporter(&self) -> Arc<dyn MppStatusReporter>;
+    /// Whether execution summaries arrive through direct task status reports.
+    /// Coordinators that do not opt into that route keep consuming streamed summaries.
+    fn ReportsExecutionSummariesDirectly(&self) -> bool {
+        false
+    }
     fn IsClosed(&self) -> bool;
     /// 参与本次 MPP 查询的节点数。
     fn GetNodeCnt(&self) -> i32;

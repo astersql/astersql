@@ -847,6 +847,10 @@ impl kv::MppCoordinator for LocalMppCoordinator {
         self.report_handle.clone()
     }
 
+    fn ReportsExecutionSummariesDirectly(&self) -> bool {
+        self.report_execution_info
+    }
+
     fn IsClosed(&self) -> bool {
         self.closed
     }
