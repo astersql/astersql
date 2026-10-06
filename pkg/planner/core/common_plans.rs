@@ -541,6 +541,7 @@ pub struct V2AnalyzeOptions {
     pub ColumnChoice: String,
     pub ColumnList: Vec<String>,
     pub RawOpts: BTreeMap<String, String>,
+    pub ResetOpts: BTreeSet<String>,
 }
 /// 列统计收集任务。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

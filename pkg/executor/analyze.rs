@@ -200,6 +200,7 @@ pub struct v2AnalyzeOptions {
     pub physicalTableID: i64,
     pub isPartition: bool,
     pub rawOptions: BTreeMap<analyzeOptionType, u64>,
+    pub resetOptions: BTreeSet<analyzeOptionType>,
     pub columnChoice: String,
     pub columnList: Vec<columnInfo>,
 }
@@ -777,38 +778,40 @@ impl AnalyzeExec {
             return Ok(());
         }
         let dynamic = self.runtime.dynamic_partition_prune();
+        let mut reset_options = BTreeSet::new();
+        let mut partition_ids = Vec::new();
         let options = self
             .OptionsMap
             .values()
-            .filter(|options| !options.isPartition || !dynamic)
+            .filter(|options| {
+                if dynamic && options.isPartition {
+                    partition_ids.push(options.physicalTableID);
+                    false
+                } else {
+                    reset_options.extend(options.resetOptions.iter().copied());
+                    true
+                }
+            })
             .collect::<Vec<_>>();
         if options.is_empty() {
             return Ok(());
         }
         let mut values = Vec::with_capacity(options.len());
         for option in options {
-            let sample_num = option
-                .rawOptions
-                .get(&analyzeOptionType::NumSamples)
-                .copied()
-                .unwrap_or_default();
-            let sample_rate = option
-                .rawOptions
-                .get(&analyzeOptionType::SampleRate)
-                .copied()
-                .map(f64::from_bits)
-                .unwrap_or_default();
-            let buckets = option
-                .rawOptions
-                .get(&analyzeOptionType::NumBuckets)
-                .copied()
-                .unwrap_or_default();
-            let topn = option
-                .rawOptions
-                .get(&analyzeOptionType::NumTopN)
-                .copied()
-                .map(|value| value as i64)
-                .unwrap_or(-1);
+            let saved_value = |option_type, transform: fn(u64) -> String| {
+                option
+                    .rawOptions
+                    .get(&option_type)
+                    .copied()
+                    .map(transform)
+                    .unwrap_or_else(|| "DEFAULT".into())
+            };
+            let sample_num = saved_value(analyzeOptionType::NumSamples, |value| value.to_string());
+            let sample_rate = saved_value(analyzeOptionType::SampleRate, |value| {
+                f64::from_bits(value).to_string()
+            });
+            let buckets = saved_value(analyzeOptionType::NumBuckets, |value| value.to_string());
+            let topn = saved_value(analyzeOptionType::NumTopN, |value| value.to_string());
             let column_ids = option
                 .columnList
                 .iter()
@@ -825,7 +828,29 @@ impl AnalyzeExec {
             "REPLACE INTO mysql.analyze_options (table_id,sample_num,sample_rate,buckets,topn,column_choice,column_ids) VALUES {}",
             values.join(",")
         );
-        self.runtime.execute_internal_sql(&sql)
+        self.runtime.execute_internal_sql(&sql)?;
+        if dynamic && !reset_options.is_empty() && !partition_ids.is_empty() {
+            let assignments = [
+                (analyzeOptionType::NumSamples, "sample_num"),
+                (analyzeOptionType::SampleRate, "sample_rate"),
+                (analyzeOptionType::NumBuckets, "buckets"),
+                (analyzeOptionType::NumTopN, "topn"),
+            ]
+            .into_iter()
+            .filter(|(option_type, _)| reset_options.contains(option_type))
+            .map(|(_, column)| format!("{column}=DEFAULT"))
+            .collect::<Vec<_>>()
+            .join(",");
+            let ids = partition_ids
+                .into_iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            self.runtime.execute_internal_sql(&format!(
+                "UPDATE mysql.analyze_options SET {assignments} WHERE table_id IN ({ids})"
+            ))?;
+        }
+        Ok(())
     }
 
     /// 捕获 panic 地处理结果通道，并按 save 并发落盘。

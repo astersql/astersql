@@ -116,6 +116,56 @@ fn full_sampling_analyze_keeps_unsigned_boundary_rows_and_single_remaining_row()
 }
 
 #[test]
+fn analyze_default_resets_saved_table_and_partition_options() {
+    let (_domain, session) = CreateAnalyzeSession().expect("create statistics session");
+    for sql in [
+        "use test",
+        "set tidb_analyze_version=2",
+        "set tidb_partition_prune_mode='static'",
+        "create table analyze_default_t(a int) partition by range(a) (partition p0 values less than (10), partition p1 values less than (20))",
+        "insert into analyze_default_t values (1),(11)",
+        "analyze table analyze_default_t with 8 buckets, 7 topn",
+    ] {
+        session
+            .execute(sql)
+            .unwrap_or_else(|error| panic!("execute {sql}: {error}"));
+    }
+
+    let mut before = session
+        .execute("select buckets,topn from mysql.analyze_options order by table_id")
+        .expect("read saved options before reset")
+        .remove(0);
+    let mut before_rows = Vec::new();
+    while let Some(row) = before.Next().expect("read saved option") {
+        before_rows.push(row);
+    }
+    assert_eq!(
+        before_rows,
+        vec![vec![String::from("8"), String::from("7")]; 3]
+    );
+
+    session
+        .execute("set tidb_partition_prune_mode='dynamic'")
+        .expect("enable dynamic pruning");
+    session
+        .execute("analyze table analyze_default_t with default buckets, default topn")
+        .expect("reset saved options");
+
+    let mut after = session
+        .execute("select buckets,topn from mysql.analyze_options order by table_id")
+        .expect("read saved options after reset")
+        .remove(0);
+    let mut after_rows = Vec::new();
+    while let Some(row) = after.Next().expect("read reset option") {
+        after_rows.push(row);
+    }
+    assert_eq!(
+        after_rows,
+        vec![vec![String::from("0"), String::from("-1")]; 3]
+    );
+}
+
+#[test]
 fn combined_merge_deprecated_concurrency_sql_warning() {
     let (domain, session) = CreateAnalyzeSession().unwrap();
     domain

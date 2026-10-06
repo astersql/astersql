@@ -440,6 +440,8 @@ pub struct AnalyzeStatement {
     pub column_choice: ColumnChoice,
     /// 选项列表。
     pub options: Vec<(AnalyzeOptionType, u64)>,
+    /// `WITH DEFAULT <option>` 指定的持久化选项重置集合。
+    pub reset_options: Vec<AnalyzeOptionType>,
     pub version: i32,
     pub incremental: bool,
 }
@@ -910,7 +912,13 @@ impl PlanBuilder {
 
     /// 构建Analyze（对应同名 Go 逻辑）。
     pub fn buildAnalyze(&mut self, analyze: &AnalyzeStatement) -> Result<BuiltPlan> {
-        let opts = fillAnalyzeOptions(handleAnalyzeOptions(&analyze.options)?);
+        let explicit = handleAnalyzeOptions(&analyze.options)?;
+        let resets = analyze.reset_options.iter().copied().collect();
+        let opts = fillAnalyzeOptions(mergeAnalyzeOptionsWithResets(
+            explicit,
+            &resets,
+            &HashMap::new(),
+        ));
         if analyze.index_names.is_empty() {
             self.buildAnalyzeTable(analyze, opts)
         } else {
@@ -1607,10 +1615,12 @@ impl PlanBuilder {
     pub fn genV2AnalyzeOptions(
         &self,
         statement: &[(AnalyzeOptionType, u64)],
+        resets: &HashSet<AnalyzeOptionType>,
         saved: &HashMap<AnalyzeOptionType, u64>,
     ) -> Result<HashMap<AnalyzeOptionType, u64>> {
-        Ok(fillAnalyzeOptions(mergeAnalyzeOptions(
+        Ok(fillAnalyzeOptions(mergeAnalyzeOptionsWithResets(
             handleAnalyzeOptions(statement)?,
+            resets,
             saved,
         )))
     }
@@ -2214,6 +2224,30 @@ pub fn mergeAnalyzeOptions(
         statement.entry(*key).or_insert(*value);
     }
     statement
+}
+
+/// Merge explicit statement values while dropping saved values reset by DEFAULT.
+pub fn mergeAnalyzeOptionsWithResets(
+    mut statement: HashMap<AnalyzeOptionType, u64>,
+    resets: &HashSet<AnalyzeOptionType>,
+    saved: &HashMap<AnalyzeOptionType, u64>,
+) -> HashMap<AnalyzeOptionType, u64> {
+    for (key, value) in saved {
+        if !resets.contains(key) {
+            statement.entry(*key).or_insert(*value);
+        }
+    }
+    statement
+}
+
+/// Apply partition-level saved options on top of table-level saved options.
+pub fn overrideAnalyzeOptions(
+    override_options: &HashMap<AnalyzeOptionType, u64>,
+    saved: &HashMap<AnalyzeOptionType, u64>,
+) -> HashMap<AnalyzeOptionType, u64> {
+    let mut merged = saved.clone();
+    merged.extend(override_options.iter().map(|(key, value)| (*key, *value)));
+    merged
 }
 /// 选取ColumnList（对应同名 Go 逻辑）。
 pub fn pickColumnList(

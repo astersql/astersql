@@ -22,9 +22,9 @@
 
 use crate::analyze::{
     AnalyzeError, AnalyzeExec, AnalyzeResultValue, analyzeColumnsExec, analyzeContext, analyzeJob,
-    analyzePlan, analyzeResultPart, analyzeResults, analyzeRuntime, analyzeTableID, analyzeTask,
-    columnInfo, globalStatsKey, globalStatsMap, handleGlobalStats, histogram, killSignal,
-    memoryTracker, statsObject, taskType, v2AnalyzeOptions,
+    analyzeOptionType, analyzePlan, analyzeResultPart, analyzeResults, analyzeRuntime,
+    analyzeTableID, analyzeTask, columnInfo, globalStatsKey, globalStatsMap, handleGlobalStats,
+    histogram, killSignal, memoryTracker, statsObject, taskType, v2AnalyzeOptions,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -484,4 +484,85 @@ fn save_analyze_options_matches_go_partition_filtering() {
         assert!(sql.contains("(10,"));
         assert_eq!(sql.contains("(11,"), partition_is_saved);
     }
+}
+
+#[test]
+/// Missing raw options must use the mysql.analyze_options column defaults.
+fn save_analyze_options_uses_defaults_for_unset_values() {
+    let runtime = Arc::new(TestRuntime {
+        persist_options: true,
+        ..TestRuntime::new(1)
+    });
+    let mut analyze = executor(runtime.clone(), Vec::new());
+    analyze.OptionsMap.insert(
+        10,
+        v2AnalyzeOptions {
+            physicalTableID: 10,
+            rawOptions: BTreeMap::from([(analyzeOptionType::NumTopN, 0)]),
+            ..Default::default()
+        },
+    );
+
+    analyze.saveAnalyzeOptions().unwrap();
+
+    let sql = runtime
+        .state
+        .executed_sql
+        .lock()
+        .unwrap()
+        .last()
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        sql,
+        "REPLACE INTO mysql.analyze_options (table_id,sample_num,sample_rate,buckets,topn,column_choice,column_ids) VALUES (10,DEFAULT,DEFAULT,DEFAULT,0,'','')"
+    );
+}
+
+#[test]
+fn save_analyze_options_resets_dynamic_partition_overrides() {
+    let runtime = Arc::new(TestRuntime {
+        persist_options: true,
+        dynamic_partition_prune: true,
+        ..TestRuntime::new(1)
+    });
+    let mut analyze = executor(runtime.clone(), Vec::new());
+    analyze.OptionsMap = BTreeMap::from([
+        (
+            10,
+            v2AnalyzeOptions {
+                physicalTableID: 10,
+                resetOptions: BTreeSet::from([
+                    analyzeOptionType::NumBuckets,
+                    analyzeOptionType::NumTopN,
+                ]),
+                ..Default::default()
+            },
+        ),
+        (
+            11,
+            v2AnalyzeOptions {
+                physicalTableID: 11,
+                isPartition: true,
+                ..Default::default()
+            },
+        ),
+        (
+            12,
+            v2AnalyzeOptions {
+                physicalTableID: 12,
+                isPartition: true,
+                ..Default::default()
+            },
+        ),
+    ]);
+
+    analyze.saveAnalyzeOptions().unwrap();
+
+    let sql = runtime.state.executed_sql.lock().unwrap().clone();
+    assert_eq!(sql.len(), 2);
+    assert_eq!(
+        sql[1],
+        "UPDATE mysql.analyze_options SET buckets=DEFAULT,topn=DEFAULT WHERE table_id IN (11,12)"
+    );
 }

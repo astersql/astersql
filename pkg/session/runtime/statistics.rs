@@ -1648,6 +1648,7 @@ impl ConcreteSession {
             && self.state.borrow().analyze_version == 2;
         let mut options_by_physical_id = HashMap::new();
         let mut options_to_save = HashMap::new();
+        let mut dynamic_partition_resets = Vec::new();
         let mut inputs = Vec::new();
         let locked = self.domain.stats_context().locked_table_ids();
         let mut skipped = Vec::new();
@@ -1787,6 +1788,20 @@ impl ConcreteSession {
                 options_to_save.insert(info.ID, table_raw.clone());
             }
             if let Some(partition) = info.GetPartitionInfo() {
+                if persist_options
+                    && dynamic_partition_prune
+                    && is_analyze_table
+                    && !resets.is_empty()
+                {
+                    dynamic_partition_resets.push((
+                        partition
+                            .Definitions
+                            .iter()
+                            .map(|definition| definition.ID)
+                            .collect::<Vec<_>>(),
+                        resets.clone(),
+                    ));
+                }
                 for definition in &partition.Definitions {
                     if !partition_names.is_empty() && !partition_names.contains(&definition.Name.L)
                     {
@@ -1965,6 +1980,30 @@ impl ConcreteSession {
                 .map(f64::from_bits)
                 .unwrap_or(-1.0);
             metadata.execute(&format!("INSERT INTO mysql.analyze_options (table_id,sample_num,sample_rate,buckets,topn) VALUES ({id},{samples},{rate},{buckets},{topn}) ON DUPLICATE KEY UPDATE sample_num={samples},sample_rate={rate},buckets={buckets},topn={topn}"))?;
+        }
+        for (partition_ids, resets) in dynamic_partition_resets {
+            use astersql_planner_core::planbuilder::AnalyzeOptionType as O;
+            let assignments = [
+                (O::NumSamples, "sample_num=0"),
+                (O::SampleRate, "sample_rate=-1"),
+                (O::Buckets, "buckets=0"),
+                (O::TopN, "topn=-1"),
+            ]
+            .into_iter()
+            .filter(|(option, _)| resets.contains(option))
+            .map(|(_, assignment)| assignment)
+            .collect::<Vec<_>>()
+            .join(",");
+            let ids = partition_ids
+                .into_iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            if !assignments.is_empty() && !ids.is_empty() {
+                metadata.execute(&format!(
+                    "UPDATE mysql.analyze_options SET {assignments} WHERE table_id IN ({ids})"
+                ))?;
+            }
         }
         Ok(())
     }

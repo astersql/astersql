@@ -23,6 +23,7 @@
 // 权限、IMPORT 赋值与 DDL 选项边界；部分 SQL 经解析器驱动的计划构建夹具执行。
 
 use logicalop_dependency::LogicalPlan as _;
+use std::collections::{HashMap, HashSet};
 
 use crate::main_test::{exercise_statement_for_test, logical_optimize_default_for_test};
 use crate::planbuilder::{
@@ -207,6 +208,7 @@ fn builder_constructs_show_analyze_and_admin_plans() {
         columns: Vec::new(),
         column_choice: ColumnChoice::All,
         options: vec![(AnalyzeOptionType::Buckets, 128)],
+        reset_options: Vec::new(),
         version: 2,
         incremental: false,
     };
@@ -376,7 +378,9 @@ fn dynamic_defaults_and_raw_options() {
     assert_eq!(filled[&AnalyzeOptionType::TopN], 150);
     let builder = NewPlanBuilder(&[]);
     let saved = [(AnalyzeOptionType::Buckets, 128)].into_iter().collect();
-    let merged = builder.genV2AnalyzeOptions(&[], &saved).unwrap();
+    let merged = builder
+        .genV2AnalyzeOptions(&[], &HashSet::new(), &saved)
+        .unwrap();
     assert_eq!(merged[&AnalyzeOptionType::Buckets], 128);
     assert_eq!(merged[&AnalyzeOptionType::TopN], 150);
 }
@@ -452,6 +456,7 @@ fn go_error_messages_and_table_plan() {
         columns: vec![],
         column_choice: ColumnChoice::All,
         options: vec![(AnalyzeOptionType::Buckets, 1024)],
+        reset_options: Vec::new(),
         version: 2,
         incremental: false,
     };
@@ -474,8 +479,40 @@ fn go_error_messages_and_table_plan() {
     let partition_saved = [(AnalyzeOptionType::Buckets, 512)].into_iter().collect();
     let saved = mergeAnalyzeOptions(partition_saved, &table_saved);
     let opts = builder
-        .genV2AnalyzeOptions(&[(AnalyzeOptionType::TopN, 0)], &saved)
+        .genV2AnalyzeOptions(&[(AnalyzeOptionType::TopN, 0)], &HashSet::new(), &saved)
         .unwrap();
     assert_eq!(opts[&AnalyzeOptionType::Buckets], 512);
     assert_eq!(opts[&AnalyzeOptionType::TopN], 0);
+}
+
+#[test]
+fn analyze_default_options_reset_saved_values() {
+    use crate::planbuilder::*;
+
+    let saved = HashMap::from([
+        (AnalyzeOptionType::Buckets, 100),
+        (AnalyzeOptionType::TopN, 20),
+    ]);
+    let resets = HashSet::from([AnalyzeOptionType::Buckets]);
+    let merged = mergeAnalyzeOptionsWithResets(
+        HashMap::from([(AnalyzeOptionType::NumSamples, 1000)]),
+        &resets,
+        &saved,
+    );
+    assert_eq!(merged.get(&AnalyzeOptionType::Buckets), None);
+    assert_eq!(merged[&AnalyzeOptionType::TopN], 20);
+    assert_eq!(merged[&AnalyzeOptionType::NumSamples], 1000);
+
+    let pinned_topn = mergeAnalyzeOptionsWithResets(
+        HashMap::from([(AnalyzeOptionType::TopN, 0)]),
+        &HashSet::new(),
+        &saved,
+    );
+    assert_eq!(pinned_topn[&AnalyzeOptionType::TopN], 0);
+
+    let table_saved = HashMap::from([(AnalyzeOptionType::Buckets, 100)]);
+    let partition_saved = HashMap::from([(AnalyzeOptionType::TopN, 10)]);
+    let layered = overrideAnalyzeOptions(&partition_saved, &table_saved);
+    assert_eq!(layered[&AnalyzeOptionType::Buckets], 100);
+    assert_eq!(layered[&AnalyzeOptionType::TopN], 10);
 }
