@@ -328,6 +328,41 @@ fn index_merge_order_by_limit_matches_index_reference() {
     }
 }
 
+/// Issue 70910: the heap's logical retention bound is the full pushed-down
+/// limit, while only its initial allocation is capped at 1024 entries.
+#[test]
+fn index_merge_order_by_limit_above_preallocation_cap_returns_all_rows() {
+    let _serial = serial_sql_test();
+    let mut tk = new_testkit();
+    tk.MustExec("use test", Vec::new());
+    tk.MustExec(
+        "create table t_im_large_limit(a int, b int, c int, \
+         index idx1(a,c), index idx2(b,c))",
+        Vec::new(),
+    );
+    for row_id in (0..3000).step_by(500) {
+        let values = (row_id..row_id + 500)
+            .map(|value| format!("(1,1,{value})"))
+            .collect::<Vec<_>>()
+            .join(",");
+        tk.MustExec(
+            &format!("insert into t_im_large_limit values {values}"),
+            Vec::new(),
+        );
+    }
+    tk.MustExec("set @@tidb_enable_index_merge = 1", Vec::new());
+
+    let query = "select /*+ use_index_merge(t_im_large_limit, idx1, idx2) */ * \
+                 from t_im_large_limit where a=1 or b=1 order by c limit 2000";
+    assert!(tk.HasPlan(query, "IndexMerge"));
+    assert!(!tk.HasPlan(query, "TopN"));
+    let rows = tk.MustQuery(query, Vec::new()).Rows();
+    assert_eq!(rows.len(), 2000);
+    for (expected, row) in rows.iter().enumerate() {
+        assert_eq!(row[2], expected.to_string());
+    }
+}
+
 /// 对应 Go `TestIndexMergeLimitPushedAsIntersectionEmbeddedLimit`：必须保留 AND
 /// intersection 和 `limit embedded` 计划属性，且下推前后返回行数一致。
 #[test]

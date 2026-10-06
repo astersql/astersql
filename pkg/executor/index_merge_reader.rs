@@ -1022,20 +1022,21 @@ fn compareHandles(a: &IndexMergeHandle, b: &IndexMergeHandle, desc: &[bool]) -> 
 }
 
 impl indexMergeProcessWorker {
-    /// 按下推 LIMIT 估算堆容量上限并绑定内存跟踪器。
+    /// 按下推 LIMIT 设置逻辑保留上限，并限制初始预分配大小。
     fn NewHandleHeap(
         &self,
         taskMap: HashMap<usize, Vec<Arc<indexMergeTableTask>>>,
         tracker: Arc<IndexMergeMemoryTracker>,
     ) -> handleHeap {
+        let requiredCnt = self
+            .indexMerge
+            .pushedLimit
+            .map_or(0, |v| v.offset + v.count);
         handleHeap {
-            requiredCnt: self
-                .indexMerge
-                .pushedLimit
-                .map_or(0, |v| (v.offset + v.count).min(1024)),
+            requiredCnt,
             tracker,
             taskMap,
-            idx: Vec::new(),
+            idx: Vec::with_capacity(requiredCnt.min(1024) as usize),
             byItems: self.indexMerge.byItemsDesc.clone(),
         }
     }
