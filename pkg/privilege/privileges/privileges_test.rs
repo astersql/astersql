@@ -581,6 +581,132 @@ fn TestCheckCertBasedAuth() {
 
 #[test]
 #[serial(privileges)]
+/// URI SAN 通配符仅匹配一个非空路径段；DNS/IP 仍保持精确匹配。
+fn uri_san_wildcards_match_only_whole_non_empty_path_segments() {
+    let privilege = globalPrivRecord::default();
+    let uri_cert = |uri: &str| Certificate {
+        uris: vec![uri.into()],
+        ..Default::default()
+    };
+    let required_uri = |uri: &str| HashMap::from([("URI".into(), vec![uri.into()])]);
+
+    let wildcard = required_uri("spiffe://domain.com/*/something/foo/*");
+    assert!(checkCertSAN(
+        &privilege,
+        &uri_cert("spiffe://domain.com/bar/something/foo/baz"),
+        &wildcard,
+    ));
+    assert!(!checkCertSAN(
+        &privilege,
+        &uri_cert("spiffe://domain.com/bar/extra/something/foo/baz"),
+        &wildcard,
+    ));
+    assert!(!checkCertSAN(
+        &privilege,
+        &uri_cert("spiffe://domain.com//something/foo/baz"),
+        &wildcard,
+    ));
+    assert!(!checkCertSAN(
+        &privilege,
+        &uri_cert("spiffe://domain.com/bar/something/foo/"),
+        &wildcard,
+    ));
+
+    assert!(!checkCertSAN(
+        &privilege,
+        &uri_cert("spiffe://domain.com/bar/baz"),
+        &required_uri("spiffe://*/bar/*"),
+    ));
+    assert!(checkCertSAN(
+        &privilege,
+        &uri_cert("spiffe://*/bar/baz"),
+        &required_uri("spiffe://*/bar/*"),
+    ));
+    assert!(checkCertSAN(
+        &privilege,
+        &uri_cert("spiffe://domain.com/foo*/bar"),
+        &required_uri("spiffe://domain.com/foo*/bar"),
+    ));
+    assert!(!checkCertSAN(
+        &privilege,
+        &uri_cert("spiffe://domain.com/foobar/bar"),
+        &required_uri("spiffe://domain.com/foo*/bar"),
+    ));
+    assert!(!checkCertSAN(
+        &privilege,
+        &uri_cert("https://domain.com/bar/baz"),
+        &required_uri("spiffe://domain.com/bar/*"),
+    ));
+    assert!(!checkCertSAN(
+        &privilege,
+        &uri_cert("spiffe://domain.com/bar/baz"),
+        &required_uri("spiffe://@domain.com/bar/*"),
+    ));
+    assert!(!checkCertSAN(
+        &privilege,
+        &uri_cert("spiffe://@domain.com/bar/baz"),
+        &required_uri("spiffe://domain.com/bar/*"),
+    ));
+    assert!(!checkCertSAN(
+        &privilege,
+        &uri_cert("spiffe:///bar/baz"),
+        &required_uri("spiffe:/bar/*"),
+    ));
+    assert!(!checkCertSAN(
+        &privilege,
+        &uri_cert("spiffe:/bar/baz"),
+        &required_uri("spiffe:///bar/*"),
+    ));
+    assert!(!checkCertSAN(
+        &privilege,
+        &uri_cert("spiffe://domain.com/bar/baz?key=value"),
+        &required_uri("spiffe://domain.com/bar/*?key=*"),
+    ));
+    assert!(checkCertSAN(
+        &privilege,
+        &uri_cert("spiffe://domain.com/bar/baz%2Fqux"),
+        &required_uri("spiffe://domain.com/bar/*"),
+    ));
+    assert!(checkCertSAN(
+        &privilege,
+        &uri_cert("/bar/baz"),
+        &required_uri("/bar/*"),
+    ));
+    assert!(checkCertSAN(
+        &privilege,
+        &uri_cert("bar/baz"),
+        &required_uri("bar/*"),
+    ));
+    assert!(!checkCertSAN(
+        &privilege,
+        &uri_cert("spiffe://domain.com/bar/baz"),
+        &required_uri("spiffe://domain.com/bar/%zz*"),
+    ));
+
+    let cert = Certificate {
+        dns_names: vec!["service.domain.com".into()],
+        ip_addresses: vec!["127.0.0.1".into()],
+        ..Default::default()
+    };
+    assert!(!checkCertSAN(
+        &privilege,
+        &cert,
+        &HashMap::from([("DNS".into(), vec!["*.domain.com".into()])]),
+    ));
+    assert!(!checkCertSAN(
+        &privilege,
+        &cert,
+        &HashMap::from([("IP".into(), vec!["127.*".into()])]),
+    ));
+    assert!(checkCertSAN(
+        &privilege,
+        &cert,
+        &HashMap::from([("IP".into(), vec!["127.0.0.1".into()])]),
+    ));
+}
+
+#[test]
+#[serial(privileges)]
 /// 密码插件鉴权（native password 等）成功/失败路径。
 fn TestCheckAuthenticate() {
     let mut source = RowDataSource::default();

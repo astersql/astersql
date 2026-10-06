@@ -1,3 +1,4 @@
+// Copyright 2026 AsterSQL.
 // Copyright 2015 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -11,8 +12,6 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-// Copyright 2026 AsterSQL.
-
 // 权限管理核心：连接鉴权、静态/动态权限校验、SSL/证书校验与 Auth Token claims。
 //
 // 对应 Go 的 `privileges.go`。`UserPrivileges` 持有当前会话用户身份与权限缓存
@@ -958,10 +957,152 @@ pub fn checkCertSAN(
             // Go logs and skips SAN kinds unknown to this version.
             _ => return true,
         };
-        // Values for one SAN kind are alternatives, and x509 SAN values are
-        // compared exactly (Go's slices.Contains), including case.
-        required.iter().any(|value| actual.contains(value))
+        // Values for one SAN kind are alternatives. Only URI SANs allow a
+        // required path segment consisting solely of `*` to match one
+        // non-empty segment; DNS and IP SANs remain exact matches.
+        required.iter().any(|value| {
+            if kind.eq_ignore_ascii_case("URI") {
+                actual
+                    .iter()
+                    .any(|candidate| match_uri_with_wildcard(value, candidate))
+            } else {
+                actual.contains(value)
+            }
+        })
     })
+}
+
+#[derive(PartialEq)]
+struct UriParts<'a> {
+    scheme: &'a str,
+    opaque: &'a str,
+    user: Option<&'a str>,
+    host: &'a str,
+    omit_host: bool,
+    force_query: bool,
+    query: &'a str,
+    fragment: &'a str,
+    path: &'a str,
+}
+
+/// Split a URI into the fields compared by Go's `url.URL` implementation.
+fn uri_parts(input: &str) -> Option<UriParts<'_>> {
+    if input.bytes().any(|byte| byte.is_ascii_control()) || !valid_percent_encoding(input) {
+        return None;
+    }
+    let first_delimiter = input.find(['/', '?', '#']).unwrap_or(input.len());
+    let (scheme, after_scheme) = match input[..first_delimiter].find(':') {
+        Some(colon) => {
+            let scheme = &input[..colon];
+            if !valid_uri_scheme(scheme) {
+                return None;
+            }
+            (scheme, &input[colon + 1..])
+        }
+        None => ("", input),
+    };
+    let (without_fragment, fragment) = after_scheme
+        .split_once('#')
+        .map_or((after_scheme, ""), |(head, tail)| (head, tail));
+    let force_query = without_fragment.ends_with('?');
+    let (hierarchy, query) = without_fragment
+        .split_once('?')
+        .map_or((without_fragment, ""), |(head, tail)| (head, tail));
+
+    if !scheme.is_empty() && !hierarchy.starts_with('/') {
+        return Some(UriParts {
+            scheme,
+            opaque: hierarchy,
+            user: None,
+            host: "",
+            omit_host: true,
+            force_query,
+            query,
+            fragment,
+            path: "",
+        });
+    }
+
+    let omit_host = !hierarchy.starts_with("//");
+    let (authority, path) = if omit_host {
+        ("", hierarchy)
+    } else {
+        let authority_and_path = &hierarchy[2..];
+        authority_and_path
+            .find('/')
+            .map_or((authority_and_path, ""), |slash| {
+                (&authority_and_path[..slash], &authority_and_path[slash..])
+            })
+    };
+    let (user, host) = authority
+        .rsplit_once('@')
+        .map_or((None, authority), |(user, host)| (Some(user), host));
+
+    Some(UriParts {
+        scheme,
+        opaque: "",
+        user,
+        host,
+        omit_host,
+        force_query,
+        query,
+        fragment,
+        path,
+    })
+}
+
+fn valid_uri_scheme(scheme: &str) -> bool {
+    let mut bytes = scheme.bytes();
+    bytes.next().is_some_and(|byte| byte.is_ascii_alphabetic())
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
+}
+
+fn valid_percent_encoding(input: &str) -> bool {
+    let bytes = input.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len()
+                || !bytes[index + 1].is_ascii_hexdigit()
+                || !bytes[index + 2].is_ascii_hexdigit()
+            {
+                return false;
+            }
+            index += 3;
+        } else {
+            index += 1;
+        }
+    }
+    true
+}
+
+/// Match URI SANs using Go's whole, non-empty path-segment wildcard rule.
+fn match_uri_with_wildcard(required: &str, given: &str) -> bool {
+    if !required.contains('*') {
+        return required == given;
+    }
+    let (Some(required), Some(given)) = (uri_parts(required), uri_parts(given)) else {
+        return false;
+    };
+    if required.scheme != given.scheme
+        || required.opaque != given.opaque
+        || required.user != given.user
+        || required.host != given.host
+        || required.omit_host != given.omit_host
+        || required.force_query != given.force_query
+        || required.query != given.query
+        || required.fragment != given.fragment
+    {
+        return false;
+    }
+
+    let required_segments: Vec<_> = required.path.split('/').collect();
+    let given_segments: Vec<_> = given.path.split('/').collect();
+    required_segments.len() == given_segments.len()
+        && required_segments
+            .iter()
+            .zip(given_segments)
+            .all(|(required, given)| *required == given || (*required == "*" && !given.is_empty()))
 }
 /// 注册新的动态权限名（大写、最长 32、不可重复）。
 pub fn RegisterDynamicPrivilege(name: &str) -> Result<(), PrivilegeError> {
