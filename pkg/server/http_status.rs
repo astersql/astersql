@@ -769,6 +769,18 @@ fn dxf_active_tasks_response(server: &Server, request: &Request) -> Response {
     dxf_response(writer)
 }
 
+fn dxf_nodes_response(server: &Server, request: &Request) -> Response {
+    use astersql_server_handler_tikvhandler::NewDXFNodesHandler;
+
+    let Some(runtime) = server.domain().and_then(|domain| domain.dxf_runtime()) else {
+        return Response::text(404, "not found");
+    };
+    let handler = NewDXFNodesHandler(runtime);
+    let mut writer = DxfHttpResponseWriter::default();
+    handler.ServeHTTP(&mut writer, &dxf_request(request, HashMap::new()));
+    dxf_response(writer)
+}
+
 fn dxf_history_response(server: &Server, request: &Request) -> Response {
     use astersql_server_handler_tikvhandler::{
         NewDXFTaskHistoryHandler, parseStoredTaskHistoryQuery,
@@ -2116,6 +2128,11 @@ pub fn build_status_router(server: Arc<Server>) -> Router {
     router.add(
         "/dxf/task/active",
         Arc::new(move |request| dxf_active_tasks_response(&dxf_server, request)),
+    );
+    let dxf_server = Arc::clone(&server);
+    router.add(
+        "/dxf/nodes",
+        Arc::new(move |request| dxf_nodes_response(&dxf_server, request)),
     );
     let dxf_server = Arc::clone(&server);
     router.add(

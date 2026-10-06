@@ -371,6 +371,38 @@ fn test_node_info_and_busy_nodes() {
 }
 
 #[test]
+/// 节点列表 API 原样返回按存储顺序读取的 host、role 与 CPU，并保留空列表。
+fn test_list_managed_nodes() {
+    let _lock = runtime_test_lock();
+    let runtime = Arc::new(StatusRuntime::default());
+    let _guard = runtime.clone().install();
+    let ctx = Context::background();
+
+    assert!(ListManagedNodes(&ctx).unwrap().is_empty());
+    runtime.nodes.lock().unwrap().extend([
+        proto::ManagedNode {
+            ID: ":4001".to_owned(),
+            Role: String::new(),
+            CPUCount: 4,
+        },
+        proto::ManagedNode {
+            ID: ":4002".to_owned(),
+            Role: "background".to_owned(),
+            CPUCount: 8,
+        },
+    ]);
+
+    let nodes = ListManagedNodes(&ctx).unwrap();
+    assert_eq!(nodes.len(), 2);
+    assert_eq!(nodes[0].ID, ":4001");
+    assert_eq!(nodes[0].Role, "");
+    assert_eq!(nodes[0].CPUCount, 4);
+    assert_eq!(nodes[1].ID, ":4002");
+    assert_eq!(nodes[1].Role, "background");
+    assert_eq!(nodes[1].CPUCount, 8);
+}
+
+#[test]
 /// 暂停缩容标志仅在启用且 TTL 未过期时对外可见。
 fn test_schedule_flag() {
     let _lock = runtime_test_lock();

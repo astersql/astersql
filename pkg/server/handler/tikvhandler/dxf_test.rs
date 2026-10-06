@@ -69,6 +69,13 @@ impl DxfRuntime for MockRuntime {
         Ok(JsonValue::Null)
     }
 
+    fn list_managed_nodes(
+        &self,
+        _context: &DxfContext,
+    ) -> DxfResult<Vec<astersql_dxf_framework_proto::ManagedNode>> {
+        Ok(Vec::new())
+    }
+
     fn list_history_tasks(
         &self,
         _context: &DxfContext,

@@ -56,6 +56,11 @@ pub fn GetActiveTaskSummary(ctx: &Context) -> Result<storage::ActiveTaskSummary>
     runtime()?.get_active_task_summary(ctx)
 }
 
+/// 返回注册在 `mysql.dist_framework_meta` 中的全部受管节点。
+pub fn ListManagedNodes(ctx: &Context) -> Result<Vec<proto::ManagedNode>> {
+    runtime()?.get_all_nodes(ctx)
+}
+
 /// 分页列出历史任务（可按 keyspace 过滤）。
 pub fn ListHistoryTasks(
     ctx: &Context,

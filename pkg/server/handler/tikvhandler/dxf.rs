@@ -22,6 +22,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
+use astersql_dxf_framework_proto::ManagedNode;
+
 /// 暂停缩容（pause scale-in）表单 action。
 const PAUSE_SCALE_IN_ACTION: &str = "pause_scale_in";
 /// 恢复缩容表单 action。
@@ -218,6 +220,7 @@ pub trait DxfRuntime: Send + Sync {
     fn validate_keyspace_name(&self, keyspace: &str) -> DxfResult<()>;
     fn get_schedule_status(&self, context: &DxfContext) -> DxfResult<JsonValue>;
     fn get_active_task_summary(&self, context: &DxfContext) -> DxfResult<JsonValue>;
+    fn list_managed_nodes(&self, context: &DxfContext) -> DxfResult<Vec<ManagedNode>>;
     fn list_history_tasks(
         &self,
         context: &DxfContext,
@@ -299,6 +302,7 @@ macro_rules! global_handler {
 
 global_handler!(DXFScheduleStatusHandler, NewDXFScheduleStatusHandler);
 global_handler!(DXFActiveTaskHandler, NewDXFActiveTaskHandler);
+global_handler!(DXFNodesHandler, NewDXFNodesHandler);
 global_handler!(DXFTaskHistoryHandler, NewDXFTaskHistoryHandler);
 global_handler!(
     DXFImportIntoHistoryJobInfoHandler,
@@ -348,6 +352,38 @@ impl DXFActiveTaskHandler {
             Err(error) => {
                 self.runtime
                     .log_warning("failed to get DXF active task summary", &error);
+                writer.write_error_with_code(500, error);
+            }
+        }
+    }
+}
+
+/// 列出注册在 `mysql.dist_framework_meta` 中的 DXF 节点（仅 GET）。
+impl DXFNodesHandler {
+    pub fn ServeHTTP(&self, writer: &mut dyn ResponseWriter, request: &Request) {
+        if request.method != "GET" {
+            writer.write_error(DxfError::new("This api only support GET method"));
+            return;
+        }
+        let context = timed_context(self.runtime.as_ref(), request.context.clone());
+        match self.runtime.list_managed_nodes(&context) {
+            Ok(nodes) => writer.write_data(JsonValue::Array(
+                nodes
+                    .into_iter()
+                    .map(|node| {
+                        JsonValue::Object(vec![
+                            ("host".to_owned(), JsonValue::String(node.ID)),
+                            ("role".to_owned(), JsonValue::String(node.Role)),
+                            (
+                                "cpu_count".to_owned(),
+                                JsonValue::Integer(i64::from(node.CPUCount)),
+                            ),
+                        ])
+                    })
+                    .collect(),
+            )),
+            Err(error) => {
+                self.runtime.log_warning("failed to get DXF nodes", &error);
                 writer.write_error_with_code(500, error);
             }
         }

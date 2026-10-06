@@ -194,6 +194,7 @@ pub(super) struct ScheduleStatusRuntime {
     pause_scale_in: std::sync::Mutex<Option<astersql_server_handler_tikvhandler::TTLFlag>>,
     max_concurrent_task: std::sync::Mutex<i32>,
     task: std::sync::Mutex<Option<astersql_server_handler_tikvhandler::Task>>,
+    nodes_error: std::sync::Mutex<Option<String>>,
 }
 
 impl Default for ScheduleStatusRuntime {
@@ -211,6 +212,7 @@ impl Default for ScheduleStatusRuntime {
                     target_steps: Vec::new(),
                 },
             })),
+            nodes_error: std::sync::Mutex::new(None),
         }
     }
 }
@@ -304,6 +306,31 @@ impl astersql_server_handler_tikvhandler::DxfRuntime for ScheduleStatusRuntime {
                 ),
             ],
         ))
+    }
+
+    fn list_managed_nodes(
+        &self,
+        context: &astersql_server_handler_tikvhandler::DxfContext,
+    ) -> astersql_server_handler_tikvhandler::DxfResult<
+        Vec<astersql_dxf_framework_proto::ManagedNode>,
+    > {
+        assert_eq!(context.deadline_unix_seconds, Some(1_010));
+        assert!(context.request_id.is_empty() || context.request_id == "nodes-request");
+        if let Some(error) = self.nodes_error.lock().expect("nodes error lock").clone() {
+            return Err(astersql_server_handler_tikvhandler::DxfError::new(error));
+        }
+        Ok(vec![
+            astersql_dxf_framework_proto::ManagedNode {
+                ID: ":4001".into(),
+                Role: String::new(),
+                CPUCount: 4,
+            },
+            astersql_dxf_framework_proto::ManagedNode {
+                ID: ":4002".into(),
+                Role: "background".into(),
+                CPUCount: 8,
+            },
+        ])
     }
 
     fn list_history_tasks(
@@ -585,6 +612,95 @@ fn dxf_schedule_status_rejects_non_get_and_returns_the_runtime_payload() {
         ))
     );
     assert!(writer.error.is_none());
+    let error_runtime = Arc::new(ScheduleStatusRuntime::default());
+    *error_runtime.nodes_error.lock().expect("nodes error lock") =
+        Some("injected read error".into());
+    let nodes_handler = astersql_server_handler_tikvhandler::NewDXFNodesHandler(error_runtime);
+    let mut writer = DxfResponseRecorder::default();
+    nodes_handler.ServeHTTP(
+        &mut writer,
+        &astersql_server_handler_tikvhandler::dxf::Request {
+            method: "GET".into(),
+            context: astersql_server_handler_tikvhandler::DxfContext {
+                request_id: "nodes-request".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        writer.error,
+        Some((Some(500), "injected read error".into()))
+    );
+
+    let nodes_handler = astersql_server_handler_tikvhandler::NewDXFNodesHandler(Arc::new(
+        ScheduleStatusRuntime::default(),
+    ));
+    let mut writer = DxfResponseRecorder::default();
+    nodes_handler.ServeHTTP(
+        &mut writer,
+        &astersql_server_handler_tikvhandler::dxf::Request {
+            method: "POST".into(),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        writer.error,
+        Some((None, "This api only support GET method".into()))
+    );
+
+    let nodes_handler = astersql_server_handler_tikvhandler::NewDXFNodesHandler(Arc::new(
+        ScheduleStatusRuntime::default(),
+    ));
+    let mut writer = DxfResponseRecorder::default();
+    nodes_handler.ServeHTTP(
+        &mut writer,
+        &astersql_server_handler_tikvhandler::dxf::Request {
+            method: "GET".into(),
+            context: astersql_server_handler_tikvhandler::DxfContext {
+                request_id: "nodes-request".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        writer.data,
+        Some(astersql_server_handler_tikvhandler::dxf::JsonValue::Array(
+            vec![
+                astersql_server_handler_tikvhandler::dxf::JsonValue::Object(vec![
+                    (
+                        "host".into(),
+                        astersql_server_handler_tikvhandler::dxf::JsonValue::String(":4001".into())
+                    ),
+                    (
+                        "role".into(),
+                        astersql_server_handler_tikvhandler::dxf::JsonValue::String(String::new())
+                    ),
+                    (
+                        "cpu_count".into(),
+                        astersql_server_handler_tikvhandler::dxf::JsonValue::Integer(4)
+                    ),
+                ]),
+                astersql_server_handler_tikvhandler::dxf::JsonValue::Object(vec![
+                    (
+                        "host".into(),
+                        astersql_server_handler_tikvhandler::dxf::JsonValue::String(":4002".into())
+                    ),
+                    (
+                        "role".into(),
+                        astersql_server_handler_tikvhandler::dxf::JsonValue::String(
+                            "background".into()
+                        )
+                    ),
+                    (
+                        "cpu_count".into(),
+                        astersql_server_handler_tikvhandler::dxf::JsonValue::Integer(8)
+                    ),
+                ]),
+            ]
+        ))
+    );
 
     let suite = super::http_handler_test::create_basic_http_handler_test_suite();
     let post = suite
@@ -697,6 +813,15 @@ fn dxf_schedule_status_rejects_non_get_and_returns_the_runtime_payload() {
     assert_eq!(
         active.text().unwrap(),
         r#"{"total":3,"per_keyspace":{"SYSTEM":1,"ks1":2}}"#
+    );
+    let nodes = suite
+        .client
+        .fetch_status("/dxf/nodes")
+        .expect("nodes query must use the runtime node list");
+    assert_eq!(nodes.status, 200);
+    assert_eq!(
+        nodes.text().unwrap(),
+        r#"[{"host":":4001","role":"","cpu_count":4},{"host":":4002","role":"background","cpu_count":8}]"#
     );
     let page = suite
         .client
@@ -2005,6 +2130,7 @@ fn cleanup_maintenance_http_rejects_actual_user_keyspace() {
         .unwrap();
     let router = astersql_server::http_status::build_status_router(server.clone());
     for path in [
+        "/dxf/nodes",
         "/dxf/schedule/task_cleanup_batch_size",
         "/dxf/schedule/max_concurrent_task",
     ] {
