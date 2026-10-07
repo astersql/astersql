@@ -21,7 +21,30 @@
 
 use std::sync::Arc;
 
+use protobuf::Message;
+
 use super::{MAX_GROUP_NAME_LENGTH, NewGroupFromOptions, ResourceGroupError, ast, model};
+
+/// 校验 Resource Manager 引用的 KeyspaceIdentity 默认值与 protobuf 往返。
+#[test]
+fn keyspace_identity_default_and_round_trip() {
+    let default_identity = super::apipb::KeyspaceIdentity::new();
+    assert_eq!(default_identity.get_namespace_id(), 0);
+    assert_eq!(default_identity.get_keyspace_id(), 0);
+
+    let mut identity = super::apipb::KeyspaceIdentity::new();
+    identity.set_namespace_id(42);
+    identity.set_keyspace_id(7);
+
+    let mut value = super::rmpb::KeyspaceIdValue::new();
+    value.set_keyspace_identity(identity);
+    let encoded = value.write_to_bytes().expect("serialize keyspace identity");
+    let decoded: super::rmpb::KeyspaceIdValue =
+        protobuf::parse_from_bytes(&encoded).expect("deserialize keyspace identity");
+
+    assert_eq!(decoded.get_keyspace_identity().get_namespace_id(), 42);
+    assert_eq!(decoded.get_keyspace_identity().get_keyspace_id(), 7);
+}
 
 /// 校验空设置、未知模式、超长名称、RU/Raw 模式冲突等错误路径。
 #[test]

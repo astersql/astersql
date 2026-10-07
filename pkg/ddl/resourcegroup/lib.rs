@@ -2,7 +2,8 @@
 
 // 资源组（Resource Group）辅助库入口。
 //
-// 聚合 Resource Manager protobuf 绑定（`rmpb`）、元模型（`model`/`ast`）、
+// 聚合 Resource Manager protobuf 绑定（`rmpb`）及其 API 依赖（`apipb`）、
+// 元模型（`model`/`ast`）、
 // 错误类型与组设置转换逻辑，供 DDL 创建/修改资源组时复用。
 
 #![allow(
@@ -13,6 +14,11 @@
     static_mut_refs
 )]
 
+/// 由 build.rs 从 `apipb.proto` 生成的 protobuf 依赖模块。
+#[allow(warnings)]
+pub mod apipb {
+    include!(concat!(env!("OUT_DIR"), "/apipb.rs"));
+}
 /// 由 build.rs 从 `resource_manager.proto` 生成的 protobuf 模块。
 #[allow(warnings)]
 pub mod rmpb {
