@@ -439,7 +439,6 @@ fn validate_generated_column(
         PhysicalType::FIXED_LEN_BYTE_ARRAY => "FIXED_LEN_BYTE_ARRAY",
         PhysicalType::INT32 => "INT32",
         PhysicalType::BOOLEAN => "BOOLEAN",
-        unsupported => bail!("unsupported column type {unsupported}"),
     };
     if data.vals.kind() != expected_kind {
         bail!(
