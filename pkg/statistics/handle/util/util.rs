@@ -24,6 +24,8 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+pub use astersql_sessionctx_vardef::TiDBMergePartitionStatsConcurrency as TIDB_MERGE_PARTITION_STATS_CONCURRENCY;
+
 /// 统计元历史来源：ANALYZE 收集。
 pub const STATS_META_HISTORY_SOURCE_ANALYZE: &str = "analyze";
 /// 统计元历史来源：加载已有统计。

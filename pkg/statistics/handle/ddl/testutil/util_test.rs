@@ -13,10 +13,10 @@ use aster_sql_statistics_handle_util::{
     ExecOption, ExecutionContext, GlobalVariableAccessor, INNODB_LOCK_WAIT_TIMEOUT,
     RestrictedSqlExecutor, ResultField, Row, SessionContext, SessionPool, SessionVariables,
     SqlExecutor, SqlValue, StatsError, TIDB_ANALYZE_PARTITION_CONCURRENCY,
-    TIDB_ANALYZE_SKIP_COLUMN_TYPES, TIDB_ANALYZE_VERSION, TIDB_ENABLE_ANALYZE_SNAPSHOT,
-    TIDB_ENABLE_ASYNC_MERGE_GLOBAL_STATS, TIDB_ENABLE_HISTORICAL_STATS,
-    TIDB_MERGE_PARTITION_STATS_CONCURRENCY, TIDB_PARTITION_PRUNE_MODE,
-    TIDB_SKIP_MISSING_PARTITION_STATS, TIME_ZONE, Transaction,
+    TIDB_ANALYZE_SKIP_COLUMN_TYPES, TIDB_ANALYZE_STORE_BATCH_SIZE, TIDB_ANALYZE_VERSION,
+    TIDB_ENABLE_ANALYZE_SNAPSHOT, TIDB_ENABLE_ASYNC_MERGE_GLOBAL_STATS,
+    TIDB_ENABLE_HISTORICAL_STATS, TIDB_MERGE_PARTITION_STATS_CONCURRENCY,
+    TIDB_PARTITION_PRUNE_MODE, TIDB_SKIP_MISSING_PARTITION_STATS, TIME_ZONE, Transaction,
 };
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -31,6 +31,7 @@ impl GlobalVariableAccessor for TestGlobalVariables {
         let values = HashMap::from([
             (TIDB_ENABLE_ASYNC_MERGE_GLOBAL_STATS, "0"),
             (TIDB_ANALYZE_PARTITION_CONCURRENCY, "1"),
+            (TIDB_ANALYZE_STORE_BATCH_SIZE, "4"),
             (TIDB_ANALYZE_VERSION, "2"),
             (TIDB_ENABLE_HISTORICAL_STATS, "0"),
             (TIDB_PARTITION_PRUNE_MODE, "dynamic"),
@@ -49,6 +50,16 @@ impl GlobalVariableAccessor for TestGlobalVariables {
                 message: "unknown test variable".to_owned(),
             })
     }
+}
+
+#[test]
+fn merge_partition_stats_concurrency_uses_go_vardef_key_and_default() {
+    assert_eq!(
+        TestGlobalVariables
+            .get_global_sys_var(TIDB_MERGE_PARTITION_STATS_CONCURRENCY)
+            .unwrap(),
+        "1"
+    );
 }
 
 struct TestRecordSet;

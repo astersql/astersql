@@ -12,6 +12,7 @@ go-package = "pkg/statistics/handle/util"
 legacy-tasks = ["task-877", "task-1490"]
 
 [dependencies]
+"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../../sessionctx/vardef" }
 "astersql-testkit-testfailpoint" = { package = "astersql-testkit-testfailpoint", path = "../../../testkit/testfailpoint" }
 
 [target.'cfg(any())'.dependencies]
@@ -25,7 +26,6 @@ legacy-tasks = ["task-877", "task-1490"]
 "astersql-session-syssession" = { package = "astersql-session-syssession", path = "../../../session/syssession" }
 "astersql-sessionctx" = { package = "astersql-sessionctx", path = "../../../sessionctx" }
 "astersql-sessionctx-sysproctrack" = { package = "astersql-sessionctx-sysproctrack", path = "../../../sessionctx/sysproctrack" }
-"astersql-sessionctx-vardef" = { package = "astersql-sessionctx-vardef", path = "../../../sessionctx/vardef" }
 "astersql-sessionctx-variable" = { package = "astersql-sessionctx-variable", path = "../../../sessionctx/variable" }
 "astersql-table" = { package = "astersql-table", path = "../../../table" }
 "astersql-types" = { package = "astersql-types", path = "../../../types" }
