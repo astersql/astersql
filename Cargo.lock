@@ -9046,6 +9046,7 @@ dependencies = [
  "astersql-util-dbterror-exeerrors",
  "astersql-util-logutil",
  "astersql-util-memory",
+ "serde_json",
 ]
 
 [[package]]

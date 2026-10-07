@@ -63,7 +63,6 @@ fn native_cloud_store_streams_simplesst_objects_through_real_local_files() {
         &Default::default(),
         &inputs,
         store.as_ref(),
-        0,
         "merged",
         "1",
         0,

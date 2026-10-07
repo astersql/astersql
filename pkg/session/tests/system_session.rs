@@ -231,7 +231,7 @@ fn crossks_align_infoschema_real_system_table_old_transaction() {
         .unwrap_or_else(|error| error.into_inner());
     use astersql_session_sessmgr::mdldef::JobMDL;
     use std::collections::{HashMap, HashSet};
-    let (domain, session) = crate::runtime::CreateAnalyzeSession().unwrap();
+    let (domain, session) = CreateAnalyzeSession().unwrap();
     let _restore = enable_crossks_mdl();
     let (_, table) = domain.stats_table("mysql", "tidb").unwrap();
     session.execute("begin").unwrap();
