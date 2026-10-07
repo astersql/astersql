@@ -6011,6 +6011,7 @@ dependencies = [
  "anyhow",
  "astersql-objstore-compressedio",
  "astersql-objstore-recording",
+ "astersql-parser-ast",
  "aws-smithy-runtime-api",
  "aws-smithy-types",
  "base64 0.22.1",

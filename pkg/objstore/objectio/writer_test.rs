@@ -226,6 +226,23 @@ fn test_external_file_writer() {
     }
 }
 
+/// 缺少 bucket 的错误不得泄露对象存储 URL 中的访问凭证。
+#[test]
+fn missing_bucket_error_redacts_credentials() {
+    let raw = "s3:///prefix?access-key=secret-id&secret-access-key=secret-key&session-token=secret-token";
+    let error = objstore::parse::ParseBackend(raw, None)
+        .unwrap_err()
+        .to_string();
+
+    assert_eq!(
+        error,
+        "please specify the bucket for s3 in s3:///prefix?access-key=xxxxxx&secret-access-key=xxxxxx&session-token=xxxxxx"
+    );
+    for secret in ["secret-id", "secret-key", "secret-token"] {
+        assert!(!error.contains(secret));
+    }
+}
+
 /// Gzip/Snappy/Zstd：磁盘直接解压与经 Storage::Open 读取结果均与原文一致。
 #[test]
 fn test_compress_reader_writer() {
