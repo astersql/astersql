@@ -1,6 +1,6 @@
 # 任务 1144: 解析 `pkg/expression/aggregation/max_min_count.rs`
 
-批次：【批次 115】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 1265: 解析 `pkg/extension/_import/import.rs`
 
-批次：【批次 127】 无
+批次：【批次 1】 无
 
 状态：未开始
 

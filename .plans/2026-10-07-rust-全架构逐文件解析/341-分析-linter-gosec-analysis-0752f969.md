@@ -1,6 +1,6 @@
 # 任务 341: 解析 `build/linter/gosec/analysis.rs`
 
-批次：【批次 35】 无
+批次：【批次 1】 无
 
 状态：未开始
 

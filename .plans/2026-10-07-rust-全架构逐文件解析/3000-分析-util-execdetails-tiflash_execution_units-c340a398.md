@@ -1,6 +1,6 @@
 # 任务 3000: 解析 `pkg/util/execdetails/tiflash_execution_units.rs`
 
-批次：【批次 300】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 2576: 解析 `pkg/store/driver/region_split_config.rs`
 
-批次：【批次 258】 无
+批次：【批次 1】 无
 
 状态：未开始
 

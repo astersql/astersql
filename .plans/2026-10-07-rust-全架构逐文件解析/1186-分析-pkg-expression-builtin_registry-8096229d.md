@@ -1,6 +1,6 @@
 # 任务 1186: 解析 `pkg/expression/builtin_registry.rs`
 
-批次：【批次 119】 无
+批次：【批次 1】 无
 
 状态：未开始
 

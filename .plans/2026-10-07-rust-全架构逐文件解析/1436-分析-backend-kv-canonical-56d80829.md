@@ -1,6 +1,6 @@
 # 任务 1436: 解析 `pkg/lightning/backend/kv/canonical.rs`
 
-批次：【批次 144】 无
+批次：【批次 1】 无
 
 状态：未开始
 

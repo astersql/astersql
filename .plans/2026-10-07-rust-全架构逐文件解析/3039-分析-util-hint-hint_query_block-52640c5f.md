@@ -1,6 +1,6 @@
 # 任务 3039: 解析 `pkg/util/hint/hint_query_block.rs`
 
-批次：【批次 304】 无
+批次：【批次 1】 无
 
 状态：未开始
 

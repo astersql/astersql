@@ -1,6 +1,6 @@
 # 任务 3213: 解析 `pkg/util/signal/signal_wasm.rs`
 
-批次：【批次 322】 无
+批次：【批次 1】 无
 
 状态：未开始
 

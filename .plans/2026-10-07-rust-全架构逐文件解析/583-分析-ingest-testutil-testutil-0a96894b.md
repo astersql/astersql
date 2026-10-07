@@ -1,6 +1,6 @@
 # 任务 583: 解析 `pkg/ddl/ingest/testutil/testutil.rs`
 
-批次：【批次 59】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 2532: 解析 `pkg/statistics/handle/util/lease_getter.rs`
 
-批次：【批次 254】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 1892: 解析 `pkg/planner/core/metrics/lib.rs`
 
-批次：【批次 190】 无
+批次：【批次 1】 无
 
 状态：未开始
 

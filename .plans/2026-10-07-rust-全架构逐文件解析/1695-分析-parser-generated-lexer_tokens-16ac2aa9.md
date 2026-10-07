@@ -1,6 +1,6 @@
 # 任务 1695: 解析 `pkg/parser/generated/lexer_tokens.rs`
 
-批次：【批次 170】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 3125: 解析 `pkg/util/plancodec/binary_plan_decode.rs`
 
-批次：【批次 313】 无
+批次：【批次 1】 无
 
 状态：未开始
 

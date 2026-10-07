@@ -1,6 +1,6 @@
 # 任务 1342: 解析 `pkg/infoschema/perfschema/init.rs`
 
-批次：【批次 135】 无
+批次：【批次 1】 无
 
 状态：未开始
 

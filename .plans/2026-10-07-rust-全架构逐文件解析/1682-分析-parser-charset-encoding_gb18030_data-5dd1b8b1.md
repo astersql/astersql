@@ -1,6 +1,6 @@
 # 任务 1682: 解析 `pkg/parser/charset/encoding_gb18030_data.rs`
 
-批次：【批次 169】 无
+批次：【批次 1】 无
 
 状态：未开始
 

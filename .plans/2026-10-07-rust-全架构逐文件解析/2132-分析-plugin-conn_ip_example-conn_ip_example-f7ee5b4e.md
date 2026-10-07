@@ -1,6 +1,6 @@
 # 任务 2132: 解析 `pkg/plugin/conn_ip_example/conn_ip_example.rs`
 
-批次：【批次 214】 无
+批次：【批次 1】 无
 
 状态：未开始
 

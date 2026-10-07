@@ -1,6 +1,6 @@
 # 任务 2052: 解析 `pkg/planner/core/rule_semi_join_rewrite.rs`
 
-批次：【批次 206】 无
+批次：【批次 1】 无
 
 状态：未开始
 

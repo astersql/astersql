@@ -1,6 +1,6 @@
 # 任务 2487: 解析 `pkg/statistics/handle/handletest/initstats/lib.rs`
 
-批次：【批次 249】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 2020: 解析 `pkg/planner/core/rule/rule_column_pruning.rs`
 
-批次：【批次 202】 无
+批次：【批次 1】 无
 
 状态：未开始
 

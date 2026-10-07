@@ -1,6 +1,6 @@
 # 任务 272: 解析 `br/pkg/utils/dyn_pprof_other.rs`
 
-批次：【批次 28】 无
+批次：【批次 1】 无
 
 状态：未开始
 

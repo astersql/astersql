@@ -1,6 +1,6 @@
 # 任务 736: 解析 `pkg/domain/sqlsvrapi/mock/ksruntime_mock.rs`
 
-批次：【批次 74】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 3276: 解析 `pkg/util/tiflashcompute/dispatch_policy.rs`
 
-批次：【批次 328】 无
+批次：【批次 1】 无
 
 状态：未开始
 

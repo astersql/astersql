@@ -1,6 +1,6 @@
 # 任务 1506: 解析 `pkg/lightning/worker/worker.rs`
 
-批次：【批次 151】 无
+批次：【批次 1】 无
 
 状态：未开始
 

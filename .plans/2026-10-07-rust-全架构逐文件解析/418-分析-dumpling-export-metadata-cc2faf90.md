@@ -1,6 +1,6 @@
 # 任务 418: 解析 `dumpling/export/metadata.rs`
 
-批次：【批次 42】 无
+批次：【批次 1】 无
 
 状态：未开始
 

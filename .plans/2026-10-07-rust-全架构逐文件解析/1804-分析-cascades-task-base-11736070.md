@@ -1,6 +1,6 @@
 # 任务 1804: 解析 `pkg/planner/cascades/task/base.rs`
 
-批次：【批次 181】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 2548: 解析 `pkg/store/copr/batch_coprocessor.rs`
 
-批次：【批次 255】 无
+批次：【批次 1】 无
 
 状态：未开始
 

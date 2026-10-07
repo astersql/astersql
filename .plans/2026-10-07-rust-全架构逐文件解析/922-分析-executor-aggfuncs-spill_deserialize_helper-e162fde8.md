@@ -1,6 +1,6 @@
 # 任务 922: 解析 `pkg/executor/aggfuncs/spill_deserialize_helper.rs`
 
-批次：【批次 93】 无
+批次：【批次 1】 无
 
 状态：未开始
 

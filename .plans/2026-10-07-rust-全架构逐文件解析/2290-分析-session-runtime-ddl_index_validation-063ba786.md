@@ -1,6 +1,6 @@
 # 任务 2290: 解析 `pkg/session/runtime/ddl_index_validation.rs`
 
-批次：【批次 229】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 524: 解析 `pkg/config/kerneltype/nextgen.rs`
 
-批次：【批次 53】 无
+批次：【批次 1】 无
 
 状态：未开始
 

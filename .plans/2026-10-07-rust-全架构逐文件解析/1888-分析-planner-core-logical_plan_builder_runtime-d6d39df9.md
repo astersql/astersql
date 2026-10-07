@@ -1,6 +1,6 @@
 # 任务 1888: 解析 `pkg/planner/core/logical_plan_builder_runtime.rs`
 
-批次：【批次 189】 无
+批次：【批次 1】 无
 
 状态：未开始
 

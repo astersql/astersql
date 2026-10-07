@@ -1,6 +1,6 @@
 # 任务 1027: 解析 `pkg/executor/join/index_lookup_join.rs`
 
-批次：【批次 103】 无
+批次：【批次 1】 无
 
 状态：未开始
 

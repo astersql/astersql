@@ -1,6 +1,6 @@
 # 任务 3350: 解析 `pkg/workloadlearning/cache.rs`
 
-批次：【批次 335】 无
+批次：【批次 1】 无
 
 状态：未开始
 

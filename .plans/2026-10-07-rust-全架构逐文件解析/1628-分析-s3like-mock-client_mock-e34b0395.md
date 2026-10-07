@@ -1,6 +1,6 @@
 # 任务 1628: 解析 `pkg/objstore/s3like/mock/client_mock.rs`
 
-批次：【批次 163】 无
+批次：【批次 1】 无
 
 状态：未开始
 

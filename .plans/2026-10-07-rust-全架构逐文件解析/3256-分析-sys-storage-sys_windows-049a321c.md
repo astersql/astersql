@@ -1,6 +1,6 @@
 # 任务 3256: 解析 `pkg/util/sys/storage/sys_windows.rs`
 
-批次：【批次 326】 无
+批次：【批次 1】 无
 
 状态：未开始
 

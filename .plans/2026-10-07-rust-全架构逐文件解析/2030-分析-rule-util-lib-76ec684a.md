@@ -1,6 +1,6 @@
 # 任务 2030: 解析 `pkg/planner/core/rule/util/lib.rs`
 
-批次：【批次 203】 无
+批次：【批次 1】 无
 
 状态：未开始
 

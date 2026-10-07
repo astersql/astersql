@@ -1,6 +1,6 @@
 # 任务 477: 解析 `lightning/pkg/importinto/job_progress.rs`
 
-批次：【批次 48】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 161: 解析 `br/pkg/restore/snap_client/systable_schema_update.rs`
 
-批次：【批次 17】 无
+批次：【批次 1】 无
 
 状态：未开始
 

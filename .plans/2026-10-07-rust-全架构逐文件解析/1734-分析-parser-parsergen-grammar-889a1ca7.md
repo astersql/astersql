@@ -1,6 +1,6 @@
 # 任务 1734: 解析 `pkg/parser/parsergen/grammar.rs`
 
-批次：【批次 174】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 2056: 解析 `pkg/planner/core/schema_table_key.rs`
 
-批次：【批次 206】 无
+批次：【批次 1】 无
 
 状态：未开始
 

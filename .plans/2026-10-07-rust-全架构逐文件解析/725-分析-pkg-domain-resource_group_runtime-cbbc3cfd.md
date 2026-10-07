@@ -1,6 +1,6 @@
 # 任务 725: 解析 `pkg/domain/resource_group_runtime.rs`
 
-批次：【批次 73】 无
+批次：【批次 1】 无
 
 状态：未开始
 

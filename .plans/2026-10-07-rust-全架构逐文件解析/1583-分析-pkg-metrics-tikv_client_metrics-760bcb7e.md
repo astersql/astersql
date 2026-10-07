@@ -1,6 +1,6 @@
 # 任务 1583: 解析 `pkg/metrics/tikv_client_metrics.rs`
 
-批次：【批次 159】 无
+批次：【批次 1】 无
 
 状态：未开始
 

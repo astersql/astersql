@@ -1,6 +1,6 @@
 # 任务 3297: 解析 `pkg/util/topsql/reporter/metrics/lib.rs`
 
-批次：【批次 330】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 247: 解析 `br/pkg/task/operator/force_flush.rs`
 
-批次：【批次 25】 无
+批次：【批次 1】 无
 
 状态：未开始
 

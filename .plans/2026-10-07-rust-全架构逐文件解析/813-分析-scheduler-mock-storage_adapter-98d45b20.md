@@ -1,6 +1,6 @@
 # 任务 813: 解析 `pkg/dxf/framework/scheduler/mock/storage_adapter.rs`
 
-批次：【批次 82】 无
+批次：【批次 1】 无
 
 状态：未开始
 

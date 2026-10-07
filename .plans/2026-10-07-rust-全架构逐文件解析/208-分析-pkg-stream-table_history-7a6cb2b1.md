@@ -1,6 +1,6 @@
 # 任务 208: 解析 `br/pkg/stream/table_history.rs`
 
-批次：【批次 21】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 1787: 解析 `pkg/planner/cascades/old/optimize.rs`
 
-批次：【批次 179】 无
+批次：【批次 1】 无
 
 状态：未开始
 

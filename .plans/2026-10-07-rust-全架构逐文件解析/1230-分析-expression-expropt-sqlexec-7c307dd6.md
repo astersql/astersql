@@ -1,6 +1,6 @@
 # 任务 1230: 解析 `pkg/expression/expropt/sqlexec.rs`
 
-批次：【批次 123】 无
+批次：【批次 1】 无
 
 状态：未开始
 

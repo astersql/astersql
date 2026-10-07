@@ -1,6 +1,6 @@
 # 任务 1090: 解析 `pkg/executor/sortexec/parallel_sort_worker.rs`
 
-批次：【批次 109】 无
+批次：【批次 1】 无
 
 状态：未开始
 

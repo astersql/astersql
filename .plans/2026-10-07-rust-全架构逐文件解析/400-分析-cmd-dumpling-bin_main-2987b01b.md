@@ -1,6 +1,6 @@
 # 任务 400: 解析 `dumpling/cmd/dumpling/bin_main.rs`
 
-批次：【批次 40】 无
+批次：【批次 1】 无
 
 状态：未开始
 

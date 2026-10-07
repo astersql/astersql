@@ -1,6 +1,6 @@
 # 任务 296: 解析 `br/pkg/utils/storewatch/lib.rs`
 
-批次：【批次 30】 无
+批次：【批次 1】 无
 
 状态：未开始
 

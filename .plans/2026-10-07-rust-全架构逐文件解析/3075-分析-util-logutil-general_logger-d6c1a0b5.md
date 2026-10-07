@@ -1,6 +1,6 @@
 # 任务 3075: 解析 `pkg/util/logutil/general_logger.rs`
 
-批次：【批次 308】 无
+批次：【批次 1】 无
 
 状态：未开始
 

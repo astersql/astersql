@@ -1,6 +1,6 @@
 # 任务 697: 解析 `pkg/domain/crossks/ddl_submit.rs`
 
-批次：【批次 70】 无
+批次：【批次 1】 无
 
 状态：未开始
 

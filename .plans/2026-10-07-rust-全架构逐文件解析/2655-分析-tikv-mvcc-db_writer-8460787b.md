@@ -1,6 +1,6 @@
 # 任务 2655: 解析 `pkg/store/mockstore/unistore/tikv/mvcc/db_writer.rs`
 
-批次：【批次 266】 无
+批次：【批次 1】 无
 
 状态：未开始
 

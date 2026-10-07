@@ -1,6 +1,6 @@
 # 任务 1496: 解析 `pkg/lightning/mydump/schema_import.rs`
 
-批次：【批次 150】 无
+批次：【批次 1】 无
 
 状态：未开始
 

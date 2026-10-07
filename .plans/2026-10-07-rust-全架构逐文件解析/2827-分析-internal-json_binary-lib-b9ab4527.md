@@ -1,6 +1,6 @@
 # 任务 2827: 解析 `pkg/types/internal/json_binary/lib.rs`
 
-批次：【批次 283】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 1512: 解析 `pkg/meta/autoid/autoid_service.rs`
 
-批次：【批次 152】 无
+批次：【批次 1】 无
 
 状态：未开始
 

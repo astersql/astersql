@@ -1,6 +1,6 @@
 # 任务 1031: 解析 `pkg/executor/join/join_table_meta.rs`
 
-批次：【批次 104】 无
+批次：【批次 1】 无
 
 状态：未开始
 

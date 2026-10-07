@@ -1,6 +1,6 @@
 # 任务 1434: 解析 `pkg/lightning/backend/kv/allocator.rs`
 
-批次：【批次 144】 无
+批次：【批次 1】 无
 
 状态：未开始
 

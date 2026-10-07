@@ -1,6 +1,6 @@
 # 任务 1606: 解析 `pkg/objstore/mockobjstore/objstore_mock.rs`
 
-批次：【批次 161】 无
+批次：【批次 1】 无
 
 状态：未开始
 

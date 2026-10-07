@@ -1,6 +1,6 @@
 # 任务 3131: 解析 `pkg/util/ppcpuusage/cpuusages.rs`
 
-批次：【批次 314】 无
+批次：【批次 1】 无
 
 状态：未开始
 

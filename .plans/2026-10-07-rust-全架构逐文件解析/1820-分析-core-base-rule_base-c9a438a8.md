@@ -1,6 +1,6 @@
 # 任务 1820: 解析 `pkg/planner/core/base/rule_base.rs`
 
-批次：【批次 182】 无
+批次：【批次 1】 无
 
 状态：未开始
 

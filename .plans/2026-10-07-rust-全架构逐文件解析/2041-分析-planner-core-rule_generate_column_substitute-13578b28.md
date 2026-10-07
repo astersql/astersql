@@ -1,6 +1,6 @@
 # 任务 2041: 解析 `pkg/planner/core/rule_generate_column_substitute.rs`
 
-批次：【批次 205】 无
+批次：【批次 1】 无
 
 状态：未开始
 

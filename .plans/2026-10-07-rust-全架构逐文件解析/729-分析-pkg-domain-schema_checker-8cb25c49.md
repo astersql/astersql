@@ -1,6 +1,6 @@
 # 任务 729: 解析 `pkg/domain/schema_checker.rs`
 
-批次：【批次 73】 无
+批次：【批次 1】 无
 
 状态：未开始
 

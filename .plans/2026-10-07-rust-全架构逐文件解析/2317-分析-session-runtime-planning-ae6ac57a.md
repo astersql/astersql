@@ -1,6 +1,6 @@
 # 任务 2317: 解析 `pkg/session/runtime/planning.rs`
 
-批次：【批次 232】 无
+批次：【批次 1】 无
 
 状态：未开始
 

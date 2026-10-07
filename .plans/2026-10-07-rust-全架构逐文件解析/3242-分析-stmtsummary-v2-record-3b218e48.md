@@ -1,6 +1,6 @@
 # 任务 3242: 解析 `pkg/util/stmtsummary/v2/record.rs`
 
-批次：【批次 325】 无
+批次：【批次 1】 无
 
 状态：未开始
 

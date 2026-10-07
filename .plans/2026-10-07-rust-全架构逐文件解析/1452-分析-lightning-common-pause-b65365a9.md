@@ -1,6 +1,6 @@
 # 任务 1452: 解析 `pkg/lightning/common/pause.rs`
 
-批次：【批次 146】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 2533: 解析 `pkg/statistics/handle/util/lib.rs`
 
-批次：【批次 254】 无
+批次：【批次 1】 无
 
 状态：未开始
 

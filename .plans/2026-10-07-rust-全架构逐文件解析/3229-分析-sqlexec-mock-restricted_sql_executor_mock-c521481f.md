@@ -1,6 +1,6 @@
 # 任务 3229: 解析 `pkg/util/sqlexec/mock/restricted_sql_executor_mock.rs`
 
-批次：【批次 323】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 1562: 解析 `pkg/metrics/external_workload.rs`
 
-批次：【批次 157】 无
+批次：【批次 1】 无
 
 状态：未开始
 

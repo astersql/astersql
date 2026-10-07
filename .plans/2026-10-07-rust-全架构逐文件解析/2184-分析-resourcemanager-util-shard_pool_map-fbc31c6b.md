@@ -1,6 +1,6 @@
 # 任务 2184: 解析 `pkg/resourcemanager/util/shard_pool_map.rs`
 
-批次：【批次 219】 无
+批次：【批次 1】 无
 
 状态：未开始
 

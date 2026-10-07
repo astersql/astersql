@@ -1,6 +1,6 @@
 # 任务 2575: 解析 `pkg/store/driver/read_request.rs`
 
-批次：【批次 258】 无
+批次：【批次 1】 无
 
 状态：未开始
 

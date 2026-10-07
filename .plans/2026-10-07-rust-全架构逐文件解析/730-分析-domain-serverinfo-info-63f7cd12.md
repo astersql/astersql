@@ -1,6 +1,6 @@
 # 任务 730: 解析 `pkg/domain/serverinfo/info.rs`
 
-批次：【批次 73】 无
+批次：【批次 1】 无
 
 状态：未开始
 

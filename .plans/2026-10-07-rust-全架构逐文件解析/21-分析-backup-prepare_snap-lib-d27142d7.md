@@ -1,6 +1,6 @@
 # 任务 21: 解析 `br/pkg/backup/prepare_snap/lib.rs`
 
-批次：【批次 3】 无
+批次：【批次 1】 无
 
 状态：未开始
 

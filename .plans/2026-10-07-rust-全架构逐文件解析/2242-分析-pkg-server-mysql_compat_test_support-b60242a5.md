@@ -1,6 +1,6 @@
 # 任务 2242: 解析 `pkg/server/mysql_compat_test_support.rs`
 
-批次：【批次 225】 无
+批次：【批次 1】 无
 
 状态：未开始
 

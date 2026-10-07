@@ -1,6 +1,6 @@
 # 任务 2832: 解析 `pkg/types/internal/time/lib.rs`
 
-批次：【批次 284】 无
+批次：【批次 1】 无
 
 状态：未开始
 

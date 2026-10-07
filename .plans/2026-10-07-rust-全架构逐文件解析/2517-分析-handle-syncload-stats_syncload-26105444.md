@@ -1,6 +1,6 @@
 # 任务 2517: 解析 `pkg/statistics/handle/syncload/stats_syncload.rs`
 
-批次：【批次 252】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 1589: 解析 `pkg/objstore/compressedio/buffer.rs`
 
-批次：【批次 159】 无
+批次：【批次 1】 无
 
 状态：未开始
 

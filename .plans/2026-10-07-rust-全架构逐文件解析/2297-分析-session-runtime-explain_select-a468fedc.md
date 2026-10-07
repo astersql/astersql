@@ -1,6 +1,6 @@
 # 任务 2297: 解析 `pkg/session/runtime/explain_select.rs`
 
-批次：【批次 230】 无
+批次：【批次 1】 无
 
 状态：未开始
 

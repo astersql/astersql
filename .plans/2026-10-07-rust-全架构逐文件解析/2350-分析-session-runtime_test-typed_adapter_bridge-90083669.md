@@ -1,6 +1,6 @@
 # 任务 2350: 解析 `pkg/session/runtime_test/typed_adapter_bridge.rs`
 
-批次：【批次 235】 无
+批次：【批次 1】 无
 
 状态：未开始
 

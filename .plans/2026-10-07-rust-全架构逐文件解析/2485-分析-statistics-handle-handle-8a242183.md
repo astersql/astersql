@@ -1,6 +1,6 @@
 # 任务 2485: 解析 `pkg/statistics/handle/handle.rs`
 
-批次：【批次 249】 无
+批次：【批次 1】 无
 
 状态：未开始
 

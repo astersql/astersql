@@ -1,6 +1,6 @@
 # 任务 2000: 解析 `pkg/planner/core/plan_cacheable_checker.rs`
 
-批次：【批次 200】 无
+批次：【批次 1】 无
 
 状态：未开始
 

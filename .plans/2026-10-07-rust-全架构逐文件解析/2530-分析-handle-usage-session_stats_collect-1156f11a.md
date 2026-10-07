@@ -1,6 +1,6 @@
 # 任务 2530: 解析 `pkg/statistics/handle/usage/session_stats_collect.rs`
 
-批次：【批次 253】 无
+批次：【批次 1】 无
 
 状态：未开始
 

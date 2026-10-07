@@ -1,6 +1,6 @@
 # 任务 401: 解析 `dumpling/cmd/dumpling/config_flags.rs`
 
-批次：【批次 41】 无
+批次：【批次 1】 无
 
 状态：未开始
 

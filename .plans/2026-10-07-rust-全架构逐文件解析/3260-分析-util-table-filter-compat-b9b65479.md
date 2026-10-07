@@ -1,6 +1,6 @@
 # 任务 3260: 解析 `pkg/util/table-filter/compat.rs`
 
-批次：【批次 326】 无
+批次：【批次 1】 无
 
 状态：未开始
 

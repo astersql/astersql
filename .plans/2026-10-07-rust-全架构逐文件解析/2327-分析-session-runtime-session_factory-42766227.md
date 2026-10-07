@@ -1,6 +1,6 @@
 # 任务 2327: 解析 `pkg/session/runtime/session_factory.rs`
 
-批次：【批次 233】 无
+批次：【批次 1】 无
 
 状态：未开始
 

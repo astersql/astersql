@@ -1,6 +1,6 @@
 # 任务 679: 解析 `pkg/ddl/util/dead_table_lock_checker.rs`
 
-批次：【批次 68】 无
+批次：【批次 1】 无
 
 状态：未开始
 

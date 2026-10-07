@@ -1,6 +1,6 @@
 # 任务 828: 解析 `pkg/dxf/framework/storage/subtask_state.rs`
 
-批次：【批次 83】 无
+批次：【批次 1】 无
 
 状态：未开始
 

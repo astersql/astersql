@@ -1,6 +1,6 @@
 # 任务 505: 解析 `pkg/bindinfo/binding_operator.rs`
 
-批次：【批次 51】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 191: 解析 `br/pkg/stream/crr/internal/checkpoint/progress.rs`
 
-批次：【批次 20】 无
+批次：【批次 1】 无
 
 状态：未开始
 

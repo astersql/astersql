@@ -1,6 +1,6 @@
 # 任务 2600: 解析 `pkg/store/mockstore/mockcopr/copr_handler.rs`
 
-批次：【批次 260】 无
+批次：【批次 1】 无
 
 状态：未开始
 

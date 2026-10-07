@@ -1,6 +1,6 @@
 # 任务 1353: 解析 `pkg/ingestor/errdef/errors.rs`
 
-批次：【批次 136】 无
+批次：【批次 1】 无
 
 状态：未开始
 

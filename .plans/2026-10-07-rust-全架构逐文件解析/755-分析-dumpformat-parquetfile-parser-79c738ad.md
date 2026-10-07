@@ -1,6 +1,6 @@
 # 任务 755: 解析 `pkg/dumpformat/parquetfile/parser.rs`
 
-批次：【批次 76】 无
+批次：【批次 1】 无
 
 状态：未开始
 

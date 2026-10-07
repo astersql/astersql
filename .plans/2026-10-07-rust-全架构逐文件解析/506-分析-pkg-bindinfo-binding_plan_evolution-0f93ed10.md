@@ -1,6 +1,6 @@
 # 任务 506: 解析 `pkg/bindinfo/binding_plan_evolution.rs`
 
-批次：【批次 51】 无
+批次：【批次 1】 无
 
 状态：未开始
 

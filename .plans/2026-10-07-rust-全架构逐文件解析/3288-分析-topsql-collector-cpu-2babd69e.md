@@ -1,6 +1,6 @@
 # 任务 3288: 解析 `pkg/util/topsql/collector/cpu.rs`
 
-批次：【批次 329】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 1504: 解析 `pkg/lightning/verification/lib.rs`
 
-批次：【批次 151】 无
+批次：【批次 1】 无
 
 状态：未开始
 

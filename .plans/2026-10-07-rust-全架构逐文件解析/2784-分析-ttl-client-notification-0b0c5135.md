@@ -1,6 +1,6 @@
 # 任务 2784: 解析 `pkg/ttl/client/notification.rs`
 
-批次：【批次 279】 无
+批次：【批次 1】 无
 
 状态：未开始
 

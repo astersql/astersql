@@ -1,6 +1,6 @@
 # 任务 3023: 解析 `pkg/util/generatedexpr/generated_expr.rs`
 
-批次：【批次 303】 无
+批次：【批次 1】 无
 
 状态：未开始
 

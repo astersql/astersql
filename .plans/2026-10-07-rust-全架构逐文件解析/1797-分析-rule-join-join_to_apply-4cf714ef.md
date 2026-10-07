@@ -1,6 +1,6 @@
 # 任务 1797: 解析 `pkg/planner/cascades/rule/join/join_to_apply.rs`
 
-批次：【批次 180】 无
+批次：【批次 1】 无
 
 状态：未开始
 

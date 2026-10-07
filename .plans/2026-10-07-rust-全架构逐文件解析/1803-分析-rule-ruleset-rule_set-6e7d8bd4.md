@@ -1,6 +1,6 @@
 # 任务 1803: 解析 `pkg/planner/cascades/rule/ruleset/rule_set.rs`
 
-批次：【批次 181】 无
+批次：【批次 1】 无
 
 状态：未开始
 

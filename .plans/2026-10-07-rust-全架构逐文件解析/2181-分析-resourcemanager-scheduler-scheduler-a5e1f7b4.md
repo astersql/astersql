@@ -1,6 +1,6 @@
 # 任务 2181: 解析 `pkg/resourcemanager/scheduler/scheduler.rs`
 
-批次：【批次 219】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 994: 解析 `pkg/executor/internal/mpp/executor_with_retry.rs`
 
-批次：【批次 100】 无
+批次：【批次 1】 无
 
 状态：未开始
 

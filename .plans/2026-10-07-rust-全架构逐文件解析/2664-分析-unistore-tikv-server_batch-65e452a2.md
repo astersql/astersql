@@ -1,6 +1,6 @@
 # 任务 2664: 解析 `pkg/store/mockstore/unistore/tikv/server_batch.rs`
 
-批次：【批次 267】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 1241: 解析 `pkg/expression/generator/helper/helper.rs`
 
-批次：【批次 125】 无
+批次：【批次 1】 无
 
 状态：未开始
 

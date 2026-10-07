@@ -1,6 +1,6 @@
 # 任务 541: 解析 `pkg/ddl/backfilling_read_index.rs`
 
-批次：【批次 55】 无
+批次：【批次 1】 无
 
 状态：未开始
 

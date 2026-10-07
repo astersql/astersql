@@ -1,6 +1,6 @@
 # 任务 2057: 解析 `pkg/planner/core/show_predicate_extractor.rs`
 
-批次：【批次 206】 无
+批次：【批次 1】 无
 
 状态：未开始
 

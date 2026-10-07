@@ -1,6 +1,6 @@
 # 任务 1457: 解析 `pkg/lightning/common/storage_windows.rs`
 
-批次：【批次 146】 无
+批次：【批次 1】 无
 
 状态：未开始
 

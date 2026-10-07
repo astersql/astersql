@@ -1,6 +1,6 @@
 # 任务 1105: 解析 `pkg/executor/staticrecordset/recordset.rs`
 
-批次：【批次 111】 无
+批次：【批次 1】 无
 
 状态：未开始
 

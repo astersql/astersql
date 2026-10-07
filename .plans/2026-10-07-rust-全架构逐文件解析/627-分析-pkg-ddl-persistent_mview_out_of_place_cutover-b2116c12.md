@@ -1,6 +1,6 @@
 # 任务 627: 解析 `pkg/ddl/persistent_mview_out_of_place_cutover.rs`
 
-批次：【批次 63】 无
+批次：【批次 1】 无
 
 状态：未开始
 

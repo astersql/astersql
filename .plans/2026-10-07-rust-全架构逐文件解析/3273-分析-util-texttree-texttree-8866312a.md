@@ -1,6 +1,6 @@
 # 任务 3273: 解析 `pkg/util/texttree/texttree.rs`
 
-批次：【批次 328】 无
+批次：【批次 1】 无
 
 状态：未开始
 

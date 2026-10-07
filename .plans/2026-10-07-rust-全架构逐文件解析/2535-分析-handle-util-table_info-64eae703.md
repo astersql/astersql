@@ -1,6 +1,6 @@
 # 任务 2535: 解析 `pkg/statistics/handle/util/table_info.rs`
 
-批次：【批次 254】 无
+批次：【批次 1】 无
 
 状态：未开始
 

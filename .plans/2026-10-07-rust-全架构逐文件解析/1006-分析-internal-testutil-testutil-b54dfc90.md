@@ -1,6 +1,6 @@
 # 任务 1006: 解析 `pkg/executor/internal/testutil/testutil.rs`
 
-批次：【批次 101】 无
+批次：【批次 1】 无
 
 状态：未开始
 

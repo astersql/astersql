@@ -1,6 +1,6 @@
 # 任务 515: 解析 `pkg/config/configtypes/types.rs`
 
-批次：【批次 52】 无
+批次：【批次 1】 无
 
 状态：未开始
 

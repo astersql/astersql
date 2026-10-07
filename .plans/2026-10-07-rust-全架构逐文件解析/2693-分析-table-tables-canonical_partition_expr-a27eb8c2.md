@@ -1,6 +1,6 @@
 # 任务 2693: 解析 `pkg/table/tables/canonical_partition_expr.rs`
 
-批次：【批次 270】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 2387: 解析 `pkg/sessionctx/variable/embedding_vars.rs`
 
-批次：【批次 239】 无
+批次：【批次 1】 无
 
 状态：未开始
 

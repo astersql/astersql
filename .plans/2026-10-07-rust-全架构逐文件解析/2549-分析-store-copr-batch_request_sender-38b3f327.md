@@ -1,6 +1,6 @@
 # 任务 2549: 解析 `pkg/store/copr/batch_request_sender.rs`
 
-批次：【批次 255】 无
+批次：【批次 1】 无
 
 状态：未开始
 

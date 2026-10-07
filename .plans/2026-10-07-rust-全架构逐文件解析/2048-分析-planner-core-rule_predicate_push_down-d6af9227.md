@@ -1,6 +1,6 @@
 # 任务 2048: 解析 `pkg/planner/core/rule_predicate_push_down.rs`
 
-批次：【批次 205】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 1721: 解析 `pkg/parser/parser_actions/dml.rs`
 
-批次：【批次 173】 无
+批次：【批次 1】 无
 
 状态：未开始
 

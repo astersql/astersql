@@ -1,6 +1,6 @@
 # 任务 3071: 解析 `pkg/util/linter/constructor/lib.rs`
 
-批次：【批次 308】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 1263: 解析 `pkg/expression/vectorized.rs`
 
-批次：【批次 127】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 2377: 解析 `pkg/sessionctx/slowlogrule/lib.rs`
 
-批次：【批次 238】 无
+批次：【批次 1】 无
 
 状态：未开始
 

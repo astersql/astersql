@@ -1,6 +1,6 @@
 # 任务 114: 解析 `br/pkg/registry/heartbeat.rs`
 
-批次：【批次 12】 无
+批次：【批次 1】 无
 
 状态：未开始
 

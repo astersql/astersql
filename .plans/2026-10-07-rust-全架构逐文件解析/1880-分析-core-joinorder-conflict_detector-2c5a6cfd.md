@@ -1,6 +1,6 @@
 # 任务 1880: 解析 `pkg/planner/core/joinorder/conflict_detector.rs`
 
-批次：【批次 188】 无
+批次：【批次 1】 无
 
 状态：未开始
 

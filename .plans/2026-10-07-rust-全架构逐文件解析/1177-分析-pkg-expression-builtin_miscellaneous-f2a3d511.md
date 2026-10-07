@@ -1,6 +1,6 @@
 # 任务 1177: 解析 `pkg/expression/builtin_miscellaneous.rs`
 
-批次：【批次 118】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 1508: 解析 `pkg/lock/context/lockcontext.rs`
 
-批次：【批次 151】 无
+批次：【批次 1】 无
 
 状态：未开始
 

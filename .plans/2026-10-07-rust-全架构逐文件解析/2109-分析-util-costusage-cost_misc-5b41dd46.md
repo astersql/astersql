@@ -1,6 +1,6 @@
 # 任务 2109: 解析 `pkg/planner/util/costusage/cost_misc.rs`
 
-批次：【批次 211】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 3184: 解析 `pkg/util/selection/selection.rs`
 
-批次：【批次 319】 无
+批次：【批次 1】 无
 
 状态：未开始
 

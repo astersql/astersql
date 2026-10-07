@@ -1,6 +1,6 @@
 # 任务 452: 解析 `lightning/pkg/importer/check_info.rs`
 
-批次：【批次 46】 无
+批次：【批次 1】 无
 
 状态：未开始
 

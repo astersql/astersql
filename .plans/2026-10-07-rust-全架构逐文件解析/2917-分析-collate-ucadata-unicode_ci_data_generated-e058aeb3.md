@@ -1,6 +1,6 @@
 # 任务 2917: 解析 `pkg/util/collate/ucadata/unicode_ci_data_generated.rs`
 
-批次：【批次 292】 无
+批次：【批次 1】 无
 
 状态：未开始
 

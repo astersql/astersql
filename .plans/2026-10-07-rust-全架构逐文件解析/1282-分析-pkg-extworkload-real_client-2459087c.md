@@ -1,6 +1,6 @@
 # 任务 1282: 解析 `pkg/extworkload/real_client.rs`
 
-批次：【批次 129】 无
+批次：【批次 1】 无
 
 状态：未开始
 

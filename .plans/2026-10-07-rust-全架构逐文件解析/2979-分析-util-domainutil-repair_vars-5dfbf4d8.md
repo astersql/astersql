@@ -1,6 +1,6 @@
 # 任务 2979: 解析 `pkg/util/domainutil/repair_vars.rs`
 
-批次：【批次 298】 无
+批次：【批次 1】 无
 
 状态：未开始
 

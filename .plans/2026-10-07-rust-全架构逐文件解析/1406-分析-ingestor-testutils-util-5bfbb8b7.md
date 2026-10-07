@@ -1,6 +1,6 @@
 # 任务 1406: 解析 `pkg/ingestor/testutils/util.rs`
 
-批次：【批次 141】 无
+批次：【批次 1】 无
 
 状态：未开始
 

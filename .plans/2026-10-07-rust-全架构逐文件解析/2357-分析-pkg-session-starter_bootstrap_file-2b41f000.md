@@ -1,6 +1,6 @@
 # 任务 2357: 解析 `pkg/session/starter_bootstrap_file.rs`
 
-批次：【批次 236】 无
+批次：【批次 1】 无
 
 状态：未开始
 

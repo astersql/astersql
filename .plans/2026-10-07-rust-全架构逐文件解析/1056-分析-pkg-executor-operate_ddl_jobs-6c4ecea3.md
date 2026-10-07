@@ -1,6 +1,6 @@
 # 任务 1056: 解析 `pkg/executor/operate_ddl_jobs.rs`
 
-批次：【批次 106】 无
+批次：【批次 1】 无
 
 状态：未开始
 

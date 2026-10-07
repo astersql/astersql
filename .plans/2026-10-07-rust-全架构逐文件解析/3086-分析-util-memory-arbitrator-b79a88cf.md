@@ -1,6 +1,6 @@
 # 任务 3086: 解析 `pkg/util/memory/arbitrator.rs`
 
-批次：【批次 309】 无
+批次：【批次 1】 无
 
 状态：未开始
 

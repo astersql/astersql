@@ -1,6 +1,6 @@
 # 任务 1312: 解析 `pkg/infoschema/bundle_builder.rs`
 
-批次：【批次 132】 无
+批次：【批次 1】 无
 
 状态：未开始
 

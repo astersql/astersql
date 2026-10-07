@@ -1,6 +1,6 @@
 # 任务 3291: 解析 `pkg/util/topsql/collector/mock/mock.rs`
 
-批次：【批次 330】 无
+批次：【批次 1】 无
 
 状态：未开始
 

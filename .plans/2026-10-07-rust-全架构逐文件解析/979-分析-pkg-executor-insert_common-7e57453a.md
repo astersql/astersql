@@ -1,6 +1,6 @@
 # 任务 979: 解析 `pkg/executor/insert_common.rs`
 
-批次：【批次 98】 无
+批次：【批次 1】 无
 
 状态：未开始
 

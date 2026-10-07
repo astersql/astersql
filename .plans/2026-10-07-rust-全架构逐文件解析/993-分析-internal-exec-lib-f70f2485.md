@@ -1,6 +1,6 @@
 # 任务 993: 解析 `pkg/executor/internal/exec/lib.rs`
 
-批次：【批次 100】 无
+批次：【批次 1】 无
 
 状态：未开始
 

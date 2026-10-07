@@ -1,6 +1,6 @@
 # 任务 2439: 解析 `pkg/statistics/handle/autoanalyze/exec/exec.rs`
 
-批次：【批次 244】 无
+批次：【批次 1】 无
 
 状态：未开始
 

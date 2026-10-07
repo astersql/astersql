@@ -1,6 +1,6 @@
 # 任务 354: 解析 `build/linter/staticcheck/analyzer.rs`
 
-批次：【批次 36】 无
+批次：【批次 1】 无
 
 状态：未开始
 

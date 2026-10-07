@@ -1,6 +1,6 @@
 # 任务 3318: 解析 `pkg/util/topsql/stmtstats/test_support.rs`
 
-批次：【批次 332】 无
+批次：【批次 1】 无
 
 状态：未开始
 

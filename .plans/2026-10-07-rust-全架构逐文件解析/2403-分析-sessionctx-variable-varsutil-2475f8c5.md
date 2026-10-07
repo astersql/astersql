@@ -1,6 +1,6 @@
 # 任务 2403: 解析 `pkg/sessionctx/variable/varsutil.rs`
 
-批次：【批次 241】 无
+批次：【批次 1】 无
 
 状态：未开始
 

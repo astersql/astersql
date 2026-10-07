@@ -1,6 +1,6 @@
 # 任务 1456: 解析 `pkg/lightning/common/storage_unix.rs`
 
-批次：【批次 146】 无
+批次：【批次 1】 无
 
 状态：未开始
 

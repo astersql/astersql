@@ -1,6 +1,6 @@
 # 任务 1873: 解析 `pkg/planner/core/generator/shallow_ref/shallow_ref_generator.rs`
 
-批次：【批次 188】 无
+批次：【批次 1】 无
 
 状态：未开始
 

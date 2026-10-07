@@ -1,6 +1,6 @@
 # 任务 668: 解析 `pkg/ddl/systable/schema_loader.rs`
 
-批次：【批次 67】 无
+批次：【批次 1】 无
 
 状态：未开始
 

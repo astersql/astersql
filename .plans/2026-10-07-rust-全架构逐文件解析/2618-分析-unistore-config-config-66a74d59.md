@@ -1,6 +1,6 @@
 # 任务 2618: 解析 `pkg/store/mockstore/unistore/config/config.rs`
 
-批次：【批次 262】 无
+批次：【批次 1】 无
 
 状态：未开始
 

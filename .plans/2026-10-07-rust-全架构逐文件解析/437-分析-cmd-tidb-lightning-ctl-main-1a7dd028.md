@@ -1,6 +1,6 @@
 # 任务 437: 解析 `lightning/cmd/tidb-lightning-ctl/main.rs`
 
-批次：【批次 44】 无
+批次：【批次 1】 无
 
 状态：未开始
 

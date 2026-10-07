@@ -1,6 +1,6 @@
 # 任务 3164: 解析 `pkg/util/resourcegrouptag/build.rs`
 
-批次：【批次 317】 无
+批次：【批次 1】 无
 
 状态：未开始
 

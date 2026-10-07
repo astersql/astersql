@@ -1,6 +1,6 @@
 # 任务 778: 解析 `pkg/dxf/framework/dxfmetric/metric.rs`
 
-批次：【批次 78】 无
+批次：【批次 1】 无
 
 状态：未开始
 

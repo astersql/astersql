@@ -1,6 +1,6 @@
 # 任务 1128: 解析 `pkg/executor/workloadrepo.rs`
 
-批次：【批次 113】 无
+批次：【批次 1】 无
 
 状态：未开始
 

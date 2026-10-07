@@ -1,6 +1,6 @@
 # 任务 2227: 解析 `pkg/server/internal/parse/parse.rs`
 
-批次：【批次 223】 无
+批次：【批次 1】 无
 
 状态：未开始
 

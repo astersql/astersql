@@ -1,6 +1,6 @@
 # 任务 2775: 解析 `pkg/timer/tablestore/store.rs`
 
-批次：【批次 278】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 2423: 解析 `pkg/sessiontxn/staleread/util.rs`
 
-批次：【批次 243】 无
+批次：【批次 1】 无
 
 状态：未开始
 

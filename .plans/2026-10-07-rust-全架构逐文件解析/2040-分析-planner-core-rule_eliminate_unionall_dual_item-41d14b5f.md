@@ -1,6 +1,6 @@
 # 任务 2040: 解析 `pkg/planner/core/rule_eliminate_unionall_dual_item.rs`
 
-批次：【批次 204】 无
+批次：【批次 1】 无
 
 状态：未开始
 

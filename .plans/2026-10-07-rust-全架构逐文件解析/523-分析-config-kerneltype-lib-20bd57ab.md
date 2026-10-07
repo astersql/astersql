@@ -1,6 +1,6 @@
 # 任务 523: 解析 `pkg/config/kerneltype/lib.rs`
 
-批次：【批次 53】 无
+批次：【批次 1】 无
 
 状态：未开始
 

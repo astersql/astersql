@@ -1,6 +1,6 @@
 # 任务 2552: 解析 `pkg/store/copr/coprocessor_cache.rs`
 
-批次：【批次 256】 无
+批次：【批次 1】 无
 
 状态：未开始
 

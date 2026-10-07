@@ -1,6 +1,6 @@
 # 任务 707: 解析 `pkg/domain/infosync/error.rs`
 
-批次：【批次 71】 无
+批次：【批次 1】 无
 
 状态：未开始
 

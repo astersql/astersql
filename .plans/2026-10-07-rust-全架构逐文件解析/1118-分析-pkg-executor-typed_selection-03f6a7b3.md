@@ -1,6 +1,6 @@
 # 任务 1118: 解析 `pkg/executor/typed_selection.rs`
 
-批次：【批次 112】 无
+批次：【批次 1】 无
 
 状态：未开始
 

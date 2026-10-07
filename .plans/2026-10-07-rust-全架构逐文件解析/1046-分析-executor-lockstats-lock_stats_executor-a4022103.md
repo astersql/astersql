@@ -1,6 +1,6 @@
 # 任务 1046: 解析 `pkg/executor/lockstats/lock_stats_executor.rs`
 
-批次：【批次 105】 无
+批次：【批次 1】 无
 
 状态：未开始
 

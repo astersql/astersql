@@ -1,6 +1,6 @@
 # 任务 2969: 解析 `pkg/util/deeptest/statictesthelper.rs`
 
-批次：【批次 297】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 947: 解析 `pkg/executor/compact_table.rs`
 
-批次：【批次 95】 无
+批次：【批次 1】 无
 
 状态：未开始
 

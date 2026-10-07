@@ -1,6 +1,6 @@
 # 任务 3144: 解析 `pkg/util/promutil/registry.rs`
 
-批次：【批次 315】 无
+批次：【批次 1】 无
 
 状态：未开始
 

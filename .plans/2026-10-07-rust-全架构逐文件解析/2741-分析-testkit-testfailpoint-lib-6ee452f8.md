@@ -1,6 +1,6 @@
 # 任务 2741: 解析 `pkg/testkit/testfailpoint/lib.rs`
 
-批次：【批次 275】 无
+批次：【批次 1】 无
 
 状态：未开始
 

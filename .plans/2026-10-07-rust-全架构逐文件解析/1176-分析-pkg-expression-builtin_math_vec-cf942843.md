@@ -1,6 +1,6 @@
 # 任务 1176: 解析 `pkg/expression/builtin_math_vec.rs`
 
-批次：【批次 118】 无
+批次：【批次 1】 无
 
 状态：未开始
 

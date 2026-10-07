@@ -1,6 +1,6 @@
 # 任务 1382: 解析 `pkg/ingestor/ingestctrl/local_freebsd.rs`
 
-批次：【批次 139】 无
+批次：【批次 1】 无
 
 状态：未开始
 

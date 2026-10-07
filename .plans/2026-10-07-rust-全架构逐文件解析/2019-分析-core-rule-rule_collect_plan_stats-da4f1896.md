@@ -1,6 +1,6 @@
 # 任务 2019: 解析 `pkg/planner/core/rule/rule_collect_plan_stats.rs`
 
-批次：【批次 202】 无
+批次：【批次 1】 无
 
 状态：未开始
 

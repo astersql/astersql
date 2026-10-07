@@ -1,6 +1,6 @@
 # 任务 2168: 解析 `pkg/resourcemanager/pool/spool/lib.rs`
 
-批次：【批次 217】 无
+批次：【批次 1】 无
 
 状态：未开始
 

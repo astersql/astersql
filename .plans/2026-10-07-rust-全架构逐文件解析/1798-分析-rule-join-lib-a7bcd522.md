@@ -1,6 +1,6 @@
 # 任务 1798: 解析 `pkg/planner/cascades/rule/join/lib.rs`
 
-批次：【批次 180】 无
+批次：【批次 1】 无
 
 状态：未开始
 

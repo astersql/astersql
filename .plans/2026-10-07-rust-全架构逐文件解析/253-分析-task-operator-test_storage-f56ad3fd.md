@@ -1,6 +1,6 @@
 # 任务 253: 解析 `br/pkg/task/operator/test_storage.rs`
 
-批次：【批次 26】 无
+批次：【批次 1】 无
 
 状态：未开始
 

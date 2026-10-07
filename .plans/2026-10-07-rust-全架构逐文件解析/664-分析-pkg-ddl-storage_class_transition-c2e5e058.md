@@ -1,6 +1,6 @@
 # 任务 664: 解析 `pkg/ddl/storage_class_transition.rs`
 
-批次：【批次 67】 无
+批次：【批次 1】 无
 
 状态：未开始
 

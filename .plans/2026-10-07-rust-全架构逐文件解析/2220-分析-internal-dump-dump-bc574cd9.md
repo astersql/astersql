@@ -1,6 +1,6 @@
 # 任务 2220: 解析 `pkg/server/internal/dump/dump.rs`
 
-批次：【批次 222】 无
+批次：【批次 1】 无
 
 状态：未开始
 

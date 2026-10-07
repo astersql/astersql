@@ -1,6 +1,6 @@
 # 任务 438: 解析 `lightning/cmd/tidb-lightning-ctl/stubs.rs`
 
-批次：【批次 44】 无
+批次：【批次 1】 无
 
 状态：未开始
 

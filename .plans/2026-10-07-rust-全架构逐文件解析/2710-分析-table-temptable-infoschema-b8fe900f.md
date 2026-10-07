@@ -1,6 +1,6 @@
 # 任务 2710: 解析 `pkg/table/temptable/infoschema.rs`
 
-批次：【批次 271】 无
+批次：【批次 1】 无
 
 状态：未开始
 

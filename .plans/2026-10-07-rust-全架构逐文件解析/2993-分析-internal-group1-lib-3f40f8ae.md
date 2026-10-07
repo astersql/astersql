@@ -1,6 +1,6 @@
 # 任务 2993: 解析 `pkg/util/execdetails/internal/group1/lib.rs`
 
-批次：【批次 300】 无
+批次：【批次 1】 无
 
 状态：未开始
 

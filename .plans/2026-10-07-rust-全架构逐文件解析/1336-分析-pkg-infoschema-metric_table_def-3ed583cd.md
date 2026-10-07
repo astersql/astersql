@@ -1,6 +1,6 @@
 # 任务 1336: 解析 `pkg/infoschema/metric_table_def.rs`
 
-批次：【批次 134】 无
+批次：【批次 1】 无
 
 状态：未开始
 

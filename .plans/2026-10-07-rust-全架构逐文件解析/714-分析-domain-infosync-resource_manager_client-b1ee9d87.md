@@ -1,6 +1,6 @@
 # 任务 714: 解析 `pkg/domain/infosync/resource_manager_client.rs`
 
-批次：【批次 72】 无
+批次：【批次 1】 无
 
 状态：未开始
 

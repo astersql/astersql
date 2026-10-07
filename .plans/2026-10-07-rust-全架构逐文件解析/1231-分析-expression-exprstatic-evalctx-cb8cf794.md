@@ -1,6 +1,6 @@
 # 任务 1231: 解析 `pkg/expression/exprstatic/evalctx.rs`
 
-批次：【批次 124】 无
+批次：【批次 1】 无
 
 状态：未开始
 

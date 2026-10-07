@@ -1,6 +1,6 @@
 # 任务 146: 解析 `br/pkg/restore/log_client/log_file_map.rs`
 
-批次：【批次 15】 无
+批次：【批次 1】 无
 
 状态：未开始
 

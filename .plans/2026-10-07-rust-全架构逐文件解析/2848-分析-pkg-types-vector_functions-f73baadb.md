@@ -1,6 +1,6 @@
 # 任务 2848: 解析 `pkg/types/vector_functions.rs`
 
-批次：【批次 285】 无
+批次：【批次 1】 无
 
 状态：未开始
 

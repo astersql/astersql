@@ -1,6 +1,6 @@
 # 任务 908: 解析 `pkg/executor/aggfuncs/func_max_min_count.rs`
 
-批次：【批次 91】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 2343: 解析 `pkg/session/runtime/typed_runaway_checker.rs`
 
-批次：【批次 235】 无
+批次：【批次 1】 无
 
 状态：未开始
 

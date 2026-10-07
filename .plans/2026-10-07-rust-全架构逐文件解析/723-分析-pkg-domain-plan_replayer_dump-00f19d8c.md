@@ -1,6 +1,6 @@
 # 任务 723: 解析 `pkg/domain/plan_replayer_dump.rs`
 
-批次：【批次 73】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 2407: 解析 `pkg/sessiontxn/internal/lib.rs`
 
-批次：【批次 241】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 2639: 解析 `pkg/store/mockstore/unistore/raw_handler.rs`
 
-批次：【批次 264】 无
+批次：【批次 1】 无
 
 状态：未开始
 

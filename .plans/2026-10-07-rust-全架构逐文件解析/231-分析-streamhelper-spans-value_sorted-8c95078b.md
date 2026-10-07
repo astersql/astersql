@@ -1,6 +1,6 @@
 # 任务 231: 解析 `br/pkg/streamhelper/spans/value_sorted.rs`
 
-批次：【批次 24】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 3003: 解析 `pkg/util/expensivequery/expensivequery.rs`
 
-批次：【批次 301】 无
+批次：【批次 1】 无
 
 状态：未开始
 

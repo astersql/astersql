@@ -1,6 +1,6 @@
 # 任务 1423: 解析 `pkg/kv/paging_resource_control.rs`
 
-批次：【批次 143】 无
+批次：【批次 1】 无
 
 状态：未开始
 

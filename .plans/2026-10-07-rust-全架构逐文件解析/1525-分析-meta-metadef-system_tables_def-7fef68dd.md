@@ -1,6 +1,6 @@
 # 任务 1525: 解析 `pkg/meta/metadef/system_tables_def.rs`
 
-批次：【批次 153】 无
+批次：【批次 1】 无
 
 状态：未开始
 

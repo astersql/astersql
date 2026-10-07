@@ -1,6 +1,6 @@
 # 任务 327: 解析 `build/linter/bodyclose/analysis.rs`
 
-批次：【批次 33】 无
+批次：【批次 1】 无
 
 状态：未开始
 

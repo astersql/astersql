@@ -1,6 +1,6 @@
 # 任务 1921: 解析 `pkg/planner/core/operator/logicalop/logical_sort.rs`
 
-批次：【批次 193】 无
+批次：【批次 1】 无
 
 状态：未开始
 

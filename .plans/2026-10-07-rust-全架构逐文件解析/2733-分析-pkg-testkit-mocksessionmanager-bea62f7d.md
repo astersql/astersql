@@ -1,6 +1,6 @@
 # 任务 2733: 解析 `pkg/testkit/mocksessionmanager.rs`
 
-批次：【批次 274】 无
+批次：【批次 1】 无
 
 状态：未开始
 

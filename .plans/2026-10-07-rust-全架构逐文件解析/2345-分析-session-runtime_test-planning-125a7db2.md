@@ -1,6 +1,6 @@
 # 任务 2345: 解析 `pkg/session/runtime_test/planning.rs`
 
-批次：【批次 235】 无
+批次：【批次 1】 无
 
 状态：未开始
 

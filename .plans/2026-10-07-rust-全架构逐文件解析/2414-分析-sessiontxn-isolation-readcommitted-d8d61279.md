@@ -1,6 +1,6 @@
 # 任务 2414: 解析 `pkg/sessiontxn/isolation/readcommitted.rs`
 
-批次：【批次 242】 无
+批次：【批次 1】 无
 
 状态：未开始
 

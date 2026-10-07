@@ -1,6 +1,6 @@
 # 任务 694: 解析 `pkg/domain/canonical_domain.rs`
 
-批次：【批次 70】 无
+批次：【批次 1】 无
 
 状态：未开始
 

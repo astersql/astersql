@@ -1,6 +1,6 @@
 # 任务 1942: 解析 `pkg/planner/core/operator/physicalop/physical_batch_point_get.rs`
 
-批次：【批次 195】 无
+批次：【批次 1】 无
 
 状态：未开始
 

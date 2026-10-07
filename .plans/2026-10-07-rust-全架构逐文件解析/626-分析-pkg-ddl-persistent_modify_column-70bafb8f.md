@@ -1,6 +1,6 @@
 # 任务 626: 解析 `pkg/ddl/persistent_modify_column.rs`
 
-批次：【批次 63】 无
+批次：【批次 1】 无
 
 状态：未开始
 

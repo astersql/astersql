@@ -1,6 +1,6 @@
 # 任务 784: 解析 `pkg/dxf/framework/integrationtests/lib.rs`
 
-批次：【批次 79】 无
+批次：【批次 1】 无
 
 状态：未开始
 

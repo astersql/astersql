@@ -1,6 +1,6 @@
 # 任务 1116: 解析 `pkg/executor/typed_point_get.rs`
 
-批次：【批次 112】 无
+批次：【批次 1】 无
 
 状态：未开始
 

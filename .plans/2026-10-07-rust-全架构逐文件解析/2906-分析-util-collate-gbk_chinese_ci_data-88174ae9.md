@@ -1,6 +1,6 @@
 # 任务 2906: 解析 `pkg/util/collate/gbk_chinese_ci_data.rs`
 
-批次：【批次 291】 无
+批次：【批次 1】 无
 
 状态：未开始
 

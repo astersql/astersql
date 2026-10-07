@@ -1,6 +1,6 @@
 # 任务 197: 解析 `br/pkg/stream/crr/service/status.rs`
 
-批次：【批次 20】 无
+批次：【批次 1】 无
 
 状态：未开始
 

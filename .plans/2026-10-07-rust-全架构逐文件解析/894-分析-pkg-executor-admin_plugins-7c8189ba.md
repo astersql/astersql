@@ -1,6 +1,6 @@
 # 任务 894: 解析 `pkg/executor/admin_plugins.rs`
 
-批次：【批次 90】 无
+批次：【批次 1】 无
 
 状态：未开始
 

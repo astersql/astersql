@@ -1,6 +1,6 @@
 # 任务 2197: 解析 `pkg/server/handler/extractorhandler/extractor.rs`
 
-批次：【批次 220】 无
+批次：【批次 1】 无
 
 状态：未开始
 

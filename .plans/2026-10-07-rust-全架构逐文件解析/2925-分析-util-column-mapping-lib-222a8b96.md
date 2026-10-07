@@ -1,6 +1,6 @@
 # 任务 2925: 解析 `pkg/util/column-mapping/lib.rs`
 
-批次：【批次 293】 无
+批次：【批次 1】 无
 
 状态：未开始
 

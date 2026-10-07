@@ -1,6 +1,6 @@
 # 任务 3016: 解析 `pkg/util/gctuner/finalizer.rs`
 
-批次：【批次 302】 无
+批次：【批次 1】 无
 
 状态：未开始
 

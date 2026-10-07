@@ -1,6 +1,6 @@
 # 任务 622: 解析 `pkg/ddl/persistent_create_materialized_view_shadow.rs`
 
-批次：【批次 63】 无
+批次：【批次 1】 无
 
 状态：未开始
 

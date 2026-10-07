@@ -1,6 +1,6 @@
 # 任务 2279: 解析 `pkg/session/runtime/bootstrap_wait.rs`
 
-批次：【批次 228】 无
+批次：【批次 1】 无
 
 状态：未开始
 

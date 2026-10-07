@@ -1,6 +1,6 @@
 # 任务 856: 解析 `pkg/dxf/importinto/encode_and_sort_operator.rs`
 
-批次：【批次 86】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 1627: 解析 `pkg/objstore/s3like/metrics.rs`
 
-批次：【批次 163】 无
+批次：【批次 1】 无
 
 状态：未开始
 

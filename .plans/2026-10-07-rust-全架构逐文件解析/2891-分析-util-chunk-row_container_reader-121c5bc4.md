@@ -1,6 +1,6 @@
 # 任务 2891: 解析 `pkg/util/chunk/row_container_reader.rs`
 
-批次：【批次 290】 无
+批次：【批次 1】 无
 
 状态：未开始
 

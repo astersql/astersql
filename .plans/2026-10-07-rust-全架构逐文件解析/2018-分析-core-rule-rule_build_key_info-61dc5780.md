@@ -1,6 +1,6 @@
 # 任务 2018: 解析 `pkg/planner/core/rule/rule_build_key_info.rs`
 
-批次：【批次 202】 无
+批次：【批次 1】 无
 
 状态：未开始
 

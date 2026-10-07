@@ -1,6 +1,6 @@
 # 任务 2145: 解析 `pkg/privilege/privileges/errors.rs`
 
-批次：【批次 215】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 1003: 解析 `pkg/executor/internal/testutil/lib.rs`
 
-批次：【批次 101】 无
+批次：【批次 1】 无
 
 状态：未开始
 

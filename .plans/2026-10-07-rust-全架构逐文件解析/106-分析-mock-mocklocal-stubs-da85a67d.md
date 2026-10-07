@@ -1,6 +1,6 @@
 # 任务 106: 解析 `br/pkg/mock/mocklocal/stubs.rs`
 
-批次：【批次 11】 无
+批次：【批次 1】 无
 
 状态：未开始
 

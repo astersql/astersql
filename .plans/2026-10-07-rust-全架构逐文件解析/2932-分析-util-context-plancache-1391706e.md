@@ -1,6 +1,6 @@
 # 任务 2932: 解析 `pkg/util/context/plancache.rs`
 
-批次：【批次 294】 无
+批次：【批次 1】 无
 
 状态：未开始
 

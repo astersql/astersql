@@ -1,6 +1,6 @@
 # 任务 2401: 解析 `pkg/sessionctx/variable/tidb_vars.rs`
 
-批次：【批次 241】 无
+批次：【批次 1】 无
 
 状态：未开始
 

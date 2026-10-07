@@ -1,6 +1,6 @@
 # 任务 498: 解析 `pkg/autoid_service/autoid.rs`
 
-批次：【批次 50】 无
+批次：【批次 1】 无
 
 状态：未开始
 

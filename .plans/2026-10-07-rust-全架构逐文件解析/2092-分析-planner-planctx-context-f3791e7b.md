@@ -1,6 +1,6 @@
 # 任务 2092: 解析 `pkg/planner/planctx/context.rs`
 
-批次：【批次 210】 无
+批次：【批次 1】 无
 
 状态：未开始
 

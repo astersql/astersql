@@ -1,6 +1,6 @@
 # 任务 2976: 解析 `pkg/util/disttask/idservice.rs`
 
-批次：【批次 298】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 1237: 解析 `pkg/expression/function_traits.rs`
 
-批次：【批次 124】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 1395: 解析 `pkg/ingestor/simplesst/codec.rs`
 
-批次：【批次 140】 无
+批次：【批次 1】 无
 
 状态：未开始
 

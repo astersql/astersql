@@ -1,6 +1,6 @@
 # 任务 1293: 解析 `pkg/importsdk/mock/sdk_mock.rs`
 
-批次：【批次 130】 无
+批次：【批次 1】 无
 
 状态：未开始
 

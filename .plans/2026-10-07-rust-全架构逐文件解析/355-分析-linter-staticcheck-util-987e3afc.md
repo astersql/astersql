@@ -1,6 +1,6 @@
 # 任务 355: 解析 `build/linter/staticcheck/util.rs`
 
-批次：【批次 36】 无
+批次：【批次 1】 无
 
 状态：未开始
 

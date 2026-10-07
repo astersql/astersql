@@ -1,6 +1,6 @@
 # 任务 3176: 解析 `pkg/util/schemacmp/charset_collation.rs`
 
-批次：【批次 318】 无
+批次：【批次 1】 无
 
 状态：未开始
 

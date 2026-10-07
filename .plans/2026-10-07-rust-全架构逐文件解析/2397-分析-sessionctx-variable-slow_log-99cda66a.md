@@ -1,6 +1,6 @@
 # 任务 2397: 解析 `pkg/sessionctx/variable/slow_log.rs`
 
-批次：【批次 240】 无
+批次：【批次 1】 无
 
 状态：未开始
 

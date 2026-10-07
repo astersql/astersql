@@ -1,6 +1,6 @@
 # 任务 1727: 解析 `pkg/parser/parser_actions/security.rs`
 
-批次：【批次 173】 无
+批次：【批次 1】 无
 
 状态：未开始
 

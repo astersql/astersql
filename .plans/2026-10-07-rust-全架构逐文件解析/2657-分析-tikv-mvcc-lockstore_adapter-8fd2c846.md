@@ -1,6 +1,6 @@
 # 任务 2657: 解析 `pkg/store/mockstore/unistore/tikv/mvcc/lockstore_adapter.rs`
 
-批次：【批次 266】 无
+批次：【批次 1】 无
 
 状态：未开始
 

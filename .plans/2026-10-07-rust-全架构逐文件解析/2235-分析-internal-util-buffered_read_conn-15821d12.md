@@ -1,6 +1,6 @@
 # 任务 2235: 解析 `pkg/server/internal/util/buffered_read_conn.rs`
 
-批次：【批次 224】 无
+批次：【批次 1】 无
 
 状态：未开始
 

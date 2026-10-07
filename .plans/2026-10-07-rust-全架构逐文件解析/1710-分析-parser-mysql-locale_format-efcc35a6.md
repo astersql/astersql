@@ -1,6 +1,6 @@
 # 任务 1710: 解析 `pkg/parser/mysql/locale_format.rs`
 
-批次：【批次 171】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 2966: 解析 `pkg/util/deadlockhistory/deadlock_history.rs`
 
-批次：【批次 297】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 2675: 解析 `pkg/store/pdtypes/typeutil.rs`
 
-批次：【批次 268】 无
+批次：【批次 1】 无
 
 状态：未开始
 

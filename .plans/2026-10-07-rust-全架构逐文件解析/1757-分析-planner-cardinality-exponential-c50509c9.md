@@ -1,6 +1,6 @@
 # 任务 1757: 解析 `pkg/planner/cardinality/exponential.rs`
 
-批次：【批次 176】 无
+批次：【批次 1】 无
 
 状态：未开始
 

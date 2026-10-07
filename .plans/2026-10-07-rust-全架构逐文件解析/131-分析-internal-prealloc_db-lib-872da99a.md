@@ -1,6 +1,6 @@
 # 任务 131: 解析 `br/pkg/restore/internal/prealloc_db/lib.rs`
 
-批次：【批次 14】 无
+批次：【批次 1】 无
 
 状态：未开始
 

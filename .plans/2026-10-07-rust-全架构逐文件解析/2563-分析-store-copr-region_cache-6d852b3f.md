@@ -1,6 +1,6 @@
 # 任务 2563: 解析 `pkg/store/copr/region_cache.rs`
 
-批次：【批次 257】 无
+批次：【批次 1】 无
 
 状态：未开始
 

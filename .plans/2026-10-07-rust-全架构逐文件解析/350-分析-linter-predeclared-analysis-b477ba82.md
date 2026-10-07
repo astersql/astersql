@@ -1,6 +1,6 @@
 # 任务 350: 解析 `build/linter/predeclared/analysis.rs`
 
-批次：【批次 35】 无
+批次：【批次 1】 无
 
 状态：未开始
 

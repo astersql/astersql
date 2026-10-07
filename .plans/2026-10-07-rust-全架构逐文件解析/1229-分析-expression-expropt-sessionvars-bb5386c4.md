@@ -1,6 +1,6 @@
 # 任务 1229: 解析 `pkg/expression/expropt/sessionvars.rs`
 
-批次：【批次 123】 无
+批次：【批次 1】 无
 
 状态：未开始
 

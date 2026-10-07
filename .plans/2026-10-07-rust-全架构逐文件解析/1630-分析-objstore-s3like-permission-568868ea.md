@@ -1,6 +1,6 @@
 # 任务 1630: 解析 `pkg/objstore/s3like/permission.rs`
 
-批次：【批次 163】 无
+批次：【批次 1】 无
 
 状态：未开始
 

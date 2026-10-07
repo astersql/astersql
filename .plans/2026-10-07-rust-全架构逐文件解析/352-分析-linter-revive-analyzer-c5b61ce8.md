@@ -1,6 +1,6 @@
 # 任务 352: 解析 `build/linter/revive/analyzer.rs`
 
-批次：【批次 36】 无
+批次：【批次 1】 无
 
 状态：未开始
 

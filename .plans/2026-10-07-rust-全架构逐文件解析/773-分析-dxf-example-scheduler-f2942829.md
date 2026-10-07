@@ -1,6 +1,6 @@
 # 任务 773: 解析 `pkg/dxf/example/scheduler.rs`
 
-批次：【批次 78】 无
+批次：【批次 1】 无
 
 状态：未开始
 

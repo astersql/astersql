@@ -1,6 +1,6 @@
 # 任务 2461: 解析 `pkg/statistics/handle/cache/internal/lfu/key_set_shard.rs`
 
-批次：【批次 247】 无
+批次：【批次 1】 无
 
 状态：未开始
 

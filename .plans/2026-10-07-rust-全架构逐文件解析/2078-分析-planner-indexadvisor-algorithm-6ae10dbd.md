@@ -1,6 +1,6 @@
 # 任务 2078: 解析 `pkg/planner/indexadvisor/algorithm.rs`
 
-批次：【批次 208】 无
+批次：【批次 1】 无
 
 状态：未开始
 

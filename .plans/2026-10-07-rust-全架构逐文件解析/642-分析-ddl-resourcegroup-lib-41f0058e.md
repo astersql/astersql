@@ -1,6 +1,6 @@
 # 任务 642: 解析 `pkg/ddl/resourcegroup/lib.rs`
 
-批次：【批次 65】 无
+批次：【批次 1】 无
 
 状态：未开始
 

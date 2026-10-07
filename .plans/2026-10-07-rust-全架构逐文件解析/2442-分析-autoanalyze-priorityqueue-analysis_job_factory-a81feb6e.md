@@ -1,6 +1,6 @@
 # 任务 2442: 解析 `pkg/statistics/handle/autoanalyze/priorityqueue/analysis_job_factory.rs`
 
-批次：【批次 245】 无
+批次：【批次 1】 无
 
 状态：未开始
 

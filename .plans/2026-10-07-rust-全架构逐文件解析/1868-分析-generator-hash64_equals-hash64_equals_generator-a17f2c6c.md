@@ -1,6 +1,6 @@
 # 任务 1868: 解析 `pkg/planner/core/generator/hash64_equals/hash64_equals_generator.rs`
 
-批次：【批次 187】 无
+批次：【批次 1】 无
 
 状态：未开始
 

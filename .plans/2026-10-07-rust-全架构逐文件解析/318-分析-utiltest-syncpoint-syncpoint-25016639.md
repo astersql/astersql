@@ -1,6 +1,6 @@
 # 任务 318: 解析 `br/pkg/utiltest/syncpoint/syncpoint.rs`
 
-批次：【批次 32】 无
+批次：【批次 1】 无
 
 状态：未开始
 

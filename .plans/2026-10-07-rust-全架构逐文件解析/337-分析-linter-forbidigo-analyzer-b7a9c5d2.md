@@ -1,6 +1,6 @@
 # 任务 337: 解析 `build/linter/forbidigo/analyzer.rs`
 
-批次：【批次 34】 无
+批次：【批次 1】 无
 
 状态：未开始
 

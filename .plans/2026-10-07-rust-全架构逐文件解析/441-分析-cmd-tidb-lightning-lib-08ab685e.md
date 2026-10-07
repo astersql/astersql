@@ -1,6 +1,6 @@
 # 任务 441: 解析 `lightning/cmd/tidb-lightning/lib.rs`
 
-批次：【批次 45】 无
+批次：【批次 1】 无
 
 状态：未开始
 

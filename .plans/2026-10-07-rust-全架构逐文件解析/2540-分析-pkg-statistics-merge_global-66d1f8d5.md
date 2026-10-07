@@ -1,6 +1,6 @@
 # 任务 2540: 解析 `pkg/statistics/merge_global.rs`
 
-批次：【批次 254】 无
+批次：【批次 1】 无
 
 状态：未开始
 

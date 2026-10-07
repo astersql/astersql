@@ -1,6 +1,6 @@
 # 任务 1863: 解析 `pkg/planner/core/find_best_task.rs`
 
-批次：【批次 187】 无
+批次：【批次 1】 无
 
 状态：未开始
 

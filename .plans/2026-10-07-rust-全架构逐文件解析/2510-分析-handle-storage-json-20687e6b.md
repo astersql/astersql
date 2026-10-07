@@ -1,6 +1,6 @@
 # 任务 2510: 解析 `pkg/statistics/handle/storage/json.rs`
 
-批次：【批次 251】 无
+批次：【批次 1】 无
 
 状态：未开始
 

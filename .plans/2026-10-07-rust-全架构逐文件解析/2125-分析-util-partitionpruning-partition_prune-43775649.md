@@ -1,6 +1,6 @@
 # 任务 2125: 解析 `pkg/planner/util/partitionpruning/partition_prune.rs`
 
-批次：【批次 213】 无
+批次：【批次 1】 无
 
 状态：未开始
 

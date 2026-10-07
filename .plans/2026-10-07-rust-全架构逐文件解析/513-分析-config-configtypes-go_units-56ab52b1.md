@@ -1,6 +1,6 @@
 # 任务 513: 解析 `pkg/config/configtypes/go_units.rs`
 
-批次：【批次 52】 无
+批次：【批次 1】 无
 
 状态：未开始
 

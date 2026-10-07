@@ -1,6 +1,6 @@
 # 任务 1033: 解析 `pkg/executor/join/joinversion/join_version.rs`
 
-批次：【批次 104】 无
+批次：【批次 1】 无
 
 状态：未开始
 

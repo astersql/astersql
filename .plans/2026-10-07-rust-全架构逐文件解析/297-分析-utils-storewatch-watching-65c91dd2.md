@@ -1,6 +1,6 @@
 # 任务 297: 解析 `br/pkg/utils/storewatch/watching.rs`
 
-批次：【批次 30】 无
+批次：【批次 1】 无
 
 状态：未开始
 

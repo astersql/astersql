@@ -1,6 +1,6 @@
 # 任务 3363: 解析 `tools/dashboard-linter/lib.rs`
 
-批次：【批次 337】 无
+批次：【批次 1】 无
 
 状态：未开始
 

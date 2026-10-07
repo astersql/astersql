@@ -1,6 +1,6 @@
 # 任务 921: 解析 `pkg/executor/aggfuncs/row_number.rs`
 
-批次：【批次 93】 无
+批次：【批次 1】 无
 
 状态：未开始
 

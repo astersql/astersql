@@ -1,6 +1,6 @@
 # 任务 1212: 解析 `pkg/expression/explicit_collation.rs`
 
-批次：【批次 122】 无
+批次：【批次 1】 无
 
 状态：未开始
 

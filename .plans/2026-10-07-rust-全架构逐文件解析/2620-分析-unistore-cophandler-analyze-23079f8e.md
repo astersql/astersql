@@ -1,6 +1,6 @@
 # 任务 2620: 解析 `pkg/store/mockstore/unistore/cophandler/analyze.rs`
 
-批次：【批次 262】 无
+批次：【批次 1】 无
 
 状态：未开始
 

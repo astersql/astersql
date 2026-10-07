@@ -1,6 +1,6 @@
 # 任务 1634: 解析 `pkg/objstore/s3store/gcs_s3_signer.rs`
 
-批次：【批次 164】 无
+批次：【批次 1】 无
 
 状态：未开始
 

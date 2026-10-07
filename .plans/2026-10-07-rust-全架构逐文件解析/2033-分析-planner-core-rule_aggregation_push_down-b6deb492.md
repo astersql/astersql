@@ -1,6 +1,6 @@
 # 任务 2033: 解析 `pkg/planner/core/rule_aggregation_push_down.rs`
 
-批次：【批次 204】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 2391: 解析 `pkg/sessionctx/variable/nextgen.rs`
 
-批次：【批次 240】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 3148: 解析 `pkg/util/ranger/context/context.rs`
 
-批次：【批次 315】 无
+批次：【批次 1】 无
 
 状态：未开始
 

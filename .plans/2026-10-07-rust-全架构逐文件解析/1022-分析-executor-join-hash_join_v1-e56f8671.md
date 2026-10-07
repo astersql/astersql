@@ -1,6 +1,6 @@
 # 任务 1022: 解析 `pkg/executor/join/hash_join_v1.rs`
 
-批次：【批次 103】 无
+批次：【批次 1】 无
 
 状态：未开始
 

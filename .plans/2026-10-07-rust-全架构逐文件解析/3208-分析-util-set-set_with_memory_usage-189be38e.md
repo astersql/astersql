@@ -1,6 +1,6 @@
 # 任务 3208: 解析 `pkg/util/set/set_with_memory_usage.rs`
 
-批次：【批次 321】 无
+批次：【批次 1】 无
 
 状态：未开始
 

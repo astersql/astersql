@@ -1,6 +1,6 @@
 # 任务 912: 解析 `pkg/executor/aggfuncs/func_rank.rs`
 
-批次：【批次 92】 无
+批次：【批次 1】 无
 
 状态：未开始
 

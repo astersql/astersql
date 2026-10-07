@@ -1,6 +1,6 @@
 # 任务 3267: 解析 `pkg/util/table-router/router.rs`
 
-批次：【批次 327】 无
+批次：【批次 1】 无
 
 状态：未开始
 

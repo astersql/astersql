@@ -1,6 +1,6 @@
 # 任务 1088: 解析 `pkg/executor/sortexec/multi_way_merge.rs`
 
-批次：【批次 109】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 2226: 解析 `pkg/server/internal/parse/lib.rs`
 
-批次：【批次 223】 无
+批次：【批次 1】 无
 
 状态：未开始
 

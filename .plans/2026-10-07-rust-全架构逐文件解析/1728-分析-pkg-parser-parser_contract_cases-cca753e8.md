@@ -1,6 +1,6 @@
 # 任务 1728: 解析 `pkg/parser/parser_contract_cases.rs`
 
-批次：【批次 173】 无
+批次：【批次 1】 无
 
 状态：未开始
 

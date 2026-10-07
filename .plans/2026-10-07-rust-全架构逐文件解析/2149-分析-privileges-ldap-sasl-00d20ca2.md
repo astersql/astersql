@@ -1,6 +1,6 @@
 # 任务 2149: 解析 `pkg/privilege/privileges/ldap/sasl.rs`
 
-批次：【批次 215】 无
+批次：【批次 1】 无
 
 状态：未开始
 

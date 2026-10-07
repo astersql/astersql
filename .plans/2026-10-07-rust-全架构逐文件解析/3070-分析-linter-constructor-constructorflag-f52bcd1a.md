@@ -1,6 +1,6 @@
 # 任务 3070: 解析 `pkg/util/linter/constructor/constructorflag.rs`
 
-批次：【批次 307】 无
+批次：【批次 1】 无
 
 状态：未开始
 

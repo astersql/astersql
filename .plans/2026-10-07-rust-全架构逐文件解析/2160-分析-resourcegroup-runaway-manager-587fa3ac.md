@@ -1,6 +1,6 @@
 # 任务 2160: 解析 `pkg/resourcegroup/runaway/manager.rs`
 
-批次：【批次 216】 无
+批次：【批次 1】 无
 
 状态：未开始
 

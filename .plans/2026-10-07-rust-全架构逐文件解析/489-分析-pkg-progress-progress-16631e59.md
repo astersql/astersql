@@ -1,6 +1,6 @@
 # 任务 489: 解析 `lightning/pkg/progress/progress.rs`
 
-批次：【批次 49】 无
+批次：【批次 1】 无
 
 状态：未开始
 

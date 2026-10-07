@@ -1,6 +1,6 @@
 # 任务 2274: 解析 `pkg/session/mock_bootstrap.rs`
 
-批次：【批次 228】 无
+批次：【批次 1】 无
 
 状态：未开始
 

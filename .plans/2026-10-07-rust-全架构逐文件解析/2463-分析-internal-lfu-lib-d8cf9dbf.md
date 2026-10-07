@@ -1,6 +1,6 @@
 # 任务 2463: 解析 `pkg/statistics/handle/cache/internal/lfu/lib.rs`
 
-批次：【批次 247】 无
+批次：【批次 1】 无
 
 状态：未开始
 

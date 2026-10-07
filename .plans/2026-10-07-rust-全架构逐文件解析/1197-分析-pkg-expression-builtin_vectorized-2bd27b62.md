@@ -1,6 +1,6 @@
 # 任务 1197: 解析 `pkg/expression/builtin_vectorized.rs`
 
-批次：【批次 120】 无
+批次：【批次 1】 无
 
 状态：未开始
 

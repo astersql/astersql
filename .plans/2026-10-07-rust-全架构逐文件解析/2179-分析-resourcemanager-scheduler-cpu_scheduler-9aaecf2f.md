@@ -1,6 +1,6 @@
 # 任务 2179: 解析 `pkg/resourcemanager/scheduler/cpu_scheduler.rs`
 
-批次：【批次 218】 无
+批次：【批次 1】 无
 
 状态：未开始
 

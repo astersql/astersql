@@ -1,6 +1,6 @@
 # 任务 1405: 解析 `pkg/ingestor/testutils/lib.rs`
 
-批次：【批次 141】 无
+批次：【批次 1】 无
 
 状态：未开始
 

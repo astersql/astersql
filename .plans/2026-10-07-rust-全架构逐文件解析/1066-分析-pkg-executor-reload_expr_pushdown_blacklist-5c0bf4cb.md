@@ -1,6 +1,6 @@
 # 任务 1066: 解析 `pkg/executor/reload_expr_pushdown_blacklist.rs`
 
-批次：【批次 107】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 1094: 解析 `pkg/executor/sortexec/sort_util.rs`
 
-批次：【批次 110】 无
+批次：【批次 1】 无
 
 状态：未开始
 

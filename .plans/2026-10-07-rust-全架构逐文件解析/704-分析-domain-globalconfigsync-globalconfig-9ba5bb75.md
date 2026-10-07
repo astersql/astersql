@@ -1,6 +1,6 @@
 # 任务 704: 解析 `pkg/domain/globalconfigsync/globalconfig.rs`
 
-批次：【批次 71】 无
+批次：【批次 1】 无
 
 状态：未开始
 

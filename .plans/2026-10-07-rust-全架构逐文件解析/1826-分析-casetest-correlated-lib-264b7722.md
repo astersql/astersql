@@ -1,6 +1,6 @@
 # 任务 1826: 解析 `pkg/planner/core/casetest/correlated/lib.rs`
 
-批次：【批次 183】 无
+批次：【批次 1】 无
 
 状态：未开始
 

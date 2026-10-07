@@ -1,6 +1,6 @@
 # 任务 3328: 解析 `pkg/util/trxevents/trx_events.rs`
 
-批次：【批次 333】 无
+批次：【批次 1】 无
 
 状态：未开始
 

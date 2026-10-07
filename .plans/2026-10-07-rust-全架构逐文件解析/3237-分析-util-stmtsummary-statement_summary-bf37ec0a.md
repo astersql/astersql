@@ -1,6 +1,6 @@
 # 任务 3237: 解析 `pkg/util/stmtsummary/statement_summary.rs`
 
-批次：【批次 324】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 2665: 解析 `pkg/store/mockstore/unistore/tikv/util.rs`
 
-批次：【批次 267】 无
+批次：【批次 1】 无
 
 状态：未开始
 

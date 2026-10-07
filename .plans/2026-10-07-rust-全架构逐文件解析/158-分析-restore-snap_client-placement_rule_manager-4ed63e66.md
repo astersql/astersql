@@ -1,6 +1,6 @@
 # 任务 158: 解析 `br/pkg/restore/snap_client/placement_rule_manager.rs`
 
-批次：【批次 16】 无
+批次：【批次 1】 无
 
 状态：未开始
 

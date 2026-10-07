@@ -1,6 +1,6 @@
 # 任务 2560: 解析 `pkg/store/copr/network_backend.rs`
 
-批次：【批次 256】 无
+批次：【批次 1】 无
 
 状态：未开始
 

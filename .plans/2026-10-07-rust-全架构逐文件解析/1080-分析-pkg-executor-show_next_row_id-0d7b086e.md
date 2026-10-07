@@ -1,6 +1,6 @@
 # 任务 1080: 解析 `pkg/executor/show_next_row_id.rs`
 
-批次：【批次 108】 无
+批次：【批次 1】 无
 
 状态：未开始
 

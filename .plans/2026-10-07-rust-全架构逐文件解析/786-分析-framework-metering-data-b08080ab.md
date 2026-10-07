@@ -1,6 +1,6 @@
 # 任务 786: 解析 `pkg/dxf/framework/metering/data.rs`
 
-批次：【批次 79】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 1135: 解析 `pkg/expression/aggregation/bit_or.rs`
 
-批次：【批次 114】 无
+批次：【批次 1】 无
 
 状态：未开始
 

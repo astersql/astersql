@@ -1,6 +1,6 @@
 # 任务 2322: 解析 `pkg/session/runtime/row_codec.rs`
 
-批次：【批次 233】 无
+批次：【批次 1】 无
 
 状态：未开始
 

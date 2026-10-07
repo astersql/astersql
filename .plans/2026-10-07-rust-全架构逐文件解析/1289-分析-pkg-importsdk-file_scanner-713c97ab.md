@@ -1,6 +1,6 @@
 # 任务 1289: 解析 `pkg/importsdk/file_scanner.rs`
 
-批次：【批次 129】 无
+批次：【批次 1】 无
 
 状态：未开始
 

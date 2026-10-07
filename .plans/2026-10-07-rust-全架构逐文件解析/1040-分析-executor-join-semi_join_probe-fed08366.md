@@ -1,6 +1,6 @@
 # 任务 1040: 解析 `pkg/executor/join/semi_join_probe.rs`
 
-批次：【批次 104】 无
+批次：【批次 1】 无
 
 状态：未开始
 

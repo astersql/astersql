@@ -1,6 +1,6 @@
 # 任务 688: 解析 `pkg/distsql/select_result.rs`
 
-批次：【批次 69】 无
+批次：【批次 1】 无
 
 状态：未开始
 

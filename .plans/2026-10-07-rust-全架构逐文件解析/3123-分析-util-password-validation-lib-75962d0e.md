@@ -1,6 +1,6 @@
 # 任务 3123: 解析 `pkg/util/password-validation/lib.rs`
 
-批次：【批次 313】 无
+批次：【批次 1】 无
 
 状态：未开始
 

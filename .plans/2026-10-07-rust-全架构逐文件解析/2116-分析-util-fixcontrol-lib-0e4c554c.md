@@ -1,6 +1,6 @@
 # 任务 2116: 解析 `pkg/planner/util/fixcontrol/lib.rs`
 
-批次：【批次 212】 无
+批次：【批次 1】 无
 
 状态：未开始
 

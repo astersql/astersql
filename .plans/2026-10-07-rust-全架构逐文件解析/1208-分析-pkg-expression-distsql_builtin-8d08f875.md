@@ -1,6 +1,6 @@
 # 任务 1208: 解析 `pkg/expression/distsql_builtin.rs`
 
-批次：【批次 121】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 1035: 解析 `pkg/executor/join/left_outer_semi_join_probe.rs`
 
-批次：【批次 104】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 2740: 解析 `pkg/testkit/testfailpoint/failpoint.rs`
 
-批次：【批次 274】 无
+批次：【批次 1】 无
 
 状态：未开始
 

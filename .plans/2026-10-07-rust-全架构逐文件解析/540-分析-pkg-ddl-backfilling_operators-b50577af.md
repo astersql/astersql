@@ -1,6 +1,6 @@
 # 任务 540: 解析 `pkg/ddl/backfilling_operators.rs`
 
-批次：【批次 54】 无
+批次：【批次 1】 无
 
 状态：未开始
 

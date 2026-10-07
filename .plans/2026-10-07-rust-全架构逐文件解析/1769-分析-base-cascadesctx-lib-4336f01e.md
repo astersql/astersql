@@ -1,6 +1,6 @@
 # 任务 1769: 解析 `pkg/planner/cascades/base/cascadesctx/lib.rs`
 
-批次：【批次 177】 无
+批次：【批次 1】 无
 
 状态：未开始
 

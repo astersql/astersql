@@ -1,6 +1,6 @@
 # 任务 3307: 解析 `pkg/util/topsql/reporter/ru_window_aggregator.rs`
 
-批次：【批次 331】 无
+批次：【批次 1】 无
 
 状态：未开始
 

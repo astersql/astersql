@@ -1,6 +1,6 @@
 # 任务 1894: 解析 `pkg/planner/core/operator/baseimpl/lib.rs`
 
-批次：【批次 190】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 639: 解析 `pkg/ddl/resourcegroup/build.rs`
 
-批次：【批次 64】 无
+批次：【批次 1】 无
 
 状态：未开始
 

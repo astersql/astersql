@@ -1,6 +1,6 @@
 # 任务 2323: 解析 `pkg/session/runtime/scan_adapter_runtime.rs`
 
-批次：【批次 233】 无
+批次：【批次 1】 无
 
 状态：未开始
 

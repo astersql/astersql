@@ -1,6 +1,6 @@
 # 任务 2042: 解析 `pkg/planner/core/rule_inject_extra_projection.rs`
 
-批次：【批次 205】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 1389: 解析 `pkg/ingestor/ingestctrl/region_job.rs`
 
-批次：【批次 139】 无
+批次：【批次 1】 无
 
 状态：未开始
 

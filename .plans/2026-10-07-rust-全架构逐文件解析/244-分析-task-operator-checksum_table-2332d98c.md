@@ -1,6 +1,6 @@
 # 任务 244: 解析 `br/pkg/task/operator/checksum_table.rs`
 
-批次：【批次 25】 无
+批次：【批次 1】 无
 
 状态：未开始
 

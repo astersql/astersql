@@ -1,6 +1,6 @@
 # 任务 1276: 解析 `pkg/extworkload/client/build.rs`
 
-批次：【批次 128】 无
+批次：【批次 1】 无
 
 状态：未开始
 

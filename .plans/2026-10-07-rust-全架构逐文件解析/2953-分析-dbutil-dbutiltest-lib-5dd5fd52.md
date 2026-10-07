@@ -1,6 +1,6 @@
 # 任务 2953: 解析 `pkg/util/dbutil/dbutiltest/lib.rs`
 
-批次：【批次 296】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 2508: 解析 `pkg/statistics/handle/runtime_stats.rs`
 
-批次：【批次 251】 无
+批次：【批次 1】 无
 
 状态：未开始
 

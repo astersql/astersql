@@ -1,6 +1,6 @@
 # 任务 497: 解析 `lightning/pkg/server/stubs.rs`
 
-批次：【批次 50】 无
+批次：【批次 1】 无
 
 状态：未开始
 

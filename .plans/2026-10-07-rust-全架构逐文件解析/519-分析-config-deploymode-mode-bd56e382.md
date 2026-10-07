@@ -1,6 +1,6 @@
 # 任务 519: 解析 `pkg/config/deploymode/mode.rs`
 
-批次：【批次 52】 无
+批次：【批次 1】 无
 
 状态：未开始
 

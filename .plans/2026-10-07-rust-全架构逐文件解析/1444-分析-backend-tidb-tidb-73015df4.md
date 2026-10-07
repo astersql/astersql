@@ -1,6 +1,6 @@
 # 任务 1444: 解析 `pkg/lightning/backend/tidb/tidb.rs`
 
-批次：【批次 145】 无
+批次：【批次 1】 无
 
 状态：未开始
 

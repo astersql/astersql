@@ -1,6 +1,6 @@
 # 任务 721: 解析 `pkg/domain/optimize_trace.rs`
 
-批次：【批次 73】 无
+批次：【批次 1】 无
 
 状态：未开始
 

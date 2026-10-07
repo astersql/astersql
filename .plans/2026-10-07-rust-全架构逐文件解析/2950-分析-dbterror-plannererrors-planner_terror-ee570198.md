@@ -1,6 +1,6 @@
 # 任务 2950: 解析 `pkg/util/dbterror/plannererrors/planner_terror.rs`
 
-批次：【批次 295】 无
+批次：【批次 1】 无
 
 状态：未开始
 

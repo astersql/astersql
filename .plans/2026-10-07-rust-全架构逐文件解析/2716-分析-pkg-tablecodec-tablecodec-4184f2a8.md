@@ -1,6 +1,6 @@
 # 任务 2716: 解析 `pkg/tablecodec/tablecodec.rs`
 
-批次：【批次 272】 无
+批次：【批次 1】 无
 
 状态：未开始
 

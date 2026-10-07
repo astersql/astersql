@@ -1,6 +1,6 @@
 # 任务 1311: 解析 `pkg/infoschema/builder_misc.rs`
 
-批次：【批次 132】 无
+批次：【批次 1】 无
 
 状态：未开始
 

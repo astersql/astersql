@@ -1,6 +1,6 @@
 # 任务 139: 解析 `br/pkg/restore/log_client/compacted_file_strategy.rs`
 
-批次：【批次 14】 无
+批次：【批次 1】 无
 
 状态：未开始
 

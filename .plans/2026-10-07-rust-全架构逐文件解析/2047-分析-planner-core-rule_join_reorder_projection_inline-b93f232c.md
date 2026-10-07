@@ -1,6 +1,6 @@
 # 任务 2047: 解析 `pkg/planner/core/rule_join_reorder_projection_inline.rs`
 
-批次：【批次 205】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 2455: 解析 `pkg/statistics/handle/autoanalyze/refresher/lib.rs`
 
-批次：【批次 246】 无
+批次：【批次 1】 无
 
 状态：未开始
 

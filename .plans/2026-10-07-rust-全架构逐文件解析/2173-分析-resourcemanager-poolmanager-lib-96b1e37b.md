@@ -1,6 +1,6 @@
 # 任务 2173: 解析 `pkg/resourcemanager/poolmanager/lib.rs`
 
-批次：【批次 218】 无
+批次：【批次 1】 无
 
 状态：未开始
 

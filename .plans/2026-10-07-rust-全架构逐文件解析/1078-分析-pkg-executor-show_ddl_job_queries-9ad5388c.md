@@ -1,6 +1,6 @@
 # 任务 1078: 解析 `pkg/executor/show_ddl_job_queries.rs`
 
-批次：【批次 108】 无
+批次：【批次 1】 无
 
 状态：未开始
 

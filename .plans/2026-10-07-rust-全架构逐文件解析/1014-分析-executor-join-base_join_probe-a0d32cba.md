@@ -1,6 +1,6 @@
 # 任务 1014: 解析 `pkg/executor/join/base_join_probe.rs`
 
-批次：【批次 102】 无
+批次：【批次 1】 无
 
 状态：未开始
 

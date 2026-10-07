@@ -1,6 +1,6 @@
 # 任务 1935: 解析 `pkg/planner/core/operator/physicalop/enforce.rs`
 
-批次：【批次 194】 无
+批次：【批次 1】 无
 
 状态：未开始
 

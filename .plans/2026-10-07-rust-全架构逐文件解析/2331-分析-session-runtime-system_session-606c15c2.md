@@ -1,6 +1,6 @@
 # 任务 2331: 解析 `pkg/session/runtime/system_session.rs`
 
-批次：【批次 234】 无
+批次：【批次 1】 无
 
 状态：未开始
 

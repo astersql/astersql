@@ -1,6 +1,6 @@
 # 任务 1314: 解析 `pkg/infoschema/catalog_columns_go45.rs`
 
-批次：【批次 132】 无
+批次：【批次 1】 无
 
 状态：未开始
 

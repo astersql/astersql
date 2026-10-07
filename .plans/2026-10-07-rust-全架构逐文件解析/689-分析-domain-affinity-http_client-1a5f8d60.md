@@ -1,6 +1,6 @@
 # 任务 689: 解析 `pkg/domain/affinity/http_client.rs`
 
-批次：【批次 69】 无
+批次：【批次 1】 无
 
 状态：未开始
 

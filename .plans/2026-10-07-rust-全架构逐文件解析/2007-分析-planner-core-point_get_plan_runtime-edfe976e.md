@@ -1,6 +1,6 @@
 # 任务 2007: 解析 `pkg/planner/core/point_get_plan_runtime.rs`
 
-批次：【批次 201】 无
+批次：【批次 1】 无
 
 状态：未开始
 

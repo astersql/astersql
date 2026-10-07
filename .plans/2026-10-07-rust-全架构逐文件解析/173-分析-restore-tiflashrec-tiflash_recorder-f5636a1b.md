@@ -1,6 +1,6 @@
 # 任务 173: 解析 `br/pkg/restore/tiflashrec/tiflash_recorder.rs`
 
-批次：【批次 18】 无
+批次：【批次 1】 无
 
 状态：未开始
 

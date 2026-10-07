@@ -1,6 +1,6 @@
 # 任务 3065: 解析 `pkg/util/keydecoder/keydecoder.rs`
 
-批次：【批次 307】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 2870: 解析 `pkg/util/cgroup/cgroup_memory_unsupport.rs`
 
-批次：【批次 287】 无
+批次：【批次 1】 无
 
 状态：未开始
 

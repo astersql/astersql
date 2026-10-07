@@ -1,6 +1,6 @@
 # 任务 2164: 解析 `pkg/resourcegroup/ruv2/model.rs`
 
-批次：【批次 217】 无
+批次：【批次 1】 无
 
 状态：未开始
 

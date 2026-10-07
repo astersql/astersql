@@ -1,6 +1,6 @@
 # 任务 3212: 解析 `pkg/util/signal/signal_posix.rs`
 
-批次：【批次 322】 无
+批次：【批次 1】 无
 
 状态：未开始
 

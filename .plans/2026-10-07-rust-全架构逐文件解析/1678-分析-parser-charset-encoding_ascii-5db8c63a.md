@@ -1,6 +1,6 @@
 # 任务 1678: 解析 `pkg/parser/charset/encoding_ascii.rs`
 
-批次：【批次 168】 无
+批次：【批次 1】 无
 
 状态：未开始
 

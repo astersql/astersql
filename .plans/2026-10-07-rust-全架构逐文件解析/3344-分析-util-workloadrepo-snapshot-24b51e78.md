@@ -1,6 +1,6 @@
 # 任务 3344: 解析 `pkg/util/workloadrepo/snapshot.rs`
 
-批次：【批次 335】 无
+批次：【批次 1】 无
 
 状态：未开始
 

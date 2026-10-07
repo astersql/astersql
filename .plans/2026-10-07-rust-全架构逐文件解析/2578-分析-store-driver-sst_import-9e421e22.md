@@ -1,6 +1,6 @@
 # 任务 2578: 解析 `pkg/store/driver/sst_import.rs`
 
-批次：【批次 258】 无
+批次：【批次 1】 无
 
 状态：未开始
 

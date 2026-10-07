@@ -1,6 +1,6 @@
 # 任务 1640: 解析 `pkg/objstore/s3store/mock/s3api_mock.rs`
 
-批次：【批次 164】 无
+批次：【批次 1】 无
 
 状态：未开始
 

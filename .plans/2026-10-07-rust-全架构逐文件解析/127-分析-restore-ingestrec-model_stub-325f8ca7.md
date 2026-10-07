@@ -1,6 +1,6 @@
 # 任务 127: 解析 `br/pkg/restore/ingestrec/model_stub.rs`
 
-批次：【批次 13】 无
+批次：【批次 1】 无
 
 状态：未开始
 

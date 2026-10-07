@@ -1,6 +1,6 @@
 # 任务 2200: 解析 `pkg/server/handler/optimizor/lib.rs`
 
-批次：【批次 220】 无
+批次：【批次 1】 无
 
 状态：未开始
 

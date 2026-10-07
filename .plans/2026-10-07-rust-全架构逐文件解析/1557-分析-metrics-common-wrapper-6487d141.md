@@ -1,6 +1,6 @@
 # 任务 1557: 解析 `pkg/metrics/common/wrapper.rs`
 
-批次：【批次 156】 无
+批次：【批次 1】 无
 
 状态：未开始
 

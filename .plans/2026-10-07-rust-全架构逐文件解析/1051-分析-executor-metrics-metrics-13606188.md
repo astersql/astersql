@@ -1,6 +1,6 @@
 # 任务 1051: 解析 `pkg/executor/metrics/metrics.rs`
 
-批次：【批次 106】 无
+批次：【批次 1】 无
 
 状态：未开始
 

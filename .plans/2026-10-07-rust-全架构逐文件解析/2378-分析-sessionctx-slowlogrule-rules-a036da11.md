@@ -1,6 +1,6 @@
 # 任务 2378: 解析 `pkg/sessionctx/slowlogrule/rules.rs`
 
-批次：【批次 238】 无
+批次：【批次 1】 无
 
 状态：未开始
 

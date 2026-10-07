@@ -1,6 +1,6 @@
 # 任务 1124: 解析 `pkg/executor/windows/builder.rs`
 
-批次：【批次 113】 无
+批次：【批次 1】 无
 
 状态：未开始
 

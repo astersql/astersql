@@ -1,6 +1,6 @@
 # 任务 1369: 解析 `pkg/ingestor/ingestcli/mock/client_mock.rs`
 
-批次：【批次 137】 无
+批次：【批次 1】 无
 
 状态：未开始
 

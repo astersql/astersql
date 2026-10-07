@@ -1,6 +1,6 @@
 # 任务 1618: 解析 `pkg/objstore/ossstore/mock/provider_mock.rs`
 
-批次：【批次 162】 无
+批次：【批次 1】 无
 
 状态：未开始
 

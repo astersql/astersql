@@ -1,6 +1,6 @@
 # 任务 1680: 解析 `pkg/parser/charset/encoding_bin.rs`
 
-批次：【批次 168】 无
+批次：【批次 1】 无
 
 状态：未开始
 

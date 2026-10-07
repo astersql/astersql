@@ -1,6 +1,6 @@
 # 任务 696: 解析 `pkg/domain/crossks/cross_ks.rs`
 
-批次：【批次 70】 无
+批次：【批次 1】 无
 
 状态：未开始
 

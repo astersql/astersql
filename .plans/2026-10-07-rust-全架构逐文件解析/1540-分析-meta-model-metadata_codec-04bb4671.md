@@ -1,6 +1,6 @@
 # 任务 1540: 解析 `pkg/meta/model/metadata_codec.rs`
 
-批次：【批次 154】 无
+批次：【批次 1】 无
 
 状态：未开始
 

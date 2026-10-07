@@ -1,6 +1,6 @@
 # 任务 451: 解析 `lightning/pkg/errormanager/stubs.rs`
 
-批次：【批次 46】 无
+批次：【批次 1】 无
 
 状态：未开始
 

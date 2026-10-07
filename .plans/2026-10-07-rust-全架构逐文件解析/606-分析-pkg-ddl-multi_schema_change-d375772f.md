@@ -1,6 +1,6 @@
 # 任务 606: 解析 `pkg/ddl/multi_schema_change.rs`
 
-批次：【批次 61】 无
+批次：【批次 1】 无
 
 状态：未开始
 

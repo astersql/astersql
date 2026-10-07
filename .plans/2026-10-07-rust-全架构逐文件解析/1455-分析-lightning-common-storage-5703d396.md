@@ -1,6 +1,6 @@
 # 任务 1455: 解析 `pkg/lightning/common/storage.rs`
 
-批次：【批次 146】 无
+批次：【批次 1】 无
 
 状态：未开始
 

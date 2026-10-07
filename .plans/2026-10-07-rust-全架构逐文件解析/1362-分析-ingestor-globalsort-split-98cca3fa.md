@@ -1,6 +1,6 @@
 # 任务 1362: 解析 `pkg/ingestor/globalsort/split.rs`
 
-批次：【批次 137】 无
+批次：【批次 1】 无
 
 状态：未开始
 

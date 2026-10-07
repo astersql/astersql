@@ -1,6 +1,6 @@
 # 任务 3019: 解析 `pkg/util/gctuner/memory_limit_tuner.rs`
 
-批次：【批次 302】 无
+批次：【批次 1】 无
 
 状态：未开始
 

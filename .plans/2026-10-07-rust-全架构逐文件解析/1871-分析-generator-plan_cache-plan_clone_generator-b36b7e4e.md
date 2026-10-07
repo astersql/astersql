@@ -1,6 +1,6 @@
 # 任务 1871: 解析 `pkg/planner/core/generator/plan_cache/plan_clone_generator.rs`
 
-批次：【批次 188】 无
+批次：【批次 1】 无
 
 状态：未开始
 

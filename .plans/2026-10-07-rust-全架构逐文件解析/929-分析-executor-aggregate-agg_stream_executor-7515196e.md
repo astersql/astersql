@@ -1,6 +1,6 @@
 # 任务 929: 解析 `pkg/executor/aggregate/agg_stream_executor.rs`
 
-批次：【批次 93】 无
+批次：【批次 1】 无
 
 状态：未开始
 

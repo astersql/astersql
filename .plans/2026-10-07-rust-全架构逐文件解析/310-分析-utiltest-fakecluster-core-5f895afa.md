@@ -1,6 +1,6 @@
 # 任务 310: 解析 `br/pkg/utiltest/fakecluster/core.rs`
 
-批次：【批次 31】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 2479: 解析 `pkg/statistics/handle/ddl/testutil/util.rs`
 
-批次：【批次 248】 无
+批次：【批次 1】 无
 
 状态：未开始
 

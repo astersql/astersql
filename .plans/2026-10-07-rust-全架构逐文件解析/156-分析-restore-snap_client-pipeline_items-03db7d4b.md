@@ -1,6 +1,6 @@
 # 任务 156: 解析 `br/pkg/restore/snap_client/pipeline_items.rs`
 
-批次：【批次 16】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 2631: 解析 `pkg/store/mockstore/unistore/lockstore/load_dump.rs`
 
-批次：【批次 264】 无
+批次：【批次 1】 无
 
 状态：未开始
 

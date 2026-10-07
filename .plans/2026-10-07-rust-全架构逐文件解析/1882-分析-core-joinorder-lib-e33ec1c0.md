@@ -1,6 +1,6 @@
 # 任务 1882: 解析 `pkg/planner/core/joinorder/lib.rs`
 
-批次：【批次 189】 无
+批次：【批次 1】 无
 
 状态：未开始
 

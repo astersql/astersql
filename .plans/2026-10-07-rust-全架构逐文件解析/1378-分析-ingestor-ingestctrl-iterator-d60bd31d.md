@@ -1,6 +1,6 @@
 # 任务 1378: 解析 `pkg/ingestor/ingestctrl/iterator.rs`
 
-批次：【批次 138】 无
+批次：【批次 1】 无
 
 状态：未开始
 

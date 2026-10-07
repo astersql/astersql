@@ -1,6 +1,6 @@
 # 任务 2605: 解析 `pkg/store/mockstore/mockstorage/canonical_storage.rs`
 
-批次：【批次 261】 无
+批次：【批次 1】 无
 
 状态：未开始
 

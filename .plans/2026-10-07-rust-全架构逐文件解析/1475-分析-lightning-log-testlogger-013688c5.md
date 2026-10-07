@@ -1,6 +1,6 @@
 # 任务 1475: 解析 `pkg/lightning/log/testlogger.rs`
 
-批次：【批次 148】 无
+批次：【批次 1】 无
 
 状态：未开始
 

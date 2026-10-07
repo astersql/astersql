@@ -1,6 +1,6 @@
 # 任务 2344: 解析 `pkg/session/runtime_test/ddl.rs`
 
-批次：【批次 235】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 1487: 解析 `pkg/lightning/mydump/common.rs`
 
-批次：【批次 149】 无
+批次：【批次 1】 无
 
 状态：未开始
 

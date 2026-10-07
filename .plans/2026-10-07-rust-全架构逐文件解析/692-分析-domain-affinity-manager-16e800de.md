@@ -1,6 +1,6 @@
 # 任务 692: 解析 `pkg/domain/affinity/manager.rs`
 
-批次：【批次 70】 无
+批次：【批次 1】 无
 
 状态：未开始
 

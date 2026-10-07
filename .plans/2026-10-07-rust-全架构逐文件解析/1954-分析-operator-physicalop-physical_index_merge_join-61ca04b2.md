@@ -1,6 +1,6 @@
 # 任务 1954: 解析 `pkg/planner/core/operator/physicalop/physical_index_merge_join.rs`
 
-批次：【批次 196】 无
+批次：【批次 1】 无
 
 状态：未开始
 

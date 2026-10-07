@@ -1,6 +1,6 @@
 # 任务 3238: 解析 `pkg/util/stmtsummary/v2/column.rs`
 
-批次：【批次 324】 无
+批次：【批次 1】 无
 
 状态：未开始
 

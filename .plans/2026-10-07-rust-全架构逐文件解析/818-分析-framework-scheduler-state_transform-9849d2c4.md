@@ -1,6 +1,6 @@
 # 任务 818: 解析 `pkg/dxf/framework/scheduler/state_transform.rs`
 
-批次：【批次 82】 无
+批次：【批次 1】 无
 
 状态：未开始
 

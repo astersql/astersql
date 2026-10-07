@@ -1,6 +1,6 @@
 # 任务 2244: 解析 `pkg/server/pg_catalog_query.rs`
 
-批次：【批次 225】 无
+批次：【批次 1】 无
 
 状态：未开始
 

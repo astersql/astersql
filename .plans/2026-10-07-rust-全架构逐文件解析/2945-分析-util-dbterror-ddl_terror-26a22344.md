@@ -1,6 +1,6 @@
 # 任务 2945: 解析 `pkg/util/dbterror/ddl_terror.rs`
 
-批次：【批次 295】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 1870: 解析 `pkg/planner/core/generator/plan_cache/lib.rs`
 
-批次：【批次 187】 无
+批次：【批次 1】 无
 
 状态：未开始
 

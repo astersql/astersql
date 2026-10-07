@@ -1,6 +1,6 @@
 # 任务 251: 解析 `br/pkg/task/operator/prepare_snap.rs`
 
-批次：【批次 26】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 3258: 解析 `pkg/util/systimemon/systime_mon.rs`
 
-批次：【批次 326】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 3353: 解析 `pkg/workloadlearning/metrics.rs`
 
-批次：【批次 336】 无
+批次：【批次 1】 无
 
 状态：未开始
 

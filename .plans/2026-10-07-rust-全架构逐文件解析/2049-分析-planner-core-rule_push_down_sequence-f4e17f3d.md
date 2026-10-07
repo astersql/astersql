@@ -1,6 +1,6 @@
 # 任务 2049: 解析 `pkg/planner/core/rule_push_down_sequence.rs`
 
-批次：【批次 205】 无
+批次：【批次 1】 无
 
 状态：未开始
 

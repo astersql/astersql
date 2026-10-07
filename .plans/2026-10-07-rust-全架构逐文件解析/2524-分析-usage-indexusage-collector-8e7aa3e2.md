@@ -1,6 +1,6 @@
 # 任务 2524: 解析 `pkg/statistics/handle/usage/indexusage/collector.rs`
 
-批次：【批次 253】 无
+批次：【批次 1】 无
 
 状态：未开始
 

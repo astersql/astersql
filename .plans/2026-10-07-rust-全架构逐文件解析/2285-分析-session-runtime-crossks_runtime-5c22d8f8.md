@@ -1,6 +1,6 @@
 # 任务 2285: 解析 `pkg/session/runtime/crossks_runtime.rs`
 
-批次：【批次 229】 无
+批次：【批次 1】 无
 
 状态：未开始
 

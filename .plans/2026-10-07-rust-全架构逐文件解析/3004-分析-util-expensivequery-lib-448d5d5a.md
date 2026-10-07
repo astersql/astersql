@@ -1,6 +1,6 @@
 # 任务 3004: 解析 `pkg/util/expensivequery/lib.rs`
 
-批次：【批次 301】 无
+批次：【批次 1】 无
 
 状态：未开始
 

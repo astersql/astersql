@@ -1,6 +1,6 @@
 # 任务 2438: 解析 `pkg/statistics/handle/autoanalyze/autoanalyze.rs`
 
-批次：【批次 244】 无
+批次：【批次 1】 无
 
 状态：未开始
 

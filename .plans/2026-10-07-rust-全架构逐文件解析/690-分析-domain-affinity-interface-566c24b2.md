@@ -1,6 +1,6 @@
 # 任务 690: 解析 `pkg/domain/affinity/interface.rs`
 
-批次：【批次 69】 无
+批次：【批次 1】 无
 
 状态：未开始
 

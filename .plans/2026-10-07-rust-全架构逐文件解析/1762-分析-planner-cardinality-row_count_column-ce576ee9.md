@@ -1,6 +1,6 @@
 # 任务 1762: 解析 `pkg/planner/cardinality/row_count_column.rs`
 
-批次：【批次 177】 无
+批次：【批次 1】 无
 
 状态：未开始
 

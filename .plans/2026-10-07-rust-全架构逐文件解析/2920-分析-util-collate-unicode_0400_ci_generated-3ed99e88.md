@@ -1,6 +1,6 @@
 # 任务 2920: 解析 `pkg/util/collate/unicode_0400_ci_generated.rs`
 
-批次：【批次 292】 无
+批次：【批次 1】 无
 
 状态：未开始
 

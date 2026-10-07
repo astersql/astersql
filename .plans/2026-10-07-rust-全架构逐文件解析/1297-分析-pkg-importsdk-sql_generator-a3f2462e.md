@@ -1,6 +1,6 @@
 # 任务 1297: 解析 `pkg/importsdk/sql_generator.rs`
 
-批次：【批次 130】 无
+批次：【批次 1】 无
 
 状态：未开始
 

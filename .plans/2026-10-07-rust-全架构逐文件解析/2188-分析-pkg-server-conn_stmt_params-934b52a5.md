@@ -1,6 +1,6 @@
 # 任务 2188: 解析 `pkg/server/conn_stmt_params.rs`
 
-批次：【批次 219】 无
+批次：【批次 1】 无
 
 状态：未开始
 

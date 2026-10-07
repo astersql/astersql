@@ -1,6 +1,6 @@
 # 任务 1482: 解析 `pkg/lightning/membuf/limiter.rs`
 
-批次：【批次 149】 无
+批次：【批次 1】 无
 
 状态：未开始
 

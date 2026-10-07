@@ -1,6 +1,6 @@
 # 任务 711: 解析 `pkg/domain/infosync/mock_info.rs`
 
-批次：【批次 72】 无
+批次：【批次 1】 无
 
 状态：未开始
 

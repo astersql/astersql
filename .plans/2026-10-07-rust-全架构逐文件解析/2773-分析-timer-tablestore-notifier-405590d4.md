@@ -1,6 +1,6 @@
 # 任务 2773: 解析 `pkg/timer/tablestore/notifier.rs`
 
-批次：【批次 278】 无
+批次：【批次 1】 无
 
 状态：未开始
 

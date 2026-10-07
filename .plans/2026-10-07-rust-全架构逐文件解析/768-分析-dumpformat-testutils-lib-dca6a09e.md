@@ -1,6 +1,6 @@
 # 任务 768: 解析 `pkg/dumpformat/testutils/lib.rs`
 
-批次：【批次 77】 无
+批次：【批次 1】 无
 
 状态：未开始
 

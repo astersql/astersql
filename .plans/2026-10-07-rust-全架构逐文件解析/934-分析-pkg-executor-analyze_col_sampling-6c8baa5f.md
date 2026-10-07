@@ -1,6 +1,6 @@
 # 任务 934: 解析 `pkg/executor/analyze_col_sampling.rs`
 
-批次：【批次 94】 无
+批次：【批次 1】 无
 
 状态：未开始
 

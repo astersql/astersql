@@ -1,6 +1,6 @@
 # 任务 2964: 解析 `pkg/util/ddl-checker/executable_checker.rs`
 
-批次：【批次 297】 无
+批次：【批次 1】 无
 
 状态：未开始
 

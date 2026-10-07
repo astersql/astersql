@@ -1,6 +1,6 @@
 # 任务 1674: 解析 `pkg/parser/auth/mysql_native_password.rs`
 
-批次：【批次 168】 无
+批次：【批次 1】 无
 
 状态：未开始
 

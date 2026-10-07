@@ -1,6 +1,6 @@
 # 任务 1719: 解析 `pkg/parser/parser_actions/admin.rs`
 
-批次：【批次 172】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 2112: 解析 `pkg/planner/util/domainmisc/lib.rs`
 
-批次：【批次 212】 无
+批次：【批次 1】 无
 
 状态：未开始
 

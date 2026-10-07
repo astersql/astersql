@@ -1,6 +1,6 @@
 # 任务 1991: 解析 `pkg/planner/core/partidx/lib.rs`
 
-批次：【批次 200】 无
+批次：【批次 1】 无
 
 状态：未开始
 

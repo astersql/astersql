@@ -1,6 +1,6 @@
 # 任务 2147: 解析 `pkg/privilege/privileges/ldap/ldap_common.rs`
 
-批次：【批次 215】 无
+批次：【批次 1】 无
 
 状态：未开始
 

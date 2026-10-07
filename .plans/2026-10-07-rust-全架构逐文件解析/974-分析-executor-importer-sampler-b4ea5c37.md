@@ -1,6 +1,6 @@
 # 任务 974: 解析 `pkg/executor/importer/sampler.rs`
 
-批次：【批次 98】 无
+批次：【批次 1】 无
 
 状态：未开始
 

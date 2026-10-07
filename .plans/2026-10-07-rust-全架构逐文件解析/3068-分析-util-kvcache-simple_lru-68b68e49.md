@@ -1,6 +1,6 @@
 # 任务 3068: 解析 `pkg/util/kvcache/simple_lru.rs`
 
-批次：【批次 307】 无
+批次：【批次 1】 无
 
 状态：未开始
 

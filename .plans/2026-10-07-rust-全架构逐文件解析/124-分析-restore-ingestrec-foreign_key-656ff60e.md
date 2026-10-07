@@ -1,6 +1,6 @@
 # 任务 124: 解析 `br/pkg/restore/ingestrec/foreign_key.rs`
 
-批次：【批次 13】 无
+批次：【批次 1】 无
 
 状态：未开始
 

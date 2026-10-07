@@ -1,6 +1,6 @@
 # 任务 1772: 解析 `pkg/planner/cascades/base/task_scheduler_base.rs`
 
-批次：【批次 178】 无
+批次：【批次 1】 无
 
 状态：未开始
 

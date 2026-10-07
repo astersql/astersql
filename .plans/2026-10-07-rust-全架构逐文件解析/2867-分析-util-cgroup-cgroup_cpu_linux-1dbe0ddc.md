@@ -1,6 +1,6 @@
 # 任务 2867: 解析 `pkg/util/cgroup/cgroup_cpu_linux.rs`
 
-批次：【批次 287】 无
+批次：【批次 1】 无
 
 状态：未开始
 

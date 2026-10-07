@@ -1,6 +1,6 @@
 # 任务 2127: 解析 `pkg/planner/util/tablesampler/lib.rs`
 
-批次：【批次 213】 无
+批次：【批次 1】 无
 
 状态：未开始
 

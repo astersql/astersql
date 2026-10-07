@@ -1,6 +1,6 @@
 # 任务 1019: 解析 `pkg/executor/join/hash_join_spill_helper.rs`
 
-批次：【批次 102】 无
+批次：【批次 1】 无
 
 状态：未开始
 

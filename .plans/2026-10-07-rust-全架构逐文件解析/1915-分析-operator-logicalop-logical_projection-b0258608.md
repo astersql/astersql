@@ -1,6 +1,6 @@
 # 任务 1915: 解析 `pkg/planner/core/operator/logicalop/logical_projection.rs`
 
-批次：【批次 192】 无
+批次：【批次 1】 无
 
 状态：未开始
 

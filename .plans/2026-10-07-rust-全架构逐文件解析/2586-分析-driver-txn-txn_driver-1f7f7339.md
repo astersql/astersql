@@ -1,6 +1,6 @@
 # 任务 2586: 解析 `pkg/store/driver/txn/txn_driver.rs`
 
-批次：【批次 259】 无
+批次：【批次 1】 无
 
 状态：未开始
 

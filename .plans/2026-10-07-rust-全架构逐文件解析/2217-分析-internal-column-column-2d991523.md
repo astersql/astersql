@@ -1,6 +1,6 @@
 # 任务 2217: 解析 `pkg/server/internal/column/column.rs`
 
-批次：【批次 222】 无
+批次：【批次 1】 无
 
 状态：未开始
 

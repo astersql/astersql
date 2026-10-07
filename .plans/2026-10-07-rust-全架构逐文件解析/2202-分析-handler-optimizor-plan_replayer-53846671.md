@@ -1,6 +1,6 @@
 # 任务 2202: 解析 `pkg/server/handler/optimizor/plan_replayer.rs`
 
-批次：【批次 221】 无
+批次：【批次 1】 无
 
 状态：未开始
 

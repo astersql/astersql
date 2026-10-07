@@ -1,6 +1,6 @@
 # 任务 328: 解析 `build/linter/bootstrap/analyzer.rs`
 
-批次：【批次 33】 无
+批次：【批次 1】 无
 
 状态：未开始
 

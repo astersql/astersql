@@ -1,6 +1,6 @@
 # 任务 1865: 解析 `pkg/planner/core/fts_plan_builder.rs`
 
-批次：【批次 187】 无
+批次：【批次 1】 无
 
 状态：未开始
 

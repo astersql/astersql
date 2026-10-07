@@ -1,6 +1,6 @@
 # 任务 2025: 解析 `pkg/planner/core/rule/rule_order_aware_join_reorder.rs`
 
-批次：【批次 203】 无
+批次：【批次 1】 无
 
 状态：未开始
 

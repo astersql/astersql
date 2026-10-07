@@ -1,6 +1,6 @@
 # 任务 649: 解析 `pkg/ddl/schematracker/info_store.rs`
 
-批次：【批次 65】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 731: 解析 `pkg/domain/serverinfo/lib.rs`
 
-批次：【批次 74】 无
+批次：【批次 1】 无
 
 状态：未开始
 

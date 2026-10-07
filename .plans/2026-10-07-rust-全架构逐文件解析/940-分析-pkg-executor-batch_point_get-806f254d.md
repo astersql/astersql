@@ -1,6 +1,6 @@
 # 任务 940: 解析 `pkg/executor/batch_point_get.rs`
 
-批次：【批次 94】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 462: 解析 `lightning/pkg/importer/mock/mock.rs`
 
-批次：【批次 47】 无
+批次：【批次 1】 无
 
 状态：未开始
 

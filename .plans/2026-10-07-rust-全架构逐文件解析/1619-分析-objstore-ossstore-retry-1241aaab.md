@@ -1,6 +1,6 @@
 # 任务 1619: 解析 `pkg/objstore/ossstore/retry.rs`
 
-批次：【批次 162】 无
+批次：【批次 1】 无
 
 状态：未开始
 

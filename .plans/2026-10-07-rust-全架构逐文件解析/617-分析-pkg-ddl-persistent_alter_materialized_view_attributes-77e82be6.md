@@ -1,6 +1,6 @@
 # 任务 617: 解析 `pkg/ddl/persistent_alter_materialized_view_attributes.rs`
 
-批次：【批次 62】 无
+批次：【批次 1】 无
 
 状态：未开始
 

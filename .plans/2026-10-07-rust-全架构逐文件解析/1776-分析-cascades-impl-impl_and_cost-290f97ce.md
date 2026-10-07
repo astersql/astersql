@@ -1,6 +1,6 @@
 # 任务 1776: 解析 `pkg/planner/cascades/impl/impl_and_cost.rs`
 
-批次：【批次 178】 无
+批次：【批次 1】 无
 
 状态：未开始
 

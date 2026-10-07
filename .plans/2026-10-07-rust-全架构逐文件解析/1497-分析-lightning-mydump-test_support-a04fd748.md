@@ -1,6 +1,6 @@
 # 任务 1497: 解析 `pkg/lightning/mydump/test_support.rs`
 
-批次：【批次 150】 无
+批次：【批次 1】 无
 
 状态：未开始
 

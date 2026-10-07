@@ -1,6 +1,6 @@
 # 任务 121: 解析 `br/pkg/restore/data/recover.rs`
 
-批次：【批次 13】 无
+批次：【批次 1】 无
 
 状态：未开始
 

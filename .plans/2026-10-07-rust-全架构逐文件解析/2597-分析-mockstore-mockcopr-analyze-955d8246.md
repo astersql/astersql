@@ -1,6 +1,6 @@
 # 任务 2597: 解析 `pkg/store/mockstore/mockcopr/analyze.rs`
 
-批次：【批次 260】 无
+批次：【批次 1】 无
 
 状态：未开始
 

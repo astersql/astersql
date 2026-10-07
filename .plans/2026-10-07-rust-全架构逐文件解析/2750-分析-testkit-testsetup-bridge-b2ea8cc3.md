@@ -1,6 +1,6 @@
 # 任务 2750: 解析 `pkg/testkit/testsetup/bridge.rs`
 
-批次：【批次 275】 无
+批次：【批次 1】 无
 
 状态：未开始
 

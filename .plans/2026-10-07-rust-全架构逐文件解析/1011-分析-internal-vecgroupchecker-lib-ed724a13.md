@@ -1,6 +1,6 @@
 # 任务 1011: 解析 `pkg/executor/internal/vecgroupchecker/lib.rs`
 
-批次：【批次 102】 无
+批次：【批次 1】 无
 
 状态：未开始
 

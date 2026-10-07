@@ -1,6 +1,6 @@
 # 任务 408: 解析 `dumpling/export/block_allow_list.rs`
 
-批次：【批次 41】 无
+批次：【批次 1】 无
 
 状态：未开始
 

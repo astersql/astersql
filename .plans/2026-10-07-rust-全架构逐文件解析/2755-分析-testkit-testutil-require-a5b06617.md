@@ -1,6 +1,6 @@
 # 任务 2755: 解析 `pkg/testkit/testutil/require.rs`
 
-批次：【批次 276】 无
+批次：【批次 1】 无
 
 状态：未开始
 

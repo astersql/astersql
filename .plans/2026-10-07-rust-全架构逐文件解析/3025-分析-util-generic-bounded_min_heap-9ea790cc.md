@@ -1,6 +1,6 @@
 # 任务 3025: 解析 `pkg/util/generic/bounded_min_heap.rs`
 
-批次：【批次 303】 无
+批次：【批次 1】 无
 
 状态：未开始
 

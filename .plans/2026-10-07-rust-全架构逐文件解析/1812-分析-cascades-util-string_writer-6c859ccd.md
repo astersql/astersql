@@ -1,6 +1,6 @@
 # 任务 1812: 解析 `pkg/planner/cascades/util/string_writer.rs`
 
-批次：【批次 182】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 3313: 解析 `pkg/util/topsql/stmtstats/kv_exec_count.rs`
 
-批次：【批次 332】 无
+批次：【批次 1】 无
 
 状态：未开始
 

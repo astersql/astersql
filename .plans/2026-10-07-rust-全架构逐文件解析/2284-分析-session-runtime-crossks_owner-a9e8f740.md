@@ -1,6 +1,6 @@
 # 任务 2284: 解析 `pkg/session/runtime/crossks_owner.rs`
 
-批次：【批次 229】 无
+批次：【批次 1】 无
 
 状态：未开始
 

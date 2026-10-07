@@ -1,6 +1,6 @@
 # 任务 2749: 解析 `pkg/testkit/testmain/wrapper.rs`
 
-批次：【批次 275】 无
+批次：【批次 1】 无
 
 状态：未开始
 

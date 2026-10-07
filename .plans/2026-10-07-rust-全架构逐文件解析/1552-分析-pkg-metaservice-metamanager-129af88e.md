@@ -1,6 +1,6 @@
 # 任务 1552: 解析 `pkg/metaservice/metamanager.rs`
 
-批次：【批次 156】 无
+批次：【批次 1】 无
 
 状态：未开始
 

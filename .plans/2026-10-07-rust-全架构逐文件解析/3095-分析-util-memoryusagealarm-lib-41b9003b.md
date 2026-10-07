@@ -1,6 +1,6 @@
 # 任务 3095: 解析 `pkg/util/memoryusagealarm/lib.rs`
 
-批次：【批次 310】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 1047: 解析 `pkg/executor/lockstats/unlock_stats_executor.rs`
 
-批次：【批次 105】 无
+批次：【批次 1】 无
 
 状态：未开始
 

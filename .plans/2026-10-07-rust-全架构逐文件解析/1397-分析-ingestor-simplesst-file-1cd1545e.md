@@ -1,6 +1,6 @@
 # 任务 1397: 解析 `pkg/ingestor/simplesst/file.rs`
 
-批次：【批次 140】 无
+批次：【批次 1】 无
 
 状态：未开始
 

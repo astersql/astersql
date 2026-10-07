@@ -1,6 +1,6 @@
 # 任务 1612: 解析 `pkg/objstore/ossstore/credential.rs`
 
-批次：【批次 162】 无
+批次：【批次 1】 无
 
 状态：未开始
 

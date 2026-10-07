@@ -1,6 +1,6 @@
 # 任务 2915: 解析 `pkg/util/collate/ucadata/lib.rs`
 
-批次：【批次 292】 无
+批次：【批次 1】 无
 
 状态：未开始
 

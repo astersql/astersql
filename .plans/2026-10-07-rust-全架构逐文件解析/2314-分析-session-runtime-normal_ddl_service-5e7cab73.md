@@ -1,6 +1,6 @@
 # 任务 2314: 解析 `pkg/session/runtime/normal_ddl_service.rs`
 
-批次：【批次 232】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 2793: 解析 `pkg/ttl/ttlworker/integrationtest/lib.rs`
 
-批次：【批次 280】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 758: 解析 `pkg/dumpformat/parquetfile/source_reader.rs`
 
-批次：【批次 76】 无
+批次：【批次 1】 无
 
 状态：未开始
 

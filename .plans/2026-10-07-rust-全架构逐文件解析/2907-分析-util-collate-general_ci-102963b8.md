@@ -1,6 +1,6 @@
 # 任务 2907: 解析 `pkg/util/collate/general_ci.rs`
 
-批次：【批次 291】 无
+批次：【批次 1】 无
 
 状态：未开始
 

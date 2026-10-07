@@ -1,6 +1,6 @@
 # 任务 2133: 解析 `pkg/plugin/conn_ip_example/lib.rs`
 
-批次：【批次 214】 无
+批次：【批次 1】 无
 
 状态：未开始
 

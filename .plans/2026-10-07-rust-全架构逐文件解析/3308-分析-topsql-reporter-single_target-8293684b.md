@@ -1,6 +1,6 @@
 # 任务 3308: 解析 `pkg/util/topsql/reporter/single_target.rs`
 
-批次：【批次 331】 无
+批次：【批次 1】 无
 
 状态：未开始
 

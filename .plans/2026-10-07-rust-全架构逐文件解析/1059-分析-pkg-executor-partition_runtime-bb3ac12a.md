@@ -1,6 +1,6 @@
 # 任务 1059: 解析 `pkg/executor/partition_runtime.rs`
 
-批次：【批次 106】 无
+批次：【批次 1】 无
 
 状态：未开始
 

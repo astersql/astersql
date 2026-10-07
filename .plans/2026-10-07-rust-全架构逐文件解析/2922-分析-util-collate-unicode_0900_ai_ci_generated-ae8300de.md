@@ -1,6 +1,6 @@
 # 任务 2922: 解析 `pkg/util/collate/unicode_0900_ai_ci_generated.rs`
 
-批次：【批次 293】 无
+批次：【批次 1】 无
 
 状态：未开始
 

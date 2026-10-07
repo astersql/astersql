@@ -1,6 +1,6 @@
 # 任务 1465: 解析 `pkg/lightning/config/toml_codec.rs`
 
-批次：【批次 147】 无
+批次：【批次 1】 无
 
 状态：未开始
 

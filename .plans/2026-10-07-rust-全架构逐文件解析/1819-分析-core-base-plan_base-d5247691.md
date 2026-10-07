@@ -1,6 +1,6 @@
 # 任务 1819: 解析 `pkg/planner/core/base/plan_base.rs`
 
-批次：【批次 182】 无
+批次：【批次 1】 无
 
 状态：未开始
 

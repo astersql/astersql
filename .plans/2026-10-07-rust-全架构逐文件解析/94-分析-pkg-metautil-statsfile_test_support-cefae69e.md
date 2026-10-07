@@ -1,6 +1,6 @@
 # 任务 94: 解析 `br/pkg/metautil/statsfile_test_support.rs`
 
-批次：【批次 10】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 2454: 解析 `pkg/statistics/handle/autoanalyze/priorityqueue/static_partitioned_table_analysis_job.rs`
 
-批次：【批次 246】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 1466: 解析 `pkg/lightning/duplicate/detector.rs`
 
-批次：【批次 147】 无
+批次：【批次 1】 无
 
 状态：未开始
 

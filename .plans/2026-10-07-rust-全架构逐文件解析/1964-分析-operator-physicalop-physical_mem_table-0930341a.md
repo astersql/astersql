@@ -1,6 +1,6 @@
 # 任务 1964: 解析 `pkg/planner/core/operator/physicalop/physical_mem_table.rs`
 
-批次：【批次 197】 无
+批次：【批次 1】 无
 
 状态：未开始
 

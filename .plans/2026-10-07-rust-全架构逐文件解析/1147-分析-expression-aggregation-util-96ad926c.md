@@ -1,6 +1,6 @@
 # 任务 1147: 解析 `pkg/expression/aggregation/util.rs`
 
-批次：【批次 115】 无
+批次：【批次 1】 无
 
 状态：未开始
 

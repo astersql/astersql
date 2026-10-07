@@ -1,6 +1,6 @@
 # 任务 652: 解析 `pkg/ddl/schemaver/mem_syncer.rs`
 
-批次：【批次 66】 无
+批次：【批次 1】 无
 
 状态：未开始
 

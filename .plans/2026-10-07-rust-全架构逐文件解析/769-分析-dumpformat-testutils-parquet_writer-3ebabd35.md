@@ -1,6 +1,6 @@
 # 任务 769: 解析 `pkg/dumpformat/testutils/parquet_writer.rs`
 
-批次：【批次 77】 无
+批次：【批次 1】 无
 
 状态：未开始
 

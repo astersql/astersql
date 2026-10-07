@@ -1,6 +1,6 @@
 # 任务 2300: 解析 `pkg/session/runtime/import_query.rs`
 
-批次：【批次 230】 无
+批次：【批次 1】 无
 
 状态：未开始
 

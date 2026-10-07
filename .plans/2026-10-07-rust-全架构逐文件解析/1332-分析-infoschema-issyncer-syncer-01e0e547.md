@@ -1,6 +1,6 @@
 # 任务 1332: 解析 `pkg/infoschema/issyncer/syncer.rs`
 
-批次：【批次 134】 无
+批次：【批次 1】 无
 
 状态：未开始
 

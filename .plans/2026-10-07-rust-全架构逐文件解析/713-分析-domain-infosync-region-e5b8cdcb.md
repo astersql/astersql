@@ -1,6 +1,6 @@
 # 任务 713: 解析 `pkg/domain/infosync/region.rs`
 
-批次：【批次 72】 无
+批次：【批次 1】 无
 
 状态：未开始
 

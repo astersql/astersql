@@ -1,6 +1,6 @@
 # 任务 347: 解析 `build/linter/mirror/analyzer.rs`
 
-批次：【批次 35】 无
+批次：【批次 1】 无
 
 状态：未开始
 

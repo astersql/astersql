@@ -1,6 +1,6 @@
 # 任务 3055: 解析 `pkg/util/intest/assert_common.rs`
 
-批次：【批次 306】 无
+批次：【批次 1】 无
 
 状态：未开始
 

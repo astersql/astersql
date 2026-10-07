@@ -1,6 +1,6 @@
 # 任务 2610: 解析 `pkg/store/mockstore/redirector.rs`
 
-批次：【批次 261】 无
+批次：【批次 1】 无
 
 状态：未开始
 

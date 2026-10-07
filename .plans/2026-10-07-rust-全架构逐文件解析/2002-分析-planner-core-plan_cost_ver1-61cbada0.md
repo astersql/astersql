@@ -1,6 +1,6 @@
 # 任务 2002: 解析 `pkg/planner/core/plan_cost_ver1.rs`
 
-批次：【批次 201】 无
+批次：【批次 1】 无
 
 状态：未开始
 

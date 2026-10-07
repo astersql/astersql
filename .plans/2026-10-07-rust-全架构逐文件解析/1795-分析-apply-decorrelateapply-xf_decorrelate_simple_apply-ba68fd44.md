@@ -1,6 +1,6 @@
 # 任务 1795: 解析 `pkg/planner/cascades/rule/apply/decorrelateapply/xf_decorrelate_simple_apply.rs`
 
-批次：【批次 180】 无
+批次：【批次 1】 无
 
 状态：未开始
 

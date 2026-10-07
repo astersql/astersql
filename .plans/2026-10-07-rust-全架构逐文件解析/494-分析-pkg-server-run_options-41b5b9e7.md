@@ -1,6 +1,6 @@
 # 任务 494: 解析 `lightning/pkg/server/run_options.rs`
 
-批次：【批次 50】 无
+批次：【批次 1】 无
 
 状态：未开始
 

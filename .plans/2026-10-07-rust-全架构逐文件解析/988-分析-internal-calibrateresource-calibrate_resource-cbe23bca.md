@@ -1,6 +1,6 @@
 # 任务 988: 解析 `pkg/executor/internal/calibrateresource/calibrate_resource.rs`
 
-批次：【批次 99】 无
+批次：【批次 1】 无
 
 状态：未开始
 

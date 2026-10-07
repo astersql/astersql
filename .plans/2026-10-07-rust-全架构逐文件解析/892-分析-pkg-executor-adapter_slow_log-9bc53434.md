@@ -1,6 +1,6 @@
 # 任务 892: 解析 `pkg/executor/adapter_slow_log.rs`
 
-批次：【批次 90】 无
+批次：【批次 1】 无
 
 状态：未开始
 

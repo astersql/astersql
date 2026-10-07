@@ -1,6 +1,6 @@
 # 任务 2724: 解析 `pkg/testkit/analyzehelper/lib.rs`
 
-批次：【批次 273】 无
+批次：【批次 1】 无
 
 状态：未开始
 

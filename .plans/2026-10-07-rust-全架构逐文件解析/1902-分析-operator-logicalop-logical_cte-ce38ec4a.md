@@ -1,6 +1,6 @@
 # 任务 1902: 解析 `pkg/planner/core/operator/logicalop/logical_cte.rs`
 
-批次：【批次 191】 无
+批次：【批次 1】 无
 
 状态：未开始
 

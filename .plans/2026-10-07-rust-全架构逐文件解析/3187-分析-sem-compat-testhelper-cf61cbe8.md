@@ -1,6 +1,6 @@
 # 任务 3187: 解析 `pkg/util/sem/compat/testhelper.rs`
 
-批次：【批次 319】 无
+批次：【批次 1】 无
 
 状态：未开始
 

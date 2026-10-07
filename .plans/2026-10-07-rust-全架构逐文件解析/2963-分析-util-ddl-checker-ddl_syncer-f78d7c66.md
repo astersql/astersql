@@ -1,6 +1,6 @@
 # 任务 2963: 解析 `pkg/util/ddl-checker/ddl_syncer.rs`
 
-批次：【批次 297】 无
+批次：【批次 1】 无
 
 状态：未开始
 

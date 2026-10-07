@@ -1,6 +1,6 @@
 # 任务 2282: 解析 `pkg/session/runtime/create_table_resources.rs`
 
-批次：【批次 229】 无
+批次：【批次 1】 无
 
 状态：未开始
 

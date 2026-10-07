@@ -1,6 +1,6 @@
 # 任务 1065: 解析 `pkg/executor/recommend_index.rs`
 
-批次：【批次 107】 无
+批次：【批次 1】 无
 
 状态：未开始
 

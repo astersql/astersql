@@ -1,6 +1,6 @@
 # 任务 1330: 解析 `pkg/infoschema/issyncer/mdldef/lib.rs`
 
-批次：【批次 133】 无
+批次：【批次 1】 无
 
 状态：未开始
 

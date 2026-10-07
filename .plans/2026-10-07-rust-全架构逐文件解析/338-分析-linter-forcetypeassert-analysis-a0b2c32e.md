@@ -1,6 +1,6 @@
 # 任务 338: 解析 `build/linter/forcetypeassert/analysis.rs`
 
-批次：【批次 34】 无
+批次：【批次 1】 无
 
 状态：未开始
 

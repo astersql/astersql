@@ -1,6 +1,6 @@
 # 任务 657: 解析 `pkg/ddl/serverstate/syncer.rs`
 
-批次：【批次 66】 无
+批次：【批次 1】 无
 
 状态：未开始
 

@@ -1,6 +1,6 @@
 # 任务 1037: 解析 `pkg/executor/join/merge_join.rs`
 
-批次：【批次 104】 无
+批次：【批次 1】 无
 
 状态：未开始
 
