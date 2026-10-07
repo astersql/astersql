@@ -48,4 +48,4 @@
 
 ## 完成
 
-仅新增 `pkg/session/runtime/mlog_purge.rs.md`。文档必须点名真实符号和调用关系，并说明相关测试所在位置；不修改 Rust、Go、Cargo 或 `plan.md`。获得事实与结构证据后标记为 `已完成`，使用 `$git-commit` 只提交本任务文档，然后删除本任务文件；若证据不足则标记 `已阻塞` 并保留查询记录。
+仅新增 `pkg/session/runtime/mlog_purge.rs.md`。文档必须点名真实符号和调用关系，并说明相关测试所在位置；不修改 Rust、Go、Cargo 或 `plan.md`。获得事实与结构证据后标记为 `已完成`，不提交；然后删除本任务文件；若证据不足则标记 `已阻塞` 并保留查询记录。
