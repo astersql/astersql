@@ -109,4 +109,4 @@ Rust 版本为承接 Go 包普遍使用的 `errors.Annotate`/`Annotatef`，额�
 - Go 对照：`br/pkg/backup/prepare_snap/errors.go`、`stream.go`、`prepare.go`；确认四个函数、固定文案及其生产调用点。
 - 独立测试：`br/pkg/backup/prepare_snap/errors_test.rs` 验证 EOF 身份边界；`parity_test.rs::contract_error_retry_limit` 和 `contract_resource_finalize_clears_lease` 验证重试文案、三类业务文案与 `convertErr` 的空值/消息转换；`prepare_test.rs` 与 Go `prepare_test.go` 提供流结束、失败重试和租约场景证据。
 - RustCodeGraph：`status` 显示 7,032 个 Rust 文件已索引；`files --filter br/pkg/backup/prepare_snap` 确认目标、Go 对照及独立测试都在索引范围；`node --file .../errors.rs` 返回完整源码及 41 个使用文件；`query` 定位 Rust/Go 同名符号；`callers/callees` 的通用名结果存在歧义，故调用边以精确目录搜索和源码复核为准。
-- 本任务是纯文档分析，按任务计划不运行 Cargo；交付前使用任务指定命令验证恰有 11 个固定二级章节，并人工检查未把本地适配层描述为完整 PingCAP 错误生态。
+- 本任务是纯文档分析，按任务计划不运行 Cargo；交付前使用任务指定命令验证恰有 11 个固定二级章节（退出码 0），并人工检查未把本地适配层描述为完整 PingCAP 错误生态。
