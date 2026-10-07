@@ -8,14 +8,14 @@
 
 来源任务：用户要求“每一个非测试 `.rs` 文件一个任务并生成对应 Markdown”。
 
-预计会话范围：只分析 `pkg/ddl/placement/bundle.rs` 及其直接入口、调用边、Cargo 声明、Go 对照和相关测试，唯一生产物为 `docs/rust-architecture/files/pkg/ddl/placement/bundle.rs.md`，适合一个聚焦会话。
+预计会话范围：只分析 `pkg/ddl/placement/bundle.rs` 及其直接入口、调用边、Cargo 声明、Go 对照和相关测试，唯一生产物为 `pkg/ddl/placement/bundle.rs.md`，适合一个聚焦会话。
 
 ## 文件
 
 - 读取：`pkg/ddl/placement/bundle.rs`
 - 读取：`pkg/ddl/placement/Cargo.toml`
 - 参考测试：`pkg/ddl/placement/bundle_test.rs`
-- 新建：`docs/rust-architecture/files/pkg/ddl/placement/bundle.rs.md`
+- 新建：`pkg/ddl/placement/bundle.rs.md`
 
 ## 上下文
 
@@ -28,7 +28,7 @@
 - 行为：目标文档准确解释该文件在完整应用中的位置、内部逻辑、依赖、边界和扩展入口。
 - 测试驱动开发不适用：本任务不改变运行时代码，只新增说明文档。
 - 事实验证：用 RustCodeGraph 核对主要符号、调用者、被调用者；用 `pkg/ddl/placement/Cargo.toml` 核对 crate 边界；用 Go 同路径文件及相关独立测试核对移植语义。
-- 结构验证：`test -f docs/rust-architecture/files/pkg/ddl/placement/bundle.rs.md && test "$(rg -c '^## (文件定位|核心职责|主要符号|执行流程|数据与状态|依赖与调用关系|错误处理与边界|并发与资源生命周期|与 Go 版本的对应关系|扩展指南|验证依据)$' docs/rust-architecture/files/pkg/ddl/placement/bundle.rs.md)" -eq 11`
+- 结构验证：`test -f pkg/ddl/placement/bundle.rs.md && test "$(rg -c '^## (文件定位|核心职责|主要符号|执行流程|数据与状态|依赖与调用关系|错误处理与边界|并发与资源生命周期|与 Go 版本的对应关系|扩展指南|验证依据)$' pkg/ddl/placement/bundle.rs.md)" -eq 11`
 
 ## 步骤
 
@@ -36,16 +36,16 @@
 2. 对关键入口执行 RustCodeGraph `query/node/callers/callees`，追踪上游调用者、下游依赖以及在应用主链中的位置。
 3. 读取最近的 `pkg/ddl/placement/Cargo.toml`、模块入口和同路径 Go 文件；核对 crate 归属、feature、外部依赖、Go/Rust 语义差异与迁移状态。
 4. 阅读相关独立 Rust 测试和 Go 测试，提取真实边界条件、不变量、错误行为和并发/资源生命周期证据。
-5. 新建 `docs/rust-architecture/files/pkg/ddl/placement/bundle.rs.md`，按固定十一个章节详细写明：文件定位、核心职责、主要符号、执行流程、数据与状态、依赖与调用关系、错误处理与边界、并发与资源生命周期、与 Go 版本的对应关系、扩展指南、验证依据。
+5. 新建 `pkg/ddl/placement/bundle.rs.md`，按固定十一个章节详细写明：文件定位、核心职责、主要符号、执行流程、数据与状态、依赖与调用关系、错误处理与边界、并发与资源生命周期、与 Go 版本的对应关系、扩展指南、验证依据。
 6. 对每个重要结论标注对应符号或文件路径；列出新增功能最可能修改的符号、需要同步的测试及兼容/性能风险。
 7. 运行结构验证，复查不含臆测、整段源码复制、无依据的“已支持”结论或测试文件内嵌建议。
 
 ## 验证
 
-- 运行：`test -f docs/rust-architecture/files/pkg/ddl/placement/bundle.rs.md && test "$(rg -c '^## (文件定位|核心职责|主要符号|执行流程|数据与状态|依赖与调用关系|错误处理与边界|并发与资源生命周期|与 Go 版本的对应关系|扩展指南|验证依据)$' docs/rust-architecture/files/pkg/ddl/placement/bundle.rs.md)" -eq 11`
+- 运行：`test -f pkg/ddl/placement/bundle.rs.md && test "$(rg -c '^## (文件定位|核心职责|主要符号|执行流程|数据与状态|依赖与调用关系|错误处理与边界|并发与资源生命周期|与 Go 版本的对应关系|扩展指南|验证依据)$' pkg/ddl/placement/bundle.rs.md)" -eq 11`
 - 预期：命令退出码为 0，目标文档恰好包含 11 个固定章节。
 - 所需证据：记录 RustCodeGraph 查询、读过的源/Cargo/Go/测试路径、关键调用边、结构验证退出码，并人工确认文档能回答“这个文件为何存在、如何运行、如何安全扩展”。
 
 ## 完成
 
-仅新增 `docs/rust-architecture/files/pkg/ddl/placement/bundle.rs.md`。文档必须点名真实符号和调用关系，并说明相关测试所在位置；不修改 Rust、Go、Cargo 或 `plan.md`。获得事实与结构证据后标记为 `已完成`，使用 `$git-commit` 只提交本任务文档，然后删除本任务文件；若证据不足则标记 `已阻塞` 并保留查询记录。
+仅新增 `pkg/ddl/placement/bundle.rs.md`。文档必须点名真实符号和调用关系，并说明相关测试所在位置；不修改 Rust、Go、Cargo 或 `plan.md`。获得事实与结构证据后标记为 `已完成`，使用 `$git-commit` 只提交本任务文档，然后删除本任务文件；若证据不足则标记 `已阻塞` 并保留查询记录。
