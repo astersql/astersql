@@ -268,7 +268,7 @@ fn real_manager_failure_persists_after_explicit_node_initialization() {
             .to_string()
             .contains("mock scheduler init error")
     );
-    manager.cleanup_finished_tasks().unwrap();
+    manager.clean_finished_tasks().unwrap();
     manager.stop();
     let independent = astersql_session::runtime::ConcreteSession::new(domain.clone());
     let history = independent.ImportTaskManager().unwrap();
