@@ -819,7 +819,9 @@ pub fn run_recorded_step_summary() {
                 put + value["put_request_count"].as_u64().unwrap(),
             )
         });
-    assert_eq!(requests, (12, 12));
+    // Each of the four real KV groups reads its data, stat, and merge metadata
+    // plus the durable input object, then writes three merge outputs.
+    assert_eq!(requests, (16, 12));
     let rows = sql_rows(&session, "select a,b from t order by a");
     assert_eq!(rows.len(), 10_000);
     for (idx, row) in rows.iter().enumerate() {
