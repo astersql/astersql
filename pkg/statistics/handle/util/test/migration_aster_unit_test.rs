@@ -18,9 +18,27 @@
 // 校验仅接受统计前台优先内部上下文、非 Context 类型保持 Go 侧 type assert panic，
 // 以及 `String()` 描述与 Go 一致。
 
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::{
+    panic::{AssertUnwindSafe, catch_unwind},
+    sync::Arc,
+};
 
-use super::{Context, CtxMatcher, kv};
+use super::{Context, CtxMatcher, kv, option_impl::TransactionSchemaChecker};
+
+/// 正式 KV option 共享的 schema checker 应保留测试夹具的成功与错误结果形状。
+#[test]
+fn transaction_schema_checker_uses_shared_error_contract() {
+    let checker = TransactionSchemaChecker(Arc::new(|schema_version| {
+        if schema_version == 42 {
+            Ok(())
+        } else {
+            Err(super::errors::New("schema changed"))
+        }
+    }));
+
+    assert_eq!((checker.0)(42), Ok(()));
+    assert_eq!((checker.0)(41), Err(super::errors::New("schema changed")));
+}
 
 /// 仅 `InternalTxnStatsForegroundPriority` 内部上下文应匹配；默认、其他 stats、带显式任务类型均不匹配。
 #[test]

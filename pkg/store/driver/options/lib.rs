@@ -11,6 +11,9 @@
 pub type Error = String;
 /// 构造错误字符串的辅助模块。
 pub mod errors {
+    /// Shared error type used by the included transaction option contracts.
+    pub type SharedError = crate::Error;
+
     /// 由任意可转 String 的消息创建错误。
     pub fn New(message: impl Into<String>) -> String {
         message.into()

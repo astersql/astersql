@@ -18,7 +18,27 @@
 // 副本读（replica read）决定读请求发往 Leader、Follower 还是混合路由。
 // 本文件锁定：TiDB 七种策略如何折叠为 TiKV 五种，以及枚举判别值与 client-go ABI 一致。
 
-use super::{GetTiKVReplicaReadType, TiKVReplicaReadType, kv::ReplicaReadType};
+use std::sync::Arc;
+
+use super::{
+    GetTiKVReplicaReadType, TiKVReplicaReadType,
+    kv::{ReplicaReadType, TransactionSchemaChecker},
+};
+
+/// 正式 KV option 共享的 schema checker 应保留本 crate 的成功与错误结果形状。
+#[test]
+fn transaction_schema_checker_uses_shared_error_contract() {
+    let checker = TransactionSchemaChecker(Arc::new(|schema_version| {
+        if schema_version == 42 {
+            Ok(())
+        } else {
+            Err("schema changed".to_owned())
+        }
+    }));
+
+    assert_eq!((checker.0)(42), Ok(()));
+    assert_eq!((checker.0)(41), Err("schema changed".to_owned()));
+}
 
 /// 断言每种 TiDB 副本读策略都映射到与 Go 侧一致的 TiKV 策略。
 ///

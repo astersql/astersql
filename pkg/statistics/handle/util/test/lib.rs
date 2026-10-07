@@ -28,6 +28,10 @@ pub struct Error(String);
 /// 错误构造辅助模块。
 pub mod errors {
     use crate::Error;
+
+    /// Shared error type used by the included transaction option contracts.
+    pub type SharedError = Error;
+
     /// 用消息字符串构造 `Error`。
     pub fn New(message: impl Into<String>) -> Error {
         Error(message.into())
