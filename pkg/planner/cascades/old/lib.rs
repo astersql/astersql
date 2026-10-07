@@ -32,6 +32,8 @@ pub use transformation_rules::*;
 #[cfg(test)]
 mod enforcer_rules_test;
 #[cfg(test)]
+mod implementation_rules_test;
+#[cfg(test)]
 mod main_test;
 
 // optimize_test.rs、stringer_test.rs 和 transformation_rules_test.rs 分别在

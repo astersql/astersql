@@ -1119,6 +1119,7 @@ impl ImplementationRule for ImplHashJoinBuildRight {
                 getImplForHashJoin(expr, req_prop, 1, false)?
             }
             JoinType::RightOuterJoin => getImplForHashJoin(expr, req_prop, 0, true)?,
+            JoinType::FullOuterJoin => return Ok(Vec::new()),
         };
         Ok(vec![implementation])
     }
