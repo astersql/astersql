@@ -165,7 +165,7 @@ fn dangling_import_job_cancellation_preserves_state_guards_on_real_sql() {
         id
     };
     let pending = create();
-    crate::import_into::cancelAndWaitImportJobInStorage(
+    crate::import_into_storage::cancelAndWaitImportJobInStorage(
         &Default::default(),
         pending,
         &manager,
@@ -183,7 +183,7 @@ fn dangling_import_job_cancellation_preserves_state_guards_on_real_sql() {
     })
     .unwrap();
     assert!(
-        crate::import_into::cancelDanglingImportJob(&manager, pending)
+        crate::import_into_storage::cancelDanglingImportJob(&manager, pending)
             .unwrap_err()
             .to_string()
             .contains("job state changed during cancel")
@@ -194,7 +194,7 @@ fn dangling_import_job_cancellation_preserves_state_guards_on_real_sql() {
     })
     .unwrap();
     assert!(
-        crate::import_into::cancelAndWaitImportJobInStorage(
+        crate::import_into_storage::cancelAndWaitImportJobInStorage(
             &Default::default(),
             running,
             &manager,
@@ -270,7 +270,7 @@ fn user_keyspace_job_cancelled_before_task_commit_stops_admission() {
                     .unwrap_err(),
                 astersql_dxf_framework_storage::ErrTaskNotFound
             );
-            crate::import_into::cancelAndWaitImportJobInStorage(
+            crate::import_into_storage::cancelAndWaitImportJobInStorage(
                 &Default::default(),
                 id,
                 &sys_manager,
@@ -360,7 +360,7 @@ fn task_started_after_probe_miss_cannot_cancel_a_running_job() {
     })
     .unwrap();
     let key = astersql_dxf_importinto::TaskKey(id);
-    let error = crate::import_into::cancelImportJobWithFallbackHook(
+    let error = crate::import_into_storage::cancelImportJobWithFallbackHook(
         &Default::default(),
         id,
         &manager,
@@ -439,9 +439,14 @@ fn failed_task_probe_does_not_cancel_import_job() {
         panic!("lookup failure touched job")
     }));
     assert_eq!(
-        crate::import_into::cancelAndWaitImportJobInStorage(&Default::default(), 41, &tasks, &jobs)
-            .unwrap_err()
-            .to_string(),
+        crate::import_into_storage::cancelAndWaitImportJobInStorage(
+            &Default::default(),
+            41,
+            &tasks,
+            &jobs,
+        )
+        .unwrap_err()
+        .to_string(),
         "task lookup unavailable"
     );
 }
@@ -506,8 +511,13 @@ fn archived_reverted_task_does_not_cancel_pending_user_job() {
         tasks.GetTaskByKey((), key.clone()).unwrap_err(),
         storage::ErrTaskNotFound
     );
-    crate::import_into::cancelAndWaitImportJobInStorage(&Default::default(), id, &tasks, &jobs)
-        .unwrap();
+    crate::import_into_storage::cancelAndWaitImportJobInStorage(
+        &Default::default(),
+        id,
+        &tasks,
+        &jobs,
+    )
+    .unwrap();
     assert_eq!(
         tasks.GetTaskBaseByKeyWithHistory((), key).unwrap().State,
         storage::proto::TaskStateReverted
@@ -568,8 +578,12 @@ fn task_committed_after_lookup_miss_does_not_delay_pending_job_cancel() {
             watchdog_context.cancel();
         }
     });
-    let result =
-        crate::import_into::cancelImportJobWithFallbackHook(&context, id, &tasks, &jobs, || {
+    let result = crate::import_into_storage::cancelImportJobWithFallbackHook(
+        &context,
+        id,
+        &tasks,
+        &jobs,
+        || {
             tasks
                 .CreateTask(
                     (),
@@ -583,7 +597,8 @@ fn task_committed_after_lookup_miss_does_not_delay_pending_job_cancel() {
                     b"{}".to_vec(),
                 )
                 .unwrap();
-        });
+        },
+    );
     let _ = done.send(());
     watchdog.join().unwrap();
     result.expect("cancel must not wait for the task committed after the probe miss");

@@ -110,6 +110,8 @@ mod foreign_key_test;
 pub mod grant;
 /// IMPORT INTO 批量导入。
 pub mod import_into;
+/// IMPORT INTO 作业存储与分布式任务取消。
+pub mod import_into_storage;
 /// Index Merge 多索引合并读取。
 pub mod index_merge_reader;
 /// Information Schema 虚拟表读取。
