@@ -2,7 +2,7 @@
 
 批次：【批次 1】 无
 
-状态：已完成，待回归验证
+状态：已完成，待回归
 
 目的：在保持 PhysicalType 显式穷尽检查的前提下消除 testutils 的 unreachable_patterns 警告。
 
