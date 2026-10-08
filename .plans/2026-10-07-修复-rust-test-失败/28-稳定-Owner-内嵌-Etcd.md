@@ -2,7 +2,7 @@
 
 批次：【批次 3】依赖：批次 2
 
-状态：未开始
+状态：已完成，待回归
 
 目的：稳定 embedded-etcd 端口、启动和清理。
 
@@ -61,3 +61,13 @@
 
 有当前证据后标记 `已完成`，使用技能 `$git-commit` 仅提交本任务变更并删除任务文件；仅因无关环境不能回归时标记 `已完成，待回归` 并保留文件。
 
+## 实施与验证记录
+
+- Go 对齐依据：`pkg/owner/manager_test.go` 的 `TestAcquireDistributedLock` 使用 `embed.NewConfig` / `embed.StartEtcd`，通过本地动态端口启动真实 etcd，并在测试清理阶段关闭服务。
+- 必要局部接线：新增 `pkg/owner/etcdhelper/main.go`，使用 client/peer 动态端口，Ready 后输出 endpoint，在父进程 stdin 关闭或收到终止信号时关闭 etcd 并删除临时数据目录；`manager_test.rs` 仅改为调用该 helper。生产 `manager.rs` 无需修改。
+- 修复前：共享槽位 8，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-8`；指定命令退出码 2，实际执行 1 个测试，因缺少 `pkg/owner/etcd_helper.go` 失败；日志 `target/rust-test.Md0T17`。
+- 修复后：共享槽位 1，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1`；指定命令退出码 0，`1 passed; 0 failed`；日志 `target/rust-test.URxFXM`。
+- 直接受影响测试：同槽位 1 运行整个 `manager_test` 模块，退出码 0，`11 passed; 0 failed`；日志 `target/rust-test.Atfro1`。
+- 格式化：共享槽位 8 运行 `cargo fmt --all`，退出码 0。
+- Ready 检查：`make lint` 退出码 0。
+- 待回归原因：新增 Go 源文件触发 `make bazel_prepare`，但当前环境缺少 `bazel`，命令以 `make: bazel: No such file or directory` 失败，无法生成并校验 Bazel 元数据。

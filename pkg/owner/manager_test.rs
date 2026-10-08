@@ -15,7 +15,7 @@
 
 // OwnerManager 集成测试：嵌入式 etcd 上竞选、强制接管、OpValue CAS、Watch 与分布式锁。
 //
-// 通过 `go run etcd_helper.go` 拉起进程内 etcd，覆盖与 Go `manager_test.go` 对齐的场景。
+// 通过 `go run etcdhelper/main.go` 拉起进程内 etcd，覆盖与 Go `manager_test.go` 对齐的场景。
 
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
@@ -61,7 +61,7 @@ fn embedded_etcd() -> &'static EmbeddedEtcd {
             .ancestors()
             .find(|path| path.join("go.mod").is_file())
             .expect("find repository root containing go.mod");
-        let helper = manifest_dir.join("etcd_helper.go");
+        let helper = manifest_dir.join("etcdhelper/main.go");
         let mut child = Command::new("go")
             .arg("run")
             .arg(helper)
