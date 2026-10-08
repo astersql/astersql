@@ -84,7 +84,7 @@ fn set_persistent_global(tk: &mut astersql_testkit::TestKit, name: &str, value: 
     );
 }
 
-/// 校验 `mysql` 系统库含 user / global_variables / tidb 等核心表，且表 ID 有序。
+/// 校验 `mysql` 系统库含 user / global_variables / tidb 等核心表，且版本与表 ID 唯一。
 #[test]
 fn bootstrap_schema_catalog_contains_mysql_core_tables() {
     let mysql = systemDatabases
@@ -95,9 +95,22 @@ fn bootstrap_schema_catalog_contains_mysql_core_tables() {
     assert!(names.contains(&"user"));
     assert!(names.contains(&"global_variables"));
     assert!(names.contains(&"tidb"));
-    // 表 ID 必须严格递增，避免元数据分配冲突。
-    assert!(mysql.tables.windows(2).all(|pair| pair[0].id < pair[1].id));
-    assert!(!versionedBootstrapSchemas.is_empty());
+    let versions = versionedBootstrapSchemas
+        .iter()
+        .map(|schema| schema.version)
+        .collect::<Vec<_>>();
+    assert!(versions.windows(2).all(|pair| pair[0] < pair[1]));
+
+    // Go TestVersionedBootstrapSchemas sorts reserved IDs before checking them:
+    // catalog declaration order follows table history, not numeric ID order.
+    let mut table_ids = versionedBootstrapSchemas
+        .iter()
+        .flat_map(|schema| schema.databases)
+        .flat_map(|database| database.tables)
+        .map(|table| table.id)
+        .collect::<Vec<_>>();
+    table_ids.sort_unstable();
+    assert!(table_ids.windows(2).all(|pair| pair[0] < pair[1]));
 }
 
 /// Bootstrap 目录中的每张持久系统表都必须一一引用 metadef 的完整权威 DDL。
