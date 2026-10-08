@@ -3221,6 +3221,9 @@ impl Domain {
                 } else {
                     table.AutoIncID.max(table.AutoIncIDExtra)
                 };
+                allocator
+                    .transfer(table.DBID, table.ID)
+                    .map_err(DomainError::from_auto_id)?;
                 Self::rebase_stats_auto_id_allocator(
                     &allocator,
                     Self::auto_increment_allocator_base(row_base),
@@ -6060,6 +6063,20 @@ impl Domain {
     /// allocators and transfers them to the table's current database identity.
     pub fn force_full_reload_for_test(&self) -> Result<i64, DomainError> {
         self.reconcile_from_committed_metadata_with_mode(false)?;
+        let single_point_tables = self
+            .stats_catalog
+            .read()
+            .expect("domain stats catalog lock poisoned")
+            .values()
+            .filter_map(|(_, table)| (table.AutoIDCache == 1).then_some(table.ID))
+            .collect::<BTreeSet<_>>();
+        self.stats_auto_id_allocators
+            .lock()
+            .expect("domain AutoID allocator lock poisoned")
+            .retain(|(table_id, _), allocator| {
+                allocator.get_type() != AllocatorType::RowId
+                    || single_point_tables.contains(table_id)
+            });
         self.reload()
     }
 
