@@ -846,7 +846,7 @@ fn show_grants_enforces_target_privileges_and_authenticated_host() {
         .MustQuery("show grants", Vec::new())
         .Check(astersql_testkit::RowsWithSep(
             "|",
-            &["GRANT USAGE ON *.* TO 'root'@'8.8.%'"],
+            &["GRANT USAGE ON *.* TO `root`@`8.8.%`"],
         ));
 }
 
