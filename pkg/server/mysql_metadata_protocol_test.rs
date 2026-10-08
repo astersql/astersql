@@ -326,6 +326,7 @@ fn mysql_protocol_exposes_system_schema_catalog_for_jdbc_clients() {
             "TIDB_PLACEMENT_POLICY_NAME",
             "TIDB_TABLE_MODE",
             "TIDB_AFFINITY",
+            "TIDB_STORAGE_CLASS",
         ],
     );
     let columns_all = query_result_set(
