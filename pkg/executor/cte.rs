@@ -560,6 +560,11 @@ impl<B: CTEBackend> cteProducer<B> {
             Ok(())
         })();
 
+        // Preserve the executor error before running spill-test synchronization. The Go
+        // failpoint callback (and its deferred waits) finishes before CTE computation, so
+        // an overflow from the recursive executor cannot be displaced by spill test state.
+        result?;
+
         if self.backend.spill_test_enabled() {
             for action in [result_action.as_ref(), iter_in_action.as_ref()]
                 .into_iter()
@@ -571,7 +576,7 @@ impl<B: CTEBackend> cteProducer<B> {
                 self.backend.wait_for_spill_test(action);
             }
         }
-        result
+        Ok(())
     }
 
     /// 执行 seed 算子，将去重后的行写入 iterInTbl 与 resTbl。

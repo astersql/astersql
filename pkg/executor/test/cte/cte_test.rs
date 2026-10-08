@@ -121,6 +121,10 @@ fn test_cte_exec_error_reports_integer_overflow() {
     tk.MustExec(&format!("insert into src values {values}"), Vec::new());
     tk.MustExec("set tidb_max_chunk_size = 32", Vec::new());
     tk.MustExec("set tidb_projection_concurrency = 20", Vec::new());
+    let _spill = astersql_testkit_testfailpoint::enable(
+        "github.com/pingcap/tidb/pkg/executor/testCTEStorageSpill",
+        "return(true)",
+    );
 
     let sql = "with recursive cte(iter, first, second, result) as (select 1, first, second, first+second from src union all select iter+1, second, result, second+result from cte where iter < 80) select * from cte";
     for _ in 0..10 {
