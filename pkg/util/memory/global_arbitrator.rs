@@ -32,7 +32,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub(crate) static GLOBAL_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 use crate::arbitrator::{
-    ArbitratorModeDisable, NewMemArbitrator, SoftLimitModeAuto, SoftLimitModeDisable,
+    ArbitratorModeDisable, DefMaxLimit, NewMemArbitrator, SoftLimitModeAuto, SoftLimitModeDisable,
     SoftLimitModeSpecified,
 };
 pub use crate::arbitrator::{
@@ -308,7 +308,11 @@ pub fn SetupGlobalMemArbitratorForTest(base_dir: String) {
         arbitrator.StopAutoRun();
     }
     state().enabled.store(false, Ordering::SeqCst);
-    state().server_limit.store(0, Ordering::SeqCst);
+    // Go's test initializer constructs the mock arbitrator with a zero limit,
+    // which NewMemArbitrator normalizes to DefMaxLimit. Keep that deterministic
+    // limit when the test switches out of disabled mode instead of probing the
+    // host's physical memory.
+    state().server_limit.store(DefMaxLimit, Ordering::SeqCst);
     *state()
         .soft_limit_text
         .write()
