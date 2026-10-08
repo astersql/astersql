@@ -928,7 +928,9 @@ fn canonical_dag_read_pool_diagnostics_survive_region_retry() {
     );
 
     let mut driver = TiKVDriver::with_backend(Arc::new(InMemoryBackend::default()));
-    let store = driver.Open("tikv://dag-adapter-test:2379").unwrap();
+    let store = driver
+        .Open("tikv://dag-diagnostics-adapter-test:2379")
+        .unwrap();
     store.set_coprocessor_store_for_test(Arc::clone(&coprocessor_store));
     let client = kv::Storage::GetClient(&store);
     assert!(client.IsRequestTypeSupported(kv::ReqTypeAnalyze, kv::ReqSubTypeBasic));
