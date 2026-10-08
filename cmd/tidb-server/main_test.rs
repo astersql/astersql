@@ -448,25 +448,21 @@ fn canonical_listener_starts_on_port_zero_and_preserves_cleanup_order() {
 
 #[test]
 fn mysql_compatibility_external_gate_targets_the_real_server_binary() {
-    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(std::path::Path::parent)
-        .expect("workspace root");
-    let gate = std::fs::read_to_string(repo_root.join("scripts/test-mysql-compat.sh"))
-        .expect("read external MySQL compatibility gate");
-    let fixture = std::fs::read_to_string(repo_root.join("tests/mysql-compat/common.sql"))
-        .expect("read common MySQL fixture");
+    let gate = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/integrationtest/run-rust-tests.sh"
+    ));
+    let manifest = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/mysqlcompat/compatibility-cases.json"
+    ));
 
-    assert!(gate.contains("server_package=\"astersql-cmd-tidb-server\""));
-    assert!(gate.contains("cargo build -p \"${server_package}\" --bin \"${server_package}\""));
-    assert!(gate.contains("-store \"${store_name}\""));
-    assert!(gate.contains("run_mysql_tester_case unistore \"\""));
-    assert!(gate.contains("./mysql_tester"));
-    assert!(gate.contains("mysql_metadata_compat"));
-    assert!(fixture.contains("CREATE TABLE child"));
-    assert!(fixture.contains("LEFT JOIN child"));
-    assert!(fixture.contains("SAVEPOINT before_insert"));
-    assert!(fixture.contains("mysql_compat_ok"));
+    assert!(gate.contains("cargo build -p astersql-cmd-tidb-server --locked"));
+    assert!(gate.contains("RUST_TIDB_SERVER_BIN"));
+    assert!(gate.contains("astersql-cmd-tidb-server"));
+    assert!(gate.contains("runner_options=(-s \"${SERVER_BIN}\")"));
+    assert!(gate.contains("./run-tests.sh \"${runner_options[@]}\""));
+    assert!(manifest.contains("pkg/session/mysql_metadata_compat_test.rs"));
 }
 
 /// 该用例覆盖真实 client-rust driver 的失败路径。
