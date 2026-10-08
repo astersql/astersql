@@ -44,10 +44,11 @@ impl crate::kv::Client for PushdownCapabilityClient {
 #[test]
 /// 验证注册表规模与解析器运算符别名均已注册。
 fn builtin_registry_matches_complete_go_function_table() {
+    const GO_BUILTIN_COUNT: usize = 310;
     const SQL_OPERATOR_ALIASES: &[&str] = &[
         "=", "!=", "<>", "<", "<=", ">", ">=", "+", "-", "*", "/", "%",
     ];
-    assert_eq!(funcs.len(), 309 + SQL_OPERATOR_ALIASES.len());
+    assert_eq!(funcs.len(), GO_BUILTIN_COUNT + SQL_OPERATOR_ALIASES.len());
     for alias in SQL_OPERATOR_ALIASES {
         assert!(
             IsFunctionSupported(alias),
@@ -57,6 +58,7 @@ fn builtin_registry_matches_complete_go_function_table() {
     assert!(IsFunctionSupported("coalesce"));
     assert!(IsFunctionSupported("tidb_decode_sql_digests"));
     assert!(IsFunctionSupported("vec_cosine_distance"));
+    assert!(IsFunctionSupported("embed_text"));
     assert!(IsFunctionSupported("fts_match_word"));
     assert!(!IsFunctionSupported("definitely_not_a_builtin"));
 }
