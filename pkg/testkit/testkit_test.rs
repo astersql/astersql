@@ -156,6 +156,15 @@ fn plan_and_operator_info_helpers_use_the_go_columns() {
             ]],
         },
     );
+    store.expect_query(
+        "explain select * from single_column_operator_info",
+        QueryRows {
+            columns: vec!["plan".into()],
+            rows: vec![vec![DbValue::String(
+                "IndexMerge root type: intersection, limit embedded(offset:0, count:1)".into(),
+            )]],
+        },
+    );
 
     let tk = TestKit::new(store);
     assert!(!tk.HasPlan("select * from misleading_plan", "Point_Get"));
@@ -163,4 +172,8 @@ fn plan_and_operator_info_helpers_use_the_go_columns() {
         !tk.HasKeywordInOperatorInfo("select * from misleading_operator_info", "keyword_decoy")
     );
     assert!(tk.HasKeywordInOperatorInfo("select * from compact_operator_info", "intersection"));
+    assert!(tk.HasKeywordInOperatorInfo(
+        "select * from single_column_operator_info",
+        "limit embedded"
+    ));
 }

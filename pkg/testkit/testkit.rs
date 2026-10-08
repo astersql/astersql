@@ -541,8 +541,9 @@ impl TestKit {
 
     /// 判断 EXPLAIN 的算子 info 是否包含关键字。
     ///
-    /// Go 的标准 EXPLAIN 把 operator info 放在第 5 列；Rust 的紧凑计划树省略
-    /// estRows，因此对应信息位于第 4 列。
+    /// Go 的标准 EXPLAIN 把 operator info 放在第 5 列；Rust 的结构化紧凑计划树
+    /// 省略 estRows，因此对应信息位于第 4 列。兼容层仍可能把完整紧凑计划行
+    /// 放在唯一一列，此时该列同时承载算子、task 和 operator info。
     pub fn HasKeywordInOperatorInfo(&self, sql: &str, keyword: &str) -> bool {
         self.MustQuery(&format!("explain {sql}"), Vec::new())
             .Rows()
@@ -550,6 +551,7 @@ impl TestKit {
             .any(|row| {
                 row.get(4)
                     .or_else(|| (row.len() == 4).then(|| &row[3]))
+                    .or_else(|| (row.len() == 1).then(|| &row[0]))
                     .is_some_and(|value| value.contains(keyword))
             })
     }
