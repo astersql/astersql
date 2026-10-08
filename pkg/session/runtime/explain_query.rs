@@ -287,8 +287,16 @@ impl ConcreteSession {
     /// 将带树形缩进的计划行转换为 EXPLAIN 使用的四列记录集。
     pub(super) fn explain_plan_tree_rows(lines: Vec<String>) -> ConcreteRecordSet {
         ConcreteRecordSet::new(
-            vec!["plan".to_owned()],
-            lines.into_iter().map(|line| vec![line]).collect(),
+            vec![
+                "id".to_owned(),
+                "task".to_owned(),
+                "access object".to_owned(),
+                "operator info".to_owned(),
+            ],
+            lines
+                .into_iter()
+                .map(|line| split_explain_plan_tree_row(&line))
+                .collect(),
         )
     }
 
@@ -4650,4 +4658,54 @@ impl ConcreteSession {
         }
         Ok(Some(Self::explain_plan_tree_rows(lines)))
     }
+}
+
+fn split_explain_plan_tree_row(line: &str) -> Vec<String> {
+    let fields = line
+        .split_whitespace()
+        .scan(0, |offset, field| {
+            let start = line[*offset..].find(field).map(|start| *offset + start)?;
+            let end = start + field.len();
+            *offset = end;
+            Some((start, end, field))
+        })
+        .collect::<Vec<_>>();
+    let task_index = fields
+        .iter()
+        .position(|(_, _, field)| {
+            *field == "root"
+                || field.starts_with("cop[")
+                || field.starts_with("mpp[")
+                || field.starts_with("batchCop[")
+        })
+        .unwrap_or(fields.len().saturating_sub(1));
+    let (task_start, task_end, task) = fields[task_index];
+
+    if task_index > 0 && fields[task_index - 1].2.parse::<f64>().is_ok() {
+        let (estimate_start, _, estimate) = fields[task_index - 1];
+        let operator = line[..estimate_start].trim_end().to_owned();
+        let info = line[task_end..].strip_prefix(' ').unwrap_or_default();
+        return vec![
+            operator,
+            estimate.to_owned(),
+            task.to_owned(),
+            info.to_owned(),
+        ];
+    }
+
+    let operator = line[..task_start].trim_end().to_owned();
+    let after_task = &line[task_end..];
+    let (access, info) = if let Some(info) = after_task.strip_prefix("  ") {
+        ("", info)
+    } else if let Some((access, info)) = after_task.trim_start().split_once(' ') {
+        (access, info)
+    } else {
+        (after_task.trim_start(), "")
+    };
+    vec![
+        operator,
+        task.to_owned(),
+        access.to_owned(),
+        info.to_owned(),
+    ]
 }

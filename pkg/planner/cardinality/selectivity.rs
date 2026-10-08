@@ -179,10 +179,61 @@ pub fn Selectivity(
                 id2Paths.get(&idxStats.ID).copied(),
                 &idxCols,
             )?;
-            let range_refs = ranges.iter().collect::<Vec<_>>();
-            let idx_col_refs = idxCols.iter().collect::<Vec<_>>();
+            let declared_col_count = idxStats.InfoRef().Columns.len();
+            // DataSource extends this mapping only after verifying that the
+            // physical secondary-index key appends a complete handle.
+            let appended_int_handle = idxCols.len() == declared_col_count + 1;
+            let estimate_ranges = if appended_int_handle {
+                let truncated = ranges
+                    .iter()
+                    .map(|range| ranger::Range {
+                        LowVal: range
+                            .LowVal
+                            .iter()
+                            .take(declared_col_count)
+                            .cloned()
+                            .collect(),
+                        HighVal: range
+                            .HighVal
+                            .iter()
+                            .take(declared_col_count)
+                            .cloned()
+                            .collect(),
+                        Collators: range
+                            .Collators
+                            .iter()
+                            .take(declared_col_count)
+                            .map(|collator| collator.Clone())
+                            .collect(),
+                        LowExclude: range.LowExclude && range.LowVal.len() <= declared_col_count,
+                        HighExclude: range.HighExclude && range.HighVal.len() <= declared_col_count,
+                        ..Default::default()
+                    })
+                    .collect();
+                ranger::UnionRanges(ctx.GetRangerCtx(), ranger::Ranges(truncated), false)?.0
+            } else {
+                ranges.0.clone()
+            };
+            let estimate_range_refs = estimate_ranges.iter().collect::<Vec<_>>();
+            let estimate_col_refs = if appended_int_handle {
+                idxCols[..declared_col_count].iter().collect::<Vec<_>>()
+            } else {
+                idxCols.iter().collect::<Vec<_>>()
+            };
             let mut countResult =
-                GetRowCountByIndexRanges(ctx, coll, id, &range_refs, &idx_col_refs)?;
+                GetRowCountByIndexRanges(ctx, coll, id, &estimate_range_refs, &estimate_col_refs)?;
+            if appended_int_handle {
+                let full_range_refs = ranges.iter().collect::<Vec<_>>();
+                let full_col_refs = idxCols.iter().collect::<Vec<_>>();
+                countResult = AdjustRowCountForAppendedHandleColumns(
+                    ctx,
+                    coll,
+                    &full_range_refs,
+                    &full_col_refs,
+                    declared_col_count,
+                    countResult,
+                );
+            }
             countResult.DivideAll(coll.RealtimeCount as f64);
             nodes.push(StatsNode {
                 Tp: IndexType,
