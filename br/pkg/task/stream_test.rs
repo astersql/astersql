@@ -1019,14 +1019,27 @@ fn stream_tikv_config_always_closes_the_created_log_client() {
 
 #[test]
 fn stream_restore_initializes_target_ts_before_checkpoint_metadata() {
-    let (control, _, _) = config_control(false);
+    let (mut control, _, _) = config_control(false);
+    control.createLogClient = Arc::new(|cfg| {
+        let mut client = astersql_br_pkg_restore_log_client::TEST_NewLogClient(1, cfg.RestoreTS);
+        client.sstRestoreManager = Some(astersql_br_pkg_restore_log_client::SstRestoreManager {
+            closed: false,
+            storeCount: 1,
+            replicaCount: 1,
+            workerPoolSize: 2,
+            restorer: None,
+        });
+        Ok(client)
+    });
     let metadata = control.metadata.as_ref().unwrap().clone();
+    let inner = crate::stubs::MemGlue::default();
+    let glue = crate::restore_lifecycle_test::fixture_glue(&inner);
     let mut cfg = RestoreConfig {
         UseCheckpoint: true,
         TiKVConfigControl: Some(Arc::new(control)),
         ..Default::default()
     };
-    restoreStream(&crate::stubs::MemGlue::default(), &mut cfg).unwrap();
+    restoreStream(&glue, &mut cfg).unwrap();
     let stored = metadata
         .LoadCheckpointMetadata(&astersql_br_pkg_checkpoint::Context::Background())
         .unwrap();
