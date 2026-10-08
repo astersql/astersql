@@ -200,7 +200,13 @@ impl DdlMetadataService {
                 catalog.next_id.to_string().into_bytes(),
             )?;
         }
-        transaction.Set(kv::Key(DDL_CATALOG_KEY.to_vec()), encode_catalog(&catalog)?)?;
+        // The Go-compatible DB/table hash keys above are the authoritative
+        // catalog. Keeping a second, monolithic catalog value makes every DDL
+        // transaction grow with the complete schema and can exceed TiKV's
+        // transaction size limit during bootstrap. Remove legacy private
+        // snapshots after publishing the split metadata; read_catalog still
+        // accepts them when upgrading stores that do not yet have hash keys.
+        transaction.Delete(kv::Key(DDL_CATALOG_KEY.to_vec()))?;
         transaction.Commit(&kv::Context::default())?;
         Ok(change)
     }

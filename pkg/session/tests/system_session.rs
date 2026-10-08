@@ -3,9 +3,28 @@
 use astersql_ddl_jobsubmit::Session as JobSession;
 use astersql_session::runtime::{CreateAnalyzeSession, system_session::SystemSessionPool};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
+
+struct TxnTotalSizeLimitGuard(u64);
+
+impl TxnTotalSizeLimitGuard {
+    fn set(limit: u64) -> Self {
+        Self(astersql_kv::TxnTotalSizeLimit.swap(limit, Ordering::SeqCst))
+    }
+}
+
+impl Drop for TxnTotalSizeLimitGuard {
+    fn drop(&mut self) {
+        astersql_kv::TxnTotalSizeLimit.store(self.0, Ordering::SeqCst);
+    }
+}
 
 #[test]
 fn crossks_align_system_session_return_rolls_back() {
+    // Go persists databases and tables as separate metadata keys. Keep the
+    // limit below the legacy monolithic Rust catalog value while leaving enough
+    // room for every individual system-table definition.
+    let _txn_limit = TxnTotalSizeLimitGuard::set(256 * 1024);
     let (domain, _) = CreateAnalyzeSession().unwrap();
     let pool = SystemSessionPool::new(Arc::clone(&domain));
     let session = pool.acquire().unwrap();
