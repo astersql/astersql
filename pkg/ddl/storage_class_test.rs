@@ -198,7 +198,7 @@ fn storage_class_show_create_preserves_scopes_transitions_and_other_fields() {
     };
     assert_eq!(
         t.StorageClassString(),
-        r#"{"tier":"STANDARD","transitions":[{"tier":"IA","after_days":30}]}"#
+        r#"{"tier":"STANDARD","transitions":[{"tier":"IA","after_days":30,"after_seconds":0}]}"#
     );
 }
 #[test]
