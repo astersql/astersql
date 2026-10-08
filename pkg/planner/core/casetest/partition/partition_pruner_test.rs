@@ -267,10 +267,8 @@ pub fn test_point_get_int_handle_not_first() {
     let _serial = serial_partition_pruner_test();
     run_test_under_cascades(|tk, _, _| {
         tk.must_exec("use test");
-        tk.must_exec("create table t (c int, a int not null, b int, primary key (a) /*T![clustered_index] clustered */)");
+        tk.must_exec("create table t (c int, a int not null, b int, primary key (a) /*T![clustered_index] clustered */) partition by range (a) (partition p0 values less than (10), partition p1 values less than (maxvalue))");
         tk.must_exec("insert into t values(1, 13, 1)");
-        tk.must_query_check("select * from t WHERE `a` BETWEEN 13 AND 13", &["1 13 1"]);
-        tk.must_exec("alter table t partition by range (a) (partition p0 values less than (10), partition p1 values less than (maxvalue))");
         tk.must_query_check("select * from t WHERE a BETWEEN 13 AND 13", &["1 13 1"]);
         tk.must_query_check("select * from t", &["1 13 1"]);
     });

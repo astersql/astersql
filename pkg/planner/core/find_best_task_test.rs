@@ -19,8 +19,8 @@
 // Hint 强制选用计划、以及 Hint 不适用时回退并告警。
 
 use crate::find_best_task::{
-    AccessPath, DataSource, LogicalPlan, PhysicalProperty, SortItem, candidatePath,
-    compareCandidates, findBestTask, getTaskPlanCost, mockLogicalPlan4Test,
+    AccessPath, DataSource, Datum, LogicalPlan, PhysicalProperty, Range, SortItem, candidatePath,
+    compareCandidates, convertToPointGet, findBestTask, getTaskPlanCost, mockLogicalPlan4Test,
 };
 use crate::task::{PlanKind, StatsInfo, StoreType, Task, TaskType};
 
@@ -48,6 +48,53 @@ fn root_plan(task: &Task) -> &crate::task::PlanNode {
         panic!("expected a valid root task");
     };
     plan
+}
+
+/// Go 1139439f13: PointGet must resolve an integer handle against the current
+/// DataSource schema instead of reusing the handle column's stale table offset.
+#[test]
+fn point_get_resolves_non_first_integer_handle_against_current_schema() {
+    let data_source = DataSource {
+        columns: vec![101, 103, 102],
+        handle_columns: vec![102],
+        schema: vec![
+            crate::task::FieldType {
+                code: crate::task::TypeCode::Int,
+                flen: 11,
+                decimal: 0,
+                unsigned: false,
+            };
+            3
+        ],
+        ..DataSource::default()
+    };
+    let candidate = candidatePath {
+        path: AccessPath {
+            is_int_handle: true,
+            ranges: vec![Range {
+                low: vec![Datum::Int(13)],
+                high: vec![Datum::Int(13)],
+                ..Range::default()
+            }],
+            count_after_access: 1.0,
+            ..AccessPath::default()
+        },
+        accessCondsColMap: Default::default(),
+        indexCondsColMap: Default::default(),
+        matchPropResult: Default::default(),
+        partialOrderMatchResult: Default::default(),
+        matchWithAdvisorySortItems: false,
+        partialPathMatchResults: Vec::new(),
+        indexJoinCols: 0,
+        countAfterAccess4IndexJoin: 0.0,
+        countAfterAccess4IndexJoinOK: false,
+        isFullRange: false,
+        eqOrInCount: 0,
+    };
+
+    let task = convertToPointGet(&data_source, &PhysicalProperty::default(), &candidate);
+
+    assert_eq!(root_plan(&task).handle_col_offset, Some(2));
 }
 
 /// 代价溢出时应夹到 f64::MAX，且 Task 仍有效。

@@ -1,3 +1,4 @@
+// Copyright 2026 AsterSQL.
 // Copyright 2017 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -11,8 +12,6 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-// Copyright 2026 AsterSQL.
-
 // 物理算子附着到 Task 的核心逻辑（对应 Go physical plan `attach2Task` 族）。
 //
 // Task 描述算子落点：Root（TiDB 层）、Cop（协处理器，推到 TiKV/TiFlash）、
@@ -163,6 +162,8 @@ pub struct PlanNode {
     pub inner_child: usize,
     pub concurrency: usize,
     pub offset: u64,
+    /// Integer handle position resolved against this plan's current schema.
+    pub handle_col_offset: Option<usize>,
     pub count: u64,
     pub expected_count: f64,
     pub ranges: usize,
@@ -190,6 +191,7 @@ impl Default for PlanNode {
             inner_child: 1,
             concurrency: 1,
             offset: 0,
+            handle_col_offset: None,
             count: 0,
             expected_count: f64::INFINITY,
             ranges: 1,

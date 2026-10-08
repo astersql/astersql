@@ -1,3 +1,4 @@
+// Copyright 2026 AsterSQL.
 // Copyright 2017 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -11,8 +12,6 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-// Copyright 2026 AsterSQL.
-
 // FindBestTask：在物理属性约束下为逻辑计划选择代价最优的执行 Task。
 //
 // 核心流程包括：穷举/迭代子物理计划、AccessPath 的 skyline 剪枝、
@@ -202,6 +201,9 @@ pub struct DataSource {
     pub memory_db: bool,
     pub sample: bool,
     pub columns: Vec<usize>,
+    /// Integer/common handle column identities before resolving against the
+    /// current output schema order.
+    pub handle_columns: Vec<usize>,
     pub new_collation_enabled: bool,
     pub common_handle_version0: bool,
 }
@@ -1252,12 +1254,24 @@ pub fn convertToPointGet(
     {
         return Task::invalid("point get requirements not satisfied");
     }
+    let handle_col_offset = if candidate.path.is_int_handle {
+        let Some(handle_column) = ds.handle_columns.first() else {
+            return Task::invalid("integer handle column is missing");
+        };
+        let Some(offset) = ds.columns.iter().position(|column| column == handle_column) else {
+            return Task::invalid("integer handle column is absent from the current schema");
+        };
+        Some(offset)
+    } else {
+        None
+    };
     let mut plan = PlanNode::new(PlanKind::PointGet);
     plan.stats = StatsInfo {
         row_count: candidate.path.count_after_access.min(1.0),
         ..ds.stats.clone()
     };
     plan.schema = ds.schema.clone();
+    plan.handle_col_offset = handle_col_offset;
     plan.ranges = 1;
     plan.flags.keep_order = !prop.is_sort_empty();
     let mut filters = candidate.path.index_filters.clone();
