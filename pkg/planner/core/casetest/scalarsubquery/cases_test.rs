@@ -254,6 +254,9 @@ fn TestExplainNonEvaledSubquery() {
                 continue;
             }
 
+            // The EXPLAIN ANALYZE EXISTS fixtures exercise the empty-result
+            // prefetch path: it must enqueue `None` instead of exhausting the
+            // scalar result queue during expression rewriting.
             let mut rows = tk.MustQuery(sql, Vec::new()).Rows();
             if is_explain_analyze {
                 rows = cut_execution_info_from_explain_analyze_output(rows);

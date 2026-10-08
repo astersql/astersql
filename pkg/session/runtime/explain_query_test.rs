@@ -43,6 +43,29 @@ fn explain_tree_indentation_stays_in_operator_column() {
 }
 
 #[test]
+fn explain_tree_without_estimates_preserves_go_columns() {
+    let result = ConcreteSession::explain_plan_tree_rows(vec![
+        "TableDual root  rows:0".to_owned(),
+        "  │ └─TableDual root  rows:0".to_owned(),
+        "  └─TableFullScan cop[tikv] table:a1 keep order:false, stats:pseudo".to_owned(),
+    ]);
+
+    assert_eq!(
+        result.rows,
+        vec![
+            vec!["TableDual", "root", "", "rows:0"],
+            vec!["  │ └─TableDual", "root", "", "rows:0"],
+            vec![
+                "  └─TableFullScan",
+                "cop[tikv]",
+                "table:a1",
+                "keep order:false, stats:pseudo",
+            ],
+        ]
+    );
+}
+
+#[test]
 fn explain_tree_preserves_go_hash_join_key_order() {
     let line = "HashJoin root  inner join, equal:[eq(Column, test.t0.c0)]";
     let result = ConcreteSession::explain_plan_tree_rows(vec![line.to_owned()]);

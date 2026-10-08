@@ -2681,6 +2681,19 @@ impl ConcreteSession {
                             .with_node(|node| prepare_node(session, node, rows))
                             .transpose()?;
                     }
+                    // Go evaluates an uncorrelated EXISTS subquery once while
+                    // rewriting it.  Keep one queue entry even when it returns
+                    // no rows; otherwise an unexecuted EXISTS is
+                    // indistinguishable from a missing prefetched result.
+                    let result = session
+                        .execute_relational_subquery(Sel, &std::collections::HashMap::new())?;
+                    rows.push_back(result.rows.first().map(|row| {
+                        result
+                            .columns
+                            .iter()
+                            .map(|column| row.get(column).cloned().unwrap_or(None))
+                            .collect()
+                    }));
                 }
                 ast::ExprKind::CompareSubquery { L, R, .. }
                 | ast::ExprKind::Binary { L, R, .. } => {

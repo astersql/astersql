@@ -2,7 +2,7 @@
 
 批次：【批次 4】依赖：批次 3
 
-状态：未开始
+状态：已完成，待回归
 
 目的：未执行子查询不耗尽 scalar result queue。
 
@@ -60,3 +60,25 @@
 ## 完成
 
 有当前证据后标记 `已完成`，使用技能 `$git-commit` 仅提交本任务变更并删除任务文件；仅因无关环境不能回归时标记 `已完成，待回归` 并保留文件。
+
+## 实施记录
+
+- 生产修改依据：Go `expression_rewriter.go` 对非相关 `EXISTS` 调用
+  `EvalSubqueryFirstRow`，以是否返回首行判定真假。Rust 的
+  `prepare_expression` 已为普通 `Subquery` 预取首行，却在 `ExistsSubquery`
+  分支只递归遍历、没有向同一结果队列写入；外表为空的 EXPLAIN ANALYZE
+  因而把“未执行/空结果”误报为“队列耗尽”。修复为 `EXISTS` 也写入一个
+  `Some(first row)` 或 `None` 队列项，不扩展其他规划逻辑。
+- 测试修改依据：现有独立 Rust casetest
+  `cases_test::TestExplainNonEvaledSubquery` 已包含空表上的 EXPLAIN ANALYZE
+  EXISTS 黄金用例；补充注释明确该用例承担队列空结果回归职责，未删减 Go
+  测试矩阵。
+- 修复前验证：槽位 6，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-6`；目标测试实际运行 1 个并失败，错误为
+  `scalar subquery result queue is exhausted`，`make` 退出码 2（Cargo 测试退出
+  101）。回溯复现使用槽位 8、同一路径后缀 `rust-slot-8`，结果一致。
+- 修复后格式化：槽位 2，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-2`；`cargo fmt --all` 退出码 0。
+- 待回归验证：同阶段精确测试在目标用例启动前，被并行任务未完成的
+  `pkg/executor/builder.rs` / `pkg/executor/typed_union_all.rs` 类型不匹配阻断
+  （期望 `Vec<Box<dyn ExecExecutor>>`，实际为 `Vec<Box<dyn Executor>>`）；
+  `make` 退出码 2（Cargo 101）。该文件不属于任务 36，未代修或纳入提交。
+- 所有本任务领取的槽位锁均在对应阶段结束后释放，编译缓存保留。
