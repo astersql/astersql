@@ -325,10 +325,6 @@ impl Runtime for MockRuntime {
         self.get_task_by_id(ctx, id)
     }
 
-    fn get_task_base_by_id_with_history(&self, ctx: &Context, id: i64) -> Result<proto::TaskBase> {
-        self.get_task_by_id(ctx, id).map(|task| task.TaskBase)
-    }
-
     fn get_task_by_key(&self, _ctx: &Context, key: &str) -> Result<Option<proto::Task>> {
         if let Some(manager) = &self.storage {
             return manager
@@ -548,7 +544,7 @@ fn test_handle() {
             .unwrap()
             .contains("unknown task type")
     );
-    let loaded = runtime.get_task_by_id(&ctx, task.ID).unwrap();
+    let loaded = history_lookup;
     assert_eq!(loaded.Key, "1");
     assert_eq!(loaded.Type, proto::TaskTypeExample);
     assert_eq!(loaded.Step, proto::StepInit);

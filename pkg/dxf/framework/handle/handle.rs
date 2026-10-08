@@ -188,7 +188,10 @@ pub trait Runtime: Send + Sync {
     ) -> Result<i64>;
     fn get_task_by_id(&self, ctx: &Context, id: i64) -> Result<proto::Task>;
     fn get_task_by_id_with_history(&self, ctx: &Context, id: i64) -> Result<proto::Task>;
-    fn get_task_base_by_id_with_history(&self, ctx: &Context, id: i64) -> Result<proto::TaskBase>;
+    fn get_task_base_by_id_with_history(&self, ctx: &Context, id: i64) -> Result<proto::TaskBase> {
+        self.get_task_by_id_with_history(ctx, id)
+            .map(|task| task.TaskBase)
+    }
     fn get_task_by_key(&self, ctx: &Context, key: &str) -> Result<Option<proto::Task>>;
     fn cancel_task(&self, ctx: &Context, id: i64) -> Result<()>;
     fn pause_task(&self, ctx: &Context, key: &str) -> Result<bool>;
