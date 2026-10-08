@@ -349,8 +349,11 @@ fn pause_on_error_is_transactional_and_checks_task_cas() {
         .unwrap();
     let calls = manager.calls();
     assert_eq!(calls.len(), 2);
+    // The global-task CAS targets a BIGINT id and must keep an integer binding.
+    assert_eq!(calls[0].args[2], Value::Int(4));
     assert!(calls[1].sql.contains("end_time = null"));
-    assert_eq!(calls[1].args[1], Value::Int(4));
+    // Go's TaskIDToKey converts the VARCHAR subtask key to a decimal string.
+    assert_eq!(calls[1].args[1], Value::String("4".into()));
 }
 
 #[test]
