@@ -934,8 +934,9 @@ pub(super) fn relational_index_mutations(
             if index.State == astersql_meta_model::SchemaState::DeleteOnly && !deleting {
                 continue;
             }
-            if index.State != astersql_meta_model::StatePublic
-                && index.BackfillState != astersql_meta_model::BackfillStateInapplicable
+            if (index.State != astersql_meta_model::StatePublic
+                && index.BackfillState != astersql_meta_model::BackfillStateInapplicable)
+                || astersql_tablecodec::IsTempIndexKey(&key.0)
             {
                 let distinct = index.Unique
                     && !relational_index_value_rows(table, index, row, flags)?

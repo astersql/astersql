@@ -619,6 +619,21 @@ fn TestTempIndexKey() {
 #[test]
 /// 验证临时索引 value 多元素编解码。
 fn TestTempIndexValueCodec() {
+    assert!(DecodeTempIndexValue(vec![b'0']).is_err());
+    let raw_index_value = temp_elem(
+        vec![b'0'],
+        Box::new(kv::IntHandle(0)),
+        TempIndexKeyTypeBackfill,
+        false,
+        false,
+    );
+    let decoded_raw_index_value = DecodeTempIndexValue(raw_index_value.Encode(None)).unwrap();
+    assert_eq!(decoded_raw_index_value.len(), 1);
+    assert_eq!(
+        decoded_raw_index_value[0].as_ref().unwrap().Value,
+        vec![b'0']
+    );
+
     let encoded = codec::EncodeValue(time::UTC, Vec::new(), vec![types::NewIntDatum(1)]).unwrap();
     let cases = vec![
         temp_elem(encoded, Box::new(kv::IntHandle(0)), b'b', false, false),
@@ -677,6 +692,14 @@ fn TestTempIndexValueCodec() {
         })
         .collect();
     assert_eq!(handles, vec![100, 100, 101]);
+
+    let filtered = decoded.FilterOverwritten();
+    let filtered_handles: Vec<_> = filtered
+        .iter()
+        .flatten()
+        .map(|entry| entry.Handle.IntValue())
+        .collect();
+    assert_eq!(filtered_handles, vec![100, 101]);
 
     let deleted = temp_elem(Vec::new(), Box::new(kv::IntHandle(100)), b'b', true, true);
     assert!(!IndexKVIsUnique(deleted.Encode(None)));

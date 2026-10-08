@@ -1600,6 +1600,16 @@ impl TempIndexValueExt for TempIndexValue {
         if self.len() <= 1 || !self[0].as_ref().map(|v| v.Distinct).unwrap_or(false) {
             return self;
         }
+        // Go hydrates normal distinct handles from the encoded index value
+        // before filtering. Rust uses a non-null placeholder handle, so do the
+        // equivalent here before comparing history entries.
+        for elem in self.iter_mut().flatten() {
+            if !elem.Delete
+                && let Ok(Some(handle)) = DecodeHandleInIndexValue(elem.Value.clone())
+            {
+                elem.Handle = handle;
+            }
+        }
         // 从后往前扫描：同一 handle 只保留最近一次操作，更早的置空后滤除。
         let mut occurred = kv::NewHandleMap();
         for i in (0..self.len()).rev() {
