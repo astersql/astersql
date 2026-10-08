@@ -42,6 +42,8 @@ fn aggregation_factors_match_go_entries() {
         (ast::AggFuncFirstRow, 0.1),
         (ast::AggFuncMax, 1.0),
         (ast::AggFuncMin, 1.0),
+        (ast::AggFuncMaxCount, 1.0),
+        (ast::AggFuncMinCount, 1.0),
         (ast::AggFuncGroupConcat, 1.0),
         (ast::AggFuncBitOr, 0.9),
         (ast::AggFuncBitXor, 0.9),
