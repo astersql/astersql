@@ -259,8 +259,11 @@ fn reporter_channels_drop_without_blocking_when_full() {
     reporter.CollectRUIncrements(ru.clone(), 1);
     reporter.CollectRUIncrements(ru, 1);
 
-    reporter.takeDataAndSendToReportChan(60);
-    reporter.takeDataAndSendToReportChan(120);
+    // Match Go's backpressure test: fill the report buffer, then submit one
+    // additional batch that must be dropped without blocking.
+    for batch in 1..=reporter::reportCollectedDataChanSize + 1 {
+        reporter.takeDataAndSendToReportChan((batch * 60) as u64);
+    }
     assert_eq!(reporter.channelDropCounts(), (1, 0, 1, 1));
     reporter.Close();
 }
