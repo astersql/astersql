@@ -2,7 +2,7 @@
 
 批次：【批次 2】依赖：批次 1
 
-状态：未开始
+状态：已完成，待回归
 
 目的：恢复 analyze tracker 关联与释放。
 
@@ -61,3 +61,11 @@
 
 有当前证据后标记 `已完成`，使用技能 `$git-commit` 仅提交本任务变更并删除任务文件；仅因无关环境不能回归时标记 `已完成，待回归` 并保留文件。
 
+## 执行记录（2026-10-08）
+
+- Go 对齐依据：`Tracker::Consume` 与 Go 一样只在全局内存仲裁禁用时维护旧式 `MemUsageTop1Tracker`；`AnalyzeExec::Next` 已与 Go `AnalyzeExec.Next` 一样在任务收尾时 detach 列任务 tracker，无需扩大生产修改。
+- 修复前：槽位 9，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-9`；聚焦命令退出 101，实际运行 1 个测试，因 Top1 指针仍为 null 失败。
+- 修复：测试状态守卫保存/恢复全局仲裁模式，驱动旧式 server-memory-limit 链路前切换为 `disable`，恢复后台仲裁前先清空 Top1 裸指针。
+- 修复后：槽位 1，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1`；`cargo fmt --all` 退出 0；聚焦命令退出 0，`1 passed; 0 failed; 8 filtered out`。
+- Ready：`make lint` 退出 0。RustCodeGraph `affected` 仅返回修改的 memory-control 测试文件。
+- 待回归：完整 crate `--lib` 在槽位 1 被无关、未提交的 `pkg/domain/domain.rs` 三元组半接线阻断（`E0308`，退出 101）；本任务未修改或回滚该文件。

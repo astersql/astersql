@@ -42,6 +42,9 @@ use astersql_statistics::MaxSampleValueLength;
 use astersql_testkit::TestKit;
 use astersql_testkit::mockstore::CreateMockStoreAndDomain;
 use astersql_util_dbterror_exeerrors::exeerrors::ErrMemoryExceedForInstance;
+use astersql_util_memory::global_arbitrator::{
+    GetGlobalMemArbitratorWorkModeText, SetGlobalMemArbitratorWorkMode,
+};
 use astersql_util_memory::sqlkiller::SQLKiller;
 use astersql_util_servermemorylimit::NewServerMemoryLimitHandle;
 
@@ -74,6 +77,7 @@ fn populate_analyze_table(tk: &mut TestKit) {
 struct GlobalMemoryStateGuard {
     server_memory_limit: u64,
     server_memory_limit_sess_min_size: u64,
+    global_mem_arbitrator_mode: String,
 }
 
 impl GlobalMemoryStateGuard {
@@ -82,16 +86,23 @@ impl GlobalMemoryStateGuard {
         Self {
             server_memory_limit: ServerMemoryLimit.Load(),
             server_memory_limit_sess_min_size: ServerMemoryLimitSessMinSize.Load(),
+            global_mem_arbitrator_mode: GetGlobalMemArbitratorWorkModeText(),
         }
+    }
+
+    /// 使用旧式 Top1 session tracker 驱动 ServerMemoryLimitHandle。
+    fn use_legacy_top1_tracker(&self) {
+        let _ = SetGlobalMemArbitratorWorkMode("disable".to_owned());
     }
 }
 
 impl Drop for GlobalMemoryStateGuard {
     fn drop(&mut self) {
-        // 还原全局限制并清空 Top1 Tracker 指针，避免泄漏到后续用例。
+        // 先清空外部所有的裸指针，再恢复可能重启后台任务的仲裁模式。
+        MemUsageTop1Tracker.store(std::ptr::null_mut(), Ordering::SeqCst);
         ServerMemoryLimit.Store(self.server_memory_limit);
         ServerMemoryLimitSessMinSize.Store(self.server_memory_limit_sess_min_size);
-        MemUsageTop1Tracker.store(std::ptr::null_mut(), Ordering::SeqCst);
+        let _ = SetGlobalMemArbitratorWorkMode(self.global_mem_arbitrator_mode.clone());
     }
 }
 
@@ -259,6 +270,7 @@ fn TestGlobalMemoryControlForAnalyze() {
 
     // 将实例限制压到极低，Consume 后应成为 Top1 并被 ServerMemoryLimitHandle 取消。
     let _guard = GlobalMemoryStateGuard::capture();
+    _guard.use_legacy_top1_tracker();
     ServerMemoryLimitSessMinSize.Store(128);
     ServerMemoryLimit.Store(1);
 
