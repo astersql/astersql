@@ -444,7 +444,9 @@ fn TestVectorConstantExplain() {
 #[test]
 /// TiFlash HNSW VECTOR INDEX 的 ANN TopN 计划保持距离、维度截断与 limit。
 fn TestVectorIndexExplain() {
-    let mut tk = new_testkit();
+    let (store, domain) = CreateMockStoreAndDomain();
+    let mut tk = TestKit::new(store);
+    tk.MustExec("use test", Vec::new());
     tk.MustExec("DROP TABLE IF EXISTS t1", Vec::new());
     tk.MustExec("CREATE TABLE t1(vec VECTOR(100))", Vec::new());
     tk.MustExec("ALTER TABLE t1 SET TIFLASH REPLICA 1", Vec::new());
@@ -452,6 +454,9 @@ fn TestVectorIndexExplain() {
         "ALTER TABLE t1 ADD VECTOR INDEX((VEC_COSINE_DISTANCE(vec))) USING HNSW",
         Vec::new(),
     );
+    domain
+        .set_tiflash_replica_for_test("test", "t1", 1, true)
+        .expect("mark test.t1 TiFlash replica available");
     let vector = format!("[{}]", vec!["100"; 100].join(","));
     tk.MustQuery(
         &format!(
