@@ -112,13 +112,14 @@ fn decode_gbk_fixture(input: &[u8]) -> Vec<u8> {
 
 const GO_SIMPLE_TEST_SOURCE: &str = include_str!("simple_test.go");
 
-const GO_TEST_CASES: [&str; 13] = [
+const GO_TEST_CASES: [&str; 14] = [
     "TestStarterUsernamePolicyInSimpleExec",
     "TestUserWithSetNames",
     "TestTransaction",
     "TestRole",
     "TestMaxUserConnections",
     "TestUser",
+    "TestAlterUserPreservesRequire",
     "TestSetPwd",
     "TestFlushPrivilegesPanic",
     "TestDropPartitionStats",
@@ -695,7 +696,15 @@ fn test_max_user_connections() {
 struct UserCatalog {
     users: BTreeMap<String, UserRecord>,
     token_issuers: BTreeMap<String, String>,
+    tls_requirements: BTreeMap<String, TlsRequirement>,
+    locked_users: BTreeSet<String>,
     warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+enum TlsRequirement {
+    Ssl,
+    SubjectAndSan { subject: String, san: String },
 }
 
 impl UserCatalog {
@@ -746,6 +755,52 @@ impl UserCatalog {
         }
         self.create(name, b"", false)?;
         self.alter_plugin(name, plugin)
+    }
+
+    fn create_with_tls(
+        &mut self,
+        name: &str,
+        plugin: &str,
+        requirement: Option<TlsRequirement>,
+        token_issuer: Option<&str>,
+    ) -> Result<(), &'static str> {
+        self.create_with_plugin(name, plugin)?;
+        if let Some(requirement) = requirement {
+            self.tls_requirements.insert(name.into(), requirement);
+        }
+        if let Some(issuer) = token_issuer {
+            self.token_issuers.insert(name.into(), issuer.into());
+        }
+        Ok(())
+    }
+
+    fn alter_attributes(
+        &mut self,
+        name: &str,
+        locked: Option<bool>,
+        requirement: Option<Option<TlsRequirement>>,
+    ) -> Result<(), &'static str> {
+        if !self.users.contains_key(name) {
+            return Err("cannot user");
+        }
+        if let Some(locked) = locked {
+            if locked {
+                self.locked_users.insert(name.into());
+            } else {
+                self.locked_users.remove(name);
+            }
+        }
+        if let Some(requirement) = requirement {
+            match requirement {
+                Some(requirement) => {
+                    self.tls_requirements.insert(name.into(), requirement);
+                }
+                None => {
+                    self.tls_requirements.remove(name);
+                }
+            }
+        }
+        Ok(())
     }
 
     fn set_plugin_and_issuer(
@@ -862,6 +917,59 @@ impl UserCatalog {
         );
         Ok(())
     }
+}
+
+#[test]
+fn test_alter_user_preserves_require() {
+    let mut catalog = UserCatalog::default();
+    let subject_and_san = TlsRequirement::SubjectAndSan {
+        subject: "/C=US/O=Example/CN=TiDB".into(),
+        san: "DNS:foo".into(),
+    };
+    catalog
+        .create_with_tls(
+            "require_user@%",
+            "mysql_native_password",
+            Some(subject_and_san.clone()),
+            None,
+        )
+        .unwrap();
+
+    catalog
+        .alter_attributes("require_user@%", Some(true), None)
+        .unwrap();
+    assert_eq!(catalog.tls_requirements["require_user@%"], subject_and_san);
+    assert!(catalog.locked_users.contains("require_user@%"));
+
+    // Attribute-only ALTER USER statements do not contain a REQUIRE clause,
+    // so they must leave the existing TLS requirements untouched.
+    for locked in [Some(false), None, None] {
+        catalog
+            .alter_attributes("require_user@%", locked, None)
+            .unwrap();
+        assert_eq!(catalog.tls_requirements["require_user@%"], subject_and_san);
+    }
+
+    catalog
+        .alter_attributes("require_user@%", None, Some(Some(TlsRequirement::Ssl)))
+        .unwrap();
+    assert_eq!(
+        catalog.tls_requirements["require_user@%"],
+        TlsRequirement::Ssl
+    );
+    catalog
+        .alter_attributes("require_user@%", None, Some(None))
+        .unwrap();
+    assert!(!catalog.tls_requirements.contains_key("require_user@%"));
+
+    catalog
+        .create_with_tls("token_only@%", "tidb_auth_token", None, Some("issuer-abc"))
+        .unwrap();
+    catalog
+        .alter_attributes("token_only@%", Some(true), None)
+        .unwrap();
+    assert!(!catalog.tls_requirements.contains_key("token_only@%"));
+    assert_eq!(catalog.token_issuers["token_only@%"], "issuer-abc");
 }
 
 #[test]
