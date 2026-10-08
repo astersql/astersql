@@ -6421,6 +6421,14 @@ impl ConcreteSession {
                 "tidb_enable_paging" => {
                     self.state.borrow_mut().enable_paging = variable_is_on(&value);
                 }
+                astersql_sessionctx_vardef::TiDBEnableTiKVShortCircuitExpression => {
+                    let enabled = variable_is_on(&value);
+                    self.session_vars
+                        .SetEnableTiKVShortCircuitExpression(enabled);
+                    self.session_vars
+                        .StmtCtx
+                        .SetEnableTiKVShortCircuitExpression(enabled);
+                }
                 "tidb_min_paging_size" => {
                     self.state.borrow_mut().min_paging_size = value
                         .trim_matches(['\'', '"'])

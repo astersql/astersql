@@ -553,7 +553,7 @@ pub struct StatementContext {
     pub StatsLoad: StatsLoadState,
     pub SysdateIsNow: bool,
     /// Whether TiKV should short-circuit logical expression evaluation.
-    pub EnableTiKVShortCircuitExpression: bool,
+    EnableTiKVShortCircuitExpression: AtomicBool,
     pub RCCheckTS: bool,
     pub IsSQLRegistered: AtomicBool,
     pub IsSQLAndPlanRegistered: AtomicBool,
@@ -762,7 +762,7 @@ impl StatementContext {
             WeakConsistency: false,
             StatsLoad: StatsLoadState::default(),
             SysdateIsNow: false,
-            EnableTiKVShortCircuitExpression: false,
+            EnableTiKVShortCircuitExpression: AtomicBool::new(false),
             RCCheckTS: false,
             IsSQLRegistered: AtomicBool::new(false),
             IsSQLAndPlanRegistered: AtomicBool::new(false),
@@ -1694,6 +1694,18 @@ impl StatementContext {
         self.ReadFromTableCache.load(Ordering::Acquire)
     }
 
+    /// Set whether TiKV may short-circuit logical expression evaluation.
+    pub fn SetEnableTiKVShortCircuitExpression(&self, enabled: bool) {
+        self.EnableTiKVShortCircuitExpression
+            .store(enabled, Ordering::Release);
+    }
+
+    /// Report whether TiKV may short-circuit logical expression evaluation.
+    pub fn EnableTiKVShortCircuitExpression(&self) -> bool {
+        self.EnableTiKVShortCircuitExpression
+            .load(Ordering::Acquire)
+    }
+
     /// 获取同步执行明细快照。
     pub fn GetExecDetails(&self) -> ExecDetails {
         self.SyncExecDetails.GetExecDetails()
@@ -1703,7 +1715,7 @@ impl StatementContext {
     pub fn PushDownFlags(&self) -> u64 {
         // 先编码类型/错误策略，再按当前语句类型叠加 Insert/Update/Select 等位。
         let mut flags = PushDownFlagsWithTypeFlagsAndErrLevels(self.TypeFlags(), self.ErrLevels());
-        if self.EnableTiKVShortCircuitExpression {
+        if self.EnableTiKVShortCircuitExpression() {
             flags |= FlagEnableTiKVShortCircuitExpression;
         }
         if self.InInsertStmt {
@@ -1727,7 +1739,7 @@ impl StatementContext {
         self.InInsertStmt = flags & FlagInInsertStmt != 0;
         self.InSelectStmt = flags & FlagInSelectStmt != 0;
         self.InDeleteStmt = flags & FlagInUpdateOrDeleteStmt != 0;
-        self.EnableTiKVShortCircuitExpression = flags & FlagEnableTiKVShortCircuitExpression != 0;
+        self.SetEnableTiKVShortCircuitExpression(flags & FlagEnableTiKVShortCircuitExpression != 0);
         let mut levels = self.ErrLevels();
         levels[errctx::ErrGroup::ErrGroupDividedByZero as usize] =
             errctx::ResolveErrLevel(false, flags & FlagDividedByZeroAsWarning != 0);

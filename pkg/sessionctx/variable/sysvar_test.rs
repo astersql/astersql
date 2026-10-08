@@ -1,5 +1,5 @@
-// Copyright 2015 PingCAP, Inc.
 // Copyright 2026 AsterSQL.
+// Copyright 2015 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -2370,11 +2370,11 @@ fn tikv_short_circuit_expression_sysvar_updates_session_and_statement_state() {
     runtime_vars
         .SetSystemVar(vardef::TiDBEnableTiKVShortCircuitExpression, vardef::On)
         .unwrap();
-    assert!(runtime_vars.EnableTiKVShortCircuitExpression);
+    assert!(runtime_vars.EnableTiKVShortCircuitExpression());
     runtime_vars
         .SetSystemVar(vardef::TiDBEnableTiKVShortCircuitExpression, vardef::Off)
         .unwrap();
-    assert!(!runtime_vars.EnableTiKVShortCircuitExpression);
+    assert!(!runtime_vars.EnableTiKVShortCircuitExpression());
 }
 
 #[test]

@@ -56,7 +56,7 @@ fn test_statement_context_push_down_flags() {
         ),
         (Box::new(|sc| sc.InLoadDataStmt = true), FlagInLoadDataStmt),
         (
-            Box::new(|sc| sc.EnableTiKVShortCircuitExpression = true),
+            Box::new(|sc| sc.SetEnableTiKVShortCircuitExpression(true)),
             FlagEnableTiKVShortCircuitExpression,
         ),
     ];
@@ -103,13 +103,13 @@ fn test_statement_context_push_down_flags() {
 fn tikv_short_circuit_flag_round_trips_through_pb_flags() {
     let mut sc = NewStmtCtx();
     sc.SetErrLevels([errctx::Level::LevelError; errctx::errGroupCount]);
-    sc.EnableTiKVShortCircuitExpression = true;
+    sc.SetEnableTiKVShortCircuitExpression(true);
     assert_eq!(FlagEnableTiKVShortCircuitExpression, sc.PushDownFlags());
 
     sc.InitFromPBFlagAndTz(0, chrono_tz::UTC);
-    assert!(!sc.EnableTiKVShortCircuitExpression);
+    assert!(!sc.EnableTiKVShortCircuitExpression());
     sc.InitFromPBFlagAndTz(FlagEnableTiKVShortCircuitExpression, chrono_tz::UTC);
-    assert!(sc.EnableTiKVShortCircuitExpression);
+    assert!(sc.EnableTiKVShortCircuitExpression());
 }
 
 #[test]

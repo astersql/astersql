@@ -718,7 +718,7 @@ pub struct SessionVars {
     pub SelectivityFactor: f64,
     pub EnableVectorizedExpression: bool,
     /// Enables short-circuit expression evaluation in TiKV.
-    pub EnableTiKVShortCircuitExpression: bool,
+    EnableTiKVShortCircuitExpression: AtomicBool,
     pub EnableChunkRPC: bool,
     pub TiDBOptJoinReorderThreshold: i64,
     pub TiDBOptEnableAdvancedJoinReorder: bool,
@@ -934,7 +934,9 @@ impl SessionVars {
             RiskGroupNDVSkewRatio: vardef::DefOptRiskGroupNDVSkewRatio,
             SelectivityFactor: vardef::DefOptSelectivityFactor,
             EnableVectorizedExpression: vardef::DefEnableVectorizedExpression,
-            EnableTiKVShortCircuitExpression: vardef::DefTiDBEnableTiKVShortCircuitExpression,
+            EnableTiKVShortCircuitExpression: AtomicBool::new(
+                vardef::DefTiDBEnableTiKVShortCircuitExpression,
+            ),
             EnableChunkRPC: false,
             TiDBOptJoinReorderThreshold: vardef::DefTiDBOptJoinReorderThreshold,
             TiDBOptEnableAdvancedJoinReorder: vardef::DefTiDBOptEnableAdvancedJoinReorder,
@@ -1084,6 +1086,9 @@ impl SessionVars {
     }
     /// 按 Hint 变量 → 会话 map → Hint 钩子顺序读取系统变量。
     pub fn GetSystemVar(&self, name: &str) -> Option<String> {
+        if name.eq_ignore_ascii_case(vardef::TiDBEnableTiKVShortCircuitExpression) {
+            return Some(crate::BoolToOnOff(self.EnableTiKVShortCircuitExpression()).to_owned());
+        }
         if name.eq_ignore_ascii_case(vardef::WarningCount) {
             return Some(self.SysWarningCount.to_string());
         }
@@ -1115,8 +1120,9 @@ impl SessionVars {
         } else if name.eq_ignore_ascii_case(vardef::TiDBEnableSharedLockUpgrade) {
             self.EnableSharedLockUpgrade = crate::TiDBOptOn(&normalized);
         } else if name.eq_ignore_ascii_case(vardef::TiDBEnableTiKVShortCircuitExpression) {
-            self.EnableTiKVShortCircuitExpression = crate::TiDBOptOn(&normalized);
-            self.StmtCtx.EnableTiKVShortCircuitExpression = self.EnableTiKVShortCircuitExpression;
+            let enabled = crate::TiDBOptOn(&normalized);
+            self.SetEnableTiKVShortCircuitExpression(enabled);
+            self.StmtCtx.SetEnableTiKVShortCircuitExpression(enabled);
         } else if name.eq_ignore_ascii_case(vardef::TiDBDMLMaxExecutionTime) {
             self.DMLMaxExecutionTime = normalized.parse().map_err(|_| {
                 format!(
@@ -1525,6 +1531,16 @@ impl SessionVars {
     /// 设置 IN 子查询转 Join/Agg 开关。
     pub fn SetAllowInSubqToJoinAndAgg(&mut self, value: bool) {
         self.allowInSubqToJoinAndAgg = value;
+    }
+    /// Update the session-scoped TiKV expression switch through shared runtimes.
+    pub fn SetEnableTiKVShortCircuitExpression(&self, enabled: bool) {
+        self.EnableTiKVShortCircuitExpression
+            .store(enabled, Ordering::Release);
+    }
+    /// Read the session-scoped TiKV expression switch.
+    pub fn EnableTiKVShortCircuitExpression(&self) -> bool {
+        self.EnableTiKVShortCircuitExpression
+            .load(Ordering::Acquire)
     }
     /// 设置用户变量字段类型（转发到 `UserVars`）。
     pub fn SetUserVarType(&self, name: impl AsRef<str>, field_type: parser_ast::ast::FieldType) {

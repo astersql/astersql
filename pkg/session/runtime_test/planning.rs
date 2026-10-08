@@ -49,8 +49,8 @@ fn statement_boundary_copies_tikv_short_circuit_expression_switch() {
         .execute("SELECT 1")
         .expect("reset enabled statement");
     session.WithSessionVars(|variables| {
-        assert!(variables.EnableTiKVShortCircuitExpression);
-        assert!(variables.StmtCtx.EnableTiKVShortCircuitExpression);
+        assert!(variables.EnableTiKVShortCircuitExpression());
+        assert!(variables.StmtCtx.EnableTiKVShortCircuitExpression());
     });
 
     session
@@ -60,8 +60,8 @@ fn statement_boundary_copies_tikv_short_circuit_expression_switch() {
         .execute("SELECT 1")
         .expect("reset disabled statement");
     session.WithSessionVars(|variables| {
-        assert!(!variables.EnableTiKVShortCircuitExpression);
-        assert!(!variables.StmtCtx.EnableTiKVShortCircuitExpression);
+        assert!(!variables.EnableTiKVShortCircuitExpression());
+        assert!(!variables.StmtCtx.EnableTiKVShortCircuitExpression());
     });
 }
 
