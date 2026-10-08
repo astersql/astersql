@@ -422,17 +422,11 @@ impl types_crate::scalar::TypeWarnAppender for TypeWarnBridge {
 
 impl err_contextutil::WarnAppender for ErrWarnBridge {
     fn AppendWarning(&self, err: err_errors::SharedError) {
-        WarnAppender::AppendWarning(
-            self.warnings.as_ref(),
-            errors::NewNoStackError(err.to_string()),
-        );
+        WarnAppender::AppendWarning(self.warnings.as_ref(), err);
     }
 
     fn AppendNote(&self, err: err_errors::SharedError) {
-        WarnAppender::AppendNote(
-            self.warnings.as_ref(),
-            errors::NewNoStackError(err.to_string()),
-        );
+        WarnAppender::AppendNote(self.warnings.as_ref(), err);
     }
 }
 
@@ -1612,6 +1606,13 @@ impl StatementContext {
     /// 追加一条 Warning。
     pub fn AppendWarning(&self, warning: errors::SharedError) {
         WarnAppender::AppendWarning(self.WarnHandler.as_ref(), warning);
+    }
+    /// 追加一条保留 MySQL 错误码的 Warning。
+    pub fn AppendWarningWithCode(&self, code: u16, message: impl Into<String>) {
+        self.AppendWarning(errors::SharedError::new(errors::Normalize(
+            message.into(),
+            &[errors::MySQLErrorCode(i32::from(code))],
+        )));
     }
     /// 批量追加告警。
     pub fn AppendWarnings(&self, warnings: Vec<SQLWarn>) {

@@ -215,6 +215,41 @@ fn test_set_stmt_ctx_type_flags_and_err_ctx() {
 }
 
 #[test]
+fn err_ctx_preserves_coded_warning_identity() {
+    let mut sc = NewStmtCtx();
+    sc.SetTypeFlags(sc.TypeFlags().WithTruncateAsWarning(true));
+    let warning = errors::SharedError::new(errors::Normalize(
+        "Truncated incorrect DOUBLE value: 'asd'",
+        &[errors::MySQLErrorCode(1292)],
+    ));
+
+    assert!(sc.ErrCtx().HandleError(Some(warning.clone())).is_none());
+    let warnings = sc.GetWarnings();
+    assert_eq!(warnings.len(), 1);
+    assert!(
+        warnings[0]
+            .Err
+            .as_ref()
+            .is_some_and(|recorded| recorded.ptr_eq(&warning))
+    );
+}
+
+#[test]
+fn append_warning_with_code_preserves_mysql_code() {
+    let sc = NewStmtCtx();
+    sc.AppendWarningWithCode(1292, "Truncated incorrect DOUBLE value: 'asd'");
+
+    let warnings = sc.GetWarnings();
+    let error = warnings[0].Err.as_ref().expect("warning error");
+    assert_eq!(
+        errors::Cause(Some(error)).and_then(|cause| cause
+            .downcast_ref::<errors::Error>()
+            .map(errors::Error::Code)),
+        Some(1292)
+    );
+}
+
+#[test]
 fn test_reset_stmt_ctx_and_id() {
     let mut sc = NewStmtCtx();
     let first_id = sc.CtxID();

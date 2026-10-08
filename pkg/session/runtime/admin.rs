@@ -716,9 +716,9 @@ impl ConcreteSession {
     /// 向语句上下文追加指定 MySQL 错误码的 warning。
     pub(super) fn set_warning_with_code(&self, code: u16, warning: String) {
         if !warning.is_empty() {
-            self.session_vars.StmtCtx.AppendWarning(
-                astersql_sessionctx_stmtctx::errors::NewNoStackError(warning.clone()),
-            );
+            self.session_vars
+                .StmtCtx
+                .AppendWarningWithCode(code, warning.clone());
             self.state
                 .borrow_mut()
                 .current_warnings
