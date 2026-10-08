@@ -5076,16 +5076,15 @@ fn attach_canonical_mpp_join(
     } else {
         physical.get_child_req_props(outer_index).MPPPartitionTp
     };
-    // A one-phase grouped producer cannot carry a pruned partition key through
-    // its output. Reintroducing that key here would leak it into the visible
-    // join projection. Drop this stale layout; a parent that needs a
-    // partitioning property will add its own Exchange.
+    // A one-phase grouped producer may carry its partition key as a hidden
+    // firstrow column after that key has been pruned from the join output.
+    // Keep the task layout for parent MPP joins, but do not reintroduce that
+    // physical key into this join's visible projection.
     let grouped_partition_key_pruned = outer_hash_cols
         .iter()
         .any(|hash_col| !schema.Contains(&hash_col.Col))
-        && !task_matches_request
         && is_one_phase_grouped_mpp_child(attached.children()[outer_index], &outer_hash_cols);
-    let (outer_partition_type, outer_hash_cols) = if full_outer || grouped_partition_key_pruned {
+    let (outer_partition_type, outer_hash_cols) = if full_outer {
         (property::AnyType, Vec::new())
     } else {
         (outer_partition_type, outer_hash_cols)
@@ -5109,6 +5108,9 @@ fn attach_canonical_mpp_join(
             .collect();
         let mut output_schema = schema;
         for hash_col in &outer_hash_cols {
+            if grouped_partition_key_pruned {
+                continue;
+            }
             if output_schema.Contains(&hash_col.Col) {
                 continue;
             }
@@ -7825,11 +7827,50 @@ fn attach_canonical_aggregation(
             output_projection.set_children(vec![plan]);
             plan = Box::new(output_projection);
         }
+        // A one-phase grouped MPP aggregate exposes the grouping key as its
+        // partition key. The input may be partitioned by an equivalent join
+        // key, but that input identity is no longer part of the aggregate's
+        // output schema.
+        let uses_group_partition = required_child.MPPPartitionTp == property::HashType;
+        let output_partition_type = if uses_group_partition {
+            required_child.MPPPartitionTp
+        } else {
+            child.mpp_partition_type()
+        };
+        let partition_columns = if uses_group_partition {
+            required_child
+                .MPPPartitionCols
+                .iter()
+                .map(property::MPPPartitionColumn::Clone)
+                .collect()
+        } else {
+            child.mpp_hash_cols()
+        };
+        let output_hash_cols: Vec<property::MPPPartitionColumn> = partition_columns
+            .into_iter()
+            .map(|partition| {
+                let mut matching = plan
+                    .schema()
+                    .Columns
+                    .iter()
+                    .filter(|column| column.String() == partition.Col.String());
+                let first = matching.next();
+                if let Some(column) = first
+                    && matching.next().is_none()
+                {
+                    return property::MPPPartitionColumn {
+                        Col: column.Clone(),
+                        CollateID: partition.CollateID,
+                    };
+                }
+                partition
+            })
+            .collect();
         return Ok(Some(Box::new(crate::RootTask::NewWithMpp(
             plan,
             Some(child.copy()),
-            child.mpp_partition_type(),
-            child.mpp_hash_cols(),
+            output_partition_type,
+            output_hash_cols,
         ))));
     }
     if is_mpp
