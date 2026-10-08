@@ -32,6 +32,7 @@ pub(super) struct TestTaskManager {
     pub transfer_error: Mutex<Option<SchedulerError>>,
     pub cleanup_error: Mutex<Option<SchedulerError>>,
     pub cleanup_reads: AtomicUsize,
+    pub cleanup_batch_size: Mutex<Option<usize>>,
     pub failed_tasks: Mutex<Vec<(i64, TaskState, SchedulerError)>>,
     /// 规划下一批子任务时返回的上一阶段结果。
     pub previous_metas: Mutex<Vec<Vec<u8>>>,
@@ -93,7 +94,12 @@ impl TaskManager for TestTaskManager {
         }
         let mut tasks =
             self.tasks_in_states(&[TASK_STATE_FAILED, TASK_STATE_REVERTED, TASK_STATE_SUCCEED])?;
-        tasks.truncate(crate::proto::GetTaskCleanupBatchSize() as usize);
+        let batch_size = self
+            .cleanup_batch_size
+            .lock()
+            .unwrap()
+            .unwrap_or_else(|| crate::proto::GetTaskCleanupBatchSize() as usize);
+        tasks.truncate(batch_size);
         Ok(tasks)
     }
 

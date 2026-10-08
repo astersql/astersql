@@ -30,6 +30,10 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+/// Serializes tests that assert deltas on the process-wide finished-task counter.
+#[cfg(test)]
+pub(crate) static FINISHED_TASK_METRIC_TEST_LOCK: Mutex<()> = Mutex::new(());
+
 /// 用户取消任务时写入的错误文案。
 pub const TASK_CANCEL_MESSAGE: &str = astersql_dxf_framework_storage::TaskCancelMessage;
 /// 持久化子任务时的 SQL 重试次数上限。

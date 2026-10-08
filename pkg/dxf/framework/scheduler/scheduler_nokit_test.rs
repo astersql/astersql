@@ -384,6 +384,9 @@ fn test_on_task_finished() {
 fn finished_task_metric_classifies_errors() {
     use astersql_dxf_framework_dxfmetric::InitDistTaskMetrics;
 
+    let _metric_guard = super::scheduler::FINISHED_TASK_METRIC_TEST_LOCK
+        .lock()
+        .unwrap();
     let counter = &InitDistTaskMetrics().FinishedTaskCounter;
     let value = |label| counter.with_label_values(&[label]).get();
     let before = ["all", "succeed", "failed", "cancelled", "data-error"].map(value);
@@ -477,6 +480,9 @@ fn finished_task_metric_classifies_errors() {
 fn terminal_transitions_update_metric() {
     use astersql_dxf_framework_dxfmetric::InitDistTaskMetrics;
 
+    let _metric_guard = super::scheduler::FINISHED_TASK_METRIC_TEST_LOCK
+        .lock()
+        .unwrap();
     let counter = &InitDistTaskMetrics().FinishedTaskCounter;
     let all_before = counter.with_label_values(&["all"]).get();
     let success_before = counter.with_label_values(&["succeed"]).get();

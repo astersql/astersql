@@ -263,6 +263,9 @@ fn test_start_scheduler_cross_keyspace_runtime() {
 fn manager_failed_task_updates_metric() {
     use astersql_dxf_framework_dxfmetric::InitDistTaskMetrics;
 
+    let _metric_guard = crate::scheduler::FINISHED_TASK_METRIC_TEST_LOCK
+        .lock()
+        .unwrap();
     let counter = &InitDistTaskMetrics().FinishedTaskCounter;
     let all_before = counter.with_label_values(&["all"]).get();
     let failed_before = counter.with_label_values(&["failed"]).get();
@@ -352,8 +355,8 @@ fn test_fast_respond_no_need_resource_task_when_schedulers_reach_limit() {
 
 #[test]
 fn test_clean_drains_bounded_batches_and_keeps_pending_tasks() {
-    let restore = crate::proto::SetTaskCleanupBatchSizeForTest(2);
     let task_manager = Arc::new(TestTaskManager::default());
+    *task_manager.cleanup_batch_size.lock().unwrap() = Some(2);
     for (index, state) in [
         TASK_STATE_FAILED,
         TASK_STATE_SUCCEED,
@@ -376,7 +379,6 @@ fn test_clean_drains_bounded_batches_and_keeps_pending_tasks() {
         task_manager.task_by_id(6).unwrap().base.state,
         TASK_STATE_PENDING
     );
-    restore();
 }
 
 struct FailingSingleCleaner;
