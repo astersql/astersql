@@ -2,7 +2,7 @@
 
 批次：【批次 4】依赖：批次 3
 
-状态：未开始
+状态：已完成，待回归
 
 目的：窗口 frame warning 次数与下推计划匹配 Go。
 
@@ -60,3 +60,12 @@
 ## 完成
 
 有当前证据后标记 `已完成`，使用技能 `$git-commit` 仅提交本任务变更并删除任务文件；仅因无关环境不能回归时标记 `已完成，待回归` 并保留文件。
+
+## 实施与验证记录
+
+- Go 差异依据：`LogicalWindow.PredicatePushDown` 使用 `ExprFromSchema`，不引用任何列的常量谓词同样属于 partition schema；Rust 原实现额外要求列集非空，已移除该偏差并扩展独立算子测试。
+- Warning 根因：会话发布阶段对已发布的 `[planner:<code>]<message>` 形式和 `StmtCtx` 的结构化 code/message 仅做字面比较，导致同一条 3599 note 重复发布。已按等价形式逐次消费，保留多个真实 warning 的次数。
+- 修复前：槽位 5，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-5`；精确 golden 测试实际运行 1 个测试，0 passed / 1 failed，底层 Cargo 退出码 101（`make` 退出码 2），第 6 个 case 实际 2 条 3599 warning，期望 1 条。
+- 局部通过：`cargo test -p astersql-planner-core-operator-logicalop --lib logical_relational_aster_unit_test::window_pushes_partition_predicates_but_retains_result_predicates -- --exact --nocapture`，退出码 0，1 passed / 0 failed / 112 filtered out。
+- 已运行 `cargo fmt --all`，退出码 0。
+- 待回归原因：精确 golden 回归在重编译时被本任务外的共享工作区改动阻断：`pkg/executor/builder.rs:474` 将 `Vec<Box<dyn Executor>>` 传给新增 `typed_union_all.rs` 要求的 `Vec<Box<dyn ExecExecutor>>`，底层 Cargo 退出码 101（`make` 退出码 2）。本任务未修改该独立改动。

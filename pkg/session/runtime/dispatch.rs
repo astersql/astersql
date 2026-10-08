@@ -4188,7 +4188,9 @@ impl ConcreteSession {
                         // Consume already-published occurrences once; retain
                         // repeated warnings from distinct optimizer phases.
                         if let Some(index) = published.iter().position(|existing| {
-                            existing.code == warning.code && existing.message == warning.message
+                            (existing.code == warning.code && existing.message == warning.message)
+                                || existing.message
+                                    == format!("[planner:{}]{}", warning.code, warning.message)
                         }) {
                             published.remove(index);
                         } else {

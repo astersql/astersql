@@ -244,7 +244,7 @@ fn expand_build_key_info_drops_child_uniqueness_after_replication() {
     assert!(!expand.MaxOneRow());
 }
 
-/// 窗口算子下推分区列谓词，保留结果列谓词。
+/// 窗口算子下推常量和分区列谓词，保留结果列谓词。
 #[test]
 fn window_pushes_partition_predicates_but_retains_result_predicates() {
     let partition = column(30);
@@ -268,7 +268,11 @@ fn window_pushes_partition_predicates_but_retains_result_predicates() {
     window.SetChildren(vec![Box::new(child)]);
 
     let retained = window
-        .PredicatePushDown(vec![expression(&partition), expression(&result)])
+        .PredicatePushDown(vec![
+            Box::new(expression::NewZero()),
+            expression(&partition),
+            expression(&result),
+        ])
         .expect("window predicate pushdown");
     assert_eq!(retained.len(), 1);
     assert_eq!(

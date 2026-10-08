@@ -204,6 +204,19 @@ fn window_go_golden_replay_matches_standard_and_cascades_planners() {
     }
 }
 
+/// Go `handleDefaultFrame` records one frame-ignored note for one EXPLAIN;
+/// publishing its structured and prefixed forms must not duplicate it.
+#[test]
+fn window_frame_ignored_warning_is_emitted_once() {
+    astersql_testkit_testsetup::SetupForCommonTest();
+    let (_domain, tk) = setup_employee_case();
+    tk.MustQuery(
+        "explain format = 'plan_tree' select *, row_number() over (partition by empid order by salary RANGE between 1 preceding and 1 following) FROM employee",
+        Vec::new(),
+    );
+    assert_eq!(planner_warnings(&tk).len(), 1);
+}
+
 /// Go suite 的 SQL 前置环境必须通过真实 TestKit 接线；窗口结果用真实输入输出回归。
 #[test]
 fn window_testkit_wiring_executes_real_window_result() {

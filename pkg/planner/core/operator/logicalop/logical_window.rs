@@ -278,10 +278,9 @@ impl LogicalWindow {
         let (pushable, mut retained): (Vec<_>, Vec<_>) =
             predicates.into_iter().partition(|predicate| {
                 let columns = expression::ExtractColumns(predicate.as_ref());
-                !columns.is_empty()
-                    && columns
-                        .iter()
-                        .all(|column| partition_ids.contains(&column.UniqueID))
+                columns
+                    .iter()
+                    .all(|column| partition_ids.contains(&column.UniqueID))
             });
         if let Some(child) = self.Children_mut().first_mut() {
             let residual = PredicatePushDownPlan(child, pushable)?;
