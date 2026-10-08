@@ -13,6 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use crate::logutil::log::{BgLogger, LogField};
@@ -21,7 +22,10 @@ use super::{KilledByMemArbitrator, QueryInterrupted, SQLKiller, UnspecifiedKillS
 
 #[test]
 fn reset_after_successful_kill_signal_cas() {
+    const TEST_CONNECTION_ID: u64 = u64::MAX;
+
     let killer = Arc::new(SQLKiller::new());
+    killer.ConnID.store(TEST_CONNECTION_ID, Ordering::SeqCst);
     let entries_before = BgLogger().entries().len();
     let callback_killer = Arc::clone(&killer);
     fail::cfg_callback("go_merge_34_before_log_kill_signal", move || {
@@ -37,11 +41,14 @@ fn reset_after_successful_kill_signal_cas() {
         .expect("query interruption must map to an error")
         .to_string();
     let entries = BgLogger().entries();
+    let expected_connection_field = LogField::U64("connection ID".to_owned(), TEST_CONNECTION_ID);
     let expected_reason_field = LogField::String("reason".to_owned(), expected_reason);
     let initiated = entries[entries_before..]
         .iter()
         .filter(|entry| {
-            entry.message == "kill initiated" && entry.fields.contains(&expected_reason_field)
+            entry.message == "kill initiated"
+                && entry.fields.contains(&expected_connection_field)
+                && entry.fields.contains(&expected_reason_field)
         })
         .collect::<Vec<_>>();
     assert_eq!(initiated.len(), 1, "the successful CAS must log once");
