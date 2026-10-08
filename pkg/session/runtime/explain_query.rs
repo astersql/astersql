@@ -1812,9 +1812,7 @@ impl ConcreteSession {
         for warning in self
             .session_vars
             .StmtCtx
-            .GetWarnings()
-            .into_iter()
-            .skip(warning_start)
+            .TruncateWarnings(warning_start as isize)
         {
             if let Some(error) = warning.Err {
                 self.set_warning_with_code(1815, error.to_string());
