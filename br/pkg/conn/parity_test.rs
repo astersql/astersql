@@ -296,7 +296,7 @@ fn go_rust_public_contract_matches() {
 
     assert_eq!(DefaultMergeRegionSizeBytes, 96 * 1024 * 1024);
     assert_eq!(DefaultMergeRegionKeyCount, 960_000);
-    assert_eq!(DefaultImportNumGoroutines, 128);
+    assert_eq!(DefaultImportNumGoroutines, 36);
     assert_eq!(NullspaceID, 0xffff_ffff);
 
     let tikv = Store {
