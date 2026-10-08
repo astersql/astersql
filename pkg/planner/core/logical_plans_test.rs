@@ -452,6 +452,18 @@ fn test_window_function_fixture() {
 }
 
 #[test]
+fn correlated_predicate_stays_below_window_in_apply() {
+    let sql = "select a from t having (select sum(a) over() as w from t tt where a > t.a)";
+    let plan = optimize_query_without_post_with_window_concurrency_for_test(sql, 1)
+        .expect("correlated window subquery must optimize");
+
+    assert_eq!(
+        physical_window_plan_string(plan.as_ref()),
+        "Apply{IndexReader(Index(t.f)[[NULL,+inf]])->IndexReader(Index(t.f)[[NULL,+inf]]->Sel([gt(test.t.a, test.t.a)]))->Window(sum(cast(test.t.a, decimal(10,0) BINARY))->Column#41 over())->MaxOneRow->Sel([Column#41])}->Projection"
+    );
+}
+
+#[test]
 /// 并行窗口（concurrency=4）物理计划形态。
 fn test_window_parallel_function_fixture() {
     let fixture = plan_fixture("TestWindowParallelFunction");

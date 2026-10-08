@@ -834,19 +834,18 @@ impl DataSource {
             path.AccessConds = detached.AccessConds;
             let (index_filters, table_filters): (Vec<_>, Vec<_>) =
                 detached.RemainedConds.into_iter().partition(|condition| {
-                    expression::ExtractCorColumns(condition.as_ref()).is_empty()
-                        && expression::ExtractColumns(condition.as_ref())
-                            .into_iter()
-                            .all(|column| {
-                                isIndexColsCoveringCol(
-                                    column,
-                                    &index_columns,
-                                    &path.IdxColLens,
-                                    false,
-                                ) || handle_columns
+                    // Go classifies residuals by the ordinary columns provided
+                    // by the index row. Apply supplies correlated operands, so
+                    // they do not turn an otherwise covered predicate into a
+                    // table filter.
+                    expression::ExtractColumns(condition.as_ref())
+                        .into_iter()
+                        .all(|column| {
+                            isIndexColsCoveringCol(column, &index_columns, &path.IdxColLens, false)
+                                || handle_columns
                                     .iter()
                                     .any(|handle| handle.UniqueID == column.UniqueID)
-                            })
+                        })
                 });
             path.IndexFilters = index_filters;
             path.TableFilters = table_filters;
@@ -920,19 +919,18 @@ impl DataSource {
                     }
                     let (index_filters, table_filters): (Vec<_>, Vec<_>) =
                         unique_filters.into_iter().partition(|condition| {
-                            expression::ExtractCorColumns(condition.as_ref()).is_empty()
-                                && expression::ExtractColumns(condition.as_ref())
-                                    .into_iter()
-                                    .all(|column| {
-                                        isIndexColsCoveringCol(
-                                            column,
-                                            &index_columns,
-                                            &path.IdxColLens,
-                                            false,
-                                        ) || handle_columns
-                                            .iter()
-                                            .any(|handle| handle.UniqueID == column.UniqueID)
-                                    })
+                            expression::ExtractColumns(condition.as_ref())
+                                .into_iter()
+                                .all(|column| {
+                                    isIndexColsCoveringCol(
+                                        column,
+                                        &index_columns,
+                                        &path.IdxColLens,
+                                        false,
+                                    ) || handle_columns
+                                        .iter()
+                                        .any(|handle| handle.UniqueID == column.UniqueID)
+                                })
                         });
                     path.IndexFilters = index_filters;
                     path.TableFilters = table_filters;
