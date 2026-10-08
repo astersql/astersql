@@ -1552,7 +1552,11 @@ fn publish_tidb_schema_metadata(
         }
     }
     for (key, table) in &previous.tables {
-        if !catalog.tables.contains_key(key) {
+        let physical_id_changed = catalog
+            .tables
+            .get(key)
+            .is_some_and(|current| current.ID != table.ID);
+        if !catalog.tables.contains_key(key) || physical_id_changed {
             let db_id = previous
                 .databases
                 .get(&key.0)
