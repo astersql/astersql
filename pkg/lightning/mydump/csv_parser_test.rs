@@ -20,7 +20,11 @@
 
 use crate::*;
 use std::io::{Error as IoError, ErrorKind, Read, Seek, SeekFrom};
-use std::sync::atomic::Ordering;
+use std::sync::{Mutex, atomic::Ordering};
+
+/// Go's tests mutate LargestEntryLimit without parallel execution. Keep the
+/// corresponding Rust tests isolated from readers that expect the default.
+static LARGEST_ENTRY_LIMIT_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 /// 用内存 StringReader 构造 CsvParser。
 fn make_parser(input: &[u8], cfg: CsvConfig, header: bool) -> Result<CsvParser, Error> {
@@ -386,6 +390,7 @@ fn TestSyntaxErrorLog() {
 /// 超过 LargestEntryLimit 报错。
 #[test]
 fn TestTooLargeRow() {
+    let _guard = LARGEST_ENTRY_LIMIT_TEST_LOCK.lock().unwrap();
     let old = LargestEntryLimit.swap(8, Ordering::SeqCst);
     let result = read_all(b"123456789,ok\n", CsvConfig::default());
     LargestEntryLimit.store(old, Ordering::SeqCst);
@@ -395,6 +400,7 @@ fn TestTooLargeRow() {
 /// 限制针对整行，而不是单个字段。
 #[test]
 fn row_limit_counts_all_fields() {
+    let _guard = LARGEST_ENTRY_LIMIT_TEST_LOCK.lock().unwrap();
     let old = LargestEntryLimit.swap(8, Ordering::SeqCst);
     let result = read_all(b"1234,5678\n", CsvConfig::default());
     LargestEntryLimit.store(old, Ordering::SeqCst);
@@ -573,6 +579,7 @@ fn TestCustomEscapeCharMetacharacter() {
 
 #[test]
 fn TestCSVParserUnescapeDenseRows() {
+    let _guard = LARGEST_ENTRY_LIMIT_TEST_LOCK.lock().unwrap();
     for escape in [b'\\', b'!', b'*'] {
         let cfg = CsvConfig {
             fields_escaped_by: String::from_utf8(vec![escape]).unwrap(),

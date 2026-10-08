@@ -22,7 +22,7 @@ use crate::{CharsetConvertor, Datum, Error, Parser, ReadSeekCloser, Row};
 use std::io::{Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// 单个 CSV 字段允许的最大字节数（默认约 120MiB），超限报配置错误。
+/// 单个 CSV 行允许的最大字节数（默认约 120MiB），超限报配置错误。
 pub static LargestEntryLimit: AtomicUsize = AtomicUsize::new(120 * 1024 * 1024);
 /// 引号字段未正确闭合时的语法错误文案。
 const ERR_UNTERMINATED_QUOTED_FIELD: &str = "syntax error: unterminated quoted field";
@@ -325,7 +325,7 @@ impl CsvParser {
                     out.push(self.data[self.pos]);
                     self.pos += 1
                 }
-                self.ensure_entry_limit(field_start)?;
+                self.ensure_entry_limit()?;
             }
         }
         let start = self.pos;
@@ -340,7 +340,7 @@ impl CsvParser {
                 return Err(Error::Syntax(ERR_UNEXPECTED_QUOTE_FIELD.into()));
             }
             self.pos += 1;
-            self.ensure_entry_limit(field_start)?;
+            self.ensure_entry_limit()?;
         }
         let raw = self.data[start..self.pos].to_vec();
         let is_null = raw == self.cfg.null.as_bytes();
@@ -350,8 +350,8 @@ impl CsvParser {
             is_null,
         })
     }
-    /// 若当前字段已超过 LargestEntryLimit 则返回配置错误。
-    fn ensure_entry_limit(&self, _start: usize) -> Result<(), Error> {
+    /// 若当前行已超过 LargestEntryLimit 则返回配置错误。
+    fn ensure_entry_limit(&self) -> Result<(), Error> {
         let limit = LargestEntryLimit.load(Ordering::Relaxed);
         if self.pos.saturating_sub(self.row_start) > limit {
             Err(Error::Configuration(
