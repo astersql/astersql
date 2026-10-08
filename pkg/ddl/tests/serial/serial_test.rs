@@ -1904,6 +1904,28 @@ fn install_gc_safe_point(tk: &mut astersql_testkit::TestKit, value: &str) {
     );
 }
 
+#[test]
+fn test_mysql_tidb_gc_safe_point_accepts_empty_comment() {
+    let _serial = serial_parity_guard();
+    let (store, _) = create_mock_store();
+    let mut tk = astersql_testkit::TestKit::new(store);
+
+    install_gc_safe_point(&mut tk, "19700101-00:00:01 +0000 UTC");
+
+    assert_eq!(
+        tk.MustQuery(
+            "select variable_value, comment from mysql.tidb \
+             where variable_name = 'tikv_gc_safe_point'",
+            Vec::new(),
+        )
+        .Rows(),
+        vec![vec![
+            "19700101-00:00:01 +0000 UTC".to_owned(),
+            String::new(),
+        ]]
+    );
+}
+
 fn runtime_ddl_job_id(
     tk: &mut astersql_testkit::TestKit,
     database: &str,

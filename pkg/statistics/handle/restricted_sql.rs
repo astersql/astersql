@@ -1717,11 +1717,16 @@ impl<B: HandleBackend + Send> KvRestrictedExecutor<'_, B> {
             // Keep the bootstrap version comment while updating only its value.
             if !existing {
                 if let Some(comment) = values.get(2) {
-                    set(
-                        self.transaction.as_mut(),
-                        system_comment_key(name),
-                        comment.as_bytes().to_vec(),
-                    )?;
+                    // TiDB permits an empty COMMENT column, while the KV API
+                    // rejects empty values as nil. A missing comment key is
+                    // decoded as the same empty string by `system_rows`.
+                    if !comment.is_empty() {
+                        set(
+                            self.transaction.as_mut(),
+                            system_comment_key(name),
+                            comment.as_bytes().to_vec(),
+                        )?;
+                    }
                 }
             }
             return Ok(());
