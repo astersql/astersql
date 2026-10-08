@@ -133,7 +133,8 @@ const SCATTER_CASES: &[ScatterCase] = &[
 // 如果该函数涉及全局状态、failpoint 或外部存储，它还承担把副作用限制在局部的责任。
 
 fn prepare() -> (Arc<AnalyzeStatsStore>, TestKit) {
-    astersql_config::update_global(|conf| conf.path = "127.0.0.1:2379".to_owned());
+    let pd = std::env::var("REAL_TIKV_PD").unwrap_or_else(|_| "127.0.0.1:2379".to_owned());
+    astersql_config::update_global(|conf| conf.path = pd);
     let (store, _domain) = CreateMockStoreAndDomain();
     let mut tk = NewTestKit(store.clone());
     tk.MustExec("USE test", Vec::new());
@@ -177,11 +178,14 @@ fn go_init_sets_pd_path_before_ddl_tests() {
     let observed = astersql_config::get_global_config().path.clone();
     astersql_config::store_global_config(previous.as_ref().clone());
 
-    assert_eq!(observed, "127.0.0.1:2379");
+    assert_eq!(
+        observed,
+        std::env::var("REAL_TIKV_PD").unwrap_or_else(|_| "127.0.0.1:2379".to_owned())
+    );
 }
 
 #[test]
-fn disabled_split_flag_keeps_a_new_table_in_one_region() {
+fn explicit_pre_split_overrides_disabled_implicit_split_flag() {
     let _serial = serial_guard();
     let _split_region = AtomicU32Reset::set(&astersql_ddl::EnableSplitTableRegion, 0);
     let (_store, mut tk) = prepare();
@@ -193,8 +197,8 @@ fn disabled_split_flag_keeps_a_new_table_in_one_region() {
     tk.MustExec("DROP TABLE disabled_split", Vec::new());
 
     assert_eq!(
-        region_count, 1,
-        "Go only applies PRE_SPLIT_REGIONS when ddl.EnableSplitTableRegion is enabled"
+        region_count, 8,
+        "Go applies explicit PRE_SPLIT_REGIONS even when ddl.EnableSplitTableRegion is disabled"
     );
 }
 
