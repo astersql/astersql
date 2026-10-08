@@ -876,11 +876,6 @@ impl SessionBoundAdapterOwner {
             scans
                 .iter()
                 .map(|scan| {
-                    if !scan.AccessCondition.is_empty() {
-                        return Err(BuildError::new(
-                            "typed multi-scan binding requires canonical full record scans",
-                        ));
-                    }
                     let table = scan
                         .Table
                         .as_ref()

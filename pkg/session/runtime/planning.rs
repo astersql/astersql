@@ -2441,7 +2441,7 @@ impl ConcreteSession {
             true,
             false,
             false,
-            None,
+            Some(Arc::clone(&self.domain)),
             Some(
                 prepared
                     .Statement
@@ -2480,7 +2480,42 @@ impl ConcreteSession {
                 .expect("cached value must contain a plan")
                 .restore(plan_context.clone())
                 .map_err(|error| session_error("restore cached physical plan", error))?;
-            (physical, 0.0)
+            let mut scans = Vec::new();
+            super::typed_adapter_bridge::collect_table_scans(physical.as_ref(), &mut scans);
+            if scans.iter().any(|scan| scan.IsPartition) {
+                // Go rebuilds cached partition ranges and physical partition IDs for the
+                // current parameters. Re-optimizing this canonical subtree preserves that
+                // contract until every typed cached scan can rebuild its partition topology.
+                let (row_count, stats_version) =
+                    estimated_table_stats(self.domain.as_ref(), table_id);
+                let (mut builder, _) = astersql_planner_core::NewPlanBuilder()
+                    .withDataSourceProvider(Arc::new(SessionKVDataSourceProvider {
+                        row_count,
+                        stats_version,
+                    }))
+                    .Init(
+                        plan_context.clone(),
+                        Arc::clone(&planning_schema),
+                        astersql_util_hint::NewQBHintHandler(None),
+                    );
+                let mut logical = builder
+                    .buildResultSetNode(
+                        astersql_planner_core::context::TODO(),
+                        &prepared.Ast,
+                        false,
+                    )
+                    .map_err(|error| session_error("rebuild cached partition SELECT", error))?;
+                plan_context.reset_plan_id();
+                astersql_planner_core::DoOptimize(
+                    astersql_planner_core::context::TODO(),
+                    &plan_context,
+                    builder.GetOptFlag(),
+                    &mut logical,
+                )
+                .map_err(|error| session_error("optimize cached partition SELECT", error))?
+            } else {
+                (physical, 0.0)
+            }
         } else {
             let (row_count, stats_version) = estimated_table_stats(self.domain.as_ref(), table_id);
             let (mut builder, _) = astersql_planner_core::NewPlanBuilder()

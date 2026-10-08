@@ -265,6 +265,7 @@ mod typed_projection_test;
 pub mod typed_selection;
 #[cfg(test)]
 mod typed_selection_test;
+pub mod typed_union_all;
 /// UnionScan：合并存储快照与事务写缓冲。
 pub mod union_scan;
 /// UPDATE 执行器。

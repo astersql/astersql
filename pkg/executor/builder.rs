@@ -314,7 +314,8 @@ fn build_typed_physical_plan(
     use astersql_planner_core_operator_physicalop::{
         LegacyPhysicalLock, PhysicalHashAgg, PhysicalHashJoin, PhysicalIndexLookUpReader,
         PhysicalIndexReader, PhysicalIndexScan, PhysicalLimit, PhysicalProjection,
-        PhysicalSelection, PhysicalTableDual, PhysicalTableReader, PhysicalTableScan, PointGetPlan,
+        PhysicalSelection, PhysicalTableDual, PhysicalTableReader, PhysicalTableScan,
+        PhysicalUnionAll, PointGetPlan,
     };
 
     if let Some(dual) = plan.as_any().downcast_ref::<PhysicalTableDual>() {
@@ -448,6 +449,31 @@ fn build_typed_physical_plan(
         )
         .map(|executor| Box::new(executor) as ExecutorBox)
         .map_err(BuildError::new);
+    }
+
+    if plan.as_any().is::<PhysicalUnionAll>() {
+        if locking {
+            return Err(BuildError::new(
+                "typed UnionAll does not support SelectLock",
+            ));
+        }
+        let children = plan
+            .children()
+            .iter()
+            .map(|child| {
+                build_typed_physical_plan(
+                    *child,
+                    bindings,
+                    binding_index,
+                    initial_capacity,
+                    maximum_chunk_size,
+                    false,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        return crate::typed_union_all::TypedUnionAll::new(children)
+            .map(|executor| Box::new(executor) as ExecutorBox)
+            .map_err(BuildError::new);
     }
 
     if let Some(reader) = plan.as_any().downcast_ref::<PhysicalIndexReader>() {
@@ -712,12 +738,16 @@ fn build_typed_physical_plan(
             initial_capacity,
             maximum_chunk_size,
         )?;
-        if scan.FilterCondition.is_empty() {
+        let mut conditions = scan.FilterCondition.clone();
+        if bindings.len() > 1 {
+            conditions.extend(scan.AccessCondition.clone());
+        }
+        if conditions.is_empty() {
             return Ok(child);
         }
         return Ok(Box::new(crate::typed_selection::TypedSelection::new(
             child,
-            scan.FilterCondition.clone(),
+            conditions,
             plan.s_ctx().clone(),
         )));
     }
