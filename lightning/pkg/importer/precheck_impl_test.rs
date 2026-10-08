@@ -747,10 +747,17 @@ fn test_cdc_pitr_check_item() {
     let mut cfg = config::Config::NewConfig();
     cfg.TikvImporter.Backend = config::BackendLocal.into();
     let pd_addrs: Arc<dyn Fn(context::Context) -> Vec<String> + Send + Sync> =
-        Arc::new(|_ctx| vec!["http://127.0.0.1:2379".into()]);
-    let mut ci = NewCDCPITRCheckItem(&cfg, pd_addrs.clone());
+        Arc::new(|_ctx| vec!["http://controlled-pd:2379".into()]);
+    let observed_addrs = Arc::new(Mutex::new(Vec::new()));
+    let captured_addrs = observed_addrs.clone();
+    let status_getter: CDCPITRStatusGetter = Arc::new(move |_ctx, _cfg, addrs, keyspace_name| {
+        assert!(keyspace_name.is_empty());
+        *captured_addrs.lock().unwrap() = addrs.to_vec();
+        Ok(false)
+    });
+    let mut ci = NewCDCPITRCheckItemWithStatusGetter(&cfg, pd_addrs.clone(), status_getter.clone());
     assert_eq!(ci.GetCheckItemID(), precheck::CheckTargetUsingCDCPITR);
-    // etcd stub GetCDCPiTRStatus returns false → pass
+    // The unit test owns the PD/etcd boundary and cannot silently use a local service.
     let res = ci.Check(precheck::context::Background()).unwrap();
     let r = assert_result(
         res,
@@ -759,9 +766,13 @@ fn test_cdc_pitr_check_item() {
         true,
     );
     assert!(r.Message.contains("no active CDC/PiTR"));
+    assert_eq!(
+        *observed_addrs.lock().unwrap(),
+        ["http://controlled-pd:2379"]
+    );
 
     cfg.TikvImporter.Backend = config::BackendTiDB.into();
-    let mut ci = NewCDCPITRCheckItem(&cfg, pd_addrs);
+    let mut ci = NewCDCPITRCheckItemWithStatusGetter(&cfg, pd_addrs, status_getter);
     let res = ci.Check(precheck::context::Background()).unwrap();
     assert!(res.is_none(), "TiDB backend skips CDC/PiTR check");
 }

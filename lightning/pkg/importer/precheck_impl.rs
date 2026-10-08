@@ -575,10 +575,14 @@ impl precheck::Checker for checkpointCheckItem {
 // 语义说明：`CDCPITRCheckItem` 对齐 Go 侧同名入口，承接 importer slim port 的最小行为契约。
 // 语义说明：这里真正需要稳定的是调用方可观察到的输入输出、跳过条件和错误形状。
 // 语义说明：因此注释重点放在职责边界，而不是重复 Rust 语法本身。
+pub(crate) type CDCPITRStatusGetter =
+    Arc<dyn Fn(Context, &Config, &[String], &str) -> crate::Result<bool> + Send + Sync>;
+
 pub struct CDCPITRCheckItem {
     pub keyspaceName: String,
     pub cfg: Config,
     pub pdAddrsGetter: Arc<dyn Fn(crate::context::Context) -> Vec<String> + Send + Sync>,
+    statusGetter: CDCPITRStatusGetter,
 }
 // 语义说明：`NewCDCPITRCheckItem` 对齐 Go 侧同名入口，承接 importer slim port 的最小行为契约。
 // 语义说明：这里真正需要稳定的是调用方可观察到的输入输出、跳过条件和错误形状。
@@ -587,17 +591,38 @@ pub fn NewCDCPITRCheckItem(
     cfg: &Config,
     pdAddrsGetter: Arc<dyn Fn(crate::context::Context) -> Vec<String> + Send + Sync>,
 ) -> Box<dyn precheck::Checker> {
-    NewCDCPITRCheckItemWithKeyspaceName(cfg, pdAddrsGetter, &cfg.TikvImporter.KeyspaceName)
+    NewCDCPITRCheckItemWithStatusGetter(cfg, pdAddrsGetter, Arc::new(getCDCPiTRStatus))
+}
+pub(crate) fn NewCDCPITRCheckItemWithStatusGetter(
+    cfg: &Config,
+    pdAddrsGetter: Arc<dyn Fn(crate::context::Context) -> Vec<String> + Send + Sync>,
+    statusGetter: CDCPITRStatusGetter,
+) -> Box<dyn precheck::Checker> {
+    newCDCPITRCheckItem(
+        cfg,
+        pdAddrsGetter,
+        &cfg.TikvImporter.KeyspaceName,
+        statusGetter,
+    )
 }
 pub fn NewCDCPITRCheckItemWithKeyspaceName(
     cfg: &Config,
     pdAddrsGetter: Arc<dyn Fn(crate::context::Context) -> Vec<String> + Send + Sync>,
     keyspaceName: &str,
 ) -> Box<dyn precheck::Checker> {
+    newCDCPITRCheckItem(cfg, pdAddrsGetter, keyspaceName, Arc::new(getCDCPiTRStatus))
+}
+fn newCDCPITRCheckItem(
+    cfg: &Config,
+    pdAddrsGetter: Arc<dyn Fn(crate::context::Context) -> Vec<String> + Send + Sync>,
+    keyspaceName: &str,
+    statusGetter: CDCPITRStatusGetter,
+) -> Box<dyn precheck::Checker> {
     Box::new(CDCPITRCheckItem {
         keyspaceName: keyspaceName.into(),
         cfg: cfg.clone(),
         pdAddrsGetter,
+        statusGetter,
     })
 }
 // 语义说明：`CDCPITRCheckItem` 对齐 Go 侧同名入口，承接 importer slim port 的最小行为契约。
@@ -615,13 +640,8 @@ impl precheck::Checker for CDCPITRCheckItem {
             return Ok(None);
         }
         let addrs = (self.pdAddrsGetter)(Context::default());
-        let cli = etcd::Client(
-            dialEtcdWithCfg(Context::default(), &self.cfg, &addrs, &self.keyspaceName)
-                .map_err(map_err)?,
-        );
-        let active = streamhelper::GetCDCPiTRStatus(&cli);
-        cli.Close();
-        let active = active.map_err(map_err)?;
+        let active = (self.statusGetter)(Context::default(), &self.cfg, &addrs, &self.keyspaceName)
+            .map_err(map_err)?;
         Ok(ok_result(
             precheck::CheckTargetUsingCDCPITR,
             precheck::Critical,
@@ -633,6 +653,18 @@ impl precheck::Checker for CDCPITRCheckItem {
             },
         ))
     }
+}
+
+fn getCDCPiTRStatus(
+    ctx: Context,
+    cfg: &Config,
+    addrs: &[String],
+    keyspaceName: &str,
+) -> crate::Result<bool> {
+    let cli = etcd::Client(dialEtcdWithCfg(ctx, cfg, addrs, keyspaceName)?);
+    let active = streamhelper::GetCDCPiTRStatus(&cli);
+    cli.Close();
+    active
 }
 
 // 语义说明：`schemaCheckItem` 对齐 Go 侧同名入口，承接 importer slim port 的最小行为契约。
