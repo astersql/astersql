@@ -1063,8 +1063,19 @@ impl ExecStmt {
                 finalized.sql_type = "commit".into();
                 return Some(finalized);
             }
-            if plan.kind == StatementRUPlanKind::PointLookup && plan.plan.id() <= 0 {
-                return None;
+            if plan.kind == StatementRUPlanKind::PointLookup {
+                return match calculate_statement_ru_point_lookup(
+                    plan.plan.id(),
+                    evidence,
+                    setup,
+                    owner.root_eof(),
+                ) {
+                    Ok(snapshot) => Some(snapshot),
+                    Err(state) => {
+                        failure = statement_ru_failed(state);
+                        None
+                    }
+                };
             }
             let subqueries = self.Ctx.StatementRUScalarSubqueries();
             let forest = astersql_planner_core::FlattenTypedPhysicalPlanForest(

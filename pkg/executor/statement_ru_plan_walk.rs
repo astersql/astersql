@@ -655,6 +655,60 @@ pub fn calculate_statement_ru_forest(
     calculate_statement_ru_forest_with_operators(forest, evidence, setup, root_eof, None)
 }
 
+/// Go `calculateStatementRUPointLookup` finalizes a top-level point read
+/// directly. Scalar-subquery and CTE forests are not part of that fast path.
+pub fn calculate_statement_ru_point_lookup(
+    plan_id: i32,
+    evidence: &StatementRURuntimeEvidence,
+    setup: StatementRUCalculationSetup,
+    root_eof: bool,
+) -> Result<crate::statement_ru_result::StatementRUFinalizedSnapshot, StatementRUOperatorState> {
+    use StatementRUOperatorState::{Complete, Invalid};
+    if plan_id <= 0 || !root_eof {
+        return Err(Invalid);
+    }
+    let mut calculator = StatementRUCalculator::new(setup);
+    if let Some(bytes) = evidence.tikv_response_bytes {
+        if bytes < 0 {
+            return Err(Invalid);
+        }
+        calculator.units.net_bytes = bytes as f64;
+        if bytes != 0 {
+            if let Some(report) = calculator.report.as_mut() {
+                report.add(
+                    StatementRUEngine::TiKV,
+                    StatementRUOperator::CopTransport,
+                    StmtUnits {
+                        net_bytes: bytes as f64,
+                        ..StmtUnits::default()
+                    },
+                );
+            }
+        }
+    }
+    let before_point = calculator.units;
+    let point = evidence
+        .points
+        .iter()
+        .find(|(id, _)| *id == plan_id)
+        .map(|(_, point)| point)
+        .or(evidence.point.as_ref());
+    let state = collect_statement_ru_point_lookup_evidence(point, &mut calculator);
+    if state != Complete {
+        return Err(state);
+    }
+    calculator.units.operator_num += 1.0;
+    calculator.compute[StatementRUEngine::TiDB as usize].operator_num += 1.0;
+    if let Some(report) = calculator.report.as_mut() {
+        report.add_operator(
+            StatementRUEngine::TiDB,
+            StatementRUOperator::PointLookup,
+            calculator.units.sub(before_point),
+        );
+    }
+    calculator.finalize().ok_or(Invalid)
+}
+
 pub fn calculate_statement_ru_forest_with_operators(
     forest: &astersql_planner_core::TypedFlatPhysicalPlan<'_>,
     evidence: &StatementRURuntimeEvidence,

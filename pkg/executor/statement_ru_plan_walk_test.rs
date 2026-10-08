@@ -1020,8 +1020,10 @@ fn go_merge_187_tree_read_path_point_and_forest() {
     evidence.point = None;
     assert_eq!(
         calculate_statement_ru_plan(&tree, 0, &evidence, &mut calculator).state,
-        StatementRUOperatorState::Unsupported
+        StatementRUOperatorState::Complete
     );
+    assert_eq!(calculator.units.scan_bytes, 0.0);
+    assert_eq!(calculator.units.net_bytes, 0.0);
 }
 
 #[test]
@@ -2915,7 +2917,12 @@ fn go_merge_187_terminal_once_suppression_and_first_outcome() {
             ..Default::default()
         });
         let result = stmt.finishStatementRU(terminal_error.as_ref());
-        assert_eq!(result.is_some(), case == 12, "case {case}");
+        assert_eq!(result.is_some(), case == 8 || case == 12, "case {case}");
+        if case == 8 {
+            let result = result.as_ref().unwrap();
+            assert_eq!(result.units.operator_num, 1.0);
+            assert_eq!(result.units.scan_bytes, 0.0);
+        }
         stmt.Ctx = Arc::new(RUTerminalRuntime::default());
         stmt.TypedPlan = original_plan;
         stmt.RecordStatementRUFinalOutcome(true);
