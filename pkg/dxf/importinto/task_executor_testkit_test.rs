@@ -104,13 +104,14 @@ fn import_step_run_subtask_cleans_real_local_engines_before_retry() {
         backend,
         calls: calls.clone(),
     };
+    let (logger, _logs) = astersql_lightning_log::testlogger::MakeTestLogger([]);
     let runtime = Arc::new(crate::ConfiguredEncodeSortRuntime {
         ControllerServices: Arc::new(|| unreachable!()),
         ImporterService: Arc::new(|| unreachable!()),
         SharedImporterService: Arc::new(std::sync::OnceLock::new()),
         ObjectStore: Arc::new(astersql_objstore::azblob::MemoryStorage::default()),
         ObjectStoreFactory: None,
-        LoggerFactory: Arc::new(|| unreachable!()),
+        LoggerFactory: Arc::new(move || logger.clone()),
         LocalEngines: None,
         Collector: None,
         WorkerFactory: Some(Arc::new(|| Ok(Box::new(FailSortChunk)))),
