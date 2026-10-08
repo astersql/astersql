@@ -327,6 +327,7 @@ fn optional_property_keys_and_unused_bits_match_go() {
     let mut full = current.Add(OptPropDDLOwnerInfo);
     for key in [
         OptPropSessionVars,
+        OptPropSessionContext,
         OptPropInfoSchema,
         OptPropKVStore,
         OptPropSQLExecutor,
