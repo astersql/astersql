@@ -2536,7 +2536,15 @@ impl ConcreteSession {
         }
         let statement = ast::NodeRef::new(statements.remove(0));
         let info_schema = self.domain.info_schema();
-        let plan_context = plan_context_with_params(Arc::clone(&self.session_vars), &[], false);
+        let plan_context = plan_context_with_params_and_explain(
+            Arc::clone(&self.session_vars),
+            &[],
+            false,
+            false,
+            false,
+            Some(Arc::clone(&self.domain)),
+            None,
+        );
         let (row_count, stats_version) =
             estimated_table_stats(self.domain.as_ref(), expected_table_id);
         let (mut builder, _) = astersql_planner_core::NewPlanBuilder()
