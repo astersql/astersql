@@ -2005,6 +2005,30 @@ fn collect_predicate_columns_descendants(
     plan: &mut dyn logicalop::LogicalPlan,
     inherited: &[expression::Column],
 ) {
+    collect_predicate_columns_and_groups_descendants(plan, inherited, &[]);
+}
+
+/// Mirror Go's column-stats collector by carrying multi-column NDV requests
+/// through schema-preserving operators to the owning data source.
+fn collect_predicate_columns_and_groups_descendants(
+    plan: &mut dyn logicalop::LogicalPlan,
+    inherited: &[expression::Column],
+    inherited_groups: &[Vec<expression::Column>],
+) {
+    let asked_column_groups = if let Some(join) =
+        plan.as_any().downcast_ref::<logicalop::LogicalJoin>()
+    {
+        join.ExtractColGroups(inherited_groups)
+    } else if let Some(projection) = plan.as_any().downcast_ref::<logicalop::LogicalProjection>() {
+        projection.ExtractColGroups(inherited_groups)
+    } else if let Some(aggregation) = plan
+        .as_any()
+        .downcast_ref::<logicalop::LogicalAggregation>()
+    {
+        aggregation.ExtractColGroups(inherited_groups)
+    } else {
+        Vec::new()
+    };
     let mut interesting = inherited.to_vec();
     if let Some(selection) = plan.as_any().downcast_ref::<logicalop::LogicalSelection>() {
         interesting.extend(
@@ -2053,6 +2077,11 @@ fn collect_predicate_columns_descendants(
     interesting.dedup_by_key(|column| column.UniqueID);
 
     if let Some(source) = plan.as_any_mut().downcast_mut::<logicalop::DataSource>() {
+        source.AskedColumnGroup = inherited_groups
+            .iter()
+            .filter(|group| group.iter().all(|column| source.Schema().Contains(column)))
+            .cloned()
+            .collect();
         interesting.retain(|column| source.Schema().Contains(column));
         // Go collects statistics from pushed-down filters. AllConds also
         // contributes to index-pruning interests, but partition-pruning-only
@@ -2113,7 +2142,11 @@ fn collect_predicate_columns_descendants(
             }
         }
         if let Some(child) = projection.Children_mut().first_mut() {
-            collect_predicate_columns_descendants(child.as_mut(), &child_interesting);
+            collect_predicate_columns_and_groups_descendants(
+                child.as_mut(),
+                &child_interesting,
+                &asked_column_groups,
+            );
         }
         return;
     }
@@ -2123,7 +2156,11 @@ fn collect_predicate_columns_descendants(
             .filter(|column| child.Schema().Contains(column))
             .cloned()
             .collect::<Vec<_>>();
-        collect_predicate_columns_descendants(child.as_mut(), &child_interesting);
+        collect_predicate_columns_and_groups_descendants(
+            child.as_mut(),
+            &child_interesting,
+            &asked_column_groups,
+        );
     }
 }
 
@@ -8247,10 +8284,17 @@ pub(crate) fn DoOptimizeForUpdate(
 
 fn do_optimize_with_update_projection_policy(
     sctx: &base::ContextRef,
-    flag: u64,
+    mut flag: u64,
     plan: &mut logicalop::LogicalPlanRef,
     preserve_update_schema: bool,
 ) -> Result<(Box<dyn base::PhysicalPlan>, f64), expression::Error> {
+    // Go's adjustOptimizationFlags always installs the statistics collection
+    // and wait points for user SQL. PlanBuilder intentionally leaves these
+    // optimizer-owned flags unset.
+    let vars = sctx.GetSessionVars();
+    if !vars.InRestrictedSQL {
+        flag |= rule::FLAG_COLLECT_PREDICATE_COLUMNS_POINT | rule::FLAG_SYNC_WAIT_STATS_LOAD_POINT;
+    }
     capture_plan_replayer_table_stats(plan.as_ref(), sctx.GetSessionVars());
     let preserve_update_schema = preserve_update_schema
         || plan.Schema().Columns.iter().any(|column| {

@@ -1048,15 +1048,28 @@ impl LogicalJoin {
     }
     /// 保留完全落在某一子树 Schema 内的列组。
     pub fn ExtractColGroups(&self, groups: &[Vec<Column>]) -> Vec<Vec<Column>> {
-        groups
-            .iter()
-            .filter(|group| {
-                self.Children()
-                    .iter()
-                    .any(|child| group.iter().all(|column| child.Schema().Contains(column)))
-            })
-            .cloned()
-            .collect()
+        let (left_keys, right_keys) = self.GetJoinKeys();
+        let mut extracted = Vec::with_capacity(groups.len() + 2);
+        if left_keys.len() > 1
+            && matches!(
+                self.JoinType,
+                JoinType::InnerJoin | JoinType::LeftOuterJoin | JoinType::RightOuterJoin
+            )
+        {
+            extracted.push(expression::SortColumns(&left_keys));
+            extracted.push(expression::SortColumns(&right_keys));
+        }
+        extracted.extend(
+            groups
+                .iter()
+                .filter(|group| {
+                    self.Children()
+                        .iter()
+                        .any(|child| group.iter().all(|column| child.Schema().Contains(column)))
+                })
+                .cloned(),
+        );
+        extracted
     }
     /// 潜在分区键：左右连接键并集。
     pub fn GetPotentialPartitionKeys(&self) -> Vec<Column> {
