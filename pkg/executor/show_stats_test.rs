@@ -616,12 +616,19 @@ fn valid_datetime(value: &str) -> bool {
             .all(|(index, byte)| matches!(index, 4 | 7 | 10 | 13 | 16) || byte.is_ascii_digit())
 }
 
-/// 生成当前时间的 snapshot 字符串（含微秒），供 `tidb_snapshot` 使用。
+/// 生成当前系统时区的 snapshot 字符串（含微秒），供 `tidb_snapshot` 使用。
+///
+/// Go 用例通过 `time.Now().Format(...)` 产生无时区的本地墙上时间；
+/// `tidb_snapshot` 也按系统时区解释该字符串。
 fn snapshot_now() -> String {
     let elapsed = std::time::SystemTime::now()
         .duration_since(std::time::SystemTime::UNIX_EPOCH)
         .unwrap();
-    let seconds = elapsed.as_secs() as i64;
+    let offset_seconds = astersql_util_timeutil::time_zone::Zone(
+        &astersql_util_timeutil::time_zone::SystemLocation(),
+    )
+    .1;
+    let seconds = (elapsed.as_secs() as i64).saturating_add(offset_seconds);
     let days = seconds.div_euclid(86_400);
     let second_of_day = seconds.rem_euclid(86_400);
     let shifted_days = days + 719_468;
