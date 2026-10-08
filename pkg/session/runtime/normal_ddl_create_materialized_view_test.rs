@@ -597,6 +597,9 @@ fn normal_ddl_plan_create_materialized_view_2_snapshot_and_restart() {
             .query("INSERT INTO test.normal_ddl_target VALUES (18,'before build')")
             .unwrap();
         run(&f, &mut j).unwrap();
+        f.pool.close();
+        f.pool = super::system_session::SystemSessionPool::new(f.domain.clone());
+        j = f.queue(j.id).unwrap();
         f.domain.reload().unwrap();
         run(&f, &mut j).unwrap();
         assert!(j.error.is_none(), "{:?}", j.error);
@@ -604,6 +607,9 @@ fn normal_ddl_plan_create_materialized_view_2_snapshot_and_restart() {
         assert!(snapshot > j.real_start_ts);
         assert_eq!(j.get_row_count(), 2);
         assert_eq!(f.queue(j.id).unwrap().get_row_count(), 2);
+        let maintenance=f.pool.acquire().unwrap().query(format!("SELECT LAST_SUCCESS_READ_TSO,LAST_SUCCESS_REFRESH_END_UNIX_SECONDS FROM mysql.tidb_mview_refresh_info WHERE MVIEW_ID={}",t.ID)).unwrap();
+        assert_ne!(maintenance[0][0], snapshot.to_string());
+        assert_eq!(maintenance[0][1], "<nil>");
         run(&f, &mut j).unwrap();
         assert_eq!(j.snapshot_ver, snapshot);
         assert_eq!(
@@ -615,16 +621,16 @@ fn normal_ddl_plan_create_materialized_view_2_snapshot_and_restart() {
             "2"
         );
         let maintenance=f.pool.acquire().unwrap().query(format!("SELECT LAST_SUCCESS_READ_TSO,LAST_SUCCESS_REFRESH_END_UNIX_SECONDS FROM mysql.tidb_mview_refresh_info WHERE MVIEW_ID={}",t.ID)).unwrap();
-        assert_ne!(maintenance[0][0], snapshot.to_string());
-        assert_eq!(maintenance[0][1], "<nil>");
-        // As Go does, a new owner without the completed reorg context rejects
-        // residual physical rows instead of silently rebuilding live data.
+        assert_eq!(maintenance[0][0], snapshot.to_string());
+        assert_ne!(maintenance[0][1], "<nil>");
+        // A new owner reloads the durable completion instead of treating the
+        // published rows as an unfinished build that needs to be rebuilt.
         f.pool.close();
         f.pool = super::system_session::SystemSessionPool::new(f.domain.clone());
         j = f.queue(j.id).unwrap();
-        run(&f, &mut j).unwrap();
-        assert_eq!(j.state, JobState::Rollingback);
-        assert!(j.error.as_ref().unwrap().contains("residual build rows"));
+        assert_eq!(j.state, JobState::Done);
+        assert!(j.error.is_none(), "{:?}", j.error);
+        assert_eq!(j.snapshot_ver, snapshot);
         assert!(f.reader().get_history_ddl_job(j.id).unwrap().is_none());
     }
 }
