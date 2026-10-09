@@ -185,6 +185,7 @@ fn dml_stmt(
         ExecStmt, PlanInfo, StatementContext, StatementKind, StatementNode,
     };
     let statement_kind = match kind {
+        astersql_executor::adapter::PlanKind::Query => StatementKind::Select,
         astersql_executor::adapter::PlanKind::Insert => StatementKind::Insert,
         astersql_executor::adapter::PlanKind::Update => StatementKind::Update,
         astersql_executor::adapter::PlanKind::Delete => StatementKind::Delete,
@@ -764,6 +765,10 @@ fn transactional_dml_uses_dml_timeout() {
     session
         .Execute("set tidb_dml_max_execution_time = 60000")
         .unwrap();
+    assert_eq!(
+        session.WithSessionVars(|vars| vars.DMLMaxExecutionTime),
+        60_000
+    );
     session.Execute("begin pessimistic").unwrap();
     let owner = Arc::new(SessionBoundAdapterOwner::new(session));
     let sql = "insert into t values (20,20)";
@@ -3075,14 +3080,16 @@ fn statement_ru_post_compile_cases(mode: u8) {
             STATEMENT_RU_POST_RUN.with(|hook| *hook.borrow_mut() = None);
         }
     }
+    let (domain, setup) = crate::runtime::CreateAnalyzeSession().unwrap();
+    setup
+        .execute("create table ru_terminal (id int primary key)")
+        .unwrap();
+    setup
+        .execute("insert into ru_terminal values (11), (22)")
+        .unwrap();
+    drop(setup);
     for fault in 0..if mode != 0 { 5 } else { 3 } {
-        let (domain, session) = crate::runtime::CreateAnalyzeSession().unwrap();
-        session
-            .execute("create table ru_terminal (id int primary key)")
-            .unwrap();
-        session
-            .execute("insert into ru_terminal values (11), (22)")
-            .unwrap();
+        let session = super::ConcreteSession::new(domain.clone());
         let prepared = session
             .PreparePlannedKVSelect(
                 "select id from ru_terminal order by id",
@@ -3205,8 +3212,8 @@ fn statement_ru_post_compile_cases(mode: u8) {
         assert!(session.inner.statement_ru_pending.borrow().is_none());
         assert!(session.inner.statement_ru_delayed.borrow().is_none());
         assert!(!session.has_file_transfer_reader());
-        domain.close();
     }
+    domain.close();
 }
 
 #[test]

@@ -459,6 +459,7 @@ impl StatementRUPublicationSink for StatementRUContextSink<'_> {
         let _guard = astersql_metrics::metrics::PACKAGE_INIT_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        astersql_metrics::ru_v2::InitRUV2Metrics();
         if self.ttl_job {
             let counter =
                 unsafe { (&*std::ptr::addr_of!(astersql_metrics::ru_v2::RUV2TTLTotal)).clone() };
@@ -479,6 +480,7 @@ impl StatementRUPublicationSink for StatementRUContextSink<'_> {
             let _guard = astersql_metrics::metrics::PACKAGE_INIT_LOCK
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
+            astersql_metrics::ru_v2::InitRUV2Metrics();
             unsafe { (&*std::ptr::addr_of!(astersql_metrics::ru_v2::RUV2Unit)).clone() }
         };
         counter
@@ -491,6 +493,7 @@ impl StatementRUPublicationSink for StatementRUContextSink<'_> {
             let _guard = astersql_metrics::metrics::PACKAGE_INIT_LOCK
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
+            astersql_metrics::ru_v2::InitRUV2Metrics();
             unsafe { (&*std::ptr::addr_of!(astersql_metrics::ru_v2::RUV2Statements)).clone() }
         };
         counter

@@ -22,6 +22,7 @@
 use prometheus::core::Collector;
 use prometheus::{Counter, Gauge, Registry};
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use crate::main_test::ensure_test_env;
 use crate::metrics::{
@@ -47,6 +48,29 @@ fn read_gauge_value(gauge: &Gauge) -> f64 {
 /// 读取 Counter 当前值。
 fn read_counter_value(counter: &Counter) -> f64 {
     counter.get()
+}
+
+#[test]
+fn ru_v2_metrics_initialize_once_under_concurrency() {
+    let start = Arc::new(std::sync::Barrier::new(9));
+    let mut workers = Vec::new();
+    for _ in 0..8 {
+        let start = start.clone();
+        workers.push(std::thread::spawn(move || {
+            start.wait();
+            crate::ru_v2::InitRUV2Metrics();
+            crate::ru_v2::AddRUV2Results(1.0, 1.0, 1.0, 3.0, "select");
+        }));
+    }
+    start.wait();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    unsafe {
+        assert!(RUV2Total.is_some());
+        assert!(RUV2BySQLType.is_some());
+        assert!(RUV2ByEngine.is_some());
+    }
 }
 
 #[test]

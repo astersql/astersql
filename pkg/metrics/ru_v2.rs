@@ -24,6 +24,7 @@ use crate::bindinfo::compat_prometheus::{
 };
 use crate::bindinfo::{compat_metricscommon as metricscommon, compat_prometheus as prometheus};
 use crate::*;
+use std::sync::Once;
 
 // 仅构造 Prometheus 指标描述与句柄，不会注册采集器、连接数据库、访问 TiKV 或执行请求计费。
 
@@ -58,6 +59,7 @@ static mut ruv2Delete: Option<prometheus::Counter> = None;
 static mut ruv2Commit: Option<prometheus::Counter> = None;
 static mut ruv2Analyze: Option<prometheus::Counter> = None;
 static mut ruv2Other: Option<prometheus::Counter> = None;
+static RUV2_METRICS_INIT: Once = Once::new();
 
 // counter 对应 Go 中重复的 metricscommon.NewCounter(CounterOpts{...}) 构造形状。
 /// 构造命名空间为 tidb、子系统为 ruv2 的 Counter。
@@ -89,7 +91,7 @@ fn counter_vec(name: &'static str, help: &'static str) -> prometheus::CounterVec
 // InitRUV2Metrics 按 Go 源码顺序初始化 RU v2 指标，最后建立热点标签缓存。
 /// 初始化全部 RU v2 指标并预热热点 executor/coprocessor 标签缓存。
 pub fn InitRUV2Metrics() {
-    unsafe {
+    RUV2_METRICS_INIT.call_once(|| unsafe {
         RUV2TTLTotal = Some(counter(
             "ttl_ru_total",
             "Counter of RU v2 consumption from TTL user-table scans and deletes, including their commits; included in ru_total.",
@@ -152,11 +154,12 @@ pub fn InitRUV2Metrics() {
             },
             &["status", "reason"],
         ));
-    }
+    });
 }
 
 /// Record RU totals by SQL type and execution engine using prebound counters.
 pub fn AddRUV2Results(tikv_ru: f64, tidb_ru: f64, tiflash_ru: f64, total_ru: f64, sql_type: &str) {
+    InitRUV2Metrics();
     unsafe {
         let sql_counter = match sql_type {
             "select" => &ruv2Select,
@@ -196,6 +199,7 @@ pub fn AddDDLJobRU(ru: f64) {
     if ru <= 0.0 {
         return;
     }
+    InitRUV2Metrics();
     unsafe {
         RUV2Total
             .as_ref()

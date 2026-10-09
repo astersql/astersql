@@ -6487,6 +6487,18 @@ impl ConcreteSession {
                             })?;
                     }
                 }
+                astersql_sessionctx_vardef::TiDBDMLMaxExecutionTime => {
+                    if !is_global {
+                        self.session_vars
+                            .SetHintSystemVarWithOldState(&name, value.trim_matches(['\'', '"']))
+                            .map_err(|error| {
+                                session_error(
+                                    "set tidb_dml_max_execution_time system variable",
+                                    error,
+                                )
+                            })?;
+                    }
+                }
                 "tidb_pessimistic_txn_fair_locking" => {
                     self.state.borrow_mut().fair_locking = variable_is_on(&value);
                 }

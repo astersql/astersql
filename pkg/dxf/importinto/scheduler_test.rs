@@ -1048,11 +1048,23 @@ fn registered_import_scheduler_reuses_encode_runtime_services() {
         Collector: None,
         WorkerFactory: None,
     });
-    let services = Arc::new(ImportSchedulerServices::FromEncodeRuntime(
+    let mut services = ImportSchedulerServices::FromEncodeRuntime(
         encode.clone(),
         vec![],
         Arc::new(|_, _| crate::planner::PlanCtx::default()),
-    ));
+    );
+    let table_info = Arc::new(model::TableInfo {
+        ID: 42,
+        Name: model::ast::NewCIStr("import_table"),
+        ..Default::default()
+    });
+    let table = table_info.clone();
+    services.Table = Some(Arc::new(move || {
+        Arc::new(astersql_planner_core_operator_physicalop::MetadataTableAdapter::New(&table))
+            as Arc<dyn astersql_table::Table>
+    }));
+    services.CheckImportTableEmpty = Some(Arc::new(|_| Ok(())));
+    let services = Arc::new(services);
     let (_domain, manager) = real_pending_import_job_manager(41);
     RegisterImportSchedulerFactoryWithServices(Arc::new(Runtime), manager, services);
     let factory =
@@ -1064,11 +1076,7 @@ fn registered_import_scheduler_reuses_encode_runtime_services() {
         JobID: 41,
         Plan: importer::Plan {
             DBName: "test".into(),
-            TableInfo: Some(Arc::new(model::TableInfo {
-                ID: 42,
-                Name: model::ast::NewCIStr("import_table"),
-                ..Default::default()
-            })),
+            TableInfo: Some(table_info),
             ..Default::default()
         },
         ChunkMap: HashMap::from([(

@@ -153,7 +153,9 @@ fn test_pipeline_concurrent_handler_2() {
         4,
         Arc::new(move |_ctx, _ct| {
             c1.fetch_add(1, Ordering::SeqCst);
-            std::thread::sleep(Duration::from_millis(2));
+            // Match the Go regression's scheduling window so every worker can
+            // take work before the failing stage cancels the pipeline.
+            std::thread::sleep(Duration::from_millis(10));
             Ok(())
         }),
         Arc::new(|_ctx| Ok(())),
@@ -164,7 +166,12 @@ fn test_pipeline_concurrent_handler_2() {
         "task2",
         concurrency,
         Arc::new(move |_ctx, ct| {
-            c2.fetch_add(1, Ordering::SeqCst);
+            let observed = c2.fetch_add(1, Ordering::SeqCst) + 1;
+            if observed <= concurrency as i64 {
+                while c2.load(Ordering::SeqCst) < concurrency as i64 {
+                    std::thread::yield_now();
+                }
+            }
             if ct.Table.ID > concurrency as i64 {
                 return Err(Error::new("failed in task2"));
             }

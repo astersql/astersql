@@ -861,7 +861,9 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
             if vars.InNonTransactionalDML {
                 0
             } else {
-                vars.DMLMaxExecutionTime
+                vars.GetSystemVar(astersql_sessionctx_vardef::TiDBDMLMaxExecutionTime)
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(vars.DMLMaxExecutionTime)
             }
         })
     }
@@ -1924,6 +1926,9 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
         Some(duration)
     }
     fn ObserveStatementDuration(&self, statement_type: &str) {
+        if self.RestrictedSQL() {
+            return;
+        }
         self.session.WithSessionVars(|vars| {
             if vars.InRestrictedSQL || vars.StmtCtx.InRestrictedSQL {
                 return;
@@ -1984,7 +1989,7 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
         self.runaway_resource_group_override.borrow_mut().take();
     }
     fn RestrictedSQL(&self) -> bool {
-        self.session.WithSessionVars(|vars| vars.InRestrictedSQL)
+        self.session.state.borrow().in_restricted_sql
     }
     fn RedactLog(&self) -> bool {
         self.session.WithSessionVars(|vars| {
