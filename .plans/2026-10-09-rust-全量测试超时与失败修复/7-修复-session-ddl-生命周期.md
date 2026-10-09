@@ -2,7 +2,16 @@
 
 批次：【批次 3】 依赖批次 1
 
-状态：未开始
+状态：已完成，待回归验证
+
+回归记录（2026-10-09）：
+
+- 聚焦失败验证先稳定复现：4 项中 1 通过、2 失败、1 超时，退出码 100；症状分别为 worker 关闭计数旧断言、已实现 create-table handler 被旧测试误当 unavailable、partial-index runtime 已支持后旧断言仍期待 deferred。
+- 修复后聚焦验证：更新后的 4 项全部通过，退出码 0，772 项跳过；worker 生命周期项耗时 4.501 秒，无后台 panic 或 10 秒超时。
+- `cargo fmt --all` 退出码 0。
+- Ready 交付检查 `make lint` 退出码 0。
+- `test(normal_ddl)` 广集启动 219 项，但前 10 项中的 5 个任务外 `normal_ddl_create_materialized_view_shadow_test` 在默认 10 秒预算超时；为遵守昂贵广扫范围规则主动中止，退出码 100，4 通过、1 SIGINT、5 超时、209 未运行。该任务外慢测阻止完整广集形成通过证据，需后续批次回归。
+- Cargo 共享槽位：slot 1；`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1`。
 
 目的：修复 DDL worker 调优、handler unavailable、schema barrier 恢复和 partial-index validation 的实际生命周期错误。
 

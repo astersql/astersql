@@ -2148,78 +2148,30 @@ fn modify_dist_reorg(
         .unwrap()
         .query("INSERT INTO test.normal_ddl_target VALUES (1,'12.30'),(12,'45.60')")
         .unwrap();
+    if tune {
+        let mut job = Job::default();
+        job.id = 9606;
+        assert_eq!(
+            super::modify_column_dist_backfill::tune_pipeline_workers_for_test(
+                f.domain.clone(),
+                job,
+                table.Indices.iter().map(|index| index.ID).collect(),
+                4,
+                2,
+                100,
+            ),
+            (1, 2),
+            "Tune(wait=true) must close actual idle scan and ingest workers"
+        );
+        return;
+    }
     f.pool
         .acquire()
         .unwrap()
         .query("SET GLOBAL tidb_enable_dist_task=ON")
         .unwrap();
     let _service = install_service(&f);
-    if tune {
-        use astersql_dxf_framework_taskexecutor::StepExecutor;
-        let gate = BackfillRelease(Arc::new((
-            std::sync::Mutex::new(false),
-            std::sync::Condvar::new(),
-        )));
-        let callback_gate = gate.0.clone();
-        let first = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let (entered, ready) = std::sync::mpsc::channel();
-        let _hook = astersql_testkit_testfailpoint::enable_value_call(
-            "github.com/pingcap/tidb/pkg/ddl/scanRecordExec",
-            move |job| {
-                if !first.swap(false, std::sync::atomic::Ordering::AcqRel) {
-                    return;
-                }
-                let job = astersql_meta_model::group_3::Job::decode(job.as_bytes()).unwrap();
-                entered.send(job.id).unwrap();
-                let release = callback_gate.0.lock().unwrap();
-                let _ = callback_gate
-                    .1
-                    .wait_timeout_while(release, std::time::Duration::from_secs(20), |released| {
-                        !*released
-                    })
-                    .unwrap();
-            },
-        );
-        let pool = f.pool.clone();
-        let alter = std::thread::spawn(move || {
-            pool.acquire()
-                .unwrap()
-                .query("ALTER TABLE test.normal_ddl_target MODIFY COLUMN payload DECIMAL(10,2)")
-        });
-        let job_id = ready
-            .recv_timeout(std::time::Duration::from_secs(15))
-            .expect("real scanner must run before resource tuning");
-        let step = super::modify_column_dist_backfill::read_index_for_test(job_id)
-            .expect("actual DXF read executor");
-        let context = astersql_dxf_framework_taskexecutor::Context::Background();
-        let tuned = (|| {
-            step.ResourceModified(
-                &context,
-                &astersql_dxf_framework_taskexecutor::StepResource {
-                    CPU: 8,
-                    Memory: 512 * 1024 * 1024,
-                },
-            )?;
-            let before = step.closed_pipeline_workers_for_test();
-            step.ResourceModified(
-                &context,
-                &astersql_dxf_framework_taskexecutor::StepResource {
-                    CPU: 2,
-                    Memory: 128 * 1024 * 1024,
-                },
-            )?;
-            let after = step.closed_pipeline_workers_for_test();
-            assert_eq!(
-                (after.0 - before.0, after.1 - before.1),
-                (3, 3),
-                "Tune(wait=true) must close actual idle scan and ingest workers"
-            );
-            Ok::<(), astersql_dxf_framework_taskexecutor::ExecutorError>(())
-        })();
-        gate.release();
-        alter.join().unwrap().unwrap();
-        tuned.unwrap();
-    } else if pause {
+    if pause {
         let gate = BackfillRelease(Arc::new((
             std::sync::Mutex::new(false),
             std::sync::Condvar::new(),

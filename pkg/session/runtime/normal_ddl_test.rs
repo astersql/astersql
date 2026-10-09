@@ -820,7 +820,10 @@ fn crossks_align_normal_ddl_unavailable_handler_preserves_legal_job_without_canc
     let f = Fixture::new();
     let mut job = Job::default();
     job.id = 94001;
-    job.tp = 3;
+    // Drop-schema remains a legal persisted action, but the Rust normal DDL
+    // dispatcher does not implement its handler yet. Create-table (action 3)
+    // is implemented and must not be used to exercise this unavailable path.
+    job.tp = 2;
     job.schema_id = f.db;
     job.table_id = 94001;
     job.schema_name = "test".into();
@@ -3480,17 +3483,14 @@ fn normal_ddl_plan_table_validation_partition_structure_and_deferred_loading() {
 }
 
 #[test]
-fn normal_ddl_plan_table_validation_partial_index_is_explicitly_deferred() {
+fn normal_ddl_plan_table_validation_accepts_partial_index_expression() {
     let f = table_validation_fixture();
     let mut table = f.reader().get_table(f.db, f.table).unwrap().unwrap();
     let mut key = table_validation_index(&table);
     key.ConditionExprString = "id > 0".into();
     table.Indices.push(key);
     table_validation_seed(&f, &table);
-    table_validation_run(
-        &f,
-        Some("partial index expression loading is not supported"),
-    );
+    table_validation_run(&f, None);
 }
 
 #[test]

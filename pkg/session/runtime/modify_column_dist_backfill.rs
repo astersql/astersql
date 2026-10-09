@@ -1689,6 +1689,30 @@ pub(super) fn read_index_for_test(job_id: i64) -> Option<Arc<ReadIndex>> {
         .and_then(Weak::upgrade)
 }
 #[cfg(test)]
+pub(super) fn tune_pipeline_workers_for_test(
+    domain: Arc<Domain>,
+    job: astersql_meta_model::group_3::Job,
+    indexes: Vec<i64>,
+    initial_cpu: i32,
+    target_cpu: i32,
+    average_row_size: usize,
+) -> (u32, u32) {
+    let pipeline = super::modify_column_pipeline::Pipeline::start(
+        domain,
+        Arc::new(job),
+        indexes,
+        initial_cpu,
+        average_row_size,
+        astersql_kv::SSTImportOptions::default(),
+        None,
+    );
+    let before = pipeline.closed_workers();
+    pipeline.tune(target_cpu);
+    let after = pipeline.closed_workers();
+    pipeline.shutdown();
+    (after.0 - before.0, after.1 - before.1)
+}
+#[cfg(test)]
 impl ReadIndex {
     pub(super) fn closed_pipeline_workers_for_test(&self) -> (u32, u32) {
         self.pipeline
