@@ -143,7 +143,13 @@ SELECT 1;
 - `unsupported startup parameter DateStyle`：当前接受 ISO 和 ISO, MDY，并报告 ISO, MDY；此前 JDBC 启动失败说明已过期。其他 DateStyle 值仍不支持，先检查客户端实际发送值。此前两版本机 JDBC 驱动已验证连接；这不代表完整 DataGrip UI 内省通过。
 - `\dt`、`\d`、DataGrip 表结构浏览：这些操作可能查询 PostgreSQL 系统目录，当前不承诺完整 pg_catalog。先用明确的 SQL `SELECT 1` 验证入口。
 
-已实测临时双 listener 上的默认 psql 18 查询，以及 libpq 18 的 3.0/3.2 查询、文本参数、事务和取消。本文的真实 TiKV + PG 启动组合尚未重新执行端到端验证；DataGrip UI、完整 PostgreSQL SQL 语义和生产鉴权也未验证。
+已实测临时双 listener 上的默认 psql 18 查询，以及 libpq 18 的 3.0/3.2 查询、文本参数、事务和取消。2026-10-09 又在 TiKV 8.5.1 RealTiKV 环境验证 libpq/psql 18 的 DDL 与 DML 提交/回滚，以及 JDBC 42.7.13/42.7.3 的 prepared CRUD、提交/回滚和失败事务恢复。完整 PostgreSQL SQL 语义和生产鉴权仍未验证。
+
+### 2026-10-09 RealTiKV + DataGrip 复验
+
+本次使用隔离 tag `astersql-task6-20261009` 和端口 PD/MySQL/PG/status `13379`/`14001`/`15432`/`20080`，不影响默认 2379/4000/5432 服务。TiUP 1.17.1 启动 TiKV 8.5.1，Rust server 通过 `--store=tikv --path=127.0.0.1:13379` 连接，专用库为 `pg_task6_delivery`。
+
+DataGrip 2025.1.3 的 Test Connection 成功，显示 `18.0 (AsterSQL)`、JDBC 42.7.13 和 21 ms ping。UI 编辑器的 PostgreSQL DDL 生命周期已在 RealTiKV 生效，但 Database Explorer 的完整自动内省仍因 `DateStyle`、`pg_catalog.pg_timezone_names` 和跨库/非 public relation 查询失败，刷新后留有 ALTER 前列缓存。因此本手册不声明 RealTiKV 下 DataGrip 完整 UI 内省已通过；当前可靠范围是连接、编辑器 DDL/DML、JDBC prepared CRUD 和 DML 事务。
 
 日常退出前台 Rust server 可在其启动终端按 Ctrl-C。PD/TiKV 的停止与重启仍按原手册执行，保留数据目录。
 

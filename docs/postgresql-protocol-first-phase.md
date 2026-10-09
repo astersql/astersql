@@ -486,4 +486,12 @@ git diff --cached --check
 
 最终聚焦运行 19 passed / 1 failed，唯一失败是 5432 被另一任务服务占用；相同构建产物在 15436 单独复验该真实客户端测试 1 passed，两版 JDBC 再次各 27/27。合计 20 个聚焦测试均有通过证据，没有 ignored 或以零测试代替验收。中间修复曾触发 CTE 边界失败，保留 24 列上限后最终边界通过。测试日志分别为 /tmp/datagrip6-ui-acl-red.log、/tmp/datagrip6-ui-final.log 和 /tmp/datagrip6-ui-retry.log；格式化、lint 日志为 /tmp/datagrip6-ui-fmt.log、/tmp/datagrip6-ui-ready-lint.log。未运行全工作区 Rust suite；共享工作区其他任务变更不属于此次隔离验证。
 
+## 2026-10-09 RealTiKV 交付复验
+
+使用 TiUP 1.17.1 启动隔离的 TiKV 8.5.1 playground（tag `astersql-task6-20261009`，PD `127.0.0.1:13379`），Rust server 的 MySQL/PG/status 端口为 `14001`/`15432`/`20080`，专用库为 `pg_task6_delivery`。libpq/psql 18 在真实 TCP 上验证了 CREATE TABLE 和 DML COMMIT/ROLLBACK；DataGrip 安装的 JDBC 42.7.13 与 42.7.3 均验证了 PreparedStatement CRUD、COMMIT、ROLLBACK，以及 `42703` 后进入 `25P02`、ROLLBACK 恢复。
+
+DataGrip 2025.1.3 真实 UI 连接测试成功，报告 `18.0 (AsterSQL)`、JDBC 42.7.13 和 21 ms ping。UI 查询编辑器执行的 CREATE TABLE、ADD/RENAME COLUMN、ALTER TYPE、SET DEFAULT/NOT NULL 与 DROP COLUMN 都在 RealTiKV 生效；原生元数据最终为 `id int NOT NULL PRIMARY KEY` 与 `points bigint NOT NULL DEFAULT 9`。
+
+但完整 DataGrip 自动内省仍会发出尚未支持的 `DateStyle`、`pg_catalog.pg_timezone_names` 和跨库/非 public relation 查询。Database Explorer 同步后仍显示 ALTER 前的 `id + note` 缓存，而不是真实的 `id + points`。因此前文的 UI 通过证据只能说明当时 MockTiKV 场景，不能推导 RealTiKV 下完整 UI 刷新通过。交付任务保持受阻；不以 JDBC 或 MySQL 查询结果替代 UI 证据，也不为通过验收而伪造系统对象。
+
 此次 stride 增加一个 Value 槽位，目录 provider 每行存储约增加 1/24，JOIN 工作量、行数和 CTE 列数上限保持不变。未做性能基准测试。make lint 与差异检查均通过；Ready 按仓库交付规则执行，当前仓库缺少 .agents/skills/tidb-verify-profile/SKILL.md，未声称已读取该缺失 skill。

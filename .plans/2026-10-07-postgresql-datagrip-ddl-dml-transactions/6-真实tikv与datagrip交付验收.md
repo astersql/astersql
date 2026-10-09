@@ -2,7 +2,7 @@
 
 批次：【批次 5】 依赖批次 4
 
-状态：未开始
+状态：受阻（DataGrip 2025.1.3 完整元数据同步尚失败）
 
 目的：在真实 TiKV、PG JDBC 和 DataGrip UI 上验收建表、字段变更、CRUD、事务与刷新闭环，并完成 Ready 交付检查。
 
@@ -67,3 +67,15 @@
 ## 完成
 
 只有真实 UI、JDBC 和 RealTiKV 场景均有证据才标记 `已完成`。完成后使用 `$git-commit` 提交本任务且删除任务文件；因无关本地环境无法完成真实回归时标记 `已完成，待回归` 并保留文件。
+
+## 2026-10-09 真实环境执行记录
+
+- 依赖提交已存在：`520e080fa8`、`10557da5e9`、`da7e4ac62b`、`d04cdc518f`、`8c66c5b1ad`。
+- 真实 TiKV：TiUP 1.17.1 启动 TiKV 8.5.1，隔离 tag `astersql-task6-20261009`，PD `127.0.0.1:13379`；Rust server 使用 MySQL `14001`、PG `15432`、status `20080`，专用库 `pg_task6_delivery`。
+- MockTiKV 先行回归 `pg_introspection_clients`：1 通过、0 失败；JDBC 42.7.13 与 42.7.3 的 27 条冻结 DataGrip SQL、RetrieveColumns/RetrieveIndexColumns 与 prepared CRUD 均通过；libpq 18 的 3.0/3.2 目录、CRUD、参数、I/T/E 与取消通过。
+- RealTiKV JDBC：42.7.13 和 42.7.3 均通过 PreparedStatement INSERT/SELECT/UPDATE/DELETE、COMMIT、ROLLBACK，语句错误 `42703` 后为 `25P02`，ROLLBACK 后恢复。
+- RealTiKV libpq/psql 18：真实 TCP 上 CREATE TABLE 及 DML COMMIT/ROLLBACK 通过；回滚行不可见，提交行可见。显式事务内 DDL 按已声明边界返回不支持。
+- DataGrip 2025.1.3（build 251.26094.87）使用 JDBC 42.7.13，真实 UI Test Connection 显示成功、`18.0 (AsterSQL)`、ping 21 ms。UI 编辑器实际执行 CREATE TABLE，以及 ADD COLUMN、RENAME COLUMN、ALTER TYPE、SET DEFAULT、SET NOT NULL、DROP COLUMN；MySQL 侧验证最终为 `id int NOT NULL PRIMARY KEY` 与 `points bigint NOT NULL DEFAULT 9`。
+- Ready 检查：`cargo fmt --all` 和 `make lint` 通过。`cargo test -p astersql-server --lib pg_ -- --test-threads=1 --nocapture` 为 81 通过、1 失败；单独复跑 `pg_catalog_test::pg_introspection_relations_live` 稳定失败，类型断言期望 69、实际 84。本任务未修改 Rust 生产/测试代码，该既有回归失败与 UI 阻塞一并保留。
+- 清理：删除专用库，正常停止 Rust server 与 TiUP playground，删除 `/tmp/astersql-task6-tiup`，确认 PD `13379` 不可达，释放 `target/rust-slot-locks/slot-1.lock`；保留 `target/rust-slot-1` 编译缓存。
+- 阻塞：DataGrip 完整自动内省发出尚未覆盖的查询，包括 `DateStyle`、`pg_catalog.pg_timezone_names` 和跨库/非 public relation；同步后 Database Explorer 仍显示 ALTER 前的 `id + note` 缓存，不能提供“UI 实际显示最终字段结构”证据。这是本任务的产品兼容缺口，不是无关本地环境，因此不标记完成、不删除本文件。
