@@ -309,52 +309,54 @@ pub struct CachedStats(property::StatsInfo);
 /// Recursive base-only node used until concrete cached-plan variants are added.
 #[derive(Clone)]
 pub enum CachedPlan {
-    Update(CachedUpdate),
-    Delete(CachedDelete),
-    Insert(CachedInsert),
-    Base(CachedPlanBase),
-    TableDual(CachedTableDual),
-    TableScan(CachedTableScan),
-    IndexScan(CachedIndexScan),
-    PointGet(CachedPointGet),
-    BatchPointGet(CachedBatchPointGet),
-    Selection(CachedSelection),
-    Projection(CachedProjection),
-    TopN(CachedTopN),
-    Limit(CachedLimit),
-    SelectLock(CachedSelectLock),
-    StreamAgg(CachedStreamAgg),
-    HashAgg(CachedHashAgg),
-    UnionAll(CachedUnionAll),
-    UnionScan(CachedUnionScan),
-    HashJoin(CachedHashJoin),
-    MergeJoin(CachedMergeJoin),
-    IndexJoin(CachedIndexJoin),
-    IndexHashJoin(CachedIndexJoin, bool),
+    Update(Box<CachedUpdate>),
+    Delete(Box<CachedDelete>),
+    Insert(Box<CachedInsert>),
+    Base(Box<CachedPlanBase>),
+    TableDual(Box<CachedTableDual>),
+    TableScan(Box<CachedTableScan>),
+    IndexScan(Box<CachedIndexScan>),
+    PointGet(Box<CachedPointGet>),
+    BatchPointGet(Box<CachedBatchPointGet>),
+    Selection(Box<CachedSelection>),
+    Projection(Box<CachedProjection>),
+    TopN(Box<CachedTopN>),
+    Limit(Box<CachedLimit>),
+    SelectLock(Box<CachedSelectLock>),
+    StreamAgg(Box<CachedStreamAgg>),
+    HashAgg(Box<CachedHashAgg>),
+    UnionAll(Box<CachedUnionAll>),
+    UnionScan(Box<CachedUnionScan>),
+    HashJoin(Box<CachedHashJoin>),
+    MergeJoin(Box<CachedMergeJoin>),
+    IndexJoin(Box<CachedIndexJoin>),
+    IndexHashJoin(Box<(CachedIndexJoin, bool)>),
     IndexMergeJoin(
-        CachedIndexJoin,
-        Vec<i32>,
-        Vec<crate::JoinCompareFunc>,
-        Vec<crate::JoinCompareFunc>,
-        bool,
-        bool,
+        Box<(
+            CachedIndexJoin,
+            Vec<i32>,
+            Vec<crate::JoinCompareFunc>,
+            Vec<crate::JoinCompareFunc>,
+            bool,
+            bool,
+        )>,
     ),
-    IndexReader(CachedIndexReader),
-    TableReader(CachedTableReader),
-    IndexLookupReader(CachedIndexLookupReader),
-    IndexMergeReader(CachedIndexMergeReader),
+    IndexReader(Box<CachedIndexReader>),
+    TableReader(Box<CachedTableReader>),
+    IndexLookupReader(Box<CachedIndexLookupReader>),
+    IndexMergeReader(Box<CachedIndexMergeReader>),
 }
 
 impl CachedPlan {
     pub fn try_capture_plan(plan: &dyn base::Plan) -> Result<Self, CacheSnapshotError> {
         if let Some(value) = plan.as_any().downcast_ref::<Update>() {
-            return Ok(Self::Update(CachedUpdate::capture(value)?));
+            return Ok(Self::Update(Box::new(CachedUpdate::capture(value)?)));
         }
         if let Some(value) = plan.as_any().downcast_ref::<Delete>() {
-            return Ok(Self::Delete(CachedDelete::capture(value)?));
+            return Ok(Self::Delete(Box::new(CachedDelete::capture(value)?)));
         }
         if let Some(value) = plan.as_any().downcast_ref::<Insert>() {
-            return Ok(Self::Insert(CachedInsert::capture(value)?));
+            return Ok(Self::Insert(Box::new(CachedInsert::capture(value)?)));
         }
         Err(unsupported(format!(
             "plan {} has no cached snapshot variant",
@@ -364,93 +366,103 @@ impl CachedPlan {
 
     pub fn try_capture(plan: &dyn base::PhysicalPlan) -> Result<Self, CacheSnapshotError> {
         if let Some(value) = plan.as_any().downcast_ref::<LegacyPhysicalLock>() {
-            return Ok(Self::SelectLock(CachedSelectLock::capture(value)?));
+            return Ok(Self::SelectLock(Box::new(CachedSelectLock::capture(
+                value,
+            )?)));
         }
         if let Some(value) = plan.as_any().downcast_ref::<PhysicalIndexReader>() {
-            return Ok(Self::IndexReader(CachedIndexReader::capture(value)?));
+            return Ok(Self::IndexReader(Box::new(CachedIndexReader::capture(
+                value,
+            )?)));
         }
         if let Some(value) = plan.as_any().downcast_ref::<PhysicalTableReader>() {
-            return Ok(Self::TableReader(CachedTableReader::capture(value)?));
+            return Ok(Self::TableReader(Box::new(CachedTableReader::capture(
+                value,
+            )?)));
         }
         if let Some(value) = plan.as_any().downcast_ref::<PhysicalIndexLookUpReader>() {
-            return Ok(Self::IndexLookupReader(CachedIndexLookupReader::capture(
-                value,
-            )?));
+            return Ok(Self::IndexLookupReader(Box::new(
+                CachedIndexLookupReader::capture(value)?,
+            )));
         }
         if let Some(value) = plan.as_any().downcast_ref::<PhysicalIndexMergeReader>() {
-            return Ok(Self::IndexMergeReader(CachedIndexMergeReader::capture(
-                value,
-            )?));
+            return Ok(Self::IndexMergeReader(Box::new(
+                CachedIndexMergeReader::capture(value)?,
+            )));
         }
         if let Some(value) = plan.as_any().downcast_ref::<PhysicalHashJoin>() {
-            return Ok(Self::HashJoin(CachedHashJoin::capture(value)?));
+            return Ok(Self::HashJoin(Box::new(CachedHashJoin::capture(value)?)));
         }
         if let Some(value) = plan.as_any().downcast_ref::<PhysicalMergeJoin>() {
-            return Ok(Self::MergeJoin(CachedMergeJoin::capture(value)?));
+            return Ok(Self::MergeJoin(Box::new(CachedMergeJoin::capture(value)?)));
         }
         if let Some(value) = plan.as_any().downcast_ref::<crate::PhysicalIndexHashJoin>() {
-            return Ok(Self::IndexHashJoin(
+            return Ok(Self::IndexHashJoin(Box::new((
                 CachedIndexJoin::capture(&value.PhysicalIndexJoin)?,
                 value.KeepOuterOrder,
-            ));
+            ))));
         }
         if let Some(value) = plan
             .as_any()
             .downcast_ref::<crate::PhysicalIndexMergeJoin>()
         {
-            return Ok(Self::IndexMergeJoin(
+            return Ok(Self::IndexMergeJoin(Box::new((
                 CachedIndexJoin::capture(&value.PhysicalIndexJoin)?,
                 value.KeyOff2KeyOffOrderByIdx.clone(),
                 value.CompareFuncs.clone(),
                 value.OuterCompareFuncs.clone(),
                 value.NeedOuterSort,
                 value.Desc,
-            ));
+            ))));
         }
         if let Some(value) = plan.as_any().downcast_ref::<PhysicalIndexJoin>() {
-            return Ok(Self::IndexJoin(CachedIndexJoin::capture(value)?));
+            return Ok(Self::IndexJoin(Box::new(CachedIndexJoin::capture(value)?)));
         }
         if let Some(value) = plan.as_any().downcast_ref::<PhysicalSelection>() {
-            return Ok(Self::Selection(CachedSelection::capture(value)?));
+            return Ok(Self::Selection(Box::new(CachedSelection::capture(value)?)));
         }
         if let Some(value) = plan.as_any().downcast_ref::<PhysicalProjection>() {
-            return Ok(Self::Projection(CachedProjection::capture(value)?));
+            return Ok(Self::Projection(Box::new(CachedProjection::capture(
+                value,
+            )?)));
         }
         if let Some(value) = plan.as_any().downcast_ref::<PhysicalTopN>() {
-            return Ok(Self::TopN(CachedTopN::capture(value)?));
+            return Ok(Self::TopN(Box::new(CachedTopN::capture(value)?)));
         }
         if let Some(value) = plan.as_any().downcast_ref::<PhysicalLimit>() {
-            return Ok(Self::Limit(CachedLimit::capture(value)?));
+            return Ok(Self::Limit(Box::new(CachedLimit::capture(value)?)));
         }
         if let Some(value) = plan.as_any().downcast_ref::<PhysicalStreamAgg>() {
-            return Ok(Self::StreamAgg(CachedStreamAgg::capture(value)?));
+            return Ok(Self::StreamAgg(Box::new(CachedStreamAgg::capture(value)?)));
         }
         if let Some(value) = plan.as_any().downcast_ref::<PhysicalHashAgg>() {
-            return Ok(Self::HashAgg(CachedHashAgg::capture(value)?));
+            return Ok(Self::HashAgg(Box::new(CachedHashAgg::capture(value)?)));
         }
         if let Some(value) = plan.as_any().downcast_ref::<PhysicalUnionAll>() {
-            return Ok(Self::UnionAll(CachedUnionAll::capture(value)?));
+            return Ok(Self::UnionAll(Box::new(CachedUnionAll::capture(value)?)));
         }
         if let Some(value) = plan.as_any().downcast_ref::<PhysicalUnionScan>() {
-            return Ok(Self::UnionScan(CachedUnionScan::capture(value)?));
+            return Ok(Self::UnionScan(Box::new(CachedUnionScan::capture(value)?)));
         }
         if let Some(value) = plan.as_any().downcast_ref::<PhysicalTableDual>() {
-            return Ok(Self::TableDual(CachedTableDual::capture(value)?));
+            return Ok(Self::TableDual(Box::new(CachedTableDual::capture(value)?)));
         }
         if let Some(value) = plan.as_any().downcast_ref::<PhysicalTableScan>() {
-            return Ok(Self::TableScan(CachedTableScan::capture(value)?));
+            return Ok(Self::TableScan(Box::new(CachedTableScan::capture(value)?)));
         }
         if let Some(value) = plan.as_any().downcast_ref::<PhysicalIndexScan>() {
-            return Ok(Self::IndexScan(CachedIndexScan::capture(value)?));
+            return Ok(Self::IndexScan(Box::new(CachedIndexScan::capture(value)?)));
         }
         if let Some(value) = plan.as_any().downcast_ref::<BatchPointGetPlan>() {
-            return Ok(Self::BatchPointGet(CachedBatchPointGet::capture(value)?));
+            return Ok(Self::BatchPointGet(Box::new(CachedBatchPointGet::capture(
+                value,
+            )?)));
         }
         if let Some(value) = plan.as_any().downcast_ref::<PointGetPlan>() {
-            return Ok(Self::PointGet(CachedPointGet::capture(value)?));
+            return Ok(Self::PointGet(Box::new(CachedPointGet::capture(value)?)));
         }
         if let Some(value) = plan.as_any().downcast_ref::<BasePhysicalPlan>() {
-            return Ok(Self::Base(CachedPlanBase::try_from_base(value)?));
+            return Ok(Self::Base(Box::new(CachedPlanBase::try_from_base(value)?)));
         }
         Err(unsupported(format!(
             "plan {} has no cached snapshot variant",
@@ -484,20 +496,18 @@ impl CachedPlan {
             Self::HashJoin(plan) => Ok(Box::new(plan.restore(context)?)),
             Self::MergeJoin(plan) => Ok(Box::new(plan.restore(context)?)),
             Self::IndexJoin(plan) => Ok(Box::new(plan.restore(context)?)),
-            Self::IndexHashJoin(plan, keep) => Ok(Box::new(crate::PhysicalIndexHashJoin {
-                PhysicalIndexJoin: plan.restore(context)?,
-                KeepOuterOrder: *keep,
+            Self::IndexHashJoin(plan) => Ok(Box::new(crate::PhysicalIndexHashJoin {
+                PhysicalIndexJoin: plan.0.restore(context)?,
+                KeepOuterOrder: plan.1,
             })),
-            Self::IndexMergeJoin(plan, keys, compare, outer, sort, desc) => {
-                Ok(Box::new(crate::PhysicalIndexMergeJoin {
-                    PhysicalIndexJoin: plan.restore(context)?,
-                    KeyOff2KeyOffOrderByIdx: keys.clone(),
-                    CompareFuncs: compare.clone(),
-                    OuterCompareFuncs: outer.clone(),
-                    NeedOuterSort: *sort,
-                    Desc: *desc,
-                }))
-            }
+            Self::IndexMergeJoin(plan) => Ok(Box::new(crate::PhysicalIndexMergeJoin {
+                PhysicalIndexJoin: plan.0.restore(context)?,
+                KeyOff2KeyOffOrderByIdx: plan.1.clone(),
+                CompareFuncs: plan.2.clone(),
+                OuterCompareFuncs: plan.3.clone(),
+                NeedOuterSort: plan.4,
+                Desc: plan.5,
+            })),
             Self::IndexReader(plan) => Ok(Box::new(plan.restore(context)?)),
             Self::TableReader(plan) => Ok(Box::new(plan.restore(context)?)),
             Self::IndexLookupReader(plan) => Ok(Box::new(plan.restore(context)?)),

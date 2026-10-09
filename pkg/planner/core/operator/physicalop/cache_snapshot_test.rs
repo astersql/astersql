@@ -971,6 +971,7 @@ fn aggregate(ctx: base::ContextRef, plan_type: &str, unique_id: i64) -> BasePhys
 
 #[test]
 fn cached_unary_agg_union_round_trip() {
+    assert!(std::mem::size_of::<CachedPlan>() <= 2 * std::mem::size_of::<usize>());
     let old_context = context();
 
     let mut selection = PhysicalSelection::New(old_context.clone());
