@@ -20,6 +20,17 @@ max-threads = 1
 [[profile.default.overrides]]
 filter = 'test(scan_adapter_runtime_test)'
 test-group = "scan-adapter-runtime"
+
+# RealTiKV tests share one external cluster and its canonical bootstrap/catalog
+# keys. Running separate packages concurrently can produce real optimistic
+# write conflicts between otherwise independent cases, so serialize only this
+# external-service test surface.
+[test-groups.realtikv]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = 'package(/^astersql-tests-realtikvtest-/)'
+test-group = "realtikv"
 # Isolated measurements are 0.1–7.8s, while transient host contention can
 # push a real Domain shutdown just past 10s. Keep the 5s slow signal but allow
 # this scoped module up to 20s; the diagnostic profile remains the 60s backstop.
@@ -31,13 +42,22 @@ slow-timeout = { period = "5s", terminate-after = 4, grace-period = "1s" }
 [[profile.default.overrides]]
 filter = '''
 test(=test_add_foreign_key_with_auto_create_index) |
+test(=test_create_primary_key) |
 test(=test_concurrent_ddl_create_gen_col_index) |
 test(=test_concurrent_ddl_create_multi_cols_index) |
 test(=test_concurrent_ddl_create_non_unique_index) |
 test(=test_concurrent_ddl_create_primary_key) |
 test(=test_concurrent_ddl_create_unique_index) |
+test(=test_multi_schema_change_create_gen_col_index) |
+test(=test_add_index_on_system_table) |
+test(=test_cross_ks_info_schema_sync) |
+test(=test_ingest_mv_index_on_partition_table) |
+test(=test_add_index_resumes_from_checkpoint_after_partial_import) |
+test(=test_add_index_resumes_from_checkpoint_after_partial_scan) |
 test(=test_merge_temp_index_basic) |
 test(=test_merge_temp_index_stuck) |
+test(=test_split_file) |
+test(=TestStaleReadAllCombinations) |
 test(=test_paging_act_rows_and_process_keys) |
 test(=parity_test::compatibility_public_start_stop_methods_execute) |
 test(=parity_test::go_rust_public_contract_matches)

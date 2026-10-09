@@ -56,7 +56,10 @@ impl Drop for Cleanup {
 
 #[test]
 fn test_keyspace_backup_uses_gc_barrier() {
-    let Ok(pd) = std::env::var("REAL_TIKV_PD") else {
+    let (Ok(pd), Ok(backup_stores)) = (
+        std::env::var("REAL_TIKV_PD"),
+        std::env::var("REAL_TIKV_BACKUP_STORES"),
+    ) else {
         eprintln!(
             "only run this test with real NextGen TiKV: set REAL_TIKV_PD and REAL_TIKV_BACKUP_STORES"
         );
@@ -132,11 +135,7 @@ fn test_keyspace_backup_uses_gc_barrier() {
     let client = RealBackupClient {
         rpc: rpc.clone(),
         keyspace_id,
-        tikv: std::env::var("REAL_TIKV_BACKUP_STORES")
-            .expect("real TiKV backup endpoints")
-            .split(',')
-            .map(str::to_owned)
-            .collect(),
+        tikv: backup_stores.split(',').map(str::to_owned).collect(),
         timestamp,
         storage: Arc::new(LocalStorage(temp.join("backup"))),
         database: DATABASE.into(),
