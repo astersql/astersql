@@ -1,6 +1,7 @@
 // Copyright 2026 AsterSQL.
 //! Bounded PostgreSQL DDL adaptation for the PostgreSQL listener.
 
+use crate::conn::TiDBContext;
 use crate::pg_catalog_query::ParseResult;
 use std::collections::BTreeMap;
 
@@ -181,6 +182,14 @@ fn column_type(
     let Some(ty) = tokens.get(start + 1).filter(|token| start + 1 < end) else {
         return Err(error("42601", "expected CREATE TABLE column type"));
     };
+    mapped_type(tokens, start + 1)
+        .map(|mapping| mapping.map(|(last, native)| (ty.start, tokens[last].end, native)))
+}
+
+fn mapped_type(tokens: &[Token], start: usize) -> ParseResult<Option<(usize, &'static str)>> {
+    let Some(ty) = tokens.get(start) else {
+        return Err(error("42601", "expected PostgreSQL column type"));
+    };
     if ty.word("serial") || ty.word("bigserial") {
         return Err(error(
             "0A000",
@@ -188,45 +197,53 @@ fn column_type(
         ));
     }
     let (last, native) = if ty.word("smallint") {
-        (start + 1, "SMALLINT")
-    } else if ty.word("integer") {
-        (start + 1, "INT")
+        (start, "SMALLINT")
+    } else if ty.word("integer") || ty.word("int") {
+        (start, "INT")
     } else if ty.word("bigint") {
-        (start + 1, "BIGINT")
+        (start, "BIGINT")
     } else if ty.word("real") {
-        (start + 1, "FLOAT")
-    } else if ty.word("double") && tokens.get(start + 2).is_some_and(|t| t.word("precision")) {
-        (start + 2, "DOUBLE")
+        (start, "FLOAT")
+    } else if ty.word("double") && tokens.get(start + 1).is_some_and(|t| t.word("precision")) {
+        (start + 1, "DOUBLE")
     } else if ty.word("numeric") || ty.word("decimal") {
-        (start + 1, "DECIMAL")
+        (start, "DECIMAL")
     } else if ty.word("boolean") {
-        (start + 1, "BOOLEAN")
+        (start, "BOOLEAN")
     } else if ty.word("char") {
-        (start + 1, "CHAR")
+        (start, "CHAR")
     } else if ty.word("varchar") {
-        (start + 1, "VARCHAR")
+        (start, "VARCHAR")
     } else if ty.word("text") {
-        (start + 1, "TEXT")
+        (start, "TEXT")
     } else if ty.word("bytea") {
-        (start + 1, "BLOB")
+        (start, "BLOB")
     } else if ty.word("date") {
-        (start + 1, "DATE")
+        (start, "DATE")
     } else if ty.word("time") {
-        (start + 1, "TIME")
+        (start, "TIME")
     } else if ty.word("timestamp") {
-        (start + 1, "TIMESTAMP")
+        (start, "TIMESTAMP")
     } else {
         return Err(error(
             "0A000",
             "unsupported PostgreSQL CREATE TABLE column type",
         ));
     };
-    Ok(Some((ty.start, tokens[last].end, native)))
+    Ok(Some((last, native)))
 }
 
 pub(crate) fn adapt(sql: &str) -> ParseResult<String> {
+    adapt_internal(sql, None)
+}
+
+pub(crate) fn adapt_with_context(sql: &str, context: &dyn TiDBContext) -> ParseResult<String> {
+    adapt_internal(sql, Some(context))
+}
+
+fn adapt_internal(sql: &str, context: Option<&dyn TiDBContext>) -> ParseResult<String> {
     let tokens = tokens(sql)?;
-    let Some(create) = tokens.first() else {
+    let Some(first) = tokens.first() else {
         return Ok(sql.to_owned());
     };
     let mut edits = BTreeMap::new();
@@ -235,9 +252,20 @@ pub(crate) fn adapt(sql: &str) -> ParseResult<String> {
             edits.insert(token.start, (token.end, quote(name)));
         }
     }
-    if !create.word("create") {
+    if first.word("alter") && tokens.get(1).is_some_and(|token| token.word("table")) {
+        adapt_alter(sql, &tokens, edits, context)
+    } else if !first.word("create") {
         return apply(sql, edits);
+    } else {
+        adapt_create(sql, &tokens, edits)
     }
+}
+
+fn adapt_create(
+    sql: &str,
+    tokens: &[Token],
+    mut edits: BTreeMap<usize, (usize, String)>,
+) -> ParseResult<String> {
     let mut table = 1;
     if tokens
         .get(table)
@@ -275,6 +303,321 @@ pub(crate) fn adapt(sql: &str) -> ParseResult<String> {
         }
     }
     apply(sql, edits)
+}
+
+fn token_name(token: &Token) -> Option<&str> {
+    match &token.kind {
+        Kind::Word(name) | Kind::Identifier(name) => Some(name),
+        _ => None,
+    }
+}
+
+fn alter_table_parts(tokens: &[Token]) -> ParseResult<(Option<String>, String, usize)> {
+    let mut index = 2;
+    if tokens.get(index).is_some_and(|token| token.word("if"))
+        && tokens
+            .get(index + 1)
+            .is_some_and(|token| token.word("exists"))
+    {
+        index += 2;
+    }
+    let first = tokens
+        .get(index)
+        .and_then(token_name)
+        .ok_or_else(|| error("42601", "expected ALTER TABLE relation name"))?
+        .to_owned();
+    if tokens
+        .get(index + 1)
+        .is_some_and(|token| token.symbol(b'.'))
+    {
+        let table = tokens
+            .get(index + 2)
+            .and_then(token_name)
+            .ok_or_else(|| error("42601", "expected ALTER TABLE relation name"))?
+            .to_owned();
+        Ok((Some(first), table, index + 3))
+    } else {
+        Ok((None, first, index + 1))
+    }
+}
+
+fn adapt_alter(
+    sql: &str,
+    tokens: &[Token],
+    mut edits: BTreeMap<usize, (usize, String)>,
+    context: Option<&dyn TiDBContext>,
+) -> ParseResult<String> {
+    let (schema, table, action) = alter_table_parts(tokens)?;
+    let mut depth = 0usize;
+    for token in tokens.iter().skip(action) {
+        if token.symbol(b'(') {
+            depth += 1;
+        } else if token.symbol(b')') {
+            depth = depth.saturating_sub(1);
+        } else if depth == 0 && token.symbol(b',') {
+            return Err(error(
+                "0A000",
+                "multi-action PostgreSQL ALTER TABLE is unsupported",
+            ));
+        }
+    }
+    let Some(operation) = tokens.get(action) else {
+        return Err(error("42601", "expected ALTER TABLE action"));
+    };
+    if operation.word("add") {
+        let mut column = action + 1;
+        if tokens.get(column).is_some_and(|token| token.word("column")) {
+            column += 1;
+        }
+        if tokens.get(column).is_some_and(|token| token.word("if")) {
+            column += 3;
+        }
+        if let Some((start, end, native)) = column_type(tokens, column, tokens.len())? {
+            edits.insert(start, (end, native.into()));
+        }
+        return apply(sql, edits);
+    }
+    if operation.word("rename") {
+        if !tokens
+            .get(action + 1)
+            .is_some_and(|token| token.word("column"))
+        {
+            return Err(error("0A000", "only PostgreSQL RENAME COLUMN is supported"));
+        }
+        return apply(sql, edits);
+    }
+    if operation.word("drop") {
+        if tokens
+            .iter()
+            .skip(action + 1)
+            .any(|token| token.word("cascade"))
+        {
+            return Err(error(
+                "0A000",
+                "PostgreSQL DROP COLUMN CASCADE is unsupported",
+            ));
+        }
+        return apply(sql, edits);
+    }
+    if !operation.word("alter")
+        || !tokens
+            .get(action + 1)
+            .is_some_and(|token| token.word("column"))
+    {
+        return Err(error("0A000", "unsupported PostgreSQL ALTER TABLE action"));
+    }
+    let column_index = action + 2;
+    let column = tokens
+        .get(column_index)
+        .and_then(token_name)
+        .ok_or_else(|| error("42601", "expected ALTER COLUMN name"))?;
+    let clause = action + 3;
+    if tokens.get(clause).is_some_and(|token| token.word("type")) {
+        if tokens
+            .iter()
+            .skip(clause + 1)
+            .any(|token| token.word("using"))
+        {
+            return Err(error(
+                "0A000",
+                "PostgreSQL ALTER COLUMN USING is unsupported",
+            ));
+        }
+        let Some((last, native)) = mapped_type(tokens, clause + 1)? else {
+            return Err(error("0A000", "unsupported PostgreSQL ALTER COLUMN type"));
+        };
+        edits.insert(tokens[action].start, (tokens[action].end, "MODIFY".into()));
+        edits.insert(
+            tokens[clause].start,
+            (tokens[clause + 1].start, String::new()),
+        );
+        edits.insert(tokens[clause + 1].start, (tokens[last].end, native.into()));
+        if let Some(context) = context {
+            let suffix = existing_column_suffix(
+                context,
+                schema.as_deref(),
+                &table,
+                column,
+                None,
+                false,
+                None,
+            )?;
+            let end = tokens
+                .iter()
+                .skip(clause + 1)
+                .rev()
+                .find(|token| !token.symbol(b';'))
+                .map_or(tokens[last].end, |token| token.end);
+            edits.insert(end, (end, suffix));
+        }
+        return apply(sql, edits);
+    }
+    let set = tokens.get(clause).is_some_and(|token| token.word("set"));
+    let drop = tokens.get(clause).is_some_and(|token| token.word("drop"));
+    if (set || drop)
+        && tokens
+            .get(clause + 1)
+            .is_some_and(|token| token.word("default"))
+    {
+        if let Some(context) = context {
+            let default = if set {
+                let value = tokens
+                    .get(clause + 2)
+                    .ok_or_else(|| error("42601", "SET DEFAULT requires an expression"))?;
+                let end = tokens
+                    .iter()
+                    .rev()
+                    .find(|token| !token.symbol(b';'))
+                    .map_or(value.end, |token| token.end);
+                Some(sql[value.start..end].to_owned())
+            } else {
+                None
+            };
+            let definition = existing_column_suffix(
+                context,
+                schema.as_deref(),
+                &table,
+                column,
+                None,
+                true,
+                Some(default),
+            )?;
+            let end = tokens
+                .iter()
+                .rev()
+                .find(|token| !token.symbol(b';'))
+                .map_or(tokens[clause + 1].end, |token| token.end);
+            edits.insert(
+                tokens[action].start,
+                (
+                    end,
+                    format!("MODIFY COLUMN {}{}", quote(column), definition),
+                ),
+            );
+        }
+        return apply(sql, edits);
+    }
+    if (set || drop)
+        && tokens
+            .get(clause + 1)
+            .is_some_and(|token| token.word("not"))
+        && tokens
+            .get(clause + 2)
+            .is_some_and(|token| token.word("null"))
+    {
+        let context = context
+            .ok_or_else(|| error("0A000", "ALTER COLUMN nullability requires catalog context"))?;
+        let definition = existing_column_suffix(
+            context,
+            schema.as_deref(),
+            &table,
+            column,
+            Some(set),
+            true,
+            None,
+        )?;
+        edits.insert(
+            tokens[action].start,
+            (
+                tokens[clause + 2].end,
+                format!("MODIFY COLUMN {}{}", quote(column), definition),
+            ),
+        );
+        return apply(sql, edits);
+    }
+    Err(error("0A000", "unsupported PostgreSQL ALTER COLUMN clause"))
+}
+
+fn existing_column_suffix(
+    context: &dyn TiDBContext,
+    schema: Option<&str>,
+    table: &str,
+    column: &str,
+    not_null: Option<bool>,
+    include_type: bool,
+    default_override: Option<Option<String>>,
+) -> ParseResult<String> {
+    use astersql_infoschema::CiString;
+    use astersql_meta_model::DefaultValue;
+    let snapshot = context
+        .schema_snapshot()
+        .ok_or_else(|| error("0A000", "schema snapshot is unavailable"))?;
+    let database = match schema {
+        Some(schema) => schema.to_owned(),
+        None => {
+            let result = context
+                .execute_query(
+                    "SELECT DATABASE()",
+                    false,
+                    &crate::conn::CancellationToken::new(),
+                )
+                .map_err(|error| ("XX000", error.to_string()))?;
+            match result
+                .first()
+                .and_then(|result| result.rows.first())
+                .and_then(|row| row.first())
+            {
+                Some(crate::conn::Value::Text(database)) => database.clone(),
+                _ => return Err(error("3D000", "no current database for ALTER TABLE")),
+            }
+        }
+    };
+    let relation = snapshot
+        .TableByName(&CiString::new(database), &CiString::new(table))
+        .map_err(|error| ("42P01", error.to_string()))?;
+    let model = relation
+        .Meta()
+        .model_meta
+        .as_ref()
+        .ok_or_else(|| error("XX000", "complete table metadata is unavailable"))?;
+    let column = model
+        .Columns
+        .iter()
+        .find(|candidate| candidate.Name.L == column.to_lowercase())
+        .ok_or_else(|| error("42703", "ALTER COLUMN target does not exist"))?;
+    if column.IsGenerated() {
+        return Err(error("0A000", "generated ALTER COLUMN is unsupported"));
+    }
+    let mut suffix = if include_type {
+        format!(" {}", column.GetTypeDesc())
+    } else {
+        String::new()
+    };
+    let is_not_null =
+        not_null.unwrap_or_else(|| astersql_parser_mysql::r#type::HasNotNullFlag(column.GetFlag()));
+    if is_not_null {
+        suffix.push_str(" NOT NULL");
+    }
+    if let Some(override_default) = default_override {
+        if let Some(default) = override_default {
+            suffix.push_str(" DEFAULT ");
+            suffix.push_str(&default);
+        }
+        return Ok(suffix);
+    }
+    if let Some(default) = column.GetDefaultValue() {
+        let rendered = match default {
+            DefaultValue::Bool(value) => value.to_string(),
+            DefaultValue::Int(value) => value.to_string(),
+            DefaultValue::Uint(value) => value.to_string(),
+            DefaultValue::Float(value) if value.is_finite() => value.to_string(),
+            DefaultValue::Float(_) => {
+                return Err(error("0A000", "non-finite column default is unsupported"));
+            }
+            DefaultValue::String(value) => {
+                let value = String::from_utf8(value)
+                    .map_err(|_| error("0A000", "binary column default is unsupported"))?;
+                if column.DefaultIsExpr || value.to_uppercase().starts_with("CURRENT_TIMESTAMP") {
+                    value
+                } else {
+                    format!("'{}'", value.replace('\\', "\\\\").replace('\'', "''"))
+                }
+            }
+        };
+        suffix.push_str(" DEFAULT ");
+        suffix.push_str(&rendered);
+    }
+    Ok(suffix)
 }
 
 fn apply(sql: &str, edits: BTreeMap<usize, (usize, String)>) -> ParseResult<String> {

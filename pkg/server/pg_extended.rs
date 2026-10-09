@@ -543,7 +543,7 @@ impl Extended {
                     (sql, Vec::new())
                 } else {
                     let sql = crate::pg_name::adapt(&sql, context.as_ref(), &self.session)?;
-                    let sql = crate::pg_sql::adapt(&sql)?;
+                    let sql = crate::pg_sql::adapt_with_context(&sql, context.as_ref())?;
                     markers(&sql)?
                 };
                 let sql = if catalog.is_some() || session_query.is_some() {

@@ -71,3 +71,44 @@ fn postgres_create_table_preserves_literals_and_comments() {
     assert!(adapted.contains("/* integer */"));
     assert!(adapted.contains("payload BLOB"));
 }
+
+#[test]
+fn postgres_alter_column_mapping() {
+    let cases = [
+        (
+            "ALTER TABLE test.t ADD COLUMN amount numeric(12, 3) DEFAULT 1.25",
+            "ALTER TABLE test.t ADD COLUMN amount DECIMAL(12, 3) DEFAULT 1.25",
+        ),
+        (
+            "ALTER TABLE test.t RENAME COLUMN amount TO total",
+            "ALTER TABLE test.t RENAME COLUMN amount TO total",
+        ),
+        (
+            "ALTER TABLE test.t ALTER COLUMN total TYPE varchar(40)",
+            "ALTER TABLE test.t MODIFY COLUMN total VARCHAR(40)",
+        ),
+        (
+            "ALTER TABLE test.t ALTER COLUMN total SET DEFAULT 'ready'",
+            "ALTER TABLE test.t ALTER COLUMN total SET DEFAULT 'ready'",
+        ),
+        (
+            "ALTER TABLE test.t ALTER COLUMN total DROP DEFAULT",
+            "ALTER TABLE test.t ALTER COLUMN total DROP DEFAULT",
+        ),
+        (
+            "ALTER TABLE test.t DROP COLUMN IF EXISTS total",
+            "ALTER TABLE test.t DROP COLUMN IF EXISTS total",
+        ),
+    ];
+    for (sql, expected) in cases {
+        assert_eq!(crate::pg_sql::adapt(sql).unwrap(), expected, "{sql}");
+    }
+
+    for sql in [
+        "ALTER TABLE test.t ALTER COLUMN total TYPE bigint USING total::bigint",
+        "ALTER TABLE test.t DROP COLUMN total CASCADE",
+        "ALTER TABLE test.t ADD COLUMN a integer, ADD COLUMN b integer",
+    ] {
+        assert_eq!(crate::pg_sql::adapt(sql).unwrap_err().0, "0A000", "{sql}");
+    }
+}

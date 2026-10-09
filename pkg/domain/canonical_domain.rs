@@ -1385,10 +1385,12 @@ impl DdlMetadataService {
                 .iter()
                 .position(|candidate| candidate.Name.L == column.Name.L)
                 .ok_or_else(|| kv::errors::New(format!("unknown column {}", column.Name.O)))?;
-            let structural_flags = new.Columns[offset].GetFlag()
-                & (astersql_meta_model::mysql::PriKeyFlag
-                    | astersql_meta_model::mysql::NotNullFlag);
+            let structural_flags =
+                new.Columns[offset].GetFlag() & astersql_meta_model::mysql::PriKeyFlag;
             column.SetFlag(column.GetFlag() | structural_flags);
+            if structural_flags != 0 {
+                column.AddFlag(astersql_meta_model::mysql::NotNullFlag);
+            }
             column.ID = new.Columns[offset].ID;
             column.Offset = new.Columns[offset].Offset;
             new.Columns[offset] = column;

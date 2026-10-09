@@ -17,6 +17,13 @@ fn execute(context: &dyn TiDBContext, sql: &str) -> Vec<Vec<Value>> {
         .unwrap()
         .rows
 }
+
+fn execute_postgres(context: &dyn TiDBContext, sql: &str) {
+    let adapted = crate::pg_sql::adapt_with_context(sql, context).unwrap();
+    context
+        .execute_query(&adapted, false, &CancellationToken::new())
+        .unwrap_or_else(|error| panic!("{sql}\nadapted: {adapted}\n{error}"));
+}
 #[test]
 fn pg_datagrip_tables() {
     let context = context();
@@ -265,6 +272,113 @@ fn pg_datagrip_column_lifecycle() {
         constraint_rows
             .iter()
             .all(|row| row[0] != table_id || row[4] != Value::Text("retired_unique".into()))
+    );
+    context.close().unwrap();
+}
+
+#[test]
+fn pg_datagrip_postgres_column_lifecycle() {
+    let context = context();
+    execute_postgres(
+        context.as_ref(),
+        "CREATE TABLE test.dg_pg_column_lifecycle (id integer PRIMARY KEY, retired varchar(12), value integer DEFAULT 7, strict varchar(8) NOT NULL, UNIQUE (retired))",
+    );
+    context
+        .execute_query(
+            "INSERT INTO test.dg_pg_column_lifecycle (id, retired, strict) VALUES (1, 'old', 'yes')",
+            false,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+    for sql in [
+        "ALTER TABLE test.dg_pg_column_lifecycle ADD COLUMN note varchar(20) DEFAULT 'draft'",
+        "ALTER TABLE test.dg_pg_column_lifecycle RENAME COLUMN note TO summary",
+        "ALTER TABLE test.dg_pg_column_lifecycle ALTER COLUMN summary TYPE varchar(64)",
+        "ALTER TABLE test.dg_pg_column_lifecycle ALTER COLUMN summary SET DEFAULT 'ready'",
+        "ALTER TABLE test.dg_pg_column_lifecycle ALTER COLUMN summary DROP DEFAULT",
+        "ALTER TABLE test.dg_pg_column_lifecycle ALTER COLUMN summary SET NOT NULL",
+        "ALTER TABLE test.dg_pg_column_lifecycle ALTER COLUMN strict DROP NOT NULL",
+        "ALTER TABLE test.dg_pg_column_lifecycle DROP COLUMN retired",
+    ] {
+        execute_postgres(context.as_ref(), sql);
+    }
+
+    let rows = context
+        .execute_query(
+            "SELECT id, value, strict, summary FROM test.dg_pg_column_lifecycle",
+            false,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+    assert_eq!(rows[0].columns.len(), 4);
+
+    let Value::Signed(namespace) = execute(
+        context.as_ref(),
+        "SELECT oid FROM pg_namespace WHERE nspname='public'",
+    )[0][0] else {
+        panic!("namespace OID")
+    };
+    let column_sql = include_str!("testdata/pg_datagrip/RetrieveColumns.sql")
+        .replace('?', &namespace.to_string());
+    let table_id = execute(
+        context.as_ref(),
+        "SELECT oid FROM pg_class WHERE relname='dg_pg_column_lifecycle'",
+    )[0][0]
+        .clone();
+    let columns = execute(context.as_ref(), &column_sql)
+        .into_iter()
+        .filter(|row| row[0] == table_id)
+        .collect::<Vec<_>>();
+    assert_eq!(columns.len(), 4);
+    let column = |name: &str| {
+        columns
+            .iter()
+            .find(|row| row[2] == Value::Text(name.into()))
+            .unwrap_or_else(|| panic!("missing {name}: {columns:?}"))
+    };
+    assert_eq!(column("value")[9], Value::Text("7".into()));
+    assert_eq!(column("strict")[8], Value::Text("false".into()));
+    assert_eq!(
+        column("summary")[6],
+        Value::Text("character varying(64)".into())
+    );
+    assert_eq!(column("summary")[8], Value::Text("true".into()));
+    assert_eq!(column("summary")[9], Value::Null);
+
+    let adapted = crate::pg_sql::adapt_with_context(
+        "ALTER TABLE test.dg_pg_column_lifecycle ALTER COLUMN summary TYPE bytea",
+        context.as_ref(),
+    )
+    .unwrap();
+    let error = context.execute_query(&adapted, false, &CancellationToken::new());
+    assert!(error.is_err(), "character-to-bytea conversion must fail");
+    let after_failure = execute(context.as_ref(), &column_sql);
+    assert_eq!(after_failure.len(), 4);
+    let summary = after_failure
+        .iter()
+        .find(|row| row[2] == Value::Text("summary".into()))
+        .expect("summary survives failed conversion");
+    assert_eq!(summary[6], Value::Text("character varying(64)".into()));
+
+    for sql in [
+        "ALTER TABLE test.dg_pg_column_lifecycle ALTER COLUMN value TYPE bigint USING value::bigint",
+        "ALTER TABLE test.dg_pg_column_lifecycle DROP COLUMN value CASCADE",
+        "ALTER TABLE test.dg_pg_column_lifecycle ADD COLUMN a integer, ADD COLUMN b integer",
+    ] {
+        let error = crate::pg_sql::adapt_with_context(sql, context.as_ref()).unwrap_err();
+        assert_eq!(error.0, "0A000", "{sql}: {error:?}");
+    }
+    assert_eq!(
+        context
+            .execute_query(
+                "SELECT id, value, strict, summary FROM test.dg_pg_column_lifecycle",
+                false,
+                &CancellationToken::new(),
+            )
+            .unwrap()[0]
+            .columns
+            .len(),
+        4
     );
     context.close().unwrap();
 }
