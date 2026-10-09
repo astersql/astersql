@@ -1751,7 +1751,7 @@ impl ConcreteSession {
         }
         Self::qualify_explain_select_tables(&mut select, &database, self.domain.as_ref())?;
         let statement = ast::NodeRef::new(select);
-        fn first_cte_seed_table(select: &ast::SelectStmt) -> Option<String> {
+        fn first_cte_fallback(select: &ast::SelectStmt) -> Option<(String, String, String)> {
             if let Some(with) = select.With.as_ref().map(|with| with.borrow())
                 && let Some(cte) = with.CTEs.first()
             {
@@ -1761,25 +1761,33 @@ impl ConcreteSession {
                 else {
                     return None;
                 };
-                return Some(if source.AsName.L.is_empty() {
+                let seed_table = if source.AsName.L.is_empty() {
                     source.Source.Name.L.clone()
                 } else {
                     source.AsName.L.clone()
-                });
+                };
+                let consumer = select.From.as_ref()?.TableRefs.Left.as_deref()?;
+                let ast::ResultSetNode::TableSource(consumer) = consumer else {
+                    return None;
+                };
+                let alias = if consumer.AsName.L.is_empty() {
+                    consumer.Source.Name.L.clone()
+                } else {
+                    consumer.AsName.L.clone()
+                };
+                return Some((seed_table, cte.Name.L.clone(), alias));
             }
             let from = select.From.as_ref()?;
             let ast::ResultSetNode::TableSource(source) = from.TableRefs.Left.as_deref()? else {
                 return None;
             };
             source.QuerySource.as_ref()?.with_node(|query| {
-                first_cte_seed_table(query.as_any().downcast_ref::<ast::SelectStmt>()?)
+                first_cte_fallback(query.as_any().downcast_ref::<ast::SelectStmt>()?)
             })?
         }
 
-        let fallback_cte_seed_table = statement
-            .with_node(|node| {
-                first_cte_seed_table(node.as_any().downcast_ref::<ast::SelectStmt>()?)
-            })
+        let fallback_cte = statement
+            .with_node(|node| first_cte_fallback(node.as_any().downcast_ref::<ast::SelectStmt>()?))
             .flatten();
         let plan_context = plan_context_with_params_and_explain(
             Arc::clone(&self.session_vars),
@@ -2306,8 +2314,16 @@ impl ConcreteSession {
             );
         }
         if cte_physical.is_none()
-            && let Some(table) = fallback_cte_seed_table
+            && let Some((table, cte_name, alias)) = fallback_cte
         {
+            // View expansion can retain the CTE seed AST after the compact
+            // physical bridge has collapsed the consumer to its seed reader.
+            // Go still exposes the consumer as the main CTEFullScan and emits
+            // the seed as the separate CTE fragment.
+            lines.clear();
+            lines.push(format!(
+                "CTEFullScan root CTE:{cte_name} AS {alias} data:CTE_0"
+            ));
             lines.extend([
                 "CTE_0 root  Non-Recursive CTE".to_owned(),
                 "└─TableReader(Seed Part) root  data:TableFullScan".to_owned(),

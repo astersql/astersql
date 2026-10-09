@@ -639,9 +639,14 @@ fn test_cbo_without_analyze_matches_go_suite_fixture() {
             .iter()
             .map(|row| row.as_str().expect("CBO plan row string").to_owned())
             .collect::<Vec<_>>();
-        let actual = tk
-            .MustQuery(sql, Vec::new())
-            .Rows()
+        let rows = tk.MustQuery(sql, Vec::new()).Rows();
+        if sql.to_ascii_lowercase().contains("format = 'hint'") {
+            assert!(
+                rows.iter().all(|row| row.len() == 1),
+                "EXPLAIN FORMAT='hint' must expose Go's single hint column: {sql}"
+            );
+        }
+        let actual = rows
             .into_iter()
             .map(|row| row.join(" "))
             .collect::<Vec<_>>();

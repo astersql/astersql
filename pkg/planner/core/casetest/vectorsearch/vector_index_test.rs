@@ -767,8 +767,8 @@ fn hnsw_query_plan_matches_execution() {
         tk.MustQuery(&format!("explain format = 'plan_tree' {query}"), Vec::new())
             .Rows()
             .iter()
-            .all(|row| row.len() == 1 && row[0].contains(' ')),
-        "plan_tree must expose complete plan lines in its single column"
+            .all(|row| row.len() == 4 && !row[0].is_empty()),
+        "plan_tree must expose Go's id/task/access-object/operator-info columns"
     );
     assert!(
         plan.iter().any(|row| row.contains("annIndex:L2")),

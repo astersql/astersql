@@ -4416,7 +4416,14 @@ impl ConcreteSession {
                             source.Source.Name.L
                         ));
                     }
-                    return Ok(Self::explain_plan_tree_rows(vec![hint]));
+                    // Go exposes EXPLAIN FORMAT='hint' as a single `hint`
+                    // column.  Feeding the text through the plan-tree splitter
+                    // treats its last token as a task column and leaves two
+                    // empty columns, which become observable trailing spaces.
+                    return Ok(ConcreteRecordSet::new(
+                        vec!["hint".to_owned()],
+                        vec![vec![hint]],
+                    ));
                 }
             }
         }
