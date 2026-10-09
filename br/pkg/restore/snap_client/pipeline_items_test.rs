@@ -183,8 +183,11 @@ fn test_pipeline_concurrent_handler_2() {
     builder.RegisterPipelineTask(
         "task3",
         concurrency,
-        Arc::new(move |_ctx, _ct| {
+        Arc::new(move |ctx, _ct| {
             c3.fetch_add(1, Ordering::SeqCst);
+            while ctx.Err().is_none() {
+                std::thread::yield_now();
+            }
             Err(Error::new("failed in task3"))
         }),
         Arc::new(|_ctx| Ok(())),

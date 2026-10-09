@@ -861,9 +861,7 @@ impl AdapterRuntime for SessionBoundAdapterOwner {
             if vars.InNonTransactionalDML {
                 0
             } else {
-                vars.GetSystemVar(astersql_sessionctx_vardef::TiDBDMLMaxExecutionTime)
-                    .and_then(|value| value.parse().ok())
-                    .unwrap_or(vars.DMLMaxExecutionTime)
+                self.session.state.borrow().dml_max_execution_time_ms
             }
         })
     }

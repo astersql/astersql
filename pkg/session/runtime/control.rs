@@ -6489,6 +6489,12 @@ impl ConcreteSession {
                 }
                 astersql_sessionctx_vardef::TiDBDMLMaxExecutionTime => {
                     if !is_global {
+                        self.state.borrow_mut().dml_max_execution_time_ms = value
+                            .trim_matches(['\'', '"'])
+                            .parse::<u64>()
+                            .map_err(|error| {
+                                session_error("parse tidb_dml_max_execution_time", error)
+                            })?;
                         self.session_vars
                             .SetHintSystemVarWithOldState(&name, value.trim_matches(['\'', '"']))
                             .map_err(|error| {

@@ -268,9 +268,18 @@ impl PipelineConcurrentBuilder {
 
         let cancelled = Arc::new(AtomicBool::new(false));
         let first_error: Arc<Mutex<Option<Error>>> = Arc::new(Mutex::new(None));
+        let parent_ctx = ctx.clone();
+        let pipeline_cancelled = cancelled.clone();
+        let pipeline_ctx = Context::WithCancellationSource(move || {
+            if pipeline_cancelled.load(Ordering::Acquire) {
+                Some(Error::with_code("Canceled", "pipeline context canceled"))
+            } else {
+                parent_ctx.Err()
+            }
+        });
         let (source_tx, source_rx) = sync_channel(defaultChannelSize);
         let source_cancelled = cancelled.clone();
-        let source_ctx = ctx.clone();
+        let source_ctx = pipeline_ctx.clone();
         let source = thread::spawn(move || {
             for table in tables {
                 if source_cancelled.load(Ordering::Acquire) || source_ctx.Err().is_some() {
@@ -303,7 +312,7 @@ impl PipelineConcurrentBuilder {
             let worker_count = f.concurrency.max(1) as usize;
             let stage_cancelled = cancelled.clone();
             let stage_error = first_error.clone();
-            let stage_ctx = ctx.clone();
+            let stage_ctx = pipeline_ctx.clone();
             stages.push(thread::spawn(move || {
                 let mut workers = Vec::with_capacity(worker_count);
                 for _ in 0..worker_count {

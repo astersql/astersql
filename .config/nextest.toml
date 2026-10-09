@@ -9,6 +9,22 @@ fail-fast = false
 # can be optimized instead of receiving permanent exemptions.
 slow-timeout = { period = "5s", terminate-after = 2, grace-period = "1s" }
 
+# Scan-adapter runtime tests own real mock-KV Domains, background services, and
+# lock-wait runtimes. Each case completes within ten seconds in isolation, but
+# running the module concurrently exhausts those resources and makes the
+# timeout move between otherwise healthy cases. Serialize only this module,
+# leaving the rest of the workspace at the default CPU concurrency.
+[test-groups.scan-adapter-runtime]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = 'test(scan_adapter_runtime_test)'
+test-group = "scan-adapter-runtime"
+# Isolated measurements are 0.1–7.8s, while transient host contention can
+# push a real Domain shutdown just past 10s. Keep the 5s slow signal but allow
+# this scoped module up to 20s; the diagnostic profile remains the 60s backstop.
+slow-timeout = { period = "5s", terminate-after = 4, grace-period = "1s" }
+
 # These RealTiKV cases perform deliberate DDL propagation, retry, paging, or
 # process-lifecycle waits. Serial diagnostic runs complete in 10.7–58.4s, so
 # give only these proven slow tests enough time while retaining slow reports.

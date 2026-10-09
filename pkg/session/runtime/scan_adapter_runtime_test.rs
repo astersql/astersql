@@ -765,12 +765,9 @@ fn transactional_dml_uses_dml_timeout() {
     session
         .Execute("set tidb_dml_max_execution_time = 60000")
         .unwrap();
-    assert_eq!(
-        session.WithSessionVars(|vars| vars.DMLMaxExecutionTime),
-        60_000
-    );
     session.Execute("begin pessimistic").unwrap();
     let owner = Arc::new(SessionBoundAdapterOwner::new(session));
+    assert_eq!(owner.DMLMaximumExecutionTime(), 60_000);
     let sql = "insert into t values (20,20)";
     owner.BindDMLStatement(sql).unwrap();
     assert!(

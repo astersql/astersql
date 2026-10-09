@@ -165,6 +165,7 @@ pub(super) struct SessionState {
     pub(super) min_paging_size: usize,
     pub(super) innodb_lock_wait_timeout_secs: u64,
     pub(super) max_execution_time_ms: u64,
+    pub(super) dml_max_execution_time_ms: u64,
     pub(super) low_resolution_tso: bool,
     pub(super) fair_locking: bool,
     pub(super) enable_noop_functions: bool,
@@ -439,6 +440,7 @@ impl Default for SessionState {
             innodb_lock_wait_timeout_secs: astersql_sessionctx_vardef::DefInnodbLockWaitTimeout
                 as u64,
             max_execution_time_ms: 0,
+            dml_max_execution_time_ms: astersql_sessionctx_vardef::DefTiDBDMLMaxExecutionTime,
             low_resolution_tso: false,
             fair_locking: false,
             enable_noop_functions: false,
