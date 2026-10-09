@@ -127,6 +127,149 @@ fn pg_datagrip_tables() {
 }
 
 #[test]
+fn pg_datagrip_column_lifecycle() {
+    let context = context();
+    context
+        .execute_query(
+            "CREATE TABLE test.dg_column_lifecycle (id INT PRIMARY KEY, retired VARCHAR(12), UNIQUE KEY retired_unique (retired))",
+            false,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+    let Value::Signed(namespace) = execute(
+        context.as_ref(),
+        "SELECT oid FROM pg_namespace WHERE nspname='public'",
+    )[0][0] else {
+        panic!("namespace OID")
+    };
+    let tables =
+        include_str!("testdata/pg_datagrip/1869280142.sql").replace('?', &namespace.to_string());
+    let columns = include_str!("testdata/pg_datagrip/RetrieveColumns.sql")
+        .replace('?', &namespace.to_string());
+    let indices =
+        include_str!("testdata/pg_datagrip/1869280153.sql").replace('?', &namespace.to_string());
+    let constraints =
+        include_str!("testdata/pg_datagrip/1869280154.sql").replace('?', &namespace.to_string());
+
+    let table_id = execute(context.as_ref(), &tables)
+        .into_iter()
+        .find(|row| row[1] == Value::Text("dg_column_lifecycle".into()))
+        .expect("created table visible to DataGrip")[2]
+        .clone();
+    let lifecycle_columns = || {
+        execute(context.as_ref(), &columns)
+            .into_iter()
+            .filter(|row| row[0] == table_id)
+            .collect::<Vec<_>>()
+    };
+    let assert_table_id_stable = || {
+        let row = execute(context.as_ref(), &tables)
+            .into_iter()
+            .find(|row| row[1] == Value::Text("dg_column_lifecycle".into()))
+            .expect("table remains visible to DataGrip");
+        assert_eq!(row[2], table_id);
+    };
+
+    let created = lifecycle_columns();
+    assert_eq!(created.len(), 2);
+    assert_eq!(created[0][1], Value::Signed(1));
+    assert_eq!(created[0][2], Value::Text("id".into()));
+    assert_eq!(created[1][1], Value::Signed(2));
+    assert_eq!(created[1][2], Value::Text("retired".into()));
+    assert_eq!(created[1][6], Value::Text("character varying(12)".into()));
+
+    context
+        .execute_query(
+            "ALTER TABLE test.dg_column_lifecycle ADD COLUMN note VARCHAR(20) NULL DEFAULT 'draft'",
+            false,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+    assert_table_id_stable();
+    let added = lifecycle_columns();
+    assert_eq!(added.len(), 3);
+    assert_eq!(added[2][1], Value::Signed(3));
+    assert_eq!(added[2][2], Value::Text("note".into()));
+    assert_eq!(added[2][6], Value::Text("character varying(20)".into()));
+    assert_eq!(added[2][8], Value::Text("false".into()));
+    assert_eq!(
+        added[2][9],
+        Value::Text("'draft'::character varying".into())
+    );
+
+    context
+        .execute_query(
+            "ALTER TABLE test.dg_column_lifecycle RENAME COLUMN note TO summary",
+            false,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+    assert_table_id_stable();
+    let renamed = lifecycle_columns();
+    assert_eq!(renamed.len(), 3);
+    assert!(
+        !renamed
+            .iter()
+            .any(|row| row[2] == Value::Text("note".into()))
+    );
+    assert_eq!(renamed[2][1], Value::Signed(3));
+    assert_eq!(renamed[2][2], Value::Text("summary".into()));
+
+    context
+        .execute_query(
+            "ALTER TABLE test.dg_column_lifecycle MODIFY COLUMN summary VARCHAR(64) NOT NULL DEFAULT 'ready'",
+            false,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+    assert_table_id_stable();
+    let modified = lifecycle_columns();
+    assert_eq!(modified.len(), 3);
+    assert_eq!(modified[2][1], Value::Signed(3));
+    assert_eq!(modified[2][2], Value::Text("summary".into()));
+    assert_eq!(modified[2][6], Value::Text("character varying(64)".into()));
+    assert_eq!(modified[2][8], Value::Text("true".into()));
+    assert_eq!(
+        modified[2][9],
+        Value::Text("'ready'::character varying".into())
+    );
+
+    context
+        .execute_query(
+            "ALTER TABLE test.dg_column_lifecycle DROP COLUMN retired",
+            false,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+    assert_table_id_stable();
+    let dropped = lifecycle_columns();
+    assert_eq!(dropped.len(), 2);
+    assert_eq!(dropped[0][1], Value::Signed(1));
+    assert_eq!(dropped[0][2], Value::Text("id".into()));
+    assert_eq!(dropped[1][1], Value::Signed(2));
+    assert_eq!(dropped[1][2], Value::Text("summary".into()));
+    assert!(
+        !dropped
+            .iter()
+            .any(|row| row[2] == Value::Text("retired".into()))
+    );
+
+    let index_rows = execute(context.as_ref(), &indices);
+    assert!(
+        index_rows
+            .iter()
+            .all(|row| row[0] != table_id || row[2] != Value::Text("retired_unique".into()))
+    );
+    let constraint_rows = execute(context.as_ref(), &constraints);
+    assert!(
+        constraint_rows
+            .iter()
+            .all(|row| row[0] != table_id || row[4] != Value::Text("retired_unique".into()))
+    );
+    context.close().unwrap();
+}
+
+#[test]
 fn pg_datagrip_structure() {
     let context = context();
     context.execute_query("CREATE TABLE test.dg_structure (id INT PRIMARY KEY, note VARCHAR(30), UNIQUE KEY note_unique (note, id))", false, &CancellationToken::new()).unwrap();
