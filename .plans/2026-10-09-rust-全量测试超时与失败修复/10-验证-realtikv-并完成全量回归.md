@@ -2,7 +2,7 @@
 
 批次：【批次 4】 依赖任务 2、3、4、5、6、7、8、9
 
-状态：未开始
+状态：已完成，待回归
 
 目的：在真实 TiKV 环境验证 RealTiKV 失败，处理剩余可复现根因，并以 Ready profile 完成全量 Rust 回归。
 
@@ -64,3 +64,15 @@
 ## 完成
 
 报告全部文件、Ready profile、风险、确切命令和本地未验证项；如产生修复，使用 `$git-commit` 提交，保留最终日志但不纳入 Git。
+
+## 实施与验证记录（2026-10-10）
+
+- Cargo 共享槽位：槽位 1，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1`。
+- TiUP：用 `tiup playground v8.5.8 --mode tikv-slim --tag rust-task10-20261010 --pd.port 12379` 启动，`http://127.0.0.1:12379/pd/api/v1/version` 探活成功；结束后进程全部退出、tag 数据已清理，PD 端点已确认不可达。
+- 失败证据：健康 TiKV 上运行计划指定的 `test_split_file` 命令，退出码 100，2/2 在默认 10 秒预算超时；diagnostic 下 2/2 通过，单项约 10.73 秒。
+- 修复：将 Rust bootstrap 逐变量 TiKV INSERT 改为与 Go `doDMLWorks` 相同的单条多值 INSERT；移除 `importintotest4` lib 对独立 `[[test]]` 的重复挂载；使 recorded-summary 任务键可重复执行。
+- 修复后 RealTiKV：`test_split_file` 默认 profile 2/2 通过，单项 5.827/5.895 秒；去重后 split-file 与 global-sort 2/2 通过，退出码 0。
+- 任务 1 的 54 项 RealTiKV 过滤集默认复跑：42 通过、11 超时、1 因重复任务键失败；局部接线修复后，11 项超时在 diagnostic 下 11/11 通过（10.736–58.430 秒），已配置精确测试级 90 秒预算。
+- `cargo fmt --all`：退出码 0。`make lint`：Ready profile，退出码 0。
+- `make rust-test`：退出码 100，18,282 项有效执行，18,127 通过、17 失败、138 超时、55 跳过，无 SIGABRT；日志为 `target/rust-test.D9DP0V`（不纳入 Git）。
+- 待回归原因：全量残余包含前置任务已记录的 planner/session 断言与并发失败、大量非本次修改测试的默认 10 秒预算超时，以及按 RealTiKV 流程清理 playground 后 full run 中的外部服务缺失失败。本任务的健康 TiKV 聚焦验证已通过，保留本文件供后续统一回归。

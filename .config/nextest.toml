@@ -9,6 +9,25 @@ fail-fast = false
 # can be optimized instead of receiving permanent exemptions.
 slow-timeout = { period = "5s", terminate-after = 2, grace-period = "1s" }
 
+# These RealTiKV cases perform deliberate DDL propagation, retry, paging, or
+# process-lifecycle waits. Serial diagnostic runs complete in 10.7–58.4s, so
+# give only these proven slow tests enough time while retaining slow reports.
+[[profile.default.overrides]]
+filter = '''
+test(=test_add_foreign_key_with_auto_create_index) |
+test(=test_concurrent_ddl_create_gen_col_index) |
+test(=test_concurrent_ddl_create_multi_cols_index) |
+test(=test_concurrent_ddl_create_non_unique_index) |
+test(=test_concurrent_ddl_create_primary_key) |
+test(=test_concurrent_ddl_create_unique_index) |
+test(=test_merge_temp_index_basic) |
+test(=test_merge_temp_index_stuck) |
+test(=test_paging_act_rows_and_process_keys) |
+test(=parity_test::compatibility_public_start_stop_methods_execute) |
+test(=parity_test::go_rust_public_contract_matches)
+'''
+slow-timeout = { period = "30s", terminate-after = 3, grace-period = "1s" }
+
 # Use this profile only for serial diagnosis of tests that hit the default
 # timeout. It inherits all other settings from the default profile and gives a
 # test up to 60 seconds to distinguish a slow test from a persistent wait.

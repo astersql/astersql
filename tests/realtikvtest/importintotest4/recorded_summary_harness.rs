@@ -634,6 +634,14 @@ pub fn run_recorded_step_summary() {
     let manager = session.ImportTaskManager().unwrap();
     storage::SetNodeResource(storage::proto::NewNodeResource(1, 128 * 1024 * 1024, 0));
     manager.InitMeta((), ":4000".into(), "".into()).unwrap();
+    let task_key = format!(
+        "recorded-native-import-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
     let mut task_meta = import::TaskMeta {
         Plan: plan.Plan.clone(),
         ..Default::default()
@@ -641,7 +649,7 @@ pub fn run_recorded_step_summary() {
     let id = manager
         .CreateTask(
             (),
-            "recorded-native-import".into(),
+            task_key.clone(),
             storage::proto::ImportInto,
             "".into(),
             1,
@@ -720,7 +728,7 @@ pub fn run_recorded_step_summary() {
     let mut logical_task = proto::Task {
         TaskBase: proto::TaskBase {
             ID: id,
-            Key: "recorded-native-import".into(),
+            Key: task_key,
             Type: proto::ImportInto,
             State: proto::TaskStateRunning,
             Step: proto::ImportStepWriteAndIngest,

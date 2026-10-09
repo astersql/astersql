@@ -2576,15 +2576,24 @@ pub fn BootstrapCanonicalDomain(domain: Arc<Domain>) -> SessionResult<ConcreteSe
         privileges.SortUserTable();
         privilege_handle.merge(privileges);
     }
-    for variable in astersql_sessionctx_variable::GetSysVars().into_values() {
-        if variable.HasGlobalScope() {
-            session.execute(&format!(
-                "INSERT IGNORE INTO mysql.global_variables (VARIABLE_NAME, VARIABLE_VALUE) \
-                 VALUES ('{}', '{}')",
+    let global_variables = astersql_sessionctx_variable::GetSysVars()
+        .into_values()
+        .filter(|variable| variable.HasGlobalScope())
+        .map(|variable| {
+            format!(
+                "('{}', '{}')",
                 quote_sql(&variable.Name),
-                quote_sql(&variable.Value),
-            ))?;
-        }
+                quote_sql(&variable.Value)
+            )
+        })
+        .collect::<Vec<_>>();
+    if !global_variables.is_empty() {
+        // Go's doDMLWorks writes all initial global variables in one statement.
+        // Keeping the same batching avoids one TiKV transaction per variable.
+        session.execute(&format!(
+            "INSERT IGNORE INTO mysql.global_variables (VARIABLE_NAME, VARIABLE_VALUE) VALUES {}",
+            global_variables.join(", ")
+        ))?;
     }
     // SAFETY: bootstrap only reads the shared compatibility version.
     let bootstrap_version = unsafe { crate::upgrade_def::currentBootstrapVersion }.to_string();

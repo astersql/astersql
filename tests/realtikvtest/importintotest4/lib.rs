@@ -41,30 +41,6 @@
     unused_variables
 )]
 
-#[cfg(test)]
-#[path = "cloud_sdk_test.rs"]
-mod cloud_sdk_test;
-
-#[cfg(test)]
-#[path = "conflict_resolution_test.rs"]
-mod conflict_resolution_test;
-
-#[cfg(test)]
-#[path = "global_sort_test.rs"]
-mod global_sort_test;
-
-#[cfg(test)]
-#[path = "import_summary_test.rs"]
-mod import_summary_test;
-
-#[cfg(test)]
-#[path = "main_test.rs"]
-mod main_test;
-
-#[cfg(test)]
-#[path = "manual_recovery_test.rs"]
-mod manual_recovery_test;
-
-#[cfg(test)]
-#[path = "split_file_test.rs"]
-mod split_file_test;
+// Each scenario is registered as its own `[[test]]` target in Cargo.toml.
+// Do not mount those files here as unit-test modules as well: RealTiKV tests
+// persist state, and running each scenario twice can collide on task keys.
