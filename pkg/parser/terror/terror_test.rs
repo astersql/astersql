@@ -239,14 +239,15 @@ fn test_trace_and_location() {
 
     assert!(error.to_string().contains("error message:abc"));
     assert!(stack.contains("terror_test.rs"), "stack =\n{stack}");
-    assert!(
-        stack.contains("parser_terror_test::call"),
-        "stack =\n{stack}"
-    );
-    assert!(
-        stack.contains("parser_terror_test::example"),
-        "stack =\n{stack}"
-    );
+    let lines: Vec<_> = stack.lines().collect();
+    let has_terror_frame = |function: &str| {
+        lines.windows(2).any(|frame| {
+            frame[0].rsplit("::").next() == Some(function)
+                && frame[1].contains("pkg/parser/terror/terror_test.rs:")
+        })
+    };
+    assert!(has_terror_frame("call"), "stack =\n{stack}");
+    assert!(has_terror_frame("example"), "stack =\n{stack}");
 }
 
 /// 校验 RegisterErrorClass 成功注册且重复编号 panic。

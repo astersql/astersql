@@ -3203,14 +3203,15 @@ fn sync_wait_stats_load_point(plan: &dyn logicalop::LogicalPlan) -> Result<(), e
     if pending_items == 0 {
         return Ok(());
     }
-    let Some(waiter) = context.GetStatsLoadWaiter() else {
-        let error =
-            "synchronous statistics are pending but this PlanContext has no StatsHandle".to_owned();
-        statement_context.FailStatsSyncWait(std::time::Duration::ZERO, error.clone());
-        return Err(expression::errors::New(error));
-    };
     let started = Instant::now();
-    match waiter.SyncWaitStatsLoad(context.GetSessionVars()) {
+    let Some(waiter) = context.GetStatsLoadWaiter() else {
+        // Lightweight planner contexts populate statistics synchronously through
+        // their DataSourceProvider, so there is no background load to wait for.
+        statement_context.CompleteStatsSyncWait(started.elapsed());
+        return Ok(());
+    };
+    let wait_result = waiter.SyncWaitStatsLoad(context.GetSessionVars());
+    match wait_result {
         Ok(()) => {
             statement_context.CompleteStatsSyncWait(started.elapsed());
             Ok(())

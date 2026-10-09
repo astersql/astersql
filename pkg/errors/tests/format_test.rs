@@ -377,10 +377,12 @@ fn all_source_format_cases_have_rust_equivalents() {
                     case.source
                 );
                 // 统计本测试函数名出现次数，作为捕获栈帧数的代理指标。
+                // line-tables-only DWARF 在部分平台只提供函数短名，完整调试信息则提供模块限定名。
                 let captured_stacks = rendered
                     .lines()
                     .filter(|line| {
-                        line.ends_with("::all_source_format_cases_have_rust_equivalents")
+                        line.rsplit("::").next()
+                            == Some("all_source_format_cases_have_rust_equivalents")
                     })
                     .count();
                 assert_eq!(captured_stacks, stacks, "{}: {rendered}", case.source);

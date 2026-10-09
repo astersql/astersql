@@ -12,7 +12,8 @@ use logicalop_dependency::LogicalPlan as _;
 
 use super::main_test::{
     PlannerTestStatsHandle, build_logical_for_test, logical_optimize_for_test,
-    logical_optimize_with_stats_handle_for_test, logical_plan_string,
+    logical_optimize_with_pending_stats_for_test, logical_optimize_with_stats_handle_for_test,
+    logical_plan_string,
 };
 
 /// 深度优先查找首个 LogicalJoin。
@@ -1060,6 +1061,29 @@ fn sync_wait_stats_load_waits_for_pending_items() {
         context.GetSessionVars().StmtCtx.StatsSyncWaitDuration()
             >= std::time::Duration::from_millis(1)
     );
+}
+
+#[test]
+/// 没有显式 StatsHandle 的轻量 PlanContext 已同步填充统计，无需异步等待。
+fn sync_wait_stats_load_without_handle_completes_synchronous_provider_stats() {
+    let (context, _) = logical_optimize_with_pending_stats_for_test(
+        "select a from t",
+        rule_dependency::FLAG_SYNC_WAIT_STATS_LOAD_POINT,
+        1,
+        false,
+    )
+    .expect("synchronously populated planner statistics do not need a wait handle");
+
+    assert!(!context.GetSessionVars().StmtCtx.IsSyncStatsFailed());
+    assert_eq!(context.GetSessionVars().StmtCtx.PendingStatsLoadItems(), 0);
+    assert!(
+        context
+            .GetSessionVars()
+            .StmtCtx
+            .StatsSyncWaitError()
+            .is_none()
+    );
+    assert!(context.GetSessionVars().StmtCtx.GetWarnings().is_empty());
 }
 
 #[test]

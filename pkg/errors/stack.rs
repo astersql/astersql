@@ -299,9 +299,11 @@ fn resolve_backtrace(backtrace: Backtrace) -> Vec<Frame> {
     resolved
 }
 
-/// 判断函数名是否属于 `NewStack`（含闭包路径）。
+/// 判断函数名是否属于 `NewStack`（含完整路径、平台短名与闭包路径）。
 fn is_new_stack(function: &str) -> bool {
-    function.ends_with("::stack::NewStack") || function.contains("::stack::NewStack::")
+    function == "NewStack"
+        || function.ends_with("::stack::NewStack")
+        || function.contains("::stack::NewStack::")
 }
 
 /// 去掉 Rust 符号末尾 `::h` + 16 位十六进制哈希。
