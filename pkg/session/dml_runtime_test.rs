@@ -2040,7 +2040,12 @@ fn sql_defaults_and_bootstrap_upgrade() {
         .unwrap()
         .pop()
         .unwrap();
-    assert_eq!(rs.Next().unwrap(), Some(vec!["283".into()]));
+    // SAFETY: the test only reads the compatibility variable.
+    let current_bootstrap_version = unsafe { crate::upgrade_def::currentBootstrapVersion };
+    assert_eq!(
+        rs.Next().unwrap(),
+        Some(vec![current_bootstrap_version.to_string()])
+    );
     for (name, value) in [
         ("tidb_analyze_default_num_buckets", "256"),
         ("tidb_analyze_default_num_topn", "100"),

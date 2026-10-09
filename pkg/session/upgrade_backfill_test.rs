@@ -231,7 +231,9 @@ fn upgrade_backfills_and_preserves_values() {
     assert_eq!(store.0["tidb_analyze_default_num_buckets"], "512");
     assert_eq!(store.0["tidb_analyze_default_num_topn"], "150");
     let mut current = VariableStore::default();
-    upgrade_bootstrap_variables(&mut current, 287).unwrap();
+    // SAFETY: the test only reads the compatibility variable.
+    let current_bootstrap_version = unsafe { crate::upgrade_def::currentBootstrapVersion };
+    upgrade_bootstrap_variables(&mut current, current_bootstrap_version).unwrap();
     assert!(current.0.is_empty());
 }
 

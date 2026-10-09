@@ -2,7 +2,7 @@
 
 批次：【批次 3】 依赖批次 1
 
-状态：未开始
+状态：已完成，待回归验证
 
 目的：统一当前 bootstrap 版本、升级函数顺序和回填结果，修复版本 177/176 漂移。
 
@@ -59,3 +59,16 @@
 ## 完成
 
 报告版本映射和回填行为；完成后使用 `$git-commit` 提交。
+
+## 执行记录
+
+- Go 与 Rust 的 upgrade registry 均为 177 项，版本序列完全一致，current bootstrap version 均为 317。Go `upgradeToVer317` 会在缺失时回填 `tidb_enable_adaptive_limit_scan=OFF`，不覆盖已有值。
+- 修复了测试中过期的 176 项和 current=287/283 假设；修复后目标两项 nextest 通过。
+- 共享槽位：3；`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-3`。
+- 修复前：`cargo nextest run --locked -p astersql-session -E 'test(upgrade_backfills_and_preserves_values) | test(upgrade_functions_match_go_order_and_current_version)'`，退出码 100，2 项均失败（`177 != 176`、current backfill 非空）。
+- 修复后同一命令：退出码 0，2/2 通过。
+- `cargo fmt --all`：退出码 0。
+- `cargo nextest run --locked -p astersql-session -E 'test(upgrade)'`：退出码 100，27 项中 25 项通过、2 项被默认 10 秒预算终止；其中 masking-policy 生命周期属任务 7 范围，`sql_defaults_and_bootstrap_upgrade` 为既有慢测。
+- `cargo test --locked -p astersql-session dml_runtime_test::sql_defaults_and_bootstrap_upgrade -- --exact`：退出码 0，1/1 通过，用时 13.42 秒，证明行为正确而 nextest 失败来自无关本次修改的统一 10 秒超时。
+- `make lint`：退出码 0。
+- 待回归：相关慢测超时修复后，重跑完整 `test(upgrade)` 过滤集。
