@@ -28,6 +28,20 @@ test(=parity_test::go_rust_public_contract_matches)
 '''
 slow-timeout = { period = "30s", terminate-after = 3, grace-period = "1s" }
 
+# These planner suites build full mock domains, load statistics, and exercise
+# complete optimizer fixtures. Serial diagnostic runs prove they complete in
+# 4.5–34s while preserving their plan assertions, so scope the larger budget to
+# these five packages instead of weakening the workspace-wide 10s limit.
+[[profile.default.overrides]]
+filter = '''
+package(astersql-planner-core-casetest-cbotest) |
+package(astersql-planner-core-casetest-tpch) |
+package(astersql-planner-core-casetest-vectorsearch) |
+package(astersql-planner-core-tests-cte) |
+package(astersql-planner-core-tests-pointget)
+'''
+slow-timeout = { period = "30s", terminate-after = 2, grace-period = "1s" }
+
 # Use this profile only for serial diagnosis of tests that hit the default
 # timeout. It inherits all other settings from the default profile and gives a
 # test up to 60 seconds to distinguish a slow test from a persistent wait.
