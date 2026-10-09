@@ -386,6 +386,19 @@ impl PgService {
                     if let Some(sql) = sql {
                         let session_query = crate::pg_session::SessionQuery::parse(sql);
                         if let Ok(Some(query)) = &session_query {
+                            if let Err((state, message)) = extended
+                                .session
+                                .check_transaction_command(Some(query.command()), context.as_ref())
+                            {
+                                extended.session.record_error(context.as_ref());
+                                write_error(socket, "ERROR", state, &message)?;
+                                write_message(
+                                    socket,
+                                    b'Z',
+                                    &[extended.session.transaction_status(context.as_ref())],
+                                )?;
+                                continue;
+                            }
                             match self.with_query(pid, |context| {
                                 extended.session.execute(query, context.as_ref())
                             })? {
@@ -394,26 +407,30 @@ impl PgService {
                                     &result,
                                     query.command(),
                                 )?,
-                                Err(error) => write_error(
-                                    socket,
-                                    "ERROR",
-                                    sqlstate(&error),
-                                    &error.to_string(),
-                                )?,
+                                Err(error) => {
+                                    extended.session.record_error(context.as_ref());
+                                    write_error(
+                                        socket,
+                                        "ERROR",
+                                        sqlstate(&error),
+                                        &error.to_string(),
+                                    )?
+                                }
                             }
                             write_message(
                                 socket,
                                 b'Z',
-                                if context.in_transaction() { b"T" } else { b"I" },
+                                &[extended.session.transaction_status(context.as_ref())],
                             )?;
                             continue;
                         }
                         if let Err((state, message)) = session_query {
+                            extended.session.record_error(context.as_ref());
                             write_error(socket, "ERROR", state, &message)?;
                             write_message(
                                 socket,
                                 b'Z',
-                                if context.in_transaction() { b"T" } else { b"I" },
+                                &[extended.session.transaction_status(context.as_ref())],
                             )?;
                             continue;
                         }
@@ -446,6 +463,19 @@ impl PgService {
                         match parsed {
                             Ok((_, None)) => write_message(socket, b'I', &[])?,
                             Ok((sql, Some(command))) => {
+                                if let Err((state, message)) = extended
+                                    .session
+                                    .check_transaction_command(Some(command), context.as_ref())
+                                {
+                                    extended.session.record_error(context.as_ref());
+                                    write_error(socket, "ERROR", state, &message)?;
+                                    write_message(
+                                        socket,
+                                        b'Z',
+                                        &[extended.session.transaction_status(context.as_ref())],
+                                    )?;
+                                    continue;
+                                }
                                 let execution = self.with_query(pid, |context| {
                                     if let Some(catalog) =
                                         catalog.as_ref().ok().and_then(|query| query.as_ref())
@@ -458,6 +488,9 @@ impl PgService {
                                 })?;
                                 match execution {
                                     Ok(results) => {
+                                        extended
+                                            .session
+                                            .record_success(Some(command), context.as_ref());
                                         let started = std::time::Instant::now();
                                         let response = if results.len() == 1 {
                                             crate::pg_result::write_result(
@@ -492,16 +525,22 @@ impl PgService {
                                             }
                                         }
                                     }
-                                    Err(error) => write_error(
-                                        socket,
-                                        "ERROR",
-                                        sqlstate(&error),
-                                        &error.to_string(),
-                                    )?,
+                                    Err(error) => {
+                                        extended.session.record_error(context.as_ref());
+                                        write_error(
+                                            socket,
+                                            "ERROR",
+                                            sqlstate(&error),
+                                            &error.to_string(),
+                                        )?
+                                    }
                                 }
                                 context.finish_protocol_response(Duration::ZERO);
                             }
-                            Err((state, message)) => write_error(socket, "ERROR", state, &message)?,
+                            Err((state, message)) => {
+                                extended.session.record_error(context.as_ref());
+                                write_error(socket, "ERROR", state, &message)?
+                            }
                         }
                     } else {
                         write_error(
@@ -514,7 +553,7 @@ impl PgService {
                     write_message(
                         socket,
                         b'Z',
-                        if context.in_transaction() { b"T" } else { b"I" },
+                        &[extended.session.transaction_status(context.as_ref())],
                     )?;
                     continue;
                 }

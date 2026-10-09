@@ -172,6 +172,10 @@ mod pg_extended_test;
 #[path = "pg_dml_test.rs"]
 mod pg_dml_test;
 
+#[cfg(test)]
+#[path = "pg_transaction_test.rs"]
+mod pg_transaction_test;
+
 mod pg_extended;
 mod pg_session;
 #[cfg(test)]

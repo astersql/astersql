@@ -483,7 +483,7 @@ impl Extended {
             write_message(
                 socket,
                 b'Z',
-                if context.in_transaction() { b"T" } else { b"I" },
+                &[self.session.transaction_status(context.as_ref())],
             )?;
             return Ok(true);
         }
@@ -498,6 +498,7 @@ impl Extended {
             }
             Err((state, message)) => {
                 self.failed = true;
+                self.session.record_error(context.as_ref());
                 write_error(socket, "ERROR", state, &message)?;
             }
         }
@@ -602,6 +603,8 @@ impl Extended {
                 if command.is_none() {
                     return Err(error("0A000", "empty prepared statements are unsupported"));
                 }
+                self.session
+                    .check_transaction_command(command, context.as_ref())?;
                 let metadata = if let Some(query) = &session_query {
                     query.metadata()
                 } else if let Some(catalog) = &catalog {
@@ -809,6 +812,7 @@ impl Extended {
                             return Err(engine(e));
                         }
                     };
+                    self.session.record_success(Some(command), context.as_ref());
                     // A parameter-free prepared statement has fixed engine-derived
                     // types. Constant projections may omit record-set fields; use
                     // the original prepare metadata only in that case. Parameterized

@@ -14,15 +14,75 @@ pub(crate) enum SessionQuery {
 #[derive(Debug)]
 pub(crate) struct PgSession {
     path: Vec<String>,
+    failed_transaction: bool,
 }
 impl Default for PgSession {
     fn default() -> Self {
         Self {
             path: vec!["public".into()],
+            failed_transaction: false,
         }
     }
 }
 impl PgSession {
+    pub(crate) fn transaction_status(&mut self, context: &dyn TiDBContext) -> u8 {
+        if !context.in_transaction() {
+            self.failed_transaction = false;
+            b'I'
+        } else if self.failed_transaction {
+            b'E'
+        } else {
+            b'T'
+        }
+    }
+
+    pub(crate) fn check_transaction_command(
+        &mut self,
+        command: Option<&str>,
+        context: &dyn TiDBContext,
+    ) -> Result<(), (&'static str, String)> {
+        if !context.in_transaction() {
+            self.failed_transaction = false;
+            return Ok(());
+        }
+        if self.failed_transaction && command != Some("ROLLBACK") {
+            return Err((
+                "25P02",
+                "current transaction is aborted, commands ignored until end of transaction block"
+                    .into(),
+            ));
+        }
+        if matches!(
+            command,
+            Some(
+                "CREATE TABLE"
+                    | "DROP TABLE"
+                    | "CREATE DATABASE"
+                    | "DROP DATABASE"
+                    | "ALTER TABLE"
+                    | "TRUNCATE TABLE"
+            )
+        ) {
+            return Err((
+                "0A000",
+                "DDL inside a PostgreSQL transaction is unsupported".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn record_error(&mut self, context: &dyn TiDBContext) {
+        if context.in_transaction() {
+            self.failed_transaction = true;
+        }
+    }
+
+    pub(crate) fn record_success(&mut self, command: Option<&str>, context: &dyn TiDBContext) {
+        if command == Some("ROLLBACK") || !context.in_transaction() {
+            self.failed_transaction = false;
+        }
+    }
+
     pub(crate) fn public_precedes_catalog(&self) -> bool {
         // An omitted pg_catalog is implicitly searched before every user schema.
         self.path

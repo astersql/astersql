@@ -20,13 +20,15 @@ startup 接受 user、database、application_name、UTF8/UTF-8 client_encoding�
 
 ## 已验证工作流
 
-真实 TCP/libpq 默认 3.0 与显式 3.2 回归执行 SELECT、CREATE TABLE、INSERT、UPDATE、DELETE、DROP TABLE、显式 int4 OID 的 `$1` 参数及 BEGIN/COMMIT/ROLLBACK。同一 Server 上的 MySQL 连接在 PG 工作流前完成鉴权，之后 COM_PING 仍成功。
+真实 TCP/libpq 默认 3.0 与显式 3.2 回归执行 SELECT、CREATE TABLE、INSERT、UPDATE、DELETE、DROP TABLE、显式 int4 OID 的 `$1` 参数及 BEGIN/COMMIT/ROLLBACK。显式 DML 事务内的错误进入失败态，ReadyForQuery 报告 E；后续命令返回 25P02，只有 ROLLBACK 可恢复到 I，COMMIT 不会提交错误前的写入。同一 Server 上的 MySQL 连接在 PG 工作流前完成鉴权，之后 COM_PING 仍成功。
 
 简单 Query 只接受一条现有引擎可执行的语句；空查询返回 EmptyQueryResponse，多语句返回 0A000。允许的 AST 命令还包括集合查询、CREATE/DROP DATABASE、ALTER/TRUNCATE TABLE、DROP VIEW、SET；这些命令的全部 SQL 变体没有逐一验收。REPLACE 与其他不支持命令被拒绝。DataGrip 的 `select round(extract(epoch from pg_postmaster_start_time() at time zone 'UTC')) as startup_time` 探测在 PG 适配层按 SQL token 识别，以 PG listener 本次启动时记录的微秒时间计算并四舍五入到 epoch 秒；同一 PG 服务的所有连接和预处理查询共用该值，结果 OID 为 numeric（1700），保留别名。此支持仅覆盖该 UTC 启动时间探测，不代表通用 EXTRACT、AT TIME ZONE 或 PostgreSQL 时间函数兼容。PG 适配层按 AST 投影和源码位置将未引用、未限定的直接 `current_catalog` 投影映射到 canonical 会话的数据库名，保留默认结果列名与显式别名；普通与扩展查询共用该适配。字符串、引用列名、限定列名不改写；完整 PostgreSQL 表达式及 pg_catalog 仿真不作兼容承诺。
 
 扩展查询支持 Parse、Bind、Describe、Execute、Close、Sync、Flush，具备命名 statement/portal、重复和乱序 `$n` 参数映射、分段返回 PortalSuspended、错误后丢弃消息直到 Sync。参数传给既有预处理接口，不通过字符串拼接值。原生执行查询的参数必须提供明确类型 OID；目录查询可从显式 `$n::oid` 等转换取得参数类型，无转换时仍需客户端提供 OID。没有通用参数类型推断，参数化投影的结果元数据缺失或 prepare/execute 元数据不一致时明确报错。目录查询的二进制参数支持 OID、int2/int4/int8、boolean 和 text/varchar/bpchar；Bind 按零个、一个或逐参数格式代码解码，OID 保留完整无符号范围，非法定长值返回 22P03。原生执行查询的二进制参数与全部二进制结果格式仍被拒绝。JDBC 连接需设置 `binaryTransfer=false`，避免驱动在达到 prepareThreshold 后切换为二进制结果。美元引用、引擎可执行注释/提示注释及 `?` 参数标记不支持。
 
-3.0 BackendKeyData 使用 4 字节随机取消密钥，3.2 使用 32 字节；CancelRequest 必须匹配当前后端和密钥。真实 libpq 验证 idle cancel 不影响下一条查询；相邻 TCP 测试验证正在执行的命令取消、错误密钥及旧/空闲取消不会污染下一命令。事务状态来自共享会话的 in_transaction；只报告 I/T，不承诺 PostgreSQL 出错事务的 E 状态及其后续语义。
+3.0 BackendKeyData 使用 4 字节随机取消密钥，3.2 使用 32 字节；CancelRequest 必须匹配当前后端和密钥。真实 libpq 验证 idle cancel 不影响下一条查询；相邻 TCP 测试验证正在执行的命令取消、错误密钥及旧/空闲取消不会污染下一命令。事务是否开启仍来自共享会话的 `in_transaction`，失败标志仅属于 PG 连接；简单与扩展协议共享 I/T/E 状态和 25P02 门禁，Sync 只结束扩展协议错误流水线，不会清除失败事务。连接关闭仍由 canonical session 回滚未提交事务。
+
+PG listener 的事务承诺仅覆盖 DML。为避免把原生 DDL 的隐式提交行为误报为 PostgreSQL 事务型 DDL，显式事务中的 CREATE/DROP DATABASE、CREATE/DROP/ALTER/TRUNCATE TABLE 以 0A000 拒绝，并使该 PG 事务进入 E 状态；ROLLBACK 后才能继续。事务外 DDL 行为不变。
 
 ## DataGrip 内省目录探测
 

@@ -761,6 +761,20 @@ for options, expected_protocol in [('', 30000), (' min_protocol_version=3.2 max_
         query('ROLLBACK')
         assert txn(conn) == 0
         query('SELECT v FROM pg_real_client ORDER BY id', [['two'], ['committed']])
+        query('BEGIN')
+        query("INSERT INTO pg_real_client VALUES (1, 'duplicate')", sqlstate='23505')
+        assert txn(conn) == 3
+        query('SELECT 1', sqlstate='25P02')
+        query('COMMIT', sqlstate='25P02')
+        assert txn(conn) == 3
+        query('ROLLBACK')
+        assert txn(conn) == 0
+        query('SELECT v FROM pg_real_client ORDER BY id', [['two'], ['committed']])
+        query('BEGIN')
+        query('CREATE TABLE pg_transactional_ddl (id INT)', sqlstate='0A000')
+        assert txn(conn) == 3
+        query('ROLLBACK')
+        assert txn(conn) == 0
         query('DELETE FROM pg_real_client WHERE id = 2')
         query('SELECT id FROM pg_real_client', [['1']])
         # libpq owns the version-specific BackendKeyData/CancelRequest framing.
@@ -773,7 +787,7 @@ for options, expected_protocol in [('', 30000), (' min_protocol_version=3.2 max_
             cancel_finish(cancel)
         query('SELECT 1', [['1']])
         query('DROP TABLE pg_real_client')
-        print(f'{expected_protocol}: startup, catalogs (simple/extended metadata, NULL, rows, ordering), error recovery, CRUD, typed parameters, transactions and idle cancel passed', flush=True)
+        print(f'{expected_protocol}: startup, catalogs (simple/extended metadata, NULL, rows, ordering), error recovery, CRUD, typed parameters, I/T/E transactions and idle cancel passed', flush=True)
     finally:
         finish(conn)
 "#;
