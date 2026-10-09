@@ -2,7 +2,7 @@
 
 批次：【批次 3】 依赖批次 2
 
-状态：已完成，待回归验证
+状态：已完成，待回归
 
 目的：让 PG JDBC/DataGrip 以 PreparedStatement 完成 INSERT、SELECT、UPDATE、DELETE，并返回正确结果类型和影响行数。
 
@@ -72,6 +72,7 @@
 - 执行 `cargo fmt --all`，退出码 0。
 - 执行 `cargo test -p astersql-server --lib prepared_crud_roundtrip -- --test-threads=1`，退出码 0：1 passed，0 failed、226 filtered out。
 - 执行 `cargo test -p astersql-server --lib pg_client_integration_test::pg_introspection_clients -- --exact --test-threads=1 --nocapture`，退出码 0：1 passed，0 failed、226 filtered out；JDBC 42.7.13 与 42.7.3 均通过 27 条 DataGrip SQL 及 PreparedStatement CRUD，libpq PG 3.0/3.2 通过。
-- 执行 `cargo test -p astersql-server --lib pg_ -- --test-threads=1`，退出码 101：69 passed，11 failed，147 filtered out。失败均来自并行任务 3 尚未提交的 PostgreSQL DDL 适配（既有 `INT` CREATE TABLE 被误拒绝、ALTER 重写错误）；二次运行在首个相同的无关失败后中止。
-- Cargo 初始领取槽位 1，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1`；该锁被并行任务意外重新领取后，本任务停止使用并重新领取槽位 2，最终 `CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-2`。
-- 未验证：完整 `pg_` 回归全绿及 `make lint`。原因是并行任务 3 在共享工作区中持续修改 `pkg/server/pg_sql.rs`/`pg_conn.rs`/`pg_extended.rs` 等文件，导致无法对稳定代码状态完成 Ready 验证。
+- 任务 3 提交后重跑 `cargo test -p astersql-server --lib pg_ -- --test-threads=1`：先修复其适配器对既有表级 `KEY`/`INDEX` 和 `ALTER TABLE ... RENAME TO` 的误拦截，对应 `pg_catalog_query_test::pg_introspection_oid_live_casts` 已从失败变为 1 passed。随后全量回归在无关的旧目录断言处停止：`pg_catalog_test::pg_introspection_relations_live` 要求 `SELECT xmin FROM pg_catalog.pg_class` 返回 `0A000`，而当前目录实现已明确为 `pg_class.xmin` 提供 NULL 投影；单独运行该测试退出码 101，0 passed，1 failed，226 filtered out。
+- Cargo 初始领取槽位 1，并行锁冲突后重新领取槽位 2；任务 3 提交后的最终回归阶段再次动态领取槽位 1，最终 `CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1`。
+- 任务 3 提交后，再次执行本任务定向测试与精确客户端回归，均退出码 0；结果仍为各 1 passed、0 failed、226 filtered out，JDBC 42.7.13/42.7.3 和 libpq PG 3.0/3.2 全部通过。
+- 未验证：完整 `pg_` 回归全绿及 `make lint`。阻塞是上述 `pg_class.xmin` 实现与旧测试期望之间的无关目录契约冲突，需单独确认应保留 NULL 投影还是恢复 `0A000`。

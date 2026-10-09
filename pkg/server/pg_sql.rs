@@ -169,6 +169,8 @@ fn column_type(
         "constraint",
         "primary",
         "unique",
+        "key",
+        "index",
         "check",
         "foreign",
         "exclude",
@@ -378,6 +380,9 @@ fn adapt_alter(
         return apply(sql, edits);
     }
     if operation.word("rename") {
+        if tokens.get(action + 1).is_some_and(|token| token.word("to")) {
+            return apply(sql, edits);
+        }
         if !tokens
             .get(action + 1)
             .is_some_and(|token| token.word("column"))
