@@ -172,6 +172,9 @@ mod pg_extended;
 mod pg_session;
 #[cfg(test)]
 mod pg_session_test;
+mod pg_sql;
+#[cfg(test)]
+mod pg_sql_test;
 
 #[cfg(test)]
 #[path = "pg_client_integration_test.rs"]

@@ -414,6 +414,67 @@ fn execute(socket: &mut TcpStream, portal: &str, limit: u32) {
 }
 
 #[test]
+fn postgres_create_table_extended_query() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        Arc::new(ConcreteSessionDriver::new_for_test(
+            domain.clone(),
+            BootstrapAuthMode::InsecureRootOnly,
+        )),
+        Arc::new(CanonicalConnectionDomain::new(domain)),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let body = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+
+    parse(
+        &mut socket,
+        "create_pg",
+        r#"CREATE TABLE public."PgCreateExtended" (
+            "id" integer NOT NULL,
+            "payload" bytea,
+            "amount" numeric(9, 2) DEFAULT 2.50,
+            "stamp" timestamp(2) DEFAULT CURRENT_TIMESTAMP(2)
+        )"#,
+        &[],
+    );
+    assert_eq!(read(&mut socket), (b'1', Vec::new()));
+    bind(&mut socket, "create_portal", "create_pg", &[]);
+    assert_eq!(read(&mut socket), (b'2', Vec::new()));
+    execute(&mut socket, "create_portal", 0);
+    assert_eq!(read(&mut socket), (b'C', b"CREATE TABLE\0".to_vec()));
+    send(&mut socket, b'S', b"");
+    assert_eq!(read(&mut socket), (b'Z', b"I".to_vec()));
+
+    let catalog = query(
+        &mut socket,
+        "SELECT a.attname, pg_catalog.format_type(a.atttypid,a.atttypmod) FROM pg_catalog.pg_attribute a WHERE a.attrelid='public.pgcreateextended'::regclass::oid ORDER BY a.attnum",
+    );
+    for expected in [
+        row(&[Some("id"), Some("integer")]),
+        row(&[Some("payload"), Some("bytea")]),
+        row(&[Some("amount"), Some("numeric(9,2)")]),
+        row(&[Some("stamp"), Some("timestamp(2) without time zone")]),
+    ] {
+        assert!(catalog.contains(&(b'D', expected)), "{catalog:?}");
+    }
+    send(&mut socket, b'X', b"");
+    service.close();
+}
+
+#[test]
 fn marker_mapping_preserves_literals_comments_and_index_order() {
     let sql = "SELECT '$1', \"$2\", `x$3`, $2, $1, $2 /* $4 */ -- $5\n";
     let (adapted, mapping) = crate::pg_extended::markers(sql).unwrap();

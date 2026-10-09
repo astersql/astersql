@@ -3058,6 +3058,7 @@ const COLUMN_TYPES: &[(i64, &str, &str, &str)] = &[
     (1042, "bpchar", "character", "S"),
     (1043, "varchar", "character varying", "S"),
     (1082, "date", "date", "D"),
+    (1083, "time", "time without time zone", "D"),
     (1114, "timestamp", "timestamp without time zone", "D"),
     (1700, "numeric", "numeric", "N"),
     (114, "json", "json", "U"),
@@ -3068,7 +3069,16 @@ fn native_column_type(column: &astersql_meta_model::ColumnInfo) -> ConnResult<(i
     if column.FieldType.IsArray() {
         return Err(ConnError::UnsupportedCommand(0));
     }
-    if column.GetFlag() & mysql::IsBooleanFlag != 0 {
+    // DDL metadata can lose the parser-only boolean flag, but preserves a
+    // boolean-typed default. Do not guess ordinary native TINYINT(1) columns.
+    if column.GetFlag() & mysql::IsBooleanFlag != 0
+        || column.GetType() == 1
+            && column.GetFlen() == 1
+            && matches!(
+                column.GetDefaultValue(),
+                Some(astersql_meta_model::DefaultValue::Bool(_))
+            )
+    {
         return Ok((16, -1));
     }
     let unsigned = mysql::HasUnsignedFlag(column.GetFlag());
@@ -3137,6 +3147,17 @@ fn native_column_type(column: &astersql_meta_model::ColumnInfo) -> ConnResult<(i
             }
         }
         10 | 14 => 1082,
+        11 => {
+            modifier =
+                i64::try_from(column.GetDecimal()).map_err(|_| ConnError::UnsupportedCommand(0))?;
+            if !(0..=6).contains(&modifier) {
+                return Err(ConnError::Session(format!(
+                    "incomplete time precision metadata for {}",
+                    column.Name.O
+                )));
+            }
+            1083
+        }
         7 | 12 => {
             modifier =
                 i64::try_from(column.GetDecimal()).map_err(|_| ConnError::UnsupportedCommand(0))?;
@@ -3149,8 +3170,7 @@ fn native_column_type(column: &astersql_meta_model::ColumnInfo) -> ConnResult<(i
             1114
         }
         245 => 114,
-        // Native TIME is a duration, not PG time-of-day; enums and sets need
-        // identities/labels not provided by this compatibility phase.
+        // Enums and sets need identities/labels not provided by this compatibility phase.
         _ => return Err(ConnError::UnsupportedCommand(0)),
     };
     if column.GetType() == 8 && unsigned {
@@ -3190,8 +3210,9 @@ fn format_column_type(oid: i64, modifier: Option<i64>) -> ConnResult<String> {
             let scale = ((n & 0x7ff) ^ 1024) - 1024;
             format!("numeric({precision},{scale})")
         }
+        1083 if (0..=6).contains(&modifier) => format!("time({modifier}) without time zone"),
         1114 if (0..=6).contains(&modifier) => format!("timestamp({modifier}) without time zone"),
-        1042 | 1043 | 1700 | 1114 => return Err(ConnError::UnsupportedCommand(0)),
+        1042 | 1043 | 1083 | 1700 | 1114 => return Err(ConnError::UnsupportedCommand(0)),
         _ => (*name).into(),
     })
 }

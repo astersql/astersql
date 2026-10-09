@@ -47,6 +47,140 @@ fn row(values: &[Option<&str>]) -> Vec<u8> {
     }
     body
 }
+fn text_row(body: &[u8]) -> Vec<Option<String>> {
+    let count = i16::from_be_bytes(body[..2].try_into().unwrap()) as usize;
+    let mut offset = 2;
+    (0..count)
+        .map(|_| {
+            let length = i32::from_be_bytes(body[offset..offset + 4].try_into().unwrap());
+            offset += 4;
+            if length < 0 {
+                None
+            } else {
+                let length = length as usize;
+                let value = String::from_utf8(body[offset..offset + length].to_vec()).unwrap();
+                offset += length;
+                Some(value)
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn postgres_create_table_simple_query() {
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let driver = Arc::new(ConcreteSessionDriver::new_for_test(
+        domain.clone(),
+        BootstrapAuthMode::InsecureRootOnly,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = PgService::start(
+        listener,
+        driver,
+        Arc::new(CanonicalConnectionDomain::new(domain.clone())),
+        false,
+    )
+    .unwrap();
+    let mut socket = TcpStream::connect(addr).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let body = [196610u32.to_be_bytes().as_slice(), b"user\0root\0\0"].concat();
+    socket
+        .write_all(&((body.len() + 4) as u32).to_be_bytes())
+        .unwrap();
+    socket.write_all(&body).unwrap();
+    while read(&mut socket).0 != b'Z' {}
+
+    let create = r#"CREATE TABLE public."PgCreateSimple" (
+        "small" smallint,
+        "regular" integer,
+        "large" bigint,
+        "single" real,
+        "double" double precision,
+        "amount" numeric(12, 3) DEFAULT 1.250,
+        "ratio" decimal(8, 2),
+        "enabled" boolean NOT NULL DEFAULT true,
+        "fixed" char(4),
+        "varying" varchar(24) DEFAULT 'hello',
+        "body" text,
+        "payload" bytea,
+        "day" date,
+        "clock" time(3),
+        "stamp" timestamp(3) DEFAULT CURRENT_TIMESTAMP(3)
+    )"#;
+    assert_eq!(
+        query(&mut socket, create)[0],
+        (b'C', b"CREATE TABLE\0".to_vec())
+    );
+
+    let schema = domain
+        .info_schema()
+        .AllSchemas()
+        .into_iter()
+        .find(|schema| schema.name.lower == "test")
+        .unwrap();
+    let tables = domain.info_schema().SchemaTableInfos(&schema.name).unwrap();
+    let table = tables
+        .into_iter()
+        .find(|table| table.name.lower == "pgcreatesimple")
+        .unwrap();
+    let table_id = crate::pg_oid::table_oid(table.model_meta.as_ref().unwrap().ID)
+        .unwrap()
+        .to_string();
+    let namespace = crate::pg_oid::namespace_oid(schema.id).unwrap();
+    let columns = include_str!("testdata/pg_datagrip/RetrieveColumns.sql")
+        .replace('?', &namespace.to_string());
+    let result = query(&mut socket, &columns);
+    let rows = result
+        .iter()
+        .filter(|(tag, _)| *tag == b'D')
+        .map(|(_, body)| text_row(body))
+        .filter(|row| row[0].as_deref() == Some(table_id.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows.len(),
+        15,
+        "full DataGrip column result: {rows:?}; response: {result:?}"
+    );
+    let specs = rows
+        .iter()
+        .map(|row| row[6].as_deref().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        specs,
+        [
+            "smallint",
+            "integer",
+            "bigint",
+            "real",
+            "double precision",
+            "numeric(12,3)",
+            "numeric(8,2)",
+            "boolean",
+            "character(4)",
+            "character varying(24)",
+            "text",
+            "bytea",
+            "date",
+            "time(3) without time zone",
+            "timestamp(3) without time zone",
+        ]
+    );
+    assert_eq!(rows[5][9].as_deref(), Some("1.250"));
+    assert_eq!(rows[7][8].as_deref(), Some("t"));
+    assert_eq!(rows[7][9].as_deref(), Some("true"));
+    assert_eq!(rows[9][9].as_deref(), Some("'hello'::character varying"));
+    let rejected = query(&mut socket, "CREATE TABLE public.bad_serial (id serial)");
+    assert_eq!(
+        rejected.iter().map(|message| message.0).collect::<Vec<_>>(),
+        b"EZ"
+    );
+    assert!(rejected[0].1.windows(5).any(|bytes| bytes == b"0A000"));
+    send(&mut socket, b'X', b"");
+    service.close();
+}
 #[test]
 fn simple_query_roundtrip() {
     let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();

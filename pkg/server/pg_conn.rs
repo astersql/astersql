@@ -428,6 +428,7 @@ impl PgService {
                             Ok((std::borrow::Cow::Borrowed(sql), Some("SELECT")))
                         } else {
                             crate::pg_name::adapt(sql, context.as_ref(), &extended.session)
+                                .and_then(|sql| crate::pg_sql::adapt(&sql))
                                 .and_then(|sql| {
                                     crate::pg_result::adapt_session_query(
                                         &sql,
