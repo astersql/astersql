@@ -2,7 +2,7 @@
 
 批次：【批次 3】 依赖批次 2
 
-状态：未开始
+状态：已完成，待回归验证
 
 目的：让 PG JDBC/DataGrip 以 PreparedStatement 完成 INSERT、SELECT、UPDATE、DELETE，并返回正确结果类型和影响行数。
 
@@ -63,3 +63,15 @@
 ## 完成
 
 完成时列出支持的参数 OID 与结果格式；不得用执行后补查猜测影响行数。状态变为 `已完成` 后使用 `$git-commit` 提交本任务且删除任务文件。
+
+## 完成记录（2026-10-09）
+
+- 支持的普通 DML 参数 OID：`16`/bool、`17`/bytea、`20`/int8、`21`/int2、`23`/int4、`25`/text、`700`/float4、`701`/float8、`1042`/bpchar、`1043`/varchar、`1082`/date、`1083`/time、`1114`/timestamp、`1700`/numeric；文本与二进制 Bind 均通过现有严格值校验。
+- 结果格式：查询 portal 支持逐列文本/二进制格式；INSERT/UPDATE/DELETE 使用引擎 `affected_rows` 直接生成 `INSERT 0 n`/`UPDATE n`/`DELETE n`，不执行后补查。
+- 新增真实 TCP listener 回归，覆盖参数化 INSERT/SELECT/UPDATE/DELETE、NULL、文本/二进制混合格式、重复/乱序 `$N`、影响行数、错误后 Sync 恢复，以及 INSERT/UPDATE/DELETE RETURNING 在 Parse 阶段以 `0A000` 拒绝且无写入副作用。
+- 执行 `cargo fmt --all`，退出码 0。
+- 执行 `cargo test -p astersql-server --lib prepared_crud_roundtrip -- --test-threads=1`，退出码 0：1 passed，0 failed、226 filtered out。
+- 执行 `cargo test -p astersql-server --lib pg_client_integration_test::pg_introspection_clients -- --exact --test-threads=1 --nocapture`，退出码 0：1 passed，0 failed、226 filtered out；JDBC 42.7.13 与 42.7.3 均通过 27 条 DataGrip SQL 及 PreparedStatement CRUD，libpq PG 3.0/3.2 通过。
+- 执行 `cargo test -p astersql-server --lib pg_ -- --test-threads=1`，退出码 101：69 passed，11 failed，147 filtered out。失败均来自并行任务 3 尚未提交的 PostgreSQL DDL 适配（既有 `INT` CREATE TABLE 被误拒绝、ALTER 重写错误）；二次运行在首个相同的无关失败后中止。
+- Cargo 初始领取槽位 1，`CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-1`；该锁被并行任务意外重新领取后，本任务停止使用并重新领取槽位 2，最终 `CARGO_TARGET_DIR=/Users/Shared/work/dir/data/codes/astersql-tidb/target/rust-slot-2`。
+- 未验证：完整 `pg_` 回归全绿及 `make lint`。原因是并行任务 3 在共享工作区中持续修改 `pkg/server/pg_sql.rs`/`pg_conn.rs`/`pg_extended.rs` 等文件，导致无法对稳定代码状态完成 Ready 验证。

@@ -178,10 +178,28 @@ pub(crate) fn command(sql: &str) -> Result<Option<&'static str>, (&'static str, 
         if insert.IsReplace {
             return Err(("0A000", "REPLACE is not a PostgreSQL command".into()));
         }
+        if !insert.Returning.is_empty() {
+            return Err((
+                "0A000",
+                "DML RETURNING is unsupported by the PostgreSQL listener".into(),
+            ));
+        }
         "INSERT"
-    } else if node.is::<ast::UpdateStmt>() {
+    } else if let Some(update) = node.downcast_ref::<ast::UpdateStmt>() {
+        if !update.Returning.is_empty() {
+            return Err((
+                "0A000",
+                "DML RETURNING is unsupported by the PostgreSQL listener".into(),
+            ));
+        }
         "UPDATE"
-    } else if node.is::<ast::DeleteStmt>() {
+    } else if let Some(delete) = node.downcast_ref::<ast::DeleteStmt>() {
+        if !delete.Returning.is_empty() {
+            return Err((
+                "0A000",
+                "DML RETURNING is unsupported by the PostgreSQL listener".into(),
+            ));
+        }
         "DELETE"
     } else if node.is::<ast::CreateTableStmt>() {
         "CREATE TABLE"

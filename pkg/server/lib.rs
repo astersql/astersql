@@ -168,6 +168,10 @@ mod pg_error_test;
 #[path = "pg_extended_test.rs"]
 mod pg_extended_test;
 
+#[cfg(test)]
+#[path = "pg_dml_test.rs"]
+mod pg_dml_test;
+
 mod pg_extended;
 mod pg_session;
 #[cfg(test)]

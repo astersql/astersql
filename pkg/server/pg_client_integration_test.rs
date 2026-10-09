@@ -347,11 +347,11 @@ class PgIntrospection {
                         }
                     }
                 }
-                try (PreparedStatement p=c.prepareStatement("INSERT INTO public.jdbc_client_live VALUES (?, ?)")) { p.setInt(1, 7); p.setString(2, "jdbc"); check(p.executeUpdate()==1, "insert count"); }
-                try (PreparedStatement p=c.prepareStatement("SELECT note FROM public.jdbc_client_live WHERE id=?")) { p.setInt(1,7); try(ResultSet r=p.executeQuery()) { check(r.next() && r.getString(1).equals("jdbc") && !r.next(), "public CRUD row"); } }
-                s.execute("UPDATE public.jdbc_client_live SET note='updated' WHERE id=7");
-                try (ResultSet r=s.executeQuery("SELECT note FROM public.jdbc_client_live")) { check(r.next() && r.getString(1).equals("updated"), "update row"); }
-                s.execute("DELETE FROM public.jdbc_client_live WHERE id=7");
+                try (PreparedStatement p=c.prepareStatement("INSERT INTO public.jdbc_client_live VALUES (?, ?)")) { p.setInt(1, 7); p.setNull(2, Types.VARCHAR); check(p.executeUpdate()==1, "prepared insert count"); }
+                try (PreparedStatement p=c.prepareStatement("SELECT note FROM public.jdbc_client_live WHERE id=?")) { p.setInt(1,7); try(ResultSet r=p.executeQuery()) { check(r.next() && r.getString(1)==null && r.wasNull() && !r.next(), "prepared NULL row"); } }
+                try (PreparedStatement p=c.prepareStatement("UPDATE public.jdbc_client_live SET note=? WHERE id=?")) { p.setString(1,"updated"); p.setInt(2,7); check(p.executeUpdate()==1, "prepared update count"); }
+                try (PreparedStatement p=c.prepareStatement("SELECT note FROM public.jdbc_client_live WHERE id=?")) { p.setInt(1,7); try(ResultSet r=p.executeQuery()) { check(r.next() && r.getString(1).equals("updated") && !r.next(), "prepared update row"); } }
+                try (PreparedStatement p=c.prepareStatement("DELETE FROM public.jdbc_client_live WHERE id=?")) { p.setInt(1,7); check(p.executeUpdate()==1, "prepared delete count"); }
                 try (ResultSet r=s.executeQuery("SELECT id FROM public.jdbc_client_live")) { check(!r.next(), "delete row"); }
                 try { s.executeQuery("SELECT oid FROM pg_catalog.pg_missing"); throw new AssertionError("missing catalog accepted"); } catch (SQLException e) { check("42P01".equals(e.getSQLState()), e.toString()); }
                 try (ResultSet r=s.executeQuery("SELECT 1")) { check(r.next() && r.getInt(1)==1, "error recovery"); }
