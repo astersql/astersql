@@ -207,7 +207,35 @@ fn common_mysql_dml_preserves_rows_constraints_and_statement_state() {
     assert_eq!(state.warning_count, 1, "{state:?}");
     let warnings = rows(&session, "show warnings");
     assert_eq!(warnings.len(), 1, "{warnings:?}");
-    assert!(warnings[0][2].contains("Duplicate entry"), "{warnings:?}");
+    assert_eq!(
+        warnings,
+        vec![vec![
+            "Warning".to_owned(),
+            "1062".to_owned(),
+            "Duplicate entry 'alpha' for key 'items.uk_items_code'".to_owned(),
+        ]],
+    );
+
+    // 单行主键冲突和同一语句中的多个冲突均应各自产生一次可见 warning。
+    let state = execute(
+        &session,
+        "insert ignore into items (id, code, quantity) values (1, 'ignored-primary', 1)",
+    );
+    assert_state(&state, 0, 0, 1);
+    assert_eq!(rows(&session, "show warnings").len(), 1);
+    let state = execute(
+        &session,
+        "insert ignore into items (code, quantity) values ('alpha', 101), ('alpha', 102)",
+    );
+    assert_state(&state, 0, 0, 2);
+    let warnings = rows(&session, "show warnings");
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert!(warnings.iter().all(|warning| warning[1] == "1062"));
+    assert!(
+        warnings
+            .iter()
+            .all(|warning| warning[2] == "Duplicate entry 'alpha' for key 'items.uk_items_code'")
+    );
 
     // Upsert 与 REPLACE 除最终数据外，还具有 MySQL 特定的受影响行数语义。
     let state = execute(

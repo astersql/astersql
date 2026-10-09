@@ -47,6 +47,10 @@ fn ignored_integer_overflow_value(
     Some(value.clamp(minimum, maximum).to_string())
 }
 
+fn duplicate_warning_message(message: &str) -> &str {
+    message.strip_prefix("[kv:1062]").unwrap_or(message)
+}
+
 fn ignored_not_null_value(column: &astersql_meta_model::ColumnInfo) -> String {
     match column.GetType() {
         astersql_parser_mysql::r#type::TypeDate => "0000-00-00".to_owned(),
@@ -2928,7 +2932,7 @@ impl ConcreteSession {
             if let Some((_, message)) = conflict.as_ref()
                 && plan.Ignore
             {
-                self.set_warning(message.clone());
+                self.set_warning_with_code(1062, duplicate_warning_message(message).to_owned());
                 continue;
             }
             if let Some((conflict_key, message)) = conflict.as_ref()
@@ -3140,7 +3144,10 @@ impl ConcreteSession {
                     Self::validate_unique_indexes(&table, working_rows.values(), flags)
             {
                 working_rows.remove(&key.0);
-                self.set_warning(error.to_string());
+                self.set_warning_with_code(
+                    1062,
+                    duplicate_warning_message(&error.to_string()).to_owned(),
+                );
                 continue;
             }
             copied_rows += 1;
@@ -3233,14 +3240,6 @@ impl ConcreteSession {
         self.record_relational_stats(&plan.Table, &table, &stats_before, &stats_after)?;
         {
             let mut state = self.state.borrow_mut();
-            if plan.Ignore {
-                for warning in &mut state.current_warnings {
-                    if let Some(message) = warning.message.strip_prefix("[kv:1062]") {
-                        warning.code = 1062;
-                        warning.message = message.to_owned();
-                    }
-                }
-            }
             if records > 1 || from_select {
                 let duplicates = if plan.Replace {
                     affected_rows.saturating_sub(records)
