@@ -2,7 +2,7 @@
 
 批次：【批次 3】 依赖任务 2
 
-状态：已完成，待回归验证
+状态：已完成，待回归
 
 目的：在 StatsHandle 共享根因消除后，修复仍存在的 hint 空格、浮点 cost、CTE/point-get/vector plan 等真实 planner 差异。
 
