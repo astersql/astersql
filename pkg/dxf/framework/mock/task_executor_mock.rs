@@ -148,23 +148,108 @@ impl MockTaskTable {
     /// GoMock 标记占位。
     pub fn ISGOMOCK(&self) {}
 
-    mock_method!(CancelSubtask(context: storage::Context, exec_id: String, subtask_id: i64) -> MockResult<()>);
-    mock_method!(FailSubtask(context: storage::Context, exec_id: String, subtask_id: i64, error: storage::Error) -> MockResult<()>);
-    mock_method!(FinishSubtask(context: storage::Context, exec_id: String, subtask_id: i64, meta: Vec<u8>) -> MockResult<()>);
-    mock_method!(GetFirstSubtaskInStates(context: storage::Context, exec_id: String, task_id: i64, step: proto::Step, states: Vec<proto::SubtaskState>) -> MockResult<Option<Box<proto::Subtask>>>);
-    mock_method!(GetSubtaskCheckpoint(context: storage::Context, subtask_id: i64) -> MockResult<String>);
-    mock_method!(GetSubtasksByExecIDAndStepAndStates(context: storage::Context, exec_id: String, task_id: i64, step: proto::Step, states: Vec<proto::SubtaskState>) -> MockResult<Vec<Box<proto::Subtask>>>);
-    mock_method!(GetTaskBaseByID(context: storage::Context, task_id: i64) -> MockResult<Option<Box<proto::TaskBase>>>);
-    mock_method!(GetTaskByID(context: storage::Context, task_id: i64) -> MockResult<Option<Box<proto::Task>>>);
-    mock_method!(GetTaskExecInfoByExecID(context: storage::Context, exec_id: String) -> MockResult<Vec<Box<TaskExecInfo>>>);
-    mock_method!(GetTasksInStates(context: storage::Context, states: Vec<Box<dyn Any + Send>>) -> MockResult<Vec<Box<proto::Task>>>);
-    mock_method!(InitMeta(context: storage::Context, exec_id: String, role: String) -> MockResult<()>);
-    mock_method!(PauseSubtasks(context: storage::Context, exec_id: String, task_id: i64) -> MockResult<()>);
-    mock_method!(RecoverMeta(context: storage::Context, exec_id: String, role: String) -> MockResult<()>);
-    mock_method!(RunningSubtasksBack2Pending(context: storage::Context, subtasks: Vec<Box<proto::SubtaskBase>>) -> MockResult<()>);
-    mock_method!(StartSubtask(context: storage::Context, subtask_id: i64, exec_id: String) -> MockResult<()>);
-    mock_method!(UpdateSubtaskCheckpoint(context: storage::Context, subtask_id: i64, checkpoint: Box<dyn Any + Send>) -> MockResult<()>);
-    mock_method!(UpdateSubtaskStateAndError(context: storage::Context, exec_id: String, subtask_id: i64, state: proto::SubtaskState, error: storage::Error) -> MockResult<()>);
+    mock_method!(
+        CancelSubtask(
+            context: storage::Context,
+            exec_id: String,
+            subtask_id: i64,
+        ) -> MockResult<()>
+    );
+    mock_method!(
+        FailSubtask(
+            context: storage::Context,
+            exec_id: String,
+            subtask_id: i64,
+            error: storage::Error,
+        ) -> MockResult<()>
+    );
+    mock_method!(
+        FinishSubtask(
+            context: storage::Context,
+            exec_id: String,
+            subtask_id: i64,
+            meta: Vec<u8>,
+        ) -> MockResult<()>
+    );
+    mock_method!(
+        GetFirstSubtaskInStates(
+            context: storage::Context,
+            exec_id: String,
+            task_id: i64,
+            step: proto::Step,
+            states: Vec<proto::SubtaskState>,
+        ) -> MockResult<Option<Box<proto::Subtask>>>
+    );
+    mock_method!(
+        GetSubtaskCheckpoint(context: storage::Context, subtask_id: i64) -> MockResult<String>
+    );
+    mock_method!(
+        GetSubtasksByExecIDAndStepAndStates(
+            context: storage::Context,
+            exec_id: String,
+            task_id: i64,
+            step: proto::Step,
+            states: Vec<proto::SubtaskState>,
+        ) -> MockResult<Vec<Box<proto::Subtask>>>
+    );
+    mock_method!(
+        GetTaskBaseByID(
+            context: storage::Context,
+            task_id: i64,
+        ) -> MockResult<Option<Box<proto::TaskBase>>>
+    );
+    mock_method!(
+        GetTaskByID(
+            context: storage::Context,
+            task_id: i64,
+        ) -> MockResult<Option<Box<proto::Task>>>
+    );
+    mock_method!(
+        GetTaskExecInfoByExecID(
+            context: storage::Context,
+            exec_id: String,
+        ) -> MockResult<Vec<Box<TaskExecInfo>>>
+    );
+    mock_method!(
+        GetTasksInStates(
+            context: storage::Context,
+            states: Vec<Box<dyn Any + Send>>,
+        ) -> MockResult<Vec<Box<proto::Task>>>
+    );
+    mock_method!(
+        InitMeta(context: storage::Context, exec_id: String, role: String) -> MockResult<()>
+    );
+    mock_method!(
+        PauseSubtasks(context: storage::Context, exec_id: String, task_id: i64) -> MockResult<()>
+    );
+    mock_method!(
+        RecoverMeta(context: storage::Context, exec_id: String, role: String) -> MockResult<()>
+    );
+    mock_method!(
+        RunningSubtasksBack2Pending(
+            context: storage::Context,
+            subtasks: Vec<Box<proto::SubtaskBase>>,
+        ) -> MockResult<()>
+    );
+    mock_method!(
+        StartSubtask(context: storage::Context, subtask_id: i64, exec_id: String) -> MockResult<()>
+    );
+    mock_method!(
+        UpdateSubtaskCheckpoint(
+            context: storage::Context,
+            subtask_id: i64,
+            checkpoint: Box<dyn Any + Send>,
+        ) -> MockResult<()>
+    );
+    mock_method!(
+        UpdateSubtaskStateAndError(
+            context: storage::Context,
+            exec_id: String,
+            subtask_id: i64,
+            state: proto::SubtaskState,
+            error: storage::Error,
+        ) -> MockResult<()>
+    );
     mock_method!(WithNewSession(callback: SessionCallback) -> MockResult<()>);
 }
 

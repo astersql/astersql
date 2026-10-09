@@ -123,21 +123,34 @@ impl<H> MockScheduler<H> {
     pub fn ISGOMOCK(&self) {}
 
     mock_method!(Close() -> ());
-    mock_method!(GetEligibleInstances(context: storage::Context, task: &proto::Task) -> MockResult<Vec<String>>);
+    mock_method!(
+        GetEligibleInstances(
+            context: storage::Context,
+            task: &proto::Task,
+        ) -> MockResult<Vec<String>>
+    );
     mock_method!(GetNextStep(task: &proto::TaskBase) -> proto::Step);
     mock_method!(GetTask() -> Option<Box<proto::Task>>);
     mock_method!(Init() -> MockResult<()>);
     mock_method!(IsRetryableErr(error: storage::Error) -> bool);
-    mock_method!(ModifyMeta(meta: Vec<u8>, modifications: Vec<proto::Modification>) -> MockResult<Vec<u8>>);
-    mock_method!(OnDone(context: storage::Context, handle: H, task: &proto::Task) -> MockResult<()>);
-    mock_method!(OnNextSubtasksBatch(
-        context: storage::Context,
-        handle: H,
-        task: &proto::Task,
-        exec_ids: Vec<String>,
-        next_step: proto::Step,
-    ) -> MockResult<Vec<Vec<u8>>>);
-    mock_method!(OnPrepare(context: storage::Context, handle: H, task: &mut proto::Task) -> MockResult<()>);
+    mock_method!(
+        ModifyMeta(meta: Vec<u8>, modifications: Vec<proto::Modification>) -> MockResult<Vec<u8>>
+    );
+    mock_method!(
+        OnDone(context: storage::Context, handle: H, task: &proto::Task) -> MockResult<()>
+    );
+    mock_method!(
+        OnNextSubtasksBatch(
+            context: storage::Context,
+            handle: H,
+            task: &proto::Task,
+            exec_ids: Vec<String>,
+            next_step: proto::Step,
+        ) -> MockResult<Vec<Vec<u8>>>
+    );
+    mock_method!(
+        OnPrepare(context: storage::Context, handle: H, task: &mut proto::Task) -> MockResult<()>
+    );
     mock_method!(OnTick(context: storage::Context, task: &proto::Task) -> ());
     mock_method!(ScheduleTask() -> ());
 }
@@ -347,42 +360,167 @@ impl MockTaskManager {
     /// GoMock 标记占位。
     pub fn ISGOMOCK(&self) {}
 
-    mock_method!(AwaitingResolveTask(context: storage::Context, task_id: i64, state: proto::TaskState, error: storage::Error) -> MockResult<()>);
+    mock_method!(
+        AwaitingResolveTask(
+            context: storage::Context,
+            task_id: i64,
+            state: proto::TaskState,
+            error: storage::Error,
+        ) -> MockResult<()>
+    );
     mock_method!(CancelTask(context: storage::Context, task_id: i64) -> MockResult<()>);
     mock_method!(DeleteDeadNodes(context: storage::Context, nodes: Vec<String>) -> MockResult<()>);
-    mock_method!(FailTask(context: storage::Context, task_id: i64, state: proto::TaskState, error: storage::Error) -> MockResult<()>);
+    mock_method!(
+        FailTask(
+            context: storage::Context,
+            task_id: i64,
+            state: proto::TaskState,
+            error: storage::Error,
+        ) -> MockResult<()>
+    );
     mock_method!(GCSubtasks(context: storage::Context) -> MockResult<()>);
-    mock_method!(GetActiveSubtasks(context: storage::Context, task_id: i64) -> MockResult<Vec<Box<proto::SubtaskBase>>>);
+    mock_method!(
+        GetActiveSubtasks(
+            context: storage::Context,
+            task_id: i64,
+        ) -> MockResult<Vec<Box<proto::SubtaskBase>>>
+    );
     mock_method!(GetAllNodes(context: storage::Context) -> MockResult<Vec<proto::ManagedNode>>);
-    mock_method!(GetAllSubtaskSummaryByStep(context: storage::Context, task_id: i64, step: proto::Step) -> MockResult<Vec<Box<execute::SubtaskSummary>>>);
-    mock_method!(GetAllSubtasks(context: storage::Context) -> MockResult<Vec<Box<proto::SubtaskBase>>>);
-    mock_method!(GetAllSubtasksByStepAndState(context: storage::Context, task_id: i64, step: proto::Step, state: proto::SubtaskState) -> MockResult<Vec<Box<proto::Subtask>>>);
+    mock_method!(
+        GetAllSubtaskSummaryByStep(
+            context: storage::Context,
+            task_id: i64,
+            step: proto::Step,
+        ) -> MockResult<Vec<Box<execute::SubtaskSummary>>>
+    );
+    mock_method!(
+        GetAllSubtasks(context: storage::Context) -> MockResult<Vec<Box<proto::SubtaskBase>>>
+    );
+    mock_method!(
+        GetAllSubtasksByStepAndState(
+            context: storage::Context,
+            task_id: i64,
+            step: proto::Step,
+            state: proto::SubtaskState,
+        ) -> MockResult<Vec<Box<proto::Subtask>>>
+    );
     mock_method!(GetAllTasks(context: storage::Context) -> MockResult<Vec<Box<proto::TaskBase>>>);
-    mock_method!(GetSubtaskCntGroupByStates(context: storage::Context, task_id: i64, step: proto::Step) -> MockResult<HashMap<proto::SubtaskState, i64>>);
-    mock_method!(GetSubtaskStateCntAndErrorsByStep(context: storage::Context, task_id: i64, step: proto::Step) -> MockResult<(HashMap<proto::SubtaskState, i64>, Vec<storage::Error>)>);
-    mock_method!(GetSubtaskErrors(context: storage::Context, task_id: i64) -> MockResult<Vec<storage::Error>>);
-    mock_method!(GetTaskBaseByID(context: storage::Context, task_id: i64) -> MockResult<Option<Box<proto::TaskBase>>>);
-    mock_method!(GetTaskByID(context: storage::Context, task_id: i64) -> MockResult<Option<Box<proto::Task>>>);
-    mock_method!(GetTasksInStates(context: storage::Context, states: Vec<Box<dyn Any + Send>>) -> MockResult<Vec<Box<proto::Task>>>);
-    mock_method!(GetTopNoNeedResourceTasks(context: storage::Context) -> MockResult<Vec<Box<proto::TaskBase>>>);
-    mock_method!(GetTopUnfinishedTasks(context: storage::Context) -> MockResult<Vec<Box<proto::TaskBase>>>);
-    mock_method!(GetUsedSlotsOnNodes(context: storage::Context) -> MockResult<HashMap<String, i32>>);
+    mock_method!(
+        GetSubtaskCntGroupByStates(
+            context: storage::Context,
+            task_id: i64,
+            step: proto::Step,
+        ) -> MockResult<HashMap<proto::SubtaskState, i64>>
+    );
+    mock_method!(
+        GetSubtaskStateCntAndErrorsByStep(
+            context: storage::Context,
+            task_id: i64,
+            step: proto::Step,
+        ) -> MockResult<(
+            HashMap<proto::SubtaskState, i64>,
+            Vec<storage::Error>
+        )>
+    );
+    mock_method!(
+        GetSubtaskErrors(
+            context: storage::Context,
+            task_id: i64,
+        ) -> MockResult<Vec<storage::Error>>
+    );
+    mock_method!(
+        GetTaskBaseByID(
+            context: storage::Context,
+            task_id: i64,
+        ) -> MockResult<Option<Box<proto::TaskBase>>>
+    );
+    mock_method!(
+        GetTaskByID(
+            context: storage::Context,
+            task_id: i64,
+        ) -> MockResult<Option<Box<proto::Task>>>
+    );
+    mock_method!(
+        GetTasksInStates(
+            context: storage::Context,
+            states: Vec<Box<dyn Any + Send>>,
+        ) -> MockResult<Vec<Box<proto::Task>>>
+    );
+    mock_method!(
+        GetTopNoNeedResourceTasks(
+            context: storage::Context,
+        ) -> MockResult<Vec<Box<proto::TaskBase>>>
+    );
+    mock_method!(
+        GetTopUnfinishedTasks(context: storage::Context) -> MockResult<Vec<Box<proto::TaskBase>>>
+    );
+    mock_method!(
+        GetUsedSlotsOnNodes(context: storage::Context) -> MockResult<HashMap<String, i32>>
+    );
     mock_method!(ModifiedTask(context: storage::Context, task: Box<proto::Task>) -> MockResult<()>);
     mock_method!(PauseTask(context: storage::Context, task_key: String) -> MockResult<bool>);
-    mock_method!(PauseTaskOnError(context: storage::Context, task_id: i64, state: proto::TaskState, step: proto::Step, error: storage::Error) -> MockResult<()>);
+    mock_method!(
+        PauseTaskOnError(
+            context: storage::Context,
+            task_id: i64,
+            state: proto::TaskState,
+            step: proto::Step,
+            error: storage::Error,
+        ) -> MockResult<()>
+    );
     mock_method!(PausedTask(context: storage::Context, task_id: i64) -> MockResult<()>);
     mock_method!(ResumeSubtasks(context: storage::Context, task_id: i64) -> MockResult<()>);
     mock_method!(ResumedTask(context: storage::Context, task_id: i64) -> MockResult<()>);
-    mock_method!(RevertTask(context: storage::Context, task_id: i64, state: proto::TaskState, error: storage::Error) -> MockResult<()>);
+    mock_method!(
+        RevertTask(
+            context: storage::Context,
+            task_id: i64,
+            state: proto::TaskState,
+            error: storage::Error,
+        ) -> MockResult<()>
+    );
     mock_method!(RevertedTask(context: storage::Context, task_id: i64) -> MockResult<()>);
     mock_method!(SucceedTask(context: storage::Context, task_id: i64) -> MockResult<()>);
-    mock_method!(SwitchTaskStepAfterPrepare(context: storage::Context, task: Box<proto::Task>) -> MockResult<bool>);
-    mock_method!(SwitchTaskStep(context: storage::Context, task: Box<proto::Task>, next_state: proto::TaskState, next_step: proto::Step, subtasks: Vec<Box<proto::Subtask>>) -> MockResult<()>);
-    mock_method!(SwitchTaskStepInBatch(context: storage::Context, task: Box<proto::Task>, next_state: proto::TaskState, next_step: proto::Step, subtasks: Vec<Box<proto::Subtask>>) -> MockResult<()>);
-    mock_method!(TransferTasks2History(context: storage::Context, tasks: Vec<Box<proto::Task>>) -> MockResult<()>);
-    mock_method!(UpdateSubtasksExecIDs(context: storage::Context, subtasks: Vec<Box<proto::SubtaskBase>>) -> MockResult<()>);
+    mock_method!(
+        SwitchTaskStepAfterPrepare(
+            context: storage::Context,
+            task: Box<proto::Task>,
+        ) -> MockResult<bool>
+    );
+    mock_method!(
+        SwitchTaskStep(
+            context: storage::Context,
+            task: Box<proto::Task>,
+            next_state: proto::TaskState,
+            next_step: proto::Step,
+            subtasks: Vec<Box<proto::Subtask>>,
+        ) -> MockResult<()>
+    );
+    mock_method!(
+        SwitchTaskStepInBatch(
+            context: storage::Context,
+            task: Box<proto::Task>,
+            next_state: proto::TaskState,
+            next_step: proto::Step,
+            subtasks: Vec<Box<proto::Subtask>>,
+        ) -> MockResult<()>
+    );
+    mock_method!(
+        TransferTasks2History(
+            context: storage::Context,
+            tasks: Vec<Box<proto::Task>>,
+        ) -> MockResult<()>
+    );
+    mock_method!(
+        UpdateSubtasksExecIDs(
+            context: storage::Context,
+            subtasks: Vec<Box<proto::SubtaskBase>>,
+        ) -> MockResult<()>
+    );
     mock_method!(WithNewSession(callback: SessionCallback) -> MockResult<()>);
-    mock_method!(WithNewTxn(context: storage::Context, callback: SessionCallback) -> MockResult<()>);
+    mock_method!(
+        WithNewTxn(context: storage::Context, callback: SessionCallback) -> MockResult<()>
+    );
 }
 
 /// 构造空期望 MockTaskManager。
