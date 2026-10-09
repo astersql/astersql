@@ -8,3 +8,10 @@ fail-fast = false
 # Keep this uniform across the workspace so expensive tests remain visible and
 # can be optimized instead of receiving permanent exemptions.
 slow-timeout = { period = "5s", terminate-after = 2, grace-period = "1s" }
+
+# Use this profile only for serial diagnosis of tests that hit the default
+# timeout. It inherits all other settings from the default profile and gives a
+# test up to 60 seconds to distinguish a slow test from a persistent wait.
+[profile.diagnostic]
+test-threads = 1
+slow-timeout = { period = "30s", terminate-after = 2, grace-period = "1s" }

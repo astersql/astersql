@@ -167,6 +167,30 @@ rust-test: ## Run Rust targets with nextest; use PACKAGE, RUST_TEST_TARGETS, and
 	echo "Rust test log saved to: $$log_file"; \
 	exit "$$status"
 
+.PHONY: rust-test-diagnose
+rust-test-diagnose: ## Normalize a nextest failure log into exact rerun filters; set RUST_TEST_LOG
+	@test -n "$(RUST_TEST_LOG)" || { echo "RUST_TEST_LOG is required" >&2; exit 2; }
+	@test -f "$(RUST_TEST_LOG)" || { echo "RUST_TEST_LOG does not exist: $(RUST_TEST_LOG)" >&2; exit 2; }
+	@mkdir -p ./target
+	@awk '\
+		BEGIN { OFS = "\t"; print "outcome", "duration", "package", "binary_id", "test", "filter" } \
+		$$1 == "TIMEOUT" || $$1 == "FAIL" || $$1 == "SIGABRT" { \
+			outcome = $$1; duration = $$3; sub(/]$$/, "", duration); binary_id = $$(NF - 1); test = $$NF; \
+			package = binary_id; sub(/::.*/, "", package); \
+			key = outcome SUBSEP binary_id SUBSEP test; \
+			if (!seen[key]++) \
+				print outcome, duration, package, binary_id, test, "binary_id(=" binary_id ") & test(=" test ")" \
+		}' "$(RUST_TEST_LOG)" > ./target/rust-test-diagnosis.tsv
+	@awk -F '\t' 'NR > 1 { count[$$1]++ } END { for (outcome in count) print outcome, count[outcome] }' ./target/rust-test-diagnosis.tsv | sort
+	@echo "Normalized diagnosis: ./target/rust-test-diagnosis.tsv"
+
+.PHONY: rust-test-diagnose-one
+rust-test-diagnose-one: ## Serially rerun one exact test; set PACKAGE, BINARY_ID, TEST_NAME, and optionally NEXTEST_PROFILE
+	@test -n "$(PACKAGE)" || { echo "PACKAGE is required" >&2; exit 2; }
+	@test -n "$(BINARY_ID)" || { echo "BINARY_ID is required" >&2; exit 2; }
+	@test -n "$(TEST_NAME)" || { echo "TEST_NAME is required" >&2; exit 2; }
+	env -u LDFLAGS cargo nextest run --locked --package "$(PACKAGE)" --profile "$(or $(NEXTEST_PROFILE),default)" --test-threads 1 --no-fail-fast -E 'binary_id(=$(BINARY_ID)) & test(=$(TEST_NAME))'
+
 .PHONY: rust-doc-test
 rust-doc-test: ## Run Rust doctests separately; use PACKAGE=<crate> to narrow
 	env -u LDFLAGS cargo test --locked --no-fail-fast $(if $(PACKAGE),--package $(PACKAGE),--workspace) --doc $(RUST_TEST_ARGS)
