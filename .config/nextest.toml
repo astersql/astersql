@@ -1,0 +1,10 @@
+[profile.default]
+# Run independent tests across all available logical CPUs. Individual tests that
+# need serialization must continue to provide their own synchronization.
+test-threads = "num-cpus"
+fail-fast = false
+
+# Report a test as slow after five seconds and terminate it after ten seconds.
+# Keep this uniform across the workspace so expensive tests remain visible and
+# can be optimized instead of receiving permanent exemptions.
+slow-timeout = { period = "5s", terminate-after = 2, grace-period = "1s" }

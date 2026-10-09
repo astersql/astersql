@@ -156,12 +156,12 @@ test: test_part_1 test_part_2
 	@>&2 echo "Great, all tests passed."
 
 .PHONY: rust-test
-rust-test: ## Run Rust targets except doctests; use PACKAGE, RUST_TEST_TARGETS, and RUST_TEST_ARGS to narrow
+rust-test: ## Run Rust targets with nextest; use PACKAGE, RUST_TEST_TARGETS, and RUST_TEST_ARGS to narrow
 	@mkdir -p ./target; \
 	log_file="$$(mktemp "./target/rust-test.XXXXXX")"; \
 	status_file="$$log_file.status"; \
 	echo "Rust test log: $$log_file"; \
-	( env -u LDFLAGS cargo test --locked --no-fail-fast $(if $(PACKAGE),--package $(PACKAGE),--workspace) $(if $(RUST_TEST_TARGETS),$(RUST_TEST_TARGETS),--all-targets) $(RUST_TEST_ARGS); echo $$? > "$$status_file" ) 2>&1 | tee "$$log_file"; \
+	( env -u LDFLAGS cargo nextest run --locked $(if $(PACKAGE),--package $(PACKAGE),--workspace) $(if $(RUST_TEST_TARGETS),$(RUST_TEST_TARGETS),--all-targets) $(RUST_TEST_ARGS); echo $$? > "$$status_file" ) 2>&1 | tee "$$log_file"; \
 	status="$$(cat "$$status_file" 2>/dev/null || echo 1)"; \
 	rm -f "$$status_file"; \
 	echo "Rust test log saved to: $$log_file"; \
@@ -173,7 +173,7 @@ rust-doc-test: ## Run Rust doctests separately; use PACKAGE=<crate> to narrow
 
 .PHONY: rust-unit-test
 rust-unit-test: ## Run Rust library unit tests across the Cargo workspace
-	env -u LDFLAGS cargo test --workspace --lib --locked --no-fail-fast
+	env -u LDFLAGS cargo nextest run --workspace --lib --locked
 
 .PHONY: test_part_1
 test_part_1: checklist integrationtest ## Run test part 1: checklist and integration tests

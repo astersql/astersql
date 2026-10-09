@@ -4,14 +4,21 @@
 
 ## 全量测试
 
+先安装 `cargo-nextest`：
+
+```bash
+cargo install cargo-nextest --locked
+```
+
 测试 Cargo workspace 中全部包的非文档测试 target（包括单元测试、集成测试、examples 和 benches）：
 
 ```bash
 make rust-test
 ```
 
-该命令使用 Cargo 的 workspace 调度能力并行编译多个包。Cargo 仍会为各个
-crate 和测试 target 分别生成测试程序，不会把整个 workspace 链接成一个测试程序。
+该命令使用 `cargo-nextest` 并行调度各个 crate 和测试 target。默认并发数等于
+逻辑 CPU 数；测试运行 5 秒后会被标记为慢，运行满 10 秒后会被终止并判为失败。
+超时策略统一作用于整个 workspace，不为已知慢测设置例外。
 测试输出会实时显示在终端，并同时保存到仓库的 `./target` 目录。命令开始和
 结束时都会打印实际日志文件路径，例如 `./target/rust-test.AbCd12`。
 
@@ -52,7 +59,7 @@ cargo test --locked
 
 ## 单个测试
 
-`RUST_TEST_ARGS` 会原样传给 `cargo test`。测试名称默认采用子字符串匹配：
+`RUST_TEST_ARGS` 会原样传给 `cargo nextest run`。测试名称默认采用子字符串匹配：
 
 ```bash
 make rust-test \
@@ -60,12 +67,12 @@ make rust-test \
   RUST_TEST_ARGS='test_name'
 ```
 
-精确执行一个测试并显示它的标准输出：
+精确执行一个测试并立即显示它的标准输出：
 
 ```bash
 make rust-test \
   PACKAGE=astersql-types \
-  RUST_TEST_ARGS='module::tests::test_name -- --exact --nocapture'
+  RUST_TEST_ARGS='-E "test(=module::tests::test_name)" --no-capture'
 ```
 
 先列出包中的测试，以获得完整测试名称：
@@ -113,14 +120,14 @@ env -u LDFLAGS cargo check --locked --package astersql-types
 ## 常用附加参数
 
 ```bash
-# 显示测试输出
-RUST_TEST_ARGS='test_name -- --nocapture'
+# 立即显示测试输出
+RUST_TEST_ARGS='test_name --no-capture'
 
 # 精确匹配测试名称
-RUST_TEST_ARGS='module::tests::test_name -- --exact'
+RUST_TEST_ARGS='-E "test(=module::tests::test_name)"'
 
-# 单线程运行测试（只影响执行阶段，不会减少编译量）
-RUST_TEST_ARGS='-- --test-threads=1'
+# 控制 nextest 的测试并发数（只影响执行阶段，不会减少编译量）
+RUST_TEST_ARGS='--test-threads=4'
 
 # 选择目标类型（默认 --all-targets，不含 Doc-tests）
 RUST_TEST_TARGETS='--lib'
