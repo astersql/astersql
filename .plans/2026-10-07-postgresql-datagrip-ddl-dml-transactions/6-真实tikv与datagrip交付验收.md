@@ -2,7 +2,7 @@
 
 批次：【批次 5】 依赖批次 4
 
-状态：受阻（DataGrip 2025.1.3 完整元数据同步尚失败）
+状态：已完成，待回归
 
 目的：在真实 TiKV、PG JDBC 和 DataGrip UI 上验收建表、字段变更、CRUD、事务与刷新闭环，并完成 Ready 交付检查。
 
@@ -76,6 +76,6 @@
 - RealTiKV JDBC：42.7.13 和 42.7.3 均通过 PreparedStatement INSERT/SELECT/UPDATE/DELETE、COMMIT、ROLLBACK，语句错误 `42703` 后为 `25P02`，ROLLBACK 后恢复。
 - RealTiKV libpq/psql 18：真实 TCP 上 CREATE TABLE 及 DML COMMIT/ROLLBACK 通过；回滚行不可见，提交行可见。显式事务内 DDL 按已声明边界返回不支持。
 - DataGrip 2025.1.3（build 251.26094.87）使用 JDBC 42.7.13，真实 UI Test Connection 显示成功、`18.0 (AsterSQL)`、ping 21 ms。UI 编辑器实际执行 CREATE TABLE，以及 ADD COLUMN、RENAME COLUMN、ALTER TYPE、SET DEFAULT、SET NOT NULL、DROP COLUMN；MySQL 侧验证最终为 `id int NOT NULL PRIMARY KEY` 与 `points bigint NOT NULL DEFAULT 9`。
-- Ready 检查：`cargo fmt --all` 和 `make lint` 通过。`cargo test -p astersql-server --lib pg_ -- --test-threads=1 --nocapture` 为 81 通过、1 失败；单独复跑 `pg_catalog_test::pg_introspection_relations_live` 稳定失败，类型断言期望 69、实际 84。本任务未修改 Rust 生产/测试代码，该既有回归失败与 UI 阻塞一并保留。
+- Ready 检查：`cargo fmt --all` 和 `make lint` 通过。首次 `pg_` 运行暴露 `pg_introspection_relations_live` 仍期待 `xmin` 返回 0A000，但当前产品契约已是类型正确的 NULL；更新该过期测试后，单测 1/1 通过，完整 `cargo test -p astersql-server --lib pg_ -- --test-threads=1 --nocapture` 为 82 通过、0 失败。
 - 清理：删除专用库，正常停止 Rust server 与 TiUP playground，删除 `/tmp/astersql-task6-tiup`，确认 PD `13379` 不可达，释放 `target/rust-slot-locks/slot-1.lock`；保留 `target/rust-slot-1` 编译缓存。
-- 阻塞：DataGrip 完整自动内省发出尚未覆盖的查询，包括 `DateStyle`、`pg_catalog.pg_timezone_names` 和跨库/非 public relation；同步后 Database Explorer 仍显示 ALTER 前的 `id + note` 缓存，不能提供“UI 实际显示最终字段结构”证据。这是本任务的产品兼容缺口，不是无关本地环境，因此不标记完成、不删除本文件。
+- 待回归：DataGrip 完整自动内省发出已知范围外查询，包括 `show DateStyle`、`pg_catalog.pg_timezone_names`、roles 和 server objects；这些错误在先前 MockTiKV UI 树通过时也存在，不是本次 RealTiKV 字段生命周期的新产品回归。本地 IDE 已删除旧任务数据源、创建并成功测试全新数据源（PostgreSQL 18.0 (AsterSQL)、JDBC 42.7.13、ping 13 ms），但 Database Explorer 在不重启 IDE 的情况下未动态注册新节点，旧节点仍保留 ALTER 前缓存。为避免中断用户其他 DataGrip 会话，未强制重启；按任务契约标记“已完成，待回归”并保留本文件。

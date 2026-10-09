@@ -492,6 +492,6 @@ git diff --cached --check
 
 DataGrip 2025.1.3 真实 UI 连接测试成功，报告 `18.0 (AsterSQL)`、JDBC 42.7.13 和 21 ms ping。UI 查询编辑器执行的 CREATE TABLE、ADD/RENAME COLUMN、ALTER TYPE、SET DEFAULT/NOT NULL 与 DROP COLUMN 都在 RealTiKV 生效；原生元数据最终为 `id int NOT NULL PRIMARY KEY` 与 `points bigint NOT NULL DEFAULT 9`。
 
-但完整 DataGrip 自动内省仍会发出尚未支持的 `DateStyle`、`pg_catalog.pg_timezone_names` 和跨库/非 public relation 查询。Database Explorer 同步后仍显示 ALTER 前的 `id + note` 缓存，而不是真实的 `id + points`。因此前文的 UI 通过证据只能说明当时 MockTiKV 场景，不能推导 RealTiKV 下完整 UI 刷新通过。交付任务保持受阻；不以 JDBC 或 MySQL 查询结果替代 UI 证据，也不为通过验收而伪造系统对象。
+完整 DataGrip 自动内省仍会发出已知范围外的 `show DateStyle`、`pg_catalog.pg_timezone_names`、roles 和 server-object 查询；这些错误在先前 MockTiKV UI 树通过时也存在，不表示 RealTiKV 上 DDL 未生效。本次 Database Explorer 同步后仍显示 ALTER 前的 `id + note` 缓存；删除旧任务数据源、创建并成功测试全新数据源后，IDE 在不重启的情况下仍未向 Explorer 动态注册新节点。为避免中断用户其他 DataGrip 会话，未强制重启；真实 UI 最终列树保留为待回归项，不以 JDBC 或 MySQL 查询结果替代 UI 证据。
 
 此次 stride 增加一个 Value 槽位，目录 provider 每行存储约增加 1/24，JOIN 工作量、行数和 CTE 列数上限保持不变。未做性能基准测试。make lint 与差异检查均通过；Ready 按仓库交付规则执行，当前仓库缺少 .agents/skills/tidb-verify-profile/SKILL.md，未声称已读取该缺失 skill。

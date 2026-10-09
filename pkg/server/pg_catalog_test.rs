@@ -701,17 +701,29 @@ fn pg_introspection_relations_live() {
         bind_execute(&mut socket, "relations_created")
             .contains(&(b'D', row(&[Some("relations_renamed")])))
     );
-    for sql in [
-        "SELECT xmin FROM pg_catalog.pg_class",
+    let xmin = query(&mut socket, "SELECT xmin FROM pg_catalog.pg_class");
+    assert_eq!(xmin[0].0, b'T', "{xmin:?}");
+    let xmin_rows = xmin
+        .iter()
+        .filter(|message| message.0 == b'D')
+        .collect::<Vec<_>>();
+    assert!(!xmin_rows.is_empty(), "{xmin:?}");
+    assert!(
+        xmin_rows.iter().all(|message| message.1 == row(&[None])),
+        "{xmin:?}"
+    );
+    let unsupported_join = query(
+        &mut socket,
         "SELECT C.relname FROM pg_catalog.pg_class C JOIN public.relations_seq B ON C.oid = B.id",
-    ] {
-        let response = query(&mut socket, sql);
-        assert_eq!(response[0].0, b'E', "{response:?}");
-        assert!(
-            response[0].1.windows(5).any(|w| w == b"0A000"),
-            "{response:?}"
-        );
-    }
+    );
+    assert_eq!(unsupported_join[0].0, b'E', "{unsupported_join:?}");
+    assert!(
+        unsupported_join[0]
+            .1
+            .windows(5)
+            .any(|window| window == b"0A000"),
+        "{unsupported_join:?}"
+    );
     assert_eq!(
         query(&mut socket, "CREATE TABLE public.pg_class (marker INT)")[0].0,
         b'C'

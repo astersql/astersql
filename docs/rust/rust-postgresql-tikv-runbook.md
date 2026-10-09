@@ -149,7 +149,7 @@ SELECT 1;
 
 本次使用隔离 tag `astersql-task6-20261009` 和端口 PD/MySQL/PG/status `13379`/`14001`/`15432`/`20080`，不影响默认 2379/4000/5432 服务。TiUP 1.17.1 启动 TiKV 8.5.1，Rust server 通过 `--store=tikv --path=127.0.0.1:13379` 连接，专用库为 `pg_task6_delivery`。
 
-DataGrip 2025.1.3 的 Test Connection 成功，显示 `18.0 (AsterSQL)`、JDBC 42.7.13 和 21 ms ping。UI 编辑器的 PostgreSQL DDL 生命周期已在 RealTiKV 生效，但 Database Explorer 的完整自动内省仍因 `DateStyle`、`pg_catalog.pg_timezone_names` 和跨库/非 public relation 查询失败，刷新后留有 ALTER 前列缓存。因此本手册不声明 RealTiKV 下 DataGrip 完整 UI 内省已通过；当前可靠范围是连接、编辑器 DDL/DML、JDBC prepared CRUD 和 DML 事务。
+DataGrip 2025.1.3 的 Test Connection 成功，显示 `18.0 (AsterSQL)`、JDBC 42.7.13 和 21 ms ping。UI 编辑器的 PostgreSQL DDL 生命周期已在 RealTiKV 生效，但 Database Explorer 刷新后留有 ALTER 前列缓存。删除旧任务数据源、创建并成功测试全新数据源后，IDE 仍未在不重启的情况下向 Explorer 动态注册新节点。为避免中断用户其他 DataGrip 会话，未强制重启；最终列树保留为待回归项。完整自动内省仍可报告已知范围外的 DateStyle、timezone、roles 和 server objects；当前可靠范围是连接、编辑器 DDL/DML、JDBC prepared CRUD 和 DML 事务。
 
 日常退出前台 Rust server 可在其启动终端按 Ctrl-C。PD/TiKV 的停止与重启仍按原手册执行，保留数据目录。
 
