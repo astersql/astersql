@@ -3451,7 +3451,7 @@ fn normal_ddl_plan_table_validation_go_offsets_cache_and_primary_exceptions() {
 }
 
 #[test]
-fn normal_ddl_plan_table_validation_partition_structure_and_deferred_loading() {
+fn normal_ddl_plan_table_validation_partition_structure_and_expression_loading() {
     for case in 0..3 {
         let f = table_validation_fixture();
         let mut table = f.reader().get_table(f.db, f.table).unwrap().unwrap();
@@ -3475,7 +3475,7 @@ fn normal_ddl_plan_table_validation_partition_structure_and_deferred_loading() {
             &f,
             match case {
                 0 => Some("[table:1735]"),
-                1 => Some("partition expression loading is not supported"),
+                1 => None,
                 _ => None,
             },
         );
