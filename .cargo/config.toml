@@ -9,6 +9,9 @@ CMAKE_POLICY_VERSION_MINIMUM = "3.5"
 git-fetch-with-cli = true
 
 [build]
+target-dir = "target"
+build-dir = "build-dir"
+
 # Keep Go-compatible translated names and helper surfaces warning-clean while the
 # Rust port is still being completed. This intentionally avoids `-A warnings` so
 # new warning classes still surface.

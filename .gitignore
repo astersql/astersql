@@ -86,6 +86,7 @@ var
 .claude/settings.local.json
 
 target/
+build-dir/
 __pycache__/
 *.py[cod]
 .local/
