@@ -97,6 +97,7 @@ pub fn NewTimerRuntimeBuilder(groupID: String, store: TimerStore) -> TimerRuntim
                 fullRefreshTimerCounter: Counter::default(),
                 partialRefreshTimerCounter: Counter::default(),
                 retryLoopWait: Duration::from_secs(10),
+                watchRetryWaiter: Arc::new(crossbeam_channel::after),
                 #[cfg(test)]
                 recoveryEventSender: None,
             }),
@@ -154,6 +155,7 @@ struct RuntimeInner {
     fullRefreshTimerCounter: Counter,
     partialRefreshTimerCounter: Counter,
     retryLoopWait: Duration,
+    watchRetryWaiter: Arc<dyn Fn(Duration) -> Receiver<Instant> + Send + Sync>,
     #[cfg(test)]
     recoveryEventSender: Option<Sender<RecoveryEvent>>,
 }
@@ -181,6 +183,16 @@ impl TimerGroupRuntime {
         Arc::get_mut(&mut self.inner)
             .expect("retry wait must be configured before the runtime is shared")
             .retryLoopWait = wait;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn setWatchRetryWaiter(
+        &mut self,
+        waiter: Arc<dyn Fn(Duration) -> Receiver<Instant> + Send + Sync>,
+    ) {
+        Arc::get_mut(&mut self.inner)
+            .expect("watch retry waiter must be configured before the runtime is shared")
+            .watchRetryWaiter = waiter;
     }
 
     #[cfg(test)]
@@ -301,7 +313,7 @@ impl TimerGroupRuntime {
         let mut lastBatch = Instant::now();
         let mut lastTryTriggerTime = systemNow() - chrono::Duration::seconds(60);
         let mut nextTry = Instant::now();
-        let mut rewatchAt: Option<Instant> = None;
+        let mut watchRetryReady: Option<Receiver<Instant>> = None;
 
         // 启动时先全量灌入缓存，再进入事件驱动循环。
         self.fullRefreshTimersWithContext(ctx);
@@ -331,9 +343,12 @@ impl TimerGroupRuntime {
                 lastTryTriggerTime = self.now();
                 nextTry = Instant::now() + self.getNextTryTriggerDuration(lastTryTriggerTime);
             }
-            if rewatchAt.is_some_and(|at| Instant::now() >= at) {
+            if watchRetryReady
+                .as_ref()
+                .is_some_and(|ready| ready.try_recv().is_ok())
+            {
                 watch = self.createWatchTimerChan(ctx);
-                rewatchAt = None;
+                watchRetryReady = None;
             }
 
             while let Ok(response) = self.inner.workerRespReceiver.try_recv() {
@@ -344,7 +359,7 @@ impl TimerGroupRuntime {
                 Ok(response) => batchResponses.push(response),
                 Err(TryRecvError::Disconnected) => {
                     watch = crossbeam_channel::never();
-                    rewatchAt = Some(Instant::now() + reWatchInterval);
+                    watchRetryReady = Some((self.inner.watchRetryWaiter)(reWatchInterval));
                 }
                 Err(TryRecvError::Empty) => {}
             }

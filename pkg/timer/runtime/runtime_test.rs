@@ -31,7 +31,9 @@ use crate::api::{
     WithSetWatermark,
 };
 use crate::cache::{procIdle, procTriggering, procWaitTriggerClose};
-use crate::runtime::{NewTimerRuntimeBuilder, RecoveryEvent, retryBusyWorkerInterval};
+use crate::runtime::{
+    NewTimerRuntimeBuilder, RecoveryEvent, reWatchInterval, retryBusyWorkerInterval,
+};
 use crate::worker::TriggerEventRequest;
 use chrono::Utc;
 use std::collections::HashSet;
@@ -642,11 +644,24 @@ fn test_watch_timer_retry() {
     core.push_watch_supported(true);
     core.push_watch(closed);
     core.push_watch(normal);
-    let runtime = NewTimerRuntimeBuilder("g1".to_string(), store).Build();
-    let started = Instant::now();
+    let (retry_requested_sender, retry_requested) = crossbeam_channel::bounded(1);
+    let (retry_ready_sender, retry_ready) = crossbeam_channel::bounded(1);
+    let mut runtime = NewTimerRuntimeBuilder("g1".to_string(), store).Build();
+    runtime.setWatchRetryWaiter(Arc::new(move |delay| {
+        retry_requested_sender.send(delay).unwrap();
+        retry_ready.clone()
+    }));
     runtime.Start();
-    wait_until(Duration::from_secs(7), || core.watch_calls() >= 2);
-    assert!(started.elapsed() >= Duration::from_secs(5));
+    assert_eq!(
+        retry_requested
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap(),
+        reWatchInterval
+    );
+    assert_eq!(core.watch_calls(), 1);
+    retry_ready_sender.send(Instant::now()).unwrap();
+    wait_until(Duration::from_secs(1), || core.watch_calls() >= 2);
+    assert_eq!(core.watch_calls(), 2);
     runtime.Stop();
 }
 
