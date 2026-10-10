@@ -519,12 +519,22 @@ impl DdlService for NormalDdlService {
                                     }
                                     Ok(scheduled)
                                 })();
-                                match result {
-                                    Ok(_) => *error.lock().unwrap() = None,
+                                let made_progress = match result {
+                                    Ok(scheduled) => {
+                                        *error.lock().unwrap() = None;
+                                        scheduled > 0
+                                    }
                                     Err(message) => {
                                         eprintln!("normal DDL scheduler: {message}");
                                         *error.lock().unwrap() = Some(message);
+                                        false
                                     }
+                                };
+                                // A durable job advances one persisted schema/reorg stage per
+                                // scheduling pass. Drain ready follow-up stages immediately;
+                                // the idle wait is only for an empty, paused, or blocked queue.
+                                if made_progress {
+                                    continue;
                                 }
                             }
                         }
