@@ -807,6 +807,7 @@ debug = "line-tables-only"
 
 [profile.test]
 debug = "line-tables-only"
+opt-level = 1
 
 [package]
 name = "astersql"

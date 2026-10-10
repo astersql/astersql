@@ -147,8 +147,11 @@ fn generated_sample(rng: &mut StdRng, sequence: u64) -> (i64, i64, Sample, bool)
 /// 并发 Report/Flush 聚合结果应与串行累加一致。
 #[test]
 fn concurrent_flush_matches_serial_aggregation() {
-    const SESSION_COUNT: usize = 64;
-    const OP_PER_SESSION: usize = 100_000;
+    // The same-path Go parity test keeps the original 64×100000 stress load.
+    // This migration supplement exercises independent seeds and interleavings
+    // without repeating that complete stress workload a second time.
+    const SESSION_COUNT: usize = 16;
+    const OP_PER_SESSION: usize = 10_000;
 
     let expected = NewCollector();
     expected.StartWorker();

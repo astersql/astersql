@@ -20,9 +20,8 @@
 
 use crate::{
     Collector, GlobalIndexID, NewCollector, NewSample, NewStmtIndexUsageCollector, Sample,
+    new_sample_at,
 };
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
@@ -129,7 +128,7 @@ struct TestOpGenerator {
     max_query_total: u64,
     max_kv_req_total: u64,
     max_table_total_rows: u64,
-    rng: StdRng,
+    rng_state: u64,
 }
 
 impl TestOpGenerator {
@@ -141,30 +140,50 @@ impl TestOpGenerator {
             max_query_total: 10_000,
             max_kv_req_total: 10_000,
             max_table_total_rows: 10_000,
-            rng: StdRng::seed_from_u64(seed),
+            rng_state: seed.max(1),
         }
+    }
+
+    /// xorshift64* 足以为并发聚合测试提供稳定、分布均匀的输入，且不承担
+    /// 密码学随机数生成器在 debug 构建中的成本。
+    fn next(&mut self) -> u64 {
+        let mut value = self.rng_state;
+        value ^= value >> 12;
+        value ^= value << 25;
+        value ^= value >> 27;
+        self.rng_state = value;
+        value.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    fn below(&mut self, upper: u64) -> u64 {
+        self.next() % upper
     }
 
     /// 生成一条带单调 LastUsedAt 的随机操作。
     fn generate_test_op(&mut self, sequence: u64) -> TestOp {
         let idx = GlobalIndexID {
-            TableID: self.rng.gen_range(0..self.table_count),
-            IndexID: self.rng.gen_range(0..self.index_per_table_count),
+            TableID: self.below(self.table_count as u64) as i64,
+            IndexID: self.below(self.index_per_table_count as u64) as i64,
         };
-        let query_total = self.rng.gen_range(0..self.max_query_total);
-        let kv_req_total = self.rng.gen_range(0..self.max_kv_req_total);
-        let total_rows = self.rng.gen_range(0..self.max_table_total_rows);
+        let query_total = self.below(self.max_query_total);
+        let kv_req_total = self.below(self.max_kv_req_total);
+        let total_rows = self.below(self.max_table_total_rows);
         let row_access = if total_rows == 0 {
             0
         } else {
-            self.rng.gen_range(0..total_rows)
+            self.below(total_rows)
         };
-        let mut info = NewSample(query_total, kv_req_total, row_access, total_rows);
-        info.LastUsedAt = UNIX_EPOCH + Duration::from_nanos(sequence);
+        let info = new_sample_at(
+            query_total,
+            kv_req_total,
+            row_access,
+            total_rows,
+            UNIX_EPOCH + Duration::from_nanos(sequence),
+        );
         TestOp {
             info,
             idx,
-            report: self.rng.gen_range(0..4) == 1,
+            report: self.below(4) == 1,
         }
     }
 }
@@ -176,42 +195,38 @@ impl TestOpGenerator {
 fn test_flush_concurrent_index_collector() {
     const SESSION_COUNT: usize = 64;
     const OP_PER_SESSION: usize = 100_000;
+    const OP_COUNT: usize = SESSION_COUNT * OP_PER_SESSION;
+
+    let mut generator = TestOpGenerator::new(1);
+    let operations = (0..OP_COUNT)
+        .map(|op_id| generator.generate_test_op(op_id as u64 + 1))
+        .collect::<Vec<_>>();
 
     let expected = NewCollector();
     expected.StartWorker();
     let expected_session = expected.SpawnSessionCollector();
-    for session_id in 0..SESSION_COUNT {
-        let mut generator = TestOpGenerator::new(session_id as u64 + 1);
-        for op_id in 0..OP_PER_SESSION {
-            let sequence = (session_id * OP_PER_SESSION + op_id + 1) as u64;
-            let op = generator.generate_test_op(sequence);
-            expected_session.Update(op.idx.TableID, op.idx.IndexID, op.info);
-        }
+    for op in &operations {
+        expected_session.Update(op.idx.TableID, op.idx.IndexID, op.info.clone());
     }
     expected_session.Flush();
 
     let actual = Arc::new(NewCollector());
     actual.StartWorker();
-    let mut workers = Vec::with_capacity(SESSION_COUNT);
-    for session_id in 0..SESSION_COUNT {
-        let actual = Arc::clone(&actual);
-        workers.push(thread::spawn(move || {
-            let session = actual.SpawnSessionCollector();
-            let mut generator = TestOpGenerator::new(session_id as u64 + 1);
-            for op_id in 0..OP_PER_SESSION {
-                let sequence = (session_id * OP_PER_SESSION + op_id + 1) as u64;
-                let op = generator.generate_test_op(sequence);
-                session.Update(op.idx.TableID, op.idx.IndexID, op.info);
-                if op.report {
-                    session.Report();
+    thread::scope(|scope| {
+        for local_operations in operations.chunks_exact(OP_PER_SESSION) {
+            let actual = Arc::clone(&actual);
+            scope.spawn(move || {
+                let session = actual.SpawnSessionCollector();
+                for op in local_operations {
+                    session.Update(op.idx.TableID, op.idx.IndexID, op.info.clone());
+                    if op.report {
+                        session.Report();
+                    }
                 }
-            }
-            session.Flush();
-        }));
-    }
-    for worker in workers {
-        worker.join().expect("index usage worker panicked");
-    }
+                session.Flush();
+            });
+        }
+    });
 
     expected.Close();
     actual.Close();

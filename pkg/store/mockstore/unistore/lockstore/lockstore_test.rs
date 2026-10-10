@@ -27,9 +27,9 @@ mod tests {
     use rand::Rng;
     use rand::seq::SliceRandom;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, RwLock};
+    use std::sync::{Arc, Barrier, RwLock};
     use std::thread;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     /// 测试键前缀。
     const KEY_PREFIX: &str = "ls";
@@ -173,10 +173,16 @@ mod tests {
     }
 
     /// 并发读者：反复 Get 指定键直到 stop。
-    fn runReader(ls: Arc<RwLock<Box<MemStore>>>, stop: Arc<AtomicBool>, i: usize) -> usize {
+    fn runReader(
+        ls: Arc<RwLock<Box<MemStore>>>,
+        stop: Arc<AtomicBool>,
+        started: Arc<Barrier>,
+        i: usize,
+    ) -> usize {
         let key = numToKey(i);
         let mut reads = 0;
         let mut buf = Vec::with_capacity(100);
+        started.wait();
         while !stop.load(Ordering::Relaxed) {
             reads += 1;
             let result = ls.read().unwrap().Get(&key, &mut buf);
@@ -191,26 +197,26 @@ mod tests {
     /// 单写多读并发：写端 Put/Delete，读端校验无损坏。
     fn test_mem_store_concurrent() {
         const KEY_RANGE: usize = 10;
+        const WRITE_ROUNDS: usize = 50_000;
         let concurrent_keys: Vec<_> = (0..KEY_RANGE).map(numToKey).collect();
         let ls = Arc::new(RwLock::new(MemStore::NewMemStore(1 << 20)));
         let stop = Arc::new(AtomicBool::new(false));
+        let started = Arc::new(Barrier::new(KEY_RANGE + 1));
         let readers: Vec<_> = (0..KEY_RANGE)
             .map(|i| {
                 let ls = Arc::clone(&ls);
                 let stop = Arc::clone(&stop);
-                thread::spawn(move || runReader(ls, stop, i))
+                let started = Arc::clone(&started);
+                thread::spawn(move || runReader(ls, stop, started, i))
             })
             .collect();
 
         let mut rng = rand::thread_rng();
-        let start = Instant::now();
         let mut total_insert = 0;
         let mut total_delete = 0;
         let mut hint = Hint::new();
-        loop {
-            if total_insert % 128 == 0 && start.elapsed() > Duration::from_secs(10) {
-                break;
-            }
+        started.wait();
+        for _ in 0..WRITE_ROUNDS {
             let key = &concurrent_keys[rng.gen_range(0..KEY_RANGE)];
             if ls.write().unwrap().PutWithHint(key, key, Some(&mut hint)) {
                 total_insert += 1;

@@ -784,43 +784,40 @@ pub(super) fn encode_relational_index_value_row(
     flags: astersql_types::Flags,
     indexed_values: Vec<astersql_types::datum::Datum>,
 ) -> SessionResult<(kv::Key, Vec<u8>)> {
-    let mut effective = table.clone();
-    for part in &index.Columns {
-        if part.UseChangingType {
-            let column = &mut effective.Columns[part.Offset as usize];
-            if let Some(changing) = &column.ChangingFieldType {
-                column.FieldType = changing.clone();
+    let effective = if index.Columns.iter().any(|part| part.UseChangingType) {
+        let mut effective = table.clone();
+        for part in &index.Columns {
+            if part.UseChangingType {
+                let column = &mut effective.Columns[part.Offset as usize];
+                if let Some(changing) = &column.ChangingFieldType {
+                    column.FieldType = changing.clone();
+                }
             }
         }
-    }
-    let table = &effective;
+        std::borrow::Cow::Owned(effective)
+    } else {
+        std::borrow::Cow::Borrowed(table)
+    };
+    let table = effective.as_ref();
     let handle = relational_row_handle(table, row, flags)?;
     let physical_table_id = ConcreteSession::row_physical_id(table, row);
-    let codec_table = astersql_tablecodec::model::TableInfo {
-        Columns: table.Columns.clone(),
-        Indices: table.Indices.clone(),
-        PKIsHandle: table.PKIsHandle,
-        IsCommonHandle: table.IsCommonHandle,
-        CommonHandleVersion: table.CommonHandleVersion,
-        ..Default::default()
-    };
     let indexed_values_for_value = indexed_values.clone();
-    let (key, distinct) = astersql_tablecodec::GenIndexKey(
+    let (key, distinct) = astersql_tablecodec::GenIndexKeyBorrowed(
         astersql_tablecodec::codec::NewEncoder(astersql_tablecodec::collate::NewCollationEnabled()),
         Some(astersql_tablecodec::time::UTC),
-        Box::new(codec_table.clone()),
-        Box::new(index.clone()),
+        table,
+        index,
         physical_table_id,
         indexed_values,
-        Some(handle.Copy()),
+        Some(handle.as_ref()),
         None,
     )
     .map_err(|error| session_error("encode relational index key", error))?;
-    let value = astersql_tablecodec::GenIndexValuePortal(
+    let value = astersql_tablecodec::GenIndexValuePortalBorrowed(
         astersql_tablecodec::collate::NewCollationEnabled(),
         Some(astersql_tablecodec::time::UTC),
-        Box::new(codec_table),
-        Box::new(index.clone()),
+        table,
+        index,
         index.Columns.iter().any(|part| {
             astersql_types::metadata::NeedRestoredData(
                 &table.Columns[part.Offset as usize].FieldType,
@@ -829,7 +826,7 @@ pub(super) fn encode_relational_index_value_row(
         distinct,
         false,
         indexed_values_for_value,
-        handle.Copy(),
+        handle.as_ref(),
         0,
         Vec::new(),
         None,

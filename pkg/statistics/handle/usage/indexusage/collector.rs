@@ -94,6 +94,23 @@ fn getIndexUsageAccessBucket(percentage: f64) -> usize {
 /// NewSample creates a new index usage data point.
 /// 根据本次访问行数与表总行数构造一个使用率采样点。
 pub fn NewSample(queryTotal: u64, kvReqTotal: u64, rowAccess: u64, tableTotalRows: u64) -> Sample {
+    new_sample_at(
+        queryTotal,
+        kvReqTotal,
+        rowAccess,
+        tableTotalRows,
+        SystemTime::now(),
+    )
+}
+
+/// 与 `NewSample` 相同，但由调用者提供时间；供确定性测试避免读取数百万次系统时钟。
+pub(crate) fn new_sample_at(
+    queryTotal: u64,
+    kvReqTotal: u64,
+    rowAccess: u64,
+    tableTotalRows: u64,
+    last_used_at: SystemTime,
+) -> Sample {
     let mut percentage_access = [0; BUCKET_BOUND.len() + 1];
     // 表行数为 0 时无法计算比例，归入满桶（与 Go 行为一致）。
     let bucket = if tableTotalRows == 0 {
@@ -104,7 +121,7 @@ pub fn NewSample(queryTotal: u64, kvReqTotal: u64, rowAccess: u64, tableTotalRow
     percentage_access[bucket] = 1;
 
     Sample {
-        LastUsedAt: SystemTime::now(),
+        LastUsedAt: last_used_at,
         QueryTotal: queryTotal,
         KvReqTotal: kvReqTotal,
         RowAccessTotal: rowAccess,
@@ -114,8 +131,8 @@ pub fn NewSample(queryTotal: u64, kvReqTotal: u64, rowAccess: u64, tableTotalRow
 
 /// 索引 → 使用样本的映射。
 type IndexUsageMap = HashMap<GlobalIndexID, Sample>;
-/// 会话侧待合并的增量（可跨线程共享）。
-type IndexUsageDelta = Arc<Mutex<IndexUsageMap>>;
+/// 会话侧待合并的增量；Report/Flush 时把所有权转移给 worker。
+type IndexUsageDelta = IndexUsageMap;
 
 /// 空映射对象池，减少频繁分配（对齐 Go `sync.Pool`）。
 static INDEX_USAGE_POOL: LazyLock<Mutex<Vec<IndexUsageMap>>> =
@@ -126,9 +143,9 @@ fn takeIndexUsageMap() -> IndexUsageMap {
     INDEX_USAGE_POOL.lock().unwrap().pop().unwrap_or_default()
 }
 
-/// 包装为可共享的会话增量容器。
+/// 从对象池取得新的会话增量。
 fn takeIndexUsageDelta() -> IndexUsageDelta {
-    Arc::new(Mutex::new(takeIndexUsageMap()))
+    takeIndexUsageMap()
 }
 
 /// 将一条样本累加到映射中对应索引上（计数 wrapping 相加，时间取较新）。
@@ -152,16 +169,14 @@ fn updateByKey(map: &mut IndexUsageMap, id: GlobalIndexID, sample: Sample) {
 /// 将会话增量合并进节点全局映射，并把清空后的容器归还对象池。
 fn mergeDelta(target: &RwLock<IndexUsageMap>, delta: IndexUsageDelta) {
     let mut target = target.write().unwrap();
-    let mut delta = delta.lock().unwrap();
+    let mut delta = delta;
     for (id, sample) in delta.drain() {
         updateByKey(&mut target, id, sample);
     }
 
     // Match sync.Pool reuse: retain the allocation after clearing the delta.
     // 对齐 Go sync.Pool：清空后保留分配，放回池供下次复用。
-    let reusable = std::mem::take(&mut *delta);
-    drop(delta);
-    INDEX_USAGE_POOL.lock().unwrap().push(reusable);
+    INDEX_USAGE_POOL.lock().unwrap().push(delta);
 }
 
 /// Collector records index usage for the whole node.
@@ -260,10 +275,9 @@ pub struct SessionIndexUsageCollector {
 impl SessionIndexUsageCollector {
     /// 将一次索引使用样本累加到本会话的待上报增量中。
     pub fn Update(&self, tableID: i64, indexID: i64, sample: Sample) {
-        let state = self.state.lock().unwrap();
-        let mut usage = state.index_usage.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
         updateByKey(
-            &mut usage,
+            &mut state.index_usage,
             GlobalIndexID {
                 TableID: tableID,
                 IndexID: indexID,
@@ -276,13 +290,14 @@ impl SessionIndexUsageCollector {
     /// 非阻塞上报增量；通道满被拒绝时增量仍留在会话侧。
     pub fn Report(&self) {
         let mut state = self.state.lock().unwrap();
-        if state.index_usage.lock().unwrap().is_empty() {
+        if state.index_usage.is_empty() {
             return;
         }
 
-        let delta = Arc::clone(&state.index_usage);
-        if state.collector.SendDelta(delta) {
-            state.index_usage = takeIndexUsageDelta();
+        let delta = std::mem::replace(&mut state.index_usage, takeIndexUsageDelta());
+        if let Err(delta) = state.collector.TrySendDelta(delta) {
+            let empty = std::mem::replace(&mut state.index_usage, delta);
+            INDEX_USAGE_POOL.lock().unwrap().push(empty);
         }
     }
 
@@ -290,13 +305,12 @@ impl SessionIndexUsageCollector {
     /// 同步刷新：阻塞直到待上报增量送入全局采集器。
     pub fn Flush(&self) {
         let mut state = self.state.lock().unwrap();
-        if state.index_usage.lock().unwrap().is_empty() {
+        if state.index_usage.is_empty() {
             return;
         }
 
-        let delta = Arc::clone(&state.index_usage);
+        let delta = std::mem::replace(&mut state.index_usage, takeIndexUsageDelta());
         state.collector.SendDeltaSync(delta);
-        state.index_usage = takeIndexUsageDelta();
     }
 }
 

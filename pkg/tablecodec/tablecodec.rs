@@ -1445,6 +1445,29 @@ pub fn GenIndexKey(
     h: Option<Box<dyn kv::Handle>>,
     buf: Option<Vec<u8>>,
 ) -> Result<(Vec<u8>, bool), errors::SharedError> {
+    GenIndexKeyBorrowed(
+        enc,
+        loc,
+        &tblInfo,
+        &idxInfo,
+        phyTblID,
+        indexedValues,
+        h.as_deref(),
+        buf,
+    )
+}
+
+/// `GenIndexKey` 的借用版本，供批量 DML 复用表/索引元数据而不逐行深拷贝。
+pub fn GenIndexKeyBorrowed(
+    enc: codec::Encoder,
+    loc: Option<time::Location>,
+    tblInfo: &model::TableInfo,
+    idxInfo: &model::IndexInfo,
+    phyTblID: i64,
+    mut indexedValues: Vec<types::Datum>,
+    h: Option<&dyn kv::Handle>,
+    buf: Option<Vec<u8>>,
+) -> Result<(Vec<u8>, bool), errors::SharedError> {
     let mut distinct = false;
     if idxInfo.Unique {
         // See https://dev.mysql.com/doc/refman/5.7/en/create-index.html
@@ -1461,7 +1484,7 @@ pub fn GenIndexKey(
     }
     // For string columns, indexes can be created using only the leading part of column values,
     // using col_name(length) syntax to specify an index prefix length.
-    TruncateIndexValues(tblInfo.clone(), idxInfo.clone(), &mut indexedValues);
+    TruncateIndexValuesBorrowed(tblInfo, idxInfo, &mut indexedValues);
     let mut key = GetIndexKeyBuf(buf, RecordRowKeyLen + indexedValues.len() * 9 + 9);
     key = appendTableIndexPrefix(key, phyTblID);
     key = codec::EncodeInt(key, idxInfo.ID);
@@ -1872,6 +1895,51 @@ pub fn GenIndexValuePortal(
     )
 }
 
+/// `GenIndexValuePortal` 的借用版本；普通 version0 路径不再克隆元数据。
+pub fn GenIndexValuePortalBorrowed(
+    useNewCollate: bool,
+    loc: Option<time::Location>,
+    tblInfo: &model::TableInfo,
+    idxInfo: &model::IndexInfo,
+    needRestoredData: bool,
+    distinct: bool,
+    untouched: bool,
+    indexedValues: Vec<types::Datum>,
+    h: &dyn kv::Handle,
+    partitionID: i64,
+    restoredData: Vec<types::Datum>,
+    buf: Option<Vec<u8>>,
+) -> Result<Vec<u8>, errors::SharedError> {
+    if tblInfo.IsCommonHandle && tblInfo.CommonHandleVersion == 1 {
+        return GenIndexValueForClusteredIndexVersion1(
+            useNewCollate,
+            loc,
+            Box::new(tblInfo.clone()),
+            Box::new(idxInfo.clone()),
+            needRestoredData,
+            distinct,
+            untouched,
+            indexedValues,
+            h.Copy(),
+            partitionID,
+            restoredData,
+            buf,
+        );
+    }
+    genIndexValueVersion0Borrowed(
+        loc,
+        tblInfo,
+        idxInfo,
+        needRestoredData,
+        distinct,
+        untouched,
+        indexedValues,
+        h,
+        partitionID,
+        buf,
+    )
+}
+
 // TryGetCommonPkColumnRestoredIds get the IDs of primary key columns which need restored data if the table has common handle.
 // Caller need to make sure the table has common handle.
 /// 尝试获取需要 RestoreData 的公共主键列 ID。
@@ -1991,6 +2059,32 @@ pub fn genIndexValueVersion0(
     partitionID: i64,
     buf: Option<Vec<u8>>,
 ) -> Result<Vec<u8>, errors::SharedError> {
+    genIndexValueVersion0Borrowed(
+        loc,
+        &tblInfo,
+        &idxInfo,
+        idxValNeedRestoredData,
+        distinct,
+        untouched,
+        indexedValues,
+        h.as_ref(),
+        partitionID,
+        buf,
+    )
+}
+
+fn genIndexValueVersion0Borrowed(
+    loc: Option<time::Location>,
+    tblInfo: &model::TableInfo,
+    idxInfo: &model::IndexInfo,
+    idxValNeedRestoredData: bool,
+    distinct: bool,
+    untouched: bool,
+    indexedValues: Vec<types::Datum>,
+    h: &dyn kv::Handle,
+    partitionID: i64,
+    buf: Option<Vec<u8>>,
+) -> Result<Vec<u8>, errors::SharedError> {
     let mut idxVal = buf.unwrap_or_default();
     idxVal.clear();
     idxVal.push(0);
@@ -2040,7 +2134,7 @@ pub fn genIndexValueVersion0(
         // Old index value encoding.
         idxVal.clear();
         if distinct {
-            idxVal = EncodeHandleInUniqueIndexValue(h, untouched);
+            idxVal = EncodeHandleInUniqueIndexValue(h.Copy(), untouched);
         }
         if untouched {
             // If index is untouched and fetch here means the key is exists in TiKV, but not in txn mem-buffer,
@@ -2060,6 +2154,15 @@ pub fn genIndexValueVersion0(
 pub fn TruncateIndexValues(
     tblInfo: Box<model::TableInfo>,
     idxInfo: Box<model::IndexInfo>,
+    indexedValues: &mut Vec<types::Datum>,
+) {
+    TruncateIndexValuesBorrowed(&tblInfo, &idxInfo, indexedValues)
+}
+
+/// 借用元数据截断索引值，避免批量编码时重复克隆完整表定义。
+pub fn TruncateIndexValuesBorrowed(
+    tblInfo: &model::TableInfo,
+    idxInfo: &model::IndexInfo,
     indexedValues: &mut Vec<types::Datum>,
 ) {
     for i in 0..indexedValues.len() {

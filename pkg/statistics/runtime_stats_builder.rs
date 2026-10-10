@@ -270,6 +270,9 @@ impl RuntimeStatsBuilder {
                 let is_null = value.IsNull();
                 let value_memory = value.MemUsage();
                 account(value_memory);
+                let previous = collector.MemSize;
+                let previous_sample_len = collector.Samples.len();
+                let previous_fm_memory = collector.FMSketch.MemoryUsage();
                 collector.Collect(&self.statement_context, value)?;
                 // Column correlation uses the sample's position after rows
                 // have been sorted by handle. NULL rows still occupy a
@@ -279,11 +282,30 @@ impl RuntimeStatsBuilder {
                         sample.Ordinal = ordinal as i32;
                     }
                 }
-                let previous = collector.MemSize;
-                collector.MemSize = collector_memory(&collector);
+                // This builder deliberately sizes the reservoir to `rows.len()`,
+                // so every non-NULL value is appended and no sample is replaced.
+                // Maintain memory in O(1); recomputing it by scanning all samples
+                // after every row makes ANALYZE quadratic in each partition.
+                let sample_memory = if collector.Samples.len() > previous_sample_len {
+                    collector
+                        .Samples
+                        .last()
+                        .map_or(0, |sample| sample.Value.MemUsage())
+                        .saturating_sub(types::EmptyDatumSize)
+                } else {
+                    0
+                };
+                let fm_memory_delta = collector
+                    .FMSketch
+                    .MemoryUsage()
+                    .saturating_sub(previous_fm_memory);
+                collector.MemSize = previous
+                    .saturating_add(sample_memory)
+                    .saturating_add(fm_memory_delta);
                 account(collector.MemSize.saturating_sub(previous));
                 account(-value_memory);
             }
+            debug_assert_eq!(collector.MemSize, collector_memory(&collector));
             // Go serializes and restores the collector before building stats;
             // restore drops samples longer than MaxSampleValueLength while
             // retaining the full TotalSize accumulated from all rows.

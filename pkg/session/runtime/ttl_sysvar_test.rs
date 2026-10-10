@@ -232,6 +232,7 @@ impl Manager for Gcv2Manager {
 
 #[test]
 fn set_global_gc_lifetime_notifies_effective_value() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
     for (role, value, expected, keyspace_level) in [
         ("master", "24h", 86400, true),
         ("gcv2", "24h", 86400, true),
@@ -240,7 +241,7 @@ fn set_global_gc_lifetime_notifies_effective_value() {
         ("master", "1m", 600, true),
         ("master", "24h", 86400, false),
     ] {
-        let (domain, session) = CreateAnalyzeSession().unwrap();
+        let session = super::ConcreteSession::new(Arc::clone(&domain));
         let calls = Arc::new(Mutex::new(Vec::new()));
         domain.set_external_workload_manager(Some(Box::new(Gcv2Manager {
             role: role.into(),

@@ -799,6 +799,68 @@ fn global_index_fixture(version: u8) -> (Box<model::TableInfo>, Box<model::Index
 }
 
 #[test]
+fn TestBorrowedIndexEncodingMatchesOwnedAPI() {
+    let (table, index) = global_index_fixture(model::GlobalIndexVersionV1);
+    let values = vec![types::NewIntDatum(123)];
+    let borrowed_handle = kv::IntHandle(999);
+    let owned_key = GenIndexKey(
+        defaultCodecEncoder(),
+        Some(time::UTC),
+        table.clone(),
+        index.clone(),
+        100,
+        values.clone(),
+        Some(Box::new(kv::IntHandle(999))),
+        None,
+    )
+    .unwrap();
+    let borrowed_key = GenIndexKeyBorrowed(
+        defaultCodecEncoder(),
+        Some(time::UTC),
+        table.as_ref(),
+        index.as_ref(),
+        100,
+        values.clone(),
+        Some(&borrowed_handle),
+        None,
+    )
+    .unwrap();
+    assert_eq!(borrowed_key, owned_key);
+
+    let owned_value = GenIndexValuePortal(
+        collate::NewCollationEnabled(),
+        Some(time::UTC),
+        table.clone(),
+        index.clone(),
+        false,
+        owned_key.1,
+        false,
+        values.clone(),
+        Box::new(kv::IntHandle(999)),
+        42,
+        Vec::new(),
+        None,
+    )
+    .unwrap();
+    let borrowed_value = GenIndexValuePortalBorrowed(
+        collate::NewCollationEnabled(),
+        Some(time::UTC),
+        table.as_ref(),
+        index.as_ref(),
+        false,
+        borrowed_key.1,
+        false,
+        values,
+        &borrowed_handle,
+        42,
+        Vec::new(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(borrowed_value, owned_value);
+}
+
+#[test]
 /// 验证含 NULL 列的全局唯一索引 key 生成。
 fn TestUniqueGlobalIndexKeyWithNullValues() {
     let (table, index) = global_index_fixture(model::GlobalIndexVersionV1);

@@ -448,7 +448,8 @@ fn temporal_table(name: &str, keys: Vec<String>) -> PhysicalTable {
 
 #[test]
 fn ttl_timestamp_pagination_preserves_instants_across_time_zones() {
-    for (zone, instants) in [
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    for (case_index, (zone, instants)) in [
         (
             "America/New_York",
             [
@@ -481,17 +482,21 @@ fn ttl_timestamp_pagination_preserves_instants_across_time_zones() {
                 "2024-01-01 02:00:00.123456",
             ],
         ),
-    ] {
-        let (_, session) = CreateAnalyzeSession().unwrap();
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let table_name = format!("ttl_instants_{case_index}");
+        let session = ConcreteSession::new(Arc::clone(&domain));
         session
             .execute(&format!("SET @@global.time_zone='{zone}'"))
             .unwrap();
         session.execute("SET @@time_zone='UTC'").unwrap();
-        session.execute("CREATE TABLE ttl_instants (expire_at TIMESTAMP(6) NOT NULL, id BIGINT NOT NULL, PRIMARY KEY(expire_at, id) CLUSTERED) TTL=expire_at + INTERVAL 1 HOUR").unwrap();
+        session.execute(&format!("CREATE TABLE {table_name} (expire_at TIMESTAMP(6) NOT NULL, id BIGINT NOT NULL, PRIMARY KEY(expire_at, id) CLUSTERED) TTL=expire_at + INTERVAL 1 HOUR")).unwrap();
         for (i, instant) in instants.iter().enumerate() {
             session
                 .execute(&format!(
-                    "INSERT INTO ttl_instants VALUES ('{instant}', {})",
+                    "INSERT INTO {table_name} VALUES ('{instant}', {})",
                     i + 1
                 ))
                 .unwrap();
@@ -500,7 +505,7 @@ fn ttl_timestamp_pagination_preserves_instants_across_time_zones() {
         let task = TtlScanTask {
             job_id: "instants".into(),
             scan_id: 0,
-            table: temporal_table("ttl_instants", vec!["expire_at".into(), "id".into()]),
+            table: temporal_table(&table_name, vec!["expire_at".into(), "id".into()]),
             expire_time: 1735689600,
             range_start: None,
             range_end: None,
@@ -543,7 +548,8 @@ fn ttl_delete_rechecks_strict_temporal_boundary_after_global_timezone_changes() 
             Ok(())
         }
     }
-    for (kind, frontier, values, updated) in [
+    let (domain, _) = CreateAnalyzeSession().unwrap();
+    for (case_index, (kind, frontier, values, updated)) in [
         (
             "TIMESTAMP",
             1730615400,
@@ -578,25 +584,30 @@ fn ttl_delete_rechecks_strict_temporal_boundary_after_global_timezone_changes() 
             ["2024-11-02", "2024-11-03", "2024-11-04", "2024-11-01"],
             "2024-11-05",
         ),
-    ] {
-        let (domain, session) = CreateAnalyzeSession().unwrap();
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let table_name = format!("ttl_delete_boundary_{case_index}");
+        let session = ConcreteSession::new(Arc::clone(&domain));
         session
             .execute("SET @@global.time_zone='America/New_York'")
             .unwrap();
         session.execute("SET @@time_zone='UTC'").unwrap();
-        session.execute(&format!("CREATE TABLE ttl_delete_boundary (id BIGINT PRIMARY KEY CLUSTERED, expire_at {kind} NOT NULL) TTL=expire_at + INTERVAL 1 HOUR")).unwrap();
+        session.execute(&format!("CREATE TABLE {table_name} (id BIGINT PRIMARY KEY CLUSTERED, expire_at {kind} NOT NULL) TTL=expire_at + INTERVAL 1 HOUR")).unwrap();
         for (i, value) in values.iter().enumerate() {
             session
                 .execute(&format!(
-                    "INSERT INTO ttl_delete_boundary VALUES ({}, '{value}')",
+                    "INSERT INTO {table_name} VALUES ({}, '{value}')",
                     i + 1
                 ))
                 .unwrap();
         }
-        let table = temporal_table("ttl_delete_boundary", vec!["id".into()]);
+        let table = temporal_table(&table_name, vec!["id".into()]);
         let mut scan_session = TtlWorkerSqlSession::new(session);
         let captured = scan_session.expiration_predicate(&table, frontier).unwrap();
-        let mut delete_session = TtlWorkerSqlSession::new(ConcreteSession::new(domain));
+        let mut delete_session =
+            TtlWorkerSqlSession::new(ConcreteSession::new(Arc::clone(&domain)));
         delete_session
             .execute("SET @@time_zone='UTC'", &[])
             .unwrap();
@@ -606,7 +617,7 @@ fn ttl_delete_rechecks_strict_temporal_boundary_after_global_timezone_changes() 
             .unwrap();
         scan_session
             .execute(
-                "UPDATE ttl_delete_boundary SET expire_at=%? WHERE id=4",
+                &format!("UPDATE {table_name} SET expire_at=%? WHERE id=4"),
                 &[Datum::Text(updated.into())],
             )
             .unwrap();
@@ -623,7 +634,7 @@ fn ttl_delete_rechecks_strict_temporal_boundary_after_global_timezone_changes() 
             "{kind}"
         );
         let rows = delete_session
-            .execute("SELECT id FROM ttl_delete_boundary ORDER BY id", &[])
+            .execute(&format!("SELECT id FROM {table_name} ORDER BY id"), &[])
             .unwrap();
         let remaining = if kind == "DATE" && frontier == 1730653200 {
             vec!["3", "4"]
@@ -644,7 +655,7 @@ fn ttl_delete_rechecks_strict_temporal_boundary_after_global_timezone_changes() 
 #[test]
 fn ttl_sql_session_preparation_restores_real_variables() {
     use astersql_ttl_ttlworker::session::{prepare_session_checked, restore_session_checked};
-    let (_, session) = CreateAnalyzeSession().unwrap();
+    let (domain, session) = CreateAnalyzeSession().unwrap();
     session
         .execute("SET SESSION time_zone='America/New_York'")
         .unwrap();
@@ -656,7 +667,7 @@ fn ttl_sql_session_preparation_restores_real_variables() {
         vec![vec![Datum::Text("America/New_York".into())]]
     );
     for zone in ["SYSTEM", "+08:00", "Asia/Shanghai"] {
-        let (_, session) = CreateAnalyzeSession().unwrap();
+        let session = ConcreteSession::new(Arc::clone(&domain));
         for sql in [
             format!("SET @@time_zone='{zone}'"),
             "SET tidb_retry_limit=7".into(),

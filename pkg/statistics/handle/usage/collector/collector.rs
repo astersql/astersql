@@ -46,6 +46,8 @@ pub trait GlobalCollector<T> {
 pub trait SessionCollector<T> {
     /// 非阻塞尝试发送；通道满或失败返回 false。超时后降级为同步发送。
     fn SendDelta(&mut self, data: T) -> bool;
+    /// 尝试发送并在通道拒绝时归还原始增量。
+    fn TrySendDelta(&mut self, data: T) -> Result<(), T>;
     /// 阻塞发送到高优先级通道；关闭时返回 false。
     fn SendDeltaSync(&mut self, data: T) -> bool;
 }
@@ -205,31 +207,43 @@ fn flush<T>(
 impl<T> sessionCollector<T> {
     /// 未超时则 try_send 普通通道；超时或需保证送达时走 SendDeltaSync。
     pub fn SendDelta(&mut self, data: T) -> bool {
+        self.TrySendDelta(data).is_ok()
+    }
+
+    /// 非阻塞尝试发送；失败时把所有权归还调用者，避免为了重试而共享或克隆增量。
+    pub fn TrySendDelta(&mut self, data: T) -> Result<(), T> {
         if self.last_update.elapsed() > self.timeout {
-            return self.SendDeltaSync(data);
+            return self.send_delta_sync_recover(data);
         }
 
         match self.data_sender.try_send(data) {
             Ok(()) => {
                 self.last_update = Instant::now();
-                true
+                Ok(())
             }
-            Err(_) => false,
+            Err(crossbeam_channel::TrySendError::Full(data))
+            | Err(crossbeam_channel::TrySendError::Disconnected(data)) => Err(data),
         }
     }
 
     /// 阻塞写入高优先级通道；若先收到关闭信号则失败返回 false。
     pub fn SendDeltaSync(&mut self, data: T) -> bool {
+        self.send_delta_sync_recover(data).is_ok()
+    }
+
+    /// 同步发送的所有权保留形式；关闭或断连时归还未发送的数据。
+    fn send_delta_sync_recover(&mut self, data: T) -> Result<(), T> {
         select! {
             send(self.high_priority_sender, data) -> result => {
-                if result.is_ok() {
-                    self.last_update = Instant::now();
-                    true
-                } else {
-                    false
+                match result {
+                    Ok(()) => {
+                        self.last_update = Instant::now();
+                        Ok(())
+                    }
+                    Err(error) => Err(error.0),
                 }
             },
-            recv(self.close_receiver) -> _ => false,
+            recv(self.close_receiver) -> _ => Err(data),
         }
     }
 }
@@ -251,6 +265,10 @@ impl<T: Send + 'static> GlobalCollector<T> for globalCollector<T> {
 impl<T> SessionCollector<T> for sessionCollector<T> {
     fn SendDelta(&mut self, data: T) -> bool {
         sessionCollector::SendDelta(self, data)
+    }
+
+    fn TrySendDelta(&mut self, data: T) -> Result<(), T> {
+        sessionCollector::TrySendDelta(self, data)
     }
 
     fn SendDeltaSync(&mut self, data: T) -> bool {
