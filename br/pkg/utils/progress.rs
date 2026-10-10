@@ -129,6 +129,19 @@ impl ProgressPrinter {
         log_func: Option<LogFunc>,
         test_writer: Option<TestProgressSink>,
     ) {
+        self.goPrintProgressWithTick(ctx, log_func, test_writer, None);
+    }
+
+    /// Starts the printer with an optional externally driven tick source.
+    /// Production uses the one-second clock; tests send ticks only after the
+    /// state transition they want to observe.
+    pub(crate) fn goPrintProgressWithTick(
+        &self,
+        ctx: Context,
+        log_func: Option<LogFunc>,
+        test_writer: Option<TestProgressSink>,
+        tick_rx: Option<std::sync::mpsc::Receiver<()>>,
+    ) {
         let name = self.name.clone();
         let total = self.total;
         let redirect_log = self.redirectLog;
@@ -187,7 +200,15 @@ impl ProgressPrinter {
                     let _ = done_tx.send(());
                     return;
                 }
-                if Instant::now() < next_tick {
+                let ticked = match tick_rx.as_ref() {
+                    Some(ticks) => match ticks.try_recv() {
+                        Ok(()) => true,
+                        Err(std::sync::mpsc::TryRecvError::Empty) => false,
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
+                    },
+                    None => Instant::now() >= next_tick,
+                };
+                if !ticked {
                     continue;
                 }
                 let current = shared_progress.load(Ordering::Relaxed);
@@ -202,7 +223,9 @@ impl ProgressPrinter {
                     &log_fn,
                     test_writer.as_ref(),
                 );
-                next_tick += Duration::from_secs(1);
+                if tick_rx.is_none() {
+                    next_tick += Duration::from_secs(1);
+                }
             }
         });
     }

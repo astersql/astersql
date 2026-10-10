@@ -33,9 +33,11 @@ use astersql_br_pkg_errors::{
 use astersql_errors::{Errors, New, SharedError};
 
 use crate::backoff::{
-    ConstantBackoff, IoEof, NewAggressivePDBackoffStrategy, NewBackupSSTBackoffStrategy,
-    NewChecksumBackoffStrategy, NewDownloadSSTBackoffStrategy, NewFlashBackBackoffStrategy,
-    NewImportSSTBackoffStrategy, NewRecoveryBackoffStrategy, NewTiKVStoreBackoffStrategy,
+    ConstantBackoff, IoEof, NewAggressivePDBackoffStrategyWithOptions,
+    NewBackupSSTBackoffStrategyWithOptions, NewChecksumBackoffStrategy,
+    NewDownloadSSTBackoffStrategy, NewDownloadSSTBackoffStrategyWithOptions,
+    NewFlashBackBackoffStrategy, NewImportSSTBackoffStrategy, NewRecoveryBackoffStrategy,
+    NewTiKVStoreBackoffStrategy, WithDelayTime, WithMaxDelayTime,
 };
 use crate::error_handling::NewDefaultContext;
 use crate::retry::{WithRetry, WithRetryReturnLastErr, WithRetryV2};
@@ -278,7 +280,10 @@ fn test_backoff_with_retryable_error() {
 fn test_pd_backoff_with_retryable_error() {
     let mut counter = 0;
     // PD 激进退避：更高容忍 Unavailable。
-    let backoff_strategy = NewAggressivePDBackoffStrategy();
+    let backoff_strategy = NewAggressivePDBackoffStrategyWithOptions(vec![
+        WithDelayTime(Duration::ZERO),
+        WithMaxDelayTime(Duration::ZERO),
+    ]);
     // 预构造错误以便与 Join 列表逐条比对。
     let grpc_error = grpc_status("Unavailable", "transport is closing");
     let err = WithRetry(
@@ -343,7 +348,10 @@ fn test_new_import_sst_backoffer_with_success() {
 fn test_new_download_sst_backoffer_with_cancel() {
     let mut counter = 0;
     // Download SST 专用退避策略。
-    let backoff_strategy = NewDownloadSSTBackoffStrategy();
+    let backoff_strategy = NewDownloadSSTBackoffStrategyWithOptions(vec![
+        WithDelayTime(Duration::ZERO),
+        WithMaxDelayTime(Duration::ZERO),
+    ]);
     let err = WithRetry(
         &Context::new(),
         Box::new(|| {
@@ -376,7 +384,10 @@ fn test_new_download_sst_backoffer_with_cancel() {
 fn test_new_backup_sst_backoffer_with_cancel() {
     let mut counter = 0;
     // Backup SST 专用退避策略。
-    let backoff_strategy = NewBackupSSTBackoffStrategy();
+    let backoff_strategy = NewBackupSSTBackoffStrategyWithOptions(vec![
+        WithDelayTime(Duration::ZERO),
+        WithMaxDelayTime(Duration::ZERO),
+    ]);
     let err = WithRetry(
         &Context::new(),
         Box::new(|| {

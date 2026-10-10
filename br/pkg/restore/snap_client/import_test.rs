@@ -101,6 +101,7 @@
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use crate::export_test::{
     GetKeyRangeByMode, GetSSTMetaFromFile, NewSnapFileImporterOptionsForTest, RestoreLabelKey,
@@ -914,10 +915,26 @@ fn retry_importer(
         vec![],
         vec![],
     );
-    (
-        NewSnapFileImporter(&Context::Background(), 1, KvMode::TiDBCompacted, opt).unwrap(),
-        rpc,
-    )
+    let mut importer =
+        NewSnapFileImporter(&Context::Background(), 1, KvMode::TiDBCompacted, opt).unwrap();
+    importer.SetDownloadBackoffFactory(Arc::new(|peer_retry| {
+        use astersql_br_pkg_utils::backoff::{
+            NewDownloadSSTBackoffStrategyWithOptions, NewPeerDownloadSSTBackoffStrategyWithOptions,
+            WithDelayTime, WithMaxDelayTime,
+        };
+        let options = || {
+            vec![
+                WithDelayTime(Duration::ZERO),
+                WithMaxDelayTime(Duration::ZERO),
+            ]
+        };
+        if peer_retry {
+            NewPeerDownloadSSTBackoffStrategyWithOptions(options())
+        } else {
+            NewDownloadSSTBackoffStrategyWithOptions(options())
+        }
+    }));
+    (importer, rpc)
 }
 
 #[test]

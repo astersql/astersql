@@ -205,6 +205,8 @@ pub struct SnapFileImporter {
     pub mergeSst: bool,
     pub retainLatestMVCCVersion: bool,
     peerDownloadRetry: bool,
+    downloadBackoffFactory:
+        Arc<dyn Fn(bool) -> Box<dyn astersql_br_pkg_utils::backoff::BackoffStrategy> + Send + Sync>,
 }
 
 pub struct SnapFileImporterOptions {
@@ -300,6 +302,13 @@ pub fn NewSnapFileImporter(
         mergeSst: false,
         retainLatestMVCCVersion: options.retainLatestMVCCVersion,
         peerDownloadRetry: false,
+        downloadBackoffFactory: Arc::new(|peer_retry| {
+            if peer_retry {
+                astersql_br_pkg_utils::backoff::NewPeerDownloadSSTBackoffStrategy()
+            } else {
+                astersql_br_pkg_utils::backoff::NewDownloadSSTBackoffStrategy()
+            }
+        }),
     };
     for f in options.createCallbacks {
         f(&mut file_importer)?;
@@ -308,6 +317,14 @@ pub fn NewSnapFileImporter(
 }
 
 impl SnapFileImporter {
+    pub(crate) fn SetDownloadBackoffFactory(
+        &mut self,
+        factory: Arc<
+            dyn Fn(bool) -> Box<dyn astersql_br_pkg_utils::backoff::BackoffStrategy> + Send + Sync,
+        >,
+    ) {
+        self.downloadBackoffFactory = factory;
+    }
     pub fn GetMergeSst(&self) -> bool {
         self.mergeSst
     }
@@ -464,14 +481,7 @@ impl SnapFileImporter {
         ctx: &Context,
         mut rpc: impl FnMut(&Context) -> Result<import_sstpb::DownloadResponse>,
     ) -> Result<import_sstpb::DownloadResponse> {
-        use astersql_br_pkg_utils::backoff::{
-            NewDownloadSSTBackoffStrategy, NewPeerDownloadSSTBackoffStrategy,
-        };
-        let mut backoff = if self.peerDownloadRetry {
-            NewPeerDownloadSSTBackoffStrategy()
-        } else {
-            NewDownloadSSTBackoffStrategy()
-        };
+        let mut backoff = (self.downloadBackoffFactory)(self.peerDownloadRetry);
         let mut errors = Vec::new();
         loop {
             if let Some(error) = ctx.Err() {

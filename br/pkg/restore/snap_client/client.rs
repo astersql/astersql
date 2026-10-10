@@ -1424,6 +1424,29 @@ pub fn SetSpeedLimitCallbacks(
     Vec<Box<dyn Fn(&mut SnapFileImporter) -> Result<()> + Send + Sync>>,
     Vec<Box<dyn Fn(&mut SnapFileImporter) -> Result<()> + Send + Sync>>,
 )> {
+    SetSpeedLimitCallbacksWithWaiter(
+        ctx,
+        pd_store,
+        import_client,
+        rate_limit,
+        concurrency,
+        closed,
+        Arc::new(std::thread::sleep),
+    )
+}
+
+pub(crate) fn SetSpeedLimitCallbacksWithWaiter(
+    ctx: &Context,
+    pd_store: Arc<dyn StoreMeta>,
+    import_client: Arc<dyn ImporterClient>,
+    rate_limit: u64,
+    concurrency: usize,
+    closed: Arc<Mutex<bool>>,
+    retry_wait: Arc<dyn Fn(std::time::Duration) + Send + Sync>,
+) -> Result<(
+    Vec<Box<dyn Fn(&mut SnapFileImporter) -> Result<()> + Send + Sync>>,
+    Vec<Box<dyn Fn(&mut SnapFileImporter) -> Result<()> + Send + Sync>>,
+)> {
     let refresh_pd_store = pd_store.clone();
     let refresh_import_client = import_client.clone();
     let refresh_ctx = ctx.clone();
@@ -1501,7 +1524,7 @@ pub fn SetSpeedLimitCallbacks(
                     }
                     Err(err) => {
                         last_error = Some(err);
-                        std::thread::sleep(std::time::Duration::from_secs((retry + 3) as u64));
+                        retry_wait(std::time::Duration::from_secs((retry + 3) as u64));
                     }
                 }
             }

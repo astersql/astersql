@@ -363,33 +363,57 @@ pub fn NewImportSSTBackoffStrategy() -> Box<dyn BackoffStrategy> {
 
 // download SST 预置参数。
 pub fn NewDownloadSSTBackoffStrategy() -> Box<dyn BackoffStrategy> {
+    NewDownloadSSTBackoffStrategyWithOptions(Vec::new())
+}
+
+/// Download SST strategy with optional overrides for deterministic callers.
+pub fn NewDownloadSSTBackoffStrategyWithOptions(
+    opts: Vec<BackoffOption>,
+) -> Box<dyn BackoffStrategy> {
     let errContext = NewErrorContext("download sst", 3);
-    NewTiKVStoreBackoffStrategy(
+    NewTiKVStoreBackoffStrategyWithOptions(
         downloadSSTRetryTimes,
         downloadSSTWaitInterval,
         downloadSSTMaxWaitInterval,
         errContext,
+        opts,
     )
 }
 
 pub fn NewPeerDownloadSSTBackoffStrategy() -> Box<dyn BackoffStrategy> {
+    NewPeerDownloadSSTBackoffStrategyWithOptions(Vec::new())
+}
+
+pub fn NewPeerDownloadSSTBackoffStrategyWithOptions(
+    opts: Vec<BackoffOption>,
+) -> Box<dyn BackoffStrategy> {
+    let mut options = vec![WithRetryableGRPCCanceled()];
+    options.extend(opts);
     NewTiKVStoreBackoffStrategyWithOptions(
         downloadSSTRetryTimes,
         downloadSSTWaitInterval,
         downloadSSTMaxWaitInterval,
         NewErrorContext("peer download sst", 3),
-        vec![WithRetryableGRPCCanceled()],
+        options,
     )
 }
 
 // backup SST 预置参数。
 pub fn NewBackupSSTBackoffStrategy() -> Box<dyn BackoffStrategy> {
+    NewBackupSSTBackoffStrategyWithOptions(Vec::new())
+}
+
+/// Backup SST strategy with optional overrides for deterministic callers.
+pub fn NewBackupSSTBackoffStrategyWithOptions(
+    opts: Vec<BackoffOption>,
+) -> Box<dyn BackoffStrategy> {
     let errContext = NewErrorContext("backup sst", 3);
-    NewTiKVStoreBackoffStrategy(
+    NewTiKVStoreBackoffStrategyWithOptions(
         backupSSTRetryTimes,
         backupSSTWaitInterval,
         backupSSTMaxWaitInterval,
         errContext,
+        opts,
     )
 }
 
@@ -411,11 +435,23 @@ pub fn NewPDBackoffStrategy(
 
 // 激进 PD 退避（resetTS* 短间隔参数）。
 pub fn NewAggressivePDBackoffStrategy() -> Box<dyn BackoffStrategy> {
-    NewPDBackoffStrategy(
-        resetTSRetryTime,
-        resetTSWaitInterval,
-        resetTSMaxWaitInterval,
-    )
+    NewAggressivePDBackoffStrategyWithOptions(Vec::new())
+}
+
+/// Aggressive PD strategy with optional overrides for deterministic callers.
+pub fn NewAggressivePDBackoffStrategyWithOptions(
+    opts: Vec<BackoffOption>,
+) -> Box<dyn BackoffStrategy> {
+    let mut options = vec![
+        WithRemainingAttempts(resetTSRetryTime),
+        WithDelayTime(resetTSWaitInterval),
+        WithMaxDelayTime(resetTSMaxWaitInterval),
+        WithErrorContext(NewZeroRetryContext("connect PD")),
+        WithRetryErrorFunc(is_pd_retry_err),
+        WithNonRetryErrorFunc(is_pd_non_retry_err),
+    ];
+    options.extend(opts);
+    NewBackoffStrategy(options)
 }
 
 // 保守 PD 退避（resetTS*Ext 长间隔参数）。

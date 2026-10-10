@@ -4,7 +4,7 @@
 //! Go-equivalent tests for `br/pkg/utils/progress_test.go`.
 //! 通过 testWriter 注入接收进度 JSON，验证百分比封顶与取消行为。
 //! recv_containing 忽略无关进度帧，直到匹配目标百分比。
-//! 睡眠 2s 大于 1s 打印周期，保证至少一次 emit。
+//! 手动 tick 在状态更新后触发，避免单测等待生产的一秒打印周期。
 //! 超额 Inc 后百分比仍封顶，防止 UI 显示超过百分百。
 //! Close 与 cancel 行为相反：前者抬满，后者冻结。
 //! progress4 在 25% 后 Close，验证 Finish=100%。
@@ -15,7 +15,6 @@
 //! 三段场景共用同一 ctx 时注意 cancel 影响后续；本测最后才 cancel。
 
 use std::sync::{Arc, mpsc};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::progress::NewProgressPrinter;
@@ -44,61 +43,66 @@ fn test_progress() {
 
     // total=2：Inc 一次→50%，再 Inc→100%；超额 Inc 仍封顶 100%。
     let (tx2, rx2) = mpsc::channel::<String>();
+    let (tick2, ticks2) = mpsc::channel();
     let progress2 = NewProgressPrinter("test", 2, false);
-    progress2.goPrintProgress(
+    progress2.goPrintProgressWithTick(
         ctx.clone(),
         None,
         Some(Arc::new(move |p: &str| {
             let _ = tx2.send(p.to_string());
         })),
+        Some(ticks2),
     );
     progress2.Inc();
-    thread::sleep(Duration::from_secs(2));
+    tick2.send(()).unwrap();
     let p = recv_containing(&rx2, r#""P":"50.00%""#);
     assert!(p.contains(r#""P":"50.00%""#), "got {p}");
     progress2.Inc();
-    thread::sleep(Duration::from_secs(2));
+    tick2.send(()).unwrap();
     let p = recv_containing(&rx2, r#""P":"100.00%""#);
     assert!(p.contains(r#""P":"100.00%""#), "got {p}");
     progress2.Inc();
-    thread::sleep(Duration::from_secs(2));
+    tick2.send(()).unwrap();
     let p = recv_containing(&rx2, r#""P":"100.00%""#);
     assert!(p.contains(r#""P":"100.00%""#), "got {p}");
     progress2.Close();
 
     // total=4：25% 后 Close，收尾行强制写成 100%（对齐 Go bar.Finish）。
     let (tx4, rx4) = mpsc::channel::<String>();
+    let (tick4, ticks4) = mpsc::channel();
     let progress4 = NewProgressPrinter("test", 4, false);
-    progress4.goPrintProgress(
+    progress4.goPrintProgressWithTick(
         ctx.clone(),
         None,
         Some(Arc::new(move |p: &str| {
             let _ = tx4.send(p.to_string());
         })),
+        Some(ticks4),
     );
     progress4.Inc();
-    thread::sleep(Duration::from_secs(2));
+    tick4.send(()).unwrap();
     let p = recv_containing(&rx4, r#""P":"25.00%""#);
     assert!(p.contains(r#""P":"25.00%""#), "got {p}");
     progress4.Inc();
     progress4.Close();
-    thread::sleep(Duration::from_secs(2));
     let p = recv_containing(&rx4, r#""P":"100.00%""#);
     assert!(p.contains(r#""P":"100.00%""#), "got {p}");
 
     // total=8：进度到 25% 后 cancel，最终进度应停在当前值而非跳到 100%。
     let (tx8, rx8) = mpsc::channel::<String>();
+    let (tick8, ticks8) = mpsc::channel();
     let progress8 = NewProgressPrinter("test", 8, false);
-    progress8.goPrintProgress(
+    progress8.goPrintProgressWithTick(
         ctx.clone(),
         None,
         Some(Arc::new(move |p: &str| {
             let _ = tx8.send(p.to_string());
         })),
+        Some(ticks8),
     );
     progress8.Inc();
     progress8.Inc();
-    thread::sleep(Duration::from_secs(2));
+    tick8.send(()).unwrap();
     let p = recv_containing(&rx8, r#""P":"25.00%""#);
     assert!(p.contains(r#""P":"25.00%""#), "got {p}");
 

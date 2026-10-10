@@ -126,7 +126,8 @@ use std::time::{Duration, Instant};
 
 use crate::client::{
     IGNORE_PLACEMENT_POLICY_MODE, NewRestoreClient, NewRestoreClientForTest,
-    SetSpeedLimitCallbacks, SortTablesBySchemaID, getMinUserTableID, makeDBPool, needLoadSchemas,
+    SetSpeedLimitCallbacks, SetSpeedLimitCallbacksWithWaiter, SortTablesBySchemaID,
+    getMinUserTableID, makeDBPool, needLoadSchemas,
 };
 use crate::export_test::MockCallSetSpeedLimit;
 use crate::import::{KvMode, NewSnapFileImporter, NewSnapFileImporterOptions, RewriteMode};
@@ -749,8 +750,18 @@ fn test_set_speed_limit_close_callback_idempotent() {
     });
     let import_client: Arc<dyn ImporterClient> = recording.clone();
     let closed = Arc::new(Mutex::new(false));
-    let (create_cbs, mut close_cbs) =
-        SetSpeedLimitCallbacks(&ctx, pd.clone(), import_client.clone(), 42, 4, closed).unwrap();
+    let waits = Arc::new(Mutex::new(Vec::new()));
+    let captured_waits = waits.clone();
+    let (create_cbs, mut close_cbs) = SetSpeedLimitCallbacksWithWaiter(
+        &ctx,
+        pd.clone(),
+        import_client.clone(),
+        42,
+        4,
+        closed,
+        Arc::new(move |duration| captured_waits.lock().unwrap().push(duration)),
+    )
+    .unwrap();
     let close_fn = close_cbs.pop().unwrap();
     let opt = NewSnapFileImporterOptions(
         None,
@@ -769,6 +780,10 @@ fn test_set_speed_limit_close_callback_idempotent() {
     close_fn(&mut importer).unwrap();
     close_fn(&mut importer).unwrap(); // idempotent via closed flag
     assert_eq!(*recording.reset_failures.lock().unwrap(), 0);
+    assert_eq!(
+        *waits.lock().unwrap(),
+        vec![Duration::from_secs(3), Duration::from_secs(4)]
+    );
 }
 
 /// TestSortTablesBySchemaID — Go same.
