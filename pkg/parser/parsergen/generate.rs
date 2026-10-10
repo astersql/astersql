@@ -4,7 +4,8 @@
 
 use std::{
     error::Error,
-    fmt, fs, io,
+    fmt::{self, Write as _},
+    fs, io,
     path::{Path, PathBuf},
 };
 
@@ -161,6 +162,14 @@ pub fn write_generated_outputs(parser_root: &Path) -> Result<(), GenerationError
 
 pub fn check_generated_outputs(parser_root: &Path) -> Result<(), CheckGeneratedOutputsError> {
     let outputs = generate_outputs(parser_root).map_err(CheckGeneratedOutputsError::generation)?;
+    check_generated_outputs_from(parser_root, &outputs)
+}
+
+/// Check already-generated output against the checked-in files without rebuilding either grammar.
+pub fn check_generated_outputs_from(
+    parser_root: &Path,
+    outputs: &[GeneratedOutput],
+) -> Result<(), CheckGeneratedOutputsError> {
     let generated_directory = parser_root.join("generated");
     let mut issues = Vec::new();
     for output in outputs {
@@ -231,7 +240,19 @@ fn render_compatibility_tables(
         ParserKind::Main => ("MAIN", "isize", "token"),
         ParserKind::Hint => ("HINT", "i32", "tokens"),
     };
-    let mut output = String::from(GENERATED_FILE_HEADER);
+    let table_entries = generated
+        .parse_table
+        .rows
+        .iter()
+        .map(|row| row.entries().len())
+        .sum::<usize>();
+    let mut output = String::with_capacity(
+        GENERATED_FILE_HEADER.len()
+            + generated.symbol_names.len() * 24
+            + generated.reductions.len() * 24
+            + table_entries * 16,
+    );
+    output.push_str(GENERATED_FILE_HEADER);
 
     output.push_str(&render_token_module(generated, token_module, integer));
 
@@ -242,7 +263,7 @@ fn render_compatibility_tables(
         "static GENERATED_{prefix}_XLAT: &[({integer}, usize)] = &[\n    (0, 0),\n"
     ));
     for (number, column) in &generated.xlat {
-        output.push_str(&format!("    ({number}, {column}),\n"));
+        writeln!(output, "    ({number}, {column}),").expect("writing to String cannot fail");
     }
     output.push_str("];\n\n");
 
@@ -250,7 +271,7 @@ fn render_compatibility_tables(
         "static GENERATED_{prefix}_SYMBOL_NAMES: &[&str] = &[\n"
     ));
     for name in &generated.symbol_names {
-        output.push_str(&format!("    {name:?},\n"));
+        writeln!(output, "    {name:?},").expect("writing to String cannot fail");
     }
     output.push_str("];\n\n");
 
@@ -264,7 +285,8 @@ fn render_compatibility_tables(
              static RULE_IDS_BY_REDUCTION: &[RuleId] = &[\n",
         );
         for rule_id in &generated.rule_ids_by_reduction {
-            output.push_str(&format!("    RuleId({:?}),\n", rule_id.as_str()));
+            writeln!(output, "    RuleId({:?}),", rule_id.as_str())
+                .expect("writing to String cannot fail");
         }
         output.push_str("];\n\n");
     }
@@ -273,10 +295,12 @@ fn render_compatibility_tables(
         "static GENERATED_{prefix}_REDUCTIONS: &[(usize, usize)] = &[\n"
     ));
     for reduction in &generated.reductions {
-        output.push_str(&format!(
-            "    ({}, {}),\n",
+        writeln!(
+            output,
+            "    ({}, {}),",
             reduction.symbol, reduction.components
-        ));
+        )
+        .expect("writing to String cannot fail");
     }
     output.push_str("];\n\n");
 
@@ -290,7 +314,7 @@ fn render_compatibility_tables(
             .position(|production| &production.rule_id == rule_id)
             .expect("generated rule originates from grammar")
             + 1;
-        output.push_str(&format!("    {rule},\n"));
+        writeln!(output, "    {rule},").expect("writing to String cannot fail");
     }
     output.push_str("];\n\n");
 
@@ -298,7 +322,7 @@ fn render_compatibility_tables(
         "static GENERATED_{prefix}_ACTION_REQUIRED: &[bool] = &[\n"
     ));
     for required in &generated.action_required_by_reduction {
-        output.push_str(&format!("    {required},\n"));
+        writeln!(output, "    {required},").expect("writing to String cannot fail");
     }
     output.push_str("];\n\n");
 
@@ -311,7 +335,8 @@ fn render_compatibility_tables(
             if index != 0 {
                 output.push_str(", ");
             }
-            output.push_str(&format!("({}, {})", entry.column, entry.value));
+            write!(output, "({}, {})", entry.column, entry.value)
+                .expect("writing to String cannot fail");
         }
         output.push_str("],\n");
     }
@@ -320,12 +345,16 @@ fn render_compatibility_tables(
 }
 
 fn render_token_module(generated: &GeneratedParser, module: &str, integer: &str) -> String {
-    let mut output = format!("#[allow(non_upper_case_globals)]\nmod {module} {{\n");
+    let mut output = String::with_capacity(generated.tokens.len() * 48);
+    writeln!(output, "#[allow(non_upper_case_globals)]\nmod {module} {{")
+        .expect("writing to String cannot fail");
     for (name, number) in &generated.tokens {
-        output.push_str(&format!(
-            "    pub const {}: {integer} = {number};\n",
+        writeln!(
+            output,
+            "    pub const {}: {integer} = {number};",
             rust_identifier(name)
-        ));
+        )
+        .expect("writing to String cannot fail");
     }
     output.push_str("}\n\n");
     output

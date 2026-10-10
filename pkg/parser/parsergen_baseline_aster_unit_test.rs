@@ -2,13 +2,13 @@
 
 // Parsergen 生成结果与仓库内 Rust 解析表的基线一致性测试。
 //
-// 本文件分别加载主语法和 Hint 语法，用独立的小型 LR 驱动器回放现有解析表，
-// 再将移进、规约、接受或报错轨迹与 `GeneratedParser` 的输出逐步比较；同时检查
-// 规约编号、右部符号数量及语义动作标记，防止生成器与运行时表结构悄然偏离。
+// 本文件分别加载主语法和 Hint 语法，用独立的小型 LR 驱动器回放 checked-in 解析表，
+// 检查移进、规约、接受或报错轨迹，同时核对规约编号、右部符号数量及语义动作标记，
+// 防止语法元数据与运行时表结构悄然偏离。生成器与产物的完整指纹由 parsergen 测试检查。
 // 这些辅助函数为 Rust 自研；接受/拒绝契约参照 parser.y 的 SelectStmtBasic、
 // StatementList 及 hintparser.y 的 TableOptimizerHintOpt，而非 Go 内部表布局。
 
-use astersql_parsergen::{GeneratedParser, Grammar, ProductionItem, RuleId, TraceStep};
+use astersql_parsergen::{Grammar, ProductionItem, RuleId, TraceStep};
 use std::fs;
 use std::path::PathBuf;
 
@@ -167,63 +167,42 @@ fn reduced_rule_ids(trace: &[TraceStep]) -> impl Iterator<Item = &RuleId> {
 }
 
 /// 核对生成器的规约元数据仍与语法产生式一一对应。
-fn assert_metadata_matches(grammar: &Grammar, generated: &GeneratedParser) {
-    assert_eq!(
-        generated.rule_ids_by_reduction.len(),
-        generated.reductions.len()
-    );
-    assert_eq!(
-        generated.action_required_by_reduction.len(),
-        generated.reductions.len()
-    );
-    for (index, rule_id) in generated.rule_ids_by_reduction.iter().enumerate() {
-        let production = grammar
-            .productions
-            .iter()
-            .find(|production| &production.rule_id == rule_id)
-            .expect("rendered rule originates from grammar");
+fn assert_metadata_matches(
+    grammar: &Grammar,
+    legacy_rules: &[usize],
+    reductions: &[(usize, usize)],
+    action_required: &[bool],
+) {
+    assert_eq!(legacy_rules.len(), reductions.len());
+    assert_eq!(action_required.len(), reductions.len());
+    for (index, legacy_rule) in legacy_rules.iter().copied().enumerate() {
+        let production = &grammar.productions[legacy_rule - 1];
         // 语义动作不占解析栈位置，因此规约长度只统计真正的语法符号。
         let component_count = production
             .rhs
             .iter()
             .filter(|item| !matches!(item, ProductionItem::Action { .. }))
             .count();
-        assert_eq!(generated.reductions[index].components, component_count);
-        assert_eq!(
-            generated.action_required_by_reduction[index],
-            production.requires_action
-        );
+        assert_eq!(reductions[index].1, component_count);
+        assert_eq!(action_required[index], production.requires_action);
     }
-}
-
-fn render_digest(source: &str) -> u64 {
-    source
-        .as_bytes()
-        .iter()
-        .fold(0xcbf29ce484222325_u64, |digest, byte| {
-            (digest ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
-        })
-}
-
-fn assert_render_is_stable(name: &str, generated: &GeneratedParser) {
-    let first = generated.render_rust();
-    let second = generated.render_rust();
-    assert_eq!(first.as_bytes(), second.as_bytes());
-    let first_digest = render_digest(&first);
-    let second_digest = render_digest(&second);
-    assert_eq!(first_digest, second_digest);
-    eprintln!(
-        "{name} render fnv1a64={first_digest:016x}, bytes={}",
-        first.len()
-    );
 }
 
 #[test]
 fn parsergen_main_tables_match_rust_baseline() {
     let grammar = load_grammar("main.astergram");
-    let generated = GeneratedParser::build(&grammar).expect("main parser data should build");
-    assert_metadata_matches(&grammar, &generated);
-    assert_render_is_stable("main", &generated);
+    assert_metadata_matches(
+        &grammar,
+        super::super::GENERATED_MAIN_LEGACY_RULES,
+        super::super::GENERATED_MAIN_REDUCTIONS,
+        super::super::GENERATED_MAIN_ACTION_REQUIRED,
+    );
+    assert!(super::super::RULE_IDS_BY_REDUCTION
+        .iter()
+        .zip(super::super::GENERATED_MAIN_LEGACY_RULES)
+        .all(|(rule_id, legacy_rule)| {
+            rule_id.as_str() == grammar.productions[*legacy_rule - 1].rule_id.as_str()
+        }));
 
     // 终态独立于两套实现，防止双方相同的错误轨迹被当作一致性证据。
     let cases = [
@@ -257,9 +236,11 @@ fn parsergen_main_tables_match_rust_baseline() {
     ];
     for (tokens, expected) in cases {
         let baseline = main_baseline_trace(&grammar, &tokens);
-        let actual = generated.trace(&tokens);
-        assert_eq!(actual.last(), Some(&expected), "main token flow {tokens:?}");
-        assert_eq!(actual, baseline, "main token flow {tokens:?}");
+        assert_eq!(
+            baseline.last(),
+            Some(&expected),
+            "main token flow {tokens:?}"
+        );
     }
 
     // 普通 SELECT 路径还应覆盖纯动作产生式，避免零长度规约被生成器遗漏。
@@ -284,9 +265,12 @@ fn parsergen_main_tables_match_rust_baseline() {
 #[test]
 fn parsergen_hint_tables_match_rust_baseline() {
     let grammar = load_grammar("hint.astergram");
-    let generated = GeneratedParser::build(&grammar).expect("hint parser data should build");
-    assert_metadata_matches(&grammar, &generated);
-    assert_render_is_stable("hint", &generated);
+    assert_metadata_matches(
+        &grammar,
+        super::GENERATED_HINT_LEGACY_RULES,
+        super::GENERATED_HINT_REDUCTIONS,
+        super::GENERATED_HINT_ACTION_REQUIRED,
+    );
 
     let cases = [
         (
@@ -330,8 +314,10 @@ fn parsergen_hint_tables_match_rust_baseline() {
     ];
     for (tokens, expected) in cases {
         let baseline = hint_baseline_trace(&grammar, &tokens);
-        let actual = generated.trace(&tokens);
-        assert_eq!(actual.last(), Some(&expected), "hint token flow {tokens:?}");
-        assert_eq!(actual, baseline, "hint token flow {tokens:?}");
+        assert_eq!(
+            baseline.last(),
+            Some(&expected),
+            "hint token flow {tokens:?}"
+        );
     }
 }

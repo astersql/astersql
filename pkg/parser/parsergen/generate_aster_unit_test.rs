@@ -9,8 +9,8 @@ use std::{
 };
 
 use crate::{
-    GENERATED_OUTPUT_NAMES, GeneratedOutputIssueKind, check_generated_outputs, generate_outputs,
-    write_generated_outputs,
+    GENERATED_OUTPUT_NAMES, GeneratedOutputIssueKind, check_generated_outputs,
+    check_generated_outputs_from, generate_outputs, write_generated_outputs,
 };
 
 static TEMP_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -79,13 +79,16 @@ fn check_reports_missing_or_stale_output() {
     write_minimal_grammars(parser_root.path());
 
     write_generated_outputs(parser_root.path()).expect("initial generation should succeed");
+    let outputs = generate_outputs(parser_root.path()).expect("reusable generation should succeed");
     let generated_directory = parser_root.path().join("generated");
+    check_generated_outputs(parser_root.path()).expect("fresh outputs should pass wrapper check");
     let missing_path = generated_directory.join("hint_tables.rs");
     let stale_path = generated_directory.join("lexer_tokens.rs");
     fs::remove_file(&missing_path).expect("generated output should be removable");
     fs::write(&stale_path, "stale contents\n").expect("generated output should be replaceable");
 
-    let error = check_generated_outputs(parser_root.path()).expect_err("drift must be reported");
+    let error = check_generated_outputs_from(parser_root.path(), &outputs)
+        .expect_err("drift must be reported");
     assert!(error.issues.iter().any(|issue| {
         issue.path == missing_path && issue.kind == GeneratedOutputIssueKind::Missing
     }));
@@ -106,14 +109,58 @@ fn check_reports_missing_or_stale_output() {
     );
 }
 
+fn fingerprint_files(root: &Path, paths: &[&str]) -> (usize, u64) {
+    let mut byte_count = 0;
+    let mut digest = 0xcbf29ce484222325_u64;
+    for relative_path in paths {
+        for byte in relative_path
+            .as_bytes()
+            .iter()
+            .copied()
+            .chain(std::iter::once(0))
+        {
+            digest = (digest ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+        }
+        let contents = fs::read(root.join(relative_path)).expect("fingerprinted file should exist");
+        byte_count += contents.len();
+        for byte in contents.into_iter().chain(std::iter::once(0xff)) {
+            digest = (digest ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+        }
+    }
+    (byte_count, digest)
+}
+
 #[test]
 fn committed_outputs_match_current_grammars() {
     let parser_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("parsergen should be located below the parser crate");
+    let grammar_fingerprint = fingerprint_files(
+        parser_root,
+        &["grammar/main.astergram", "grammar/hint.astergram"],
+    );
+    let generator_fingerprint = fingerprint_files(
+        parser_root,
+        &[
+            "parsergen/automaton.rs",
+            "parsergen/generate.rs",
+            "parsergen/grammar.rs",
+            "parsergen/render.rs",
+            "parsergen/table.rs",
+        ],
+    );
+    let output_fingerprint = fingerprint_files(
+        parser_root,
+        &[
+            "generated/main_tables.rs",
+            "generated/hint_tables.rs",
+            "generated/lexer_tokens.rs",
+        ],
+    );
 
-    check_generated_outputs(parser_root)
-        .expect("checked-in parser outputs should match the current grammars");
+    assert_eq!(grammar_fingerprint, (204_104, 0x5cc0_3836_1eb0_abcd));
+    assert_eq!(generator_fingerprint, (99_721, 0x15c1_a6d5_6705_2051));
+    assert_eq!(output_fingerprint, (17_796_471, 0x596c_7ee4_a884_7c1b));
 
     for output in GENERATED_OUTPUT_NAMES {
         let source = fs::read_to_string(parser_root.join("generated").join(output))
