@@ -105,6 +105,24 @@ async fn clear_path(client: &mut Client, path: &str) {
         .unwrap();
 }
 
+/// 等待 etcd lock 前缀下出现指定数量的持有者/等待者 key。
+async fn wait_lock_candidates(client: &mut Client, path: &str, expected: usize) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let response = client
+                .get(path, Some(etcd_client::GetOptions::new().with_prefix()))
+                .await
+                .unwrap();
+            if response.kvs().len() >= expected {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("lock {path} did not expose {expected} candidates"));
+}
+
 /// 轮询直至 manager.IsOwner() 达到期望值。
 async fn wait_owner(manager: &Arc<dyn Manager>, expected: bool) {
     tokio::time::timeout(Duration::from_secs(12), async {
@@ -581,13 +599,10 @@ async fn test_acquire_distributed_lock() {
         .unwrap();
     let same_ctx = ctx.clone();
     let same_client = client1.clone();
-    let mut blocked =
+    let blocked =
         tokio::spawn(async move { AcquireDistributedLock(&same_ctx, same_client, key, 10).await });
-    assert!(
-        tokio::time::timeout(Duration::from_millis(300), &mut blocked)
-            .await
-            .is_err()
-    );
+    wait_lock_candidates(&mut client1, key, 2).await;
+    assert!(!blocked.is_finished());
     lock1.release().await.unwrap();
     let lock2 = tokio::time::timeout(Duration::from_secs(5), blocked)
         .await
@@ -613,15 +628,12 @@ async fn test_acquire_distributed_lock() {
         .unwrap();
     let other_ctx = ctx.clone();
     let other_client = client2.clone();
-    let mut blocked =
+    let blocked =
         tokio::spawn(
             async move { AcquireDistributedLock(&other_ctx, other_client, key, 10).await },
         );
-    assert!(
-        tokio::time::timeout(Duration::from_millis(300), &mut blocked)
-            .await
-            .is_err()
-    );
+    wait_lock_candidates(&mut client1, key, 2).await;
+    assert!(!blocked.is_finished());
     lock1.release().await.unwrap();
     let lock2 = tokio::time::timeout(Duration::from_secs(5), blocked)
         .await
