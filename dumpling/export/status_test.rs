@@ -54,22 +54,18 @@ fn test_get_parameters() {
     assert_eq!(mid.EstimateTotalRows, 40.0);
 }
 
-/// 验证 SpeedRecorder 在 sleep 间隔内 bytes/s 与 Go 用例一致（允许 10% 相对误差）。
+/// 验证 SpeedRecorder 在显式时间间隔内 bytes/s 与 Go 用例一致。
 #[test]
 fn test_speed_recorder() {
     let cases = [(1i64, 100.0, 100.0), (2, 200.0, 50.0), (3, 200.0, 50.0)];
     // Go 用例：100B/1s=100，再 100B/2s=50，finished 不变则保持 50。
     let mut speed_recorder = NewSpeedRecorder();
+    let started_at = speed_recorder.last_update_time;
+    let mut elapsed = Duration::ZERO;
     for (spent, finished, expected) in cases {
-        // 真实 sleep 测速率，允许 10% 相对误差。
-        thread::sleep(Duration::from_secs(spent as u64));
-        let recent = speed_recorder.GetSpeed(finished);
-        let rel = (expected - recent).abs() / expected;
-        // 与 Go assert.InDelta 等价容差。
-        assert!(
-            rel <= 0.1,
-            "speed unexpected expected={expected:.2} recent={recent:.2}"
-        );
+        elapsed += Duration::from_secs(spent as u64);
+        let recent = speed_recorder.getSpeedAt(finished, started_at + elapsed);
+        assert_eq!(recent, expected);
     }
 }
 
@@ -197,51 +193,41 @@ fn stop_log_progress_waits_for_final_snapshot_and_is_repeatable() {
 
 #[test]
 fn periodic_refresh_and_log_average_use_separate_samples() {
-    let d = Arc::new(status_dumper());
-    let (ctx, cancel) = tcontext::Background().WithCancel();
-    let view = d.clone();
-    let worker = thread::spawn(move || {
-        view.runLogProgressWithTicks(
-            &ctx,
-            Duration::from_millis(50),
-            Duration::from_millis(120),
-            false,
-        )
-    });
+    let d = status_dumper();
+    let ctx = tcontext::Background();
+    let started_at = Instant::now();
     AddGauge(Some(&d.metrics.finishedSizeGauge), 500.0);
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while d.GetStatus().FinishedBytes != 500.0 && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(5));
-    }
+    d.runLogProgressWithTicks(
+        &ctx,
+        started_at,
+        [ProgressTick::Refresh(
+            started_at + Duration::from_millis(50),
+        )],
+        false,
+    );
     assert_eq!(d.GetStatus().FinishedBytes, 500.0);
     AddGauge(Some(&d.metrics.finishedSizeGauge), 1000.0);
-    cancel.call();
-    worker.join().unwrap();
+    d.refreshStatusAt(started_at + Duration::from_millis(120));
     assert_eq!(d.GetStatus().FinishedBytes, 1500.0);
     let final_status = d.GetStatus();
-    thread::sleep(Duration::from_millis(60));
     assert_eq!(d.GetStatus(), final_status);
 }
 
 #[test]
 fn accelerated_log_tick_refreshes_before_five_second_status_tick() {
-    let d = Arc::new(status_dumper());
-    let (ctx, cancel) = tcontext::Background().WithCancel();
-    let view = d.clone();
-    let worker = thread::spawn(move || {
-        view.runLogProgressWithTicks(&ctx, statusRefreshTick, logProgressTick, true)
-    });
-    thread::sleep(Duration::from_millis(30));
+    let d = status_dumper();
+    let ctx = tcontext::Background();
+    let started_at = Instant::now();
     d.metrics.totalChunks.store(4, Ordering::SeqCst);
     d.metrics.completedChunks.store(1, Ordering::SeqCst);
     d.metrics.progressReady.store(true, Ordering::SeqCst);
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while d.GetStatus().ProgressPercent != Some(25.0) && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(5));
-    }
+    d.runLogProgressWithTicks(
+        &ctx,
+        started_at,
+        [ProgressTick::Log(started_at + Duration::from_secs(1))],
+        true,
+    );
     let snapshot = d.GetStatus();
-    cancel.call();
-    worker.join().unwrap();
     assert_eq!(snapshot.ProgressPercent, Some(25.0));
 }
 
@@ -253,21 +239,28 @@ fn log_interval_average_reads_live_bytes_even_with_stale_snapshot() {
     let (ctx, cancel) = tcontext::Background()
         .WithLogger(logger.clone())
         .WithCancel();
+    let started_at = Instant::now();
+    let (tick_tx, tick_rx) = mpsc::channel();
     let view = d.clone();
-    let worker = thread::spawn(move || {
-        view.runLogProgressWithTicks(&ctx, statusRefreshTick, Duration::from_millis(120), false)
-    });
+    let worker =
+        thread::spawn(move || view.runLogProgressWithTicks(&ctx, started_at, tick_rx, false));
     let deadline = Instant::now() + Duration::from_secs(2);
     while d.GetStatus().TotalTables != 1 && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(1));
     }
     AddGauge(Some(&d.metrics.finishedSizeGauge), 2000.0);
+    tick_tx
+        .send(ProgressTick::Log(started_at + Duration::from_millis(120)))
+        .unwrap();
     while logger.entries().is_empty() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(1));
     }
     let stale = d.GetStatus();
     let entries = logger.entries();
     cancel.call();
+    tick_tx
+        .send(ProgressTick::Stop(started_at + Duration::from_millis(120)))
+        .unwrap();
     worker.join().unwrap();
     assert_eq!(stale.FinishedBytes, 0.0);
     assert_eq!(entries.len(), 1);
@@ -287,32 +280,27 @@ fn log_interval_average_reads_live_bytes_even_with_stale_snapshot() {
 
 #[test]
 fn production_five_second_refresh_samples_speed_and_stops() {
-    let d = Arc::new(status_dumper());
+    assert_eq!(statusRefreshTick, Duration::from_secs(5));
+    let d = status_dumper();
     d.totalTables.store(1, Ordering::SeqCst);
     let logger = log::NewAppLogger(log::ZapLogger::capture(log::Level::Info));
-    let (ctx, cancel) = tcontext::Background()
-        .WithLogger(logger.clone())
-        .WithCancel();
-    let view = d.clone();
-    let worker = thread::spawn(move || view.runLogProgress(&ctx));
-    let deadline = Instant::now() + Duration::from_secs(7);
-    while d.GetStatus().TotalTables != 1 && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(1));
-    }
+    let ctx = tcontext::Background().WithLogger(logger.clone());
+    let started_at = d.speedRecorder.lock().unwrap().last_update_time;
     let initial = d.GetStatus();
     AddGauge(Some(&d.metrics.finishedSizeGauge), 500.0);
-    while d.GetStatus().FinishedBytes != 500.0 && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(5));
-    }
-    let sampled = d.GetStatus();
-    cancel.call();
-    worker.join().unwrap();
-    assert_eq!(sampled.FinishedBytes, 500.0);
-    assert!(
-        (sampled.CurrentSpeedBPS - 100.0).abs() < 3.0,
-        "{:?}",
-        sampled
+    d.runLogProgressWithTicks(
+        &ctx,
+        started_at,
+        [
+            ProgressTick::Refresh(started_at + statusRefreshTick),
+            ProgressTick::Stop(started_at + statusRefreshTick),
+        ],
+        false,
     );
+    let sampled = d.GetStatus();
+    assert_eq!(sampled.FinishedBytes, 500.0);
+    assert_eq!(sampled.CurrentSpeedBPS, 100.0);
+    assert_eq!(sampled.TotalTables, 1);
     assert_eq!(initial.FinishedBytes, 0.0);
     assert!(logger.entries().is_empty());
 }

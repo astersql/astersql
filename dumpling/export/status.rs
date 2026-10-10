@@ -11,6 +11,13 @@ pub const statusRefreshTick: Duration = Duration::from_secs(5);
 
 pub const logProgressTick: Duration = Duration::from_secs(2 * 60);
 
+#[derive(Clone, Copy)]
+enum ProgressTick {
+    Refresh(Instant),
+    Log(Instant),
+    Stop(Instant),
+}
+
 /// The join guard mirrors Go's cancel-and-wait stop function, including repeated stop calls.
 pub struct LogProgressGuard {
     cancel: astersql_dumpling_context::CancelFunc,
@@ -58,51 +65,69 @@ impl Dumper {
     }
 
     pub fn runLogProgress(&self, tctx: &tcontext::Context) {
-        self.runLogProgressWithTicks(
-            tctx,
-            statusRefreshTick,
-            logProgressTick,
-            failpoint_inject("EnableLogProgress"),
-        );
-    }
-
-    // Tick durations are the explicit time boundary used by Rust's deterministic scoped tests.
-    fn runLogProgressWithTicks(
-        &self,
-        tctx: &tcontext::Context,
-        refresh_tick: Duration,
-        log_tick: Duration,
-        accelerated: bool,
-    ) {
-        self.RefreshStatus();
-        let tick = if accelerated {
+        let accelerated = failpoint_inject("EnableLogProgress");
+        let log_tick = if accelerated {
             Duration::from_secs(1)
         } else {
-            log_tick
+            logProgressTick
         };
         if accelerated {
             tctx.L().Debug("EnableLogProgress", []);
         }
-        let mut last_checkpoint = Instant::now();
-        let mut last_bytes = 0.0;
-        let mut next_status = last_checkpoint + refresh_tick;
-        let mut next_log = last_checkpoint + tick;
-        loop {
+        let started_at = Instant::now();
+        let mut next_status = started_at + statusRefreshTick;
+        let mut next_log = started_at + log_tick;
+        let ticks = std::iter::from_fn(|| loop {
             if tctx.Done() {
-                tctx.L().Debug("stopping log progress", []);
-                self.RefreshStatus();
-                return;
+                return Some(ProgressTick::Stop(Instant::now()));
             }
             let now = Instant::now();
             if now >= next_status {
-                self.RefreshStatus();
                 while next_status <= now {
-                    next_status += refresh_tick;
+                    next_status += statusRefreshTick;
                 }
+                return Some(ProgressTick::Refresh(now));
             }
             if now >= next_log {
+                while next_log <= now {
+                    next_log += log_tick;
+                }
+                return Some(ProgressTick::Log(now));
+            }
+            thread::sleep(
+                next_status
+                    .min(next_log)
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_millis(10)),
+            );
+        });
+        self.runLogProgressWithTicks(tctx, started_at, ticks, accelerated);
+    }
+
+    // Tick events are the explicit time boundary used by Rust's deterministic scoped tests.
+    fn runLogProgressWithTicks<I>(
+        &self,
+        tctx: &tcontext::Context,
+        started_at: Instant,
+        ticks: I,
+        accelerated: bool,
+    ) where
+        I: IntoIterator<Item = ProgressTick>,
+    {
+        self.refreshStatusAt(started_at);
+        let mut last_checkpoint = started_at;
+        let mut last_bytes = 0.0;
+        for event in ticks {
+            match event {
+                ProgressTick::Refresh(now) => self.refreshStatusAt(now),
+                ProgressTick::Stop(now) => {
+                    tctx.L().Debug("stopping log progress", []);
+                    self.refreshStatusAt(now);
+                    return;
+                }
+                ProgressTick::Log(now) => {
                 if accelerated {
-                    self.RefreshStatus();
+                    self.refreshStatusAt(now);
                 }
                 let nanoseconds = now.duration_since(last_checkpoint).as_nanos() as f64;
                 let finished_bytes = ReadGauge(Some(&self.metrics.finishedSizeGauge));
@@ -128,18 +153,10 @@ impl Dumper {
                         Field::string("chunks progress", s.Progress),
                     ],
                 );
-                last_checkpoint = Instant::now();
+                last_checkpoint = now;
                 last_bytes = finished_bytes;
-                while next_log <= now {
-                    next_log += tick;
                 }
             }
-            thread::sleep(
-                next_status
-                    .min(next_log)
-                    .saturating_duration_since(Instant::now())
-                    .min(Duration::from_millis(10)),
-            );
         }
     }
 
@@ -149,6 +166,10 @@ impl Dumper {
     }
 
     pub fn RefreshStatus(&self) {
+        self.refreshStatusAt(Instant::now());
+    }
+
+    fn refreshStatusAt(&self, now: Instant) {
         let mut ret = DumpStatus::default();
         ret.TotalTables = self.totalTables.load(Ordering::SeqCst);
         ret.CompletedTables = ReadCounter(Some(&self.metrics.finishedTablesCounter));
@@ -160,7 +181,7 @@ impl Dumper {
             .speedRecorder
             .lock()
             .unwrap()
-            .GetSpeed(ret.FinishedBytes);
+            .getSpeedAt(ret.FinishedBytes, now);
         if self.metrics.progressReady.load(Ordering::SeqCst) {
             // chunk 进度条仅在 dump 初始化完分片计数后启用。
             if self.metrics.totalChunks.load(Ordering::SeqCst) == 0 {
@@ -290,11 +311,14 @@ pub fn NewSpeedRecorder() -> SpeedRecorder {
 impl SpeedRecorder {
     /// 根据累计 finished 字节更新并返回当前 bytes/s；Go `GetSpeed`。
     pub fn GetSpeed(&mut self, finished: f64) -> f64 {
+        self.getSpeedAt(finished, Instant::now())
+    }
+
+    fn getSpeedAt(&mut self, finished: f64, now: Instant) -> f64 {
         // finished 未增长时返回上次速率，避免除零抖动。
         if finished <= self.last_finished {
             return self.speed_bps;
         }
-        let now = Instant::now();
         let elapsed = now.duration_since(self.last_update_time).as_secs_f64();
         // 同一时刻多次采样则沿用旧速率。
         if elapsed == 0.0 {
