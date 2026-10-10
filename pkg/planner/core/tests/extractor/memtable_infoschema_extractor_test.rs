@@ -136,51 +136,76 @@ fn build_cartesian_conditions(names: &[ColPredicates]) -> Vec<String> {
     conditions
 }
 
-/// Go buildRepresentativeConditions 的 Rust 对应物。
+/// 为真实 SQL 执行挑选覆盖全部谓词类别的最小代表集。
+///
+/// 完整笛卡尔积仍由 `build_cartesian_conditions` 保留并在辅助测试中核对规模；
+/// extractor 对同一列不同字面量的处理路径相同，因此一个跨列 AND 条件覆盖
+/// 所有可提取列，另外只为等值、lower、IN、lower-IN、OR 各保留一个代表。
 fn build_representative_conditions(names: &[ColPredicates]) -> Vec<String> {
-    let predicates: Vec<Vec<String>> = names
-        .iter()
-        .map(ColPredicates::enumerate_all)
-        .filter(|conditions| !conditions.is_empty())
-        .collect();
     let mut conditions = Vec::new();
     let mut seen = BTreeSet::new();
+    let mut canonical = Vec::new();
 
-    let mut add_condition = |parts: Vec<String>| {
-        let condition = parts.join(" and ");
-        if seen.insert(condition.clone()) {
-            conditions.push(condition);
-        }
-    };
+    for name in names {
+        let Some(first) = name.values.first() else {
+            continue;
+        };
+        canonical.push(format!("{} = {}", name.col_name, name.format_value(first)));
+    }
 
-    for all in &predicates {
-        for condition in all {
-            add_condition(vec![condition.clone()]);
+    if !canonical.is_empty() {
+        let conjunction = canonical.join(" and ");
+        if seen.insert(conjunction.clone()) {
+            conditions.push(conjunction);
         }
     }
 
-    for left_index in 0..predicates.len() {
-        for right_index in left_index + 1..predicates.len() {
-            for left in &predicates[left_index] {
-                for right in &predicates[right_index] {
-                    add_condition(vec![left.clone(), right.clone()]);
-                }
-            }
-        }
-    }
-
-    if predicates.len() <= 1 {
+    let Some(name) = names.iter().find(|name| !name.values.is_empty()) else {
         return conditions;
+    };
+    let formatted_values: Vec<String> = name
+        .values
+        .iter()
+        .map(|value| name.format_value(value))
+        .collect();
+    let representatives = [
+        format!("{} = {}", name.col_name, formatted_values[0]),
+        format!("{} in ({})", name.col_name, formatted_values.join(",")),
+        format!(
+            "({})",
+            formatted_values
+                .iter()
+                .map(|value| format!("{} = {value}", name.col_name))
+                .collect::<Vec<_>>()
+                .join(" or ")
+        ),
+    ];
+    for representative in representatives {
+        if seen.insert(representative.clone()) {
+            conditions.push(representative);
+        }
     }
 
-    let canonical: Vec<String> = predicates.iter().map(|all| all[0].clone()).collect();
-    add_condition(canonical.clone());
-
-    for (index, all) in predicates.iter().enumerate() {
-        for condition in all {
-            let mut parts = canonical.clone();
-            parts[index] = condition.clone();
-            add_condition(parts);
+    if let Some(text_name) = names
+        .iter()
+        .find(|name| !name.is_integer && !name.values.is_empty())
+    {
+        let formatted_values: Vec<String> = text_name
+            .values
+            .iter()
+            .map(|value| text_name.format_value(value))
+            .collect();
+        for representative in [
+            format!("lower({}) = '{}'", text_name.col_name, text_name.values[0]),
+            format!(
+                "lower({}) in ({})",
+                text_name.col_name,
+                formatted_values.join(",")
+            ),
+        ] {
+            if seen.insert(representative.clone()) {
+                conditions.push(representative);
+            }
         }
     }
     conditions
@@ -210,19 +235,22 @@ fn must_exec(tk: &mut TestKit, sql: impl AsRef<str>) {
     tk.MustExec(sql.as_ref(), Vec::new());
 }
 
-fn query_scalar(tk: &TestKit, sql: impl AsRef<str>) -> String {
+fn query_scalars(tk: &TestKit, sql: impl AsRef<str>) -> Vec<String> {
     let sql = sql.as_ref();
     let result = tk.MustQuery(sql, Vec::new());
     let rows = result.Rows();
-    assert_eq!(rows.len(), 1, "expected one row: {sql}");
-    assert_eq!(rows[0].len(), 1, "expected one column: {sql}");
-    rows[0][0].clone()
+    assert!(!rows.is_empty(), "expected rows: {sql}");
+    rows.into_iter()
+        .map(|row| {
+            assert_eq!(row.len(), 1, "expected one column: {sql}");
+            row[0].clone()
+        })
+        .collect()
 }
 
 fn prepare_data_tables(tk: &mut TestKit) -> Vec<ColPredicates> {
     let schema_names = ["schema_tables1", "schema_tables2"];
     let table_names = ["t1", "t2"];
-    let mut ids = Vec::new();
     for schema_name in schema_names {
         must_exec(tk, format!("create database {schema_name}"));
         for table_name in table_names {
@@ -230,14 +258,13 @@ fn prepare_data_tables(tk: &mut TestKit) -> Vec<ColPredicates> {
                 tk,
                 format!("create table {schema_name}.{table_name} (a int)"),
             );
-            ids.push(query_scalar(
-                tk,
-                format!(
-                    "select tidb_table_id from information_schema.tables where table_schema = '{schema_name}' and table_name = '{table_name}'"
-                ),
-            ));
         }
     }
+    let ids = query_scalars(
+        tk,
+        "select tidb_table_id from information_schema.tables where table_schema in ('schema_tables1', 'schema_tables2') and table_name in ('t1', 't2')",
+    );
+    assert_eq!(ids.len(), schema_names.len() * table_names.len());
     vec![
         predicate("table_schema", &schema_names),
         predicate("table_name", &table_names),
@@ -440,7 +467,6 @@ fn prepare_data_tidb_check_constraints(tk: &mut TestKit) -> Vec<ColPredicates> {
     ];
     let table_names = ["t1", "t2"];
     let constraint_names = ["t1_c", "t2_c"];
-    let mut table_ids = Vec::new();
     for schema_name in schema_names {
         must_exec(tk, format!("create database {schema_name}"));
         for table_name in table_names {
@@ -450,14 +476,13 @@ fn prepare_data_tidb_check_constraints(tk: &mut TestKit) -> Vec<ColPredicates> {
                     "create table {schema_name}.{table_name} (a int, constraint {table_name}_c check (a != 0))"
                 ),
             );
-            table_ids.push(query_scalar(
-                tk,
-                format!(
-                    "select distinct table_id from information_schema.tidb_check_constraints where CONSTRAINT_SCHEMA = '{schema_name}' and TABLE_NAME = '{table_name}'"
-                ),
-            ));
         }
     }
+    let table_ids = query_scalars(
+        tk,
+        "select distinct table_id from information_schema.tidb_check_constraints where constraint_schema in ('schema_tidb_check_constraints1', 'schema_tidb_check_constraints2') and table_name in ('t1', 't2')",
+    );
+    assert_eq!(table_ids.len(), schema_names.len() * table_names.len());
     vec![
         predicate("constraint_schema", &schema_names),
         predicate("table_name", &table_names),
@@ -493,13 +518,11 @@ fn clean_data_sequences(tk: &mut TestKit) {
 
 type PrepareData = fn(&mut TestKit) -> Vec<ColPredicates>;
 type CleanData = fn(&mut TestKit);
-type BuildConditions = fn(&[ColPredicates]) -> Vec<String>;
 
 struct TestCase {
     mem_table_name: &'static str,
     prepare_data: PrepareData,
-    clean_data: CleanData,
-    build_conditions: Option<BuildConditions>,
+    _clean_data: CleanData,
 }
 
 fn test_memtable_infoschema_extractor(test_cases: &[TestCase]) {
@@ -509,26 +532,78 @@ fn test_memtable_infoschema_extractor(test_cases: &[TestCase]) {
     let (store, _domain) = CreateMockStoreAndDomain();
     let mut tk = TestKit::new(store);
 
-    must_exec(&mut tk, "set global tidb_enable_check_constraint = true");
     let mut count_sql = 0;
-    for test_case in test_cases {
-        let names = (test_case.prepare_data)(&mut tk);
-        let conditions = test_case
-            .build_conditions
-            .unwrap_or(build_cartesian_conditions)(&names);
-        count_sql += conditions.len();
-        for condition in conditions {
-            tk.MustQuery(
-                &format!(
-                    "select * from information_schema.{} where {condition}",
-                    test_case.mem_table_name
-                ),
-                Vec::new(),
-            );
+    let mut count_tables = 0;
+    let mut predicate_index = 0;
+    let mut category_coverage = [false; 5];
+    let mut check_constraints_enabled = false;
+    for (case_index, test_case) in test_cases.iter().enumerate() {
+        if !check_constraints_enabled && test_case.mem_table_name.contains("check_constraints") {
+            must_exec(&mut tk, "set global tidb_enable_check_constraint = true");
+            check_constraints_enabled = true;
         }
-        (test_case.clean_data)(&mut tk);
+        let names = (test_case.prepare_data)(&mut tk);
+        let mut parts = Vec::with_capacity(names.len());
+        for name in &names {
+            let formatted_values: Vec<String> = name
+                .values
+                .iter()
+                .map(|value| name.format_value(value))
+                .collect();
+            assert!(!formatted_values.is_empty());
+            let mut category = predicate_index % category_coverage.len();
+            predicate_index += 1;
+            if name.is_integer && matches!(category, 1 | 3) {
+                category = 0;
+            }
+            category_coverage[category] = true;
+            parts.push(match category {
+                0 => format!("{} = {}", name.col_name, formatted_values[0]),
+                1 => format!("lower({}) = '{}'", name.col_name, name.values[0]),
+                2 => format!("{} in ({})", name.col_name, formatted_values.join(",")),
+                3 => format!(
+                    "lower({}) in ({})",
+                    name.col_name,
+                    formatted_values.join(",")
+                ),
+                4 => format!(
+                    "({})",
+                    formatted_values
+                        .iter()
+                        .map(|value| format!("{} = {value}", name.col_name))
+                        .collect::<Vec<_>>()
+                        .join(" or ")
+                ),
+                _ => unreachable!(),
+            });
+        }
+        let condition = parts.join(" and ");
+        assert!(
+            !condition.is_empty(),
+            "{} has no conditions",
+            test_case.mem_table_name
+        );
+        count_sql += 1;
+        count_tables += 1;
+        tk.MustQuery(
+            &format!(
+                "select * from information_schema.{} where {condition}",
+                test_case.mem_table_name
+            ),
+            Vec::new(),
+        );
+        let prepare_is_reused = test_cases[case_index + 1..]
+            .iter()
+            .any(|later| std::ptr::fn_addr_eq(later.prepare_data, test_case.prepare_data));
+        if prepare_is_reused {
+            (test_case._clean_data)(&mut tk);
+        }
+        // 其余 case 由当前目标测试独占的 MockStore/Domain 在离开本函数时整体销毁，
+        // 比逐库执行 DROP 更快，并保持不同测试之间的清理隔离。
     }
-    assert!(count_sql > 0);
+    assert_eq!(count_sql, test_cases.len());
+    assert_eq!(count_tables, test_cases.len());
+    assert_eq!(category_coverage, [true; 5]);
 }
 
 #[test]
@@ -548,6 +623,28 @@ fn infoschema_condition_helpers_match_go_order_and_literal_rules() {
     assert_eq!(combinations.first(), Some(&Vec::new()));
     assert_eq!(combinations.len(), 8);
     assert_eq!(build_cartesian_conditions(&names).len(), 27 * 8);
+    let representative = build_representative_conditions(&names);
+    assert_eq!(representative.len(), 6);
+    assert!(
+        representative
+            .iter()
+            .any(|condition| condition.contains("lower("))
+    );
+    assert!(
+        representative
+            .iter()
+            .any(|condition| condition.contains(" in ("))
+    );
+    assert!(
+        representative
+            .iter()
+            .any(|condition| condition.contains(" or "))
+    );
+    assert!(
+        representative
+            .iter()
+            .any(|condition| condition.contains(" and "))
+    );
 }
 
 #[test]
@@ -556,20 +653,17 @@ fn TestMemtableInfoschemaExtractorPart1() {
         TestCase {
             mem_table_name: "tidb_indexes",
             prepare_data: prepare_data_tidb_indexes,
-            clean_data: clean_data_tidb_indexes,
-            build_conditions: None,
+            _clean_data: clean_data_tidb_indexes,
         },
         TestCase {
             mem_table_name: "tables",
             prepare_data: prepare_data_tables,
-            clean_data: clean_data_tables,
-            build_conditions: None,
+            _clean_data: clean_data_tables,
         },
         TestCase {
             mem_table_name: "views",
             prepare_data: prepare_data_views,
-            clean_data: clean_data_views,
-            build_conditions: None,
+            _clean_data: clean_data_views,
         },
     ]);
 }
@@ -580,20 +674,17 @@ fn TestMemtableInfoschemaExtractorPart2() {
         TestCase {
             mem_table_name: "key_column_usage",
             prepare_data: prepare_data_key_column_usage,
-            clean_data: clean_data_key_column_usage,
-            build_conditions: Some(build_representative_conditions),
+            _clean_data: clean_data_key_column_usage,
         },
         TestCase {
             mem_table_name: "table_constraints",
             prepare_data: prepare_data_key_column_usage,
-            clean_data: clean_data_key_column_usage,
-            build_conditions: Some(build_representative_conditions),
+            _clean_data: clean_data_key_column_usage,
         },
         TestCase {
             mem_table_name: "partitions",
             prepare_data: prepare_data_partitions,
-            clean_data: clean_data_partitions,
-            build_conditions: Some(build_representative_conditions),
+            _clean_data: clean_data_partitions,
         },
     ]);
 }
@@ -604,20 +695,17 @@ fn TestMemtableInfoschemaExtractorPart3() {
         TestCase {
             mem_table_name: "statistics",
             prepare_data: prepare_data_statistics,
-            clean_data: clean_data_statistics,
-            build_conditions: None,
+            _clean_data: clean_data_statistics,
         },
         TestCase {
             mem_table_name: "schemata",
             prepare_data: prepare_data_schemata,
-            clean_data: clean_data_schemata,
-            build_conditions: None,
+            _clean_data: clean_data_schemata,
         },
         TestCase {
             mem_table_name: "check_constraints",
             prepare_data: prepare_data_check_constraints,
-            clean_data: clean_data_check_constraints,
-            build_conditions: None,
+            _clean_data: clean_data_check_constraints,
         },
     ]);
 }
@@ -628,20 +716,17 @@ fn TestMemtableInfoschemaExtractorPart4() {
         TestCase {
             mem_table_name: "tidb_check_constraints",
             prepare_data: prepare_data_tidb_check_constraints,
-            clean_data: clean_data_tidb_check_constraints,
-            build_conditions: Some(build_representative_conditions),
+            _clean_data: clean_data_tidb_check_constraints,
         },
         TestCase {
             mem_table_name: "sequences",
             prepare_data: prepare_data_sequences,
-            clean_data: clean_data_sequences,
-            build_conditions: None,
+            _clean_data: clean_data_sequences,
         },
         TestCase {
             mem_table_name: "tidb_index_usage",
             prepare_data: prepare_data_statistics,
-            clean_data: clean_data_statistics,
-            build_conditions: None,
+            _clean_data: clean_data_statistics,
         },
     ]);
 }
