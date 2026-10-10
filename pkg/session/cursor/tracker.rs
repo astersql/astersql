@@ -118,6 +118,11 @@ impl CursorTracker {
     pub(crate) fn set_id_alloc_for_test(&self, id: i64) {
         self.id_alloc.store(id, Ordering::SeqCst);
     }
+
+    #[cfg(test)]
+    pub(crate) fn cursor_count_for_test(&self) -> usize {
+        self.cursors.lock().expect("cursor map poisoned").len()
+    }
 }
 
 // Handle is used to update/close the cursor.

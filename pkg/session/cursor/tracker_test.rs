@@ -21,10 +21,10 @@
 
 use super::state::State;
 use super::tracker::{NewTracker, Tracker};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Barrier};
 use std::thread;
-use std::time::Duration;
 
 /// 验证连续新建游标时 ID 从 1、2 递增。
 #[test]
@@ -90,39 +90,72 @@ fn TestCursorHandleClose() {
 /// 并发创建与遍历关闭应在压力下保持安全。
 #[test]
 fn TestCursorTrackerConcurrentCreateDelete() {
-    let tracker = NewTracker();
-    let stop = Arc::new(AtomicBool::new(false));
-    let mut threads = Vec::new();
-    let threads_for_each_operation = 100;
+    const CREATOR_THREADS: usize = 8;
+    const CLOSER_THREADS: usize = 8;
+    const ROUNDS: usize = 16;
 
-    // 创建侧：持续 NewCursor。
-    for _ in 0..threads_for_each_operation {
+    let tracker = NewTracker();
+    let round_start = Arc::new(Barrier::new(CREATOR_THREADS + CLOSER_THREADS));
+    let round_end = Arc::new(Barrier::new(CREATOR_THREADS + CLOSER_THREADS));
+    let range_count = Arc::new(AtomicUsize::new(0));
+    let close_count = Arc::new(AtomicUsize::new(0));
+    let mut creators = Vec::with_capacity(CREATOR_THREADS);
+    let mut closers = Vec::with_capacity(CLOSER_THREADS);
+
+    // 每轮先创建一个种子 cursor，保证屏障放行后至少一次 Range 能观察到数据；
+    // 随后的 NewCursor 与 Range/Close 在同一轮真实并发。
+    for _ in 0..CREATOR_THREADS {
         let tracker = Arc::clone(&tracker);
-        let stop = Arc::clone(&stop);
-        threads.push(thread::spawn(move || {
-            while !stop.load(Ordering::Acquire) {
-                tracker.NewCursor(State::default());
+        let round_start = Arc::clone(&round_start);
+        let round_end = Arc::clone(&round_end);
+        creators.push(thread::spawn(move || {
+            let mut ids = Vec::with_capacity(ROUNDS * 2);
+            for _ in 0..ROUNDS {
+                ids.push(tracker.NewCursor(State::default()).ID());
+                round_start.wait();
+                ids.push(tracker.NewCursor(State::default()).ID());
+                round_end.wait();
             }
+            ids
         }));
     }
 
-    // 删除侧：RangeCursor 中 Close 全部句柄。
-    for _ in 0..threads_for_each_operation {
+    for _ in 0..CLOSER_THREADS {
         let tracker = Arc::clone(&tracker);
-        let stop = Arc::clone(&stop);
-        threads.push(thread::spawn(move || {
-            while !stop.load(Ordering::Acquire) {
+        let round_start = Arc::clone(&round_start);
+        let round_end = Arc::clone(&round_end);
+        let range_count = Arc::clone(&range_count);
+        let close_count = Arc::clone(&close_count);
+        closers.push(thread::spawn(move || {
+            for _ in 0..ROUNDS {
+                round_start.wait();
+                range_count.fetch_add(1, Ordering::Relaxed);
                 tracker.RangeCursor(|cursor| {
                     cursor.Close();
+                    close_count.fetch_add(1, Ordering::Relaxed);
                     true
                 });
+                round_end.wait();
             }
         }));
     }
 
-    thread::sleep(Duration::from_secs(2));
-    stop.store(true, Ordering::Release);
-    for thread in threads {
-        thread.join().expect("cursor worker must not panic");
+    let mut ids = Vec::with_capacity(CREATOR_THREADS * ROUNDS * 2);
+    for creator in creators {
+        ids.extend(creator.join().expect("cursor creator must not panic"));
     }
+    for closer in closers {
+        closer.join().expect("cursor closer must not panic");
+    }
+
+    assert_eq!(ids.len(), CREATOR_THREADS * ROUNDS * 2);
+    assert_eq!(ids.iter().copied().collect::<HashSet<_>>().len(), ids.len());
+    assert_eq!(range_count.load(Ordering::Relaxed), CLOSER_THREADS * ROUNDS);
+    assert!(close_count.load(Ordering::Relaxed) >= ROUNDS);
+
+    tracker.RangeCursor(|cursor| {
+        cursor.Close();
+        true
+    });
+    assert_eq!(tracker.cursor_count_for_test(), 0);
 }
