@@ -9,7 +9,7 @@ This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`, 
 ## Progress
 
 - [x] (2026-10-10) 从用户输出恢复目标测试清单并定位 crate、源文件和验证入口。
-- [ ] 执行任务 1，生成当前提交上的可复现基线。
+- [ ] 执行任务 1，生成当前提交上的可复现基线（已完成 21/25 项；4 项 RealTiKV 因缺少 `tiup` 阻塞）。
 - [ ] 并行完成本地 crate 任务 2–7 和任务 10。
 - [ ] 串行完成共享集群任务 8–9。
 - [ ] 汇总默认 profile 复验和 Ready 检查证据。
@@ -20,6 +20,14 @@ This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`, 
   Evidence: `find target /tmp -name 'rust-test.*'` 无输出，因此任务 1 不依赖旧文件内容。
 - Observation: 当前提交已修复八个原超时用例。
   Evidence: 提交 `ac22fe7863` 包含 TTL、combined statistics、indexusage、lockstore 修复。
+- Observation: 9 个既有修复复验项均在默认 profile 下通过，其中 `combined_merge_sql_100010_rows_seven_partitions` 为 8.888s，仍接近 10s 上限。
+  Evidence: `target/rust-timeout-baseline/logs/fixed-*-default.log`。
+- Observation: 当前稳定存在 3 个正确性失败和 3 个默认超时。
+  Evidence: bootstrap 177/178 的存储版本断言为 `317 != 262`，schema checker 的 `unwrap_err` 收到 `Ok`；timer/profile/traceevent 分别在 10.006s/10.007s/10.007s 被终止。
+- Observation: timer 是超出默认预算的固定重试等待，traceevent 包含显式 11 秒 cooloff，profile 则在 60s diagnostic 预算内仍未完成。
+  Evidence: timer diagnostic 20.071s 通过，traceevent diagnostic 11.016s 通过，`pkg/util/traceevent/traceevent_test.rs:153` 执行 `sleep(Duration::from_secs(11))`，profile diagnostic 60.007s 超时。
+- Observation: RealTiKV 基线无法在当前主机按仓库契约启动。
+  Evidence: `command -v tiup` 退出码 1，同时 `127.0.0.1:2379` 已有外部 PD；本任务未动该集群。
 
 ## Decision Log
 
@@ -32,7 +40,7 @@ This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`, 
 
 ## Outcomes & Retrospective
 
-计划阶段完成；实现结果、未解决项和性能变化由执行者在每个里程碑后补充。
+任务 1 已产出 25 行机器可读清单，其中 21 项有当前提交的有效测试证据；已确认任务 3、4、6、7 仍需实施，任务 2 和 5 当前为绿色。因主机缺少 `tiup`，任务 8–9 的 4 项 RealTiKV 用例没有可接受的本轮证据，因此任务 1 保持阻塞，不宣称整体基线已完成。
 
 ## Context and Orientation
 
