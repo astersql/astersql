@@ -415,7 +415,10 @@ fn upgrade_from_177_rewrites_ddl_table_version_in_the_same_store() {
         upgraded_bootstrap_version
             .Next()
             .expect("read bootstrap version row"),
-        Some(vec!["262".to_owned()])
+        Some(vec![{
+            let current_version = unsafe { astersql_session::upgrade_def::currentBootstrapVersion };
+            current_version.to_string()
+        }])
     );
     assert_eq!(
         upgraded_bootstrap_version
@@ -481,7 +484,10 @@ fn upgrade_from_178_keeps_global_variable_value_capacity() {
     );
     assert_eq!(
         version.Next().expect("read bootstrap version"),
-        Some(vec!["262".to_owned()])
+        Some(vec![{
+            let current_version = unsafe { astersql_session::upgrade_def::currentBootstrapVersion };
+            current_version.to_string()
+        }])
     );
     version.Close().expect("close bootstrap version result");
 
