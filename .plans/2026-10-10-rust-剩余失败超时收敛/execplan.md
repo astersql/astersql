@@ -10,7 +10,8 @@ This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`, 
 
 - [x] (2026-10-10) 从用户输出恢复目标测试清单并定位 crate、源文件和验证入口。
 - [x] (2026-10-10) 执行任务 1，生成当前提交上 25/25 项的可复现基线。
-- [ ] 并行完成本地 crate 任务 2、4。
+- [x] (2026-10-10) 复验任务 2 session Domain 与 Starter 目标及两个测试模块窄集合，确认当前实现已稳定收敛。
+- [ ] 并行完成本地 crate 任务 4。
 - [x] (2026-10-10) 完成任务 3，bootstrap 177/178 回归改为断言 Rust 当前版本常量，5 个目标测试在默认 profile 下通过。
 - [x] (2026-10-10) 完成任务 6，timer panic 恢复测试用显式阶段事件替代固定等待并连续 20 次通过。
 - [x] (2026-10-10) 复验任务 5 SST transport 取消语义 20 次，确认当前实现已稳定收敛。
@@ -53,6 +54,10 @@ This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`, 
   Evidence: Go 对照测试断言 `session.CurrentBootstrapVersion`；Rust 改为读取 `upgrade_def::currentBootstrapVersion` 后两个失败项分别在 0.859s 和 0.788s 通过。
 - Observation: Cargo 槽位隔离最终产物，但仓库 `.cargo/config.toml` 的共享 `build-dir = "target"` 仍会让并发构建排队并争用 CPU。
   Evidence: 首次完整复跑中 dist-task 状态矩阵在重负载下 10.015s 超时；负载下降后同一命令为 4.601s，5/5 通过。
+- Observation: 任务 2 的 session 初始化目标在当前提交上未复现超时。
+  Evidence: 精确默认 profile 2/2 通过，Starter 与 Domain 用例分别为 3.353s 和 2.190s；所属两个测试模块窄回归 28/28 通过，目标用例分别为 3.749s 和 2.067s。
+- Observation: 仅设置 `CARGO_TARGET_DIR` 时，仓库 `build-dir = "target"` 配置会使 Cargo 仍打开根目录文件锁。
+  Evidence: 槽位 5 首次命令打开 `target/debug/.cargo-build-lock`；同时设置 `CARGO_BUILD_BUILD_DIR="$CARGO_TARGET_DIR"` 后，冷编译和测试在 `target/rust-slot-5` 独立完成。
 
 ## Decision Log
 
@@ -77,8 +82,13 @@ This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`, 
 - Decision: 任务 3 不修改 bootstrap 生产升级逻辑，只消除两个 Rust 回归中的版本号硬编码。
   Rationale: 同 store 的 DDL table version、global variable 容量和六种 dist-task 状态行为均已通过；根因是测试偏离 Go 的当前版本常量断言，扩大生产修改没有失败依据。
   Date/Author: 2026-10-10 / Codex
+- Decision: 任务 2 不修改 session 生产或测试代码。
+  Rationale: 两个目标用例在任务 1 基线和本次独立复验中都低于默认 10 秒预算，且 1024 用户、密码历史、claim/warning 和 Domain 复用/替换断言全部保留；无失败或热点证据时修改初始化路径会超出本任务范围。
+  Date/Author: 2026-10-10 / Codex
 
 ## Outcomes & Retrospective
+
+任务 2 在当前提交上无需代码修改：精确目标 2/2 与所属模块窄回归 28/28 均在默认 profile 下通过，最慢目标 3.749s；`cargo fmt --all`、`make lint` 与任务文档 diff 检查通过。
 
 任务 5 在当前提交上无需代码修改：SST blocked-write 取消顺序已连续 20 次在默认 profile 下通过，且每次均无 ingest、batch frame 或未 join 的 wire worker。
 
