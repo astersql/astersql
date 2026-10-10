@@ -26,7 +26,11 @@ use astersql_meta_metadef::{
     CreateTiDBBackgroundSubtaskTable, CreateTiDBGlobalTaskHistoryTable, CreateTiDBGlobalTaskTable,
     CreateTiDBMaskingPolicyTable,
 };
-use astersql_session::bootstrap::{systemDatabases, versionedBootstrapSchemas};
+use astersql_session::bootstrap::{
+    CreateBootstrapUpgradeTestSession, systemDatabases, versionedBootstrapSchemas,
+};
+use astersql_session::runtime::{BootstrapCanonicalDomain, ConcreteSession};
+use astersql_session::testutil::{MustExec, MustExecToRecodeSet};
 use astersql_testkit::{Database, NewTestKit};
 
 fn new_bootstrap_test_kit() -> astersql_testkit::TestKit {
@@ -82,6 +86,86 @@ fn set_persistent_global(tk: &mut astersql_testkit::TestKit, name: &str, value: 
         ),
         Vec::new(),
     );
+}
+
+fn set_upgrade_version(session: &ConcreteSession, version: i64) {
+    MustExec(
+        session,
+        &format!(
+            "update mysql.tidb set variable_value='{version}' where variable_name='tidb_server_version'"
+        ),
+        &[],
+    );
+}
+
+fn set_upgrade_global(session: &ConcreteSession, name: &str, value: Option<&str>) {
+    match value {
+        Some(value) => MustExec(
+            session,
+            &format!(
+                "insert into mysql.global_variables (variable_name, variable_value) values ('{name}', '{value}') on duplicate key update variable_value='{value}'"
+            ),
+            &[],
+        ),
+        None => MustExec(
+            session,
+            &format!("delete from mysql.global_variables where variable_name='{name}'"),
+            &[],
+        ),
+    }
+}
+
+fn upgraded_global(
+    version: i64,
+    name: &str,
+    value: Option<&str>,
+    read_runtime: bool,
+) -> (String, Option<String>) {
+    let (domain, session) = CreateBootstrapUpgradeTestSession();
+    set_upgrade_version(&session, version);
+    set_upgrade_global(&session, name, value);
+    drop(session);
+    let upgraded = BootstrapCanonicalDomain(Arc::clone(&domain)).expect("upgrade forked baseline");
+    let mut rows = MustExecToRecodeSet(
+        &upgraded,
+        &format!("select variable_value from mysql.global_variables where variable_name='{name}'"),
+        &[],
+    );
+    let value = rows
+        .Next()
+        .expect("read upgraded global variable")
+        .expect("upgraded global variable row")[0]
+        .clone();
+    rows.Close().expect("close upgraded global variable result");
+    let runtime_value = read_runtime
+        .then(|| domain.global_system_variable(name))
+        .flatten();
+    drop(upgraded);
+    (value, runtime_value)
+}
+
+#[test]
+fn bootstrap_upgrade_fixture_forks_are_isolated() {
+    let (first_domain, first) = CreateBootstrapUpgradeTestSession();
+    set_upgrade_version(&first, 33);
+    drop(first);
+    first_domain.close();
+
+    let (second_domain, second) = CreateBootstrapUpgradeTestSession();
+    let mut rows = MustExecToRecodeSet(
+        &second,
+        "select variable_value from mysql.tidb where variable_name='tidb_server_version'",
+        &[],
+    );
+    assert_eq!(
+        rows.Next().expect("read bootstrap version"),
+        Some(vec![
+            unsafe { astersql_session::upgrade_def::currentBootstrapVersion }.to_string()
+        ]),
+    );
+    rows.Close().expect("close bootstrap version result");
+    drop(second);
+    second_domain.close();
 }
 
 /// 校验 `mysql` 系统库含 user / global_variables / tidb 等核心表，且版本与表 ID 唯一。
@@ -621,63 +705,32 @@ fn upgrade_68_restores_clustered_index_default() {
 /// 对应 Go 的两个 analyze version 升级用例：缺失值初始化为 2，遗留值 1 也重写为 2。
 #[test]
 fn analyze_version_upgrades_missing_and_legacy_values_to_two() {
-    let (mut missing, rebootstrap_missing) = new_rebootstrap_test_kit();
-    set_bootstrap_version(&mut missing, 33);
-    missing.MustExec(
-        "delete from mysql.global_variables where variable_name='tidb_analyze_version'",
-        Vec::new(),
-    );
-    drop(missing);
-    let missing = rebootstrap_missing();
-    assert_eq!(
-        persistent_global_value(&missing, "tidb_analyze_version"),
-        vec![vec!["2".to_owned()]],
-    );
-
-    let (mut legacy, rebootstrap_legacy) = new_rebootstrap_test_kit();
-    set_bootstrap_version(&mut legacy, 254);
-    set_persistent_global(&mut legacy, "tidb_analyze_version", "1");
-    drop(legacy);
-    let legacy = rebootstrap_legacy();
-    assert_eq!(
-        persistent_global_value(&legacy, "tidb_analyze_version"),
-        vec![vec!["2".to_owned()]],
-    );
-    assert_eq!(
-        legacy
-            .MustQuery("select @@global.tidb_analyze_version", Vec::new())
-            .Rows(),
-        vec![vec!["2".to_owned()]],
-    );
+    let missing = std::thread::spawn(|| upgraded_global(33, "tidb_analyze_version", None, false));
+    let legacy =
+        std::thread::spawn(|| upgraded_global(254, "tidb_analyze_version", Some("1"), true));
+    assert_eq!(missing.join().expect("missing analyze upgrade").0, "2");
+    let legacy = legacy.join().expect("legacy analyze upgrade");
+    assert_eq!(legacy, ("2".to_owned(), Some("2".to_owned())));
 }
 
 /// 对应 Go 的 index merge 升级矩阵：3.0 缺失值初始化为 OFF；4.0 已有 OFF/ON
 /// 均必须原样保留。
 #[test]
 fn index_merge_upgrade_preserves_existing_choice_and_defaults_old_missing_to_off() {
-    let (mut missing, rebootstrap_missing) = new_rebootstrap_test_kit();
-    set_bootstrap_version(&mut missing, 33);
-    missing.MustExec(
-        "delete from mysql.global_variables where variable_name='tidb_enable_index_merge'",
-        Vec::new(),
-    );
-    drop(missing);
-    let missing = rebootstrap_missing();
-    assert_eq!(
-        persistent_global_value(&missing, "tidb_enable_index_merge"),
-        vec![vec!["OFF".to_owned()]],
-    );
-
-    for value in ["OFF", "ON"] {
-        let (mut tk, rebootstrap) = new_rebootstrap_test_kit();
-        set_bootstrap_version(&mut tk, 46);
-        set_persistent_global(&mut tk, "tidb_enable_index_merge", value);
-        drop(tk);
-        let tk = rebootstrap();
-        assert_eq!(
-            persistent_global_value(&tk, "tidb_enable_index_merge"),
-            vec![vec![value.to_owned()]],
-        );
+    let cases = [
+        (33, None, "OFF"),
+        (46, Some("OFF"), "OFF"),
+        (46, Some("ON"), "ON"),
+    ]
+    .map(|(version, value, expected)| {
+        std::thread::spawn(move || {
+            let actual = upgraded_global(version, "tidb_enable_index_merge", value, false).0;
+            (actual, expected)
+        })
+    });
+    for case in cases {
+        let (actual, expected) = case.join().expect("index merge upgrade case");
+        assert_eq!(actual, expected);
     }
 }
 
@@ -734,29 +787,17 @@ fn upgrade_135_initializes_advanced_join_hint_to_off() {
 /// 对应 Go 的 cost model 升级矩阵：旧缺失值初始化为 1，已有 1/2 均保留。
 #[test]
 fn cost_model_upgrade_defaults_old_missing_to_one_and_preserves_existing_value() {
-    let (mut missing, rebootstrap_missing) = new_rebootstrap_test_kit();
-    set_bootstrap_version(&mut missing, 33);
-    missing.MustExec(
-        "delete from mysql.global_variables where variable_name='tidb_cost_model_version'",
-        Vec::new(),
+    let cases = [(33, None, "1"), (91, Some("1"), "1"), (91, Some("2"), "2")].map(
+        |(version, value, expected)| {
+            std::thread::spawn(move || {
+                let actual = upgraded_global(version, "tidb_cost_model_version", value, false).0;
+                (actual, expected)
+            })
+        },
     );
-    drop(missing);
-    let missing = rebootstrap_missing();
-    assert_eq!(
-        persistent_global_value(&missing, "tidb_cost_model_version"),
-        vec![vec!["1".to_owned()]],
-    );
-
-    for value in ["1", "2"] {
-        let (mut tk, rebootstrap) = new_rebootstrap_test_kit();
-        set_bootstrap_version(&mut tk, 91);
-        set_persistent_global(&mut tk, "tidb_cost_model_version", value);
-        drop(tk);
-        let tk = rebootstrap();
-        assert_eq!(
-            persistent_global_value(&tk, "tidb_cost_model_version"),
-            vec![vec![value.to_owned()]],
-        );
+    for case in cases {
+        let (actual, expected) = case.join().expect("cost model upgrade case");
+        assert_eq!(actual, expected);
     }
 }
 

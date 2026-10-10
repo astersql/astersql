@@ -355,6 +355,7 @@ use astersql_meta_metadef::{
     CreateTiDBRunawayQueriesTable, ReservedGlobalIDLowerBound, ReservedGlobalIDUpperBound,
     TiDBGlobalTaskHistoryTableID, TiDBGlobalTaskTableID,
 };
+use astersql_session::bootstrap::CreateBootstrapUpgradeTestSession;
 use astersql_session::runtime::{BootstrapCanonicalDomain, CreateAnalyzeSession};
 use astersql_session::testutil::{MustExec, MustExecToRecodeSet, TestRecordSet};
 
@@ -503,11 +504,10 @@ fn upgrade_from_178_keeps_global_variable_value_capacity() {
 }
 
 fn upgrade_from_178_with_dist_task_injection(inject_sql: &str) {
-    let (domain, old_session) = CreateAnalyzeSession().expect("create bootstrapped store");
-    MustExec(&old_session, "use mysql", &[]);
+    let (domain, old_session) = CreateBootstrapUpgradeTestSession();
     MustExec(
         &old_session,
-        "update tidb set variable_value='178' where variable_name='tidb_server_version'",
+        "update mysql.tidb set variable_value='178' where variable_name='tidb_server_version'",
         &[],
     );
     MustExec(&old_session, inject_sql, &[]);
@@ -529,13 +529,19 @@ fn upgrade_from_178_is_nonfatal_for_both_dist_task_switch_values() {
 /// 对应 Go `TestTiDBUpgradeWithDistTaskRunning`：六种已有任务状态都不能让升级 fatal。
 #[test]
 fn upgrade_from_178_is_nonfatal_for_every_dist_task_state() {
-    for state in [
+    let cases = [
         "running", "succeed", "failed", "reverted", "paused", "other",
-    ] {
-        upgrade_from_178_with_dist_task_injection(&format!(
-            "insert into tidb_global_task (id, task_key, type, state) \
-             values (1, 'aaa', 'aaa', '{state}')"
-        ));
+    ]
+    .map(|state| {
+        std::thread::spawn(move || {
+            upgrade_from_178_with_dist_task_injection(&format!(
+                "insert into mysql.tidb_global_task (id, task_key, type, state) \
+                 values (1, 'aaa', 'aaa', '{state}')"
+            ));
+        })
+    });
+    for case in cases {
+        case.join().expect("dist-task state upgrade case");
     }
 }
 

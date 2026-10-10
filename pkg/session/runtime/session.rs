@@ -2516,8 +2516,10 @@ pub fn BootstrapCanonicalDomain(domain: Arc<Domain>) -> SessionResult<ConcreteSe
     }
 
     init_bootstrap_dependent_tables(&domain, previous_bootstrap_version)?;
-    for database in ["mysql", "sys", "test"] {
-        session.execute(&format!("CREATE DATABASE IF NOT EXISTS {database}"))?;
+    if !was_bootstrapped {
+        for database in ["mysql", "sys", "test"] {
+            session.execute(&format!("CREATE DATABASE IF NOT EXISTS {database}"))?;
+        }
     }
     for definition in astersql_meta_metadef::BootstrapSystemTableDefinitions {
         // Fresh bootstrap owns creation; classic upgrades below v280 were
@@ -2541,28 +2543,32 @@ pub fn BootstrapCanonicalDomain(domain: Arc<Domain>) -> SessionResult<ConcreteSe
         session.execute("ALTER RESOURCE GROUP default BACKGROUND=(TASK_TYPES='stats')")?;
     }
     upgrade_canonical_domain(&session, previous_bootstrap_version)?;
-    session
-        .execute(astersql_meta_metadef::CreateSysConfigTable)
-        .map_err(|error| session_error("bootstrap sys.sys_config", error))?;
-    session.execute(
-        "INSERT IGNORE INTO sys.sys_config (variable, value) VALUES \
-         ('statement_truncate_len', '64'), \
-         ('statement_performance_analyzer.limit', '100'), \
-         ('statement_performance_analyzer.view', NULL), \
-         ('diagnostics.allow_i_s_tables', 'OFF'), \
-         ('diagnostics.include_raw', 'OFF'), \
-         ('ps_thread_trx_info.max_length', '65535')",
-    )?;
+    if domain.stats_table("sys", "sys_config").is_none() {
+        session
+            .execute(astersql_meta_metadef::CreateSysConfigTable)
+            .map_err(|error| session_error("bootstrap sys.sys_config", error))?;
+        session.execute(
+            "INSERT IGNORE INTO sys.sys_config (variable, value) VALUES \
+             ('statement_truncate_len', '64'), \
+             ('statement_performance_analyzer.limit', '100'), \
+             ('statement_performance_analyzer.view', NULL), \
+             ('diagnostics.allow_i_s_tables', 'OFF'), \
+             ('diagnostics.include_raw', 'OFF'), \
+             ('ps_thread_trx_info.max_length', '65535')",
+        )?;
+    }
 
     // Keep the canonical mock bootstrap's persistent rows aligned with Go's
     // doDMLWorks.  Creating only the table definitions makes later bootstrap
     // and upgrade tests observe an empty mysql.tidb/global_variables table.
     astersql_sessionctx_variable::register_builtin_sysvars();
     let quote_sql = |value: &str| value.replace('\'', "''");
-    session.execute(
-        "INSERT IGNORE INTO mysql.user (Host, User, authentication_string, plugin) \
-         VALUES ('%', 'root', '', 'mysql_native_password')",
-    )?;
+    if !was_bootstrapped {
+        session.execute(
+            "INSERT IGNORE INTO mysql.user (Host, User, authentication_string, plugin) \
+             VALUES ('%', 'root', '', 'mysql_native_password')",
+        )?;
+    }
     let privilege_handle = runtime_privilege_handle(&domain);
     let mut privileges = privilege_handle.Get();
     if !privileges
@@ -2578,28 +2584,30 @@ pub fn BootstrapCanonicalDomain(domain: Arc<Domain>) -> SessionResult<ConcreteSe
         privileges.SortUserTable();
         privilege_handle.merge(privileges);
     }
-    let global_variables = astersql_sessionctx_variable::GetSysVars()
-        .into_values()
-        .filter(|variable| variable.HasGlobalScope())
-        .map(|variable| {
-            format!(
-                "('{}', '{}')",
-                quote_sql(&variable.Name),
-                quote_sql(&variable.Value)
-            )
-        })
-        .collect::<Vec<_>>();
-    if !global_variables.is_empty() {
+    if !was_bootstrapped {
+        let global_variables = astersql_sessionctx_variable::GetSysVars()
+            .into_values()
+            .filter(|variable| variable.HasGlobalScope())
+            .map(|variable| {
+                format!(
+                    "('{}', '{}')",
+                    quote_sql(&variable.Name),
+                    quote_sql(&variable.Value)
+                )
+            })
+            .collect::<Vec<_>>();
         // Go's doDMLWorks writes all initial global variables in one statement.
         // Keeping the same batching avoids one TiKV transaction per variable.
-        session.execute(&format!(
-            "INSERT IGNORE INTO mysql.global_variables (VARIABLE_NAME, VARIABLE_VALUE) VALUES {}",
-            global_variables.join(", ")
-        ))?;
+        if !global_variables.is_empty() {
+            session.execute(&format!(
+                "INSERT IGNORE INTO mysql.global_variables (VARIABLE_NAME, VARIABLE_VALUE) VALUES {}",
+                global_variables.join(", ")
+            ))?;
+        }
     }
     // SAFETY: bootstrap only reads the shared compatibility version.
     let bootstrap_version = unsafe { crate::upgrade_def::currentBootstrapVersion }.to_string();
-    for (name, value, comment) in [
+    let bootstrap_variables = [
         ("bootstrapped", "True", "Bootstrap flag"),
         (
             "tidb_server_version",
@@ -2609,7 +2617,13 @@ pub fn BootstrapCanonicalDomain(domain: Arc<Domain>) -> SessionResult<ConcreteSe
         ("ddl_table_version", "4", "DDL table version"),
         ("new_collation_enabled", "False", "New collation flag"),
         ("system_tz", "CST", "System timezone"),
-    ] {
+    ];
+    let variables = if was_bootstrapped {
+        &bootstrap_variables[1..2]
+    } else {
+        &bootstrap_variables[..]
+    };
+    for (name, value, comment) in variables {
         session.execute(&format!(
             "INSERT INTO mysql.tidb (VARIABLE_NAME, VARIABLE_VALUE, COMMENT) \
              VALUES ('{}', '{}', '{}') ON DUPLICATE KEY UPDATE \
@@ -2632,6 +2646,7 @@ pub fn BootstrapCanonicalDomain(domain: Arc<Domain>) -> SessionResult<ConcreteSe
     // Refresh the authoritative catalog and its hooks before exposing it to the
     // server factory; a previous Domain override must not mask a backfill.
     for name in [
+        astersql_sessionctx_vardef::TiDBAnalyzeVersion,
         astersql_sessionctx_vardef::TiDBAnalyzeDefaultNumBuckets,
         astersql_sessionctx_vardef::TiDBAnalyzeDefaultNumTopN,
         astersql_sessionctx_vardef::TiDBPersistAnalyzeOptions,

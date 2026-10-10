@@ -28,6 +28,57 @@ use std::time::Duration;
 
 use astersql_meta_metadef as metadef;
 
+/// Build an isolated Domain from a shared, fully bootstrapped in-memory image.
+///
+/// Bootstrap upgrade tests need a real SQL/KV bootstrap baseline, but rebuilding
+/// every system table for every matrix entry obscures the upgrade being tested.
+/// The immutable image is initialized once; each caller receives an independent
+/// MVCC fork with its own Domain, transactions, TSO allocation and failure state.
+#[doc(hidden)]
+pub fn CreateBootstrapUpgradeTestSession() -> (
+    std::sync::Arc<astersql_domain::Domain>,
+    crate::runtime::ConcreteSession,
+) {
+    use std::sync::{Arc, OnceLock};
+
+    fn domain_from_kv(
+        kv: astersql_store_mockstore_mockstorage::KVStore,
+    ) -> Arc<astersql_domain::Domain> {
+        let storage = Arc::try_unwrap(
+            astersql_store_mockstore_mockstorage::NewMockStorage(kv, None)
+                .expect("create bootstrap upgrade mock storage"),
+        )
+        .ok()
+        .expect("bootstrap upgrade storage must have one owner");
+        let mut config = astersql_domain::DomainConfig::default();
+        config.schema_lease = Duration::ZERO;
+        config.stats_lease = Duration::ZERO;
+        let domain = Arc::new(astersql_domain::Domain::new(
+            storage,
+            Arc::new(astersql_domain::KvInfoSchemaLoader::new()),
+            config,
+        ));
+        domain.init().expect("initialize bootstrap upgrade Domain");
+        domain
+    }
+
+    static BASELINE: OnceLock<(
+        astersql_store_mockstore_mockstorage::KVStore,
+        Arc<astersql_domain::Domain>,
+    )> = OnceLock::new();
+    let baseline = BASELINE.get_or_init(|| {
+        let kv = astersql_store_mockstore_mockstorage::KVStore::NewMemoryWithWallClockTSO();
+        let domain = domain_from_kv(kv.clone());
+        let session = crate::runtime::BootstrapCanonicalDomain(Arc::clone(&domain))
+            .expect("create bootstrap upgrade baseline");
+        drop(session);
+        (kv, domain)
+    });
+    let domain = domain_from_kv(baseline.0.ForkForTest());
+    let session = crate::runtime::ConcreteSession::new(Arc::clone(&domain));
+    (domain, session)
+}
+
 /// 分布式 DDL Owner 锁在 etcd 上的键前缀。
 pub const bootstrapOwnerKey: &str = "/tidb/distributeDDLOwnerLock/";
 /// mysql.tidb 中布尔 True 字面量。
