@@ -84,3 +84,9 @@ slow-timeout = { period = "30s", terminate-after = 2, grace-period = "1s" }
 [profile.diagnostic]
 test-threads = 1
 slow-timeout = { period = "30s", terminate-after = 2, grace-period = "1s" }
+
+# Measure isolated test latency without weakening the default CI profile. A test
+# is reported as slow after one second and is bounded at sixty seconds.
+[profile.perf-audit]
+test-threads = 1
+slow-timeout = { period = "1s", terminate-after = 60, grace-period = "1s" }
