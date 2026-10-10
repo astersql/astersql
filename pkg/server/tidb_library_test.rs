@@ -6,16 +6,34 @@
 /// mock KV store and bootstraps the production session/Domain stack.
 #[test]
 fn test_memory_leak() {
+    use std::sync::mpsc;
+
     const MIB: u64 = 1024 * 1024;
+    const CYCLES: usize = 20;
 
     let old_heap_in_use = astersql_util_memory::memstats::ForceReadMemStats().heap_inuse;
 
-    for _ in 0..20 {
-        let (domain, session) = astersql_session::runtime::CreateAnalyzeSession()
-            .expect("create mock store and bootstrap session");
-        drop(session);
-        domain.close();
-        drop(domain);
+    // Every cycle still owns an independent real mock store and canonical
+    // Domain, matching Go's initAndCloseTiDB workload.  They do not share
+    // mutable state, so execute them concurrently and use the channel only as
+    // an explicit resource-termination acknowledgement before measuring heap.
+    let (closed_tx, closed_rx) = mpsc::channel();
+    let mut workers = Vec::with_capacity(CYCLES);
+    for _ in 0..CYCLES {
+        let closed_tx = closed_tx.clone();
+        workers.push(std::thread::spawn(move || {
+            let (domain, session) = astersql_session::runtime::CreateAnalyzeSession()
+                .expect("create mock store and bootstrap session");
+            drop(session);
+            domain.close();
+            drop(domain);
+            closed_tx.send(()).expect("report closed Domain");
+        }));
+    }
+    drop(closed_tx);
+    assert_eq!(closed_rx.iter().count(), CYCLES);
+    for worker in workers {
+        worker.join().expect("bootstrap/close worker");
     }
 
     let heap_in_use = astersql_util_memory::memstats::ForceReadMemStats().heap_inuse;
@@ -27,7 +45,7 @@ fn test_memory_leak() {
     };
     assert!(
         growth < limit,
-        "20 bootstrap/close cycles retained {growth} bytes of heap (limit {limit})"
+        "{CYCLES} bootstrap/close cycles retained {growth} bytes of heap (limit {limit})"
     );
 }
 

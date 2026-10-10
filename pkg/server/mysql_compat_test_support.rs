@@ -154,6 +154,12 @@ impl MysqlCompatServer {
     ) -> Result<MysqlTestClient, String> {
         MysqlTestClient::connect_as(self.mysql_addr, username, extra_capabilities, None, &[])
     }
+
+    /// Deterministically stop both listeners before assertions inspect released
+    /// resources; `Drop` remains the panic-safe fallback for other tests.
+    pub(crate) fn close(&self) {
+        self.server.close();
+    }
 }
 
 impl Drop for MysqlCompatServer {

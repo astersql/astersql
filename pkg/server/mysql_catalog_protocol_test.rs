@@ -6,6 +6,7 @@
 // ColumnDefinition41 元数据与状态标志，并分别覆盖传统 EOF 包和弃用 EOF 包两种模式。
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Mutex, OnceLock};
 
 use serde_json::Value;
 
@@ -27,16 +28,20 @@ const UNSIGNED_FLAG: u16 = 0x0020;
 const AUTO_INCREMENT_FLAG: u16 = 0x0200;
 const SERVER_STATUS_AUTOCOMMIT: u16 = 0x0002;
 
-fn tcp_cases() -> Vec<Value> {
+fn tcp_cases() -> &'static [Value] {
+    static TCP_CASES: OnceLock<Vec<Value>> = OnceLock::new();
+
     // 同一份清单也服务于其他协议层；这里只执行要求经过 TCP 线协议验证的必选用例。
-    serde_json::from_str::<Vec<Value>>(MANIFEST)
-        .expect("parse MySQL compatibility manifest")
-        .into_iter()
-        .filter(|case| {
-            case.get("layer").and_then(Value::as_str) == Some("tcp")
-                && case.get("required").and_then(Value::as_bool) == Some(true)
-        })
-        .collect()
+    TCP_CASES.get_or_init(|| {
+        serde_json::from_str::<Vec<Value>>(MANIFEST)
+            .expect("parse MySQL compatibility manifest")
+            .into_iter()
+            .filter(|case| {
+                case.get("layer").and_then(Value::as_str) == Some("tcp")
+                    && case.get("required").and_then(Value::as_bool) == Some(true)
+            })
+            .collect()
+    })
 }
 
 fn strings(value: &Value, field: &str, case_id: &str) -> Vec<String> {
@@ -177,28 +182,35 @@ fn assert_column_contract(actual: &ColumnDefinition, expected: &Value, case_id: 
     }
 }
 
-fn run_manifest(capabilities: u32) -> usize {
+fn run_manifest(
+    server: &MysqlCompatServer,
+    capabilities: u32,
+    identity_database: &Mutex<()>,
+) -> usize {
     let mut executed = 0;
+    let mut client = server
+        .connect_root(capabilities, None)
+        .unwrap_or_else(|error| panic!("connect real listener: {error}"));
 
     for case in tcp_cases() {
         let case_id = case["id"].as_str().expect("TCP manifest case id");
-        let server = MysqlCompatServer::start()
-            .unwrap_or_else(|error| panic!("{case_id}: start real listener: {error}"));
-        let mut client = server
-            .connect_root(capabilities, None)
-            .unwrap_or_else(|error| panic!("{case_id}: connect real listener: {error}"));
-        // Go's mock store bootstraps root with global privileges.  The Rust
-        // real-listener fixture deliberately only bypasses root authentication,
-        // so materialize the equivalent privilege rows before exercising
-        // catalog tables through the production privilege checker.
-        for sql in [
-            "CREATE USER IF NOT EXISTS 'root'@'%'",
-            "GRANT ALL PRIVILEGES ON *.* TO 'root'@'%'",
-        ] {
-            let response = client.query(sql).unwrap_or_else(|error| {
-                panic!("{case_id}.root bootstrap transport failure: {error}")
-            });
-            expect_ok(response, case_id, sql);
+        let identity_guard = if case_id == "protocol.column-definition41-identity" {
+            Some(
+                identity_database
+                    .lock()
+                    .expect("identity database lock poisoned"),
+            )
+        } else {
+            None
+        };
+        if identity_guard.is_some() {
+            expect_ok(
+                client
+                    .query("DROP DATABASE IF EXISTS manifest_protocol")
+                    .expect("reset identity manifest database"),
+                case_id,
+                "DROP DATABASE IF EXISTS manifest_protocol",
+            );
         }
         for sql in strings(&case, "setup_sql", case_id) {
             let response = client
@@ -312,7 +324,15 @@ fn run_manifest(capabilities: u32) -> usize {
                 prepared.columns, direct.columns,
                 "{case_id}.prepared metadata mismatch"
             );
+            expect_ok(
+                client
+                    .query("DROP DATABASE manifest_protocol")
+                    .expect("drop identity manifest database"),
+                case_id,
+                "DROP DATABASE manifest_protocol",
+            );
         }
+        drop(identity_guard);
         executed += 1;
     }
     executed
@@ -327,11 +347,42 @@ fn mysql_catalog_protocol_manifest_matches_wire_metadata() {
         .collect::<BTreeSet<_>>();
     assert_eq!(ids.len(), 6, "required TCP manifest case count changed");
 
-    // 每个用例在两种 EOF 协商模式下都必须产生相同的目录与列元数据契约。
-    let classic = run_manifest(0);
-    let deprecate_eof = run_manifest(CLIENT_DEPRECATE_EOF);
+    // Server/Domain bootstrap does not affect per-connection EOF negotiation.
+    // Reuse the real listener while keeping an independent connection and
+    // database cleanup for each mode, so all twelve wire scenarios retain the
+    // same isolation without repeating the expensive catalog bootstrap.
+    let server = MysqlCompatServer::start().expect("start shared real listener");
+    // Go's mock store bootstraps root with global privileges. The Rust fixture
+    // only bypasses root authentication, so initialize the shared privilege
+    // rows before the two capability connections run concurrently.
+    let mut bootstrap = server
+        .connect_root(0, None)
+        .expect("connect bootstrap root");
+    for sql in [
+        "CREATE USER IF NOT EXISTS 'root'@'%'",
+        "GRANT ALL PRIVILEGES ON *.* TO 'root'@'%'",
+    ] {
+        let response = bootstrap
+            .query(sql)
+            .unwrap_or_else(|error| panic!("root bootstrap transport failure: {error}"));
+        expect_ok(response, "root-bootstrap", sql);
+    }
+    drop(bootstrap);
+    let identity_database = Mutex::new(());
+    let (classic, deprecate_eof) = std::thread::scope(|scope| {
+        let classic = scope.spawn(|| run_manifest(&server, 0, &identity_database));
+        let deprecate_eof =
+            scope.spawn(|| run_manifest(&server, CLIENT_DEPRECATE_EOF, &identity_database));
+        (
+            classic.join().expect("classic EOF manifest worker"),
+            deprecate_eof
+                .join()
+                .expect("deprecated EOF manifest worker"),
+        )
+    });
     assert_eq!(classic, 6);
     assert_eq!(deprecate_eof, 6);
+    server.close();
     println!(
         "mysql catalog protocol manifest: {} cases x 2 EOF modes = {} wire scenarios",
         ids.len(),
