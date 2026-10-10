@@ -15,13 +15,13 @@
 
 //! Executable parity tests for Go's join-reorder casetest suite.
 
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::CreatePlannerTestStoreAndDomain;
 use astersql_testkit::testdata::TestData;
 use astersql_testkit::{Rows, TestKit};
 use std::path::Path;
 
 fn new_testkit(cascades: bool) -> TestKit {
-    let (store, _domain) = CreateMockStoreAndDomain();
+    let (store, _domain) = CreatePlannerTestStoreAndDomain();
     let mut tk = TestKit::new(store);
     tk.MustExec("use test", Vec::new());
     tk.MustExec(
@@ -54,51 +54,66 @@ fn run_fixture(tk: &TestKit, suite: &TestData, name: &str, cascades: bool) {
         .as_array()
         .unwrap_or_else(|| panic!("{name} output array"));
     assert_eq!(input.len(), output.len(), "{name} input/output count");
-    for (index, (sql, expected)) in input.iter().zip(output).enumerate() {
-        let sql = sql
-            .as_str()
-            .unwrap_or_else(|| panic!("{name}[{index}] SQL"));
-        assert_eq!(expected.get("SQL").and_then(|v| v.as_str()), Some(sql));
-        let plan = expected
-            .get("Plan")
-            .unwrap_or_else(|| panic!("{name}[{index}] Plan"))
-            .as_array()
-            .unwrap_or_else(|| panic!("{name}[{index}] Plan array"))
-            .iter()
-            .map(|v| {
-                v.as_str()
-                    .unwrap_or_else(|| panic!("{name}[{index}] Plan row"))
-                    .to_owned()
-            })
-            .collect::<Vec<_>>();
-        let warnings = expected
-            .get("Warning")
-            .unwrap_or_else(|| panic!("{name}[{index}] Warning"))
-            .as_array()
-            .map(|rows| {
-                rows.iter()
+    let store = tk.Store();
+    std::thread::scope(|scope| {
+        for (index, (sql, expected)) in input.iter().zip(output).enumerate() {
+            let store = store.clone();
+            scope.spawn(move || {
+                let sql = sql
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{name}[{index}] SQL"));
+                assert_eq!(expected.get("SQL").and_then(|v| v.as_str()), Some(sql));
+                let plan = expected
+                    .get("Plan")
+                    .unwrap_or_else(|| panic!("{name}[{index}] Plan"))
+                    .as_array()
+                    .unwrap_or_else(|| panic!("{name}[{index}] Plan array"))
+                    .iter()
                     .map(|v| {
                         v.as_str()
-                            .unwrap_or_else(|| panic!("{name}[{index}] Warning row"))
+                            .unwrap_or_else(|| panic!("{name}[{index}] Plan row"))
                             .to_owned()
                     })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        assert!(!plan.is_empty(), "{name}[{index}] recorded Plan is empty");
-        let actual = tk
-            .MustQuery(&format!("explain format = 'plan_tree' {sql}"), Vec::new())
-            .Rows();
-        assert!(
-            !actual.is_empty(),
-            "{name}[{index}] executable Plan is empty"
-        );
-        // The Rust TestKit currently renders a compact plan rather than TiDB's
-        // complete golden text.  Still validate the Go warning fixture shape and
-        // execute SHOW WARNINGS for every case so neither contract is dormant.
-        assert!(warnings.iter().all(|warning| !warning.is_empty()));
-        let _ = tk.MustQuery("show warnings", Vec::new()).Rows();
-    }
+                    .collect::<Vec<_>>();
+                let warnings = expected
+                    .get("Warning")
+                    .unwrap_or_else(|| panic!("{name}[{index}] Warning"))
+                    .as_array()
+                    .map(|rows| {
+                        rows.iter()
+                            .map(|v| {
+                                v.as_str()
+                                    .unwrap_or_else(|| panic!("{name}[{index}] Warning row"))
+                                    .to_owned()
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                assert!(!plan.is_empty(), "{name}[{index}] recorded Plan is empty");
+                let mut case_tk = TestKit::new(store);
+                case_tk.MustExec("use test", Vec::new());
+                case_tk.MustExec(
+                    &format!(
+                        "set @@tidb_enable_cascades_planner={}",
+                        if cascades { "on" } else { "off" }
+                    ),
+                    Vec::new(),
+                );
+                let actual = case_tk
+                    .MustQuery(&format!("explain format = 'plan_tree' {sql}"), Vec::new())
+                    .Rows();
+                assert!(
+                    !actual.is_empty(),
+                    "{name}[{index}] executable Plan is empty"
+                );
+                // The Rust TestKit currently renders a compact plan rather than TiDB's
+                // complete golden text.  Still validate the Go warning fixture shape and
+                // execute SHOW WARNINGS for every case so neither contract is dormant.
+                assert!(warnings.iter().all(|warning| !warning.is_empty()));
+                let _ = case_tk.MustQuery("show warnings", Vec::new()).Rows();
+            });
+        }
+    });
 }
 
 fn standard_tables(tk: &mut TestKit, partitioned: bool) {
@@ -124,53 +139,71 @@ fn standard_tables(tk: &mut TestKit, partitioned: bool) {
     }
 }
 
-#[test]
-fn join_reorder_go_fixture_cases() {
+fn run_join_reorder_scenario(cascades: bool, scenario: usize) {
     let suite = load_suite();
-    for cascades in [false, true] {
-        let mut tk = new_testkit(cascades);
-        tk.MustExec("drop table if exists t1,t2,t3,t4", Vec::new());
-        tk.MustExec("set tidb_opt_enable_hash_join=off", Vec::new());
-        for table in ["t1", "t2", "t3", "t4"] {
-            tk.MustExec(
-                &format!("create table {table}(a int,b int,key(a))"),
-                Vec::new(),
+    let mut tk = new_testkit(cascades);
+    match scenario {
+        0 => {
+            tk.MustExec("drop table if exists t1,t2,t3,t4", Vec::new());
+            tk.MustExec("set tidb_opt_enable_hash_join=off", Vec::new());
+            for table in ["t1", "t2", "t3", "t4"] {
+                tk.MustExec(
+                    &format!("create table {table}(a int,b int,key(a))"),
+                    Vec::new(),
+                );
+            }
+            run_fixture(&tk, &suite, "TestOptEnableHashJoin", cascades);
+        }
+        1 => {
+            standard_tables(&mut tk, true);
+            tk.MustExec("set @@tidb_partition_prune_mode='dynamic'", Vec::new());
+            tk.MustExec("set @@tidb_enable_outer_join_reorder=true", Vec::new());
+            run_fixture(
+                &tk,
+                &suite,
+                "TestJoinOrderHint4DynamicPartitionTable",
+                cascades,
             );
         }
-        run_fixture(&tk, &suite, "TestOptEnableHashJoin", cascades);
-        tk.MustExec("set tidb_opt_enable_hash_join=on", Vec::new());
-
-        standard_tables(&mut tk, true);
-        tk.MustExec("set @@tidb_partition_prune_mode='dynamic'", Vec::new());
-        tk.MustExec("set @@tidb_enable_outer_join_reorder=true", Vec::new());
-        run_fixture(
-            &tk,
-            &suite,
-            "TestJoinOrderHint4DynamicPartitionTable",
-            cascades,
-        );
-
-        standard_tables(&mut tk, false);
-        tk.MustExec("set @@tidb_allow_mpp=1", Vec::new());
-        tk.MustExec("set @@tidb_enforce_mpp=1", Vec::new());
-        run_fixture(&tk, &suite, "TestJoinOrderHint4TiFlash", cascades);
-        tk.MustExec("set @@tidb_allow_mpp=0", Vec::new());
-        tk.MustExec("set @@tidb_enforce_mpp=0", Vec::new());
-        run_fixture(&tk, &suite, "TestJoinOrderHint4NestedLeading", cascades);
-
-        tk.MustExec("drop table if exists t1,t2,t3,t4", Vec::new());
-        tk.MustExec("create table t1(a int not null,b int,key(a))", Vec::new());
-        tk.MustExec("create table t2(a int not null,b int,key(a))", Vec::new());
-        tk.MustExec(
-            "create table t3(a int not null,b int not null,primary key(a))",
-            Vec::new(),
-        );
-        tk.MustExec(
-            "create table t4(a int not null,b int not null,primary key(b))",
-            Vec::new(),
-        );
-        run_fixture(&tk, &suite, "TestJoinOrderHint4NestedLeadingPK", cascades);
+        2 => {
+            standard_tables(&mut tk, false);
+            tk.MustExec("set @@tidb_allow_mpp=1", Vec::new());
+            tk.MustExec("set @@tidb_enforce_mpp=1", Vec::new());
+            run_fixture(&tk, &suite, "TestJoinOrderHint4TiFlash", cascades);
+        }
+        3 => {
+            standard_tables(&mut tk, false);
+            tk.MustExec("set @@tidb_allow_mpp=0", Vec::new());
+            tk.MustExec("set @@tidb_enforce_mpp=0", Vec::new());
+            run_fixture(&tk, &suite, "TestJoinOrderHint4NestedLeading", cascades);
+        }
+        4 => {
+            tk.MustExec("drop table if exists t1,t2,t3,t4", Vec::new());
+            tk.MustExec("create table t1(a int not null,b int,key(a))", Vec::new());
+            tk.MustExec("create table t2(a int not null,b int,key(a))", Vec::new());
+            tk.MustExec(
+                "create table t3(a int not null,b int not null,primary key(a))",
+                Vec::new(),
+            );
+            tk.MustExec(
+                "create table t4(a int not null,b int not null,primary key(b))",
+                Vec::new(),
+            );
+            run_fixture(&tk, &suite, "TestJoinOrderHint4NestedLeadingPK", cascades);
+        }
+        _ => unreachable!("unknown join reorder scenario"),
     }
+}
+
+#[test]
+fn join_reorder_go_fixture_cases() {
+    std::thread::scope(|scope| {
+        for cascades in [false, true] {
+            for scenario in 0..5 {
+                scope.spawn(move || run_join_reorder_scenario(cascades, scenario));
+            }
+        }
+    });
 }
 
 #[test]

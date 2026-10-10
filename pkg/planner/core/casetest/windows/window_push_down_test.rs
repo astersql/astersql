@@ -22,7 +22,7 @@
 use astersql_planner_core::rule_derive_topn_from_window::DeriveTopNFromWindow;
 use astersql_planner_core::task::{Expression, PlanFlags, PlanKind, PlanNode};
 use astersql_testkit::TestKit;
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::CreatePlannerTestStoreAndDomain;
 use astersql_testkit::testdata::ConvertRowsToStrings;
 
 const GO_WINDOW_PUSH_DOWN_TESTS: [&str; 3] = [
@@ -64,7 +64,7 @@ fn window_push_down_suite_inventory_matches_go() {
 }
 
 fn setup_employee_case() -> (std::sync::Arc<astersql_domain::Domain>, TestKit) {
-    let (store, domain) = CreateMockStoreAndDomain();
+    let (store, domain) = CreatePlannerTestStoreAndDomain();
     let mut tk = TestKit::new(store);
     tk.MustExec("use test", Vec::new());
     tk.MustExec("drop table if exists employee", Vec::new());
@@ -197,11 +197,13 @@ fn run_window_push_down_suite(test_name: &str, cascades: bool) {
 
 #[test]
 fn window_go_golden_replay_matches_standard_and_cascades_planners() {
-    for cascades in [false, true] {
-        for test_name in GO_WINDOW_PUSH_DOWN_TESTS {
-            run_window_push_down_suite(test_name, cascades);
+    std::thread::scope(|scope| {
+        for cascades in [false, true] {
+            for test_name in GO_WINDOW_PUSH_DOWN_TESTS {
+                scope.spawn(move || run_window_push_down_suite(test_name, cascades));
+            }
         }
-    }
+    });
 }
 
 /// Go `handleDefaultFrame` records one frame-ignored note for one EXPLAIN;

@@ -2705,11 +2705,11 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
         | ExpressionRule::DefaultOrExpressionListAlt02 => {
             let mut values = rhs[rhs_len - (2)]
                 .item
-                .as_deref()
-                .and_then(|item| item.downcast_ref::<Vec<parser_ast::ExprNode>>())
-                .cloned()
+                .take()
+                .and_then(|item| item.downcast::<Vec<parser_ast::ExprNode>>().ok())
+                .map(|values| *values)
                 .unwrap_or_default();
-            if let Some(value) = rhs[rhs_len - (0)].expr.clone() {
+            if let Some(value) = rhs[rhs_len - (0)].expr.take() {
                 values.push(value);
             }
             out.item = Some(Box::new(values));
@@ -2884,14 +2884,14 @@ fn apply_rule(rule: ExpressionRule, mut rhs: Rhs<'_>, context: Context<'_>) -> R
         | ExpressionRule::AnyOrAllAlt01
         | ExpressionRule::AnyOrAllAlt02 => out.item = Some(Box::new(false)),
         ExpressionRule::PredicateExprAlt01 => {
-            let Some(expr) = rhs[rhs_len - (4)].expr.clone() else {
+            let Some(expr) = rhs[rhs_len - (4)].expr.take() else {
                 return Ok(false);
             };
             let list = rhs[rhs_len - (1)]
                 .item
-                .as_deref()
-                .and_then(|item| item.downcast_ref::<Vec<parser_ast::ExprNode>>())
-                .cloned()
+                .take()
+                .and_then(|item| item.downcast::<Vec<parser_ast::ExprNode>>().ok())
+                .map(|list| *list)
                 .unwrap_or_default();
             let not = !rhs[rhs_len - (3)]
                 .item

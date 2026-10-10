@@ -40,7 +40,7 @@ pub struct TestKitDraft {
 impl TestKitDraft {
     fn new() -> Self {
         Self {
-            inner: crate::support::new_testkit(),
+            inner: TestKit::new(astersql_testkit::mockstore::CreatePlannerTestStoreAndDomain().0),
         }
     }
 
@@ -213,7 +213,7 @@ pub fn test_list_columns_partition_pruner() {
         );
         let store = tk.inner.Store();
         let mut tk1 = TestKitDraft::from_store(store.clone());
-        let mut tk2 = TestKitDraft::from_store(store);
+        let mut tk2 = TestKitDraft::from_store(store.clone());
         for sql in &LIST_COLUMNS_PARTITION_SETUP[..7] {
             tk.must_exec(*sql);
         }
@@ -230,31 +230,46 @@ pub fn test_list_columns_partition_pruner() {
         );
         tk1.must_exec(&cascades_sql);
         tk2.must_exec(&cascades_sql);
-        let mut compared_with_normal_table = false;
-        for case in load_list_columns_cases(cascades, caller) {
-            let plan_sql = format!("explain format = 'plan_tree' {}", case.sql);
-            tk.must_query_check(&plan_sql, &case.plan);
-            tk1.must_query_check(&plan_sql, &case.index_plan);
-            check_prune_partition_info(&case.sql, &case.pruner, &case.plan);
-            check_prune_partition_info(&case.sql, &case.pruner, &case.index_plan);
-            let mut result = tk.inner.MustQuery(&case.sql, Vec::new());
-            let mut index_result = tk1.inner.MustQuery(&case.sql, Vec::new());
-            result.Sort();
-            index_result.Sort();
-            result.Check(index_result.Rows());
-            result.Check(Rows(
-                &case.result.iter().map(String::as_str).collect::<Vec<_>>(),
-            ));
+        let cases = load_list_columns_cases(cascades, caller);
+        assert!(cases.iter().any(|case| !case.sql.contains("partition(")));
+        std::thread::scope(|scope| {
+            for case in cases {
+                let store = store.clone();
+                let cascades_sql = cascades_sql.clone();
+                scope.spawn(move || {
+                    let mut partition = TestKitDraft::from_store(store.clone());
+                    let mut indexed = TestKitDraft::from_store(store.clone());
+                    let mut normal = TestKitDraft::from_store(store);
+                    partition.must_exec("use test_partition");
+                    indexed.must_exec("use test_partition_1");
+                    normal.must_exec("use test_partition_2");
+                    partition.must_exec(&cascades_sql);
+                    indexed.must_exec(&cascades_sql);
+                    normal.must_exec(&cascades_sql);
+                    indexed.must_exec("set @@tidb_enable_chunk_rpc = on");
 
-            if !case.sql.contains("partition(") {
-                // Go 只有未显式指定 partition 的查询才与普通表结果比较，并要求至少命中一次。
-                let mut normal_result = tk2.inner.MustQuery(&case.sql, Vec::new());
-                normal_result.Sort();
-                result.Check(normal_result.Rows());
-                compared_with_normal_table = true;
+                    let plan_sql = format!("explain format = 'plan_tree' {}", case.sql);
+                    partition.must_query_check(&plan_sql, &case.plan);
+                    indexed.must_query_check(&plan_sql, &case.index_plan);
+                    check_prune_partition_info(&case.sql, &case.pruner, &case.plan);
+                    check_prune_partition_info(&case.sql, &case.pruner, &case.index_plan);
+                    let mut result = partition.inner.MustQuery(&case.sql, Vec::new());
+                    let mut index_result = indexed.inner.MustQuery(&case.sql, Vec::new());
+                    result.Sort();
+                    index_result.Sort();
+                    result.Check(index_result.Rows());
+                    result.Check(Rows(
+                        &case.result.iter().map(String::as_str).collect::<Vec<_>>(),
+                    ));
+
+                    if !case.sql.contains("partition(") {
+                        let mut normal_result = normal.inner.MustQuery(&case.sql, Vec::new());
+                        normal_result.Sort();
+                        result.Check(normal_result.Rows());
+                    }
+                });
             }
-        }
-        assert!(compared_with_normal_table);
+        });
         disable_failpoint("github.com/pingcap/tidb/pkg/planner/core/forceDynamicPrune");
     });
 }
@@ -280,9 +295,13 @@ pub fn test_point_get_int_handle_not_first() {
 /// 对应 Go `TestRangeDatePruningExtract`：DATE/DATETIME(+FSP) 的 EXTRACT 裁剪。
 pub fn test_range_date_pruning_extract() {
     let _serial = serial_partition_pruner_test();
-    for col_type in ["DATE", "DATETIME", "DATETIME(1)", "DATETIME(6)"] {
-        run_extract_test_cases(col_type, date_extract_cases());
-    }
+    std::thread::scope(|scope| {
+        for col_type in ["DATE", "DATETIME", "DATETIME(1)", "DATETIME(6)"] {
+            for case in date_extract_cases() {
+                scope.spawn(move || run_extract_test_cases(col_type, vec![case]));
+            }
+        }
+    });
 }
 
 // run_extract_test_cases 对应 Go 的 runExtractTestCases。
@@ -366,16 +385,20 @@ pub fn run_extract_test_cases(col_type: &str, extract_test_cases: Vec<ExtractTes
 /// 对应 Go `TestRangeTimePruningExtract`：TIME/TIMESTAMP(+FSP) 的 EXTRACT 裁剪。
 pub fn test_range_time_pruning_extract() {
     let _serial = serial_partition_pruner_test();
-    for col_type in [
-        "TIME",
-        "TIME(1)",
-        "TIME(6)",
-        "TIMESTAMP",
-        "TIMESTAMP(1)",
-        "TIMESTAMP(6)",
-    ] {
-        run_extract_test_cases(col_type, time_extract_cases());
-    }
+    std::thread::scope(|scope| {
+        for col_type in [
+            "TIME",
+            "TIME(1)",
+            "TIME(6)",
+            "TIMESTAMP",
+            "TIMESTAMP(1)",
+            "TIMESTAMP(6)",
+        ] {
+            for case in time_extract_cases() {
+                scope.spawn(move || run_extract_test_cases(col_type, vec![case]));
+            }
+        }
+    });
 }
 
 // test_partition_pruner_regression 对应 Go 的 TestPartitionPrunerRegression。
@@ -531,16 +554,21 @@ pub fn disable_failpoint(path: &str) {
 /// 对应 `testkit.RunTestUnderCascades`，使用真实 TestKit 运行两个 planner 模式。
 pub fn run_test_under_cascades<F>(mut f: F)
 where
-    F: FnMut(&mut TestKitDraft, &str, &str),
+    F: Fn(&mut TestKitDraft, &str, &str) + Sync,
 {
-    for (cascades, caller) in [("off", "classic"), ("on", "cascades")] {
-        let mut tk = TestKitDraft::new();
-        tk.must_exec(format!(
-            "set @@tidb_enable_cascades_planner = {}",
-            if cascades == "on" { "on" } else { "off" }
-        ));
-        f(&mut tk, cascades, caller);
-    }
+    std::thread::scope(|scope| {
+        let f = &f;
+        for (cascades, caller) in [("off", "classic"), ("on", "cascades")] {
+            scope.spawn(move || {
+                let mut tk = TestKitDraft::new();
+                tk.must_exec(format!(
+                    "set @@tidb_enable_cascades_planner = {}",
+                    if cascades == "on" { "on" } else { "off" }
+                ));
+                f(&mut tk, cascades, caller);
+            });
+        }
+    });
 }
 
 /// hash 分区裁剪 testdata 单条：SQL 与期望结果行。

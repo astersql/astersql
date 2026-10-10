@@ -1884,6 +1884,23 @@ pub fn CreateMockStoreAndDomainWithSchemaLease(
     (store, domain)
 }
 
+/// Create a real mock-backed planner fixture without bootstrapping unrelated
+/// statistics system tables. Planner casetests still use the production
+/// Domain, transactional KV storage, DDL, sessions, and optimizer.
+pub fn CreatePlannerTestStoreAndDomain() -> (Arc<AnalyzeStatsStore>, Arc<Domain>) {
+    let active_sessions = Arc::new(AtomicUsize::new(0));
+    let bootstrap = AnalyzeSessionDatabase::spawn(Arc::clone(&active_sessions), 0, || {
+        create_session_with_schema_loader(Arc::new(KvInfoSchemaLoader::new()), Duration::ZERO)
+    });
+    let store = Arc::new(AnalyzeStatsStore::from_bootstrap(
+        active_sessions,
+        bootstrap,
+    ));
+    let domain = store.domain();
+    domain.register_auto_analyze_executor(Arc::downgrade(&store) as Weak<dyn AutoAnalyzeExecutor>);
+    (store, domain)
+}
+
 /// Use the production TiKV driver and canonical SQL sessions for integration
 /// tests. Connection/bootstrap failures are reported; this never falls back to
 /// an in-memory store or the RealTiKV lifecycle stubs.

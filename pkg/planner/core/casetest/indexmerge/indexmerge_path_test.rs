@@ -18,7 +18,7 @@ use astersql_planner_core::indexmerge_path::{
     MULTI_VALUES_OR_MV_TP, SINGLE_VALUE_MV_TP, checkAccessFilter4IdxCol,
 };
 use astersql_planner_core::task::Expression;
-use astersql_testkit::mockstore::CreateMockStoreAndDomain;
+use astersql_testkit::mockstore::CreatePlannerTestStoreAndDomain;
 use astersql_testkit::{Rows, TestKit};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -171,7 +171,7 @@ fn execute_prepared_and_check(
 }
 
 fn new_testkit() -> TestKit {
-    TestKit::new(CreateMockStoreAndDomain().0)
+    TestKit::new(CreatePlannerTestStoreAndDomain().0)
 }
 
 /// 对应 Go TestCollectFilters4MVIndexMutations：MV member-of、JSON_CONTAINS、
@@ -242,8 +242,6 @@ fn test_collect_filters4_mv_index_mutations() {
 /// partial paths，且单值 member-of 只取第一组访问过滤。
 #[test]
 fn test_multi_mv_index_random() {
-    let mut tk = new_testkit();
-    tk.MustExec("use test", Vec::new());
     let cases = [
         (
             "signed",
@@ -324,52 +322,64 @@ fn test_multi_mv_index_random() {
             },
         ),
     ];
-    for (index_type, insert_opts, query_opts) in cases {
-        tk.MustExec("drop table if exists t1", Vec::new());
-        tk.MustExec(&format!("create table t1(pk int auto_increment primary key, a json, b json, c int, d int, index idx((cast(a as {index_type} array))), index idx2((cast(b as {index_type} array)), c), index idx3(c, d), index idx4(d))"), Vec::new());
-        let rows = (0..20).map(|_| {
-            let values = (0..4).map(|_| rand_mv_index_value(insert_opts)).collect::<Vec<_>>();
-            let c = rand_n(insert_opts.distinct); let d = rand_n(insert_opts.distinct);
-            if index_type == "date" { format!("(json_array(cast({} as date), cast({} as date)), json_array(cast({} as date), cast({} as date)), {c}, {d})", values[0], values[1], values[2], values[3]) }
-            else { format!("('[{}, {}]', '[{}, {}]', {c}, {d})", values[0], values[1], values[2], values[3]) }
-        }).collect::<Vec<_>>();
-        tk.MustExec(
-            &format!("insert into t1(a,b,c,d) values {}", rows.join(", ")),
-            Vec::new(),
-        );
-        tk.MustExec("set @@tidb_opt_fix_control = '45798:on'", Vec::new());
-        for i in 0..20 {
-            let connector = Some(if i < 10 { "AND" } else { "OR" });
-            let (conditions, parameterized, params) = rand_mv_index_conds(
-                rand_n(3) + 2,
-                query_opts,
-                connector,
-                &["a", "b"],
-                &["c", "d"],
-            );
-            let mut expected = tk.MustQuery(&format!("select /*+ ignore_index(t1, idx, idx2, idx3, idx4) */ * from t1 where {conditions}"), Vec::new());
-            expected.Sort();
-            let expected_rows = expected.Rows();
-            let mut hinted = tk.MustQuery(&format!("select /*+ use_index_merge(t1, idx, idx2, idx3, idx4) */ * from t1 where {conditions}"), Vec::new());
-            hinted.Sort();
-            assert_eq!(hinted.Rows(), expected_rows);
-            execute_prepared_and_check(
-                &mut tk,
-                &format!(
-                    "select /*+ use_index_merge(t1, idx, idx2, idx3, idx4) */ * from t1 where {parameterized}"
-                ),
-                &params,
-                expected_rows,
-            );
+    std::thread::scope(|scope| {
+        for (index_type, insert_opts, query_opts) in cases {
+            scope.spawn(move || {
+                let mut tk = new_testkit();
+                tk.MustExec("use test", Vec::new());
+                tk.MustExec("drop table if exists t1", Vec::new());
+                tk.MustExec(&format!("create table t1(pk int auto_increment primary key, a json, b json, c int, d int, index idx((cast(a as {index_type} array))), index idx2((cast(b as {index_type} array)), c), index idx3(c, d), index idx4(d))"), Vec::new());
+                let rows = (0..20)
+                    .map(|_| {
+                        let values = (0..4)
+                            .map(|_| rand_mv_index_value(insert_opts))
+                            .collect::<Vec<_>>();
+                        let c = rand_n(insert_opts.distinct);
+                        let d = rand_n(insert_opts.distinct);
+                        if index_type == "date" {
+                            format!("(json_array(cast({} as date), cast({} as date)), json_array(cast({} as date), cast({} as date)), {c}, {d})", values[0], values[1], values[2], values[3])
+                        } else {
+                            format!("('[{}, {}]', '[{}, {}]', {c}, {d})", values[0], values[1], values[2], values[3])
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                tk.MustExec(
+                    &format!("insert into t1(a,b,c,d) values {}", rows.join(", ")),
+                    Vec::new(),
+                );
+                tk.MustExec("set @@tidb_opt_fix_control = '45798:on'", Vec::new());
+                for i in 0..20 {
+                    let connector = Some(if i < 10 { "AND" } else { "OR" });
+                    let (conditions, parameterized, params) = rand_mv_index_conds(
+                        rand_n(3) + 2,
+                        query_opts,
+                        connector,
+                        &["a", "b"],
+                        &["c", "d"],
+                    );
+                    let mut expected = tk.MustQuery(&format!("select /*+ ignore_index(t1, idx, idx2, idx3, idx4) */ * from t1 where {conditions}"), Vec::new());
+                    expected.Sort();
+                    let expected_rows = expected.Rows();
+                    let mut hinted = tk.MustQuery(&format!("select /*+ use_index_merge(t1, idx, idx2, idx3, idx4) */ * from t1 where {conditions}"), Vec::new());
+                    hinted.Sort();
+                    assert_eq!(hinted.Rows(), expected_rows);
+                    execute_prepared_and_check(
+                        &mut tk,
+                        &format!(
+                            "select /*+ use_index_merge(t1, idx, idx2, idx3, idx4) */ * from t1 where {parameterized}"
+                        ),
+                        &params,
+                        expected_rows,
+                    );
+                }
+            });
         }
-    }
+    });
 }
 
 /// 对应 Go TestMVIndexRandom：四类谓词及列归属的分类契约。
 #[test]
 fn test_mv_index_random() {
-    let mut tk = new_testkit();
-    tk.MustExec("use test", Vec::new());
     let cases = [
         (
             "signed",
@@ -420,52 +430,64 @@ fn test_mv_index_random() {
             },
         ),
     ];
-    for (index_type, opts) in cases {
-        tk.MustExec("drop table if exists t", Vec::new());
-        tk.MustExec(
-            &format!("create table t(a int, j json, index kj((cast(j as {index_type} array))))"),
-            Vec::new(),
-        );
-        let rows = (0..20)
-            .map(|_| {
-                let a = rand_n(opts.distinct);
-                let v1 = rand_mv_index_value(opts);
-                let v2 = rand_mv_index_value(opts);
-                if index_type == "date" {
-                    format!("({a}, json_array(cast({v1} as date), cast({v2} as date)))")
-                } else {
-                    format!("({a}, '[{v1}, {v2}]')")
+    std::thread::scope(|scope| {
+        for (index_type, opts) in cases {
+            scope.spawn(move || {
+                let mut tk = new_testkit();
+                tk.MustExec("use test", Vec::new());
+                tk.MustExec("drop table if exists t", Vec::new());
+                tk.MustExec(
+                    &format!(
+                        "create table t(a int, j json, index kj((cast(j as {index_type} array))))"
+                    ),
+                    Vec::new(),
+                );
+                let rows = (0..20)
+                    .map(|_| {
+                        let a = rand_n(opts.distinct);
+                        let v1 = rand_mv_index_value(opts);
+                        let v2 = rand_mv_index_value(opts);
+                        if index_type == "date" {
+                            format!("({a}, json_array(cast({v1} as date), cast({v2} as date)))")
+                        } else {
+                            format!("({a}, '[{v1}, {v2}]')")
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                tk.MustExec(
+                    &format!("insert into t values {}", rows.join(", ")),
+                    Vec::new(),
+                );
+                tk.MustExec("set @@tidb_opt_fix_control = '45798:on'", Vec::new());
+                for _ in 0..20 {
+                    let (conditions, parameterized, params) =
+                        rand_mv_index_conds(rand_n(3) + 1, opts, None, &["j"], &["a"]);
+                    let mut expected = tk.MustQuery(
+                        &format!("select /*+ ignore_index(t, kj) */ * from t where {conditions}"),
+                        Vec::new(),
+                    );
+                    expected.Sort();
+                    let expected_rows = expected.Rows();
+                    let mut hinted = tk.MustQuery(
+                        &format!(
+                            "select /*+ use_index_merge(t, kj) */ * from t where {conditions}"
+                        ),
+                        Vec::new(),
+                    );
+                    hinted.Sort();
+                    assert_eq!(hinted.Rows(), expected_rows);
+                    execute_prepared_and_check(
+                        &mut tk,
+                        &format!(
+                            "select /*+ use_index_merge(t, kj) */ * from t where {parameterized}"
+                        ),
+                        &params,
+                        expected_rows,
+                    );
                 }
-            })
-            .collect::<Vec<_>>();
-        tk.MustExec(
-            &format!("insert into t values {}", rows.join(", ")),
-            Vec::new(),
-        );
-        tk.MustExec("set @@tidb_opt_fix_control = '45798:on'", Vec::new());
-        for _ in 0..20 {
-            let (conditions, parameterized, params) =
-                rand_mv_index_conds(rand_n(3) + 1, opts, None, &["j"], &["a"]);
-            let mut expected = tk.MustQuery(
-                &format!("select /*+ ignore_index(t, kj) */ * from t where {conditions}"),
-                Vec::new(),
-            );
-            expected.Sort();
-            let expected_rows = expected.Rows();
-            let mut hinted = tk.MustQuery(
-                &format!("select /*+ use_index_merge(t, kj) */ * from t where {conditions}"),
-                Vec::new(),
-            );
-            hinted.Sort();
-            assert_eq!(hinted.Rows(), expected_rows);
-            execute_prepared_and_check(
-                &mut tk,
-                &format!("select /*+ use_index_merge(t, kj) */ * from t where {parameterized}"),
-                &params,
-                expected_rows,
-            );
+            });
         }
-    }
+    });
 }
 
 /// 对应 Go TestPlanCacheMVIndex：参数化 MV 查询的归一化形状、执行结果及

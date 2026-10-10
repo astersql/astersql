@@ -36,7 +36,7 @@ use astersql_util_hint::{
 #[test]
 fn test_semi_join_order_runs_go_result_contract() {
     for cascades in [false, true] {
-        let (store, _domain) = astersql_testkit::mockstore::CreateMockStoreAndDomain();
+        let (store, _domain) = astersql_testkit::mockstore::CreatePlannerTestStoreAndDomain();
         let mut tk = astersql_testkit::TestKit::new(store);
         tk.MustExec("use test", Vec::new());
         tk.MustExec("create table t1 (col0 int, col1 int)", Vec::new());
@@ -402,68 +402,75 @@ fn test_join_simplify_condition_inlj_hint_and_large_in_list() {
 /// 复现 Go `TestJoinSimplifyCondition` 的计划简化与大 IN-list 下推边界。
 #[test]
 fn test_join_simplify_condition_runs_go_plan_contract() {
-    for cascades in [false, true] {
-        let (store, _domain) = astersql_testkit::mockstore::CreateMockStoreAndDomain();
-        let mut tk = astersql_testkit::TestKit::new(store);
-        tk.MustExec("use test", Vec::new());
-        tk.MustExec(
-            &format!(
-                "set @@session.tidb_enable_cascades_planner = {}",
-                u8::from(cascades)
-            ),
-            Vec::new(),
-        );
-        tk.MustExec(
-            "create table t1 (a int default null, b int default null, c int default null, key idx_a (a))",
-            Vec::new(),
-        );
-        tk.MustExec(
-            "create table t2 (a int default null, b int default null, c int default null, key idx_a (a))",
-            Vec::new(),
-        );
-        tk.MustQuery(
-            "explain format = 'plan_tree' select * from t1,t2 \
-             where t1.a=t2.a and t1.b = 1 or 1=2",
-            Vec::new(),
-        )
-        .Check(astersql_testkit::Rows(&[
-            "IndexHashJoin root  inner join, inner:IndexLookUp, outer key:test.t1.a, inner key:test.t2.a, equal cond:eq(test.t1.a, test.t2.a)",
-            "├─TableReader(Build) root  data:Selection",
-            "│ └─Selection cop[tikv]  eq(test.t1.b, 1), not(isnull(test.t1.a))",
-            "│   └─TableFullScan cop[tikv] table:t1 keep order:false, stats:pseudo",
-            "└─IndexLookUp(Probe) root  ",
-            "  ├─Selection(Build) cop[tikv]  not(isnull(test.t2.a))",
-            "  │ └─IndexRangeScan cop[tikv] table:t2, index:idx_a(a) range: decided by [eq(test.t2.a, test.t1.a)], keep order:false, stats:pseudo",
-            "  └─TableRowIDScan(Probe) cop[tikv] table:t2 keep order:false, stats:pseudo",
-        ]));
+    std::thread::scope(|scope| {
+        for cascades in [false, true] {
+            scope.spawn(move || {
+                let (store, _domain) =
+                    astersql_testkit::mockstore::CreatePlannerTestStoreAndDomain();
+                let mut tk = astersql_testkit::TestKit::new(store);
+                tk.MustExec("use test", Vec::new());
+                tk.MustExec(
+                    &format!(
+                        "set @@session.tidb_enable_cascades_planner = {}",
+                        u8::from(cascades)
+                    ),
+                    Vec::new(),
+                );
+                tk.MustExec(
+                    "create table t1 (a int default null, b int default null, c int default null, key idx_a (a))",
+                    Vec::new(),
+                );
+                tk.MustExec(
+                    "create table t2 (a int default null, b int default null, c int default null, key idx_a (a))",
+                    Vec::new(),
+                );
+                tk.MustQuery(
+                    "explain format = 'plan_tree' select * from t1,t2 \
+                     where t1.a=t2.a and t1.b = 1 or 1=2",
+                    Vec::new(),
+                )
+                .Check(astersql_testkit::Rows(&[
+                    "IndexHashJoin root  inner join, inner:IndexLookUp, outer key:test.t1.a, inner key:test.t2.a, equal cond:eq(test.t1.a, test.t2.a)",
+                    "├─TableReader(Build) root  data:Selection",
+                    "│ └─Selection cop[tikv]  eq(test.t1.b, 1), not(isnull(test.t1.a))",
+                    "│   └─TableFullScan cop[tikv] table:t1 keep order:false, stats:pseudo",
+                    "└─IndexLookUp(Probe) root  ",
+                    "  ├─Selection(Build) cop[tikv]  not(isnull(test.t2.a))",
+                    "  │ └─IndexRangeScan cop[tikv] table:t2, index:idx_a(a) range: decided by [eq(test.t2.a, test.t1.a)], keep order:false, stats:pseudo",
+                    "  └─TableRowIDScan(Probe) cop[tikv] table:t2 keep order:false, stats:pseudo",
+                ]));
 
-        const LARGE_IN_LIST_LENGTH: usize = 10001;
-        let values = (1..=LARGE_IN_LIST_LENGTH)
-            .map(|value| value.to_string())
-            .collect::<Vec<_>>()
-            .join(",");
-        let plan = tk.MustQuery(
-            &format!(
-                "explain format = 'plan_tree' select /*+ INL_HASH_JOIN(t1, t2) */ * \
-                 from t1 join t2 on t1.a = t2.a where t2.b = 1 or t2.c in ({values})"
-            ),
-            Vec::new(),
-        );
-        assert!(!plan.is_empty());
-        let plan = plan.String();
-        assert!(
-            plan.contains("IndexJoin")
-                || plan.contains("IndexHashJoin")
-                || plan.contains("IndexMergeJoin"),
-            "expected index join family plan under INL_HASH_JOIN hint: {plan}"
-        );
-        assert!(plan.contains("Selection(Probe) root"), "{plan}");
-        assert!(plan.contains("or(eq(test.t2.b, 1), in(test.t2.c"), "{plan}");
-        assert!(
-            !plan.contains("Selection(Probe) cop[tikv]  or(eq(test.t2.b, 1), in(test.t2.c"),
-            "{plan}"
-        );
-    }
+                const LARGE_IN_LIST_LENGTH: usize = 10001;
+                let values = (1..=LARGE_IN_LIST_LENGTH)
+                    .map(|value| value.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let plan = tk.MustQuery(
+                    &format!(
+                        "explain format = 'plan_tree' select /*+ INL_HASH_JOIN(t1, t2) */ * \
+                         from t1 join t2 on t1.a = t2.a where t2.b = 1 or t2.c in ({values})"
+                    ),
+                    Vec::new(),
+                );
+                assert!(!plan.is_empty());
+                let plan = plan.String();
+                assert!(
+                    plan.contains("IndexJoin")
+                        || plan.contains("IndexHashJoin")
+                        || plan.contains("IndexMergeJoin"),
+                    "expected index join family plan under INL_HASH_JOIN hint: {plan}"
+                );
+                assert!(plan.contains("Selection(Probe) root"), "{plan}");
+                assert!(plan.contains("or(eq(test.t2.b, 1), in(test.t2.c"), "{plan}");
+                assert!(
+                    !plan.contains(
+                        "Selection(Probe) cop[tikv]  or(eq(test.t2.b, 1), in(test.t2.c"
+                    ),
+                    "{plan}"
+                );
+            });
+        }
+    });
 }
 
 // test_keeping_join_keys_sysvar_metadata_matches_go 作为 Go TestKeepingJoinKeys 的补充定位：
