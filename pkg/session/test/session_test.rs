@@ -1621,6 +1621,9 @@ fn schema_checker_sql_matches_go_normal_and_partition_paths() {
         return;
     }
     let (store, _domain) = CreateMockStoreAndDomain();
+    let mut set_txn_tk = NewTestKit(store.clone());
+    set_txn_tk.MustExec("set global tidb_enable_metadata_lock=0", vec![]);
+    set_txn_tk.MustExec("set global tidb_txn_mode=''", vec![]);
     let mut tk = NewTestKit(store.clone());
     let mut ddl = NewTestKit(store);
     for session in [&mut tk, &mut ddl] {

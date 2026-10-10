@@ -11,7 +11,7 @@ This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`, 
 - [x] (2026-10-10) 从用户输出恢复目标测试清单并定位 crate、源文件和验证入口。
 - [x] (2026-10-10) 执行任务 1，生成当前提交上 25/25 项的可复现基线。
 - [x] (2026-10-10) 复验任务 2 session Domain 与 Starter 目标及两个测试模块窄集合，确认当前实现已稳定收敛。
-- [ ] 并行完成本地 crate 任务 4。
+- [x] (2026-10-10) 完成任务 4，session schema checker 已正确校验分区表的物理写键。
 - [x] (2026-10-10) 完成任务 3，bootstrap 177/178 回归改为断言 Rust 当前版本常量，5 个目标测试在默认 profile 下通过。
 - [x] (2026-10-10) 完成任务 6，timer panic 恢复测试用显式阶段事件替代固定等待并连续 20 次通过。
 - [x] (2026-10-10) 复验任务 5 SST transport 取消语义 20 次，确认当前实现已稳定收敛。
@@ -59,6 +59,11 @@ This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`, 
 - Observation: 仅设置 `CARGO_TARGET_DIR` 时，仓库 `build-dir = "target"` 配置会使 Cargo 仍打开根目录文件锁。
   Evidence: 槽位 5 首次命令打开 `target/debug/.cargo-build-lock`；同时设置 `CARGO_BUILD_BUILD_DIR="$CARGO_TARGET_DIR"` 后，冷编译和测试在 `target/rust-slot-5` 独立完成。
 
+- Observation: 任务 4 补齐 Go 的 MDL/txn-mode 前置后 normal 路径恢复，partition 路径仍将应失败的提交返回 `Ok`。
+  Evidence: 修复前精确 nextest 在 `pkg/session/test/session_test.rs:1662` 失败；补前置后失败点移到 partition 断言 `:1665`。
+- Observation: Rust session 的相关表集合记录逻辑表 ID，但分区写键解码为物理分区 ID，导致 `transaction_schema_changed` 把真实分区写误判为无写入。
+  Evidence: 按事务开始 schema 的 `PartitionInfo.Definitions` 映射物理 ID 后，目标用例 1/1 在 0.864s 通过，现有 normal/temporary-table 窄回归 1/1 在 0.740s 通过。
+
 ## Decision Log
 
 - Decision: 以精确测试重跑重建基线，不根据缺失日志猜测错误文本。
@@ -96,7 +101,9 @@ This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`, 
 
 任务 3 已将 bootstrap 177/178 回归与 Go 的当前版本断言重新对齐，保留 DDL table version、16383 字符容量和完整六状态 dist-task 矩阵。默认 profile 目标 5/5 通过，`cargo fmt --all`、`make lint` 和 `git diff --check` 通过。
 
-任务 1 已产出 25 行机器可读清单，25 项均有当前提交的有效测试证据。已确认任务 3、4 仍需实施，任务 2 和 5 当前为绿色；任务 8 的 add-index 已恢复而 paging 仍超时，任务 9 两项已恢复。隔离 playground、Cargo 槽位和 tag 数据均已清理，任务 1 完成。任务 10 在当前提交上无需代码修改：target 和关联 global-stats options 窄回归均在默认 profile 下通过，最慢单例 3.550s。任务 7 已移除 profile 的冗余首次符号化预热，并以可控时间边界验证 traceevent 冷却；目标 2/2、重复 3/3 和 crate 全测 27/27 通过，`make lint` 通过。
+任务 1 已产出 25 行机器可读清单，25 项均有当前提交的有效测试证据。任务 3、4 已完成，任务 2 和 5 当前为绿色；任务 8 的 add-index 已恢复而 paging 仍超时，任务 9 两项已恢复。隔离 playground、Cargo 槽位和 tag 数据均已清理，任务 1 完成。任务 10 在当前提交上无需代码修改：target 和关联 global-stats options 窄回归均在默认 profile 下通过，最慢单例 3.550s。任务 7 已移除 profile 的冗余首次符号化预热，并以可控时间边界验证 traceevent 冷却；目标 2/2、重复 3/3 和 crate 全测 27/27 通过，`make lint` 通过。
+
+任务 4 已补齐 Go `TestSchemaCheckerSQL` 的全局前置，并将分区写键的物理 ID 映射回事务开始 schema 中的逻辑表；目标 normal/partition 用例与相邻 schema-check 窄回归均在默认 nextest profile 通过。
 
 ## Context and Orientation
 

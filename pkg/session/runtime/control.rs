@@ -841,21 +841,15 @@ impl ConcreteSession {
         {
             return Ok(false);
         }
-        for table_id in related_table_ids {
-            // Go retries ErrInfoSchemaChanged by rebuilding and replaying the
-            // transaction history.  The canonical Rust runtime keeps the
-            // already-staged KV mutations instead; a table read without locking
-            // or targeted by an empty UPDATE/DELETE therefore needs no replay.
-            // Keep rejecting real writes through a stale table definition.
-            let table_has_writes = transaction_write_keys.iter().any(|write_key| {
+        let written_physical_table_ids = transaction_write_keys
+            .iter()
+            .map(|write_key| {
                 astersql_tablecodec::DecodeTableID(astersql_tablecodec::kv::Key(
                     write_key.key.clone(),
-                )) == *table_id
-            });
-            // Go includes tables accessed by locking reads in the commit schema check.
-            if !table_has_writes && !locking_table_ids.contains(table_id) {
-                continue;
-            }
+                ))
+            })
+            .collect::<HashSet<_>>();
+        for table_id in related_table_ids {
             let start = start_schema
                 .TableByID(*table_id)
                 .map(|table| {
@@ -864,6 +858,26 @@ impl ConcreteSession {
                         .map_err(|error| session_error("read transaction table schema", error))
                 })
                 .transpose()?;
+            // Go retries ErrInfoSchemaChanged by rebuilding and replaying the
+            // transaction history.  The canonical Rust runtime keeps the
+            // already-staged KV mutations instead; a table read without locking
+            // or targeted by an empty UPDATE/DELETE therefore needs no replay.
+            // Keep rejecting real writes through a stale table definition.
+            // Go's TableDeltaMap records physical partition IDs, while the
+            // session's related-table set records the logical table ID.
+            let table_has_writes = written_physical_table_ids.contains(table_id)
+                || start.as_ref().is_some_and(|table| {
+                    table.GetPartitionInfo().is_some_and(|partition| {
+                        partition
+                            .Definitions
+                            .iter()
+                            .any(|definition| written_physical_table_ids.contains(&definition.ID))
+                    })
+                });
+            // Go includes tables accessed by locking reads in the commit schema check.
+            if !table_has_writes && !locking_table_ids.contains(table_id) {
+                continue;
+            }
             let latest = latest_schema
                 .TableByID(*table_id)
                 .map(|table| {
