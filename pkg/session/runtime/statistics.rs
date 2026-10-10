@@ -695,46 +695,71 @@ impl astersql_executor::analyze::CanonicalAnalyzeRuntime for SessionAnalyzeRunti
             }
             if let Some(partition) = input.info.GetPartitionInfo() {
                 let expression = partition.Expr.replace('`', "").to_lowercase();
-                for (position, definition) in partition.Definitions.iter().enumerate() {
-                    if !input.partition_names.is_empty()
-                        && !input.partition_names.contains(&definition.Name.L)
-                    {
+                let selected_definitions = partition
+                    .Definitions
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, definition)| {
+                        input.partition_names.is_empty()
+                            || input.partition_names.contains(&definition.Name.L)
+                    })
+                    .collect::<Vec<_>>();
+                let mut rows_by_definition = (0..selected_definitions.len())
+                    .map(|_| Vec::new())
+                    .collect::<Vec<_>>();
+                let selected_hash_positions = selected_definitions
+                    .iter()
+                    .enumerate()
+                    .map(|(selected_position, (position, _))| (*position, selected_position))
+                    .collect::<HashMap<_, _>>();
+                for row in &input.rows {
+                    // Partition expressions are independent of the target
+                    // definition. Evaluate once per row, then route that row
+                    // to the selected physical profile(s). The former nested
+                    // filter evaluated the same expression P times for P
+                    // partitions, which dominated large ANALYZE fixtures.
+                    let value = partition_expression_value(&expression, row).unwrap_or_default();
+                    if matches!(
+                        partition.Type,
+                        astersql_meta_model::ast::model::PartitionTypeHash
+                            | astersql_meta_model::ast::model::PartitionTypeKey
+                    ) {
+                        let position =
+                            value.rem_euclid(partition.Definitions.len() as i64) as usize;
+                        if let Some(selected_position) = selected_hash_positions.get(&position) {
+                            rows_by_definition[*selected_position].push(row.clone());
+                        }
                         continue;
                     }
-                    let partition_rows = input
-                        .rows
-                        .iter()
-                        .filter(|row| {
-                            let value =
-                                partition_expression_value(&expression, row).unwrap_or_default();
-                            match partition.Type {
-                                astersql_meta_model::ast::model::PartitionTypeHash
-                                | astersql_meta_model::ast::model::PartitionTypeKey => {
-                                    value.rem_euclid(partition.Definitions.len() as i64)
-                                        == position as i64
-                                }
-                                astersql_meta_model::ast::model::PartitionTypeRange => {
-                                    let below_upper =
-                                        definition.LessThan.first().is_none_or(|upper| {
-                                            upper.eq_ignore_ascii_case("maxvalue")
-                                                || value < upper.parse::<i64>().unwrap_or(i64::MAX)
+                    for (selected_position, (position, definition)) in
+                        selected_definitions.iter().enumerate()
+                    {
+                        let matches = match partition.Type {
+                            astersql_meta_model::ast::model::PartitionTypeRange => {
+                                let below_upper = definition.LessThan.first().is_none_or(|upper| {
+                                    upper.eq_ignore_ascii_case("maxvalue")
+                                        || value < upper.parse::<i64>().unwrap_or(i64::MAX)
+                                });
+                                let above_lower = *position == 0
+                                    || partition.Definitions[*position - 1]
+                                        .LessThan
+                                        .first()
+                                        .is_none_or(|lower| {
+                                            lower.eq_ignore_ascii_case("maxvalue")
+                                                || value >= lower.parse::<i64>().unwrap_or(i64::MIN)
                                         });
-                                    let above_lower = position == 0
-                                        || partition.Definitions[position - 1]
-                                            .LessThan
-                                            .first()
-                                            .is_none_or(|lower| {
-                                                lower.eq_ignore_ascii_case("maxvalue")
-                                                    || value
-                                                        >= lower.parse::<i64>().unwrap_or(i64::MIN)
-                                            });
-                                    below_upper && above_lower
-                                }
-                                _ => true,
+                                below_upper && above_lower
                             }
-                        })
-                        .cloned()
-                        .collect::<Vec<_>>();
+                            _ => true,
+                        };
+                        if matches {
+                            rows_by_definition[selected_position].push(row.clone());
+                        }
+                    }
+                }
+                for ((_, definition), partition_rows) in
+                    selected_definitions.into_iter().zip(rows_by_definition)
+                {
                     profile_inputs.push((
                         definition.ID,
                         input.info.clone(),
