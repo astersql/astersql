@@ -306,6 +306,55 @@ impl KVStore {
         Self::new_with_clock(Arc::new(MemoryPdClient::default()), true)
     }
 
+    /// Copy the committed MVCC state into an independent in-memory store.
+    ///
+    /// Test fixtures use this to reuse an expensive immutable bootstrap image
+    /// without sharing transactions, failure injection, close state, or TSO
+    /// allocation between cases.
+    pub fn ForkForTest(&self) -> Self {
+        let fork = Self::new_with_clock(
+            Arc::new(MemoryPdClient::default()),
+            self.inner.wall_clock_tso,
+        );
+        *fork.inner.data.write().expect("kv data lock poisoned") = self
+            .inner
+            .data
+            .read()
+            .expect("kv data lock poisoned")
+            .clone();
+        fork.inner.current_ts.store(
+            self.inner.current_ts.load(Ordering::Acquire),
+            Ordering::Release,
+        );
+        fork
+    }
+
+    /// Restore committed state from an independent fixture image.
+    pub fn RestoreFromForTest(&self, source: &Self) {
+        assert!(!Arc::ptr_eq(&self.inner, &source.inner));
+        *self.inner.data.write().expect("kv data lock poisoned") = source
+            .inner
+            .data
+            .read()
+            .expect("kv data lock poisoned")
+            .clone();
+        self.inner.current_ts.store(
+            source.inner.current_ts.load(Ordering::Acquire),
+            Ordering::Release,
+        );
+        self.inner.tso_request_count.store(0, Ordering::Release);
+        *self
+            .inner
+            .begin_failure
+            .lock()
+            .expect("begin failure lock poisoned") = None;
+        *self
+            .inner
+            .copr_failure
+            .lock()
+            .expect("coprocessor failure lock poisoned") = None;
+    }
+
     /// Use embedded TiKV RPCs as the authoritative MVCC backend. The local
     /// transaction buffer remains the same canonical MemBuffer implementation.
     pub fn NewEmbeddedRpc() -> Result<Self> {

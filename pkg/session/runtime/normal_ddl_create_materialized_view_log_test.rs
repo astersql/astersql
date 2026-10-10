@@ -372,9 +372,10 @@ fn normal_ddl_plan_create_materialized_view_log_1_metadata_and_args() {
 }
 #[test]
 fn normal_ddl_plan_create_materialized_view_log_1_rejects_invalid_metadata() {
+    let f = Fixture::new();
     for v in [JobVersion::V1, JobVersion::V2] {
         for case in 0..12 {
-            let f = Fixture::new();
+            f.reset();
             let mut t = table(&f);
             let mut base = f.reader().get_table(f.db, f.table).unwrap().unwrap();
             let expected = match case {

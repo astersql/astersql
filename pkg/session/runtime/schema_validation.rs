@@ -32,12 +32,16 @@ pub(super) fn checker(
     tables: Vec<i64>,
     delta: bool,
 ) -> astersql_kv::TransactionSchemaChecker {
-    let checker = astersql_domain::schema_checker::SchemaChecker::new(
+    let retry = validator.schema_checker_retry_for_test();
+    let mut checker = astersql_domain::schema_checker::SchemaChecker::new(
         Arc::new(SharedValidator(validator)),
         version,
         tables,
         delta,
     );
+    if let Some((interval, times)) = retry {
+        checker = checker.with_retry(interval, times);
+    }
     astersql_kv::TransactionSchemaChecker(Arc::new(move |ts| {
         checker.check(ts).map_err(|error| match error {
             astersql_domain::schema_checker::SchemaCheckError::InfoSchemaChanged(_) => {

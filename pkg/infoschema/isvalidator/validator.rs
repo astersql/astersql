@@ -93,6 +93,7 @@ pub struct Validator {
     /// schema lease 时长；update 时据此计算 `latest_schema_expire`。
     lease: Duration,
     state: RwLock<ValidatorState>,
+    schema_checker_retry_for_test: RwLock<Option<(Duration, usize)>>,
 }
 
 /// ValidatorMetricsSnapshot mirrors the five schema-validator counter labels
@@ -219,7 +220,23 @@ impl Validator {
                     vardef::DefTiDBMaxDeltaSchemaCount.max(0) as usize
                 ),
             }),
+            schema_checker_retry_for_test: RwLock::new(None),
         })
+    }
+
+    /// Override commit-time schema-check retries for deterministic tests.
+    pub fn set_schema_checker_retry_for_test(&self, interval: Duration, times: usize) {
+        *self
+            .schema_checker_retry_for_test
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((interval, times));
+    }
+
+    pub fn schema_checker_retry_for_test(&self) -> Option<(Duration, usize)> {
+        *self
+            .schema_checker_retry_for_test
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// 复制一份一致的只读状态快照。

@@ -70,6 +70,32 @@ fn executor() -> NormalDdlExecutor<Barrier, Policy> {
         sequence: Arc::new(AtomicI64::new(0)),
     }
 }
+
+#[test]
+fn normal_ddl_fixture_forks_clean_bootstrap_state() {
+    let first = Fixture::new();
+    first
+        .pool
+        .acquire()
+        .unwrap()
+        .query("INSERT INTO test.normal_ddl_target VALUES (1, 'first case')")
+        .unwrap();
+    first.insert(88001, JobState::Queueing);
+    assert_eq!(first.queue(88001).unwrap().state, JobState::Queueing);
+    drop(first);
+
+    let second = Fixture::new();
+    assert!(
+        second
+            .pool
+            .acquire()
+            .unwrap()
+            .query("SELECT * FROM test.normal_ddl_target")
+            .unwrap()
+            .is_empty()
+    );
+    assert!(second.queue(88001).is_none());
+}
 #[test]
 fn crossks_align_normal_ddl_persists_table_then_synced_history_after_barrier() {
     let f = Fixture::new();
@@ -1426,6 +1452,8 @@ fn crossks_align_normal_ddl_service_public_owner_handoff_consumes_same_queue() {
         pool: pool2,
         db: f.db,
         table: f.table,
+        kv: f.kv.clone(),
+        clean: f.clean.ForkForTest(),
     };
     second.insert(99402, JobState::Queueing);
     while second

@@ -515,6 +515,7 @@ fn crossks_align_lifecycle_session_commit_uses_shared_validator_and_recovers() {
     let validator: Arc<astersql_infoschema_isvalidator::Validator> = Arc::from(
         astersql_infoschema_isvalidator::new(std::time::Duration::from_secs(1)),
     );
+    validator.set_schema_checker_retry_for_test(std::time::Duration::ZERO, 1);
     let version = f.domain.info_schema().SchemaMetaVersion();
     let ts = f
         .domain
@@ -539,12 +540,6 @@ fn crossks_align_lifecycle_session_commit_uses_shared_validator_and_recovers() {
         commit.is_err(),
         "stopped shared validator must prevent SQL writes from committing"
     );
-    assert!(
-        lease
-            .query("SELECT * FROM test.lifecycle_target")
-            .unwrap()
-            .is_empty()
-    );
     validator.restart(version);
     let ts = f
         .domain
@@ -553,6 +548,12 @@ fn crossks_align_lifecycle_session_commit_uses_shared_validator_and_recovers() {
         .unwrap()
         .Ver;
     validator.update(ts, version, version, None);
+    assert!(
+        lease
+            .query("SELECT * FROM test.lifecycle_target")
+            .unwrap()
+            .is_empty()
+    );
     lease.query("BEGIN").unwrap();
     lease
         .query("INSERT INTO test.lifecycle_target VALUES (2)")
@@ -573,17 +574,22 @@ fn crossks_align_lifecycle_automatic_gc_is_installed_and_stops_with_manager() {
         .install_on_domain(&f.domain, "source".into())
         .unwrap();
     let manager = f.domain.cross_ks_manager().unwrap();
+    assert!(
+        manager
+            .restart_idle_gc_for_test(
+                std::time::Duration::from_millis(10),
+                std::time::Duration::ZERO,
+            )
+            .unwrap(),
+        "factory installation must start the Go idle runtime sweep loop"
+    );
     let handle = manager.acquire("SYSTEM", "automatic-gc-holder").unwrap();
     handle.release();
     manager.set_last_release_at(
         "SYSTEM",
-        std::time::Instant::now()
-            - astersql_domain_crossks::CROSS_KEYSPACE_RUNTIME_IDLE_TIMEOUT
-            - std::time::Duration::from_secs(1),
+        std::time::Instant::now() - std::time::Duration::from_secs(1),
     );
-    let deadline = std::time::Instant::now()
-        + astersql_domain_crossks::CROSS_KEYSPACE_RUNTIME_SWEEP_INTERVAL
-        + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
     while manager.get("SYSTEM").is_some() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
@@ -592,7 +598,7 @@ fn crossks_align_lifecycle_automatic_gc_is_installed_and_stops_with_manager() {
     manager.close();
     assert!(
         evicted,
-        "factory installation must start the Go idle runtime sweep loop"
+        "installed idle runtime sweep loop must evict expired runtimes"
     );
     assert_eq!(f.kv.CloseCount(), 0);
     assert!(f.server.Snapshot().is_empty());
@@ -660,6 +666,7 @@ fn crossks_align_lifecycle_expired_validator_rejects_writes_but_read_only_commit
     let validator: Arc<astersql_infoschema_isvalidator::Validator> = Arc::from(
         astersql_infoschema_isvalidator::new(std::time::Duration::from_secs(1)),
     );
+    validator.set_schema_checker_retry_for_test(std::time::Duration::ZERO, 1);
     let version = f.domain.info_schema().SchemaMetaVersion();
     let pool = super::system_session::SystemSessionPool::new_with_validator(
         f.domain.clone(),
@@ -690,6 +697,7 @@ fn crossks_align_lifecycle_expired_validator_rejects_writes_but_read_only_commit
             .to_string()
             .contains("8027")
     );
+    validator.update(ts, version, version, None);
     assert!(
         lease
             .query("SELECT * FROM test.lifecycle_target")

@@ -313,6 +313,7 @@ fn install_gcv2_manager(
 
 #[test]
 fn initialize_gcv2_reads_effective_sql_lifetime_and_cleans_failed_manager() {
+    let (domain, session) = CreateAnalyzeSession().unwrap();
     for (role, keyspace_level, fail_action, invalid, expected_calls, removed) in [
         ("master", true, None, false, 1, false),
         ("gcv2", true, None, false, 0, false),
@@ -320,10 +321,10 @@ fn initialize_gcv2_reads_effective_sql_lifetime_and_cleans_failed_manager() {
         ("master", true, Some("init"), false, 1, true),
         ("master", true, None, true, 0, true),
     ] {
-        let (domain, session) = CreateAnalyzeSession().unwrap();
         session
             .execute("SET GLOBAL tidb_gc_life_time = '24h'")
             .unwrap();
+        session.execute("UPDATE mysql.tidb SET VARIABLE_VALUE='24h' WHERE VARIABLE_NAME='tikv_gc_life_time'").unwrap();
         if invalid {
             session.execute("UPDATE mysql.tidb SET VARIABLE_VALUE='invalid' WHERE VARIABLE_NAME='tikv_gc_life_time'").unwrap();
         }
@@ -346,8 +347,9 @@ fn initialize_gcv2_reads_effective_sql_lifetime_and_cleans_failed_manager() {
                 .filter(|v| *v == "close")
                 .count()
         );
-        domain.close();
+        domain.set_external_workload_manager(None);
     }
+    domain.close();
 }
 
 #[test]
@@ -451,6 +453,7 @@ fn upgrade_gcv2_aborts_only_when_upgrade_is_still_required() {
 
 #[test]
 fn external_controller_startup_failures_are_fatal_only_for_dedicated_gcv2() {
+    let (domain, _) = CreateAnalyzeSession().unwrap();
     for (role, missing_meta, keyspace_level, controller_failure, fatal, expected_create) in [
         ("gcv2", true, true, false, true, 0),
         ("master", true, true, false, false, 0),
@@ -463,7 +466,6 @@ fn external_controller_startup_failures_are_fatal_only_for_dedicated_gcv2() {
         ("gcv2", false, true, false, false, 1),
         ("ttl", false, true, false, false, 1),
     ] {
-        let (domain, _) = CreateAnalyzeSession().unwrap();
         let calls = Arc::new(Mutex::new(Vec::new()));
         let events = Arc::new(Mutex::new(Vec::new()));
         let meta = if missing_meta {
@@ -504,6 +506,7 @@ fn external_controller_startup_failures_are_fatal_only_for_dedicated_gcv2() {
             !fatal && !missing_meta && !controller_failure,
             domain.external_workload_manager().is_some()
         );
-        domain.close();
+        domain.set_external_workload_manager(None);
     }
+    domain.close();
 }

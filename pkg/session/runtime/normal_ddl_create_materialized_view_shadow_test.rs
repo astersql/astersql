@@ -235,9 +235,10 @@ fn assert_diff(f: &Fixture, j: &Job, old: i64) {
 }
 #[test]
 fn normal_ddl_plan_create_materialized_view_shadow_rejects_invalid_metadata() {
+    let f = Fixture::new();
     for v in [JobVersion::V1, JobVersion::V2] {
         for case in 0..8 {
-            let f = Fixture::new();
+            f.reset();
             seed_source(&f);
             let mut t = table(&f);
             match case {
@@ -295,8 +296,9 @@ fn normal_ddl_plan_create_materialized_view_shadow_rejects_invalid_metadata() {
 }
 #[test]
 fn normal_ddl_plan_create_materialized_view_shadow_validates_source() {
+    let f = Fixture::new();
     for case in 0..5 {
-        let f = Fixture::new();
+        f.reset();
         seed_source(&f);
         let mut source = f.reader().get_table(f.db, f.table).unwrap().unwrap();
         let mut t = table(&f);

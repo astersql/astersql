@@ -536,6 +536,18 @@ impl Manager {
     }
     /// Start the idle sweep worker owned by this manager.
     pub fn start_idle_gc(self: &Arc<Self>) -> Result<(), ManagerError> {
+        self.start_idle_gc_with_intervals(
+            CROSS_KEYSPACE_RUNTIME_SWEEP_INTERVAL,
+            CROSS_KEYSPACE_RUNTIME_IDLE_TIMEOUT,
+        )
+    }
+
+    /// Start the idle sweep worker with explicit timing for deterministic tests.
+    pub fn start_idle_gc_with_intervals(
+        self: &Arc<Self>,
+        sweep_interval: Duration,
+        idle_timeout: Duration,
+    ) -> Result<(), ManagerError> {
         let mut worker = self.idle_gc.lock().expect("crossks GC mutex poisoned");
         if worker.is_some() || self.closed.load(Ordering::Acquire) {
             return Ok(());
@@ -546,7 +558,7 @@ impl Manager {
             .name("crossks-idle-gc".into())
             .spawn(move || {
                 loop {
-                    match receiver.recv_timeout(CROSS_KEYSPACE_RUNTIME_SWEEP_INTERVAL) {
+                    match receiver.recv_timeout(sweep_interval) {
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                             let Some(manager) = manager.upgrade() else {
                                 break;
@@ -554,7 +566,7 @@ impl Manager {
                             if manager.closed.load(Ordering::Acquire) {
                                 break;
                             }
-                            manager.sweep_idle_runtimes(CROSS_KEYSPACE_RUNTIME_IDLE_TIMEOUT);
+                            manager.sweep_idle_runtimes(idle_timeout);
                         }
                         _ => break,
                     }
@@ -563,6 +575,27 @@ impl Manager {
             .map_err(|error| ManagerError(format!("start crossks idle GC: {error}")))?;
         *worker = Some((stop, thread));
         Ok(())
+    }
+
+    /// Replace an installed idle-GC worker with deterministic test timings.
+    /// Returns false when the production installation path did not start it.
+    pub fn restart_idle_gc_for_test(
+        self: &Arc<Self>,
+        sweep_interval: Duration,
+        idle_timeout: Duration,
+    ) -> Result<bool, ManagerError> {
+        let installed = self
+            .idle_gc
+            .lock()
+            .expect("crossks GC mutex poisoned")
+            .take();
+        let Some((stop, thread)) = installed else {
+            return Ok(false);
+        };
+        let _ = stop.send(());
+        let _ = thread.join();
+        self.start_idle_gc_with_intervals(sweep_interval, idle_timeout)?;
+        Ok(true)
     }
     /// 系统 KS 上的 GC 循环：按扫描间隔调用 sweep_idle_runtimes，直到取消。
     pub fn run_system_keyspace_gc_loop(&self, cancellation: &Cancellation) {

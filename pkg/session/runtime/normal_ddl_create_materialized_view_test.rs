@@ -93,6 +93,10 @@ pub(super) fn seed(f: &Fixture, t: &TableInfo) {
 }
 pub(super) fn setup(v: JobVersion) -> (Fixture, TableInfo, Job) {
     let f = Fixture::new();
+    let (view, job) = setup_on(&f, v);
+    (f, view, job)
+}
+fn setup_on(f: &Fixture, v: JobVersion) -> (TableInfo, Job) {
     f.pool
         .acquire()
         .unwrap()
@@ -182,7 +186,7 @@ pub(super) fn setup(v: JobVersion) -> (Fixture, TableInfo, Job) {
     .unwrap();
     let wire = astersql_meta::encode_go_ddl_job(&mut j, false).unwrap();
     f.pool.acquire().unwrap().query(format!("INSERT INTO mysql.tidb_ddl_job (job_id,reorg,schema_ids,table_ids,job_meta,type,processing) VALUES ({},1,'{}','{},{},{}',X'{}',86,0)",j.id,f.db,j.table_id,base.ID,log.ID,hex(&wire))).unwrap();
-    (f, view, j)
+    (view, j)
 }
 pub(super) fn run(f: &Fixture, j: &mut Job) -> Result<i64, String> {
     let bytes = astersql_meta::encode_go_ddl_job(j, false).unwrap();
@@ -327,9 +331,11 @@ fn rewrite_args(j: &mut Job, t: &TableInfo, logs: &[i64]) {
 }
 #[test]
 fn normal_ddl_plan_create_materialized_view_1_dependency_errors() {
+    let f = Fixture::new();
     for v in [JobVersion::V1, JobVersion::V2] {
         for case in 0..19 {
-            let (f, mut t, mut j) = setup(v);
+            f.reset();
+            let (mut t, mut j) = setup_on(&f, v);
             let mut base = f.reader().get_table(f.db, f.table).unwrap().unwrap();
             let log_id = base.MaterializedViewBase.as_ref().unwrap().MLogID;
             let mut log = f.reader().get_table(f.db, log_id).unwrap().unwrap();

@@ -625,8 +625,9 @@ fn normal_ddl_plan_create_table_restore_public_and_legacy_write_only() {
 }
 #[test]
 fn normal_ddl_plan_create_table_validation_errors_atomic() {
+    let f = Fixture::new();
     for case in 0..10 {
-        let f = Fixture::new();
+        f.reset();
         let mut t = table(&f);
         let code = match case {
             0 => {

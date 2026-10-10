@@ -1,8 +1,38 @@
 // Copyright 2026 AsterSQL.
 
-use super::{CreateAnalyzeSession, system_session::SystemSessionPool};
+use super::{BootstrapCanonicalDomain, system_session::SystemSessionPool};
 use astersql_meta_model::group_3::{Job, JobState};
-use std::sync::Arc;
+use std::{
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
+
+fn bootstrap_store() -> &'static astersql_store_mockstore_mockstorage::KVStore {
+    static STORE: OnceLock<astersql_store_mockstore_mockstorage::KVStore> = OnceLock::new();
+    STORE.get_or_init(|| {
+        let kv = astersql_store_mockstore_mockstorage::KVStore::NewMemoryWithWallClockTSO();
+        let storage = Arc::try_unwrap(
+            astersql_store_mockstore_mockstorage::NewMockStorage(kv.clone(), None).unwrap(),
+        )
+        .ok()
+        .unwrap();
+        let mut config = astersql_domain::DomainConfig::default();
+        config.schema_lease = Duration::ZERO;
+        config.stats_lease = Duration::ZERO;
+        let domain = Arc::new(astersql_domain::Domain::new(
+            storage,
+            Arc::new(astersql_domain::KvInfoSchemaLoader::new()),
+            config,
+        ));
+        domain.init().unwrap();
+        let session = BootstrapCanonicalDomain(domain.clone()).unwrap();
+        domain.initialize_stats().unwrap();
+        domain.set_global_system_variable("tidb_cdc_write_source", "9");
+        drop(session);
+        domain.close();
+        kv
+    })
+}
 
 pub(super) fn hex(b: &[u8]) -> String {
     b.iter().map(|b| format!("{b:02x}")).collect()
@@ -19,10 +49,27 @@ pub(super) struct Fixture {
     pub(super) pool: Arc<SystemSessionPool>,
     pub(super) db: i64,
     pub(super) table: i64,
+    pub(super) kv: astersql_store_mockstore_mockstorage::KVStore,
+    pub(super) clean: astersql_store_mockstore_mockstorage::KVStore,
 }
 impl Fixture {
     pub(super) fn new() -> Self {
-        let (domain, _) = CreateAnalyzeSession().unwrap();
+        let kv = bootstrap_store().ForkForTest();
+        let storage = Arc::try_unwrap(
+            astersql_store_mockstore_mockstorage::NewMockStorage(kv.clone(), None).unwrap(),
+        )
+        .ok()
+        .unwrap();
+        let mut config = astersql_domain::DomainConfig::default();
+        config.schema_lease = Duration::ZERO;
+        config.stats_lease = Duration::ZERO;
+        let domain = Arc::new(astersql_domain::Domain::new(
+            storage,
+            Arc::new(astersql_domain::KvInfoSchemaLoader::new()),
+            config,
+        ));
+        domain.init().unwrap();
+        domain.initialize_stats().unwrap();
         domain.set_global_system_variable("tidb_cdc_write_source", "9");
         let pool = SystemSessionPool::new(domain.clone());
         pool.acquire()
@@ -66,12 +113,18 @@ impl Fixture {
         )
         .unwrap();
         txn.Commit(&astersql_kv::Context::default()).unwrap();
+        let clean = kv.ForkForTest();
         Self {
             domain,
             pool,
             db,
             table,
+            kv,
+            clean,
         }
+    }
+    pub(super) fn reset(&self) {
+        self.kv.RestoreFromForTest(&self.clean);
     }
     pub(super) fn insert(&self, id: i64, state: JobState) {
         use astersql_ddl_jobsubmit::{
