@@ -293,133 +293,143 @@ impl Drop for LabelResources {
     }
 }
 
-#[test]
-fn masking_policy_upgrade_189_254_279_recreates_missing_masking_table_after_restart() {
+fn assert_masking_policy_upgrade_recreates_missing_table_after_restart(version: i64) {
     if astersql_config_kerneltype::IsNextGen() {
         return;
     }
-    for version in [189, 254, 279] {
-        let f = Fixture::new();
-        let handle = f.domain.storage_handle();
-        let policy = f
-            .domain
-            .table_by_name("mysql", "tidb_masking_policy")
-            .unwrap();
-        f.pool.acquire().unwrap().query(format!("UPDATE mysql.tidb SET variable_value='{version}' WHERE variable_name='tidb_server_version'")).unwrap();
-        let mut txn = handle.with_storage(|s| s.Begin(&[])).unwrap();
-        txn.Set(
-            astersql_meta::transaction_meta_string_key(b"BootstrapKey"),
-            version.to_string().into_bytes(),
-        )
+    let (domain, _) = super::CreateAnalyzeSession().unwrap();
+    let pool = super::system_session::SystemSessionPool::new(domain.clone());
+    let handle = domain.storage_handle();
+    let policy = domain
+        .table_by_name("mysql", "tidb_masking_policy")
         .unwrap();
+    pool.acquire().unwrap().query(format!("UPDATE mysql.tidb SET variable_value='{version}' WHERE variable_name='tidb_server_version'")).unwrap();
+    let mut txn = handle.with_storage(|s| s.Begin(&[])).unwrap();
+    txn.Set(
+        astersql_meta::transaction_meta_string_key(b"BootstrapKey"),
+        version.to_string().into_bytes(),
+    )
+    .unwrap();
+    astersql_meta::TransactionMutator::new(txn.as_mut())
+        .drop_table_only(policy.DBID, policy.ID)
+        .unwrap();
+    assert!(
         astersql_meta::TransactionMutator::new(txn.as_mut())
-            .drop_table_only(policy.DBID, policy.ID)
-            .unwrap();
-        assert!(
-            astersql_meta::TransactionMutator::new(txn.as_mut())
-                .get_table(policy.DBID, policy.ID)
-                .unwrap()
-                .is_none()
-        );
-        txn.Commit(&astersql_kv::Context::default()).unwrap();
-        f.pool.close();
-        f.domain.close();
-        let mut config = astersql_domain::DomainConfig::default();
-        config.schema_lease = std::time::Duration::ZERO;
-        config.stats_lease = std::time::Duration::ZERO;
-        let restarted = Arc::new(astersql_domain::Domain::new_with_storage_handle(
-            handle,
-            Arc::new(astersql_domain::canonical_domain::KvInfoSchemaLoader::new()),
-            config,
-        ));
-        restarted.init().unwrap();
-        assert!(
-            restarted
-                .table_by_name("mysql", "tidb_masking_policy")
-                .is_err()
-        );
-        let session = super::BootstrapCanonicalDomain(restarted.clone()).unwrap();
-        let mut rows = session
-            .execute(
-                "SELECT variable_value FROM mysql.tidb WHERE variable_name='tidb_server_version'",
-            )
-            .unwrap();
-        assert_eq!(
-            rows[0].next_row().unwrap().unwrap(),
-            vec![unsafe { crate::upgrade_def::currentBootstrapVersion }.to_string()]
-        );
-        let table = restarted
+            .get_table(policy.DBID, policy.ID)
+            .unwrap()
+            .is_none()
+    );
+    txn.Commit(&astersql_kv::Context::default()).unwrap();
+    pool.close();
+    domain.close();
+    let mut config = astersql_domain::DomainConfig::default();
+    config.schema_lease = std::time::Duration::ZERO;
+    config.stats_lease = std::time::Duration::ZERO;
+    let restarted = Arc::new(astersql_domain::Domain::new_with_storage_handle(
+        handle,
+        Arc::new(astersql_domain::canonical_domain::KvInfoSchemaLoader::new()),
+        config,
+    ));
+    restarted.init().unwrap();
+    assert!(
+        restarted
             .table_by_name("mysql", "tidb_masking_policy")
-            .unwrap();
-        assert!(!astersql_meta_metadef::IsReservedID(policy.ID));
-        assert!(!astersql_meta_metadef::IsReservedID(table.ID));
-        assert_ne!(policy.ID, table.ID);
-        let expected = [
-            "policy_id",
-            "policy_name",
-            "db_name",
-            "table_name",
-            "table_id",
-            "column_name",
-            "column_id",
-            "expression",
-            "status",
-            "masking_type",
-            "restrict_on",
-            "created_at",
-            "updated_at",
-            "created_by",
-        ];
-        assert_eq!(
-            table
-                .Columns
-                .iter()
-                .map(|c| c.Name.L.as_str())
-                .collect::<Vec<_>>(),
-            expected
-        );
-        let mut columns = session.execute("SELECT column_name, LOWER(column_type), is_nullable FROM information_schema.columns WHERE table_schema='mysql' AND table_name='tidb_masking_policy' ORDER BY ordinal_position").unwrap();
-        let mut actual_columns = Vec::new();
-        while let Some(row) = columns[0].next_row().unwrap() {
-            actual_columns.push(row.join(" "));
-        }
-        assert_eq!(
-            actual_columns,
-            [
-                "policy_id bigint(64) NO",
-                "policy_name varchar(64) NO",
-                "db_name varchar(64) NO",
-                "table_name varchar(64) NO",
-                "table_id bigint(64) NO",
-                "column_name varchar(64) NO",
-                "column_id bigint(64) NO",
-                "expression text NO",
-                "status varchar(16) NO",
-                "masking_type varchar(32) NO",
-                "restrict_on varchar(256) NO",
-                "created_at datetime(6) NO",
-                "updated_at datetime(6) NO",
-                "created_by varchar(288) NO",
-            ]
-        );
-        assert!(table.PKIsHandle);
-        let mut indexes = session.execute("SELECT index_name, non_unique, seq_in_index, column_name FROM information_schema.statistics WHERE table_schema='mysql' AND table_name='tidb_masking_policy' ORDER BY index_name, seq_in_index").unwrap();
-        let mut actual = Vec::new();
-        while let Some(row) = indexes[0].next_row().unwrap() {
-            actual.push(row);
-        }
-        let expected = [
-            ["PRIMARY", "0", "1", "policy_id"],
-            ["uk_table_column", "0", "1", "table_id"],
-            ["uk_table_column", "0", "2", "column_id"],
-            ["uk_table_policy", "0", "1", "table_id"],
-            ["uk_table_policy", "0", "2", "policy_name"],
-        ]
-        .map(|row| row.map(str::to_string).to_vec())
-        .to_vec();
-        assert_eq!(actual, expected);
-        restarted.close();
+            .is_err()
+    );
+    let session = super::BootstrapCanonicalDomain(restarted.clone()).unwrap();
+    let mut rows = session
+        .execute("SELECT variable_value FROM mysql.tidb WHERE variable_name='tidb_server_version'")
+        .unwrap();
+    assert_eq!(
+        rows[0].next_row().unwrap().unwrap(),
+        vec![unsafe { crate::upgrade_def::currentBootstrapVersion }.to_string()]
+    );
+    let table = restarted
+        .table_by_name("mysql", "tidb_masking_policy")
+        .unwrap();
+    assert!(!astersql_meta_metadef::IsReservedID(policy.ID));
+    assert!(!astersql_meta_metadef::IsReservedID(table.ID));
+    assert_ne!(policy.ID, table.ID);
+    let expected = [
+        "policy_id",
+        "policy_name",
+        "db_name",
+        "table_name",
+        "table_id",
+        "column_name",
+        "column_id",
+        "expression",
+        "status",
+        "masking_type",
+        "restrict_on",
+        "created_at",
+        "updated_at",
+        "created_by",
+    ];
+    assert_eq!(
+        table
+            .Columns
+            .iter()
+            .map(|c| c.Name.L.as_str())
+            .collect::<Vec<_>>(),
+        expected
+    );
+    let mut columns = session.execute("SELECT column_name, LOWER(column_type), is_nullable FROM information_schema.columns WHERE table_schema='mysql' AND table_name='tidb_masking_policy' ORDER BY ordinal_position").unwrap();
+    let mut actual_columns = Vec::new();
+    while let Some(row) = columns[0].next_row().unwrap() {
+        actual_columns.push(row.join(" "));
     }
+    assert_eq!(
+        actual_columns,
+        [
+            "policy_id bigint(64) NO",
+            "policy_name varchar(64) NO",
+            "db_name varchar(64) NO",
+            "table_name varchar(64) NO",
+            "table_id bigint(64) NO",
+            "column_name varchar(64) NO",
+            "column_id bigint(64) NO",
+            "expression text NO",
+            "status varchar(16) NO",
+            "masking_type varchar(32) NO",
+            "restrict_on varchar(256) NO",
+            "created_at datetime(6) NO",
+            "updated_at datetime(6) NO",
+            "created_by varchar(288) NO",
+        ]
+    );
+    assert!(table.PKIsHandle);
+    let mut indexes = session.execute("SELECT index_name, non_unique, seq_in_index, column_name FROM information_schema.statistics WHERE table_schema='mysql' AND table_name='tidb_masking_policy' ORDER BY index_name, seq_in_index").unwrap();
+    let mut actual = Vec::new();
+    while let Some(row) = indexes[0].next_row().unwrap() {
+        actual.push(row);
+    }
+    let expected = [
+        ["PRIMARY", "0", "1", "policy_id"],
+        ["uk_table_column", "0", "1", "table_id"],
+        ["uk_table_column", "0", "2", "column_id"],
+        ["uk_table_policy", "0", "1", "table_id"],
+        ["uk_table_policy", "0", "2", "policy_name"],
+    ]
+    .map(|row| row.map(str::to_string).to_vec())
+    .to_vec();
+    assert_eq!(actual, expected);
+    restarted.close();
+}
+
+#[test]
+fn masking_policy_upgrade_from_189_recreates_missing_table_after_restart() {
+    assert_masking_policy_upgrade_recreates_missing_table_after_restart(189);
+}
+
+#[test]
+fn masking_policy_upgrade_from_254_recreates_missing_table_after_restart() {
+    assert_masking_policy_upgrade_recreates_missing_table_after_restart(254);
+}
+
+#[test]
+fn masking_policy_upgrade_from_279_recreates_missing_table_after_restart() {
+    assert_masking_policy_upgrade_recreates_missing_table_after_restart(279);
 }
 
 fn seed_policy(f: &Fixture, id: i64) {
