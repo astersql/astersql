@@ -31,7 +31,7 @@ use crate::api::{
     WithSetWatermark,
 };
 use crate::cache::{procIdle, procTriggering, procWaitTriggerClose};
-use crate::runtime::{NewTimerRuntimeBuilder, retryBusyWorkerInterval};
+use crate::runtime::{NewTimerRuntimeBuilder, RecoveryEvent, retryBusyWorkerInterval};
 use crate::worker::TriggerEventRequest;
 use chrono::Utc;
 use std::collections::HashSet;
@@ -771,18 +771,49 @@ fn test_timer_runtime_loop_panic_recover() {
     core.push_list_panic("store panic 1");
     core.push_list_panic("store panic 2");
     core.push_list(Vec::new());
-    let runtime = NewTimerRuntimeBuilder("g1".to_string(), store).Build();
+    let mut runtime = NewTimerRuntimeBuilder("g1".to_string(), store).Build();
+    runtime.setRetryLoopWait(Duration::from_millis(1));
+    let recovery_events = runtime.observeRecoveryEvents();
     runtime.Start();
-    wait_until(Duration::from_secs(25), || core.list_calls() >= 3);
+    for expected in [
+        RecoveryEvent::PanicCaught(1),
+        RecoveryEvent::RetryWaiting(1),
+        RecoveryEvent::RetryDelayElapsed(1),
+        RecoveryEvent::PanicCaught(2),
+        RecoveryEvent::RetryWaiting(2),
+        RecoveryEvent::RetryDelayElapsed(2),
+        RecoveryEvent::LoopResumed(2),
+    ] {
+        assert_eq!(
+            recovery_events.recv_timeout(Duration::from_secs(2)),
+            Ok(expected)
+        );
+    }
+    assert_eq!(core.list_calls(), 3);
     assert!(runtime.Running());
     runtime.Stop();
 
     let (core, store) = new_mock_store();
     core.push_watch_supported(false);
+    core.push_watch_supported(false);
     core.push_list_panic("store panic always");
-    let runtime = NewTimerRuntimeBuilder("g1".to_string(), store).Build();
+    core.push_list_panic("store panic always");
+    let mut runtime = NewTimerRuntimeBuilder("g1".to_string(), store).Build();
+    runtime.setRetryLoopWait(Duration::from_millis(1));
+    let recovery_events = runtime.observeRecoveryEvents();
     runtime.Start();
-    wait_until(Duration::from_secs(2), || core.list_calls() >= 1);
+    for expected in [
+        RecoveryEvent::PanicCaught(1),
+        RecoveryEvent::RetryWaiting(1),
+        RecoveryEvent::RetryDelayElapsed(1),
+        RecoveryEvent::PanicCaught(2),
+    ] {
+        assert_eq!(
+            recovery_events.recv_timeout(Duration::from_secs(2)),
+            Ok(expected)
+        );
+    }
+    assert!(core.list_calls() >= 2);
     let before_stop = Instant::now();
     runtime.Stop();
     assert!(before_stop.elapsed() < Duration::from_secs(1));
@@ -790,10 +821,17 @@ fn test_timer_runtime_loop_panic_recover() {
     let (core, store) = new_mock_store();
     core.push_watch_supported(false);
     core.push_list_panic("store panic before long retry");
-    let runtime = NewTimerRuntimeBuilder("g1".to_string(), store).Build();
+    let mut runtime = NewTimerRuntimeBuilder("g1".to_string(), store).Build();
+    let recovery_events = runtime.observeRecoveryEvents();
     runtime.Start();
-    wait_until(Duration::from_secs(2), || core.list_calls() >= 1);
-    thread::sleep(Duration::from_millis(20));
+    assert_eq!(
+        recovery_events.recv_timeout(Duration::from_secs(2)),
+        Ok(RecoveryEvent::PanicCaught(1))
+    );
+    assert_eq!(
+        recovery_events.recv_timeout(Duration::from_secs(2)),
+        Ok(RecoveryEvent::RetryWaiting(1))
+    );
     let before_stop = Instant::now();
     runtime.Stop();
     assert!(before_stop.elapsed() < Duration::from_secs(1));

@@ -10,7 +10,9 @@ This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`, 
 
 - [x] (2026-10-10) 从用户输出恢复目标测试清单并定位 crate、源文件和验证入口。
 - [x] (2026-10-10) 执行任务 1，生成当前提交上 25/25 项的可复现基线。
-- [ ] 并行完成本地 crate 任务 2–4、6。
+- [ ] 并行完成本地 crate 任务 2、4。
+- [x] (2026-10-10) 完成任务 3，bootstrap 177/178 回归改为断言 Rust 当前版本常量，5 个目标测试在默认 profile 下通过。
+- [x] (2026-10-10) 完成任务 6，timer panic 恢复测试用显式阶段事件替代固定等待并连续 20 次通过。
 - [x] (2026-10-10) 复验任务 5 SST transport 取消语义 20 次，确认当前实现已稳定收敛。
 - [x] (2026-10-10) 完成任务 7，profile 与 traceevent 目标及两个 crate 全测在默认 profile 下通过。
 - [x] (2026-10-10) 复验任务 10 global stats options 目标与窄回归，确认无需性能修改。
@@ -45,6 +47,12 @@ This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`, 
   Evidence: 将 dump 核心抽成接收秒时间戳的 crate 内边界后，原冷却断言保持不变，目标重复运行约 0.015s；reset 同时清除 `LAST_DUMP_TIME`。
 - Observation: 任务 5 的 blocked-write 取消用例在当前提交上未复现原 2 秒失败。
   Evidence: 默认 nextest profile 首次 1/1 通过，随后连续 20 次均 1/1 通过；测试本体耗时 0.08–0.19s，取消后无 ingest 请求、无 batch frame，wire worker 由 harness `Drop` join。
+- Observation: timer 用例的约 20 秒耗时来自两次真实 panic 后各执行一次生产 10 秒重试等待，不是恢复事件丢失。
+  Evidence: Go 对齐测试将 `retryLoopWait` 设为 1ms；Rust 基线在默认 profile 10.006s 超时、diagnostic profile 20.071s 通过。对齐后单次测试 0.039s，连续 20 次全部通过。
+- Observation: bootstrap 177/178 的两个正确性失败来自测试将当前版本硬编码为已过期的 `262`，升级执行器实际正确写入当前 `317`。
+  Evidence: Go 对照测试断言 `session.CurrentBootstrapVersion`；Rust 改为读取 `upgrade_def::currentBootstrapVersion` 后两个失败项分别在 0.859s 和 0.788s 通过。
+- Observation: Cargo 槽位隔离最终产物，但仓库 `.cargo/config.toml` 的共享 `build-dir = "target"` 仍会让并发构建排队并争用 CPU。
+  Evidence: 首次完整复跑中 dist-task 状态矩阵在重负载下 10.015s 超时；负载下降后同一命令为 4.601s，5/5 通过。
 
 ## Decision Log
 
@@ -63,12 +71,22 @@ This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`, 
 - Decision: 任务 5 不修改 SST transport 生产或测试代码。
   Rationale: 当前用例已用受控 limiter 固定 blocked-write 交错，并在 20 次默认预算回归中持续证明取消先于 ingest；无失败证据时继续改动会违反“先复验已修复项”的范围限制。
   Date/Author: 2026-10-10 / Codex
+- Decision: timer 生产重试间隔保持 10 秒，仅向 Rust 测试暴露与 Go 同类的 1ms 重试配置和 panic/retry/resumed 观测事件。
+  Rationale: 这保留了真实 runtime loop 与取消语义，同时让测试通过通道确认阶段顺序，不再依赖轮询或任意 sleep。
+  Date/Author: 2026-10-10 / Codex
+- Decision: 任务 3 不修改 bootstrap 生产升级逻辑，只消除两个 Rust 回归中的版本号硬编码。
+  Rationale: 同 store 的 DDL table version、global variable 容量和六种 dist-task 状态行为均已通过；根因是测试偏离 Go 的当前版本常量断言，扩大生产修改没有失败依据。
+  Date/Author: 2026-10-10 / Codex
 
 ## Outcomes & Retrospective
 
 任务 5 在当前提交上无需代码修改：SST blocked-write 取消顺序已连续 20 次在默认 profile 下通过，且每次均无 ingest、batch frame 或未 join 的 wire worker。
 
-任务 1 已产出 25 行机器可读清单，25 项均有当前提交的有效测试证据。已确认任务 3、4、6 仍需实施，任务 2 和 5 当前为绿色；任务 8 的 add-index 已恢复而 paging 仍超时，任务 9 两项已恢复。隔离 playground、Cargo 槽位和 tag 数据均已清理，任务 1 完成。任务 10 在当前提交上无需代码修改：target 和关联 global-stats options 窄回归均在默认 profile 下通过，最慢单例 3.550s。任务 7 已移除 profile 的冗余首次符号化预热，并以可控时间边界验证 traceevent 冷却；目标 2/2、重复 3/3 和 crate 全测 27/27 通过，`make lint` 通过。
+任务 6 已保留生产 10 秒 panic 重试和立即取消语义，并使测试显式验证两次 panic、两次 retry 及 post-recover 刷新顺序。目标用例单次 0.039s，重复 20/20 通过，`make lint` 通过。
+
+任务 3 已将 bootstrap 177/178 回归与 Go 的当前版本断言重新对齐，保留 DDL table version、16383 字符容量和完整六状态 dist-task 矩阵。默认 profile 目标 5/5 通过，`cargo fmt --all`、`make lint` 和 `git diff --check` 通过。
+
+任务 1 已产出 25 行机器可读清单，25 项均有当前提交的有效测试证据。已确认任务 3、4 仍需实施，任务 2 和 5 当前为绿色；任务 8 的 add-index 已恢复而 paging 仍超时，任务 9 两项已恢复。隔离 playground、Cargo 槽位和 tag 数据均已清理，任务 1 完成。任务 10 在当前提交上无需代码修改：target 和关联 global-stats options 窄回归均在默认 profile 下通过，最慢单例 3.550s。任务 7 已移除 profile 的冗余首次符号化预热，并以可控时间边界验证 traceevent 冷却；目标 2/2、重复 3/3 和 crate 全测 27/27 通过，`make lint` 通过。
 
 ## Context and Orientation
 

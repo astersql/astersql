@@ -97,6 +97,8 @@ pub fn NewTimerRuntimeBuilder(groupID: String, store: TimerStore) -> TimerRuntim
                 fullRefreshTimerCounter: Counter::default(),
                 partialRefreshTimerCounter: Counter::default(),
                 retryLoopWait: Duration::from_secs(10),
+                #[cfg(test)]
+                recoveryEventSender: None,
             }),
         },
     }
@@ -152,6 +154,17 @@ struct RuntimeInner {
     fullRefreshTimerCounter: Counter,
     partialRefreshTimerCounter: Counter,
     retryLoopWait: Duration,
+    #[cfg(test)]
+    recoveryEventSender: Option<Sender<RecoveryEvent>>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RecoveryEvent {
+    PanicCaught(u64),
+    RetryWaiting(u64),
+    RetryDelayElapsed(u64),
+    LoopResumed(u64),
 }
 
 #[derive(Default)]
@@ -163,6 +176,22 @@ struct RunState {
 }
 
 impl TimerGroupRuntime {
+    #[cfg(test)]
+    pub(crate) fn setRetryLoopWait(&mut self, wait: Duration) {
+        Arc::get_mut(&mut self.inner)
+            .expect("retry wait must be configured before the runtime is shared")
+            .retryLoopWait = wait;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observeRecoveryEvents(&mut self) -> Receiver<RecoveryEvent> {
+        let (sender, receiver) = crossbeam_channel::unbounded();
+        Arc::get_mut(&mut self.inner)
+            .expect("recovery events must be observed before the runtime is shared")
+            .recoveryEventSender = Some(sender);
+        receiver
+    }
+
     /// 启动恢复循环线程；已运行则直接返回。
     pub fn Start(&self) {
         let mut state = self
@@ -237,19 +266,34 @@ impl TimerGroupRuntime {
     fn runRecoverLoop(&self, ctx: Context) {
         let mut totalPanic = 0u64;
         while !ctx.is_cancelled() {
-            if totalPanic > 0 && !sleep(&ctx, self.inner.retryLoopWait) {
-                return;
+            if totalPanic > 0 {
+                #[cfg(test)]
+                self.notifyRecoveryEvent(RecoveryEvent::RetryWaiting(totalPanic));
+                if !sleep(&ctx, self.inner.retryLoopWait) {
+                    return;
+                }
+                #[cfg(test)]
+                self.notifyRecoveryEvent(RecoveryEvent::RetryDelayElapsed(totalPanic));
             }
-            let result = catch_unwind(AssertUnwindSafe(|| self.loopOnce(&ctx)));
+            let result = catch_unwind(AssertUnwindSafe(|| self.loopOnce(&ctx, totalPanic)));
             if result.is_ok() {
                 return;
             }
             totalPanic += 1;
+            #[cfg(test)]
+            self.notifyRecoveryEvent(RecoveryEvent::PanicCaught(totalPanic));
+        }
+    }
+
+    #[cfg(test)]
+    fn notifyRecoveryEvent(&self, event: RecoveryEvent) {
+        if let Some(sender) = &self.inner.recoveryEventSender {
+            let _ = sender.send(event);
         }
     }
 
     /// 单次主循环：周期性全量刷新、关事件、批处理 Watch、尝试触发。
-    fn loopOnce(&self, ctx: &Context) {
+    fn loopOnce(&self, ctx: &Context, recoveredFromPanics: u64) {
         let mut watch = self.createWatchTimerChan(ctx);
         let mut batchResponses = Vec::with_capacity(1);
         let mut lastFullRefresh = Instant::now();
@@ -261,6 +305,10 @@ impl TimerGroupRuntime {
 
         // 启动时先全量灌入缓存，再进入事件驱动循环。
         self.fullRefreshTimersWithContext(ctx);
+        #[cfg(test)]
+        if recoveredFromPanics > 0 {
+            self.notifyRecoveryEvent(RecoveryEvent::LoopResumed(recoveredFromPanics));
+        }
         while !ctx.is_cancelled() {
             if lastFullRefresh.elapsed() >= fullRefreshTimersInterval {
                 self.fullRefreshTimersWithContext(ctx);
