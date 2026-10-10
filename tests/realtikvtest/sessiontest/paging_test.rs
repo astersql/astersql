@@ -124,17 +124,23 @@ fn test_paging_act_rows_and_process_keys() {
         "create table t(a int,b int,c int,index idx(a,b), primary key(a))",
         Vec::new(),
     );
-
-    for batch in 0..100 {
-        let mut sql = String::from("insert into t value");
-        for offset in 0..1000 {
-            if offset != 0 {
-                sql.push(',');
-            }
-            let value = batch * 1000 + offset;
-            sql.push_str(&format!("({value},{value},{value})"));
+    let mut sql = String::from("insert into t value");
+    for value in 0..1000 {
+        if value != 0 {
+            sql.push(',');
         }
-        session.MustExec(&sql, Vec::new());
+        sql.push_str(&format!("({value},{value},{value})"));
+    }
+    session.MustExec(&sql, Vec::new());
+    // Keep Go's 100 batches of 1000 consecutive rows, but derive the later
+    // batches from the seed batch so statement parsing stays within the
+    // RealTiKV test budget without reducing the paging workload.
+    for batch in 1..100 {
+        let offset = batch * 1000;
+        session.MustExec(
+            &format!("insert into t select a+{offset},b+{offset},c+{offset} from t where a < 1000"),
+            Vec::new(),
+        );
     }
     session
         .MustQuery("select count(*) from t", Vec::new())

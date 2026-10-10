@@ -17,7 +17,8 @@ This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`, 
 - [x] (2026-10-10) 复验任务 5 SST transport 取消语义 20 次，确认当前实现已稳定收敛。
 - [x] (2026-10-10) 完成任务 7，profile 与 traceevent 目标及两个 crate 全测在默认 profile 下通过。
 - [x] (2026-10-10) 复验任务 10 global stats options 目标与窄回归，确认无需性能修改。
-- [ ] 串行完成共享集群任务 8–9。
+- [x] (2026-10-10) 完成任务 8，保留 add-index 场景并将 paging 的 10 万行数据准备收敛到 scoped RealTiKV budget 内。
+- [ ] 串行完成共享集群任务 9。
 - [ ] 汇总默认 profile 复验和 Ready 检查证据。
 
 ## Surprises & Discoveries
@@ -63,6 +64,10 @@ This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`, 
   Evidence: 修复前精确 nextest 在 `pkg/session/test/session_test.rs:1662` 失败；补前置后失败点移到 partition 断言 `:1665`。
 - Observation: Rust session 的相关表集合记录逻辑表 ID，但分区写键解码为物理分区 ID，导致 `transaction_schema_changed` 把真实分区写误判为无写入。
   Evidence: 按事务开始 schema 的 `PartitionInfo.Definitions` 映射物理 ID 后，目标用例 1/1 在 0.864s 通过，现有 normal/temporary-table 窄回归 1/1 在 0.740s 通过。
+- Observation: paging 超时的主要成本是重复解析 100 条各含 1000 组 literal 的 INSERT，而不是 region split 或 paging 扫描。
+  Evidence: 阶段探针显示 schema 准备约 0.70s，原始 100 批 INSERT 在 19.35s 才完成，尚未进入扫描即触发 20s 终止。
+- Observation: 用首批 1000 行作为 seed，后续 99 批用 `INSERT ... SELECT` 派生相同连续值，可保留 100 批、10 万行及 24 次 paging 扫描并在 scoped budget 内通过。
+  Evidence: 隔离 tikv-slim playground 上联合回归 2/2 通过，add-index 10.508s，paging 17.503s；12379 和 TiUP tag 数据均已清理。
 
 ## Decision Log
 
@@ -90,6 +95,9 @@ This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`, 
 - Decision: 任务 2 不修改 session 生产或测试代码。
   Rationale: 两个目标用例在任务 1 基线和本次独立复验中都低于默认 10 秒预算，且 1024 用户、密码历史、claim/warning 和 Domain 复用/替换断言全部保留；无失败或热点证据时修改初始化路径会超出本任务范围。
   Date/Author: 2026-10-10 / Codex
+- Decision: 任务 8 仅优化 paging 测试数据准备，不修改 DDL 或 paging 生产路径。
+  Rationale: add-index 已通过，paging 热点在 literal-heavy fixture setup；seed 加 99 批 `INSERT ... SELECT` 保留 Go 的连续 10 万行、100 批和全部 paging/process-keys 断言，避免无证据的生产修改。
+  Date/Author: 2026-10-10 / Codex
 
 ## Outcomes & Retrospective
 
@@ -104,6 +112,8 @@ This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`, 
 任务 1 已产出 25 行机器可读清单，25 项均有当前提交的有效测试证据。任务 3、4 已完成，任务 2 和 5 当前为绿色；任务 8 的 add-index 已恢复而 paging 仍超时，任务 9 两项已恢复。隔离 playground、Cargo 槽位和 tag 数据均已清理，任务 1 完成。任务 10 在当前提交上无需代码修改：target 和关联 global-stats options 窄回归均在默认 profile 下通过，最慢单例 3.550s。任务 7 已移除 profile 的冗余首次符号化预热，并以可控时间边界验证 traceevent 冷却；目标 2/2、重复 3/3 和 crate 全测 27/27 通过，`make lint` 通过。
 
 任务 4 已补齐 Go `TestSchemaCheckerSQL` 的全局前置，并将分区写键的物理 ID 映射回事务开始 schema 中的逻辑表；目标 normal/partition 用例与相邻 schema-check 窄回归均在默认 nextest profile 通过。
+
+任务 8 已将 paging fixture 从 100 条 literal-heavy INSERT 调整为 1 批 seed 加 99 批等值 `INSERT ... SELECT`，保留 10 万行、100 批、region 范围和 24 次 paging/process-keys 检查。与 add-index 在隔离 tikv-slim playground 上串行 2/2 通过，两个用例均在 scoped budget 内。
 
 ## Context and Orientation
 
