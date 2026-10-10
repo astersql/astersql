@@ -18,7 +18,7 @@ This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`, 
 - [x] (2026-10-10) 完成任务 7，profile 与 traceevent 目标及两个 crate 全测在默认 profile 下通过。
 - [x] (2026-10-10) 复验任务 10 global stats options 目标与窄回归，确认无需性能修改。
 - [x] (2026-10-10) 完成任务 8，保留 add-index 场景并将 paging 的 10 万行数据准备收敛到 scoped RealTiKV budget 内。
-- [ ] 串行完成共享集群任务 9。
+- [x] (2026-10-10) 完成任务 9，split-file 与公共契约在干净 RealTiKV playground 中联合通过并完整清理。
 - [ ] 汇总默认 profile 复验和 Ready 检查证据。
 
 ## Surprises & Discoveries
@@ -39,6 +39,10 @@ This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`, 
   Evidence: 唯一 tag `rust-baseline-01a12497` 在 12379 返回 PD v8.5.8；测试后 12379 不可达、tag 数据已清理，2379 仍返回 v8.5.1。
 - Observation: 任务 8–9 的部分计划过滤器与 nextest 实际名称不符，原样执行会得到 0 tests。
   Evidence: `cargo nextest list` 显示 add-index、paging 与 split-file 是独立测试二进制名下的无模块前缀测试；更正过滤器后每组均运行 2 个有效测试。
+- Observation: 任务 9 的 split-file 已在真实 TiKV 上稳定通过，不需要修改 import 生产逻辑；公共契约的边缘超时来自每个契约分支重新创建 mock store/domain，而不是契约项或工作线程缺失。
+  Evidence: 修复前联合基线为 split-file 2.880s、contract 19.805s；独立诊断复现 contract 在 20.013s 被终止，其中 normal/boundary/error 阶段分别耗时 4.298s/6.857s/2.705s。
+- Observation: 在同一契约测试内复用一个 mock store，并依旧对每个场景执行 `DROP/CREATE` 重建 SQL fixture，可以保留 192 条 Go 等价 INSERT、3×64 行和所有契约分支，同时将用例收敛到 13.153s。
+  Evidence: 干净 tikv-slim playground 联合回归 2/2 通过，split-file 2.852s、contract 13.153s；12379 不可达且两个任务 tag 目录均已删除。
 - Observation: 任务 10 的 `TestAnalyzeGlobalStatsWithOpts2` 已在默认 10 秒预算内稳定通过，未复现计划假设的 global merge 超时。
   Evidence: 单例复验 1/1 通过，nextest 耗时 3.439s；关联 `TestAnalyzeGlobalStatsWithOpts1/2` 窄回归 2/2 通过，分别耗时 3.115s 和 3.550s，测试中四次 ANALYZE 及 global/p0/p1 options 断言均保留。
 - Observation: 任务 10 首次命令的 302.26s 总墙钟为冷编译和共享 Cargo build-dir 排队，不是测试执行热点。
@@ -98,6 +102,9 @@ This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`, 
 - Decision: 任务 8 仅优化 paging 测试数据准备，不修改 DDL 或 paging 生产路径。
   Rationale: add-index 已通过，paging 热点在 literal-heavy fixture setup；seed 加 99 批 `INSERT ... SELECT` 保留 Go 的连续 10 万行、100 批和全部 paging/process-keys 断言，避免无证据的生产修改。
   Date/Author: 2026-10-10 / Codex
+- Decision: 任务 9 仅复用公共契约测试内的 mock store，不修改 split-file 生产路径，不批处理或删减 Go 的 192 条 fixture INSERT。
+  Rationale: split-file 基线已在真实 TiKV 通过；contract 的热点是重复 store/domain setup。复用 store 后每个场景仍通过 `DROP/CREATE` 重建表和数据，保留 normal、boundary、error 与 resource-cleanup 全部断言。
+  Date/Author: 2026-10-10 / Codex
 
 ## Outcomes & Retrospective
 
@@ -114,6 +121,8 @@ This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`, 
 任务 4 已补齐 Go `TestSchemaCheckerSQL` 的全局前置，并将分区写键的物理 ID 映射回事务开始 schema 中的逻辑表；目标 normal/partition 用例与相邻 schema-check 窄回归均在默认 nextest profile 通过。
 
 任务 8 已将 paging fixture 从 100 条 literal-heavy INSERT 调整为 1 批 seed 加 99 批等值 `INSERT ... SELECT`，保留 10 万行、100 批、region 范围和 24 次 paging/process-keys 检查。与 add-index 在隔离 tikv-slim playground 上串行 2/2 通过，两个用例均在 scoped budget 内。
+
+任务 9 确认 split-file 生产路径无需修改，并将公共契约的重复 mock store/domain setup 收敛为单个共享 store；每个场景仍重建完整 SQL fixture。干净 RealTiKV 联合回归 2/2 通过，contract 从 20.013s 超时降至 13.153s，`make lint` 通过，playground 进程、12379 端口和唯一 tag 数据均已清理。
 
 ## Context and Orientation
 

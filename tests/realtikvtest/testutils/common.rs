@@ -356,6 +356,11 @@ pub(crate) fn newSuiteContext(t: &TestCtx, tk: testkit::TestKit, store: Storage)
 /// InitTest inits SuiteContext for test.
 pub fn InitTest(t: &TestCtx) -> SuiteContext {
     let store = CreateMockStoreAndSetup(t, &[]);
+    InitTestWithStore(t, store)
+}
+
+/// Build a fresh Go-equivalent SQL fixture on an existing mock store.
+pub(crate) fn InitTestWithStore(t: &TestCtx, store: Storage) -> SuiteContext {
     let tk = testkit::NewTestKit(t, store.clone());
     tk.MustExec("drop database if exists addindex;");
     tk.MustExec("create database addindex;");

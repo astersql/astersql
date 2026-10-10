@@ -69,6 +69,7 @@
 
 //! Parity tests for `tests/realtikvtest/testutils` public contracts vs Go.
 
+use crate::common::InitTestWithStore;
 use crate::stubs::{
     ExternalTagged, ExternalTaggedField, failpoint, fakestorage, kerneltype, require,
     set_classic_for_test, set_failpoint_hold_ms_for_test, storage, take_local_events, testkit,
@@ -76,18 +77,45 @@ use crate::stubs::{
 use crate::workload::{deleteStr, genColval, insertStr, isSkippedError, updateStr};
 use crate::{
     AddIndexMultiCols, AddIndexNonUnique, AddIndexPK, AddIndexUnique, AssertExternalField,
-    CompatibilityContext, InitCompCtx, InitCompCtxParams, InitConcurrentDDLTest, InitTest,
-    InitTestFailpoint, RemoveAllObjects, SuiteContext, TestNonUnique, TestOneColFrame,
-    TestOneIndexFrame, TestTwoColsFrame,
+    CompatibilityContext, InitCompCtxParams, InitTest, RemoveAllObjects, SuiteContext,
+    TestNonUnique, TestOneColFrame, TestOneIndexFrame, TestTwoColsFrame,
 };
 use astersql_tests_realtikvtest::stubs::{TestCtx, reset_test_globals as reset_parent};
 
+fn init_comp_ctx_with_store(
+    t: &TestCtx,
+    store: &astersql_tests_realtikvtest::stubs::Storage,
+) -> SuiteContext {
+    let mut ctx = InitTestWithStore(t, store.clone());
+    InitCompCtxParams(&mut ctx);
+    ctx
+}
+
+fn init_concurrent_ddl_with_store(
+    t: &TestCtx,
+    store: &astersql_tests_realtikvtest::stubs::Storage,
+    col_iids: Vec<Vec<i32>>,
+    col_jids: Vec<Vec<i32>>,
+) -> SuiteContext {
+    let ctx = init_comp_ctx_with_store(t, store);
+    if let Some(comp) = &ctx.CompCtx {
+        let mut comp = comp.write().unwrap();
+        comp.IsConcurrentDDL = true;
+        comp.tType = TestNonUnique;
+        comp.colIIDs = col_iids;
+        comp.colJIDs = col_jids;
+    }
+    ctx
+}
+
 #[test]
 fn go_rust_public_contract_matches() {
-    contract_normal_paths();
-    contract_boundary();
-    contract_error_paths();
-    contract_resource_cleanup();
+    let t = TestCtx::new();
+    let store = astersql_tests_realtikvtest::CreateMockStoreAndSetup(&t, &[]);
+    contract_normal_paths(&store);
+    contract_boundary(&store);
+    contract_error_paths(&store);
+    contract_resource_cleanup(&store);
 }
 
 #[test]
@@ -117,14 +145,14 @@ fn compatibility_public_start_stop_methods_execute() {
 }
 
 /// Normal: InitTest SQL fixture, DDL SQL shape, frames, GCS cleanup, genColval.
-fn contract_normal_paths() {
+fn contract_normal_paths(store: &astersql_tests_realtikvtest::stubs::Storage) {
     reset_parent();
     crate::stubs::reset_test_globals();
     set_classic_for_test(true);
     set_failpoint_hold_ms_for_test(0);
 
     let t = TestCtx::new();
-    let ctx = InitTest(&t);
+    let ctx = InitTestWithStore(&t, store.clone());
     assert_eq!(ctx.tableNum, 3);
     assert_eq!(ctx.rowNum, 64);
     assert!(kerneltype::IsClassic());
@@ -216,7 +244,7 @@ fn contract_normal_paths() {
     );
 
     // Multi-col frame skips identical column pairs.
-    let ctx3 = InitTest(&t);
+    let ctx3 = InitTestWithStore(&t, store.clone());
     let i_ids = vec![vec![1], vec![], vec![]];
     let j_ids = vec![vec![1, 2], vec![], vec![]];
     TestTwoColsFrame(&ctx3, &i_ids, &j_ids, AddIndexMultiCols);
@@ -231,7 +259,7 @@ fn contract_normal_paths() {
     );
 
     // PK frame uses admin check table.
-    let ctx4 = InitTest(&t);
+    let ctx4 = InitTestWithStore(&t, store.clone());
     TestOneIndexFrame(&ctx4, 0, AddIndexPK);
     assert!(
         ctx4.tk
@@ -261,14 +289,14 @@ fn contract_normal_paths() {
 
 /// Boundary: next-gen skips fast reorg; unique+partition composite; multi-schema DDL suffix;
 /// AssertExternalField empty/nil; failpoint list.
-fn contract_boundary() {
+fn contract_boundary(store: &astersql_tests_realtikvtest::stubs::Storage) {
     reset_parent();
     crate::stubs::reset_test_globals();
     set_classic_for_test(false);
     set_failpoint_hold_ms_for_test(0);
 
     let t = TestCtx::new();
-    let ctx = InitTest(&t);
+    let ctx = InitTestWithStore(&t, store.clone());
     assert!(!kerneltype::IsClassic());
     assert!(
         !ctx.tk
@@ -279,7 +307,7 @@ fn contract_boundary() {
     );
 
     // Unique index on partitioned table includes c0.
-    let ctx = InitTest(&t);
+    let ctx = InitTestWithStore(&t, store.clone());
     let col_ids = vec![vec![], vec![3], vec![]];
     TestOneColFrame(&ctx, &col_ids, AddIndexUnique);
     assert!(
@@ -304,7 +332,7 @@ fn contract_boundary() {
     );
 
     // Multi-schema change appends column DDL.
-    let mut ctx = InitCompCtx(&t);
+    let mut ctx = init_comp_ctx_with_store(&t, store);
     if let Some(comp) = &ctx.CompCtx {
         comp.write().unwrap().IsMultiSchemaChange = true;
     }
@@ -353,7 +381,8 @@ fn contract_boundary() {
     );
 
     // Failpoint path table (enable/disable with 0 hold).
-    let fp = InitTestFailpoint(&t);
+    let mut fp = InitTestWithStore(&t, store.clone());
+    fp.isFailpointsTest = true;
     assert!(fp.isFailpointsTest);
     require::NoError(
         &t,
@@ -371,11 +400,11 @@ fn contract_boundary() {
     );
 
     // Concurrent DDL init flags
-    let ctx = InitConcurrentDDLTest(
+    let ctx = init_concurrent_ddl_with_store(
         &t,
+        store,
         vec![vec![1], vec![1], vec![1]],
         vec![vec![], vec![], vec![]],
-        TestNonUnique,
     );
     assert!(
         ctx.CompCtx
@@ -388,14 +417,14 @@ fn contract_boundary() {
 }
 
 /// Error: Duplicate entry accepted for unique/PK; RemoveAllObjects list error; unexpected delete.
-fn contract_error_paths() {
+fn contract_error_paths(store: &astersql_tests_realtikvtest::stubs::Storage) {
     reset_parent();
     crate::stubs::reset_test_globals();
     set_classic_for_test(true);
     set_failpoint_hold_ms_for_test(0);
 
     let t = TestCtx::new();
-    let ctx = InitTest(&t);
+    let ctx = InitTestWithStore(&t, store.clone());
     // Force unique create on table 0 col 1 to return Duplicate entry (Go expects Contains).
     ctx.tk.set_exec_handler(|sql| {
         if sql.contains("add unique index") {
@@ -410,7 +439,7 @@ fn contract_error_paths() {
     assert!(err.unwrap_err().contains("1062"));
 
     // Non-unique failure must panic via require.NoError — exercise via catch_unwind.
-    let ctx = InitTest(&t);
+    let ctx = InitTestWithStore(&t, store.clone());
     ctx.tk.set_exec_handler(|sql| {
         if sql.contains("add index") {
             Err("boom".into())
@@ -440,14 +469,14 @@ fn contract_error_paths() {
 
 /// Resource cleanup: workload start/stop cancels workers; CompCtx start/stop returns kits;
 /// GCS objects removed; result sets closed on workload SQL.
-fn contract_resource_cleanup() {
+fn contract_resource_cleanup(store: &astersql_tests_realtikvtest::stubs::Storage) {
     reset_parent();
     crate::stubs::reset_test_globals();
     set_classic_for_test(true);
     set_failpoint_hold_ms_for_test(0);
 
     let t = TestCtx::new();
-    let ctx = InitTest(&t);
+    let ctx = InitTestWithStore(&t, store.clone());
     assert!(ctx.workload.is_some());
     assert!(ctx.tkPool.is_some());
 
@@ -461,11 +490,11 @@ fn contract_resource_cleanup() {
     }
 
     // Concurrent DDL start/stop returns kits to pool.
-    let ctx = InitConcurrentDDLTest(
+    let ctx = init_concurrent_ddl_with_store(
         &t,
+        store,
         vec![vec![1], vec![1], vec![1]],
         vec![vec![], vec![], vec![]],
-        TestNonUnique,
     );
     let comp = ctx.CompCtx.as_ref().unwrap().clone();
     CompatibilityContext::start_on(&comp, &ctx);
@@ -483,7 +512,7 @@ fn contract_resource_cleanup() {
     assert_eq!(server.objects("bucket").len(), 0);
 
     // InitCompCtxParams resets flags
-    let mut ctx = InitTest(&t);
+    let mut ctx = InitTestWithStore(&t, store.clone());
     InitCompCtxParams(&mut ctx);
     let g = ctx.CompCtx.as_ref().unwrap().read().unwrap();
     assert!(!g.IsConcurrentDDL);
