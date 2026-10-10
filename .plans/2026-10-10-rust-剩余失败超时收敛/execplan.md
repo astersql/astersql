@@ -9,7 +9,7 @@ This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`, 
 ## Progress
 
 - [x] (2026-10-10) 从用户输出恢复目标测试清单并定位 crate、源文件和验证入口。
-- [ ] 执行任务 1，生成当前提交上的可复现基线（已完成 21/25 项；4 项 RealTiKV 因缺少 `tiup` 阻塞）。
+- [x] (2026-10-10) 执行任务 1，生成当前提交上 25/25 项的可复现基线。
 - [ ] 并行完成本地 crate 任务 2–7 和任务 10。
 - [ ] 串行完成共享集群任务 8–9。
 - [ ] 汇总默认 profile 复验和 Ready 检查证据。
@@ -28,6 +28,10 @@ This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`, 
   Evidence: timer diagnostic 20.071s 通过，traceevent diagnostic 11.016s 通过，`pkg/util/traceevent/traceevent_test.rs:153` 执行 `sleep(Duration::from_secs(11))`，profile diagnostic 60.007s 超时。
 - Observation: RealTiKV 基线无法在当前主机按仓库契约启动。
   Evidence: `command -v tiup` 退出码 1，同时 `127.0.0.1:2379` 已有外部 PD；本任务未动该集群。
+- Observation: `tiup` 实际存在于 `/Users/xiangmin/.tiup/bin/tiup`，可用端口偏移隔离现有 2379 集群。
+  Evidence: 唯一 tag `rust-baseline-01a12497` 在 12379 返回 PD v8.5.8；测试后 12379 不可达、tag 数据已清理，2379 仍返回 v8.5.1。
+- Observation: 任务 8–9 的部分计划过滤器与 nextest 实际名称不符，原样执行会得到 0 tests。
+  Evidence: `cargo nextest list` 显示 add-index、paging 与 split-file 是独立测试二进制名下的无模块前缀测试；更正过滤器后每组均运行 2 个有效测试。
 
 ## Decision Log
 
@@ -40,7 +44,7 @@ This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`, 
 
 ## Outcomes & Retrospective
 
-任务 1 已产出 25 行机器可读清单，其中 21 项有当前提交的有效测试证据；已确认任务 3、4、6、7 仍需实施，任务 2 和 5 当前为绿色。因主机缺少 `tiup`，任务 8–9 的 4 项 RealTiKV 用例没有可接受的本轮证据，因此任务 1 保持阻塞，不宣称整体基线已完成。
+任务 1 已产出 25 行机器可读清单，25 项均有当前提交的有效测试证据。已确认任务 3、4、6、7 仍需实施，任务 2 和 5 当前为绿色；任务 8 的 add-index 已恢复而 paging 仍超时，任务 9 两项已恢复。隔离 playground、Cargo 槽位和 tag 数据均已清理，任务 1 完成。
 
 ## Context and Orientation
 

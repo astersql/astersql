@@ -32,7 +32,7 @@
 ## 测试计划
 
 - 行为：split file 的边界、内容和错误语义正确；Go/Rust public contract 全场景完成。
-- 失败验证命令：干净 tikv-slim playground 中运行 `cargo nextest run --locked --package astersql-tests-realtikvtest-importintotest4 --package astersql-tests-realtikvtest-testutils -E 'test(=split_file_test::test_split_file) | test(=parity_test::go_rust_public_contract_matches)' --no-capture`。
+- 失败验证命令：干净 tikv-slim playground 中运行 `cargo nextest run --locked --package astersql-tests-realtikvtest-importintotest4 --package astersql-tests-realtikvtest-testutils -E 'test(=test_split_file) | test(=parity_test::go_rust_public_contract_matches)' --no-capture`。`split-file` 是独立测试二进制，nextest 名称不带 `split_file_test::` 前缀。
 - 预期失败原因：任务 1 保存的精确断言错误和 contract setup/teardown 热点。
 - 通过验证命令：同上并完成 playground cleanup check。
 - 模拟策略：真实 TiKV 和真实临时文件；只控制临时目录生命周期。

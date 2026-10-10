@@ -32,7 +32,7 @@
 ## 测试计划
 
 - 行为：外键缺索引时自动创建并生效；paging 的 act rows/process keys 与真实 TiKV 返回一致。
-- 失败验证命令：按 `docs/agents/testing-flow.md` 启动带唯一 tag 的 tikv-slim playground 后运行 `cargo nextest run --locked --package astersql-tests-realtikvtest-addindextest --package astersql-tests-realtikvtest-sessiontest -E 'test(=add_index_test::test_add_foreign_key_with_auto_create_index) | test(=paging_test::test_paging_act_rows_and_process_keys)' --no-capture`。
+- 失败验证命令：按 `docs/agents/testing-flow.md` 启动带唯一 tag 的 tikv-slim playground 后运行 `cargo nextest run --locked --package astersql-tests-realtikvtest-addindextest --package astersql-tests-realtikvtest-sessiontest -E 'test(=test_add_foreign_key_with_auto_create_index) | test(=test_paging_act_rows_and_process_keys)' --no-capture`。这两个 crate 将用例编译为独立测试二进制，nextest 名称不带源文件模块前缀。
 - 预期失败原因：任务 1 确认的 DDL 等待/polling 或 paging RPC 成本。
 - 通过验证命令：同上；退出后确认 PD 不可达并清理唯一 tag 数据。
 - 模拟策略：禁止 mock TiKV。
