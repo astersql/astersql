@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use types::datum::{Datum, KindInt64, KindString};
 
@@ -70,33 +70,7 @@ impl RunningGlobalProfiler {
         cpuprofile::reset_global_profiler_for_test();
         cpuprofile::set_profile_duration(Duration::from_millis(200));
         cpuprofile::StartCPUProfiler().expect("StartCPUProfiler");
-        let running = Self;
-
-        // Go reaches this test through a bootstrapped domain, so its global
-        // profiler has already completed at least one interval. Warm the Rust
-        // pprof backend to the same state; the first report may spend several
-        // seconds symbolizing on macOS even with a 200 ms sampling interval.
-        let output = Arc::new(Mutex::new(Vec::new()));
-        let mut warmup = cpuprofile::NewCollector();
-        warmup
-            .StartCPUProfile(cpuprofile::shared_buffer_writer(Arc::clone(&output)))
-            .expect("start CPU profiler warmup");
-        let timeout = if cfg!(target_os = "macos") {
-            Duration::from_secs(60)
-        } else {
-            Duration::from_secs(15)
-        };
-        let started = Instant::now();
-        while started.elapsed() < timeout && output.lock().expect("warmup output mutex").is_empty()
-        {
-            black_box((0..100_000_u64).fold(0_u64, |sum, value| sum.wrapping_add(value)));
-        }
-        warmup.StopCPUProfile().expect("stop CPU profiler warmup");
-        assert!(
-            !output.lock().expect("warmup output mutex").is_empty(),
-            "global CPU profiler did not become ready"
-        );
-        running
+        Self
     }
 }
 

@@ -22,7 +22,6 @@ use astersql_util_traceevent::flightrecorder::{
 };
 use astersql_util_traceevent::traceevent::*;
 use std::sync::Arc;
-use std::time::Duration;
 
 /// 关闭旧实例后按类别列表启动日志飞行记录器。
 fn start_recorder(categories: &[&str]) {
@@ -50,6 +49,7 @@ fn reset_state() {
     set_sink(None);
     let _ = set_mode(MODE_BASE);
     flight_recorder().discard_or_flush();
+    reset_last_dump_time_for_test();
     close_flight_recorder();
 }
 
@@ -148,10 +148,10 @@ fn test_suite() {
         "cooloff-test-event",
         vec![Field::i64("value", 1)],
     );
-    assert!(dump_flight_recorder_to_logger("test-reason-1") > 0);
-    assert_eq!(dump_flight_recorder_to_logger("test-reason-2"), 0);
-    std::thread::sleep(Duration::from_secs(11));
-    assert!(dump_flight_recorder_to_logger("test-reason-3") > 0);
+    let now = 1_000;
+    assert!(dump_flight_recorder_to_logger_at(now) > 0);
+    assert_eq!(dump_flight_recorder_to_logger_at(now), 0);
+    assert!(dump_flight_recorder_to_logger_at(now + 11) > 0);
     reset_state();
 }
 

@@ -11,6 +11,7 @@ This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`, 
 - [x] (2026-10-10) 从用户输出恢复目标测试清单并定位 crate、源文件和验证入口。
 - [x] (2026-10-10) 执行任务 1，生成当前提交上 25/25 项的可复现基线。
 - [ ] 并行完成本地 crate 任务 2–7。
+- [x] (2026-10-10) 完成任务 7，profile 与 traceevent 目标及两个 crate 全测在默认 profile 下通过。
 - [x] (2026-10-10) 复验任务 10 global stats options 目标与窄回归，确认无需性能修改。
 - [ ] 串行完成共享集群任务 8–9。
 - [ ] 汇总默认 profile 复验和 Ready 检查证据。
@@ -37,6 +38,10 @@ This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`, 
   Evidence: 单例复验 1/1 通过，nextest 耗时 3.439s；关联 `TestAnalyzeGlobalStatsWithOpts1/2` 窄回归 2/2 通过，分别耗时 3.115s 和 3.550s，测试中四次 ANALYZE 及 global/p0/p1 options 断言均保留。
 - Observation: 任务 10 首次命令的 302.26s 总墙钟为冷编译和共享 Cargo build-dir 排队，不是测试执行热点。
   Evidence: nextest 报告测试本体 3.439s，而 Cargo 编译阶段为 4m57s；窄回归中两个测试总计 6.666s。
+- Observation: profile 超时来自测试额外等待全局 profiler 首轮符号化输出；生产采集路径本身在保留真实 2 秒窗口后可于约 2.08s 完成。
+  Evidence: 删除测试专用 warmup 后目标重复 3 次分别为 2.039s、2.037s、2.081s，仍启动全局 profiler、生成 CPU 负载并断言 profile 数据。
+- Observation: traceevent 超时完全来自测试为跨过 10 秒冷却期而执行的 11 秒真实睡眠。
+  Evidence: 将 dump 核心抽成接收秒时间戳的 crate 内边界后，原冷却断言保持不变，目标重复运行约 0.015s；reset 同时清除 `LAST_DUMP_TIME`。
 
 ## Decision Log
 
@@ -49,10 +54,13 @@ This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`, 
 - Decision: 任务 10 不做无热点证据的生产代码优化。
   Rationale: 目标与关联回归均在默认预算内通过，且完整保留 Go 版测试意图；继续修改会超出“先复验、避免重复修改”范围。
   Date/Author: 2026-10-10 / Codex
+- Decision: profile 只移除测试预热，不缩短真实采样窗口；traceevent 通过内部时间边界推进冷却时间。
+  Rationale: 这样同时保留 Go 测试的真实 profiler 生命周期、profile 数据断言、ring-buffer 行为和完整 10 秒生产冷却语义。
+  Date/Author: 2026-10-10 / Codex
 
 ## Outcomes & Retrospective
 
-任务 1 已产出 25 行机器可读清单，25 项均有当前提交的有效测试证据。已确认任务 3、4、6、7 仍需实施，任务 2 和 5 当前为绿色；任务 8 的 add-index 已恢复而 paging 仍超时，任务 9 两项已恢复。隔离 playground、Cargo 槽位和 tag 数据均已清理，任务 1 完成。任务 10 在当前提交上无需代码修改：target 和关联 global-stats options 窄回归均在默认 profile 下通过，最慢单例 3.550s。
+任务 1 已产出 25 行机器可读清单，25 项均有当前提交的有效测试证据。已确认任务 3、4、6 仍需实施，任务 2 和 5 当前为绿色；任务 8 的 add-index 已恢复而 paging 仍超时，任务 9 两项已恢复。隔离 playground、Cargo 槽位和 tag 数据均已清理，任务 1 完成。任务 10 在当前提交上无需代码修改：target 和关联 global-stats options 窄回归均在默认 profile 下通过，最慢单例 3.550s。任务 7 已移除 profile 的冗余首次符号化预热，并以可控时间边界验证 traceevent 冷却；目标 2/2、重复 3/3 和 crate 全测 27/27 通过，`make lint` 通过。
 
 ## Context and Orientation
 

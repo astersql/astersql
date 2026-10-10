@@ -491,11 +491,15 @@ impl Sink for RingBufferSink {
 
 /// 将环形缓冲快照 dump 到日志；冷却期内或空缓冲返回 0。
 pub fn dump_flight_recorder_to_logger(_reason: &str) -> usize {
+    dump_flight_recorder_to_logger_at(now_seconds())
+}
+
+/// 使用给定秒时间戳执行 dump，供内部测试确定性验证冷却边界。
+pub(crate) fn dump_flight_recorder_to_logger_at(now: i64) -> usize {
     let events = flight_recorder().snapshot();
     if events.is_empty() {
         return 0;
     }
-    let now = now_seconds();
     let last = LAST_DUMP_TIME.load(Ordering::SeqCst);
     if last > 0 && now - last < FLIGHT_RECORDER_COOLING_OFF_PERIOD.as_secs() as i64 {
         return 0;
@@ -505,6 +509,12 @@ pub fn dump_flight_recorder_to_logger(_reason: &str) -> usize {
         log_event(&Context::default(), event);
     }
     events.len()
+}
+
+/// 重置进程级 dump 冷却状态，避免测试间泄漏。
+#[cfg(test)]
+pub(crate) fn reset_last_dump_time_for_test() {
+    LAST_DUMP_TIME.store(0, Ordering::SeqCst);
 }
 
 /// Chrome Trace Event JSON 渲染用结构（ph/ts/pid/tid/cat/args）。
