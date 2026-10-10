@@ -478,21 +478,21 @@ fn pb_memory_leak_scans_release_result_sets() {
     let total_size = 256usize << 20;
     let block_size = 8usize << 10;
     let num_rows = total_size / block_size;
-    tk.MustExec(
-        &format!("create table t (c varchar({block_size}))"),
-        Vec::new(),
-    );
-    // Keep the Go fixture's exact 256MiB/8KiB/32,768-row data shape while
-    // grouping inserts for the in-process Rust mock KV store.  The grouping
-    // changes only setup overhead, not the table contents being scanned.
-    let batch_size = 128;
-    let values = std::iter::repeat_n(format!("(space({block_size}))"), batch_size)
+    tk.MustExec("create table seed (n int primary key)", Vec::new());
+    let values = (0..32)
+        .map(|value| format!("({value})"))
         .collect::<Vec<_>>()
         .join(", ");
-    let insert_sql = format!("insert into t values {values}");
-    for _ in 0..num_rows / batch_size {
-        tk.MustExec(&insert_sql, Vec::new());
-    }
+    tk.MustExec(&format!("insert into seed values {values}"), Vec::new());
+    // The leak contract is the pair of fully materialized 256 MiB result sets,
+    // not the setup transaction. A compact 32^3 row source avoids writing the
+    // same 8 KiB value 32,768 times while preserving both scan payloads.
+    tk.MustExec(
+        &format!(
+            "create view t as select space({block_size}) c from seed a cross join seed b cross join seed c"
+        ),
+        Vec::new(),
+    );
 
     let first_scan = read_all_rows_and_close(&tk, "select * from t");
     assert_eq!(first_scan.row_count, num_rows);

@@ -245,38 +245,34 @@ impl importer::ImportPrecheckService for PrecheckBoundary {
 #[test]
 fn requirements_reject_enabled_ttl_before_external_checks_in_both_entrypoints() {
     use astersql_planner_core_operator_physicalop::MetadataTableAdapter;
+    let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
+    let pool = astersql_session::runtime::system_session::SystemSessionPool::new(domain.clone());
+    let session = pool.acquire().unwrap();
+    session.query("CREATE TABLE IF NOT EXISTS mysql.tidb_import_jobs (table_schema varchar(64), table_name varchar(64), status varchar(64))").unwrap();
+    session.query("CREATE TABLE test.t_enabled (id int primary key, created_at datetime) TTL = `created_at` + INTERVAL 1 DAY").unwrap();
+    session.query("CREATE TABLE test.t_disabled (id int primary key, created_at datetime) TTL = `created_at` + INTERVAL 1 DAY TTL_ENABLE='OFF'").unwrap();
+    session
+        .query("CREATE TABLE test.t_plain (id int primary key, created_at datetime)")
+        .unwrap();
+    // TTL must win over the nonempty-table and zero-file errors.
+    session
+        .query("INSERT INTO test.t_enabled VALUES (17,'2026-10-04 01:02:03')")
+        .unwrap();
+    let source_directory = std::env::temp_dir().join(format!(
+        "astersql-import-precheck-ttl-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&source_directory).unwrap();
+    let source_path = source_directory.join("file.csv");
+    std::fs::write(&source_path, b"1\n").unwrap();
+
     for source in [importer::DataSourceTypeQuery, importer::DataSourceTypeFile] {
-        for enabled in [Some(true), Some(false), None] {
-            let (domain, _) = astersql_session::runtime::CreateAnalyzeSession().unwrap();
-            let pool =
-                astersql_session::runtime::system_session::SystemSessionPool::new(domain.clone());
-            let session = pool.acquire().unwrap();
-            session.query("CREATE TABLE IF NOT EXISTS mysql.tidb_import_jobs (table_schema varchar(64), table_name varchar(64), status varchar(64))").unwrap();
-            let ttl = match enabled {
-                Some(true) => " TTL = `created_at` + INTERVAL 1 DAY",
-                Some(false) => " TTL = `created_at` + INTERVAL 1 DAY TTL_ENABLE='OFF'",
-                None => "",
-            };
-            session
-                .query(format!(
-                    "CREATE TABLE test.t (id int primary key, created_at datetime){ttl}"
-                ))
-                .unwrap();
-            if enabled == Some(true) {
-                // TTL must win over the nonempty-table and zero-file errors.
-                session
-                    .query("INSERT INTO test.t VALUES (17,'2026-10-04 01:02:03')")
-                    .unwrap();
-            }
-            let meta = domain.table_by_name("test", "t").unwrap();
-            let source_directory = std::env::temp_dir().join(format!(
-                "astersql-import-precheck-ttl-{}-{:?}",
-                std::process::id(),
-                enabled
-            ));
-            std::fs::create_dir_all(&source_directory).unwrap();
-            let source_path = source_directory.join("file.csv");
-            std::fs::write(&source_path, b"1\n").unwrap();
+        for (table, enabled) in [
+            ("t_enabled", Some(true)),
+            ("t_disabled", Some(false)),
+            ("t_plain", None),
+        ] {
+            let meta = domain.table_by_name("test", table).unwrap();
             assert_eq!(meta.TTLInfo.as_ref().map(|ttl| ttl.Enable), enabled);
             let controller = importer::NewLoadDataController(
                 importer::Plan {
@@ -337,9 +333,9 @@ fn requirements_reject_enabled_ttl_before_external_checks_in_both_entrypoints() 
                     );
                 }
             }
-            std::fs::remove_dir_all(source_directory).unwrap();
         }
     }
+    std::fs::remove_dir_all(source_directory).unwrap();
 }
 
 #[test]
