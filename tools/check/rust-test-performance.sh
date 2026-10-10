@@ -80,7 +80,7 @@ elif [[ $output != /* ]]; then
 fi
 mkdir -p "$(dirname "$output")"
 
-classify_script=$(mktemp "$report_dir/.classify.XXXXXX.py")
+classify_script=$(mktemp "$report_dir/.classify.XXXXXX")
 cleanup() {
   rm -f "$classify_script" "${run_log:-}" "${run_tsv:-}" "${run_meta:-}"
 }
@@ -215,9 +215,9 @@ overall_count=0
 overall_max=0
 audit_failed=0
 for run in $(seq 1 "$runs"); do
-  run_log=$(mktemp "$report_dir/.run-$run.XXXXXX.jsonl")
-  run_tsv=$(mktemp "$report_dir/.run-$run.XXXXXX.tsv")
-  run_meta=$(mktemp "$report_dir/.run-$run.XXXXXX.meta")
+  run_log=$(mktemp "$report_dir/.run-$run.XXXXXX")
+  run_tsv=$(mktemp "$report_dir/.run-$run.XXXXXX")
+  run_meta=$(mktemp "$report_dir/.run-$run.XXXXXX")
   printf 'Audit run %s/%s...\n' "$run" "$runs"
   NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1 cargo nextest run --profile perf-audit --message-format libtest-json-plus "${nextest_args[@]}" >"$run_log" 2>&1
   cargo_status=$?

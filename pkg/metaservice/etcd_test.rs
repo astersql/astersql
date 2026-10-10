@@ -18,11 +18,14 @@
 // 覆盖仅 PD 客户端时的地址解析、双客户端为空返回 None、无可用 URL 时报错，
 // 以及 `parse_url` 对 http(s)/IPv6 合法与非法输入的矩阵校验。
 
-use super::{Context, MetaServiceError, PdClient, PdMember, get_pd_addrs, new_client, parse_url};
+use super::{
+    Context, MetaServiceError, PdClient, PdMember, get_pd_addrs_with_backoff, new_client, parse_url,
+};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
+use std::time::Duration;
 
 /// 固定返回预设成员列表的 Mock PD 客户端。
 struct MockPdClient {
@@ -121,15 +124,27 @@ fn test_get_pd_addrs_uses_go_region_miss_backoff() {
     let pd_client = AlwaysFailPdClient {
         calls: calls.clone(),
     };
+    let mut sleeps = Vec::new();
 
-    let error = get_pd_addrs(&Context::default(), &pd_client, false)
-        .expect_err("exhausted region-miss backoff must fail");
+    let error = get_pd_addrs_with_backoff(&Context::default(), &pd_client, false, |duration| {
+        sleeps.push(duration);
+        true
+    })
+    .expect_err("exhausted region-miss backoff must fail");
 
     assert!(
         matches!(&error, MetaServiceError::Pd(message) if message == "region unavailable"),
         "unexpected exhausted-backoff error: {error}"
     );
     assert_eq!(calls.load(Ordering::Relaxed), 18);
+    assert_eq!(
+        sleeps,
+        [2, 4, 8, 16, 32, 64, 128, 256]
+            .into_iter()
+            .chain(std::iter::repeat(500).take(9))
+            .map(Duration::from_millis)
+            .collect::<Vec<_>>()
+    );
 }
 
 /// parse_url 合法/非法用例矩阵（含 IPv6 方括号形式与缺端口等）。

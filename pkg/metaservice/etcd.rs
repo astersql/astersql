@@ -208,6 +208,17 @@ pub fn get_pd_addrs(
     pd_client: &dyn PdClient,
     with_scheme: bool,
 ) -> Result<Vec<String>, MetaServiceError> {
+    get_pd_addrs_with_backoff(ctx, pd_client, with_scheme, |duration| {
+        ctx.wait_backoff(duration)
+    })
+}
+
+fn get_pd_addrs_with_backoff(
+    ctx: &Context,
+    pd_client: &dyn PdClient,
+    with_scheme: bool,
+    mut wait_backoff: impl FnMut(Duration) -> bool,
+) -> Result<Vec<String>, MetaServiceError> {
     let mut total_sleep_ms = 0;
     let mut delay_ms = REGION_MISS_BACKOFF_BASE_MS;
 
@@ -241,7 +252,7 @@ pub fn get_pd_addrs(
                 if total_sleep_ms >= GET_ALL_MEMBERS_BACKOFF_MS {
                     return Err(MetaServiceError::Pd("region unavailable".to_owned()));
                 }
-                if !ctx.wait_backoff(Duration::from_millis(delay_ms)) {
+                if !wait_backoff(Duration::from_millis(delay_ms)) {
                     return Err(MetaServiceError::Cancelled);
                 }
                 total_sleep_ms += delay_ms;
