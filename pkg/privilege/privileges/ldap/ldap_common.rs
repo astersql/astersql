@@ -42,7 +42,7 @@ pub(crate) fn search_filter(search_attr: &str, user_name: &str) -> String {
     format!("({search_attr}={user_name})")
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 /// LDAP 服务端与绑定/搜索相关配置。
 pub struct LdapConfig {
     /// 搜索用户的 Base DN。
@@ -63,10 +63,31 @@ pub struct LdapConfig {
     pub ca_path: String,
     /// 已加载的 CA PEM 字节（可选）。
     pub ca_pem: Option<Vec<u8>>,
+    /// 建立连接与 LDAP 操作的超时。
+    pub timeout: Duration,
     /// 连接池初始/最小空闲容量。
     pub init_capacity: u32,
     /// 连接池最大容量。
     pub max_capacity: u32,
+}
+
+impl Default for LdapConfig {
+    fn default() -> Self {
+        Self {
+            bind_base_dn: String::new(),
+            bind_root_dn: String::new(),
+            bind_root_pwd: String::new(),
+            search_attr: String::new(),
+            ldap_server_host: String::new(),
+            ldap_server_port: 0,
+            enable_tls: false,
+            ca_path: String::new(),
+            ca_pem: None,
+            timeout: LDAP_TIMEOUT,
+            init_capacity: 0,
+            max_capacity: 0,
+        }
+    }
 }
 
 /// 运行时状态：配置、连接池与重建世代号。
@@ -135,12 +156,12 @@ impl LdapConnectionManager {
     /// 按 URL 建立 LDAP 连接（可选 StartTLS）。
     pub fn connect_url(&self, url: &str, starttls: bool) -> Result<LdapConn> {
         let settings = LdapConnSettings::new()
-            .set_conn_timeout(LDAP_TIMEOUT)
+            .set_conn_timeout(self.config.timeout)
             .set_starttls(starttls)
             .set_connector(self.tls_connector()?);
         let mut conn = LdapConn::with_settings(settings, url)
             .with_context(|| format!("connect to LDAP at {url}"))?;
-        conn.with_timeout(LDAP_TIMEOUT);
+        conn.with_timeout(self.config.timeout);
         Ok(conn)
     }
 
@@ -236,7 +257,7 @@ impl LdapAuthImpl {
             Pool::builder()
                 .max_size(config.max_capacity)
                 .min_idle(Some(config.init_capacity))
-                .connection_timeout(LDAP_TIMEOUT)
+                .connection_timeout(config.timeout)
                 .test_on_check_out(true)
                 .build_unchecked(manager),
         );

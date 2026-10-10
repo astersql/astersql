@@ -409,7 +409,6 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration as StdDuration, Instant};
 
 /// 校验 SessionToken JSON 字段名与 signature 的 base64 往返与 Go 一致。
 #[test]
@@ -714,7 +713,7 @@ fn certificate_grace_period_matches_go() {
     ResetSigningCertForTest();
 }
 
-/// 对应 Go TestLoadAndReadConcurrently：5 秒并发写证书、重载、签发和验签。
+/// 对应 Go TestLoadAndReadConcurrently：并发写证书、重载、签发和验签。
 #[test]
 fn certificate_reload_and_reads_are_concurrent_safe() {
     let _guard = SESSION_TOKEN_TEST_LOCK
@@ -724,50 +723,81 @@ fn certificate_reload_and_reads_are_concurrent_safe() {
     let directory = tempfile::tempdir().unwrap();
     let cert_path = Arc::new(directory.path().join("cert.pem"));
     let key_path = Arc::new(directory.path().join("key.pem"));
-    write_rsa_x509_pair(&cert_path, &key_path, 4096, MessageDigest::sha256());
+    write_rsa_x509_pair(&cert_path, &key_path, 2048, MessageDigest::sha256());
     SetKeyPath(key_path.to_string_lossy().into_owned());
     SetCertPath(cert_path.to_string_lossy().into_owned());
-    let deadline = Instant::now() + StdDuration::from_secs(5);
+
+    // Key generation is not part of the concurrency contract. Build two
+    // immutable fixtures once, then race only file replacement, reloads and reads.
+    let fixture_directory = tempfile::tempdir().unwrap();
+    let fixtures = Arc::new(
+        (0..2)
+            .map(|id| {
+                let fixture_cert = fixture_directory.path().join(format!("cert-{id}.pem"));
+                let fixture_key = fixture_directory.path().join(format!("key-{id}.pem"));
+                write_ecdsa_x509_pair(
+                    &fixture_cert,
+                    &fixture_key,
+                    Nid::X9_62_PRIME256V1,
+                    MessageDigest::sha256(),
+                );
+                (
+                    fs::read(fixture_cert).unwrap(),
+                    fs::read(fixture_key).unwrap(),
+                )
+            })
+            .collect::<Vec<_>>(),
+    );
+    let barrier = Arc::new(std::sync::Barrier::new(7));
 
     let writer_cert = Arc::clone(&cert_path);
     let writer_key = Arc::clone(&key_path);
+    let writer_fixtures = Arc::clone(&fixtures);
+    let writer_barrier = Arc::clone(&barrier);
     let writer = thread::spawn(move || {
-        while Instant::now() < deadline {
-            write_rsa_x509_pair(&writer_cert, &writer_key, 4096, MessageDigest::sha256());
-            thread::sleep(StdDuration::from_secs(1));
+        writer_barrier.wait();
+        for id in 0..16 {
+            let (cert, key) = &writer_fixtures[id % writer_fixtures.len()];
+            fs::write(&*writer_cert, cert).unwrap();
+            fs::write(&*writer_key, key).unwrap();
         }
+        16
     });
     let loaders: Vec<_> = (0..2)
         .map(|_| {
+            let barrier = Arc::clone(&barrier);
             thread::spawn(move || {
-                while Instant::now() < deadline {
+                barrier.wait();
+                for _ in 0..32 {
                     ReloadSigningCert();
-                    thread::sleep(StdDuration::from_millis(500));
                 }
+                32
             })
         })
         .collect();
     let readers: Vec<_> = (0..3)
         .map(|id| {
+            let barrier = Arc::clone(&barrier);
             thread::spawn(move || {
+                barrier.wait();
                 let username = format!("test_user_{id}");
-                while Instant::now() < deadline {
+                for _ in 0..32 {
                     let bytes =
                         serde_json::to_vec(&CreateSessionToken(&username).unwrap()).unwrap();
-                    thread::sleep(StdDuration::from_millis(10));
                     ValidateSessionToken(&bytes, &username).unwrap();
-                    thread::sleep(StdDuration::from_millis(10));
                 }
+                32
             })
         })
         .collect();
 
-    writer.join().unwrap();
+    barrier.wait();
+    assert_eq!(writer.join().unwrap(), 16);
     for loader in loaders {
-        loader.join().unwrap();
+        assert_eq!(loader.join().unwrap(), 32);
     }
     for reader in readers {
-        reader.join().unwrap();
+        assert_eq!(reader.join().unwrap(), 32);
     }
     ResetSigningCertForTest();
 }

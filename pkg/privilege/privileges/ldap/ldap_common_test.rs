@@ -18,7 +18,7 @@
 #![allow(non_snake_case)]
 
 use astersql_privilege_ldap::ldap_common::{
-    LDAP_TIMEOUT, LdapAuthImpl, LdapConfig, LdapConnectionManager, search_filter,
+    LdapAuthImpl, LdapConfig, LdapConnectionManager, search_filter,
 };
 
 #[cfg(test)]
@@ -29,14 +29,13 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
+    use super::{LdapAuthImpl, LdapConfig, LdapConnectionManager, search_filter};
     use astersql_privilege_ldap::native_tls::{Identity, Protocol, TlsAcceptor};
     use rcgen::{
         BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair,
-        KeyUsagePurpose, PKCS_RSA_SHA256, SanType,
+        KeyUsagePurpose, SanType,
     };
     use time::OffsetDateTime;
-
-    use super::{LDAP_TIMEOUT, LdapAuthImpl, LdapConfig, LdapConnectionManager, search_filter};
 
     /// 串行化 TLS 相关测试，避免 macOS Secure Transport 互相干扰。
     fn tls_test_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -46,11 +45,12 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// 生成短生命周期本地测试 CA/服务器证书与 TLS acceptor。
+    /// 用预生成 RSA 密钥签发短生命周期证书并构造本地 TLS acceptor。
     fn tls_acceptor(max_protocol: Option<Protocol>) -> (TlsAcceptor, Vec<u8>) {
-        // macOS rejects the Go fixture's 100-year lifetime, so generate the
-        // same trusted localhost boundary with a short-lived RSA identity.
+        const CA_KEY: &str = include_str!("test/aster_test_ca.key");
+        const SERVER_KEY: &str = include_str!("test/aster_test_server.key");
         let now = OffsetDateTime::now_utc();
+        let ca_key = KeyPair::from_pem(CA_KEY).expect("import LDAP test CA key");
         let mut ca_params =
             CertificateParams::new(Vec::new()).expect("create LDAP test CA parameters");
         ca_params.not_before = now - time::Duration::days(1);
@@ -58,20 +58,17 @@ mod tests {
         ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
         ca_params
             .distinguished_name
-            .push(DnType::CommonName, "TiDB LDAP test CA");
+            .push(DnType::CommonName, "AsterSQL LDAP test CA");
         ca_params.key_usages = vec![
             KeyUsagePurpose::KeyCertSign,
             KeyUsagePurpose::DigitalSignature,
             KeyUsagePurpose::CrlSign,
         ];
-        let ca_key = KeyPair::generate_for(&PKCS_RSA_SHA256).expect("generate LDAP test CA key");
         let ca_certificate = ca_params
             .self_signed(&ca_key)
-            .expect("generate LDAP test CA certificate");
+            .expect("sign LDAP test CA certificate");
 
-        let key_pair =
-            KeyPair::generate_for(&PKCS_RSA_SHA256).expect("generate LDAP test server key");
-        // Bind/connect on 127.0.0.1 to avoid localhost IPv4/IPv6 races under load.
+        let server_key = KeyPair::from_pem(SERVER_KEY).expect("import LDAP test server key");
         let mut server_params = CertificateParams::new(vec!["localhost".to_owned()])
             .expect("create LDAP test server certificate parameters");
         server_params
@@ -90,14 +87,12 @@ mod tests {
         ];
         server_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
         let certificate = server_params
-            .signed_by(&key_pair, &ca_certificate, &ca_key)
-            .expect("generate LDAP test server certificate");
+            .signed_by(&server_key, &ca_certificate, &ca_key)
+            .expect("sign LDAP test server certificate");
         let ca_pem = ca_certificate.pem();
-        let certificate_chain_pem = format!("{}{}", certificate.pem(), ca_pem);
-        let private_key_pem = key_pair.serialize_pem();
-        let identity =
-            Identity::from_pkcs8(certificate_chain_pem.as_bytes(), private_key_pem.as_bytes())
-                .expect("import LDAP test identity");
+        let certificate_chain = format!("{}{}", certificate.pem(), ca_pem);
+        let identity = Identity::from_pkcs8(certificate_chain.as_bytes(), SERVER_KEY.as_bytes())
+            .expect("import LDAP test identity");
         let mut builder = TlsAcceptor::builder(identity);
         builder.min_protocol_version(None);
         builder.max_protocol_version(max_protocol);
@@ -116,6 +111,7 @@ mod tests {
                 ldap_server_port: port,
                 enable_tls: true,
                 ca_pem,
+                timeout: Duration::from_millis(250),
                 ..LdapConfig::default()
             },
         }
@@ -290,7 +286,7 @@ mod tests {
 
     // 对照 Go：对静默服务端的 StartTLS 超时。
     // TestLDAPStartTLSTimeout mirrors Go's silent-server StartTLS timeout.
-    // Rust's production timeout is immutable, so the assertion uses LDAP_TIMEOUT.
+    // Go temporarily shortens ldapTimeout; use the equivalent per-manager timeout.
     #[test]
     #[allow(non_snake_case)]
     fn TestLDAPStartTLSTimeout() {
@@ -309,7 +305,8 @@ mod tests {
         });
         ready_rx.recv().expect("timeout server thread is ready");
 
-        let manager = tls_manager(port, None);
+        let mut manager = tls_manager(port, None);
+        manager.config.timeout = Duration::from_millis(100);
         let start = Instant::now();
         let error = manager
             .connect_url(&format!("ldap://localhost:{port}"), true)
@@ -318,9 +315,12 @@ mod tests {
         release_tx.send(()).expect("release timeout server");
         server.join().expect("join timeout server");
 
-        assert!(elapsed >= LDAP_TIMEOUT, "returned too early: {elapsed:?}");
         assert!(
-            elapsed < LDAP_TIMEOUT + Duration::from_secs(3),
+            elapsed >= manager.config.timeout,
+            "returned too early: {elapsed:?}"
+        );
+        assert!(
+            elapsed < manager.config.timeout + Duration::from_secs(1),
             "returned too late: {elapsed:?}"
         );
         let message = format!("{error:#}");
