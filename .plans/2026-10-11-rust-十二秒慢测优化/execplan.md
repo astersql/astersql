@@ -9,11 +9,11 @@ This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`, 
 ## Progress
 
 - [x] (2026-10-11) 解析 `target/rust-test.gnCQRN`，确认 5 个超过 12 秒的完成测试及其基线。
-- [ ] 冻结五目标可重复基线和分段测量方法。
-- [ ] 完成 vectorsearch fixture 写入优化、golden 执行优化和独立验收。
-- [ ] 拆分 testutils 契约测量边界，分别优化 normal/boundary 与 error/resource 两组路径。
-- [ ] 完成 RealTiKV 生命周期基线和外键自动建索引执行优化。
-- [ ] 完成五目标聚合审计、工作区回归、Ready lint 和差异自审。
+- [x] (2026-10-11) 冻结五目标可重复基线和分段测量方法。
+- [x] (2026-10-11) 完成 vectorsearch fixture 写入优化、golden 执行优化和独立验收。
+- [x] (2026-10-11) 拆分 testutils 契约测量边界，分别优化 normal/boundary 与 error/resource 两组路径。
+- [x] (2026-10-12) 完成 RealTiKV 生命周期基线和外键自动建索引执行优化。
+- [x] (2026-10-12) 完成五目标聚合审计、工作区回归、Ready lint 和差异自审。
 
 ## Surprises & Discoveries
 
@@ -23,6 +23,12 @@ This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`, 
   Evidence: 来源日志与 `InitTestWithStore` 的当前调用点。
 - Observation: 来源全量回归还有 14 FAIL 和 7 TIMEOUT，但它们都未超过 12 秒且不属于本轮行为范围。
   Evidence: `target/rust-test.gnCQRN` Summary。
+- Observation: 最终专用串行审计的 15 个样本全部通过，五项最大值为 8.250、8.156、8.155、10.735 和 8.882 秒。
+  Evidence: `target/rust-performance/2026-10-11-five-targets-final.tsv`。
+- Observation: 全工作区并行回归中 addindex 目标在竞争下用时 16.020 秒，而同一目标的三次串行热测为 10.689/10.735/10.657 秒。
+  Evidence: `target/rust-test.AnjoZR` 与 `target/rust-performance/2026-10-11-addindex-final.tsv`。
+- Observation: 最终工作区回归为 18165 tests，18147 passed、7 failed、11 timed out、55 skipped；失败 identity 均已出现于来源日志，其中四个压缩测试由 FAIL 变为 20 秒 TIMEOUT。
+  Evidence: `target/rust-test.AnjoZR` 与 `target/rust-test.gnCQRN` 的 Summary 和末尾失败清单。
 
 ## Decision Log
 
@@ -35,10 +41,13 @@ This ExecPlan is a living document. Keep `Progress`, `Surprises & Discoveries`, 
 - Decision: 三个模块串行交付，最终再聚合运行。
   Rationale: 性能验收对宿主竞争敏感，且 RealTiKV playground 是独占验证资源。
   Date/Author: 2026-10-11 / Codex
+- Decision: 以 `perf-audit` 的三次串行热测判定 12 秒性能门槛，工作区并行数值作为竞争风险记录，不用来替代专用样本。
+  Rationale: 计划的最低门槛明确要求三次串行热运行；全工作区中同一 addindex 测试受其他重测试竞争影响，但功能仍 PASS。
+  Date/Author: 2026-10-12 / Codex
 
 ## Outcomes & Retrospective
 
-尚未实施。每个任务完成时记录优化前后三次样本、行为证据和仍存在的性能下界；最终记录五目标最大值、工作区 >12 秒清单和范围外失败。
+五个来源热点的 15/15 专用串行样本全部 PASS，最大值从 14.575–16.989 秒降到 8.155–10.735 秒，且保留 vectorsearch 6000 行与双 Cascades 模式、testutils 四类契约、addindex 14 次倍增与最终 262144 行及外键状态断言。`cargo fmt --all -- --check`、`make lint` 和 `git diff --check` 通过。全工作区回归仍有来源已知失败，且 addindex 在并行竞争下为 16.020 秒；这一数值是交付后继续观测的性能风险，不改变三次串行热测的验收结论。
 
 ## Context and Orientation
 
