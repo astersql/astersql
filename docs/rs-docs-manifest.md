@@ -716,10 +716,10 @@
 
 ## pkg/errors
 
-- [ ] [`pkg/errors/adaptor.rs.md`](../pkg/errors/adaptor.rs.md)
-- [ ] [`pkg/errors/core.rs.md`](../pkg/errors/core.rs.md)
-- [ ] [`pkg/errors/group.rs.md`](../pkg/errors/group.rs.md)
-- [ ] [`pkg/errors/join.rs.md`](../pkg/errors/join.rs.md)
+- [x] [`pkg/errors/adaptor.rs.md`](../pkg/errors/adaptor.rs.md)
+- [x] [`pkg/errors/core.rs.md`](../pkg/errors/core.rs.md) @todo <go-type> 这里有问题吧，为什么是 go呢，不是 rust 呢。
+- [x] [`pkg/errors/group.rs.md`](../pkg/errors/group.rs.md)
+- [x] [`pkg/errors/join.rs.md`](../pkg/errors/join.rs.md)
 - [ ] [`pkg/errors/normalize.rs.md`](../pkg/errors/normalize.rs.md)
 - [ ] [`pkg/errors/stack.rs.md`](../pkg/errors/stack.rs.md)
 - [ ] [`pkg/errors/wrap.rs.md`](../pkg/errors/wrap.rs.md)
