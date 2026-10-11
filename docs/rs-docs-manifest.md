@@ -720,7 +720,7 @@
 - [x] [`pkg/errors/core.rs.md`](../pkg/errors/core.rs.md) @todo <go-type> 这里有问题吧，为什么是 go呢，不是 rust 呢。
 - [x] [`pkg/errors/group.rs.md`](../pkg/errors/group.rs.md)
 - [x] [`pkg/errors/join.rs.md`](../pkg/errors/join.rs.md)
-- [ ] [`pkg/errors/normalize.rs.md`](../pkg/errors/normalize.rs.md)
+- [x] [`pkg/errors/normalize.rs.md`](../pkg/errors/normalize.rs.md) @todo Go 用 runtime.Caller，Rust 用 #[track_caller]/Location::caller；快速路径都不记录位置。Go 无法取位置时写 <unknown>/-1，Rust 当前没有该失败分支。
 - [ ] [`pkg/errors/stack.rs.md`](../pkg/errors/stack.rs.md)
 - [ ] [`pkg/errors/wrap.rs.md`](../pkg/errors/wrap.rs.md)
 
