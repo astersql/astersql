@@ -1,12 +1,4 @@
 // Copyright 2026 AsterSQL.
-
-// 聚簇索引（Clustered Index）行为测试。
-//
-// 聚簇索引指主键与数据行按同一顺序存放（非聚簇则主键仅为二级索引）。本文件用 mock-store
-// 验证 insert ignore、事务内 DML/union scan 可见性，以及 hash/range 分区表与普通表行数一致性。
-
-/// Go 源文件版权与说明草稿归档，不参与运行。
-const _GO_DRAFT: &str = r################"
 // Copyright 2020 PingCAP, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,9 +13,10 @@ const _GO_DRAFT: &str = r################"
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Real Rust tests below mirror Go semantics using the available mock-store ABI
-// (CREATE/INSERT/UPDATE/DELETE/ANALYZE + Domain metadata/stats), matching schematest.
-"################;
+// 聚簇索引（Clustered Index）行为测试。
+//
+// 聚簇索引指主键与数据行按同一顺序存放（非聚簇则主键仅为二级索引）。本文件用 mock-store
+// 验证 insert ignore、事务内 DML/union scan 可见性，以及 hash/range 分区表与普通表行数一致性。
 
 use astersql_sessionctx_vardef::{
     ClusteredIndexDefModeOff, ClusteredIndexDefModeOn, DefTiDBEnableClusteredIndex,

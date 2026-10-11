@@ -20,53 +20,6 @@
 // `SetTxnResourceGroup` 在 Prewrite / Commit / PessimisticLock 请求上携带的组名，
 // 并覆盖 SELECT 语句级 hint 解析与 mock store 上的建组/写入路径。
 
-const _GO_DRAFT_ARCHIVE: &str = r################"
-// 资源组 hint 在事务内外写入、悲观锁、prewrite/commit 与大小写场景下的期望资源组检查。
-
-// TestResourceGroupHintInTxn 对应 Go 同名测试：通过 failpoint 检查 RESOURCE_GROUP hint 在事务阶段的传递。
-#[test]
-pub fn TestResourceGroupHintInTxn(t: testing::T) {
-	let store = testkit::CreateMockStore(t);
-	let tk = testkit::NewTestKit(t, store);
-
-	tk.MustExec("create resource group rg1 ru_per_sec=1000");
-	tk.MustExec("create resource group rg2 ru_per_sec=1000");
-	tk.MustExec("use test;");
-	tk.MustExec("create table t (id int primary key, val int)");
-
-	require::NoError(t, failpoint::Enable("github.com/pingcap/tidb/pkg/kv/TxnResourceGroupChecker", r#"return("default")"#));
-	// defer/cleanup 对应 Go 的资源收尾路径，只记录关闭顺序。
-	defer!(|| {
-		require::NoError(t, failpoint::Disable("github.com/pingcap/tidb/pkg/kv/TxnResourceGroupChecker"));
-	});
-	tk.MustExec("insert into t values (1, 1);");
-	require::NoError(t, failpoint::Enable("github.com/pingcap/tidb/pkg/kv/TxnResourceGroupChecker", r#"return("rg1")"#));
-	tk.MustExec("insert /*+ RESOURCE_GROUP(rg1) */ into t values (2, 2);");
-	tk.MustExec("BEGIN;");
-	// for pessimistic lock the resource group should be rg1
-	tk.MustExec("insert /*+ RESOURCE_GROUP(rg1) */ into t values (3, 3);");
-	require::NoError(t, failpoint::Enable("github.com/pingcap/tidb/pkg/kv/TxnResourceGroupChecker", r#"return("rg2")"#));
-	// for final prewrite/commit the resource group should be rg2
-	tk.MustExec("update /*+ RESOURCE_GROUP(rg2) */ t set val = val + 1 where id = 3;");
-	tk.MustExec("COMMIT;");
-
-	tk.MustExec("SET @@autocommit=1;");
-	require::NoError(t, failpoint::Enable("github.com/pingcap/tidb/pkg/kv/TxnResourceGroupChecker", r#"return("default")"#));
-	tk.MustExec("insert /*+ RESOURCE_GROUP(not_exist_group) */ into t values (4, 4);");
-
-	tk.MustExec("BEGIN;");
-	// for pessimistic lock the resource group should be rg1
-	tk.MustExec("insert /*+ RESOURCE_GROUP(unknown_1) */ into t values (5, 5);");
-	// for final prewrite/commit the resource group should be rg2
-	tk.MustExec("update /*+ RESOURCE_GROUP(unknown_2) */ t set val = val + 1 where id = 5;");
-	tk.MustExec("COMMIT;");
-
-	require::NoError(t, failpoint::Enable("github.com/pingcap/tidb/pkg/kv/TxnResourceGroupChecker", r#"return("rg1")"#));
-	tk.MustExec("insert /*+ RESOURCE_GROUP(RG1) */ into t values (6, 6);");
-	require::NoError(t, tk.ExecToErr("select /*+ RESOURCE_GROUP(RG1) */ * from t;"));
-}
-"################;
-
 use std::any::Any;
 use std::collections::HashMap;
 

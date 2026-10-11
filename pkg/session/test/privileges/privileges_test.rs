@@ -18,69 +18,6 @@
 // 对照 Go `TestSkipWithGrant` / `TestSessionAuth`：验证 `SkipWithGrant` 开关对
 // `UserPrivileges.ConnectionVerification`（连接认证）的影响，以及未知用户空密码拒绝路径。
 
-const _GO_DRAFT_ARCHIVE: &str = r################"
-// auth、privileges、testkit、require 等外部依赖均为 Go 语义占位。
-
-// test_skip_with_grant 对应 Go 的 TestSkipWithGrant。
-// 它临时修改全局 SkipWithGrant，验证关闭时未知用户认证失败、开启后可跳过 grant 检查。
-#[test]
-fn test_skip_with_grant() {
-    let store = testkit::CreateMockStore();
-    let mut tk = testkit::NewTestKit(&store);
-
-    let save2 = privileges::SkipWithGrant;
-
-    privileges::SkipWithGrant = false;
-    require::Error(tk.Session().Auth(
-        &auth::UserIdentity { Username: "user_not_exist".to_string(), Hostname: String::new() },
-        b"yyy",
-        b"zzz",
-        None,
-    ));
-
-    privileges::SkipWithGrant = true;
-    require::NoError(tk.Session().Auth(
-        &auth::UserIdentity { Username: "xxx".to_string(), Hostname: "%".to_string() },
-        b"yyy",
-        b"zzz",
-        None,
-    ));
-    require::NoError(tk.Session().Auth(
-        &auth::UserIdentity { Username: "root".to_string(), Hostname: "%".to_string() },
-        b"",
-        b"",
-        None,
-    ));
-    tk.MustExec("use test");
-    tk.MustExec("create table t (id int)");
-    tk.MustExec("create role r_1");
-    tk.MustExec("grant r_1 to root");
-    tk.MustExec("set role all");
-    tk.MustExec("show grants for root");
-
-    // Go 测试末尾手动恢复全局开关；显式保留这个资源收尾点。
-    privileges::SkipWithGrant = save2;
-}
-
-// test_session_auth 对应 Go 的 TestSessionAuth。
-// 它验证不存在用户名即使空密码也不能通过 Session.Auth。
-#[test]
-fn test_session_auth() {
-    let store = testkit::CreateMockStore();
-    let mut tk = testkit::NewTestKit(&store);
-    tk.MustExec("use test");
-    require::Error(tk.Session().Auth(
-        &auth::UserIdentity {
-            Username: "Any not exist username with zero password!".to_string(),
-            Hostname: "anyhost".to_string(),
-        },
-        b"",
-        b"",
-        None,
-    ));
-}
-"################;
-
 use serial_test::serial;
 
 use astersql_privilege_privileges::{
