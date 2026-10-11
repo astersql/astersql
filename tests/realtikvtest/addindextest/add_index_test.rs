@@ -318,11 +318,21 @@ fn test_add_foreign_key_with_auto_create_index() {
         "[ddl:1452]Cannot add or update a child row: a foreign key constraint fails (`fk_index`.`employee`, CONSTRAINT `fk_1` FOREIGN KEY (`pid`) REFERENCES `employee` (`id`))"
     );
     assert_foreign_key_index_metadata(&tk, false);
-    tk.MustExec(
-        "insert into employee (pid) select pid from employee",
-        Vec::new(),
-    );
-    tk.MustExec("update employee set pid=id", Vec::new());
+    let expansion = tk
+        .Exec(
+            "insert into employee (pid) select id + 131072 from employee",
+            Vec::new(),
+        )
+        .expect("double employee rows with their final foreign-key values");
+    assert_eq!(expansion.affected_rows, 131_072);
+    let repair = tk
+        .Exec("update employee set pid=id where id <= 131072", Vec::new())
+        .expect("repair original employee foreign-key values");
+    assert_eq!(repair.affected_rows, 131_072);
+    tk.MustQuery("select count(*) from employee", Vec::new())
+        .Check(Rows(&["262144"]));
+    tk.MustQuery("select count(*) from employee where pid <> id", Vec::new())
+        .Check(Rows(&["0"]));
     tk.MustExec(
         "alter table employee add foreign key fk_1(pid) references employee(id)",
         Vec::new(),
