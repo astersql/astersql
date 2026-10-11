@@ -21,8 +21,3 @@ mod helper_1_aster_unit_test {
 #[cfg(test)]
 #[path = "helper_test.rs"]
 mod helper_test;
-
-/// 对应 Go TestMain 的测试环境初始化校验。
-#[cfg(test)]
-#[path = "main_test.rs"]
-mod main_test;

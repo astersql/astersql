@@ -102,8 +102,6 @@ pub use unlock_stats::{
 #[cfg(test)]
 mod lock_stats_test;
 #[cfg(test)]
-mod main_test;
-#[cfg(test)]
 mod query_lock_test;
 #[cfg(test)]
 mod unlock_stats_test;

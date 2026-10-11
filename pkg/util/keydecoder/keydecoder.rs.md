@@ -98,7 +98,7 @@
 
 可见差异如下：Rust `HandleType` 是 `&'static str`，Go 是命名字符串类型；Rust 错误是本地 `DecodeKeyError`，Go 使用 `errors.Errorf`；Rust 的 `InfoSchema` API 通过表元数据 `db_id` 调 `SchemaByID`，Go 用 `SchemaByTable`；Rust 为序列化省略添加显式谓词；Rust 通过拥有型快照克隆名称和索引列表。Rust 对普通表命中后将 `TableID` 设为 `meta.id`，正常情况下与输入 ID 相同；Go 在普通表分支依靠初始物理 ID，不重复赋值。
 
-[`keydecoder_test.rs`](keydecoder_test.rs) 的 `decode_key_matches_go_test_decode_key_scenarios` 明确复刻 [`keydecoder_test.go`](keydecoder_test.go) 的普通整数 handle、公共 handle、普通/分区索引、分区记录、非法键和 schema 变化后未知表场景。Rust 还增加了注入 lookup 的缺失 schema、JSON 省略规则等聚焦测试。Go 的 [`main_test.go`](main_test.go) 安装 goroutine 泄漏检查；Rust [`main_test.rs`](main_test.rs) 明确记录没有对应进程级 goroutine harness，这不是生产解码语义差异。
+[`keydecoder_test.rs`](keydecoder_test.rs) 的 `decode_key_matches_go_test_decode_key_scenarios` 明确复刻 [`keydecoder_test.go`](keydecoder_test.go) 的普通整数 handle、公共 handle、普通/分区索引、分区记录、非法键和 schema 变化后未知表场景。Rust 还增加了注入 lookup 的缺失 schema、JSON 省略规则等聚焦测试。Go 的 [`main_test.go`](main_test.go) 安装 goroutine 泄漏检查；Rust 没有对应的进程级 goroutine harness，这不是生产解码语义差异。
 
 ## 扩展指南
 
@@ -116,7 +116,7 @@
 - Rust 源码：[`keydecoder.rs`](keydecoder.rs)，完整核对常量、`DecodedKey`、`DecodeKeyError`、`handleType`、`KeyMetadata`、`MetadataLookup`、`InfoSchemaLookup::lookup`、`decodeKeyWithLookup` 和 `DecodeKey`。
 - crate/装配：[`Cargo.toml`](Cargo.toml)、[`lib.rs`](lib.rs) 与根 facade [`pkg/lib.rs`](../../lib.rs)，核对 crate 名、Go 移植元数据、依赖、crate 根和再导出链；`pkg/executor/Cargo.toml` 仅证明依赖声明，不证明源码调用。
 - Go 对照：[`keydecoder.go`](keydecoder.go)，核对输出字段、handle 分类、元数据解析顺序、部分成功策略与错误边界。
-- 独立测试：[`keydecoder_test.rs`](keydecoder_test.rs) 覆盖未知键、整数/公共 handle、分区身份、普通索引、表/schema 缺失、JSON 字段，以及完整 Go 场景；[`keydecoder_test.go`](keydecoder_test.go) 提供原始移植语义；两个 `main_test` 文件只用于核对测试运行时差异。
+- 独立测试：[`keydecoder_test.rs`](keydecoder_test.rs) 覆盖未知键、整数/公共 handle、分区身份、普通索引、表/schema 缺失、JSON 字段，以及完整 Go 场景；[`keydecoder_test.go`](keydecoder_test.go) 提供原始移植语义。
 - RustCodeGraph：`status` 报告索引可用（11,467 个文件、307,296 个节点）；`files --filter pkg/util/keydecoder` 报告 `keydecoder.rs` 含 15 个符号；`node --file ... --offset 1 --limit 400` 返回完整 288 行源码，并报告三个文件级使用者；`query` 精确定位 Rust `DecodeKey`、`decodeKeyWithLookup`、`handleType`。路径限定的 `callers`/`callees` 没有返回边明细，且文件级结果中的两个 TopSQL 文件经 `rg` 未发现符号引用，因此文档只把独立测试记为已证实直接调用者。
 - 仓库文本复核：对 `astersql_util_keydecoder`、`keydecoder::`、`DecodeKey(` 的 Rust 搜索只发现 facade、crate 内实现和独立测试；对 Cargo manifest 的搜索发现 `pkg/executor/Cargo.toml` 依赖声明。
 - 人工复核：确认文档能回答文件为何存在、普通表/分区记录/索引如何运行、哪些异常返回错误或部分结果、ID 字段如何变化、当前接线状态以及扩展时应修改的符号与独立测试位置；未把未返回的图边或 manifest 依赖推断为生产调用。

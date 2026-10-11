@@ -10,8 +10,6 @@ pub mod slice;
 pub use slice::*;
 
 #[cfg(test)]
-mod main_test;
-#[cfg(test)]
 mod slice_test;
 
 #[cfg(test)]

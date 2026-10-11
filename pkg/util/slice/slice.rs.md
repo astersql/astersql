@@ -92,6 +92,6 @@ Go `DeepClone` 的约束是 `interface{ Clone() T }`，nil 输入返回 nil，�
 
 - RustCodeGraph：`status` 显示索引包含 7,032 个 Rust 文件且目标目录已收录；`files --filter pkg/util/slice` 列出 `slice.rs`、crate 入口、Go 对照及独立测试；`node --file pkg/util/slice/slice.rs --offset 1 --limit 240` 展示完整 81 行和 7 个符号；`query` 分别确认 `AllOf`、`Int64sToStrings`、`DeepClone`、`DeepCloneItem` 的定义。`callers AllOf`/聚合 callers、callees 查询在本次环境中未在 30 秒内返回，因此未据此虚构精确 Rust 调用边，改用索引文件关联结果与下列直接源码搜索交叉核验。
 - 实现与装配：`pkg/util/slice/slice.rs`、`pkg/util/slice/lib.rs`、`pkg/util/slice/Cargo.toml`、根 `Cargo.toml` 的 `facade_util_slice` 路径依赖、`pkg/lib.rs::util::slice`。
-- Rust 测试：`pkg/util/slice/slice_test.rs` 验证空切片全称真、非 `Clone` 元素、整数边界、自定义深拷贝和 nil/空区别；`pkg/util/slice/migration_aster_unit_test.rs` 验证短路访问序列、十进制极值和标准 `Clone` 类型的独立堆对象；`pkg/lib_test.rs` 验证根 facade 接线。`pkg/util/slice/main_test.rs` 说明该 crate 没有额外后台资源生命周期。
+- Rust 测试：`pkg/util/slice/slice_test.rs` 验证空切片全称真、非 `Clone` 元素、整数边界、自定义深拷贝和 nil/空区别；`pkg/util/slice/migration_aster_unit_test.rs` 验证短路访问序列、十进制极值和标准 `Clone` 类型的独立堆对象；`pkg/lib_test.rs` 验证根 facade 接线。
 - Go 对照：`pkg/util/slice/slice.go`、`pkg/util/slice/slice_test.go`、`pkg/util/slice/main_test.go`。生产用途通过 `pkg/ddl/partition.go`、`pkg/statistics/handle/bootstrap.go`、`pkg/util/workloadrepo/table.go`、`pkg/planner/util/path.go` 和 `pkg/planner/core/operator/physicalop/*.go` 的直接搜索核验。
 - 本任务为纯文档分析，按计划不运行 Cargo；最终以固定十一个二级标题的结构命令以及人工事实复核作为验收证据。

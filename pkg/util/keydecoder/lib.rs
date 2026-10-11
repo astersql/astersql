@@ -14,6 +14,3 @@ pub use keydecoder::*;
 
 #[cfg(test)]
 mod keydecoder_test;
-
-#[cfg(test)]
-mod main_test;
