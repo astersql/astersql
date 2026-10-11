@@ -829,7 +829,6 @@ race = []
 mem-arbitrator = ["facade_util_memory/mem-arbitrator"]
 
 [dependencies]
-regex = "1"
 facade_config = { package = "astersql-config", path = "pkg/config" }
 facade_config_configtypes = { package = "astersql-config-configtypes", path = "pkg/config/configtypes" }
 facade_config_deploymode = { package = "astersql-config-deploymode", path = "pkg/config/deploymode" }

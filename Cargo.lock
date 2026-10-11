@@ -1019,7 +1019,6 @@ dependencies = [
  "criterion",
  "protobuf-codegen-pure 2.8.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "protoc-bin-vendored",
- "regex",
  "tonic-build 0.12.3",
 ]
 

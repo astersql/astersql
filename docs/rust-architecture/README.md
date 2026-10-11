@@ -1,6 +1,6 @@
 # Rust 架构阅读索引
 
-本清单覆盖计划保留的 **2598 / 2598** 个含实际业务逻辑的非测试 Rust 源文件。每个条目链接到源码同目录的逐文件说明；勾选状态留给读者长期维护，本次生成时全部保持未勾选。
+本清单覆盖计划保留的 **2561 / 2561** 个含实际业务逻辑的非测试 Rust 源文件。每个条目链接到源码同目录的逐文件说明；勾选状态留给读者长期维护，本次生成时全部保持未勾选。
 
 ## 使用方法
 
@@ -254,49 +254,6 @@
 - [ ] `br/pkg/utiltest/syncpoint/syncpoint.rs.md` — [说明](../../br/pkg/utiltest/syncpoint/syncpoint.rs.md) ← [`br/pkg/utiltest/syncpoint/syncpoint.rs`](../../br/pkg/utiltest/syncpoint/syncpoint.rs)
 - [ ] `br/pkg/version/build/info.rs.md` — [说明](../../br/pkg/version/build/info.rs.md) ← [`br/pkg/version/build/info.rs`](../../br/pkg/version/build/info.rs)
 - [ ] `br/pkg/version/version.rs.md` — [说明](../../br/pkg/version/version.rs.md) ← [`br/pkg/version/version.rs`](../../br/pkg/version/version.rs)
-### build/config.rs
-
-- [ ] `build/config.rs.md` — [说明](../../build/config.rs.md) ← [`build/config.rs`](../../build/config.rs)
-### build/debug-linter
-
-- [ ] `build/debug-linter/main.rs.md` — [说明](../../build/debug-linter/main.rs.md) ← [`build/debug-linter/main.rs`](../../build/debug-linter/main.rs)
-### build/linter
-
-- [ ] `build/linter/allrevive/analyzer.rs.md` — [说明](../../build/linter/allrevive/analyzer.rs.md) ← [`build/linter/allrevive/analyzer.rs`](../../build/linter/allrevive/analyzer.rs)
-- [ ] `build/linter/assertionapi/analyzer.rs.md` — [说明](../../build/linter/assertionapi/analyzer.rs.md) ← [`build/linter/assertionapi/analyzer.rs`](../../build/linter/assertionapi/analyzer.rs)
-- [ ] `build/linter/bodyclose/analysis.rs.md` — [说明](../../build/linter/bodyclose/analysis.rs.md) ← [`build/linter/bodyclose/analysis.rs`](../../build/linter/bodyclose/analysis.rs)
-- [ ] `build/linter/bootstrap/analyzer.rs.md` — [说明](../../build/linter/bootstrap/analyzer.rs.md) ← [`build/linter/bootstrap/analyzer.rs`](../../build/linter/bootstrap/analyzer.rs)
-- [ ] `build/linter/constructor/analyzer.rs.md` — [说明](../../build/linter/constructor/analyzer.rs.md) ← [`build/linter/constructor/analyzer.rs`](../../build/linter/constructor/analyzer.rs)
-- [ ] `build/linter/copyloopvar/analyzer.rs.md` — [说明](../../build/linter/copyloopvar/analyzer.rs.md) ← [`build/linter/copyloopvar/analyzer.rs`](../../build/linter/copyloopvar/analyzer.rs)
-- [ ] `build/linter/deferrecover/analyzer.rs.md` — [说明](../../build/linter/deferrecover/analyzer.rs.md) ← [`build/linter/deferrecover/analyzer.rs`](../../build/linter/deferrecover/analyzer.rs)
-- [ ] `build/linter/durationcheck/analyzer.rs.md` — [说明](../../build/linter/durationcheck/analyzer.rs.md) ← [`build/linter/durationcheck/analyzer.rs`](../../build/linter/durationcheck/analyzer.rs)
-- [ ] `build/linter/errcheck/analyzer.rs.md` — [说明](../../build/linter/errcheck/analyzer.rs.md) ← [`build/linter/errcheck/analyzer.rs`](../../build/linter/errcheck/analyzer.rs)
-- [ ] `build/linter/etcdconfig/analyzer.rs.md` — [说明](../../build/linter/etcdconfig/analyzer.rs.md) ← [`build/linter/etcdconfig/analyzer.rs`](../../build/linter/etcdconfig/analyzer.rs)
-- [ ] `build/linter/exptostd/analyzer.rs.md` — [说明](../../build/linter/exptostd/analyzer.rs.md) ← [`build/linter/exptostd/analyzer.rs`](../../build/linter/exptostd/analyzer.rs)
-- [ ] `build/linter/filepermission/checker.rs.md` — [说明](../../build/linter/filepermission/checker.rs.md) ← [`build/linter/filepermission/checker.rs`](../../build/linter/filepermission/checker.rs)
-- [ ] `build/linter/forbidigo/analyzer.rs.md` — [说明](../../build/linter/forbidigo/analyzer.rs.md) ← [`build/linter/forbidigo/analyzer.rs`](../../build/linter/forbidigo/analyzer.rs)
-- [ ] `build/linter/forcetypeassert/analysis.rs.md` — [说明](../../build/linter/forcetypeassert/analysis.rs.md) ← [`build/linter/forcetypeassert/analysis.rs`](../../build/linter/forcetypeassert/analysis.rs)
-- [ ] `build/linter/gci/analysis.rs.md` — [说明](../../build/linter/gci/analysis.rs.md) ← [`build/linter/gci/analysis.rs`](../../build/linter/gci/analysis.rs)
-- [ ] `build/linter/gofmt/analyzer.rs.md` — [说明](../../build/linter/gofmt/analyzer.rs.md) ← [`build/linter/gofmt/analyzer.rs`](../../build/linter/gofmt/analyzer.rs)
-- [ ] `build/linter/gosec/analysis.rs.md` — [说明](../../build/linter/gosec/analysis.rs.md) ← [`build/linter/gosec/analysis.rs`](../../build/linter/gosec/analysis.rs)
-- [ ] `build/linter/ineffassign/analyzer.rs.md` — [说明](../../build/linter/ineffassign/analyzer.rs.md) ← [`build/linter/ineffassign/analyzer.rs`](../../build/linter/ineffassign/analyzer.rs)
-- [ ] `build/linter/intrange/analyzer.rs.md` — [说明](../../build/linter/intrange/analyzer.rs.md) ← [`build/linter/intrange/analyzer.rs`](../../build/linter/intrange/analyzer.rs)
-- [ ] `build/linter/linter.rs.md` — [说明](../../build/linter/linter.rs.md) ← [`build/linter/linter.rs`](../../build/linter/linter.rs)
-- [ ] `build/linter/lll/analyzer.rs.md` — [说明](../../build/linter/lll/analyzer.rs.md) ← [`build/linter/lll/analyzer.rs`](../../build/linter/lll/analyzer.rs)
-- [ ] `build/linter/makezero/analyzer.rs.md` — [说明](../../build/linter/makezero/analyzer.rs.md) ← [`build/linter/makezero/analyzer.rs`](../../build/linter/makezero/analyzer.rs)
-- [ ] `build/linter/mirror/analyzer.rs.md` — [说明](../../build/linter/mirror/analyzer.rs.md) ← [`build/linter/mirror/analyzer.rs`](../../build/linter/mirror/analyzer.rs)
-- [ ] `build/linter/misspell/analyzer.rs.md` — [说明](../../build/linter/misspell/analyzer.rs.md) ← [`build/linter/misspell/analyzer.rs`](../../build/linter/misspell/analyzer.rs)
-- [ ] `build/linter/prealloc/analyzer.rs.md` — [说明](../../build/linter/prealloc/analyzer.rs.md) ← [`build/linter/prealloc/analyzer.rs`](../../build/linter/prealloc/analyzer.rs)
-- [ ] `build/linter/predeclared/analysis.rs.md` — [说明](../../build/linter/predeclared/analysis.rs.md) ← [`build/linter/predeclared/analysis.rs`](../../build/linter/predeclared/analysis.rs)
-- [ ] `build/linter/printexpression/analyzer.rs.md` — [说明](../../build/linter/printexpression/analyzer.rs.md) ← [`build/linter/printexpression/analyzer.rs`](../../build/linter/printexpression/analyzer.rs)
-- [ ] `build/linter/revive/analyzer.rs.md` — [说明](../../build/linter/revive/analyzer.rs.md) ← [`build/linter/revive/analyzer.rs`](../../build/linter/revive/analyzer.rs)
-- [ ] `build/linter/rowserrcheck/analyzer.rs.md` — [说明](../../build/linter/rowserrcheck/analyzer.rs.md) ← [`build/linter/rowserrcheck/analyzer.rs`](../../build/linter/rowserrcheck/analyzer.rs)
-- [ ] `build/linter/staticcheck/analyzer.rs.md` — [说明](../../build/linter/staticcheck/analyzer.rs.md) ← [`build/linter/staticcheck/analyzer.rs`](../../build/linter/staticcheck/analyzer.rs)
-- [ ] `build/linter/staticcheck/util.rs.md` — [说明](../../build/linter/staticcheck/util.rs.md) ← [`build/linter/staticcheck/util.rs`](../../build/linter/staticcheck/util.rs)
-- [ ] `build/linter/toomanytests/analyze.rs.md` — [说明](../../build/linter/toomanytests/analyze.rs.md) ← [`build/linter/toomanytests/analyze.rs`](../../build/linter/toomanytests/analyze.rs)
-- [ ] `build/linter/unconvert/analysis.rs.md` — [说明](../../build/linter/unconvert/analysis.rs.md) ← [`build/linter/unconvert/analysis.rs`](../../build/linter/unconvert/analysis.rs)
-- [ ] `build/linter/util/exclude.rs.md` — [说明](../../build/linter/util/exclude.rs.md) ← [`build/linter/util/exclude.rs`](../../build/linter/util/exclude.rs)
-- [ ] `build/linter/util/util.rs.md` — [说明](../../build/linter/util/util.rs.md) ← [`build/linter/util/util.rs`](../../build/linter/util/util.rs)
 ### cmd/benchdb
 
 - [ ] `cmd/benchdb/main.rs.md` — [说明](../../cmd/benchdb/main.rs.md) ← [`cmd/benchdb/main.rs`](../../cmd/benchdb/main.rs)

@@ -1,6 +1,6 @@
 # AsterSQL Rust 整体架构
 
-本文从 2598 份逐文件说明反向汇总当前 Rust 实现。图中的节点均可点击到源码旁的说明文档；图后的“边证据”明确给出每条跨层关系的复核入口。装配文件虽不在逐文件清单中，进程入口及模块边界仍由业务实现文档覆盖。
+本文从 2561 份逐文件说明反向汇总当前 Rust 实现。图中的节点均可点击到源码旁的说明文档；图后的“边证据”明确给出每条跨层关系的复核入口。装配文件虽不在逐文件清单中，进程入口及模块边界仍由业务实现文档覆盖。
 
 ## 部署角色与分层
 
@@ -15,7 +15,7 @@ flowchart LR
   BR[BR 备份恢复] --> Storage
   Lightning[Lightning 批量导入] --> Storage
   Dumpling[Dumpling 逻辑导出] --> Server
-  Build[build / tools] -.生成、检查、维护.-> Server
+  Build[tools] -.生成、检查、维护.-> Server
   click Server "../../cmd/tidb-server/main.rs.md"
   click Kernel "../../pkg/session/runtime/session.rs.md"
   click Meta "../../pkg/domain/domain.rs.md"
@@ -23,7 +23,7 @@ flowchart LR
   click BR "../../br/cmd/br/main.rs.md"
   click Lightning "../../lightning/cmd/tidb-lightning/main.rs.md"
   click Dumpling "../../dumpling/cmd/dumpling/main.rs.md"
-  click Build "../../build/linter/linter.rs.md"
+  click Build "../../tools/tazel/main.rs.md"
 ```
 
 边证据：客户端接入与内核创建见 [`pkg/server/server.rs.md`](../../pkg/server/server.rs.md)；在线内核初始化、Domain 与存储接线见 [`cmd/tidb-server/main.rs.md`](../../cmd/tidb-server/main.rs.md)；工具到存储/SQL 的边界分别见 [`br/cmd/br/backup.rs.md`](../../br/cmd/br/backup.rs.md)、[`lightning/pkg/importer/import.rs.md`](../../lightning/pkg/importer/import.rs.md) 和 [`dumpling/export/dump.rs.md`](../../dumpling/export/dump.rs.md)；构建辅助面的职责见 [`tools/tazel/main.rs.md`](../../tools/tazel/main.rs.md)。
@@ -156,6 +156,6 @@ flowchart TB
 
 ## 验证依据与限制
 
-本汇总基于 `docs/docs-manifest.md` 的 2598 个唯一源文件/说明映射；生成时确认源文件、说明文件双向差集均为空，且每份说明都有 11 个固定二级章节。RustCodeGraph 索引覆盖 7032 个 Rust 文件；通过 `node --file` 额外复核了在线入口、Session、PlanBuilder、Executor、Domain、DDL、TiKV driver 以及 BR/Lightning/Dumpling 入口的文件使用关系和源码职责。
+本汇总基于 `docs/rs-docs-manifest.md` 的 2561 个唯一源文件/说明映射；生成时确认源文件、说明文件双向差集均为空，且每份说明都有 11 个固定二级章节。RustCodeGraph 索引覆盖范围会随工作区源码变化；在线入口、Session、PlanBuilder、Executor、Domain、DDL、TiKV driver 以及 BR/Lightning/Dumpling 入口的文件使用关系和源码职责可通过当前索引复核。
 
 本任务不运行 Cargo、Go 或 Bazel。图表达的是当前仓库可由逐文件证据支持的模块关系，而不是对所有路径已具备生产完整性的承诺；具体未接线、桩实现和 Go 差异以各 `*.rs.md` 为准。

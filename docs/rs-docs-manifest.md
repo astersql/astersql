@@ -1,6 +1,6 @@
 # Rust 文件说明文档新增清单
 
-计划为 2598 个含实际业务逻辑的非测试 Rust 文件新增一一对应、与源文件同目录的 `<文件名>.rs.md`。此清单是计划范围清单；真正的阅读勾选清单将在执行阶段生成到 `docs/rust-architecture/README.md`。
+计划为 2561 个含实际业务逻辑的非测试 Rust 文件新增一一对应、与源文件同目录的 `<文件名>.rs.md`。此清单是计划范围清单；真正的阅读勾选清单将在执行阶段生成到 `docs/rust-architecture/README.md`。
 
 排除：`*_test.rs`、`*_tests.rs`、`test.rs`、`tests.rs`，`test/tests/testdata/benches/fuzz` 目录，以及仅承担装配、占位、桩接线或薄转发的 `lib.rs`、`mod.rs`、`doc.rs`、`stubs.rs`、`build.rs`、`bin_main.rs`。
 
@@ -8,7 +8,7 @@
 
 正文仍按仓库目录排列；阅读时按下面的 `【序号】` 标记查找对应章节。同一阶段内建议按列出的先后顺序阅读，暂时看不懂的实现可以先跳过，沿主线读完后再回看。
 
-1. 【01·基础约定】`build/config.rs` → `pkg/errno` → `pkg/errors` → `pkg/errctx` → `pkg/format` → `pkg/param`
+1. 【01·基础约定】`pkg/errno` → `pkg/errors` → `pkg/errctx` → `pkg/format` → `pkg/param`
 2. 【02·通用能力】`pkg/types` → `pkg/util` → `pkg/config` → `pkg/metrics` → `pkg/timer` → `pkg/lock`
 3. 【03·SQL 数据模型】`pkg/parser` → `pkg/expression` → `pkg/tablecodec` → `pkg/structure` → `pkg/table` → `pkg/meta` → `pkg/infoschema`
 4. 【04·存储访问】`pkg/kv` → `pkg/keyspace` → `pkg/objstore` → `pkg/store` → `pkg/distsql`
@@ -17,7 +17,7 @@
 7. 【07·治理与扩展】`pkg/privilege` → `pkg/bindinfo` → `pkg/plugin` → `pkg/extension` → `pkg/resourcegroup` → `pkg/resourcemanager` → `pkg/extworkload`
 8. 【08·数据维护】`pkg/statistics` → `pkg/ttl` → `pkg/workloadlearning` → `pkg/telemetry` → `pkg/inference` → `pkg/dxf` → `pkg/metaservice`
 9. 【09·导入导出】`pkg/dumpformat` → `dumpling/context` → `dumpling/log` → `dumpling/export` → `dumpling/cli` → `dumpling/cmd` → `pkg/importsdk` → `pkg/ingestor` → `pkg/lightning` → `lightning/pkg` → `lightning/cmd` → `br/pkg` → `br/cmd`
-10. 【10·工具与专项】`pkg/testkit` → `cmd/benchdb` → `cmd/benchkv` → `cmd/benchraw` → `cmd/importer` → `cmd/mirror` → `cmd/pluginpkg` → `build/debug-linter` → `build/linter` → `tools/check` → `tools/dashboard-linter` → `tools/fake-oauth` → `tools/gen-parquet` → `tools/patch-go` → `tools/tazel`
+10. 【10·工具与专项】`pkg/testkit` → `cmd/benchdb` → `cmd/benchkv` → `cmd/benchraw` → `cmd/importer` → `cmd/mirror` → `cmd/pluginpkg` → `tools/check` → `tools/dashboard-linter` → `tools/fake-oauth` → `tools/gen-parquet` → `tools/patch-go` → `tools/tazel`
 
 > 推荐主线：先读【01】—【06】；需要了解完整产品能力时再读【07】—【09】；【10】适合最后按需查阅。
 
@@ -253,52 +253,6 @@
 - [ ] [`br/pkg/utiltest/syncpoint/syncpoint.rs.md`](../br/pkg/utiltest/syncpoint/syncpoint.rs.md)
 - [ ] [`br/pkg/version/build/info.rs.md`](../br/pkg/version/build/info.rs.md)
 - [ ] [`br/pkg/version/version.rs.md`](../br/pkg/version/version.rs.md)
-
-## build/config.rs
-
-- [ ] [`build/config.rs.md`](../build/config.rs.md)
-
-## build/debug-linter
-
-- [ ] [`build/debug-linter/main.rs.md`](../build/debug-linter/main.rs.md)
-
-## build/linter
-
-- [ ] [`build/linter/allrevive/analyzer.rs.md`](../build/linter/allrevive/analyzer.rs.md)
-- [ ] [`build/linter/assertionapi/analyzer.rs.md`](../build/linter/assertionapi/analyzer.rs.md)
-- [ ] [`build/linter/bodyclose/analysis.rs.md`](../build/linter/bodyclose/analysis.rs.md)
-- [ ] [`build/linter/bootstrap/analyzer.rs.md`](../build/linter/bootstrap/analyzer.rs.md)
-- [ ] [`build/linter/constructor/analyzer.rs.md`](../build/linter/constructor/analyzer.rs.md)
-- [ ] [`build/linter/copyloopvar/analyzer.rs.md`](../build/linter/copyloopvar/analyzer.rs.md)
-- [ ] [`build/linter/deferrecover/analyzer.rs.md`](../build/linter/deferrecover/analyzer.rs.md)
-- [ ] [`build/linter/durationcheck/analyzer.rs.md`](../build/linter/durationcheck/analyzer.rs.md)
-- [ ] [`build/linter/errcheck/analyzer.rs.md`](../build/linter/errcheck/analyzer.rs.md)
-- [ ] [`build/linter/etcdconfig/analyzer.rs.md`](../build/linter/etcdconfig/analyzer.rs.md)
-- [ ] [`build/linter/exptostd/analyzer.rs.md`](../build/linter/exptostd/analyzer.rs.md)
-- [ ] [`build/linter/filepermission/checker.rs.md`](../build/linter/filepermission/checker.rs.md)
-- [ ] [`build/linter/forbidigo/analyzer.rs.md`](../build/linter/forbidigo/analyzer.rs.md)
-- [ ] [`build/linter/forcetypeassert/analysis.rs.md`](../build/linter/forcetypeassert/analysis.rs.md)
-- [ ] [`build/linter/gci/analysis.rs.md`](../build/linter/gci/analysis.rs.md)
-- [ ] [`build/linter/gofmt/analyzer.rs.md`](../build/linter/gofmt/analyzer.rs.md)
-- [ ] [`build/linter/gosec/analysis.rs.md`](../build/linter/gosec/analysis.rs.md)
-- [ ] [`build/linter/ineffassign/analyzer.rs.md`](../build/linter/ineffassign/analyzer.rs.md)
-- [ ] [`build/linter/intrange/analyzer.rs.md`](../build/linter/intrange/analyzer.rs.md)
-- [ ] [`build/linter/linter.rs.md`](../build/linter/linter.rs.md)
-- [ ] [`build/linter/lll/analyzer.rs.md`](../build/linter/lll/analyzer.rs.md)
-- [ ] [`build/linter/makezero/analyzer.rs.md`](../build/linter/makezero/analyzer.rs.md)
-- [ ] [`build/linter/mirror/analyzer.rs.md`](../build/linter/mirror/analyzer.rs.md)
-- [ ] [`build/linter/misspell/analyzer.rs.md`](../build/linter/misspell/analyzer.rs.md)
-- [ ] [`build/linter/prealloc/analyzer.rs.md`](../build/linter/prealloc/analyzer.rs.md)
-- [ ] [`build/linter/predeclared/analysis.rs.md`](../build/linter/predeclared/analysis.rs.md)
-- [ ] [`build/linter/printexpression/analyzer.rs.md`](../build/linter/printexpression/analyzer.rs.md)
-- [ ] [`build/linter/revive/analyzer.rs.md`](../build/linter/revive/analyzer.rs.md)
-- [ ] [`build/linter/rowserrcheck/analyzer.rs.md`](../build/linter/rowserrcheck/analyzer.rs.md)
-- [ ] [`build/linter/staticcheck/analyzer.rs.md`](../build/linter/staticcheck/analyzer.rs.md)
-- [ ] [`build/linter/staticcheck/util.rs.md`](../build/linter/staticcheck/util.rs.md)
-- [ ] [`build/linter/toomanytests/analyze.rs.md`](../build/linter/toomanytests/analyze.rs.md)
-- [ ] [`build/linter/unconvert/analysis.rs.md`](../build/linter/unconvert/analysis.rs.md)
-- [ ] [`build/linter/util/exclude.rs.md`](../build/linter/util/exclude.rs.md)
-- [ ] [`build/linter/util/util.rs.md`](../build/linter/util/util.rs.md)
 
 ## cmd/benchdb
 
