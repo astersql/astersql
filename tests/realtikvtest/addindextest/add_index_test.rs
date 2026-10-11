@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Once};
 
 use astersql_testkit::mockstore::CreateMockStoreAndDomain;
-use astersql_testkit::{NewTestKit, Rows};
+use astersql_testkit::{NewTestKit, Rows, TestKit};
 use astersql_testkit_testfailpoint as testfailpoint;
 use astersql_tests_realtikvtest::stubs::{TestCtx, config};
 use astersql_tests_realtikvtest_addindextest::{FULL_MODE, serial_guard};
@@ -99,6 +99,15 @@ fn reduce_check_interval(t: &TestCtx) {
     // The compatibility harness has no polling sleep, but preserve Go's setup
     // call as observable test context state.
     t.Log("testutil.ReduceCheckInterval");
+}
+
+fn assert_foreign_key_index_metadata(tk: &TestKit, has_index: bool) {
+    let indexes = tk.MustQuery("show index from employee", Vec::new()).Rows();
+    assert_eq!(
+        indexes.iter().any(|row| row[2] == "fk_1"),
+        has_index,
+        "unexpected fk_1 index metadata: {indexes:?}"
+    );
 }
 
 // `enable_fast_add_index_failpoints` 承担当前文件中的一段辅助职责或状态转换。
@@ -298,13 +307,17 @@ fn test_add_foreign_key_with_auto_create_index() {
         "alter table employee add foreign key fk_1(pid) references employee(id)",
         Vec::new(),
     );
+    assert_foreign_key_index_metadata(&tk, true);
     tk.MustExec("alter table employee drop foreign key fk_1", Vec::new());
+    assert_foreign_key_index_metadata(&tk, true);
     tk.MustExec("alter table employee drop index fk_1", Vec::new());
+    assert_foreign_key_index_metadata(&tk, false);
     tk.MustExec("update employee set pid=0 where id=1", Vec::new());
     tk.MustGetErrMsg(
         "alter table employee add foreign key fk_1(pid) references employee(id)",
         "[ddl:1452]Cannot add or update a child row: a foreign key constraint fails (`fk_index`.`employee`, CONSTRAINT `fk_1` FOREIGN KEY (`pid`) REFERENCES `employee` (`id`))"
     );
+    assert_foreign_key_index_metadata(&tk, false);
     tk.MustExec(
         "insert into employee (pid) select pid from employee",
         Vec::new(),
@@ -314,6 +327,7 @@ fn test_add_foreign_key_with_auto_create_index() {
         "alter table employee add foreign key fk_1(pid) references employee(id)",
         Vec::new(),
     );
+    assert_foreign_key_index_metadata(&tk, true);
 }
 
 /// `TestIssue51162`.
