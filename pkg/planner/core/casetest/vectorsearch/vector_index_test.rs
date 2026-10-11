@@ -31,6 +31,7 @@ use astersql_sessionctx_vardef::TiDBIsolationReadEngines;
 use astersql_testkit::TestKit;
 use astersql_testkit::mockstore::CreateMockStoreAndDomain;
 use astersql_testkit::testdata::{ConvertRowsToStrings, LoadTestSuiteDataWithCascades};
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 /// 创建 mock store + Domain，并返回绑定其上的 `TestKit`。
@@ -799,24 +800,67 @@ fn setup_vector_search_with_pk(domain: &astersql_domain::Domain, tk: &mut TestKi
         )",
         Vec::new(),
     );
-    for i in 0..2000 {
-        tk.MustExec(
-            &format!(
-                "insert into t1 values
-                    ({i}, '[1,1,1]', 1, 1, '[1,1,1]', '[1,1,1]'),
-                    ({}, '[2,2,2]', 2, 2, '[2,2,2]', '[2,2,2]'),
-                    ({}, '[3,3,3]', 3, 3, '[3,3,3]', '[3,3,3]')",
-                2000 + i,
-                4000 + i,
-            ),
-            Vec::new(),
-        );
-    }
+    insert_vector_search_fixture(tk);
     tk.MustExec("analyze table t1", Vec::new());
     tk.MustExec("create table doc(id int, doc longtext)", Vec::new());
     domain
         .set_tiflash_replica_for_test("test", "t1", 1, true)
         .expect("set test.t1 TiFlash replica");
+}
+
+fn insert_vector_search_fixture(tk: &mut TestKit) {
+    const ROWS_PER_GROUP: usize = 2000;
+    const GROUPS_PER_INSERT: usize = 100;
+
+    for batch_start in (0..ROWS_PER_GROUP).step_by(GROUPS_PER_INSERT) {
+        let batch_end = (batch_start + GROUPS_PER_INSERT).min(ROWS_PER_GROUP);
+        let mut sql = String::from("insert into t1 values ");
+        let mut first = true;
+        for i in batch_start..batch_end {
+            for (id, value) in [(i, 1), (ROWS_PER_GROUP + i, 2), (2 * ROWS_PER_GROUP + i, 3)] {
+                write!(
+                    sql,
+                    "{}({id}, '[{value},{value},{value}]', {value}, {value}, \
+                     '[{value},{value},{value}]', '[{value},{value},{value}]')",
+                    if first { "" } else { "," },
+                )
+                .expect("write vector fixture SQL");
+                first = false;
+            }
+        }
+        tk.MustExec(&sql, Vec::new());
+    }
+}
+
+#[test]
+fn vector_pk_fixture_preserves_go_distribution() {
+    let (domain, mut tk) = new_testkit();
+    setup_vector_search_with_pk(&domain, &mut tk);
+
+    tk.MustQuery("select count(*) from t1", Vec::new())
+        .Check(vec![vec!["6000"]]);
+    for (start, end, vector, value) in [
+        (0, 1999, "[1,1,1]", 1),
+        (2000, 3999, "[2,2,2]", 2),
+        (4000, 5999, "[3,3,3]", 3),
+    ] {
+        tk.MustQuery(
+            &format!(
+                "select count(*), min(id), max(id) from t1
+                 where id between {start} and {end}
+                   and vec_l2_distance(vec, '{vector}') = 0
+                   and a = {value} and b = {value}",
+            ),
+            Vec::new(),
+        )
+        .Check(vec![vec!["2000", &start.to_string(), &end.to_string()]]);
+    }
+
+    tk.MustQuery(
+        "show stats_meta where db_name = 'test' and table_name = 't1'",
+        Vec::new(),
+    )
+    .CheckAt(&[5], vec![vec!["6000"]]);
 }
 
 /// 对应 Go `TestVectorSearchWithPKAuto`：两种规划器模式逐条比对 golden。
