@@ -710,9 +710,9 @@
 
 ## pkg/errno
 
-- [ ] [`pkg/errno/errcode.rs.md`](../pkg/errno/errcode.rs.md)
-- [ ] [`pkg/errno/errname.rs.md`](../pkg/errno/errname.rs.md)
-- [ ] [`pkg/errno/infoschema.rs.md`](../pkg/errno/infoschema.rs.md)
+- [x] [`pkg/errno/errcode.rs.md`](../pkg/errno/errcode.rs.md)
+- [x] [`pkg/errno/errname.rs.md`](../pkg/errno/errname.rs.md)
+- [x] [`pkg/errno/infoschema.rs.md`](../pkg/errno/infoschema.rs.md) @todo
 
 ## pkg/errors
 
