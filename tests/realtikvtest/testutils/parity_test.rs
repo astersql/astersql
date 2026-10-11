@@ -69,7 +69,7 @@
 
 //! Parity tests for `tests/realtikvtest/testutils` public contracts vs Go.
 
-use crate::common::InitTestWithStore;
+use crate::common::{InitTestWithStore, ResetTestWithStore};
 use crate::stubs::{
     ExternalTagged, ExternalTaggedField, failpoint, fakestorage, kerneltype, require,
     set_classic_for_test, set_failpoint_hold_ms_for_test, storage, take_local_events, testkit,
@@ -173,6 +173,37 @@ fn contract_error_paths() {
 #[test]
 fn contract_resource_cleanup() {
     run_contract(run_contract_resource_cleanup);
+}
+
+#[test]
+fn reused_fixture_resets_normal_boundary_state() {
+    let _isolation = ContractIsolation::new();
+    let t = TestCtx::new();
+    let store = astersql_tests_realtikvtest::CreateMockStoreAndSetup(&t, &[]);
+    let polluted = InitTestWithStore(&t, store.clone());
+
+    polluted
+        .tk
+        .set_exec_handler(|_| Err("polluted handler".into()));
+    set_classic_for_test(false);
+    failpoint::Enable(
+        "github.com/pingcap/tidb/pkg/ddl/mockHighLoadForAddIndex",
+        "return",
+    )
+    .unwrap();
+
+    let reset = ResetTestWithStore(&t, store, true);
+    assert!(kerneltype::IsClassic());
+    assert!(!failpoint::is_enabled(
+        "github.com/pingcap/tidb/pkg/ddl/mockHighLoadForAddIndex"
+    ));
+    reset.tk.MustExec("use addindex;");
+    assert_eq!(
+        reset.tk.Query("select count(*) from addindex.t0").unwrap(),
+        vec![vec![String::from("64")]]
+    );
+    assert_eq!(reset.tableNum, 3);
+    assert_eq!(reset.rowNum, 64);
 }
 
 #[test]
@@ -299,7 +330,7 @@ fn run_contract_normal_paths(store: &astersql_tests_realtikvtest::stubs::Storage
     );
 
     // Multi-col frame skips identical column pairs.
-    let ctx3 = InitTestWithStore(&t, store.clone());
+    let ctx3 = ResetTestWithStore(&t, store.clone(), true);
     let i_ids = vec![vec![1], vec![], vec![]];
     let j_ids = vec![vec![1, 2], vec![], vec![]];
     TestTwoColsFrame(&ctx3, &i_ids, &j_ids, AddIndexMultiCols);
@@ -314,7 +345,7 @@ fn run_contract_normal_paths(store: &astersql_tests_realtikvtest::stubs::Storage
     );
 
     // PK frame uses admin check table.
-    let ctx4 = InitTestWithStore(&t, store.clone());
+    let ctx4 = ResetTestWithStore(&t, store.clone(), true);
     TestOneIndexFrame(&ctx4, 0, AddIndexPK);
     assert!(
         ctx4.tk
@@ -360,7 +391,7 @@ fn run_contract_boundary(store: &astersql_tests_realtikvtest::stubs::Storage) {
     );
 
     // Unique index on partitioned table includes c0.
-    let ctx = InitTestWithStore(&t, store.clone());
+    let ctx = ResetTestWithStore(&t, store.clone(), false);
     let col_ids = vec![vec![], vec![3], vec![]];
     TestOneColFrame(&ctx, &col_ids, AddIndexUnique);
     assert!(
@@ -385,7 +416,8 @@ fn run_contract_boundary(store: &astersql_tests_realtikvtest::stubs::Storage) {
     );
 
     // Multi-schema change appends column DDL.
-    let mut ctx = init_comp_ctx_with_store(&t, store);
+    let mut ctx = ResetTestWithStore(&t, store.clone(), false);
+    InitCompCtxParams(&mut ctx);
     if let Some(comp) = &ctx.CompCtx {
         comp.write().unwrap().IsMultiSchemaChange = true;
     }
@@ -434,7 +466,7 @@ fn run_contract_boundary(store: &astersql_tests_realtikvtest::stubs::Storage) {
     );
 
     // Failpoint path table (enable/disable with 0 hold).
-    let mut fp = InitTestWithStore(&t, store.clone());
+    let mut fp = ResetTestWithStore(&t, store.clone(), false);
     fp.isFailpointsTest = true;
     assert!(fp.isFailpointsTest);
     require::NoError(
@@ -453,12 +485,15 @@ fn run_contract_boundary(store: &astersql_tests_realtikvtest::stubs::Storage) {
     );
 
     // Concurrent DDL init flags
-    let ctx = init_concurrent_ddl_with_store(
-        &t,
-        store,
-        vec![vec![1], vec![1], vec![1]],
-        vec![vec![], vec![], vec![]],
-    );
+    let mut ctx = ResetTestWithStore(&t, store.clone(), false);
+    InitCompCtxParams(&mut ctx);
+    if let Some(comp) = &ctx.CompCtx {
+        let mut comp = comp.write().unwrap();
+        comp.IsConcurrentDDL = true;
+        comp.tType = TestNonUnique;
+        comp.colIIDs = vec![vec![1], vec![1], vec![1]];
+        comp.colJIDs = vec![vec![], vec![], vec![]];
+    }
     assert!(
         ctx.CompCtx
             .as_ref()

@@ -192,7 +192,7 @@
 use crate::compatibility::CompatibilityContext;
 use crate::stubs::{
     ExternalTagged, ExternalTaggedField, failpoint, failpoint_hold_duration, kerneltype, logutil,
-    require, testkit,
+    require, reset_test_globals, testkit,
 };
 use crate::workload::{Workload, initWorkloadParams};
 use astersql_tests_realtikvtest::CreateMockStoreAndSetup;
@@ -372,6 +372,18 @@ pub(crate) fn InitTestWithStore(t: &TestCtx, store: Storage) -> SuiteContext {
     let mut ctx = newSuiteContext(t, tk, store);
     createTable(&ctx.tk);
     insertRows(&ctx.tk);
+    initWorkloadParams(&mut ctx);
+    ctx
+}
+
+/// Reset mutable test state and attach a fresh context to an existing immutable seed fixture.
+pub(crate) fn ResetTestWithStore(t: &TestCtx, store: Storage, classic: bool) -> SuiteContext {
+    reset_test_globals();
+    crate::stubs::set_classic_for_test(classic);
+    let tk = testkit::NewTestKit(t, store.clone());
+    tk.MustExec("use addindex;");
+
+    let mut ctx = newSuiteContext(t, tk, store);
     initWorkloadParams(&mut ctx);
     ctx
 }
