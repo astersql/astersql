@@ -24,7 +24,7 @@ use std::thread;
 
 use astersql_testkit::TestKit;
 
-use super::support::{Harness, exec, query, rand, rows};
+use super::support::{Harness, exec, insert_rows, query, rand, rows};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// 同一条语句的普通 SQL 与预处理 SQL 表示，用于逐项对照执行结果。
@@ -197,9 +197,8 @@ fn run_point_case(
         "set global tidb_enable_instance_plan_cache=1",
     );
     exec(&mut harness.tk, ddl);
-    for i in 0..100 {
-        exec(&mut harness.tk, &format!("insert into t values ({i}, {i})"));
-    }
+    let values = (0..100).map(|i| format!("({i},{i})")).collect::<Vec<_>>();
+    insert_rows(&mut harness.tk, "insert into t values", &values);
     concurrent(&harness.store, move |mut tk| {
         exec(&mut tk, "use test");
         exec(&mut tk, prepare);
@@ -234,9 +233,8 @@ pub fn TestInstancePlanCacheConcurrencyPointMultipleColPKNoTxn() {
         &mut harness.tk,
         "create table t (a int, b int, primary key(a,b))",
     );
-    for i in 0..100 {
-        exec(&mut harness.tk, &format!("insert into t values ({i},{i})"));
-    }
+    let values = (0..100).map(|i| format!("({i},{i})")).collect::<Vec<_>>();
+    insert_rows(&mut harness.tk, "insert into t values", &values);
     concurrent(&harness.store, |mut tk| {
         exec(&mut tk, "use test");
         exec(
@@ -264,9 +262,8 @@ pub fn TestInstancePlanCacheConcurrencyBatchPointNoTxn() {
         &mut harness.tk,
         "create table t (a int, b int, primary key(a))",
     );
-    for i in 0..100 {
-        exec(&mut harness.tk, &format!("insert into t values ({i},{i})"));
-    }
+    let values = (0..100).map(|i| format!("({i},{i})")).collect::<Vec<_>>();
+    insert_rows(&mut harness.tk, "insert into t values", &values);
     concurrent(&harness.store, |mut tk| {
         exec(&mut tk, "use test");
         exec(
@@ -298,12 +295,10 @@ pub fn TestInstancePlanCacheBatchPointMultiColIndex() {
         &mut harness.tk,
         "create table t (a int,b int,c int,d int,primary key(a,b),unique key(c,d))",
     );
-    for i in 0..100 {
-        exec(
-            &mut harness.tk,
-            &format!("insert into t values ({i},{i},{i},{i})"),
-        );
-    }
+    let values = (0..100)
+        .map(|i| format!("({i},{i},{i},{i})"))
+        .collect::<Vec<_>>();
+    insert_rows(&mut harness.tk, "insert into t values", &values);
     concurrent(&harness.store, |mut tk| {
         exec(&mut tk, "use test");
         // 每个会话随机选择复合主键或复合唯一索引，覆盖两类批量点查计划。
@@ -343,10 +338,9 @@ pub fn TestInstancePlanCacheConcurrencyPointPartitioning() {
         &mut harness.tk,
         "create table t2 (a int, primary key(a)) partition by range(a) (partition p0 values less than (10), partition p1 values less than (20), partition p2 values less than (30), partition p3 values less than (40), partition p4 values less than (50), partition p5 values less than (60), partition p6 values less than (70), partition p7 values less than (80), partition p8 values less than (90), partition p9 values less than (100))",
     );
-    for i in 0..100 {
-        exec(&mut harness.tk, &format!("insert into t1 values ({i})"));
-        exec(&mut harness.tk, &format!("insert into t2 values ({i})"));
-    }
+    let values = (0..100).map(|i| format!("({i})")).collect::<Vec<_>>();
+    insert_rows(&mut harness.tk, "insert into t1 values", &values);
+    insert_rows(&mut harness.tk, "insert into t2 values", &values);
     concurrent(&harness.store, |mut tk| {
         exec(&mut tk, "use test");
         for _ in 0..100 {
@@ -374,9 +368,8 @@ pub fn TestInstancePlanCacheTableIndexScan() {
         &mut harness.tk,
         "create table t (a int primary key,b int,key(b))",
     );
-    for i in 0..100 {
-        exec(&mut harness.tk, &format!("insert into t values ({i},{i})"));
-    }
+    let values = (0..100).map(|i| format!("({i},{i})")).collect::<Vec<_>>();
+    insert_rows(&mut harness.tk, "insert into t values", &values);
     concurrent(&harness.store, |mut tk| {
         exec(&mut tk, "use test");
         for _ in 0..100 {
@@ -414,10 +407,10 @@ pub fn TestInstancePlanCacheIndexJoin() {
     );
     exec(&mut harness.tk, "create table t1 (a int,b int)");
     exec(&mut harness.tk, "create table t2 (a int,key(a))");
-    for i in 0..100 {
-        exec(&mut harness.tk, &format!("insert into t1 values ({i},{i})"));
-        exec(&mut harness.tk, &format!("insert into t2 values ({i})"));
-    }
+    let t1_values = (0..100).map(|i| format!("({i},{i})")).collect::<Vec<_>>();
+    let t2_values = (0..100).map(|i| format!("({i})")).collect::<Vec<_>>();
+    insert_rows(&mut harness.tk, "insert into t1 values", &t1_values);
+    insert_rows(&mut harness.tk, "insert into t2 values", &t2_values);
     concurrent(&harness.store, |mut tk| {
         exec(&mut tk, "use test");
         exec(
@@ -449,9 +442,8 @@ fn point_workload() {
             &mut harness.tk,
             "create table t1 (col1 int, col2 int, primary key(col1), unique key(col2))",
         );
-        for i in 0..100 {
-            exec(&mut harness.tk, &format!("insert into t1 values ({i},{i})"));
-        }
+        let values = (0..100).map(|i| format!("({i},{i})")).collect::<Vec<_>>();
+        insert_rows(&mut harness.tk, "insert into t1 values", &values);
     }
     let mut statements = vec![txn("begin")];
     while statements.len() < 400 {
@@ -511,9 +503,8 @@ pub fn TestInstancePlanCacheConcurrencyPartitioning() {
         &mut harness.tk,
         "create table t (a int) partition by range(a) (partition p0 values less than (10), partition p1 values less than (20), partition p2 values less than (30), partition p3 values less than (40), partition p4 values less than (50), partition p5 values less than (60), partition p6 values less than (70), partition p7 values less than (80), partition p8 values less than (90), partition p9 values less than (100))",
     );
-    for i in 0..100 {
-        exec(&mut harness.tk, &format!("insert into t values ({i})"));
-    }
+    let values = (0..100).map(|i| format!("({i})")).collect::<Vec<_>>();
+    insert_rows(&mut harness.tk, "insert into t values", &values);
     concurrent(&harness.store, |mut tk| {
         exec(&mut tk, "use test");
         for _ in 0..100 {

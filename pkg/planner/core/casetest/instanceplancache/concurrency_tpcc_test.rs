@@ -23,7 +23,7 @@ use std::thread;
 
 use astersql_testkit::TestKit;
 
-use super::support::{Harness, exec, query, rand};
+use super::support::{Harness, exec, insert_rows, query, rand};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// 一条可沿直接执行和预处理执行两条路径运行的 TPC-C 事务步骤。
@@ -305,52 +305,41 @@ fn prepareTPCC(tk: &mut TestKit) {
         }
     }
     exec(tk, "use normal");
+    let mut warehouses = Vec::with_capacity(10);
+    let mut districts = Vec::with_capacity(100);
     for w in 1..=10 {
-        exec(
-            tk,
-            &format!(
-                "insert into warehouse values({w},'1','1','1','1','1','1',0.1,{})",
-                r_int()
-            ),
-        );
+        warehouses.push(format!("({w},'1','1','1','1','1','1',0.1,{})", r_int()));
         for d in 1..=10 {
-            exec(
-                tk,
-                &format!(
-                    "insert into district values({d},{w},'1','1','1','1','1','1',0.1,{},{})",
-                    r_int(),
-                    r_int()
-                ),
-            );
+            districts.push(format!(
+                "({d},{w},'1','1','1','1','1','1',0.1,{},{})",
+                r_int(),
+                r_int()
+            ));
         }
     }
+    insert_rows(tk, "insert into warehouse values", &warehouses);
+    insert_rows(tk, "insert into district values", &districts);
+    let mut customers = Vec::with_capacity(1500);
+    let mut orders = Vec::with_capacity(1500);
+    let mut new_orders = Vec::with_capacity(800);
     for w in 1..=10 {
         for d in 1..=10 {
             for c in 1..=15 {
-                exec(
-                    tk,
-                    &format!(
-                        "insert into customer values({c},{d},{w},'1','1','1','1','1','1','1','1','1','2010-01-01','1',1,0.1,1,1,1,1,'1')"
-                    ),
-                );
+                customers.push(format!(
+                    "({c},{d},{w},'1','1','1','1','1','1','1','1','1','2010-01-01','1',1,0.1,1,1,1,1,'1')"
+                ));
             }
             for o in 1..=15 {
-                exec(
-                    tk,
-                    &format!(
-                        "insert into orders values({o},{d},{w},{},'2010-01-01',1,1,1)",
-                        r_int()
-                    ),
-                );
+                orders.push(format!("({o},{d},{w},{},'2010-01-01',1,1,1)", r_int()));
             }
             for no in 1..=8 {
-                exec(
-                    tk,
-                    &format!("insert into new_order values({},{d},{w})", 2100 + no),
-                );
+                new_orders.push(format!("({},{d},{w})", 2100 + no));
             }
         }
     }
+    insert_rows(tk, "insert into customer values", &customers);
+    insert_rows(tk, "insert into orders values", &orders);
+    insert_rows(tk, "insert into new_order values", &new_orders);
     for table in ["customer", "warehouse", "district", "orders", "new_order"] {
         exec(
             tk,

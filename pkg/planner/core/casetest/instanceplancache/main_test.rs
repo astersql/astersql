@@ -220,15 +220,19 @@ pub fn prepareTableData(table: &str, rows: usize, col_types: &[&str]) -> Vec<Str
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
-    (0..rows)
+    let values = (0..rows)
         .map(|row| {
             let values = column_values
                 .iter()
                 .map(|column| column[row].clone())
                 .collect::<Vec<_>>();
-            format!("insert ignore into {table} values ({});", values.join(", "))
+            format!("({})", values.join(", "))
         })
-        .collect()
+        .collect::<Vec<_>>();
+    vec![format!(
+        "insert ignore into {table} values {};",
+        values.join(",")
+    )]
 }
 
 /// 生成测试表及其固定规模的数据，供不同会话共享同一组查询对象。
@@ -485,7 +489,8 @@ fn generated_workload_matches_go_suite_shape() {
     assert!(patterns.iter().any(|sql| sql.contains(" join ")));
 
     let tables = prepareTables(1);
-    assert_eq!(tables.len(), 101);
+    assert_eq!(tables.len(), 2);
     assert!(tables[0].contains("index idx1"));
     assert!(tables[0].contains("index idx2"));
+    assert_eq!(tables[1].matches("),(").count() + 1, 100);
 }

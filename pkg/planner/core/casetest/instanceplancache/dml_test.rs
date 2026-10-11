@@ -18,7 +18,7 @@
 //! 主要通过相同初始数据比较“占位符绑定后执行”与“参数直接写入 SQL”两条路径，
 //! 并覆盖基础增删改、TPCC 风格更新、指定分区更新及分区表 DML。
 
-use super::support::{Harness, exec, query, rand};
+use super::support::{Harness, exec, insert_rows, query, rand};
 
 /// TPCC 仓库表的最小化测试结构。
 pub const tpccWarehouse: &str =
@@ -135,34 +135,25 @@ pub fn TestInstancePlanCacheDMLTPCC() {
     exec(&mut tk1, tpccWarehouse);
     exec(&mut tk1, tpccDistrict);
     exec(&mut tk1, tpccCustomer);
-    for i in 0..100 {
-        exec(&mut tk1, &format!("insert into warehouse values ({i},0.1)"));
-        exec(
-            &mut tk1,
-            &format!("insert into district values ({i},{i},0.1,0)"),
-        );
-        exec(
-            &mut tk1,
-            &format!("insert into customer values ({i},{i},{i},0.1,0,0,0,'data')"),
-        );
-    }
+    let warehouses = (0..100).map(|i| format!("({i},0.1)")).collect::<Vec<_>>();
+    let districts = (0..100)
+        .map(|i| format!("({i},{i},0.1,0)"))
+        .collect::<Vec<_>>();
+    let customers = (0..100)
+        .map(|i| format!("({i},{i},{i},0.1,0,0,0,'data')"))
+        .collect::<Vec<_>>();
+    insert_rows(&mut tk1, "insert into warehouse values", &warehouses);
+    insert_rows(&mut tk1, "insert into district values", &districts);
+    insert_rows(&mut tk1, "insert into customer values", &customers);
 
     exec(&mut tk2, "create database tpcc2");
     exec(&mut tk2, "use tpcc2");
     exec(&mut tk2, tpccWarehouse);
     exec(&mut tk2, tpccDistrict);
     exec(&mut tk2, tpccCustomer);
-    for i in 0..100 {
-        exec(&mut tk2, &format!("insert into warehouse values ({i},0.1)"));
-        exec(
-            &mut tk2,
-            &format!("insert into district values ({i},{i},0.1,0)"),
-        );
-        exec(
-            &mut tk2,
-            &format!("insert into customer values ({i},{i},{i},0.1,0,0,0,'data')"),
-        );
-    }
+    insert_rows(&mut tk2, "insert into warehouse values", &warehouses);
+    insert_rows(&mut tk2, "insert into district values", &districts);
+    insert_rows(&mut tk2, "insert into customer values", &customers);
 
     exec(&mut tk1, "set global tidb_enable_instance_plan_cache=1");
     for i in 0..100 {
@@ -266,10 +257,9 @@ pub fn TestInstancePlanCacheUpdateSpecifiedPartition() {
         "create table t1(a int,b int) partition by range(a)(partition p0 values less than(10),partition p1 values less than(20),partition p2 values less than(30),partition p3 values less than(40))",
     );
     exec(&mut harness.tk, "create table t2 like t1");
-    for i in 0..40 {
-        exec(&mut harness.tk, &format!("insert into t1 values ({i},{i})"));
-        exec(&mut harness.tk, &format!("insert into t2 values ({i},{i})"));
-    }
+    let values = (0..40).map(|i| format!("({i},{i})")).collect::<Vec<_>>();
+    insert_rows(&mut harness.tk, "insert into t1 values", &values);
+    insert_rows(&mut harness.tk, "insert into t2 values", &values);
     exec(&mut harness.tk, "set @v=1");
     for _ in 0..100 {
         let partition = rand::intn(5);

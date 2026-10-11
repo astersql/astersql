@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use astersql_testkit::TestKit;
-use astersql_testkit::mockstore::{AnalyzeStatsStore, CreateMockStoreAndDomain};
+use astersql_testkit::mockstore::{AnalyzeStatsStore, CreatePlannerTestStoreAndDomain};
 
 /// Small thread-safe deterministic equivalent of the Go test's rand.Intn.
 /// 为并发用例提供可复现的伪随机序列，避免依赖线程局部随机源造成结果漂移。
@@ -61,21 +61,36 @@ pub struct Harness {
 }
 
 static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static SHARED_STORE: OnceLock<Arc<AnalyzeStatsStore>> = OnceLock::new();
+
+const TEST_DATABASES: &[&str] = &["test", "normal", "prepared", "tpcc1", "tpcc2"];
 
 impl Harness {
-    /// 获取跨用例互斥锁后创建全新的模拟存储、域和主会话。
+    /// 获取跨用例互斥锁后复用 canonical store，并清理本套件会创建的数据库。
+    ///
+    /// Domain bootstrap 是进程级 fixture；各用例仍通过重建数据库获得与独立 store
+    /// 相同的 schema/data 隔离，派生会话则继续共享同一实例级计划缓存。
     pub fn new() -> Self {
         let test_guard = TEST_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let (store, _domain) = CreateMockStoreAndDomain();
+        let store = Arc::clone(SHARED_STORE.get_or_init(|| CreatePlannerTestStoreAndDomain().0));
         let tk = TestKit::new(store.clone());
-        Self {
+        let mut harness = Self {
             store,
             tk,
             _test_guard: test_guard,
+        };
+        for database in TEST_DATABASES {
+            exec(
+                &mut harness.tk,
+                &format!("drop database if exists {database}"),
+            );
         }
+        exec(&mut harness.tk, "create database test");
+        exec(&mut harness.tk, "use test");
+        harness
     }
 
     /// 在同一存储上创建独立会话，用于模拟并发连接而不共享会话状态。
@@ -99,6 +114,34 @@ pub fn exec_many(tk: &mut TestKit, statements: &[&str]) {
     for statement in statements {
         exec(tk, statement);
     }
+}
+
+/// 使用单条多值 INSERT 装载一组已格式化的行，保留行数和值而消除逐行解析/提交。
+pub fn insert_rows(tk: &mut TestKit, prefix: &str, values: &[String]) {
+    if !values.is_empty() {
+        exec(tk, &format!("{prefix} {}", values.join(",")));
+    }
+}
+
+#[test]
+fn bulk_insert_preserves_row_values_and_count() {
+    let mut harness = Harness::new();
+    exec(&mut harness.tk, "use test");
+    exec(
+        &mut harness.tk,
+        "create table bulk_fixture(a int,b varchar(8))",
+    );
+    let values = vec![
+        "(1,'a')".to_owned(),
+        "(2,'b')".to_owned(),
+        "(3,'c')".to_owned(),
+    ];
+    insert_rows(&mut harness.tk, "insert into bulk_fixture values", &values);
+    query(&harness.tk, "select * from bulk_fixture order by a").Check(vec![
+        vec!["1", "a"],
+        vec!["2", "b"],
+        vec!["3", "c"],
+    ]);
 }
 
 /// 将一维字符串序列转换为 TestKit 比较所需的单列行集。
