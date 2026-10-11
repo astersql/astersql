@@ -95,7 +95,7 @@
 
 GC 注册也有差异：Go 先用 `infosync.ContainsInternalSession` 检查，并在测试环境通过 failpoint 允许跳出重试；取消由 `context.Context` 提供。Rust 每轮直接调用抽象的 `register_internal_session`，没有 contains 快路径或 failpoint，取消由本地 `CancellationToken` 提供。因此 Rust 的 `false` 必然意味着继续重试，直至取消或成功。
 
-Go 测试 `pkg/session/syssession/pool_test.go` 覆盖容量、复用、旧 owner/重复 Put、in-use、avoid-reuse、未决事务、panic、满池、关闭池、回调错误/panic 和幂等关闭。Rust 的可执行对照位于独立文件 `pool_test.rs` 后半段与 `session_integration_test.rs`；前半段 `GO_POOL_TEST_DRAFT` 只是保留文本，不是可执行 Rust，不能作为通过证据。
+Go 测试 `pkg/session/syssession/pool_test.go` 覆盖容量、复用、旧 owner/重复 Put、in-use、avoid-reuse、未决事务、panic、满池、关闭池、回调错误/panic 和幂等关闭。Rust 的可执行对照位于独立文件 `pool_test.rs` 与 `session_integration_test.rs`。
 
 ## 扩展指南
 
